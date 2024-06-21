@@ -337,7 +337,7 @@ void startup_demo_tft() {
     drawBiwako(false, center_lat, center_lon, scale, i);
     show_gpsinfo();
     draw_degpersecond(30.0 / (300.0 / 1000));
-    tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 - 60);
+    tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 - 55);
     tft.setTextSize(3);
     tft.print("DEMO");
     delay(100);
@@ -392,10 +392,13 @@ void show_gpsinfo() {
   tft.setCursor(SCREEN_WIDTH / 2 - 14, 0);
   tft.setTextSize(2);
   tft.setTextColor(ST77XX_CYAN);
-
-  char buf[4];
-  sprintf(buf, "%03d", (int)get_gps_truetrack());
-  tft.println(buf);  // Display as an integer
+  if(get_gps_fix()){
+    char buf[4];
+    sprintf(buf, "%03d", (int)get_gps_truetrack());
+    tft.println(buf);  // Display as an integer
+  }else{
+    tft.println("N/A");  // Display as an integer
+  }
 
   tft.setTextSize(1);
 
@@ -404,8 +407,12 @@ void show_gpsinfo() {
 
   tft.setTextColor(ST77XX_GREEN);
   // Convert speed from knots to m/s (1 knot = 0.514444 m/s) and display with one decimal place
-  double speed_m_s = get_gps_speed() * 0.514444;
-  tft.print(speed_m_s, 1);
+  if(get_gps_fix()){
+    double speed_m_s = get_gps_speed() * 0.514444;
+    tft.print(speed_m_s, 1);
+  }else{
+    tft.print("N/A");
+  }
   tft.println("m/s");
 
   //tft.println(get_gps_lat(),4);
@@ -415,10 +422,10 @@ void show_gpsinfo() {
   //tft.println(get_gps_altitude(),1);
 
 
-  tft.fillRect(0, SCREEN_HEIGHT - 16, 18, 16, ST77XX_BLACK);
-  tft.setCursor(0, SCREEN_HEIGHT - 16);
+  tft.fillRect(0, SCREEN_HEIGHT - 8, 16, 8, ST77XX_BLACK);
+  tft.setCursor(0, SCREEN_HEIGHT - 8);
   tft.println(get_gps_numsat());
-  tft.print(get_gps_altitude());
+  //tft.print(get_gps_altitude());
 }
 
 

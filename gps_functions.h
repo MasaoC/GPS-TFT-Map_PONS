@@ -4,6 +4,8 @@
 void gps_setup();
 void gps_loop();
 
+
+bool get_gps_fix();
 double get_gps_speed();
 float get_gps_truetrack();
 int get_gps_numsat();

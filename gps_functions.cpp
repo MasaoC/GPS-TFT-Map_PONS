@@ -5,7 +5,7 @@
 
 
 //デモ用途。ひとつだけ選択。【リリース版は全てコメントアウト】
-#define DEBUG_GPS_SIM_BIWAKO
+//#define DEBUG_GPS_SIM_BIWAKO
 //#define DEBUG_GPS_SIM_SHINURA2BIWA
 //#define DEBUG_GPS_SIM_OSAKA2BIWA
 //#define DEBUG_GPS_SIM_SHINURA2OSAKA
@@ -27,7 +27,7 @@ void gps_setup() {
 #endif
   GPS.begin(9600);
   GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
+  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_2HZ);  // 1 Hz update rate
   GPS.sendCommand(PGCMD_ANTENNA);
 }
 
@@ -57,7 +57,8 @@ float get_gps_lat() {
   #ifdef DEBUG_GPS_SIM_SHINURA2OSAKA
     return OSAKA_LAT+GPS.latitudeDegrees-SHINURA_LAT;
   #endif 
-
+  Serial.println(GPS.latitude);
+  Serial.println(GPS.latitude_fixed);
   return GPS.latitudeDegrees;
 }
 
@@ -84,6 +85,10 @@ double get_gps_speed() {
 #else
   return GPS.speed;
 #endif
+}
+
+bool get_gps_fix(){
+  return GPS.fix;
 }
 
 float get_gps_altitude() {

@@ -15,6 +15,7 @@
   Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 #endif
 
+#define SCREEN_INTERVAL 500 
 
 int scaleindex = 3;
 float scale = 2.0;
@@ -63,6 +64,9 @@ void setup(void) {
   tft.fillScreen(ST77XX_BLACK);
   pixels.clear();
   pixels.show();
+
+  redraw = true;
+  quick_redraw = true;
 }
 
 
@@ -86,7 +90,7 @@ void check_bankwarning(){
 
 
   //Do not trigger bank warning if speed is below ...
-  if(get_gps_speed() < 0.5){
+  if(get_gps_speed() < 1.0){
     if(bank_warning){
       redraw = true;
       pixels.clear();
@@ -161,15 +165,17 @@ void loop() {
     }
   }
 
-  if(millis() - last_time_gpsdata > 1000 || quick_redraw){
+  if(millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw){
     float newtrack = get_gps_truetrack();
     float new_lat = get_gps_lat();
+    Serial.println(new_lat);
     last_time_gpsdata = millis();
     quick_redraw = false;
 
     check_bankwarning();
 
     if(!bank_warning){
+      //1.0deg per second から　3.0 deg per second をLEDの0-255に変換。
       byte led_g = constrain(map(degpersecond*100,100,300,0,255),0,255);
       byte led_b = constrain(map(-degpersecond*100,100,300,0,255),0,255);
       pixels.clear();
@@ -197,15 +203,21 @@ void loop() {
         redraw = false;
       }else{
         Serial.println("ERR NO map around this area");
+        tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 100, ST77XX_BLACK);
+        tft.setTextColor(ST77XX_WHITE);
         tft.setTextSize(2);
         tft.setCursor(0, SCREEN_HEIGHT/2-50);
-        tft.println("GPS-POSITION");
+        tft.println("NO MAPDATA AT");
+        tft.print("");
         tft.print("LAT:");
         tft.println(new_lat);
         tft.print("LON:");
         tft.println(new_long);
-        tft.print("PDOP:");
-        tft.println(get_gps_pdop());
+        tft.print("Searching GPS");
+        int dotcouter = (millis()/1000)%5;
+        for(int i = 0; i < dotcouter;i++){
+          tft.print(".");
+        }
         redraw = true;
       }
     }
