@@ -177,7 +177,7 @@ float degreesToRadians(float degrees) {
 // draw north east west south according to truetrack, where truetrack is direction of upward display.
 // However direction of y-axis is downward for tft display.
 void draw_news(float truetrack, uint16_t col) {
-  const int dist = 90;
+  const int dist = 103;
   int centerx = SCREEN_WIDTH / 2;
   int centery = SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN;
   float radian = degreesToRadians(truetrack);
@@ -329,7 +329,7 @@ void drawOsaka(bool redraw, float center_lat, float center_lon, float scale, flo
 
 
 void startup_demo_tft() {
-  for (int i = 0; i <= 360; i += 10) {
+  for (int i = 0; i <= 360; i += 30) {
     float scale = 0.15;
     float center_lat = 35.3034225841915;
     float center_lon = 136.1461056306493;
