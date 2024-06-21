@@ -7,7 +7,7 @@
 #define TFT_CS        D3
 #define TFT_RST        D0 // Or set to -1 and connect to Arduino RESET pin
 #define TFT_DC         D1
-#define TFT_BL      D2
+#define TFT_BL      D3
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 160
@@ -22,22 +22,38 @@
   struct cord_tft{
     int x;
     int y;
+
+    bool isOutsideTft(){
+      return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
+    }
+  };
+
+  enum stroke_group{
+    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND
   };
   
 
   extern  Adafruit_ST7735 tft;
+  extern bool fresh_display;
 
 #endif
 
 //https://rgbcolorpicker.com/565
-#define ST77XX_GRAY 0x878787
+#define ST77XX_GRAY 0x7bcf
+#define ST77XX_BRIGHTGRAY 0xc618
 
 void show_gpsinfo();
 void setup_tft();
-bool draw_circle_km(float scale, int km);
+
+void draw_bankwarning();
+void draw_degpersecond(float degpersecond);
+void drawShinura(bool redraw, float center_lat,float center_lon,float scale,float up);
+void drawBiwako(bool redraw, float center_lat,float center_lon,float scale,float up);
+void drawOsaka(bool redraw, float center_lat,float center_lon,float scale,float up);
+bool draw_circle_km(float scale, float km);
 void draw_km_circle(float scale);
 void startup_demo_tft();
-void drawmap(bool erasePreviousLines, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp);
+void drawmap(stroke_group id, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
 
 void draw_pilon_line(float mapcenter_lat, float mapcenter_lon,float scale, float upward);

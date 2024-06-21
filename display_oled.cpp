@@ -1,10 +1,7 @@
 #include "display_oled.h"
 #include "gps_functions.h"
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-
-
+Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
 
 void setup_oled(){
 
@@ -46,10 +43,13 @@ void show_oled(){
       display.print("m/s");
     }
 
+    // Display Track Made Good
+    display.setCursor(0, 40);
+    display.print("TT");
     // Set a larger text size
     display.setTextSize(5);
     // Display Track Made Good
-    display.setCursor(24, 24);
+    display.setCursor(30, 24);
     if (isnan(ttrack)) {
       display.print("N/A");
     } else {
