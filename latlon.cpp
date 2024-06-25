@@ -145,7 +145,7 @@ bool out_of_bounds(int x1,int y1,int x2,int y2){
 
 #define EARTH_RADIUS 6371.0 // Earth's radius in kilometers
 #define AVG_LATITUDE 35.5 // Average latitude of the specific range in degrees
-#define DEG_TO_RAD (PI / 180.0) // Conversion factor from degrees to radians
+//#define DEG_TO_RAD (PI / 180.0) // Conversion factor from degrees to radians
 #define COS_AVG_LATITUDE cos(AVG_LATITUDE * DEG_TO_RAD) // Cosine of the average latitude in radians
 
 // Precompute meters per degree for the specific latitude

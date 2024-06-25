@@ -4,10 +4,9 @@
 
 #include "navdata.h"
 
-#define TFT_CS        D3
-#define TFT_RST        D0 // Or set to -1 and connect to Arduino RESET pin
+#define TFT_RST        D0
 #define TFT_DC         D1
-#define TFT_BL      D3
+#define TFT_BL      D9
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 160

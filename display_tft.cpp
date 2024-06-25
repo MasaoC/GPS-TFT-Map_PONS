@@ -3,15 +3,11 @@
 #include "navdata.h"
 #include "gps_functions.h"
 
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_ST7735 tft = Adafruit_ST7735(-1, TFT_DC, TFT_RST);
 
 
 void setup_tft() {
 
-  // Initialize backlight control pin
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);  // Turn on the backlight
-  //analogWrite(TFT_BL,255);
 
   tft.initR(INITR_BLACKTAB);
   //tft.setSPISpeed(24000000);
@@ -19,6 +15,11 @@ void setup_tft() {
   Serial.println(F("Initialized"));
 
   tft.fillScreen(ST77XX_BLACK);
+
+  // Initialize backlight control pin
+  pinMode(TFT_BL, OUTPUT);
+  //digitalWrite(TFT_BL, HIGH);  // Turn on the backlight
+  analogWrite(TFT_BL,255);
 }
 
 
