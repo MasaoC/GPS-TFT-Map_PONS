@@ -24,7 +24,7 @@ void show_oled(){
   lastshown = millis();
   bool fix = get_gps_fix();
   float spd = get_gps_speed();
-  float ttrack = get_gps_truetrack();
+  float mtrack = get_gps_magtrack();
 
    // Clear the display
     display.clearDisplay();
@@ -35,29 +35,24 @@ void show_oled(){
     // Display Ground Speed
     display.setCursor(0, 0);
     display.print("GS:");
-    if (isnan(spd) || !fix) {
-      display.print("N/A");
-    } else {
-      // Convert speed from knots to m/s (1 knot = 0.514444 m/s) and display with one decimal place
-      float speed_m_s = spd * 0.514444;
-      display.print(speed_m_s, 1);
-      display.print("m/s");
-    }
+  
+    // Convert speed from knots to m/s (1 knot = 0.514444 m/s) and display with one decimal place
+    float speed_m_s = spd * 0.514444;
+    display.print(speed_m_s, 1);
+    display.print("m/s");
+    
 
     // Display Track Made Good
     display.setCursor(0, 40);
-    display.print("TT");
+    display.print("MT");
     // Set a larger text size
     display.setTextSize(5);
     // Display Track Made Good
     display.setCursor(30, 24);
-    if (isnan(ttrack)|| !fix) {
-      display.print("N/A");
-    } else {
-      char buf[4];
-      sprintf( buf, "%03d", (int)ttrack );
-      display.print(buf); // Display as an integer
-    }
+    char buf[4];
+    sprintf( buf, "%03d", (int)mtrack );
+    display.print(buf); // Display as an integer
+  
 
     // Display the results
     display.display();

@@ -1,14 +1,7 @@
 #include "gps_functions.h"
 #include "navdata.h"
+#include "settings.h"
 
-//#define ESP32S3
-
-
-//デモ用途。ひとつだけ選択。【リリース版は全てコメントアウト】
-//#define DEBUG_GPS_SIM_BIWAKO
-//#define DEBUG_GPS_SIM_SHINURA2BIWA
-//#define DEBUG_GPS_SIM_OSAKA2BIWA
-//#define DEBUG_GPS_SIM_SHINURA2OSAKA
 
 #ifdef ESP32S3
 #include <HardwareSerial.h>
@@ -17,6 +10,8 @@ Adafruit_GPS GPS(&MySerial0);
 #else
 Adafruit_GPS GPS(&Serial1);
 #endif
+
+bool gps_connection = false;
 
 void gps_setup() {
 #ifdef ESP32S3
@@ -38,6 +33,7 @@ void gps_loop() {
   //Serial.print(c);
   // If a new NMEA sentence is available
   if (GPS.newNMEAreceived()) {
+    gps_connection = true;
     if (!GPS.parse(GPS.lastNMEA())) {
       return;
     }
@@ -45,7 +41,7 @@ void gps_loop() {
 }
 float get_gps_lat() {
   #ifdef DEBUG_GPS_SIM_BIWAKO
-    return PLA_LAT+millis()/8000.0/1000.0;
+    return PLA_LAT+millis()/16000.0/1000.0-0.01;
   #endif
   #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
     return PLA_LAT +GPS.latitudeDegrees- SHINURA_LAT;
@@ -64,7 +60,7 @@ float get_gps_lat() {
 
 float get_gps_long() {
   #ifdef DEBUG_GPS_SIM_BIWAKO
-    return PLA_LON-millis()/500.0/1000.0;
+    return PLA_LON-millis()/1000.0/1000.0+0.035;
   #endif
   #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
     return PLA_LON +GPS.longitudeDegrees- SHINURA_LON;
@@ -87,6 +83,10 @@ double get_gps_speed() {
 #endif
 }
 
+
+bool get_gps_connection(){
+  return gps_connection;
+}
 bool get_gps_fix(){
   return GPS.fix;
 }
@@ -104,13 +104,19 @@ float get_gps_truetrack() {
 #endif
 }
 
+
+float get_gps_magtrack() {
+  float temp = get_gps_truetrack()+8.0;
+  if(temp > 360.0){
+    temp -= 360.0;
+  }
+  return temp;
+}
+
 int get_gps_numsat() {
   return GPS.satellites;
 }
 
-float get_gps_magvar() {
-  return GPS.magvariation;
-}
 
 float get_gps_pdop(){
   return GPS.PDOP;

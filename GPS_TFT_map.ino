@@ -2,10 +2,7 @@
 #include "navdata.h"
 #include "display_oled.h"
 #include "display_tft.h"
-
-
-
-#define RP2040
+#include "settings.h"
 
 #ifdef RP2040
   #include <Adafruit_NeoPixel.h>
@@ -15,20 +12,20 @@
   Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 #endif
 
-#define SCREEN_INTERVAL 500 
+#define SCALE_JAPAN 0.008f
 
 int scaleindex = 3;
-float scale = 2.0;
-const float scalelist[] = {0.2,0.4,1.0,2.5,10.0};
+const float scalelist[] = {SCALE_JAPAN,0.2f,0.4f,1.0f,2.5f,10.0f};
+float scale = scalelist[scaleindex];
 
 
 unsigned long last_newtrack_time = 0;
 float old_track = 0;
-float track_now = 0;
+float truetrack_now = 0;
 float lat_now = 0;
-int last_time_gpsdata = 0;
-bool redraw = false;
-bool quick_redraw = false;
+unsigned long last_time_gpsdata = 0;    //GPSを最後に受信した時間 millis()
+bool redraw = false;          //次の描画では、黒塗りして新たに画面を描画する
+bool quick_redraw = false;    //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
 float degpersecond = 0;
 bool bank_warning = false;
 
@@ -41,6 +38,8 @@ bool lastSwitchState = HIGH; // Previous state of the switch
 bool longPressHandled = false; // Whether the long press was already handled
 
 
+// Settings mode variable
+bool show_setting = false;
 
 void setup(void) {
   Serial.begin(38400);
@@ -61,7 +60,7 @@ void setup(void) {
   setup_tft();
   startup_demo_tft();
 
-  tft.fillScreen(ST77XX_BLACK);
+  tft.fillScreen(COLOR_BLACK);
   pixels.clear();
   pixels.show();
 
@@ -117,6 +116,12 @@ void debug_print(const char* inp){
 }
 
 
+// Variables for setting selection
+int selectedLine = -1;
+int cursorLine = 0;
+#define SETTING_LINES 4
+
+
 void switch_handling(){
   int reading = digitalRead(switchPin); // Read the current state of the switch
 
@@ -130,9 +135,20 @@ void switch_handling(){
       unsigned long pressDuration = millis() - pressTime;
       if (pressDuration < longPressDuration && pressDuration > debounceTime) {
         Serial.println("short press");
-        scale = scalelist[scaleindex++%(sizeof(scalelist) / sizeof(scalelist[0]))];
-        quick_redraw = true;
-        redraw = true;
+        if(show_setting){//Setting mode
+          if(selectedLine == -1){//No active selected line.
+            cursorLine = (cursorLine+1)%SETTING_LINES;
+          }else if(selectedLine == 0){
+            tft_increment_brightness();
+            redraw = true;
+          }else{
+            Serial.println("no setting");
+          }
+        }else{
+          scale = scalelist[scaleindex++%(sizeof(scalelist) / sizeof(scalelist[0]))];
+          quick_redraw = true;
+          redraw = true;
+        }
       }
     }
     delay(debounceTime); // Debounce delay
@@ -140,6 +156,28 @@ void switch_handling(){
     // Check for long press
     if (millis() - pressTime >= longPressDuration) {
         Serial.println("long press");
+        longPressHandled = true;
+        if(!show_setting){        
+          show_setting = true;
+          selectedLine = -1;
+          redraw = true;
+        }else{
+          if(cursorLine == SETTING_LINES-1){
+            show_setting = false;
+            quick_redraw = true;
+            redraw = true;
+          }else{
+            if(selectedLine == -1){
+              //Entering changing value mode.
+              selectedLine = cursorLine;
+              redraw = true;
+            }else{
+              //exiting changing value mode.
+              selectedLine = -1;
+              redraw = true;
+            }
+          }
+        }
     }
   }
 
@@ -152,6 +190,12 @@ bool err_nomap = false;
 void loop() {
   switch_handling();
   gps_loop();
+
+
+  if (show_setting) {
+    draw_setting_mode(redraw, selectedLine, cursorLine);
+    return;
+  }
 
   if(bank_warning){
     if((millis()/100)%3 == 0){
@@ -166,14 +210,16 @@ void loop() {
   }
 
   if(millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw){
-    float newtrack = get_gps_truetrack();
+    float new_truetrack = get_gps_truetrack();
     float new_lat = get_gps_lat();
     Serial.println(new_lat);
     last_time_gpsdata = millis();
     quick_redraw = false;
 
-    check_bankwarning();
 
+
+
+    check_bankwarning();
     if(!bank_warning){
       //1.0deg per second から　3.0 deg per second をLEDの0-255に変換。
       byte led_g = constrain(map(degpersecond*100,100,300,0,255),0,255);
@@ -183,46 +229,59 @@ void loop() {
       pixels.show();
     }
     
-    if(newtrack != track_now || new_lat != lat_now || redraw){
-      track_now = newtrack;
+    if(new_truetrack != truetrack_now || new_lat != lat_now || redraw){
+      truetrack_now = new_truetrack;
       lat_now = new_lat;
       float new_long = get_gps_long();
       debug_print("drawmap begin");
 
-
-      if(abs(new_long - PLA_LON) < 0.6){
-        drawBiwako(redraw,new_lat,new_long, scale, newtrack);
-        redraw = false;
-      }
-      else if(abs(new_long - OSAKA_LON) < 0.6){
-        drawOsaka(redraw, new_lat,new_long, scale, newtrack);
-        redraw = false;
-      }
-      else if(abs(new_long - SHINURA_LON) < 0.6){
-        drawShinura(redraw,new_lat, new_long, scale, newtrack);
-        redraw = false;
+      if(scale <= SCALE_JAPAN){
+        Serial.println("test");
+        drawJapan(redraw,new_lat,new_long,scale,truetrack_now);
       }else{
-        Serial.println("ERR NO map around this area");
-        tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 100, ST77XX_BLACK);
-        tft.setTextColor(ST77XX_WHITE);
-        tft.setTextSize(2);
-        tft.setCursor(0, SCREEN_HEIGHT/2-50);
-        tft.println("NO MAPDATA AT");
-        tft.print("");
-        tft.print("LAT:");
-        tft.println(new_lat);
-        tft.print("LON:");
-        tft.println(new_long);
-        tft.print("Searching GPS");
-        int dotcouter = (millis()/1000)%5;
-        for(int i = 0; i < dotcouter;i++){
-          tft.print(".");
+
+        if(abs(new_long - PLA_LON) < 0.6){
+          drawBiwako(redraw,new_lat,new_long, scale, truetrack_now);
         }
-        redraw = true;
+        else if(abs(new_long - OSAKA_LON) < 0.6){
+          drawOsaka(redraw, new_lat,new_long, scale, truetrack_now);
+        }
+        else if(abs(new_long - SHINURA_LON) < 0.6){
+          drawShinura(redraw,new_lat, new_long, scale, truetrack_now);
+          redraw = false;
+        }else{
+          Serial.println("ERR NO map around this area");
+          tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 100, COLOR_BLACK);
+          tft.setTextColor(COLOR_WHITE);
+          tft.setTextSize(2);
+          tft.setCursor(0, SCREEN_HEIGHT/2-50);
+          tft.println("NO MAPDATA");
+          tft.println("");
+          if(!get_gps_fix()){
+            tft.println("Searching");
+            tft.print("GPS");
+            int dotcouter = (millis()/1000)%5;
+            for(int i = 0; i < dotcouter;i++){
+              tft.print(".");
+            }
+            tft.println("");
+            tft.setTextSize(1);
+            if(get_gps_connection()){
+              tft.print("GPS connection found...");
+            }else{
+              tft.println("No GPS found !!");
+              tft.print("Check connection, or try reset.");
+            }
+          }else{
+            tft.println("GPS Fixed.");
+            tft.println("No Data.");
+          }
+          redraw = true;
+        }
       }
     }
-    show_gpsinfo();
     draw_degpersecond(degpersecond);
+    show_gpsinfo();
     
 
     if(bank_warning){

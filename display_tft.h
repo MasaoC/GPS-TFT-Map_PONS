@@ -1,15 +1,31 @@
 #include <Adafruit_GFX.h>    // Core graphics library
-#include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
-//#include <SPI.h>
-
+#include "settings.h"
 #include "navdata.h"
+
+
+#ifdef TFT_SELECT_ST7789
+  #include <Adafruit_ST7789.h> // Hardware-specific library for ST7735
+  #define SCREEN_WIDTH 240
+  #define SCREEN_HEIGHT 320
+  #define TFT_BL        D9
+#endif
+#ifdef TFT_SELECT_ST7735
+  #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
+  #define SCREEN_WIDTH 128
+  #define SCREEN_HEIGHT 160
+  #define TFT_BL        D9
+#endif
+#ifdef TFT_USE_ILI9341
+  #include <Adafruit_ILI9341.h>
+  #define SCREEN_WIDTH 240
+  #define SCREEN_HEIGHT 320
+  #define TFT_BL        D9
+#endif
 
 #define TFT_RST        D0
 #define TFT_DC         D1
-#define TFT_BL      D9
+#define TFT_CS        -1
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 160
 
 
 #define MAP_SHIFT_DOWN 60   //80+60=140 is centerY.
@@ -30,29 +46,72 @@
   enum stroke_group{
     STRK_PILONLINE,STRK_MAP1,STRK_SEALAND
   };
-  
 
-  extern  Adafruit_ST7735 tft;
+  #if defined(TFT_USE_ST7789) || defined(TFT_USE_ST7735)
+    #define COLOR_ORANGE ST77XX_ORANGE
+    #define COLOR_BLACK ST77XX_BLACK
+    #define COLOR_BLUE ST77XX_BLUE
+    #define COLOR_GREEN ST77XX_GREEN
+    #define COLOR_RED ST77XX_RED
+    #define COLOR_YELLOW ST77XX_YELLOW
+    #define COLOR_MAGENTA ST77XX_MAGENTA
+    #define COLOR_WHITE ST77XX_WHITE
+    #define COLOR_CYAN ST77XX_CYAN
+    //https://rgbcolorpicker.com/565
+    #define COLOR_GRAY 0x7bcf
+    #define COLOR_BRIGHTGRAY 0xc618
+    #define COLOR_LIGHT_BLUE 0x3dbf
+  #endif
+  #ifdef TFT_USE_ILI9341
+    #define COLOR_ORANGE ILI9341_ORANGE
+    #define COLOR_BLACK ILI9341_BLACK
+    #define COLOR_BLUE ILI9341_BLUE
+    #define COLOR_GREEN ILI9341_GREEN
+    #define COLOR_RED ILI9341_RED
+    #define COLOR_YELLOW ILI9341_YELLOW
+    #define COLOR_WHITE ILI9341_WHITE
+    #define COLOR_CYAN ILI9341_CYAN
+    #define COLOR_GRAY 0x7bcf
+    #define COLOR_BRIGHTGRAY 0xc618
+    #define COLOR_LIGHT_BLUE 0x3dbf
+    #define COLOR_MAGENTA ILI9341_PINK
+  #endif
+
+  
+  #ifdef TFT_USE_ST7789
+    extern  Adafruit_ST7789 tft;
+  #endif
+  #ifdef TFT_USE_ST7735
+    extern  Adafruit_ST7735 tft;
+  #endif
+  #ifdef TFT_USE_ILI9341
+    extern Adafruit_ILI9341 tft;
+  #endif
+
   extern bool fresh_display;
+
+
 
 #endif
 
-//https://rgbcolorpicker.com/565
-#define ST77XX_GRAY 0x7bcf
-#define ST77XX_BRIGHTGRAY 0xc618
 
 void show_gpsinfo();
 void setup_tft();
 
+
+void tft_increment_brightness();
+
+void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);
-void drawShinura(bool redraw, float center_lat,float center_lon,float scale,float up);
-void drawBiwako(bool redraw, float center_lat,float center_lon,float scale,float up);
-void drawOsaka(bool redraw, float center_lat,float center_lon,float scale,float up);
+void drawJapan(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void drawShinura(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void drawBiwako(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void drawOsaka(bool& redraw, float center_lat,float center_lon,float scale,float up);
 bool draw_circle_km(float scale, float km);
 void draw_km_circle(float scale);
 void startup_demo_tft();
 void drawmap(stroke_group id, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
 
-void draw_pilon_line(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
+void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
