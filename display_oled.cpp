@@ -1,10 +1,10 @@
 #include "display_oled.h"
 #include "gps_functions.h"
 
+
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
 
 void setup_oled(){
-
   // Initialize the OLED display with the SSD1306_SWITCHCAPVCC parameter
   if (!display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));

@@ -1,22 +1,18 @@
 #include "gps_functions.h"
 #include "navdata.h"
-#include "display_oled.h"
 #include "display_tft.h"
 #include "settings.h"
+#include "gps_functions.h"
 
-#ifdef RP2040
-  #include <Adafruit_NeoPixel.h>
-  int Power = 11;
-  int PIN  = 12;
-  #define NUMPIXELS 1
-  Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+#ifdef USE_OLED
+  #include "display_oled.h"
 #endif
 
-#define SCALE_JAPAN 0.008f
 
-int scaleindex = 3;
-const float scalelist[] = {SCALE_JAPAN,0.2f,0.4f,1.0f,2.5f,10.0f};
-float scale = scalelist[scaleindex];
+#include <QMC5883LCompass.h>
+
+QMC5883LCompass compass;
+
 
 
 unsigned long last_newtrack_time = 0;
@@ -29,6 +25,8 @@ bool quick_redraw = false;    //次の描画時間を待たずに、次のルー
 float degpersecond = 0;
 bool bank_warning = false;
 
+
+//スイッチ関連
 const int switchPin = D2;  // Pin where the switch is connected
 unsigned long pressTime = 0;   // Time when the switch is pressed
 unsigned long debounceTime = 50; // Debounce time in milliseconds
@@ -41,34 +39,68 @@ bool longPressHandled = false; // Whether the long press was already handled
 // Settings mode variable
 bool show_setting = false;
 
+
+#ifdef XIAO_RP2040
+  #include <Adafruit_NeoPixel.h>
+  int Power = 11;
+  int PIN  = 12;
+  #define NUMPIXELS 1
+  Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+#endif
+
+#define SCALE_JAPAN 0.008f
+
+
+int scaleindex = 3;
+const float scalelist[] = {SCALE_JAPAN,0.2f,0.4f,1.0f,2.5f,10.0f};
+float scale = scalelist[scaleindex];
+
+
+
 void setup(void) {
   Serial.begin(38400);
   Serial.print(F("SETUP"));
 
-  pixels.begin();
-  pinMode(Power,OUTPUT);
-  digitalWrite(Power, HIGH);
+
+
+  #ifdef XIAO_RP2040
+    pixels.begin();
+    pinMode(Power,OUTPUT);
+    digitalWrite(Power, HIGH);
+    pixels.clear();
+    pixels.setPixelColor(0, pixels.Color(15, 25, 205));
+    pixels.show();
+  #endif
+
+  compass.init();
+  compass.setSmoothing(10,true);  
+
 
   pinMode(switchPin,INPUT_PULLUP);
 
-  pixels.clear();
-  pixels.setPixelColor(0, pixels.Color(15, 25, 205));
-  pixels.show();
-  
   gps_setup();
-  setup_oled();
+
+  #ifdef USE_OLED
+    setup_oled();
+  #endif
   setup_tft();
+
+
   startup_demo_tft();
 
   tft.fillScreen(COLOR_BLACK);
-  pixels.clear();
-  pixels.show();
+
+
+  #ifdef XIAO_RP2040
+    pixels.clear();
+    pixels.show();
+  #endif
 
   redraw = true;
   quick_redraw = true;
+
+
 }
-
-
 
 
 void check_bankwarning(){
@@ -92,8 +124,10 @@ void check_bankwarning(){
   if(get_gps_speed() < 1.0){
     if(bank_warning){
       redraw = true;
-      pixels.clear();
-      pixels.show();
+      #ifdef XIAO_RP2040
+        pixels.clear();
+        pixels.show();
+      #endif
       bank_warning = false;
     }
     return;
@@ -103,8 +137,10 @@ void check_bankwarning(){
   }else{
     if(bank_warning){
       redraw = true;
-      pixels.clear();
-      pixels.show();
+      #ifdef XIAO_RP2040
+        pixels.clear();
+        pixels.show();
+      #endif
       bank_warning = false;
     }
   }
@@ -141,6 +177,9 @@ void switch_handling(){
           }else if(selectedLine == 0){
             tft_increment_brightness();
             redraw = true;
+          }else if(selectedLine == 1){
+            toggle_demo_biwako();  
+            redraw = true;
           }else{
             Serial.println("no setting");
           }
@@ -159,9 +198,11 @@ void switch_handling(){
         longPressHandled = true;
         if(!show_setting){        
           show_setting = true;
+          cursorLine = 0;
           selectedLine = -1;
           redraw = true;
         }else{
+          //exit
           if(cursorLine == SETTING_LINES-1){
             show_setting = false;
             quick_redraw = true;
@@ -187,27 +228,52 @@ void switch_handling(){
 
 bool err_nomap = false;
 
+unsigned long last_compass_time = 0;
+#define COMPASS_INTERVAL 500
+
 void loop() {
   switch_handling();
   gps_loop();
-
-
+  
   if (show_setting) {
     draw_setting_mode(redraw, selectedLine, cursorLine);
     return;
   }
 
+
+  #ifdef XIAO_RP2040
   if(bank_warning){
     if((millis()/100)%3 == 0){
-    pixels.clear();
-    pixels.setPixelColor(0, pixels.Color(255, 0, 0));
-    pixels.show();
+      pixels.clear();
+      pixels.setPixelColor(0, pixels.Color(255, 0, 0));
+      pixels.show();
     }
     if((millis()/100)%3 == 1){
       pixels.clear();
       pixels.show();
     }
   }
+  #endif
+
+  if(millis() - last_compass_time > COMPASS_INTERVAL){
+    last_compass_time = millis();
+    int x, y, z;
+    // Return XYZ readings
+    x = compass.getX();
+    y = compass.getY();
+    z = compass.getZ();
+    
+    Serial.print("X: ");
+    Serial.print(x);
+    Serial.print(" Y: ");
+    Serial.print(y);
+    Serial.print(" Z: ");
+    Serial.print(z);
+    Serial.println();
+    
+  }
+
+
 
   if(millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw){
     float new_truetrack = get_gps_truetrack();
@@ -216,18 +282,18 @@ void loop() {
     last_time_gpsdata = millis();
     quick_redraw = false;
 
-
-
-
     check_bankwarning();
-    if(!bank_warning){
-      //1.0deg per second から　3.0 deg per second をLEDの0-255に変換。
-      byte led_g = constrain(map(degpersecond*100,100,300,0,255),0,255);
-      byte led_b = constrain(map(-degpersecond*100,100,300,0,255),0,255);
-      pixels.clear();
-      pixels.setPixelColor(0, pixels.Color(0, led_g, led_b));
-      pixels.show();
-    }
+
+    #ifdef XIAO_RP2040
+      if(!bank_warning){
+        //1.0deg per second から　3.0 deg per second をLEDの0-255に変換。
+        byte led_g = constrain(map(degpersecond*100,100,300,0,255),0,255);
+        byte led_b = constrain(map(-degpersecond*100,100,300,0,255),0,255);
+        pixels.clear();
+        pixels.setPixelColor(0, pixels.Color(0, led_g, led_b));
+        pixels.show();
+      }
+    #endif
     
     if(new_truetrack != truetrack_now || new_lat != lat_now || redraw){
       truetrack_now = new_truetrack;
@@ -254,7 +320,7 @@ void loop() {
           tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 100, COLOR_BLACK);
           tft.setTextColor(COLOR_WHITE);
           tft.setTextSize(2);
-          tft.setCursor(0, SCREEN_HEIGHT/2-50);
+          tft.setCursor(0, SCREEN_HEIGHT/2-40);
           tft.println("NO MAPDATA");
           tft.println("");
           if(!get_gps_fix()){
@@ -267,7 +333,7 @@ void loop() {
             tft.println("");
             tft.setTextSize(1);
             if(get_gps_connection()){
-              tft.print("GPS connection found...");
+              tft.print("GPS connection found");
             }else{
               tft.println("No GPS found !!");
               tft.print("Check connection, or try reset.");
@@ -279,6 +345,11 @@ void loop() {
           redraw = true;
         }
       }
+      if(get_demo_biwako()){
+        tft.setCursor(SCREEN_WIDTH / 2 - 20, SCREEN_HEIGHT / 2 - 35);
+        tft.setTextSize(2);
+        tft.print("DEMO");
+      }
     }
     draw_degpersecond(degpersecond);
     show_gpsinfo();
@@ -287,8 +358,10 @@ void loop() {
     if(bank_warning){
       draw_bankwarning();
     }
-    debug_print("show oled");
-    show_oled();
+
+    #ifdef USE_OLED
+      show_oled();
+    #endif
   }
   
 }

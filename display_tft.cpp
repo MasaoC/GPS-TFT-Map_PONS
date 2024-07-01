@@ -2,33 +2,39 @@
 #include "latlon.h"
 #include "navdata.h"
 #include "gps_functions.h"
+#include "settings.h"
 
 #ifdef TFT_USE_ST7789
   Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
   // TFT_CS must be actually connected to ST7789 Module CS pin for some reason.
-  // Library is not accepting -1 CS or my module that I have is not working.
+  // Library is not accepting -1 CS or my module that I have. thus not working.
 #endif
-#ifdef TFT_USE_ST_7735
-  Adafruit_ST7735 tft = Adafruit_ST7735(-1, TFT_DC, TFT_RST);
+#ifdef TFT_USE_ST7735
+  Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 #endif
 
 #ifdef TFT_USE_ILI9341
   //default pin setting
-  #define TFT_MOSI D10
-  #define TFT_CLK D8
-  Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+  Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);//CS can be -1 but now, RST must be connected to actual pin. somehow...
   //Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI,TFT_CLK,-1,-1);   Does not work....
 #endif
 
 
 
-int screen_brightness = 60; // Example brightness value
-const int brightnessLevels[] = {1, 20, 60, 150, 200}; // Example brightness levels
-int brightnessIndex = 1; // Default to 60
+int screen_brightness = 255; // Example brightness value
+const int brightnessLevels[] = {30, 100, 150, 200, 255}; // Example brightness levels
+int brightnessIndex = 4; // Default to 60
 
 void setup_tft() {
-  //pinMode(TFT_RST, OUTPUT);
-  //digitalWrite(TFT_RST,HIGH);
+
+  // Initialize backlight control pin
+  pinMode(TFT_BL, OUTPUT);
+  #ifdef XIAO_RP2040
+  analogWriteFreq(BL_PWM_FRQ); // 1000Hz
+  #endif
+  analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
+
+
 
   #ifdef TFT_USE_ST7789
     tft.init(240, 320);           // Init ST7789 320x240
@@ -39,13 +45,17 @@ void setup_tft() {
   #ifdef TFT_USE_ILI9341
     tft.begin();
   #endif
-  tft.setSPISpeed(20000000);
+
+/* not working... for now.
+  #ifdef XIAO_RP2040
+    #define SPI_CLOCK_SPEED 40000000
+    tft.setSPISpeed(SPI_CLOCK_SPEED);
+  #endif
+*/
+
   Serial.println(F("Initialized"));
   tft.fillScreen(COLOR_BLACK);
 
-  // Initialize backlight control pin
-  pinMode(TFT_BL, OUTPUT);
-  analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
 }
 
 
@@ -169,8 +179,11 @@ public:
   }
 };
 
-#define MAX_STROKES 800
-
+#ifdef XIAO_SAMD21
+  #define MAX_STROKES 300
+#else
+  #define MAX_STROKES 800
+#endif
 StrokeManager strokeManager(MAX_STROKES);
 
 
@@ -178,6 +191,12 @@ StrokeManager strokeManager(MAX_STROKES);
 float degreesToRadians(float degrees) {
   return degrees * PI / 180.0;
 }
+
+
+double rad2deg(double rad) {
+    return rad * (180.0 / PI);
+}
+
 
 #define RADIUS_EARTH_KM 6371.0 // Earth's radius in kilometers
 
@@ -227,7 +246,7 @@ bool draw_circle_km(float scale, float km) {
 // draw magnetic north east west south according to truetrack, where truetrack is direction of upward display.
 // However direction of y-axis is downward for tft display.
 void draw_compass(float truetrack, uint16_t col) {
-  const int dist = 103;
+  const int dist = 93;
   int centerx = SCREEN_WIDTH / 2;
   int centery = SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN;
   //Varietion 8 degrees.
@@ -338,6 +357,9 @@ void blacken_display(bool redraw) {
   strokeManager.removeAllStrokes();
 }
 
+void drawTriangle(){
+  tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN, SCREEN_WIDTH / 2 - 4, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN + 8, SCREEN_WIDTH / 2 + 4, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN + 8, COLOR_RED);
+}
 
 void drawJapan(bool& redraw, float center_lat, float center_lon, float scale, float up) {
   blacken_display(redraw);
@@ -348,6 +370,7 @@ void drawJapan(bool& redraw, float center_lat, float center_lon, float scale, fl
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
+  drawTriangle();
   last_truetrack = up;
   redraw = false;
 }
@@ -358,6 +381,8 @@ void drawShinura(bool& redraw, float center_lat, float center_lon, float scale, 
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
+  drawTriangle();
+
   last_truetrack = up;
   redraw = false;
 }
@@ -373,6 +398,7 @@ void drawBiwako(bool& redraw, float center_lat, float center_lon, float scale, f
   fill_sea_land(center_lat, center_lon, scale, up);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
+  drawTriangle();
   last_truetrack = up;
   redraw = false;
 }
@@ -395,6 +421,8 @@ void drawOsaka(bool& redraw, float center_lat, float center_lon, float scale, fl
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
+  drawTriangle();
+
   last_truetrack = up;
   redraw = false;
 }
@@ -436,6 +464,9 @@ void draw_degpersecond(float degpersecond) {
   tft.print("deg/s");
 
   int barposy = 22;
+  #ifdef TFT_USE_ILI9341
+    barposy = 25;
+  #endif
   tft.drawFastHLine(0, barposy - 1, SCREEN_WIDTH, COLOR_BLACK);
   tft.drawFastHLine(0, barposy, SCREEN_WIDTH, COLOR_BLACK);
   tft.drawFastHLine(0, barposy + 1, SCREEN_WIDTH, COLOR_BLACK);
@@ -514,10 +545,20 @@ void show_gpsinfo() {
   tft.fillRect(0, 8, 36, 8, COLOR_BLACK);
   tft.print(get_gps_numsat());
   tft.println("sats");
-
-
+  
+  tft.setCursor(0, 27);
+  tft.fillRect(0, 27, 32, 8, COLOR_BLACK);
+  double input_voltage = analogRead(A3)/1024.0*3.3*2;
+  Serial.println(input_voltage);
+  if(input_voltage < 3.75){
+    tft.setTextColor(COLOR_ORANGE);
+    tft.println("BATTERY LOW");
+  }else{
+    tft.print(input_voltage,1);
+    tft.println("V");
+  }
   #ifdef TFT_USE_ILI9341
-    tft.fillRect(0, SCREEN_HEIGHT - 24, 32, 24, COLOR_BLACK);
+    tft.fillRect(0, SCREEN_HEIGHT - 24, 48, 24, COLOR_BLACK);
     tft.fillRect(0, SCREEN_HEIGHT - 9, SCREEN_WIDTH, 9, COLOR_BLACK);
     tft.setTextSize(2);
     double dist = calculateDistance(get_gps_lat(),get_gps_long(),PLA_LAT,PLA_LON);
@@ -590,10 +631,26 @@ void drawmap(stroke_group strokeid, float mapUpDirection, float center_lat, floa
   //Serial.print(millis() - tstartline);
   //Serial.println("ms to draw lines");
   //tft.endWrite();
-  tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN, SCREEN_WIDTH / 2 - 4, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN + 8, SCREEN_WIDTH / 2 + 4, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN + 8, COLOR_RED);
-
   //Serial.print(millis() - tstart);
   //Serial.println("ms to draw complete map");
+}
+
+
+void calculatePointC(double lat1, double lon1, double lat2, double lon2, double distance, double &lat3, double &lon3) {
+    const double R = 6371.0; // Radius of the Earth in kilometers
+    lat1 = degreesToRadians(lat1);
+    lon1 = degreesToRadians(lon1);
+    lat2 = degreesToRadians(lat2);
+    lon2 = degreesToRadians(lon2);
+
+    double d = distance / R; // Distance in radians
+    double bearing = atan2(sin(lon2 - lon1) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1));
+
+    lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
+    lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
+
+    lat3 = rad2deg(lat3);
+    lon3 = rad2deg(lon3);
 }
 
 
@@ -610,7 +667,7 @@ void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon, float s
 
 
   if(!strokeManager.addStroke(STRK_PILONLINE, 2)) return;
-  tft.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_YELLOW);
+  tft.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_MAGENTA);
   strokeManager.addPointToStroke(pla.x, pla.y);
   strokeManager.addPointToStroke(takeshima.x, takeshima.y);
 
@@ -619,10 +676,26 @@ void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon, float s
   strokeManager.addPointToStroke(pla.x, pla.y);
   strokeManager.addPointToStroke(w_pilon.x, w_pilon.y);
   tft.drawLine(pla.x, pla.y, w_pilon.x, w_pilon.y, COLOR_MAGENTA);
+
+
+
+  if(!strokeManager.addStroke(STRK_PILONLINE, 2)) return;
+
+  double lat3,lon3;
+  calculatePointC(PLA_LAT,PLA_LON,get_gps_lat(),get_gps_long(),5,lat3,lon3);
+  cord_tft targetpoint = latLonToXY(lat3, lon3, mapcenter_lat, mapcenter_lon, scale, upward);
+
+  tft.drawLine(pla.x, pla.y, targetpoint.x, targetpoint.y, COLOR_YELLOW);
+  strokeManager.addPointToStroke(pla.x, pla.y);
+  strokeManager.addPointToStroke(targetpoint.x, targetpoint.y);
 }
 
 
 void fill_sea_land(float mapcenter_lat, float mapcenter_lon, float scale, float upward) {
+  #ifdef XIAO_SAMD21
+    //Due to memory shortage.
+    return;
+  #endif
   //fill
   for (int lat_i = 0; lat_i < ROW_FILLDATA; lat_i++) {
     float latitude = 35.0 + lat_i * 0.02;
@@ -744,13 +817,17 @@ void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
   }
 
   tft.setTextColor(COLOR_WHITE);
-  tft.setTextSize(2);
+  if(SCREEN_WIDTH <=128){
+    tft.setTextSize(1);
+  }else{
+    tft.setTextSize(2);
+  }
   // Line 1: Screen Brightness
   if (cursorLine == 0){
     if(selectedLine == 0){
       tft.setTextColor(COLOR_RED); // Highlight selected line
     }else{
-      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
+      tft.setTextColor(COLOR_YELLOW); // Highlight selected line
     }
   }
   tft.setCursor(10, 30);
@@ -759,19 +836,42 @@ void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
   tft.setTextColor(COLOR_WHITE);
 
   // Line 2: Placeholder for future settings
-  if (cursorLine == 1) tft.setTextColor(COLOR_MAGENTA);
+  if (cursorLine == 1){
+    if(selectedLine == 1){
+      tft.setTextColor(COLOR_RED); // Highlight selected line
+    }else{
+      tft.setTextColor(COLOR_YELLOW); // Highlight selected line
+    }
+  }
   tft.setCursor(10, 60);
-  tft.println("Setting 2: N/A");
+  tft.print(selectedLine == 1 ? " DEMO BIWA: ":"DEMO BIWA: ");
+  if(get_demo_biwako()){
+    tft.println("YES");
+  }else{
+    tft.println("NO");
+  }
   tft.setTextColor(COLOR_WHITE);
 
   // Line 3: Placeholder for future settings
-  if (cursorLine == 2) tft.setTextColor(COLOR_MAGENTA);
+  if (cursorLine == 2){
+    if(selectedLine == 2){
+      tft.setTextColor(COLOR_RED); // Highlight selected line
+    }else{
+      tft.setTextColor(COLOR_YELLOW); // Highlight selected line
+    }
+  }
   tft.setCursor(10, 90);
   tft.println("Setting 3: N/A");
   tft.setTextColor(COLOR_WHITE);
 
   // Line 4: Exit
-  if (cursorLine == 3) tft.setTextColor(COLOR_MAGENTA);
+  if (cursorLine == 3){
+    if(selectedLine == 3){
+      tft.setTextColor(COLOR_RED); // Highlight selected line
+    }else{
+      tft.setTextColor(COLOR_YELLOW); // Highlight selected line
+    }
+  }
   tft.setCursor(10, 120);
   tft.println("Exit");
   tft.setTextColor(COLOR_WHITE);

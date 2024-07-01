@@ -4,6 +4,8 @@
 void gps_setup();
 void gps_loop();
 
+void toggle_demo_biwako();
+bool get_demo_biwako();
 
 bool get_gps_fix();
 bool get_gps_connection();

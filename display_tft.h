@@ -3,32 +3,41 @@
 #include "navdata.h"
 
 
-#ifdef TFT_SELECT_ST7789
+#ifdef TFT_USE_ST7789
   #include <Adafruit_ST7789.h> // Hardware-specific library for ST7735
   #define SCREEN_WIDTH 240
   #define SCREEN_HEIGHT 320
   #define TFT_BL        D9
+  #define TFT_CS        -1
 #endif
-#ifdef TFT_SELECT_ST7735
+#ifdef TFT_USE_ST7735
   #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
   #define SCREEN_WIDTH 128
   #define SCREEN_HEIGHT 160
   #define TFT_BL        D9
+  #define TFT_CS        -1
 #endif
 #ifdef TFT_USE_ILI9341
   #include <Adafruit_ILI9341.h>
   #define SCREEN_WIDTH 240
   #define SCREEN_HEIGHT 320
-  #define TFT_BL        D9
+  #define TFT_BL        D5    //D9 used for MISO
+  #define TFT_CS        -1
+  //#define TFT_MOSI      D10
+  //#define TFT_CLK       D8
 #endif
 
 #define TFT_RST        D0
 #define TFT_DC         D1
-#define TFT_CS        -1
 
+#define BL_PWM_FRQ 1000   //1000Hz
 
+#ifdef TFT_USE_ST7735
+  #define MAP_SHIFT_DOWN 40
+#else
+  #define MAP_SHIFT_DOWN 60   //80+60=140 is centerY.
+#endif
 
-#define MAP_SHIFT_DOWN 60   //80+60=140 is centerY.
 #define PX_PER_KM(SCALE) (17.3596112311*SCALE)//(1789+140)/60/1852=0.01735961123 pixel/m/scale
 
 #ifndef DISPLAY_TFT_DEFINED
