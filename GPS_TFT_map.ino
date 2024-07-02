@@ -3,7 +3,6 @@
 #include "display_tft.h"
 #include "settings.h"
 #include "gps_functions.h"
-#include "compass.h"
 
 #ifdef USE_OLED
   #include "display_oled.h"
@@ -76,7 +75,6 @@ void setup(void) {
     pixels.show();
   #endif
 
-  setup_compass();
 
 
   pinMode(switchPin,INPUT_PULLUP);
@@ -101,8 +99,7 @@ void setup(void) {
 
   redraw = true;
   quick_redraw = true;
-
-
+  
 }
 
 void update_degpersecond(){
@@ -112,7 +109,7 @@ void update_degpersecond(){
     lastSampleTime = currentTime;
     // Update the truetrack value
     // This is where you would get the new truetrack value from your sensor
-    upward_samples[sampleIndex] = is_headingupmode()?get_magnetic_heading():get_gps_truetrack();
+    upward_samples[sampleIndex] = get_gps_truetrack();
     // Calculate the differential if we have enough samples
     if (sampleIndex >= numSamples - 1) {
       float totalDifference = 0;
@@ -260,7 +257,6 @@ bool err_nomap = false;
 void loop() {
   switch_handling();
   gps_loop();
-  compass_loop();
   
   if (show_setting) {
     draw_setting_mode(redraw, selectedLine, cursorLine);
@@ -305,14 +301,12 @@ void loop() {
       }
     #endif
     
-    if(new_truetrack != truetrack_now || new_lat != lat_now || redraw || is_headingupmode()){
+    if(new_truetrack != truetrack_now || new_lat != lat_now || redraw){
       truetrack_now = new_truetrack;
       lat_now = new_lat;
 
       float drawupward_direction = truetrack_now;
-      if(is_headingupmode()){
-        drawupward_direction = get_magnetic_heading();
-      }else if(is_northupmode()){
+      if(is_northupmode()){
         drawupward_direction = 0;
       }
       float new_long = get_gps_long();
@@ -358,9 +352,6 @@ void loop() {
           }
           redraw = true;
         }
-      }
-      if(is_headingupmode()){
-        draw_headingupmode();
       }
 
       if(get_demo_biwako()){

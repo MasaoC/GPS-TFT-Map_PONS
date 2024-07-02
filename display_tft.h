@@ -106,7 +106,6 @@ void setup_tft();
 void tft_increment_brightness();
 void toggle_mode();
 bool is_trackupmode();
-bool is_headingupmode();
 bool is_northupmode();
 
 
@@ -122,7 +121,6 @@ void draw_km_circle(float scale);
 void startup_demo_tft();
 void drawmap(stroke_group id, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
-void draw_headingupmode();
 void draw_triangle();
 void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
 

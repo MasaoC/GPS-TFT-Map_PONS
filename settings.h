@@ -24,4 +24,4 @@
 #define SCREEN_INTERVAL 500
 
 
-#define USE_OLED
+//#define USE_OLED
