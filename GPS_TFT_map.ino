@@ -3,27 +3,31 @@
 #include "display_tft.h"
 #include "settings.h"
 #include "gps_functions.h"
+#include "compass.h"
 
 #ifdef USE_OLED
   #include "display_oled.h"
 #endif
 
 
-#include <QMC5883LCompass.h>
-
-QMC5883LCompass compass;
 
 
 
 unsigned long last_newtrack_time = 0;
-float old_track = 0;
 float truetrack_now = 0;
 float lat_now = 0;
 unsigned long last_time_gpsdata = 0;    //GPSを最後に受信した時間 millis()
 bool redraw = false;          //次の描画では、黒塗りして新たに画面を描画する
 bool quick_redraw = false;    //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
-float degpersecond = 0;
 bool bank_warning = false;
+
+const int sampleInterval = 500; // Sample interval in milliseconds
+const int numSamples = 6;       // Number of samples to take over 3 seconds
+float upward_samples[numSamples]; // Array to store truetrack values
+unsigned long lastSampleTime = 0; // Time when the last sample was taken
+int sampleIndex = 0; // Index to keep track of current sample
+
+float degpersecond = 0; // The calculated average differential
 
 
 //スイッチ関連
@@ -72,8 +76,7 @@ void setup(void) {
     pixels.show();
   #endif
 
-  compass.init();
-  compass.setSmoothing(10,true);  
+  setup_compass();
 
 
   pinMode(switchPin,INPUT_PULLUP);
@@ -102,23 +105,48 @@ void setup(void) {
 
 }
 
+void update_degpersecond(){
+  unsigned long currentTime = millis();
+  // Check if it's time to take a new sample
+  if (currentTime - lastSampleTime >= sampleInterval) {
+    lastSampleTime = currentTime;
+    // Update the truetrack value
+    // This is where you would get the new truetrack value from your sensor
+    upward_samples[sampleIndex] = is_headingupmode()?get_magnetic_heading():get_gps_truetrack();
+    // Calculate the differential if we have enough samples
+    if (sampleIndex >= numSamples - 1) {
+      float totalDifference = 0;
+      // Calculate the differences between consecutive samples
+      for (int i = 1; i < numSamples; i++) {
+        float degchange =  (upward_samples[i] - upward_samples[i - 1]) ;
+        if(degchange<-180){
+          degchange += 360;
+        }else if(degchange >180){
+          degchange -= 360;
+        }
+        float difference = degchange / (sampleInterval / 1000.0); // deg/s
+        totalDifference += difference;
+      }
+      // Calculate the average differential
+      degpersecond = totalDifference / (numSamples - 1);
+      // Print the average differential
+      Serial.print("Average Differential (deg/s): ");
+      Serial.println(degpersecond);
+      // Shift samples to make room for new ones
+      for (int i = 1; i < numSamples; i++) {
+        upward_samples[i - 1] = upward_samples[i];
+      }
+      // Adjust the sample index to the last position
+      sampleIndex = numSamples - 2;
+    }
+    // Move to the next sample
+    sampleIndex++;
+  }
+}
 
 void check_bankwarning(){
-  unsigned long timedif = millis() - last_newtrack_time;
-  last_newtrack_time = millis();
-  float degchange = get_gps_truetrack()-old_track;
-  
-  if(degchange<-180){
-    degchange += 360;
-  }else if(degchange >180){
-    degchange -= 360;
-  }
-  
-  if(timedif >0){
-    degpersecond = degchange/(timedif/1000.0);
-  }
-  old_track = get_gps_truetrack();
-
+  unsigned long currentTime = millis();
+  last_newtrack_time = currentTime;
 
   //Do not trigger bank warning if speed is below ...
   if(get_gps_speed() < 1.0){
@@ -132,7 +160,7 @@ void check_bankwarning(){
     }
     return;
   }
-  if(abs(degpersecond) > 3.0 || abs(degchange) > 15){
+  if(abs(degpersecond) > 3.0){
     bank_warning = true;
   }else{
     if(bank_warning){
@@ -181,7 +209,8 @@ void switch_handling(){
             toggle_demo_biwako();  
             redraw = true;
           }else{
-            Serial.println("no setting");
+            toggle_mode();
+            redraw = true;
           }
         }else{
           scale = scalelist[scaleindex++%(sizeof(scalelist) / sizeof(scalelist[0]))];
@@ -228,12 +257,10 @@ void switch_handling(){
 
 bool err_nomap = false;
 
-unsigned long last_compass_time = 0;
-#define COMPASS_INTERVAL 500
-
 void loop() {
   switch_handling();
   gps_loop();
+  compass_loop();
   
   if (show_setting) {
     draw_setting_mode(redraw, selectedLine, cursorLine);
@@ -255,25 +282,8 @@ void loop() {
   }
   #endif
 
-  if(millis() - last_compass_time > COMPASS_INTERVAL){
-    last_compass_time = millis();
-    int x, y, z;
-    // Return XYZ readings
-    x = compass.getX();
-    y = compass.getY();
-    z = compass.getZ();
-    
-    Serial.print("X: ");
-    Serial.print(x);
-    Serial.print(" Y: ");
-    Serial.print(y);
-    Serial.print(" Z: ");
-    Serial.print(z);
-    Serial.println();
-    
-  }
 
-
+  update_degpersecond();
 
   if(millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw){
     float new_truetrack = get_gps_truetrack();
@@ -295,34 +305,36 @@ void loop() {
       }
     #endif
     
-    if(new_truetrack != truetrack_now || new_lat != lat_now || redraw){
+    if(new_truetrack != truetrack_now || new_lat != lat_now || redraw || is_headingupmode()){
       truetrack_now = new_truetrack;
       lat_now = new_lat;
+
+      float drawupward_direction = truetrack_now;
+      if(is_headingupmode()){
+        drawupward_direction = get_magnetic_heading();
+      }else if(is_northupmode()){
+        drawupward_direction = 0;
+      }
       float new_long = get_gps_long();
-      debug_print("drawmap begin");
 
       if(scale <= SCALE_JAPAN){
-        Serial.println("test");
-        drawJapan(redraw,new_lat,new_long,scale,truetrack_now);
+        drawJapan(redraw,new_lat,new_long,scale,drawupward_direction);
       }else{
-
         if(abs(new_long - PLA_LON) < 0.6){
-          drawBiwako(redraw,new_lat,new_long, scale, truetrack_now);
+          drawBiwako(redraw,new_lat,new_long, scale, drawupward_direction);
         }
         else if(abs(new_long - OSAKA_LON) < 0.6){
-          drawOsaka(redraw, new_lat,new_long, scale, truetrack_now);
+          drawOsaka(redraw, new_lat,new_long, scale, drawupward_direction);
         }
         else if(abs(new_long - SHINURA_LON) < 0.6){
-          drawShinura(redraw,new_lat, new_long, scale, truetrack_now);
+          drawShinura(redraw,new_lat, new_long, scale, drawupward_direction);
           redraw = false;
         }else{
-          Serial.println("ERR NO map around this area");
-          tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 100, COLOR_BLACK);
+          tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 120, COLOR_BLACK);
           tft.setTextColor(COLOR_WHITE);
           tft.setTextSize(2);
-          tft.setCursor(0, SCREEN_HEIGHT/2-40);
-          tft.println("NO MAPDATA");
-          tft.println("");
+          tft.setCursor(0, SCREEN_HEIGHT/2-30);
+          
           if(!get_gps_fix()){
             tft.println("Searching");
             tft.print("GPS");
@@ -333,26 +345,33 @@ void loop() {
             tft.println("");
             tft.setTextSize(1);
             if(get_gps_connection()){
+              tft.setTextColor(COLOR_GREEN);
               tft.print("GPS connection found");
             }else{
+              tft.setTextColor(COLOR_YELLOW);
               tft.println("No GPS found !!");
               tft.print("Check connection, or try reset.");
             }
           }else{
+            tft.println("NO MAPDATA");
             tft.println("GPS Fixed.");
-            tft.println("No Data.");
           }
           redraw = true;
         }
       }
+      if(is_headingupmode()){
+        draw_headingupmode();
+      }
+
       if(get_demo_biwako()){
         tft.setCursor(SCREEN_WIDTH / 2 - 20, SCREEN_HEIGHT / 2 - 35);
         tft.setTextSize(2);
         tft.print("DEMO");
       }
     }
+    draw_triangle();
     draw_degpersecond(degpersecond);
-    show_gpsinfo();
+    draw_gpsinfo();
     
 
     if(bank_warning){

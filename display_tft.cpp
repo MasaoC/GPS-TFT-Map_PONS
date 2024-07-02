@@ -3,6 +3,7 @@
 #include "navdata.h"
 #include "gps_functions.h"
 #include "settings.h"
+#include "compass.h"
 
 #ifdef TFT_USE_ST7789
   Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
@@ -25,6 +26,38 @@ int screen_brightness = 255; // Example brightness value
 const int brightnessLevels[] = {30, 100, 150, 200, 255}; // Example brightness levels
 int brightnessIndex = 4; // Default to 60
 
+#define MODE_TRACKUP 0
+#define MODE_HEADINGUP 1
+#define MODE_NORTHUP 2
+int upward_mode = MODE_NORTHUP;
+
+
+int map_shift_down = 0;
+#ifdef TFT_USE_ST7735
+  #define MAP_SHIFT_DOWN_DEFAULT 40
+#else
+  #define MAP_SHIFT_DOWN_DEFAULT 60   //80+60=140 is centerY.
+#endif
+
+void toggle_mode(){
+  upward_mode = (upward_mode +1)%3;
+  if(upward_mode == MODE_TRACKUP || upward_mode == MODE_HEADINGUP){
+    map_shift_down = MAP_SHIFT_DOWN_DEFAULT;
+  }else if(upward_mode == MODE_NORTHUP){
+    map_shift_down = 0;
+  }
+}
+bool is_headingupmode(){
+  return upward_mode == MODE_HEADINGUP;
+}
+bool is_northupmode(){
+  return upward_mode == MODE_NORTHUP;
+}
+bool is_trackupmode(){
+  return upward_mode == MODE_TRACKUP;
+}
+
+
 void setup_tft() {
 
   // Initialize backlight control pin
@@ -45,6 +78,7 @@ void setup_tft() {
   #ifdef TFT_USE_ILI9341
     tft.begin();
   #endif
+  //tft.invertDisplay(true);
 
 /* not working... for now.
   #ifdef XIAO_RP2040
@@ -224,9 +258,9 @@ double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
 
 bool draw_circle_km(float scale, float km) {
   int radius = PX_PER_KM(scale) * km;
-  int ypos = SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN - radius;
+  int ypos = SCREEN_HEIGHT / 2 + map_shift_down - radius;
   if (ypos > 16) {
-    tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN, radius, COLOR_RED);
+    tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, radius, COLOR_RED);
     tft.setCursor(SCREEN_WIDTH / 2 + 2, ypos - 2);
     tft.setTextColor(COLOR_WHITE);
     tft.setTextSize(1);
@@ -246,9 +280,13 @@ bool draw_circle_km(float scale, float km) {
 // draw magnetic north east west south according to truetrack, where truetrack is direction of upward display.
 // However direction of y-axis is downward for tft display.
 void draw_compass(float truetrack, uint16_t col) {
-  const int dist = 93;
+  tft.setTextWrap(false);
+  int dist = 73;
+  if(is_northupmode()){
+    dist = 50;
+  }
   int centerx = SCREEN_WIDTH / 2;
-  int centery = SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN;
+  int centery = SCREEN_HEIGHT / 2 + map_shift_down;
   //Varietion 8 degrees.
   float radian = degreesToRadians(truetrack+8.0);
   float radian45offset = degreesToRadians(truetrack+8.0 + 45);
@@ -260,19 +298,19 @@ void draw_compass(float truetrack, uint16_t col) {
   cord_tft s = { int(centerx + sin(radian) * dist), int(centery + cos(radian) * dist) };
   cord_tft w = { int(centerx - cos(-radian) * dist), int(centery - sin(-radian) * dist) };
   if (!n.isOutsideTft()) {
-    tft.setCursor(n.x, n.y);
+    tft.setCursor(n.x-5, n.y);
     tft.print("N");
   }
   if (!e.isOutsideTft()) {
-    tft.setCursor(e.x, e.y);
+    tft.setCursor(e.x-5, e.y);
     tft.print("E");
   }
   if (!s.isOutsideTft()) {
-    tft.setCursor(s.x, s.y);
+    tft.setCursor(s.x-5, s.y);
     tft.print("S");
   }
   if (!w.isOutsideTft()) {
-    tft.setCursor(w.x, w.y);
+    tft.setCursor(w.x-5, w.y);
     tft.print("W");
   }
 
@@ -283,21 +321,22 @@ void draw_compass(float truetrack, uint16_t col) {
 
   tft.setTextSize(1);
   if (!nw.isOutsideTft()) {
-    tft.setCursor(nw.x, nw.y);
+    tft.setCursor(nw.x-5, nw.y);
     tft.print("NW");
   }
   if (!ne.isOutsideTft()) {
-    tft.setCursor(ne.x, ne.y);
+    tft.setCursor(ne.x-5, ne.y);
     tft.print("NE");
   }
   if (!se.isOutsideTft()) {
-    tft.setCursor(se.x, se.y);
+    tft.setCursor(se.x-5, se.y);
     tft.print("SE");
   }
   if (!sw.isOutsideTft()) {
-    tft.setCursor(sw.x, sw.y);
+    tft.setCursor(sw.x-5, sw.y);
     tft.print("SW");
   }
+  tft.setTextWrap(true);
 }
 
 
@@ -305,8 +344,6 @@ void draw_compass(float truetrack, uint16_t col) {
 
 
 void draw_km_circle(float scale) {
-  tft.drawFastVLine(SCREEN_WIDTH / 2, 20, MAP_SHIFT_DOWN + SCREEN_HEIGHT / 2 - 22, COLOR_GRAY);
-
   if (!draw_circle_km(scale, 400)) {
     if (!draw_circle_km(scale, 20)) {
       if (!draw_circle_km(scale, 10)) {
@@ -342,7 +379,6 @@ unsigned long lastfresh_millis = 0;
 float last_up = 0;
 float last_truetrack = 0;
 
-
 void blacken_display(bool redraw) {
   fresh = false;
   if (millis() - lastfresh_millis > 20000 || redraw) {
@@ -357,8 +393,71 @@ void blacken_display(bool redraw) {
   strokeManager.removeAllStrokes();
 }
 
-void drawTriangle(){
-  tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN, SCREEN_WIDTH / 2 - 4, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN + 8, SCREEN_WIDTH / 2 + 4, SCREEN_HEIGHT / 2 + MAP_SHIFT_DOWN + 8, COLOR_RED);
+
+int rb_x_old,rb_y_old,lb_x_old,lb_y_old;
+void draw_triangle(){
+  if(upward_mode == MODE_NORTHUP){
+    int magtrack = get_gps_truetrack();
+    float radians = degreesToRadians(magtrack);
+    int x_track =  SCREEN_HEIGHT * sin(radians);
+    int y_track =  SCREEN_HEIGHT * -cos(radians);
+
+    tft.drawLine(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 + x_track, SCREEN_HEIGHT / 2 + map_shift_down + y_track, COLOR_WHITE);
+    strokeManager.addStroke(STRK_OTHER, 2);
+    strokeManager.addPointToStroke(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down);
+    strokeManager.addPointToStroke(SCREEN_WIDTH / 2 + x_track, SCREEN_HEIGHT / 2 + map_shift_down + y_track);
+
+    int rb_x_new = -4 * cos(radians) - 12 * sin(radians);
+    int rb_y_new = -4 * sin(radians) + 12 * cos(radians);
+    int lb_x_new = 4 * cos(radians) - 12 * sin(radians);
+    int lb_y_new = 4 * sin(radians) + 12 * cos(radians);
+    tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 + rb_x_old, SCREEN_HEIGHT / 2 + map_shift_down + rb_y_old, SCREEN_WIDTH / 2 + lb_x_old, SCREEN_HEIGHT / 2 + map_shift_down + lb_y_old, COLOR_BLACK);
+    tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 + rb_x_new, SCREEN_HEIGHT / 2 + map_shift_down + rb_y_new, SCREEN_WIDTH / 2 + lb_x_new, SCREEN_HEIGHT / 2 + map_shift_down + lb_y_new, COLOR_WHITE);
+    rb_x_old = rb_x_new;
+    rb_y_old = rb_y_new;
+    lb_x_old = lb_x_new;
+    lb_y_old = lb_y_new;
+  }
+  if(upward_mode == MODE_TRACKUP){
+    #if defined(COMPASS_QMC5883L) || defined(COMPASS_BNO055)
+      tft.drawFastVLine(SCREEN_WIDTH / 2, 20, map_shift_down + SCREEN_HEIGHT / 2 - 22, COLOR_WHITE);
+      int heading = get_magnetic_heading();
+      int magtrack = get_gps_magtrack();
+      int difangle = heading-magtrack;
+      int rightbottomx = 4;int rightbottomy = +10;
+      int leftbottomx = -4;int leftbottomy = +10;
+      float radians = degreesToRadians(difangle);
+
+      int rb_x_new = -4 * cos(radians) - 12 * sin(radians);
+      int rb_y_new = -4 * sin(radians) + 12 * cos(radians);
+      int lb_x_new = 4 * cos(radians) - 12 * sin(radians);
+      int lb_y_new = 4 * sin(radians) + 12 * cos(radians);
+      tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 + rb_x_old, SCREEN_HEIGHT / 2 + map_shift_down + rb_y_old, SCREEN_WIDTH / 2 + lb_x_old, SCREEN_HEIGHT / 2 + map_shift_down + lb_y_old, COLOR_BLACK);
+      tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 + rb_x_new, SCREEN_HEIGHT / 2 + map_shift_down + rb_y_new, SCREEN_WIDTH / 2 + lb_x_new, SCREEN_HEIGHT / 2 + map_shift_down + lb_y_new, COLOR_WHITE);
+      rb_x_old = rb_x_new;
+      rb_y_old = rb_y_new;
+      lb_x_old = lb_x_new;
+      lb_y_old = lb_y_new;
+    #else
+      tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 - 4, SCREEN_HEIGHT / 2 + map_shift_down + 12, SCREEN_WIDTH / 2 + 4, SCREEN_HEIGHT / 2 + map_shift_down + 12, COLOR_RED);
+    #endif
+  }else if(upward_mode == MODE_HEADINGUP){
+    //heading up mode
+    tft.drawFastVLine(SCREEN_WIDTH / 2, 20, map_shift_down + SCREEN_HEIGHT / 2 - 22, COLOR_GREEN);
+    int heading = get_magnetic_heading();
+    int magtrack = get_gps_magtrack();
+    int difangle = magtrack-heading;
+    float radians = degreesToRadians(difangle);
+
+    int x_track =  - SCREEN_HEIGHT * sin(radians);
+    int y_track =  SCREEN_HEIGHT * cos(radians);
+
+    tft.drawLine(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 + x_track, SCREEN_HEIGHT / 2 + map_shift_down + y_track, COLOR_WHITE);
+    strokeManager.addStroke(STRK_OTHER, 2);
+    strokeManager.addPointToStroke(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down);
+    strokeManager.addPointToStroke(SCREEN_WIDTH / 2 + x_track, SCREEN_HEIGHT / 2 + map_shift_down + y_track);
+    tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 - 4, SCREEN_HEIGHT / 2 + map_shift_down + 12, SCREEN_WIDTH / 2 + 4, SCREEN_HEIGHT / 2 + map_shift_down + 12, COLOR_WHITE);
+  }
 }
 
 void drawJapan(bool& redraw, float center_lat, float center_lon, float scale, float up) {
@@ -370,7 +469,6 @@ void drawJapan(bool& redraw, float center_lat, float center_lon, float scale, fl
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
-  drawTriangle();
   last_truetrack = up;
   redraw = false;
 }
@@ -381,7 +479,6 @@ void drawShinura(bool& redraw, float center_lat, float center_lon, float scale, 
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
-  drawTriangle();
 
   last_truetrack = up;
   redraw = false;
@@ -398,7 +495,6 @@ void drawBiwako(bool& redraw, float center_lat, float center_lon, float scale, f
   fill_sea_land(center_lat, center_lon, scale, up);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
-  drawTriangle();
   last_truetrack = up;
   redraw = false;
 }
@@ -421,7 +517,6 @@ void drawOsaka(bool& redraw, float center_lat, float center_lon, float scale, fl
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_BLACK);
   draw_compass(up, COLOR_WHITE);
-  drawTriangle();
 
   last_truetrack = up;
   redraw = false;
@@ -436,8 +531,8 @@ void startup_demo_tft() {
     bool redraw = false;
     drawBiwako(redraw, center_lat, center_lon, scale, i);
     draw_degpersecond(30.0 / (300.0 / 1000));
-    show_gpsinfo();
-    tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 - 55);
+    draw_gpsinfo();
+    tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 - 40);
     tft.setTextSize(3);
     tft.print("DEMO");
     delay(100);
@@ -494,36 +589,43 @@ void draw_bankwarning() {
   tft.setTextSize(1);
 }
 
-void show_gpsinfo() {
+int last_written_mh = 0;
+void draw_gpsinfo() {
   #ifdef TFT_USE_ILI9341
     tft.fillRect(SCREEN_WIDTH / 2 - 40, 0, 76, 24, COLOR_BLACK);
-    tft.setCursor(SCREEN_WIDTH / 2 - 40, 0);
-    tft.setTextColor(COLOR_CYAN);
-    if(get_gps_fix()){
-      char buf[4];
+    if(is_trackupmode() || is_northupmode()){
+      tft.setCursor(SCREEN_WIDTH / 2 - 40, 0);
+      tft.setTextColor(COLOR_CYAN);
       tft.setTextSize(2);
-      tft.print("MT");  // Display as an integer
+      tft.print("MT"); 
       tft.setTextSize(3);
-      sprintf(buf, "%03d", (int)get_gps_magtrack());
-      tft.println(buf);  // Display as an integer
-    }else{
+      tft.printf("%03d", (int)get_gps_magtrack());
+    }else if(is_headingupmode()){//heading up mode
+      tft.setCursor(SCREEN_WIDTH / 2 - 40, 9);
+      tft.setTextColor(COLOR_GREEN);
       tft.setTextSize(2);
-      tft.println(" N/A");  // Display as an integer
+      tft.print("MH");  // Display as an integer
+      tft.setTextSize(3);
+      tft.printf("%03d", get_magnetic_heading());
     }
   #else
     tft.fillRect(SCREEN_WIDTH / 2 - 25, 0, 46, 14, COLOR_BLACK);
-    tft.setCursor(SCREEN_WIDTH / 2 - 25, 0);
-    tft.setTextColor(COLOR_CYAN);
-    if(get_gps_fix()){
-      char buf[4];
+    if(is_trackupmode() || is_northupmode()){
+      tft.setCursor(SCREEN_WIDTH / 2 - 25, 0);
+      tft.setTextColor(COLOR_CYAN);
       tft.setTextSize(1);
-      tft.print("MT");  // Display as an integer
+      tft.print("MT"); 
       tft.setTextSize(2);
-      sprintf(buf, "%03d", (int)get_gps_magtrack());
-      tft.println(buf);  // Display as an integer
-    }else{
+      tft.printf("%03d", (int)get_gps_magtrack());
+    }else if(is_headingupmode()){
+      //heading up mode.
+      tft.setCursor(SCREEN_WIDTH / 2 - 25, 8);
+      tft.setTextColor(COLOR_GREEN);
+      tft.setTextSize(1);
+      tft.print("MH");  // Display as an integer
+      tft.setCursor(SCREEN_WIDTH / 2 - 13, 0);
       tft.setTextSize(2);
-      tft.println(" N/A");  // Display as an integer
+      tft.printf("%03d",get_raw_magnetic_heading());
     }
   #endif
 
@@ -543,20 +645,31 @@ void show_gpsinfo() {
   tft.println("m/s");
   
   tft.fillRect(0, 8, 36, 8, COLOR_BLACK);
+  if(get_gps_numsat() < 5){
+    tft.setTextColor(COLOR_YELLOW);
+  }
   tft.print(get_gps_numsat());
   tft.println("sats");
+  tft.setTextColor(COLOR_GREEN);
   
   tft.setCursor(0, 27);
   tft.fillRect(0, 27, 32, 8, COLOR_BLACK);
   double input_voltage = analogRead(A3)/1024.0*3.3*2;
   Serial.println(input_voltage);
   if(input_voltage < 3.75){
-    tft.setTextColor(COLOR_ORANGE);
+    tft.setTextColor(COLOR_YELLOW);
     tft.println("BATTERY LOW");
+    tft.setTextColor(COLOR_GREEN);
   }else{
     tft.print(input_voltage,1);
     tft.println("V");
   }
+
+  tft.setCursor(0, 35);
+  tft.fillRect(0, 35, 35, 8, COLOR_BLACK);
+  tft.print("RMH");
+  tft.println(get_raw_magnetic_heading());
+
   #ifdef TFT_USE_ILI9341
     tft.fillRect(0, SCREEN_HEIGHT - 24, 48, 24, COLOR_BLACK);
     tft.fillRect(0, SCREEN_HEIGHT - 9, SCREEN_WIDTH, 9, COLOR_BLACK);
@@ -584,9 +697,12 @@ void show_gpsinfo() {
     tft.setCursor(SCREEN_WIDTH/2, SCREEN_HEIGHT - 8);
     tft.println(get_gps_long(),6);
   #endif
+}
 
-
-
+void draw_headingupmode(){
+  tft.setCursor(SCREEN_WIDTH/2-18, SCREEN_HEIGHT - 21);
+  tft.setTextColor(COLOR_WHITE); // Highlight selected line
+  tft.println("HDG UP");
 }
 
 
@@ -607,7 +723,7 @@ void drawmap(stroke_group strokeid, float mapUpDirection, float center_lat, floa
     float lon1 = mp->cords[i][0];  // Example longitude
                                    //drawbool[i] = check_maybe_inside_draw(mapcenter, lat1, lon1, mapScale);
                                    //if(drawbool[i]){
-    points[i] = latLonToXY(lat1, lon1, center_lat, center_lon, mapScale, mapUpDirection);
+    points[i] = latLonToXY(lat1, lon1, center_lat, center_lon, mapScale, mapUpDirection, map_shift_down);
     strokeManager.addPointToStroke(points[i].x, points[i].y);
 
     //}else{
@@ -655,10 +771,10 @@ void calculatePointC(double lat1, double lon1, double lat2, double lon2, double 
 
 
 void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon, float scale, float upward) {
-  cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft takeshima = latLonToXY(TAKESHIMA_LAT, TAKESHIMA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
+  cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
+  cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
+  cord_tft takeshima = latLonToXY(TAKESHIMA_LAT, TAKESHIMA_LON, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
 
   if(!strokeManager.addStroke(STRK_PILONLINE, 2)) return;
   tft.drawLine(pla.x, pla.y, n_pilon.x, n_pilon.y, COLOR_MAGENTA);
@@ -683,7 +799,7 @@ void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon, float s
 
   double lat3,lon3;
   calculatePointC(PLA_LAT,PLA_LON,get_gps_lat(),get_gps_long(),5,lat3,lon3);
-  cord_tft targetpoint = latLonToXY(lat3, lon3, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft targetpoint = latLonToXY(lat3, lon3, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
 
   tft.drawLine(pla.x, pla.y, targetpoint.x, targetpoint.y, COLOR_YELLOW);
   strokeManager.addPointToStroke(pla.x, pla.y);
@@ -703,7 +819,7 @@ void fill_sea_land(float mapcenter_lat, float mapcenter_lon, float scale, float 
       float longitude = 135.8 + lon_i * 0.02;
       bool is_sea = filldata[lat_i][lon_i];
       int indexfillp = lat_i * COL_FILLDATA + lon_i;
-      cord_tft pos = latLonToXY(latitude, longitude, mapcenter_lat, mapcenter_lon, scale, upward);
+      cord_tft pos = latLonToXY(latitude, longitude, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
       if (pos.isOutsideTft()) {
         continue;
       } else {
@@ -719,13 +835,13 @@ void fill_sea_land(float mapcenter_lat, float mapcenter_lon, float scale, float 
             strokeManager.addPointToStroke(pos.x - lenbar, pos.y);
             strokeManager.addPointToStroke(pos.x + lenbar, pos.y);
 
-            tft.drawFastVLine(pos.x, pos.y - lenbar, 1+lenbar*2, COLOR_BLUE);
-            tft.drawFastHLine(pos.x - lenbar, pos.y, 1+lenbar*2, COLOR_BLUE);
+            tft.drawFastVLine(pos.x, pos.y - lenbar, 1+lenbar*2, COLOR_LIGHT_BLUE);
+            tft.drawFastHLine(pos.x - lenbar, pos.y, 1+lenbar*2, COLOR_LIGHT_BLUE);
           } else {
             if(!strokeManager.addStroke(STRK_SEALAND, 2)) return;
             strokeManager.addPointToStroke(pos.x - 1, pos.y);
             strokeManager.addPointToStroke(pos.x + 1, pos.y);
-            tft.drawFastHLine(pos.x - 1, pos.y, 3, COLOR_BLUE);
+            tft.drawFastHLine(pos.x - 1, pos.y, 3, COLOR_LIGHT_BLUE);
           }
         } else {
           if (scale > 0.5) {
@@ -778,7 +894,7 @@ void fill_sea_land(float mapcenter_lat, float mapcenter_lon, float scale, float 
               }
               double lat_dx = 35.0+x*0.02+0.02*dx/dx_size;
               double lat_dy = 135.8+y*0.02+0.02*dy/dy_size;
-              cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward);
+              cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
               int lenbar = 3;
               if (!dpos.isOutsideTft()) {
                 if(!strokeManager.addStroke(STRK_SEALAND, 2)) return;
@@ -788,8 +904,8 @@ void fill_sea_land(float mapcenter_lat, float mapcenter_lon, float scale, float 
                 strokeManager.addPointToStroke(dpos.x - lenbar, dpos.y);
                 strokeManager.addPointToStroke(dpos.x + lenbar, dpos.y);
                 if(origin){
-                  tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, COLOR_BLUE);
-                  tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, COLOR_BLUE);
+                  tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, COLOR_LIGHT_BLUE);
+                  tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, COLOR_LIGHT_BLUE);
                 }else{
                   tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, COLOR_ORANGE);
                   tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, COLOR_ORANGE);
@@ -825,7 +941,7 @@ void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
   // Line 1: Screen Brightness
   if (cursorLine == 0){
     if(selectedLine == 0){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
+      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
     }else{
       tft.setTextColor(COLOR_YELLOW); // Highlight selected line
     }
@@ -838,7 +954,7 @@ void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
   // Line 2: Placeholder for future settings
   if (cursorLine == 1){
     if(selectedLine == 1){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
+      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
     }else{
       tft.setTextColor(COLOR_YELLOW); // Highlight selected line
     }
@@ -855,19 +971,26 @@ void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
   // Line 3: Placeholder for future settings
   if (cursorLine == 2){
     if(selectedLine == 2){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
+      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
     }else{
       tft.setTextColor(COLOR_YELLOW); // Highlight selected line
     }
   }
   tft.setCursor(10, 90);
-  tft.println("Setting 3: N/A");
+  tft.print(selectedLine == 2 ? " UPWARD: ":"UPWARD: ");
+  if(is_trackupmode()){
+    tft.println("TRACK UP");
+  }else if(is_headingupmode()){
+    tft.println("HEADING UP");
+  }else if(is_northupmode()){
+    tft.println("NORTH UP");
+  }
   tft.setTextColor(COLOR_WHITE);
 
   // Line 4: Exit
   if (cursorLine == 3){
     if(selectedLine == 3){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
+      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
     }else{
       tft.setTextColor(COLOR_YELLOW); // Highlight selected line
     }

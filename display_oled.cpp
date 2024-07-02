@@ -1,5 +1,6 @@
 #include "display_oled.h"
 #include "gps_functions.h"
+#include "display_tft.h"
 
 
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
@@ -42,6 +43,7 @@ void show_oled(){
     display.print("m/s");
     
 
+    
     // Display Track Made Good
     display.setCursor(0, 40);
     display.print("MT");

@@ -32,11 +32,6 @@
 
 #define BL_PWM_FRQ 1000   //1000Hz
 
-#ifdef TFT_USE_ST7735
-  #define MAP_SHIFT_DOWN 40
-#else
-  #define MAP_SHIFT_DOWN 60   //80+60=140 is centerY.
-#endif
 
 #define PX_PER_KM(SCALE) (17.3596112311*SCALE)//(1789+140)/60/1852=0.01735961123 pixel/m/scale
 
@@ -47,13 +42,14 @@
     int x;
     int y;
 
+    //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
     bool isOutsideTft(){
       return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
     }
   };
 
   enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND
+    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER
   };
 
   #if defined(TFT_USE_ST7789) || defined(TFT_USE_ST7735)
@@ -104,11 +100,15 @@
 #endif
 
 
-void show_gpsinfo();
+void draw_gpsinfo();
 void setup_tft();
 
-
 void tft_increment_brightness();
+void toggle_mode();
+bool is_trackupmode();
+bool is_headingupmode();
+bool is_northupmode();
+
 
 void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
@@ -122,5 +122,9 @@ void draw_km_circle(float scale);
 void startup_demo_tft();
 void drawmap(stroke_group id, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
-
+void draw_headingupmode();
+void draw_triangle();
 void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
+
+
+

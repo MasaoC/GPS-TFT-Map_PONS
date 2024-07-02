@@ -82,7 +82,7 @@ void printStrokes() {
 
 
 // Function to convert latitude and longitude to x, y coordinates on the TFT screen
-cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
   // Convert map center latitude and longitude to radians
   float centerLatRad = mapCenterLat * PI / 180.0;
   float centerLonRad = mapCenterLon * PI / 180.0;
@@ -110,14 +110,14 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 
   // Translate to screen coordinates
   return cord_tft{(SCREEN_WIDTH / 2) + (int)rotatedX,
-    (SCREEN_HEIGHT / 2) - (int)rotatedY + MAP_SHIFT_DOWN}; // Y is inverted on the screen
+    (SCREEN_HEIGHT / 2) - (int)rotatedY + mapshiftdown}; // Y is inverted on the screen
 }
 
 // Function to convert x, y coordinates on the TFT screen to latitude and longitude
-cord_map xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
+cord_map xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
     // Translate screen coordinates to map coordinates
     float screenX = x - (SCREEN_WIDTH / 2);
-    float screenY = (SCREEN_HEIGHT / 2) - y + MAP_SHIFT_DOWN;
+    float screenY = (SCREEN_HEIGHT / 2) - y + mapshiftdown;
 
     // Apply rotation inverse for map up direction
     float angleRad = mapUpDirection * PI / 180.0;
