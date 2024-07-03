@@ -89,7 +89,7 @@ void setup(void) {
 
   startup_demo_tft();
 
-  tft.fillScreen(COLOR_BLACK);
+  tft.fillScreen(COLOR_WHITE);
 
 
   #ifdef XIAO_RP2040
@@ -146,18 +146,21 @@ void check_bankwarning(){
   last_newtrack_time = currentTime;
 
   //Do not trigger bank warning if speed is below ...
-  if(get_gps_speed() < 1.0){
+  if(get_gps_mps() < 2.0){
     if(bank_warning){
       redraw = true;
       #ifdef XIAO_RP2040
         pixels.clear();
         pixels.show();
       #endif
+      tft.invertDisplay(false);
       bank_warning = false;
     }
     return;
   }
-  if(abs(degpersecond) > 3.0){
+
+  
+  if(abs(degpersecond) > 3.0 && get_gps_mps() > 2){
     bank_warning = true;
   }else{
     if(bank_warning){
@@ -166,6 +169,7 @@ void check_bankwarning(){
         pixels.clear();
         pixels.show();
       #endif
+      tft.invertDisplay(false);
       bank_warning = false;
     }
   }
@@ -264,19 +268,23 @@ void loop() {
   }
 
 
-  #ifdef XIAO_RP2040
   if(bank_warning){
     if((millis()/100)%3 == 0){
-      pixels.clear();
-      pixels.setPixelColor(0, pixels.Color(255, 0, 0));
-      pixels.show();
+      #ifdef XIAO_RP2040
+        pixels.clear();
+        pixels.setPixelColor(0, pixels.Color(255, 0, 0));
+        pixels.show();
+      #endif
+      tft.invertDisplay(false);
     }
     if((millis()/100)%3 == 1){
-      pixels.clear();
-      pixels.show();
+      #ifdef XIAO_RP2040
+        pixels.clear();
+        pixels.show();
+      #endif
+      tft.invertDisplay(true);
     }
   }
-  #endif
 
 
   update_degpersecond();
@@ -324,8 +332,8 @@ void loop() {
           drawShinura(redraw,new_lat, new_long, scale, drawupward_direction);
           redraw = false;
         }else{
-          tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 120, COLOR_BLACK);
-          tft.setTextColor(COLOR_WHITE);
+          tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 120, COLOR_WHITE);
+          tft.setTextColor(COLOR_BLACK);
           tft.setTextSize(2);
           tft.setCursor(0, SCREEN_HEIGHT/2-30);
           
@@ -342,7 +350,7 @@ void loop() {
               tft.setTextColor(COLOR_GREEN);
               tft.print("GPS connection found");
             }else{
-              tft.setTextColor(COLOR_YELLOW);
+              tft.setTextColor(COLOR_MAGENTA);
               tft.println("No GPS found !!");
               tft.print("Check connection, or try reset.");
             }

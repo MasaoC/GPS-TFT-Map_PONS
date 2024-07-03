@@ -24,7 +24,7 @@ void show_oled(){
   }
   lastshown = millis();
   bool fix = get_gps_fix();
-  float spd = get_gps_speed();
+  float spd = get_gps_mps();
   float mtrack = get_gps_magtrack();
 
    // Clear the display
@@ -37,9 +37,7 @@ void show_oled(){
     display.setCursor(0, 0);
     display.print("GS:");
   
-    // Convert speed from knots to m/s (1 knot = 0.514444 m/s) and display with one decimal place
-    float speed_m_s = spd * 0.514444;
-    display.print(speed_m_s, 1);
+    display.print(spd, 1);
     display.print("m/s");
     
 

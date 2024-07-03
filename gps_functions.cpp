@@ -52,7 +52,7 @@ void gps_loop() {
 float get_gps_lat() {
   if(demo_biwako){
     int timeelapsed = millis()%200000;
-    return PLA_LAT+timeelapsed/16000.0/1000.0-0.01;
+    return PLA_LAT+timeelapsed/16000.0/1000.0-0.002;
   }
   #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
     return PLA_LAT +GPS.latitudeDegrees- SHINURA_LAT;
@@ -72,7 +72,7 @@ float get_gps_lat() {
 float get_gps_long() {
   if(demo_biwako){
     int timeelapsed = millis()%200000;
-    return PLA_LON-timeelapsed/1600.0/1000.0+0.055;
+    return PLA_LON-timeelapsed/1600.0/1000.0+0.025;
   }
   #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
     return PLA_LON +GPS.longitudeDegrees- SHINURA_LON;
@@ -87,11 +87,18 @@ float get_gps_long() {
 
   return GPS.longitudeDegrees;
 }
-double get_gps_speed() {
+double get_gps_kts() {
   if(demo_biwako){
     return 20+5*sin(millis()/1500.0);
   }
   return GPS.speed;
+}
+
+double get_gps_mps(){
+  if(demo_biwako){
+    return get_gps_kts()*0.514444;
+  }
+  return GPS.speed*0.514444;
 }
 
 
@@ -109,7 +116,7 @@ float get_gps_altitude() {
 
 float get_gps_truetrack() {
   if(demo_biwako){
-    return 280+9.2*sin(millis()/3000.0);
+    return 280+(9.1+sin(millis()/2100.0))*sin(millis()/3000.0);
   }
   return GPS.angle;
 }
