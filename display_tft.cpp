@@ -4,6 +4,8 @@
 #include "gps_functions.h"
 #include "settings.h"
 
+#include <SD.h>
+
 #ifdef TFT_USE_ST7789
   Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
   // TFT_CS must be actually connected to ST7789 Module CS pin for some reason.
@@ -53,6 +55,53 @@ bool is_trackupmode(){
   return upward_mode == MODE_TRACKUP;
 }
 
+File myFile;
+void setup_sd(){
+  Serial.print("Initializing SD card...");
+  if (!SD.begin(1)) {
+    Serial.println("initialization failed!");
+  }else{
+    Serial.println("initialization done.");
+  }
+}
+
+void write_sd(){
+  // open the file. note that only one file can be open at a time,
+  // so you have to close this one before opening another.
+  myFile = SD.open("test.txt", FILE_WRITE);
+  // if the file opened okay, write to it:
+  if (myFile) {
+    Serial.print("Writing to test.txt...");
+    myFile.println("testing 1, 2, 3.");
+    Serial.println("done.");
+    // close the file:
+    myFile.close();
+  } else {
+    // if the file didn't open, print an error:
+    Serial.println("error opening test.txt");
+  }
+}
+
+void read_sd(){
+    // open the file. note that only one file can be open at a time,
+    // so you have to close this one before opening another.
+    myFile = SD.open("test.txt");
+
+  if (myFile) {
+    Serial.println("test.txt:");
+
+    // read from the file until there's nothing else in it:
+    while (myFile.available()) {
+      Serial.write(myFile.read());
+    }
+    // close the file:
+    myFile.close();
+  } else {
+    // if the file didn't open, print an error:
+    Serial.println("error opening test.txt");
+  }
+}
+
 
 void setup_tft() {
 
@@ -63,7 +112,17 @@ void setup_tft() {
   #endif
   analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
 
+  #ifdef RP2040_ZERO
+  SPI.setRX(0);
+  SPI.setCS(1);
+  SPI.setSCK(2);
+  SPI.setTX(3);
+  SPI.begin();
+  #endif
 
+  setup_sd();
+
+  write_sd();
 
   #ifdef TFT_USE_ST7789
     tft.init(240, 320);           // Init ST7789 320x240
@@ -75,6 +134,7 @@ void setup_tft() {
     tft.begin();
   #endif
   //tft.invertDisplay(true);
+  read_sd();
 
 /* not working... for now.
   #ifdef XIAO_RP2040

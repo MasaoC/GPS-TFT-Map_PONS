@@ -30,7 +30,11 @@ float degpersecond = 0; // The calculated average differential
 
 
 //スイッチ関連
-const int switchPin = D2;  // Pin where the switch is connected
+#ifdef RP2040_ZERO
+  const int switchPin = 7;  // Pin where the switch is connected
+#else
+  const int switchPin = D2;  // Pin where the switch is connected
+#endif
 unsigned long pressTime = 0;   // Time when the switch is pressed
 unsigned long debounceTime = 50; // Debounce time in milliseconds
 unsigned long longPressDuration = 1000; // Duration to detect a long press in milliseconds

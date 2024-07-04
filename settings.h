@@ -1,10 +1,10 @@
 //====== 設定画面 =======
 
 //使用するマイコン種類を選択する。【どれか一つを選択】
-  #define XIAO_RP2040              // RP2040が有効の場合、LEDを使用する。
+  //#define XIAO_RP2040              // RP2040が有効の場合、LEDを使用する。
   //#define XIAO_ESP32S3             // ESP32S3は、HardSerialのプログラムに変更が必要となるため、使用する場合は次の行を有効とする。
   //#define XIAO_SAMD21                // 無印のXIAO。クロックが遅く、メモリーが少ないため非推奨
-
+  #define RP2040_ZERO
 
 //GPSのデモ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS

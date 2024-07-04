@@ -2,33 +2,44 @@
 #include "settings.h"
 #include "navdata.h"
 
-
-#ifdef TFT_USE_ST7789
-  #include <Adafruit_ST7789.h> // Hardware-specific library for ST7735
-  #define SCREEN_WIDTH 240
-  #define SCREEN_HEIGHT 320
-  #define TFT_BL        D9
-  #define TFT_CS        -1
-#endif
-#ifdef TFT_USE_ST7735
-  #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
-  #define SCREEN_WIDTH 128
-  #define SCREEN_HEIGHT 160
-  #define TFT_BL        D9
-  #define TFT_CS        -1
-#endif
-#ifdef TFT_USE_ILI9341
+#ifdef RP2040_ZERO
   #include <Adafruit_ILI9341.h>
   #define SCREEN_WIDTH 240
   #define SCREEN_HEIGHT 320
-  #define TFT_BL        D5    //D9 used for MISO
-  #define TFT_CS        -1
-  //#define TFT_MOSI      D10
-  //#define TFT_CLK       D8
+  #define TFT_BL        -1
+  #define TFT_CS        5
+  #define TFT_RST        4
+  #define TFT_DC         6
+#else
+  #ifdef TFT_USE_ST7789
+    #include <Adafruit_ST7789.h> // Hardware-specific library for ST7735
+    #define SCREEN_WIDTH 240
+    #define SCREEN_HEIGHT 320
+    #define TFT_BL        D9
+    #define TFT_CS        -1
+  #endif
+  #ifdef TFT_USE_ST7735
+    #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
+    #define SCREEN_WIDTH 128
+    #define SCREEN_HEIGHT 160
+    #define TFT_BL        D9
+    #define TFT_CS        -1
+  #endif
+  #ifdef TFT_USE_ILI9341
+    #include <Adafruit_ILI9341.h>
+    #define SCREEN_WIDTH 240
+    #define SCREEN_HEIGHT 320
+    #define TFT_BL        D5    //D9 used for MISO
+    #define TFT_CS        -1
+    //#define TFT_MOSI      D10
+    //#define TFT_CLK       D8
+  #endif
+  #define TFT_RST        D0
+  #define TFT_DC         D1
 #endif
 
-#define TFT_RST        D0
-#define TFT_DC         D1
+
+
 
 #define BL_PWM_FRQ 1000   //1000Hz
 
