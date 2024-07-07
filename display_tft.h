@@ -2,6 +2,7 @@
 #include "settings.h"
 #include "navdata.h"
 
+
 #ifdef RP2040_ZERO
   #include <Adafruit_ILI9341.h>
   #define SCREEN_WIDTH 240
@@ -61,6 +62,11 @@
 
   enum stroke_group{
     STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER
+  };  
+
+  enum text_id{
+    SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSCONST,SETTING_EXIT,
+    ND_MPS,ND_SATS,ND_MT
   };
 
   #if defined(TFT_USE_ST7789) || defined(TFT_USE_ST7735)
@@ -115,6 +121,7 @@
 
 void draw_gpsinfo();
 void setup_tft();
+void blacken_display(bool& redraw);
 
 void tft_increment_brightness();
 void toggle_mode();
@@ -122,17 +129,18 @@ bool is_trackupmode();
 bool is_northupmode();
 
 
+void draw_ConstellationDiagram(bool& redraw);
 void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);
-void drawJapan(bool& redraw, float center_lat,float center_lon,float scale,float up);
-void drawShinura(bool& redraw, float center_lat,float center_lon,float scale,float up);
-void drawBiwako(bool& redraw, float center_lat,float center_lon,float scale,float up);
-void drawOsaka(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void draw_Japan(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void draw_Shinura(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void draw_Biwako(bool& redraw, float center_lat,float center_lon,float scale,float up);
+void draw_Osaka(bool& redraw, float center_lat,float center_lon,float scale,float up);
 bool draw_circle_km(float scale, float km);
 void draw_km_circle(float scale);
 void startup_demo_tft();
-void drawmap(stroke_group id, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp,uint16_t color);
+void draw_map(stroke_group id, float mapUpDirection, float center_lat, float center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(float mapcenter_lat, float mapcenter_lon,float scale, float upward);
 void draw_triangle();
 void draw_pilon_takeshima_line(float mapcenter_lat, float mapcenter_lon,float scale, float upward);

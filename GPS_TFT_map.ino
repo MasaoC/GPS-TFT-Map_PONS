@@ -3,13 +3,12 @@
 #include "display_tft.h"
 #include "settings.h"
 #include "gps_functions.h"
+#include "mysd.h"
+#include "latlon.h"
 
 #ifdef USE_OLED
   #include "display_oled.h"
 #endif
-
-
-
 
 
 unsigned long last_newtrack_time = 0;
@@ -43,9 +42,11 @@ bool lastSwitchState = HIGH; // Previous state of the switch
 bool longPressHandled = false; // Whether the long press was already handled
 
 
-// Settings mode variable
-bool show_setting = false;
 
+const int MODE_SETTING  = 1;
+const int MODE_MAP      = 2;
+const int MODE_GPSCONST = 3;
+int screen_mode = MODE_MAP;
 
 #ifdef XIAO_RP2040
   #include <Adafruit_NeoPixel.h>
@@ -90,6 +91,8 @@ void setup(void) {
   #endif
   setup_tft();
 
+  setup_sd();
+
 
   startup_demo_tft();
 
@@ -130,9 +133,6 @@ void update_degpersecond(){
       }
       // Calculate the average differential
       degpersecond = totalDifference / (numSamples - 1);
-      // Print the average differential
-      Serial.print("Average Differential (deg/s): ");
-      Serial.println(degpersecond);
       // Shift samples to make room for new ones
       for (int i = 1; i < numSamples; i++) {
         upward_samples[i - 1] = upward_samples[i];
@@ -188,7 +188,8 @@ void debug_print(const char* inp){
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
-#define SETTING_LINES 4
+#define SETTING_LINES 5
+
 
 
 void switch_handling(){
@@ -204,23 +205,22 @@ void switch_handling(){
       unsigned long pressDuration = millis() - pressTime;
       if (pressDuration < longPressDuration && pressDuration > debounceTime) {
         Serial.println("short press");
-        if(show_setting){//Setting mode
+        quick_redraw = true;
+        redraw = true;
+        if(screen_mode == MODE_SETTING){//Setting mode
           if(selectedLine == -1){//No active selected line.
             cursorLine = (cursorLine+1)%SETTING_LINES;
           }else if(selectedLine == 0){
             tft_increment_brightness();
-            redraw = true;
           }else if(selectedLine == 1){
             toggle_demo_biwako();  
-            redraw = true;
-          }else{
+          }else if(selectedLine == 2){
             toggle_mode();
-            redraw = true;
+          }else if(selectedLine == 3){
+            screen_mode = MODE_GPSCONST;
           }
         }else{
           scale = scalelist[scaleindex++%(sizeof(scalelist) / sizeof(scalelist[0]))];
-          quick_redraw = true;
-          redraw = true;
         }
       }
     }
@@ -230,26 +230,31 @@ void switch_handling(){
     if (millis() - pressTime >= longPressDuration) {
         Serial.println("long press");
         longPressHandled = true;
-        if(!show_setting){        
-          show_setting = true;
+        redraw = true;
+        quick_redraw = true;
+        if(screen_mode != MODE_SETTING){
+          if(screen_mode == MODE_GPSCONST)
+            gps_getposition_mode();
+          screen_mode = MODE_SETTING;
           cursorLine = 0;
           selectedLine = -1;
-          redraw = true;
+          tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
         }else{
           //exit
           if(cursorLine == SETTING_LINES-1){
-            show_setting = false;
-            quick_redraw = true;
-            redraw = true;
+            screen_mode = MODE_MAP;
+          }
+          else if(cursorLine == 3){
+            Serial.println("GPS CONST MODE");
+            gps_constellation_mode();
+            screen_mode = MODE_GPSCONST;
           }else{
             if(selectedLine == -1){
               //Entering changing value mode.
               selectedLine = cursorLine;
-              redraw = true;
             }else{
               //exiting changing value mode.
               selectedLine = -1;
-              redraw = true;
             }
           }
         }
@@ -262,15 +267,19 @@ void switch_handling(){
 
 bool err_nomap = false;
 
+
 void loop() {
   switch_handling();
-  gps_loop();
+  gps_loop(redraw, screen_mode == MODE_GPSCONST);
   
-  if (show_setting) {
+  if (screen_mode == MODE_SETTING) {
     draw_setting_mode(redraw, selectedLine, cursorLine);
     return;
   }
-
+  if(screen_mode == MODE_GPSCONST){
+    draw_ConstellationDiagram(redraw);
+    return;
+  }
 
   if(bank_warning){
     if((millis()/100)%3 == 0){
@@ -290,13 +299,11 @@ void loop() {
     }
   }
 
-
   update_degpersecond();
 
   if(millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw){
     float new_truetrack = get_gps_truetrack();
     float new_lat = get_gps_lat();
-    Serial.println(new_lat);
     last_time_gpsdata = millis();
     quick_redraw = false;
 
@@ -324,27 +331,27 @@ void loop() {
       float new_long = get_gps_long();
 
       if(scale <= SCALE_JAPAN){
-        drawJapan(redraw,new_lat,new_long,scale,drawupward_direction);
+        draw_Japan(redraw,new_lat,new_long,scale,drawupward_direction);
       }else{
-        if(abs(new_long - PLA_LON) < 0.6){
-          drawBiwako(redraw,new_lat,new_long, scale, drawupward_direction);
+        if(check_within_latlon(0.6,0.6,new_lat,PLA_LAT,new_long,PLA_LON)){
+          draw_Biwako(redraw,new_lat,new_long, scale, drawupward_direction);
         }
-        else if(abs(new_long - OSAKA_LON) < 0.6){
-          drawOsaka(redraw, new_lat,new_long, scale, drawupward_direction);
+        else if(check_within_latlon(0.6,0.6,new_lat,OSAKA_LAT,new_long,OSAKA_LON)){
+          draw_Osaka(redraw, new_lat,new_long, scale, drawupward_direction);
         }
-        else if(abs(new_long - SHINURA_LON) < 0.6){
-          drawShinura(redraw,new_lat, new_long, scale, drawupward_direction);
-          redraw = false;
+        else if(check_within_latlon(0.6,0.6,new_lat,SHINURA_LAT,new_long,SHINURA_LON)){
+          draw_Shinura(redraw,new_lat, new_long, scale, drawupward_direction);
         }else{
           tft.fillRect(0, SCREEN_HEIGHT/2-50, SCREEN_WIDTH, 120, COLOR_WHITE);
           tft.setTextColor(COLOR_BLACK);
           tft.setTextSize(2);
           tft.setCursor(0, SCREEN_HEIGHT/2-30);
+          blacken_display(redraw);
           
           if(!get_gps_fix()){
             tft.println("Searching");
             tft.print("GPS");
-            int dotcouter = (millis()/1000)%5;
+            int dotcouter = (millis()/500)%6;
             for(int i = 0; i < dotcouter;i++){
               tft.print(".");
             }

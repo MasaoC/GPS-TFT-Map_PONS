@@ -169,6 +169,10 @@ double fastDistance(float lat1, float lon1, float lat2, float lon2) {
 }
 
 
+bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2){
+  return (abs(lat1-lat2) < latdif) && (abs(lon1-lon2) < londif);
+}
+
 
 bool check_maybe_inside_draw(cord_map mapcenter, float checklat, float checklon, float scale){
   double dist = fastDistance(mapcenter.lat,mapcenter.lon, checklat, checklon);

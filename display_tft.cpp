@@ -1,10 +1,8 @@
+#include <XPT2046_Touchscreen.h>
 #include "display_tft.h"
 #include "latlon.h"
-#include "navdata.h"
 #include "gps_functions.h"
-#include "settings.h"
-
-#include <SD.h>
+#include "mysd.h"
 
 #ifdef TFT_USE_ST7789
   Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
@@ -19,6 +17,10 @@
   //default pin setting
   Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);//CS can be -1 but now, RST must be connected to actual pin. somehow...
   //Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI,TFT_CLK,-1,-1);   Does not work....
+  #define TCH_CS_PIN  15
+  #define TIRQ_PIN  26
+  XPT2046_Touchscreen ts(TCH_CS_PIN, TIRQ_PIN);  // Param 2 - Touch IRQ Pin - interrupt enabled polling
+
 #endif
 
 
@@ -55,52 +57,7 @@ bool is_trackupmode(){
   return upward_mode == MODE_TRACKUP;
 }
 
-File myFile;
-void setup_sd(){
-  Serial.print("Initializing SD card...");
-  if (!SD.begin(1)) {
-    Serial.println("initialization failed!");
-  }else{
-    Serial.println("initialization done.");
-  }
-}
 
-void write_sd(){
-  // open the file. note that only one file can be open at a time,
-  // so you have to close this one before opening another.
-  myFile = SD.open("test.txt", FILE_WRITE);
-  // if the file opened okay, write to it:
-  if (myFile) {
-    Serial.print("Writing to test.txt...");
-    myFile.println("testing 1, 2, 3.");
-    Serial.println("done.");
-    // close the file:
-    myFile.close();
-  } else {
-    // if the file didn't open, print an error:
-    Serial.println("error opening test.txt");
-  }
-}
-
-void read_sd(){
-    // open the file. note that only one file can be open at a time,
-    // so you have to close this one before opening another.
-    myFile = SD.open("test.txt");
-
-  if (myFile) {
-    Serial.println("test.txt:");
-
-    // read from the file until there's nothing else in it:
-    while (myFile.available()) {
-      Serial.write(myFile.read());
-    }
-    // close the file:
-    myFile.close();
-  } else {
-    // if the file didn't open, print an error:
-    Serial.println("error opening test.txt");
-  }
-}
 
 
 void setup_tft() {
@@ -120,12 +77,11 @@ void setup_tft() {
   SPI.begin();
   #endif
 
-  setup_sd();
-
-  write_sd();
 
   #ifdef TFT_USE_ST7789
     tft.init(240, 320);           // Init ST7789 320x240
+    ts.begin();
+    ts.setRotation(1);
   #endif
   #ifdef TFT_USE_ST7735
     tft.initR(INITR_BLACKTAB);
@@ -134,7 +90,6 @@ void setup_tft() {
     tft.begin();
   #endif
   //tft.invertDisplay(true);
-  read_sd();
 
 /* not working... for now.
   #ifdef XIAO_RP2040
@@ -155,12 +110,153 @@ struct line {
   int x1, y1, x2, y2;
 };
 
+#include <cstring> // for strlen and strcpy
+#include <cstdlib> // for malloc and free
+
+
+class Point {
+public:
+    int x, y;
+    Point(int x = 0, int y = 0) : x(x), y(y) {}
+};
+
+class Text {
+private:
+    int id;
+    int size;
+    Point cord;
+    char* textchar;
+
+public:
+    Text() : id(0), size(0), cord(0, 0), textchar(NULL) {}
+
+    Text(int id, int size, int x, int y, const char* text_in) : id(id), size(size), cord(x, y), textchar(NULL) {
+        setText(text_in);
+    }
+
+    ~Text() {
+        free(textchar);
+    }
+
+    // Copy constructor
+    Text(const Text& other) : id(other.id), size(other.size), cord(other.cord), textchar(NULL) {
+        setText(other.textchar);
+    }
+
+    // Assignment operator
+    Text& operator=(const Text& other) {
+        if (this != &other) {
+            id = other.id;
+            size = other.size;
+            cord = other.cord;
+            setText(other.textchar);
+        }
+        return *this;
+    }
+
+    bool setText(const char* text_in) {
+        if (textchar != NULL) {
+            free(textchar);
+        }
+        size_t length = strlen(text_in);
+        textchar = (char*)malloc((length + 1) * sizeof(char));
+        if (textchar == NULL) {
+            return false; // Memory allocation failed
+        }
+        strcpy(textchar, text_in);
+        return true;
+    }
+
+    int getId() const { return id; }
+    int getSize() const { return size; }
+    Point getCord() const { return cord; }
+    const char* getTextChar() const { return textchar; }
+
+    friend class TextManager;
+};
+
+class TextManager {
+private:
+    Text** draw_texts; // Array of pointers to Text objects
+    int textCount;
+    int maxtext;
+
+    Text* createNewText(int id, int size, int x, int y, const char* text_in) {
+        if (textCount >= maxtext) {
+            return nullptr;
+        }
+        Text* newText = new Text(id, size, x, y, text_in);
+        draw_texts[textCount++] = newText;
+        return newText;
+    }
+
+public:
+    TextManager(int maxTexts) : textCount(0), maxtext(maxTexts) {
+        draw_texts = new Text*[maxTexts];
+        for (int i = 0; i < maxTexts; ++i) {
+            draw_texts[i] = nullptr;
+        }
+    }
+
+    ~TextManager() {
+        for (int i = 0; i < textCount; ++i) {
+            delete draw_texts[i];
+        }
+        delete[] draw_texts;
+    }
+
+   bool drawText(int id, int size, int x, int y, uint16_t col, const char* text_in) {
+      Text* foundText = nullptr;
+      // Search for text with the same id.
+      for (int i = 0; i < textCount; i++) {
+          if (draw_texts[i]->getId() == id) {
+              foundText = draw_texts[i];
+              break;
+          }
+      }
+      // If found, overwrite text with white.
+      if (foundText != nullptr) {
+          tft.setCursor(foundText->getCord().x, foundText->getCord().y);
+          tft.setTextColor(COLOR_WHITE);
+          tft.setTextSize(foundText->getSize());
+          tft.print(foundText->getTextChar());
+          // Update value.
+          foundText->cord.x = x;
+          foundText->cord.y = y;
+          foundText->size = size;
+          foundText->setText(text_in); // Update textchar
+      }
+      // If not found, create new Text with the id
+      if (foundText == nullptr) {
+          foundText = createNewText(id, size, x, y, text_in);
+          if (foundText == nullptr) {
+              return false;
+          }
+      }
+      // Print the text.
+      tft.setCursor(foundText->cord.x, foundText->cord.y);
+      tft.setTextColor(col);
+      tft.setTextSize(foundText->size);
+      tft.print(foundText->getTextChar());
+      return true;
+  }
+
+
+    bool drawTextf(int id, int size, int x, int y, uint16_t col, const char* format, ...) {
+        char buffer[256]; // Temporary buffer for formatted text
+
+        va_list args;
+        va_start(args, format);
+        vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+
+        return drawText(id, size, x, y, col, buffer);
+    }
+};
+
+TextManager textmanager(50);
 
 class StrokeManager {
-  struct Point {
-    int x;
-    int y;
-  };
 
   struct Stroke {
     stroke_group id;
@@ -264,8 +360,6 @@ public:
         tft.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
       }
     }
-    Serial.print("stroke black ");
-    Serial.println(strokeCount);
   }
 };
 
@@ -440,7 +534,8 @@ unsigned long lastfresh_millis = 0;
 float last_up = 0;
 float last_truetrack = 0;
 
-void blacken_display(bool redraw) {
+//20秒経過、またはredrraw指定で画面を白に塗り直す。
+void blacken_display(bool& redraw) {
   fresh = false;
   if (millis() - lastfresh_millis > 20000 || redraw) {
     lastfresh_millis = millis();
@@ -452,6 +547,7 @@ void blacken_display(bool redraw) {
     strokeManager.drawAllStroke();
   }
   strokeManager.removeAllStrokes();
+  redraw = false;
 }
 
 
@@ -493,58 +589,55 @@ void draw_triangle(){
   }
 }
 
-void drawJapan(bool& redraw, float center_lat, float center_lon, float scale, float up) {
+void draw_Japan(bool& redraw, float center_lat, float center_lon, float scale, float up) {
   blacken_display(redraw);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan1, COLOR_GREEN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan3, COLOR_GREEN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan4, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan1, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan3, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan4, COLOR_GREEN);
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_WHITE);
   draw_compass(up, COLOR_BLACK);
   last_truetrack = up;
-  redraw = false;
 }
 
-void drawShinura(bool& redraw, float center_lat, float center_lon, float scale, float up) {
+void draw_Shinura(bool& redraw, float center_lat, float center_lon, float scale, float up) {
   blacken_display(redraw);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_shinura, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_shinura, COLOR_GREEN);
   draw_km_circle(scale);
   draw_compass(last_truetrack, COLOR_WHITE);
   draw_compass(up, COLOR_BLACK);
 
   last_truetrack = up;
-  redraw = false;
 }
 
-void drawBiwako(bool& redraw, float center_lat, float center_lon, float scale, float up) {
+void draw_Biwako(bool& redraw, float center_lat, float center_lon, float scale, float up) {
   blacken_display(redraw);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
   draw_km_circle(scale);
   draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
   fill_sea_land(center_lat, center_lon, scale, up);
   draw_compass(last_truetrack, COLOR_WHITE);
   draw_compass(up, COLOR_BLACK);
   last_truetrack = up;
-  redraw = false;
 }
 
-void drawOsaka(bool& redraw, float center_lat, float center_lon, float scale, float up) {
+void draw_Osaka(bool& redraw, float center_lat, float center_lon, float scale, float up) {
   blacken_display(redraw);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaioutside, COLOR_CYAN);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway, COLOR_MAGENTA);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway2, COLOR_MAGENTA);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaioutside, COLOR_CYAN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway, COLOR_MAGENTA);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway2, COLOR_MAGENTA);
 
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside1, COLOR_BRIGHTGRAY);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside2, COLOR_BRIGHTGRAY);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside3, COLOR_BRIGHTGRAY);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside4, COLOR_BRIGHTGRAY);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside5, COLOR_BRIGHTGRAY);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handairailway, COLOR_ORANGE);
-  drawmap(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaicafe, COLOR_GREEN);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside1, COLOR_BRIGHTGRAY);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside2, COLOR_BRIGHTGRAY);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside3, COLOR_BRIGHTGRAY);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside4, COLOR_BRIGHTGRAY);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside5, COLOR_BRIGHTGRAY);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handairailway, COLOR_ORANGE);
+  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaicafe, COLOR_GREEN);
 
 
   draw_km_circle(scale);
@@ -552,7 +645,6 @@ void drawOsaka(bool& redraw, float center_lat, float center_lon, float scale, fl
   draw_compass(up, COLOR_BLACK);
 
   last_truetrack = up;
-  redraw = false;
 }
 
 
@@ -562,7 +654,7 @@ void startup_demo_tft() {
     float center_lat = 35.3034225841915;
     float center_lon = 136.1461056306493;
     bool redraw = false;
-    drawBiwako(redraw, center_lat, center_lon, scale, i);
+    draw_Biwako(redraw, center_lat, center_lon, scale, i);
     draw_degpersecond(30.0 / (300.0 / 1000));
     draw_gpsinfo();
     tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 - 40);
@@ -579,16 +671,16 @@ void draw_degpersecond(float degpersecond) {
     tft.setTextColor(COLOR_GREEN);
   }
   if (degpersecond < 0) {
-    tft.setTextColor(COLOR_LIGHT_BLUE);
+    tft.setTextColor(COLOR_BLUE);
   }
   if (degpersecond == 0) {
     tft.setTextColor(COLOR_BRIGHTGRAY);
   }
 
   tft.setTextSize(1);
-  tft.setCursor(SCREEN_WIDTH - 28, 0);
+  tft.setCursor(SCREEN_WIDTH - 28, 1);
   tft.print(degpersecond, 1);
-  tft.setCursor(SCREEN_WIDTH - 30, 8);
+  tft.setCursor(SCREEN_WIDTH - 30, 9);
   tft.print("deg/s");
 
   int barposy = 22;
@@ -624,17 +716,19 @@ void draw_bankwarning() {
 
 int last_written_mh = 0;
 void draw_gpsinfo() {
+  int col = COLOR_BLACK;
   #ifdef TFT_USE_ILI9341
-    tft.fillRect(SCREEN_WIDTH / 2 - 40, 0, 76, 24, COLOR_WHITE);
-    tft.setCursor(SCREEN_WIDTH / 2 - 40, 0);
+    //tft.fillRect(SCREEN_WIDTH / 2 - 40, 1, 76, 23, COLOR_WHITE);
+    const int mtlx = SCREEN_WIDTH / 2 - 40;
+    const int mtvx = mtlx+21;
+    tft.setCursor(mtlx, 1);
     tft.setTextColor(COLOR_BLACK);
     tft.setTextSize(2);
     tft.print("MT"); 
-    tft.setTextSize(3);
-    tft.printf("%03d", (int)get_gps_magtrack());
+    textmanager.drawTextf(ND_MT,3,mtvx, 1,col,"%03d", (int)get_gps_magtrack());
   #else
-    tft.fillRect(SCREEN_WIDTH / 2 - 25, 0, 46, 14, COLOR_WHITE);
-    tft.setCursor(SCREEN_WIDTH / 2 - 25, 0);
+    tft.fillRect(SCREEN_WIDTH / 2 - 25, 1, 46, 14, COLOR_WHITE);
+    tft.setCursor(SCREEN_WIDTH / 2 - 25, 1);
     tft.setTextColor(COLOR_BLACK);
     tft.setTextSize(1);
     tft.print("MT"); 
@@ -642,33 +736,18 @@ void draw_gpsinfo() {
     tft.printf("%03d", (int)get_gps_magtrack());
   #endif
 
-  tft.setTextSize(1);
+  textmanager.drawTextf(ND_MPS,1,1,1,COLOR_BLACK,"%.1fm/s",get_gps_mps());
 
-  tft.setCursor(0, 0);
-  tft.fillRect(0, 0, 39, 8, COLOR_WHITE);
-
-  tft.setTextColor(COLOR_BLACK);
-  // Convert speed from knots to m/s (1 knot = 0.514444 m/s) and display with one decimal place
-  
-  double speed_m_s = get_gps_mps();
-  tft.print(speed_m_s, 1);
-  
-  tft.println("m/s");
-  
-  tft.fillRect(0, 8, 36, 8, COLOR_WHITE);
+  col = COLOR_GREEN;
   if(get_gps_numsat() < 5){
-    tft.setTextColor(COLOR_RED);
-  }else{
-    tft.setTextColor(COLOR_GREEN);
+    col = COLOR_RED;
   }
-  tft.print(get_gps_numsat());
-  tft.println("sats");
-  tft.setTextColor(COLOR_GREEN);
+  textmanager.drawTextf(ND_SATS,1,1,9,col,"%dsats",get_gps_numsat());
   
   tft.setCursor(0, 27);
   tft.fillRect(0, 27, 32, 8, COLOR_WHITE);
   double input_voltage = analogRead(A3)/1024.0*3.3*2;
-  Serial.println(input_voltage);
+  //Serial.println(input_voltage);
   if(input_voltage < 3.75){
     tft.setTextColor(COLOR_MAGENTA);
     tft.println("BATTERY LOW");
@@ -715,7 +794,7 @@ void draw_headingupmode(){
 }
 
 
-void drawmap(stroke_group strokeid, float mapUpDirection, float center_lat, float center_lon, float mapScale, const mapdata* mp, uint16_t color) {
+void draw_map(stroke_group strokeid, float mapUpDirection, float center_lat, float center_lon, float mapScale, const mapdata* mp, uint16_t color) {
   int tstart_calc = millis();
   //float mapScale = 1.5;  // Example scale
 
@@ -935,74 +1014,148 @@ void tft_increment_brightness(){
   analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
 }
 
-void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
+
+int calculateX(float azimuth, float elevation) {
+  const int shift_left = 20;
+  int width = SCREEN_WIDTH - shift_left;
+  return (width / 2) + (int)(cos(radians(azimuth)) * (width / 2) * (1 - elevation / 90.0))-shift_left;
+}
+
+int calculateY(float azimuth, float elevation) {
+  int height = SCREEN_HEIGHT -40;
+  const int shift_down = 20;
+  return (height / 2) - (int)(sin(radians(azimuth)) * (height / 2) * (1 - elevation / 90.0))+shift_down;
+}
+
+
+unsigned long lastdrawn_const = 0;
+void draw_ConstellationDiagram(bool& redraw) {
+  if(millis()-lastdrawn_const > 1000){
+    redraw = true;
+    lastdrawn_const = millis();
+  }
   if(redraw){
-    tft.fillScreen(COLOR_WHITE);
     redraw = false;
-  }
+    bool aru = false;
+    for (int i = 0; i < 32; i++) {
+      if (satellites[i].PRN != 0) aru = true; // Skip empty entries
+    }
 
-  tft.setTextColor(COLOR_BLACK);
-  if(SCREEN_WIDTH <=128){
-    tft.setTextSize(1);
-  }else{
+    tft.fillScreen(COLOR_WHITE);
+    tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 20, SCREEN_WIDTH/2-2, COLOR_BLACK);
+    tft.setTextColor(COLOR_BLACK);
     tft.setTextSize(2);
-  }
-  // Line 1: Screen Brightness
-  if (cursorLine == 0){
-    if(selectedLine == 0){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
-    }else{
-      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
-    }
-  }
-  tft.setCursor(10, 30);
-  tft.print(selectedLine == 0 ? " Brightness: ":"Brightness: ");
-  tft.println(screen_brightness);
-  tft.setTextColor(COLOR_BLACK);
+    tft.setCursor(1, 1);
+    tft.println("GPS CONSTELLATION");
+    if(!aru)
+      return;
 
-  // Line 2: Placeholder for future settings
-  if (cursorLine == 1){
-    if(selectedLine == 1){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
-    }else{
-      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
-    }
-  }
-  tft.setCursor(10, 60);
-  tft.print(selectedLine == 1 ? " DEMO BIWA: ":"DEMO BIWA: ");
-  if(get_demo_biwako()){
-    tft.println("YES");
-  }else{
-    tft.println("NO");
-  }
-  tft.setTextColor(COLOR_BLACK);
+    for (int i = 0; i < 32; i++) {
+      if (satellites[i].PRN == 0) continue; // Skip empty entries
+      //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
 
-  // Line 3: Placeholder for future settings
-  if (cursorLine == 2){
-    if(selectedLine == 2){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
-    }else{
-      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
-    }
-  }
-  tft.setCursor(10, 90);
-  tft.print(selectedLine == 2 ? " UPWARD: ":"UPWARD: ");
-  if(is_trackupmode()){
-    tft.println("TRACK UP");
-  }else if(is_northupmode()){
-    tft.println("NORTH UP");
-  }
-  tft.setTextColor(COLOR_BLACK);
+      // Calculate position on display based on azimuth and elevation
+      float azimuth = satellites[i].azimuth;
+      float elevation = satellites[i].elevation;
 
-  // Line 4: Exit
-  if (cursorLine == 3){
-    if(selectedLine == 3){
-      tft.setTextColor(COLOR_RED); // Highlight selected line
-    }else{
-      tft.setTextColor(COLOR_MAGENTA); // Highlight selected line
+      int x = calculateX(azimuth, elevation);
+      int y = calculateY(azimuth, elevation);
+      if(satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
+        tft.drawCircle(x, y, 5, COLOR_RED);
+      else if(satellites[i].satelliteType == SATELLITE_TYPE_GPS)
+        tft.fillCircle(x, y, 5, COLOR_RED);
+      else if(satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
+        tft.fillCircle(x, y, 5, COLOR_BLUE);
+      else if(satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
+        tft.fillCircle(x, y, 5, COLOR_ORANGE);
+      else
+        tft.fillCircle(x, y, 5, COLOR_BLACK);
+      
+      int textx = constrain(x+6,0,SCREEN_WIDTH-20);
+      if(satellites[i].PRN >= 10)
+        textx -= 10;
+      if(satellites[i].PRN >= 100)
+        textx -= 10;
+      tft.setCursor(textx, y - 3);
+      tft.setTextColor(COLOR_BLACK);
+      tft.print(satellites[i].PRN);
     }
   }
-  tft.setCursor(10, 120);
-  tft.println("Exit");
-  tft.setTextColor(COLOR_BLACK);
+}
+
+
+void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine){
+  int posy = 35;
+  const int separation = 25;
+  if(redraw){
+    redraw = false;
+
+    textmanager.drawText(SETTING_TITLE,2,5,5,COLOR_BLUE,"SETTINGS");
+
+    tft.setTextColor(COLOR_BLACK);
+    if(SCREEN_WIDTH <=128){
+      tft.setTextSize(1);
+    }else{
+      tft.setTextSize(2);
+    }
+    // Line 1: Screen Brightness
+    int col = COLOR_BLACK;
+    if (cursorLine == 0){
+      if(selectedLine == 0)
+        col = COLOR_RED; // Highlight selected line
+      else
+        col = COLOR_MAGENTA; // Highlight selected line
+    }
+    textmanager.drawTextf(SETTING_BRIGHTNESS,2,10, posy,col,selectedLine == 0 ? " Brightness: %03d":"Brightness: %03d",screen_brightness);
+    posy += separation;
+
+
+    col = COLOR_BLACK;
+
+    // Line 2: Placeholder for future settings
+    if (cursorLine == 1){
+      if(selectedLine == 1)
+        col = COLOR_RED; // Highlight selected line
+      else
+        col = COLOR_MAGENTA; // Highlight selected line
+    }
+
+    textmanager.drawTextf(SETTING_DEMOBIWA,2,10, posy,col,selectedLine == 1 ? " DEMO BIWA: %s":"DEMO BIWA: %s",get_demo_biwako()?"YES":"NO");
+    posy += separation;
+
+    // Line3: Upward choice
+    col = COLOR_BLACK;
+    if (cursorLine == 2){
+      if(selectedLine == 2)
+        col = COLOR_RED; // Highlight selected line
+      else
+        col = COLOR_MAGENTA; // Highlight selected line
+    }
+    textmanager.drawTextf(SETTING_UPWARD,2,10, posy,col,selectedLine == 2 ? " UPWARD: %s":"UPWARD: %s",is_trackupmode()?"TRACK UP":"NORTH UP");
+    posy += separation;
+
+    // Line4: GPS constellation
+    col = COLOR_BLACK;
+    if (cursorLine == 3){
+      if(selectedLine == 3)
+        col = COLOR_RED; // Highlight selected line
+      else
+        col = COLOR_MAGENTA; // Highlight selected line
+    }
+    textmanager.drawTextf(SETTING_GPSCONST,2,10, posy,col,selectedLine == 3 ? " SHOW GPS CONST >":"SHOW GPS CONST >");
+    posy += separation;
+
+    col = COLOR_BLACK;
+    // Line 5: Exit
+    if (cursorLine == 4){
+      if(selectedLine == 4){
+        col = COLOR_RED; // Highlight selected line
+      }else{
+        col = COLOR_MAGENTA; // Highlight selected line
+      }
+    }
+    textmanager.drawTextf(SETTING_EXIT,2,10, posy,col,"Exit");
+    posy += separation;
+
   }
+}
