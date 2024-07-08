@@ -3,82 +3,41 @@
 #include "display_tft.h"
 
 
-#define MAX_STROKES 10
+LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
-struct Point {
-  byte x;
-  byte y;
-};
-
-struct Stroke {
-  Point* points;
-  int pointCount;
-  int maxPoints;
-};
-
-// Array to store strokes
-Stroke strokes[MAX_STROKES];
-int strokeCount = 0;
-
-// Function to add a new stroke with a specified maximum number of points
-bool addStroke(int maxPoints) {
-  if (strokeCount >= MAX_STROKES) {
-    return false; // No more space for new strokes
-  }
-  strokes[strokeCount].points = (Point*)malloc(maxPoints * sizeof(Point));
-  if (strokes[strokeCount].points == nullptr) {
-    return false; // Memory allocation failed
-  }
-  strokes[strokeCount].pointCount = 0;
-  strokes[strokeCount].maxPoints = maxPoints;
-  strokeCount++;
-  return true;
-}
-
-// Function to add a point to the last stroke
-bool addPointToStroke(byte x, byte y) {
-  if (strokeCount == 0) {
-    return false; // No strokes to add points to
-  }
-  Stroke* stroke = &strokes[strokeCount - 1];
-  if (stroke->pointCount >= stroke->maxPoints) {
-    return false; // No more space for new points in this stroke
-  }
-  stroke->points[stroke->pointCount].x = x;
-  stroke->points[stroke->pointCount].y = y;
-  stroke->pointCount++;
-  return true;
-}
-
-// Function to remove the last stroke
-bool removeStroke() {
-  if (strokeCount == 0) {
-    return false; // No strokes to remove
-  }
-  strokeCount--;
-  free(strokes[strokeCount].points); // Free allocated memory
-  strokes[strokeCount].points = nullptr;
-  strokes[strokeCount].pointCount = 0;
-  strokes[strokeCount].maxPoints = 0;
-  return true;
-}
-
-// Function to print strokes for debugging purposes
-void printStrokes() {
-  for (int i = 0; i < strokeCount; i++) {
-    Serial.print("Stroke ");
-    Serial.print(i);
-    Serial.println(":");
-    for (int j = 0; j < strokes[i].pointCount; j++) {
-      Serial.print("(");
-      Serial.print(strokes[i].points[j].x);
-      Serial.print(", ");
-      Serial.print(strokes[i].points[j].y);
-      Serial.print(") ");
-    }
-    Serial.println();
+void LatLonManager::addCoord(Coordinate position) {
+  coords[currentIndex] = position;
+  currentIndex = (currentIndex + 1) % 180;
+  if (count < 180) {
+    count++;
   }
 }
+
+int LatLonManager::getCount() {
+  return count;
+}
+
+void LatLonManager::printData() {
+  for (int i = 0; i < count; i++) {
+    Serial.print("Coordinate ");
+    Serial.print(i + 1);
+    Serial.print(": Latitude = ");
+    Serial.print(coords[i].latitude, 6);
+    Serial.print(", Longitude = ");
+    Serial.println(coords[i].longitude, 6);
+  }
+}
+
+Coordinate LatLonManager::getData(int newest_index) {
+  if (newest_index >= count) {
+    Serial.println("Invalid index");
+    return {0, 0};
+  }
+  int index = (currentIndex - 1 - newest_index + 180) % 180;
+  return coords[index];
+}
+
+LatLonManager latlon_manager;
 
 
 // Function to convert latitude and longitude to x, y coordinates on the TFT screen
@@ -114,7 +73,7 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 }
 
 // Function to convert x, y coordinates on the TFT screen to latitude and longitude
-cord_map xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
+Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
     // Translate screen coordinates to map coordinates
     float screenX = x - (SCREEN_WIDTH / 2);
     float screenY = (SCREEN_HEIGHT / 2) - y + mapshiftdown;
@@ -132,7 +91,7 @@ cord_map xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float 
     float newLon = mapCenterLon + (lonDist * 180.0 / PI);
     float newLat = mapCenterLat + (latDist * 180.0 / PI);
 
-    return cord_map{newLat, newLon};
+    return Coordinate{newLat, newLon};
 }
 
 bool out_of_bounds(int x1,int y1,int x2,int y2){
@@ -174,8 +133,8 @@ bool check_within_latlon(double latdif,double londif,double lat1,double lat2,dou
 }
 
 
-bool check_maybe_inside_draw(cord_map mapcenter, float checklat, float checklon, float scale){
-  double dist = fastDistance(mapcenter.lat,mapcenter.lon, checklat, checklon);
+bool check_maybe_inside_draw(Coordinate mapcenter, float checklat, float checklon, float scale){
+  double dist = fastDistance(mapcenter.latitude,mapcenter.longitude, checklat, checklon);
   float radius_scrn = 146.6f*scale;
   return dist < radius_scrn;
 }

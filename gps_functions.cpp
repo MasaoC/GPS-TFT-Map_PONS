@@ -3,7 +3,8 @@
 #include "navdata.h"
 #include "settings.h"
 #include "display_tft.h"
-
+#include "mysd.h"
+#include "latlon.h"
 
 #ifdef XIAO_ESP32S3
   #include <HardwareSerial.h>
@@ -284,7 +285,7 @@ void convertLatLong(double latitude, char latDirection, double longitude, char l
     GPS.longitudeDegrees = convertNMEA_Decimal(longitude);
   }
 }
-
+/*
 void parseGNGGA(char *nmea) {
   Serial.println(nmea);
   char *p = nmea;
@@ -330,7 +331,6 @@ void parseGNRMC(char *nmea) {
 }
 
 
-
 void processNMEASentence(char *nmea) {
   if (strstr(nmea, "GSV")) {
     parseGSV(nmea);
@@ -347,6 +347,10 @@ void processNMEASentence(char *nmea) {
   }
 }
 
+*/
+
+unsigned long last_latlon_manager = 0;
+#define LATLON_MANAGER_INTERVAL 3000
 void gps_loop(bool& redraw,bool constellation_mode) {
   /*
   while (Serial2.available()) {
@@ -377,18 +381,21 @@ void gps_loop(bool& redraw,bool constellation_mode) {
   
   if (GPS.newNMEAreceived()) {
     gps_connection = true;
-    Serial.println("-----");
     Serial.println(GPS.lastNMEA());
-    Serial.println("-----");
     if(constellation_mode && strstr(GPS.lastNMEA(), "GSV")){
       parseGSV(GPS.lastNMEA());
       GPS.parse(GPS.lastNMEA());
       //printReceivedData();
       //redraw = true;
     }else if(GPS.parse(GPS.lastNMEA())){
-      // Print non-GSV sentences for debugging
-      Serial.print("Received non-GSV NMEA: ");
-      Serial.println(GPS.lastNMEA());
+      // GNGGA と GNRMC が毎秒くるので、片方のみ=1秒おきに保存、
+      if(GPS.fix && strstr(GPS.lastNMEA(), "$GNRMC")){
+        saveCSV(GPS.latitudeDegrees, GPS.longitudeDegrees, GPS.year, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
+        if(millis()-last_latlon_manager > LATLON_MANAGER_INTERVAL){
+          latlon_manager.addCoord({GPS.latitudeDegrees,GPS.longitudeDegrees});
+          last_latlon_manager = millis();
+        }
+      }
     }else{
       Serial.print("Failed Parsing: ");
       Serial.println(GPS.lastNMEA());

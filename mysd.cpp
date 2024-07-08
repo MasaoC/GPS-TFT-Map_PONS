@@ -1,25 +1,38 @@
 
 #include <SD.h>
 File myFile;
+File csvFile;
+
+bool sdInitialized = false;
+bool sdError = false;
+#define SD_CS_PIN 1
+#define LOGFILE_NAME "log.txt"
+
+bool headerWritten = false;
+int fileyear = 0;
+int filemonth;
+int fileday;
+int filehour;
+int fileminute;
 
 
+bool good_sd(){
+  return sdInitialized && !sdError;
+}
 
 
-
-void write_sd(){
+void log_sd(char* text){
   // open the file. note that only one file can be open at a time,
   // so you have to close this one before opening another.
-  myFile = SD.open("test.txt", FILE_WRITE);
+  myFile = SD.open(LOGFILE_NAME, FILE_WRITE);
   // if the file opened okay, write to it:
   if (myFile) {
-    Serial.print("Writing to test.txt...");
-    myFile.println("testing 1, 2, 3.");
-    Serial.println("done.");
+    myFile.println(text);
     // close the file:
     myFile.close();
   } else {
     // if the file didn't open, print an error:
-    Serial.println("error opening test.txt");
+    Serial.println("error opening log");
   }
 }
 
@@ -43,14 +56,70 @@ void read_sd(){
   }
 }
 
+void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) {
+  if (!sdInitialized && !sdError) {
+    sdInitialized = SD.begin(SD_CS_PIN);
+    if (!sdInitialized) {
+      Serial.println("SD Card initialization failed!");
+      sdError = true;
+      return;
+    }
+  }
+  if(sdError){
+    Serial.println("SD FAIL");
+    return;
+  }
+  //Run only once.
+  if(fileyear == 0){
+    fileyear = year;
+    filemonth = month;
+    fileday = day;
+    filehour = hour;
+    fileminute = minute;
+  }
+  char csv_filename[20];
+  sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  csvFile = SD.open(csv_filename, FILE_WRITE);
+  if (csvFile) {
+    if(!headerWritten){
+      csvFile.println("latitude,longitude,date,time");
+      headerWritten = true;
+    }
+    csvFile.print(latitude, 6);
+    csvFile.print(",");
+    csvFile.print(longitude, 6);
+    csvFile.print(",");
+
+    // Format date as YYYY-MM-DD
+    char date[11];
+    sprintf(date, "%04d-%02d-%02d", year, month, day);
+    csvFile.print(date);
+    csvFile.print(",");
+
+    // Format time as HH:MM:SS
+    char time[9];
+    sprintf(time, "%02d:%02d:%02d", hour, minute, second);
+    csvFile.println(time);
+
+    csvFile.close();
+    sdError = false; // Reset SD error flag after successful write
+  } else {
+    if (!sdError) {
+      Serial.println("Failed to open CSV file for appending");
+      sdError = true;
+    }
+    sdInitialized = false; // Mark SD card as not initialized for the next attempt
+  }
+}
 
 void setup_sd(){
   Serial.print("Initializing SD card...");
-  if (!SD.begin(1)) {
+  sdInitialized = SD.begin(SD_CS_PIN);
+
+  if (!sdInitialized) {
     Serial.println("SD initialization failed!");
+    return;
   }else{
     Serial.println("SD initialization done.");
   }
-  write_sd();
-  read_sd();
 }
