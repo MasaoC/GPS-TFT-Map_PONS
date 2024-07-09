@@ -2,6 +2,9 @@
 #include "display_tft.h"
 
 
+#define MAX_TRACK_CORDS 240
+
+
 bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);
 cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection, int mapshiftdown);
 
@@ -14,9 +17,11 @@ struct Coordinate {
   float longitude;
 };
 
+
+
 class LatLonManager {
 private:
-  Coordinate coords[180];
+  Coordinate coords[MAX_TRACK_CORDS];
   int currentIndex;
   int count;
 

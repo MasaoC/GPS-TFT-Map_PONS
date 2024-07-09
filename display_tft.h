@@ -1,44 +1,20 @@
-#include <Adafruit_GFX.h>    // Core graphics library
+#include <TFT_eSPI.h> // Hardware-specific library
+#include <SPI.h>
 #include "settings.h"
 #include "navdata.h"
 
 
-#ifdef RP2040_ZERO
-  #include <Adafruit_ILI9341.h>
-  #define SCREEN_WIDTH 240
-  #define SCREEN_HEIGHT 320
-  #define TFT_BL        -1
-  #define TFT_CS        5
-  #define TFT_RST        4
-  #define TFT_DC         6
-#else
-  #ifdef TFT_USE_ST7789
-    #include <Adafruit_ST7789.h> // Hardware-specific library for ST7735
-    #define SCREEN_WIDTH 240
-    #define SCREEN_HEIGHT 320
-    #define TFT_BL        D9
-    #define TFT_CS        -1
-  #endif
-  #ifdef TFT_USE_ST7735
-    #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
-    #define SCREEN_WIDTH 128
-    #define SCREEN_HEIGHT 160
-    #define TFT_BL        D9
-    #define TFT_CS        -1
-  #endif
-  #ifdef TFT_USE_ILI9341
-    #include <Adafruit_ILI9341.h>
-    #define SCREEN_WIDTH 240
-    #define SCREEN_HEIGHT 320
-    #define TFT_BL        D5    //D9 used for MISO
-    #define TFT_CS        -1
-    //#define TFT_MOSI      D10
-    //#define TFT_CLK       D8
-  #endif
-  #define TFT_RST        D0
-  #define TFT_DC         D1
-#endif
+#define SCREEN_WIDTH 240
+#define SCREEN_HEIGHT 320
 
+#define TFT_BL        7
+/*
+#define TFT_RST        4
+#define TFT_CS        5
+#define TFT_DC         6
+#define TFT_MOSI         3
+#define TFT_SCLK         2
+*/
 
 
 
@@ -61,7 +37,7 @@
   };
 
   enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK
+    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_COMPASS
   };  
 
   enum text_id{
@@ -103,15 +79,7 @@
   #endif
 
   
-  #ifdef TFT_USE_ST7789
-    extern  Adafruit_ST7789 tft;
-  #endif
-  #ifdef TFT_USE_ST7735
-    extern  Adafruit_ST7735 tft;
-  #endif
-  #ifdef TFT_USE_ILI9341
-    extern Adafruit_ILI9341 tft;
-  #endif
+  extern TFT_eSPI tft;
 
   extern bool fresh_display;
 
@@ -131,15 +99,16 @@ bool is_trackupmode();
 bool is_northupmode();
 
 
-void draw_nomapdata(bool& redraw);
-void draw_ConstellationDiagram(bool& redraw);
-void draw_setting_mode(bool& redraw, int selectedLine, int cursorLine);
+void redraw_compass(bool redraw, float up,int col,int bgcolor);
+void draw_nomapdata(bool redraw);
+void draw_ConstellationDiagram(bool redraw);
+void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);
-void draw_Japan(bool& redraw, double center_lat,double center_lon,float scale,float up);
-void draw_Shinura(bool& redraw, double center_lat,double center_lon,float scale,float up);
-void draw_Biwako(bool& redraw, double center_lat,double center_lon,float scale,float up);
-void draw_Osaka(bool& redraw, double center_lat,double center_lon,float scale,float up);
+void draw_Japan(bool redraw, double center_lat,double center_lon,float scale,float up);
+void draw_Shinura(bool redraw, double center_lat,double center_lon,float scale,float up);
+void draw_Biwako(bool redraw, double center_lat,double center_lon,float scale,float up);
+void draw_Osaka(bool redraw, double center_lat,double center_lon,float scale,float up);
 bool draw_circle_km(float scale, float km);
 void draw_km_circle(float scale);
 void startup_demo_tft();

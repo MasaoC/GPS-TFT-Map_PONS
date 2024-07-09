@@ -22,7 +22,7 @@
 
 struct mapdata {
   int id;
-  int size;
+  int size; 
   double cords[][2];
 };
 

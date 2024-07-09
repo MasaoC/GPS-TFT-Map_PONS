@@ -29,11 +29,7 @@ float degpersecond = 0;  // The calculated average differential
 
 
 //スイッチ関連
-#ifdef RP2040_ZERO
 const int switchPin = 7;  // Pin where the switch is connected
-#else
-const int switchPin = D2;  // Pin where the switch is connected
-#endif
 unsigned long pressTime = 0;             // Time when the switch is pressed
 unsigned long debounceTime = 50;         // Debounce time in milliseconds
 unsigned long longPressDuration = 1000;  // Duration to detect a long press in milliseconds
@@ -60,8 +56,10 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
 
 int scaleindex = 3;
-const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.4f, 1.0f, 2.5f, 10.0f };
+const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.5f, 1.0f, 2.5f, 10.0f };
 float scale = scalelist[scaleindex];
+
+
 
 
 
@@ -82,30 +80,24 @@ void setup(void) {
 
 
 
-  pinMode(switchPin, INPUT_PULLUP);
-
   gps_setup();
 
 #ifdef USE_OLED
   setup_oled();
 #endif
+  setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
+  pinMode(switchPin, INPUT_PULLUP);//This must be after setup tft for somereason of library TFT_eSPI.
 
-  setup_sd();
 
 
   startup_demo_tft();
 
-  tft.fillScreen(COLOR_WHITE);
 
-
-#ifdef XIAO_RP2040
-  pixels.clear();
-  pixels.show();
-#endif
 
   redraw = true;
   quick_redraw = true;
+  log_sd((const char*)"INIT");
 }
 
 void reset_degpersecond(){
@@ -275,36 +267,22 @@ void switch_handling() {
 bool err_nomap = false;
 
 
+
 void loop() {
   switch_handling();
   gps_loop(redraw, screen_mode == MODE_GPSCONST);
 
   if (screen_mode == MODE_SETTING) {
     draw_setting_mode(redraw, selectedLine, cursorLine);
+    redraw = false;
     return;
   }
   if (screen_mode == MODE_GPSCONST) {
     draw_ConstellationDiagram(redraw);
+    redraw = false;
     return;
   }
 
-  if (bank_warning) {
-    if ((millis() / 100) % 3 == 0) {
-#ifdef XIAO_RP2040
-      pixels.clear();
-      pixels.setPixelColor(0, pixels.Color(255, 0, 0));
-      pixels.show();
-#endif
-      //tft.invertDisplay(false);
-    }
-    if ((millis() / 100) % 3 == 1) {
-#ifdef XIAO_RP2040
-      pixels.clear();
-      pixels.show();
-#endif
-      //tft.invertDisplay(true);
-    }
-  }
 
   update_degpersecond();
 
@@ -325,6 +303,7 @@ void loop() {
       truetrack_now = new_truetrack;
       lat_now = new_lat;
       
+      blacken_display(redraw);
       if(scale > SCALE_JAPAN){
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
           draw_Biwako(redraw, new_lat, new_long, scale, drawupward_direction);
@@ -335,36 +314,33 @@ void loop() {
         }
       }else{
         //near japan.
-        if(check_within_latlon(20,40,new_lat, 35, new_long, 138) || !get_gps_fix()){
+        if(check_within_latlon(20,40,new_lat, 35, new_long, 138)){
           draw_Japan(redraw, new_lat, new_long, scale, drawupward_direction);
         }
       }
 
       if (get_demo_biwako()) {
-        tft.setTextColor(COLOR_BLACK);
-        tft.fillRect(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 + 20,60,20,COLOR_WHITE);
-        tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 + 20);
+        tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+        tft.setCursor(SCREEN_WIDTH / 2 - 20, SCREEN_HEIGHT / 2 + 20);
         tft.setTextSize(3);
         tft.print("DEMO");
       }
     }
 
-    draw_nomapdata(redraw);
-    
+
     draw_triangle();
+    redraw_compass(redraw,drawupward_direction,COLOR_BLACK, COLOR_WHITE);
+    
+    if (bank_warning) {
+      draw_bankwarning();
+    }
+    
+    draw_nomapdata(redraw);
     draw_degpersecond(degpersecond);
     draw_gpsinfo();
     draw_sdinfo();
 
-
-    if (bank_warning) {
-      draw_bankwarning();
-    }
-
-    //処理されず最後まで来た場合。
-    if(redraw){
-      blacken_display(redraw);
-    }
+    redraw = false;
 
 #ifdef USE_OLED
     show_oled();

@@ -350,8 +350,7 @@ void processNMEASentence(char *nmea) {
 */
 
 unsigned long last_latlon_manager = 0;
-#define LATLON_MANAGER_INTERVAL 3000
-void gps_loop(bool& redraw,bool constellation_mode) {
+void gps_loop(bool redraw,bool constellation_mode) {
   /*
   while (Serial2.available()) {
     char c = Serial2.read();
@@ -391,7 +390,10 @@ void gps_loop(bool& redraw,bool constellation_mode) {
       // GNGGA と GNRMC が毎秒くるので、片方のみ=1秒おきに保存、
       if(GPS.fix && strstr(GPS.lastNMEA(), "$GNRMC")){
         saveCSV(GPS.latitudeDegrees, GPS.longitudeDegrees, GPS.year, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
-        if(millis()-last_latlon_manager > LATLON_MANAGER_INTERVAL){
+        int tracklog_interval = constrain(12000-get_gps_mps()*1000,1000,10000);
+        //Interval from 1sec to 12sec. When mps is 0, 12sec interval.  When mps is 7, log 35m apart.
+        //When mps is 5, save every 7sec and log 35m apart.  When mps is 3, save every 9 sec and 27m apart. so on...
+        if(millis()-last_latlon_manager > tracklog_interval){
           latlon_manager.addCoord({GPS.latitudeDegrees,GPS.longitudeDegrees});
           last_latlon_manager = millis();
         }

@@ -14,6 +14,7 @@ int filemonth;
 int fileday;
 int filehour;
 int fileminute;
+int filesecond;
 
 
 bool good_sd(){
@@ -71,11 +72,12 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
   }
   //Run only once.
   if(fileyear == 0){
-    fileyear = year;
+    fileyear = year + 2000;
     filemonth = month;
     fileday = day;
     filehour = hour;
     fileminute = minute;
+    filesecond = second;
   }
   char csv_filename[20];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
@@ -92,7 +94,7 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
 
     // Format date as YYYY-MM-DD
     char date[11];
-    sprintf(date, "%04d-%02d-%02d", year, month, day);
+    sprintf(date, "%04d-%02d-%02d", year+2000, month, day);
     csvFile.print(date);
     csvFile.print(",");
 
@@ -112,8 +114,29 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
   }
 }
 
+void dateTime(uint16_t* date, uint16_t* time) {
+ //sprintf(timestamp, "%02d:%02d:%02d %2d/%2d/%2d \n", filehour,fileminute,filesecond,filemonth,fileday,fileyear-2000);
+ //Serial.println(timestamp);
+ // return date using FAT_DATE macro to format fields
+ Serial.println("year is");
+ Serial.println(fileyear);
+ *date = FAT_DATE(fileyear-1980, filemonth, fileday);
+ // return time using FAT_TIME macro to format fields
+ *time = FAT_TIME(filehour, fileminute, filesecond);
+}
+
 void setup_sd(){
   Serial.print("Initializing SD card...");
+
+  SPI.setRX(0);
+  SPI.setCS(1);
+  SPI.setSCK(2);
+  SPI.setTX(3);
+  SPI.begin();
+  
+  // set date time callback function
+  SdFile::dateTimeCallback(dateTime);
+  
   sdInitialized = SD.begin(SD_CS_PIN);
 
   if (!sdInitialized) {
