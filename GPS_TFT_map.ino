@@ -15,7 +15,7 @@ unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
 float lat_now = 0;
 unsigned long last_time_gpsdata = 0;  //GPSを最後に受信した時間 millis()
-bool redraw = false;                  //次の描画では、黒塗りして新たに画面を描画する
+bool redraw_screen = false;                  //次の描画では、黒塗りして新たに画面を描画する
 bool quick_redraw = false;            //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
 bool bank_warning = false;
 
@@ -44,13 +44,6 @@ const int MODE_MAP = 2;
 const int MODE_GPSCONST = 3;
 int screen_mode = MODE_MAP;
 
-#ifdef XIAO_RP2040
-#include <Adafruit_NeoPixel.h>
-int Power = 11;
-int PIN = 12;
-#define NUMPIXELS 1
-Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
-#endif
 
 #define SCALE_JAPAN 0.008f
 
@@ -68,18 +61,6 @@ void setup(void) {
   Serial.print(F("SETUP"));
 
 
-
-#ifdef XIAO_RP2040
-  pixels.begin();
-  pinMode(Power, OUTPUT);
-  digitalWrite(Power, HIGH);
-  pixels.clear();
-  pixels.setPixelColor(0, pixels.Color(15, 25, 205));
-  pixels.show();
-#endif
-
-
-
   gps_setup();
 
 #ifdef USE_OLED
@@ -95,7 +76,7 @@ void setup(void) {
 
 
 
-  redraw = true;
+  redraw_screen = true;
   quick_redraw = true;
   log_sd((const char*)"INIT");
 }
@@ -151,11 +132,7 @@ void check_bankwarning() {
   //Do not trigger bank warning if speed is below ...
   if (get_gps_mps() < 2.0) {
     if (bank_warning) {
-      redraw = true;
-#ifdef XIAO_RP2040
-      pixels.clear();
-      pixels.show();
-#endif
+      redraw_screen = true;
       tft.invertDisplay(false);
       bank_warning = false;
     }
@@ -167,11 +144,7 @@ void check_bankwarning() {
     bank_warning = true;
   } else {
     if (bank_warning) {
-      redraw = true;
-#ifdef XIAO_RP2040
-      pixels.clear();
-      pixels.show();
-#endif
+      redraw_screen = true;
       //tft.invertDisplay(false);
       bank_warning = false;
     }
@@ -205,7 +178,7 @@ void switch_handling() {
       if (pressDuration < longPressDuration && pressDuration > debounceTime) {
         Serial.println("short press");
         quick_redraw = true;
-        redraw = true;
+        redraw_screen = true;
         if (screen_mode == MODE_SETTING) {  //Setting mode
           if (selectedLine == -1) {         //No active selected line.
             cursorLine = (cursorLine + 1) % SETTING_LINES;
@@ -230,7 +203,7 @@ void switch_handling() {
     if (millis() - pressTime >= longPressDuration) {
       Serial.println("long press");
       longPressHandled = true;
-      redraw = true;
+      redraw_screen = true;
       quick_redraw = true;
       if (screen_mode != MODE_SETTING) {
         if (screen_mode == MODE_GPSCONST)
@@ -270,16 +243,16 @@ bool err_nomap = false;
 
 void loop() {
   switch_handling();
-  gps_loop(redraw, screen_mode == MODE_GPSCONST);
+  gps_loop(screen_mode == MODE_GPSCONST);
 
   if (screen_mode == MODE_SETTING) {
-    draw_setting_mode(redraw, selectedLine, cursorLine);
-    redraw = false;
+    draw_setting_mode(redraw_screen, selectedLine, cursorLine);
+    redraw_screen = false;
     return;
   }
   if (screen_mode == MODE_GPSCONST) {
-    draw_ConstellationDiagram(redraw);
-    redraw = false;
+    draw_ConstellationDiagram(redraw_screen);
+    redraw_screen = false;
     return;
   }
 
@@ -293,29 +266,39 @@ void loop() {
     last_time_gpsdata = millis();
     quick_redraw = false;
     
-    check_bankwarning();
 
+    //画面上の方向設定
     float drawupward_direction = truetrack_now;
     if (is_northupmode()) {
       drawupward_direction = 0;
     }
-    if (new_truetrack != truetrack_now || new_lat != lat_now || redraw) {
+
+    //redraw_map = 古い線を白色で上書きして、新しく書き直す。redraw_screen = 画面全てを白で塗りつぶしたあとに塗り直す。
+    bool redraw_map = redraw_screen;
+    if(new_truetrack != truetrack_now || new_lat != lat_now){
+      check_bankwarning();
+      redraw_map = true;
+    }
+
+    if (redraw_map || redraw_screen) {
       truetrack_now = new_truetrack;
       lat_now = new_lat;
-      
-      blacken_display(redraw);
+      //古い線の削除。必要に応じて、白塗りつぶしを行った場合は、redraw_screen = true で上書きして帰ってくる。
+      clean_display(redraw_screen);
+
+
       if(scale > SCALE_JAPAN){
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-          draw_Biwako(redraw, new_lat, new_long, scale, drawupward_direction);
+          draw_Biwako(new_lat, new_long, scale, drawupward_direction);
         } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
-          draw_Osaka(redraw, new_lat, new_long, scale, drawupward_direction);
+          draw_Osaka(new_lat, new_long, scale, drawupward_direction);
         } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
-          draw_Shinura(redraw, new_lat, new_long, scale, drawupward_direction);
+          draw_Shinura(new_lat, new_long, scale, drawupward_direction);
         }
       }else{
         //near japan.
         if(check_within_latlon(20,40,new_lat, 35, new_long, 138)){
-          draw_Japan(redraw, new_lat, new_long, scale, drawupward_direction);
+          draw_Japan(new_lat, new_long, scale, drawupward_direction);
         }
       }
 
@@ -325,22 +308,24 @@ void loop() {
         tft.setTextSize(3);
         tft.print("DEMO");
       }
+
+      draw_km_circle(scale);
+      draw_triangle();
+      redraw_compass(drawupward_direction,COLOR_BLACK, COLOR_WHITE);
     }
 
+    //地図が更新されていない時でも、更新するもの。
 
-    draw_triangle();
-    redraw_compass(redraw,drawupward_direction,COLOR_BLACK, COLOR_WHITE);
-    
     if (bank_warning) {
       draw_bankwarning();
     }
-    
-    draw_nomapdata(redraw);
+    draw_nomapdata();
     draw_degpersecond(degpersecond);
     draw_gpsinfo();
     draw_sdinfo();
 
-    redraw = false;
+    //更新終了
+    redraw_screen = false;
 
 #ifdef USE_OLED
     show_oled();

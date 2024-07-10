@@ -549,25 +549,23 @@ float last_up = 0;
 float last_truetrack = 0;
 bool nomap_drawn = true;
 
-void redraw_compass(bool redraw,float up,int forecolor,int bgcolor){
-  if(last_truetrack == up && !redraw){
-    return;//same as before.
-  }
+void redraw_compass(float up,int forecolor,int bgcolor){
   draw_compass(last_truetrack, bgcolor);
   draw_compass(up, forecolor);
   last_truetrack = up;
 }
 
-//20秒経過、またはredrraw指定で画面を白に塗り直す。
-void blacken_display(bool& redraw) {
+//20秒経過、または redraw_screen 指定で画面を白に塗り直す。
+void clean_display(bool& redraw_screen) {
   fresh = false;
-  if (millis() - lastfresh_millis > 20000 || redraw) {
+  if (millis() - lastfresh_millis > 20000 || redraw_screen) {
     lastfresh_millis = millis();
     fresh = true;
   }
+  //塗りつぶし(時間がかかる)
   if (fresh) {
     tft.fillScreen(COLOR_WHITE);
-    redraw = true;
+    redraw_screen = true;
   } else {
     mapStrokeManager.drawAllStroke();
   }
@@ -617,7 +615,9 @@ void draw_triangle(){
     lb_y_old = lb_y_new;
   }
   if(upward_mode == MODE_TRACKUP){
-    tft.drawFastVLine(SCREEN_WIDTH / 2, 0, SCREEN_HEIGHT / 2 + map_shift_down, COLOR_BLACK);
+    int shortening = 30;
+    tft.drawFastVLine(SCREEN_WIDTH / 2, shortening, SCREEN_HEIGHT / 2 + map_shift_down-shortening, COLOR_BLACK);
+    tft.drawFastVLine(SCREEN_WIDTH / 2+1, shortening, SCREEN_HEIGHT / 2 + map_shift_down-shortening, COLOR_BLACK);
     tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, SCREEN_WIDTH / 2 - TRIANGLE_HWIDTH, SCREEN_HEIGHT / 2 + map_shift_down + TRIANGLE_SIZE, SCREEN_WIDTH / 2 + TRIANGLE_HWIDTH, SCREEN_HEIGHT / 2 + map_shift_down + TRIANGLE_SIZE, COLOR_BLACK);
   }
 }
@@ -645,38 +645,35 @@ void draw_track(double center_lat,double center_lon,float scale, float up){
   }
 }
 
-void draw_Japan(bool redraw, double center_lat, double center_lon, float scale, float up) {
+void draw_Japan(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan1, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan3, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan4, COLOR_GREEN);
   draw_track(center_lat,center_lon,scale,up);
-  draw_km_circle(scale);
   nomap_drawn = false;
 }
 
-void draw_Shinura(bool redraw, double center_lat, double center_lon, float scale, float up) {
+void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_shinura, COLOR_GREEN);
 
   draw_track(center_lat,center_lon,scale,up);
   
-  draw_km_circle(scale);
   nomap_drawn = false;
 }
 
-void draw_Biwako(bool redraw, double center_lat, double center_lon, float scale, float up) {
+void draw_Biwako(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
   draw_track(center_lat,center_lon,scale,up);
-  draw_km_circle(scale);
   draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
   fill_sea_land(center_lat, center_lon, scale, up);
   nomap_drawn = false;
 }
 
-void draw_Osaka(bool redraw, double center_lat, double center_lon, float scale, float up) {
+void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaioutside, COLOR_CYAN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway, COLOR_MAGENTA);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway2, COLOR_MAGENTA);
@@ -691,7 +688,6 @@ void draw_Osaka(bool redraw, double center_lat, double center_lon, float scale, 
 
   draw_track(center_lat,center_lon,scale,up);
 
-  draw_km_circle(scale);
 
   nomap_drawn = false;
 }
@@ -703,7 +699,7 @@ void startup_demo_tft() {
   float center_lat = 35.3034225841915;
   float center_lon = 136.1461056306493;
   bool redraw = false;
-  draw_Biwako(redraw, center_lat, center_lon, scale, 0);
+  draw_Biwako(center_lat, center_lon, scale, 0);
   draw_degpersecond(30.0 / (300.0 / 1000));
   draw_gpsinfo();
   tft.fillRect(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 + 20,60,20,COLOR_WHITE);
@@ -713,6 +709,35 @@ void startup_demo_tft() {
   delay(1000);
 }
 
+
+
+
+void drawbar(float degpersecond, int col){
+  if(col == -1){
+    if (degpersecond > 0) {
+      col = COLOR_GREEN;
+    }else{
+      col = COLOR_LIGHT_BLUE;
+    }
+  }
+  int barposy = 28;
+  float abs_degpersecond = abs(degpersecond);
+  int absint_degpersecond = abs_degpersecond;
+  int barwidth = (abs_degpersecond * SCREEN_WIDTH / 2) / 3.0;//3deg = max width
+  int thickness = constrain(1+absint_degpersecond*absint_degpersecond,1,17);
+  if (degpersecond > 0) {
+    for(int i = 0;i < thickness; i++){
+      tft.drawFastHLine(SCREEN_WIDTH / 2, barposy+i, barwidth, col);
+    }
+  } else {
+    for(int i = 0;i < thickness; i++){
+      tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth, barposy+i, barwidth, col);
+    }
+  }
+}
+
+float last_degpersecond;
+
 void draw_degpersecond(float degpersecond) {
   int col = COLOR_GRAY;
   if (degpersecond > 0) {
@@ -721,27 +746,9 @@ void draw_degpersecond(float degpersecond) {
   if (degpersecond < 0) {
     col = COLOR_BLUE;
   }
-
-
-
-
-  int barposy = 22;
-  #ifdef TFT_USE_ILI9341
-    barposy = 25;
-  #endif
-  tft.drawFastHLine(0, barposy - 1, SCREEN_WIDTH, COLOR_WHITE);
-  tft.drawFastHLine(0, barposy, SCREEN_WIDTH, COLOR_WHITE);
-  tft.drawFastHLine(0, barposy + 1, SCREEN_WIDTH, COLOR_WHITE);
-  int barwidth = (abs(degpersecond) * SCREEN_WIDTH / 2) / 3.0;
-  if (degpersecond > 0) {
-    tft.drawFastHLine(SCREEN_WIDTH / 2, barposy - 1, barwidth, COLOR_GREEN);
-    tft.drawFastHLine(SCREEN_WIDTH / 2, barposy, barwidth, COLOR_GREEN);
-    tft.drawFastHLine(SCREEN_WIDTH / 2, barposy + 1, barwidth, COLOR_GREEN);
-  } else {
-    tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth, barposy - 1, barwidth, COLOR_LIGHT_BLUE);
-    tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth, barposy, barwidth, COLOR_LIGHT_BLUE);
-    tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth, barposy + 1, barwidth, COLOR_LIGHT_BLUE);
-  }
+  drawbar(last_degpersecond,COLOR_WHITE);
+  drawbar(degpersecond,-1);
+  last_degpersecond = degpersecond;
 
   textmanager.drawTextf(ND_DEGPERSEC_VAL,1,SCREEN_WIDTH - 40, 1,col,"%.1f",degpersecond);
   textmanager.drawText(ND_DEGPERSEC_TEX,1,SCREEN_WIDTH -50, 15,col,"deg/s");
@@ -749,6 +756,7 @@ void draw_degpersecond(float degpersecond) {
 
 bool bankwarning_flipflop = true;
 void draw_bankwarning() {
+  int starty = 30;
   bankwarning_flipflop = !bankwarning_flipflop;
   int bgcolor = COLOR_BLACK;
   int tcolor = COLOR_WHITE;
@@ -756,15 +764,15 @@ void draw_bankwarning() {
     bgcolor = COLOR_WHITE;
     tcolor = COLOR_BLACK;
   }
-  tft.fillRect(0, 30, SCREEN_WIDTH, 36, bgcolor);
-  int x = SCREEN_WIDTH / 2 - 90;
-  tft.setCursor(x, 32);
+  tft.fillRect(0, starty, SCREEN_WIDTH, 36, bgcolor);
+  int x = SCREEN_WIDTH / 2 - 20;
+  tft.setCursor(x, starty+2);
   tft.setTextColor(COLOR_RED,bgcolor);
   tft.setTextSize(4);
-  tft.print("!-BANK-!");
-  tft.setCursor(x - 1, 34);
+  tft.print("!  BANK  !");
+  tft.setCursor(x - 1, starty+4);
   tft.setTextColor(tcolor,bgcolor);
-  tft.print("!-BANK-!");
+  tft.print("!  BANK  !");
   tft.setTextSize(1);
 }
 
@@ -781,35 +789,16 @@ void draw_sdinfo(){
 
 int last_written_mh = 0;
 void draw_gpsinfo() {
+  
   int col = COLOR_BLACK;
-  #ifdef TFT_USE_ILI9341
-    //tft.fillRect(SCREEN_WIDTH / 2 - 40, 1, 76, 23, COLOR_WHITE);
-    const int mtlx = SCREEN_WIDTH / 2 - 40;
-    const int mtvx = mtlx+21;
-    //tft.setCursor(mtlx, 1);
-    //tft.setTextColor(COLOR_BLACK);
-    //tft.setTextSize(3);
-    //tft.print("MT"); 
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.drawString("MT",mtlx, 1);
-    //char temp[4];
-    //sprintf(temp,"%03d",((int)get_gps_magtrack()));
-    //tft.drawString(temp,mtvx, 1);
+  const int mtlx = SCREEN_WIDTH / 2 - 40;
+  const int mtvx = mtlx+21;
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  tft.drawString("MT",mtlx, 1);
 
-    tft.loadFont(NM_FONT_LARGE);    // Must load the font first
-    textmanager.drawTextf(ND_MT,1,mtvx, 1,col,"%03d", (int)get_gps_magtrack());
-    tft.loadFont(AA_FONT_SMALL);    // Must load the font first
-  #else
-    tft.fillRect(SCREEN_WIDTH / 2 - 25, 1, 46, 14, COLOR_WHITE);
-    tft.setCursor(SCREEN_WIDTH / 2 - 25, 1);
-    tft.setTextColor(COLOR_BLACK);
-    tft.setTextSize(1);
-    tft.drawString("MT"); 
-    tft.setTextSize(3);
-    tft.drawString("MT"); 
-    tft.setTextSize(3);
-    tft.printf("%03d", (int)get_gps_magtrack());
-  #endif
+  tft.loadFont(NM_FONT_LARGE);    // Must load the font first
+  textmanager.drawTextf(ND_MT,1,mtvx, 1,col,"%03d", (int)get_gps_magtrack());
+  tft.loadFont(AA_FONT_SMALL);    // Must load the font first
 
   textmanager.drawTextf(ND_MPS,1,1,1,COLOR_BLACK,"%.1fm/s",get_gps_mps());
 
@@ -820,7 +809,7 @@ void draw_gpsinfo() {
   textmanager.drawTextf(ND_SATS,1,1,15,col,"%dsats",get_gps_numsat());
   
   tft.setCursor(0, 27);
-  tft.fillRect(0, 27, 32, 8, COLOR_WHITE);
+  
   double input_voltage = analogRead(BATTERY_PIN)/1024.0*3.3*2;
   //Serial.println(input_voltage);
   if(input_voltage < 3.75){
@@ -934,10 +923,13 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
   sealandStrokeManager.drawAllStroke();
   sealandStrokeManager.removeAllStrokes();
-  #ifdef XIAO_SAMD21
-    //Due to memory shortage.
-    return;
-  #endif
+
+  int lenbar = 5;
+  if(scale > 0.1) lenbar = 7;
+  if(scale > 0.4) lenbar = 15;
+  if(scale > 2) lenbar = 20;
+  if(scale > 5) lenbar = 24;
+      
   //fill
   for (int lat_i = 0; lat_i < ROW_FILLDATA; lat_i++) {
     float latitude = 35.0 + lat_i * 0.02;
@@ -949,46 +941,17 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
       if (pos.isOutsideTft()) {
         continue;
       } else {
-        if (is_sea) {
-          if (scale > 0.5) {
-            int lenbar = 5;
-            if(scale > 2) lenbar = 6;
-            if(scale > 5) lenbar = 7;
-            if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-            sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
-            sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
-            if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-            sealandStrokeManager.addPointToStroke(pos.x - lenbar, pos.y);
-            sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y);
+        int col = is_sea? COLOR_LIGHT_BLUE : COLOR_ORANGE;
+        if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
+        sealandStrokeManager.addPointToStroke(pos.x - lenbar, pos.y);
+        sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y);
+        tft.drawFastHLine(pos.x - lenbar, pos.y, 1+lenbar*2, col);
 
-            tft.drawFastVLine(pos.x, pos.y - lenbar, 1+lenbar*2, COLOR_LIGHT_BLUE);
-            tft.drawFastHLine(pos.x - lenbar, pos.y, 1+lenbar*2, COLOR_LIGHT_BLUE);
-          } else {
-            if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-            sealandStrokeManager.addPointToStroke(pos.x - 1, pos.y);
-            sealandStrokeManager.addPointToStroke(pos.x + 1, pos.y);
-            tft.drawFastHLine(pos.x - 1, pos.y, 3, COLOR_LIGHT_BLUE);
-          }
-        } else {
-          if (scale > 0.5) {
-            int lenbar = 5;
-            if(scale > 2) lenbar = 6;
-            if(scale > 5) lenbar = 7;
-            if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-            sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
-            sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
-            if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-            sealandStrokeManager.addPointToStroke(pos.x - lenbar, pos.y);
-            sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y);
-
-            tft.drawFastVLine(pos.x, pos.y - lenbar, 1+lenbar*2, COLOR_ORANGE);
-            tft.drawFastHLine(pos.x - lenbar, pos.y, 1+lenbar*2, COLOR_ORANGE);
-          } else {
-            if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-            sealandStrokeManager.addPointToStroke(pos.x - 1, pos.y);
-            sealandStrokeManager.addPointToStroke(pos.x + 1, pos.y);
-            tft.drawFastHLine(pos.x - 1, pos.y, 3, COLOR_ORANGE);
-          }
+        if (scale > 0.5) {
+          if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
+          sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
+          sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
+          tft.drawFastVLine(pos.x, pos.y - lenbar, 1+lenbar*2, col);
         }
       }
     }
@@ -999,11 +962,12 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
     //Big zoom
     int latitude_index = int((mapcenter_lat-35.0)/0.02);
     int longitude_index = int((mapcenter_lon-135.8)/0.02);
+
     for(int x = latitude_index-3; x < latitude_index+3;x++){
       for(int y = longitude_index-3; y < longitude_index+3;y++){
         if(latitude_index >= 0 && latitude_index < ROW_FILLDATA-1 && longitude_index >= 0 && longitude_index < COL_FILLDATA-1){
-          bool origin = filldata[x][y];
-          if(origin != filldata[x+1][y] || origin != filldata[x][y+1] || origin != filldata[x+1][y+1]){
+          bool origin_sealand = filldata[x][y];
+          if(origin_sealand != filldata[x+1][y] || origin_sealand != filldata[x][y+1] || origin_sealand != filldata[x+1][y+1]){
             //陸海の曖昧なエリアは + マークを追加しない。
             continue;
           }
@@ -1013,6 +977,7 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
             dx_size = 8;
             dy_size = 8;
           }
+          int col = origin_sealand?COLOR_LIGHT_BLUE:COLOR_ORANGE;
           for(int dx = 0; dx < dx_size; dx++){
             for(int dy= 0; dy < dy_size; dy++){
               if(dx == 0 && dy == 0){
@@ -1021,7 +986,6 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
               double lat_dx = 35.0+x*0.02+0.02*dx/dx_size;
               double lat_dy = 135.8+y*0.02+0.02*dy/dy_size;
               cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
-              int lenbar = 6;
               if (!dpos.isOutsideTft()) {
                 if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
                 sealandStrokeManager.addPointToStroke(dpos.x, dpos.y - lenbar);
@@ -1029,13 +993,9 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
                 if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
                 sealandStrokeManager.addPointToStroke(dpos.x - lenbar, dpos.y);
                 sealandStrokeManager.addPointToStroke(dpos.x + lenbar, dpos.y);
-                if(origin){
-                  tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, COLOR_LIGHT_BLUE);
-                  tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, COLOR_LIGHT_BLUE);
-                }else{
-                  tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, COLOR_ORANGE);
-                  tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, COLOR_ORANGE);
-                }
+
+                tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, col);
+                tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, col);
               }
             }
           }
@@ -1069,8 +1029,10 @@ int calculateY(float azimuth, float elevation) {
 
 
 unsigned long lastdrawtime_nomapdata = 0;
-void draw_nomapdata(bool redraw){
+void draw_nomapdata(){
   if(!nomap_drawn && get_gps_fix()){
+    //Remove old draw.
+    textmanager.drawText(ND_GPSCOND,1,0,0,COLOR_WHITE,"");
     return;
   }
   //Map is not written or gps_fix not obtained.

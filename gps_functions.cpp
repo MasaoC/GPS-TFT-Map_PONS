@@ -6,18 +6,8 @@
 #include "mysd.h"
 #include "latlon.h"
 
-#ifdef XIAO_ESP32S3
-  #include <HardwareSerial.h>
-  HardwareSerial MySerial0(0);
-  Adafruit_GPS GPS(&MySerial0);
-#endif
-#ifdef XIAO_SAMD21
-  //SAMD21,RP2040 zero
-  Adafruit_GPS GPS(&Serial1);
-#endif
-#ifdef RP2040_ZERO
-  Adafruit_GPS GPS(&Serial2);
-#endif
+Adafruit_GPS GPS(&Serial2);
+
 
 bool gps_connection = false;
 bool demo_biwako = false;
@@ -54,18 +44,10 @@ void gps_constellation_mode(){
 
 
 void gps_setup() {
-  #ifdef XIAO_ESP32S3
-    // Configure MySerial0 on pins TX=D6 and RX=D7 (-1, -1 means use the default)
-    MySerial0.begin(9600, SERIAL_8N1, -1, -1);
-  #endif
-  #ifdef RP2040_ZERO
-    Serial2.setTX(8);
-    Serial2.setRX(9);
-    Serial2.begin(9600);
-  #endif
-  #ifdef XIAO_SAMD21
-    Serial1.begin(9600);
-  #endif
+  Serial2.setTX(8);
+  Serial2.setRX(9);
+  Serial2.begin(9600);
+
   GPS.begin(9600);
   gps_getposition_mode();
   GPS.sendCommand(PGCMD_ANTENNA);
@@ -350,30 +332,7 @@ void processNMEASentence(char *nmea) {
 */
 
 unsigned long last_latlon_manager = 0;
-void gps_loop(bool redraw,bool constellation_mode) {
-  /*
-  while (Serial2.available()) {
-    char c = Serial2.read();
-    Serial.print(c);
-    
-    // Collect the NMEA sentence into the buffer
-    if (c == '\n' || c == '\r') {
-      if (bufferIndex > 0) {
-        nmeaBuffer[bufferIndex] = '\0';
-        processNMEASentence(nmeaBuffer);
-        bufferIndex = 0; // Reset buffer index for the next sentence
-      }
-    } else {
-      if (bufferIndex < sizeof(nmeaBuffer) - 1) {
-        nmeaBuffer[bufferIndex++] = c;
-      } else {
-        // Buffer overflow, reset buffer and print error
-        bufferIndex = 0;
-        Serial.println("Buffer overflow. Sentence too long.");
-      }
-    }
-  }
-  */
+void gps_loop(bool constellation_mode) {
   
   // Read data from the GPS module
   char c = GPS.read();
@@ -384,8 +343,6 @@ void gps_loop(bool redraw,bool constellation_mode) {
     if(constellation_mode && strstr(GPS.lastNMEA(), "GSV")){
       parseGSV(GPS.lastNMEA());
       GPS.parse(GPS.lastNMEA());
-      //printReceivedData();
-      //redraw = true;
     }else if(GPS.parse(GPS.lastNMEA())){
       // GNGGA と GNRMC が毎秒くるので、片方のみ=1秒おきに保存、
       if(GPS.fix && strstr(GPS.lastNMEA(), "$GNRMC")){

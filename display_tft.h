@@ -91,7 +91,7 @@
 void draw_sdinfo();
 void draw_gpsinfo();
 void setup_tft();
-void blacken_display(bool& redraw);
+void clean_display(bool& redraw);
 
 void tft_increment_brightness();
 void toggle_mode();
@@ -99,16 +99,16 @@ bool is_trackupmode();
 bool is_northupmode();
 
 
-void redraw_compass(bool redraw, float up,int col,int bgcolor);
-void draw_nomapdata(bool redraw);
+void redraw_compass(float up,int col,int bgcolor);
+void draw_nomapdata();
 void draw_ConstellationDiagram(bool redraw);
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);
-void draw_Japan(bool redraw, double center_lat,double center_lon,float scale,float up);
-void draw_Shinura(bool redraw, double center_lat,double center_lon,float scale,float up);
-void draw_Biwako(bool redraw, double center_lat,double center_lon,float scale,float up);
-void draw_Osaka(bool redraw, double center_lat,double center_lon,float scale,float up);
+void draw_Japan(double center_lat,double center_lon,float scale,float up);
+void draw_Shinura(double center_lat,double center_lon,float scale,float up);
+void draw_Biwako(double center_lat,double center_lon,float scale,float up);
+void draw_Osaka(double center_lat,double center_lon,float scale,float up);
 bool draw_circle_km(float scale, float km);
 void draw_km_circle(float scale);
 void startup_demo_tft();
