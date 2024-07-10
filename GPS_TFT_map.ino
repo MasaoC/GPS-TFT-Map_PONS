@@ -6,10 +6,6 @@
 #include "mysd.h"
 #include "latlon.h"
 
-#ifdef USE_OLED
-#include "display_oled.h"
-#endif
-
 
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
@@ -60,12 +56,7 @@ void setup(void) {
   Serial.begin(38400);
   Serial.print(F("SETUP"));
 
-
   gps_setup();
-
-#ifdef USE_OLED
-  setup_oled();
-#endif
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
   pinMode(switchPin, INPUT_PULLUP);//This must be after setup tft for somereason of library TFT_eSPI.
@@ -326,9 +317,5 @@ void loop() {
 
     //更新終了
     redraw_screen = false;
-
-#ifdef USE_OLED
-    show_oled();
-#endif
   }
 }

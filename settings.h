@@ -18,5 +18,3 @@
 //TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい)
 #define SCREEN_INTERVAL 500
 
-
-//#define USE_OLED
