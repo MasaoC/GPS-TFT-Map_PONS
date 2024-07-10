@@ -69,7 +69,8 @@ void setup(void) {
 
   redraw_screen = true;
   quick_redraw = true;
-  log_sd((const char*)"INIT");
+  const char* inittext = "INIT";
+  log_sd(inittext);
 }
 
 void reset_degpersecond(){

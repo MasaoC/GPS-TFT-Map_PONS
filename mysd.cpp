@@ -22,13 +22,15 @@ bool good_sd(){
 }
 
 
-void log_sd(char* text){
+void log_sd(const char* text){
   // open the file. note that only one file can be open at a time,
   // so you have to close this one before opening another.
   myFile = SD.open(LOGFILE_NAME, FILE_WRITE);
   // if the file opened okay, write to it:
   if (myFile) {
-    myFile.println(text);
+    char logtext[100];   // array to hold the result.
+    sprintf(logtext,"%d:%s",millis(),text);
+    myFile.println(logtext);
     // close the file:
     myFile.close();
   } else {
