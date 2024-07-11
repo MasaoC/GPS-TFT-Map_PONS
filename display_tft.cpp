@@ -81,7 +81,6 @@ void setup_tft() {
   analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
 
 
-
   tft.begin();
   tft.setRotation(0);
   tft.loadFont(AA_FONT_SMALL);    // Must load the font first
@@ -949,9 +948,11 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
 
         if (scale > 0.5) {
           if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-          sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
-          sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
-          tft.drawFastVLine(pos.x, pos.y - lenbar, 1+lenbar*2, col);
+//          sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
+//          sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
+          sealandStrokeManager.addPointToStroke(pos.x - lenbar, pos.y+20 );
+          sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y+20 );
+          tft.drawFastHLine(pos.x - lenbar, pos.y+20, 1+lenbar*2, col);
         }
       }
     }
@@ -988,14 +989,17 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
               cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
               if (!dpos.isOutsideTft()) {
                 if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-                sealandStrokeManager.addPointToStroke(dpos.x, dpos.y - lenbar);
-                sealandStrokeManager.addPointToStroke(dpos.x, dpos.y + lenbar);
-                if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
+                //sealandStrokeManager.addPointToStroke(dpos.x, dpos.y - lenbar);
+                //sealandStrokeManager.addPointToStroke(dpos.x, dpos.y + lenbar);
                 sealandStrokeManager.addPointToStroke(dpos.x - lenbar, dpos.y);
                 sealandStrokeManager.addPointToStroke(dpos.x + lenbar, dpos.y);
+                if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
+                sealandStrokeManager.addPointToStroke(dpos.x - lenbar, dpos.y+20);
+                sealandStrokeManager.addPointToStroke(dpos.x + lenbar, dpos.y+20);
 
-                tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, col);
+                //tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, col);
                 tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, col);
+                tft.drawFastHLine(dpos.x - lenbar, dpos.y+20, 1+lenbar*2, col);
               }
             }
           }

@@ -10,10 +10,10 @@
 
 
 // TFTを選択
-  //7789 is being under test.  Not debuged yet
-  //#define TFT_USE_ST7789    //Not tested
-  //#define TFT_USE_ST7735      //Tested well
-  #define TFT_USE_ILI9341   //Tested some
+  #define TFT_USE_ST7789    //Tested well. Change User Setting at TFT_eSPI
+  //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
+
+  //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
 
 //TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい)
 #define SCREEN_INTERVAL 500

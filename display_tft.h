@@ -4,10 +4,14 @@
 #include "navdata.h"
 
 
+
+
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 320
 
 #define TFT_BL        7
+
+//Pin defined in SPI-eTFT
 /*
 #define TFT_RST        4
 #define TFT_CS        5
@@ -46,45 +50,38 @@
     ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND
   };
 
-  #if defined(TFT_USE_ST7789) || defined(TFT_USE_ST7735)
-    #define COLOR_ORANGE ST77XX_ORANGE
-    #define COLOR_WHITE ST77XX_WHITE
-    #define COLOR_BLUE ST77XX_NAVY
-    #define COLOR_GREEN ST77XX_DARKGREEN
-    #define COLOR_RED ST77XX_RED
-    #define COLOR_MAGENTA ST77XX_YELLOW
-    #define COLOR_MAGENTA ST77XX_MAGENTA
-    #define COLOR_BLACK ST77XX_BLACK
-    #define COLOR_CYAN ST77XX_CYAN
-    //https://rgbcolorpicker.com/565
-    #define COLOR_GRAY 0x7bcf
-    #define COLOR_BRIGHTGRAY 0xc618
-    #define COLOR_LIGHT_BLUE 0x3dbf
-  #endif
-  #ifdef TFT_USE_ILI9341
-    #define COLOR_ORANGE ILI9341_ORANGE
-    #define COLOR_WHITE ILI9341_WHITE
-    #define COLOR_BLUE ILI9341_NAVY
-    #define COLOR_YELLOW ILI9341_YELLOW
-    #define COLOR_PURPLE ILI9341_PURPLE
-    #define COLOR_PINK ILI9341_PINK
-    #define COLOR_MAGENTA ILI9341_MAGENTA
-    #define COLOR_BLACK ILI9341_BLACK
-    #define COLOR_CYAN ILI9341_DARKCYAN
-    #define COLOR_GRAY 0x7bcf
-    #define COLOR_BRIGHTGRAY 0xc618
-    #define COLOR_LIGHT_BLUE 0x3dbf
-    #define COLOR_RED ILI9341_RED
-    #define COLOR_GREEN ILI9341_DARKGREEN
-  #endif
+  #define COLOR_ORANGE TFT_ORANGE
+  #define COLOR_WHITE TFT_WHITE
+  #define COLOR_BLUE TFT_BLUE
+  #define COLOR_GREEN TFT_DARKGREEN
+  #define COLOR_RED TFT_RED
+  #define COLOR_MAGENTA TFT_MAGENTA
+  #define COLOR_BLACK TFT_BLACK
+  #define COLOR_CYAN TFT_CYAN
+  //https://rgbcolorpicker.com/565
+  #define COLOR_GRAY 0x7bcf
+  #define COLOR_BRIGHTGRAY 0xc618
+  #define COLOR_LIGHT_BLUE 0x3dbf
+  #define COLOR_PINK TFT_PINK
+  /*
+  #define COLOR_ORANGE ILI9341_ORANGE
+  #define COLOR_WHITE ILI9341_WHITE
+  #define COLOR_BLUE ILI9341_NAVY
+  #define COLOR_YELLOW ILI9341_YELLOW
+  #define COLOR_PURPLE ILI9341_PURPLE
+  #define COLOR_PINK ILI9341_PINK
+  #define COLOR_MAGENTA ILI9341_MAGENTA
+  #define COLOR_BLACK ILI9341_BLACK
+  #define COLOR_CYAN ILI9341_DARKCYAN
+  #define COLOR_GRAY 0x7bcf
+  #define COLOR_BRIGHTGRAY 0xc618
+  #define COLOR_LIGHT_BLUE 0x3dbf
+  #define COLOR_RED ILI9341_RED
+  #define COLOR_GREEN ILI9341_DARKGREEN
+  */
 
-  
   extern TFT_eSPI tft;
-
   extern bool fresh_display;
-
-
-
 #endif
 
 

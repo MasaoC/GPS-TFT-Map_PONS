@@ -125,7 +125,6 @@ void check_bankwarning() {
   if (get_gps_mps() < 2.0) {
     if (bank_warning) {
       redraw_screen = true;
-      tft.invertDisplay(false);
       bank_warning = false;
     }
     return;
@@ -137,7 +136,6 @@ void check_bankwarning() {
   } else {
     if (bank_warning) {
       redraw_screen = true;
-      //tft.invertDisplay(false);
       bank_warning = false;
     }
   }
