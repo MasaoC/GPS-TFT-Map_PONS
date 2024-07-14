@@ -1,11 +1,11 @@
-
+#include "mysd.h"
 #include <SD.h>
 File myFile;
 File csvFile;
 
 bool sdInitialized = false;
 bool sdError = false;
-#define SD_CS_PIN 1
+
 #define LOGFILE_NAME "log.txt"
 
 bool headerWritten = false;
@@ -20,6 +20,7 @@ int filesecond;
 bool good_sd(){
   return sdInitialized && !sdError;
 }
+
 
 
 void log_sd(const char* text){
@@ -40,9 +41,9 @@ void log_sd(const char* text){
 }
 
 void read_sd(){
-    // open the file. note that only one file can be open at a time,
-    // so you have to close this one before opening another.
-    myFile = SD.open("test.txt");
+  // open the file. note that only one file can be open at a time,
+  // so you have to close this one before opening another.
+  myFile = SD.open("test.txt");
 
   if (myFile) {
     Serial.println("test.txt:");
@@ -58,6 +59,7 @@ void read_sd(){
     Serial.println("error opening test.txt");
   }
 }
+unsigned long lasttrytime_sd = 0;
 
 void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) {
   if (!sdInitialized && !sdError) {
@@ -70,10 +72,14 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
   }
   if(sdError){
     Serial.println("SD FAIL");
+    if(millis()-lasttrytime_sd > 10000){
+      lasttrytime_sd = millis();
+      setup_sd();
+    }
     return;
   }
   //Run only once.
-  if(fileyear == 0){
+  if(fileyear == 0 && year != 0){
     fileyear = year + 2000;
     filemonth = month;
     fileday = day;
@@ -81,8 +87,9 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
     fileminute = minute;
     filesecond = second;
   }
-  char csv_filename[20];
+  char csv_filename[30];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  Serial.println(csv_filename);
   csvFile = SD.open(csv_filename, FILE_WRITE);
   if (csvFile) {
     if(!headerWritten){
@@ -117,12 +124,13 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
 }
 
 void dateTime(uint16_t* date, uint16_t* time) {
+  Serial.println("call of dateTime is now");
  //sprintf(timestamp, "%02d:%02d:%02d %2d/%2d/%2d \n", filehour,fileminute,filesecond,filemonth,fileday,fileyear-2000);
  //Serial.println(timestamp);
  // return date using FAT_DATE macro to format fields
  Serial.println("year is");
  Serial.println(fileyear);
- *date = FAT_DATE(fileyear-1980, filemonth, fileday);
+ *date = FAT_DATE(fileyear, filemonth, fileday);
  // return time using FAT_TIME macro to format fields
  *time = FAT_TIME(filehour, fileminute, filesecond);
 }
@@ -136,15 +144,18 @@ void setup_sd(){
   SPI.setTX(3);
   SPI.begin();
   
-  // set date time callback function
-  SdFile::dateTimeCallback(dateTime);
   
   sdInitialized = SD.begin(SD_CS_PIN);
+
 
   if (!sdInitialized) {
     Serial.println("SD initialization failed!");
     return;
   }else{
     Serial.println("SD initialization done.");
+    sdError = false;
+    // set date time callback function
+    SdFile::dateTimeCallback(dateTime);
+    log_sd("SD INIT");
   }
 }

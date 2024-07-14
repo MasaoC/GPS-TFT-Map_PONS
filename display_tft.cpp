@@ -30,6 +30,16 @@ int map_shift_down = 0;
 
 #define MAP_SHIFT_DOWN_DEFAULT 60   //80+60=140 is centerY.
 
+
+// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
+#ifdef PNP_BL
+  #define BRIGHTNESS (255-screen_brightness)
+#endif
+#ifdef NPN_BL
+  #define BRIGHTNESS (screen_brightness)
+#endif
+
+
 void toggle_mode(){
   upward_mode = (upward_mode +1)%MODE_SIZE;
   if(upward_mode == MODE_TRACKUP){
@@ -74,15 +84,13 @@ void createNeedle(void)
 
 
 void setup_tft() {
-
   // Initialize backlight control pin
   pinMode(TFT_BL, OUTPUT);
   analogWriteFreq(BL_PWM_FRQ); // 1000Hz
-  analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
-
+  analogWrite(TFT_BL,BRIGHTNESS);
 
   tft.begin();
-  tft.setRotation(0);
+  tft.setRotation(2);//set 0 for newhaven
   tft.loadFont(AA_FONT_SMALL);    // Must load the font first
   //tft.setTextFont(2);
 
@@ -755,7 +763,7 @@ void draw_degpersecond(float degpersecond) {
 
 bool bankwarning_flipflop = true;
 void draw_bankwarning() {
-  int starty = 30;
+  int starty = 40;
   bankwarning_flipflop = !bankwarning_flipflop;
   int bgcolor = COLOR_BLACK;
   int tcolor = COLOR_WHITE;
@@ -764,7 +772,7 @@ void draw_bankwarning() {
     tcolor = COLOR_BLACK;
   }
   tft.fillRect(0, starty, SCREEN_WIDTH, 36, bgcolor);
-  int x = SCREEN_WIDTH / 2 - 20;
+  int x = SCREEN_WIDTH / 2 - 40;
   tft.setCursor(x, starty+2);
   tft.setTextColor(COLOR_RED,bgcolor);
   tft.setTextSize(4);
@@ -811,7 +819,7 @@ void draw_gpsinfo() {
   
   double input_voltage = analogRead(BATTERY_PIN)/1024.0*3.3*2;
   //Serial.println(input_voltage);
-  if(input_voltage < 3.75){
+  if(input_voltage < 3.70){
     textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-30,COLOR_MAGENTA,"BAT_LOW");
   }else{
     textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 60, SCREEN_HEIGHT-30,COLOR_GREEN,"%.1fV",input_voltage);
@@ -1009,11 +1017,14 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
   }
 }
 
+int mod( int x, int y ){
+  return x<0 ? ((x+1)%y)+y-1 : x%y;
+}
 
-void tft_increment_brightness(){
-  brightnessIndex = (brightnessIndex+1)% (sizeof(brightnessLevels)/sizeof(brightnessLevels[0]));
+void tft_change_brightness(int increment){
+  brightnessIndex = mod(brightnessIndex+increment,sizeof(brightnessLevels)/sizeof(brightnessLevels[0]));
   screen_brightness = brightnessLevels[brightnessIndex];
-  analogWrite(TFT_BL,255-screen_brightness);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
+  analogWrite(TFT_BL,BRIGHTNESS);// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
 }
 
 

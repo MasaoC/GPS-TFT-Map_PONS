@@ -1,9 +1,8 @@
 
 //====================[Setting file FOR ST7789]====================
 // eSPI version [2.5.34]
-// 2.5.43 version does not work!!!
-//Copy the following lines into library setting file that you will use.
-//Note:  Change User_Setup_Select.h as well to load the setting that you want to use.
+// 2.5.43 version does not work!!
+// Change User_Setup_Select.h as well.
 
 #define USER_SETUP_ID 18
 #define ST7789_DRIVER     // Configure all registers
@@ -11,29 +10,30 @@
 #define TFT_HEIGHT 320
 #define TFT_INVERSION_OFF
 #define TFT_RGB_ORDER TFT_BGR  // Colour order Blue-Green-Red
+
+
 /*
-// For Pico (PR2040)
-#define TFT_CS 17   // Chip Select pin
-#define TFT_DC 16   // Data Command control pin 
-#define TFT_RST -1  // No Reset pin
-#define TFT_MOSI 19
-#define TFT_SCLK 18
-*/
-
-
-//waveshare RP2040 zero
+//Newhaven
 #define TFT_RST        4
 #define TFT_CS        5
 #define TFT_DC         6
 #define TFT_MOSI         3
 #define TFT_SCLK         2
+*/
+#define TFT_SCLK         2
+#define TFT_MOSI         3
+#define TFT_CS       	4
+#define TFT_RST        5
+#define TFT_DC         6
 
-#define LOAD_GLCD   // Font
+#define LOAD_GLCD   // Font 1. Original Adafruit 8 pixel font needs ~1820 bytes in FLASH
+#define LOAD_GFXFF  // FreeFonts. Include access to the 48 Adafruit_GFX free fonts FF1 to FF48 and custom fonts
 #define SMOOTH_FONT
-#define SPI_FREQUENCY       40000000
-#define SPI_READ_FREQUENCY  20000000
-//#define SPI_TOUCH_FREQUENCY  2500000
 
+//SDカードの都合で20Mhzまで。いまのところ...
+#define SPI_FREQUENCY       20000000
+#define SPI_READ_FREQUENCY  20000000
+#define SPI_TOUCH_FREQUENCY  2500000
 
 
 

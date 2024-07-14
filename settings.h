@@ -1,5 +1,5 @@
 //====== 設定画面 =======
-
+// TFT_eSPIも設定
 
 
 //GPSのデモ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
@@ -16,5 +16,5 @@
   //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
 
 //TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい)
-#define SCREEN_INTERVAL 500
+#define SCREEN_INTERVAL 1000
 

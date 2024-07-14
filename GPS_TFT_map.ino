@@ -5,6 +5,7 @@
 #include "gps_functions.h"
 #include "mysd.h"
 #include "latlon.h"
+#include "button.h"
 
 
 unsigned long last_newtrack_time = 0;
@@ -24,15 +25,6 @@ int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;  // The calculated average differential
 
 
-//スイッチ関連
-const int switchPin = 7;  // Pin where the switch is connected
-unsigned long pressTime = 0;             // Time when the switch is pressed
-unsigned long debounceTime = 50;         // Debounce time in milliseconds
-unsigned long longPressDuration = 1000;  // Duration to detect a long press in milliseconds
-bool switchState = HIGH;                 // Current state of the switch
-bool lastSwitchState = HIGH;             // Previous state of the switch
-bool longPressHandled = false;           // Whether the long press was already handled
-
 
 
 const int MODE_SETTING = 1;
@@ -51,15 +43,122 @@ float scale = scalelist[scaleindex];
 
 
 
+// Variables for setting selection
+int selectedLine = -1;
+int cursorLine = 0;
+#define SETTING_LINES 5
+
+// Callback function for short press
+void shortPressCallback() {
+  quick_redraw = true;
+  redraw_screen = true;
+  Serial.println("short press");
+  if (screen_mode != MODE_SETTING) {
+    if (screen_mode == MODE_GPSCONST)
+      gps_getposition_mode();
+    screen_mode = MODE_SETTING;
+    cursorLine = 0;
+    selectedLine = -1;
+    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+  } else {
+    //exit
+    if (cursorLine == SETTING_LINES - 1) {
+      screen_mode = MODE_MAP;
+    } else if (cursorLine == 3) {
+      Serial.println("GPS CONST MODE");
+      gps_constellation_mode();
+      screen_mode = MODE_GPSCONST;
+    } else {
+      if (selectedLine == -1) {
+        //Entering changing value mode.
+        selectedLine = cursorLine;
+      } else {
+        //exiting changing value mode.
+        selectedLine = -1;
+      }
+    }
+  }
+}
+// Callback function for short press
+void shortPressCallback_up() {
+  quick_redraw = true;
+  redraw_screen = true;
+  Serial.println("short press up");
+  if (screen_mode == MODE_SETTING) {  //Setting mode
+    if (selectedLine == -1) {         //No active selected line.
+      cursorLine = (cursorLine + 1) % SETTING_LINES;
+    } else if (selectedLine == 0) {
+      tft_change_brightness(1);
+    } else if (selectedLine == 1) {
+      toggle_demo_biwako();
+      reset_degpersecond();
+    } else if (selectedLine == 2) {
+      toggle_mode();
+    } else if (selectedLine == 3) {
+      screen_mode = MODE_GPSCONST;
+    }
+  } else {
+    scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
+  }
+}
+
+
+// Callback function for short press
+void shortPressCallback_down() {
+  quick_redraw = true;
+  redraw_screen = true;
+  Serial.println("short press down");
+  if (screen_mode == MODE_SETTING) {  //Setting mode
+    if (selectedLine == -1) {         //No active selected line.
+      cursorLine = mod(cursorLine - 1,SETTING_LINES);
+    } else if (selectedLine == 0) {
+      tft_change_brightness(-1);
+    } else if (selectedLine == 1) {
+      toggle_demo_biwako();
+      reset_degpersecond();
+    } else if (selectedLine == 2) {
+      toggle_mode();
+    } else if (selectedLine == 3) {
+      screen_mode = MODE_GPSCONST;
+    }
+  } else {
+    scale = scalelist[--scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
+  }
+}
+// Callback function for long press
+void longPressCallback() {
+  quick_redraw = true;
+  redraw_screen = true;
+
+  Serial.println("long press");
+}
+
+// Create Button objects
+Button sw_push(14, shortPressCallback, longPressCallback);
+Button sw_up(10, shortPressCallback_up);
+Button sw_down(11, shortPressCallback_down);
+
+void setup_switch() {
+    pinMode(sw_push.getPin(), INPUT_PULLUP); // This must be after setup tft for some reason of library TFT_eSPI.
+    pinMode(sw_up.getPin(), INPUT_PULLUP); // This must be after setup tft for some reason of library TFT_eSPI.
+    pinMode(sw_down.getPin(), INPUT_PULLUP); // This must be after setup tft for some reason of library TFT_eSPI.
+}
+
+void switch_handling() {
+    sw_push.read();
+    sw_up.read();
+    sw_down.read();
+}
 
 void setup(void) {
   Serial.begin(38400);
   Serial.print(F("SETUP"));
 
+
+  setup_switch();
   gps_setup();
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
-  pinMode(switchPin, INPUT_PULLUP);//This must be after setup tft for somereason of library TFT_eSPI.
 
 
 
@@ -147,84 +246,6 @@ void debug_print(const char* inp) {
 }
 
 
-// Variables for setting selection
-int selectedLine = -1;
-int cursorLine = 0;
-#define SETTING_LINES 5
-
-
-
-void switch_handling() {
-  int reading = digitalRead(switchPin);  // Read the current state of the switch
-
-  // Check for switch state change
-  if (reading != lastSwitchState) {
-    if (reading == LOW) {
-      pressTime = millis();  // Record the time when the switch is pressed
-      longPressHandled = false;
-    } else {
-      // When the switch is released
-      unsigned long pressDuration = millis() - pressTime;
-      if (pressDuration < longPressDuration && pressDuration > debounceTime) {
-        Serial.println("short press");
-        quick_redraw = true;
-        redraw_screen = true;
-        if (screen_mode == MODE_SETTING) {  //Setting mode
-          if (selectedLine == -1) {         //No active selected line.
-            cursorLine = (cursorLine + 1) % SETTING_LINES;
-          } else if (selectedLine == 0) {
-            tft_increment_brightness();
-          } else if (selectedLine == 1) {
-            toggle_demo_biwako();
-            reset_degpersecond();
-          } else if (selectedLine == 2) {
-            toggle_mode();
-          } else if (selectedLine == 3) {
-            screen_mode = MODE_GPSCONST;
-          }
-        } else {
-          scale = scalelist[scaleindex++ % (sizeof(scalelist) / sizeof(scalelist[0]))];
-        }
-      }
-    }
-    delay(debounceTime);  // Debounce delay
-  } else if (reading == LOW && !longPressHandled) {
-    // Check for long press
-    if (millis() - pressTime >= longPressDuration) {
-      Serial.println("long press");
-      longPressHandled = true;
-      redraw_screen = true;
-      quick_redraw = true;
-      if (screen_mode != MODE_SETTING) {
-        if (screen_mode == MODE_GPSCONST)
-          gps_getposition_mode();
-        screen_mode = MODE_SETTING;
-        cursorLine = 0;
-        selectedLine = -1;
-        tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
-      } else {
-        //exit
-        if (cursorLine == SETTING_LINES - 1) {
-          screen_mode = MODE_MAP;
-        } else if (cursorLine == 3) {
-          Serial.println("GPS CONST MODE");
-          gps_constellation_mode();
-          screen_mode = MODE_GPSCONST;
-        } else {
-          if (selectedLine == -1) {
-            //Entering changing value mode.
-            selectedLine = cursorLine;
-          } else {
-            //exiting changing value mode.
-            selectedLine = -1;
-          }
-        }
-      }
-    }
-  }
-
-  lastSwitchState = reading;  // Update the switch state
-}
 
 
 bool err_nomap = false;
@@ -255,6 +276,9 @@ void loop() {
     float new_long = get_gps_long();
     last_time_gpsdata = millis();
     quick_redraw = false;
+    //char logdata[30];
+    //sprintf(logdata,"%d,%03d,%.1f,%s",millis(),new_truetrack,get_gps_mps(),get_gps_fix()?"fix":"nil");
+    //log_sd(logdata);
     
 
     //画面上の方向設定

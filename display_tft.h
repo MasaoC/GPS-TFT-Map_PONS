@@ -9,6 +9,8 @@
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 320
 
+//#define NPN_BL
+#define PNP_BL
 #define TFT_BL        7
 
 //Pin defined in SPI-eTFT
@@ -90,7 +92,7 @@ void draw_gpsinfo();
 void setup_tft();
 void clean_display(bool& redraw);
 
-void tft_increment_brightness();
+void tft_change_brightness(int increment);
 void toggle_mode();
 bool is_trackupmode();
 bool is_northupmode();
@@ -115,4 +117,5 @@ void draw_triangle();
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 
 
+int mod( int x, int y );
 
