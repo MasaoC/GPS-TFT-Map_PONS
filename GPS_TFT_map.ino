@@ -47,37 +47,58 @@ float scale = scalelist[scaleindex];
 int selectedLine = -1;
 int cursorLine = 0;
 #define SETTING_LINES 5
+#define SINGLE_SWITCH
 
 // Callback function for short press
 void shortPressCallback() {
   quick_redraw = true;
   redraw_screen = true;
   Serial.println("short press");
-  if (screen_mode != MODE_SETTING) {
-    if (screen_mode == MODE_GPSCONST)
-      gps_getposition_mode();
-    screen_mode = MODE_SETTING;
-    cursorLine = 0;
-    selectedLine = -1;
-    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
-  } else {
-    //exit
-    if (cursorLine == SETTING_LINES - 1) {
-      screen_mode = MODE_MAP;
-    } else if (cursorLine == 3) {
-      Serial.println("GPS CONST MODE");
-      gps_constellation_mode();
-      screen_mode = MODE_GPSCONST;
+
+  #ifdef SINGLE_SWITCH
+    if (screen_mode == MODE_SETTING) {  //Setting mode
+      if (selectedLine == -1) {         //No active selected line.
+        cursorLine = (cursorLine + 1) % SETTING_LINES;
+      } else if (selectedLine == 0) {
+        tft_change_brightness(1);
+      } else if (selectedLine == 1) {
+        toggle_demo_biwako();
+        reset_degpersecond();
+      } else if (selectedLine == 2) {
+        toggle_mode();
+      } else if (selectedLine == 3) {
+        screen_mode = MODE_GPSCONST;
+      }
     } else {
-      if (selectedLine == -1) {
-        //Entering changing value mode.
-        selectedLine = cursorLine;
+      scale = scalelist[scaleindex++ % (sizeof(scalelist) / sizeof(scalelist[0]))];
+    }
+  #else
+    if (screen_mode != MODE_SETTING) {
+      if (screen_mode == MODE_GPSCONST)
+        gps_getposition_mode();
+      screen_mode = MODE_SETTING;
+      cursorLine = 0;
+      selectedLine = -1;
+      tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+    } else {
+      //exit
+      if (cursorLine == SETTING_LINES - 1) {
+        screen_mode = MODE_MAP;
+      } else if (cursorLine == 3) {
+        Serial.println("GPS CONST MODE");
+        gps_constellation_mode();
+        screen_mode = MODE_GPSCONST;
       } else {
-        //exiting changing value mode.
-        selectedLine = -1;
+        if (selectedLine == -1) {
+          //Entering changing value mode.
+          selectedLine = cursorLine;
+        } else {
+          //exiting changing value mode.
+          selectedLine = -1;
+        }
       }
     }
-  }
+  #endif
 }
 // Callback function for short press
 void shortPressCallback_up() {
@@ -131,6 +152,33 @@ void longPressCallback() {
   redraw_screen = true;
 
   Serial.println("long press");
+  #ifdef SINGLE_SWITCH
+    if (screen_mode != MODE_SETTING) {
+      if (screen_mode == MODE_GPSCONST)
+        gps_getposition_mode();
+      screen_mode = MODE_SETTING;
+      cursorLine = 0;
+      selectedLine = -1;
+      tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+    } else {
+      //exit
+      if (cursorLine == SETTING_LINES - 1) {
+        screen_mode = MODE_MAP;
+      } else if (cursorLine == 3) {
+        Serial.println("GPS CONST MODE");
+        gps_constellation_mode();
+        screen_mode = MODE_GPSCONST;
+      } else {
+        if (selectedLine == -1) {
+          //Entering changing value mode.
+          selectedLine = cursorLine;
+        } else {
+          //exiting changing value mode.
+          selectedLine = -1;
+        }
+      }
+    }
+  #endif
 }
 
 // Create Button objects

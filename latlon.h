@@ -2,7 +2,7 @@
 #include "display_tft.h"
 
 
-#define MAX_TRACK_CORDS 240
+#define MAX_TRACK_CORDS 800
 
 
 bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);

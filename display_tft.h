@@ -9,18 +9,11 @@
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 320
 
-//#define NPN_BL
-#define PNP_BL
-#define TFT_BL        7
 
-//Pin defined in SPI-eTFT
-/*
-#define TFT_RST        4
-#define TFT_CS        5
-#define TFT_DC         6
-#define TFT_MOSI         3
-#define TFT_SCLK         2
-*/
+//NPN or PNP を指定する。（画面の明るさ設定のため）
+#define NPN_BL
+//#define PNP_BL
+#define TFT_BL        7
 
 
 
@@ -65,22 +58,6 @@
   #define COLOR_BRIGHTGRAY 0xc618
   #define COLOR_LIGHT_BLUE 0x3dbf
   #define COLOR_PINK TFT_PINK
-  /*
-  #define COLOR_ORANGE ILI9341_ORANGE
-  #define COLOR_WHITE ILI9341_WHITE
-  #define COLOR_BLUE ILI9341_NAVY
-  #define COLOR_YELLOW ILI9341_YELLOW
-  #define COLOR_PURPLE ILI9341_PURPLE
-  #define COLOR_PINK ILI9341_PINK
-  #define COLOR_MAGENTA ILI9341_MAGENTA
-  #define COLOR_BLACK ILI9341_BLACK
-  #define COLOR_CYAN ILI9341_DARKCYAN
-  #define COLOR_GRAY 0x7bcf
-  #define COLOR_BRIGHTGRAY 0xc618
-  #define COLOR_LIGHT_BLUE 0x3dbf
-  #define COLOR_RED ILI9341_RED
-  #define COLOR_GREEN ILI9341_DARKGREEN
-  */
 
   extern TFT_eSPI tft;
   extern bool fresh_display;

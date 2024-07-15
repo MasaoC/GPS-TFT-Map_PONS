@@ -12,14 +12,6 @@
 #define TFT_RGB_ORDER TFT_BGR  // Colour order Blue-Green-Red
 
 
-/*
-//Newhaven
-#define TFT_RST        4
-#define TFT_CS        5
-#define TFT_DC         6
-#define TFT_MOSI         3
-#define TFT_SCLK         2
-*/
 #define TFT_SCLK         2
 #define TFT_MOSI         3
 #define TFT_CS       	4
@@ -44,7 +36,6 @@
 //Copy the following lines into library setting file that you will use.
 //Note:  Change User_Setup_Select.h as well to load the setting that you want to use.
 
-/*
 #define USER_SETUP_ID 1
 #define ILI9341_DRIVER
 #define TFT_CS   5  // Chip select control pin D8
@@ -68,4 +59,4 @@
 #define SPI_READ_FREQUENCY  20000000
 #define SPI_TOUCH_FREQUENCY  250000
 // #define SUPPORT_TRANSACTIONS
-*/
+
