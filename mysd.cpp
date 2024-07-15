@@ -1,4 +1,5 @@
 #include "mysd.h"
+#include "navdata.h"
 #include <SD.h>
 File myFile;
 File csvFile;
@@ -8,6 +9,7 @@ bool sdError = false;
 
 #define LOGFILE_NAME "log.txt"
 
+unsigned long lasttrytime_sd = 0;
 bool headerWritten = false;
 int fileyear = 0;
 int filemonth;
@@ -40,28 +42,108 @@ void log_sd(const char* text){
   }
 }
 
-void read_sd(){
-  // open the file. note that only one file can be open at a time,
-  // so you have to close this one before opening another.
-  myFile = SD.open("test.txt");
 
-  if (myFile) {
-    Serial.println("test.txt:");
+void process_line(String line) {
+  int index = 0;
+  int commaIndex = line.indexOf(',');
+  String name = line.substring(index, commaIndex);
+  index = commaIndex + 1;
 
-    // read from the file until there's nothing else in it:
-    while (myFile.available()) {
-      Serial.write(myFile.read());
+  commaIndex = line.indexOf(',', index);
+  int size = line.substring(index, commaIndex).toInt();
+  index = commaIndex + 1;
+
+  // Allocate memory for the coordinates
+  double (*cords)[2] = new double[size][2];
+
+  for (int i = 0; i < size; i++) {
+    commaIndex = line.indexOf(',', index);
+    if (commaIndex == -1 && i < size - 1) {
+      Serial.println("Error: Invalid format.");
+      delete[] cords;
+      return;
     }
-    // close the file:
-    myFile.close();
-  } else {
-    // if the file didn't open, print an error:
-    Serial.println("error opening test.txt");
+    cords[i][0] = line.substring(index, commaIndex).toDouble();
+    index = commaIndex + 1;
+    commaIndex = line.indexOf(',', index);
+    if (commaIndex == -1 && i < size - 1) {
+      Serial.println("Error: Invalid format.");
+      delete[] cords;
+      return;
+    }
+    cords[i][1] = line.substring(index, commaIndex).toDouble();
+    index = commaIndex + 1;
+  }
+
+  extramaps[mapdata_count].id = current_id++;
+  extramaps[mapdata_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
+  extramaps[mapdata_count].size = size;
+  extramaps[mapdata_count].cords = cords;
+  mapdata_count++;
+}
+
+
+void read_sd() {
+  File myFile = SD.open("mapdata.csv");
+  if (!myFile) {
+    Serial.println("error opening mapdata.csv");
+    return;
+  }
+
+  Serial.println("mapdata.csv:");
+
+  while (myFile.available() && mapdata_count < MAX_MAPDATAS) {
+    String line = myFile.readStringUntil('\n');
+    line.trim();
+    if (line.length() > 0) {
+      process_line(line);
+    }
+  }
+
+  myFile.close();
+
+  Serial.println("extramap");
+  // For debugging: print loaded map data
+  for (int i = 0; i < mapdata_count; i++) {
+    Serial.print("ID: "); Serial.println(extramaps[i].id);
+    Serial.print("Name: "); Serial.println(extramaps[i].name);
+    Serial.print("Size: "); Serial.println(extramaps[i].size);
+    for (int j = 0; j < extramaps[i].size; j++) {
+      Serial.print("Lat: "); Serial.print(extramaps[i].cords[j][0]);
+      Serial.print(", Lon: "); Serial.println(extramaps[i].cords[j][1]);
+    }
   }
 }
-unsigned long lasttrytime_sd = 0;
+
+
+void utcToJst(int *year, int *month, int *day, int *hour) {
+    // Add 9 hours to convert UTC to JST
+    *hour += 9;
+    // Handle overflow of hours (24-hour format)
+    if (*hour >= 24) {
+        *hour -= 24;
+        (*day)++;
+    }
+    // Handle overflow of days in each month
+    int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    // Check for leap year
+    bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
+    if (isLeapYear) {
+        daysInMonth[1] = 29;
+    }
+    if (*day > daysInMonth[*month - 1]) {
+        *day = 1;
+        (*month)++;
+    }
+    // Handle overflow of months
+    if (*month > 12) {
+        *month = 1;
+        (*year)++;
+    }
+}
 
 void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) {
+  utcToJst(&year,&month,&day,&hour);
   if (!sdInitialized && !sdError) {
     sdInitialized = SD.begin(SD_CS_PIN);
     if (!sdInitialized) {
@@ -124,7 +206,6 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
 }
 
 void dateTime(uint16_t* date, uint16_t* time) {
-  Serial.println("call of dateTime is now");
  //sprintf(timestamp, "%02d:%02d:%02d %2d/%2d/%2d \n", filehour,fileminute,filesecond,filemonth,fileday,fileyear-2000);
  //Serial.println(timestamp);
  // return date using FAT_DATE macro to format fields
@@ -157,5 +238,6 @@ void setup_sd(){
     // set date time callback function
     SdFile::dateTimeCallback(dateTime);
     log_sd("SD INIT");
+    read_sd();
   }
 }

@@ -1,23 +1,21 @@
+#include "display_tft.h"
 
 void gps_setup();
 void gps_loop(bool constellation_mode);
 
 void toggle_demo_biwako();
 bool get_demo_biwako();
-
-
 void gps_getposition_mode();
 void gps_constellation_mode();
-
 bool get_gps_fix();
 bool get_gps_connection();
+char* get_gps_nmea();
 double get_gps_kts();
 double get_gps_mps();
 double get_gps_truetrack();
 double get_gps_magtrack();
 int get_gps_numsat();
 double get_gps_pdop();
-
 double get_gps_lat();
 double get_gps_long();
 double get_gps_altitude();
@@ -90,4 +88,39 @@ double get_gps_altitude();
   extern SatelliteData satellites[32];
 
 
-#endif
+
+
+
+
+#define MAX_TRACK_CORDS 800
+
+
+bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection, int mapshiftdown);
+
+
+
+struct Coordinate {
+  float latitude;
+  float longitude;
+};
+
+
+
+class LatLonManager {
+private:
+  Coordinate coords[MAX_TRACK_CORDS];
+  int currentIndex;
+  int count;
+
+public:
+  LatLonManager();
+  void addCoord(Coordinate position);
+  int getCount();
+  void printData();
+  Coordinate getData(int newest_index);
+};
+
+extern LatLonManager latlon_manager;
+
+#endif // LATLONMANAGER_H

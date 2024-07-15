@@ -22,32 +22,39 @@
 
 struct mapdata {
   int id;
-  int size; 
-  double cords[][2];
+  char* name;
+  int size;
+  double (*cords)[2]; // Pointer to an array of 2-element arrays
 };
 
 
-extern const mapdata map_shinura;
-extern const mapdata map_takeshima;
-extern const mapdata map_chikubushima;
-extern const mapdata map_biwako;
-extern const mapdata map_okishima;
 
-extern const mapdata map_handaioutside;
-extern const mapdata map_handaihighway;
-extern const mapdata map_handaihighway2;
-extern const mapdata map_handaiinside1;
-extern const mapdata map_handaiinside2;
-extern const mapdata map_handaiinside3;
-extern const mapdata map_handaiinside4;
-extern const mapdata map_handaiinside5;
-extern const mapdata map_handairailway;
-extern const mapdata map_handaicafe;
+#define MAX_MAPDATAS 20
+extern mapdata extramaps[MAX_MAPDATAS];
+extern int current_id;
+extern int mapdata_count;
 
-extern const mapdata map_japan1;
-extern const mapdata map_japan2;
-extern const mapdata map_japan3;
-extern const mapdata map_japan4;
+extern mapdata map_shinura;
+extern mapdata map_takeshima;
+extern mapdata map_chikubushima;
+extern mapdata map_biwako;
+extern mapdata map_okishima;
+
+extern mapdata map_handaioutside;
+extern mapdata map_handaihighway;
+extern mapdata map_handaihighway2;
+extern mapdata map_handaiinside1;
+extern mapdata map_handaiinside2;
+extern mapdata map_handaiinside3;
+extern mapdata map_handaiinside4;
+extern mapdata map_handaiinside5;
+extern mapdata map_handairailway;
+extern mapdata map_handaicafe;
+
+extern mapdata map_japan1;
+extern mapdata map_japan2;
+extern mapdata map_japan3;
+extern mapdata map_japan4;
 
 
 extern const bool filldata[ROW_FILLDATA][COL_FILLDATA];

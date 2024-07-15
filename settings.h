@@ -12,9 +12,17 @@
 // TFTを選択
   #define TFT_USE_ST7789    //Tested well. Change User Setting at TFT_eSPI
   //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
-
   //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
 
 //TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい)
 #define SCREEN_INTERVAL 1000
 
+//強制画面リフレッシュ時間
+#define SCREEN_FRESH_INTERVAL 30000
+
+//外部スイッチ（up,down,push)がない場合。
+#define SINGLE_SWITCH
+
+// TFTのBL調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
+#define NPN_BL
+//#define PNP_BL

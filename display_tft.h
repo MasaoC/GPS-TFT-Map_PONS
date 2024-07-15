@@ -10,9 +10,6 @@
 #define SCREEN_HEIGHT 320
 
 
-//NPN or PNP を指定する。（画面の明るさ設定のため）
-#define NPN_BL
-//#define PNP_BL
 #define TFT_BL        7
 
 
@@ -41,7 +38,7 @@
 
   enum text_id{
     SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSCONST,SETTING_EXIT,
-    ND_MPS,ND_SATS,ND_MT,ND_DIST_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
+    ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
     ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND
   };
 
@@ -67,7 +64,8 @@
 void draw_sdinfo();
 void draw_gpsinfo();
 void setup_tft();
-void clean_display(bool& redraw);
+void clean_display();
+void clean_map();
 
 void tft_change_brightness(int increment);
 void toggle_mode();
@@ -81,6 +79,8 @@ void draw_ConstellationDiagram(bool redraw);
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);
+
+void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 void draw_Japan(double center_lat,double center_lon,float scale,float up);
 void draw_Shinura(double center_lat,double center_lon,float scale,float up);
 void draw_Biwako(double center_lat,double center_lon,float scale,float up);
@@ -90,6 +90,7 @@ void draw_km_circle(float scale);
 void startup_demo_tft();
 void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+void erase_triangle();
 void draw_triangle();
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 

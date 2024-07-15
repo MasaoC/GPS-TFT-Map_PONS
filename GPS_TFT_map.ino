@@ -1,10 +1,8 @@
-#include "gps_functions.h"
+#include "gps_latlon.h"
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
-#include "gps_functions.h"
 #include "mysd.h"
-#include "latlon.h"
 #include "button.h"
 
 
@@ -36,6 +34,7 @@ int screen_mode = MODE_MAP;
 #define SCALE_JAPAN 0.008f
 
 
+
 int scaleindex = 3;
 const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.5f, 1.0f, 2.5f, 10.0f };
 float scale = scalelist[scaleindex];
@@ -47,7 +46,6 @@ float scale = scalelist[scaleindex];
 int selectedLine = -1;
 int cursorLine = 0;
 #define SETTING_LINES 5
-#define SINGLE_SWITCH
 
 // Callback function for short press
 void shortPressCallback() {
@@ -70,7 +68,7 @@ void shortPressCallback() {
         screen_mode = MODE_GPSCONST;
       }
     } else {
-      scale = scalelist[scaleindex++ % (sizeof(scalelist) / sizeof(scalelist[0]))];
+      scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
     }
   #else
     if (screen_mode != MODE_SETTING) {
@@ -213,7 +211,6 @@ void setup(void) {
   startup_demo_tft();
 
 
-
   redraw_screen = true;
   quick_redraw = true;
   const char* inittext = "INIT";
@@ -298,6 +295,7 @@ void debug_print(const char* inp) {
 
 bool err_nomap = false;
 
+unsigned long lastfresh_millis = 0;
 
 
 void loop() {
@@ -342,11 +340,23 @@ void loop() {
       redraw_map = true;
     }
 
+
+    if (millis() - lastfresh_millis > SCREEN_FRESH_INTERVAL || redraw_screen) {
+      lastfresh_millis = millis();
+      clean_display();
+      redraw_screen = true;
+    }
+
     if (redraw_map || redraw_screen) {
       truetrack_now = new_truetrack;
       lat_now = new_lat;
       //古い線の削除。必要に応じて、白塗りつぶしを行った場合は、redraw_screen = true で上書きして帰ってくる。
-      clean_display(redraw_screen);
+      //clean_display(redraw_screen);
+
+      clean_map();
+
+      erase_triangle();
+      
 
 
       if(scale > SCALE_JAPAN){
@@ -357,6 +367,7 @@ void loop() {
         } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
           draw_Shinura(new_lat, new_long, scale, drawupward_direction);
         }
+        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
       }else{
         //near japan.
         if(check_within_latlon(20,40,new_lat, 35, new_long, 138)){
