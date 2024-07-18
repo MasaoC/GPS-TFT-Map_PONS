@@ -24,6 +24,17 @@ bool good_sd(){
 }
 
 
+void log_sdf(const char* format, ...){
+  char buffer[256]; // Temporary buffer for formatted text
+
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+
+  return log_sd(buffer);
+}
+
 
 void log_sd(const char* text){
   // open the file. note that only one file can be open at a time,
@@ -117,6 +128,12 @@ void read_sd() {
 
 
 void utcToJst(int *year, int *month, int *day, int *hour) {
+    if(*month <= 0 || *month > 12){
+      Serial.print("month invalid:");
+      Serial.println(*month);
+      log_sdf("month invalid:%d",month);
+      return;
+    }
     // Add 9 hours to convert UTC to JST
     *hour += 9;
     // Handle overflow of hours (24-hour format)
@@ -171,6 +188,7 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
   }
   char csv_filename[30];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  log_sdf("%d:%s",millis(),csv_filename);
   Serial.println(csv_filename);
   csvFile = SD.open(csv_filename, FILE_WRITE);
   if (csvFile) {
@@ -209,7 +227,7 @@ void dateTime(uint16_t* date, uint16_t* time) {
  //sprintf(timestamp, "%02d:%02d:%02d %2d/%2d/%2d \n", filehour,fileminute,filesecond,filemonth,fileday,fileyear-2000);
  //Serial.println(timestamp);
  // return date using FAT_DATE macro to format fields
- Serial.println("year is");
+ Serial.print("Callback: FileYear is ");
  Serial.println(fileyear);
  *date = FAT_DATE(fileyear, filemonth, fileday);
  // return time using FAT_TIME macro to format fields

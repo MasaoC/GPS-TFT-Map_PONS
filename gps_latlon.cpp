@@ -29,9 +29,11 @@ SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 #define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
 #define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
 
+#define TIME_NMEA_GROUP 50 //50ms
+
 void gps_getposition_mode() {
   Serial.println("POS MODE");
-  Serial2.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
   Serial2.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
 }
 
@@ -54,7 +56,13 @@ void gps_setup() {
 
   GPS.begin(9600);
   gps_getposition_mode();
-  GPS.sendCommand(PGCMD_ANTENNA);
+  //GPS.sendCommand(PGCMD_ANTENNA);
+
+  //57600bps
+  GPS.sendCommand(PMTK_SET_BAUD_57600);
+  GPS.begin(57600);
+  GPS.sendCommand(PMTK_ENABLE_SBAS);
+  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
 }
 
 void parseGSV(char *nmea) {
@@ -173,21 +181,32 @@ void removeStaleSatellites() {
 
 
 unsigned long last_latlon_manager = 0;
-void gps_loop(bool constellation_mode) {
-
+unsigned long last_gga = 0;
+unsigned long last_rmc = 0;
+bool gps_loop(bool constellation_mode) {
   // Read data from the GPS module
   char c = GPS.read();
+  bool GPS_updated = false;
 
   if (GPS.newNMEAreceived()) {
     gps_connection = true;
+
     Serial.println(GPS.lastNMEA());
+    if(strstr(GPS.lastNMEA(), "GGA"))
+      last_gga = millis();
+    else if(strstr(GPS.lastNMEA(), "RMC"))
+      last_rmc = millis();
+    int timedif = last_rmc-last_gga;
+    if(abs(timedif) < TIME_NMEA_GROUP)
+      GPS_updated = true;// RMC/GGAを受信した。(57600bpsだと通常9ms間隔となるが、50msとした。)
+
     if (constellation_mode && strstr(GPS.lastNMEA(), "GSV")) {
       parseGSV(GPS.lastNMEA());
-      GPS.parse(GPS.lastNMEA());
+      //GPS.parse(GPS.lastNMEA());
     } else if (GPS.parse(GPS.lastNMEA())) {
       // GNGGA と GNRMC が毎秒くるので、片方のみ=1秒おきに保存、
       if (GPS.fix && strstr(GPS.lastNMEA(), "$GNRMC")) {
-        if(GPS.year < 2024){// Somehow, error data has year 2001 or 2002 ish.  By eliminating GPS data with year < 2024, this will avoid displaying errorneous track.
+        if(GPS.year < 24){// Somehow, error data has GPS.year of 01 or 2002 ish.  By eliminating GPS data with year < 2024, this will avoid displaying errorneous track.
           Serial.println("ERROR GPS DATA");
           log_sd("ERROR GPS DATA");
           log_sd(GPS.lastNMEA());
@@ -211,6 +230,8 @@ void gps_loop(bool constellation_mode) {
 
   // Remove satellites not received for 60 seconds
   removeStaleSatellites();
+
+  return GPS_updated;
 }
 
 
@@ -219,6 +240,10 @@ double get_gps_lat() {
     int timeelapsed = millis() % 200000;
     return PLA_LAT + timeelapsed / 16000.0 / 1000.0 - 0.002;
   }
+
+#ifdef DEBUG_GPS_SIM_SHINURA
+    return SHINURA_LAT;
+#endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
   return PLA_LAT + GPS.latitudeDegrees - SHINURA_LAT;
 #endif
@@ -238,6 +263,9 @@ double get_gps_long() {
     int timeelapsed = millis() % 200000;
     return PLA_LON - timeelapsed / 1600.0 / 1000.0 + 0.025;
   }
+#ifdef DEBUG_GPS_SIM_SHINURA
+    return SHINURA_LON;
+#endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
   return PLA_LON + GPS.longitudeDegrees - SHINURA_LON;
 #endif
@@ -270,6 +298,9 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
+#ifndef RELEASE_GPS
+  return true;
+#endif
   return GPS.fix;
 }
 

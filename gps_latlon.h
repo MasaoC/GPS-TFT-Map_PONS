@@ -1,7 +1,7 @@
 #include "display_tft.h"
 
 void gps_setup();
-void gps_loop(bool constellation_mode);
+bool gps_loop(bool constellation_mode);
 
 void toggle_demo_biwako();
 bool get_demo_biwako();

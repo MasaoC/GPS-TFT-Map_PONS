@@ -4,6 +4,7 @@
 
 //GPSのデモ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
+  //#define DEBUG_GPS_SIM_SHINURA
   //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
@@ -14,8 +15,8 @@
   //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
   //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
 
-//TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい)
-#define SCREEN_INTERVAL 1000
+//TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい。1000ms>990ms for serial?)
+#define SCREEN_INTERVAL 990
 
 //強制画面リフレッシュ時間
 #define SCREEN_FRESH_INTERVAL 30000

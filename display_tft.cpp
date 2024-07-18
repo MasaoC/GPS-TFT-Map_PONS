@@ -3,21 +3,19 @@
 #include "gps_latlon.h"
 #include "mysd.h"
 
-#include "NotoSansBold15.h"
-#include "Arial_Black28.h"
+#include "font_data.h"
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_LARGE Arial_Black32
 
 
 TFT_eSPI tft = TFT_eSPI();       // Invoke custom library
 TFT_eSprite needle = TFT_eSprite(&tft); // Sprite object for needle
-TFT_eSprite needle_w = TFT_eSprite(&tft); // Sprite object for needle
+TFT_eSprite needle_w = TFT_eSprite(&tft); // Sprite object for deleting needle with white
 
 #define BATTERY_PIN 26 //A3
 
-
 int screen_brightness = 255; // Example brightness value
-const int brightnessLevels[] = {30, 100, 150, 200, 255}; // Example brightness levels
+const int brightnessLevels[] = {10, 100, 150, 200, 255}; // Example brightness levels
 int brightnessIndex = 4; // Default to 60
 
 #define MODE_TRACKUP 0
@@ -281,15 +279,16 @@ public:
 
   bool addStroke(stroke_group id, int maxPoints) {
     if (strokeCount >= maxStrokes) {
-      char temp[40];
-      sprintf(temp,"ERR max stroke reached %d,%d",id, maxPoints);
+      char temp[50];
+      sprintf(temp,"ERR max stroke reached(id,max) %d,%d",id, maxPoints);
       log_sd(temp);
-
-      Serial.println("ERR max stroke reached");
+      Serial.println(temp);
       return false;  // No more space for new strokes
     }
     strokes[strokeCount].points = (Point*)malloc(maxPoints * sizeof(Point));
     if (strokes[strokeCount].points == nullptr) {
+      Serial.print("Malloc failed at adding stroke: ID=");
+      Serial.println(id);
       return false;  // Memory allocation failed
     }
     strokes[strokeCount].pointCount = 0;
@@ -354,7 +353,7 @@ public:
   }
 
 
-  void drawAllStroke() {
+  void drawAllStrokes() {
     for (int i = 0; i < strokeCount; i++) {
       for (int j = 0; j < strokes[i].pointCount - 1; j++) {
         tft.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
@@ -364,8 +363,8 @@ public:
 };
 
 
-#define MAX_STROKES_MAP 200
-#define MAX_STROKES_SEALAND 700
+#define MAX_STROKES_MAP 100
+#define MAX_STROKES_SEALAND 1000
 
 StrokeManager mapStrokeManager(MAX_STROKES_MAP);
 StrokeManager sealandStrokeManager(MAX_STROKES_SEALAND);
@@ -565,7 +564,7 @@ void clean_display(){
 }
 
 void clean_map(){
-  mapStrokeManager.drawAllStroke();
+  mapStrokeManager.drawAllStrokes();
   mapStrokeManager.removeAllStrokes();
   nomap_drawn = true;
 }
@@ -644,7 +643,7 @@ void draw_track(double center_lat,double center_lon,float scale, float up){
 
   for (int i = 0; i < sizetrack - 1; i++) {
     if (!points[i].isOutsideTft() || !points[i + 1].isOutsideTft()) {
-      tft.drawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, COLOR_RED);
+      tft.drawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, COLOR_BLACK);
     }
   }
 }
@@ -659,7 +658,30 @@ void draw_Japan(double center_lat, double center_lon, float scale, float up) {
 }
 
 void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up) {
-  
+  for(int i = 0; i < mapdata_count;i++){
+    if(extramaps[i].size <= 1){
+      continue;
+    }
+    double lon1 = extramaps[i].cords[0][0];
+    double lat1 = extramaps[i].cords[0][1];
+    if(check_within_latlon(1,1,lat1,get_gps_lat(),lon1,get_gps_long())){
+      int col = COLOR_GREEN;
+      char name_firstchar = extramaps[i].name[0];
+      if(name_firstchar == 's'){
+        col = COLOR_RED;
+      }else if(name_firstchar == 'o'){
+        col = COLOR_ORANGE;
+      }else if(name_firstchar == 'g'){
+        col = COLOR_BRIGHTGRAY;
+      }else if(name_firstchar == 'm'){
+        col = COLOR_MAGENTA;
+      }else if(name_firstchar == 'c'){
+        col = COLOR_CYAN;
+      }
+      draw_map(STRK_MAP1,up,center_lat,center_lon,scale,&extramaps[i],col);
+    }
+
+  }
 }
 
 void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
@@ -702,18 +724,35 @@ void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
 
 
 void startup_demo_tft() {
-  float scale = 0.15;
-  float center_lat = 35.3034225841915;
-  float center_lon = 136.1461056306493;
+  float scale = 0.25;
+  float center_lat = 35.2334225841915;
+  float center_lon = 136.091056306493;
   bool redraw = false;
-  draw_Biwako(center_lat, center_lon, scale, 0);
-  draw_degpersecond(30.0 / (300.0 / 1000));
-  draw_gpsinfo();
-  tft.fillRect(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 + 20,60,20,COLOR_WHITE);
-  tft.setCursor(SCREEN_WIDTH / 2 - 30, SCREEN_HEIGHT / 2 + 20);
-  tft.setTextSize(3);
-  tft.print("DEMO");
-  delay(1000);
+  //draw_degpersecond(30.0 / (300.0 / 1000));
+  //draw_gpsinfo();
+  for(int i = 0; i < 10; i++){
+    clean_map();
+    sealandStrokeManager.drawAllStrokes();
+    sealandStrokeManager.removeAllStrokes();
+    draw_Biwako(center_lat, center_lon, scale-i*0.01, 0);
+
+    tft.setTextColor(COLOR_RED,COLOR_WHITE);
+    tft.setCursor(5, 5);
+    tft.println(" Piolot Oriented");
+    tft.println("   Navigation System   for HPA");
+    tft.println("========== PONS ==========");
+
+
+    tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+    tft.setCursor(1, SCREEN_HEIGHT / 2 + 110);
+    tft.print("SD MAP COUNT:");
+    tft.print(mapdata_count);
+    tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
+    tft.print("VERSION:0.1 (2024.7.16)");
+
+
+    delay(500);
+  }
 }
 
 
@@ -731,7 +770,7 @@ void drawbar(float degpersecond, int col){
   float abs_degpersecond = abs(degpersecond);
   int absint_degpersecond = abs_degpersecond;
   int barwidth = (abs_degpersecond * SCREEN_WIDTH / 2) / 3.0;//3deg = max width
-  int thickness = constrain(1+absint_degpersecond*absint_degpersecond,1,17);
+  int thickness = constrain(1+absint_degpersecond*absint_degpersecond,2,17);
   if (degpersecond > 0) {
     for(int i = 0;i < thickness; i++){
       tft.drawFastHLine(SCREEN_WIDTH / 2, barposy+i, barwidth, col);
@@ -757,7 +796,7 @@ void draw_degpersecond(float degpersecond) {
   drawbar(degpersecond,-1);
   last_degpersecond = degpersecond;
 
-  textmanager.drawTextf(ND_DEGPERSEC_VAL,1,SCREEN_WIDTH - 80, 30,COLOR_BLACK,"%.1f deg/s",degpersecond);
+  textmanager.drawTextf(ND_DEGPERSEC_VAL,1,SCREEN_WIDTH/2 - 30, 30,COLOR_BLACK,"%.1f deg/s",degpersecond);
   //textmanager.drawText(ND_DEGPERSEC_TEX,1,SCREEN_WIDTH -50, 15,col,"deg/s");
 }
 
@@ -812,19 +851,21 @@ void draw_gpsinfo() {
   col = COLOR_GREEN;
   if(get_gps_numsat() < 5){
     col = COLOR_RED;
+  }else if(get_gps_numsat() < 10){
+    col = COLOR_DARKORANGE;
   }
-  textmanager.drawTextf(ND_SATS,1,1,30,col,"%dsats",get_gps_numsat());
+  textmanager.drawTextf(ND_SATS,1,SCREEN_WIDTH/2,SCREEN_HEIGHT-28,col,"%dsats",get_gps_numsat());
   
   tft.setCursor(0, 27);
   
   double input_voltage = analogRead(BATTERY_PIN)/1024.0*3.3*2;
   //Serial.println(input_voltage);
   if(input_voltage < 3.55){
-    textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-30,COLOR_RED,"BAT_LOW");
+    textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_LOW");
   }else if(input_voltage < 3.75){
-    textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-30,COLOR_MAGENTA,"%.1fV",input_voltage);
+    textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-28,COLOR_MAGENTA,"%.1fV",input_voltage);
   }else{
-    textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-30,COLOR_GREEN,"%.1fV",input_voltage);
+    textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-28,COLOR_GREEN,"%.1fV",input_voltage);
   }
 
   // Distance to plathome.
@@ -832,8 +873,8 @@ void draw_gpsinfo() {
   textmanager.drawTextf(ND_DIST_PLAT,2,0,SCREEN_HEIGHT - 30,COLOR_BLACK,"%.1fkm", dist);
 
   // 5 decimal places latitude, longitude print.
-  textmanager.drawTextf(ND_LAT,1,1,SCREEN_HEIGHT - 15,COLOR_BLACK,"%.5f", get_gps_lat());
-  textmanager.drawTextf(ND_LON,1,SCREEN_WIDTH/2,SCREEN_HEIGHT - 15,COLOR_BLACK,"%.5f", get_gps_long());
+  textmanager.drawTextf(ND_LAT,1,1,SCREEN_HEIGHT - 14,COLOR_BLACK,"%.5f", get_gps_lat());
+  textmanager.drawTextf(ND_LON,1,SCREEN_WIDTH/2,SCREEN_HEIGHT - 14,COLOR_BLACK,"%.5f", get_gps_long());
 }
 
 void draw_headingupmode(){
@@ -926,7 +967,7 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 
 
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
-  sealandStrokeManager.drawAllStroke();
+  sealandStrokeManager.drawAllStrokes();
   sealandStrokeManager.removeAllStrokes();
 
   int lenbar = 5;
@@ -954,11 +995,12 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
 
         if (scale > 0.5) {
           if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-//          sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
-//          sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
-          sealandStrokeManager.addPointToStroke(pos.x - lenbar, pos.y+20 );
-          sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y+20 );
-          tft.drawFastHLine(pos.x - lenbar, pos.y+20, 1+lenbar*2, col);
+          sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
+          sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
+          tft.drawFastVLine(pos.x, pos.y-lenbar, 1+lenbar*2, col);
+          //sealandStrokeManager.addPointToStroke(pos.x - lenbar, pos.y+20 );
+          //sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y+20 );
+          //tft.drawFastHLine(pos.x - lenbar, pos.y+20, 1+lenbar*2, col);
         }
       }
     }
@@ -995,17 +1037,17 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
               cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward, map_shift_down);
               if (!dpos.isOutsideTft()) {
                 if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-                //sealandStrokeManager.addPointToStroke(dpos.x, dpos.y - lenbar);
-                //sealandStrokeManager.addPointToStroke(dpos.x, dpos.y + lenbar);
+                sealandStrokeManager.addPointToStroke(dpos.x, dpos.y - lenbar);
+                sealandStrokeManager.addPointToStroke(dpos.x, dpos.y + lenbar);
+                //sealandStrokeManager.addPointToStroke(dpos.x - lenbar, dpos.y);
+                //sealandStrokeManager.addPointToStroke(dpos.x + lenbar, dpos.y);
+                if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
                 sealandStrokeManager.addPointToStroke(dpos.x - lenbar, dpos.y);
                 sealandStrokeManager.addPointToStroke(dpos.x + lenbar, dpos.y);
-                if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
-                sealandStrokeManager.addPointToStroke(dpos.x - lenbar, dpos.y+20);
-                sealandStrokeManager.addPointToStroke(dpos.x + lenbar, dpos.y+20);
 
-                //tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, col);
+                tft.drawFastVLine(dpos.x, dpos.y - lenbar, 1+lenbar*2, col);
                 tft.drawFastHLine(dpos.x - lenbar, dpos.y, 1+lenbar*2, col);
-                tft.drawFastHLine(dpos.x - lenbar, dpos.y+20, 1+lenbar*2, col);
+                //tft.drawFastHLine(dpos.x - lenbar, dpos.y+20, 1+lenbar*2, col);
               }
             }
           }
@@ -1043,7 +1085,7 @@ int calculateY(float azimuth, float elevation) {
 
 unsigned long lastdrawtime_nomapdata = 0;
 void draw_nomapdata(){
-  int posy = SCREEN_HEIGHT-110;
+  int posy = SCREEN_HEIGHT-130;
   if(!nomap_drawn && get_gps_fix()){
     //Remove old draw.
     textmanager.drawText(ND_GPSCOND,1,0,0,COLOR_WHITE,"");
@@ -1055,7 +1097,7 @@ void draw_nomapdata(){
   if(millis() - lastdrawtime_nomapdata > 500){
     lastdrawtime_nomapdata = millis();
     if(get_gps_connection()){
-      textmanager.drawText(ND_GPSCOND,1,3, posy,COLOR_GREEN,"GPS connection found.");
+      textmanager.drawText(ND_GPSCOND,1,3, posy,COLOR_GREEN,"GPS Module connected.");
     }else{
       textmanager.drawText(ND_GPSCOND,2,3, posy,COLOR_MAGENTA,"GPS connection not found !! Check connection, or try reset.");
       return;
@@ -1063,11 +1105,11 @@ void draw_nomapdata(){
 
     int col = COLOR_BLACK;
     if(!get_gps_fix()){
-      textmanager.drawText(ND_SEARCHING,2,3, posy+15,col,"Fixing");
-      int dotcounter = (millis() / 500) % 5;
-      char text[10] = "GPS";
-      int i = 3;
-      for (; i < 3 + dotcounter && i < 9; i++) {
+      textmanager.drawText(ND_SEARCHING,2,3, posy+15,col,"Weak Signal. Fixing GPS.");
+      int dotcounter = (millis() / 900) % 10;
+      char text[20] = "Scanning";
+      int i = 8;
+      for (; i < 8 + dotcounter && i < 20; i++) {
         text[i] = '.';
       }
       text[i] = '\0';

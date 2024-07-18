@@ -300,7 +300,7 @@ unsigned long lastfresh_millis = 0;
 
 void loop() {
   switch_handling();
-  gps_loop(screen_mode == MODE_GPSCONST);
+  bool newmsg_received = gps_loop(screen_mode == MODE_GPSCONST);
 
   if (screen_mode == MODE_SETTING) {
     draw_setting_mode(redraw_screen, selectedLine, cursorLine);
@@ -316,7 +316,10 @@ void loop() {
 
   update_degpersecond();
 
-  if (millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw) {
+  // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している or 強制描画タイミング)
+  // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
+  bool redraw_map = (newmsg_received || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw);
+  if (redraw_map) {
     float new_truetrack = get_gps_truetrack();
     float new_lat = get_gps_lat();
     float new_long = get_gps_long();
@@ -399,5 +402,7 @@ void loop() {
 
     //更新終了
     redraw_screen = false;
+    Serial.print("Redraw time ms:");
+    Serial.println(millis()-last_time_gpsdata);
   }
 }
