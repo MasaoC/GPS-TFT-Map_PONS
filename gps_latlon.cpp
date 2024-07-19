@@ -5,16 +5,22 @@
 #include "display_tft.h"
 #include "mysd.h"
 
+#ifdef RP2040_ZERO
+  #define GPS_SERIAL Serial2
+  #define GPS_TX 8
+  #define GPS_RX 9
+#endif
+#ifdef RP2040_PICO
+  #define GPS_SERIAL Serial1
+  #define GPS_TX 0
+  #define GPS_RX 1
+#endif
 
-Adafruit_GPS GPS(&Serial2);
-
+Adafruit_GPS GPS(&GPS_SERIAL);
 
 bool gps_connection = false;
 bool demo_biwako = false;
 
-GNGGAData gnggaData;
-GNRMCData gnrmcData;
-//AdaGPS GPS;
 
 
 // Define a buffer to store incoming data
@@ -29,19 +35,20 @@ SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 #define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
 #define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
 
-#define TIME_NMEA_GROUP 50 //50ms
+#define TIME_NMEA_GROUP 60 //60ms
 
 void gps_getposition_mode() {
   Serial.println("POS MODE");
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  Serial2.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
+
+  GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+  GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
 }
 
 
 void gps_constellation_mode() {
   Serial.println("CONST MODE");
-  Serial2.println(PMTK_SET_NMEA_OUTPUT_GSVONLY);
-  Serial2.println(PMTK_SET_NMEA_UPDATE_1HZ);
+  GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_GSVONLY);
+  GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);
 }
 
 
@@ -50,19 +57,15 @@ char* get_gps_nmea(){
 }
 
 void gps_setup() {
-  Serial2.setTX(8);
-  Serial2.setRX(9);
-  Serial2.begin(9600);
+  GPS_SERIAL.setTX(GPS_TX);
+  GPS_SERIAL.setRX(GPS_RX);
 
   GPS.begin(9600);
-  gps_getposition_mode();
-  //GPS.sendCommand(PGCMD_ANTENNA);
-
-  //57600bps
-  GPS.sendCommand(PMTK_SET_BAUD_57600);
-  GPS.begin(57600);
+  GPS.sendCommand("$PMTK251,38400*27");//Somehow 57600　NG
+  GPS.begin(38400);
   GPS.sendCommand(PMTK_ENABLE_SBAS);
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+  GPS.sendCommand(PGCMD_ANTENNA);
+  gps_getposition_mode();
 }
 
 void parseGSV(char *nmea) {
@@ -197,8 +200,9 @@ bool gps_loop(bool constellation_mode) {
     else if(strstr(GPS.lastNMEA(), "RMC"))
       last_rmc = millis();
     int timedif = last_rmc-last_gga;
+    Serial.println(timedif);
     if(abs(timedif) < TIME_NMEA_GROUP)
-      GPS_updated = true;// RMC/GGAを受信した。(57600bpsだと通常9ms間隔となるが、50msとした。)
+      GPS_updated = true;// RMC/GGAを受信した。(57600bpsだと通常9ms間隔,9600だと51msとなるので、60msとした。)
 
     if (constellation_mode && strstr(GPS.lastNMEA(), "GSV")) {
       parseGSV(GPS.lastNMEA());

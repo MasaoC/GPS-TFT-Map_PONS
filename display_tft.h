@@ -10,7 +10,6 @@
 #define SCREEN_HEIGHT 320
 
 
-#define TFT_BL        7
 
 
 

@@ -180,9 +180,9 @@ void longPressCallback() {
 }
 
 // Create Button objects
-Button sw_push(14, shortPressCallback, longPressCallback);
-Button sw_up(10, shortPressCallback_up);
-Button sw_down(11, shortPressCallback_down);
+Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
+Button sw_up(SW_UP, shortPressCallback_up);
+Button sw_down(SW_DOWN, shortPressCallback_down);
 
 void setup_switch() {
     pinMode(sw_push.getPin(), INPUT_PULLUP); // This must be after setup tft for some reason of library TFT_eSPI.

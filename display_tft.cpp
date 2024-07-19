@@ -12,7 +12,6 @@ TFT_eSPI tft = TFT_eSPI();       // Invoke custom library
 TFT_eSprite needle = TFT_eSprite(&tft); // Sprite object for needle
 TFT_eSprite needle_w = TFT_eSprite(&tft); // Sprite object for deleting needle with white
 
-#define BATTERY_PIN 26 //A3
 
 int screen_brightness = 255; // Example brightness value
 const int brightnessLevels[] = {10, 100, 150, 200, 255}; // Example brightness levels
@@ -732,6 +731,7 @@ void startup_demo_tft() {
   //draw_gpsinfo();
   for(int i = 0; i < 10; i++){
     clean_map();
+    gps_loop(false);
     sealandStrokeManager.drawAllStrokes();
     sealandStrokeManager.removeAllStrokes();
     draw_Biwako(center_lat, center_lon, scale-i*0.01, 0);
@@ -751,7 +751,7 @@ void startup_demo_tft() {
     tft.print("VERSION:0.1 (2024.7.16)");
 
 
-    delay(500);
+    delay(300);
   }
 }
 
