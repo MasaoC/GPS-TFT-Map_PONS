@@ -5,17 +5,6 @@
 #include "display_tft.h"
 #include "mysd.h"
 
-#ifdef RP2040_ZERO
-  #define GPS_SERIAL Serial2
-  #define GPS_TX 8
-  #define GPS_RX 9
-#endif
-#ifdef RP2040_PICO
-  #define GPS_SERIAL Serial1
-  #define GPS_TX 0
-  #define GPS_RX 1
-#endif
-
 Adafruit_GPS GPS(&GPS_SERIAL);
 
 bool gps_connection = false;
@@ -35,7 +24,7 @@ SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 #define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
 #define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
 
-#define TIME_NMEA_GROUP 60 //60ms
+#define TIME_NMEA_GROUP 80 // RMC/GGAを受信した判定。(57600bpsだと通常9ms間隔,9600だと74ms以下となるので、80msとした。)
 
 void gps_getposition_mode() {
   Serial.println("POS MODE");
@@ -61,11 +50,16 @@ void gps_setup() {
   GPS_SERIAL.setRX(GPS_RX);
 
   GPS.begin(9600);
-  GPS.sendCommand("$PMTK251,38400*27");//Somehow 57600　NG
-  GPS.begin(38400);
+  
+  //Somehow 57600　NG on RP2040_ZERO
+  // For RP2040_PICO, unable change bps for some unknown reason. Keep commented out for now.
+  //GPS.sendCommand("$PMTK251,38400*27");
+  //GPS.begin(38400);
+
   GPS.sendCommand(PMTK_ENABLE_SBAS);
   GPS.sendCommand(PGCMD_ANTENNA);
   gps_getposition_mode();
+
 }
 
 void parseGSV(char *nmea) {
@@ -202,7 +196,7 @@ bool gps_loop(bool constellation_mode) {
     int timedif = last_rmc-last_gga;
     Serial.println(timedif);
     if(abs(timedif) < TIME_NMEA_GROUP)
-      GPS_updated = true;// RMC/GGAを受信した。(57600bpsだと通常9ms間隔,9600だと51msとなるので、60msとした。)
+      GPS_updated = true;
 
     if (constellation_mode && strstr(GPS.lastNMEA(), "GSV")) {
       parseGSV(GPS.lastNMEA());

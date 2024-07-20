@@ -190,10 +190,11 @@ void setup_switch() {
     pinMode(sw_down.getPin(), INPUT_PULLUP); // This must be after setup tft for some reason of library TFT_eSPI.
 }
 
-void switch_handling() {
-    sw_push.read();
-    sw_up.read();
-    sw_down.read();
+
+void switch_handling(){
+  sw_push.read();
+  sw_up.read();
+  sw_down.read();
 }
 
 void setup(void) {
@@ -208,7 +209,7 @@ void setup(void) {
 
 
 
-  startup_demo_tft();
+  //startup_demo_tft();
 
 
   redraw_screen = true;
@@ -318,7 +319,7 @@ void loop() {
 
   // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している or 強制描画タイミング)
   // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
-  bool redraw_map = (newmsg_received || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL || quick_redraw);
+  bool redraw_map = ((newmsg_received || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL)) || quick_redraw;
   if (redraw_map) {
     float new_truetrack = get_gps_truetrack();
     float new_lat = get_gps_lat();

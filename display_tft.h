@@ -9,7 +9,13 @@
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 320
 
-
+// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
+#ifdef PNP_BL
+  #define BRIGHTNESS(brt) (255-brt)
+#endif
+#ifdef NPN_BL
+  #define BRIGHTNESS(brt) (brt)
+#endif
 
 
 
@@ -58,6 +64,7 @@
 
   extern TFT_eSPI tft;
   extern bool fresh_display;
+  extern int screen_brightness;
 #endif
 
 

@@ -1,6 +1,9 @@
 #include "mysd.h"
 #include "navdata.h"
+#include "settings.h"
 #include <SD.h>
+
+
 File myFile;
 File csvFile;
 
@@ -25,18 +28,26 @@ bool good_sd(){
 
 
 void log_sdf(const char* format, ...){
-  char buffer[256]; // Temporary buffer for formatted text
 
+  #ifdef DISABLE_SD
+    return;
+  #endif
+
+  char buffer[256]; // Temporary buffer for formatted text
   va_list args;
   va_start(args, format);
   vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-
   return log_sd(buffer);
 }
 
 
 void log_sd(const char* text){
+
+  #ifdef DISABLE_SD
+    return;
+  #endif
+
   // open the file. note that only one file can be open at a time,
   // so you have to close this one before opening another.
   myFile = SD.open(LOGFILE_NAME, FILE_WRITE);
@@ -95,6 +106,11 @@ void process_line(String line) {
 
 
 void read_sd() {
+
+  #ifdef DISABLE_SD
+    return;
+  #endif
+
   File myFile = SD.open("mapdata.csv");
   if (!myFile) {
     Serial.println("error opening mapdata.csv");
@@ -160,6 +176,11 @@ void utcToJst(int *year, int *month, int *day, int *hour) {
 }
 
 void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) {
+
+  #ifdef DISABLE_SD
+    return;
+  #endif
+
   utcToJst(&year,&month,&day,&hour);
   if (!sdInitialized && !sdError) {
     sdInitialized = SD.begin(SD_CS_PIN);
@@ -235,14 +256,21 @@ void dateTime(uint16_t* date, uint16_t* time) {
 }
 
 void setup_sd(){
+  #ifdef DISABLE_SD
+    return;
+  #endif
   Serial.print("Initializing SD card...");
 
-  SPI.setRX(0);
-  SPI.setCS(1);
-  SPI.setSCK(2);
-  SPI.setTX(3);
+  SPI.setRX(SD_RX);
+  SPI.setSCK(SD_SCK);
+  SPI.setTX(SD_TX);
+  #ifdef RP2040_ZERO
+  SPI.setCS(SD_CS_PIN);
   SPI.begin();
-  
+  #endif
+  #ifdef RP2040_PICO
+  SPI.begin(true);
+  #endif
   
   sdInitialized = SD.begin(SD_CS_PIN);
 

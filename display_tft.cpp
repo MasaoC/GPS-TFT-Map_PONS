@@ -28,13 +28,7 @@ int map_shift_down = 0;
 #define MAP_SHIFT_DOWN_DEFAULT 60   //80+60=140 is centerY.
 
 
-// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
-#ifdef PNP_BL
-  #define BRIGHTNESS(brt) (255-brt)
-#endif
-#ifdef NPN_BL
-  #define BRIGHTNESS(brt) (brt)
-#endif
+
 
 
 void toggle_mode(){
@@ -83,6 +77,7 @@ void setup_tft() {
   pinMode(TFT_BL, OUTPUT);
   analogWriteFreq(BL_PWM_FRQ); // 1000Hz
   analogWrite(TFT_BL,BRIGHTNESS(0));
+
 
   tft.begin();
   tft.setRotation(2);//set 0 for newhaven

@@ -31,20 +31,42 @@
 
 // Hardware Ver 0.1
 
-#define SW_PUSH   14
 #define RP2040_ZERO
+#define SW_PUSH   14
 #define SW_UP     10
 #define SW_DOWN   11
 #define TFT_BL     7
+#define GPS_SERIAL Serial2
+#define GPS_TX 8
+#define GPS_RX 9
+
+#define SD_RX 0
+#define SD_CS_PIN 1
+#define SD_SCK 2
+#define SD_TX 3
+
+
 
 
 // Hardware Ver0.2 
-/*#define RP2040_PICO
-#define SW_PUSH 22 
-#define SW_UP -1//10
-#define SW_DOWN -1//11
-#define TFT_BL        -1//7
+/*
+#define RP2040_PICO
+#define SW_PUSH 5
+#define SW_UP   -1
+#define SW_DOWN -1
+#define TFT_BL  -1
+#define GPS_SERIAL Serial1
+#define GPS_TX 0
+#define GPS_RX 1
+//#define DISABLE_SD
+#define SD_RX 4    //MISO
+#define SD_CS_PIN -1
+#define SD_SCK 2
+#define SD_TX 3    //CMD MOSI
 */
+
+
+
 
 #define BATTERY_PIN 26 //A3
 

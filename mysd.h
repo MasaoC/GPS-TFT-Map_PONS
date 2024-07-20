@@ -8,5 +8,3 @@ void log_sd(const char* text);
 
 void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) ;
 
-
-#define SD_CS_PIN 1
