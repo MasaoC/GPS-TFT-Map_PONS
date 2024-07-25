@@ -6,5 +6,5 @@ void read_sd();
 
 void log_sd(const char* text);
 
-void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) ;
+void saveCSV(float latitude, float longitude,float gs,int mtrack, int year, int month, int day, int hour, int minute, int second) ;
 

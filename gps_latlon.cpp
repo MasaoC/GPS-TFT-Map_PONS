@@ -4,6 +4,7 @@
 #include "settings.h"
 #include "display_tft.h"
 #include "mysd.h"
+#include "display_tft.h"
 
 Adafruit_GPS GPS(&GPS_SERIAL);
 
@@ -210,10 +211,8 @@ bool gps_loop(bool constellation_mode) {
           log_sd(GPS.lastNMEA());
         }else{
           // save to SD card
-          saveCSV(GPS.latitudeDegrees, GPS.longitudeDegrees, GPS.year, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
-          int tracklog_interval = constrain(12000 - get_gps_mps() * 1000, 1000, 10000);
-          // Interval from 1sec to 12sec. When mps is 0, 12sec interval.  When mps is 7, log 35m apart.
-          // When mps is 5, save every 7sec and log 35m apart.  When mps is 3, save every 9 sec and 27m apart. so on...
+          saveCSV(GPS.latitudeDegrees, GPS.longitudeDegrees,GPS.speed,get_gps_truetrack() , GPS.year, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
+          int tracklog_interval = constrain(50000/(1+get_gps_mps()), 1000, 15000);//約50mおきに一回記録するような計算となる。
           if (millis() - last_latlon_manager > tracklog_interval) {
             latlon_manager.addCoord({ GPS.latitudeDegrees, GPS.longitudeDegrees });
             last_latlon_manager = millis();
@@ -334,15 +333,14 @@ double get_gps_pdop() {
 
 
 
-#include "display_tft.h"
 
 
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
 void LatLonManager::addCoord(Coordinate position) {
   coords[currentIndex] = position;
-  currentIndex = (currentIndex + 1) % 180;
-  if (count < 180) {
+  currentIndex = (currentIndex + 1) % MAX_TRACK_CORDS;
+  if (count < MAX_TRACK_CORDS) {
     count++;
   }
 }
@@ -367,7 +365,7 @@ Coordinate LatLonManager::getData(int newest_index) {
     Serial.println("Invalid index");
     return {0, 0};
   }
-  int index = (currentIndex - 1 - newest_index + 180) % 180;
+  int index = (currentIndex - 1 - newest_index + MAX_TRACK_CORDS) % MAX_TRACK_CORDS;
   return coords[index];
 }
 
@@ -377,12 +375,12 @@ LatLonManager latlon_manager;
 // Function to convert latitude and longitude to x, y coordinates on the TFT screen
 cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
   // Convert map center latitude and longitude to radians
-  float centerLatRad = mapCenterLat * PI / 180.0;
-  float centerLonRad = mapCenterLon * PI / 180.0;
+  float centerLatRad = mapCenterLat * DEG_TO_RAD;
+  float centerLonRad = mapCenterLon * DEG_TO_RAD;
 
   // Convert point latitude and longitude to radians
-  float latRad = lat * PI / 180.0;
-  float lonRad = lon * PI / 180.0;
+  float latRad = lat * DEG_TO_RAD;
+  float lonRad = lon * DEG_TO_RAD;
 
   // Calculate the differences
   float dLat = latRad - centerLatRad;
@@ -397,7 +395,7 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
   yDist *= mapScale;
 
   // Apply rotation for map up direction
-  float angleRad = mapUpDirection * PI / 180.0;
+  float angleRad = mapUpDirection * DEG_TO_RAD;
   float rotatedX = xDist * cos(angleRad) - yDist * sin(angleRad);
   float rotatedY = xDist * sin(angleRad) + yDist * cos(angleRad);
 
@@ -413,17 +411,17 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
     float screenY = (SCREEN_HEIGHT / 2) - y + mapshiftdown;
 
     // Apply rotation inverse for map up direction
-    float angleRad = mapUpDirection * PI / 180.0;
+    float angleRad = mapUpDirection * DEG_TO_RAD;
     float rotatedX = screenX * cos(angleRad) + screenY * sin(angleRad);
     float rotatedY = -screenX * sin(angleRad) + screenY * cos(angleRad);
 
     // Convert map distances to degrees
-    float lonDist = rotatedX / (111320.0 * cos(mapCenterLat * PI / 180.0) * mapScale);
+    float lonDist = rotatedX / (111320.0 * cos(mapCenterLat * DEG_TO_RAD) * mapScale);
     float latDist = rotatedY / (110540.0 * mapScale);
 
     // Calculate latitude and longitude
-    float newLon = mapCenterLon + (lonDist * 180.0 / PI);
-    float newLat = mapCenterLat + (latDist * 180.0 / PI);
+    float newLon = mapCenterLon + (lonDist * RAD_TO_DEG);
+    float newLat = mapCenterLat + (latDist * RAD_TO_DEG);
 
     return Coordinate{newLat, newLon};
 }
@@ -438,7 +436,6 @@ bool out_of_bounds(int x1,int y1,int x2,int y2){
 
 #define EARTH_RADIUS 6371.0 // Earth's radius in kilometers
 #define AVG_LATITUDE 35.5 // Average latitude of the specific range in degrees
-//#define DEG_TO_RAD (PI / 180.0) // Conversion factor from degrees to radians
 #define COS_AVG_LATITUDE cos(AVG_LATITUDE * DEG_TO_RAD) // Cosine of the average latitude in radians
 
 // Precompute meters per degree for the specific latitude

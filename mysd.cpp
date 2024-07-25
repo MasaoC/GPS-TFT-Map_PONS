@@ -175,7 +175,7 @@ void utcToJst(int *year, int *month, int *day, int *hour) {
     }
 }
 
-void saveCSV(float latitude, float longitude, int year, int month, int day, int hour, int minute, int second) {
+void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second) {
 
   #ifdef DISABLE_SD
     return;
@@ -214,12 +214,16 @@ void saveCSV(float latitude, float longitude, int year, int month, int day, int 
   csvFile = SD.open(csv_filename, FILE_WRITE);
   if (csvFile) {
     if(!headerWritten){
-      csvFile.println("latitude,longitude,date,time");
+      csvFile.println("latitude,longitude,gs,TrueTrack,date,time");
       headerWritten = true;
     }
     csvFile.print(latitude, 6);
     csvFile.print(",");
     csvFile.print(longitude, 6);
+    csvFile.print(",");
+    csvFile.print(gs, 1);
+    csvFile.print(",");
+    csvFile.print(ttrack);
     csvFile.print(",");
 
     // Format date as YYYY-MM-DD

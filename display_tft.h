@@ -17,8 +17,6 @@
   #define BRIGHTNESS(brt) (brt)
 #endif
 
-
-
 #define BL_PWM_FRQ 1000   //1000Hz
 
 
@@ -42,7 +40,7 @@
   };  
 
   enum text_id{
-    SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSCONST,SETTING_EXIT,
+    SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSCONST,SETTING_MAPDETAIL,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
     ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND
   };
@@ -83,6 +81,7 @@ bool is_northupmode();
 void redraw_compass(float up,int col,int bgcolor);
 void draw_nomapdata();
 void draw_ConstellationDiagram(bool redraw);
+void draw_maplist_mode(bool redraw);
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);

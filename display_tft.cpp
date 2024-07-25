@@ -2,8 +2,11 @@
 #include "display_tft.h"
 #include "gps_latlon.h"
 #include "mysd.h"
-
 #include "font_data.h"
+
+#include <cstring> // for strlen and strcpy
+#include <cstdlib> // for malloc and free
+
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_LARGE Arial_Black32
 
@@ -27,6 +30,9 @@ int map_shift_down = 0;
 
 #define MAP_SHIFT_DOWN_DEFAULT 60   //80+60=140 is centerY.
 
+#define RADIUS_EARTH_KM 6371.0 // Earth's radius in kilometers
+#define MAX_STROKES_MAP 100
+#define MAX_STROKES_SEALAND 1000
 
 
 
@@ -97,9 +103,6 @@ void setup_tft() {
 struct line {
   int x1, y1, x2, y2;
 };
-
-#include <cstring> // for strlen and strcpy
-#include <cstdlib> // for malloc and free
 
 
 class Point {
@@ -357,8 +360,6 @@ public:
 };
 
 
-#define MAX_STROKES_MAP 100
-#define MAX_STROKES_SEALAND 1000
 
 StrokeManager mapStrokeManager(MAX_STROKES_MAP);
 StrokeManager sealandStrokeManager(MAX_STROKES_SEALAND);
@@ -374,8 +375,6 @@ double rad2deg(double rad) {
     return rad * (180.0 / PI);
 }
 
-
-#define RADIUS_EARTH_KM 6371.0 // Earth's radius in kilometers
 
 
 // Function to calculate distance using Haversine formula
@@ -663,7 +662,7 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
       char name_firstchar = extramaps[i].name[0];
       if(name_firstchar == 's'){
         col = COLOR_RED;
-      }else if(name_firstchar == 'o'){
+      }else if(name_firstchar == 'r'){
         col = COLOR_ORANGE;
       }else if(name_firstchar == 'g'){
         col = COLOR_BRIGHTGRAY;
@@ -671,6 +670,8 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
         col = COLOR_MAGENTA;
       }else if(name_firstchar == 'c'){
         col = COLOR_CYAN;
+      }else if(name_firstchar == 'b'){
+        col = COLOR_BLUE;
       }
       draw_map(STRK_MAP1,up,center_lat,center_lon,scale,&extramaps[i],col);
     }
@@ -740,18 +741,15 @@ void startup_demo_tft() {
 
     tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 110);
-    tft.print("SD MAP COUNT:");
+    tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
-    tft.print("VERSION:0.1 (2024.7.16)");
+    tft.print("SOFT VERSION:0.2 (2024.7.25)");
 
 
     delay(300);
   }
 }
-
-
-
 
 void drawbar(float degpersecond, int col){
   if(col == -1){
@@ -855,7 +853,7 @@ void draw_gpsinfo() {
   
   double input_voltage = analogRead(BATTERY_PIN)/1024.0*3.3*2;
   //Serial.println(input_voltage);
-  if(input_voltage < 3.55){
+  if(input_voltage < BAT_LOW_VOLTAGE){
     textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_LOW");
   }else if(input_voltage < 3.75){
     textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-28,COLOR_MAGENTA,"%.1fV",input_voltage);
@@ -1063,14 +1061,14 @@ void tft_change_brightness(int increment){
 }
 
 
-int calculateX(float azimuth, float elevation) {
+int calculateGPS_X(float azimuth, float elevation) {
   const int shift_left = 10;
   const int radius = SCREEN_WIDTH/2 - shift_left;
 
   return (SCREEN_WIDTH / 2) + (int)(cos(radians(azimuth)) * (radius) * (1 - elevation / 90.0))-shift_left;
 }
 
-int calculateY(float azimuth, float elevation) {
+int calculateGPS_Y(float azimuth, float elevation) {
   const int height = SCREEN_HEIGHT;
   const int radius = SCREEN_WIDTH/2-20;
   const int shift_down = 20;
@@ -1119,9 +1117,9 @@ unsigned long lastdrawn_const = 0;
 void draw_ConstellationDiagram(bool redraw) {
   if(millis()-lastdrawn_const > 1000){
     redraw = true;
-    lastdrawn_const = millis();
   }
   if(redraw){
+    lastdrawn_const = millis();
     redraw = false;
     bool aru = false;
     for (int i = 0; i < 32; i++) {
@@ -1159,8 +1157,8 @@ void draw_ConstellationDiagram(bool redraw) {
       float azimuth = satellites[i].azimuth;
       float elevation = satellites[i].elevation;
 
-      int x = calculateX(azimuth, elevation);
-      int y = calculateY(azimuth, elevation);
+      int x = calculateGPS_X(azimuth, elevation);
+      int y = calculateGPS_Y(azimuth, elevation);
       int size = 5;
       if(satellites[i].SNR <= 0){
         size = 3;
@@ -1188,6 +1186,51 @@ void draw_ConstellationDiagram(bool redraw) {
   }
 }
 
+void draw_maplist_mode(bool redraw){
+  if(millis()-lastdrawn_const > 10000){
+    redraw = true;
+  }
+  if(redraw){
+    lastdrawn_const = millis();
+    redraw = false;
+
+    mapdata* mapdatas[] = {&map_shinura,&map_okishima,&map_takeshima,&map_chikubushima,&map_biwako,&map_handaioutside,&map_handaihighway,&map_handaihighway2,&map_handaiinside1,&map_handaiinside2,&map_handaiinside3,
+    &map_handaiinside4,&map_handaiinside5,&map_handairailway,&map_handaicafe,&map_japan1,&map_japan2,&map_japan3,&map_japan4};
+    int sizeof_mapflash = sizeof(mapdatas)/sizeof(mapdatas[0]);
+    tft.fillScreen(COLOR_WHITE);
+    tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+    tft.setCursor(1, 1);
+    tft.printf("MAPLIST FLSH:%d/SD:%d",sizeof_mapflash,mapdata_count);
+
+    tft.unloadFont();
+    tft.setTextSize(1);
+    int posy = 20;
+    tft.setCursor(1,posy);
+    tft.setTextColor(COLOR_BLACK);
+
+    for(int i = 0; i < sizeof_mapflash;i++){
+      tft.printf("FLSH %d: %s,%4.2f,%4.2f,%d",mapdatas[i]->id,mapdatas[i]->name,mapdatas[i]->cords[0][0],mapdatas[i]->cords[0][1],mapdatas[i]->size);
+      posy += 10;
+      tft.setCursor(1,posy);
+    }
+
+    for(int i = 0; i < mapdata_count;i++){
+      if(extramaps[i].size <= 1){
+        continue;
+      }
+      double lon1 = extramaps[i].cords[0][0];
+      double lat1 = extramaps[i].cords[0][1];
+      char name_firstchar = extramaps[i].name[0];
+      
+      tft.printf("SD %d:%s,%4.2f,%4.2f,%d,%c",i,extramaps[i].name,lat1,lon1,extramaps[i].size,name_firstchar);
+      posy += 10;
+      tft.setCursor(1,posy);
+    }
+
+    tft.loadFont(AA_FONT_SMALL);    // Must load the font first
+    
+  }
+}
 
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine){
   int posy = 35;
@@ -1250,10 +1293,23 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine){
     textmanager.drawTextf(SETTING_GPSCONST,2,10, posy,col,selectedLine == 3 ? " SHOW GPS CONST >":"SHOW GPS CONST >");
     posy += separation;
 
+
+    // Line 5: Mapdetail
     col = COLOR_BLACK;
-    // Line 5: Exit
     if (cursorLine == 4){
       if(selectedLine == 4){
+        col = COLOR_RED; // Highlight selected line
+      }else{
+        col = COLOR_MAGENTA; // Highlight selected line
+      }
+    }
+    textmanager.drawTextf(SETTING_MAPDETAIL,2,10, posy,col,"Maplist Detail");
+    posy += separation;
+
+    // Line 6: Exit
+    col = COLOR_BLACK;
+    if (cursorLine == 5){
+      if(selectedLine == 5){
         col = COLOR_RED; // Highlight selected line
       }else{
         col = COLOR_MAGENTA; // Highlight selected line

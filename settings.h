@@ -19,6 +19,8 @@
 #define SCREEN_FRESH_INTERVAL 30000
 
 
+#define BAT_LOW_VOLTAGE 3.55
+
 
 // =====Hardware Settings =====
 
@@ -29,7 +31,7 @@
 #define NPN_BL
 //#define PNP_BL
 
-// Hardware Ver 0.1
+// Hardware Ver1,2
 
 #define RP2040_ZERO
 #define SW_PUSH   14
@@ -48,7 +50,8 @@
 
 
 
-// Hardware Ver0.2 
+
+// Hardware Ver3
 /*
 #define RP2040_PICO
 #define SW_PUSH 5

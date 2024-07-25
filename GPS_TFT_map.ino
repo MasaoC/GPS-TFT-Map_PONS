@@ -6,6 +6,9 @@
 #include "button.h"
 
 
+#define SCALE_JAPAN 0.008f
+#define SETTING_LINES 6
+
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
 float lat_now = 0;
@@ -19,33 +22,22 @@ const int numSamples = 6;          // Number of samples to take over 3 seconds
 float upward_samples[numSamples];  // Array to store truetrack values
 unsigned long lastSampleTime = 0;  // Time when the last sample was taken
 int sampleIndex = 0;               // Index to keep track of current sample
-
 float degpersecond = 0;  // The calculated average differential
-
-
-
 
 const int MODE_SETTING = 1;
 const int MODE_MAP = 2;
 const int MODE_GPSCONST = 3;
+const int MODE_MAPLIST = 4;
 int screen_mode = MODE_MAP;
-
-
-#define SCALE_JAPAN 0.008f
-
-
-
 int scaleindex = 3;
 const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.5f, 1.0f, 2.5f, 10.0f };
 float scale = scalelist[scaleindex];
-
-
-
-
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
-#define SETTING_LINES 5
+bool err_nomap = false;
+unsigned long lastfresh_millis = 0;
+
 
 // Callback function for short press
 void shortPressCallback() {
@@ -86,6 +78,9 @@ void shortPressCallback() {
         Serial.println("GPS CONST MODE");
         gps_constellation_mode();
         screen_mode = MODE_GPSCONST;
+      } else if (cursorLine == 4) {
+        Serial.println("MAPLIST MODE");
+        screen_mode = MODE_MAPLIST;
       } else {
         if (selectedLine == -1) {
           //Entering changing value mode.
@@ -166,6 +161,9 @@ void longPressCallback() {
         Serial.println("GPS CONST MODE");
         gps_constellation_mode();
         screen_mode = MODE_GPSCONST;
+      } else if (cursorLine == 4) {
+        Serial.println("MAP DETAIL MODE");
+        screen_mode = MODE_MAPLIST;
       } else {
         if (selectedLine == -1) {
           //Entering changing value mode.
@@ -190,7 +188,6 @@ void setup_switch() {
     pinMode(sw_down.getPin(), INPUT_PULLUP); // This must be after setup tft for some reason of library TFT_eSPI.
 }
 
-
 void switch_handling(){
   sw_push.read();
   sw_up.read();
@@ -209,7 +206,7 @@ void setup(void) {
 
 
 
-  //startup_demo_tft();
+  startup_demo_tft();
 
 
   redraw_screen = true;
@@ -286,17 +283,9 @@ void check_bankwarning() {
   }
 }
 
-
 void debug_print(const char* inp) {
   Serial.println(inp);
 }
-
-
-
-
-bool err_nomap = false;
-
-unsigned long lastfresh_millis = 0;
 
 
 void loop() {
@@ -310,6 +299,12 @@ void loop() {
   }
   if (screen_mode == MODE_GPSCONST) {
     draw_ConstellationDiagram(redraw_screen);
+    redraw_screen = false;
+    return;
+  }
+
+  if (screen_mode == MODE_MAPLIST) {
+    draw_maplist_mode(redraw_screen);
     redraw_screen = false;
     return;
   }
