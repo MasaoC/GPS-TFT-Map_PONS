@@ -5,11 +5,11 @@
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
-下記二ついずれか。
+下記二ついずれかを推奨。
  * Waveshare RP2040 zero
- * Rasbery Pi PICO
+ * Rasbery Pi Pico
    
- PICOでは、TFTとの間で8 bit or 16 bit Paralel接続を使う事で高速描画可能。
+ Picoでは、TFTとの間で16 bit Paralel接続を使う事で約３倍高速描画可能。
 
 ## TFT  Recommended TFT panel.
  Tested on ILI9341 and ST7789 using TFT_eSPI library.  Aliexpress で安価に購入もできるが、屋外で使用する場合は輝度が高く画質も綺麗なDigikeyにて購入を推奨する。
