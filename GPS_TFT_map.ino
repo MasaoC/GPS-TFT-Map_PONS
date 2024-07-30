@@ -196,10 +196,12 @@ void switch_handling(){
 
 void setup(void) {
   Serial.begin(38400);
-  Serial.print(F("SETUP"));
+  Serial.print(F("SETUP INIT"));
+
 
 
   setup_switch();
+  Serial.print(F("GPS SETUP"));
   gps_setup();
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
@@ -213,6 +215,7 @@ void setup(void) {
   quick_redraw = true;
   const char* inittext = "INIT";
   log_sd(inittext);
+  Serial.print(F("SETUP DONE"));
 }
 
 void reset_degpersecond(){

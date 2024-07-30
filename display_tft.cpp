@@ -851,7 +851,7 @@ void draw_gpsinfo() {
   
   tft.setCursor(0, 27);
   
-  double input_voltage = analogRead(BATTERY_PIN)/1024.0*3.3*2;
+  double input_voltage = analogRead(BATTERY_PIN)/1024.0*BATTERY_MULTIPLYER;
   //Serial.println(input_voltage);
   if(input_voltage < BAT_LOW_VOLTAGE){
     textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_LOW");

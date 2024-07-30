@@ -17,22 +17,19 @@
 
 //強制画面リフレッシュ時間
 #define SCREEN_FRESH_INTERVAL 30000
-
-
-#define BAT_LOW_VOLTAGE 3.55
+#define BATTERY_PIN 26 //A3
 
 
 // =====Hardware Settings =====
 
-//外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
-#define SINGLE_SWITCH
+
 
 // TFTのBL調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
-#define NPN_BL
-//#define PNP_BL
+//#define NPN_BL
+#define PNP_BL
 
 // Hardware Ver1,2
-
+/*
 #define RP2040_ZERO
 #define SW_PUSH   14
 #define SW_UP     10
@@ -46,13 +43,14 @@
 #define SD_CS_PIN 1
 #define SD_SCK 2
 #define SD_TX 3
-
+#define BATTERY_MULTIPLYER 3.3*2
+#define BAT_LOW_VOLTAGE 3.55
+*/
 
 
 
 
 // Hardware Ver3
-/*
 #define RP2040_PICO
 #define SW_PUSH 5
 #define SW_UP   -1
@@ -66,12 +64,11 @@
 #define SD_CS_PIN -1
 #define SD_SCK 2
 #define SD_TX 3    //CMD MOSI
-*/
+#define BATTERY_MULTIPLYER 3.1*2
+#define BAT_LOW_VOLTAGE 3.2
+#define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 
 
-
-
-#define BATTERY_PIN 26 //A3
 
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 

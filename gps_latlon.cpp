@@ -25,11 +25,12 @@ SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 #define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
 #define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
 
-#define TIME_NMEA_GROUP 80 // RMC/GGAを受信した判定。(57600bpsだと通常9ms間隔,9600だと74ms以下となるので、80msとした。)
+
+// RMC/GGAを受信した判定。(57600bpsだと通常9ms間隔,9600だと74ms以下となるので、80msでもOK。)
+#define TIME_NMEA_GROUP 500 //不具合の可能性があり、一時的に500msにセット。
 
 void gps_getposition_mode() {
   Serial.println("POS MODE");
-
   GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
   GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
 }
