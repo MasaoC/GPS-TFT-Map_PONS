@@ -1,9 +1,10 @@
 #include "settings.h"
 #include "display_tft.h"
-#include "gps_latlon.h"
+#include "ublox_gps.h"
 #include "mysd.h"
 #include "font_data.h"
 
+#include "hardware/adc.h"
 #include <cstring> // for strlen and strcpy
 #include <cstdlib> // for malloc and free
 
@@ -84,7 +85,6 @@ void setup_tft() {
   analogWriteFreq(BL_PWM_FRQ); // 1000Hz
   analogWrite(TFT_BL,BRIGHTNESS(0));
 
-
   tft.begin();
   tft.setRotation(2);//set 0 for newhaven
   tft.loadFont(AA_FONT_SMALL);    // Must load the font first
@@ -93,8 +93,13 @@ void setup_tft() {
   Serial.println(F("Initialized"));
   tft.fillScreen(COLOR_WHITE);
   createNeedle();
-
   analogWrite(TFT_BL,BRIGHTNESS(screen_brightness));
+
+  pinMode(BATTERY_PIN,INPUT);
+  #ifdef RP2040_PICO
+    adc_init ();                /* initialize ADC */
+    adc_gpio_init (BATTERY_PIN);   /* init gpio 26 as input pin,  0.0-3.3V */
+  #endif
 }
 
 
@@ -744,7 +749,7 @@ void startup_demo_tft() {
     tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
-    tft.print("SOFT VERSION:0.2 (2024.7.25)");
+    tft.print("SOFT VERSION:0.3 (2024.8.3)");
 
 
     delay(300);
@@ -826,6 +831,28 @@ void draw_sdinfo(){
   tft.print("SD");
 }
 
+const int numPoints = 14;
+const int adReadings[numPoints] = {1600, 1584, 1569, 1549, 1535, 1525, 1508, 1490, 1473, 1295, 995, 746, 555, 473};
+const double voltages[numPoints] = {4.25, 4.15, 4.05, 3.95, 3.85, 3.75, 3.65, 3.55, 3.45, 3.35, 3.25, 3.15, 3.05, 2.95};
+double volts_interpolate(int adreading) {
+    // Handle readings above the highest data point
+    if (adreading >= adReadings[0]) {
+        return voltages[0] + (adreading - adReadings[0]) * (voltages[0] - voltages[1]) / (adReadings[0] - adReadings[1]);
+    }    
+    // Handle readings below the lowest data point
+    if (adreading <= adReadings[numPoints - 1]) {
+        return voltages[numPoints - 1] + (adreading - adReadings[numPoints - 1]) * (voltages[numPoints - 1] - voltages[numPoints - 2]) / (adReadings[numPoints - 1] - adReadings[numPoints - 2]);
+    }
+    // Handle readings within the data range using linear interpolation
+    for (int i = 0; i < numPoints - 1; i++) {
+        if (adreading >= adReadings[i + 1] && adreading <= adReadings[i]) {
+            return voltages[i] + (adreading - adReadings[i]) * (voltages[i + 1] - voltages[i]) / (adReadings[i + 1] - adReadings[i]);
+        }
+    }
+    // If something goes wrong, return a default value
+    return 0.0;
+}
+
 int last_written_mh = 0;
 void draw_gpsinfo() {
   int col = COLOR_BLACK;
@@ -850,9 +877,14 @@ void draw_gpsinfo() {
   textmanager.drawTextf(ND_SATS,1,SCREEN_WIDTH/2,SCREEN_HEIGHT-28,col,"%dsats",get_gps_numsat());
   
   tft.setCursor(0, 27);
-  
-  double input_voltage = analogRead(BATTERY_PIN)/1024.0*BATTERY_MULTIPLYER;
-  //Serial.println(input_voltage);
+  #ifdef RP2040_PICO
+    adc_select_input (0);    /* select input on ADC0 */
+    int adreading = adc_read();
+    double input_voltage = volts_interpolate(adreading);
+  #else
+    double input_voltage = analogRead(BATTERY_PIN)/1048.0*BATTERY_MULTIPLYER;
+  #endif
+
   if(input_voltage < BAT_LOW_VOLTAGE){
     textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_LOW");
   }else if(input_voltage < 3.75){
@@ -866,8 +898,8 @@ void draw_gpsinfo() {
   textmanager.drawTextf(ND_DIST_PLAT,2,0,SCREEN_HEIGHT - 30,COLOR_BLACK,"%.1fkm", dist);
 
   // 5 decimal places latitude, longitude print.
-  textmanager.drawTextf(ND_LAT,1,1,SCREEN_HEIGHT - 14,COLOR_BLACK,"%.5f", get_gps_lat());
-  textmanager.drawTextf(ND_LON,1,SCREEN_WIDTH/2,SCREEN_HEIGHT - 14,COLOR_BLACK,"%.5f", get_gps_long());
+  textmanager.drawTextf(ND_LAT,1,1,SCREEN_HEIGHT - 14,COLOR_BLACK,"%.6f", get_gps_lat());
+  textmanager.drawTextf(ND_LON,1,SCREEN_WIDTH/2,SCREEN_HEIGHT - 14,COLOR_BLACK,"%.6f", get_gps_long());
 }
 
 void draw_headingupmode(){
@@ -1143,7 +1175,7 @@ void draw_ConstellationDiagram(bool redraw) {
     tft.setTextSize(1);
     tft.setTextColor(COLOR_BLACK);
     tft.unloadFont();
-    tft.println(get_gps_nmea());
+    //tft.println(get_gps_nmea());
     tft.loadFont(AA_FONT_SMALL);    // Must load the font first
     if(!aru)
       return;

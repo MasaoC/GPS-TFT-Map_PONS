@@ -1,5 +1,8 @@
+
+#ifdef MEDIATEK_GPS
+
 #include <Adafruit_GPS.h>
-#include "gps_latlon.h"
+#include "mediatek_gps.h"
 #include "navdata.h"
 #include "settings.h"
 #include "display_tft.h"
@@ -212,7 +215,7 @@ bool gps_loop(bool constellation_mode) {
           log_sd(GPS.lastNMEA());
         }else{
           // save to SD card
-          saveCSV(GPS.latitudeDegrees, GPS.longitudeDegrees,GPS.speed,get_gps_truetrack() , GPS.year, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
+          saveCSV(GPS.latitudeDegrees, GPS.longitudeDegrees,GPS.speed,get_gps_truetrack() , GPS.year+2000, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
           int tracklog_interval = constrain(50000/(1+get_gps_mps()), 1000, 15000);//約50mおきに一回記録するような計算となる。
           if (millis() - last_latlon_manager > tracklog_interval) {
             latlon_manager.addCoord({ GPS.latitudeDegrees, GPS.longitudeDegrees });
@@ -470,3 +473,6 @@ bool check_maybe_inside_draw(Coordinate mapcenter, float checklat, float checklo
   float radius_scrn = 146.6f*scale;
   return dist < radius_scrn;
 }
+
+
+#endif

@@ -1,4 +1,4 @@
-#include "gps_latlon.h"
+#include "ublox_gps.h"
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
@@ -199,9 +199,9 @@ void setup(void) {
   Serial.print(F("SETUP INIT"));
 
 
-
   setup_switch();
   Serial.print(F("GPS SETUP"));
+
   gps_setup();
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();

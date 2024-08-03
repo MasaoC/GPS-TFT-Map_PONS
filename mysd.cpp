@@ -129,6 +129,7 @@ void read_sd() {
 
   myFile.close();
 
+  /*. FOR DEBUG
   Serial.println("extramap");
   // For debugging: print loaded map data
   for (int i = 0; i < mapdata_count; i++) {
@@ -140,6 +141,7 @@ void read_sd() {
       Serial.print(", Lon: "); Serial.println(extramaps[i].cords[j][1]);
     }
   }
+  */
 }
 
 
@@ -200,7 +202,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   }
   //Run only once.
   if(fileyear == 0 && year != 0){
-    fileyear = year + 2000;
+    fileyear = year;
     filemonth = month;
     fileday = day;
     filehour = hour;
@@ -228,7 +230,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
 
     // Format date as YYYY-MM-DD
     char date[11];
-    sprintf(date, "%04d-%02d-%02d", year+2000, month, day);
+    sprintf(date, "%04d-%02d-%02d", year, month, day);
     csvFile.print(date);
     csvFile.print(",");
 

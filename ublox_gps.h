@@ -2,27 +2,24 @@
 
 void gps_setup();
 bool gps_loop(bool constellation_mode);
-
-void toggle_demo_biwako();
-bool get_demo_biwako();
 void gps_getposition_mode();
 void gps_constellation_mode();
 bool get_gps_fix();
 bool get_gps_connection();
-char* get_gps_nmea();
-double get_gps_kts();
+int get_gps_numsat();
 double get_gps_mps();
 double get_gps_truetrack();
 double get_gps_magtrack();
-int get_gps_numsat();
 double get_gps_pdop();
 double get_gps_lat();
 double get_gps_long();
 double get_gps_altitude();
 
+void toggle_demo_biwako();
+bool get_demo_biwako();
 
-#ifndef GPS_FUNCT
-#define GPS_FUNCT
+#ifndef UBLOX_FUNCT
+#define UBLOX_FUNCT
   // Define satellite types
   #define SATELLITE_TYPE_GPS 1
   #define SATELLITE_TYPE_GLONASS 2
@@ -32,7 +29,6 @@ double get_gps_altitude();
   #define SATELLITE_TYPE_UNKNOWN 0
 
   #define MAX_TRACK_CORDS 360
-
 
 
   // Structure to store parsed data from GNGGA message
@@ -75,18 +71,6 @@ double get_gps_altitude();
     unsigned long lastReceived = 0;
   };
 
-  struct AdaGPS{
-    double latitudeDegrees;
-    double longitudeDegrees;
-    int satellites;
-    int angle;
-    double PDOP;
-    double speed;
-    double altitude;
-    bool fix;
-  };
-
-
   extern SatelliteData satellites[32];
 
   bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);
@@ -111,5 +95,7 @@ double get_gps_altitude();
     Coordinate getData(int newest_index);
   };
   extern LatLonManager latlon_manager;
+
+
 
 #endif // LATLONMANAGER_H
