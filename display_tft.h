@@ -81,7 +81,7 @@ bool is_northupmode();
 void redraw_compass(float up,int col,int bgcolor);
 void draw_nomapdata();
 void draw_ConstellationDiagram(bool redraw);
-void draw_maplist_mode(bool redraw);
+void draw_maplist_mode(bool redraw,int maplist_page);
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);

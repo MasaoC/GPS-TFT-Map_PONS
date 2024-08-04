@@ -29,6 +29,7 @@ const int MODE_MAP = 2;
 const int MODE_GPSCONST = 3;
 const int MODE_MAPLIST = 4;
 int screen_mode = MODE_MAP;
+int maplist_page = 0;
 int scaleindex = 3;
 const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.5f, 1.0f, 2.5f, 10.0f };
 float scale = scalelist[scaleindex];
@@ -59,6 +60,8 @@ void shortPressCallback() {
       } else if (selectedLine == 3) {
         screen_mode = MODE_GPSCONST;
       }
+    } else if(screen_mode == MODE_MAPLIST){
+      maplist_page++;
     } else {
       scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
     }
@@ -98,7 +101,10 @@ void shortPressCallback_up() {
   quick_redraw = true;
   redraw_screen = true;
   Serial.println("short press up");
-  if (screen_mode == MODE_SETTING) {  //Setting mode
+  if (screen_mode == MODE_MAPLIST){
+    maplist_page++;
+  }
+  else if (screen_mode == MODE_SETTING) {  //Setting mode
     if (selectedLine == -1) {         //No active selected line.
       cursorLine = (cursorLine + 1) % SETTING_LINES;
     } else if (selectedLine == 0) {
@@ -122,7 +128,10 @@ void shortPressCallback_down() {
   quick_redraw = true;
   redraw_screen = true;
   Serial.println("short press down");
-  if (screen_mode == MODE_SETTING) {  //Setting mode
+  if (screen_mode == MODE_MAPLIST){
+    maplist_page--;
+  }
+  else if (screen_mode == MODE_SETTING) {  //Setting mode
     if (selectedLine == -1) {         //No active selected line.
       cursorLine = mod(cursorLine - 1,SETTING_LINES);
     } else if (selectedLine == 0) {
@@ -307,7 +316,7 @@ void loop() {
   }
 
   if (screen_mode == MODE_MAPLIST) {
-    draw_maplist_mode(redraw_screen);
+    draw_maplist_mode(redraw_screen, maplist_page);
     redraw_screen = false;
     return;
   }

@@ -597,13 +597,6 @@ void draw_triangle(){
     tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2+map_shift_down);
     needle.pushRotated(magtrack);
     oldmagtrack = magtrack;
-    /*
-    int x1 = SCREEN_WIDTH / 2 ;
-    int y1 = SCREEN_HEIGHT / 2 + map_shift_down ;
-    int x2 = SCREEN_WIDTH / 2 + x_track;
-    int y2 = SCREEN_HEIGHT / 2 + map_shift_down + y_track ;
-    drawThickLine(x1,y1,x2,y2,3,COLOR_BLACK);
-    */
 
     int rb_x_new = -TRIANGLE_HWIDTH * cos(radians) - TRIANGLE_SIZE * sin(radians);
     int rb_y_new = -TRIANGLE_HWIDTH * sin(radians) + TRIANGLE_SIZE * cos(radians);
@@ -1218,7 +1211,8 @@ void draw_ConstellationDiagram(bool redraw) {
   }
 }
 
-void draw_maplist_mode(bool redraw){
+
+void draw_maplist_mode(bool redraw, int maplist_page){
   if(millis()-lastdrawn_const > 10000){
     redraw = true;
   }
@@ -1232,21 +1226,32 @@ void draw_maplist_mode(bool redraw){
     tft.fillScreen(COLOR_WHITE);
     tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
     tft.setCursor(1, 1);
-    tft.printf("MAPLIST FLSH:%d/SD:%d",sizeof_mapflash,mapdata_count);
+
+
+    int pagetotal = 1+(sizeof_mapflash+mapdata_count)/30;
+    int pagenow = maplist_page%pagetotal;
+    
+    tft.printf("MAPLIST FLSH:%d/SD:%d (%d/%d)",sizeof_mapflash,mapdata_count,pagenow+1,pagetotal);
 
     tft.unloadFont();
     tft.setTextSize(1);
     int posy = 20;
     tft.setCursor(1,posy);
     tft.setTextColor(COLOR_BLACK);
-
-    for(int i = 0; i < sizeof_mapflash;i++){
-      tft.printf("FLSH %d: %s,%4.2f,%4.2f,%d",mapdatas[i]->id,mapdatas[i]->name,mapdatas[i]->cords[0][0],mapdatas[i]->cords[0][1],mapdatas[i]->size);
-      posy += 10;
-      tft.setCursor(1,posy);
+    if(pagenow == 0){
+      for(int i = 0; i < sizeof_mapflash;i++){
+        tft.printf("FLSH %d: %s,%4.2f,%4.2f,%d",mapdatas[i]->id,mapdatas[i]->name,mapdatas[i]->cords[0][0],mapdatas[i]->cords[0][1],mapdatas[i]->size);
+        posy += 10;
+        tft.setCursor(1,posy);
+      }
     }
 
-    for(int i = 0; i < mapdata_count;i++){
+    int sd_start_index = 0;
+    if(pagenow > 0){
+      sd_start_index = 30*pagenow-sizeof_mapflash;
+    }
+
+    for(int i = sd_start_index; i < mapdata_count;i++){
       if(extramaps[i].size <= 1){
         continue;
       }

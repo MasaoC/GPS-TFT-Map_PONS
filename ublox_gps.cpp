@@ -168,12 +168,14 @@ bool gps_loop(bool constellation_mode) {
     return true;
   }
   
+
   while (GPS_SERIAL.available() > 0) {
     //Serial.println(millis()-last_gps_time);
     //Serial.println((char)GPS_SERIAL.peek());
-    gps.encode(GPS_SERIAL.read());
+    char c = GPS_SERIAL.read();
+    gps.encode(c);
     gps_connection = true;
-
+    
     if (gps.location.isUpdated()) {
       draw_allowed = false;
       last_gps_time = millis();
