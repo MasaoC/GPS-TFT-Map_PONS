@@ -14,6 +14,7 @@ double get_gps_pdop();
 double get_gps_lat();
 double get_gps_long();
 double get_gps_altitude();
+char* get_gps_nmea(int i = 0);
 
 void toggle_demo_biwako();
 bool get_demo_biwako();
@@ -29,6 +30,8 @@ bool get_demo_biwako();
   #define SATELLITE_TYPE_UNKNOWN 0
 
   #define MAX_TRACK_CORDS 360
+  #define MAX_LAST_NMEA 11
+  #define NMEA_MAX_CHAR 100
 
 
   // Structure to store parsed data from GNGGA message

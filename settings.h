@@ -44,7 +44,7 @@
 #define SD_CS_PIN 1
 #define SD_SCK 2
 #define SD_TX 3
-#define BATTERY_MULTIPLYER 3.3*2
+#define BATTERY_MULTIPLYER(adr) (adr/4096.0*3.3*2)
 #define BAT_LOW_VOLTAGE 3.55
 */
 
@@ -65,7 +65,8 @@
 #define SD_CS_PIN -1
 #define SD_SCK 2
 #define SD_TX 3    //CMD MOSI
-#define BAT_LOW_VOLTAGE 3.0
+#define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になって、誤差修正係数0.886になった数値。
+#define BAT_LOW_VOLTAGE 3.49
 #define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 
 

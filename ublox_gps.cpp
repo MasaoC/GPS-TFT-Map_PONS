@@ -20,6 +20,10 @@ SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 
 
 
+
+int stored_nmea_index = 0;
+char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
+
 // Send UBX command to change baud rate to 38400
 byte setBaud38400[] = {
   0xB5, 0x62, // UBX header
@@ -48,11 +52,9 @@ void calcChecksum(byte *ubxMsg, byte len, byte &ckA, byte &ckB) {
 
 
 
-void sendUBX(byte *ubxMsg, byte len,bool slow = false) {
+void sendUBX(byte *ubxMsg, byte len) {
   for (int i = 0; i < len; i++) {
     GPS_SERIAL.write(ubxMsg[i]);
-    if(slow)
-      delay(5);
   }
 }
 
@@ -100,8 +102,6 @@ void disableGSV() {
 
 void gps_getposition_mode() {
   Serial.println("POS MODE");
-
-  
 }
 
 
@@ -118,15 +118,19 @@ void gps_setup() {
 
   // Configure GPS baud rate
   const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
-  delay (1500);
+  delay (50);// なぜか必要（TO DO: Do not delete without careful look.)
   for (int i = 0; i < sizeof(UBLOX_INIT_38400); i++) {
     GPS_SERIAL.write(UBLOX_INIT_38400[i]);
   }
-  delay (1500);
+  delay (100);//なぜか必要（TO DO: Do not delete without careful look.)
   GPS_SERIAL.end();
-  delay(200);
+  delay(50);//なぜか必要（TO DO: Do not delete without careful look.)
   GPS_SERIAL.begin(38400);
 
+
+  for(int i = 0; i < MAX_LAST_NMEA;i++){
+    last_nmea[i][0] = 0;
+  }
 }
 
 void toggle_demo_biwako() {
@@ -148,6 +152,94 @@ void removeStaleSatellites() {
 }
 
 
+void parseGSV(char *nmea) {
+  // Print the received NMEA sentence for debugging
+  Serial.print("Received NMEA: ");
+  Serial.println(nmea);
+
+
+  // Determine the satellite type based on the NMEA sentence identifier
+  int satelliteType = SATELLITE_TYPE_UNKNOWN;
+  if (strstr(nmea, "$GPGSV")) {
+    satelliteType = SATELLITE_TYPE_GPS;
+  } else if (strstr(nmea, "$GLGSV")) {
+    satelliteType = SATELLITE_TYPE_GLONASS;
+  } else if (strstr(nmea, "$GAGSV")) {
+    satelliteType = SATELLITE_TYPE_GALILEO;
+  } else if (strstr(nmea, "$BDGSV")) {
+    satelliteType = SATELLITE_TYPE_BEIDOU;
+  } else if (strstr(nmea, "$QZGSV")) {
+    satelliteType = SATELLITE_TYPE_QZSS;
+  }
+
+  // Print the satellite type for debugging
+  Serial.print("Satellite Type: ");
+  Serial.println(satelliteType);
+
+  
+  // Example NMEA GSV sentence: $GPGSV,4,4,14,194,,,,195,,,*7D
+  char *p = nmea;
+
+  // Skip past the initial part of the sentence
+  p = strchr(p, ','); if (!p) return; p++;
+  p = strchr(p, ','); if (!p) return; p++;
+  p = strchr(p, ','); if (!p) return; p++;
+  p = strchr(p, ','); if (!p) return; p++;
+
+  for (int i = 0; i < 4; i++) {
+    if (*p == '*' || *p == '\0') break; // End of sentence or no more data
+
+    // Read satellite PRN number
+    int prn = atoi(p);
+    p = strchr(p, ','); if (!p) break; p++;
+
+    // Read elevation
+    int elevation = (*p != ',' && *p != '*') ? atoi(p) : -1;
+    p = strchr(p, ','); if (!p) break; p++;
+
+    // Read azimuth
+    int azimuth = (*p != ',' && *p != '*') ? atoi(p) : -1;
+    p = strchr(p, ','); if (!p) break; p++;
+
+    // Read SNR (Signal to Noise Ratio)
+    int snr = (*p != ',' && *p != '*') ? atoi(p) : -1;
+    p = strchr(p, ','); if (!p) break; p++;
+
+    // Debugging: Print parsed values
+    Serial.print("PRN: "); Serial.print(prn);
+    Serial.print(", Elevation: "); Serial.print(elevation);
+    Serial.print(", Azimuth: "); Serial.print(azimuth);
+    Serial.print(", SNR: "); Serial.println(snr);
+
+    // Validate parsed values and update satellite data
+    if (prn > 0 && prn < 200) {
+      for (int j = 0; j < 32; j++) {
+        if (satellites[j].PRN == prn || satellites[j].PRN == 0) {
+          satellites[j].PRN = prn;
+          satellites[j].elevation = (elevation >= 0 && elevation <= 90) ? elevation : satellites[j].elevation;
+          satellites[j].azimuth = (azimuth >= 0 && azimuth < 360) ? azimuth : satellites[j].azimuth;
+          satellites[j].SNR = (snr >= 0) ? snr : satellites[j].SNR;
+          satellites[j].satelliteType = satelliteType;
+          satellites[j].lastReceived = millis();
+          break;
+        }
+      }
+    } else {
+      Serial.println("Invalid PRN parsed");
+    }
+  }
+}
+
+
+char* get_gps_nmea(int i){
+  int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
+  if(index < 0){
+    index += MAX_LAST_NMEA;
+  }
+  return last_nmea[index];
+}
+
+
 unsigned long last_latlon_manager = 0;
 unsigned long last_gps_save = 0;
 unsigned long last_gps_time = 0;
@@ -156,10 +248,13 @@ bool draw_allowed = false;
 // そのため画面描画する際に true　を返す。
 // M10Qの初期設定のデータ量では、最初の座標取得からメッセージを全て受信するまで38400bpsでおよそ270msである。そのため、500ms経過したら描画許可を出すこととする。(ので、データ受信完了してから画面描画は500ms遅延する。)
 
+int index_buffer1 = 0;
+char nmea_buffer1[128];
+
 bool gps_loop(bool constellation_mode) {
 
-  if(GPS_SERIAL.available() > 10){
-    Serial.print("!!!!!B");
+  if(GPS_SERIAL.available() > 29){
+    Serial.print("!!WARNING!! Buffer Overflow");
     Serial.println(GPS_SERIAL.available());
   }
 
@@ -167,7 +262,6 @@ bool gps_loop(bool constellation_mode) {
     draw_allowed = true;
     return true;
   }
-  
 
   while (GPS_SERIAL.available() > 0) {
     //Serial.println(millis()-last_gps_time);
@@ -175,95 +269,116 @@ bool gps_loop(bool constellation_mode) {
     char c = GPS_SERIAL.read();
     gps.encode(c);
     gps_connection = true;
+
+    if(c == '$')
+      index_buffer1 = 0;
     
-    if (gps.location.isUpdated()) {
-      draw_allowed = false;
-      last_gps_time = millis();
-      Serial.print(F("Location: "));
-      stored_latitude = gps.location.lat();
-      stored_longitude = gps.location.lng();
-      Serial.print(stored_latitude, 6);
-      Serial.print(F(", "));
-      Serial.println(stored_longitude, 6);
-      bool all_valid = true;
-      if (gps.location.isValid()) {
-        // Check if the location fix is valid
-        if (gps.satellites.isValid()) {
-          stored_fixtype = 2;
-        } else {
-          stored_fixtype = 1;
+    nmea_buffer1[index_buffer1++] = c;
+    if(index_buffer1 >= 255 || c == '\n'){
+      if(index_buffer1 >= 2){
+        nmea_buffer1[index_buffer1-1] = '\0';
+        strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
+        stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
+        Serial.println(nmea_buffer1);
+        //Usually last message of ublox is GNGLL.  This will be the key to start drawing TFT (so we dont miss hardware serial RX interrupt).
+        if(strstr(nmea_buffer1, "$GNGLL")){
+          return true;
         }
+        if(strstr(nmea_buffer1, "GSV")){
+          parseGSV(nmea_buffer1);
+        }
+      }
+      index_buffer1 = 0;
+    }
+  }
+
+    
+  if (gps.location.isUpdated()) {
+    draw_allowed = false;
+    last_gps_time = millis();
+    Serial.print(F("Location: "));
+    stored_latitude = gps.location.lat();
+    stored_longitude = gps.location.lng();
+    Serial.print(stored_latitude, 6);
+    Serial.print(F(", "));
+    Serial.println(stored_longitude, 6);
+    bool all_valid = true;
+    if (gps.location.isValid()) {
+      // Check if the location fix is valid
+      if (gps.satellites.isValid()) {
+        stored_fixtype = 2;
       } else {
-        all_valid = false;
-        stored_fixtype = 0;
+        stored_fixtype = 1;
       }
-      int year,month,day,hour,minute,second;
-
-      // Print date
-      if (gps.date.isValid()) {
-        year = gps.date.year();
-        month = gps.date.month();
-        day = gps.date.day();
-        Serial.print("Date: ");
-        Serial.print(year);
-        Serial.print("-");
-        Serial.print(month);
-        Serial.print("-");
-        Serial.print(day);
-        Serial.println();
-      } else {
-        Serial.println("Date: Not Available");
-        all_valid = false;
-      }
-      
-      // Print time
-      if (gps.time.isValid()) {
-        hour = gps.time.hour();
-        minute = gps.time.minute();
-        second = gps.time.second();
-        Serial.print("Time: ");
-        Serial.print(hour);
-        Serial.print(":");
-        Serial.print(minute);
-        Serial.print(":");
-        Serial.print(second);
-        Serial.println();
-      } else {
-        Serial.println("Time: Not Available");
-        all_valid = false;
-      }
-      if(all_valid && millis() - last_gps_save > 1000){
-        saveCSV(stored_latitude, stored_longitude, stored_gs, stored_truetrack, year, month, day, hour, minute, second);
-        last_gps_save = millis();
-      }
+    } else {
+      all_valid = false;
+      stored_fixtype = 0;
     }
+    int year,month,day,hour,minute,second;
 
-    if (gps.altitude.isUpdated()) {
-      Serial.print(F("Altitude: "));
-      stored_altitude = gps.altitude.meters();
-      Serial.println(stored_altitude);
+    // Print date
+    if (gps.date.isValid()) {
+      year = gps.date.year();
+      month = gps.date.month();
+      day = gps.date.day();
+      Serial.print("Date: ");
+      Serial.print(year);
+      Serial.print("-");
+      Serial.print(month);
+      Serial.print("-");
+      Serial.print(day);
+      Serial.println();
+    } else {
+      Serial.println("Date: Not Available");
+      all_valid = false;
     }
+    
+    // Print time
+    if (gps.time.isValid()) {
+      hour = gps.time.hour();
+      minute = gps.time.minute();
+      second = gps.time.second();
+      Serial.print("Time: ");
+      Serial.print(hour);
+      Serial.print(":");
+      Serial.print(minute);
+      Serial.print(":");
+      Serial.print(second);
+      Serial.println();
+    } else {
+      Serial.println("Time: Not Available");
+      all_valid = false;
+    }
+    if(all_valid && millis() - last_gps_save > 1000){
+      latlon_manager.addCoord({ (float)stored_latitude, (float)stored_longitude });
+      saveCSV(stored_latitude, stored_longitude, stored_gs, stored_truetrack, year, month, day, hour, minute, second);
+      last_gps_save = millis();
+    }
+  }
 
-    if (gps.speed.isUpdated()) {
-      Serial.print(F("Speed: "));
-      stored_gs = gps.speed.mps();
-      Serial.print(stored_gs);  // Speed in meters per second
-      Serial.println(F(" mps"));
-    }
+  if (gps.altitude.isUpdated()) {
+    Serial.print(F("Altitude: "));
+    stored_altitude = gps.altitude.meters();
+    Serial.println(stored_altitude);
+  }
 
-    if (gps.course.isUpdated()) {
-      Serial.print(F("Course: "));
-      stored_truetrack = gps.course.deg();
-      Serial.println(stored_truetrack);
-    }
+  if (gps.speed.isUpdated()) {
+    Serial.print(F("Speed: "));
+    stored_gs = gps.speed.mps();
+    Serial.print(stored_gs);  // Speed in meters per second
+    Serial.println(F(" mps"));
+  }
 
-    if (gps.satellites.isUpdated()) {
-      Serial.print(F("Satellites: "));
-      stored_numsats = gps.satellites.value();
-      Serial.println(stored_numsats);
-      if(millis() - last_gps_time > 1000)
-        return true;
-    }
+  if (gps.course.isUpdated()) {
+    Serial.print(F("Course: "));
+    stored_truetrack = gps.course.deg();
+    Serial.println(stored_truetrack);
+  }
+
+  if (gps.satellites.isUpdated()) {
+    Serial.print(F("Satellites: "));
+    stored_numsats = gps.satellites.value();
+    Serial.println(stored_numsats);
   }
   return false;
 }

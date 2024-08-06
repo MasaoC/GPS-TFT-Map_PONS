@@ -6,10 +6,10 @@
 #define TFT_INVERSION_OFF
 #define TFT_RGB_ORDER TFT_BGR  // Colour order Blue-Green-Red
 //#define TFT_CS   -1  // Do not define, chip select control pin permanently connected to 0V
-#define TFT_DC    3    // Data Command control pin
-#define TFT_RST   2    // Reset pin
+#define TFT_DC    27    // Data Command control pin
+#define TFT_RST   22    // Reset pin
 //#define TFT_RD   -1  // Do not define, read pin must be permanently connected to 3V3
-#define TFT_WR   4
+#define TFT_WR   28
 // PIO requires these to be sequentially increasing GPIO with no gaps
 #define TFT_D0    6
 #define TFT_D1    7

@@ -5,7 +5,6 @@
 #include "mysd.h"
 #include "button.h"
 
-
 #define SCALE_JAPAN 0.008f
 #define SETTING_LINES 6
 
@@ -26,10 +25,10 @@ float degpersecond = 0;  // The calculated average differential
 
 const int MODE_SETTING = 1;
 const int MODE_MAP = 2;
-const int MODE_GPSCONST = 3;
+const int MODE_GPSDETAIL = 3;
 const int MODE_MAPLIST = 4;
 int screen_mode = MODE_MAP;
-int maplist_page = 0;
+int detail_page = 0;
 int scaleindex = 3;
 const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.5f, 1.0f, 2.5f, 10.0f };
 float scale = scalelist[scaleindex];
@@ -58,16 +57,16 @@ void shortPressCallback() {
       } else if (selectedLine == 2) {
         toggle_mode();
       } else if (selectedLine == 3) {
-        screen_mode = MODE_GPSCONST;
+        screen_mode = MODE_GPSDETAIL;
       }
-    } else if(screen_mode == MODE_MAPLIST){
-      maplist_page++;
+    } else if(screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL){
+      detail_page++;
     } else {
       scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
     }
   #else
     if (screen_mode != MODE_SETTING) {
-      if (screen_mode == MODE_GPSCONST)
+      if (screen_mode == MODE_GPSDETAIL)
         gps_getposition_mode();
       screen_mode = MODE_SETTING;
       cursorLine = 0;
@@ -78,10 +77,12 @@ void shortPressCallback() {
       if (cursorLine == SETTING_LINES - 1) {
         screen_mode = MODE_MAP;
       } else if (cursorLine == 3) {
-        Serial.println("GPS CONST MODE");
+        detail_page = 0;
+        Serial.println("GPS DETAIL MODE");
         gps_constellation_mode();
-        screen_mode = MODE_GPSCONST;
+        screen_mode = MODE_GPSDETAIL;
       } else if (cursorLine == 4) {
+        detail_page = 0;
         Serial.println("MAPLIST MODE");
         screen_mode = MODE_MAPLIST;
       } else {
@@ -101,8 +102,8 @@ void shortPressCallback_up() {
   quick_redraw = true;
   redraw_screen = true;
   Serial.println("short press up");
-  if (screen_mode == MODE_MAPLIST){
-    maplist_page++;
+  if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL){
+    detail_page++;
   }
   else if (screen_mode == MODE_SETTING) {  //Setting mode
     if (selectedLine == -1) {         //No active selected line.
@@ -115,7 +116,7 @@ void shortPressCallback_up() {
     } else if (selectedLine == 2) {
       toggle_mode();
     } else if (selectedLine == 3) {
-      screen_mode = MODE_GPSCONST;
+      screen_mode = MODE_GPSDETAIL;
     }
   } else {
     scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
@@ -129,7 +130,7 @@ void shortPressCallback_down() {
   redraw_screen = true;
   Serial.println("short press down");
   if (screen_mode == MODE_MAPLIST){
-    maplist_page--;
+    detail_page--;
   }
   else if (screen_mode == MODE_SETTING) {  //Setting mode
     if (selectedLine == -1) {         //No active selected line.
@@ -142,7 +143,7 @@ void shortPressCallback_down() {
     } else if (selectedLine == 2) {
       toggle_mode();
     } else if (selectedLine == 3) {
-      screen_mode = MODE_GPSCONST;
+      screen_mode = MODE_GPSDETAIL;
     }
   } else {
     scale = scalelist[--scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
@@ -156,7 +157,7 @@ void longPressCallback() {
   Serial.println("long press");
   #ifdef SINGLE_SWITCH
     if (screen_mode != MODE_SETTING) {
-      if (screen_mode == MODE_GPSCONST)
+      if (screen_mode == MODE_GPSDETAIL)
         gps_getposition_mode();
       screen_mode = MODE_SETTING;
       cursorLine = 0;
@@ -169,7 +170,7 @@ void longPressCallback() {
       } else if (cursorLine == 3) {
         Serial.println("GPS CONST MODE");
         gps_constellation_mode();
-        screen_mode = MODE_GPSCONST;
+        screen_mode = MODE_GPSDETAIL;
       } else if (cursorLine == 4) {
         Serial.println("MAP DETAIL MODE");
         screen_mode = MODE_MAPLIST;
@@ -209,16 +210,11 @@ void setup(void) {
 
 
   setup_switch();
-  Serial.print(F("GPS SETUP"));
-
-  gps_setup();
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
-
-
-
+  Serial.print(F("GPS SETUP"));
+  gps_setup();
   startup_demo_tft();
-
 
   redraw_screen = true;
   quick_redraw = true;
@@ -302,21 +298,21 @@ void debug_print(const char* inp) {
 
 void loop() {
   switch_handling();
-  bool newmsg_received = gps_loop(screen_mode == MODE_GPSCONST);
+  bool newmsg_received = gps_loop(screen_mode == MODE_GPSDETAIL);
 
   if (screen_mode == MODE_SETTING) {
     draw_setting_mode(redraw_screen, selectedLine, cursorLine);
     redraw_screen = false;
     return;
   }
-  if (screen_mode == MODE_GPSCONST) {
-    draw_ConstellationDiagram(redraw_screen);
+  if (screen_mode == MODE_GPSDETAIL) {
+    draw_gpsdetail(redraw_screen, detail_page);
     redraw_screen = false;
     return;
   }
 
   if (screen_mode == MODE_MAPLIST) {
-    draw_maplist_mode(redraw_screen, maplist_page);
+    draw_maplist_mode(redraw_screen, detail_page);
     redraw_screen = false;
     return;
   }
@@ -385,6 +381,8 @@ void loop() {
           draw_Japan(new_lat, new_long, scale, drawupward_direction);
         }
       }
+
+      draw_track(new_lat,new_long,scale,drawupward_direction);
 
       if (get_demo_biwako()) {
         tft.setTextColor(COLOR_BLACK,COLOR_WHITE);

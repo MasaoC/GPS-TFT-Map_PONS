@@ -78,28 +78,30 @@ void createNeedle(void)
 
 
 
-
 void setup_tft() {
+
+  pinMode(BATTERY_PIN,INPUT);
+  analogReadResolution(12);
+
+
   // Initialize backlight control pin
   pinMode(TFT_BL, OUTPUT);
   analogWriteFreq(BL_PWM_FRQ); // 1000Hz
   analogWrite(TFT_BL,BRIGHTNESS(0));
 
   tft.begin();
+
+
   tft.setRotation(2);//set 0 for newhaven
   tft.loadFont(AA_FONT_SMALL);    // Must load the font first
   //tft.setTextFont(2);
 
+
   Serial.println(F("Initialized"));
   tft.fillScreen(COLOR_WHITE);
   createNeedle();
-  analogWrite(TFT_BL,BRIGHTNESS(screen_brightness));
 
-  pinMode(BATTERY_PIN,INPUT);
-  #ifdef RP2040_PICO
-    adc_init ();                /* initialize ADC */
-    adc_gpio_init (BATTERY_PIN);   /* init gpio 26 as input pin,  0.0-3.3V */
-  #endif
+  analogWrite(TFT_BL,BRIGHTNESS(screen_brightness));
 }
 
 
@@ -644,7 +646,6 @@ void draw_Japan(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan3, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan4, COLOR_GREEN);
-  draw_track(center_lat,center_lon,scale,up);
   nomap_drawn = false;
 }
 
@@ -679,8 +680,6 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
 
 void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_shinura, COLOR_GREEN);
-
-  draw_track(center_lat,center_lon,scale,up);
   
   nomap_drawn = false;
 }
@@ -690,7 +689,6 @@ void draw_Biwako(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
-  draw_track(center_lat,center_lon,scale,up);
   draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
   fill_sea_land(center_lat, center_lon, scale, up);
   nomap_drawn = false;
@@ -709,7 +707,7 @@ void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handairailway, COLOR_ORANGE);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaicafe, COLOR_GREEN);
 
-  draw_track(center_lat,center_lon,scale,up);
+
 
 
   nomap_drawn = false;
@@ -725,7 +723,6 @@ void startup_demo_tft() {
   //draw_gpsinfo();
   for(int i = 0; i < 10; i++){
     clean_map();
-    gps_loop(false);
     sealandStrokeManager.drawAllStrokes();
     sealandStrokeManager.removeAllStrokes();
     draw_Biwako(center_lat, center_lon, scale-i*0.01, 0);
@@ -742,10 +739,12 @@ void startup_demo_tft() {
     tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
-    tft.print("SOFT VERSION:0.3 (2024.8.3)");
+    tft.print("SOFT VERSION:0.3 (2024.8.4)");
 
-
-    delay(300);
+    for(int j = 0; j < 250; j++){
+      gps_loop(false);
+      delay(1);
+    }
   }
 }
 
@@ -847,6 +846,10 @@ double volts_interpolate(int adreading) {
 }
 
 int last_written_mh = 0;
+unsigned long last_maxadr_time = 0;
+int max_adreading = 0;
+unsigned long last_bigvolarity_time = 0;
+
 void draw_gpsinfo() {
   int col = COLOR_BLACK;
   const int mtlx = SCREEN_WIDTH - 100;
@@ -870,20 +873,38 @@ void draw_gpsinfo() {
   textmanager.drawTextf(ND_SATS,1,SCREEN_WIDTH/2,SCREEN_HEIGHT-28,col,"%dsats",get_gps_numsat());
   
   tft.setCursor(0, 27);
-  #ifdef RP2040_PICO
-    adc_select_input (0);    /* select input on ADC0 */
-    int adreading = adc_read();
-    double input_voltage = volts_interpolate(adreading);
-  #else
-    double input_voltage = analogRead(BATTERY_PIN)/1048.0*BATTERY_MULTIPLYER;
-  #endif
 
-  if(input_voltage < BAT_LOW_VOLTAGE){
-    textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_LOW");
-  }else if(input_voltage < 3.75){
-    textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-28,COLOR_MAGENTA,"%.1fV",input_voltage);
+  
+  int adreading = analogRead(BATTERY_PIN);
+  if(abs(max_adreading-adreading) > 100){
+    //100以上ずれたら異常=mcp73831が充電池がつながっているかどうかを検出しようとしている＝電池がつながっていない。
+    last_bigvolarity_time = millis();
+  }
+
+  if(adreading > max_adreading){
+    max_adreading = adreading;
+    last_maxadr_time = millis();
+  }else if(millis() - last_maxadr_time > 3000){
+    max_adreading += (adreading-max_adreading)*0.4;
+  }
+
+  double input_voltage = BATTERY_MULTIPLYER(max_adreading);
+
+  
+  if(millis() - last_bigvolarity_time < 5000){
+    textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_OFF");
   }else{
-    textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 40, SCREEN_HEIGHT-28,COLOR_GREEN,"%.1fV",input_voltage);
+    if(input_voltage > 4.25){
+      input_voltage = 4.25;
+      textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_GREEN,"CHARGE");
+    }
+    else if(input_voltage < BAT_LOW_VOLTAGE){
+      textmanager.drawText(ND_BATTERY,1,SCREEN_WIDTH - 70, SCREEN_HEIGHT-28,COLOR_RED,"BAT_LOW");
+    }else if(input_voltage < 3.75){
+      textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 45, SCREEN_HEIGHT-28,COLOR_MAGENTA,"%.2fV",input_voltage);
+    }else{
+      textmanager.drawTextf(ND_BATTERY,1,SCREEN_WIDTH - 45, SCREEN_HEIGHT-28,COLOR_GREEN,"%.2fV",input_voltage);
+    }
   }
 
   // Distance to plathome.
@@ -1096,7 +1117,7 @@ int calculateGPS_X(float azimuth, float elevation) {
 int calculateGPS_Y(float azimuth, float elevation) {
   const int height = SCREEN_HEIGHT;
   const int radius = SCREEN_WIDTH/2-20;
-  const int shift_down = 20;
+  const int shift_down = 0;
   return (height / 2) - (int)(sin(radians(azimuth)) * (radius) * (1 - elevation / 90.0))+shift_down;
 }
 
@@ -1139,7 +1160,7 @@ void draw_nomapdata(){
   }
 }
 unsigned long lastdrawn_const = 0;
-void draw_ConstellationDiagram(bool redraw) {
+void draw_gpsdetail(bool redraw, int page){
   if(millis()-lastdrawn_const > 1000){
     redraw = true;
   }
@@ -1152,61 +1173,76 @@ void draw_ConstellationDiagram(bool redraw) {
     }
 
     tft.fillScreen(COLOR_WHITE);
-    tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 20, SCREEN_WIDTH/2-2, COLOR_BLACK);
-    tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
-    tft.setTextSize(2);
-    tft.setCursor(1, 1);
-    tft.println("GPS CONSTELLATION");
-    tft.setTextColor(COLOR_CYAN,COLOR_WHITE);
-    tft.print("GPS ");
-    tft.setTextColor(COLOR_GREEN,COLOR_WHITE);
-    tft.print("GLONASS ");
-    tft.setTextColor(COLOR_WHITE,COLOR_BLUE,true);
-    tft.print("GALILEO ");
 
-    tft.setCursor(1,SCREEN_HEIGHT-20);
-    tft.setTextSize(1);
-    tft.setTextColor(COLOR_BLACK);
-    tft.unloadFont();
-    //tft.println(get_gps_nmea());
-    tft.loadFont(AA_FONT_SMALL);    // Must load the font first
-    if(!aru)
-      return;
+    if(page%2 == 1){
+      tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(1, 1);
+      tft.println("GPS DETAIL 2: raw NMEAs");
 
-    tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
-    for (int i = 0; i < 32; i++) {
-      if (satellites[i].PRN == 0) continue; // Skip empty entries
-      //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
-
-      // Calculate position on display based on azimuth and elevation
-      float azimuth = satellites[i].azimuth;
-      float elevation = satellites[i].elevation;
-
-      int x = calculateGPS_X(azimuth, elevation);
-      int y = calculateGPS_Y(azimuth, elevation);
-      int size = 5;
-      if(satellites[i].SNR <= 0){
-        size = 3;
+      tft.unloadFont();
+      tft.setTextSize(1);
+      int posy = 10;
+      tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+      for(int i = 0; i < MAX_LAST_NMEA; i++){
+        posy += 20;
+        tft.setCursor(1,posy);
+        tft.println(get_gps_nmea(i));
       }
+      tft.loadFont(AA_FONT_SMALL);    // Must load the font first
+    }
+    if(page%2 == 0){
+      tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(1, 1);
+      tft.println("GPS DETAIL 1:CONSTELLATION");
 
-      if(satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
-        tft.fillCircle(x, y, size, COLOR_RED);
-      else if(satellites[i].satelliteType == SATELLITE_TYPE_GPS)
-        tft.fillCircle(x, y, size, COLOR_CYAN);
-      else if(satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
-        tft.fillCircle(x, y, size, COLOR_GREEN);
-      else if(satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
-        tft.drawCircle(x, y, size, COLOR_BLUE);
-      else
-        tft.fillCircle(x, y, size, COLOR_BLACK);
-      
-      int textx = constrain(x+6,0,SCREEN_WIDTH-20);
-      if(satellites[i].PRN >= 10)
-        textx -= 10;
-      if(satellites[i].PRN >= 100)
-        textx -= 10;
-      tft.setCursor(textx, y - 3);
-      tft.print(satellites[i].PRN);
+      tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 , SCREEN_WIDTH/2-2, COLOR_BLACK);
+      tft.setTextColor(COLOR_CYAN,COLOR_WHITE);
+      tft.print("GPS ");
+      tft.setTextColor(COLOR_GREEN,COLOR_WHITE);
+      tft.print("GLONASS ");
+      tft.setTextColor(COLOR_WHITE,COLOR_BLUE,true);
+      tft.print("GALILEO ");
+
+      if(!aru)
+        return;
+
+      tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+      for (int i = 0; i < 32; i++) {
+        if (satellites[i].PRN == 0) continue; // Skip empty entries
+        //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
+
+        // Calculate position on display based on azimuth and elevation
+        float azimuth = satellites[i].azimuth;
+        float elevation = satellites[i].elevation;
+
+        int x = calculateGPS_X(azimuth, elevation);
+        int y = calculateGPS_Y(azimuth, elevation);
+        int size = 5;
+        if(satellites[i].SNR <= 0){
+          size = 3;
+        }
+
+        if(satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
+          tft.fillCircle(x, y, size, COLOR_RED);
+        else if(satellites[i].satelliteType == SATELLITE_TYPE_GPS)
+          tft.fillCircle(x, y, size, COLOR_CYAN);
+        else if(satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
+          tft.fillCircle(x, y, size, COLOR_GREEN);
+        else if(satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
+          tft.drawCircle(x, y, size, COLOR_BLUE);
+        else
+          tft.fillCircle(x, y, size, COLOR_BLACK);
+        
+        int textx = constrain(x+6,0,SCREEN_WIDTH-20);
+        if(satellites[i].PRN >= 10)
+          textx -= 10;
+        if(satellites[i].PRN >= 100)
+          textx -= 10;
+        tft.setCursor(textx, y - 3);
+        tft.print(satellites[i].PRN);
+      }
     }
   }
 }
@@ -1327,7 +1363,7 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine){
       else
         col = COLOR_MAGENTA; // Highlight selected line
     }
-    textmanager.drawTextf(SETTING_GPSCONST,2,10, posy,col,selectedLine == 3 ? " SHOW GPS CONST >":"SHOW GPS CONST >");
+    textmanager.drawTextf(SETTING_GPSDETAIL,2,10, posy,col,selectedLine == 3 ? " SHOW GPS DETAIL >":"SHOW GPS DETAIL >");
     posy += separation;
 
 

@@ -65,7 +65,7 @@ tt_text = tt_ax.text(0.5, 1.05, "", horizontalalignment='center', verticalalignm
 lat_text = tt_ax.text(0.5, -0.1, "", horizontalalignment='center', verticalalignment='center', transform=tt_ax.transAxes, color='black', fontsize=20, fontweight='bold', path_effects=[path_effects.withStroke(linewidth=6, foreground='white')])
 lon_text = tt_ax.text(0.5, -0.16, "", horizontalalignment='center', verticalalignment='center', transform=tt_ax.transAxes, color='black', fontsize=20, fontweight='bold', path_effects=[path_effects.withStroke(linewidth=6, foreground='white')])
 gs_text = gs_ax.text(0.5, 0.75, "", horizontalalignment='center', verticalalignment='center', transform=gs_ax.transAxes, color='black', fontsize=40, fontweight='bold', path_effects=[path_effects.withStroke(linewidth=6, foreground='white')])
-time_text = tt_ax.text(0.5, 1.15, "", horizontalalignment='center', verticalalignment='center', transform=tt_ax.transAxes, color='black', fontsize=30, fontweight='bold', path_effects=[path_effects.withStroke(linewidth=6, foreground='white')])
+time_text = tt_ax.text(0.5, 1.2, "", horizontalalignment='center', verticalalignment='center', transform=tt_ax.transAxes, color='black', fontsize=30, fontweight='bold', path_effects=[path_effects.withStroke(linewidth=6, foreground='white')])
 
 # Update function for animation
 def update(i):
