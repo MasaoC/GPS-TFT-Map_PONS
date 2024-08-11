@@ -3,10 +3,10 @@
 #include "ublox_gps.h"
 #include "mysd.h"
 #include "font_data.h"
-
 #include "hardware/adc.h"
 #include <cstring> // for strlen and strcpy
 #include <cstdlib> // for malloc and free
+
 
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_LARGE Arial_Black32
@@ -876,7 +876,7 @@ void draw_gpsinfo() {
 
   
   int adreading = analogRead(BATTERY_PIN);
-  if(abs(max_adreading-adreading) > 100){
+  if(abs(max_adreading-adreading) > 100 && max_adreading != 0){
     //100以上ずれたら異常=mcp73831が充電池がつながっているかどうかを検出しようとしている＝電池がつながっていない。
     last_bigvolarity_time = millis();
   }

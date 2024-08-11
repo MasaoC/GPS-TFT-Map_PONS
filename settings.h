@@ -1,8 +1,12 @@
 //====== 設定画面 =======
 
+// リリース時
+#define DEBUG_P(txt)  Serial.println(txt);
+
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  #define RELEASE_GPS
+  //#define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
+  #define DEBUG_GPS_SIM_SHISHI         //しし固定座標
   //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換

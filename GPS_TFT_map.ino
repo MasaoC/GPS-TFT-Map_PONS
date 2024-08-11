@@ -206,13 +206,14 @@ void switch_handling(){
 
 void setup(void) {
   Serial.begin(38400);
-  Serial.print(F("SETUP INIT"));
-
-
+  DEBUG_P("SETUP INIT");
   setup_switch();
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
-  Serial.print(F("GPS SETUP"));
+  //bmp_open();
+  display_region5(PLA_LAT, PLA_LON);
+  display_region5(SHINURA_LAT, SHINURA_LON);
+  DEBUG_P("GPS SETUP");
   gps_setup();
   startup_demo_tft();
 
@@ -410,5 +411,10 @@ void loop() {
     redraw_screen = false;
     Serial.print("Redraw time ms:");
     Serial.println(millis()-last_time_gpsdata);
+    Serial.print("free/used ram:");
+    Serial.print(rp2040.getFreeHeap());
+    Serial.print("/");
+    Serial.println(rp2040.getUsedHeap());
+
   }
 }

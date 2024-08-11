@@ -2,7 +2,7 @@
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
 <Document id="1bwnt5-SYo0HhioJ-Poq9j1M0KglSkwg0">
 	<name>gpstft</name>
-	<gx:CascadingStyle kml:id="__managed_style_0B44A9E9B3321F6EE8BD">
+	<gx:CascadingStyle kml:id="__managed_style_0DD79C94D0326C7353DB">
 		<Style>
 			<IconStyle>
 				<scale>1.2</scale>
@@ -14,7 +14,7 @@
 			<LabelStyle>
 			</LabelStyle>
 			<LineStyle>
-				<color>ffd27619</color>
+				<color>fff72dfb</color>
 				<width>3</width>
 			</LineStyle>
 			<PolyStyle>
@@ -24,17 +24,7 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<StyleMap id="__managed_style_0E3650FC90321F6A058F">
-		<Pair>
-			<key>normal</key>
-			<styleUrl>#__managed_style_16B209DB7F321F6A058F</styleUrl>
-		</Pair>
-		<Pair>
-			<key>highlight</key>
-			<styleUrl>#__managed_style_2AC96D4018321F6A058F</styleUrl>
-		</Pair>
-	</StyleMap>
-	<gx:CascadingStyle kml:id="__managed_style_15118E001E321F6EE8BC">
+	<gx:CascadingStyle kml:id="__managed_style_1354E84C7D326C7353DA">
 		<Style>
 			<IconStyle>
 				<Icon>
@@ -45,7 +35,7 @@
 			<LabelStyle>
 			</LabelStyle>
 			<LineStyle>
-				<color>ffd27619</color>
+				<color>fff72dfb</color>
 				<width>2</width>
 			</LineStyle>
 			<PolyStyle>
@@ -55,17 +45,7 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<StyleMap id="__managed_style_0DCCDE3BA4321F6EE8BC">
-		<Pair>
-			<key>normal</key>
-			<styleUrl>#__managed_style_15118E001E321F6EE8BC</styleUrl>
-		</Pair>
-		<Pair>
-			<key>highlight</key>
-			<styleUrl>#__managed_style_0B44A9E9B3321F6EE8BD</styleUrl>
-		</Pair>
-	</StyleMap>
-	<gx:CascadingStyle kml:id="__managed_style_2D1741782C321F6D7E0E">
+	<gx:CascadingStyle kml:id="__managed_style_2E214D1160326C70FF2E">
 		<Style>
 			<IconStyle>
 				<scale>1.2</scale>
@@ -77,7 +57,7 @@
 			<LabelStyle>
 			</LabelStyle>
 			<LineStyle>
-				<color>ff000000</color>
+				<color>ffbdbdbd</color>
 				<width>3</width>
 			</LineStyle>
 			<PolyStyle>
@@ -87,10 +67,167 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<gx:CascadingStyle kml:id="__managed_style_2AC96D4018321F6A058F">
+	<gx:CascadingStyle kml:id="__managed_style_0E0E1A1C1D326C12056E">
 		<Style>
 			<IconStyle>
 				<scale>1.2</scale>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>fff5a542</color>
+				<width>3</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<gx:CascadingStyle kml:id="__managed_style_282333FBF5326C0FE1DC">
+		<Style>
+			<IconStyle>
+				<scale>1.2</scale>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ff2f2fd3</color>
+				<width>3</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<gx:CascadingStyle kml:id="__managed_style_1A37C1F283326C0FE1DC">
+		<Style>
+			<IconStyle>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ff2f2fd3</color>
+				<width>2</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<StyleMap id="__managed_style_0A70E92F4E326C7353DA">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_1354E84C7D326C7353DA</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_0DD79C94D0326C7353DB</styleUrl>
+		</Pair>
+	</StyleMap>
+	<gx:CascadingStyle kml:id="__managed_style_1C99567256326C00EEA3">
+		<Style>
+			<IconStyle>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ff9f3f30</color>
+				<width>2</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<StyleMap id="__managed_style_00DBEB858D326C0FE1DC">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_1A37C1F283326C0FE1DC</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_282333FBF5326C0FE1DC</styleUrl>
+		</Pair>
+	</StyleMap>
+	<StyleMap id="__managed_style_00C2FC43BC326C12056D">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_132DFE5B35326C12056D</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_0E0E1A1C1D326C12056E</styleUrl>
+		</Pair>
+	</StyleMap>
+	<gx:CascadingStyle kml:id="__managed_style_236C6906D0326C00EEA3">
+		<Style>
+			<IconStyle>
+				<scale>1.2</scale>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ff9f3f30</color>
+				<width>3</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<StyleMap id="__managed_style_0C906421B1326C00EEA3">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_1C99567256326C00EEA3</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_236C6906D0326C00EEA3</styleUrl>
+		</Pair>
+	</StyleMap>
+	<StyleMap id="__managed_style_68769B3827326BFC53F5">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_7A7EAB19F6326BFC53F5</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_82F20C6191326BFC53F5</styleUrl>
+		</Pair>
+	</StyleMap>
+	<gx:CascadingStyle kml:id="__managed_style_17D7D8493E326BFC53F3">
+		<Style>
+			<IconStyle>
 				<Icon>
 					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
 				</Icon>
@@ -100,7 +237,7 @@
 			</LabelStyle>
 			<LineStyle>
 				<color>ff2dc0fb</color>
-				<width>3</width>
+				<width>2</width>
 			</LineStyle>
 			<PolyStyle>
 				<color>40ffffff</color>
@@ -109,7 +246,49 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<gx:CascadingStyle kml:id="__managed_style_1E147A05F6321F6D7E0E">
+	<gx:CascadingStyle kml:id="__managed_style_7A7EAB19F6326BFC53F5">
+		<Style>
+			<IconStyle>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ffd27619</color>
+				<width>2</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<gx:CascadingStyle kml:id="__managed_style_132DFE5B35326C12056D">
+		<Style>
+			<IconStyle>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>fff5a542</color>
+				<width>2</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<gx:CascadingStyle kml:id="__managed_style_45B6FF3A17326BFC53F8">
 		<Style>
 			<IconStyle>
 				<Icon>
@@ -130,7 +309,7 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<gx:CascadingStyle kml:id="__managed_style_4C1E88B7D4321F6A0592">
+	<gx:CascadingStyle kml:id="__managed_style_11986A36AC326BFC53F8">
 		<Style>
 			<IconStyle>
 				<Icon>
@@ -151,19 +330,52 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<StyleMap id="__managed_style_314176D3C6321F6A0592">
+	<gx:CascadingStyle kml:id="__managed_style_5447CD8344326BFC53F8">
+		<Style>
+			<IconStyle>
+				<scale>1.2</scale>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ff000000</color>
+				<width>3</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<StyleMap id="__managed_style_3A04EC4FBF326BFC53F8">
 		<Pair>
 			<key>normal</key>
-			<styleUrl>#__managed_style_4C1E88B7D4321F6A0592</styleUrl>
+			<styleUrl>#__managed_style_45B6FF3A17326BFC53F8</styleUrl>
 		</Pair>
 		<Pair>
 			<key>highlight</key>
-			<styleUrl>#__managed_style_0F4FB40B42321F6A0593</styleUrl>
+			<styleUrl>#__managed_style_5447CD8344326BFC53F8</styleUrl>
 		</Pair>
 	</StyleMap>
-	<gx:CascadingStyle kml:id="__managed_style_16B209DB7F321F6A058F">
+	<StyleMap id="__managed_style_02523153C4326BFC53F8">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_11986A36AC326BFC53F8</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_2FAEE2D92E326BFC53F8</styleUrl>
+		</Pair>
+	</StyleMap>
+	<gx:CascadingStyle kml:id="__managed_style_089EB69398326BFC53F4">
 		<Style>
 			<IconStyle>
+				<scale>1.2</scale>
 				<Icon>
 					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
 				</Icon>
@@ -173,7 +385,7 @@
 			</LabelStyle>
 			<LineStyle>
 				<color>ff2dc0fb</color>
-				<width>2</width>
+				<width>3</width>
 			</LineStyle>
 			<PolyStyle>
 				<color>40ffffff</color>
@@ -182,17 +394,39 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
-	<StyleMap id="__managed_style_0A016C2A17321F6D7E0E">
+	<gx:CascadingStyle kml:id="__managed_style_82F20C6191326BFC53F5">
+		<Style>
+			<IconStyle>
+				<scale>1.2</scale>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ffd27619</color>
+				<width>3</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<StyleMap id="__managed_style_0E0312928A326C70FF2E">
 		<Pair>
 			<key>normal</key>
-			<styleUrl>#__managed_style_1E147A05F6321F6D7E0E</styleUrl>
+			<styleUrl>#__managed_style_15F566F4D2326C70FF2E</styleUrl>
 		</Pair>
 		<Pair>
 			<key>highlight</key>
-			<styleUrl>#__managed_style_2D1741782C321F6D7E0E</styleUrl>
+			<styleUrl>#__managed_style_2E214D1160326C70FF2E</styleUrl>
 		</Pair>
 	</StyleMap>
-	<gx:CascadingStyle kml:id="__managed_style_0F4FB40B42321F6A0593">
+	<gx:CascadingStyle kml:id="__managed_style_2FAEE2D92E326BFC53F8">
 		<Style>
 			<IconStyle>
 				<scale>1.2</scale>
@@ -214,6 +448,37 @@
 			</BalloonStyle>
 		</Style>
 	</gx:CascadingStyle>
+	<gx:CascadingStyle kml:id="__managed_style_15F566F4D2326C70FF2E">
+		<Style>
+			<IconStyle>
+				<Icon>
+					<href>https://earth.google.com/earth/rpc/cc/icon?color=1976d2&amp;id=2000&amp;scale=4</href>
+				</Icon>
+				<hotSpot x="64" y="128" xunits="pixels" yunits="insetPixels"/>
+			</IconStyle>
+			<LabelStyle>
+			</LabelStyle>
+			<LineStyle>
+				<color>ffbdbdbd</color>
+				<width>2</width>
+			</LineStyle>
+			<PolyStyle>
+				<color>40ffffff</color>
+			</PolyStyle>
+			<BalloonStyle>
+			</BalloonStyle>
+		</Style>
+	</gx:CascadingStyle>
+	<StyleMap id="__managed_style_06BFD2B62B326BFC53F3">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#__managed_style_17D7D8493E326BFC53F3</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#__managed_style_089EB69398326BFC53F4</styleUrl>
+		</Pair>
+	</StyleMap>
 	<Placemark id="05E39F7789314A99FCDB">
 		<name>Biwako-outline</name>
 		<LookAt>
@@ -226,7 +491,7 @@
 			<range>66035.24567641318</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -249,7 +514,7 @@
 			<range>3847.49113560305</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				139.8946356790473,35.63477147414148,0 139.8993962764904,35.63110435074648,0 139.9002186788533,35.63184812546795,0 139.9008942475155,35.63125868543327,0 139.9004808672615,35.63082071949847,0 139.9017683882747,35.62979845567328,0 139.905309740396,35.63276837386708,0 139.9070412556721,35.63142355706371,0 139.9047568234965,35.629384210175,0 139.9048220323033,35.6285672291831,0 139.9101594917179,35.62430394795486,0 139.9255366540211,35.63283614382335,0 139.9248309637531,35.63329607165124,0 139.9240439847594,35.63280712494947,0 139.9233251312328,35.6332986364198,0 139.9241865249091,35.63394884889712,0 139.9132598107083,35.64273479918383,0 139.902058875763,35.65167210976476,0 139.9003122200594,35.65312588152109,0 139.9006823423278,35.65368394237774,0 139.902332057434,35.65205382762832,0 139.9246833409793,35.63426801685366,0 139.9262118128646,35.63321951767619,0 139.9396948447581,35.64067293500552,0 139.9396172604242,35.64116657883129,0 139.9366494390052,35.64334513962186,0 139.9238356810629,35.651579929176,0 139.9179629203061,35.65551661369825,0 139.9123317898366,35.65919457306638,0 139.9076897744661,35.66222837752126,0 
@@ -268,7 +533,7 @@
 			<range>626.3175130929449</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -291,7 +556,7 @@
 			<range>3675.238183893962</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -314,7 +579,7 @@
 			<range>9635.500633270713</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -337,7 +602,7 @@
 			<range>7620.647074539447</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -360,7 +625,7 @@
 			<range>9687.748504851479</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -383,7 +648,7 @@
 			<range>14231.33823007112</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.2919766703268,34.82837511747447,0 135.320657991067,34.82133520007292,0 135.3302936937067,34.82252443927133,0 135.3537875341487,34.81705098431264,0 135.3706653610012,34.80591838792454,0 135.3764679056429,34.80570578597841,0 135.3896188580854,34.81032308241407,0 135.4070405506025,34.81102188043336,0 135.4251274365064,34.81054709674935,0 135.4373742827077,34.80137142539753,0 135.4466059860585,34.79980474195187,0 135.4557572568827,34.80110036154443,0 135.4657433432215,34.79973081146891,0 135.4773510305108,34.80471044690934,0 135.4931386553174,34.80665933423054,0 135.5046978524636,34.80706202778127,0 135.5160010177071,34.80572309517391,0 135.5231006132117,34.80698724029931,0 135.5393734313193,34.80768041461451,0 135.5577343079876,34.8083040553582,0 135.5613460188478,34.80761954939811,0 135.5669882166196,34.80045153434467,0 135.5669850394806,34.79736433864149,0 135.560745843585,34.77863192421765,0 135.5626301772432,34.77319819436347,0 135.5745798816736,34.75757698842251,0 135.5821021580458,34.74238885012384,0 135.5826770973382,34.72666339598693,0 135.5891073948839,34.7156394011711,0 
@@ -402,7 +667,7 @@
 			<range>13049.62183698546</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.44588145832,34.7444489641071,0 135.466505306639,34.75482092807188,0 135.4926828314341,34.7616370812935,0 135.5042869092798,34.77118628202819,0 135.5195870345565,34.77592107264577,0 135.5352569756113,34.79132001061255,0 135.5387891789514,34.79711584719897,0 135.5444121599329,34.80908454888896,0 135.5531986248832,34.82189177414612,0 135.5595354179282,34.83070407558225,0 135.5821689694532,34.85137383136014,0 135.6166841513287,34.86756777151034,0 135.6254484019459,34.86730521898983,0 135.6403605373168,34.86235625685767,0 135.6509362801736,34.86817838427577,0 
@@ -411,6 +676,7 @@
 	</Placemark>
 	<Placemark id="0F847ED099315FFFA588">
 		<name>handai_inside1</name>
+		<visibility>0</visibility>
 		<LookAt>
 			<longitude>135.5234887289494</longitude>
 			<latitude>34.81997975800062</latitude>
@@ -421,7 +687,7 @@
 			<range>754.0945521937829</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.5192546630597,34.82290122322834,0 135.5202608927341,34.82473714307037,0 135.5206192267198,34.82486547821112,0 135.5217566743228,34.82453841549704,0 135.5244832613544,34.82355410608935,0 135.5250823824439,34.82324933976636,0 135.5267673351993,34.82159632903841,0 135.5267177871875,34.8212531312041,0 135.5261512088265,34.820690594109,0 135.5252942965001,34.82033917705255,0 135.5244373365641,34.81942598165465,0 135.5242214600272,34.81906565250041,0 135.5256380375261,34.81859729141113,0 135.5247158404168,34.81729424042686,0 135.5252446824773,34.81694258980153,0 135.5257522649573,34.81629080476041,0 
@@ -440,7 +706,7 @@
 			<range>1274.230893454951</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.5286365645366,34.82568485125642,0 135.5273128013348,34.82549139911511,0 135.5261273662329,34.82554391784173,0 135.5254161526343,34.82517085459351,0 135.5244468888839,34.82354534706387,0 
@@ -459,7 +725,7 @@
 			<range>320.3315513979396</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.5267331073241,34.82133387379517,0 135.5272059493836,34.82108416686005,0 135.5278977953256,34.82100216147467,0 135.528146269457,34.82106616633,0 135.529093955624,34.82091067930091,0 135.5295367759326,34.82067872443532,0 135.5295844950343,34.82034217934558,0 135.5295209430969,34.81975800482471,0 135.5301028726996,34.81969461270889,0 
@@ -478,7 +744,7 @@
 			<range>2540.632579266967</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.5298121242363,34.81706877893021,0 135.5283966354298,34.8177316121194,0 135.5293706790027,34.81885231412389,0 135.5294961829965,34.81976659237854,0 135.5291018988957,34.81982356034222,0 135.5290421344131,34.81914923603694,0 135.5293880045558,34.81909154410851,0 135.5293796309032,34.81885345398125,0 135.5283935365026,34.81770532516372,0 135.5273655622806,34.81810440892493,0 135.5256027870635,34.81860849241601,0 135.5250884665181,34.81878295185591,0 135.5252858782623,34.81916263538049,0 135.5245482800287,34.81955098896822,0 135.5244482112157,34.81945038187022,0 135.5241533909122,34.81960023635778,0 135.5239282663402,34.81957430691934,0 135.5237028220277,34.8192410143936,0 135.5242211303909,34.81907006999748,0 135.5237046505857,34.81924344665654,0 135.5224634013304,34.81985548296133,0 135.5209487140366,34.82070440413926,0 135.5203786293369,34.82175959067454,0 
@@ -497,29 +763,12 @@
 			<range>2457.568142419041</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.5224490054155,34.81983638295585,0 135.5217425718252,34.81894459807737,0 135.52138305435,34.81849558741609,0 135.5211988415703,34.81759455392782,0 135.5223054627608,34.81753896709042,0 135.5237609911553,34.81672296814051,0 135.5240946255629,34.81665363436559,0 135.5247054321576,34.81729110638855,0 135.5217293474069,34.81895734917615,0 
 			</coordinates>
 		</LineString>
-	</Placemark>
-	<Placemark id="0E6392BC963161852D5E">
-		<name>platform</name>
-		<LookAt>
-			<longitude>136.2543972538463</longitude>
-			<latitude>35.29468429475436</latitude>
-			<altitude>85.05354678272427</altitude>
-			<heading>353.2712824783748</heading>
-			<tilt>0</tilt>
-			<gx:fovy>35</gx:fovy>
-			<range>641.4863247699395</range>
-			<altitudeMode>absolute</altitudeMode>
-		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
-		<Point>
-			<coordinates>136.2552788374742,35.29491915874323,85.14892170168582</coordinates>
-		</Point>
 	</Placemark>
 	<Placemark id="0E860F84C1316D64FB06">
 		<name>handai_railway</name>
@@ -533,7 +782,7 @@
 			<range>3579.82509294874</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				135.6512900479658,34.86505554647611,0 135.6261271246183,34.8558228850904,0 135.5876045781108,34.83425382341493,0 135.5688579383831,34.82329415151023,0 135.5605410163086,34.81257614753417,0 135.5451305011336,34.78012561482964,0 135.5134857526336,34.75439898128973,0 135.5082960697691,34.74949744725232,0 135.5016934812638,34.73392941571991,0 135.5031603039674,34.71640892082067,0 135.5016258761365,34.70645144393945,0 135.4896595481223,34.69881453423703,0 135.4778970720051,34.70200983976291,0 135.4568340529023,34.72584445850289,0 135.3929511812172,34.73880606817378,0 135.3273315971037,34.73876720830363,0 135.2074051853469,34.70410088899852,0 135.3145552422696,34.74129266484319,0 135.4449721297769,34.75380261291568,0 135.474278749778,34.73129043250403,0 135.4894070154188,34.71013272641515,0 135.4980560274448,34.70786384018691,0 135.4985417876908,34.7048003408009,0 
@@ -552,7 +801,7 @@
 			<range>236.8221278199053</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -575,7 +824,7 @@
 			<range>4319.959267140948</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_314176D3C6321F6A0592</styleUrl>
+		<styleUrl>#__managed_style_02523153C4326BFC53F8</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -598,7 +847,7 @@
 			<range>6936.766231938964</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				139.7949835220542,35.5324579614413,0 139.7949234803781,35.53681762499832,0 139.7937629781906,35.53966080168896,0 139.7819436896765,35.55634595048138,0 139.7762843047625,35.5606287791055,0 139.760911108271,35.5686827482975,0 139.7591990660884,35.57197431107097,0 139.7552953904915,35.58473545708767,0 139.755349083465,35.60781585326425,0 139.7558519076607,35.6114143386645,0 139.7594411389888,35.61457581297559,0 139.7733400950358,35.62505307584292,0 139.8012911023447,35.64046665447868,0 139.8147487647724,35.64488404052349,0 139.8186765216809,35.64584959370877,0 139.8372515895879,35.6475048918095,0 139.8575906210018,35.64630430311576,0 139.8817111822728,35.63784440599325,0 139.8846269223977,35.63740392879545,0 139.888853081852,35.63837367655485,0 139.9158295355527,35.66091979157895,0 139.9267850537099,35.6719961282983,0 139.9383744404211,35.68160344846714,0 139.9543106941346,35.69135638949484,0 139.9583071899312,35.69259263519459,0 139.9626759797323,35.69219225615449,0 139.9897315725638,35.68511218452621,0 139.9949245046516,35.68282759282649,0 140.0002745087959,35.68025973140762,0 140.0026442593331,35.67779241344505,0 140.0046717054273,35.67332255748368,0 140.0090360743694,35.67037558989493,0 140.0241199747225,35.6615252574113,0 140.0287856563436,35.6600652168997,0 140.0316371271043,35.65956368611444,0 140.0344342564661,35.65876903785911,0 140.037176123574,35.65775618065229,0 140.0398571598697,35.65639616985164,0 140.0470105922694,35.65237619471305,0 140.0519997045618,35.65065472503376,0 140.0624384710234,35.64855328514565,0 140.0692023907537,35.64424781754578,0 140.0734363167047,35.64178871819846,0 
@@ -617,7 +866,7 @@
 			<range>7105.79582854989</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -640,7 +889,7 @@
 			<range>1389.159708481893</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0A016C2A17321F6D7E0E</styleUrl>
+		<styleUrl>#__managed_style_3A04EC4FBF326BFC53F8</styleUrl>
 		<Polygon>
 			<outerBoundaryIs>
 				<LinearRing>
@@ -663,7 +912,7 @@
 			<range>6313.212415793678</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0DCCDE3BA4321F6EE8BC</styleUrl>
+		<styleUrl>#__managed_style_68769B3827326BFC53F5</styleUrl>
 		<LineString>
 			<coordinates>
 				136.2572380977219,35.29518424582945,0 136.2617579016415,35.2938172352981,0 136.2627960927115,35.29380049951158,0 136.2662902812724,35.29559722511106,0 136.2680237390526,35.29759947892346,0 136.2714452241691,35.29847877072163,0 136.2730603656948,35.29824401439343,0 136.2742970410717,35.29754720517144,0 
@@ -682,7 +931,7 @@
 			<range>1527.305617497914</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0DCCDE3BA4321F6EE8BC</styleUrl>
+		<styleUrl>#__managed_style_68769B3827326BFC53F5</styleUrl>
 		<LineString>
 			<coordinates>
 				136.2507679508692,35.28064570090126,0 136.2511814678224,35.28139807004228,0 136.2488478593726,35.28312663239029,0 136.2459545639699,35.28279044447319,0 136.2439715540649,35.28316246516691,0 136.2428988655414,35.28372703624611,0 136.243552396669,35.28409985272489,0 136.2457508588805,35.28356962302397,0 136.2473526013199,35.28331014481797,0 136.2489411760689,35.28348470370894,0 136.2515528720796,35.28159612298066,0 136.2555092518472,35.27945958379843,0 136.2595242680859,35.27724323954628,0 136.2590337956354,35.27654326973992,0 136.2582088162399,35.27689239981954,0 136.2580438615921,35.27772211173728,0 136.251600412113,35.28129432522173,0 136.2510398208218,35.28065122041701,0 136.2514352290396,35.27862323823684,0 136.2541653617707,35.27705826617931,0 136.2541056807763,35.27634040740333,0 136.2547530590885,35.27599370876916,0 136.2541355067885,35.2748147640616,0 136.2542061077861,35.27418597462039,0 136.2523060114984,35.27404854904425,0 136.250094454686,35.27586262196992,0 136.2493785486473,35.27718142574627,0 136.2500921986807,35.28009738485261,0 136.2495026560335,35.28063548130795,0 136.248714080822,35.27965791831233,0 136.2491005645695,35.27932724256677,0 136.2471933719653,35.27715012174542,0 136.2479847010742,35.27660090686342,0 136.247503197428,35.2757979910587,0 136.2488196581792,35.27501704246986,0 136.2510127377192,35.27348059740434,0 136.254559027625,35.27163941907565,0 136.256632366543,35.27400796303849,0 136.2551591830609,35.27472373278519,0 
@@ -701,10 +950,415 @@
 			<range>538.7241269749211</range>
 			<altitudeMode>absolute</altitudeMode>
 		</LookAt>
-		<styleUrl>#__managed_style_0E3650FC90321F6A058F</styleUrl>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
 		<LineString>
 			<coordinates>
 				136.2455328999009,35.28386007051213,0 136.2468614675958,35.28391961411462,0 136.2495933578609,35.28631941173479,0 136.2530553938902,35.28969870461576,0 136.2557860962248,35.29270667000694,0 136.2572233113205,35.2947246932563,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="0335D094B8326BFF8778">
+		<name>b_tedoridam</name>
+		<LookAt>
+			<longitude>136.6334063623839</longitude>
+			<latitude>36.4023946618245</latitude>
+			<altitude>140.0180199924371</altitude>
+			<heading>51.08145492110454</heading>
+			<tilt>0.3266305856938227</tilt>
+			<gx:fovy>34.9999779850594</gx:fovy>
+			<range>3735.915284809889</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_68769B3827326BFC53F5</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.6400346026383,36.38420326408057,0 136.6400001217772,36.38480122698617,0 136.6386401924524,36.38683824233124,0 136.6386105410765,36.38935864461654,0 136.637732180501,36.39027819182848,0 136.6388366090621,36.39317879001779,0 136.6364083837188,36.39900144633066,0 136.6359496913366,36.40056086939691,0 136.6342039733965,36.40031323684958,0 136.6330042264848,36.39983651874334,0 136.6348514119909,36.39734026105165,0 136.6365976236445,36.39550563481676,0 136.6371025157031,36.39223469922964,0 136.6364524515417,36.39011892741829,0 136.638176782088,36.38883706998773,0 136.63839808573,36.38643871276464,0 136.6390708527787,36.38476490667453,0 136.6391367408675,36.38428761355789,0 136.6395119204862,36.38483607132838,0 136.6400346026383,36.38420326408057,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="05824F69BA326C00C8C0">
+		<name>b_tedoriko</name>
+		<LookAt>
+			<longitude>136.6192033658067</longitude>
+			<latitude>36.21727285771064</latitude>
+			<altitude>607.9991673211674</altitude>
+			<heading>51.05160859487015</heading>
+			<tilt>0.3268704408624683</tilt>
+			<gx:fovy>34.9999779850594</gx:fovy>
+			<range>8417.963167664129</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0C906421B1326C00EEA3</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.6309019399667,36.20724048988413,0 136.6374023955915,36.21950200188045,0 136.6418808070546,36.21548666860505,0 136.6375270088966,36.22530602368975,0 136.6422598839534,36.23133815557786,0 136.6392142347626,36.23797208559633,0 136.6407777317064,36.24352960381793,0 136.6446583263946,36.24908496792371,0 136.6538872780943,36.25700968045209,0 136.6484057705603,36.25875105574337,0 136.646220000507,36.26438576073932,0 136.6408474258351,36.26636217878399,0 136.6356039264823,36.26280832362453,0 136.6430301312711,36.25908806603675,0 136.6424441719878,36.25475841694182,0 136.6347669493448,36.2517970876002,0 136.6382179119119,36.24893695006368,0 136.6377463169717,36.24220067898626,0 136.6352738654902,36.23919880127924,0 136.6360020934365,36.2365845920741,0 136.6311438177344,36.23185740852596,0 136.6215588110601,36.23381758478369,0 136.6248465443164,36.2304648569364,0 136.6187487749596,36.22604431602723,0 136.6378528374994,36.23165794358118,0 136.6179400371163,36.21049055825755,0 136.6339930008233,36.22332568785426,0 136.6269354302602,36.21023703312413,0 136.6249065208641,36.18556189011285,0 136.6309019399667,36.20724048988413,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="03363CCE5D326C030DE8">
+		<name>b_tedoririver</name>
+		<LookAt>
+			<longitude>136.6215469479972</longitude>
+			<latitude>36.42199123434826</latitude>
+			<altitude>346.6842432485202</altitude>
+			<heading>51.04408270779238</heading>
+			<tilt>0.3266450958454968</tilt>
+			<gx:fovy>34.9999779850594</gx:fovy>
+			<range>4019.614663597313</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0C906421B1326C00EEA3</styleUrl>
+		<LineString>
+			<coordinates>
+				136.6466563002215,36.2825123761809,0 136.6424706408875,36.28246025543592,0 136.6405212734512,36.29300664966154,0 136.6387603304513,36.30279397739782,0 136.6449581316083,36.31208701869731,0 136.6479221664489,36.31523537904938,0 136.6449135920904,36.32594082355257,0 136.6410820384432,36.32845278989483,0 136.6406262524473,36.33793790872925,0 136.6227833026581,36.34879447319582,0 136.6247687196817,36.35348956078362,0 136.6093811604208,36.36684904854254,0 136.6131565475646,36.37036576541556,0 136.6061747430521,36.37899479602128,0 136.6110827088526,36.38732194284083,0 136.6170213129342,36.39285073041054,0 136.6181881187836,36.39835415300116,0 136.6257054172472,36.4024208703574,0 136.6275375568263,36.40077434864517,0 136.6293951152156,36.40165979742561,0 136.6300198556974,36.40334628729895,0 136.6319424538444,36.40434586389937,0 136.6327100029941,36.40629903952748,0 136.6322403445586,36.40972584011809,0 136.6308658923069,36.41336340969482,0 136.6295837583788,36.42223052241139,0 136.6302685358168,36.42848277384552,0 136.6318997578089,36.43420810886806,0 136.6326472184543,36.43670283054722,0 136.6320023282445,36.43810299234659,0 136.6297352743039,36.44055296401095,0 136.6276742921936,36.44166049723388,0 136.6248787300421,36.44254336053886,0 136.6221129251627,36.44502714854222,0 136.6213446288765,36.4482623661027,0 136.6200663376287,36.45070488773018,0 136.6165459598133,36.45465593733418,0 136.6112859880138,36.45711243592152,0 136.6021259485326,36.45963274713941,0 136.5784669650038,36.46139653583284,0 136.5475241266448,36.4625757191257,0 136.506131859615,36.46500497029411,0 136.4970760420775,36.46691007608508,0 136.4870149567942,36.47210609694657,0 136.483748789258,36.47684748663753,0 136.4826796286736,36.48467358910273,0 136.4792136560219,36.49018671989448,0 136.478457588687,36.48871318600933,0 136.4805198044652,36.48670589546703,0 136.480330624748,36.48089294172528,0 136.4805991474063,36.47417157877854,0 136.4856194062808,36.4687142071141,0 136.4952091537524,36.46319807513886,0 136.5132924275611,36.46114031298494,0 136.5462125560348,36.4597053213956,0 136.5778011981526,36.45908892242909,0 136.6023740473876,36.45676713360734,0 136.6135790192669,36.45331671163016,0 136.6186303663114,36.44992158359798,0 136.6199361905578,36.44448514624309,0 136.6238425411856,36.4419249307539,0 136.6269486169343,36.44080172517388,0 136.6293930735514,36.43944151954898,0 136.631330648038,36.43734369119872,0 136.6307701994444,36.43477575569833,0 136.6288545660255,36.42944392648343,0 136.6286038715347,36.42181656403505,0 136.6303745906027,36.41342367851021,0 136.6321897277724,36.4080554177657,0 136.6319473163585,36.40543843065232,0 136.6308785831792,36.40410920524867,0 136.6295476750952,36.40347805586568,0 136.6287876300495,36.4018141949103,0 136.6274337030338,36.40093347359747,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="0185B6983D326C09748E">
+		<name>o_gondora</name>
+		<LookAt>
+			<longitude>136.6471096708457</longitude>
+			<latitude>36.44643727620969</latitude>
+			<altitude>603.5993218021346</altitude>
+			<heading>3.170469689936134</heading>
+			<tilt>0</tilt>
+			<gx:fovy>34.99999614975178</gx:fovy>
+			<range>594.6507007708715</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_06BFD2B62B326BFC53F3</styleUrl>
+		<LineString>
+			<coordinates>
+				136.6411301349085,36.43948349791241,0 136.6480914257878,36.4461717967049,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="034C963B11326C0EA886">
+		<name>r_shishikulanding</name>
+		<LookAt>
+			<longitude>136.6381055896993</longitude>
+			<latitude>36.44225521615594</latitude>
+			<altitude>144.4531161121194</altitude>
+			<heading>-103.6427872324174</heading>
+			<tilt>0.8490101175867858</tilt>
+			<gx:fovy>34.99999614975178</gx:fovy>
+			<range>488.4039363329067</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00DBEB858D326C0FE1DC</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.63875642609,36.4423197993856,0 136.6392698115485,36.44336245940905,0 136.6388627756748,36.44377823194324,0 136.6383516407585,36.44395650023801,0 136.6377057613998,36.44268619092521,0 136.63875642609,36.4423197993856,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="0088083721326C0F52F6">
+		<name>r_shishikutakeoff</name>
+		<LookAt>
+			<longitude>136.6470474501135</longitude>
+			<latitude>36.44634317906436</latitude>
+			<altitude>600.2168742756119</altitude>
+			<heading>-72.94721085235432</heading>
+			<tilt>6.522327970517509</tilt>
+			<gx:fovy>34.99999614975178</gx:fovy>
+			<range>304.3468650458818</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00DBEB858D326C0FE1DC</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.6476415287267,36.44627954732704,0 136.6477534934551,36.44631856765253,0 136.6476607726648,36.44668933764474,0 136.6475795931691,36.44682356086479,0 136.6468591689297,36.44659718195526,0 136.6468386118241,36.44638248324014,0 136.6471073272409,36.44616571071661,0 136.6476415287267,36.44627954732704,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="01EE47F1F5326C11DBB4">
+		<name>c_yosuiro</name>
+		<LookAt>
+			<longitude>136.6341891293198</longitude>
+			<latitude>36.43676586826754</latitude>
+			<altitude>115.4598331877378</altitude>
+			<heading>-39.16878693384181</heading>
+			<tilt>0.1812542822651017</tilt>
+			<gx:fovy>34.99999614975178</gx:fovy>
+			<range>3325.214528461803</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00C2FC43BC326C12056D</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.631621198939,36.43905522173689,0 136.6318185976571,36.43911637816407,0 136.6304268939941,36.44130392835049,0 136.6224558288967,36.44926483651848,0 136.6190221061659,36.45376768696488,0 136.6156485951586,36.45659959972476,0 136.6142490607984,36.45680156409938,0 136.6142119034563,36.45658468695564,0 136.6155483231513,36.45643008113392,0 136.6188171978311,36.45360972443633,0 136.6222238020009,36.44923700004955,0 136.6270632549366,36.44443272687651,0 136.6301952854903,36.44121751941343,0 136.631621198939,36.43905522173689,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="0C779E777C326C14C4AC">
+		<name>o_tsukubaneparking</name>
+		<LookAt>
+			<longitude>136.9182246243488</longitude>
+			<latitude>36.47506956308703</latitude>
+			<altitude>722.6981644443365</altitude>
+			<heading>-6.283784763241282</heading>
+			<tilt>0.1574106416415466</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>220.2764276753442</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00DBEB858D326C0FE1DC</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.9183225566652,36.47487072182816,0 136.918558459176,36.47484926110078,0 136.9186431369551,36.4752971074511,0 136.918478568851,36.47536849784022,0 136.9183332801409,36.47523566395097,0 136.9182887672295,36.47501766239992,0 136.9183225566652,36.47487072182816,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="02F835BB6E326C16D94B">
+		<name>r_tsukubanetakeoff</name>
+		<LookAt>
+			<longitude>136.9258644678622</longitude>
+			<latitude>36.47255622142648</latitude>
+			<altitude>976.5577079094918</altitude>
+			<heading>32.99023394502195</heading>
+			<tilt>0</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>183.6108909105496</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00DBEB858D326C0FE1DC</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.9261023884906,36.47249048322367,0 136.9257713897159,36.47227795802032,0 136.9260454949698,36.47199486448922,0 136.9262872807778,36.47219322074508,0 136.9262259316927,36.47237880752756,0 136.9261023884906,36.47249048322367,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="0124A37BFD326C68EA2E">
+		<name>r_tsukubanelanding</name>
+		<LookAt>
+			<longitude>136.9087352937654</longitude>
+			<latitude>36.50688934355434</latitude>
+			<altitude>161.9699580659565</altitude>
+			<heading>342.422794511926</heading>
+			<tilt>0</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>700.3970144834602</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00DBEB858D326C0FE1DC</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.9099067188053,36.50622844126293,0 136.9106644157234,36.50710596061865,0 136.9104819282873,36.50720904400529,0 136.9104025283922,36.50714323106374,0 136.91010388152,36.50725254875675,0 136.9100353404297,36.5074597813858,0 136.9096503718937,36.50771679828795,0 136.9098001134178,36.50792604112883,0 136.909317048038,36.5081142193773,0 136.9084474681788,36.50704768695163,0 136.9099067188053,36.50622844126293,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="00C6EE36F1326C6C65F6">
+		<name>b_yamadagawas</name>
+		<LookAt>
+			<longitude>136.9441443448711</longitude>
+			<latitude>36.75607963797087</latitude>
+			<altitude>38.06282102184134</altitude>
+			<heading>-22.73357322134047</heading>
+			<tilt>20.35281895386523</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>31528.0678747315</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_68769B3827326BFC53F5</styleUrl>
+		<LineString>
+			<coordinates>
+				136.9106135206305,36.46068259766518,0 136.9085930462209,36.46126530822894,0 136.9083197269919,36.46192812520099,0 136.9062488899077,36.46257250975833,0 136.9023386200644,36.46299001018889,0 136.8997820554106,36.46283013258519,0 136.8970871403824,36.46368663526218,0 136.8947353306919,36.46218588096642,0 136.8941594929426,36.46395008336828,0 136.894362999358,36.46489487657234,0 136.8915789610136,36.46824256378019,0 136.8900755662622,36.47064312901222,0 136.890489360304,36.4753456028215,0 136.8912629060495,36.47843304797113,0 136.8884329322089,36.48190006788425,0 136.8868835925004,36.48625091249815,0 136.8849785685044,36.48967647714603,0 136.8856528980384,36.49119093206713,0 136.8849110555167,36.49468812139366,0 136.8862314375946,36.49551768803335,0 136.8863407017515,36.49801151148524,0 136.8855179383584,36.50106374793179,0 136.8861634714681,36.50300776630752,0 136.8882407284078,36.50389671885552,0 136.8908315348789,36.50555309355475,0 136.8927933067269,36.50583008577911,0 136.8932460281668,36.50630131289535,0 136.8929126332414,36.50733631049316,0 136.8939166100083,36.50790035144821,0 136.8944739236514,36.51014700965762,0 136.8965228559711,36.51166371690699,0 136.8970808614114,36.51339284718395,0 136.8983504536436,36.51478629646977,0 136.8986708070696,36.51666237002827,0 136.9014210551518,36.51820335260396,0 136.9040086693667,36.52151961902561,0 136.9091254797663,36.52423468806378,0 136.9144201442559,36.5334048800749,0 136.9158748288211,36.53464963303428,0 136.9185308676218,36.54117568347657,0 136.9186012269172,36.54556265199109,0 136.9199217499669,36.55010341491496,0 136.9197985803176,36.55213948151464,0 136.9181521468961,36.5575422450186,0 136.9158429810385,36.5679819657465,0 136.910022325267,36.57640805689071,0 136.9090965069892,36.58133743396026,0 136.9038278046314,36.58376317545085,0 136.9023824313711,36.59162781208853,0 136.9005542728311,36.59353125407329,0 136.8989990772942,36.5976558269946,0 136.9046337288661,36.61286682299281,0 136.8966572155882,36.61887316142648,0 136.8903546616303,36.61882880199219,0 136.8924029834367,36.62631198224185,0 136.8845314567556,36.63116168877409,0 136.883070501813,36.63714604123346,0 136.8742631995342,36.64568788457322,0 136.8719694695039,36.6557683479112,0 136.8696409266182,36.66938215778065,0 136.8816490186918,36.67498694479404,0 136.885825396429,36.69149119752558,0 136.9039417476945,36.70307637825614,0 136.9359769191439,36.7221709032987,0 136.9557619065251,36.73494956426655,0 136.9665123808365,36.7488218499367,0 136.9836149103653,36.75118763038129,0 136.9798829428915,36.76654949198422,0 136.9935305899139,36.769055760252,0 137.0026344252046,36.77554265841017,0 137.0082092595737,36.76289560122543,0 137.0306654214174,36.77262557624123,0 137.0374921590737,36.78119334669935,0 137.0516436875273,36.78290879520969,0 137.0655572975439,36.79612162477124,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="0467482355326C6E7194">
+		<name>b_ishikawaoceanline</name>
+		<LookAt>
+			<longitude>136.6401440663184</longitude>
+			<latitude>36.89020503084833</latitude>
+			<altitude>-33.18728251429685</altitude>
+			<heading>-22.89558419086393</heading>
+			<tilt>20.91272598018355</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>211360.7190717012</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_68769B3827326BFC53F5</styleUrl>
+		<LineString>
+			<coordinates>
+				137.5118014126051,36.95754033315824,0 137.4310592241284,36.92599470463219,0 137.4109615572272,36.89566971875958,0 137.4142267477824,36.85304704922797,0 137.3930447751485,36.80641361393869,0 137.3300131696608,36.76028518443947,0 137.2268412883181,36.76760572748179,0 137.1729704682703,36.7598844643176,0 137.0973190615304,36.78586201287541,0 137.0628546910826,36.79671777271268,0 136.9915229795127,36.84429369399966,0 136.981520739212,36.87640455768838,0 137.0313700810739,36.92656086728654,0 137.0553904027848,36.96866540020358,0 137.0521711944708,37.10629325820467,0 136.9843642589364,37.05089672558356,0 136.9272505005744,37.08331485465945,0 136.8650043957246,37.07249433516231,0 136.8981495197004,37.135940043975,0 136.949036936408,37.10258095908053,0 136.9960345805389,37.1173142606933,0 137.046360631608,37.12540344871294,0 137.0423842475514,37.16773914219281,0 137.0103639093528,37.13918764064699,0 136.9189229456631,37.14985873142496,0 136.8755117712163,37.13828567669724,0 136.9219188940063,37.21840239587861,0 136.9643998018423,37.23490866741965,0 136.9690598351802,37.20106111950153,0 137.0245202371131,37.18711387613158,0 137.0737337393185,37.2212726051261,0 137.1130623475756,37.2868448949048,0 137.2371709985754,37.2970808789299,0 137.2702215327202,37.3605795452192,0 137.2445628497571,37.40991186215653,0 137.2862883705392,37.44509834223243,0 137.3557283986599,37.44668310766011,0 137.3436488112682,37.51880158765611,0 137.2660944782564,37.53472865299614,0 137.1083706637239,37.48132846311521,0 136.9393103358996,37.39861075253855,0 136.878709124124,37.4104651933133,0 136.7782085543871,37.37151271935249,0 136.7133997352359,37.32284415141672,0 136.7255907907397,37.26141153445781,0 136.6724972240527,37.18262390456482,0 136.6772450734504,37.13400582285667,0 136.7131437480247,37.15021370159383,0 136.7327955614323,37.1302732074897,0 136.7213994213544,37.04993933594914,0 136.7639080151394,36.99616463612968,0 136.7522579893551,36.92415834903609,0 136.7659331425189,36.91963352548954,0 136.7673066564074,36.89677939659595,0 136.7531827144026,36.85372798609905,0 136.7019923490972,36.75227010491577,0 136.6422520661662,36.65823508072892,0 136.6191102484022,36.63939207767366,0 136.6134720742163,36.63953299097331,0 136.5853750714194,36.6093057262328,0 136.5887524365714,36.60532822651733,0 136.4989884493228,36.5068943403509,0 136.4785422767847,36.48898103989016,0 136.407017156172,36.40872379432449,0 136.3282464517067,36.3533932293321,0 136.3021609601768,36.35185306680617,0 136.2713133557578,36.31344188062075,0 136.1981450004457,36.26403905186974,0 136.1623935609148,36.24952041516693,0 136.1430322872302,36.2517664146187,0 136.1238583812261,36.25081097766737,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="0325C4B30A326C70B8B2">
+		<name>g_road304</name>
+		<LookAt>
+			<longitude>136.8836745178261</longitude>
+			<latitude>36.53670693439032</latitude>
+			<altitude>111.9476013680745</altitude>
+			<heading>-22.71431122051159</heading>
+			<tilt>20.31063315647116</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>17978.38543772232</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0E0312928A326C70FF2E</styleUrl>
+		<LineString>
+			<coordinates>
+				136.9038649883106,36.46505278580094,0 136.9000732857415,36.46508142060618,0 136.8977816912216,36.46620811136702,0 136.8989555998376,36.46847462662214,0 136.8984949880605,36.46922775148356,0 136.8964021638715,36.46980742818616,0 136.8939113684721,36.47262471756404,0 136.8938683318526,36.47439483751688,0 136.8945848534863,36.47610104413781,0 136.8959199997387,36.47618342269371,0 136.8955276994151,36.47847297196333,0 136.8943852590973,36.47926322125043,0 136.8933803447179,36.47948319183656,0 136.893991228863,36.48063044397781,0 136.8935789244087,36.481267666022,0 136.8946495831391,36.48235280503907,0 136.8965119831798,36.48321538079801,0 136.9000499134279,36.48738225094215,0 136.8997532160307,36.48859140701438,0 136.8974008683398,36.49121696720392,0 136.8956406256923,36.49234053966921,0 136.8953464857848,36.49333041995593,0 136.896079223043,36.49565608924667,0 136.8960954819765,36.49876583513741,0 136.8974528287894,36.50155956816373,0 136.8977467091406,36.50390083980197,0 136.8993142056177,36.50828715046401,0 136.9022952944731,36.51417824203345,0 136.902523555519,36.51544658219938,0 136.9045116269418,36.51920027530043,0 136.9042687501843,36.51964295231497,0 136.8971850775349,36.52508378701601,0 136.8911314137155,36.5278603695437,0 136.8887135746823,36.52985348391643,0 136.8876478913915,36.53195958624421,0 136.8822340928207,36.54066568750004,0 136.8749904496123,36.54447809026931,0 136.87428399754,36.552283152131,0 136.8764405516615,36.55867659032729,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="076C0C19D8326C7281B5">
+		<name>m_highwaye41</name>
+		<LookAt>
+			<longitude>136.89121160565</longitude>
+			<latitude>36.53197464228395</latitude>
+			<altitude>113.7748971235301</altitude>
+			<heading>321.1362940580501</heading>
+			<tilt>0</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>9072.95025864034</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0A70E92F4E326C7353DA</styleUrl>
+		<LineString>
+			<coordinates>
+				136.8804592154276,36.4849763051583,0 136.8786267736965,36.49148974103559,0 136.8744731747468,36.49853911018666,0 136.8743027965251,36.50402935528323,0 136.8766541695744,36.51002011149329,0 136.8843964812936,36.52172476459247,0 136.890762069512,36.53875863351819,0 136.8983269658021,36.54753962061696,0 136.9026137893698,36.55624615847426,0 136.903238811137,36.57018847388034,0 136.9024641688901,36.57225484292101,0 136.9012522921293,36.59271075844099,0 136.9036204875225,36.6063571548607,0 136.9070843010748,36.61661482424493,0 136.9085009166096,36.63065231355776,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="05E0E0AE37326C73AE38">
+		<name>c_goldpond</name>
+		<LookAt>
+			<longitude>136.9379816373248</longitude>
+			<latitude>36.5217083454575</latitude>
+			<altitude>214.1999671855455</altitude>
+			<heading>311.3547338559653</heading>
+			<tilt>0</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>2481.128450299439</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00C2FC43BC326C12056D</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.9399753636091,36.52144003477117,0 136.9408268802533,36.52228350610106,0 136.9407427061307,36.52557632492314,0 136.9399220378413,36.52611996106473,0 136.9390053141845,36.5259580535046,0 136.9385122421485,36.52521679666934,0 136.9393105246806,36.52242679081635,0 136.9399753636091,36.52144003477117,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="0F21145D44326C742BEE">
+		<name>c_zyotandam</name>
+		<LookAt>
+			<longitude>136.8698366385473</longitude>
+			<latitude>36.48012010286674</latitude>
+			<altitude>274.3615497381493</altitude>
+			<heading>311.3290576438791</heading>
+			<tilt>0</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>3386.146026708302</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_00C2FC43BC326C12056D</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.8686600128599,36.48272328991171,0 136.8681578725437,36.4799421254764,0 136.8692093363668,36.47885024312608,0 136.8710250478795,36.47330382322373,0 136.8702773363584,36.47692138910906,0 136.8696914064319,36.47990669973356,0 136.8701755164063,36.48227169033162,0 136.8711829845412,36.4827964517659,0 136.8710244704937,36.48411256510753,0 136.8692027212307,36.48373311608046,0 136.8686600128599,36.48272328991171,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="0AD265F746326C75C65A">
+		<name>g_kanden</name>
+		<LookAt>
+			<longitude>136.9125671406471</longitude>
+			<latitude>36.4968981003766</latitude>
+			<altitude>200.8390106040999</altitude>
+			<heading>-43.95958815420935</heading>
+			<tilt>12.94321686666984</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>1535.012818257819</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0E0312928A326C70FF2E</styleUrl>
+		<Polygon>
+			<outerBoundaryIs>
+				<LinearRing>
+					<coordinates>
+						136.9134422973464,36.49562088865549,0 136.915107687721,36.49443102962929,0 136.9183590896694,36.49716712577721,0 136.9176561497573,36.49769806585379,0 136.9150637964302,36.49540763880209,0 136.9140574107274,36.4961629236704,0 136.9134422973464,36.49562088865549,0 
+					</coordinates>
+				</LinearRing>
+			</outerBoundaryIs>
+		</Polygon>
+	</Placemark>
+	<Placemark id="02FD7332F6326C76A158">
+		<name>b_ikegawa</name>
+		<LookAt>
+			<longitude>136.9017713471536</longitude>
+			<latitude>36.51829416406104</latitude>
+			<altitude>126.0204612736454</altitude>
+			<heading>-43.9598033732785</heading>
+			<tilt>12.94362784512237</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>1739.072574989113</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0C906421B1326C00EEA3</styleUrl>
+		<LineString>
+			<coordinates>
+				136.9330532299961,36.49329176312414,0 136.9324276372391,36.4934910313994,0 136.9320166543712,36.49432479040973,0 136.9287016829376,36.49574751254699,0 136.924896311435,36.49633831230097,0 136.9190334808414,36.49839109977692,0 136.9151039354678,36.49760250202753,0 136.9143227444321,36.4984176674045,0 136.9131237928762,36.49870083429048,0 136.9110898264624,36.50038082676017,0 136.910343823516,36.50236230749544,0 136.9106934944756,36.50285915853616,0 136.9087608292388,36.50453608295459,0 136.9087139160838,36.50535560276543,0 136.9073279789381,36.50674247441301,0 136.9073010214819,36.50754647614067,0 136.9058704804216,36.50788442220718,0 136.9049403619919,36.51028873289341,0 136.9033588840911,36.51393528068778,0 136.9052177053498,36.5152940196129,0 136.9046125116224,36.51871070350324,0 136.9050297281362,36.52048562359378,0 136.904880489632,36.52195554209514,0 
+			</coordinates>
+		</LineString>
+	</Placemark>
+	<Placemark id="08413069A8326C77750E">
+		<name>b_uchiogawa</name>
+		<LookAt>
+			<longitude>136.9021162557317</longitude>
+			<latitude>36.48537603636014</latitude>
+			<altitude>315.7643784766547</altitude>
+			<heading>-43.95890057043052</heading>
+			<tilt>12.94186580752802</tilt>
+			<gx:fovy>35</gx:fovy>
+			<range>864.1310859030639</range>
+			<altitudeMode>absolute</altitudeMode>
+		</LookAt>
+		<styleUrl>#__managed_style_0C906421B1326C00EEA3</styleUrl>
+		<LineString>
+			<coordinates>
+				136.8900440628919,36.50506189587905,0 136.8897211794505,36.50396985370229,0 136.8900071442561,36.50340948995171,0 136.889037029669,36.50263596136337,0 136.889554508451,36.50204789735484,0 136.8890317918235,36.50005932353888,0 136.8891322592813,36.49833245523857,0 136.8900501554992,36.49705784946217,0 136.8897001094747,36.49591235374952,0 136.8907597625171,36.49532904819898,0 136.8913620187881,36.49289911188776,0 136.8928973771449,36.49185144267957,0 136.8939234861305,36.49205170356458,0 136.8943906523049,36.4909358953201,0 136.8957662977886,36.49104833604449,0 136.9000582786915,36.48958285103946,0 136.9021483712973,36.49014669134392,0 136.9051095453039,36.48868877382728,0 136.9052317571839,36.48691229879537,0 
 			</coordinates>
 		</LineString>
 	</Placemark>

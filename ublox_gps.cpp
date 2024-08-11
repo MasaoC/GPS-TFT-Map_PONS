@@ -154,8 +154,10 @@ void removeStaleSatellites() {
 
 void parseGSV(char *nmea) {
   // Print the received NMEA sentence for debugging
+  #ifdef DEBUG_NMEA
   Serial.print("Received NMEA: ");
   Serial.println(nmea);
+  #endif
 
 
   // Determine the satellite type based on the NMEA sentence identifier
@@ -172,9 +174,12 @@ void parseGSV(char *nmea) {
     satelliteType = SATELLITE_TYPE_QZSS;
   }
 
+
+  #ifdef DEBUG_NMEA
   // Print the satellite type for debugging
   Serial.print("Satellite Type: ");
   Serial.println(satelliteType);
+  #endif
 
   
   // Example NMEA GSV sentence: $GPGSV,4,4,14,194,,,,195,,,*7D
@@ -279,7 +284,9 @@ bool gps_loop(bool constellation_mode) {
         nmea_buffer1[index_buffer1-1] = '\0';
         strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
         stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
+        #ifdef DEBUG_NMEA
         Serial.println(nmea_buffer1);
+        #endif
         //Usually last message of ublox is GNGLL.  This will be the key to start drawing TFT (so we dont miss hardware serial RX interrupt).
         if(strstr(nmea_buffer1, "$GNGLL")){
           return true;
@@ -397,6 +404,9 @@ double get_gps_lat() {
 #ifdef DEBUG_GPS_SIM_SHINURA
     return SHINURA_LAT;
 #endif
+#ifdef DEBUG_GPS_SIM_SHISHI
+    return SHISHI_LAT;
+#endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
   return PLA_LAT + stored_latitude - SHINURA_LAT;
 #endif
@@ -418,6 +428,9 @@ double get_gps_long() {
   }
 #ifdef DEBUG_GPS_SIM_SHINURA
     return SHINURA_LON;
+#endif
+#ifdef DEBUG_GPS_SIM_SHISHI
+    return SHISHI_LON;
 #endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
   return PLA_LON + stored_longitude - SHINURA_LON;

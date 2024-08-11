@@ -1,5 +1,8 @@
 #include "display_tft.h"
 
+
+//#define DEBUG_NMEA
+
 void gps_setup();
 bool gps_loop(bool constellation_mode);
 void gps_getposition_mode();

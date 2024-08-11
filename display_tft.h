@@ -63,6 +63,7 @@
   extern TFT_eSPI tft;
   extern bool fresh_display;
   extern int screen_brightness;
+  
 #endif
 
 
