@@ -439,12 +439,7 @@ bool out_of_bounds(int x1,int y1,int x2,int y2){
 
 
 #define EARTH_RADIUS 6371.0 // Earth's radius in kilometers
-#define AVG_LATITUDE 35.5 // Average latitude of the specific range in degrees
-#define COS_AVG_LATITUDE cos(AVG_LATITUDE * DEG_TO_RAD) // Cosine of the average latitude in radians
 
-// Precompute meters per degree for the specific latitude
-const double METERS_PER_DEG_LAT = 110540.0; // Approximate meters per degree of latitude
-const double METERS_PER_DEG_LON = 111320.0 * COS_AVG_LATITUDE; // Approximate meters per degree of longitude
 
 // Function to calculate the distance between two points (latitude and longitude) using an optimized formula
 double fastDistance(float lat1, float lon1, float lat2, float lon2) {
@@ -453,13 +448,11 @@ double fastDistance(float lat1, float lon1, float lat2, float lon2) {
     float dLon = lon2 - lon1;
 
     // Convert degree differences to meters
-    double dLatMeters = dLat * METERS_PER_DEG_LAT;
-    double dLonMeters = dLon * METERS_PER_DEG_LON;
+    double dLatMeters = dLat * KM_PER_DEG_LAT;
+    double dLonMeters = dLon * KM_PER_DEG_LON(lat1);
 
     // Use Pythagorean theorem to calculate the distance
-    double distance = sqrt(dLatMeters*dLatMeters + dLonMeters*dLonMeters) / 1000.0; // Convert to kilometers
-
-    return distance;
+    return sqrt(dLatMeters*dLatMeters + dLonMeters*dLonMeters); 
 }
 
 

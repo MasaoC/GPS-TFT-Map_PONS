@@ -20,7 +20,6 @@
 #define BL_PWM_FRQ 1000   //1000Hz
 
 
-#define PX_PER_KM(SCALE) (17.3596112311*SCALE)//(1789+140)/60/1852=0.01735961123 pixel/m/scale
 
 #ifndef DISPLAY_TFT_DEFINED
   #define DISPLAY_TFT_DEFINED
@@ -68,10 +67,12 @@
 
 
 void draw_sdinfo();
+void draw_nogmap();
 void draw_gpsinfo();
 void setup_tft();
 void clean_display();
 void clean_map();
+
 
 void tft_change_brightness(int increment);
 void toggle_mode();
@@ -80,6 +81,7 @@ bool is_northupmode();
 
 
 void redraw_compass(float up,int col,int bgcolor);
+void draw_compass(float truetrack, uint16_t col);
 void draw_nomapdata();
 void draw_gpsdetail(bool redraw,int page);
 void draw_maplist_mode(bool redraw,int maplist_page);

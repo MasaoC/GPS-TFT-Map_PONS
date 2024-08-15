@@ -1,4 +1,4 @@
-#include <TinyGPS++.h>
+
 #include "ublox_gps.h"
 #include "navdata.h"
 #include "settings.h"
@@ -210,11 +210,13 @@ void parseGSV(char *nmea) {
     int snr = (*p != ',' && *p != '*') ? atoi(p) : -1;
     p = strchr(p, ','); if (!p) break; p++;
 
+    #ifdef DEBUG_NMEA
     // Debugging: Print parsed values
     Serial.print("PRN: "); Serial.print(prn);
     Serial.print(", Elevation: "); Serial.print(elevation);
     Serial.print(", Azimuth: "); Serial.print(azimuth);
     Serial.print(", SNR: "); Serial.println(snr);
+    #endif
 
     // Validate parsed values and update satellite data
     if (prn > 0 && prn < 200) {
@@ -245,6 +247,8 @@ char* get_gps_nmea(int i){
 }
 
 
+
+
 unsigned long last_latlon_manager = 0;
 unsigned long last_gps_save = 0;
 unsigned long last_gps_time = 0;
@@ -255,6 +259,46 @@ bool draw_allowed = false;
 
 int index_buffer1 = 0;
 char nmea_buffer1[128];
+
+
+void utcToJst(int *year, int *month, int *day, int *hour) {
+    if(*month <= 0 || *month > 12){
+      Serial.print("month invalid:");
+      Serial.println(*month);
+      log_sdf("month invalid:%d",month);
+      return;
+    }
+    // Add 9 hours to convert UTC to JST
+    *hour += 9;
+    // Handle overflow of hours (24-hour format)
+    if (*hour >= 24) {
+        *hour -= 24;
+        (*day)++;
+    }
+    // Handle overflow of days in each month
+    int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    // Check for leap year
+    bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
+    if (isLeapYear) {
+        daysInMonth[1] = 29;
+    }
+    if (*day > daysInMonth[*month - 1]) {
+        *day = 1;
+        (*month)++;
+    }
+    // Handle overflow of months
+    if (*month > 12) {
+        *month = 1;
+        (*year)++;
+    }
+}
+
+TinyGPSDate get_gpsdate(){
+  return gps.date;
+}
+TinyGPSTime get_gpstime(){
+  return gps.time;
+}
 
 bool gps_loop(bool constellation_mode) {
 
@@ -303,12 +347,15 @@ bool gps_loop(bool constellation_mode) {
   if (gps.location.isUpdated()) {
     draw_allowed = false;
     last_gps_time = millis();
-    Serial.print(F("Location: "));
     stored_latitude = gps.location.lat();
     stored_longitude = gps.location.lng();
+
+    #ifdef DEBUG_NMEA
+    Serial.print(F("Location: "));
     Serial.print(stored_latitude, 6);
     Serial.print(F(", "));
     Serial.println(stored_longitude, 6);
+    #endif
     bool all_valid = true;
     if (gps.location.isValid()) {
       // Check if the location fix is valid
@@ -321,71 +368,67 @@ bool gps_loop(bool constellation_mode) {
       all_valid = false;
       stored_fixtype = 0;
     }
-    int year,month,day,hour,minute,second;
+    
 
     // Print date
-    if (gps.date.isValid()) {
-      year = gps.date.year();
-      month = gps.date.month();
-      day = gps.date.day();
-      Serial.print("Date: ");
-      Serial.print(year);
-      Serial.print("-");
-      Serial.print(month);
-      Serial.print("-");
-      Serial.print(day);
-      Serial.println();
-    } else {
+    if (!gps.date.isValid()) {
       Serial.println("Date: Not Available");
       all_valid = false;
     }
     
     // Print time
-    if (gps.time.isValid()) {
-      hour = gps.time.hour();
-      minute = gps.time.minute();
-      second = gps.time.second();
-      Serial.print("Time: ");
-      Serial.print(hour);
-      Serial.print(":");
-      Serial.print(minute);
-      Serial.print(":");
-      Serial.print(second);
-      Serial.println();
-    } else {
+    if (!gps.time.isValid()) {
       Serial.println("Time: Not Available");
       all_valid = false;
     }
     if(all_valid && millis() - last_gps_save > 1000){
       latlon_manager.addCoord({ (float)stored_latitude, (float)stored_longitude });
-      saveCSV(stored_latitude, stored_longitude, stored_gs, stored_truetrack, year, month, day, hour, minute, second);
+      int year = gps.date.year();
+      int month = gps.date.month();
+      int day = gps.date.day();
+      int hour = gps.time.hour();
+      utcToJst(&year,&month,&day,&hour);
+      saveCSV(stored_latitude, stored_longitude, stored_gs, stored_truetrack, year, month, day, hour, gps.time.minute(), gps.time.second());
       last_gps_save = millis();
     }
   }
 
   if (gps.altitude.isUpdated()) {
+    #ifdef DEBUG_NMEA
     Serial.print(F("Altitude: "));
+    #endif
     stored_altitude = gps.altitude.meters();
     Serial.println(stored_altitude);
   }
 
   if (gps.speed.isUpdated()) {
-    Serial.print(F("Speed: "));
     stored_gs = gps.speed.mps();
+    #ifdef DEBUG_NMEA
+    Serial.print(F("Speed: "));
     Serial.print(stored_gs);  // Speed in meters per second
     Serial.println(F(" mps"));
+    #endif
   }
 
   if (gps.course.isUpdated()) {
+    #ifdef DEBUG_NMEA
     Serial.print(F("Course: "));
-    stored_truetrack = gps.course.deg();
     Serial.println(stored_truetrack);
+    #endif
+    stored_truetrack = gps.course.deg();
+    if(stored_truetrack < 0 || stored_truetrack > 360){
+      Serial.print("ERROR:MT");
+      Serial.println(stored_truetrack);
+      stored_truetrack = 0;
+    }
   }
 
   if (gps.satellites.isUpdated()) {
+    #ifdef DEBUG_NMEA
     Serial.print(F("Satellites: "));
     stored_numsats = gps.satellites.value();
     Serial.println(stored_numsats);
+    #endif
   }
   return false;
 }
@@ -402,10 +445,14 @@ double get_gps_lat() {
   }
 
 #ifdef DEBUG_GPS_SIM_SHINURA
-    return SHINURA_LAT;
+  int timeelapsed = millis() % 200000;
+  return SHINURA_LAT+ timeelapsed / 16000.0 / 1000.0;
+#endif
+#ifdef DEBUG_GPS_SIM_SAPPORO
+  return SAPPORO_LAT;
 #endif
 #ifdef DEBUG_GPS_SIM_SHISHI
-    return SHISHI_LAT;
+  return SHISHI_LAT;
 #endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
   return PLA_LAT + stored_latitude - SHINURA_LAT;
@@ -427,7 +474,11 @@ double get_gps_long() {
     return PLA_LON - timeelapsed / 1600.0 / 1000.0 + 0.025;
   }
 #ifdef DEBUG_GPS_SIM_SHINURA
-    return SHINURA_LON;
+  int timeelapsed = millis() % 200000;
+  return SHINURA_LON + timeelapsed / 1600.0 / 1000.0;
+#endif
+#ifdef DEBUG_GPS_SIM_SAPPORO
+    return SAPPORO_LON;
 #endif
 #ifdef DEBUG_GPS_SIM_SHISHI
     return SHISHI_LON;
@@ -531,36 +582,35 @@ Coordinate LatLonManager::getData(int newest_index) {
 LatLonManager latlon_manager;
 
 
-// Function to convert latitude and longitude to x, y coordinates on the TFT screen
-cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
-  // Convert map center latitude and longitude to radians
-  float centerLatRad = mapCenterLat * DEG_TO_RAD;
-  float centerLonRad = mapCenterLon * DEG_TO_RAD;
-
-  // Convert point latitude and longitude to radians
-  float latRad = lat * DEG_TO_RAD;
-  float lonRad = lon * DEG_TO_RAD;
-
-  // Calculate the differences
-  float dLat = latRad - centerLatRad;
-  float dLon = lonRad - centerLonRad;
-
-  // Calculate x and y distances
-  float xDist = dLon * cos(centerLatRad) * 111320.0; // Approx distance per degree longitude in meters
-  float yDist = dLat * 110540.0; // Approx distance per degree latitude in meters
-
+// Function to convert latitude from degrees to radians
+double degreesToRadians(double degrees) {
+  return degrees * PI / 180.0;
+}
+// Function to calculate y-coordinate in Mercator projection
+double latitudeToMercatorY(double latitude) {
+  double radLatitude = degreesToRadians(latitude);
+  return log(tan(PI / 4.0 + radLatitude / 2.0));
+}
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection, int mapshiftdown) {
+  // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
+  float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
+  // Calculate y-coordinates in Mercator projection
+  double yA = latitudeToMercatorY(mapCenterLat);
+  double yB = latitudeToMercatorY(lat);
+  // Calculate the distance on the y-axis
+  double yDist = (yB - yA)* 6378.22347118;// 1 radian longitude = 111.321 *180/3.1415 = 6378.22347118 km
   // Apply scale factor
   xDist *= mapScale;
   yDist *= mapScale;
-
   // Apply rotation for map up direction
   float angleRad = mapUpDirection * DEG_TO_RAD;
   float rotatedX = xDist * cos(angleRad) - yDist * sin(angleRad);
   float rotatedY = xDist * sin(angleRad) + yDist * cos(angleRad);
-
   // Translate to screen coordinates
-  return cord_tft{(SCREEN_WIDTH / 2) + (int)rotatedX,
-    (SCREEN_HEIGHT / 2) - (int)rotatedY + mapshiftdown}; // Y is inverted on the screen
+  return cord_tft{
+    (SCREEN_WIDTH / 2) + (int)rotatedX,
+    (SCREEN_HEIGHT / 2) - (int)rotatedY + mapshiftdown  // Y is inverted on the screen
+  };
 }
 
 // Function to convert x, y coordinates on the TFT screen to latitude and longitude
@@ -593,13 +643,6 @@ bool out_of_bounds(int x1,int y1,int x2,int y2){
 
 
 
-#define EARTH_RADIUS 6371.0 // Earth's radius in kilometers
-#define AVG_LATITUDE 35.5 // Average latitude of the specific range in degrees
-#define COS_AVG_LATITUDE cos(AVG_LATITUDE * DEG_TO_RAD) // Cosine of the average latitude in radians
-
-// Precompute meters per degree for the specific latitude
-const double METERS_PER_DEG_LAT = 110540.0; // Approximate meters per degree of latitude
-const double METERS_PER_DEG_LON = 111320.0 * COS_AVG_LATITUDE; // Approximate meters per degree of longitude
 
 // Function to calculate the distance between two points (latitude and longitude) using an optimized formula
 double fastDistance(float lat1, float lon1, float lat2, float lon2) {
@@ -608,8 +651,8 @@ double fastDistance(float lat1, float lon1, float lat2, float lon2) {
     float dLon = lon2 - lon1;
 
     // Convert degree differences to meters
-    double dLatMeters = dLat * METERS_PER_DEG_LAT;
-    double dLonMeters = dLon * METERS_PER_DEG_LON;
+    double dLatMeters = dLat * KM_PER_DEG_LAT;
+    double dLonMeters = dLon * KM_PER_DEG_LON(lat1);
 
     // Use Pythagorean theorem to calculate the distance
     double distance = sqrt(dLatMeters*dLatMeters + dLonMeters*dLonMeters) / 1000.0; // Convert to kilometers

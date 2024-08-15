@@ -1,12 +1,17 @@
 //====== 設定画面 =======
 
-// リリース時
-#define DEBUG_P(txt)  Serial.println(txt);
+// リリース時 削除
+#define DEBUG
+#define BUILDDATE 20240815
+#define BUILDVERSION "0.4"
+#define DEBUG_P(num,txt)  if(num >= BUILDDATE-10)Serial.print(txt);
+#define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-10)Serial.println(txt);
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   //#define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
-  #define DEBUG_GPS_SIM_SHISHI         //しし固定座標
+  //#define DEBUG_GPS_SIM_SAPPORO         //新浦安固定座標
+  //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
   //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
@@ -69,7 +74,7 @@
 #define SD_CS_PIN -1
 #define SD_SCK 2
 #define SD_TX 3    //CMD MOSI
-#define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になって、誤差修正係数0.886になった数値。
+#define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になった数値。
 #define BAT_LOW_VOLTAGE 3.49
 #define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 
@@ -80,5 +85,5 @@
 
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
-// 秋月で売っているGPSなど、Mediatek GPSを使う場合は、ublox_gps.h ではなく mediatek_gps.h に全て書き換えてください。
+// 秋月で売っているGPS など、Mediatek GPSを使う場合は、ublox_gps.h ではなく mediatek_gps.h に全て書き換えてください。
 

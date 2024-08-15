@@ -5,7 +5,12 @@
 #include "mysd.h"
 #include "button.h"
 
-#define SCALE_JAPAN 0.008f
+
+#define SCALE_EXLARGE_GMAP 52.32994872  //zoom13
+#define SCALE_LARGE_GMAP 13.08248718  //zoom11
+#define SCALE_MEDIUM_GMAP 3.2706218   //zoom9
+#define SCALE_SMALL_GMAP 0.81765545   //zoom7
+#define SCALE_EXSMALL_GMAP 0.2044138625 //zoom5
 #define SETTING_LINES 6
 
 unsigned long last_newtrack_time = 0;
@@ -30,8 +35,9 @@ const int MODE_MAPLIST = 4;
 int screen_mode = MODE_MAP;
 int detail_page = 0;
 int scaleindex = 3;
-const float scalelist[] = { SCALE_JAPAN, 0.2f, 0.5f, 1.0f, 2.5f, 10.0f };
-float scale = scalelist[scaleindex];
+
+const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 180.0f };
+double scale = scalelist[scaleindex];
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
@@ -206,14 +212,10 @@ void switch_handling(){
 
 void setup(void) {
   Serial.begin(38400);
-  DEBUG_P("SETUP INIT");
   setup_switch();
   setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
-  //bmp_open();
-  display_region5(PLA_LAT, PLA_LON);
-  display_region5(SHINURA_LAT, SHINURA_LON);
-  DEBUG_P("GPS SETUP");
+
   gps_setup();
   startup_demo_tft();
 
@@ -363,11 +365,21 @@ void loop() {
 
       clean_map();
 
-      erase_triangle();
-      
+      //google map load成功している間は、古いものを削除する必要はない。
+      if(!gmap_loaded){
+        erase_triangle();
+      }
 
 
-      if(scale > SCALE_JAPAN){
+      int zoomlevel = 0;
+      if(scale == SCALE_EXSMALL_GMAP) zoomlevel = 5;
+      if(scale == SCALE_SMALL_GMAP) zoomlevel = 7;
+      if(scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
+      if(scale == SCALE_LARGE_GMAP) zoomlevel = 11;
+      if(scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
+      display_region(new_lat,new_long,zoomlevel);
+
+      if(scale > SCALE_SMALL_GMAP){
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
           draw_Biwako(new_lat, new_long, scale, drawupward_direction);
         } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
@@ -383,6 +395,7 @@ void loop() {
         }
       }
 
+
       draw_track(new_lat,new_long,scale,drawupward_direction);
 
       if (get_demo_biwako()) {
@@ -394,7 +407,13 @@ void loop() {
 
       draw_km_circle(scale);
       draw_triangle();
-      redraw_compass(drawupward_direction,COLOR_BLACK, COLOR_WHITE);
+
+      //google map load成功している間は、古いものを削除する必要はない。
+      if(!gmap_loaded){
+        redraw_compass(drawupward_direction,COLOR_BLACK, COLOR_WHITE);
+      }else{
+        draw_compass(drawupward_direction,COLOR_BLACK);
+      }
     }
 
     //地図が更新されていない時でも、更新するもの。
@@ -402,10 +421,15 @@ void loop() {
     if (bank_warning) {
       draw_bankwarning();
     }
+
     draw_nomapdata();
+
     draw_degpersecond(degpersecond);
     draw_gpsinfo();
     draw_sdinfo();
+    if(!gmap_loaded){
+      draw_nogmap();
+    }
 
     //更新終了
     redraw_screen = false;

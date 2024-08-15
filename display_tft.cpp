@@ -79,6 +79,17 @@ void createNeedle(void)
 
 
 void setup_tft() {
+  gpio_init(27);
+  gpio_set_dir(27, GPIO_OUT);
+  gpio_put(27, 0);  // or gpio_put(28, 1);
+  gpio_init(28);
+  gpio_set_dir(28, GPIO_OUT);
+  gpio_put(28, 0);  // or gpio_put(28, 1);
+
+
+  // Set GPIO26 as an ADC input and disable pull-up/pull-down resistors
+  adc_gpio_init(BATTERY_PIN); // Initialize GPIO26 as ADC
+
 
   pinMode(BATTERY_PIN,INPUT);
   analogReadResolution(12);
@@ -406,9 +417,9 @@ double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
 
 
 bool draw_circle_km(float scale, float km) {
-  int radius = PX_PER_KM(scale) * km;
+  int radius = scale * km;//scale is px/km
   int ypos = SCREEN_HEIGHT / 2 + map_shift_down - radius;
-  if (ypos > 16) {
+  if (ypos > 30) {
     tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, radius, COLOR_PINK);
     tft.setCursor(SCREEN_WIDTH / 2 + 2, ypos + 1);
     tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
@@ -516,33 +527,29 @@ void draw_compass(float truetrack, uint16_t col) {
 
 
 void draw_km_circle(float scale) {
-  if (!draw_circle_km(scale, 400)) {
-    if (!draw_circle_km(scale, 20)) {
-      if (!draw_circle_km(scale, 10)) {
-        if (!draw_circle_km(scale, 5)) {
-          if (!draw_circle_km(scale, 2)) {
-            if (!draw_circle_km(scale, 1)) {
-              draw_circle_km(scale, 0.4);
-              draw_circle_km(scale, 0.2);
-            } else {
-              draw_circle_km(scale, 0.5);
-            }
-          } else {
-            draw_circle_km(scale, 1);
-          }
-        } else {
-          draw_circle_km(scale, 2);
-        }
-      } else {
-        draw_circle_km(scale, 5);
-      }
-    } else {
-      draw_circle_km(scale, 10);
-    }
-  }
-  else {
-    draw_circle_km(scale, 200);
-  }
+  int draw_counter = 0;
+
+  if(draw_circle_km(scale, 400)) draw_counter++;
+  if(draw_circle_km(scale, 200)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 100)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 50)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 20)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 10)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 5)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 2)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 1)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 0.4)) draw_counter++;
+  if(draw_counter >= 2) return;
+  if(draw_circle_km(scale, 0.2)) draw_counter++;
+  if(draw_counter >= 2) return;
 }
 
 bool fresh = false;
@@ -568,6 +575,9 @@ void clean_map(){
   mapStrokeManager.removeAllStrokes();
   nomap_drawn = true;
 }
+
+
+
 
 int rb_x_old,rb_y_old,lb_x_old,lb_y_old;
 #ifdef TFT_USE_ST7735
@@ -707,15 +717,12 @@ void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handairailway, COLOR_ORANGE);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaicafe, COLOR_GREEN);
 
-
-
-
   nomap_drawn = false;
 }
 
 
 void startup_demo_tft() {
-  float scale = 0.25;
+  float scale = 3.0;
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
   bool redraw = false;
@@ -725,7 +732,7 @@ void startup_demo_tft() {
     clean_map();
     sealandStrokeManager.drawAllStrokes();
     sealandStrokeManager.removeAllStrokes();
-    draw_Biwako(center_lat, center_lon, scale-i*0.01, 0);
+    draw_Biwako(center_lat, center_lon, scale-i*0.19, 0);
 
     tft.setTextColor(COLOR_RED,COLOR_WHITE);
     tft.setCursor(5, 5);
@@ -739,7 +746,12 @@ void startup_demo_tft() {
     tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
-    tft.print("SOFT VERSION:0.3 (2024.8.4)");
+    tft.print("SOFT VERSION:");
+    tft.print(BUILDVERSION);
+    tft.print("(b");
+    tft.print(BUILDDATE);
+    tft.print(")");
+
 
     for(int j = 0; j < 250; j++){
       gps_loop(false);
@@ -759,15 +771,15 @@ void drawbar(float degpersecond, int col){
   int barposy = 28;
   float abs_degpersecond = abs(degpersecond);
   int absint_degpersecond = abs_degpersecond;
-  int barwidth = (abs_degpersecond * SCREEN_WIDTH / 2) / 3.0;//3deg = max width
-  int thickness = constrain(1+absint_degpersecond*absint_degpersecond,2,17);
+  int barwidth = (abs_degpersecond * (SCREEN_WIDTH/2-20)) / 3.0;//3deg = max width
+  int thickness = constrain(1+absint_degpersecond*absint_degpersecond,2,13);
   if (degpersecond > 0) {
     for(int i = 0;i < thickness; i++){
-      tft.drawFastHLine(SCREEN_WIDTH / 2, barposy+i, barwidth, col);
+      tft.drawFastHLine(SCREEN_WIDTH / 2+20, barposy+i, barwidth, col);
     }
   } else {
     for(int i = 0;i < thickness; i++){
-      tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth, barposy+i, barwidth, col);
+      tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth-20, barposy+i, barwidth, col);
     }
   }
 }
@@ -786,8 +798,8 @@ void draw_degpersecond(float degpersecond) {
   drawbar(degpersecond,-1);
   last_degpersecond = degpersecond;
 
-  textmanager.drawTextf(ND_DEGPERSEC_VAL,1,SCREEN_WIDTH/2 - 30, 30,COLOR_BLACK,"%.1f deg/s",degpersecond);
-  //textmanager.drawText(ND_DEGPERSEC_TEX,1,SCREEN_WIDTH -50, 15,col,"deg/s");
+  textmanager.drawTextf(ND_DEGPERSEC_VAL,1,SCREEN_WIDTH/2 - 20, 27,COLOR_BLACK,"%.1f",degpersecond);
+  textmanager.drawText(ND_DEGPERSEC_TEX,1,SCREEN_WIDTH -100, 27,col,"deg/s");
 }
 
 bool bankwarning_flipflop = true;
@@ -810,6 +822,12 @@ void draw_bankwarning() {
   tft.setTextColor(tcolor,bgcolor);
   tft.print("!  BANK  !");
   tft.setTextSize(1);
+}
+
+void draw_nogmap(){
+  tft.setTextColor(COLOR_ORANGE,COLOR_WHITE);
+  tft.setCursor(1, SCREEN_HEIGHT-50);
+  tft.print("No map image available.");
 }
 
 void draw_sdinfo(){
@@ -1010,10 +1028,10 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
   sealandStrokeManager.removeAllStrokes();
 
   int lenbar = 5;
-  if(scale > 0.1) lenbar = 7;
-  if(scale > 0.4) lenbar = 15;
-  if(scale > 2) lenbar = 20;
-  if(scale > 5) lenbar = 24;
+  if(scale > 1.8) lenbar = 7;
+  if(scale > 7.2) lenbar = 15;
+  if(scale > 36) lenbar = 20;
+  if(scale > 90) lenbar = 24;
       
   //fill
   for (int lat_i = 0; lat_i < ROW_FILLDATA; lat_i++) {
@@ -1032,7 +1050,7 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
         sealandStrokeManager.addPointToStroke(pos.x + lenbar, pos.y);
         tft.drawFastHLine(pos.x - lenbar, pos.y, 1+lenbar*2, col);
 
-        if (scale > 0.5) {
+        if (scale > 9) {
           if(!sealandStrokeManager.addStroke(STRK_SEALAND, 2)) return;
           sealandStrokeManager.addPointToStroke(pos.x, pos.y - lenbar);
           sealandStrokeManager.addPointToStroke(pos.x, pos.y + lenbar);
@@ -1045,7 +1063,7 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
     }
   }
   
-  if(scale > 2){
+  if(scale > 36){
     // + マークのNavデータが登録されていない場所の+をfillする。 要するに拡大すると真っ暗にならないように対策。
     //Big zoom
     int latitude_index = int((mapcenter_lat-35.0)/0.02);
@@ -1061,7 +1079,7 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
           }
           int dx_size = 2;
           int dy_size = 2;
-          if(scale > 5){
+          if(scale > 90){
             dx_size = 8;
             dy_size = 8;
           }
@@ -1204,6 +1222,17 @@ void draw_gpsdetail(bool redraw, int page){
       tft.print("GLONASS ");
       tft.setTextColor(COLOR_WHITE,COLOR_BLUE,true);
       tft.print("GALILEO ");
+
+      tft.setCursor(0,SCREEN_HEIGHT-15);
+      tft.unloadFont();
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
+      TinyGPSDate date = get_gpsdate();
+      TinyGPSTime time = get_gpstime();
+      if(date.isValid() && time.isValid()){
+        tft.printf("Time:%d.%d.%d %d:%d:%d",date.year(),date.month(),date.day(),time.hour(),time.minute(),time.second());
+      }
+      tft.loadFont(AA_FONT_SMALL);    // Must load the font first
 
       if(!aru)
         return;

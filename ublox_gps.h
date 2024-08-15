@@ -1,8 +1,8 @@
 #include "display_tft.h"
+#include <TinyGPS++.h>
 
 
 //#define DEBUG_NMEA
-
 void gps_setup();
 bool gps_loop(bool constellation_mode);
 void gps_getposition_mode();
@@ -18,6 +18,11 @@ double get_gps_lat();
 double get_gps_long();
 double get_gps_altitude();
 char* get_gps_nmea(int i = 0);
+
+
+TinyGPSDate get_gpsdate();
+TinyGPSTime get_gpstime();
+
 
 void toggle_demo_biwako();
 bool get_demo_biwako();
