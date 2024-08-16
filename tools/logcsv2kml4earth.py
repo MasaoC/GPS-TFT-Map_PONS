@@ -5,6 +5,8 @@ import simplekml
 from datetime import datetime, timedelta
 import random
 
+#This file creates KML file for Google Earth from logged positions from csv file of a device(sd card).
+
 def generate_random_color():
     r = lambda: random.randint(0, 255)
     return simplekml.Color.rgb(r(), r(), r())

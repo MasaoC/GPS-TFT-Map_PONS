@@ -1,6 +1,9 @@
 import csv
 from lxml import etree
 
+
+# This file creates map data csv from Google earth exported KML file.
+
 def parse_kml(kml_file):
     # Parse the KML file
     tree = etree.parse(kml_file)

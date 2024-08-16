@@ -700,7 +700,8 @@ void draw_Biwako(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
   draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
-  fill_sea_land(center_lat, center_lon, scale, up);
+  if(!gmap_loaded)
+    fill_sea_land(center_lat, center_lon, scale, up);
   nomap_drawn = false;
 }
 

@@ -424,9 +424,9 @@ bool gps_loop(bool constellation_mode) {
   }
 
   if (gps.satellites.isUpdated()) {
+    stored_numsats = gps.satellites.value();
     #ifdef DEBUG_NMEA
     Serial.print(F("Satellites: "));
-    stored_numsats = gps.satellites.value();
     Serial.println(stored_numsats);
     #endif
   }

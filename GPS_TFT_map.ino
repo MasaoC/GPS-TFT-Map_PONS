@@ -43,7 +43,7 @@ int selectedLine = -1;
 int cursorLine = 0;
 bool err_nomap = false;
 unsigned long lastfresh_millis = 0;
-
+bool scale_changed = true;
 
 // Callback function for short press
 void shortPressCallback() {
@@ -69,6 +69,7 @@ void shortPressCallback() {
       detail_page++;
     } else {
       scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
+      scale_changed = true;
     }
   #else
     if (screen_mode != MODE_SETTING) {
@@ -371,13 +372,19 @@ void loop() {
       }
 
 
-      int zoomlevel = 0;
-      if(scale == SCALE_EXSMALL_GMAP) zoomlevel = 5;
-      if(scale == SCALE_SMALL_GMAP) zoomlevel = 7;
-      if(scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
-      if(scale == SCALE_LARGE_GMAP) zoomlevel = 11;
-      if(scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
-      display_region(new_lat,new_long,zoomlevel);
+      //Do not drawy mapimage right after scale change;
+      if(scale_changed){
+        scale_changed = false;
+        quick_redraw = true;
+      }else{
+        int zoomlevel = 0;
+        if(scale == SCALE_EXSMALL_GMAP) zoomlevel = 5;
+        if(scale == SCALE_SMALL_GMAP) zoomlevel = 7;
+        if(scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
+        if(scale == SCALE_LARGE_GMAP) zoomlevel = 11;
+        if(scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
+        display_region(new_lat,new_long,zoomlevel);
+      }
 
       if(scale > SCALE_SMALL_GMAP){
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {

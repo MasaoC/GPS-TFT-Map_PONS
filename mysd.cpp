@@ -288,24 +288,22 @@ struct bmp_image_header_t {
 };
 
 
+
+
 double pixelsPerDegree(int zoom) {
   // Google Maps API approximation: pixels per degree at the given zoom level
   // Zoom 5 is used as the base reference in this example
   return 256 * pow(2, zoom) / 360.0;
 }
 
-
 double pixelsPerKM_zoom(int zoom){
   return pixelsPerDegree(zoom)/KM_PER_DEG_LAT;//px/deg / (km/deg) = px /km
 }
-
 
 double pixelsPerDegreeLat(int zoom,double latitude) {
   // Calculate pixels per degree for latitude
   return pixelsPerDegree(zoom) / cos(radians(latitude)); // Reference latitude
 }
-
-
 
 
 // Function to round a value to the nearest 5 degrees
@@ -323,9 +321,9 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
   int starttime = millis();
   double map_lat,map_lon;
   double round_degrees = 0.0;
-  if(zoomlevel == 5) round_degrees = 20.0;
-  else if(zoomlevel == 7) round_degrees = 5.0;
-  else if(zoomlevel == 9) round_degrees = 1.2;
+  if(zoomlevel == 5) round_degrees = 12.0;
+  else if(zoomlevel == 7) round_degrees = 3.0;
+  else if(zoomlevel == 9) round_degrees = 0.8;
   else if(zoomlevel == 11) round_degrees = 0.2;
   else if(zoomlevel == 13) round_degrees = 0.05;
   if(round_degrees == 0.0){
@@ -335,9 +333,6 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
   // Round latitude and longitude to the nearest 5 degrees
   map_lat = roundToNearestXDegrees(round_degrees, center_lat);
   map_lon = roundToNearestXDegrees(round_degrees, center_lon);
-
-  int maplat4 = (int)(map_lat*100);
-  int maplon5 = (int)(map_lon*100);
   
   // Calculate pixel coordinates for given latitude and longitude
   int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegree(zoomlevel));
@@ -345,11 +340,22 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
   // Calculate top-left corner of 240x240 region
   int start_x = center_x - 120;
   int start_y = center_y - 120;
+  if(start_x < 0){
+    Serial.print("ERR OUT OF BOUND X");
+    Serial.println(start_x);
+  }
+  if(start_y < 0){
+    Serial.print("ERR OUT OF BOUND Y");
+    Serial.println(start_y);
+  }
+
   char current_sprite_id[20];
+  int maplat4 = round(map_lat*100);
+  int maplon5 = round(map_lon*100);
   sprintf(current_sprite_id,"%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
   Serial.println(current_sprite_id);
 
-  if(strcmp(current_sprite_id,lastsprite_id) == 0){
+  if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded){
     Serial.println("same sprite");
     gmap_sprite.pushSprite(0, 40);
     Serial.print(millis()-starttime);
@@ -385,7 +391,12 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
   // Open BMP file
   File32 bmpImage = SD.open(filename, FILE_READ);
   if (!bmpImage) {
-    Serial.println("Error opening BMP file");
+    Serial.print("Error opening BMP file:");
+    Serial.print(filename);
+    Serial.print("/cla=");
+    Serial.print(center_lat,8);
+    Serial.print("/clo=");
+    Serial.println(center_lon,8);
     gmap_loaded = false;
     return;
   }
