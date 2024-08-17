@@ -9,7 +9,7 @@
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   //#define RELEASE_GPS
-  //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
+  #define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
   //#define DEBUG_GPS_SIM_SAPPORO         //新浦安固定座標
   //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
   //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
@@ -25,7 +25,7 @@
 #define SCREEN_INTERVAL 990
 
 //強制画面リフレッシュ時間
-#define SCREEN_FRESH_INTERVAL 30000
+#define SCREEN_FRESH_INTERVAL 60000
 #define BATTERY_PIN 26 //A0
 
 

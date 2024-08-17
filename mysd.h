@@ -11,7 +11,7 @@ void saveCSV(float latitude, float longitude,float gs,int mtrack, int year, int 
 
 
 void bmp_open();
-void display_region(double center_lat, double center_lon,int zoomlevel);
+void draw_mapimage(double center_lat, double center_lon,int zoomlevel,double rotation);
 
 
 extern bool gmap_loaded;

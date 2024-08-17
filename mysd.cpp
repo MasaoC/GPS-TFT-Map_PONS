@@ -1,7 +1,6 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
-//#include <SD.h>
 #include "SdFat.h"
 #include "display_tft.h"
 #include <SPI.h>
@@ -317,7 +316,7 @@ bool gmap_loaded = false;
 char lastsprite_id[20] = "\0";
 int last_start_x,last_start_y = 0;
 
-void display_region(double center_lat, double center_lon,int zoomlevel) {
+void draw_mapimage(double center_lat, double center_lon,int zoomlevel,double rotation) {
   int starttime = millis();
   double map_lat,map_lon;
   double round_degrees = 0.0;
@@ -340,6 +339,10 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
   // Calculate top-left corner of 240x240 region
   int start_x = center_x - 120;
   int start_y = center_y - 120;
+  DEBUG_P(20240817,"sx,sy=");
+  DEBUG_P(20240817,start_x);
+  DEBUG_P(20240817,",");
+  DEBUG_PLN(20240817,start_y);
   if(start_x < 0){
     Serial.print("ERR OUT OF BOUND X");
     Serial.println(start_x);
@@ -357,7 +360,12 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
 
   if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded){
     Serial.println("same sprite");
-    gmap_sprite.pushSprite(0, 40);
+    if(rotation != 0){
+      tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
+      gmap_sprite.pushRotated(-rotation);
+    }
+    else
+      gmap_sprite.pushSprite(0, 40);
     Serial.print(millis()-starttime);
     Serial.println("ms to pushsrpite");
     return;
@@ -378,9 +386,6 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
     scrollx = (start_x-last_start_x);
     scrolly = (start_y-last_start_y);
   }
-
-  last_start_x = start_x;
-  last_start_y = start_y;
 
   strcpy(lastsprite_id,current_sprite_id);
 
@@ -455,7 +460,7 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
         int x_end = scrollx > 0 ? 240 : -scrollx;
 
         for (int y = 0; y < 240; y++) {
-            int bmp_y = start_y + y;
+            int bmp_y = last_start_y + y;//Y must be old start_y since we have not scrolled vertically yet.
             if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
             bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2 + x_start * 2);
             for (int x = x_start; x < x_end; x++) {
@@ -493,7 +498,7 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
             }
         }
     }
-    DEBUG_P(20240815,"scroll load time=");
+    DEBUG_P(20240815,"scroll x/y/load time=");
     DEBUG_P(20240815,scrollx);
     DEBUG_P(20240815,"/");
     DEBUG_P(20240815,scrolly);
@@ -521,15 +526,23 @@ void display_region(double center_lat, double center_lon,int zoomlevel) {
     gmap_loaded = true;
   }
 
-
-  // Push the sprite to the TFT display at (0, 40)
-  gmap_sprite.pushSprite(0, 40);
+  if(rotation != 0){
+    tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
+    //gmap_sprite.setPivot(120, 120);
+    gmap_sprite.pushRotated(-rotation);
+  }
+  else
+    gmap_sprite.pushSprite(0, 40);
 
   Serial.print(millis()-starttime);
   Serial.println("ms to pushsrpite");
 
   // Close the BMP file
   bmpImage.close();
+
+  last_start_x = start_x;
+  last_start_y = start_y;
+
 }
 
 

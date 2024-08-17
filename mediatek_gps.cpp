@@ -83,7 +83,7 @@ void parseGSV(char *nmea) {
     satelliteType = SATELLITE_TYPE_GALILEO;
   } else if (strstr(nmea, "$BDGSV")) {
     satelliteType = SATELLITE_TYPE_BEIDOU;
-  } else if (strstr(nmea, "$QZGSV")) {
+  } else if (strstr(nmea, "$GQGSV")) {//QZGSV
     satelliteType = SATELLITE_TYPE_QZSS;
   }
 
@@ -377,7 +377,7 @@ LatLonManager latlon_manager;
 
 
 // Function to convert latitude and longitude to x, y coordinates on the TFT screen
-cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
   // Convert map center latitude and longitude to radians
   float centerLatRad = mapCenterLat * DEG_TO_RAD;
   float centerLonRad = mapCenterLon * DEG_TO_RAD;
@@ -405,7 +405,7 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 
   // Translate to screen coordinates
   return cord_tft{(SCREEN_WIDTH / 2) + (int)rotatedX,
-    (SCREEN_HEIGHT / 2) - (int)rotatedY + mapshiftdown}; // Y is inverted on the screen
+    (SCREEN_HEIGHT / 2) - (int)rotatedY}; // Y is inverted on the screen
 }
 
 // Function to convert x, y coordinates on the TFT screen to latitude and longitude

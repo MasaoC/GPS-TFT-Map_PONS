@@ -170,7 +170,7 @@ void parseGSV(char *nmea) {
     satelliteType = SATELLITE_TYPE_GALILEO;
   } else if (strstr(nmea, "$BDGSV")) {
     satelliteType = SATELLITE_TYPE_BEIDOU;
-  } else if (strstr(nmea, "$QZGSV")) {
+  } else if (strstr(nmea, "$GQGSV")) {//GQGSVQZGSV
     satelliteType = SATELLITE_TYPE_QZSS;
   }
 
@@ -445,7 +445,7 @@ double get_gps_lat() {
   }
 
 #ifdef DEBUG_GPS_SIM_SHINURA
-  int timeelapsed = millis() % 200000;
+  int timeelapsed = millis()*10 % 200000;
   return SHINURA_LAT+ timeelapsed / 16000.0 / 1000.0;
 #endif
 #ifdef DEBUG_GPS_SIM_SAPPORO
@@ -474,7 +474,7 @@ double get_gps_long() {
     return PLA_LON - timeelapsed / 1600.0 / 1000.0 + 0.025;
   }
 #ifdef DEBUG_GPS_SIM_SHINURA
-  int timeelapsed = millis() % 200000;
+  int timeelapsed = millis()*10 % 200000;
   return SHINURA_LON + timeelapsed / 1600.0 / 1000.0;
 #endif
 #ifdef DEBUG_GPS_SIM_SAPPORO
@@ -591,7 +591,7 @@ double latitudeToMercatorY(double latitude) {
   double radLatitude = degreesToRadians(latitude);
   return log(tan(PI / 4.0 + radLatitude / 2.0));
 }
-cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection, int mapshiftdown) {
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
   // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
   float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
   // Calculate y-coordinates in Mercator projection
@@ -609,7 +609,7 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
   // Translate to screen coordinates
   return cord_tft{
     (SCREEN_WIDTH / 2) + (int)rotatedX,
-    (SCREEN_HEIGHT / 2) - (int)rotatedY + mapshiftdown  // Y is inverted on the screen
+    (SCREEN_HEIGHT / 2) - (int)rotatedY  // Y is inverted on the screen
   };
 }
 

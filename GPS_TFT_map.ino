@@ -41,7 +41,6 @@ double scale = scalelist[scaleindex];
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
-bool err_nomap = false;
 unsigned long lastfresh_millis = 0;
 bool scale_changed = true;
 
@@ -383,7 +382,7 @@ void loop() {
         if(scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
         if(scale == SCALE_LARGE_GMAP) zoomlevel = 11;
         if(scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
-        display_region(new_lat,new_long,zoomlevel);
+        draw_mapimage(new_lat,new_long,zoomlevel,drawupward_direction);
       }
 
       if(scale > SCALE_SMALL_GMAP){
@@ -430,9 +429,8 @@ void loop() {
     }
 
     draw_nomapdata();
-
-    draw_degpersecond(degpersecond);
     draw_gpsinfo();
+    draw_degpersecond(degpersecond);//after gpsinfo preferred
     draw_sdinfo();
     if(!gmap_loaded){
       draw_nogmap();
