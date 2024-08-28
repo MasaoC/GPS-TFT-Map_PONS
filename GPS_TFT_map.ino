@@ -18,7 +18,7 @@ float truetrack_now = 0;
 float lat_now = 0;
 unsigned long last_time_gpsdata = 0;  //GPSを最後に受信した時間 millis()
 bool redraw_screen = false;                  //次の描画では、黒塗りして新たに画面を描画する
-bool quick_redraw = false;            //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
+volatile bool quick_redraw = false;            //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
 bool bank_warning = false;
 
 const int sampleInterval = 500;    // Sample interval in milliseconds
@@ -42,13 +42,13 @@ double scale = scalelist[scaleindex];
 int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
-bool scale_changed = true;
 
 // Callback function for short press
 void shortPressCallback() {
   quick_redraw = true;
   redraw_screen = true;
-  Serial.println("short press");
+  DEBUG_PLN(20240801,"short press");
+  
 
   #ifdef SINGLE_SWITCH
     if (screen_mode == MODE_SETTING) {  //Setting mode
@@ -68,7 +68,7 @@ void shortPressCallback() {
       detail_page++;
     } else {
       scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
-      scale_changed = true;
+      gmap_loaded = false;
     }
   #else
     if (screen_mode != MODE_SETTING) {
@@ -84,12 +84,12 @@ void shortPressCallback() {
         screen_mode = MODE_MAP;
       } else if (cursorLine == 3) {
         detail_page = 0;
-        Serial.println("GPS DETAIL MODE");
+        DEBUG_PLN(20240801,"GPS DETAIL MODE");
         gps_constellation_mode();
         screen_mode = MODE_GPSDETAIL;
       } else if (cursorLine == 4) {
         detail_page = 0;
-        Serial.println("MAPLIST MODE");
+        DEBUG_PLN(20240801,"MAPLIST MODE");
         screen_mode = MODE_MAPLIST;
       } else {
         if (selectedLine == -1) {
@@ -107,7 +107,7 @@ void shortPressCallback() {
 void shortPressCallback_up() {
   quick_redraw = true;
   redraw_screen = true;
-  Serial.println("short press up");
+  DEBUG_PLN(20240801,"short press up");
   if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL){
     detail_page++;
   }
@@ -126,6 +126,7 @@ void shortPressCallback_up() {
     }
   } else {
     scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
+    gmap_loaded = false;
   }
 }
 
@@ -134,7 +135,7 @@ void shortPressCallback_up() {
 void shortPressCallback_down() {
   quick_redraw = true;
   redraw_screen = true;
-  Serial.println("short press down");
+  DEBUG_PLN(20240801,"short press down");
   if (screen_mode == MODE_MAPLIST){
     detail_page--;
   }
@@ -153,6 +154,7 @@ void shortPressCallback_down() {
     }
   } else {
     scale = scalelist[--scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
+    gmap_loaded = false;
   }
 }
 // Callback function for long press
@@ -160,7 +162,7 @@ void longPressCallback() {
   quick_redraw = true;
   redraw_screen = true;
 
-  Serial.println("long press");
+  DEBUG_PLN(20240801,"long press");
   #ifdef SINGLE_SWITCH
     if (screen_mode != MODE_SETTING) {
       if (screen_mode == MODE_GPSDETAIL)
@@ -210,10 +212,18 @@ void switch_handling(){
   sw_down.read();
 }
 
+
 void setup(void) {
   Serial.begin(38400);
   setup_switch();
-  setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
+
+  
+  // Enqueue init_sd task
+  //Task task;
+  //task.type = TASK_INIT_SD;
+  //enqueueTask(task);
+
+  //setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
 
   gps_setup();
@@ -221,9 +231,15 @@ void setup(void) {
 
   redraw_screen = true;
   quick_redraw = true;
-  const char* inittext = "INIT";
-  log_sd(inittext);
-  Serial.print(F("SETUP DONE"));
+
+
+  // Enqueue log_sd task
+  Task task;
+  task.type = TASK_LOG_SD;
+  task.logText = "SETUP DONE";
+  enqueueTask(task);
+
+  DEBUG_PLN(20240801,"SETUP DONE");
 }
 
 void reset_degpersecond(){
@@ -294,14 +310,11 @@ void check_bankwarning() {
   }
 }
 
-void debug_print(const char* inp) {
-  Serial.println(inp);
-}
 
 
 void loop() {
   switch_handling();
-  bool newmsg_received = gps_loop(screen_mode == MODE_GPSDETAIL);
+  bool longdraw_allowed = gps_loop();
 
   if (screen_mode == MODE_SETTING) {
     draw_setting_mode(redraw_screen, selectedLine, cursorLine);
@@ -319,19 +332,25 @@ void loop() {
     redraw_screen = false;
     return;
   }
-
-
   update_degpersecond();
+
+  draw_loading_image();
 
   // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している or 強制描画タイミング)
   // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
-  bool redraw_map = ((newmsg_received || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL)) || quick_redraw;
-  if (redraw_map) {
+  bool redraw_map = ((longdraw_allowed || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL)) || quick_redraw;
+  if(new_gmap_loaded && longdraw_allowed){
+    redraw_map = true;
+    Serial.println("longdraw_allowed and new_gmap_loaded");
+  }
+  if (redraw_map){
+    DEBUG_PLN(20240828,"redraw map");
+    quick_redraw = false;
+    new_gmap_loaded = false;
     float new_truetrack = get_gps_truetrack();
     float new_lat = get_gps_lat();
     float new_long = get_gps_long();
     last_time_gpsdata = millis();
-    quick_redraw = false;
     //char logdata[30];
     //sprintf(logdata,"%d,%03d,%.1f,%s",millis(),new_truetrack,get_gps_mps(),get_gps_fix()?"fix":"nil");
     //log_sd(logdata);
@@ -343,8 +362,7 @@ void loop() {
       drawupward_direction = 0;
     }
 
-    //redraw_map = 古い線を白色で上書きして、新しく書き直す。redraw_screen = 画面全てを白で塗りつぶしたあとに塗り直す。
-    bool redraw_map = redraw_screen;
+    //redraw_screen = 古い線を白色で上書きして、新しく書き直す。redraw_screen = 画面全てを白で塗りつぶしたあとに塗り直す。
     if(new_truetrack != truetrack_now || new_lat != lat_now){
       check_bankwarning();
       redraw_map = true;
@@ -360,8 +378,6 @@ void loop() {
     if (redraw_map || redraw_screen) {
       truetrack_now = new_truetrack;
       lat_now = new_lat;
-      //古い線の削除。必要に応じて、白塗りつぶしを行った場合は、redraw_screen = true で上書きして帰ってくる。
-      //clean_display(redraw_screen);
 
       clean_map();
 
@@ -371,19 +387,20 @@ void loop() {
       }
 
 
-      //Do not drawy mapimage right after scale change;
-      if(scale_changed){
-        scale_changed = false;
-        quick_redraw = true;
-      }else{
-        int zoomlevel = 0;
-        if(scale == SCALE_EXSMALL_GMAP) zoomlevel = 5;
-        if(scale == SCALE_SMALL_GMAP) zoomlevel = 7;
-        if(scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
-        if(scale == SCALE_LARGE_GMAP) zoomlevel = 11;
-        if(scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
-        draw_mapimage(new_lat,new_long,zoomlevel,drawupward_direction);
+      int zoomlevel = 0;
+      if(scale == SCALE_EXSMALL_GMAP) zoomlevel = 5;
+      if(scale == SCALE_SMALL_GMAP) zoomlevel = 7;
+      if(scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
+      if(scale == SCALE_LARGE_GMAP) zoomlevel = 11;
+      if(scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
+      //load_mapimage(new_lat,new_long,zoomlevel);
+      if(gmap_loaded){
+        gmap_sprite.pushSprite(0, 40);
+        DEBUG_PLN(20240828,"pushed gmap");
       }
+      //If loadImagetask already running in Core1, abort.
+      enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat,new_long,zoomlevel));
+      
 
       if(scale > SCALE_SMALL_GMAP){
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
@@ -401,8 +418,8 @@ void loop() {
         }
       }
 
-
       draw_track(new_lat,new_long,scale,drawupward_direction);
+      draw_targetline(new_lat,new_long,scale,drawupward_direction);
 
       if (get_demo_biwako()) {
         tft.setTextColor(COLOR_BLACK,COLOR_WHITE);
@@ -438,12 +455,11 @@ void loop() {
 
     //更新終了
     redraw_screen = false;
-    Serial.print("Redraw time ms:");
-    Serial.println(millis()-last_time_gpsdata);
-    Serial.print("free/used ram:");
-    Serial.print(rp2040.getFreeHeap());
-    Serial.print("/");
-    Serial.println(rp2040.getUsedHeap());
-
+    DEBUG_P(20240801,"Redraw time ms:");
+    DEBUG_PLN(20240801,millis()-last_time_gpsdata);
+    DEBUG_P(20240801,"free/used ram:");
+    DEBUG_P(20240801,rp2040.getFreeHeap());
+    DEBUG_P(20240801,"/");
+    DEBUG_PLN(20240801,rp2040.getUsedHeap());
   }
 }

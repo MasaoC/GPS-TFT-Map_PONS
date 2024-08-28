@@ -35,7 +35,7 @@
   };
 
   enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_COMPASS
+    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK
   };  
 
   enum text_id{
@@ -66,6 +66,7 @@
 #endif
 
 
+void draw_loading_image();
 void draw_sdinfo();
 void draw_nogmap();
 void draw_gpsinfo();
@@ -89,6 +90,9 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
 void draw_degpersecond(float degpersecond);
 
+
+void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
+void draw_targetline(double center_lat,double center_lon,float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 void draw_Japan(double center_lat,double center_lon,float scale,float up);

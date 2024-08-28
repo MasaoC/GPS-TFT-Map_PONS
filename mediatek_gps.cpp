@@ -33,7 +33,7 @@ SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 #define TIME_NMEA_GROUP 500 //不具合の可能性があり、一時的に500msにセット。
 
 void gps_getposition_mode() {
-  Serial.println("POS MODE");
+  DEBUG_PLN(20240801,"POS MODE");
   GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
   GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
 }
@@ -69,8 +69,8 @@ void gps_setup() {
 
 void parseGSV(char *nmea) {
   // Print the received NMEA sentence for debugging
-  Serial.print("Received NMEA: ");
-  Serial.println(nmea);
+  DEBUG_P(20240801,"Received NMEA: ");
+  DEBUG_PLN(20240801,nmea);
 
 
   // Determine the satellite type based on the NMEA sentence identifier
@@ -88,8 +88,8 @@ void parseGSV(char *nmea) {
   }
 
   // Print the satellite type for debugging
-  Serial.print("Satellite Type: ");
-  Serial.println(satelliteType);
+  DEBUG_P(20240801,"Satellite Type: ");
+  DEBUG_PLN(20240801,satelliteType);
 
   
   // Example NMEA GSV sentence: $GPGSV,4,4,14,194,,,,195,,,*7D

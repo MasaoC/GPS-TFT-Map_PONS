@@ -13,12 +13,12 @@ import shutil
 
 
 # biwako
-center_latitude = 35.295109085322686
-center_longitude = 136.25322693133202
+#center_latitude = 35.295109085322686
+#center_longitude = 136.25322693133202
 
 # tokyo
-#center_latitude = 35.63413070650897
-#center_longitude = 139.922110708556
+center_latitude = 35.63413070650897
+center_longitude = 139.922110708556
 
 distance_radius = 10  # in kilometers, Especially important for zoom level 11 and 13.
 

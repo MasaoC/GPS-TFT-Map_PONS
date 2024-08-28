@@ -51,10 +51,13 @@ void createNeedle(void)
 {
   needle.setColorDepth(8);
   needle_w.setColorDepth(8);
-  needle.createSprite(3, 120); // create the needle Sprite 11 pixels wide by 49 high
+  needle.createSprite(3, 120); // create the needle Sprite 3x120
   needle_w.createSprite(3, 120);
 
   needle.fillSprite(TFT_BLACK);          // Fill with black
+  //needle.drawFastVLine(0, 0, 120, COLOR_RED);
+  needle.drawFastVLine(2, 0, 120, COLOR_RED);
+  needle.fillRect(0, 5, 3, 9, COLOR_RED);
   needle_w.fillSprite(TFT_WHITE);
 
   // Define needle pivot point
@@ -63,7 +66,7 @@ void createNeedle(void)
   needle.setPivot(piv_x, piv_y);         // Set pivot point in this Sprite
   needle_w.setPivot(piv_x, piv_y);         // Set pivot point in this Sprite
 
-  needle.drawLine(0, 10, 0, 120, COLOR_GRAY);
+  //needle.drawLine(0, 10, 0, 120, COLOR_GRAY);
 
   // Draw needle centre boss
   //needle.drawPixel( piv_x, piv_y, TFT_WHITE);     // Mark needle pivot point with a white pixel
@@ -101,7 +104,6 @@ void setup_tft() {
   //tft.setTextFont(2);
 
 
-  Serial.println(F("Initialized"));
   tft.fillScreen(COLOR_WHITE);
   createNeedle();
 
@@ -265,6 +267,7 @@ class StrokeManager {
     Point* points;
     int pointCount;
     int maxPoints;
+    int thickness;
   };
 
   Stroke* strokes;
@@ -285,23 +288,26 @@ public:
     delete[] strokes;
   }
 
-  bool addStroke(stroke_group id, int maxPoints) {
+  bool addStroke(stroke_group id, int maxPoints,int thickness = 1) {
     if (strokeCount >= maxStrokes) {
-      char temp[50];
-      sprintf(temp,"ERR max stroke reached(id,max) %d,%d",id, maxPoints);
-      log_sd(temp);
-      Serial.println(temp);
+      DEBUG_P(20240827,id);
+      DEBUG_PLN(20240827,"ERR max stroke reached");
+      enqueueTask(createLogSdfTask("ERR max stroke reached(id,max) %d,%d",id,maxPoints));
+
+
       return false;  // No more space for new strokes
     }
     strokes[strokeCount].points = (Point*)malloc(maxPoints * sizeof(Point));
     if (strokes[strokeCount].points == nullptr) {
-      Serial.print("Malloc failed at adding stroke: ID=");
-      Serial.println(id);
+      DEBUG_P(20240827,id);
+      DEBUG_PLN(20240827,"malloc fail");
+      enqueueTask(createLogSdfTask("malloc failed:adding stroke:ID=%d",id));
       return false;  // Memory allocation failed
     }
     strokes[strokeCount].pointCount = 0;
     strokes[strokeCount].maxPoints = maxPoints;
     strokes[strokeCount].id = id;
+    strokes[strokeCount].thickness = thickness;
     strokeCount++;
     return true;
   }
@@ -349,22 +355,14 @@ public:
     }
   }
 
-  void drawStroke(int id) {
-    for (int i = 0; i < strokeCount; i++) {
-      if (id != strokes[i].id) {
-        continue;
-      }
-      for (int j = 0; j < strokes[i].pointCount - 1; j++) {
-        tft.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
-      }
-    }
-  }
-
 
   void drawAllStrokes() {
     for (int i = 0; i < strokeCount; i++) {
       for (int j = 0; j < strokes[i].pointCount - 1; j++) {
-        tft.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
+        if(strokes[i].thickness == 1)
+          tft.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
+        else
+          drawThickLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, strokes[i].thickness, COLOR_WHITE);
       }
     }
   }
@@ -442,10 +440,7 @@ void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color
   for (float t = -halfThickness; t <= halfThickness; t++) {
     int dx = round(t * sin(angle));
     int dy = round(t * -cos(angle));
-    if(!mapStrokeManager.addStroke(STRK_COMPASS, 2)) return;
     tft.drawLine(x0 + dx, y0 + dy, x1 + dx, y1 + dy, color);
-    mapStrokeManager.addPointToStroke(x0 + dx, y0 + dy);
-    mapStrokeManager.addPointToStroke(x1 + dx, y1 + dy);
   }
 }
 
@@ -621,25 +616,57 @@ void draw_triangle(){
   }
 }
 
+
+// point A -> B -(distance)> C
+void calculatePointC(double lat1, double lon1, double lat2, double lon2, double distance, double &lat3, double &lon3) {
+    const double R = 6371.0; // Radius of the Earth in kilometers
+    lat1 = degreesToRadians(lat1);
+    lon1 = degreesToRadians(lon1);
+    lat2 = degreesToRadians(lat2);
+    lon2 = degreesToRadians(lon2);
+
+    double d = distance / R; // Distance in radians
+    double bearing = atan2(sin(lon2 - lon1) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1));
+
+    lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
+    lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
+
+    lat3 = rad2deg(lat3);
+    lon3 = rad2deg(lon3);
+}
+
+void draw_targetline(double center_lat,double center_lon,float scale, float up){
+  int thickness = 2;
+  double lat3,lon3;
+  cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, center_lat, center_lon, scale, up);
+  calculatePointC(PLA_LAT,PLA_LON,center_lat,center_lon,25,lat3,lon3);
+  cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
+  mapStrokeManager.addPointToStroke(pla.x, pla.y);
+  mapStrokeManager.addPointToStroke(targetpoint.x, targetpoint.y);
+  drawThickLine(pla.x,pla.y,targetpoint.x,targetpoint.y, thickness, COLOR_MAGENTA);  
+}
+
 void draw_track(double center_lat,double center_lon,float scale, float up){
   int sizetrack = latlon_manager.getCount();
   cord_tft points[sizetrack];
-  mapStrokeManager.addStroke(STRK_TRACK, sizetrack);
+  int thickness = 2;
+  mapStrokeManager.addStroke(STRK_TRACK, sizetrack,thickness);
   int old_x = 0;
   int old_y = 0;
   for(int i = 0;i  < sizetrack;i++){
     Coordinate tempc = latlon_manager.getData(i);
     points[i] = latLonToXY(tempc.latitude,tempc.longitude,center_lat,center_lon,scale,up);
+    //Only if cordinates are different.
     if(i < 2 || old_x !=  points[i].x || old_y !=  points[i].y){
       old_x = points[i].x;
       old_y = points[i].y;
       mapStrokeManager.addPointToStroke(points[i].x,points[i].y);
     }
   }
-
   for (int i = 0; i < sizetrack - 1; i++) {
     if (!points[i].isOutsideTft() || !points[i + 1].isOutsideTft()) {
-      tft.drawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, COLOR_BLACK);
+      //tft.drawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, COLOR_GREEN);
+      drawThickLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y,thickness, COLOR_GREEN);
     }
   }
 }
@@ -748,7 +775,7 @@ void startup_demo_tft() {
 
 
     for(int j = 0; j < 250; j++){
-      gps_loop(false);
+      gps_loop();
       delay(1);
     }
   }
@@ -820,7 +847,7 @@ void draw_bankwarning() {
 
 void draw_nogmap(){
   tft.setTextColor(COLOR_ORANGE,COLOR_WHITE);
-  tft.setCursor(1, SCREEN_HEIGHT-50);
+  tft.setCursor(1, SCREEN_HEIGHT-58);
   tft.print("No map image available.");
 }
 
@@ -855,6 +882,22 @@ double volts_interpolate(int adreading) {
     }
     // If something goes wrong, return a default value
     return 0.0;
+}
+
+
+unsigned long last_loading_image = 0;
+void draw_loading_image(){
+  if(millis()-last_loading_image > 15){//50Hz
+    last_loading_image = millis();
+    int x = (millis()/15)%SCREEN_WIDTH;
+    int color = (TASK_LOAD_MAPIMAGE == currentTaskType)?COLOR_ORANGE:COLOR_GRAY;
+    if(color == TASK_LOG_SD || color == TASK_LOG_SDF || color == TASK_SAVE_CSV){
+      color = COLOR_RED;
+    }
+    tft.drawFastVLine(x, SCREEN_HEIGHT/2+240/2, 4, color);
+    tft.drawFastVLine((x+1)%SCREEN_WIDTH, SCREEN_HEIGHT/2+240/2, 4, COLOR_WHITE);
+    tft.drawFastVLine((x+2)%SCREEN_WIDTH, SCREEN_HEIGHT/2+240/2, 4, COLOR_WHITE);
+  }
 }
 
 int last_written_mh = 0;
@@ -962,22 +1005,6 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
 }
 
 
-void calculatePointC(double lat1, double lon1, double lat2, double lon2, double distance, double &lat3, double &lon3) {
-    const double R = 6371.0; // Radius of the Earth in kilometers
-    lat1 = degreesToRadians(lat1);
-    lon1 = degreesToRadians(lon1);
-    lat2 = degreesToRadians(lat2);
-    lon2 = degreesToRadians(lon2);
-
-    double d = distance / R; // Distance in radians
-    double bearing = atan2(sin(lon2 - lon1) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1));
-
-    lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
-    lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
-
-    lat3 = rad2deg(lat3);
-    lon3 = rad2deg(lon3);
-}
 
 
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
@@ -1002,18 +1029,6 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   mapStrokeManager.addPointToStroke(pla.x, pla.y);
   mapStrokeManager.addPointToStroke(w_pilon.x, w_pilon.y);
   tft.drawLine(pla.x, pla.y, w_pilon.x, w_pilon.y, COLOR_GREEN);
-
-
-  if(!mapStrokeManager.addStroke(STRK_PILONLINE, 2)) return;
-  double lat3,lon3;
-  calculatePointC(PLA_LAT,PLA_LON,mapcenter_lat,mapcenter_lon,25,lat3,lon3);
-  cord_tft targetpoint = latLonToXY(lat3, lon3, mapcenter_lat, mapcenter_lon, scale, upward);
-
-  drawThickLine(pla.x,pla.y,targetpoint.x,targetpoint.y,2,COLOR_MAGENTA);
-  //tft.drawLine(pla.x, pla.y, targetpoint.x, targetpoint.y, COLOR_MAGENTA);
-  
-  mapStrokeManager.addPointToStroke(pla.x, pla.y);
-  mapStrokeManager.addPointToStroke(targetpoint.x, targetpoint.y);
 }
 
 

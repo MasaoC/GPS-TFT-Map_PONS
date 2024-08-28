@@ -4,7 +4,7 @@
 
 //#define DEBUG_NMEA
 void gps_setup();
-bool gps_loop(bool constellation_mode);
+bool gps_loop();
 void gps_getposition_mode();
 void gps_constellation_mode();
 bool get_gps_fix();
@@ -37,7 +37,7 @@ bool get_demo_biwako();
   #define SATELLITE_TYPE_QZSS 5
   #define SATELLITE_TYPE_UNKNOWN 0
 
-  #define MAX_TRACK_CORDS 360
+  #define MAX_TRACK_CORDS 720
   #define MAX_LAST_NMEA 11
   #define NMEA_MAX_CHAR 100
 

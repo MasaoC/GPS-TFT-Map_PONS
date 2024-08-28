@@ -1,15 +1,15 @@
 //====== 設定画面 =======
 
 // リリース時 削除
-#define DEBUG
-#define BUILDDATE 20240815
-#define BUILDVERSION "0.4"
-#define DEBUG_P(num,txt)  if(num >= BUILDDATE-10)Serial.print(txt);
-#define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-10)Serial.println(txt);
+#define BUILDDATE 20240828
+#define BUILDVERSION "0.5"
+#define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
+#define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  //#define RELEASE_GPS
-  #define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
+  #define RELEASE_GPS
+  //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
+  //#define DEBUG_GPS_SIM_BIWAKO         //新浦安固定座標
   //#define DEBUG_GPS_SIM_SAPPORO         //新浦安固定座標
   //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
   //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
