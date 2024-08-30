@@ -85,14 +85,13 @@ void disableGSV() {
 #define TIME_NMEA_GROUP 500 //不具合の可能性があり、一時的に500msにセット。
 
 
+//Due compability
 void gps_getposition_mode() {
   Serial.println("POS MODE");
 }
-
-
+//Due compability
 void gps_constellation_mode() {
   Serial.println("CONST MODE");
-
 }
 
 
@@ -234,11 +233,10 @@ char* get_gps_nmea(int i){
 }
 
 
-
-
 unsigned long last_latlon_manager = 0;
 unsigned long last_gps_save_time = 0;
 unsigned long last_gps_time = 0;// last position update time.
+unsigned long time_lastnmea = 0;//last nmea time
 // ここでは、Hardware Serialの受信を行う。この受信とTFTの描画が同時に発生すると、バッファーオーバーフローでデータ受信が失敗する恐れがある。
 // そのため画面描画する際に true　を返す。
 // M10Qの初期設定のデータ量では、最初の座標取得からメッセージを全て受信するまで38400bpsでおよそ270msである。そのため、500ms経過したら描画許可を出すこととする。(ので、データ受信完了してから画面描画は500ms遅延する。)
@@ -306,6 +304,7 @@ bool gps_loop() {
     nmea_buffer1[index_buffer1++] = c;
     if(index_buffer1 >= 255 || c == '\n'){
       if(index_buffer1 >= 2){
+        time_lastnmea = millis();
         nmea_buffer1[index_buffer1-1] = '\0';
         strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
         stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;

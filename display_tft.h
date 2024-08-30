@@ -24,6 +24,16 @@
 #ifndef DISPLAY_TFT_DEFINED
   #define DISPLAY_TFT_DEFINED
 
+  struct Setting {
+      int id;
+      std::string (*getLabel)(bool selected);
+      void (*CallbackEnter)();
+      void (*CallbackToggle)();
+  };
+
+
+  extern Setting settings[];
+
   struct cord_tft{
     int x;
     int y;
@@ -35,11 +45,11 @@
   };
 
   enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK
+    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_TARGETLINE
   };  
 
   enum text_id{
-    SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_EXIT,
+    SETTING_SETDESTINATION,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
     ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND
   };
@@ -92,7 +102,8 @@ void draw_degpersecond(float degpersecond);
 
 
 void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
-void draw_targetline(double center_lat,double center_lon,float scale, float up);
+void draw_flyinto(double center_lat,double center_lon,float scale, float up);
+void draw_flyawayfrom(double center_lat,double center_lon,float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 void draw_Japan(double center_lat,double center_lon,float scale,float up);

@@ -99,7 +99,6 @@ void removeDuplicateTask(TaskType type) {
   while (newTail != originalHead) {
     // Check if the task at the current position matches the type to be removed
     if (taskQueue.tasks[newTail].type == type) {
-        Serial.println("remove Dup task");
         // Shift the remaining tasks forward in the queue
         int current = newTail;
         while (current != originalHead) {
@@ -121,15 +120,12 @@ void removeDuplicateTask(TaskType type) {
 void enqueueTaskWithAbortCheck(Task newTask) {
   if (isTaskRunning(newTask.type)) {  // Implement this check based on your task handling
     abortTask = true;  // Notify the running task to abort
-    Serial.print("abortTask = true");
   }
   removeDuplicateTask(newTask.type);
   enqueueTask(newTask);  // Enqueue the new task
 }
 
 void enqueueTask(Task task) {
-  Serial.print("Enqued task:");
-  Serial.println(task.type);
   mutex_enter_blocking(&taskQueueMutex);
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
   if (nextTail != taskQueue.head) {  // Queue not full
@@ -437,8 +433,6 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   }
 }
 
-
-
 // Define BMP header structures
 struct bmp_file_header_t {
   uint16_t signature;       // 2 bytes: should be 'BM'
@@ -533,7 +527,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     //}
     //else
     //  gmap_sprite.pushSprite(0, 40);
-    Serial.println("gmap No change");
     return;
   }
   

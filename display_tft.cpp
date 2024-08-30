@@ -5,6 +5,7 @@
 #include "font_data.h"
 #include "hardware/adc.h"
 #include <cstring> // for strlen and strcpy
+#include <string>
 #include <cstdlib> // for malloc and free
 
 
@@ -90,11 +91,13 @@ void setup_tft() {
   pinMode(BATTERY_PIN,INPUT);
   analogReadResolution(12);
 
-
+  #ifdef BRIGHTNESS_SETTING_AVAIL
   // Initialize backlight control pin
   pinMode(TFT_BL, OUTPUT);
   analogWriteFreq(BL_PWM_FRQ); // 1000Hz
   analogWrite(TFT_BL,BRIGHTNESS(0));
+  analogWrite(TFT_BL,BRIGHTNESS(screen_brightness));
+  #endif
 
   tft.begin();
 
@@ -106,8 +109,6 @@ void setup_tft() {
 
   tft.fillScreen(COLOR_WHITE);
   createNeedle();
-
-  analogWrite(TFT_BL,BRIGHTNESS(screen_brightness));
 }
 
 
@@ -617,33 +618,81 @@ void draw_triangle(){
 }
 
 
+
 // point A -> B -(distance)> C
 void calculatePointC(double lat1, double lon1, double lat2, double lon2, double distance, double &lat3, double &lon3) {
-    const double R = 6371.0; // Radius of the Earth in kilometers
-    lat1 = degreesToRadians(lat1);
-    lon1 = degreesToRadians(lon1);
-    lat2 = degreesToRadians(lat2);
-    lon2 = degreesToRadians(lon2);
+  const double R = 6371.0; // Radius of the Earth in kilometers
+  lat1 = degreesToRadians(lat1);
+  lon1 = degreesToRadians(lon1);
+  lat2 = degreesToRadians(lat2);
+  lon2 = degreesToRadians(lon2);
 
-    double d = distance / R; // Distance in radians
-    double bearing = atan2(sin(lon2 - lon1) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1));
+  double d = distance / R; // Distance in radians
+  double bearing = atan2(sin(lon2 - lon1) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(lon2 - lon1));
 
-    lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
-    lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
+  lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
+  lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
 
-    lat3 = rad2deg(lat3);
-    lon3 = rad2deg(lon3);
+  lat3 = rad2deg(lat3);
+  lon3 = rad2deg(lon3);
 }
 
-void draw_targetline(double center_lat,double center_lon,float scale, float up){
+// Point A -(distance)> D -> B
+void calculatePointD(double lat1, double lon1, double lat2, double lon2, double distance, double &lat3, double &lon3) {
+  const double R = 6371.0; // Radius of the Earth in kilometers
+  lat1 = degreesToRadians(lat1);
+  lon1 = degreesToRadians(lon1);
+  lat2 = degreesToRadians(lat2);
+  lon2 = degreesToRadians(lon2);
+
+  double d = distance / R; // Distance in radians
+  double deltaLon = lon2 - lon1;
+  double bearing;
+
+  if (lat1 == lat2 && lon1 == lon2) {
+      Serial.println("Error: Points A and B are the same. Bearing is undefined.");
+      return;
+  }
+
+  bearing = atan2(sin(deltaLon) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(deltaLon));
+
+  lat3 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing));
+  lon3 = lon1 + atan2(sin(bearing) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat3));
+
+
+  lat3 = rad2deg(lat3);
+  lon3 = rad2deg(lon3);
+}
+
+void draw_flyawayfrom(double center_lat,double center_lon,float scale, float up){
   int thickness = 2;
   double lat3,lon3;
   cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, center_lat, center_lon, scale, up);
   calculatePointC(PLA_LAT,PLA_LON,center_lat,center_lon,25,lat3,lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
+  mapStrokeManager.addStroke(STRK_TARGETLINE, 2);
   mapStrokeManager.addPointToStroke(pla.x, pla.y);
   mapStrokeManager.addPointToStroke(targetpoint.x, targetpoint.y);
   drawThickLine(pla.x,pla.y,targetpoint.x,targetpoint.y, thickness, COLOR_MAGENTA);  
+}
+
+void draw_flyinto(double center_lat,double center_lon,float scale, float up){
+  int thickness = 2;
+  double target_lat = PLA_LAT;
+  double target_lon = PLA_LON;
+  cord_tft goal = latLonToXY(target_lat, target_lon, center_lat, center_lon, scale, up);
+  if(goal.isOutsideTft()){
+    //scaleがとても大きい場合、goal.x,goal.yがオーバーフローする。
+    //そのまま描画すると処理落ちするので、適度な座標を計算し直す必要がある。
+    double distance = 200/scale;//画面外に出ればよいので適当な距離を設定。
+    double newlat,newlon;
+    calculatePointD(center_lat,center_lon,target_lat,target_lon,distance,newlat,newlon);
+    goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
+  }
+  mapStrokeManager.addStroke(STRK_TARGETLINE, 2, thickness);
+  mapStrokeManager.addPointToStroke(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
+  mapStrokeManager.addPointToStroke(goal.x, goal.y);
+  drawThickLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2,goal.x,goal.y, thickness, COLOR_MAGENTA);  
 }
 
 void draw_track(double center_lat,double center_lon,float scale, float up){
@@ -689,9 +738,9 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
     if(check_within_latlon(1,1,lat1,get_gps_lat(),lon1,get_gps_long())){
       int col = COLOR_GREEN;
       char name_firstchar = extramaps[i].name[0];
-      if(name_firstchar == 's'){
+      if(name_firstchar == 'r'){
         col = COLOR_RED;
-      }else if(name_firstchar == 'r'){
+      }else if(name_firstchar == 'o'){
         col = COLOR_ORANGE;
       }else if(name_firstchar == 'g'){
         col = COLOR_BRIGHTGRAY;
@@ -889,10 +938,15 @@ unsigned long last_loading_image = 0;
 void draw_loading_image(){
   if(millis()-last_loading_image > 15){//50Hz
     last_loading_image = millis();
-    int x = (millis()/15)%SCREEN_WIDTH;
+
+    int x = (millis()/20)%SCREEN_WIDTH;
     int color = (TASK_LOAD_MAPIMAGE == currentTaskType)?COLOR_ORANGE:COLOR_GRAY;
-    if(color == TASK_LOG_SD || color == TASK_LOG_SDF || color == TASK_SAVE_CSV){
+    if(currentTaskType == TASK_LOG_SD || currentTaskType == TASK_LOG_SDF || currentTaskType == TASK_SAVE_CSV){
       color = COLOR_RED;
+    }
+
+    if(millis() - time_lastnmea < 15){
+      color = COLOR_BLUE;
     }
     tft.drawFastVLine(x, SCREEN_HEIGHT/2+240/2, 4, color);
     tft.drawFastVLine((x+1)%SCREEN_WIDTH, SCREEN_HEIGHT/2+240/2, 4, COLOR_WHITE);
@@ -1128,9 +1182,11 @@ int mod( int x, int y ){
 }
 
 void tft_change_brightness(int increment){
+  #ifdef BRIGHTNESS_SETTING_AVAIL
   brightnessIndex = mod(brightnessIndex+increment,sizeof(brightnessLevels)/sizeof(brightnessLevels[0]));
   screen_brightness = brightnessLevels[brightnessIndex];
   analogWrite(TFT_BL,BRIGHTNESS(screen_brightness));// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
+  #endif
 }
 
 
@@ -1349,91 +1405,109 @@ void draw_maplist_mode(bool redraw, int maplist_page){
   }
 }
 
-void draw_setting_mode(bool redraw, int selectedLine, int cursorLine){
-  int posy = 35;
+void reset_degpersecond();
+extern int screen_mode;
+int t_counter = 0;
+
+Setting settings[] = {
+    {SETTING_SETDESTINATION,
+        [](bool selected) -> std::string {
+            char buff[32];   // temporary buffer
+            sprintf(buff, selected ? " Set destination: %03d" : "Set destination >: %03d", t_counter);
+            return std::string(buff);  // return as std::string
+        },
+        []() {
+            Serial.println("hi");
+        },
+        []() {
+            t_counter++;
+        }
+    },
+    #ifdef BRIGHTNESS_SETTING_AVAIL    
+        {SETTING_BRIGHTNESS, 
+            [](bool selected) -> std::string {
+                char buff[32];   // temporary buffer
+                sprintf(buff, selected ? " Brightness: %03d" : "Brightness: %03d", screen_brightness);
+                return std::string(buff);  // return as std::string
+            }, nullptr,
+            []() {
+                tft_change_brightness(1);
+            }
+        },
+    #endif 
+    {SETTING_DEMOBIWA, 
+        [](bool selected) -> std::string {
+            char buff[32];   // temporary buffer
+            sprintf(buff, selected ? " DEMO BIWA: %s" : "DEMO BIWA: %s", get_demo_biwako() ? "YES" : "NO");
+            return std::string(buff);  // return as std::string
+        }, nullptr,
+        []() {
+            toggle_demo_biwako();
+            reset_degpersecond();
+        }
+    },
+    {SETTING_UPWARD, 
+        [](bool selected) -> std::string {
+            char buff[32];   // temporary buffer
+            sprintf(buff, selected ? " Upward: %s" : "Upward: %s", is_trackupmode() ? "TRACK UP" : "NORTH UP");
+            return std::string(buff);  // return as std::string
+        }, nullptr,
+        []() {
+            toggle_mode();
+        }
+    },
+    {SETTING_GPSDETAIL,
+        [](bool selected) -> std::string {
+            return "Show GPS detail >";
+        },
+        []() {
+            DEBUG_P(20240801,"GPS CONST MODE");
+            gps_constellation_mode();
+            screen_mode = MODE_GPSDETAIL;
+        },
+        nullptr
+    },
+    {SETTING_MAPDETAIL,
+        [](bool selected) -> std::string {
+            return "Maplist detail >";
+        },
+        []() {
+            DEBUG_P(20240801,"MAP DETAIL MODE");
+            screen_mode = MODE_MAPLIST;
+        },
+        nullptr
+    },
+    {SETTING_EXIT,
+        [](bool selected) -> std::string {
+            return "Exit setting";
+        },
+        []() {
+            screen_mode = MODE_MAP;
+        },
+        nullptr
+    }
+};
+
+
+int setting_size = sizeof(settings)/sizeof(settings[0]);
+
+void draw_setting_mode(bool redraw, int selectedLine, int cursorLine) {
   const int separation = 25;
-  if(redraw){
+  const int startY = 35;
+
+  if (redraw) {
     redraw = false;
-
-    textmanager.drawText(SETTING_TITLE,2,5,5,COLOR_BLUE,"SETTINGS");
-
+    textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
     tft.setTextColor(COLOR_BLACK);
-    if(SCREEN_WIDTH <=128){
-      tft.setTextSize(1);
-    }else{
-      tft.setTextSize(2);
-    }
-    // Line 1: Screen Brightness
-    int col = COLOR_BLACK;
-    if (cursorLine == 0){
-      if(selectedLine == 0)
-        col = COLOR_RED; // Highlight selected line
-      else
-        col = COLOR_MAGENTA; // Highlight selected line
-    }
-    textmanager.drawTextf(SETTING_BRIGHTNESS,2,10, posy,col,selectedLine == 0 ? " Brightness: %03d":"Brightness: %03d",screen_brightness);
-    posy += separation;
 
 
-    col = COLOR_BLACK;
-
-    // Line 2: Placeholder for future settings
-    if (cursorLine == 1){
-      if(selectedLine == 1)
-        col = COLOR_RED; // Highlight selected line
-      else
-        col = COLOR_MAGENTA; // Highlight selected line
-    }
-
-    textmanager.drawTextf(SETTING_DEMOBIWA,2,10, posy,col,selectedLine == 1 ? " DEMO BIWA: %s":"DEMO BIWA: %s",get_demo_biwako()?"YES":"NO");
-    posy += separation;
-
-    // Line3: Upward choice
-    col = COLOR_BLACK;
-    if (cursorLine == 2){
-      if(selectedLine == 2)
-        col = COLOR_RED; // Highlight selected line
-      else
-        col = COLOR_MAGENTA; // Highlight selected line
-    }
-    textmanager.drawTextf(SETTING_UPWARD,2,10, posy,col,selectedLine == 2 ? " UPWARD: %s":"UPWARD: %s",is_trackupmode()?"TRACK UP":"NORTH UP");
-    posy += separation;
-
-    // Line4: GPS constellation
-    col = COLOR_BLACK;
-    if (cursorLine == 3){
-      if(selectedLine == 3)
-        col = COLOR_RED; // Highlight selected line
-      else
-        col = COLOR_MAGENTA; // Highlight selected line
-    }
-    textmanager.drawTextf(SETTING_GPSDETAIL,2,10, posy,col,selectedLine == 3 ? " SHOW GPS DETAIL >":"SHOW GPS DETAIL >");
-    posy += separation;
-
-
-    // Line 5: Mapdetail
-    col = COLOR_BLACK;
-    if (cursorLine == 4){
-      if(selectedLine == 4){
-        col = COLOR_RED; // Highlight selected line
-      }else{
-        col = COLOR_MAGENTA; // Highlight selected line
+    for (int i = 0; i < setting_size; ++i) {
+      uint16_t col = COLOR_BLACK;
+      if (cursorLine == i) {
+        col = (selectedLine == i) ? COLOR_RED : COLOR_MAGENTA;
       }
-    }
-    textmanager.drawTextf(SETTING_MAPDETAIL,2,10, posy,col,"Maplist Detail");
-    posy += separation;
 
-    // Line 6: Exit
-    col = COLOR_BLACK;
-    if (cursorLine == 5){
-      if(selectedLine == 5){
-        col = COLOR_RED; // Highlight selected line
-      }else{
-        col = COLOR_MAGENTA; // Highlight selected line
-      }
+      textmanager.drawTextf(settings[i].id, 2, 10, startY + i * separation, col, settings[i].getLabel(selectedLine == i).c_str());
     }
-    textmanager.drawTextf(SETTING_EXIT,2,10, posy,col,"Exit");
-    posy += separation;
-
   }
 }

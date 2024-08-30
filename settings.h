@@ -31,11 +31,12 @@
 
 // =====Hardware Settings =====
 
-
-
-// TFTのBL調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
+// TFTのBL調整があれば、BRIGHTNESS_SETTING_AVAIL。また、調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
+//#define BRIGHTNESS_SETTING_AVAIL
 //#define NPN_BL
-#define PNP_BL
+//#define PNP_BL
+
+
 
 // Hardware Ver1,2
 /*
@@ -86,4 +87,14 @@
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
 // 秋月で売っているGPS など、Mediatek GPSを使う場合は、ublox_gps.h ではなく mediatek_gps.h に全て書き換えてください。
+
+
+
+
+
+//======= Shared Global variables ======
+#define MODE_SETTING 1
+#define MODE_MAP 2
+#define MODE_GPSDETAIL 3
+#define MODE_MAPLIST 4
 

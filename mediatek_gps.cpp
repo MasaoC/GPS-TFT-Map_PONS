@@ -199,7 +199,7 @@ bool gps_loop(bool constellation_mode) {
     else if(strstr(GPS.lastNMEA(), "RMC"))
       last_rmc = millis();
     int timedif = last_rmc-last_gga;
-    Serial.println(timedif);
+    DEBUG_P(20240801,timedif);
     if(abs(timedif) < TIME_NMEA_GROUP)
       GPS_updated = true;
 

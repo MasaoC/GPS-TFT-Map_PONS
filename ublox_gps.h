@@ -84,6 +84,8 @@ bool get_demo_biwako();
 
   extern SatelliteData satellites[32];
 
+  extern unsigned long time_lastnmea;//last nmea time
+
   bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);
   cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection);
 
