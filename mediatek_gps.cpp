@@ -259,7 +259,7 @@ double get_gps_lat() {
   return GPS.latitudeDegrees;
 }
 
-double get_gps_long() {
+double get_gps_lon() {
   if (demo_biwako) {
     int timeelapsed = millis() % 200000;
     return PLA_LON - timeelapsed / 1600.0 / 1000.0 + 0.025;

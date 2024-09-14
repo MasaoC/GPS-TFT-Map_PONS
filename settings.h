@@ -1,16 +1,18 @@
 //====== 設定画面 =======
 
 // リリース時 削除
-#define BUILDDATE 20240828
+#define BUILDDATE 20240913
 #define BUILDVERSION "0.5"
+
+//#define RELEASE
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
-  //#define DEBUG_GPS_SIM_BIWAKO         //新浦安固定座標
-  //#define DEBUG_GPS_SIM_SAPPORO         //新浦安固定座標
+  //#define DEBUG_GPS_SIM_BIWAKO         //琵琶湖固定座標
+  //#define DEBUG_GPS_SIM_SAPPORO         //札幌固定座標
   //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
   //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
@@ -93,8 +95,20 @@
 
 
 //======= Shared Global variables ======
+//screen_mode
 #define MODE_SETTING 1
 #define MODE_MAP 2
 #define MODE_GPSDETAIL 3
 #define MODE_MAPLIST 4
 
+
+//destination mode
+#define DMODE_FLYINTO 0
+#define DMODE_FLYAWAY 1
+
+#if !defined(TEMP)
+  #define TEMP
+  #if !defined(RELEASE) || !defined(RELEASE_GPS)
+    #warning NOT RELEASE!
+  #endif
+#endif

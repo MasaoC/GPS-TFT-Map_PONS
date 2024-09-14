@@ -368,11 +368,6 @@ bool gps_loop() {
     int hour = gps.time.hour();
     utcToJst(&year,&month,&day,&hour);
     if(all_valid && millis() - last_latlon_manager > tracklog_interval){
-      Serial.print(stored_gs);
-      Serial.print("mps:");
-      Serial.print(tracklog_interval);
-      Serial.print("ms latlon addCord:Count");
-      Serial.println(latlon_manager.getCount());
       latlon_manager.addCoord({ (float)stored_latitude, (float)stored_longitude });
       last_latlon_manager = millis();
     }
@@ -387,7 +382,7 @@ bool gps_loop() {
   #ifndef RELEASE_GPS
     int tracklog_interval = constrain(50000/(1+gps.speed.mps()), 1000, 15000);//約50mおきに一回記録するような計算となる。
     if(millis() - last_latlon_manager > tracklog_interval){
-      latlon_manager.addCoord({ (float)get_gps_lat(), (float)get_gps_long() });
+      latlon_manager.addCoord({ (float)get_gps_lat(), (float)get_gps_lon() });
       last_latlon_manager = millis();
     }
   #endif
@@ -447,7 +442,7 @@ double get_gps_lat() {
 #endif
 #ifdef DEBUG_GPS_SIM_SHINURA
   int timeelapsed = ((int)(millis()/1000)) % 20000;
-  return SHINURA_LAT+ timeelapsed / 16000.0;
+  return SHINURA_LAT + timeelapsed / 1600.0;
 #endif
 #ifdef DEBUG_GPS_SIM_SAPPORO
   return SAPPORO_LAT;
@@ -469,7 +464,7 @@ double get_gps_lat() {
   return stored_latitude;
 }
 
-double get_gps_long() {
+double get_gps_lon() {
   if (demo_biwako) {
     int timeelapsed = millis() % 200000;
     return PLA_LON - timeelapsed / 1600.0 / 1000.0 + 0.025;
@@ -480,7 +475,7 @@ double get_gps_long() {
 #endif
 #ifdef DEBUG_GPS_SIM_SHINURA
   int timeelapsed = ((int)(millis()/1000)) % 20000;
-  return SHINURA_LON + timeelapsed / 1600.0;
+  return SHINURA_LON + timeelapsed / 16000.0;
 #endif
 #ifdef DEBUG_GPS_SIM_SAPPORO
     return SAPPORO_LON;
@@ -505,7 +500,7 @@ double get_gps_long() {
 
 double get_gps_mps() {
   #ifndef RELEASE_GPS
-    return 5 + 2 * sin(millis() / 1500.0);
+    return 8 + 4 * sin(millis() / 1500.0);
   #endif
   if (demo_biwako) {
     return 2 + 2 * sin(millis() / 1500.0);
@@ -531,7 +526,7 @@ double get_gps_altitude() {
 
 double get_gps_truetrack() {
   #ifdef DEBUG_GPS_SIM_SHINURA
-    return 90 + (8.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
+    return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
   if (demo_biwako) {
     return 280 + (8.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
@@ -581,8 +576,13 @@ void LatLonManager::printData() {
   }
 }
 
+void LatLonManager::reset(){
+  count = 0;
+  currentIndex = 0;
+}
+
 Coordinate LatLonManager::getData(int newest_index) {
-  if (newest_index >= count) {
+  if (newest_index >= count || newest_index < 0) {
     Serial.println("Invalid index");
     return {0, 0};
   }
@@ -594,12 +594,12 @@ LatLonManager latlon_manager;
 
 
 // Function to convert latitude from degrees to radians
-double degreesToRadians(double degrees) {
+double deg2rad(double degrees) {
   return degrees * PI / 180.0;
 }
 // Function to calculate y-coordinate in Mercator projection
 double latitudeToMercatorY(double latitude) {
-  double radLatitude = degreesToRadians(latitude);
+  double radLatitude = deg2rad(latitude);
   return log(tan(PI / 4.0 + radLatitude / 2.0));
 }
 cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {

@@ -5,6 +5,10 @@ mapdata extramaps[MAX_MAPDATAS];
 int current_id = 100;
 int mapdata_count = 0;
 
+mapdata extradestinations[MAX_DESTINATIONS];
+int destinations_count = 0;
+int currentdestination = -1;
+
 char* strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case
     // Calculate the length of the input string

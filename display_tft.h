@@ -45,13 +45,13 @@
   };
 
   enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_TARGETLINE
+    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_TARGETLINE,STRK_TARGETLINE2
   };  
 
   enum text_id{
-    SETTING_SETDESTINATION,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_EXIT,
-    ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND
+    SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_EXIT,
+    ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
+    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -102,8 +102,8 @@ void draw_degpersecond(float degpersecond);
 
 
 void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
-void draw_flyinto(double center_lat,double center_lon,float scale, float up);
-void draw_flyawayfrom(double center_lat,double center_lon,float scale, float up);
+void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up);
+void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 void draw_Japan(double center_lat,double center_lon,float scale,float up);

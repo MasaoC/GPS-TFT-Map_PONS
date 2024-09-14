@@ -12,6 +12,8 @@
 #define SCALE_SMALL_GMAP 0.81765545      //zoom7
 #define SCALE_EXSMALL_GMAP 0.2044138625  //zoom5
 
+
+
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
 float lat_now = 0;
@@ -28,6 +30,7 @@ int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;            // The calculated average differential
 
 
+int destination_mode = DMODE_FLYINTO;
 
 int screen_mode = MODE_MAP;
 int detail_page = 0;
@@ -200,7 +203,6 @@ void setup(void) {
   Serial.begin(38400);
   setup_switch();
 
-
   // Enqueue init_sd task
   //Task task;
   //task.type = TASK_INIT_SD;
@@ -317,10 +319,11 @@ void loop() {
     return;
   }
   update_degpersecond();
+  check_bankwarning();
 
   draw_loading_image();
 
-  // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している or 強制描画タイミング)
+  // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している) or 強制描画タイミング(スイッチ操作など)
   // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
   bool redraw_map = ((longdraw_allowed || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL)) || quick_redraw;
   if (new_gmap_loaded && longdraw_allowed) {
@@ -332,12 +335,8 @@ void loop() {
     new_gmap_loaded = false;
     float new_truetrack = get_gps_truetrack();
     float new_lat = get_gps_lat();
-    float new_long = get_gps_long();
+    float new_long = get_gps_lon();
     last_time_gpsdata = millis();
-    //char logdata[30];
-    //sprintf(logdata,"%d,%03d,%.1f,%s",millis(),new_truetrack,get_gps_mps(),get_gps_fix()?"fix":"nil");
-    //log_sd(logdata);
-
 
     //画面上の方向設定
     float drawupward_direction = truetrack_now;
@@ -347,7 +346,6 @@ void loop() {
 
     //redraw_screen = 古い線を白色で上書きして、新しく書き直す。redraw_screen = 画面全てを白で塗りつぶしたあとに塗り直す。
     if (new_truetrack != truetrack_now || new_lat != lat_now) {
-      check_bankwarning();
       redraw_map = true;
     }
 
@@ -378,7 +376,10 @@ void loop() {
       if (scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
       //load_mapimage(new_lat,new_long,zoomlevel);
       if (gmap_loaded) {
-        gmap_sprite.pushSprite(0, 40);
+        if(is_trackupmode())
+          gmap_sprite.pushRotated(-drawupward_direction);
+        else
+          gmap_sprite.pushSprite(0, 40);
         DEBUG_PLN(20240828, "pushed gmap");
       }
       //If loadImagetask already running in Core1, abort.
@@ -402,7 +403,15 @@ void loop() {
       }
 
       draw_track(new_lat, new_long, scale, drawupward_direction);
-      draw_flyinto(new_lat, new_long, scale, drawupward_direction);
+
+      if(currentdestination != -1 && currentdestination < destinations_count){
+        double destlat = extradestinations[currentdestination].cords[0][0];
+        double destlon = extradestinations[currentdestination].cords[0][1];
+        if(destination_mode == DMODE_FLYINTO) 
+          draw_flyinto(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+        else if(destination_mode == DMODE_FLYAWAY) 
+          draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+      }
 
       if (get_demo_biwako()) {
         tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
@@ -429,20 +438,26 @@ void loop() {
     }
 
     draw_nomapdata();
-    draw_gpsinfo();
     draw_degpersecond(degpersecond);  //after gpsinfo preferred
+    draw_gpsinfo();
     draw_sdinfo();
-    if (!gmap_loaded) {
+    if (!gmap_loaded && currentTaskType != TASK_LOAD_MAPIMAGE) {
       draw_nogmap();
     }
 
     //更新終了
     redraw_screen = false;
-    DEBUG_P(20240801, "Redraw time ms:");
-    DEBUG_PLN(20240801, millis() - last_time_gpsdata);
-    DEBUG_P(20240801, "free/used ram:");
-    DEBUG_P(20240801, rp2040.getFreeHeap());
-    DEBUG_P(20240801, "/");
-    DEBUG_PLN(20240801, rp2040.getUsedHeap());
+    //DEBUG_P(20240912, "Redraw time ms:");
+    //DEBUG_PLN(20240912, millis() - last_time_gpsdata);
+
+    DEBUG_P(20240912, "C0 free/used heap and free stack/Pointer:");
+    DEBUG_P(20240912, rp2040.getFreeHeap());
+    DEBUG_P(20240912, "/");
+    DEBUG_P(20240912, rp2040.getUsedHeap());
+    DEBUG_P(20240912, "/");
+    DEBUG_P(20240912, rp2040.getFreeStack());
+    DEBUG_P(20240912, "/");
+    DEBUG_PLN(20240912, rp2040.getStackPointer());
+    watchAndRestartCore1If(3000);
   }
 }

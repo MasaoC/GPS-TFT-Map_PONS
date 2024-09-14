@@ -30,6 +30,7 @@
 
 #define LOAD_GLCD   // Font 1. Original Adafruit 8 pixel font needs ~1820 bytes in FLASH
 #define SMOOTH_FONT
+#define DISABLE_ALL_LIBRARY_WARNINGS
 
 //====================[Setting file FOR ST7789 SPI]====================
 // eSPI version must be [2.5.34]
@@ -58,6 +59,7 @@
 #define SPI_FREQUENCY       20000000
 #define SPI_READ_FREQUENCY  20000000
 #define SPI_TOUCH_FREQUENCY  2500000
+#define DISABLE_ALL_LIBRARY_WARNINGS
 
 
 
@@ -81,3 +83,4 @@
 #define SPI_FREQUENCY  20000000
 #define SPI_READ_FREQUENCY  20000000
 #define SPI_TOUCH_FREQUENCY  250000
+#define DISABLE_ALL_LIBRARY_WARNINGS

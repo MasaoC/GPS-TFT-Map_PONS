@@ -54,7 +54,7 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
 void enqueueTask(Task task);
 void enqueueTaskWithAbortCheck(Task task);
 bool dequeueTask(Task* task);
-void processTasks();  // Core1 function
+void watchAndRestartCore1If(int ms_elapsed);
 
 bool good_sd();
 
@@ -71,3 +71,6 @@ extern mutex_t taskQueueMutex;
 extern TFT_eSprite gmap_sprite;
 extern volatile bool gmap_loaded;
 extern volatile bool new_gmap_loaded;
+extern volatile unsigned long loop1counter;
+extern volatile int loop1pos;
+extern volatile int loop0pos;

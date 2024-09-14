@@ -4,8 +4,8 @@
 
 #define PLA_LAT 35.294353
 #define PLA_LON 136.25418
-#define SHINURA_LAT 35.6343618
-#define SHINURA_LON 139.9206059
+#define SHINURA_LAT 35.650433188178
+#define SHINURA_LON 139.913699521520
 #define OSAKA_LAT 34.8227376
 #define OSAKA_LON 135.5213544
 #define SAPPORO_LAT 43.05989937316593
@@ -44,6 +44,13 @@ struct mapdata {
 extern mapdata extramaps[MAX_MAPDATAS];
 extern int current_id;
 extern int mapdata_count;
+
+#define MAX_DESTINATIONS 100
+extern mapdata extradestinations[MAX_DESTINATIONS];
+extern int destinations_count;
+extern int currentdestination;
+
+
 
 extern mapdata map_shinura;
 extern mapdata map_takeshima;

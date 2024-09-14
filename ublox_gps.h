@@ -15,7 +15,7 @@ double get_gps_truetrack();
 double get_gps_magtrack();
 double get_gps_pdop();
 double get_gps_lat();
-double get_gps_long();
+double get_gps_lon();
 double get_gps_altitude();
 char* get_gps_nmea(int i = 0);
 
@@ -37,7 +37,7 @@ bool get_demo_biwako();
   #define SATELLITE_TYPE_QZSS 5
   #define SATELLITE_TYPE_UNKNOWN 0
 
-  #define MAX_TRACK_CORDS 720
+  #define MAX_TRACK_CORDS 500
   #define MAX_LAST_NMEA 11
   #define NMEA_MAX_CHAR 100
 
@@ -105,6 +105,7 @@ bool get_demo_biwako();
     void addCoord(Coordinate position);
     int getCount();
     void printData();
+    void reset();
     Coordinate getData(int newest_index);
   };
   extern LatLonManager latlon_manager;

@@ -21,6 +21,8 @@ int filehour;
 int fileminute;
 int filesecond;
 
+
+
 mutex_t sdMutex;
 volatile bool core0NeedsAccess = false;
 volatile bool abortTask = false;
@@ -38,12 +40,14 @@ void dateTime(uint16_t* date, uint16_t* time);
 
 
 bool isTaskRunning(int taskType) {
-    return currentTaskType == taskType;
+  loop0pos = 42;
+  return currentTaskType == taskType;
 }
 
 
 // Initializer for TASK_LOG_SD
 Task createLogSdTask(const char* logText) {
+  loop0pos = 41;
   Task task;
   task.type = TASK_LOG_SD;
   task.logText = logText;
@@ -52,6 +56,7 @@ Task createLogSdTask(const char* logText) {
 
 // Initializer for TASK_LOG_SDF
 Task createLogSdfTask(const char* format, ...) {
+  loop0pos = 40;
   Task task;
   task.type = TASK_LOG_SDF;
   va_list args;
@@ -65,6 +70,7 @@ Task createLogSdfTask(const char* format, ...) {
 
 // Initializer for TASK_SAVE_CSV
 Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second) {
+  loop0pos = 39;
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -82,6 +88,7 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, in
 
 // Initializer for TASK_LOAD_MAPIMAGE
 Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel) {
+  loop0pos = 38;
   Task task;
   task.type = TASK_LOAD_MAPIMAGE;
   task.loadMapImageArgs.center_lat = center_lat;
@@ -91,66 +98,91 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
 }
 
 void removeDuplicateTask(TaskType type) {
+  loop0pos = 29;
   mutex_enter_blocking(&taskQueueMutex);
+  loop0pos = 30;
   int newTail = taskQueue.tail;
   int originalHead = taskQueue.head;
 
   // Iterate through the queue from tail to head
   while (newTail != originalHead) {
     // Check if the task at the current position matches the type to be removed
+    loop0pos = 31;
     if (taskQueue.tasks[newTail].type == type) {
-        // Shift the remaining tasks forward in the queue
-        int current = newTail;
-        while (current != originalHead) {
-            int next = (current + 1) % TASK_QUEUE_SIZE;
-            taskQueue.tasks[current] = taskQueue.tasks[next];
-            current = next;
-        }
-        // Update the head pointer to reflect the removal
-        taskQueue.head = (taskQueue.head - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
-        originalHead = taskQueue.head; // Update the new head after the removal
+      // Shift the remaining tasks forward in the queue
+      int current = newTail;
+      loop0pos = 32;
+      while (current != originalHead) {
+          int next = (current + 1) % TASK_QUEUE_SIZE;
+          loop0pos = 33;
+          taskQueue.tasks[current] = taskQueue.tasks[next];
+          current = next;
+      }
+      loop0pos = 34;
+      // Update the head pointer to reflect the removal
+      taskQueue.head = (taskQueue.head - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
+      loop0pos = 35;
+      originalHead = taskQueue.head; // Update the new head after the removal
     } else {
-        // Move to the next task in the queue
-        newTail = (newTail + 1) % TASK_QUEUE_SIZE;
+      // Move to the next task in the queue
+      loop0pos = 36;
+      newTail = (newTail + 1) % TASK_QUEUE_SIZE;
     }
   }
+  loop0pos = 37;
   mutex_exit(&taskQueueMutex);
 }
 
 void enqueueTaskWithAbortCheck(Task newTask) {
+  loop0pos = 26;
   if (isTaskRunning(newTask.type)) {  // Implement this check based on your task handling
     abortTask = true;  // Notify the running task to abort
   }
+  loop0pos = 27;
   removeDuplicateTask(newTask.type);
+  loop0pos = 28;
   enqueueTask(newTask);  // Enqueue the new task
 }
 
 void enqueueTask(Task task) {
+  loop0pos = 17;
   mutex_enter_blocking(&taskQueueMutex);
+  loop0pos = 18;
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
+  loop0pos = 19;
   if (nextTail != taskQueue.head) {  // Queue not full
-      taskQueue.tasks[taskQueue.tail] = task;
-      taskQueue.tail = nextTail;
+    loop0pos = 20;
+    taskQueue.tasks[taskQueue.tail] = task;
+    loop0pos = 21;
+    taskQueue.tail = nextTail;
+    loop0pos = 22;
   }
+  loop0pos = 23;
   mutex_exit(&taskQueueMutex);
+  loop0pos = 24;
 }
 
 bool dequeueTask(Task* task) {
+  loop0pos = 11;
     bool success = false;
     mutex_enter_blocking(&taskQueueMutex);
-    if (taskQueue.head != taskQueue.tail) {  // Queue not empty
-        *task = taskQueue.tasks[taskQueue.head];
-        taskQueue.head = (taskQueue.head + 1) % TASK_QUEUE_SIZE;
-        success = true;
-    }
-    mutex_exit(&taskQueueMutex);
-    return success;
+  loop0pos = 12;
+  if (taskQueue.head != taskQueue.tail) {  // Queue not empty
+    loop0pos = 13;
+    *task = taskQueue.tasks[taskQueue.head];
+    loop0pos = 14;
+    taskQueue.head = (taskQueue.head + 1) % TASK_QUEUE_SIZE;
+    loop0pos = 15;
+    success = true;
+  }
+  loop0pos = 16;
+  mutex_exit(&taskQueueMutex);
+  loop0pos = 25;
+  return success;
 }
 
-
-
 //
-void process_csv_line(String line) {
+void process_mapcsv_line(String line) {
   int index = 0;
   int commaIndex = line.indexOf(',');
   String name = line.substring(index, commaIndex);
@@ -188,7 +220,42 @@ void process_csv_line(String line) {
 }
 
 
-void read_sd() {
+void process_destinationcsv_line(String line) {
+  int index = 0;
+  int commaIndex = line.indexOf(',');
+  String name = line.substring(index, commaIndex);
+  index = commaIndex + 1;
+
+  int size = 1;
+  // Allocate memory for the coordinates
+  double (*cords)[2] = new double[size][2];
+
+  for (int i = 0; i < size; i++) {
+    commaIndex = line.indexOf(',', index);
+    if (commaIndex == -1 && i < size - 1) {
+      delete[] cords;
+      return;
+    }
+    cords[i][0] = line.substring(index, commaIndex).toDouble();
+    index = commaIndex + 1;
+    commaIndex = line.indexOf(',', index);
+    if (commaIndex == -1 && i < size - 1) {
+      delete[] cords;
+      return;
+    }
+    cords[i][1] = line.substring(index, commaIndex).toDouble();
+    index = commaIndex + 1;
+  }
+
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
+  extradestinations[destinations_count].size = size;
+  extradestinations[destinations_count].cords = cords;
+  destinations_count++;
+}
+
+
+void init_mapdata() {
   #ifdef DISABLE_SD
     return;
   #endif
@@ -196,12 +263,54 @@ void read_sd() {
   if (!myFile) {
     return;
   }
-
   while (myFile.available() && mapdata_count < MAX_MAPDATAS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      process_csv_line(line);
+      process_mapcsv_line(line);
+    }
+  }
+  myFile.close();
+}
+
+void init_destinations(){
+  destinations_count = 0;
+  currentdestination = 0;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("PLATHOME");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {PLA_LAT, PLA_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("N_PILON");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {PILON_NORTH_LAT, PILON_NORTH_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("W_PILON");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {PILON_WEST_LAT, PILON_WEST_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("TAKESHIMA");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("SHINURA");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
+  destinations_count++;
+
+  File32 myFile = SD.open("destinations.csv");
+  if (!myFile) {
+    return;
+  }
+  while (myFile.available() && destinations_count < MAX_DESTINATIONS) {
+    String line = myFile.readStringUntil('\n');
+    line.trim();
+    if (line.length() > 0) {
+      process_destinationcsv_line(line);
     }
   }
   myFile.close();
@@ -233,7 +342,8 @@ void setup_sd(){
     // set date time callback function
     SdFile::dateTimeCallback(dateTime);
     log_sd("SD INIT");
-    read_sd();
+    init_mapdata();
+    init_destinations();
   }
 }
 
@@ -242,43 +352,80 @@ void setup1(void){
   setup_sd();
 }
 
-void loop1() {
-  Task currentTask;
-  while (true) {
-      if (dequeueTask(&currentTask)) {
-          currentTaskType = currentTask.type;
-          switch (currentTask.type) {
-              case TASK_INIT_SD:
-                  setup_sd();
-                  break;
-              case TASK_LOG_SD:
-                  log_sd(currentTask.logText);
-                  break;
-              case TASK_LOG_SDF:
-                  log_sdf(currentTask.logSdfArgs.format, currentTask.logSdfArgs.buffer);
-                  break;
-              case TASK_SAVE_CSV:
-                  saveCSV(
-                      currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-                      currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
-                      currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
-                      currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
-                      currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second
-                  );
-                  break;
-              case TASK_LOAD_MAPIMAGE:
-                  load_mapimage(
-                      currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
-                      currentTask.loadMapImageArgs.zoomlevel
-                  );
-                  break;
-          }
-          currentTaskType = TASK_NONE;
-      } else {
-          // No tasks, optionally sleep or yield
-          tight_loop_contents();
-      }
+volatile unsigned long loop1counter = 0;
+volatile int loop1pos = 0;
+volatile int loop0pos = 0;
+
+
+unsigned long last_loop1counter = 0;
+unsigned long time_loop1counter_updated = 0;
+
+
+// watchRestartCore1 is Called from Core0. Due to unknown reason, loop1 terminates at some moment after running app for more than 1,2 hours.
+// Cause is not determined at the moment, however by adding this function, we can restart Core1 by detecting loop1counter being not updated.
+void watchAndRestartCore1If(int ms_elapsed){
+  if(last_loop1counter != loop1counter || last_loop1counter == 0){
+    time_loop1counter_updated = millis();
+    last_loop1counter = loop1counter;
+  }else{
+    //Core1 seems not updating.
+    int elapsedtime = millis() - time_loop1counter_updated;
+    if(elapsedtime > ms_elapsed){
+      Serial.println("ERR: CORE1 is not updated for 3000 ms");
+      last_loop1counter = 0;
+      loop1counter = 0;
+      rp2040.restartCore1();
+    }
   }
+}
+
+void loop1() {
+  loop1pos = 0;
+  Task currentTask;
+  loop1counter++;
+  loop1pos = 1;
+  if (dequeueTask(&currentTask)) {
+    currentTaskType = currentTask.type;
+    loop1pos = 2;
+    switch (currentTask.type) {
+      case TASK_INIT_SD:
+        loop1pos = 3;
+        setup_sd();
+        break;
+      case TASK_LOG_SD:
+        loop1pos = 4;
+        log_sd(currentTask.logText);
+        break;
+      case TASK_LOG_SDF:
+        loop1pos = 5;
+        log_sdf(currentTask.logSdfArgs.format, currentTask.logSdfArgs.buffer);
+        break;
+      case TASK_SAVE_CSV:
+        loop1pos = 6;
+        saveCSV(
+          currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
+          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
+          currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
+          currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
+          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second
+        );
+        break;
+      case TASK_LOAD_MAPIMAGE:
+        loop1pos = 7;
+        load_mapimage(
+          currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
+          currentTask.loadMapImageArgs.zoomlevel
+        );
+        break;
+    }
+    loop1pos = 8;
+    currentTaskType = TASK_NONE;
+  } else {
+    loop1pos = 9;
+    // No tasks, optionally sleep or yield
+    delay(10);
+  }
+  loop1pos = 10;
 }
 
 void dateTime(uint16_t* date, uint16_t* time) {
@@ -293,32 +440,6 @@ void dateTime(uint16_t* date, uint16_t* time) {
 
 
 
-void core1Task(){
- while (true) {
-      // Check if Core 0 needs access
-      if (core0NeedsAccess) {
-          // Release the mutex if held
-          if (mutex_try_enter(&sdMutex, NULL)) {
-              mutex_exit(&sdMutex);
-          }
-          // Wait until Core 0 no longer needs access
-          while (core0NeedsAccess) {
-              tight_loop_contents();  // Optionally, yield control or sleep
-          }
-      }
-      
-      // Core 1's long process, periodically checking the flag
-      if (mutex_enter_timeout_ms(&sdMutex, 10)) {  // Try to acquire mutex with a timeout
-          // Critical section: access shared resources
-          // ...
-
-          mutex_exit(&sdMutex);  // Release the mutex
-      }
-
-      // Perform non-critical work (outside mutex-protected area)
-      // ...
-  }
-}
 
 
 
@@ -330,33 +451,46 @@ bool good_sd(){
 
 
 void log_sd(const char* text){
+  loop1pos = 100;
   #ifdef DISABLE_SD
     return;
   #endif
 
   File32 myFile = SD.open(LOGFILE_NAME, FILE_WRITE);
+  loop1pos = 101;
   // if the file opened okay, write to it:
   if (myFile) {
+    loop1pos = 102;
     char logtext[100];   // array to hold the result.
+    loop1pos = 103;
     sprintf(logtext,"%d:%s",millis(),text);
+    loop1pos = 104;
     myFile.println(logtext);
+    loop1pos = 105;
     // close the file:
     myFile.close();
+    loop1pos = 106;
   }
 }
 
 
 void log_sdf(const char* format, ...){
+  loop1pos = 107;
 
   #ifdef DISABLE_SD
     return;
   #endif
 
   char buffer[256]; // Temporary buffer for formatted text
+  loop1pos = 112;
   va_list args;
+  loop1pos = 111;
   va_start(args, format);
+  loop1pos = 108;
   vsnprintf(buffer, sizeof(buffer), format, args);
+  loop1pos = 109;
   va_end(args);
+  loop1pos = 110;
   return log_sd(buffer);
 }
 
@@ -366,7 +500,7 @@ void log_sdf(const char* format, ...){
 
 
 void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second) {
-
+  loop1pos = 200;
   #ifdef DISABLE_SD
     return;
   #endif
@@ -378,6 +512,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
       return;
     }
   }
+  loop1pos = 201;
+
   if(sdError){
     if(millis()-lasttrytime_sd > 10000){//10秒以上たっていたら、リトライ
       lasttrytime_sd = millis();
@@ -385,6 +521,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     }
     return;
   }
+  loop1pos = 202;
+
   //Run only once.
   if(fileyear == 0 && year != 0){
     fileyear = year;
@@ -394,15 +532,23 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     fileminute = minute;
     filesecond = second;
   }
+  loop1pos = 203;
+
   char csv_filename[30];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
   log_sdf("%d:%s",millis(),csv_filename);
+  loop1pos = 204;
+
   File32 csvFile = SD.open(csv_filename, FILE_WRITE);
+  loop1pos = 205;
+
   if (csvFile) {
     if(!headerWritten){
       csvFile.println("latitude,longitude,gs,TrueTrack,date,time");
       headerWritten = true;
     }
+    loop1pos = 206;
+
     csvFile.print(latitude, 6);
     csvFile.print(",");
     csvFile.print(longitude, 6);
@@ -418,11 +564,14 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     csvFile.print(date);
     csvFile.print(",");
 
+    loop1pos = 207;
+
     // Format time as HH:MM:SS
     char time[9];
     sprintf(time, "%02d:%02d:%02d", hour, minute, second);
     csvFile.println(time);
 
+    loop1pos = 208;
     csvFile.close();
     sdError = false; // Reset SD error flag after successful write
   } else {
@@ -431,6 +580,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     }
     sdInitialized = false; // Mark SD card as not initialized for the next attempt
   }
+
+  loop1pos = 209;
 }
 
 // Define BMP header structures
@@ -487,6 +638,7 @@ char lastsprite_id[20] = "\0";
 int last_start_x,last_start_y = 0;
 
 void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
+  loop1pos = 300;
   DEBUG_PLN(20240828,"load mapimage begin");
   //Setting up resolution of bmp image according to zoomlevel.
   double round_degrees = 0.0;
@@ -496,17 +648,20 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   else if(zoomlevel == 11) round_degrees = 0.2;
   else if(zoomlevel == 13) round_degrees = 0.05;
 
+  loop1pos = 301;
   //Invalid zoomleel
   if(round_degrees == 0.0){
     gmap_loaded = false;
     return;
   }
+  loop1pos = 302;
 
   double map_lat,map_lon;
   // Round latitude and longitude to the nearest 5 degrees
   map_lat = roundToNearestXDegrees(round_degrees, center_lat);
   map_lon = roundToNearestXDegrees(round_degrees, center_lon);
   
+  loop1pos = 303;
   // Calculate pixel coordinates for given latitude and longitude
   int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegree(zoomlevel));
   int center_y = (int)(320.0 - (center_lat - map_lat) * pixelsPerDegreeLat(zoomlevel,center_lat));
@@ -514,13 +669,18 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   int start_x = center_x - 120;
   int start_y = center_y - 120;
 
+  loop1pos = 304;
+
   char current_sprite_id[36];
   int maplat4 = round(map_lat*100);
   int maplon5 = round(map_lon*100);
   sprintf(current_sprite_id,"%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
 
+  loop1pos = 305;
+
   //Already loaded.
   if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded){
+    loop1pos = 306;
     //if(rotation != 0){
       //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
       //gmap_sprite.pushRotated(-rotation);
@@ -529,6 +689,8 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     //  gmap_sprite.pushSprite(0, 40);
     return;
   }
+
+  loop1pos = 307;
   
   //Check to scroll bmp
   bool samefile = true;
@@ -540,16 +702,19 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   }
   int scrollx = 0;
   int scrolly = 0;
-  if(samefile){;
+  //If exact same file already loaded.
+  if(samefile && gmap_loaded){
     scrollx = (start_x-last_start_x);
     scrolly = (start_y-last_start_y);
   }
 
+  loop1pos = 308;
   strcpy(lastsprite_id,current_sprite_id);
 
   char filename[36];
   sprintf(filename, "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);
 
+  loop1pos = 309;
 
   // Open BMP file
   File32 bmpImage = SD.open(filename, FILE_READ);
@@ -557,6 +722,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     gmap_loaded = false;
     return;
   }
+  loop1pos = 310;
 
   // Read the file header
   bmp_file_header_t fileHeader;
@@ -565,12 +731,16 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
   bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
 
+  loop1pos = 311;
+
   // Check signature
   if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
     bmpImage.close();
     gmap_loaded = false;
     return;
   }
+
+  loop1pos = 312;
 
   // Image header (assuming 640x640, 16-bit RGB565 BMP file)
   bmp_image_header_t imageHeader;
@@ -586,11 +756,16 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   bmpImage.read((uint8_t*)&imageHeader.colors_in_palette, sizeof(imageHeader.colors_in_palette));
   bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
 
+
+  loop1pos = 313;
+
   if (imageHeader.image_width != 640 || imageHeader.image_height != 640 || imageHeader.bits_per_pixel != 16) {
     bmpImage.close();
     gmap_loaded = false;
     return;
   }
+
+  loop1pos = 314;
 
   // Create the 240x240 sprite
   if(!gmap_sprite.created()){
@@ -598,6 +773,8 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     gmap_sprite.createSprite(240, 240);
   }
   int tloadbmp_start = millis();
+
+  loop1pos = 315;
 
   //From nowon, gmap under edit. so unload gmap.
   gmap_loaded = false;
@@ -684,10 +861,13 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
         gmap_sprite.drawPixel(x, y, color);
       }
     }
-    DEBUG_P(20240815,"bmp load time=");
-    DEBUG_P(20240815,millis()-tloadbmp_start);
-    DEBUG_PLN(20240815,"ms");
   }
+
+  loop1pos = 318;
+  DEBUG_P(20240815,"bmp load time=");
+  DEBUG_P(20240815,millis()-tloadbmp_start);
+  DEBUG_PLN(20240815,"ms");
+  
 
   //if(rotation != 0){
     //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
@@ -697,9 +877,10 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   //else
     //gmap_sprite.pushSprite(0, 40);
 
-
   // Close the BMP file
   bmpImage.close();
+  
+  loop1pos = 319;
   if(abortTask){
     DEBUG_PLN(20240828,"aborted task! gmap unloaded");
     gmap_loaded = false;
@@ -711,6 +892,8 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   last_start_y = start_y;
   gmap_loaded = true;
   new_gmap_loaded = true;
+
+  loop1pos = 320;
 
   DEBUG_PLN(20240828,"gmap_loaded! new_gmap_loaded!");
 }

@@ -16,7 +16,7 @@
   double get_gps_magtrack();
   double get_gps_pdop();
   double get_gps_lat();
-  double get_gps_long();
+  double get_gps_lon();
   double get_gps_altitude();
 
   void toggle_demo_biwako();
