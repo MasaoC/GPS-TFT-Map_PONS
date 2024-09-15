@@ -347,24 +347,27 @@ void setup_sd(){
   }
 }
 
-void setup1(void){
-  mutex_init(&taskQueueMutex);
-  setup_sd();
-}
 
 volatile unsigned long loop1counter = 0;
 volatile int loop1pos = 0;
 volatile int loop0pos = 0;
-
+volatile int restartcount = 0;
 
 unsigned long last_loop1counter = 0;
 unsigned long time_loop1counter_updated = 0;
+
+void setup1(void){
+  if(restartcount == 0){
+    mutex_init(&taskQueueMutex);
+    setup_sd();
+  }
+}
 
 
 // watchRestartCore1 is Called from Core0. Due to unknown reason, loop1 terminates at some moment after running app for more than 1,2 hours.
 // Cause is not determined at the moment, however by adding this function, we can restart Core1 by detecting loop1counter being not updated.
 void watchAndRestartCore1If(int ms_elapsed){
-  if(last_loop1counter != loop1counter || last_loop1counter == 0){
+  if(last_loop1counter != loop1counter || last_loop1counter < 3000){
     time_loop1counter_updated = millis();
     last_loop1counter = loop1counter;
   }else{
@@ -374,6 +377,7 @@ void watchAndRestartCore1If(int ms_elapsed){
       Serial.println("ERR: CORE1 is not updated for 3000 ms");
       last_loop1counter = 0;
       loop1counter = 0;
+      restartcount++;
       rp2040.restartCore1();
     }
   }
@@ -449,26 +453,32 @@ bool good_sd(){
 }
 
 
-
+File32 logFile;
 void log_sd(const char* text){
   loop1pos = 100;
   #ifdef DISABLE_SD
     return;
   #endif
 
-  File32 myFile = SD.open(LOGFILE_NAME, FILE_WRITE);
+  File32 logFile = SD.open("log2.txt", FILE_WRITE);
+  if(!logFile){
+    Serial.println("ERR LOG");
+    sdError = true;
+    return;
+  }
+
   loop1pos = 101;
   // if the file opened okay, write to it:
-  if (myFile) {
+  if (logFile) {
     loop1pos = 102;
     char logtext[100];   // array to hold the result.
     loop1pos = 103;
-    sprintf(logtext,"%d:%s",millis(),text);
+    sprintf(logtext,"%d:%s",(int)(millis()/1000),text);
     loop1pos = 104;
-    myFile.println(logtext);
+    logFile.println(logtext);
     loop1pos = 105;
     // close the file:
-    myFile.close();
+    logFile.close();
     loop1pos = 106;
   }
 }
@@ -868,16 +878,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   DEBUG_P(20240815,millis()-tloadbmp_start);
   DEBUG_PLN(20240815,"ms");
   
-
-  //if(rotation != 0){
-    //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-    //gmap_sprite.setPivot(120, 120);
-    //gmap_sprite.pushRotated(-rotation);
-  //}
-  //else
-    //gmap_sprite.pushSprite(0, 40);
-
-  // Close the BMP file
   bmpImage.close();
   
   loop1pos = 319;

@@ -36,14 +36,18 @@ int screen_mode = MODE_MAP;
 int detail_page = 0;
 int scaleindex = 3;
 
-const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 180.0f };
+const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 1380.0f };
 double scale = scalelist[scaleindex];
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
-
 extern int setting_size;
+
+
+double lastload_lat;
+double lastload_lon;
+int lastload_zoomlevel;
 
 // Callback function for short press
 void shortPressCallback() {
@@ -298,6 +302,7 @@ void check_bankwarning() {
 
 
 
+
 void loop() {
   switch_handling();
   bool longdraw_allowed = gps_loop();
@@ -334,8 +339,8 @@ void loop() {
     quick_redraw = false;
     new_gmap_loaded = false;
     float new_truetrack = get_gps_truetrack();
-    float new_lat = get_gps_lat();
-    float new_long = get_gps_lon();
+    double new_lat = get_gps_lat();
+    double new_long = get_gps_lon();
     last_time_gpsdata = millis();
 
     //画面上の方向設定
@@ -383,7 +388,12 @@ void loop() {
         DEBUG_PLN(20240828, "pushed gmap");
       }
       //If loadImagetask already running in Core1, abort.
-      enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
+      if(lastload_lat != new_lat || lastload_lon != new_long || lastload_zoomlevel != zoomlevel){
+        lastload_lat = new_lat;
+        lastload_lon = new_long;
+        lastload_zoomlevel = zoomlevel;
+        enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
+      }
 
 
       if (scale > SCALE_SMALL_GMAP) {
@@ -402,6 +412,17 @@ void loop() {
         }
       }
 
+
+
+      DEBUG_P(20240912, "T1");
+      DEBUG_P(20240912, rp2040.getFreeHeap());
+      DEBUG_P(20240912, "/");
+      DEBUG_P(20240912, rp2040.getUsedHeap());
+      DEBUG_P(20240912, "/");
+      DEBUG_P(20240912, rp2040.getFreeStack());
+      DEBUG_P(20240912, "/");
+      DEBUG_PLN(20240912, rp2040.getStackPointer());
+      
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
       if(currentdestination != -1 && currentdestination < destinations_count){
@@ -458,6 +479,6 @@ void loop() {
     DEBUG_P(20240912, rp2040.getFreeStack());
     DEBUG_P(20240912, "/");
     DEBUG_PLN(20240912, rp2040.getStackPointer());
-    watchAndRestartCore1If(3000);
+    //watchAndRestartCore1If(3000);
   }
 }

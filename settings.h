@@ -1,7 +1,7 @@
 //====== 設定画面 =======
 
 // リリース時 削除
-#define BUILDDATE 20240913
+#define BUILDDATE 20240915
 #define BUILDVERSION "0.5"
 
 //#define RELEASE

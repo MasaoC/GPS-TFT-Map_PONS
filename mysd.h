@@ -74,3 +74,4 @@ extern volatile bool new_gmap_loaded;
 extern volatile unsigned long loop1counter;
 extern volatile int loop1pos;
 extern volatile int loop0pos;
+extern volatile int restartcount;
