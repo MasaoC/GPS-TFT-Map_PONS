@@ -124,7 +124,12 @@ class Point {
 public:
   int x, y;
   Point(int x = 0, int y = 0)
-    : x(x), y(y) {}
+    : x(x), y(y) {};
+
+  //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
+  bool isOutsideTft(){
+    return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
+  }
 };
 
 class Text {
@@ -351,14 +356,28 @@ public:
     if (strokeCount == 0) {
       return false;  // No strokes to add points to
     }
-    Stroke* stroke = &strokes[strokeCount - 1];
-    if (stroke->pointCount >= stroke->maxPoints) {
+    if (strokes[strokeCount - 1].pointCount >= strokes[strokeCount - 1].maxPoints) {
       return false;  // No more space for new points in this stroke
     }
-    stroke->points[stroke->pointCount].x = x;
-    stroke->points[stroke->pointCount].y = y;
-    stroke->pointCount++;
+    strokes[strokeCount - 1].points[strokes[strokeCount - 1].pointCount].x = x;
+    strokes[strokeCount - 1].points[strokes[strokeCount - 1].pointCount].y = y;
+    strokes[strokeCount - 1].pointCount++;
     return true;
+  }
+
+  void drawCurrentStroke(int col){
+    int strkid = strokeCount - 1;
+    if(strokeCount == 0 || strokes[strkid].pointCount < 2){
+      return;
+    }
+    for(int i = 0; i < strokes[strkid].pointCount-1; i++){
+      if (!strokes[strkid].points[i].isOutsideTft() || !strokes[strkid].points[i+1].isOutsideTft()) {
+        if (strokes[strkid].thickness == 1)
+          tft.drawLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, col);
+        else
+          drawThickLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, strokes[strkid].thickness, col);
+      }
+    }
   }
 
 
@@ -752,11 +771,15 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     Serial.println("ERR Add strk");
     return;
   }
-  cord_tft points[sizetrack];
+  cord_tft points[MAX_TRACK_CORDS];
   int old_x = 0;
   int old_y = 0;
   for (int i = 0; i < sizetrack; i++) {
     Coordinate tempc = latlon_manager.getData(i);
+    if(tempc.latitude == 0 && tempc.longitude == 0){
+      Serial.println("ERR lat lon 0");
+      break;
+    }
     points[i] = latLonToXY(tempc.latitude, tempc.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
     if (i == 0 || old_x != points[i].x || old_y != points[i].y) {
@@ -765,11 +788,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
       mapStrokeManager.addPointToStroke(points[i].x, points[i].y);
     }
   }
-  for (int i = 0; i < sizetrack - 1; i++) {
-    if (!points[i].isOutsideTft() || !points[i + 1].isOutsideTft()) {
-      drawThickLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, thickness, COLOR_GREEN);
-    }
-  }
+  mapStrokeManager.drawCurrentStroke(COLOR_GREEN);
 }
 
 void draw_Japan(double center_lat, double center_lon, float scale, float up) {
@@ -1010,7 +1029,7 @@ void draw_loading_image() {
   }
   #ifndef RELEASE
   tft.unloadFont();
-  textmanager.drawTextf(COUNTER, 1, 0, SCREEN_HEIGHT-35, COLOR_BLACK, "%d|%d|%d|%d", loop1counter, currentTaskType, loop0pos, loop1pos);
+  textmanager.drawTextf(COUNTER, 1, 0, SCREEN_HEIGHT-35, COLOR_BLACK, "%d|%d|%d|%d|%d", loop1counter, currentTaskType, loop0pos, loop1pos, restartcount);
   tft.loadFont(AA_FONT_SMALL);
   #endif
 }

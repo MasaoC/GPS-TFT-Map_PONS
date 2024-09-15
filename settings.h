@@ -9,8 +9,8 @@
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  #define RELEASE_GPS
-  //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
+  //#define RELEASE_GPS
+  #define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
   //#define DEBUG_GPS_SIM_BIWAKO         //琵琶湖固定座標
   //#define DEBUG_GPS_SIM_SAPPORO         //札幌固定座標
   //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
