@@ -466,7 +466,6 @@ void log_sd(const char* text){
     sdError = true;
     return;
   }
-  delay(100);
 
   loop1pos = 101;
   // if the file opened okay, write to it:
@@ -879,16 +878,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   DEBUG_P(20240815,millis()-tloadbmp_start);
   DEBUG_PLN(20240815,"ms");
   
-
-  //if(rotation != 0){
-    //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-    //gmap_sprite.setPivot(120, 120);
-    //gmap_sprite.pushRotated(-rotation);
-  //}
-  //else
-    //gmap_sprite.pushSprite(0, 40);
-
-  // Close the BMP file
   bmpImage.close();
   
   loop1pos = 319;

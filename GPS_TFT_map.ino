@@ -412,6 +412,17 @@ void loop() {
         }
       }
 
+
+
+      DEBUG_P(20240912, "T1");
+      DEBUG_P(20240912, rp2040.getFreeHeap());
+      DEBUG_P(20240912, "/");
+      DEBUG_P(20240912, rp2040.getUsedHeap());
+      DEBUG_P(20240912, "/");
+      DEBUG_P(20240912, rp2040.getFreeStack());
+      DEBUG_P(20240912, "/");
+      DEBUG_PLN(20240912, rp2040.getStackPointer());
+      
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
       if(currentdestination != -1 && currentdestination < destinations_count){

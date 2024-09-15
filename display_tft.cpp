@@ -761,7 +761,14 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
   drawThickLine(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
 }
 
+
+// Im making this variable global so that it will be stored in RAM instead of Stack.
+// Core0 is running out of stack with 4KB with MAX_TRACK_CORDS>=300, when making this local variable(Stack) we need to do bool core1_separate_stack = true;
+// However, we have enough RAM so, lets make points variable global for now.
+cord_tft points[MAX_TRACK_CORDS];
+
 void draw_track(double center_lat, double center_lon, float scale, float up) {
+
   int sizetrack = latlon_manager.getCount();
   if(sizetrack <= 1){
     return;
@@ -770,8 +777,8 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   if (!mapStrokeManager.addStroke(STRK_TRACK, MAX_TRACK_CORDS, thickness)) {
     Serial.println("ERR Add strk");
     return;
-  }
-  cord_tft points[MAX_TRACK_CORDS];
+  }  
+
   int old_x = 0;
   int old_y = 0;
   for (int i = 0; i < sizetrack; i++) {
@@ -788,7 +795,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
       mapStrokeManager.addPointToStroke(points[i].x, points[i].y);
     }
   }
-  mapStrokeManager.drawCurrentStroke(COLOR_GREEN);
+  //mapStrokeManager.drawCurrentStroke(COLOR_GREEN);
 }
 
 void draw_Japan(double center_lat, double center_lon, float scale, float up) {
