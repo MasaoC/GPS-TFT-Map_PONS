@@ -98,11 +98,11 @@ void draw_gpsdetail(bool redraw,int page);
 void draw_maplist_mode(bool redraw,int maplist_page);
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
 void draw_bankwarning();
-void draw_degpersecond(float degpersecond);
+void draw_degpersecond(double degpersecond);
 
 
 void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
-void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up);
+void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);

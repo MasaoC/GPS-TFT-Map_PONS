@@ -1,3 +1,6 @@
+// SD card read and write programs.
+// All process regarding SD card access are done in Core1.(#2 core)
+
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
@@ -5,7 +8,6 @@
 #include <SPI.h>
 
 extern volatile bool quick_redraw;
-
 
 SdFat32 SD;
 bool sdInitialized = false;
@@ -351,37 +353,15 @@ void setup_sd(){
 volatile unsigned long loop1counter = 0;
 volatile int loop1pos = 0;
 volatile int loop0pos = 0;
-volatile int restartcount = 0;
 
 unsigned long last_loop1counter = 0;
 unsigned long time_loop1counter_updated = 0;
 
 void setup1(void){
-  if(restartcount == 0){
-    mutex_init(&taskQueueMutex);
-    setup_sd();
-  }
+  mutex_init(&taskQueueMutex);
+  setup_sd();
 }
 
-
-// watchRestartCore1 is Called from Core0. Due to unknown reason, loop1 terminates at some moment after running app for more than 1,2 hours.
-// Cause is not determined at the moment, however by adding this function, we can restart Core1 by detecting loop1counter being not updated.
-void watchAndRestartCore1If(int ms_elapsed){
-  if(last_loop1counter != loop1counter || last_loop1counter < 3000){
-    time_loop1counter_updated = millis();
-    last_loop1counter = loop1counter;
-  }else{
-    //Core1 seems not updating.
-    int elapsedtime = millis() - time_loop1counter_updated;
-    if(elapsedtime > ms_elapsed){
-      Serial.println("ERR: CORE1 is not updated for 3000 ms");
-      last_loop1counter = 0;
-      loop1counter = 0;
-      restartcount++;
-      rp2040.restartCore1();
-    }
-  }
-}
 
 void loop1() {
   loop1pos = 0;

@@ -54,7 +54,6 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
 void enqueueTask(Task task);
 void enqueueTaskWithAbortCheck(Task task);
 bool dequeueTask(Task* task);
-void watchAndRestartCore1If(int ms_elapsed);
 
 bool good_sd();
 

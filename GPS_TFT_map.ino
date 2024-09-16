@@ -36,7 +36,7 @@ int screen_mode = MODE_MAP;
 int detail_page = 0;
 int scaleindex = 3;
 
-const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 1380.0f };
+const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 180.0f };
 double scale = scalelist[scaleindex];
 // Variables for setting selection
 int selectedLine = -1;
@@ -281,7 +281,7 @@ void check_bankwarning() {
   last_newtrack_time = currentTime;
 
   //Do not trigger bank warning if speed is below ...
-  if (get_gps_mps() < 2.0) {
+  if (get_gps_mps() <= 2.0) {
     if (bank_warning) {
       redraw_screen = true;
       bank_warning = false;
@@ -412,24 +412,13 @@ void loop() {
         }
       }
 
-
-
-      DEBUG_P(20240912, "T1");
-      DEBUG_P(20240912, rp2040.getFreeHeap());
-      DEBUG_P(20240912, "/");
-      DEBUG_P(20240912, rp2040.getUsedHeap());
-      DEBUG_P(20240912, "/");
-      DEBUG_P(20240912, rp2040.getFreeStack());
-      DEBUG_P(20240912, "/");
-      DEBUG_PLN(20240912, rp2040.getStackPointer());
-      
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
       if(currentdestination != -1 && currentdestination < destinations_count){
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         if(destination_mode == DMODE_FLYINTO) 
-          draw_flyinto(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+          draw_flyinto(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
         else if(destination_mode == DMODE_FLYAWAY) 
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
       }
@@ -468,8 +457,6 @@ void loop() {
 
     //更新終了
     redraw_screen = false;
-    //DEBUG_P(20240912, "Redraw time ms:");
-    //DEBUG_PLN(20240912, millis() - last_time_gpsdata);
 
     DEBUG_P(20240912, "C0 free/used heap and free stack/Pointer:");
     DEBUG_P(20240912, rp2040.getFreeHeap());
@@ -479,6 +466,5 @@ void loop() {
     DEBUG_P(20240912, rp2040.getFreeStack());
     DEBUG_P(20240912, "/");
     DEBUG_PLN(20240912, rp2040.getStackPointer());
-    //watchAndRestartCore1If(3000);
   }
 }

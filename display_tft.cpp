@@ -10,7 +10,8 @@
 
 
 #define AA_FONT_SMALL NotoSansBold15
-#define NM_FONT_LARGE Arial_Black32
+#define NM_FONT_MEDIUM Arial_Black22
+#define NM_FONT_LARGE Arial_Black42
 
 
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
@@ -53,13 +54,11 @@ bool is_trackupmode() {
 void createNeedle(void) {
   needle.setColorDepth(8);
   needle_w.setColorDepth(8);
-  needle.createSprite(3, 120);  // create the needle Sprite 3x120
-  needle_w.createSprite(3, 120);
+  needle.createSprite(4, 120);  // create the needle Sprite 3x120
+  needle_w.createSprite(4, 120);
 
   needle.fillSprite(TFT_BLACK);  // Fill with black
-  //needle.drawFastVLine(0, 0, 120, COLOR_RED);
-  needle.drawFastVLine(2, 0, 120, COLOR_RED);
-  needle.fillRect(0, 5, 3, 9, COLOR_RED);
+  needle.fillRect(0, 10, 4, 12, COLOR_RED);
   needle_w.fillSprite(TFT_WHITE);
 
   // Define needle pivot point
@@ -693,8 +692,8 @@ void calculatePointC(double lat1, double lon1, double lat2, double lon2, double 
   lon2 = deg2rad(lon2);
 
   double d = distance / R;  // Distance in radians
-  double bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
-
+  //Note  PointA and PointB should be reversed and PI be added in order to accurately calculate angle at pointB since bearing is not the same at pointA and pointB if they are far apart.
+  double bearing = calculateTrueCourseRad(lat2, lon2,lat1, lon1)+PI;
   lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
   lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
 
@@ -734,18 +733,16 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
   calculatePointC(dest_lat, dest_lon, center_lat, center_lon, distance, lat3, lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
-  mapStrokeManager.addStroke(STRK_TARGETLINE, 2);
-  mapStrokeManager.addPointToStroke(dest.x, dest.y);
-  mapStrokeManager.addPointToStroke(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-  tft.drawLine(dest.x,  dest.y, SCREEN_WIDTH/2, SCREEN_HEIGHT/2, COLOR_MAGENTA);
+
+  draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
+
   mapStrokeManager.addStroke(STRK_TARGETLINE2, 2, thickness);
   mapStrokeManager.addPointToStroke(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
   mapStrokeManager.addPointToStroke(targetpoint.x, targetpoint.y);
   drawThickLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, targetpoint.x, targetpoint.y, thickness, COLOR_MAGENTA);
 }
 
-void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up) {
-  int thickness = 2;
+void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
   cord_tft goal = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   if (goal.isOutsideTft()) {
     //scaleがとても大きい場合、goal.x,goal.yがオーバーフローする。
@@ -795,7 +792,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
       mapStrokeManager.addPointToStroke(points[i].x, points[i].y);
     }
   }
-  //mapStrokeManager.drawCurrentStroke(COLOR_GREEN);
+  mapStrokeManager.drawCurrentStroke(COLOR_GREEN);
 }
 
 void draw_Japan(double center_lat, double center_lon, float scale, float up) {
@@ -873,8 +870,6 @@ void startup_demo_tft() {
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
   bool redraw = false;
-  //draw_degpersecond(30.0 / (300.0 / 1000));
-  //draw_gpsinfo();
   for (int i = 0; i < 10; i++) {
     clean_map();
     sealandStrokeManager.drawAllStrokes();
@@ -909,7 +904,7 @@ void drawbar(float degpersecond, int col) {
       col = COLOR_LIGHT_BLUE;
     }
   }
-  int barposy = 28;
+  int barposy = 32;
   float abs_degpersecond = abs(degpersecond);
   int absint_degpersecond = abs_degpersecond;
   int barwidth = (abs_degpersecond * (SCREEN_WIDTH / 2)) / 3.0;  //3deg = max width
@@ -927,13 +922,16 @@ void drawbar(float degpersecond, int col) {
 
 float last_degpersecond;
 
-void draw_degpersecond(float degpersecond) {
+void draw_degpersecond(double degpersecond) {
   int col = COLOR_GRAY;
-  int posx = SCREEN_WIDTH / 2 - 31;
-  if (degpersecond > 1.0)
-    col = COLOR_GREEN;
-  if (degpersecond < -1.0)
-    col = COLOR_BLUE;
+  int posx = SCREEN_WIDTH / 2 - 18;
+
+  if(get_gps_mps() > 2.0){
+    if (degpersecond > 1.0)
+      col = COLOR_GREEN;
+    if (degpersecond < -1.0)
+      col = COLOR_BLUE;
+  }
   if (degpersecond != 0)
     posx -= 5;
   if (abs(degpersecond) > 10)
@@ -944,14 +942,14 @@ void draw_degpersecond(float degpersecond) {
   drawbar(degpersecond, -1);
   last_degpersecond = degpersecond;
 
-  tft.loadFont(NM_FONT_LARGE);  // Must load the font first
+  tft.loadFont(NM_FONT_MEDIUM);  // Must load the font first
   if (degpersecond > 0)
-    textmanager.drawTextf(ND_DEGPERSEC_VAL, 1, posx, 1, col, "+%.1f", degpersecond);
+    textmanager.drawTextf(ND_DEGPERSEC_VAL, 1, posx, 9, col, "+%.1f", degpersecond);
   else
-    textmanager.drawTextf(ND_DEGPERSEC_VAL, 1, posx, 1, col, "%.1f", degpersecond);
+    textmanager.drawTextf(ND_DEGPERSEC_VAL, 1, posx, 9, col, "%.1f", degpersecond);
 
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
-  textmanager.drawText(ND_DEGPERSEC_TEX, 1, SCREEN_WIDTH / 2 - 15, 26, col, "deg/s");
+  textmanager.drawText(ND_DEGPERSEC_TEX, 1, SCREEN_WIDTH / 2 - 15, 32, col, "deg/s");
 }
 
 bool bankwarning_flipflop = true;
@@ -1036,7 +1034,7 @@ void draw_loading_image() {
   }
   #ifndef RELEASE
   tft.unloadFont();
-  textmanager.drawTextf(COUNTER, 1, 0, SCREEN_HEIGHT-35, COLOR_BLACK, "%d|%d|%d|%d|%d", loop1counter, currentTaskType, loop0pos, loop1pos, restartcount);
+  textmanager.drawTextf(COUNTER, 1, 0, SCREEN_HEIGHT-35, COLOR_BLACK, "%d|%d|%d|%d", loop1counter, currentTaskType, loop0pos, loop1pos);
   tft.loadFont(AA_FONT_SMALL);
   #endif
 }
@@ -1049,15 +1047,15 @@ unsigned long last_bigvolarity_time = 0;
 void draw_gpsinfo() {
   int col = COLOR_BLACK;
   const int mtlx = SCREEN_WIDTH - 40;
-  const int mtvx = SCREEN_WIDTH - 65;
+  const int mtvx = SCREEN_WIDTH - 85;
   tft.setTextColor(TFT_BLACK, TFT_WHITE);
-  tft.drawString("MT", mtlx, 26);
-  tft.drawString("GS    m/s", 12, 26);
+  tft.drawString("MT", mtlx, 34);
+  tft.drawString("GS    m/s", 12, 34);
 
   tft.loadFont(NM_FONT_LARGE);  // Must load the font first
-  textmanager.drawTextf(ND_MT, 1, mtvx, 1, col, "%03d", (int)get_gps_magtrack());
+  textmanager.drawTextf(ND_MT, 1, mtvx, 3, col, "%03d", (int)get_gps_magtrack());
 
-  textmanager.drawTextf(ND_MPS, 1, 1, 1, COLOR_BLACK, "%4.1f", get_gps_mps());
+  textmanager.drawTextf(ND_MPS, 1, 1, 3, COLOR_BLACK, "%4.1f", get_gps_mps());
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
 
 
