@@ -4,7 +4,7 @@ import pandas as pd
 import simplekml
 from datetime import datetime, timedelta
 import random
-
+from pandas.errors import ParserError
 #This file creates KML file for Google Earth from logged positions from csv file of a device(sd card).
 
 def generate_random_color():
@@ -18,12 +18,19 @@ def csv_to_kml(input_folder):
         if csv_file.endswith(".csv"):
             # Read the CSV file
             file_path = os.path.join(input_folder, csv_file)
-            df = pd.read_csv(file_path)
+            try:
+                df = pd.read_csv(file_path)
+            except ParserError as e:
+                print(f"Error'{e}' at file'{file_path}'")
+                continue
             
             # Create a new linestring for each file
-            linestring = kml.newlinestring(name=csv_file)
-            linestring.coords = list(zip(df['longitude'], df['latitude']))
-            
+            try:
+                linestring = kml.newlinestring(name=csv_file)
+                linestring.coords = list(zip(df['longitude'], df['latitude']))
+            except KeyError as e:
+                print(f"Error'{e}' at file'{file_path}'")
+                continue
             # Generate a random color for the path and label
             path_color = generate_random_color()
             linestring.style.linestyle.color = path_color
