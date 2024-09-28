@@ -75,6 +75,12 @@
   
 #endif
 
+// Function to convert x, y coordinates on the TFT screen to latitude and longitude
+
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection);
+Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown);
+// Function to calculate the distance between two points (latitude and longitude) using an optimized formula
+
 
 void draw_loading_image();
 void draw_sdinfo();
@@ -118,6 +124,7 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float
 void erase_triangle();
 void draw_triangle();
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+
 
 
 int mod( int x, int y );

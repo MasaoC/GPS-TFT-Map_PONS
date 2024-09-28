@@ -1,13 +1,12 @@
 #include "settings.h"
 #include "display_tft.h"
-#include "ublox_gps.h"
+#include "gps.h"
 #include "mysd.h"
 #include "font_data.h"
 #include "hardware/adc.h"
 #include <cstring>  // for strlen and strcpy
 #include <string>
 #include <cstdlib>  // for malloc and free
-
 
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_MEDIUM Arial_Black22
@@ -48,6 +47,53 @@ bool is_northupmode() {
 }
 bool is_trackupmode() {
   return upward_mode == MODE_TRACKUP;
+}
+
+
+
+cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
+  // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
+  float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
+  // Calculate y-coordinates in Mercator projection
+  double yA = latitudeToMercatorY(mapCenterLat);
+  double yB = latitudeToMercatorY(lat);
+  // Calculate the distance on the y-axis
+  double yDist = (yB - yA)* 6378.22347118;// 1 radian longitude = 111.321 *180/3.1415 = 6378.22347118 km
+  // Apply scale factor
+  xDist *= mapScale;
+  yDist *= mapScale;
+  // Apply rotation for map up direction
+  float angleRad = mapUpDirection * DEG_TO_RAD;
+  float rotatedX = xDist * cos(angleRad) - yDist * sin(angleRad);
+  float rotatedY = xDist * sin(angleRad) + yDist * cos(angleRad);
+  // Translate to screen coordinates
+  return cord_tft{
+    (SCREEN_WIDTH / 2) + (int)rotatedX,
+    (SCREEN_HEIGHT / 2) - (int)rotatedY  // Y is inverted on the screen
+  };
+}
+
+
+// Function to convert x, y coordinates on the TFT screen to latitude and longitude
+Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
+    // Translate screen coordinates to map coordinates
+    float screenX = x - (SCREEN_WIDTH / 2);
+    float screenY = (SCREEN_HEIGHT / 2) - y + mapshiftdown;
+
+    // Apply rotation inverse for map up direction
+    float angleRad = mapUpDirection * DEG_TO_RAD;
+    float rotatedX = screenX * cos(angleRad) + screenY * sin(angleRad);
+    float rotatedY = -screenX * sin(angleRad) + screenY * cos(angleRad);
+
+    // Convert map distances to degrees
+    float lonDist = rotatedX / (111320.0 * cos(mapCenterLat * DEG_TO_RAD) * mapScale);
+    float latDist = rotatedY / (110540.0 * mapScale);
+
+    // Calculate latitude and longitude
+    float newLon = mapCenterLon + (lonDist * RAD_TO_DEG);
+    float newLat = mapCenterLat + (latDist * RAD_TO_DEG);
+
+    return Coordinate{newLat, newLon};
 }
 
 
@@ -1020,8 +1066,8 @@ void draw_loading_image() {
     last_loading_image = millis();
 
     int x = (last_loading_image / 20) % SCREEN_WIDTH;
-    int color = (TASK_LOAD_MAPIMAGE == currentTaskType) ? COLOR_ORANGE : COLOR_GRAY;
-    if (currentTaskType == TASK_LOG_SD || currentTaskType == TASK_LOG_SDF || currentTaskType == TASK_SAVE_CSV) {
+    int color = isTaskRunning(TASK_LOAD_MAPIMAGE) ? COLOR_ORANGE : COLOR_GRAY;
+    if (isTaskRunning(TASK_LOG_SD) || isTaskRunning(TASK_LOG_SDF) || isTaskRunning(TASK_SAVE_CSV)) {
       color = COLOR_RED;
     }
 
@@ -1034,7 +1080,7 @@ void draw_loading_image() {
   }
   #ifndef RELEASE
   tft.unloadFont();
-  textmanager.drawTextf(COUNTER, 1, 0, SCREEN_HEIGHT-35, COLOR_BLACK, "%d|%d|%d|%d", loop1counter, currentTaskType, loop0pos, loop1pos);
+  textmanager.drawTextf(COUNTER, 1, 0, SCREEN_HEIGHT-35, COLOR_BLACK, "%d|%d|%d|%d", loop1counter, currentTask.type, loop0pos, loop1pos);
   tft.loadFont(AA_FONT_SMALL);
   #endif
 }
@@ -1141,8 +1187,6 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
   for (int i = 0; i < mapsize; i++) {
     float lat1 = mp->cords[i][1];  // Example latitude
     float lon1 = mp->cords[i][0];  // Example longitude
-                                   //drawbool[i] = check_maybe_inside_draw(mapcenter, lat1, lon1, mapScale);
-                                   //if(drawbool[i]){
     points[i] = latLonToXY(lat1, lon1, center_lat, center_lon, mapScale, mapUpDirection);
     mapStrokeManager.addPointToStroke(points[i].x, points[i].y);
   }

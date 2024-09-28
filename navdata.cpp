@@ -1,4 +1,68 @@
 #include "navdata.h"
+#include <Arduino.h>
+
+
+LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
+
+void LatLonManager::addCoord(Coordinate position) {
+  coords[currentIndex] = position;
+  currentIndex = (currentIndex + 1) % MAX_TRACK_CORDS;
+  if (count < MAX_TRACK_CORDS) {
+    count++;
+  }
+}
+
+int LatLonManager::getCount() {
+  return count;
+}
+
+void LatLonManager::printData() {
+  for (int i = 0; i < count; i++) {
+    Serial.print("Coordinate ");
+    Serial.print(i + 1);
+    Serial.print(": Latitude = ");
+    Serial.print(coords[i].latitude, 6);
+    Serial.print(", Longitude = ");
+    Serial.println(coords[i].longitude, 6);
+  }
+}
+
+void LatLonManager::reset(){
+  count = 0;
+  currentIndex = 0;
+}
+
+Coordinate LatLonManager::getData(int newest_index) {
+  if (newest_index >= count || newest_index < 0) {
+    Serial.println("Invalid index");
+    return {0, 0};
+  }
+  int index = (currentIndex - 1 - newest_index + MAX_TRACK_CORDS) % MAX_TRACK_CORDS;
+  return coords[index];
+}
+
+LatLonManager latlon_manager;
+
+
+// Function to convert latitude from degrees to radians
+double deg2rad(double degrees) {
+  return degrees * PI / 180.0;
+}
+// Function to calculate y-coordinate in Mercator projection
+double latitudeToMercatorY(double latitude) {
+  double radLatitude = deg2rad(latitude);
+  return log(tan(PI / 4.0 + radLatitude / 2.0));
+}
+
+
+
+
+
+bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2){
+  return (abs(lat1-lat2) < latdif) && (abs(lon1-lon2) < londif);
+}
+
+
 
 
 mapdata extramaps[MAX_MAPDATAS];

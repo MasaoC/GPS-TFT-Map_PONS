@@ -1,129 +1,75 @@
+#include <Arduino.h>
 
-#include "ublox_gps.h"
+#include "gps.h"
+#include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
 #include "display_tft.h"
 #include "mysd.h"
 #include "display_tft.h"
+#include "gps.h"
 
 // Create a UBLOX instance
 TinyGPSPlus gps;
 
+//mediatek
+#define PMTK_ENABLE_SBAS "$PMTK313,1*2E"
+#define PMTK_SET_NMEA_OUTPUT_GSVONLY "$PMTK314,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0*29"
+#define PMTK_SET_NMEA_OUTPUT_RMCGGA "$PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28"
+#define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
+#define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
+
+
 
 double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
 int stored_numsats;
-
 bool gps_connection = false;
 bool demo_biwako = false;
 
 SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
-
-
-
-
-int stored_nmea_index = 0;
 char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
+int stored_nmea_index = 0;
 
+int readfail_counter = 0;
 
-// Calculate UBX checksum (provided for completeness, not used here)
-void calcChecksum(byte *ubxMsg, byte len, byte &ckA, byte &ckB) {
-  ckA = 0;
-  ckB = 0;
-  for (int i = 2; i < len - 2; i++) {
-    ckA += ubxMsg[i];
-    ckB += ckA;
+void utcToJst(int *year, int *month, int *day, int *hour) {
+  if(*month <= 0 || *month > 12){
+    Serial.print("month invalid:");
+    Serial.println(*month);
+    enqueueTask(createLogSdfTask("month invalid:%d",*month));
+    return;
+  }
+  // Add 9 hours to convert UTC to JST
+  *hour += 9;
+  // Handle overflow of hours (24-hour format)
+  if (*hour >= 24) {
+      *hour -= 24;
+      (*day)++;
+  }
+  // Handle overflow of days in each month
+  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  // Check for leap year
+  bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
+  if (isLeapYear) {
+      daysInMonth[1] = 29;
+  }
+  if (*day > daysInMonth[*month - 1]) {
+      *day = 1;
+      (*month)++;
+  }
+  // Handle overflow of months
+  if (*month > 12) {
+      *month = 1;
+      (*year)++;
   }
 }
 
-
-
-void sendUBX(byte *ubxMsg, byte len) {
-  for (int i = 0; i < len; i++) {
-    GPS_SERIAL.write(ubxMsg[i]);
+char* get_gps_nmea(int i){
+  int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
+  if(index < 0){
+    index += MAX_LAST_NMEA;
   }
-}
-
-
-
-
-void disableGSV() {
-  byte configNMEA[] = {
-    0xB5, 0x62, // UBX header
-    0x06, 0x01, // Class: CFG, ID: NMEA
-    0x24, 0x00, // Length: 36 bytes
-    0x00, 0x00, // Reserved
-    0x00, 0x00, // Version
-    0x00, 0x00, // Reserved
-    0x00, 0x00, // Mask for NMEA output (default)
-    0x00, 0x00, // Reserved
-    0x00, 0x00, // Reserved
-    0x00, 0x00, // Reserved
-    0x00, 0x00, // Checksum (to be calculated)
-  };
-
-  // Set the output mask to disable GSV messages
-  configNMEA[10] = 0xFF; // All messages disabled
-  configNMEA[11] = 0xFF; // All messages disabled
-
-  // Enable specific messages (bit positions as needed)
-  // For example: 0x01 for GNGGA, 0x02 for GNGRMC
-  // Example: Enable only GNGGA and GNGRMC (assumes bits 0 and 1)
-  configNMEA[10] = 0x03; // Enable GNGGA and GNGRMC
-
-  // Calculate and update checksum
-  byte ckA, ckB;
-  calcChecksum(configNMEA, sizeof(configNMEA), ckA, ckB);
-  configNMEA[sizeof(configNMEA) - 2] = ckA;
-  configNMEA[sizeof(configNMEA) - 1] = ckB;
-
-  // Send the UBX command
-  sendUBX(configNMEA, sizeof(configNMEA));
-}
-
-
-// RMC/GGAを受信した判定。(57600bpsだと通常9ms間隔,9600だと74ms以下となるので、80msでもOK。)
-#define TIME_NMEA_GROUP 500 //不具合の可能性があり、一時的に500msにセット。
-
-
-//Due compability
-void gps_getposition_mode() {
-  Serial.println("POS MODE");
-}
-//Due compability
-void gps_constellation_mode() {
-  Serial.println("CONST MODE");
-}
-
-
-void gps_setup() {
-  GPS_SERIAL.begin(9600);
-  GPS_SERIAL.setTX(GPS_TX);
-  GPS_SERIAL.setRX(GPS_RX);// Initialize GNSS
-
-  
-  // Configure GPS baud rate
-  const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
-  delay (50);// なぜか必要（TO DO: Do not delete without careful look.)
-  for (int i = 0; i < sizeof(UBLOX_INIT_38400); i++) {
-    GPS_SERIAL.write(UBLOX_INIT_38400[i]);
-  }
-  delay (100);//なぜか必要（TO DO: Do not delete without careful look.)
-  GPS_SERIAL.end();
-  delay(50);//なぜか必要（TO DO: Do not delete without careful look.)
-  GPS_SERIAL.begin(38400);
-  
-
-  for(int i = 0; i < MAX_LAST_NMEA;i++){
-    last_nmea[i][0] = 0;
-  }
-}
-
-void toggle_demo_biwako() {
-  demo_biwako = !demo_biwako;
-}
-
-bool get_demo_biwako() {
-  return demo_biwako;
+  return last_nmea[index];
 }
 
 
@@ -135,7 +81,6 @@ void removeStaleSatellites() {
     }
   }
 }
-
 
 void parseGSV(char *nmea) {
   // Print the received NMEA sentence for debugging
@@ -224,58 +169,76 @@ void parseGSV(char *nmea) {
 }
 
 
-char* get_gps_nmea(int i){
-  int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
-  if(index < 0){
-    index += MAX_LAST_NMEA;
-  }
-  return last_nmea[index];
+
+//Due compability
+void gps_getposition_mode() {
+  Serial.println("POS MODE");
+  #ifdef MEDIATEK_GPS
+  GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+  GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
+  #endif
+}
+//Due compability
+void gps_constellation_mode() {
+  Serial.println("CONST MODE");
+  #ifdef MEDIATEK_GPS
+    GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_GSVONLY);
+    GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);
+  #endif
 }
 
+
+void gps_setup() {
+  readfail_counter = 0;
+  GPS_SERIAL.setTX(GPS_TX);
+  GPS_SERIAL.setRX(GPS_RX);// Initialize GNSS
+  GPS_SERIAL.begin(9600);
+
+  #ifdef MEADIATEK_GPS
+    GPS_SERIAL.println(PMTK_ENABLE_SBAS);
+    gps_getposition_mode();
+    delay(100);//（Do not delete without care.)
+    GPS_SERIAL.println("$PMTK251,38400*27");
+    delay(100);//（Do not delete without care.)
+    GPS_SERIAL.end();
+    delay(50);//（Do not delete without care.)
+    GPS_SERIAL.begin(38400);
+  #endif
+
+  #ifdef UBLOX_GPS
+    // Configure GPS baud rate
+    const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
+    delay (50);// なぜか必要（Do not delete without care.)
+    for (int i = 0; i < sizeof(UBLOX_INIT_38400); i++) {
+      GPS_SERIAL.write(UBLOX_INIT_38400[i]);
+    }
+    delay (100);//なぜか必要（Do not delete without care.)
+    GPS_SERIAL.end();
+    delay(50);//なぜか必要（Do not delete without care.)
+    GPS_SERIAL.begin(38400);
+  #endif
+  
+  for(int i = 0; i < MAX_LAST_NMEA;i++){
+    last_nmea[i][0] = 0;
+  }
+}
+
+void toggle_demo_biwako() {
+  demo_biwako = !demo_biwako;
+}
+
+bool get_demo_biwako() {
+  return demo_biwako;
+}
 
 unsigned long last_latlon_manager = 0;
 unsigned long last_gps_save_time = 0;
 unsigned long last_gps_time = 0;// last position update time.
 unsigned long time_lastnmea = 0;//last nmea time
-// ここでは、Hardware Serialの受信を行う。この受信とTFTの描画が同時に発生すると、バッファーオーバーフローでデータ受信が失敗する恐れがある。
-// そのため画面描画する際に true　を返す。
-// M10Qの初期設定のデータ量では、最初の座標取得からメッセージを全て受信するまで38400bpsでおよそ270msである。そのため、500ms経過したら描画許可を出すこととする。(ので、データ受信完了してから画面描画は500ms遅延する。)
 
 int index_buffer1 = 0;
 char nmea_buffer1[128];
 
-
-void utcToJst(int *year, int *month, int *day, int *hour) {
-    if(*month <= 0 || *month > 12){
-      Serial.print("month invalid:");
-      Serial.println(*month);
-      enqueueTask(createLogSdfTask("month invalid:%d",*month));
-      return;
-    }
-    // Add 9 hours to convert UTC to JST
-    *hour += 9;
-    // Handle overflow of hours (24-hour format)
-    if (*hour >= 24) {
-        *hour -= 24;
-        (*day)++;
-    }
-    // Handle overflow of days in each month
-    int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    // Check for leap year
-    bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
-    if (isLeapYear) {
-        daysInMonth[1] = 29;
-    }
-    if (*day > daysInMonth[*month - 1]) {
-        *day = 1;
-        (*month)++;
-    }
-    // Handle overflow of months
-    if (*month > 12) {
-        *month = 1;
-        (*year)++;
-    }
-}
 
 TinyGPSDate get_gpsdate(){
   return gps.date;
@@ -285,16 +248,30 @@ TinyGPSTime get_gpstime(){
 }
 
 
-//return gps msg received.
+// return true if all the gps msgs received. Hardware Serialの受信を行う。
+// UART受信とTFTの描画が同時に発生すると、バッファーオーバーフローでデータ受信が失敗する恐れがある。
+// そのため画面描画する際に true　を返す。
+bool drawallow_once = false;
 bool gps_loop() {
-
-  if(GPS_SERIAL.available() > 29){
-    Serial.print("!!WARNING!! Buffer Overflow ");
-    Serial.println(GPS_SERIAL.available());
-  }
 
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
+    if(GPS_SERIAL.available() >= 29){
+      Serial.print("!!WARNING!! Buffer Overflow ");
+      Serial.println(GPS_SERIAL.available());
+      Serial.println(c);
+      Serial.println((int)c);
+    }
+    if((int)c >= 128){
+      readfail_counter++;
+      if(readfail_counter > 10){
+        Serial.print("Read Failed 10 times, non ascii char:");
+        Serial.println((int)c);
+        Serial.print("GPS SETUP");
+        gps_setup();
+      }
+      continue;
+    }
     gps.encode(c);
     gps_connection = true;
 
@@ -305,16 +282,18 @@ bool gps_loop() {
     if(index_buffer1 >= 255 || c == '\n'){
       if(index_buffer1 >= 2){
         time_lastnmea = millis();
+        drawallow_once = true;
         nmea_buffer1[index_buffer1-1] = '\0';
         strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
         stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
         #ifdef DEBUG_NMEA
         Serial.println(nmea_buffer1);
         #endif
-        //Usually last message of ublox is GNGLL.  This will be the key to start drawing TFT (so we dont miss hardware serial RX interrupt).
-        if(strstr(nmea_buffer1, "$GNGLL")){
-          return true;
-        }
+        // Usually last message of ublox is GNGLL for ublox M10Q.  
+        // This will be the key message to start drawing TFT (So we dont miss hardware serial RX with overflow while long wait for TFT update).
+        //if(strstr(nmea_buffer1, "$GNGLL")){
+        //  return true;
+        //}
         if(strstr(nmea_buffer1, "GSV")){
           parseGSV(nmea_buffer1);
         }
@@ -418,11 +397,20 @@ bool gps_loop() {
   }
 
   if (gps.satellites.isUpdated()) {
+    // Remove satellites not received for 60 seconds
+    removeStaleSatellites();
     stored_numsats = gps.satellites.value();
     #ifdef DEBUG_NMEA
     Serial.print(F("Satellites: "));
     Serial.println(stored_numsats);
     #endif
+  }
+
+
+  //with 38400, usually nmea sentence will be sent within 10ms.
+  if(millis()-time_lastnmea > 20 && drawallow_once){
+    drawallow_once = false;
+    return true;
   }
   return false;
 }
@@ -547,138 +535,3 @@ int get_gps_numsat() {
   return stored_numsats;
 }
 
-
-
-
-
-LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
-
-void LatLonManager::addCoord(Coordinate position) {
-  coords[currentIndex] = position;
-  currentIndex = (currentIndex + 1) % MAX_TRACK_CORDS;
-  if (count < MAX_TRACK_CORDS) {
-    count++;
-  }
-}
-
-int LatLonManager::getCount() {
-  return count;
-}
-
-void LatLonManager::printData() {
-  for (int i = 0; i < count; i++) {
-    Serial.print("Coordinate ");
-    Serial.print(i + 1);
-    Serial.print(": Latitude = ");
-    Serial.print(coords[i].latitude, 6);
-    Serial.print(", Longitude = ");
-    Serial.println(coords[i].longitude, 6);
-  }
-}
-
-void LatLonManager::reset(){
-  count = 0;
-  currentIndex = 0;
-}
-
-Coordinate LatLonManager::getData(int newest_index) {
-  if (newest_index >= count || newest_index < 0) {
-    Serial.println("Invalid index");
-    return {0, 0};
-  }
-  int index = (currentIndex - 1 - newest_index + MAX_TRACK_CORDS) % MAX_TRACK_CORDS;
-  return coords[index];
-}
-
-LatLonManager latlon_manager;
-
-
-// Function to convert latitude from degrees to radians
-double deg2rad(double degrees) {
-  return degrees * PI / 180.0;
-}
-// Function to calculate y-coordinate in Mercator projection
-double latitudeToMercatorY(double latitude) {
-  double radLatitude = deg2rad(latitude);
-  return log(tan(PI / 4.0 + radLatitude / 2.0));
-}
-cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
-  // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
-  float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
-  // Calculate y-coordinates in Mercator projection
-  double yA = latitudeToMercatorY(mapCenterLat);
-  double yB = latitudeToMercatorY(lat);
-  // Calculate the distance on the y-axis
-  double yDist = (yB - yA)* 6378.22347118;// 1 radian longitude = 111.321 *180/3.1415 = 6378.22347118 km
-  // Apply scale factor
-  xDist *= mapScale;
-  yDist *= mapScale;
-  // Apply rotation for map up direction
-  float angleRad = mapUpDirection * DEG_TO_RAD;
-  float rotatedX = xDist * cos(angleRad) - yDist * sin(angleRad);
-  float rotatedY = xDist * sin(angleRad) + yDist * cos(angleRad);
-  // Translate to screen coordinates
-  return cord_tft{
-    (SCREEN_WIDTH / 2) + (int)rotatedX,
-    (SCREEN_HEIGHT / 2) - (int)rotatedY  // Y is inverted on the screen
-  };
-}
-
-// Function to convert x, y coordinates on the TFT screen to latitude and longitude
-Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
-    // Translate screen coordinates to map coordinates
-    float screenX = x - (SCREEN_WIDTH / 2);
-    float screenY = (SCREEN_HEIGHT / 2) - y + mapshiftdown;
-
-    // Apply rotation inverse for map up direction
-    float angleRad = mapUpDirection * DEG_TO_RAD;
-    float rotatedX = screenX * cos(angleRad) + screenY * sin(angleRad);
-    float rotatedY = -screenX * sin(angleRad) + screenY * cos(angleRad);
-
-    // Convert map distances to degrees
-    float lonDist = rotatedX / (111320.0 * cos(mapCenterLat * DEG_TO_RAD) * mapScale);
-    float latDist = rotatedY / (110540.0 * mapScale);
-
-    // Calculate latitude and longitude
-    float newLon = mapCenterLon + (lonDist * RAD_TO_DEG);
-    float newLat = mapCenterLat + (latDist * RAD_TO_DEG);
-
-    return Coordinate{newLat, newLon};
-}
-
-bool out_of_bounds(int x1,int y1,int x2,int y2){
-  int newx = (x1+x2)/2;
-  int newy = (y1+y2)/2;
-  return (newx < 0 || newx > SCREEN_WIDTH) && (newy <0 || newy > SCREEN_HEIGHT);
-}
-
-
-
-
-// Function to calculate the distance between two points (latitude and longitude) using an optimized formula
-double fastDistance(float lat1, float lon1, float lat2, float lon2) {
-    // Calculate differences in latitude and longitude in degrees
-    float dLat = lat2 - lat1;
-    float dLon = lon2 - lon1;
-
-    // Convert degree differences to meters
-    double dLatMeters = dLat * KM_PER_DEG_LAT;
-    double dLonMeters = dLon * KM_PER_DEG_LON(lat1);
-
-    // Use Pythagorean theorem to calculate the distance
-    double distance = sqrt(dLatMeters*dLatMeters + dLonMeters*dLonMeters) / 1000.0; // Convert to kilometers
-
-    return distance;
-}
-
-
-bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2){
-  return (abs(lat1-lat2) < latdif) && (abs(lon1-lon2) < londif);
-}
-
-
-bool check_maybe_inside_draw(Coordinate mapcenter, float checklat, float checklon, float scale){
-  double dist = fastDistance(mapcenter.latitude,mapcenter.longitude, checklat, checklon);
-  float radius_scrn = 146.6f*scale;
-  return dist < radius_scrn;
-}

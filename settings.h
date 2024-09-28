@@ -8,6 +8,12 @@
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
 
+
+//----------GPS---------
+#define DEBUG_NMEA
+#define MEADIATEK_GPS
+//#define UBLOX_GPS
+
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
@@ -18,6 +24,8 @@
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
 
+
+//---------TFT----------
 // TFTを選択
   #define TFT_USE_ST7789    //Tested well. Change User Setting at TFT_eSPI
   //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
@@ -29,6 +37,10 @@
 //強制画面リフレッシュ時間
 #define SCREEN_FRESH_INTERVAL 60000
 #define BATTERY_PIN 26 //A0
+
+
+#define MAX_TRACK_CORDS 500
+
 
 
 // =====Hardware Settings =====

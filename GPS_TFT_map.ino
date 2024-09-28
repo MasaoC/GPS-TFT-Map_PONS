@@ -1,18 +1,15 @@
-#include "ublox_gps.h"
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
 #include "mysd.h"
 #include "button.h"
-
+#include "gps.h"
 
 #define SCALE_EXLARGE_GMAP 52.32994872   //zoom13
 #define SCALE_LARGE_GMAP 13.08248718     //zoom11
 #define SCALE_MEDIUM_GMAP 3.2706218      //zoom9
 #define SCALE_SMALL_GMAP 0.81765545      //zoom7
 #define SCALE_EXSMALL_GMAP 0.2044138625  //zoom5
-
-
 
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
@@ -451,7 +448,7 @@ void loop() {
     draw_degpersecond(degpersecond);  //after gpsinfo preferred
     draw_gpsinfo();
     draw_sdinfo();
-    if (!gmap_loaded && currentTaskType != TASK_LOAD_MAPIMAGE) {
+    if (!gmap_loaded && !isTaskRunning(TASK_LOAD_MAPIMAGE)) {
       draw_nogmap();
     }
 

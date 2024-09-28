@@ -28,9 +28,10 @@ int filesecond;
 mutex_t sdMutex;
 volatile bool core0NeedsAccess = false;
 volatile bool abortTask = false;
-volatile TaskType currentTaskType = TASK_NONE;
 TaskQueue taskQueue;
 mutex_t taskQueueMutex;
+Task currentTask;
+
 
 void load_mapimage(double center_lat, double center_lon,int zoomlevel);
 void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second);
@@ -43,7 +44,7 @@ void dateTime(uint16_t* date, uint16_t* time);
 
 bool isTaskRunning(int taskType) {
   loop0pos = 42;
-  return currentTaskType == taskType;
+  return currentTask.type == taskType;
 }
 
 
@@ -137,7 +138,15 @@ void removeDuplicateTask(TaskType type) {
 
 void enqueueTaskWithAbortCheck(Task newTask) {
   loop0pos = 26;
-  if (isTaskRunning(newTask.type)) {  // Implement this check based on your task handling
+  Serial.println("enq task");
+  if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
+    if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
+      //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.
+      Serial.println("NOT enque the task.");
+      return;
+    }
+    
+    // Abort the old task with different zoomlevel = meaning user changed zoom level while loading image.
     abortTask = true;  // Notify the running task to abort
   }
   loop0pos = 27;
@@ -166,8 +175,8 @@ void enqueueTask(Task task) {
 
 bool dequeueTask(Task* task) {
   loop0pos = 11;
-    bool success = false;
-    mutex_enter_blocking(&taskQueueMutex);
+  bool success = false;
+  mutex_enter_blocking(&taskQueueMutex);
   loop0pos = 12;
   if (taskQueue.head != taskQueue.tail) {  // Queue not empty
     loop0pos = 13;
@@ -362,14 +371,11 @@ void setup1(void){
   setup_sd();
 }
 
-
 void loop1() {
   loop1pos = 0;
-  Task currentTask;
   loop1counter++;
   loop1pos = 1;
   if (dequeueTask(&currentTask)) {
-    currentTaskType = currentTask.type;
     loop1pos = 2;
     switch (currentTask.type) {
       case TASK_INIT_SD:
@@ -403,7 +409,7 @@ void loop1() {
         break;
     }
     loop1pos = 8;
-    currentTaskType = TASK_NONE;
+    currentTask.type = TASK_NONE;
   } else {
     loop1pos = 9;
     // No tasks, optionally sleep or yield
