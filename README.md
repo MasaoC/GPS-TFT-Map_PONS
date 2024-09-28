@@ -19,9 +19,11 @@
    * 757-NHD-2.4-240320CF-BSXV-F-ND
    * NHD-2.4-240320CF-CSXN#-F-ND
 
-## GPS Module モジュール
- UART NMEA0183 で通信するため、任意のモジュール使用可能。
- * テストではGT-502MGG-N を使用した。https://akizukidenshi.com/catalog/g/g117980/
+## GNSS Module モジュール
+ UART NMEA0183 で通信するため、任意のモジュール使用可能。下記のGNSSモジュールで実験済み。ただし、Mediatek or ubloxで、初期化処理が異なるため、settings.hを変更すること。
+ * GT-502MGG-N https://akizukidenshi.com/catalog/g/g117980/
+ * ublox M-10Q
+ * Quectel L86
 
 
 # 機能 Detail.
