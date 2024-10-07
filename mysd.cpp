@@ -265,11 +265,15 @@ void process_destinationcsv_line(String line) {
   destinations_count++;
 }
 
-
+bool mapdatainitialized = false;
 void init_mapdata() {
   #ifdef DISABLE_SD
     return;
   #endif
+  if(mapdatainitialized){
+    DEBUG_PLN(20241006,"Map already initialized.");
+    return;//only once to avoid possible memory leak.
+  }
   File32 myFile = SD.open("mapdata.csv");
   if (!myFile) {
     return;
@@ -282,6 +286,7 @@ void init_mapdata() {
     }
   }
   myFile.close();
+  mapdatainitialized = true;
 }
 
 void init_destinations(){
@@ -312,7 +317,9 @@ void init_destinations(){
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
   destinations_count++;
+}
 
+void load_destinations(){
   File32 myFile = SD.open("destinations.csv");
   if (!myFile) {
     return;
@@ -354,7 +361,7 @@ void setup_sd(){
     SdFile::dateTimeCallback(dateTime);
     log_sd("SD INIT");
     init_mapdata();
-    init_destinations();
+    load_destinations();
   }
 }
 
@@ -368,6 +375,7 @@ unsigned long time_loop1counter_updated = 0;
 
 void setup1(void){
   mutex_init(&taskQueueMutex);
+  init_destinations();
   setup_sd();
 }
 

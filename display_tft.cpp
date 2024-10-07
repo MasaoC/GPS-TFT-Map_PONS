@@ -147,8 +147,12 @@ void setup_tft() {
 
   tft.begin();
 
-
+#ifdef VERTICAL_FLIP
+  tft.setRotation(0);           //set 0 for newhaven
+#else
   tft.setRotation(2);           //set 0 for newhaven
+#endif
+
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
   //tft.setTextFont(2);
 
@@ -1117,8 +1121,8 @@ void draw_gpsinfo() {
     max_adreading += (adreading - max_adreading) * 0.4;
   }
   double input_voltage = BATTERY_MULTIPLYER(max_adreading);
-  if (millis() - last_bigvolarity_time < 5000L) {
-    textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 67, SCREEN_HEIGHT - 28, COLOR_RED, "BATOFF");
+  if (millis() - last_bigvolarity_time < 3000L || digitalRead(24)) {
+    textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 37, SCREEN_HEIGHT - 28, COLOR_GREEN, "USB");
   } else {
     if (input_voltage > 4.25) {
       input_voltage = 4.25;

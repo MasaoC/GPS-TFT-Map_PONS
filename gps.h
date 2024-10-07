@@ -10,7 +10,7 @@
   #define SATELLITE_TYPE_QZSS 5
   #define SATELLITE_TYPE_UNKNOWN 0
 
-  #define MAX_LAST_NMEA 11
+  #define MAX_LAST_NMEA 14
   #define NMEA_MAX_CHAR 100
 
   struct SatelliteData {

@@ -19,6 +19,9 @@ TinyGPSPlus gps;
 #define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
 #define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
 
+//quectel
+#define PAIR_SET_38400 "$PAIR864,0,0,38400*23"
+
 
 
 double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
@@ -98,7 +101,7 @@ void parseGSV(char *nmea) {
     satelliteType = SATELLITE_TYPE_GLONASS;
   } else if (strstr(nmea, "$GAGSV")) {
     satelliteType = SATELLITE_TYPE_GALILEO;
-  } else if (strstr(nmea, "$BDGSV")) {
+  } else if (strstr(nmea, "$GBGSV")) {//$BDGSV
     satelliteType = SATELLITE_TYPE_BEIDOU;
   } else if (strstr(nmea, "$GQGSV")) {//GQGSVQZGSV
     satelliteType = SATELLITE_TYPE_QZSS;
@@ -187,40 +190,66 @@ void gps_constellation_mode() {
   #endif
 }
 
+int setupcounter = 1;
 
 void gps_setup() {
+  Serial.print("GPS SETUP");
+  
   readfail_counter = 0;
   GPS_SERIAL.setTX(GPS_TX);
   GPS_SERIAL.setRX(GPS_RX);// Initialize GNSS
-  GPS_SERIAL.begin(9600);
 
-  #ifdef MEADIATEK_GPS
-    GPS_SERIAL.println(PMTK_ENABLE_SBAS);
-    gps_getposition_mode();
-    delay(100);//（Do not delete without care.)
-    GPS_SERIAL.println("$PMTK251,38400*27");
-    delay(100);//（Do not delete without care.)
-    GPS_SERIAL.end();
-    delay(50);//（Do not delete without care.)
-    GPS_SERIAL.begin(38400);
-  #endif
+  //初回SETUP
+  if(setupcounter == 1){
+    GPS_SERIAL.begin(9600);
 
-  #ifdef UBLOX_GPS
-    // Configure GPS baud rate
-    const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
-    delay (50);// なぜか必要（Do not delete without care.)
-    for (int i = 0; i < sizeof(UBLOX_INIT_38400); i++) {
-      GPS_SERIAL.write(UBLOX_INIT_38400[i]);
+    #ifdef MEADIATEK_GPS
+      GPS_SERIAL.println(PMTK_ENABLE_SBAS);
+      gps_getposition_mode();
+      delay(100);//（Do not delete without care.)
+      GPS_SERIAL.println("$PMTK251,38400*27");
+      delay(100);//（Do not delete without care.)
+      GPS_SERIAL.end();
+      delay(50);//（Do not delete without care.)
+      GPS_SERIAL.begin(38400);
+    #endif
+
+    #ifdef UBLOX_GPS
+      // Configure GPS baud rate
+      const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
+      delay (50);// なぜか必要（Do not delete without care.)
+      for (int i = 0; i < sizeof(UBLOX_INIT_38400); i++) {
+        GPS_SERIAL.write(UBLOX_INIT_38400[i]);
+      }
+      delay (100);//なぜか必要（Do not delete without care.)
+      GPS_SERIAL.end();
+      delay(50);//なぜか必要（Do not delete without care.)
+      GPS_SERIAL.begin(38400);
+    #endif
+    
+  }else{
+    //2nd try
+    if(setupcounter%3 == 2){
+      Serial.println("115200 to 38400 ublox try ");
+      GPS_SERIAL.begin(115200);
+      GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
+      delay (100);//なぜか必要（Do not delete without care.)
+      GPS_SERIAL.end();
+      delay(50);//なぜか必要（Do not delete without care.)
+      GPS_SERIAL.begin(38400);
+    }else if(setupcounter%3 == 1){
+      //4th try
+      GPS_SERIAL.begin(38400);
+    }else{
+      //3rd try
+      GPS_SERIAL.begin(9600);
     }
-    delay (100);//なぜか必要（Do not delete without care.)
-    GPS_SERIAL.end();
-    delay(50);//なぜか必要（Do not delete without care.)
-    GPS_SERIAL.begin(38400);
-  #endif
-  
+  }
+
   for(int i = 0; i < MAX_LAST_NMEA;i++){
     last_nmea[i][0] = 0;
   }
+  setupcounter++;
 }
 
 void toggle_demo_biwako() {
@@ -267,7 +296,6 @@ bool gps_loop() {
       if(readfail_counter > 10){
         Serial.print("Read Failed 10 times, non ascii char:");
         Serial.println((int)c);
-        Serial.print("GPS SETUP");
         gps_setup();
       }
       continue;

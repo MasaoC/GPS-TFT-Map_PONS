@@ -1,8 +1,8 @@
 //====== 設定画面 =======
 
 // リリース時 削除
-#define BUILDDATE 20240915
-#define BUILDVERSION "0.5"
+#define BUILDDATE 20241006
+#define BUILDVERSION "0.51"
 
 //#define RELEASE
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
@@ -10,7 +10,7 @@
 
 
 //----------GPS---------
-#define DEBUG_NMEA
+//#define DEBUG_NMEA
 #define MEADIATEK_GPS
 //#define UBLOX_GPS
 
@@ -31,12 +31,13 @@
   //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
   //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
 
+#define VERTICAL_FLIP
+
 //TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい。1000ms>990ms for serial?)
 #define SCREEN_INTERVAL 990
 
 //強制画面リフレッシュ時間
 #define SCREEN_FRESH_INTERVAL 60000
-#define BATTERY_PIN 26 //A0
 
 
 #define MAX_TRACK_CORDS 500
@@ -57,6 +58,7 @@
 #define MEDIATEK_GPS
 #define RP2040_ZERO
 #define SW_PUSH   14
+#define BATTERY_PIN 26 //A0
 #define SW_UP     10
 #define SW_DOWN   11
 #define TFT_BL     7
@@ -76,8 +78,10 @@
 
 
 // Hardware Ver3
+/*
 #define RP2040_PICO
 #define SW_PUSH 5
+#define BATTERY_PIN 26 //A0
 #define SW_UP   -1
 #define SW_DOWN -1
 #define TFT_BL  -1
@@ -92,7 +96,26 @@
 #define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になった数値。
 #define BAT_LOW_VOLTAGE 3.49
 #define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
+*/
 
+// Hardware Ver4
+#define RP2040_PICO
+#define SW_PUSH 26
+#define BATTERY_PIN 29 //A0
+#define SW_UP   -1
+#define SW_DOWN -1
+#define TFT_BL  -1
+#define GPS_SERIAL Serial1
+#define GPS_TX 0
+#define GPS_RX 1
+//#define DISABLE_SD
+#define SD_RX 4    //MISO
+#define SD_CS_PIN -1
+#define SD_SCK 2
+#define SD_TX 3    //CMD MOSI
+#define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
+#define BAT_LOW_VOLTAGE 3.3
+#define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 
 
 
