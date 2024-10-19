@@ -3,8 +3,8 @@
 // リリース時 削除
 #define RELEASE
 
-#define BUILDDATE 20241018
-#define BUILDVERSION "0.52"
+#define BUILDDATE 20241019
+#define BUILDVERSION "0.59"
 
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);

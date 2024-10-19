@@ -765,7 +765,6 @@ void draw_triangle() {
     }else if(steer_to > 180){
       steer_to -= 360;
     }
-    Serial.println(steer_to);
     //約10度以上の方位違いがある場合に、指示三角形を描画する。
     if(abs(steer_to) > ANGLE_STEER1){
       double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
