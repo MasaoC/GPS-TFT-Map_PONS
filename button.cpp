@@ -1,4 +1,5 @@
 #include "Button.h"
+#include "mysd.h"
 
 // Debounce time in milliseconds
 const unsigned long debounceTime = 10;
@@ -9,6 +10,8 @@ const unsigned long longPressDuration = 1000;
 Button::Button(int p, void (*shortPressCb)(), void (*longPressCb)()) 
     : pin(p), switchState(HIGH), lastSwitchState(HIGH), pressTime(0), longPressHandled(false), 
       shortPressCallback(shortPressCb), longPressCallback(longPressCb) {}
+
+extern int sound_len;
 
 // Method to read button state
 void Button::read() {
@@ -29,6 +32,10 @@ void Button::read() {
                 unsigned long pressDuration = millis() - pressTime;
                 if (pressDuration < longPressDuration && pressDuration > debounceTime) {
                     if (shortPressCallback != NULL) {
+                        #ifdef PIN_TONE
+                        if(sound_len > 0)
+                          enqueueTask(createPlayMultiToneTask(4000,10,1));
+                        #endif
                         shortPressCallback();
                     }
                 }
@@ -38,6 +45,10 @@ void Button::read() {
         // Check for long press
         if (millis() - pressTime >= longPressDuration) {
             if (longPressCallback != NULL) {
+                #ifdef PIN_TONE
+                if(sound_len > 0)
+                  enqueueTask(createPlayMultiToneTask(4000,30,2));
+                #endif
                 longPressCallback();
             }
             longPressHandled = true;

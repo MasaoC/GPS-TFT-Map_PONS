@@ -22,6 +22,8 @@ int screen_brightness = 255;                                // Example brightnes
 const int brightnessLevels[] = { 10, 100, 150, 200, 255 };  // Example brightness levels
 int brightnessIndex = 4;                                    // Default to 60
 
+
+
 #define MODE_TRACKUP 0
 #define MODE_NORTHUP 1
 #define MODE_SIZE 2
@@ -33,7 +35,7 @@ int upward_mode = MODE_NORTHUP;
 #define MAX_STROKES_MAP 100
 #define MAX_STROKES_SEALAND 1000
 
-
+extern int sound_len;
 extern int screen_mode;
 extern int destination_mode;
 
@@ -96,12 +98,12 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
     return Coordinate{newLat, newLon};
 }
 
-
+const int NEEDLE_LEN = 120;
 void createNeedle(void) {
   needle.setColorDepth(8);
   needle_w.setColorDepth(8);
-  needle.createSprite(4, 120);  // create the needle Sprite 3x120
-  needle_w.createSprite(4, 120);
+  needle.createSprite(4, NEEDLE_LEN);  // create the needle Sprite 3x120
+  needle_w.createSprite(4, NEEDLE_LEN);
 
   needle.fillSprite(TFT_BLACK);  // Fill with black
   needle.fillRect(0, 10, 4, 12, COLOR_RED);
@@ -688,36 +690,127 @@ int rb_x_old, rb_y_old, lb_x_old, lb_y_old;
 #endif
 
 
-int oldmagtrack = 0;
+int oldttrack = 0;
+double steer_to = 0.0;
+int old_tone_tt = 0;
 
 void erase_triangle() {
   if (upward_mode == MODE_NORTHUP) {
     tft.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
-    needle_w.pushRotated(oldmagtrack);
+    needle_w.pushRotated(oldttrack);
     tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2 + rb_x_old, SCREEN_HEIGHT / 2 + rb_y_old, SCREEN_WIDTH / 2 + lb_x_old, SCREEN_HEIGHT / 2 + lb_y_old, COLOR_WHITE);
+  }
+
+  #ifdef PIN_TONE
+  if(sound_len > 0){
+    float tone_left = deg2rad(old_tone_tt-10);
+    float tone_right = deg2rad(old_tone_tt+10);
+    float tone_center = deg2rad(old_tone_tt);
+    int x_tone_left = (NEEDLE_LEN-10) * sin(tone_left) + SCREEN_WIDTH/2;
+    int y_tone_left = (NEEDLE_LEN-10) * -cos(tone_left) + SCREEN_HEIGHT/2;
+    int x_tone_right = (NEEDLE_LEN-10) * sin(tone_right) + SCREEN_WIDTH/2;
+    int y_tone_right = (NEEDLE_LEN-10) * -cos(tone_right) + SCREEN_HEIGHT/2;
+    int x_tone_center = (NEEDLE_LEN-4) * sin(tone_center) + SCREEN_WIDTH/2;
+    int y_tone_center = (NEEDLE_LEN-4) * -cos(tone_center) + SCREEN_HEIGHT/2;
+    tft.fillTriangle(x_tone_left,y_tone_left,x_tone_right,y_tone_right,x_tone_center,y_tone_center, COLOR_WHITE);
+  }
+  #endif
+  
+  //約10度以上の方位違いがある場合に、指示三角形を描画する。
+  double tt_radians = deg2rad(oldttrack);
+  if(abs(steer_to) > 0.2){
+    double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
+    double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.2:0.2);
+    int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+    int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+    int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+    int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+    int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
+    int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
+    tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_WHITE);
+  }
+  if(abs(steer_to) > 0.6){
+    double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.3:0.3);
+    double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.4:0.4);
+    int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+    int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+    int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+    int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+    int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
+    int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
+    tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_WHITE);
   }
 }
 
+double bearing = 0;
+extern float last_tone_tt;
 void draw_triangle() {
+
   if (upward_mode == MODE_NORTHUP) {
-    int magtrack = get_gps_truetrack();
-    float radians = deg2rad(magtrack);
-    int x_track = SCREEN_HEIGHT * sin(radians);
-    int y_track = SCREEN_HEIGHT * -cos(radians);
+
+    int ttrack = get_gps_truetrack();
+    float tt_radians = deg2rad(ttrack);
+
+    //Tone Range
+    #ifdef PIN_TONE
+    if(sound_len > 0){
+      old_tone_tt = last_tone_tt;
+      float tone_left = deg2rad(last_tone_tt-10);
+      float tone_right = deg2rad(last_tone_tt+10);
+      float tone_center = deg2rad(last_tone_tt);
+      int x_tone_left = (NEEDLE_LEN-10) * sin(tone_left) + SCREEN_WIDTH/2;
+      int y_tone_left = (NEEDLE_LEN-10) * -cos(tone_left) + SCREEN_HEIGHT/2;
+      int x_tone_right = (NEEDLE_LEN-10) * sin(tone_right) + SCREEN_WIDTH/2;
+      int y_tone_right = (NEEDLE_LEN-10) * -cos(tone_right) + SCREEN_HEIGHT/2;
+      int x_tone_center = (NEEDLE_LEN-4) * sin(tone_center) + SCREEN_WIDTH/2;
+      int y_tone_center = (NEEDLE_LEN-4) * -cos(tone_center) + SCREEN_HEIGHT/2;
+      tft.fillTriangle(x_tone_left,y_tone_left,x_tone_right,y_tone_right,x_tone_center,y_tone_center, COLOR_GRAY);
+    }
+    #endif
 
     tft.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
-    needle.pushRotated(magtrack);
-    oldmagtrack = magtrack;
+    needle.pushRotated(ttrack);
+    oldttrack = ttrack;
 
-    int rb_x_new = -TRIANGLE_HWIDTH * cos(radians) - TRIANGLE_SIZE * sin(radians);
-    int rb_y_new = -TRIANGLE_HWIDTH * sin(radians) + TRIANGLE_SIZE * cos(radians);
-    int lb_x_new = TRIANGLE_HWIDTH * cos(radians) - TRIANGLE_SIZE * sin(radians);
-    int lb_y_new = TRIANGLE_HWIDTH * sin(radians) + TRIANGLE_SIZE * cos(radians);
+    int rb_x_new = -TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
+    int rb_y_new = -TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
+    int lb_x_new = TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
+    int lb_y_new = TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
     tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2 + rb_x_new, SCREEN_HEIGHT / 2 + rb_y_new, SCREEN_WIDTH / 2 + lb_x_new, SCREEN_HEIGHT / 2 + lb_y_new, COLOR_BLACK);
     rb_x_old = rb_x_new;
     rb_y_old = rb_y_new;
     lb_x_old = lb_x_new;
     lb_y_old = lb_y_new;
+
+    steer_to = bearing - tt_radians;
+    if(steer_to < -PI){
+      steer_to += TWO_PI;
+    }else if(steer_to > PI){
+      steer_to -= TWO_PI;
+    }
+    //約10度以上の方位違いがある場合に、指示三角形を描画する。
+    if(abs(steer_to) > 0.2){
+      double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
+      double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.2:0.2);
+      int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
+      int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
+      tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_RED);
+    }
+    if(abs(steer_to) > 0.6){
+      double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.3:0.3);
+      double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.4:0.4);
+      int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
+      int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
+      tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_RED);
+    }
   }
   if (upward_mode == MODE_TRACKUP) {
     int shortening = 30;
@@ -733,6 +826,7 @@ double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2
   return atan2(sin(deltaLon) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(deltaLon));
 }
 
+
 // point A -> B -(distance)> C
 void calculatePointC(double lat1, double lon1, double lat2, double lon2, double distance, double& lat3, double& lon3) {
   const double R = 6371.0;  // Radius of the Earth in kilometers
@@ -743,12 +837,14 @@ void calculatePointC(double lat1, double lon1, double lat2, double lon2, double 
 
   double d = distance / R;  // Distance in radians
   //Note  PointA and PointB should be reversed and PI be added in order to accurately calculate angle at pointB since bearing is not the same at pointA and pointB if they are far apart.
-  double bearing = calculateTrueCourseRad(lat2, lon2,lat1, lon1)+PI;
+  //And we want the bearing at pointB.
+  bearing = calculateTrueCourseRad(lat2, lon2,lat1, lon1)+PI;
   lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
   lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
 
   lat3 = rad2deg(lat3);
   lon3 = rad2deg(lon3);
+
 }
 
 
@@ -766,7 +862,7 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
     Serial.println("Error: Points A and B are the same. Bearing is undefined.");
     return;
   }
-  double bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
+  bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
 
   lat3 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing));
   lon3 = lon1 + atan2(sin(bearing) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat3));
@@ -774,17 +870,19 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
 
   lat3 = rad2deg(lat3);
   lon3 = rad2deg(lon3);
+
 }
 
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up) {
+  // (Note: draw_flyinto must be done before calculatePointC, just for bearing calculation for red steer_to triangle.)
+  draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
+
   int thickness = 2;
   double lat3, lon3;
   cord_tft dest = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
   calculatePointC(dest_lat, dest_lon, center_lat, center_lon, distance, lat3, lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
-
-  draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
 
   mapStrokeManager.addStroke(STRK_TARGETLINE2, 2, thickness);
   mapStrokeManager.addPointToStroke(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
@@ -1026,7 +1124,7 @@ void draw_bankwarning() {
 
 void draw_nogmap() {
   tft.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-  tft.setCursor(1, SCREEN_HEIGHT - 58);
+  tft.setCursor(1, SCREEN_HEIGHT - 55);
   tft.print("No map image available.");
 }
 
@@ -1094,8 +1192,8 @@ unsigned long last_maxadr_time = 0;
 int max_adreading = 0;
 unsigned long last_bigvolarity_time = 0;
 
+
 void draw_gpsinfo() {
-  int col = COLOR_BLACK;
   const int mtlx = SCREEN_WIDTH - 40;
   const int mtvx = SCREEN_WIDTH - 85;
   tft.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -1103,9 +1201,9 @@ void draw_gpsinfo() {
   tft.drawString("GS    m/s", 12, 34);
 
   tft.loadFont(NM_FONT_LARGE);  // Must load the font first
-  textmanager.drawTextf(ND_MT, 1, mtvx, 3, col, "%03d", (int)get_gps_magtrack());
-
-  textmanager.drawTextf(ND_MPS, 1, 1, 3, COLOR_BLACK, "%4.1f", get_gps_mps());
+  int sel_col = get_gps_mps()<2?COLOR_GRAY:COLOR_BLACK;
+  textmanager.drawTextf(ND_MT, 1, mtvx, 3, sel_col, "%03d", (int)get_gps_magtrack());
+  textmanager.drawTextf(ND_MPS, 1, 1, 3, sel_col, "%4.1f", get_gps_mps());
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
 
 
@@ -1121,7 +1219,10 @@ void draw_gpsinfo() {
     max_adreading += (adreading - max_adreading) * 0.4;
   }
   double input_voltage = BATTERY_MULTIPLYER(max_adreading);
-  if (millis() - last_bigvolarity_time < 3000L || digitalRead(24)) {
+  if(millis() < 3000L){
+    textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 37, SCREEN_HEIGHT - 28, COLOR_GREEN, "---");
+  }
+  else if (millis() - last_bigvolarity_time < 3000L || digitalRead(24)) {
     textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 37, SCREEN_HEIGHT - 28, COLOR_GREEN, "USB");
   } else {
     if (input_voltage > 4.25) {
@@ -1162,7 +1263,7 @@ void draw_gpsinfo() {
   }
 
   // 5 decimal places latitude, longitude print.
-  col = COLOR_GREEN;
+  int col = COLOR_GREEN;
   if (get_gps_numsat() < 5) {
     col = COLOR_RED;
   } else if (get_gps_numsat() < 10) {
@@ -1363,7 +1464,7 @@ void draw_nomapdata() {
   if (millis() - lastdrawtime_nomapdata > 500L) {
     lastdrawtime_nomapdata = millis();
     if (get_gps_connection()) {
-      textmanager.drawText(ND_GPSCOND, 1, 3, posy, COLOR_GREEN, "GPS Module connected.");
+      //textmanager.drawText(ND_GPSCOND, 1, 3, posy, COLOR_GREEN, "GPS Module connected.");
     } else {
       textmanager.drawText(ND_GPSCOND, 2, 3, posy, COLOR_MAGENTA, "GPS connection not found !! Check connection, or try reset.");
       return;
@@ -1381,7 +1482,7 @@ void draw_nomapdata() {
       text[i] = '\0';
       textmanager.drawText(ND_GPSDOTS, 2, 3, posy + 30, col, text);
     } else if (nomap_drawn) {
-      textmanager.drawText(ND_SEARCHING, 2, 3, posy + 15, col, "NO MAPDATA.GPS Fixed.");
+      //textmanager.drawText(ND_SEARCHING, 2, 3, posy + 15, col, "NO MAPDATA.GPS Fixed.");
     }
   }
 }
@@ -1634,6 +1735,28 @@ Setting settings[] = {
       screen_mode = MODE_MAPLIST;
     },
     nullptr },
+  { SETTING_SOUNDLEN,
+    [](bool selected) -> std::string {
+      char buff[32];  // temporary buffer
+      sprintf(buff, selected ? " Sound_deg/s: %d ms" : "Sound_deg/s: %d ms", sound_len);
+      return std::string(buff);  // return as std::string
+    },
+    nullptr,
+    []() {
+      if(sound_len >= 1000)
+        sound_len = 0;
+      else if(sound_len <= 0)
+        sound_len = 50;
+      else
+        sound_len *= 2;
+
+      if(sound_len > 1000){
+        sound_len = 1000;
+      }
+      if(sound_len>0)
+        enqueueTask(createPlayMultiToneTask(3000,sound_len,1));
+    }
+  },
   { SETTING_EXIT,
     [](bool selected) -> std::string {
       return "Exit setting";
@@ -1655,7 +1778,7 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine) {
     redraw = false;
     textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
     tft.setTextColor(COLOR_BLACK);
-
+    
 
     for (int i = 0; i < setting_size; ++i) {
       uint16_t col = COLOR_BLACK;
@@ -1665,5 +1788,8 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine) {
 
       textmanager.drawTextf(settings[i].id, 2, 10, startY + i * separation, col, settings[i].getLabel(selectedLine == i).c_str());
     }
+    tft.unloadFont();
+    textmanager.drawTextf(ND_TEMP,1 , 2 , SCREEN_HEIGHT - 15, COLOR_GRAY, "CPU temp %.1fC",analogReadTemp());
+    tft.loadFont(AA_FONT_SMALL);
   }
 }

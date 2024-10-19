@@ -6,6 +6,7 @@
 #include "settings.h"
 #include "SdFat.h"
 #include <SPI.h>
+#include "sound.h"
 
 extern volatile bool quick_redraw;
 
@@ -100,6 +101,16 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
   return task;
 }
 
+Task createPlayMultiToneTask(double freq, double duration, int count){
+  loop0pos = 39;
+  Task task;
+  task.type = TASK_PLAY_MULTITONE;
+  task.playMultiToneArgs.freq = freq;
+  task.playMultiToneArgs.duration = duration;
+  task.playMultiToneArgs.counter = count;
+  return task;
+}
+
 void removeDuplicateTask(TaskType type) {
   loop0pos = 29;
   mutex_enter_blocking(&taskQueueMutex);
@@ -138,7 +149,6 @@ void removeDuplicateTask(TaskType type) {
 
 void enqueueTaskWithAbortCheck(Task newTask) {
   loop0pos = 26;
-  Serial.println("enq task");
   if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
     if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
       //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.
@@ -386,6 +396,9 @@ void loop1() {
   if (dequeueTask(&currentTask)) {
     loop1pos = 2;
     switch (currentTask.type) {
+      case TASK_PLAY_MULTITONE:
+        playTone(currentTask.playMultiToneArgs.freq,currentTask.playMultiToneArgs.duration,currentTask.playMultiToneArgs.counter);
+        break;
       case TASK_INIT_SD:
         loop1pos = 3;
         setup_sd();

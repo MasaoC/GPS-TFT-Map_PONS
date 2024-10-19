@@ -10,7 +10,8 @@
       TASK_LOG_SD,
       TASK_LOG_SDF,
       TASK_SAVE_CSV,
-      TASK_LOAD_MAPIMAGE
+      TASK_LOAD_MAPIMAGE,
+      TASK_PLAY_MULTITONE
   } TaskType;
 
   #define TASK_QUEUE_SIZE 10
@@ -36,6 +37,11 @@
               double center_lon;
               int zoomlevel;
           } loadMapImageArgs;
+          struct {
+              int freq;
+              int duration;
+              int counter;
+          } playMultiToneArgs;
       };
   } Task;
 
@@ -51,6 +57,7 @@
   Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
+  Task createPlayMultiToneTask(double freq, double duration, int count);
 
   // Functions to handle the queue (declarations)
   void enqueueTask(Task task);

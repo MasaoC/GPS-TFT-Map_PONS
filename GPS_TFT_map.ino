@@ -4,6 +4,7 @@
 #include "mysd.h"
 #include "button.h"
 #include "gps.h"
+#include "sound.h"
 
 #define SCALE_EXLARGE_GMAP 52.32994872   //zoom13
 #define SCALE_LARGE_GMAP 13.08248718     //zoom11
@@ -20,25 +21,28 @@ volatile bool quick_redraw = false;   //次の描画時間を待たずに、次�
 bool bank_warning = false;
 
 const int sampleInterval = 500;    // Sample interval in milliseconds
-const int numSamples = 6;          // Number of samples to take over 3 seconds
+const int numSamples = 4;          // Number of samples to take over 2 seconds
 float upward_samples[numSamples];  // Array to store truetrack values
 unsigned long lastSampleTime = 0;  // Time when the last sample was taken
 int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;            // The calculated average differential
 
 
-int destination_mode = DMODE_FLYINTO;
+int destination_mode = DMODE_FLYAWAY;
 
 int screen_mode = MODE_MAP;
 int detail_page = 0;
 int scaleindex = 3;
-
 const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 180.0f };
 double scale = scalelist[scaleindex];
+
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
+
+int sound_len = 100;
+
 extern int setting_size;
 
 
@@ -202,6 +206,16 @@ void switch_handling() {
 
 void setup(void) {
   Serial.begin(38400);
+
+  #ifndef RELEASE
+  while (!Serial){
+    //max wait for 5 seconds.
+    if(millis() > 5000){
+      break;
+    }
+  };
+  #endif
+
   setup_switch();
 
   // Enqueue init_sd task
@@ -428,7 +442,6 @@ void loop() {
       }
 
       draw_km_circle(scale);
-      draw_triangle();
 
       //google map load成功している間は、古いものを削除する必要はない。
       if (!gmap_loaded) {
@@ -436,6 +449,7 @@ void loop() {
       } else {
         draw_compass(drawupward_direction, COLOR_BLACK);
       }
+      draw_triangle();
     }
 
     //地図が更新されていない時でも、更新するもの。
@@ -444,6 +458,10 @@ void loop() {
       draw_bankwarning();
     }
 
+    #ifdef PIN_TONE
+    update_tone(degpersecond,sound_len);
+    #endif
+    
     draw_nomapdata();
     draw_degpersecond(degpersecond);  //after gpsinfo preferred
     draw_gpsinfo();

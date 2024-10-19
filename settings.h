@@ -1,17 +1,19 @@
 //====== 設定画面 =======
 
 // リリース時 削除
-#define BUILDDATE 20241006
-#define BUILDVERSION "0.51"
+#define RELEASE
 
-//#define RELEASE
+#define BUILDDATE 20241018
+#define BUILDVERSION "0.52"
+
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
 
 
 //----------GPS---------
 //#define DEBUG_NMEA
-#define MEADIATEK_GPS
+#define QUECTEL_GPS
+//#define MEADIATEK_GPS
 //#define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
@@ -116,7 +118,7 @@
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
 #define BAT_LOW_VOLTAGE 3.3
 #define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
-
+#define PIN_TONE 5
 
 
 // =====追加設定項目====

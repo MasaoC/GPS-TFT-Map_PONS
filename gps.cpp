@@ -21,6 +21,10 @@ TinyGPSPlus gps;
 
 //quectel
 #define PAIR_SET_38400 "$PAIR864,0,0,38400*23"
+#define PAIR_DISABLE_GSV "$PAIR062,3,0*3D"
+#define PAIR_ENABLE_GSV "$PAIR062,3,1*3C"
+#define PAIR_DISABLE_GSA "$PAIR062,2,0*3C"
+#define PAIR_ENABLE_GSA "$PAIR062,2,1*3D"
 
 
 
@@ -176,6 +180,12 @@ void parseGSV(char *nmea) {
 //Due compability
 void gps_getposition_mode() {
   Serial.println("POS MODE");
+
+  #ifdef QUECTEL_GPS
+    GPS_SERIAL.println(PAIR_DISABLE_GSV);
+    delay(3);
+    GPS_SERIAL.println(PAIR_DISABLE_GSA);
+  #endif
   #ifdef MEDIATEK_GPS
   GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
   GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
@@ -184,6 +194,11 @@ void gps_getposition_mode() {
 //Due compability
 void gps_constellation_mode() {
   Serial.println("CONST MODE");
+  #ifdef QUECTEL_GPS
+    GPS_SERIAL.println(PAIR_ENABLE_GSV);
+    delay(3);
+    GPS_SERIAL.println(PAIR_ENABLE_GSA);
+  #endif
   #ifdef MEDIATEK_GPS
     GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_GSVONLY);
     GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);
@@ -192,8 +207,11 @@ void gps_constellation_mode() {
 
 int setupcounter = 1;
 
+// Try to establish connection with GPS module.  Either ublox or mediatek.
 void gps_setup() {
-  Serial.print("GPS SETUP");
+  Serial.println("GPS SETUP");
+  Serial.print("setup");
+  Serial.println(setupcounter);
   
   readfail_counter = 0;
   GPS_SERIAL.setTX(GPS_TX);
@@ -201,9 +219,11 @@ void gps_setup() {
 
   //初回SETUP
   if(setupcounter == 1){
-    GPS_SERIAL.begin(9600);
 
-    #ifdef MEADIATEK_GPS
+    #ifdef QUECTEL_GPS
+      GPS_SERIAL.setFIFOSize(128);
+      GPS_SERIAL.begin(115200);
+    #elif MEADIATEK_GPS
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
       gps_getposition_mode();
       delay(100);//（Do not delete without care.)
@@ -212,9 +232,7 @@ void gps_setup() {
       GPS_SERIAL.end();
       delay(50);//（Do not delete without care.)
       GPS_SERIAL.begin(38400);
-    #endif
-
-    #ifdef UBLOX_GPS
+    #elif UBLOX_GPS
       // Configure GPS baud rate
       const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
       delay (50);// なぜか必要（Do not delete without care.)
@@ -225,12 +243,15 @@ void gps_setup() {
       GPS_SERIAL.end();
       delay(50);//なぜか必要（Do not delete without care.)
       GPS_SERIAL.begin(38400);
+    #else
+      GPS_SERIAL.begin(9600);
     #endif
     
   }else{
     //2nd try
     if(setupcounter%3 == 2){
-      Serial.println("115200 to 38400 ublox try ");
+      Serial.println("115200 to 38400 LC86G try ");
+      GPS_SERIAL.setFIFOSize(128);
       GPS_SERIAL.begin(115200);
       GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
       delay (100);//なぜか必要（Do not delete without care.)
@@ -249,6 +270,7 @@ void gps_setup() {
   for(int i = 0; i < MAX_LAST_NMEA;i++){
     last_nmea[i][0] = 0;
   }
+
   setupcounter++;
 }
 
@@ -265,8 +287,9 @@ unsigned long last_gps_save_time = 0;
 unsigned long last_gps_time = 0;// last position update time.
 unsigned long time_lastnmea = 0;//last nmea time
 
+const int NMEA_BUFFER_SIZE = 256;
 int index_buffer1 = 0;
-char nmea_buffer1[128];
+char nmea_buffer1[NMEA_BUFFER_SIZE];
 
 
 TinyGPSDate get_gpsdate(){
@@ -282,10 +305,10 @@ TinyGPSTime get_gpstime(){
 // そのため画面描画する際に true　を返す。
 bool drawallow_once = false;
 bool gps_loop() {
-
+  loop0pos = GPS_SERIAL.available()+100;
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
-    if(GPS_SERIAL.available() >= 29){
+    if(GPS_SERIAL.overflow()){
       Serial.print("!!WARNING!! Buffer Overflow ");
       Serial.println(GPS_SERIAL.available());
       Serial.println(c);
@@ -307,7 +330,7 @@ bool gps_loop() {
       index_buffer1 = 0;
     
     nmea_buffer1[index_buffer1++] = c;
-    if(index_buffer1 >= 255 || c == '\n'){
+    if(index_buffer1 >= (NMEA_BUFFER_SIZE-1) || c == '\n'){
       if(index_buffer1 >= 2){
         time_lastnmea = millis();
         drawallow_once = true;
