@@ -10,7 +10,7 @@
 
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_MEDIUM Arial_Black22
-#define NM_FONT_LARGE Arial_Black42
+#define NM_FONT_LARGE Arial_Black46
 
 
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
@@ -692,8 +692,13 @@ int rb_x_old, rb_y_old, lb_x_old, lb_y_old;
 
 int oldttrack = 0;
 double steer_to = 0.0;
-int old_tone_tt = 0;
 
+struct tt_triangle{
+  int x1,y1,x2,y2,x3,y3;
+} steer_to_triangle1,steer_to_triangle2,old_tone_triangle;
+
+#define ANGLE_STEER1 15
+#define ANGLE_STEER2 45
 void erase_triangle() {
   if (upward_mode == MODE_NORTHUP) {
     tft.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
@@ -703,68 +708,40 @@ void erase_triangle() {
 
   #ifdef PIN_TONE
   if(sound_len > 0){
-    float tone_left = deg2rad(old_tone_tt-10);
-    float tone_right = deg2rad(old_tone_tt+10);
-    float tone_center = deg2rad(old_tone_tt);
-    int x_tone_left = (NEEDLE_LEN-10) * sin(tone_left) + SCREEN_WIDTH/2;
-    int y_tone_left = (NEEDLE_LEN-10) * -cos(tone_left) + SCREEN_HEIGHT/2;
-    int x_tone_right = (NEEDLE_LEN-10) * sin(tone_right) + SCREEN_WIDTH/2;
-    int y_tone_right = (NEEDLE_LEN-10) * -cos(tone_right) + SCREEN_HEIGHT/2;
-    int x_tone_center = (NEEDLE_LEN-4) * sin(tone_center) + SCREEN_WIDTH/2;
-    int y_tone_center = (NEEDLE_LEN-4) * -cos(tone_center) + SCREEN_HEIGHT/2;
-    tft.fillTriangle(x_tone_left,y_tone_left,x_tone_right,y_tone_right,x_tone_center,y_tone_center, COLOR_WHITE);
+    tft.fillTriangle(old_tone_triangle.x1,old_tone_triangle.y1,old_tone_triangle.x2,old_tone_triangle.y2,old_tone_triangle.x3,old_tone_triangle.y3, COLOR_WHITE);
   }
   #endif
   
   //約10度以上の方位違いがある場合に、指示三角形を描画する。
   double tt_radians = deg2rad(oldttrack);
-  if(abs(steer_to) > 0.2){
-    double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
-    double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.2:0.2);
-    int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-    int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-    int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-    int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-    int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
-    int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
-    tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_WHITE);
+  if(abs(steer_to) > ANGLE_STEER1){
+    tft.fillTriangle(steer_to_triangle1.x1,steer_to_triangle1.y1,steer_to_triangle1.x2,steer_to_triangle1.y2,steer_to_triangle1.x3,steer_to_triangle1.y3, COLOR_WHITE);
   }
-  if(abs(steer_to) > 0.6){
-    double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.3:0.3);
-    double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.4:0.4);
-    int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-    int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-    int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-    int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-    int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
-    int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
-    tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_WHITE);
+  if(abs(steer_to) > ANGLE_STEER2){
+    tft.fillTriangle(steer_to_triangle2.x1,steer_to_triangle2.y1,steer_to_triangle2.x2,steer_to_triangle2.y2,steer_to_triangle2.x3,steer_to_triangle2.y3, COLOR_WHITE);
   }
 }
 
-double bearing = 0;
+int magc = 0;
 extern float last_tone_tt;
 void draw_triangle() {
-
   if (upward_mode == MODE_NORTHUP) {
-
     int ttrack = get_gps_truetrack();
     float tt_radians = deg2rad(ttrack);
 
     //Tone Range
     #ifdef PIN_TONE
     if(sound_len > 0){
-      old_tone_tt = last_tone_tt;
-      float tone_left = deg2rad(last_tone_tt-10);
-      float tone_right = deg2rad(last_tone_tt+10);
+      float tone_left = deg2rad(last_tone_tt-15);
+      float tone_right = deg2rad(last_tone_tt+15);
       float tone_center = deg2rad(last_tone_tt);
-      int x_tone_left = (NEEDLE_LEN-10) * sin(tone_left) + SCREEN_WIDTH/2;
-      int y_tone_left = (NEEDLE_LEN-10) * -cos(tone_left) + SCREEN_HEIGHT/2;
-      int x_tone_right = (NEEDLE_LEN-10) * sin(tone_right) + SCREEN_WIDTH/2;
-      int y_tone_right = (NEEDLE_LEN-10) * -cos(tone_right) + SCREEN_HEIGHT/2;
-      int x_tone_center = (NEEDLE_LEN-4) * sin(tone_center) + SCREEN_WIDTH/2;
-      int y_tone_center = (NEEDLE_LEN-4) * -cos(tone_center) + SCREEN_HEIGHT/2;
-      tft.fillTriangle(x_tone_left,y_tone_left,x_tone_right,y_tone_right,x_tone_center,y_tone_center, COLOR_GRAY);
+      old_tone_triangle.x1 = (NEEDLE_LEN-10) * sin(tone_left) + SCREEN_WIDTH/2;
+      old_tone_triangle.y1 = (NEEDLE_LEN-10) * -cos(tone_left) + SCREEN_HEIGHT/2;
+      old_tone_triangle.x2 = (NEEDLE_LEN-10) * sin(tone_right) + SCREEN_WIDTH/2;
+      old_tone_triangle.y2 = (NEEDLE_LEN-10) * -cos(tone_right) + SCREEN_HEIGHT/2;
+      old_tone_triangle.x3 = (NEEDLE_LEN-4) * sin(tone_center) + SCREEN_WIDTH/2;
+      old_tone_triangle.y3 = (NEEDLE_LEN-4) * -cos(tone_center) + SCREEN_HEIGHT/2;
+      tft.drawTriangle(old_tone_triangle.x1,old_tone_triangle.y1,old_tone_triangle.x2,old_tone_triangle.y2,old_tone_triangle.x3,old_tone_triangle.y3, COLOR_BLACK);
     }
     #endif
 
@@ -782,34 +759,35 @@ void draw_triangle() {
     lb_x_old = lb_x_new;
     lb_y_old = lb_y_new;
 
-    steer_to = bearing - tt_radians;
-    if(steer_to < -PI){
-      steer_to += TWO_PI;
-    }else if(steer_to > PI){
-      steer_to -= TWO_PI;
+    steer_to = (magc-8) - rad2deg(tt_radians);
+    if(steer_to < -180){
+      steer_to += 360;
+    }else if(steer_to > 180){
+      steer_to -= 360;
     }
+    Serial.println(steer_to);
     //約10度以上の方位違いがある場合に、指示三角形を描画する。
-    if(abs(steer_to) > 0.2){
+    if(abs(steer_to) > ANGLE_STEER1){
       double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
-      double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.2:0.2);
-      int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-      int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-      int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-      int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-      int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
-      int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
-      tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_RED);
+      double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.3:0.3);
+      steer_to_triangle1.x1 = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      steer_to_triangle1.y1 = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      steer_to_triangle1.x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      steer_to_triangle1.y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      steer_to_triangle1.x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
+      steer_to_triangle1.y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
+      tft.fillTriangle(steer_to_triangle1.x1,steer_to_triangle1.y1,steer_to_triangle1.x2,steer_to_triangle1.y2,steer_to_triangle1.x3,steer_to_triangle1.y3,COLOR_RED);
     }
-    if(abs(steer_to) > 0.6){
-      double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.3:0.3);
-      double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.4:0.4);
-      int x_needle = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-      int y_needle = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-      int x_needle_s = (NEEDLE_LEN-20) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
-      int y_needle_s = (NEEDLE_LEN-20) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
-      int tip_steer_triangle_x = (NEEDLE_LEN-15) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
-      int tip_steer_triangle_y = (NEEDLE_LEN-15) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
-      tft.fillTriangle(tip_steer_triangle_x,tip_steer_triangle_y,x_needle_s,y_needle_s,x_needle,y_needle,COLOR_RED);
+    if(abs(steer_to) > ANGLE_STEER2){
+      double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.45:0.45);
+      double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.65:0.65);
+      steer_to_triangle2.x1 = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      steer_to_triangle2.y1 = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      steer_to_triangle2.x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + SCREEN_WIDTH/2;
+      steer_to_triangle2.y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + SCREEN_HEIGHT/2;
+      steer_to_triangle2.x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + SCREEN_WIDTH/2;
+      steer_to_triangle2.y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + SCREEN_HEIGHT/2;
+      tft.fillTriangle(steer_to_triangle2.x1,steer_to_triangle2.y1,steer_to_triangle2.x2,steer_to_triangle2.y2,steer_to_triangle2.x3,steer_to_triangle2.y3,COLOR_RED);
     }
   }
   if (upward_mode == MODE_TRACKUP) {
@@ -838,7 +816,7 @@ void calculatePointC(double lat1, double lon1, double lat2, double lon2, double 
   double d = distance / R;  // Distance in radians
   //Note  PointA and PointB should be reversed and PI be added in order to accurately calculate angle at pointB since bearing is not the same at pointA and pointB if they are far apart.
   //And we want the bearing at pointB.
-  bearing = calculateTrueCourseRad(lat2, lon2,lat1, lon1)+PI;
+  double bearing = calculateTrueCourseRad(lat2, lon2,lat1, lon1)+PI;
   lat3 = asin(sin(lat2) * cos(d) + cos(lat2) * sin(d) * cos(bearing));
   lon3 = lon2 + atan2(sin(bearing) * sin(d) * cos(lat2), cos(d) - sin(lat2) * sin(lat3));
 
@@ -862,7 +840,7 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
     Serial.println("Error: Points A and B are the same. Bearing is undefined.");
     return;
   }
-  bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
+  double bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
 
   lat3 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing));
   lon3 = lon1 + atan2(sin(bearing) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat3));
@@ -874,7 +852,6 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
 }
 
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up) {
-  // (Note: draw_flyinto must be done before calculatePointC, just for bearing calculation for red steer_to triangle.)
   draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
 
   int thickness = 2;
@@ -1195,17 +1172,17 @@ unsigned long last_bigvolarity_time = 0;
 
 void draw_gpsinfo() {
   const int mtlx = SCREEN_WIDTH - 40;
-  const int mtvx = SCREEN_WIDTH - 85;
+  const int mtvx = SCREEN_WIDTH - 91;
   tft.setTextColor(TFT_BLACK, TFT_WHITE);
-  tft.drawString("MT", mtlx, 34);
-  tft.drawString("GS    m/s", 12, 34);
-
+  tft.drawString("MT", mtlx, 37);
+  tft.drawString("GS      m/s", 18, 37);
+  tft.setTextWrap(false);
   tft.loadFont(NM_FONT_LARGE);  // Must load the font first
   int sel_col = get_gps_mps()<2?COLOR_GRAY:COLOR_BLACK;
   textmanager.drawTextf(ND_MT, 1, mtvx, 3, sel_col, "%03d", (int)get_gps_magtrack());
   textmanager.drawTextf(ND_MPS, 1, 1, 3, sel_col, "%4.1f", get_gps_mps());
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
-
+  tft.setTextWrap(true);
 
   int adreading = analogRead(BATTERY_PIN);
   if (abs(max_adreading - adreading) > 100 && max_adreading != 0) {
@@ -1242,10 +1219,11 @@ void draw_gpsinfo() {
     double destlat = extradestinations[currentdestination].cords[0][0];
     double destlon = extradestinations[currentdestination].cords[0][1];
     double dist = calculateDistance(get_gps_lat(), get_gps_lon(), destlat, destlon);
-    int magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
+    magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
     if(destination_mode == DMODE_FLYAWAY){
       magc = (magc+180)%360;
     }
+    
     int posx_km = dist>1000?51:53;
     textmanager.drawTextf(ND_MC_PLAT, 2, 1, SCREEN_HEIGHT - 28, COLOR_MAGENTA, "MC%3d", magc);
     textmanager.drawTextf(ND_DIST_PLAT, 2, posx_km, SCREEN_HEIGHT - 28, COLOR_BLACK, dist>1000?"%.0fkm":dist>100?"%.1fkm":"%.2fkm", dist);

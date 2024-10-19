@@ -15,15 +15,18 @@ import shutil
 # biwako
 #center_latitude = 35.295109085322686
 #center_longitude = 136.25322693133202
-
 # tokyo
-center_latitude = 35.63413070650897
-center_longitude = 139.922110708556
+#center_latitude = 35.63413070650897
+#center_longitude = 139.922110708556
+#distance_radius = 10  # in kilometers, Especially important for zoom level 11 and 13.
 
-distance_radius = 10  # in kilometers, Especially important for zoom level 11 and 13.
-
+center_latitude = float(input("Input center latitude (ex.35.634): "))
+center_longitude = float(input("Input center longitude (ex.139.922):"))
+distance_radius = int(input("Input range(radius) in km (ex.10): "))
 key = input("Enter Google Map API Key: ")
 mapid = "9820e68e0789f0b1"
+
+
 
 def convert_png_bmp(inputfilename,outputfilename):
     def convert_to_rgb565(image):
@@ -119,6 +122,8 @@ def convert_png_bmp(inputfilename,outputfilename):
     # Example usage
     image = Image.open(inputfilename)
 
+    # Could not delete highway IC green labels using Google map API style (mapid) which only appeares at zoomlevel 13,
+    # so here we are replacing related green color.
     if "z13" in inputfilename:
         # Convert the target color to the replacement color
         target_color = (101, 147, 67)
@@ -137,7 +142,7 @@ def get_google_map_image(zoomlevel, latitude, longitude, key, mapid):
     
     # Check if the file already exists
     if os.path.exists(filename):
-        print(f"File already exists: {filename}")
+        print(f"Skipping, file already exists: {filename}")
         return
     
     # Create the URL for the Google Maps Static API

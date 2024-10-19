@@ -41,7 +41,7 @@ int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
 
-int sound_len = 100;
+int sound_len = 50;
 
 extern int setting_size;
 
@@ -317,6 +317,11 @@ void check_bankwarning() {
 void loop() {
   switch_handling();
   bool longdraw_allowed = gps_loop();
+  #ifndef RELEASE
+  if(Serial.available()){
+    GPS_SERIAL.write(Serial.read());
+  }
+  #endif
 
   if (screen_mode == MODE_SETTING) {
     draw_setting_mode(redraw_screen, selectedLine, cursorLine);

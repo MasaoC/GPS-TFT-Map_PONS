@@ -542,7 +542,7 @@ double get_gps_mps() {
     return 8 + 4 * sin(millis() / 1500.0);
   #endif
   if (demo_biwako) {
-    return 2 + 2 * sin(millis() / 1500.0);
+    return 4 + 2 * sin(millis() / 1500.0);
   }
   return stored_gs;
 }
@@ -568,7 +568,7 @@ double get_gps_truetrack() {
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
   if (demo_biwako) {
-    return 280 + (8.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
+    return 280 + (8.5 + 2*sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   }
   return stored_truetrack;     // Heading in degrees;
 }
