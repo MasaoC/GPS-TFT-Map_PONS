@@ -22,10 +22,15 @@ int screen_brightness = 255;                                // Example brightnes
 const int brightnessLevels[] = { 10, 100, 150, 200, 255 };  // Example brightness levels
 int brightnessIndex = 4;                                    // Default to 60
 
+<<<<<<< Updated upstream
 #define MODE_TRACKUP 0
 #define MODE_NORTHUP 1
 #define MODE_SIZE 2
 int upward_mode = MODE_NORTHUP;
+=======
+
+
+>>>>>>> Stashed changes
 
 
 
@@ -35,18 +40,18 @@ int upward_mode = MODE_NORTHUP;
 
 
 extern int screen_mode;
-extern int destination_mode;
+extern AppSetting settingData;
 
 
 void toggle_mode() {
-  upward_mode = (upward_mode + 1) % MODE_SIZE;
+  settingData.upward_mode = (settingData.upward_mode + 1) % MODE_SIZE;
 }
 
 bool is_northupmode() {
-  return upward_mode == MODE_NORTHUP;
+  return settingData.upward_mode == MODE_NORTHUP;
 }
 bool is_trackupmode() {
-  return upward_mode == MODE_TRACKUP;
+  return settingData.upward_mode == MODE_TRACKUP;
 }
 
 
@@ -642,7 +647,7 @@ int rb_x_old, rb_y_old, lb_x_old, lb_y_old;
 int oldmagtrack = 0;
 
 void erase_triangle() {
-  if (upward_mode == MODE_NORTHUP) {
+  if (settingData.upward_mode == MODE_NORTHUP) {
     tft.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
     needle_w.pushRotated(oldmagtrack);
     tft.fillTriangle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2 + rb_x_old, SCREEN_HEIGHT / 2 + rb_y_old, SCREEN_WIDTH / 2 + lb_x_old, SCREEN_HEIGHT / 2 + lb_y_old, COLOR_WHITE);
@@ -650,11 +655,33 @@ void erase_triangle() {
 }
 
 void draw_triangle() {
+<<<<<<< Updated upstream
   if (upward_mode == MODE_NORTHUP) {
     int magtrack = get_gps_truetrack();
     float radians = deg2rad(magtrack);
     int x_track = SCREEN_HEIGHT * sin(radians);
     int y_track = SCREEN_HEIGHT * -cos(radians);
+=======
+  if (settingData.upward_mode == MODE_NORTHUP) {
+    int ttrack = get_gps_truetrack();
+    float tt_radians = deg2rad(ttrack);
+
+    //Tone Range
+    #ifdef PIN_TONE
+    if(sound_len > 0){
+      float tone_left = deg2rad(last_tone_tt-15);
+      float tone_right = deg2rad(last_tone_tt+15);
+      float tone_center = deg2rad(last_tone_tt);
+      old_tone_triangle.x1 = (NEEDLE_LEN-10) * sin(tone_left) + SCREEN_WIDTH/2;
+      old_tone_triangle.y1 = (NEEDLE_LEN-10) * -cos(tone_left) + SCREEN_HEIGHT/2;
+      old_tone_triangle.x2 = (NEEDLE_LEN-10) * sin(tone_right) + SCREEN_WIDTH/2;
+      old_tone_triangle.y2 = (NEEDLE_LEN-10) * -cos(tone_right) + SCREEN_HEIGHT/2;
+      old_tone_triangle.x3 = (NEEDLE_LEN-4) * sin(tone_center) + SCREEN_WIDTH/2;
+      old_tone_triangle.y3 = (NEEDLE_LEN-4) * -cos(tone_center) + SCREEN_HEIGHT/2;
+      tft.drawTriangle(old_tone_triangle.x1,old_tone_triangle.y1,old_tone_triangle.x2,old_tone_triangle.y2,old_tone_triangle.x3,old_tone_triangle.y3, COLOR_BLACK);
+    }
+    #endif
+>>>>>>> Stashed changes
 
     tft.setPivot(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
     needle.pushRotated(magtrack);
@@ -670,7 +697,7 @@ void draw_triangle() {
     lb_x_old = lb_x_new;
     lb_y_old = lb_y_new;
   }
-  if (upward_mode == MODE_TRACKUP) {
+  if (settingData.upward_mode == MODE_TRACKUP) {
     int shortening = 30;
     tft.drawFastVLine(SCREEN_WIDTH / 2, shortening, SCREEN_HEIGHT / 2 - shortening, COLOR_BLACK);
     tft.drawFastVLine(SCREEN_WIDTH / 2 + 1, shortening, SCREEN_HEIGHT / 2 - shortening, COLOR_BLACK);
@@ -883,12 +910,13 @@ void startup_demo_tft() {
 
     tft.setTextColor(COLOR_RED, COLOR_WHITE);
     tft.setCursor(5, 5);
+    
     tft.println(" Piolot Oriented");
     tft.println("   Navigation System   for HPA");
     tft.println("========== PONS ==========");
 
 
-    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE,true);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 110);
     tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
@@ -899,6 +927,7 @@ void startup_demo_tft() {
     tft.print(BUILDDATE);
     tft.print(")");
   }
+  delay(1000);
 }
 
 void drawbar(float degpersecond, int col) {
@@ -1047,9 +1076,14 @@ int max_adreading = 0;
 unsigned long last_bigvolarity_time = 0;
 
 void draw_gpsinfo() {
+<<<<<<< Updated upstream
   int col = COLOR_BLACK;
   const int mtlx = SCREEN_WIDTH - 40;
   const int mtvx = SCREEN_WIDTH - 65;
+=======
+  const int mtlx = SCREEN_WIDTH - 24;
+  const int mtvx = SCREEN_WIDTH - 93;
+>>>>>>> Stashed changes
   tft.setTextColor(TFT_BLACK, TFT_WHITE);
   tft.drawString("MT", mtlx, 26);
   tft.drawString("GS    m/s", 12, 26);
@@ -1089,12 +1123,17 @@ void draw_gpsinfo() {
   }
 
   // Distance to plathome.
-  if(currentdestination != -1 && currentdestination < destinations_count){
-    double destlat = extradestinations[currentdestination].cords[0][0];
-    double destlon = extradestinations[currentdestination].cords[0][1];
+  if(settingData.currentdestination != -1 && settingData.currentdestination < destinations_count){
+    double destlat = extradestinations[settingData.currentdestination].cords[0][0];
+    double destlon = extradestinations[settingData.currentdestination].cords[0][1];
     double dist = calculateDistance(get_gps_lat(), get_gps_lon(), destlat, destlon);
+<<<<<<< Updated upstream
     int magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
     if(destination_mode == DMODE_FLYAWAY){
+=======
+    magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
+    if(settingData.destination_mode == DMODE_FLYAWAY){
+>>>>>>> Stashed changes
       magc = (magc+180)%360;
     }
     int posx_km = dist>1000?51:53;
@@ -1102,9 +1141,9 @@ void draw_gpsinfo() {
     textmanager.drawTextf(ND_DIST_PLAT, 2, posx_km, SCREEN_HEIGHT - 28, COLOR_BLACK, dist>1000?"%.0fkm":dist>100?"%.1fkm":"%.2fkm", dist);
 
     tft.unloadFont(); 
-    if(currentdestination != -1 && currentdestination < destinations_count){
-      textmanager.drawText(ND_DESTMODE, 1, 120, SCREEN_HEIGHT - 29, COLOR_MAGENTA,destination_mode == DMODE_FLYAWAY?"FLY AWAY FRM":"FLY INTO");
-      textmanager.drawText(ND_DESTNAME, 1, 120, SCREEN_HEIGHT - 21, COLOR_MAGENTA,extradestinations[currentdestination].name);
+    if(settingData.currentdestination != -1 && settingData.currentdestination < destinations_count){
+      textmanager.drawText(ND_DESTMODE, 1, 120, SCREEN_HEIGHT - 29, COLOR_MAGENTA,settingData.destination_mode == DMODE_FLYAWAY?"FLY AWAY FRM":"FLY INTO");
+      textmanager.drawText(ND_DESTNAME, 1, 120, SCREEN_HEIGHT - 21, COLOR_MAGENTA,extradestinations[settingData.currentdestination].name);
     }
     TinyGPSTime time = get_gpstime();
     if (time.isValid()) {
@@ -1499,41 +1538,46 @@ void draw_maplist_mode(bool redraw, int maplist_page) {
 }
 
 void reset_degpersecond();
+extern void writeflash();
 
 Setting settings[] = {
   { SETTING_SETDESTINATION,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
 
-      if(currentdestination != -1 && currentdestination < destinations_count){
-        sprintf(buff, selected ? " Set destination: %s(%d)" : "Set destination: %s(%d)", extradestinations[currentdestination].name, currentdestination);
+      if(settingData.currentdestination != -1 && settingData.currentdestination < destinations_count){
+        sprintf(buff, selected ? " Set destination: %s(%d)" : "Set destination: %s(%d)", extradestinations[settingData.currentdestination].name, settingData.currentdestination);
       }else
-        sprintf(buff, selected ? " Set destination: %d/%d" : "Set destination: %d/%d", currentdestination,destinations_count);
+        sprintf(buff, selected ? " Set destination: %d/%d" : "Set destination: %d/%d", settingData.currentdestination,destinations_count);
         
       return std::string(buff);  // return as std::string
-    },nullptr,
+    },[](){
+      writeflash();
+    },
     []() {
       if(destinations_count > 0){
-        currentdestination++;
-        if(currentdestination >= destinations_count){
-          currentdestination = 0;
+        settingData.currentdestination++;
+        if(settingData.currentdestination >= destinations_count){
+          settingData.currentdestination = 0;
         }
       }
     } },
   { SETTING_DESTINATIONMODE,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
-      if(destination_mode == DMODE_FLYINTO)
+      if(settingData.destination_mode == DMODE_FLYINTO)
         strcpy(buff, selected ? " Destination Mode: Fly into" : "Destination Mode: Fly into");
-      else if(destination_mode == DMODE_FLYAWAY)
+      else if(settingData.destination_mode == DMODE_FLYAWAY)
         strcpy(buff, selected ? " Destination Mode: Fly away" : "Destination Mode: Fly away");
       return std::string(buff);  // return as std::string
-    },nullptr,
+    },[](){
+      writeflash();
+    },
     []() {
-      if(destination_mode == DMODE_FLYINTO)
-        destination_mode = DMODE_FLYAWAY;
-      else if(destination_mode == DMODE_FLYAWAY)
-        destination_mode = DMODE_FLYINTO;
+      if(settingData.destination_mode == DMODE_FLYINTO)
+        settingData.destination_mode = DMODE_FLYAWAY;
+      else if(settingData.destination_mode == DMODE_FLYAWAY)
+        settingData.destination_mode = DMODE_FLYINTO;
     } },
 #ifdef BRIGHTNESS_SETTING_AVAIL
   { SETTING_BRIGHTNESS,
@@ -1565,7 +1609,9 @@ Setting settings[] = {
       sprintf(buff, selected ? " Upward: %s" : "Upward: %s", is_trackupmode() ? "TRACK UP" : "NORTH UP");
       return std::string(buff);  // return as std::string
     },
-    nullptr,
+    [](){
+      writeflash();
+    },
     []() {
       toggle_mode();
     } },
@@ -1619,5 +1665,12 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine) {
 
       textmanager.drawTextf(settings[i].id, 2, 10, startY + i * separation, col, settings[i].getLabel(selectedLine == i).c_str());
     }
+<<<<<<< Updated upstream
+=======
+    tft.unloadFont();
+    textmanager.drawTextf(SETTING_TEMP,1 , 2 , SCREEN_HEIGHT - 20, COLOR_GRAY, "CPU temp %.1fC",analogReadTemp());
+    textmanager.drawTextf(SETTING_INFOTEXT,1 , 2 , SCREEN_HEIGHT - 10, COLOR_GRAY, "%s_%s_%d",HARDWARENAME,BUILDDATE,BUILDVERSION);
+    tft.loadFont(AA_FONT_SMALL);
+>>>>>>> Stashed changes
   }
 }

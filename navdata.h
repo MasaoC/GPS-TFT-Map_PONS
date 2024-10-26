@@ -45,10 +45,16 @@ extern mapdata extramaps[MAX_MAPDATAS];
 extern int current_id;
 extern int mapdata_count;
 
+<<<<<<< Updated upstream
 #define MAX_DESTINATIONS 100
 extern mapdata extradestinations[MAX_DESTINATIONS];
 extern int destinations_count;
 extern int currentdestination;
+=======
+  #define MAX_DESTINATIONS 100
+  extern mapdata extradestinations[MAX_DESTINATIONS];
+  extern int destinations_count;
+>>>>>>> Stashed changes
 
 
 

@@ -1,8 +1,10 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
-#include "SdFat.h"
 #include <SPI.h>
+
+#define DISABLE_FS_H_WARNING
+#include "SdFat.h"
 
 extern volatile bool quick_redraw;
 
@@ -29,6 +31,13 @@ volatile bool abortTask = false;
 volatile TaskType currentTaskType = TASK_NONE;
 TaskQueue taskQueue;
 mutex_t taskQueueMutex;
+<<<<<<< Updated upstream
+=======
+Task currentTask;
+
+extern AppSetting settingData;
+
+>>>>>>> Stashed changes
 
 void load_mapimage(double center_lat, double center_lon,int zoomlevel);
 void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second);
@@ -275,7 +284,7 @@ void init_mapdata() {
 
 void init_destinations(){
   destinations_count = 0;
-  currentdestination = 0;
+  settingData.currentdestination = 0;
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("PLATHOME");
   extradestinations[destinations_count].size = 1;
@@ -296,11 +305,15 @@ void init_destinations(){
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
   destinations_count++;
+<<<<<<< Updated upstream
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("SHINURA");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
   destinations_count++;
+=======
+}
+>>>>>>> Stashed changes
 
   File32 myFile = SD.open("destinations.csv");
   if (!myFile) {
@@ -357,6 +370,7 @@ unsigned long last_loop1counter = 0;
 unsigned long time_loop1counter_updated = 0;
 
 void setup1(void){
+<<<<<<< Updated upstream
   if(restartcount == 0){
     mutex_init(&taskQueueMutex);
     setup_sd();
@@ -381,6 +395,12 @@ void watchAndRestartCore1If(int ms_elapsed){
       rp2040.restartCore1();
     }
   }
+=======
+  multicore_lockout_victim_init();
+  mutex_init(&taskQueueMutex);
+  init_destinations();
+  setup_sd();
+>>>>>>> Stashed changes
 }
 
 void loop1() {
@@ -460,7 +480,7 @@ void log_sd(const char* text){
     return;
   #endif
 
-  File32 logFile = SD.open("log2.txt", FILE_WRITE);
+  File32 logFile = SD.open(LOGFILE_NAME, FILE_WRITE);
   if(!logFile){
     Serial.println("ERR LOG");
     sdError = true;

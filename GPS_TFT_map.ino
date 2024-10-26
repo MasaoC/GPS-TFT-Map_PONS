@@ -1,10 +1,62 @@
+<<<<<<< Updated upstream
 #include "ublox_gps.h"
+=======
+#include <hardware/flash.h>
+#include <hardware/sync.h>
+#include <pico/stdlib.h>
+>>>>>>> Stashed changes
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
 #include "mysd.h"
 #include "button.h"
 
+
+// Define the start address in flash memory where data will be stored
+const uint32_t FLASH_TARGET_OFFSET = 512 * 1024; // Example offset (512KB from start)
+
+AppSetting settingData = {.currentdestination = 0, .destination_mode = DMODE_FLYAWAY, .upward_mode = MODE_NORTHUP};
+
+void writeflash(){
+    uint8_t* myDataAsBytes = (uint8_t*) &settingData;
+    int myDataSize = sizeof(settingData);
+    
+    int writeSize = (myDataSize / FLASH_PAGE_SIZE) + 1; // how many flash pages we're gonna need to write
+    int sectorCount = ((writeSize * FLASH_PAGE_SIZE) / FLASH_SECTOR_SIZE) + 1; // how many flash sectors we're gonna need to erase
+        
+    printf("Programming flash target region...\n");
+
+    uint32_t interrupts = save_and_disable_interrupts();
+    multicore_lockout_start_blocking();
+    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE * sectorCount);
+    flash_range_program(FLASH_TARGET_OFFSET, myDataAsBytes, FLASH_PAGE_SIZE * writeSize);
+    multicore_lockout_end_blocking();
+    restore_interrupts(interrupts);
+
+    printf("Done.\n");
+}
+
+void loadflash(){
+  const uint8_t* flash_target_contents = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET);
+  memcpy(&settingData, flash_target_contents, sizeof(settingData));
+  bool error = false;
+  if(settingData.upward_mode != MODE_NORTHUP || settingData.upward_mode != MODE_TRACKUP){
+    error = true;
+  }
+  if(settingData.currentdestination < 0 || settingData.currentdestination >= destinations_count){
+    error = true;
+  }
+  if(settingData.destination_mode != DMODE_FLYAWAY && settingData.destination_mode != DMODE_FLYINTO){
+    error = true;
+  }
+
+  if(error){
+    Serial.println("load flash error. saving default value.");
+    settingData.currentdestination = 0;
+    settingData = {.currentdestination = 0, .destination_mode = DMODE_FLYAWAY, .upward_mode = MODE_NORTHUP};
+    writeflash();
+  }
+}
 
 #define SCALE_EXLARGE_GMAP 52.32994872   //zoom13
 #define SCALE_LARGE_GMAP 13.08248718     //zoom11
@@ -30,7 +82,10 @@ int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;            // The calculated average differential
 
 
+<<<<<<< Updated upstream
 int destination_mode = DMODE_FLYINTO;
+=======
+>>>>>>> Stashed changes
 
 int screen_mode = MODE_MAP;
 int detail_page = 0;
@@ -48,6 +103,7 @@ extern int setting_size;
 double lastload_lat;
 double lastload_lon;
 int lastload_zoomlevel;
+
 
 // Callback function for short press
 void shortPressCallback() {
@@ -205,17 +261,29 @@ void switch_handling() {
 
 void setup(void) {
   Serial.begin(38400);
+<<<<<<< Updated upstream
+=======
+
+  #ifndef RELEASE
+  while (!Serial){
+    //max wait for 5 seconds.
+    if(millis() > 5000){
+      break;
+    }
+  };
+  #endif
+  DEBUG_PLN(20241026, "Setup");
+  //loadflash();
+
+  DEBUG_PLN(20241026, "1");
+>>>>>>> Stashed changes
   setup_switch();
-
-  // Enqueue init_sd task
-  //Task task;
-  //task.type = TASK_INIT_SD;
-  //enqueueTask(task);
-
-  //setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
+  DEBUG_PLN(20241026, "2");
   setup_tft();
-
+  DEBUG_PLN(20241026, "3");
   gps_setup();
+
+  DEBUG_PLN(20241026, "4");
   startup_demo_tft();
 
   redraw_screen = true;
@@ -425,12 +493,21 @@ void loop() {
       
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
+<<<<<<< Updated upstream
       if(currentdestination != -1 && currentdestination < destinations_count){
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         if(destination_mode == DMODE_FLYINTO) 
           draw_flyinto(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
         else if(destination_mode == DMODE_FLYAWAY) 
+=======
+      if(settingData.currentdestination != -1 && settingData.currentdestination < destinations_count){
+        double destlat = extradestinations[settingData.currentdestination].cords[0][0];
+        double destlon = extradestinations[settingData.currentdestination].cords[0][1];
+        if(settingData.destination_mode == DMODE_FLYINTO) 
+          draw_flyinto(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
+        else if(settingData.destination_mode == DMODE_FLYAWAY) 
+>>>>>>> Stashed changes
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
       }
 

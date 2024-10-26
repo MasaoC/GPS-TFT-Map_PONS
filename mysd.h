@@ -1,4 +1,25 @@
+<<<<<<< Updated upstream
 #include "display_tft.h"
+=======
+
+#ifndef MYSD_H
+  #define MYSD_H
+
+  #include "display_tft.h"
+  #include <Arduino.h>
+
+  typedef enum {
+      TASK_NONE,
+      TASK_INIT_SD,
+      TASK_LOG_SD,
+      TASK_LOG_SDF,
+      TASK_SAVE_CSV,
+      TASK_LOAD_MAPIMAGE,
+      TASK_PLAY_MULTITONE
+  } TaskType;
+
+  #define TASK_QUEUE_SIZE 10
+>>>>>>> Stashed changes
 
 
 
