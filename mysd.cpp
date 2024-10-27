@@ -4,6 +4,7 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
+#define DISABLE_FS_H_WARNING
 #include "SdFat.h"
 #include <SPI.h>
 #include "sound.h"

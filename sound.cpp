@@ -83,11 +83,17 @@ float nearest_note_frequency(float input_freq) {
 
 
 void update_tone(float degpersecond,int duration){
-  int angle_diff = abs(get_gps_truetrack()-last_tone_tt);
+  int relativedif = get_gps_truetrack()-last_tone_tt;
+  if(relativedif > 180)
+    relativedif -= 180;
+  if(relativedif < -180)
+    relativedif += 180;
+  int angle_diff = abs(relativedif);
+
   //角度変化が大きい時。
   if(angle_diff > 15 && duration > 0){
     last_tone_tt = get_gps_truetrack();
-    enqueueTask(createPlayMultiToneTask(3500,50,angle_diff>30?4:2));
+    enqueueTask(createPlayMultiToneTask(3000,50+0.1*duration,angle_diff>30?4:2));
     Serial.println("multi");
   }
   //音を出す閾値は、2.0deg/s かつ 2.0 m/s 以上 かつ 音再生設定がある時。
