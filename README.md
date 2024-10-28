@@ -1,7 +1,8 @@
 # GPS_TFT_map 概要/Abstract
- * Show GPS map on TFT and data on OLED using Arduino.  Code are specialized for Birdman rally at Biwako.
- * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft
- * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。Designed to assist pilots while flying over lake Biwa.
+ * PONSデバイスの使い方や画面の見方などの詳細は、[docsフォルダ](docs)に説明書があります。
+ * Arduinoを使用して、TFTにGPSマップを表示し、OLEDにデータを表示します。コードは琵琶湖での鳥人間コンテスト用に特化されています。
+ * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft = 人力飛行機用パイロット向けナビゲーションシステム
+ * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。琵琶湖上空を飛行するパイロットの支援を目的としています。」
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
