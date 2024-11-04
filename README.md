@@ -1,10 +1,12 @@
 # GPS_TFT_map 概要/Abstract
  * PONSデバイスの使い方や画面の見方などの詳細は、[docsフォルダ](docs)に説明書があります。このREADMEファイルの方が情報が古い場合があります。
+   ![image](https://github.com/user-attachments/assets/e5c458c2-ea0e-470b-8ae2-00049514d380)
  * Arduinoを使用して、TFTにGPSマップや位置・速度・方位の情報を表示します。琵琶湖での鳥人間コンテスト用に特化されています。
  * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft = 人力飛行機用パイロット向けナビゲーションシステム
  * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。琵琶湖上空を飛行するパイロットの支援を目的としています。
  * 地図データは、Google earthから出力された緯度経度の他、Google map APIにて事前ダウンロードしたbmp画像をSDカードから読み込んで表示も可能です。
  * 日本地図・琵琶湖（沖島・竹生島・多景島）などがプログラムに事前登録されています。
+
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
