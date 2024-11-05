@@ -26,9 +26,9 @@
 
 ## GNSS Module モジュール
  UART NMEA0183 で通信するため、任意のモジュール使用可能。下記のGNSSモジュールで実験済み。ただし、Mediatek or ubloxで、初期化処理が異なるため、settings.hを変更すること。
- * GT-502MGG-N https://akizukidenshi.com/catalog/g/g117980/
- * ublox M-10Q
- * Quectel LC86G
+ * GT-502MGG-N (v1,2: 2023大会で使用) https://akizukidenshi.com/catalog/g/g117980/
+ * ublox M-10Q (v3:追走ボート用で使用)
+ * Quectel LC86G (v4:パイロット用で使用。LC86GPAMD)
 
 
 # 機能 Detail.
