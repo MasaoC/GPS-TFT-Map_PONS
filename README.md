@@ -15,18 +15,18 @@
    
  TFTとの通信では、PicoのPIOを使用し 16 bit Paralel 接続を使う事で高速描画可能になっています。これは、TFT_eSPIライブラリによるものです。
 
-## TFT  Recommended TFT panel.
+## TFT  Recommended TFT panel. (動作確認済みTFT)
  Tested on ILI9341 and ST7789 using TFT_eSPI library.  Aliexpress で安価に購入もできるが、屋外で使用する場合は輝度が高く画質も綺麗なDigikeyにて購入を推奨する。
  * Aliexpress TZT Choice Store
-   * Arduino、2.8 "、240x320、spi、tft、pcbアダプター、マイクロsd、il9341、st7789v、5v、3.3v、2.8" 用のLCDシリアルポートモジュール、LEDディスプレイ
- * Digikey (動作確認済みTFT)
-   * 757-NHD-2.4-240320CF-BSXV-F-ND
-   * NHD-2.4-240320CF-CSXN#-F-ND
-   * NHD-2.8-240320AF-CSXP-F-ND  
+   * Arduino、2.8 "、240x320、spi、tft、pcbアダプター、マイクロsd、il9341、st7789v、5v、3.3v、2.8" 用のLCDシリアルポートモジュール、LEDディスプレイ  (v1で使用)
+ * Digikey
+   * NHD-2.4-240320CF-BSXV-F-ND (v2：2023大会ボート用で使用)
+   * NHD-2.4-240320CF-CSXN#-F-ND (v3:追走ボート用で使用)
+   * NHD-2.8-240320AF-CSXP-F-ND (v4:パイロット用で使用)
 
 ## GNSS Module モジュール
  UART NMEA0183 で通信するため、任意のモジュール使用可能。下記のGNSSモジュールで実験済み。ただし、Mediatek or ubloxで、初期化処理が異なるため、settings.hを変更すること。
- * GT-502MGG-N (v1,2: 2023大会で使用) https://akizukidenshi.com/catalog/g/g117980/
+ * GT-502MGG-N (v1,2: 2023大会ボート用で使用) https://akizukidenshi.com/catalog/g/g117980/
  * ublox M-10Q (v3:追走ボート用で使用)
  * Quectel LC86G (v4:パイロット用で使用。LC86GPAMD)
 
