@@ -2,6 +2,267 @@
 #include "sound.h"
 #include "gps.h"
 #include "mysd.h"
+#include "hardware/pwm.h"
+#include "hardware/timer.h"
+#include "pico/stdlib.h"
+#include <SD.h>
+
+#define PWM_PIN 9           // PWM output pin
+#define AMP_SHUTDOWN_PIN 10 // PAM8302 shutdown pin
+
+//makesure file does not contain meta data.  8 bit unsigned PCM , 16kHz.
+#define FILENAME "wav/opening.wav"
+const int sampleRate = 16000;  // 16 kHz sample rate
+// Audio parameters
+const int WAV_HEADER_SIZE = 45;  // Standard WAV header size
+
+// Double buffering setup
+const int CHUNK_SIZE = 8 * 1024;  // 8KB chunks for 0.5 seconds of audio
+uint8_t audioBuffer[2][CHUNK_SIZE];  // Double buffer
+volatile int activeBuffer = 0;  // Currently playing buffer (0 or 1)
+volatile int loadBuffer = 1;    // Buffer to load data into (0 or 1, opposite of activeBuffer)
+volatile uint32_t bufferPos = 0;  // Position in active buffer
+volatile bool playing = false;  // Playback state
+volatile bool endOfFile = false;  // Flag to indicate end of file reached
+volatile bool bufferReady[2] = {false, false};  // Flags to indicate if buffers are loaded
+volatile bool bufferSwapRequest = false;  // Flag to request buffer swap
+
+
+// File object and size tracking
+File audioFile;
+uint32_t totalAudioSize = 0;    // Total size of audio data
+uint32_t audioDataRead = 0;     // How much data we've read so far
+uint32_t chunksLoaded = 0;      // Counter for tracking how many chunks were loaded
+
+// Timing variables
+const unsigned long playInterval = 10000;  // 2 seconds between plays
+
+
+//------
+const int tableSize = 256;     // Sine wave table size
+uint8_t sineTable[tableSize];
+
+volatile uint32_t phaseAcc = 0;
+volatile uint32_t phaseInc = 0;
+
+bool wavmode = true;
+bool sinmode = true;
+
+// Timer interrupt callback
+bool timerCallback(struct repeating_timer *t) {
+  if(wavmode){
+    if (!playing || !bufferReady[activeBuffer]) {
+        return true;  // Nothing to play
+    }
+    // Output PCM value directly from active buffer
+    pwm_set_gpio_level(PWM_PIN, audioBuffer[activeBuffer][bufferPos]);
+    bufferPos++;
+    
+    // Check if we've reached the end of the current buffer
+    if (bufferPos >= CHUNK_SIZE) {
+        bufferPos = 0;  // Reset position
+        
+        // Request buffer swap - we'll handle it in the main loop
+        bufferSwapRequest = true;
+    }
+  }
+  if(sinmode){
+    phaseAcc += phaseInc;
+    pwm_set_gpio_level(PIN_TONE, sineTable[(phaseAcc >> 24) % tableSize]); // Output sine wave
+  }
+  //keep running
+  return true;
+}
+
+// Controls the PAM8302 amplifier
+void setAmplifierState(bool enable) {
+    digitalWrite(AMP_SHUTDOWN_PIN, enable ? HIGH : LOW);
+    Serial.print("Amplifier ");
+    Serial.println(enable ? "enabled" : "disabled");
+}
+
+// Function to load the next chunk of audio data
+bool loadNextChunk() {
+    if (audioFile && !bufferReady[loadBuffer] && audioDataRead < totalAudioSize) {
+        uint32_t remaining = totalAudioSize - audioDataRead;
+        uint32_t toRead = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
+        
+        uint32_t bytesRead = audioFile.read(audioBuffer[loadBuffer], toRead);
+        
+        if (bytesRead > 0) {
+            audioDataRead += bytesRead;
+            chunksLoaded++;  // Increment the chunks loaded counter
+            
+            // If we couldn't fill the buffer completely, pad with silence
+            if (bytesRead < CHUNK_SIZE) {
+                // Use 128 as silence for unsigned 8-bit audio. (remove last 1 byte due to value 0 at the end of wav file makes noise.)
+                memset(audioBuffer[loadBuffer] + bytesRead, 128, CHUNK_SIZE - bytesRead);
+                endOfFile = true;
+            }
+            
+            bufferReady[loadBuffer] = true;
+            return true;
+        } else {
+            endOfFile = true;
+            return false;
+        }
+    }
+    return false;
+}
+
+void startPlayback(const char* filename) {
+    // Stop current playback if any
+    wavmode = true;
+    sinmode = false;
+    playing = false;
+    delay(100);  // Give time for interrupt to stop
+    
+    // Reset state
+    endOfFile = false;
+    audioDataRead = 0;
+    chunksLoaded = 0;  // Reset chunks loaded counter
+    bufferPos = 0;
+    bufferReady[0] = false;
+    bufferReady[1] = false;
+    activeBuffer = 0;  // Start with buffer 0 as active
+    loadBuffer = 1;    // Start loading into buffer 1
+    bufferSwapRequest = false;
+    
+    // Close previous file if open
+    if (audioFile) {
+        audioFile.close();
+    }
+    
+    // Open WAV file
+    audioFile = SD.open(filename, FILE_READ);
+    if (!audioFile) {
+        Serial.print("Error opening file: ");
+        Serial.println(filename);
+        return;
+    }
+    
+    // Get file size and calculate audio data size
+    uint32_t fileSize = audioFile.size();
+    totalAudioSize = fileSize - WAV_HEADER_SIZE;
+    
+    Serial.print("File: ");
+    Serial.print(filename);
+    Serial.print(", Size: ");
+    Serial.print(fileSize);
+    Serial.print(" bytes, Audio data: ");
+    Serial.print(totalAudioSize);
+    Serial.print(" bytes (");
+    Serial.print((float)totalAudioSize / sampleRate);
+    Serial.println(" seconds)");
+    
+    // Skip WAV header
+    audioFile.seek(WAV_HEADER_SIZE);
+    
+    // Load initial buffer
+    loadNextChunk();  // Load first buffer into loadBuffer (buffer 1)
+    
+    // Start playback only after we have data
+    if (bufferReady[loadBuffer]) {
+        // Swap buffers so the first loaded buffer becomes active
+        int temp = activeBuffer;
+        activeBuffer = loadBuffer;
+        loadBuffer = temp;
+        
+        // Enable the amplifier before starting playback
+        setAmplifierState(true);
+        
+        // Start playback
+        bufferPos = 0;
+        playing = true;
+        Serial.println("Playback started");
+    } else {
+        Serial.println("Failed to load initial audio data");
+    }
+}
+
+void stopPlayback() {
+    playing = false;
+    delay(50);  // Short delay to ensure the interrupt handler stops
+    
+    // Disable the amplifier when playback stops
+    setAmplifierState(false);
+    
+    Serial.println("Playback stopped");
+}
+
+
+void browseWav() {
+    // Print available files on SD card
+    Serial.println("Available WAV files:");
+    File root = SD.open("wav/");
+    while (true) {
+        File entry = root.openNextFile();
+        if (!entry) break;
+        if (!entry.isDirectory()) {
+            String filename = entry.name();
+            if (filename.endsWith(".wav") || filename.endsWith(".WAV")) {
+                Serial.println(entry.name());
+            }
+        }
+        entry.close();
+    }
+    root.close();
+}
+
+
+
+
+void loop_sound(){
+    unsigned long currentTime = millis();
+    
+    // Handle buffer swap request outside of interrupt
+    if (bufferSwapRequest && playing) {
+        bufferSwapRequest = false;
+        bufferReady[activeBuffer] = false;  // Mark current buffer as processed
+        
+        // Swap buffers if the next one is ready
+        if (bufferReady[loadBuffer]) {
+            int temp = activeBuffer;
+            activeBuffer = loadBuffer;
+            loadBuffer = temp;
+            Serial.print("Swapped to buffer ");
+            Serial.print(activeBuffer);
+            Serial.print(", chunks loaded so far: ");
+            Serial.println(chunksLoaded);
+        } else if (endOfFile) {
+            // If next buffer isn't ready and we've reached EOF, stop playing
+            Serial.println("End of file reached");
+            stopPlayback();  // This will disable the amplifier
+        } else {
+            // Buffer underrun - this is bad, we couldn't load the next buffer in time
+            Serial.println("WARNING: Buffer underrun detected!");
+        }
+    }
+    
+    // If we're playing, try to load the next chunk into the load buffer
+    if (playing && !bufferReady[loadBuffer] && !endOfFile) {
+        if (loadNextChunk()) {
+            Serial.print("Loaded chunk #");
+            Serial.print(chunksLoaded);
+            Serial.print(" into buffer ");
+            Serial.println(loadBuffer);
+        }
+    }
+    
+    
+    // Simple playback status indicator - but not too often
+    static unsigned long lastStatusTime = 0;
+    if (playing && (currentTime - lastStatusTime >= 1000)) {  // Update every second
+        lastStatusTime = currentTime;
+        float percentComplete = (float)audioDataRead / totalAudioSize * 100.0;
+        Serial.print("Playing: ");
+        Serial.print(percentComplete);
+        Serial.print("% complete (");
+        Serial.print(chunksLoaded);
+        Serial.println(" chunks loaded)");
+    }
+}
+
 
 
 float last_tone_tt = 0;
@@ -82,6 +343,42 @@ float nearest_note_frequency(float input_freq) {
 }
 
 
+
+
+void setup_sound(){
+    // Initialize amplifier control pin
+  pinMode(AMP_SHUTDOWN_PIN, OUTPUT);
+  setAmplifierState(false);  // Start with amplifier disabled
+
+  // Initialize PWM with proper settings for audio
+  pinMode(PWM_PIN, OUTPUT);
+  uint slice_num = pwm_gpio_to_slice_num(PWM_PIN);
+  pwm_config config = pwm_get_default_config();
+  
+  pwm_config_set_clkdiv(&config, 8);      //Less than 32 required for audio quality.
+  pwm_config_set_wrap(&config, 255);     // 8-bit resolution
+  
+  pwm_init(slice_num, &config, true);
+  gpio_set_function(PWM_PIN, GPIO_FUNC_PWM);
+  
+  // Set PWM to mid-point (silence) initially
+  pwm_set_gpio_level(PWM_PIN, 128);
+
+  // Setup timer for 16kHz playback
+  static struct repeating_timer timer;
+  add_repeating_timer_us(-500000 / sampleRate, timerCallback, NULL, &timer);
+
+
+  browseWav();
+  startPlayback(FILENAME);
+
+  //generate sin table.
+  float volume = 0.18f;//1max
+  for (int i = 0; i < tableSize; i++) {
+      sineTable[i] = 128 + 127 *volume* sin(2 * M_PI * i / tableSize);
+  }
+}
+
 void update_tone(float degpersecond,int duration){
   int relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
@@ -108,16 +405,35 @@ void update_tone(float degpersecond,int duration){
   }
 }
 
+
+// Change the note
+void playNextNote(int frequency) {
+    phaseInc = (frequency * tableSize * (1ULL << 24)) / 32300; // Use 1ULL for 64-bit
+    DEBUG_P(20250412,"FRQ: ");
+    DEBUG_PLN(20250412,frequency);
+}
+
+
+void myTone(int freq,int duration){
+  digitalWrite(AMP_SHUTDOWN_PIN,HIGH);
+  playNextNote(freq);
+  delay(duration);
+  digitalWrite(AMP_SHUTDOWN_PIN,LOW);
+}
+
+
 void playTone(int freq, int duration, int counter){
-  tone(PIN_TONE,freq, duration);
+    DEBUG_P(20250412,"playTone:counter");
+    DEBUG_PLN(20250412,counter);
+  wavmode = false;
+  sinmode = true;
+  myTone(freq, duration);
   if(counter <= 1){
     return;
   }
-  for(int i = counter; i > 0; i--){
+  for(int i = counter; i > 1; i--){
     delay(duration);
-    noTone(PIN_TONE);
-    delay(duration);
-    tone(PIN_TONE,freq, duration);
+    myTone(freq, duration);
   }
-  noTone(PIN_TONE);
+  
 }

@@ -4,14 +4,13 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
-#define DISABLE_FS_H_WARNING
-#include "SdFat.h"
+//#define DISABLE_FS_H_WARNING
+#include <SD.h>
 #include <SPI.h>
 #include "sound.h"
 
 extern volatile bool quick_redraw;
 
-SdFat32 SD;
 bool sdInitialized = false;
 bool sdError = false;
 #define LOGFILE_NAME "log.txt"
@@ -113,39 +112,44 @@ Task createPlayMultiToneTask(double freq, double duration, int count){
 }
 
 void removeDuplicateTask(TaskType type) {
-  loop0pos = 29;
-  mutex_enter_blocking(&taskQueueMutex);
-  loop0pos = 30;
-  int newTail = taskQueue.tail;
-  int originalHead = taskQueue.head;
-
-  // Iterate through the queue from tail to head
-  while (newTail != originalHead) {
-    // Check if the task at the current position matches the type to be removed
-    loop0pos = 31;
-    if (taskQueue.tasks[newTail].type == type) {
-      // Shift the remaining tasks forward in the queue
-      int current = newTail;
-      loop0pos = 32;
-      while (current != originalHead) {
-          int next = (current + 1) % TASK_QUEUE_SIZE;
-          loop0pos = 33;
-          taskQueue.tasks[current] = taskQueue.tasks[next];
-          current = next;
-      }
-      loop0pos = 34;
-      // Update the head pointer to reflect the removal
-      taskQueue.head = (taskQueue.head - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
-      loop0pos = 35;
-      originalHead = taskQueue.head; // Update the new head after the removal
-    } else {
-      // Move to the next task in the queue
-      loop0pos = 36;
-      newTail = (newTail + 1) % TASK_QUEUE_SIZE;
+    mutex_enter_blocking(&taskQueueMutex);
+    
+    // If queue is empty, nothing to do
+    if (taskQueue.head == taskQueue.tail) {
+        mutex_exit(&taskQueueMutex);
+        return;
     }
-  }
-  loop0pos = 37;
-  mutex_exit(&taskQueueMutex);
+
+
+    Serial.println("removeDup()");
+    Serial.print(taskQueue.head);
+    Serial.print(":");
+    Serial.println(taskQueue.tail);
+
+    int current = taskQueue.head;
+    
+    // Iterate from head to tail-1
+    while (current != taskQueue.tail) {
+        if (taskQueue.tasks[current].type == type) {
+            // Found a match, shift tasks forward
+            int next = (current + 1) % TASK_QUEUE_SIZE;
+            while (next != taskQueue.tail) {
+                taskQueue.tasks[current] = taskQueue.tasks[next];
+                current = next;
+                next = (next + 1) % TASK_QUEUE_SIZE;
+            }
+            // Update tail to reflect removal
+            taskQueue.tail = (taskQueue.tail - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
+            break; // Remove only the first matching task
+        }
+        current = (current + 1) % TASK_QUEUE_SIZE;
+    }
+    
+    Serial.print(taskQueue.head);
+    Serial.print(":");
+    Serial.println(taskQueue.tail);
+
+    mutex_exit(&taskQueueMutex);
 }
 
 void enqueueTaskWithAbortCheck(Task newTask) {
@@ -167,6 +171,9 @@ void enqueueTaskWithAbortCheck(Task newTask) {
 }
 
 void enqueueTask(Task task) {
+
+  if(task.type == TASK_PLAY_MULTITONE)
+      Serial.println("et");
   loop0pos = 17;
   mutex_enter_blocking(&taskQueueMutex);
   loop0pos = 18;
@@ -192,6 +199,12 @@ bool dequeueTask(Task* task) {
   if (taskQueue.head != taskQueue.tail) {  // Queue not empty
     loop0pos = 13;
     *task = taskQueue.tasks[taskQueue.head];
+    Serial.print("dequetask");
+    Serial.print(taskQueue.head);
+    Serial.print(":");
+    Serial.print(taskQueue.tail);
+    Serial.print(":");
+    Serial.print(task->type);
     loop0pos = 14;
     taskQueue.head = (taskQueue.head + 1) % TASK_QUEUE_SIZE;
     loop0pos = 15;
@@ -285,7 +298,7 @@ void init_mapdata() {
     DEBUG_PLN(20241006,"Map already initialized.");
     return;//only once to avoid possible memory leak.
   }
-  File32 myFile = SD.open("mapdata.csv");
+  File myFile = SD.open("mapdata.csv");
   if (!myFile) {
     return;
   }
@@ -331,7 +344,7 @@ void init_destinations(){
 }
 
 void load_destinations(){
-  File32 myFile = SD.open("destinations.csv");
+  File myFile = SD.open("destinations.csv");
   if (!myFile) {
     return;
   }
@@ -350,19 +363,10 @@ void setup_sd(){
     return;
   #endif
 
-  SPI.setRX(SD_RX);
-  SPI.setSCK(SD_SCK);
-  SPI.setTX(SD_TX);
-  #ifdef RP2040_ZERO
-  SPI.setCS(SD_CS_PIN);
-  SPI.begin();
-  #endif
-  #ifdef RP2040_PICO
-  SPI.begin(true);
-  #endif
   
-  
-  sdInitialized = SD.begin(SD_CS_PIN,SD_SCK_MHZ(50));
+  //sdInitialized = SD.begin(SD_CS_PIN,SD_SCK_MHZ(50));
+  sdInitialized = SD.begin(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO);
+
 
   if (!sdInitialized) {
     return;
@@ -388,12 +392,15 @@ void setup1(void){
   mutex_init(&taskQueueMutex);
   init_destinations();
   setup_sd();
+
+  setup_sound();
 }
 
 void loop1() {
   loop1pos = 0;
   loop1counter++;
   loop1pos = 1;
+  loop_sound();
   if (dequeueTask(&currentTask)) {
     loop1pos = 2;
     switch (currentTask.type) {
@@ -461,14 +468,14 @@ bool good_sd(){
 }
 
 
-File32 logFile;
+File logFile;
 void log_sd(const char* text){
   loop1pos = 100;
   #ifdef DISABLE_SD
     return;
   #endif
 
-  File32 logFile = SD.open("log2.txt", FILE_WRITE);
+  File logFile = SD.open("log2.txt", FILE_WRITE);
   if(!logFile){
     Serial.println("ERR LOG");
     sdError = true;
@@ -557,7 +564,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   log_sdf("%d:%s",millis(),csv_filename);
   loop1pos = 204;
 
-  File32 csvFile = SD.open(csv_filename, FILE_WRITE);
+  File csvFile = SD.open(csv_filename, FILE_WRITE);
   loop1pos = 205;
 
   if (csvFile) {
@@ -735,7 +742,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   loop1pos = 309;
 
   // Open BMP file
-  File32 bmpImage = SD.open(filename, FILE_READ);
+  File bmpImage = SD.open(filename, FILE_READ);
   if (!bmpImage) {
     gmap_loaded = false;
     return;

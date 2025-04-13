@@ -16,6 +16,7 @@
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
 TFT_eSprite needle = TFT_eSprite(&tft);    // Sprite object for needle
 TFT_eSprite needle_w = TFT_eSprite(&tft);  // Sprite object for deleting needle with white
+TFT_eSprite backscreen = TFT_eSprite(&tft);
 
 
 int screen_brightness = 255;                                // Example brightness value
@@ -136,6 +137,7 @@ void setup_tft() {
   adc_gpio_init(BATTERY_PIN);  // Initialize GPIO26 as ADC
 
 
+  pinMode(24,INPUT);
   pinMode(BATTERY_PIN, INPUT);
   analogReadResolution(12);
 
@@ -161,6 +163,11 @@ void setup_tft() {
 
   tft.fillScreen(COLOR_WHITE);
   createNeedle();
+  if(!backscreen.created()){
+    backscreen.setColorDepth(16);
+    backscreen.createSprite(240, 240);
+  }
+
 }
 
 
@@ -1018,6 +1025,7 @@ void startup_demo_tft() {
     tft.print(BUILDDATE);
     tft.print(")");
   }
+  delay(2000);
 }
 
 void drawbar(float degpersecond, int col) {
@@ -1202,13 +1210,14 @@ void draw_gpsinfo() {
     textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 37, SCREEN_HEIGHT - 28, COLOR_GREEN, "USB");
   } else {
     if (input_voltage > 4.25) {
-      input_voltage = 4.25;
-      textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 67, SCREEN_HEIGHT - 28, COLOR_GREEN, "CHARGE");
+      //textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 37, SCREEN_HEIGHT - 28, COLOR_GREEN, "USB.");
+      textmanager.drawTextf(ND_BATTERY, 1, SCREEN_WIDTH - 45, SCREEN_HEIGHT - 28, COLOR_RED, "%.2fV", input_voltage);
+      //input_voltage = 4.25;
     } else if (input_voltage < BAT_LOW_VOLTAGE) {
       textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 67, SCREEN_HEIGHT - 28, COLOR_RED, "BATLOW");
     } else if (input_voltage < 3.75) {
       textmanager.drawTextf(ND_BATTERY, 1, SCREEN_WIDTH - 45, SCREEN_HEIGHT - 28, COLOR_MAGENTA, "%.2fV", input_voltage);
-    } else {
+    } else {//between 3.75-4.25
       textmanager.drawTextf(ND_BATTERY, 1, SCREEN_WIDTH - 45, SCREEN_HEIGHT - 28, COLOR_GREEN, "%.2fV", input_voltage);
     }
   }

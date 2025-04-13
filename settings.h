@@ -1,10 +1,10 @@
 //====== 設定画面 =======
 
-// リリース時 削除
-#define RELEASE
+// リリース時
+//#define RELEASE
 
-#define BUILDDATE 20241027
-#define BUILDVERSION "0.60"
+#define BUILDDATE 20250412
+#define BUILDVERSION "0.70"
 
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
@@ -100,8 +100,7 @@
 #define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 */
 
-// Hardware Ver4
-#define RP2040_PICO
+// Hardware Ver5
 #define SW_PUSH 26
 #define BATTERY_PIN 29 //A0
 #define SW_UP   -1
@@ -110,15 +109,25 @@
 #define GPS_SERIAL Serial1
 #define GPS_TX 0
 #define GPS_RX 1
+
+
+
 //#define DISABLE_SD
-#define SD_RX 4    //MISO
+//#define SD_RX 4    //MISO
 #define SD_CS_PIN -1
-#define SD_SCK 2
-#define SD_TX 3    //CMD MOSI
+//#define SD_SCK 2
+//#define SD_TX 3    //CMD MOSI
+// If you have all 4 DAT pins wired up to the Pico you can use SDIO mode
+#define RP_CLK_GPIO 2 // Set to CLK GPIO
+#define RP_CMD_GPIO 3 // Set to CMD GPIO
+#define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected.
+
+
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
 #define BAT_LOW_VOLTAGE 3.3
 #define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
-#define PIN_TONE 5
+#define PIN_TONE 9
+#define PIN_AMP_SD 10 //アンプシャットダウン(HIGHでON)
 
 
 // =====追加設定項目====

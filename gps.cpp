@@ -221,7 +221,7 @@ void gps_setup() {
   if(setupcounter == 1){
 
     #ifdef QUECTEL_GPS
-      GPS_SERIAL.setFIFOSize(128);
+      GPS_SERIAL.setFIFOSize(256);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
       GPS_SERIAL.begin(115200);
     #elif MEADIATEK_GPS
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);

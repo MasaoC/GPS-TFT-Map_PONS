@@ -2,7 +2,7 @@
 #include "mysd.h"
 
 // Debounce time in milliseconds
-const unsigned long debounceTime = 10;
+const unsigned long debounceTime = 5;
 // Duration to detect a long press in milliseconds
 const unsigned long longPressDuration = 1000;
 
@@ -34,7 +34,7 @@ void Button::read() {
                     if (shortPressCallback != NULL) {
                         #ifdef PIN_TONE
                         if(sound_len > 0)
-                          enqueueTask(createPlayMultiToneTask(4000,10,1));
+                          enqueueTask(createPlayMultiToneTask(1046,80,1));
                         #endif
                         shortPressCallback();
                     }
@@ -47,7 +47,7 @@ void Button::read() {
             if (longPressCallback != NULL) {
                 #ifdef PIN_TONE
                 if(sound_len > 0)
-                  enqueueTask(createPlayMultiToneTask(4000,30,2));
+                  enqueueTask(createPlayMultiToneTask(1046,50,2));
                 #endif
                 longPressCallback();
             }

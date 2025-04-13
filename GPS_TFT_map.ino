@@ -478,13 +478,13 @@ void loop() {
     //更新終了
     redraw_screen = false;
 
-    DEBUG_P(20240912, "C0 free/used heap and free stack/Pointer:");
-    DEBUG_P(20240912, rp2040.getFreeHeap());
-    DEBUG_P(20240912, "/");
-    DEBUG_P(20240912, rp2040.getUsedHeap());
-    DEBUG_P(20240912, "/");
-    DEBUG_P(20240912, rp2040.getFreeStack());
-    DEBUG_P(20240912, "/");
-    DEBUG_PLN(20240912, rp2040.getStackPointer());
+    DEBUG_P(20250413, "C0 free/used heap and free stack/Pointer:");
+    DEBUG_P(20250413, rp2040.getFreeHeap());
+    DEBUG_P(20250413, "/");
+    DEBUG_P(20250413, rp2040.getUsedHeap());
+    DEBUG_P(20250413, "/");
+    DEBUG_P(20250413, rp2040.getFreeStack());
+    DEBUG_P(20250413, "/");
+    DEBUG_PLN(20250413, rp2040.getStackPointer());
   }
 }
