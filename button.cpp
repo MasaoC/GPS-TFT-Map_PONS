@@ -11,7 +11,7 @@ Button::Button(int p, void (*shortPressCb)(), void (*longPressCb)())
     : pin(p), switchState(HIGH), lastSwitchState(HIGH), pressTime(0), longPressHandled(false), 
       shortPressCallback(shortPressCb), longPressCallback(longPressCb) {}
 
-extern int sound_len;
+extern int sound_volume;
 
 // Method to read button state
 void Button::read() {
@@ -32,10 +32,7 @@ void Button::read() {
                 unsigned long pressDuration = millis() - pressTime;
                 if (pressDuration < longPressDuration && pressDuration > debounceTime) {
                     if (shortPressCallback != NULL) {
-                        #ifdef PIN_TONE
-                        if(sound_len > 0)
-                          enqueueTask(createPlayMultiToneTask(1046,80,1));
-                        #endif
+                        enqueueTask(createPlayMultiToneTask(1046,80,1));
                         shortPressCallback();
                     }
                 }
@@ -45,10 +42,7 @@ void Button::read() {
         // Check for long press
         if (millis() - pressTime >= longPressDuration) {
             if (longPressCallback != NULL) {
-                #ifdef PIN_TONE
-                if(sound_len > 0)
-                  enqueueTask(createPlayMultiToneTask(1046,50,2));
-                #endif
+                enqueueTask(createPlayMultiToneTask(1046,50,2));
                 longPressCallback();
             }
             longPressHandled = true;

@@ -1,8 +1,66 @@
 #include "navdata.h"
+#include "gps.h"
 #include <Arduino.h>
 
 
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
+
+
+int magc = 0;
+float dest_dist = 0;
+extern int destination_mode;
+
+
+// Convert degrees to radians
+float deg2rad(float degrees) {
+  return degrees * PI / 180.0;
+}
+
+
+double rad2deg(double rad) {
+  return rad * (180.0 / PI);
+}
+
+
+// Function to calculate distance using Haversine formula
+double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  // Convert latitude and longitude from degrees to radians
+  lat1 = deg2rad(lat1);
+  lon1 = deg2rad(lon1);
+  lat2 = deg2rad(lat2);
+  lon2 = deg2rad(lon2);
+
+  // Haversine formula
+  double dlon = lon2 - lon1;
+  double dlat = lat2 - lat1;
+  double a = pow(sin(dlat / 2), 2) + cos(lat1) * cos(lat2) * pow(sin(dlon / 2), 2);
+  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  double distance = RADIUS_EARTH_KM * c;
+
+  return distance;
+}
+
+
+double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2) {
+  double deltaLon = lon2 - lon1;
+  return atan2(sin(deltaLon) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(deltaLon));
+}
+
+
+void nav_update(){
+  // ====Navigation.==== Distance to plathome.
+  if(currentdestination != -1 && currentdestination < destinations_count){
+    double destlat = extradestinations[currentdestination].cords[0][0];
+    double destlon = extradestinations[currentdestination].cords[0][1];
+    dest_dist = calculateDistance(get_gps_lat(), get_gps_lon(), destlat, destlon);
+    magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
+    if(destination_mode == DMODE_FLYAWAY){
+      magc = (magc+180)%360;
+    }
+  }
+}
+
+
 
 void LatLonManager::addCoord(Coordinate position) {
   coords[currentIndex] = position;
@@ -61,8 +119,6 @@ double latitudeToMercatorY(double latitude) {
 bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2){
   return (abs(lat1-lat2) < latdif) && (abs(lon1-lon2) < londif);
 }
-
-
 
 
 mapdata extramaps[MAX_MAPDATAS];

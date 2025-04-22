@@ -17,7 +17,7 @@ const int sampleRate = 16000;  // 16 kHz sample rate
 const int WAV_HEADER_SIZE = 45;  // Standard WAV header size
 
 // Double buffering setup
-const int CHUNK_SIZE = 8 * 1024;  // 8KB chunks for 0.5 seconds of audio
+const int CHUNK_SIZE = 16 * 1024;  // 8KB chunks for 1.0 seconds of audio
 uint8_t audioBuffer[2][CHUNK_SIZE];  // Double buffer
 volatile int activeBuffer = 0;  // Currently playing buffer (0 or 1)
 volatile int loadBuffer = 1;    // Buffer to load data into (0 or 1, opposite of activeBuffer)
@@ -36,7 +36,7 @@ uint32_t chunksLoaded = 0;      // Counter for tracking how many chunks were loa
 
 // Timing variables
 const unsigned long playInterval = 10000;  // 2 seconds between plays
-
+extern int sound_volume;
 
 //------
 const int tableSize = 256;     // Sine wave table size
@@ -48,6 +48,8 @@ volatile uint32_t phaseInc = 0;
 bool wavmode = true;
 bool sinmode = true;
 
+
+
 // Timer interrupt callback
 bool timerCallback(struct repeating_timer *t) {
   if(wavmode){
@@ -55,7 +57,7 @@ bool timerCallback(struct repeating_timer *t) {
         return true;  // Nothing to play
     }
     // Output PCM value directly from active buffer
-    pwm_set_gpio_level(PWM_PIN, audioBuffer[activeBuffer][bufferPos]);
+    pwm_set_gpio_level(PWM_PIN, audioBuffer[activeBuffer][bufferPos]*sound_volume/100.0);
     bufferPos++;
     
     // Check if we've reached the end of the current buffer
@@ -64,15 +66,17 @@ bool timerCallback(struct repeating_timer *t) {
         
         // Request buffer swap - we'll handle it in the main loop
         bufferSwapRequest = true;
+        Serial.println("bufferSwapRequest");
     }
   }
   if(sinmode){
     phaseAcc += phaseInc;
-    pwm_set_gpio_level(PIN_TONE, sineTable[(phaseAcc >> 24) % tableSize]); // Output sine wave
+    pwm_set_gpio_level(PIN_TONE, sineTable[(phaseAcc >> 24) % tableSize]*sound_volume/100.0); // Output sine wave
   }
   //keep running
   return true;
 }
+
 
 // Controls the PAM8302 amplifier
 void setAmplifierState(bool enable) {
@@ -92,12 +96,12 @@ bool loadNextChunk() {
         if (bytesRead > 0) {
             audioDataRead += bytesRead;
             chunksLoaded++;  // Increment the chunks loaded counter
-            
             // If we couldn't fill the buffer completely, pad with silence
             if (bytesRead < CHUNK_SIZE) {
                 // Use 128 as silence for unsigned 8-bit audio. (remove last 1 byte due to value 0 at the end of wav file makes noise.)
                 memset(audioBuffer[loadBuffer] + bytesRead, 128, CHUNK_SIZE - bytesRead);
                 endOfFile = true;
+                Serial.println("endOfFile");
             }
             
             bufferReady[loadBuffer] = true;
@@ -110,12 +114,12 @@ bool loadNextChunk() {
     return false;
 }
 
-void startPlayback(const char* filename) {
+void startPlayWav(const char* filename) {
     // Stop current playback if any
     wavmode = true;
     sinmode = false;
     playing = false;
-    delay(100);  // Give time for interrupt to stop
+    delay(50);  // Give time for interrupt to stop
     
     // Reset state
     endOfFile = false;
@@ -138,6 +142,7 @@ void startPlayback(const char* filename) {
     if (!audioFile) {
         Serial.print("Error opening file: ");
         Serial.println(filename);
+        enqueueTask(createPlayMultiToneTask(500, 200, 2));//error sound.
         return;
     }
     
@@ -342,9 +347,7 @@ float nearest_note_frequency(float input_freq) {
     }
 }
 
-
-
-
+// CORE1
 void setup_sound(){
     // Initialize amplifier control pin
   pinMode(AMP_SHUTDOWN_PIN, OUTPUT);
@@ -366,20 +369,24 @@ void setup_sound(){
 
   // Setup timer for 16kHz playback
   static struct repeating_timer timer;
-  add_repeating_timer_us(-500000 / sampleRate, timerCallback, NULL, &timer);
+  add_repeating_timer_us(-1000000 / sampleRate, timerCallback, NULL, &timer);
 
-
+  
   browseWav();
-  startPlayback(FILENAME);
+    for (int i = 0; i < tableSize; i++) {
+        sineTable[i] = 128 + 127 *SIN_VOLUME* sin(2 * M_PI * i / tableSize);
+    }
+    if(good_sd()){
+        startPlayWav(FILENAME);
+    }else{
+        enqueueTask(createPlayMultiToneTask(500, 150, 10));
+    }
 
-  //generate sin table.
-  float volume = 0.18f;//1max
-  for (int i = 0; i < tableSize; i++) {
-      sineTable[i] = 128 + 127 *volume* sin(2 * M_PI * i / tableSize);
-  }
 }
 
-void update_tone(float degpersecond,int duration){
+unsigned long trackwarning_until;
+// CORE0
+void update_tone(float degpersecond){
   int relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
     relativedif -= 180;
@@ -388,19 +395,23 @@ void update_tone(float degpersecond,int duration){
   int angle_diff = abs(relativedif);
 
   //角度変化が大きい時。
-  if(angle_diff > 15 && duration > 0){
+  if(angle_diff > 15){
     last_tone_tt = get_gps_truetrack();
-    enqueueTask(createPlayMultiToneTask(3000,50+0.1*duration,angle_diff>30?4:2));
-    Serial.println("multi");
+    trackwarning_until = millis()+8000;
+    enqueueTask(createPlayMultiToneTask(3000,60,angle_diff>30?4:2));
+    if(good_sd()){
+        enqueueTask(createPlayWavTask("wav/track.wav"));
+    }
   }
   //音を出す閾値は、2.0deg/s かつ 2.0 m/s 以上 かつ 音再生設定がある時。
-  if(abs(degpersecond) > 2.0 && get_gps_mps() > 2.0 && duration > 0){
+  //また。angle_diffが15より大きい時は上記警告音+wavファイル再生を優先し、deg/sの警告音は流さない。
+  else if(abs(degpersecond) > 2.0 && get_gps_mps() > 2.0){
     int freq = abs(degpersecond)*300-560;//40Hz以上
     if(freq > 3000){
       freq = 3000;
     }
     //精度が低い状況や角度変化少ない状況では、音は短めにする。
-    int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?duration*0.4:duration;
+    int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?80:150;
     enqueueTask(createPlayMultiToneTask(nearest_note_frequency(freq), newduration,1));
   }
 }
@@ -408,7 +419,8 @@ void update_tone(float degpersecond,int duration){
 
 // Change the note
 void playNextNote(int frequency) {
-    phaseInc = (frequency * tableSize * (1ULL << 24)) / 32300; // Use 1ULL for 64-bit
+    phaseAcc = 0;
+    phaseInc = (frequency * tableSize * (1ULL << 24)) / 16150; // Use 1ULL for 64-bit
     DEBUG_P(20250412,"FRQ: ");
     DEBUG_PLN(20250412,frequency);
 }
@@ -422,7 +434,13 @@ void myTone(int freq,int duration){
 }
 
 
+
 void playTone(int freq, int duration, int counter){
+    if(playing){//wait maximum of 3 seconds.
+        Serial.println("failed playTone due to Wav file playing.");
+        //caution.  Do not wait wav file finish playing here, because that will stop loop1 and cause wav file unable finish playing.
+       return;
+    }
     DEBUG_P(20250412,"playTone:counter");
     DEBUG_PLN(20250412,counter);
   wavmode = false;
@@ -435,5 +453,4 @@ void playTone(int freq, int duration, int counter){
     delay(duration);
     myTone(freq, duration);
   }
-  
 }

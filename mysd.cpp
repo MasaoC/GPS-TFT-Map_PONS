@@ -9,6 +9,9 @@
 #include <SPI.h>
 #include "sound.h"
 
+#define MAX_SETTING_LENGTH 32
+#define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value + separator and newline
+
 extern volatile bool quick_redraw;
 
 bool sdInitialized = false;
@@ -42,16 +45,204 @@ void dateTime(uint16_t* date, uint16_t* time);
 
 
 
+//====================SD settings.txt=========
+// Array of settings (extend this as needed)
+SDSetting settings[] = {
+  {"volume", setVolume, getVolume},
+  {"destination", setDestination, getDestination},
+  {"destination_mode", setDestinationMode, getDestinationMode},
+  {"scaleindex", setScaleIndex, getScaleIndex}
+};
+const int numSettings = sizeof(settings) / sizeof(settings[0]);
+extern int sound_volume;
+extern int destination_mode;
+extern int scaleindex;
+extern double scalelist[6];
+extern double scale;
+
+
+// Save all settings to settings.txt
+bool saveSettings() {
+  SD.remove("settings.txt"); // Remove old file to start fresh
+  File file = SD.open("settings.txt", FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open settings.txt for writing");
+    return false;
+  }
+
+  char value[MAX_SETTING_LENGTH];
+  for (int i = 0; i < numSettings; i++) {
+    settings[i].getter(value, MAX_SETTING_LENGTH);
+    file.print(settings[i].id);
+    file.print(":");
+    file.print(value);
+    file.print("\n");//
+  }
+
+  file.close();
+  Serial.println("Settings saved to settings.txt");
+  return true;
+}
+
+
+// Load settings from settings.txt
+bool loadSettings() {
+  File file = SD.open("settings.txt", FILE_READ);
+  if (!file) {
+    Serial.println("Failed to open settings.txt for reading");
+    return false;
+  }
+
+  char line[MAX_LINE_LENGTH];
+  char settingId[MAX_SETTING_LENGTH];
+  char value[MAX_SETTING_LENGTH];
+  int linePos = 0;
+
+  while (file.available()) {
+    char c = file.read();
+    if (c == '\n' || linePos >= MAX_LINE_LENGTH - 1) {
+      line[linePos] = '\0'; // Null-terminate the line
+      linePos = 0;
+
+      // Parse line into settingId and value
+      char* colon = strchr(line, ':');
+      if (colon) {
+        *colon = '\0'; // Split at colon
+        strncpy(settingId, line, MAX_SETTING_LENGTH);
+        settingId[MAX_SETTING_LENGTH - 1] = '\0';
+        strncpy(value, colon + 1, MAX_SETTING_LENGTH);
+        value[MAX_SETTING_LENGTH - 1] = '\0';
+
+        // Find and apply the setting
+        for (int i = 0; i < numSettings; i++) {
+          if (strcmp(settings[i].id, settingId) == 0) {
+            settings[i].setter(value);
+            break;
+          }
+        }
+      }
+    } else {
+      line[linePos++] = c;
+    }
+  }
+
+
+
+  // Handle last line if not newline-terminated
+  if (linePos > 0) {
+    line[linePos] = '\0';
+    char* colon = strchr(line, ':');
+    if (colon) {
+      *colon = '\0';
+      strncpy(settingId, line, MAX_SETTING_LENGTH);
+      settingId[MAX_SETTING_LENGTH - 1] = '\0';
+      strncpy(value, colon + 1, MAX_SETTING_LENGTH);
+      value[MAX_SETTING_LENGTH - 1] = '\0';
+
+      for (int i = 0; i < numSettings; i++) {
+        if (strcmp(settings[i].id, settingId) == 0) {
+          settings[i].setter(value);
+          break;
+        }
+      }
+    }
+  }
+
+  file.close();
+  Serial.println("Settings loaded from settings.txt");
+  return true;
+}
+
+
+
+// Example setter and getter functions
+void setVolume(const char* value) {
+  sound_volume = atoi(value);
+  Serial.print("Set volume to: ");
+  Serial.println(sound_volume);
+}
+
+void getVolume(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", sound_volume);
+}
+
+void setDestinationMode(const char *value){
+  if(strcmp(value,"INTO") == 0){
+    destination_mode = DMODE_FLYINTO;
+  }
+  else if(strcmp(value,"AWAY") == 0){
+    destination_mode = DMODE_FLYAWAY;
+  }else{
+    Serial.println("err mode");
+  }
+}
+void getDestinationMode(char* buffer, size_t bufferSize) {
+  if(destination_mode == DMODE_FLYINTO)
+    strncpy(buffer,"INTO", bufferSize);
+  else if(destination_mode == DMODE_FLYAWAY)
+    strncpy(buffer,"AWAY", bufferSize);
+  buffer[bufferSize - 1] = '\0';
+}
+
+void setDestination(const char* value) {
+  for(int i = 0; i < destinations_count; i++){
+    if(strcmp(extradestinations[i].name,value) == 0){
+      currentdestination = i;
+      return;
+    }
+  }
+  Serial.println("err dest");
+}
+
+
+void getScaleIndex(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", scaleindex);
+}
+
+void setScaleIndex(const char* value) {
+  int indexofsetting = atoi(value);
+  if(indexofsetting >= 0 && indexofsetting < (sizeof(scalelist) / sizeof(scalelist[0]))){
+    scaleindex = indexofsetting;
+    scale = scalelist[scaleindex];
+    Serial.print("scale index set to: ");
+    Serial.println(scaleindex);
+  }else{
+    Serial.print("error scale index:");
+    Serial.println(scaleindex);
+  }
+}
+
+void getDestination(char* buffer, size_t bufferSize) {
+  strncpy(buffer, extradestinations[currentdestination].name, bufferSize);
+  buffer[bufferSize - 1] = '\0';
+}
+
 
 bool isTaskRunning(int taskType) {
-  loop0pos = 42;
   return currentTask.type == taskType;
+}
+
+bool isTaskInQueue(int taskType){
+    int current = taskQueue.head;
+    // Iterate from head to tail-1
+    while (current != taskQueue.tail) {
+        if (taskQueue.tasks[current].type == taskType) {
+            return true;
+        }
+        current = (current + 1) % TASK_QUEUE_SIZE;
+    }
+    return false;
+}
+
+Task createSaveSettingTask(){
+  Task task;
+  task.type = TASK_SAVE_SETTINGS;
+  return task;
 }
 
 
 // Initializer for TASK_LOG_SD
 Task createLogSdTask(const char* logText) {
-  loop0pos = 41;
   Task task;
   task.type = TASK_LOG_SD;
   task.logText = logText;
@@ -60,7 +251,6 @@ Task createLogSdTask(const char* logText) {
 
 // Initializer for TASK_LOG_SDF
 Task createLogSdfTask(const char* format, ...) {
-  loop0pos = 40;
   Task task;
   task.type = TASK_LOG_SDF;
   va_list args;
@@ -74,7 +264,6 @@ Task createLogSdfTask(const char* format, ...) {
 
 // Initializer for TASK_SAVE_CSV
 Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second) {
-  loop0pos = 39;
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -92,7 +281,6 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, in
 
 // Initializer for TASK_LOAD_MAPIMAGE
 Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel) {
-  loop0pos = 38;
   Task task;
   task.type = TASK_LOAD_MAPIMAGE;
   task.loadMapImageArgs.center_lat = center_lat;
@@ -101,8 +289,7 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
   return task;
 }
 
-Task createPlayMultiToneTask(double freq, double duration, int count){
-  loop0pos = 39;
+Task createPlayMultiToneTask(int freq, int duration, int count){
   Task task;
   task.type = TASK_PLAY_MULTITONE;
   task.playMultiToneArgs.freq = freq;
@@ -111,49 +298,41 @@ Task createPlayMultiToneTask(double freq, double duration, int count){
   return task;
 }
 
+Task createPlayWavTask(const char* filename){
+  Task task;
+  task.type = TASK_PLAY_WAV;
+  task.wavfilename = filename;
+  return task;
+}
+
 void removeDuplicateTask(TaskType type) {
     mutex_enter_blocking(&taskQueueMutex);
-    
-    // If queue is empty, nothing to do
+
     if (taskQueue.head == taskQueue.tail) {
         mutex_exit(&taskQueueMutex);
         return;
     }
 
+    int read = taskQueue.head;
+    int write = taskQueue.head;
 
-    Serial.println("removeDup()");
-    Serial.print(taskQueue.head);
-    Serial.print(":");
-    Serial.println(taskQueue.tail);
-
-    int current = taskQueue.head;
-    
-    // Iterate from head to tail-1
-    while (current != taskQueue.tail) {
-        if (taskQueue.tasks[current].type == type) {
-            // Found a match, shift tasks forward
-            int next = (current + 1) % TASK_QUEUE_SIZE;
-            while (next != taskQueue.tail) {
-                taskQueue.tasks[current] = taskQueue.tasks[next];
-                current = next;
-                next = (next + 1) % TASK_QUEUE_SIZE;
+    // Loop through the queue from head to tail
+    while (read != taskQueue.tail) {
+        if (taskQueue.tasks[read].type != type) {
+            if (write != read) {
+                taskQueue.tasks[write] = taskQueue.tasks[read];
             }
-            // Update tail to reflect removal
-            taskQueue.tail = (taskQueue.tail - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
-            break; // Remove only the first matching task
+            write = (write + 1) % TASK_QUEUE_SIZE;
         }
-        current = (current + 1) % TASK_QUEUE_SIZE;
+        read = (read + 1) % TASK_QUEUE_SIZE;
     }
-    
-    Serial.print(taskQueue.head);
-    Serial.print(":");
-    Serial.println(taskQueue.tail);
+
+    taskQueue.tail = write;
 
     mutex_exit(&taskQueueMutex);
 }
 
 void enqueueTaskWithAbortCheck(Task newTask) {
-  loop0pos = 26;
   if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
     if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
       //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.
@@ -164,55 +343,29 @@ void enqueueTaskWithAbortCheck(Task newTask) {
     // Abort the old task with different zoomlevel = meaning user changed zoom level while loading image.
     abortTask = true;  // Notify the running task to abort
   }
-  loop0pos = 27;
   removeDuplicateTask(newTask.type);
-  loop0pos = 28;
   enqueueTask(newTask);  // Enqueue the new task
 }
 
 void enqueueTask(Task task) {
-
-  if(task.type == TASK_PLAY_MULTITONE)
-      Serial.println("et");
-  loop0pos = 17;
   mutex_enter_blocking(&taskQueueMutex);
-  loop0pos = 18;
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
-  loop0pos = 19;
   if (nextTail != taskQueue.head) {  // Queue not full
-    loop0pos = 20;
     taskQueue.tasks[taskQueue.tail] = task;
-    loop0pos = 21;
     taskQueue.tail = nextTail;
-    loop0pos = 22;
   }
-  loop0pos = 23;
   mutex_exit(&taskQueueMutex);
-  loop0pos = 24;
 }
 
 bool dequeueTask(Task* task) {
-  loop0pos = 11;
   bool success = false;
   mutex_enter_blocking(&taskQueueMutex);
-  loop0pos = 12;
   if (taskQueue.head != taskQueue.tail) {  // Queue not empty
-    loop0pos = 13;
     *task = taskQueue.tasks[taskQueue.head];
-    Serial.print("dequetask");
-    Serial.print(taskQueue.head);
-    Serial.print(":");
-    Serial.print(taskQueue.tail);
-    Serial.print(":");
-    Serial.print(task->type);
-    loop0pos = 14;
     taskQueue.head = (taskQueue.head + 1) % TASK_QUEUE_SIZE;
-    loop0pos = 15;
     success = true;
   }
-  loop0pos = 16;
   mutex_exit(&taskQueueMutex);
-  loop0pos = 25;
   return success;
 }
 
@@ -377,18 +530,19 @@ void setup_sd(){
     log_sd("SD INIT");
     init_mapdata();
     load_destinations();
+    if(!loadSettings()){
+      Serial.println("Error loading settings.");
+    }
   }
 }
-
-
-volatile unsigned long loop1counter = 0;
-volatile int loop1pos = 0;
-volatile int loop0pos = 0;
-
-unsigned long last_loop1counter = 0;
-unsigned long time_loop1counter_updated = 0;
-
 void setup1(void){
+
+  #ifndef RELEASE
+  while(!Serial){
+    delay(10);
+  }
+  #endif
+
   mutex_init(&taskQueueMutex);
   init_destinations();
   setup_sd();
@@ -397,30 +551,28 @@ void setup1(void){
 }
 
 void loop1() {
-  loop1pos = 0;
-  loop1counter++;
-  loop1pos = 1;
   loop_sound();
   if (dequeueTask(&currentTask)) {
-    loop1pos = 2;
     switch (currentTask.type) {
+      case TASK_SAVE_SETTINGS:
+        saveSettings();
+        break;
+      case TASK_PLAY_WAV:
+        startPlayWav(currentTask.wavfilename);
+        break;
       case TASK_PLAY_MULTITONE:
         playTone(currentTask.playMultiToneArgs.freq,currentTask.playMultiToneArgs.duration,currentTask.playMultiToneArgs.counter);
         break;
       case TASK_INIT_SD:
-        loop1pos = 3;
         setup_sd();
         break;
       case TASK_LOG_SD:
-        loop1pos = 4;
         log_sd(currentTask.logText);
         break;
       case TASK_LOG_SDF:
-        loop1pos = 5;
         log_sdf(currentTask.logSdfArgs.format, currentTask.logSdfArgs.buffer);
         break;
       case TASK_SAVE_CSV:
-        loop1pos = 6;
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
           currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
@@ -430,21 +582,17 @@ void loop1() {
         );
         break;
       case TASK_LOAD_MAPIMAGE:
-        loop1pos = 7;
         load_mapimage(
           currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
           currentTask.loadMapImageArgs.zoomlevel
         );
         break;
     }
-    loop1pos = 8;
     currentTask.type = TASK_NONE;
   } else {
-    loop1pos = 9;
     // No tasks, optionally sleep or yield
     delay(10);
   }
-  loop1pos = 10;
 }
 
 void dateTime(uint16_t* date, uint16_t* time) {
@@ -470,7 +618,6 @@ bool good_sd(){
 
 File logFile;
 void log_sd(const char* text){
-  loop1pos = 100;
   #ifdef DISABLE_SD
     return;
   #endif
@@ -482,40 +629,27 @@ void log_sd(const char* text){
     return;
   }
 
-  loop1pos = 101;
   // if the file opened okay, write to it:
   if (logFile) {
-    loop1pos = 102;
     char logtext[100];   // array to hold the result.
-    loop1pos = 103;
     sprintf(logtext,"%d:%s",(int)(millis()/1000),text);
-    loop1pos = 104;
     logFile.println(logtext);
-    loop1pos = 105;
     // close the file:
     logFile.close();
-    loop1pos = 106;
   }
 }
 
 
 void log_sdf(const char* format, ...){
-  loop1pos = 107;
-
   #ifdef DISABLE_SD
     return;
   #endif
 
   char buffer[256]; // Temporary buffer for formatted text
-  loop1pos = 112;
   va_list args;
-  loop1pos = 111;
   va_start(args, format);
-  loop1pos = 108;
   vsnprintf(buffer, sizeof(buffer), format, args);
-  loop1pos = 109;
   va_end(args);
-  loop1pos = 110;
   return log_sd(buffer);
 }
 
@@ -525,7 +659,6 @@ void log_sdf(const char* format, ...){
 
 
 void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second) {
-  loop1pos = 200;
   #ifdef DISABLE_SD
     return;
   #endif
@@ -537,7 +670,6 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
       return;
     }
   }
-  loop1pos = 201;
 
   if(sdError){
     if(millis()-lasttrytime_sd > 10000){//10秒以上たっていたら、リトライ
@@ -546,7 +678,6 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     }
     return;
   }
-  loop1pos = 202;
 
   //Run only once.
   if(fileyear == 0 && year != 0){
@@ -557,22 +688,18 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     fileminute = minute;
     filesecond = second;
   }
-  loop1pos = 203;
 
   char csv_filename[30];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
   log_sdf("%d:%s",millis(),csv_filename);
-  loop1pos = 204;
 
   File csvFile = SD.open(csv_filename, FILE_WRITE);
-  loop1pos = 205;
 
   if (csvFile) {
     if(!headerWritten){
       csvFile.println("latitude,longitude,gs,TrueTrack,date,time");
       headerWritten = true;
     }
-    loop1pos = 206;
 
     csvFile.print(latitude, 6);
     csvFile.print(",");
@@ -589,14 +716,11 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     csvFile.print(date);
     csvFile.print(",");
 
-    loop1pos = 207;
-
     // Format time as HH:MM:SS
     char time[9];
     sprintf(time, "%02d:%02d:%02d", hour, minute, second);
     csvFile.println(time);
 
-    loop1pos = 208;
     csvFile.close();
     sdError = false; // Reset SD error flag after successful write
   } else {
@@ -605,8 +729,6 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     }
     sdInitialized = false; // Mark SD card as not initialized for the next attempt
   }
-
-  loop1pos = 209;
 }
 
 // Define BMP header structures
@@ -634,19 +756,21 @@ struct bmp_image_header_t {
 
 
 
-double pixelsPerDegree(int zoom) {
+// Warning Only applicable at equator.
+double pixelsPerDegreeEQ(int zoom) {
   // Google Maps API approximation: pixels per degree at the given zoom level
   // Zoom 5 is used as the base reference in this example
   return 256 * pow(2, zoom) / 360.0;
 }
 
-double pixelsPerKM_zoom(int zoom){
-  return pixelsPerDegree(zoom)/KM_PER_DEG_LAT;//px/deg / (km/deg) = px /km
+// Warning Only applicable at equator.
+double pixelsPerKMEQ_zoom(int zoom){
+  return pixelsPerDegreeEQ(zoom)/KM_PER_DEG_LAT;//px/deg / (km/deg) = px /km
 }
 
 double pixelsPerDegreeLat(int zoom,double latitude) {
   // Calculate pixels per degree for latitude
-  return pixelsPerDegree(zoom) / cos(radians(latitude)); // Reference latitude
+  return pixelsPerDegreeEQ(zoom) / cos(radians(latitude)); // Reference latitude
 }
 
 
@@ -663,8 +787,7 @@ char lastsprite_id[20] = "\0";
 int last_start_x,last_start_y = 0;
 
 void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
-  loop1pos = 300;
-  DEBUG_PLN(20240828,"load mapimage begin");
+  DEBUG_PLN(20250417,"load mapimage begin");
   //Setting up resolution of bmp image according to zoomlevel.
   double round_degrees = 0.0;
   if(zoomlevel == 5) round_degrees = 12.0;
@@ -673,39 +796,31 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   else if(zoomlevel == 11) round_degrees = 0.2;
   else if(zoomlevel == 13) round_degrees = 0.05;
 
-  loop1pos = 301;
   //Invalid zoomleel
   if(round_degrees == 0.0){
     gmap_loaded = false;
     return;
   }
-  loop1pos = 302;
 
   double map_lat,map_lon;
   // Round latitude and longitude to the nearest 5 degrees
   map_lat = roundToNearestXDegrees(round_degrees, center_lat);
   map_lon = roundToNearestXDegrees(round_degrees, center_lon);
   
-  loop1pos = 303;
   // Calculate pixel coordinates for given latitude and longitude
-  int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegree(zoomlevel));
+  int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegreeEQ(zoomlevel));
   int center_y = (int)(320.0 - (center_lat - map_lat) * pixelsPerDegreeLat(zoomlevel,center_lat));
   // Calculate top-left corner of 240x240 region
   int start_x = center_x - 120;
   int start_y = center_y - 120;
-
-  loop1pos = 304;
 
   char current_sprite_id[36];
   int maplat4 = round(map_lat*100);
   int maplon5 = round(map_lon*100);
   sprintf(current_sprite_id,"%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
 
-  loop1pos = 305;
-
   //Already loaded.
   if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded){
-    loop1pos = 306;
     //if(rotation != 0){
       //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
       //gmap_sprite.pushRotated(-rotation);
@@ -714,8 +829,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     //  gmap_sprite.pushSprite(0, 40);
     return;
   }
-
-  loop1pos = 307;
   
   //Check to scroll bmp
   bool samefile = true;
@@ -733,13 +846,11 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     scrolly = (start_y-last_start_y);
   }
 
-  loop1pos = 308;
   strcpy(lastsprite_id,current_sprite_id);
 
   char filename[36];
   sprintf(filename, "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);
 
-  loop1pos = 309;
 
   // Open BMP file
   File bmpImage = SD.open(filename, FILE_READ);
@@ -747,7 +858,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     gmap_loaded = false;
     return;
   }
-  loop1pos = 310;
 
   // Read the file header
   bmp_file_header_t fileHeader;
@@ -756,7 +866,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
   bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
 
-  loop1pos = 311;
 
   // Check signature
   if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
@@ -764,8 +873,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     gmap_loaded = false;
     return;
   }
-
-  loop1pos = 312;
 
   // Image header (assuming 640x640, 16-bit RGB565 BMP file)
   bmp_image_header_t imageHeader;
@@ -782,15 +889,11 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
 
 
-  loop1pos = 313;
-
   if (imageHeader.image_width != 640 || imageHeader.image_height != 640 || imageHeader.bits_per_pixel != 16) {
     bmpImage.close();
     gmap_loaded = false;
     return;
   }
-
-  loop1pos = 314;
 
   // Create the 240x240 sprite
   if(!gmap_sprite.created()){
@@ -798,8 +901,6 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     gmap_sprite.createSprite(240, 240);
   }
   int tloadbmp_start = millis();
-
-  loop1pos = 315;
 
   //From nowon, gmap under edit. so unload gmap.
   gmap_loaded = false;
@@ -888,14 +989,12 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     }
   }
 
-  loop1pos = 318;
   DEBUG_P(20240815,"bmp load time=");
   DEBUG_P(20240815,millis()-tloadbmp_start);
   DEBUG_PLN(20240815,"ms");
   
   bmpImage.close();
   
-  loop1pos = 319;
   if(abortTask){
     DEBUG_PLN(20240828,"aborted task! gmap unloaded");
     gmap_loaded = false;
@@ -908,9 +1007,66 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   gmap_loaded = true;
   new_gmap_loaded = true;
 
-  loop1pos = 320;
-
   DEBUG_PLN(20240828,"gmap_loaded! new_gmap_loaded!");
 }
 
+
+
+void load_push_logo(){
+    // Open BMP file
+  File bmpImage = SD.open("logo.bmp", FILE_READ);
+  if (!bmpImage) {
+    gmap_loaded = false;
+    return;
+  }
+  const int sizey = 52;
+  // Read the file header
+  bmp_file_header_t fileHeader;
+  bmpImage.read((uint8_t*)&fileHeader.signature, sizeof(fileHeader.signature));
+  bmpImage.read((uint8_t*)&fileHeader.file_size, sizeof(fileHeader.file_size));
+  bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
+  bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
+  // Check signature
+  if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
+    bmpImage.close();
+    gmap_loaded = false;
+    return;
+  }
+  // Image header (assuming 640x640, 16-bit RGB565 BMP file)
+  bmp_image_header_t imageHeader;
+  bmpImage.read((uint8_t*)&imageHeader.header_size, sizeof(imageHeader.header_size));
+  bmpImage.read((uint8_t*)&imageHeader.image_width, sizeof(imageHeader.image_width));
+  bmpImage.read((uint8_t*)&imageHeader.image_height, sizeof(imageHeader.image_height));
+  bmpImage.read((uint8_t*)&imageHeader.color_planes, sizeof(imageHeader.color_planes));
+  bmpImage.read((uint8_t*)&imageHeader.bits_per_pixel, sizeof(imageHeader.bits_per_pixel));
+  bmpImage.read((uint8_t*)&imageHeader.compression_method, sizeof(imageHeader.compression_method));
+  bmpImage.read((uint8_t*)&imageHeader.image_size, sizeof(imageHeader.image_size));
+  bmpImage.read((uint8_t*)&imageHeader.horizontal_resolution, sizeof(imageHeader.horizontal_resolution));
+  bmpImage.read((uint8_t*)&imageHeader.vertical_resolution, sizeof(imageHeader.vertical_resolution));
+  bmpImage.read((uint8_t*)&imageHeader.colors_in_palette, sizeof(imageHeader.colors_in_palette));
+  bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
+  if (imageHeader.image_width != 240 || imageHeader.image_height != sizey || imageHeader.bits_per_pixel != 16) {
+    bmpImage.close();
+    return;
+  }
+  // Create the 240x240 sprite
+  if(!gmap_sprite.created()){
+    gmap_sprite.setColorDepth(16);
+    gmap_sprite.createSprite(240, 240);
+  }
+  int tloadbmp_start = millis();
+
+  for (int y = 0; y < sizey; y++) {
+      for (int x = 0; x < 240; x++) {
+          bmpImage.seek(fileHeader.image_offset + 240*(sizey-y-1) * 2 + x * 2);
+          uint16_t color = bmpImage.read(); // Read low byte
+          color |= (bmpImage.read() << 8);  // Read high byte
+          gmap_sprite.drawPixel(x, y, color);
+      }
+  }
+  bmpImage.close();
+
+  gmap_sprite.pushSprite(0,0);
+  Serial.println("aaa");
+}
 

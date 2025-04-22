@@ -4,6 +4,8 @@
 #ifndef NAVDATA_H
 #define NAVDATA_H
 
+
+
   struct Coordinate {
     float latitude;
     float longitude;
@@ -34,6 +36,8 @@
 
 
 
+  #define RADIUS_EARTH_KM 6371.0  // Earth's radius in kilometers
+
   #define ROW_FILLDATA 28
   #define COL_FILLDATA 28
 
@@ -50,13 +54,30 @@
   #define SHISHI_LAT 36.4734161//36.44641973
   #define SHISHI_LON 136.9234498//136.64713865
 
+
+  #define PILON_NORTH_LAT 35.36437425956881
+  #define PILON_NORTH_LON 136.1763690764263
+  #define PILON_WEST_LAT 35.26178541248602
+  #define PILON_WEST_LON 136.145446500099
+
+
+/*. old
   #define PILON_NORTH_LAT 35.41640778478595
   #define PILON_NORTH_LON 136.1183001762145
   #define PILON_WEST_LAT 35.23295479141404
   #define PILON_WEST_LON 136.0493286559818
+*/
+
   #define TAKESHIMA_LAT 35.296584352454964
   #define TAKESHIMA_LON 136.1780537684742
 
+
+
+  #define SCALE_EXLARGE_GMAP 52.32994872   //zoom13
+  #define SCALE_LARGE_GMAP 13.08248718     //zoom11
+  #define SCALE_MEDIUM_GMAP 3.2706218      //zoom9
+  #define SCALE_SMALL_GMAP 0.81765545      //zoom7
+  #define SCALE_EXSMALL_GMAP 0.2044138625  //zoom5
 
 
   #define KM_PER_DEG_LAT (111.321)
@@ -70,7 +91,15 @@
     double (*cords)[2]; // Pointer to an array of 2-element arrays
   };
 
+  float deg2rad(float degrees);
+  double rad2deg(double rad);
+  extern int magc;
+  extern float dest_dist;
 
+
+
+  double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2);
+  void nav_update();
 
   #define MAX_MAPDATAS 100
   extern mapdata extramaps[MAX_MAPDATAS];
@@ -81,6 +110,8 @@
   extern mapdata extradestinations[MAX_DESTINATIONS];
   extern int destinations_count;
   extern int currentdestination;
+
+
 
 
 

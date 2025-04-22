@@ -6,11 +6,6 @@
 #include "gps.h"
 #include "sound.h"
 
-#define SCALE_EXLARGE_GMAP 52.32994872   //zoom13
-#define SCALE_LARGE_GMAP 13.08248718     //zoom11
-#define SCALE_MEDIUM_GMAP 3.2706218      //zoom9
-#define SCALE_SMALL_GMAP 0.81765545      //zoom7
-#define SCALE_EXSMALL_GMAP 0.2044138625  //zoom5
 
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
@@ -29,19 +24,18 @@ float degpersecond = 0;            // The calculated average differential
 
 
 int destination_mode = DMODE_FLYAWAY;
-
 int screen_mode = MODE_MAP;
 int detail_page = 0;
 int scaleindex = 3;
-const double scalelist[] = { SCALE_EXSMALL_GMAP, SCALE_SMALL_GMAP, SCALE_MEDIUM_GMAP, SCALE_LARGE_GMAP, SCALE_EXLARGE_GMAP, 180.0f };
-double scale = scalelist[scaleindex];
+double scalelist[6];
+double scale;
 
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
 
-int sound_len = 50;
+int sound_volume = 50;
 
 extern int setting_size;
 
@@ -57,111 +51,26 @@ void shortPressCallback() {
   DEBUG_PLN(20240801, "short press");
 
 
-#ifdef SINGLE_SWITCH
   if (screen_mode == MODE_SETTING) {  //Setting mode
     if (selectedLine == -1) {         //No active selected line.
       cursorLine = (cursorLine + 1) % setting_size;
     } else {
-      settings[selectedLine].CallbackToggle();
+      menu_settings[selectedLine].CallbackToggle();
     }
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL) {
     detail_page++;
   } else {
-    scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
-    gmap_loaded = false;
-  }
-#else
-  if (screen_mode != MODE_SETTING) {
-    if (screen_mode == MODE_GPSDETAIL)
-      gps_getposition_mode();
-    screen_mode = MODE_SETTING;
-    cursorLine = 0;
-    selectedLine = -1;
-    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
-  } else {
-    //exit
-    if (cursorLine == setting_size - 1) {
-      screen_mode = MODE_MAP;
-    } else if (cursorLine == 3) {
-      detail_page = 0;
-      DEBUG_PLN(20240801, "GPS DETAIL MODE");
-      gps_constellation_mode();
-      screen_mode = MODE_GPSDETAIL;
-    } else if (cursorLine == 4) {
-      detail_page = 0;
-      DEBUG_PLN(20240801, "MAPLIST MODE");
-      screen_mode = MODE_MAPLIST;
-    } else {
-      if (selectedLine == -1) {
-        //Entering changing value mode.
-        selectedLine = cursorLine;
-      } else {
-        //exiting changing value mode.
-        selectedLine = -1;
-      }
-    }
-  }
-#endif
-}
-// Callback function for short press
-void shortPressCallback_up() {
-  quick_redraw = true;
-  redraw_screen = true;
-  DEBUG_PLN(20240801, "short press up");
-  if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL) {
-    detail_page++;
-  } else if (screen_mode == MODE_SETTING) {  //Setting mode
-    if (selectedLine == -1) {                //No active selected line.
-      cursorLine = (cursorLine + 1) % setting_size;
-    } else if (selectedLine == 0) {
-      tft_change_brightness(1);
-    } else if (selectedLine == 1) {
-      toggle_demo_biwako();
-      reset_degpersecond();
-    } else if (selectedLine == 2) {
-      toggle_mode();
-    } else if (selectedLine == 3) {
-      screen_mode = MODE_GPSDETAIL;
-    }
-  } else {
-    scale = scalelist[++scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
+    scaleindex = (scaleindex+1) % (sizeof(scalelist) / sizeof(scalelist[0]));
+    scale = scalelist[scaleindex];
     gmap_loaded = false;
   }
 }
 
-
-// Callback function for short press
-void shortPressCallback_down() {
-  quick_redraw = true;
-  redraw_screen = true;
-  DEBUG_PLN(20240801, "short press down");
-  if (screen_mode == MODE_MAPLIST) {
-    detail_page--;
-  } else if (screen_mode == MODE_SETTING) {  //Setting mode
-    if (selectedLine == -1) {                //No active selected line.
-      cursorLine = mod(cursorLine - 1, setting_size);
-    } else if (selectedLine == 0) {
-      tft_change_brightness(-1);
-    } else if (selectedLine == 1) {
-      toggle_demo_biwako();
-      reset_degpersecond();
-    } else if (selectedLine == 2) {
-      toggle_mode();
-    } else if (selectedLine == 3) {
-      screen_mode = MODE_GPSDETAIL;
-    }
-  } else {
-    scale = scalelist[--scaleindex % (sizeof(scalelist) / sizeof(scalelist[0]))];
-    gmap_loaded = false;
-  }
-}
 // Callback function for long press
 void longPressCallback() {
   quick_redraw = true;
   redraw_screen = true;
 
-  DEBUG_PLN(20240801, "long press");
-#ifdef SINGLE_SWITCH
   if (screen_mode != MODE_SETTING) {
     if (screen_mode == MODE_GPSDETAIL)
       gps_getposition_mode();
@@ -170,8 +79,8 @@ void longPressCallback() {
     selectedLine = -1;
     tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
   } else {
-    if (selectedLine == -1 && settings[cursorLine].CallbackEnter != nullptr) {
-      settings[cursorLine].CallbackEnter();
+    if (selectedLine == -1 && menu_settings[cursorLine].CallbackEnter != nullptr) {
+      menu_settings[cursorLine].CallbackEnter();
       selectedLine = cursorLine;
     } else {
       if (selectedLine == -1) {
@@ -179,28 +88,23 @@ void longPressCallback() {
         selectedLine = cursorLine;
       } else {
         //exiting changing value mode.
+        if(menu_settings[cursorLine].CallbackExit != nullptr)
+          menu_settings[cursorLine].CallbackExit();
         selectedLine = -1;
       }
     }
   }
-#endif
 }
 
 // Create Button objects
 Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
-Button sw_up(SW_UP, shortPressCallback_up);
-Button sw_down(SW_DOWN, shortPressCallback_down);
 
 void setup_switch() {
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
-  pinMode(sw_up.getPin(), INPUT_PULLUP);    // This must be after setup tft for some reason of library TFT_eSPI.
-  pinMode(sw_down.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
 }
 
 void switch_handling() {
   sw_push.read();
-  sw_up.read();
-  sw_down.read();
 }
 
 
@@ -208,23 +112,24 @@ void setup(void) {
   Serial.begin(38400);
 
   #ifndef RELEASE
-  while (!Serial){
-    //max wait for 5 seconds.
-    if(millis() > 5000){
-      break;
-    }
-  };
+  while(!Serial){
+    delay(10);
+  }
   #endif
 
   setup_switch();
-
-  // Enqueue init_sd task
-  //Task task;
-  //task.type = TASK_INIT_SD;
-  //enqueueTask(task);
-
-  //setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
   setup_tft();
+
+
+  scalelist[0] = SCALE_EXSMALL_GMAP;//pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT;
+  scalelist[1] = SCALE_SMALL_GMAP;//pixelsPerDegreeLat(7,35)/KM_PER_DEG_LAT;
+  scalelist[2] = SCALE_MEDIUM_GMAP;//pixelsPerDegreeLat(9,35)/KM_PER_DEG_LAT;
+  scalelist[3] = SCALE_LARGE_GMAP;//pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
+  scalelist[4] = SCALE_EXLARGE_GMAP;//pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
+  scalelist[5] = 200.0;
+  for(int i = 0; i < 6;i++)
+    Serial.println(scalelist[i]);
+  scale = scalelist[scaleindex];
 
   gps_setup();
   startup_demo_tft();
@@ -287,6 +192,7 @@ void update_degpersecond() {
   }
 }
 
+/*
 void check_bankwarning() {
   unsigned long currentTime = millis();
   last_newtrack_time = currentTime;
@@ -310,8 +216,7 @@ void check_bankwarning() {
     }
   }
 }
-
-
+*/
 
 
 void loop() {
@@ -340,16 +245,18 @@ void loop() {
     return;
   }
   update_degpersecond();
-  check_bankwarning();
+  //check_bankwarning();  
 
   draw_loading_image();
 
   // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している) or 強制描画タイミング(スイッチ操作など)
   // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
   bool redraw_map = ((longdraw_allowed || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL)) || quick_redraw;
+  // 新しいgmapのロードが完了していて、GPS受信中ではない(longdraw_allowed)の場合。
   if (new_gmap_loaded && longdraw_allowed) {
     redraw_map = true;
   }
+
   if (redraw_map) {
     DEBUG_PLN(20240828, "redraw map");
     quick_redraw = false;
@@ -377,32 +284,31 @@ void loop() {
       redraw_screen = true;
     }
 
+    nav_update();// MC や dist を更新する。
+    draw_header(degpersecond);
+
     if (redraw_map || redraw_screen) {
       truetrack_now = new_truetrack;
       lat_now = new_lat;
 
-      clean_map();
+      //clean_map();
 
-      //google map load成功している間は、古いものを削除する必要はない。
-      if (!gmap_loaded) {
-        erase_triangle();
-      }
+
+      clean_backscreen();
 
 
       int zoomlevel = 0;
-      if (scale == SCALE_EXSMALL_GMAP) zoomlevel = 5;
-      if (scale == SCALE_SMALL_GMAP) zoomlevel = 7;
-      if (scale == SCALE_MEDIUM_GMAP) zoomlevel = 9;
-      if (scale == SCALE_LARGE_GMAP) zoomlevel = 11;
-      if (scale == SCALE_EXLARGE_GMAP) zoomlevel = 13;
-      //load_mapimage(new_lat,new_long,zoomlevel);
-      if (gmap_loaded) {
-        if(is_trackupmode())
-          gmap_sprite.pushRotated(-drawupward_direction);
-        else
-          gmap_sprite.pushSprite(0, 40);
-        DEBUG_PLN(20240828, "pushed gmap");
-      }
+      if (scaleindex == 0) zoomlevel = 5;//SCALE_EXSMALL_GMAP
+      if (scaleindex == 1) zoomlevel = 7;//SCALE_SMALL_GMAP
+      if (scaleindex == 2) zoomlevel = 9;//SCALE_MEDIUM_GMAP
+      if (scaleindex == 3) zoomlevel = 11;//SCALE_LARGE_GMAP
+      if (scaleindex == 4) zoomlevel = 13;//SCALE_EXLARGE_GMAP
+      Serial.println(zoomlevel);
+      bool gmap_drawed = draw_gmap(drawupward_direction);
+      Serial.print("p1:");
+      Serial.println(gmap_loaded);
+      
+
       //If loadImagetask already running in Core1, abort.
       if(lastload_lat != new_lat || lastload_lon != new_long || lastload_zoomlevel != zoomlevel){
         lastload_lat = new_lat;
@@ -410,7 +316,6 @@ void loop() {
         lastload_zoomlevel = zoomlevel;
         enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
       }
-
 
       if (scale > SCALE_SMALL_GMAP) {
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
@@ -428,6 +333,8 @@ void loop() {
         }
       }
 
+
+
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
       if(currentdestination != -1 && currentdestination < destinations_count){
@@ -439,41 +346,39 @@ void loop() {
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
       }
 
-      if (get_demo_biwako()) {
-        tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-        tft.setCursor(SCREEN_WIDTH / 2 - 20, SCREEN_HEIGHT / 2 + 20);
-        tft.setTextSize(3);
-        tft.print("DEMO");
-      }
-
       draw_km_circle(scale);
+      draw_compass(drawupward_direction, COLOR_BLACK);
+      
 
-      //google map load成功している間は、古いものを削除する必要はない。
-      if (!gmap_loaded) {
-        redraw_compass(drawupward_direction, COLOR_BLACK, COLOR_WHITE);
-      } else {
-        draw_compass(drawupward_direction, COLOR_BLACK);
+      if (get_demo_biwako()) {
+        draw_demo_biwako();
       }
+      //google map load成功している間は、古いものを削除する必要はない。
+      //if (!gmap_loaded) {
+      //  redraw_compass(drawupward_direction, COLOR_BLACK, COLOR_WHITE);
+      //} else {
+      //  draw_compass(drawupward_direction, COLOR_BLACK);
+      //}
       draw_triangle();
+      
+      if (!gmap_drawed && !isTaskInQueue(TASK_LOAD_MAPIMAGE)) {
+        draw_nogmap(scale);
+      }
+      draw_headertext(degpersecond);
+      draw_nomapdata();
+      push_backscreen();
     }
 
     //地図が更新されていない時でも、更新するもの。
 
+    /*
     if (bank_warning) {
       draw_bankwarning();
-    }
+    }*/
 
-    #ifdef PIN_TONE
-    update_tone(degpersecond,sound_len);
-    #endif
+    update_tone(degpersecond);
     
-    draw_nomapdata();
-    draw_degpersecond(degpersecond);  //after gpsinfo preferred
-    draw_gpsinfo();
-    draw_sdinfo();
-    if (!gmap_loaded && !isTaskRunning(TASK_LOAD_MAPIMAGE)) {
-      draw_nogmap();
-    }
+    draw_footer();
 
     //更新終了
     redraw_screen = false;

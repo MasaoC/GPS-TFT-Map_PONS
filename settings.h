@@ -1,10 +1,10 @@
 //====== 設定画面 =======
 
 // リリース時
-//#define RELEASE
+#define RELEASE
 
-#define BUILDDATE 20250412
-#define BUILDVERSION "0.70"
+#define BUILDDATE 20250422
+#define BUILDVERSION "0.80"
 
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
@@ -97,14 +97,11 @@
 #define SD_TX 3    //CMD MOSI
 #define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になった数値。
 #define BAT_LOW_VOLTAGE 3.49
-#define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 */
 
 // Hardware Ver5
 #define SW_PUSH 26
 #define BATTERY_PIN 29 //A0
-#define SW_UP   -1
-#define SW_DOWN -1
 #define TFT_BL  -1
 #define GPS_SERIAL Serial1
 #define GPS_TX 0
@@ -125,10 +122,11 @@
 
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
 #define BAT_LOW_VOLTAGE 3.3
-#define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
 #define PIN_TONE 9
 #define PIN_AMP_SD 10 //アンプシャットダウン(HIGHでON)
 
+
+#define SIN_VOLUME 0.15f // WAVファイルの音量と合わせるために、Sin wave音の音量は下げられていますが、ここで調整可能です。0〜1.0f
 
 // =====追加設定項目====
 

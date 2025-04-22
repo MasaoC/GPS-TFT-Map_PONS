@@ -305,7 +305,6 @@ TinyGPSTime get_gpstime(){
 // そのため画面描画する際に true　を返す。
 bool drawallow_once = false;
 bool gps_loop() {
-  loop0pos = GPS_SERIAL.available()+100;
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
     if(GPS_SERIAL.overflow()){
@@ -568,7 +567,7 @@ double get_gps_truetrack() {
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
   if (demo_biwako) {
-    return 280 + (8.5 + 2*sin(millis() / 2100.0)) * sin(millis() / 3000.0);
+    return 280 + (8.5 + 2*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+30*sin(millis() / 10000.0);
   }
   return stored_truetrack;     // Heading in degrees;
 }
