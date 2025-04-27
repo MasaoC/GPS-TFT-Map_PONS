@@ -64,7 +64,7 @@
       39,
       40
     ],
-    "visible_layers": "fffffff_ffffffff",
+    "visible_layers": "fffffcf_ffffffff",
     "zone_display_mode": 0
   },
   "git": {
@@ -74,7 +74,7 @@
     "ssh_key": ""
   },
   "meta": {
-    "filename": "DisplayModule_PONSv4.kicad_prl",
+    "filename": "DisplayModule_PONSv5.kicad_prl",
     "version": 3
   },
   "project": {
