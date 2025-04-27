@@ -6,6 +6,7 @@
 #include "font_data.h"
 #include "sound.h"
 #include "hardware/adc.h"
+#include "button.h"
 #include <cstring>  // for strlen and strcpy
 #include <string>
 #include <cstdlib>  // for malloc and free
@@ -493,13 +494,39 @@ public:
 
 
 
-bool draw_circle_km(float scale, float km) {
+bool try_draw_km_distance(float scale, float km) {
   double latnow = get_gps_lat();
   if(latnow <-80 || latnow > 80){
     latnow = 35;
   }
-  int radius =  scale*km/cos(radians(latnow));//scale * km;  //scale is px/km
-  int ypos = BACKSCREEN_SIZE / 2 - radius;
+  int distance_px =  scale*km/cos(radians(latnow));//scale * km;  //scale is px/km
+  if(distance_px > 140)
+    return false;
+
+  int ypos = 240-2;
+  int xpos = 240-2;
+
+  backscreen.drawFastVLine(xpos, ypos-distance_px, distance_px, COLOR_BLACK);
+  backscreen.drawFastHLine(xpos-5, ypos, 5, COLOR_BLACK);
+  backscreen.drawFastHLine(xpos-5, ypos-distance_px, 5, COLOR_BLACK);
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_BLACK);
+  if(km >= 100){
+    backscreen.setCursor(xpos-18,ypos-distance_px-8);
+    backscreen.printf("%d",(int)km);
+  }
+  else if(km < 1.0 ){
+    backscreen.setCursor(xpos-18,ypos-distance_px-8);
+    backscreen.printf("%.1f",km);
+  }else{
+    backscreen.setCursor(xpos-11,ypos-distance_px-8);
+    backscreen.printf("%d",(int)km);
+  }
+  backscreen.setCursor(xpos-12,ypos-distance_px);
+  backscreen.print("km");
+  return true;
+  /*
+
   if (ypos > 30) {
     backscreen.drawCircle(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, radius, COLOR_PINK);
     backscreen.setCursor(BACKSCREEN_SIZE / 2 + 2, ypos + 1);
@@ -517,6 +544,7 @@ bool draw_circle_km(float scale, float km) {
   } else {
     return false;
   }
+  */
 }
 
 void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color) {
@@ -608,31 +636,21 @@ void draw_compass(float truetrack, uint16_t col) {
 
 
 
-
-void draw_km_circle(float scale) {
+void draw_km_distances(float scale) {
+  const float distances[] = {400, 200, 100, 50, 20, 10, 5, 2, 1, 0.4, 0.2};
   int draw_counter = 0;
 
-  if (draw_circle_km(scale, 400)) draw_counter++;
-  if (draw_circle_km(scale, 200)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 100)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 50)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 20)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 10)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 5)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 2)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 1)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 0.4)) draw_counter++;
-  if (draw_counter >= 2) return;
-  if (draw_circle_km(scale, 0.2)) draw_counter++;
-  if (draw_counter >= 2) return;
+  backscreen.unloadFont();
+
+  for (float d : distances) {
+    if (try_draw_km_distance(scale, d)) {
+      draw_counter++;
+      if (draw_counter >= 2) {
+        backscreen.loadFont(AA_FONT_SMALL);
+        return;
+      }
+    }
+  }
 }
 
 bool fresh = false;
@@ -640,12 +658,6 @@ float last_scale = 1.0;
 float last_up = 0;
 bool nomap_drawn = true;
 
-
-void clean_display() {
-  tft.fillRect(0, SCREEN_HEIGHT-40, SCREEN_WIDTH, 40, COLOR_WHITE);
-  //tft.fillScreen(COLOR_WHITE);
-  nomap_drawn = true;
-}
 
 
 
@@ -667,7 +679,6 @@ double steer_to = 0.0;
 
 extern float last_tone_tt;
 extern unsigned long trackwarning_until;
-int triangle_flipflop = 0;
 
 void draw_triangle() {
   if (upward_mode == MODE_NORTHUP) {
@@ -705,37 +716,37 @@ void draw_triangle() {
       steer_to -= 360;
     }
 
-    if((triangle_flipflop++)%2==0){
+    if((millis()/1000)%2==0){
       //約10度以上の方位違いがある場合に、指示三角形を描画する。
       if(abs(steer_to) > 15){
         double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
         double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.35:0.35);
-        float x1 = (NEEDLE_LEN-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (NEEDLE_LEN-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (NEEDLE_LEN-28) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (NEEDLE_LEN-28) * -cos(steer_triangle_start_rad) + 240/2;
+        float x1 = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + 240/2;
+        float x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + 240/2;
         float x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + 240/2;
         float y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + 240/2;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
-      if(abs(steer_to) > 60){
+      if(abs(steer_to) > 50){
         double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.7:0.7);
         double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.95:0.95);
-        float x1 = (NEEDLE_LEN-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (NEEDLE_LEN-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (NEEDLE_LEN-28) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (NEEDLE_LEN-28) * -cos(steer_triangle_start_rad) + 240/2;
+        float x1 = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + 240/2;
+        float x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + 240/2;
         float x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + 240/2;
         float y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + 240/2;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
-      if(abs(steer_to) > 120){
+      if(abs(steer_to) > 100){
         double steer_triangle_start_rad = tt_radians + (steer_to<0?-1.3:1.3);
         double steer_triangle_end_rad = tt_radians + (steer_to<0?-1.55:1.55);
         float x1 = (NEEDLE_LEN-12) * sin(steer_triangle_start_rad) + 240/2;
         float y1 = (NEEDLE_LEN-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (NEEDLE_LEN-28) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (NEEDLE_LEN-28) * -cos(steer_triangle_start_rad) + 240/2;
+        float x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + 240/2;
         float x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + 240/2;
         float y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + 240/2;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
@@ -784,7 +795,7 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
   double d = distance / R;  // Distance in radians
 
   if (lat1 == lat2 && lon1 == lon2) {
-    Serial.println("Error: Points A and B are the same. Bearing is undefined.");
+    DEBUG_PLN(20250424,"Error: Points A and B are the same. Bearing is undefined.");
     return;
   }
   double bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
@@ -810,6 +821,26 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   drawThickLine(240/2, 240/2, targetpoint.x, targetpoint.y, thickness, COLOR_MAGENTA);
 }
 
+void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
+  cord_tft goal = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
+  if (goal.isOutsideTft()) {
+    //scaleがとても大きい場合、goal.x,goal.yがオーバーフローする。
+    //そのまま描画すると処理落ちするので、適度な座標を計算し直す必要がある。
+    double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
+    double newlat, newlon;
+    calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
+    goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
+    drawThickLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
+  }else{
+    drawThickLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
+    double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
+    double newlat, newlon;
+    calculatePointC(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
+    goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
+    backscreen.drawLine(240 / 2, 240 / 2,goal.x, goal.y, COLOR_MAGENTA);
+  }
+}
+
 void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
   cord_tft goal = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   if (goal.isOutsideTft()) {
@@ -831,15 +862,21 @@ cord_tft points[MAX_TRACK_CORDS];
 
 void draw_track(double center_lat, double center_lon, float scale, float up) {
   int sizetrack = latlon_manager.getCount();
-  if(sizetrack <= 1){
+  if(sizetrack <= 0){
     return;
+  }
+  //latest
+  Coordinate c0 = latlon_manager.getData(0);
+  cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
+  if(p0.x != 120 || p0.y != 120){
+    drawThickLine(p0.x,p0.y,120,120,2,COLOR_GREEN);
   }
 
   for (int i = 0; i < sizetrack-1; i++) {
     Coordinate c0 = latlon_manager.getData(i);
     Coordinate c1 = latlon_manager.getData(i+1);
     if(c0.latitude == 0 && c1.longitude == 0){
-      Serial.println("ERR lat lon 0");
+      DEBUG_PLN(20250424,"ERR lat lon 0");
       break;
     }
     
@@ -848,11 +885,8 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     //Only if cordinates are different.
     if (p0.x != p1.x || p0.y != p1.y) {
       drawThickLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
-      Serial.println(p0.x);
-      Serial.println(p0.y);      Serial.println(p1.x);
-      Serial.println(p1.y);
-
     }
+    
   }
 }
 
@@ -899,14 +933,18 @@ void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
   nomap_drawn = false;
 }
 
-void draw_Biwako(double center_lat, double center_lon, float scale, float up) {
+void draw_Biwako(double center_lat, double center_lon, float scale, float up, bool gmap_drawed) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
   draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
-  if (!gmap_loaded && !isTaskInQueue(TASK_LOAD_MAPIMAGE))
+  if(!gmap_drawed){//if (! && !isTaskInQueue(TASK_LOAD_MAPIMAGE))
+    //Run gps_loop 
+    gps_loop(2);
     fill_sea_land(center_lat, center_lon, scale, up);
+    gps_loop(3);
+  }
   nomap_drawn = false;
 }
 
@@ -973,14 +1011,14 @@ void startup_demo_tft() {
   float center_lon = 136.091056306493;
 
   backscreen.fillScreen(COLOR_WHITE);
-  draw_Biwako(center_lat,center_lon,2, 0);
+  draw_Biwako(center_lat,center_lon,2, 0,false);
   draw_version_backscreen();
   backscreen.pushSprite(0,52);
-  delay(2400);
+  delay(3200);
 
   for (int i = 0; i <= 40; i++) {
     backscreen.fillScreen(COLOR_WHITE);
-    draw_Biwako(mapf(i,0,40,center_lat,PLA_LAT), mapf(i,0,40,center_lon,PLA_LON), 2 + i * 0.25, 0);
+    draw_Biwako(mapf(i,0,40,center_lat,PLA_LAT), mapf(i,0,40,center_lon,PLA_LON), 2 + i * 0.25, 0, false);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
@@ -989,7 +1027,7 @@ void startup_demo_tft() {
   
   for (int i = 0; i < 40; i++) {
     backscreen.fillScreen(COLOR_WHITE);
-    draw_Biwako(mapf(i,0,100,PLA_LAT,center_lat), mapf(i,0,100,PLA_LON,center_lon), (2+40*0.25)*(40.0 - i)/40.0, 0);
+    draw_Biwako(mapf(i,0,100,PLA_LAT,center_lat), mapf(i,0,100,PLA_LON,center_lon), (2+40*0.25)*(40.0 - i)/40.0, 0, false);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
@@ -997,9 +1035,9 @@ void startup_demo_tft() {
 void draw_demo_biwako(){
   backscreen.fillRect(5, 165, SCREEN_WIDTH-5*2, 25+5*2, COLOR_WHITE);
   backscreen.drawRect(5, 165, SCREEN_WIDTH-5*2, 25+5*2, COLOR_ORANGE);
-  backscreen.setCursor(50,170);
+  backscreen.setCursor(25,170);
   backscreen.setTextColor(COLOR_ORANGE);
-  backscreen.print("BIWAKO DEMO mode");
+  backscreen.print("LAKE BIWA DEMO x10 SPD");
   backscreen.setCursor(17,185);
   backscreen.unloadFont();
   backscreen.setTextSize(1);
@@ -1027,7 +1065,6 @@ void draw_headertext(double degpersecond){
     backscreen.drawString("MT", SCREEN_WIDTH - 40, 1);
   }
   backscreen.drawString("GS      m/s", 18, 1);
-
 }
 
 /*
@@ -1055,20 +1092,25 @@ void draw_bankwarning() {
 */
 
 void draw_nogmap(double scale) {
-    backscreen.setCursor(5, BACKSCREEN_SIZE - 15);
-    if(scale <= SCALE_EXLARGE_GMAP){
-      if(get_gps_fix()){
+  backscreen.setCursor(5, BACKSCREEN_SIZE - 15);
+  if(scale > SCALE_EXLARGE_GMAP){
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("No map image at this scale.");
+  }else{
+    if(!isTaskInQueue(TASK_LOAD_MAPIMAGE) && !isTaskRunning(TASK_LOAD_MAPIMAGE)){
+      if(get_gps_fix() && !new_gmap_ready){//描画中に新しいimageがload完了している場合がある。
         backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
         backscreen.print("No map image available.");
       }
     }else{
       backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("No map image at this scale.");
+      backscreen.print("Loading image...");
     }
+  }
 }
 
 bool draw_gmap(float drawupward_direction){
-  if (gmap_loaded) {
+  if (gmap_loaded_active) {
     if(is_trackupmode())
       gmap_sprite.pushRotated(&backscreen,-drawupward_direction);
     else
@@ -1133,8 +1175,6 @@ void draw_header(double degpersecond) {
   }
   if (degpersecond != 0)
     posx -= 5;
-  if (abs(degpersecond) > 10)
-    posx -= 9;
 
   header_footer.setCursor(posx, 8);
   header_footer.printf("%+.1f",degpersecond);
@@ -1152,7 +1192,12 @@ void draw_header(double degpersecond) {
 
   header_footer.setCursor(mtvx, 3);
   if(trackwarning_until > millis()){
-    header_footer.setTextColor((millis()/1000)%2==0?COLOR_RED:COLOR_BLACK, TFT_WHITE);
+    if((millis()/1000)%2==0){
+      header_footer.setTextColor(COLOR_RED, TFT_WHITE);
+    }else{
+      header_footer.fillRect(mtvx,0,92,3,COLOR_RED);
+      header_footer.setTextColor(COLOR_WHITE, TFT_RED,true);
+    }
     header_footer.printf("%03d", (int)get_gps_magtrack());
     header_footer.setTextColor(sel_col, TFT_WHITE);
   }else{
@@ -1164,6 +1209,12 @@ void draw_header(double degpersecond) {
   header_footer.printf("%4.1f", get_gps_mps());
 
   header_footer.drawFastHLine(0,39,240,COLOR_BLACK);
+
+  if(get_gps_numsat() == 0 && !get_demo_biwako()){
+    header_footer.drawFastHLine(5, 19, SCREEN_WIDTH-10, COLOR_RED);
+    header_footer.drawFastHLine(5, 20, SCREEN_WIDTH-10, COLOR_RED);
+  }
+
   header_footer.pushSprite(0,0);
 }
 
@@ -1179,14 +1230,29 @@ void draw_footer(){
     header_footer.setTextColor(COLOR_MAGENTA);
     header_footer.printf("MC%3d", magc);
 
+
     header_footer.setCursor(60, 12);
     header_footer.setTextColor(COLOR_BLACK);
-    header_footer.printf(dest_dist>1000?"%.0fkm":dest_dist>100?"%.1fkm":"%.2fkm", dest_dist);
+    if(!get_gps_fix() && !get_demo_biwako())
+      header_footer.print("---km");
+    else
+      header_footer.printf(dest_dist>1000?"%.0fkm":dest_dist>100?"%.1fkm":"%.2fkm", dest_dist);
+    
 
     if(currentdestination != -1 && currentdestination < destinations_count){
       header_footer.setTextColor(COLOR_MAGENTA);
       header_footer.setCursor(1, 27);
-      header_footer.print(destination_mode == DMODE_FLYAWAY?"FLY AWAY":"FLY INTO");
+      if(destination_mode == DMODE_FLYAWAY)
+        header_footer.print("FLY AWAY");
+      if(destination_mode == DMODE_FLYINTO)
+        header_footer.print("FLY INTO");
+      if(destination_mode == DMODE_AUTO10K){
+        if(auto10k_status == AUTO10K_INTO)
+          header_footer.print("10K INTO");
+        if(auto10k_status == AUTO10K_AWAY)
+          header_footer.print("10K AWAY");
+      }
+
       header_footer.setCursor(80, 27);
       header_footer.setTextWrap(false);
       header_footer.print(extradestinations[currentdestination].name);
@@ -1195,6 +1261,7 @@ void draw_footer(){
     header_footer.unloadFont();
     if (time.isValid()) {
       header_footer.setCursor(1, 2);
+      header_footer.setTextSize(1);
       header_footer.setTextColor(COLOR_BLACK);
       header_footer.printf("%02d:%02d:%02d JST", (time.hour()+9)%24, time.minute(), time.second());
     }
@@ -1250,10 +1317,19 @@ void draw_footer(){
   // 5 decimal places latitude, longitude print.
   header_footer.unloadFont();
   header_footer.setTextColor(COLOR_BLACK);
-  header_footer.setCursor(125,2);
+  header_footer.setCursor(115,2);
   header_footer.printf("%.5f", get_gps_lat());
-  header_footer.setCursor(185,2);
+  if(get_gps_lat() >= 0)
+    header_footer.print("N");
+  else
+    header_footer.print("S");
+
+  header_footer.setCursor(175,2);
   header_footer.printf("%.5f", get_gps_lon());
+  if(get_gps_lon() >= 0)
+    header_footer.print("E");
+  else
+    header_footer.print("W");
   header_footer.loadFont(AA_FONT_SMALL);
   
 
@@ -1403,112 +1479,195 @@ int calculateGPS_X(float azimuth, float elevation) {
 }
 
 int calculateGPS_Y(float azimuth, float elevation) {
-  const int height = SCREEN_HEIGHT;
+  const int height = SCREEN_WIDTH;
   const int radius = SCREEN_WIDTH / 2 - 20;
   const int shift_down = 0;
   return (height / 2) - (int)(sin(radians(azimuth)) * (radius) * (1 - elevation / 90.0)) + shift_down;
 }
 
 
-unsigned long lastdrawtime_nomapdata = 0;
 void draw_nomapdata() {
   int posy = SCREEN_HEIGHT - 130;
-  //Map is not written or gps_fix not obtained.
-  if (millis() - lastdrawtime_nomapdata > 500L) {
-    lastdrawtime_nomapdata = millis();
-    if (get_gps_connection()) {
-      //"GPS Module connected."
-    } else {
-      backscreen.setCursor(3,150);
-      backscreen.setTextColor(COLOR_MAGENTA);
-      backscreen.print("GPS connection not found !! Check connection, or try reset.");
-      return;
-    }
+  
+  if (get_gps_connection()) {
+    //"GPS Module connected."
+  } else {
+    backscreen.setCursor(3,150);
+    backscreen.setTextColor(COLOR_MAGENTA);
+    backscreen.print("GPS connection not found !! Check connection, or try reset.");
+    return;
+  }
 
-    int col = COLOR_BLACK;
-    if (!get_gps_fix() && !get_demo_biwako()) {
-      backscreen.fillRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
-      backscreen.drawRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
-      backscreen.drawRect(6, 146, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
-      backscreen.setCursor(30,150);
-      backscreen.setTextColor(COLOR_ORANGE);
-      backscreen.print("Weak GNSS/GPS Signal");
-      int dotcounter = (millis() / 900) % 10;
-      char text[28] = "Scanning&Fixing";
-      int i = 15;
-      for (; i < 15 + dotcounter && i < 28; i++) {
-        text[i] = '.';
-      }
-      text[i] = '\0';
-      backscreen.setCursor(45,165);
-      backscreen.print(text);
-    } else if (nomap_drawn) {
-      //"NO MAPDATA.GPS Fixed."
+  int col = COLOR_BLACK;
+  if (!get_gps_fix() && !get_demo_biwako()) {
+    backscreen.fillRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
+    backscreen.drawRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
+    backscreen.drawRect(6, 146, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
+    backscreen.setCursor(30,150);
+    backscreen.setTextColor(COLOR_ORANGE);
+    backscreen.print("Weak GNSS/GPS Signal");
+    int dotcounter = (millis() / 900) % 10;
+    char text[28] = "Scanning&Fixing";
+    int i = 15;
+    for (; i < 15 + dotcounter && i < 28; i++) {
+      text[i] = '.';
     }
+    text[i] = '\0';
+    backscreen.setCursor(45,165);
+    backscreen.print(text);
+  } else if (nomap_drawn) {
+    //"NO MAPDATA.GPS Fixed."
   }
 }
-unsigned long lastdrawn_const = 0;
-void draw_gpsdetail(bool redraw, int page) {
-  if (millis() - lastdrawn_const > 1000) {
-    redraw = true;
+
+unsigned long lastdrawn_sddetail = 0;
+extern char sdfiles[20][32];
+extern int sdfiles_size[20]; 
+extern int max_page;     // Global variable to store maximum page number
+bool loading_sddetail = true;
+
+void draw_sddetail(bool redraw_screen, int page) {
+  if(redraw_screen){
+    loading_sddetail = true;
+    if(max_page <= 0)
+      enqueueTask(createBrowseSDTask(0));
+    else
+      enqueueTask(createBrowseSDTask(page%(max_page+1)));
   }
-  if (redraw) {
+  if(redraw_screen || millis() - lastdrawn_sddetail > 500) {
+
+    lastdrawn_sddetail = millis();
+    header_footer.fillScreen(COLOR_WHITE);
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    header_footer.setTextSize(2);
+    header_footer.setCursor(1, 1);
+    if(max_page >= 0 && !loading_sddetail)
+      header_footer.printf("SD DETAIL  %d/%d",page%(max_page+1)+1,max_page+1);
+    else
+      header_footer.printf("SD DETAIL  loading...");
+    header_footer.pushSprite(0,0);
+    backscreen.fillScreen(COLOR_WHITE);
+    for(int i= 0; i< 20; i++){
+      backscreen.setCursor(10,i*12);
+      backscreen.print(sdfiles[i]);
+    }
+
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    for(int i= 0; i< 20; i++){
+      if(sdfiles_size[i] != 0){
+        backscreen.setCursor(SCREEN_WIDTH-40,i*12+4);
+        backscreen.printf("%dKB",(int)(sdfiles_size[i]/1024)+1);
+      }
+    }
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.pushSprite(0,40);
+    header_footer.fillScreen(COLOR_WHITE);
+    header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+    /*
+    // Print available files on SD card
+    Serial.println("Available WAV files:");
+    File root = SD.open("wav/");
+    while (true) {
+        File entry = root.openNextFile();
+        if (!entry) break;
+        if (!entry.isDirectory()) {
+            String filename = entry.name();
+            if (filename.endsWith(".wav") || filename.endsWith(".WAV")) {
+                Serial.println(entry.name());
+            }
+        }
+        entry.close();
+    }
+    root.close();
+    */
+  }
+}
+
+
+
+//==================MODE DRAWS===============
+unsigned long lastdrawn_const = 0;
+void draw_gpsdetail(bool redraw_screen, int page) {
+  if (redraw_screen || millis() - lastdrawn_const > 1000) {
     lastdrawn_const = millis();
-    redraw = false;
     bool aru = false;
     for (int i = 0; i < 32; i++) {
       if (satellites[i].PRN != 0) aru = true;  // Skip empty entries
     }
 
-    tft.fillScreen(COLOR_WHITE);
+    header_footer.fillScreen(COLOR_WHITE);
 
     if (page % 2 == 1) {
-      tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      tft.setTextSize(2);
-      tft.setCursor(1, 1);
-      tft.println("GPS DETAIL 2: raw NMEAs");
+      tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
+      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      header_footer.setTextSize(2);
+      header_footer.setCursor(1, 1);
+      header_footer.println("GPS DETAIL 2: raw NMEAs");
+      header_footer.pushSprite(0,0);
 
       tft.unloadFont();
       tft.setTextSize(1);
-      int posy = 10;
+      int posy = 0;
       tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
       for (int i = 0; i < MAX_LAST_NMEA; i++) {
-        posy += 20;
+        posy += 18;
         tft.setCursor(1, posy);
+        if(get_gps_nmea_time(i) < millis()-1000){
+          tft.setTextColor(COLOR_GRAY);
+        }else{
+          tft.setTextColor(COLOR_BLACK);
+        }
         tft.println(get_gps_nmea(i));
       }
       tft.loadFont(AA_FONT_SMALL);  // Must load the font first
     }
     if (page % 2 == 0) {
-      tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      tft.setTextSize(2);
-      tft.setCursor(1, 1);
-      tft.println("GPS DETAIL 1:CONSTELLATION");
+      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      header_footer.setTextSize(2);
+      header_footer.setCursor(1, 1);
+      header_footer.println("GPS DETAIL 1:CONSTELLATION");
 
-      tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, SCREEN_WIDTH / 2 - 2, COLOR_BLACK);
-      tft.setTextColor(COLOR_CYAN, COLOR_WHITE);
-      tft.print("GPS ");
-      tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      tft.print("GLO ");
-      tft.setTextColor(COLOR_WHITE, COLOR_BLUE, true);
-      tft.print("GAL ");
-      tft.setTextColor(COLOR_RED, COLOR_WHITE);
-      tft.print("QZS ");
-      tft.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-      tft.print("BEI ");
+      header_footer.setTextColor(COLOR_CYAN, COLOR_WHITE);
+      header_footer.setCursor(0,18);
+      header_footer.print("GPS ");
+      header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      header_footer.print("GLO ");
+      header_footer.setTextColor(COLOR_BLUE, COLOR_WHITE);
+      header_footer.print("GAL ");
+      header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
+      header_footer.print("QZS ");
+      header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      header_footer.print("BEI ");
+      header_footer.pushSprite(0,0);
 
-      tft.setCursor(23, SCREEN_HEIGHT - 20);
-      tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      
+
+      header_footer.fillSprite(COLOR_WHITE);
+      header_footer.setCursor(23, 5);
+      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
       TinyGPSDate date = get_gpsdate();
       TinyGPSTime time = get_gpstime();
       if (date.isValid() && time.isValid()) {
-        tft.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
+        header_footer.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
+      }
+      header_footer.setCursor(23, 17);
+      header_footer.printf("%d sats, Fix=%s",get_gps_numsat(),get_gps_fix()?"yes":"no");
+
+      header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+
+
+
+      backscreen.fillSprite(COLOR_WHITE);
+      backscreen.drawCircle(240 / 2, 240 / 2, 240 / 2 - 2, COLOR_BLACK);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+      if (!aru){
+        backscreen.pushSprite(0,40);
+        return;
       }
 
-      if (!aru)
-        return;
 
-      tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
       for (int i = 0; i < 32; i++) {
         if (satellites[i].PRN == 0) continue;  // Skip empty entries
         //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
@@ -1525,38 +1684,35 @@ void draw_gpsdetail(bool redraw, int page) {
         }
 
         if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
-          tft.fillCircle(x, y, size, COLOR_RED);
+          backscreen.fillCircle(x, y, size, COLOR_RED);
         else if (satellites[i].satelliteType == SATELLITE_TYPE_GPS)
-          tft.fillCircle(x, y, size, COLOR_CYAN);
+          backscreen.fillCircle(x, y, size, COLOR_CYAN);
         else if (satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
-          tft.fillCircle(x, y, size, COLOR_GREEN);
+          backscreen.fillCircle(x, y, size, COLOR_GREEN);
         else if (satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
-          tft.drawCircle(x, y, size, COLOR_BLUE);
+          backscreen.fillCircle(x, y, size, COLOR_BLUE);
         else if (satellites[i].satelliteType == SATELLITE_TYPE_BEIDOU)
-          tft.drawCircle(x, y, size, COLOR_ORANGE);
+          backscreen.fillCircle(x, y, size, COLOR_ORANGE);
         else
-          tft.fillCircle(x, y, size, COLOR_BLACK);
+          backscreen.fillCircle(x, y, size, COLOR_BLACK);
 
         int textx = constrain(x + 6, 0, SCREEN_WIDTH - 20);
         if (satellites[i].PRN >= 10)
           textx -= 10;
         if (satellites[i].PRN >= 100)
           textx -= 10;
-        tft.setCursor(textx, y - 3);
-        tft.print(satellites[i].PRN);
+        backscreen.setCursor(textx, y - 3);
+        backscreen.print(satellites[i].PRN);
       }
+      backscreen.pushSprite(0,40);
     }
   }
 }
 
 
-void draw_maplist_mode(bool redraw, int maplist_page) {
-  if (millis() - lastdrawn_const > 10000L) {
-    redraw = true;
-  }
-  if (redraw) {
+void draw_maplist_mode(bool redraw_screen, int maplist_page) {
+  if (redraw_screen || millis() - lastdrawn_const > 10000L) {
     lastdrawn_const = millis();
-    redraw = false;
 
     mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
                             &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
@@ -1606,155 +1762,12 @@ void draw_maplist_mode(bool redraw, int maplist_page) {
   }
 }
 
-void reset_degpersecond();
-
-Setting menu_settings[] = {
-  { SETTING_SETDESTINATION,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      if(currentdestination != -1 && currentdestination < destinations_count){
-        sprintf(buff, selected ? " Set destination: %s(%d)" : "Set destination: %s(%d)", extradestinations[currentdestination].name, currentdestination);
-      }else
-        sprintf(buff, selected ? " Set destination: %d/%d" : "Set destination: %d/%d", currentdestination,destinations_count);
-      return std::string(buff);  // return as std::string
-    },nullptr,
-    []() {
-      if(destinations_count > 0){
-        currentdestination++;
-        if(currentdestination >= destinations_count){
-          currentdestination = 0;
-        }
-      }
-    },
-    nullptr
-  },
-  { SETTING_DESTINATIONMODE,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      if(destination_mode == DMODE_FLYINTO)
-        strcpy(buff, selected ? " Destination Mode: Fly into" : "Destination Mode: Fly into");
-      else if(destination_mode == DMODE_FLYAWAY)
-        strcpy(buff, selected ? " Destination Mode: Fly away" : "Destination Mode: Fly away");
-      return std::string(buff);  // return as std::string
-    },nullptr,
-    []() {
-      if(destination_mode == DMODE_FLYINTO)
-        destination_mode = DMODE_FLYAWAY;
-      else if(destination_mode == DMODE_FLYAWAY)
-        destination_mode = DMODE_FLYINTO;
-    },
-    nullptr
-    },
-#ifdef BRIGHTNESS_SETTING_AVAIL
-  { SETTING_BRIGHTNESS,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " Brightness: %03d" : "Brightness: %03d", screen_brightness);
-      return std::string(buff);  // return as std::string
-    },
-    nullptr,
-    []() {
-      tft_change_brightness(1);
-    },
-    nullptr
-  },
-#endif
-  { SETTING_VOLUME,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " Volume: %d/100" : "Volume: %d/100", sound_volume);
-      return std::string(buff);  // return as std::string
-    },
-    nullptr,
-    []() {
-      if(sound_volume < 40){
-        sound_volume += 10;
-      }else{
-        sound_volume += 20;
-      }
-
-      if(sound_volume >= 101)
-        sound_volume = 0;
-      else if(sound_volume <= 0)
-        sound_volume = 0;      
-
-      if(sound_volume>0){
-        enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,200,1));
-        enqueueTask(createPlayMultiToneTask(1046,200,1));
-        enqueueTask(createPlayMultiToneTask(440,200,1));
-      }
-    },
-    nullptr
-  },
-  { SETTING_UPWARD,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " Upward: %s" : "Upward: %s", is_trackupmode() ? "TRACK UP" : "NORTH UP");
-      return std::string(buff);  // return as std::string
-    },
-    nullptr,
-    []() {
-      toggle_mode();
-    },
-    nullptr
-  },
-  { SETTING_DEMOBIWA,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " DEMO mode: %s" : "DEMO mode: %s", get_demo_biwako() ? "YES" : "NO");
-      return std::string(buff);  // return as std::string
-    },
-    nullptr,
-    []() {
-      latlon_manager.reset();
-      toggle_demo_biwako();
-      reset_degpersecond();
-    },nullptr
-  },
-  { SETTING_GPSDETAIL,
-    [](bool selected) -> std::string {
-      return "Show GPS detail >";
-    },
-    []() {
-      DEBUG_P(20240801, "GPS CONST MODE");
-      gps_constellation_mode();
-      screen_mode = MODE_GPSDETAIL;
-    },
-    nullptr,
-    nullptr
-  },
-  { SETTING_MAPDETAIL,
-    [](bool selected) -> std::string {
-      return "Maplist detail >";
-    },
-    []() {
-      DEBUG_P(20240801, "MAP DETAIL MODE");
-      screen_mode = MODE_MAPLIST;
-    },
-    nullptr,
-    nullptr
-  },
-  { SETTING_EXIT,
-    [](bool selected) -> std::string {
-      return "Save & Exit >>";
-    },
-    []() {
-      enqueueTask(createSaveSettingTask());
-      screen_mode = MODE_MAP;
-    },
-    nullptr,
-    nullptr
-  }
-};
 
 
-int setting_size = sizeof(menu_settings) / sizeof(menu_settings[0]);
 
-void draw_setting_mode(bool redraw, int selectedLine, int cursorLine) {
-  const int separation = 25;
-
-  if (redraw) {
-    redraw = false;
+void draw_setting_mode(bool redraw_screen, int selectedLine, int cursorLine) {
+  if(redraw_screen){
+    const int separation = 25;
     textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
     tft.setTextColor(COLOR_BLACK);
     backscreen.fillScreen(COLOR_WHITE);
@@ -1770,8 +1783,21 @@ void draw_setting_mode(bool redraw, int selectedLine, int cursorLine) {
       //textmanager.drawTextf(menu_settings[i].id, 2, 10, startY + i * separation, col, menu_settings[i].getLabel(selectedLine == i).c_str());
     }
     backscreen.pushSprite(0,30);
-    tft.unloadFont();
-    textmanager.drawTextf(ND_TEMP,1 , 2 , SCREEN_HEIGHT - 15, COLOR_GRAY, "CPU temp %.1fC",analogReadTemp());
-    tft.loadFont(AA_FONT_SMALL);
+
+    header_footer.unloadFont();
+    header_footer.fillScreen(COLOR_WHITE);
+
+    header_footer.setTextSize(1);
+    header_footer.setCursor(2, 15);
+    header_footer.setTextColor(COLOR_GRAY);
+    header_footer.printf("CPU temp %.1fC",analogReadTemp());
+
+    #ifdef RELEASE
+    header_footer.setCursor(100,15);
+    header_footer.printf("Heap %d%% FrStk %dKB",rp2040.getFreeHeap()*100/rp2040.getTotalHeap(),rp2040.getFreeStack()/1000);
+    #endif
+
+    header_footer.loadFont(AA_FONT_SMALL);
+    header_footer.pushSprite(0,SCREEN_HEIGHT-40);
   }
 }

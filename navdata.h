@@ -98,6 +98,7 @@
 
 
 
+  double calculateDistance(double lat1, double lon1, double lat2, double lon2);
   double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2);
   void nav_update();
 
@@ -111,7 +112,17 @@
   extern int destinations_count;
   extern int currentdestination;
 
+  //destination mode
+  #define DMODE_FLYINTO 0
+  #define DMODE_FLYAWAY 1
+  #define DMODE_AUTO10K 2
+  extern int destination_mode;
 
+
+  extern int auto10k_status;
+  #define AUTO10K_AWAY 0
+  #define AUTO10K_INTO 1
+  extern int auto10k_status;
 
 
 

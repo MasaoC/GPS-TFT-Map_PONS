@@ -172,6 +172,9 @@ void setDestinationMode(const char *value){
   }
   else if(strcmp(value,"AWAY") == 0){
     destination_mode = DMODE_FLYAWAY;
+  }
+  else if(strcmp(value,"AUTO10K") == 0){
+    destination_mode = DMODE_AUTO10K;
   }else{
     Serial.println("err mode");
   }
@@ -181,6 +184,8 @@ void getDestinationMode(char* buffer, size_t bufferSize) {
     strncpy(buffer,"INTO", bufferSize);
   else if(destination_mode == DMODE_FLYAWAY)
     strncpy(buffer,"AWAY", bufferSize);
+  else if(destination_mode == DMODE_AUTO10K)
+    strncpy(buffer,"AUTO10K", bufferSize);
   buffer[bufferSize - 1] = '\0';
 }
 
@@ -298,12 +303,22 @@ Task createPlayMultiToneTask(int freq, int duration, int count){
   return task;
 }
 
-Task createPlayWavTask(const char* filename){
+Task createPlayWavTask(const char* filename, int priority){
   Task task;
   task.type = TASK_PLAY_WAV;
-  task.wavfilename = filename;
+  task.playWavArgs.wavfilename = filename;
+  task.playWavArgs.priority = priority;
   return task;
 }
+
+
+Task createBrowseSDTask(int page){
+  Task task;
+  task.type = TASK_BROWSE_SD;
+  task.pagenum = page;
+  return task;
+}
+
 
 void removeDuplicateTask(TaskType type) {
     mutex_enter_blocking(&taskQueueMutex);
@@ -515,7 +530,6 @@ void setup_sd(){
   #ifdef DISABLE_SD
     return;
   #endif
-
   
   //sdInitialized = SD.begin(SD_CS_PIN,SD_SCK_MHZ(50));
   sdInitialized = SD.begin(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO);
@@ -535,6 +549,90 @@ void setup_sd(){
     }
   }
 }
+
+char sdfiles[20][32]; 
+int sdfiles_size[20]; 
+int max_page = -1;
+extern bool loading_sddetail;
+bool browse_sd(int page) {
+    // Input validation
+    if (page < 0) {
+        Serial.println("Invalid page number");
+        return false;
+    }
+
+    // Clear the array
+    for (int i = 0; i < 20; i++) {
+        sdfiles[i][0] = '\0';
+        sdfiles_size[i] = 0;
+    }
+
+
+    File root = SD.open("/");
+    if (!root || !root.isDirectory()) {
+        Serial.println("Failed to open root directory");
+        if (root) root.close();
+        return false;
+    }
+
+    int count = 0;          // Total files/folders processed
+    int matched = 0;        // Entries stored in sdfiles
+    int total_valid = 0;    // Total non-hidden files/folders
+
+    // Process all entries
+    while (true) {
+        File entry = root.openNextFile();
+        if (!entry) break;
+
+        // Skip hidden files and macOS-specific files starting with "." or "/."
+        const char* name = entry.name();
+        if (name[0] == '.' || (name[0] == '/' && name[1] == '.')) {
+            entry.close();
+            continue;
+        }
+
+        // Count valid entries for max_page calculation
+        total_valid++;
+
+        // Store entries for the requested page
+        if (count >= page * 20 && matched < 20) {
+            char* target = sdfiles[matched];
+            
+            if (entry.isDirectory()) {
+                target[0] = '/';
+                strlcpy(target + 1, name, 31); // Leave space for prefix
+            } else {
+                strlcpy(target, name, 32);
+                sdfiles_size[matched] = entry.size();
+            }
+
+            // Ensure truncation at 60 chars (including prefix for folders)
+            if (strlen(target) > 30) {
+                target[30] = '\0';
+            }
+
+            matched++;
+        }
+        
+        count++;
+        entry.close();
+    }
+
+    root.close();
+
+    // Calculate and store maximum page number (0-based)
+    max_page = total_valid > 0 ? (total_valid - 1) / 20 : 0;
+
+    // Print results for debugging
+    for (int i = 0; i < matched; i++) {
+        Serial.println(sdfiles[i]);
+    }
+    Serial.print("Max page: ");
+    Serial.println(max_page);
+    loading_sddetail = false;
+    return matched > 0; // Return true if any entries were found
+}
+
 void setup1(void){
 
   #ifndef RELEASE
@@ -558,13 +656,16 @@ void loop1() {
         saveSettings();
         break;
       case TASK_PLAY_WAV:
-        startPlayWav(currentTask.wavfilename);
+        startPlayWav(currentTask.playWavArgs.wavfilename,currentTask.playWavArgs.priority);
         break;
       case TASK_PLAY_MULTITONE:
         playTone(currentTask.playMultiToneArgs.freq,currentTask.playMultiToneArgs.duration,currentTask.playMultiToneArgs.counter);
         break;
       case TASK_INIT_SD:
         setup_sd();
+        break;
+      case TASK_BROWSE_SD:
+        browse_sd(currentTask.pagenum);
         break;
       case TASK_LOG_SD:
         log_sd(currentTask.logText);
@@ -781,8 +882,8 @@ double roundToNearestXDegrees(double x, double value) {
 
 TFT_eSprite gmap_sprite = TFT_eSprite(&tft);
 bool init_gmap = false;
-volatile bool gmap_loaded = false;
-volatile bool new_gmap_loaded = false;
+volatile bool gmap_loaded_active = false;
+volatile bool new_gmap_ready = false;
 char lastsprite_id[20] = "\0";
 int last_start_x,last_start_y = 0;
 
@@ -798,7 +899,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
 
   //Invalid zoomleel
   if(round_degrees == 0.0){
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     return;
   }
 
@@ -820,7 +921,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   sprintf(current_sprite_id,"%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
 
   //Already loaded.
-  if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded){
+  if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded_active){
     //if(rotation != 0){
       //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
       //gmap_sprite.pushRotated(-rotation);
@@ -841,7 +942,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   int scrollx = 0;
   int scrolly = 0;
   //If exact same file already loaded.
-  if(samefile && gmap_loaded){
+  if(samefile && gmap_loaded_active){
     scrollx = (start_x-last_start_x);
     scrolly = (start_y-last_start_y);
   }
@@ -855,7 +956,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   // Open BMP file
   File bmpImage = SD.open(filename, FILE_READ);
   if (!bmpImage) {
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     return;
   }
 
@@ -870,7 +971,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   // Check signature
   if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
     bmpImage.close();
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     return;
   }
 
@@ -891,7 +992,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
 
   if (imageHeader.image_width != 640 || imageHeader.image_height != 640 || imageHeader.bits_per_pixel != 16) {
     bmpImage.close();
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     return;
   }
 
@@ -903,7 +1004,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   int tloadbmp_start = millis();
 
   //From nowon, gmap under edit. so unload gmap.
-  gmap_loaded = false;
+  gmap_loaded_active = false;
 
   //Scroll
   if(scrollx != 0 || scrolly != 0){
@@ -997,17 +1098,17 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   
   if(abortTask){
     DEBUG_PLN(20240828,"aborted task! gmap unloaded");
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     abortTask = false;
     return;
   }
 
   last_start_x = start_x;
   last_start_y = start_y;
-  gmap_loaded = true;
-  new_gmap_loaded = true;
+  gmap_loaded_active = true;
+  new_gmap_ready = true;
 
-  DEBUG_PLN(20240828,"gmap_loaded! new_gmap_loaded!");
+  DEBUG_PLN(20250424,"gmap_loaded_active! new_gmap_ready!");
 }
 
 
@@ -1016,7 +1117,7 @@ void load_push_logo(){
     // Open BMP file
   File bmpImage = SD.open("logo.bmp", FILE_READ);
   if (!bmpImage) {
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     return;
   }
   const int sizey = 52;
@@ -1029,7 +1130,7 @@ void load_push_logo(){
   // Check signature
   if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
     bmpImage.close();
-    gmap_loaded = false;
+    gmap_loaded_active = false;
     return;
   }
   // Image header (assuming 640x640, 16-bit RGB565 BMP file)
@@ -1067,6 +1168,5 @@ void load_push_logo(){
   bmpImage.close();
 
   gmap_sprite.pushSprite(0,0);
-  Serial.println("aaa");
 }
 

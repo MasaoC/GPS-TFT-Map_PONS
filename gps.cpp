@@ -25,7 +25,8 @@ TinyGPSPlus gps;
 #define PAIR_ENABLE_GSV "$PAIR062,3,1*3C"
 #define PAIR_DISABLE_GSA "$PAIR062,2,0*3C"
 #define PAIR_ENABLE_GSA "$PAIR062,2,1*3D"
-
+#define PAIR_SET_38400 "$PAIR864,0,0,38400*23"
+//#define PQTM_OFF "$PQTMCFGMSGRATE,W,PQTMANTENNASTATUS,0,2*39"
 
 
 double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
@@ -35,14 +36,16 @@ bool demo_biwako = false;
 
 SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
+unsigned long last_nmea_time[MAX_LAST_NMEA];
 int stored_nmea_index = 0;
-
 int readfail_counter = 0;
+bool newdata_arrived = false;
+bool newcourse_arrived = false;
 
 void utcToJst(int *year, int *month, int *day, int *hour) {
   if(*month <= 0 || *month > 12){
-    Serial.print("month invalid:");
-    Serial.println(*month);
+    DEBUGW_P(20250424,"month invalid:");
+    DEBUGW_PLN(20250424,*month);
     enqueueTask(createLogSdfTask("month invalid:%d",*month));
     return;
   }
@@ -77,6 +80,14 @@ char* get_gps_nmea(int i){
     index += MAX_LAST_NMEA;
   }
   return last_nmea[index];
+}
+
+unsigned long get_gps_nmea_time(int i){
+  int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
+  if(index < 0){
+    index += MAX_LAST_NMEA;
+  }
+  return last_nmea_time[index];
 }
 
 
@@ -221,7 +232,7 @@ void gps_setup() {
   if(setupcounter == 1){
 
     #ifdef QUECTEL_GPS
-      GPS_SERIAL.setFIFOSize(256);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
+      GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
       GPS_SERIAL.begin(115200);
     #elif MEADIATEK_GPS
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
@@ -251,7 +262,7 @@ void gps_setup() {
     //2nd try
     if(setupcounter%3 == 2){
       Serial.println("115200 to 38400 LC86G try ");
-      GPS_SERIAL.setFIFOSize(128);
+      GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(115200);
       GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
       delay (100);//なぜか必要（Do not delete without care.)
@@ -269,7 +280,11 @@ void gps_setup() {
 
   for(int i = 0; i < MAX_LAST_NMEA;i++){
     last_nmea[i][0] = 0;
+    last_nmea_time[i] = millis();
   }
+
+  //効果なし 調査中
+  //GPS_SERIAL.println(PQTM_OFF);
 
   setupcounter++;
 }
@@ -299,25 +314,77 @@ TinyGPSTime get_gpstime(){
   return gps.time;
 }
 
+unsigned long last_demo_gpsupdate = 0;
+double demo_biwako_lat = PLA_LAT;
+double demo_biwako_lon = PLA_LON;
+double demo_biwako_mps = 0;
+double demo_biwako_truetrack = 0;
+
+void add_latlon_track(float lat,float lon){
+  int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
+  if(millis() - last_latlon_manager > tracklog_interval){
+    latlon_manager.addCoord({ lat, lon});
+    last_latlon_manager = millis();
+  }
+}
+
+bool gps_newdata_arrived(){
+  if(get_demo_biwako()){
+    if(millis() > last_demo_gpsupdate + 1000){
+      int biwa_spd = 10;
+      demo_biwako_lat += 0.0001*biwa_spd*cos(radians(get_gps_truetrack()));
+      if(calculateDistance(demo_biwako_lat,demo_biwako_lon,PLA_LAT,PLA_LON) > 15){
+        demo_biwako_lat = PLA_LAT;
+        demo_biwako_lon = PLA_LON;
+        latlon_manager.reset();
+      }
+      demo_biwako_lon += 0.0001*biwa_spd*sin(radians(get_gps_truetrack()));
+      last_demo_gpsupdate = millis();
+      newdata_arrived = true;
+      demo_biwako_mps = 7 + 2 * sin(millis() / 1500.0);
+      
+      int basetrack = 280;
+      if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
+        basetrack = 100;
+      demo_biwako_truetrack = basetrack + (8.5 + 2*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+30*sin(millis() / 10000.0);
+      
+      newcourse_arrived = true;
+      add_latlon_track(demo_biwako_lat, demo_biwako_lon);
+    }
+  }
+  return newdata_arrived;
+}
+
+void set_newdata_off(){
+  newdata_arrived = false;
+}
 
 // return true if all the gps msgs received. Hardware Serialの受信を行う。
 // UART受信とTFTの描画が同時に発生すると、バッファーオーバーフローでデータ受信が失敗する恐れがある。
 // そのため画面描画する際に true　を返す。
 bool drawallow_once = false;
-bool gps_loop() {
+unsigned long timelastgpsupdate = 0;
+void gps_loop(int id) {
+  if(GPS_SERIAL.available() > 100){
+    DEBUGW_P(20250424,"ID=");
+    DEBUGW_P(20250424,id);
+    DEBUGW_P(20250424," Caution, remaining FIFO buffer. avail=");
+    DEBUGW_PLN(20250424,GPS_SERIAL.available());
+    DEBUGW_P(20250424,"Time=");
+    DEBUGW_PLN(20250424,millis()-timelastgpsupdate);
+  }
+  timelastgpsupdate = millis();
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
     if(GPS_SERIAL.overflow()){
-      Serial.print("!!WARNING!! Buffer Overflow ");
-      Serial.println(GPS_SERIAL.available());
-      Serial.println(c);
-      Serial.println((int)c);
+      DEBUGW_P(20250424,"!!WARNING!! Buffer Overflow ");
+      DEBUGW_PLN(20250424,GPS_SERIAL.available());
     }
     if((int)c >= 128){
       readfail_counter++;
       if(readfail_counter > 10){
-        Serial.print("Read Failed 10 times, non ascii char:");
-        Serial.println((int)c);
+        DEBUGW_P(20250424,"Read Failed 10 times, non ascii char:");
+        DEBUGW_P(20250424,(int)c);
         gps_setup();
       }
       continue;
@@ -335,6 +402,7 @@ bool gps_loop() {
         drawallow_once = true;
         nmea_buffer1[index_buffer1-1] = '\0';
         strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
+        last_nmea_time[stored_nmea_index] = millis();
         stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
         #ifdef DEBUG_NMEA
         Serial.println(nmea_buffer1);
@@ -355,8 +423,13 @@ bool gps_loop() {
     
   if (gps.location.isUpdated()) {
     last_gps_time = millis();
+    if(stored_latitude != gps.location.lat() || stored_longitude != gps.location.lng()){
+      if(!get_demo_biwako())
+        newdata_arrived = true;
+    }
     stored_latitude = gps.location.lat();
     stored_longitude = gps.location.lng();
+    
 
     #ifdef DEBUG_NMEA
     Serial.print(F("Location: "));
@@ -390,31 +463,22 @@ bool gps_loop() {
       Serial.println("Time: Not Available");
       all_valid = false;
     }
-    int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
-    int year = gps.date.year();
-    int month = gps.date.month();
-    int day = gps.date.day();
-    int hour = gps.time.hour();
-    utcToJst(&year,&month,&day,&hour);
-    if(all_valid && millis() - last_latlon_manager > tracklog_interval){
-      latlon_manager.addCoord({ (float)stored_latitude, (float)stored_longitude });
-      last_latlon_manager = millis();
+
+    if(all_valid && ! get_demo_biwako()){
+      add_latlon_track(get_gps_lat(),get_gps_lon());
     }
+
     if(all_valid && millis() - last_gps_save_time > 1000){
+      int year = gps.date.year();
+      int month = gps.date.month();
+      int day = gps.date.day();
+      int hour = gps.time.hour();
+      utcToJst(&year,&month,&day,&hour);
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, year, month, day, hour, gps.time.minute(), gps.time.second()));
       last_gps_save_time = millis();
     }
   }
 
-
-  //simulated.
-  #ifndef RELEASE_GPS
-    int tracklog_interval = constrain(50000/(1+gps.speed.mps()), 1000, 15000);//約50mおきに一回記録するような計算となる。
-    if(millis() - last_latlon_manager > tracklog_interval){
-      latlon_manager.addCoord({ (float)get_gps_lat(), (float)get_gps_lon() });
-      last_latlon_manager = millis();
-    }
-  #endif
 
   if (gps.altitude.isUpdated()) {
     #ifdef DEBUG_NMEA
@@ -438,6 +502,8 @@ bool gps_loop() {
     Serial.print(F("Course: "));
     Serial.println(stored_truetrack);
     #endif
+    if(!get_demo_biwako())
+      newcourse_arrived = true;
     stored_truetrack = gps.course.deg();
     if(stored_truetrack < 0 || stored_truetrack > 360){
       Serial.print("ERROR:MT");
@@ -455,7 +521,7 @@ bool gps_loop() {
     Serial.println(stored_numsats);
     #endif
   }
-
+  /*
 
   //with 38400, usually nmea sentence will be sent within 10ms.
   if(millis()-time_lastnmea > 20 && drawallow_once){
@@ -463,6 +529,7 @@ bool gps_loop() {
     return true;
   }
   return false;
+  */
 }
 
 
@@ -472,8 +539,7 @@ bool gps_loop() {
 
 double get_gps_lat() {
   if (demo_biwako) {
-    int timeelapsed = millis() % 200000;
-    return PLA_LAT + timeelapsed / 16000.0 / 1000.0 - 0.002;
+    return demo_biwako_lat;
   }
 #ifdef DEBUG_GPS_SIM_BIWAKO
   return PLA_LAT;
@@ -489,7 +555,7 @@ double get_gps_lat() {
   return SHISHI_LAT;
 #endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
-  return PLA_LAT + stored_latitude - SHINURA_LAT;
+  return PLA_LAT + stored_latitude - SHINURA_LAT+0.02;
 #endif
 #ifdef DEBUG_GPS_SIM_OSAKA2BIWA
   return PLA_LAT + stored_latitude - OSAKA_LAT;
@@ -504,8 +570,7 @@ double get_gps_lat() {
 
 double get_gps_lon() {
   if (demo_biwako) {
-    int timeelapsed = millis() % 200000;
-    return PLA_LON - timeelapsed / 1600.0 / 1000.0 + 0.025;
+    return demo_biwako_lon;
   }
 
 #ifdef DEBUG_GPS_SIM_BIWAKO
@@ -522,7 +587,7 @@ double get_gps_lon() {
     return SHISHI_LON;
 #endif
 #ifdef DEBUG_GPS_SIM_SHINURA2BIWA
-  return PLA_LON + stored_longitude - SHINURA_LON;
+  return PLA_LON + stored_longitude - SHINURA_LON-0.03;
 #endif
 #ifdef DEBUG_GPS_SIM_OSAKA2BIWA
   return PLA_LON + stored_longitude - OSAKA_LON;
@@ -537,11 +602,8 @@ double get_gps_lon() {
 
 
 double get_gps_mps() {
-  #ifndef RELEASE_GPS
-    return 8 + 4 * sin(millis() / 1500.0);
-  #endif
   if (demo_biwako) {
-    return 4 + 2 * sin(millis() / 1500.0);
+    return demo_biwako_mps;
   }
   return stored_gs;
 }
@@ -567,7 +629,7 @@ double get_gps_truetrack() {
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
   if (demo_biwako) {
-    return 280 + (8.5 + 2*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+30*sin(millis() / 10000.0);
+    return demo_biwako_truetrack;
   }
   return stored_truetrack;     // Heading in degrees;
 }
@@ -582,6 +644,9 @@ double get_gps_magtrack() {
 }
 
 int get_gps_numsat() {
+  if(get_demo_biwako()){
+    return (int)(20.0*sin(millis()/5000))+20;
+  }
   return stored_numsats;
 }
 

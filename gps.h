@@ -10,7 +10,7 @@
   #define SATELLITE_TYPE_QZSS 5
   #define SATELLITE_TYPE_UNKNOWN 0
 
-  #define MAX_LAST_NMEA 14
+  #define MAX_LAST_NMEA 16
   #define NMEA_MAX_CHAR 100
 
   struct SatelliteData {
@@ -29,8 +29,13 @@
   void utcToJst(int *year, int *month, int *day, int *hour);
   void parseGSV(char *nmea);
   char* get_gps_nmea(int i);
+  unsigned long get_gps_nmea_time(int i);
   void gps_setup();
-  bool gps_loop();
+  void gps_loop(int id);
+  
+  bool gps_newdata_arrived();
+  void set_newdata_off();
+
   void gps_getposition_mode();
   void gps_constellation_mode();
   bool get_gps_fix();

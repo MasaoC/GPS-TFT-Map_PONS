@@ -13,7 +13,8 @@
       TASK_LOAD_MAPIMAGE,
       TASK_PLAY_MULTITONE,
       TASK_PLAY_WAV,
-      TASK_SAVE_SETTINGS
+      TASK_SAVE_SETTINGS,
+      TASK_BROWSE_SD
   } TaskType;
 
 
@@ -43,6 +44,7 @@
   typedef struct {
       TaskType type;
       union {
+          int pagenum;                         //For browsesd
           const char* logText;               // For log_sd
           struct {                           // For log_sdf
               const char* format;
@@ -65,7 +67,10 @@
               int duration;
               int counter;
           } playMultiToneArgs;
-          const char* wavfilename;
+          struct{
+              const char* wavfilename;
+              int priority;
+          }playWavArgs;
       };
   } Task;
 
@@ -83,7 +88,8 @@
   Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count);
-  Task createPlayWavTask(const char* logText);
+  Task createPlayWavTask(const char* logText,int priority=1);
+  Task createBrowseSDTask(int page);
 
   // Functions to handle the queue (declarations)
   void enqueueTask(Task task);
@@ -108,8 +114,8 @@
   extern Task currentTask;
   extern mutex_t taskQueueMutex;
   extern TFT_eSprite gmap_sprite;
-  extern volatile bool gmap_loaded;
-  extern volatile bool new_gmap_loaded;
+  extern volatile bool gmap_loaded_active;
+  extern volatile bool new_gmap_ready;
   extern volatile unsigned long loop1counter;
   extern volatile int restartcount;
 #endif

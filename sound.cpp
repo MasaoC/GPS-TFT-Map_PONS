@@ -11,7 +11,7 @@
 #define AMP_SHUTDOWN_PIN 10 // PAM8302 shutdown pin
 
 //makesure file does not contain meta data.  8 bit unsigned PCM , 16kHz.
-#define FILENAME "wav/opening.wav"
+#define OPENING_FILENAME "wav/opening.wav"
 const int sampleRate = 16000;  // 16 kHz sample rate
 // Audio parameters
 const int WAV_HEADER_SIZE = 45;  // Standard WAV header size
@@ -23,6 +23,8 @@ volatile int activeBuffer = 0;  // Currently playing buffer (0 or 1)
 volatile int loadBuffer = 1;    // Buffer to load data into (0 or 1, opposite of activeBuffer)
 volatile uint32_t bufferPos = 0;  // Position in active buffer
 volatile bool playing = false;  // Playback state
+volatile int playing_priority = 0;
+
 volatile bool endOfFile = false;  // Flag to indicate end of file reached
 volatile bool bufferReady[2] = {false, false};  // Flags to indicate if buffers are loaded
 volatile bool bufferSwapRequest = false;  // Flag to request buffer swap
@@ -66,7 +68,7 @@ bool timerCallback(struct repeating_timer *t) {
         
         // Request buffer swap - we'll handle it in the main loop
         bufferSwapRequest = true;
-        Serial.println("bufferSwapRequest");
+        DEBUG_P(20250424,"bufferSwapRequest");
     }
   }
   if(sinmode){
@@ -81,8 +83,8 @@ bool timerCallback(struct repeating_timer *t) {
 // Controls the PAM8302 amplifier
 void setAmplifierState(bool enable) {
     digitalWrite(AMP_SHUTDOWN_PIN, enable ? HIGH : LOW);
-    Serial.print("Amplifier ");
-    Serial.println(enable ? "enabled" : "disabled");
+    DEBUG_P(20250424,"Amplifier ");
+    DEBUG_P(20250424,enable ? "enabled" : "disabled");
 }
 
 // Function to load the next chunk of audio data
@@ -101,7 +103,7 @@ bool loadNextChunk() {
                 // Use 128 as silence for unsigned 8-bit audio. (remove last 1 byte due to value 0 at the end of wav file makes noise.)
                 memset(audioBuffer[loadBuffer] + bytesRead, 128, CHUNK_SIZE - bytesRead);
                 endOfFile = true;
-                Serial.println("endOfFile");
+                DEBUG_PLN(20250424,"endOfFile");
             }
             
             bufferReady[loadBuffer] = true;
@@ -114,7 +116,14 @@ bool loadNextChunk() {
     return false;
 }
 
-void startPlayWav(const char* filename) {
+extern bool sdError;
+void startPlayWav(const char* filename, int priority) {
+    Serial.println(filename);
+    Serial.println(priority);
+    if(playing && playing_priority > priority){
+        DEBUGW_PLN(20250427,"Start play wav canceled due to priority.");
+        return;
+    }
     // Stop current playback if any
     wavmode = true;
     sinmode = false;
@@ -140,8 +149,9 @@ void startPlayWav(const char* filename) {
     // Open WAV file
     audioFile = SD.open(filename, FILE_READ);
     if (!audioFile) {
-        Serial.print("Error opening file: ");
-        Serial.println(filename);
+        sdError = true;
+        DEBUG_P(20250424,"Error opening file: ");
+        DEBUG_PLN(20250424,filename);
         enqueueTask(createPlayMultiToneTask(500, 200, 2));//error sound.
         return;
     }
@@ -150,15 +160,15 @@ void startPlayWav(const char* filename) {
     uint32_t fileSize = audioFile.size();
     totalAudioSize = fileSize - WAV_HEADER_SIZE;
     
-    Serial.print("File: ");
-    Serial.print(filename);
-    Serial.print(", Size: ");
-    Serial.print(fileSize);
-    Serial.print(" bytes, Audio data: ");
-    Serial.print(totalAudioSize);
-    Serial.print(" bytes (");
-    Serial.print((float)totalAudioSize / sampleRate);
-    Serial.println(" seconds)");
+    DEBUG_P(20250424,"File: ");
+    DEBUG_P(20250424,filename);
+    DEBUG_P(20250424,", Size: ");
+    DEBUG_P(20250424,fileSize);
+    DEBUG_P(20250424," bytes, Audio data: ");
+    DEBUG_P(20250424,totalAudioSize);
+    DEBUG_P(20250424," bytes (");
+    DEBUG_P(20250424,(float)totalAudioSize / sampleRate);
+    DEBUG_PLN(20250424," seconds)");
     
     // Skip WAV header
     audioFile.seek(WAV_HEADER_SIZE);
@@ -179,9 +189,10 @@ void startPlayWav(const char* filename) {
         // Start playback
         bufferPos = 0;
         playing = true;
-        Serial.println("Playback started");
+        playing_priority = priority;
+        DEBUG_P(20250424,"Playback started");
     } else {
-        Serial.println("Failed to load initial audio data");
+        DEBUG_P(20250424,"Failed to load initial audio data");
     }
 }
 
@@ -192,7 +203,7 @@ void stopPlayback() {
     // Disable the amplifier when playback stops
     setAmplifierState(false);
     
-    Serial.println("Playback stopped");
+    DEBUG_P(20250424,"Playback stopped");
 }
 
 
@@ -230,13 +241,13 @@ void loop_sound(){
             int temp = activeBuffer;
             activeBuffer = loadBuffer;
             loadBuffer = temp;
-            Serial.print("Swapped to buffer ");
-            Serial.print(activeBuffer);
-            Serial.print(", chunks loaded so far: ");
-            Serial.println(chunksLoaded);
+            DEBUG_P(20240424,"Swapped to buffer ");
+            DEBUG_P(20240424,activeBuffer);
+            DEBUG_P(20240424,", chunks loaded so far: ");
+            DEBUG_PLN(20240424,chunksLoaded);
         } else if (endOfFile) {
             // If next buffer isn't ready and we've reached EOF, stop playing
-            Serial.println("End of file reached");
+            DEBUG_PLN(20240424,"End of file reached");
             stopPlayback();  // This will disable the amplifier
         } else {
             // Buffer underrun - this is bad, we couldn't load the next buffer in time
@@ -247,10 +258,10 @@ void loop_sound(){
     // If we're playing, try to load the next chunk into the load buffer
     if (playing && !bufferReady[loadBuffer] && !endOfFile) {
         if (loadNextChunk()) {
-            Serial.print("Loaded chunk #");
-            Serial.print(chunksLoaded);
-            Serial.print(" into buffer ");
-            Serial.println(loadBuffer);
+            DEBUG_P(20240424,"Loaded chunk #");
+            DEBUG_P(20240424,chunksLoaded);
+            DEBUG_P(20240424," into buffer ");
+            DEBUG_PLN(20240424,loadBuffer);
         }
     }
     
@@ -260,11 +271,11 @@ void loop_sound(){
     if (playing && (currentTime - lastStatusTime >= 1000)) {  // Update every second
         lastStatusTime = currentTime;
         float percentComplete = (float)audioDataRead / totalAudioSize * 100.0;
-        Serial.print("Playing: ");
-        Serial.print(percentComplete);
-        Serial.print("% complete (");
-        Serial.print(chunksLoaded);
-        Serial.println(" chunks loaded)");
+        DEBUG_P(20250424,"Playing: ");
+        DEBUG_P(20250424,percentComplete);
+        DEBUG_P(20250424,"% complete (");
+        DEBUG_P(20250424,chunksLoaded);
+        DEBUG_PLN(20250424," chunks loaded)");
     }
 }
 
@@ -372,21 +383,27 @@ void setup_sound(){
   add_repeating_timer_us(-1000000 / sampleRate, timerCallback, NULL, &timer);
 
   
-  browseWav();
     for (int i = 0; i < tableSize; i++) {
         sineTable[i] = 128 + 127 *SIN_VOLUME* sin(2 * M_PI * i / tableSize);
     }
     if(good_sd()){
-        startPlayWav(FILENAME);
+        startPlayWav(OPENING_FILENAME);
     }else{
         enqueueTask(createPlayMultiToneTask(500, 150, 10));
     }
+  browseWav();
 
 }
 
 unsigned long trackwarning_until;
 // CORE0
+unsigned long last_update_tone = 0;
 void update_tone(float degpersecond){
+    if(millis() - last_update_tone < 900){
+        Serial.println("errrr");
+        return;
+    }
+    last_update_tone - millis();
   int relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
     relativedif -= 180;
@@ -397,18 +414,20 @@ void update_tone(float degpersecond){
   //角度変化が大きい時。
   if(angle_diff > 15){
     last_tone_tt = get_gps_truetrack();
-    trackwarning_until = millis()+8000;
-    enqueueTask(createPlayMultiToneTask(3000,60,angle_diff>30?4:2));
-    if(good_sd()){
-        enqueueTask(createPlayWavTask("wav/track.wav"));
+    if(get_gps_mps() > 2.0){
+        trackwarning_until = millis()+8000;
+        enqueueTask(createPlayMultiToneTask(3136,120,angle_diff>30?5:3));// スピーカー性能都合 ソの音
+        if(good_sd()){
+            enqueueTask(createPlayWavTask("wav/track.wav"));
+        }
     }
   }
   //音を出す閾値は、2.0deg/s かつ 2.0 m/s 以上 かつ 音再生設定がある時。
   //また。angle_diffが15より大きい時は上記警告音+wavファイル再生を優先し、deg/sの警告音は流さない。
   else if(abs(degpersecond) > 2.0 && get_gps_mps() > 2.0){
-    int freq = abs(degpersecond)*300-560;//40Hz以上
-    if(freq > 3000){
-      freq = 3000;
+    int freq = abs(degpersecond)*600-680;// 1200-680=520Hz以上 (speaker性能都合)
+    if(freq > 3136){
+      freq = 3136;// スピーカー性能都合 ソの音
     }
     //精度が低い状況や角度変化少ない状況では、音は短めにする。
     int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?80:150;
@@ -437,7 +456,7 @@ void myTone(int freq,int duration){
 
 void playTone(int freq, int duration, int counter){
     if(playing){//wait maximum of 3 seconds.
-        Serial.println("failed playTone due to Wav file playing.");
+        DEBUG_P(20250424,"failed playTone due to Wav file playing.");
         //caution.  Do not wait wav file finish playing here, because that will stop loop1 and cause wav file unable finish playing.
        return;
     }

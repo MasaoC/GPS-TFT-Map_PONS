@@ -9,21 +9,20 @@
 
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
-float lat_now = 0;
-unsigned long last_time_gpsdata = 0;  //GPSを最後に受信した時間 millis()
+unsigned long last_screen_update = 0;  //GPSを最後に受信した時間 millis()
 bool redraw_screen = false;           //次の描画では、黒塗りして新たに画面を描画する
 volatile bool quick_redraw = false;   //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
 bool bank_warning = false;
 
 const int sampleInterval = 500;    // Sample interval in milliseconds
-const int numSamples = 4;          // Number of samples to take over 2 seconds
-float upward_samples[numSamples];  // Array to store truetrack values
+const int NUM_SAMPLES = 4;          // Number of samples to take over 2 seconds
+float upward_samples[NUM_SAMPLES];  // Array to store truetrack values
 unsigned long lastSampleTime = 0;  // Time when the last sample was taken
 int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;            // The calculated average differential
 
 
-int destination_mode = DMODE_FLYAWAY;
+
 int screen_mode = MODE_MAP;
 int detail_page = 0;
 int scaleindex = 3;
@@ -40,8 +39,6 @@ int sound_volume = 50;
 extern int setting_size;
 
 
-double lastload_lat;
-double lastload_lon;
 int lastload_zoomlevel;
 
 // Callback function for short press
@@ -57,12 +54,12 @@ void shortPressCallback() {
     } else {
       menu_settings[selectedLine].CallbackToggle();
     }
-  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL) {
+  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_SDDETAIL) {
     detail_page++;
   } else {
+    gmap_loaded_active = false;
     scaleindex = (scaleindex+1) % (sizeof(scalelist) / sizeof(scalelist[0]));
     scale = scalelist[scaleindex];
-    gmap_loaded = false;
   }
 }
 
@@ -127,8 +124,7 @@ void setup(void) {
   scalelist[3] = SCALE_LARGE_GMAP;//pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
   scalelist[4] = SCALE_EXLARGE_GMAP;//pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
   scalelist[5] = 200.0;
-  for(int i = 0; i < 6;i++)
-    Serial.println(scalelist[i]);
+
   scale = scalelist[scaleindex];
 
   gps_setup();
@@ -149,7 +145,7 @@ void setup(void) {
 
 void reset_degpersecond() {
   float track = get_gps_truetrack();
-  for (int i = 1; i < numSamples; i++) {
+  for (int i = 1; i < NUM_SAMPLES; i++) {
     upward_samples[i] = track;
   }
   degpersecond = 0;
@@ -165,10 +161,10 @@ void update_degpersecond() {
     // This is where you would get the new truetrack value from your sensor
     upward_samples[sampleIndex] = get_gps_truetrack();
     // Calculate the differential if we have enough samples
-    if (sampleIndex >= numSamples - 1) {
+    if (sampleIndex >= NUM_SAMPLES - 1) {
       float totalDifference = 0;
       // Calculate the differences between consecutive samples
-      for (int i = 1; i < numSamples; i++) {
+      for (int i = 1; i < NUM_SAMPLES; i++) {
         float degchange = (upward_samples[i] - upward_samples[i - 1]);
         if (degchange < -180) {
           degchange += 360;
@@ -179,13 +175,13 @@ void update_degpersecond() {
         totalDifference += difference;
       }
       // Calculate the average differential
-      degpersecond = totalDifference / (numSamples - 1);
+      degpersecond = totalDifference / (NUM_SAMPLES - 1);
       // Shift samples to make room for new ones
-      for (int i = 1; i < numSamples; i++) {
+      for (int i = 1; i < NUM_SAMPLES; i++) {
         upward_samples[i - 1] = upward_samples[i];
       }
       // Adjust the sample index to the last position
-      sampleIndex = numSamples - 2;
+      sampleIndex = NUM_SAMPLES - 2;
     }
     // Move to the next sample
     sampleIndex++;
@@ -218,10 +214,10 @@ void check_bankwarning() {
 }
 */
 
-
+extern bool newcourse_arrived;
 void loop() {
   switch_handling();
-  bool longdraw_allowed = gps_loop();
+  gps_loop(0);
   #ifndef RELEASE
   if(Serial.available()){
     GPS_SERIAL.write(Serial.read());
@@ -239,6 +235,11 @@ void loop() {
     return;
   }
 
+  if (screen_mode == MODE_SDDETAIL) {
+    draw_sddetail(redraw_screen, detail_page);
+    redraw_screen = false;
+    return;
+  }
   if (screen_mode == MODE_MAPLIST) {
     draw_maplist_mode(redraw_screen, detail_page);
     redraw_screen = false;
@@ -248,23 +249,50 @@ void loop() {
   //check_bankwarning();  
 
   draw_loading_image();
+  bool new_gps_info = gps_newdata_arrived();
 
-  // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している) or 強制描画タイミング(スイッチ操作など)
-  // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
-  bool redraw_map = ((longdraw_allowed || !get_gps_connection()) && (millis() - last_time_gpsdata > SCREEN_INTERVAL)) || quick_redraw;
-  // 新しいgmapのロードが完了していて、GPS受信中ではない(longdraw_allowed)の場合。
-  if (new_gmap_loaded && longdraw_allowed) {
-    redraw_map = true;
+  if(new_gps_info && destination_mode == DMODE_AUTO10K){
+    double distance_frm_plathome = calculateDistance(get_gps_lat(), get_gps_lon(), PLA_LAT, PLA_LON);
+    if(auto10k_status == AUTO10K_AWAY){
+      if(distance_frm_plathome > 10.0){//10.54 だけど、540mの誤差を引いておく。
+        auto10k_status = AUTO10K_INTO;
+        enqueueTask(createPlayWavTask("wav/destination_change.wav",2));
+      }
+    }
+    if(auto10k_status == AUTO10K_INTO && distance_frm_plathome < 1.0){//折り返し用。
+      auto10k_status = AUTO10K_AWAY;
+      enqueueTask(createPlayWavTask("wav/destination_change.wav",2));
+    }
   }
 
-  if (redraw_map) {
-    DEBUG_PLN(20240828, "redraw map");
+  if(newcourse_arrived){
+    update_tone(degpersecond);
+    newcourse_arrived = false;
+  }
+
+  if(!redraw_screen){
+    // (GPSの受信が完了したタイミング or GPSが不作動) && (画面更新インターバルが経過している) or 強制描画タイミング(スイッチ操作など)
+    // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
+    redraw_screen = (( !get_gps_connection()) && (millis() - last_screen_update > SCREEN_INTERVAL)) || quick_redraw;
+    // 新しいgmapのロードが完了していて、GPS受信中ではない(longdraw_allowed)の場合。
+    if (new_gmap_ready || new_gps_info) {
+      redraw_screen = true;
+    }
+    if (millis() - lastfresh_millis > SCREEN_FRESH_INTERVAL) {
+      DEBUGW_PLN(20240424,"FORCE FRESH");
+      redraw_screen = true;
+    }
+  }
+
+  
+  if (redraw_screen) {
+    DEBUG_PLN(20250424, "redraw map");
     quick_redraw = false;
-    new_gmap_loaded = false;
     float new_truetrack = get_gps_truetrack();
     double new_lat = get_gps_lat();
     double new_long = get_gps_lon();
-    last_time_gpsdata = millis();
+    last_screen_update = millis();
+    set_newdata_off();
 
     //画面上の方向設定
     float drawupward_direction = truetrack_now;
@@ -272,24 +300,12 @@ void loop() {
       drawupward_direction = 0;
     }
 
-    //redraw_screen = 古い線を白色で上書きして、新しく書き直す。redraw_screen = 画面全てを白で塗りつぶしたあとに塗り直す。
-    if (new_truetrack != truetrack_now || new_lat != lat_now) {
-      redraw_map = true;
-    }
-
-
-    if (millis() - lastfresh_millis > SCREEN_FRESH_INTERVAL || redraw_screen) {
-      lastfresh_millis = millis();
-      clean_display();
-      redraw_screen = true;
-    }
-
     nav_update();// MC や dist を更新する。
     draw_header(degpersecond);
 
-    if (redraw_map || redraw_screen) {
+    if (redraw_screen) {
       truetrack_now = new_truetrack;
-      lat_now = new_lat;
+      new_gmap_ready = false;
 
       //clean_map();
 
@@ -303,23 +319,22 @@ void loop() {
       if (scaleindex == 2) zoomlevel = 9;//SCALE_MEDIUM_GMAP
       if (scaleindex == 3) zoomlevel = 11;//SCALE_LARGE_GMAP
       if (scaleindex == 4) zoomlevel = 13;//SCALE_EXLARGE_GMAP
-      Serial.println(zoomlevel);
-      bool gmap_drawed = draw_gmap(drawupward_direction);
-      Serial.print("p1:");
-      Serial.println(gmap_loaded);
+
+      bool gmap_drawed = false;
+      if(gmap_loaded_active)
+        gmap_drawed = draw_gmap(drawupward_direction);
+      
       
 
       //If loadImagetask already running in Core1, abort.
-      if(lastload_lat != new_lat || lastload_lon != new_long || lastload_zoomlevel != zoomlevel){
-        lastload_lat = new_lat;
-        lastload_lon = new_long;
+      if(new_gps_info || lastload_zoomlevel != zoomlevel){
         lastload_zoomlevel = zoomlevel;
         enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
       }
 
       if (scale > SCALE_SMALL_GMAP) {
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-          draw_Biwako(new_lat, new_long, scale, drawupward_direction);
+          draw_Biwako(new_lat, new_long, scale, drawupward_direction,gmap_drawed);
         } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
           draw_Osaka(new_lat, new_long, scale, drawupward_direction);
         } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
@@ -334,6 +349,7 @@ void loop() {
       }
 
 
+      gps_loop(4);
 
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
@@ -341,12 +357,18 @@ void loop() {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         if(destination_mode == DMODE_FLYINTO) 
-          draw_flyinto(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
+          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
         else if(destination_mode == DMODE_FLYAWAY) 
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+        else if(destination_mode == DMODE_AUTO10K){
+          if(auto10k_status == AUTO10K_AWAY)
+            draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+          else if(auto10k_status == AUTO10K_INTO)
+            draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
+        }
       }
-
-      draw_km_circle(scale);
+      gps_loop(5);
+      draw_km_distances(scale);
       draw_compass(drawupward_direction, COLOR_BLACK);
       
 
@@ -354,19 +376,23 @@ void loop() {
         draw_demo_biwako();
       }
       //google map load成功している間は、古いものを削除する必要はない。
-      //if (!gmap_loaded) {
+      //if (!gmap_loaded_active) {
       //  redraw_compass(drawupward_direction, COLOR_BLACK, COLOR_WHITE);
       //} else {
       //  draw_compass(drawupward_direction, COLOR_BLACK);
       //}
       draw_triangle();
       
-      if (!gmap_drawed && !isTaskInQueue(TASK_LOAD_MAPIMAGE)) {
+      if (!gmap_drawed) {
         draw_nogmap(scale);
       }
       draw_headertext(degpersecond);
       draw_nomapdata();
+      gps_loop(6);
       push_backscreen();
+      gps_loop(7);
+      draw_footer();
+      lastfresh_millis = millis();
     }
 
     //地図が更新されていない時でも、更新するもの。
@@ -376,9 +402,6 @@ void loop() {
       draw_bankwarning();
     }*/
 
-    update_tone(degpersecond);
-    
-    draw_footer();
 
     //更新終了
     redraw_screen = false;

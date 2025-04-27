@@ -8,8 +8,9 @@ LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
 int magc = 0;
 float dest_dist = 0;
-extern int destination_mode;
 
+int destination_mode = DMODE_FLYAWAY;
+int auto10k_status = AUTO10K_AWAY;
 
 // Convert degrees to radians
 float deg2rad(float degrees) {
@@ -53,8 +54,11 @@ void nav_update(){
     double destlat = extradestinations[currentdestination].cords[0][0];
     double destlon = extradestinations[currentdestination].cords[0][1];
     dest_dist = calculateDistance(get_gps_lat(), get_gps_lon(), destlat, destlon);
+    
+    //Fly into magc
     magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
-    if(destination_mode == DMODE_FLYAWAY){
+    
+    if(destination_mode == DMODE_FLYAWAY || (destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_AWAY)){
       magc = (magc+180)%360;
     }
   }
@@ -1071,9 +1075,9 @@ const double map_japan4_coords[] = {
 
 
 mapdata map_shinura = create_static_mapdata(0,"Urayasu", 68-39+1, map_shinura_coords);
-mapdata map_okishima = create_static_mapdata(1,"Okishima", 10, map_okishima_coords);
-mapdata map_takeshima = create_static_mapdata(2,"Takeshima", 79-75+1, map_takeshima_coords);
-mapdata map_chikubushima = create_static_mapdata(3,"Chikubushima", 94-86+1, map_chikubushima_coords);
+mapdata map_okishima = create_static_mapdata(1,"g_Okishima", 10, map_okishima_coords);
+mapdata map_takeshima = create_static_mapdata(2,"g_Takeshima", 79-75+1, map_takeshima_coords);
+mapdata map_chikubushima = create_static_mapdata(3,"g_Chikubushima", 94-86+1, map_chikubushima_coords);
 mapdata map_biwako = create_static_mapdata(4,"Biwako", 211-116+1, map_biwako_coords);
 mapdata map_handaioutside = create_static_mapdata(5,"Handai_O", 302-218+1, map_handaioutside_coords);
 mapdata map_handaihighway = create_static_mapdata(6,"Handai_H1", 339-311+1, map_handaihighway_coords);

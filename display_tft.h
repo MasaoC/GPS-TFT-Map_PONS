@@ -25,17 +25,6 @@
 #ifndef DISPLAY_TFT_DEFINED
   #define DISPLAY_TFT_DEFINED
 
-  struct Setting {
-      int id;
-      std::string (*getLabel)(bool selected);
-      void (*CallbackEnter)();
-      void (*CallbackToggle)();
-      void (*CallbackExit)();
-  };
-
-
-  extern Setting menu_settings[];
-
   struct cord_tft{
     int x;
     int y;
@@ -53,7 +42,7 @@
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,
+    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -105,9 +94,16 @@ bool is_northupmode();
 
 void draw_compass(float truetrack, uint16_t col);
 void draw_nomapdata();
-void draw_gpsdetail(bool redraw,int page);
-void draw_maplist_mode(bool redraw,int maplist_page);
-void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
+
+
+//mode draws
+void draw_setting_mode(bool redraw_screen, int selectedLine, int cursorLine);
+void draw_gpsdetail(bool redraw_screen, int page);
+void draw_sddetail(bool redraw_screen, int page);
+void draw_maplist_mode(bool redraw_screen, int maplist_page);
+
+
+
 //void draw_bankwarning();
 void clean_backscreen();
 void push_backscreen();
@@ -115,15 +111,16 @@ void push_backscreen();
 
 void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
 void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
+void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 void draw_Japan(double center_lat,double center_lon,float scale,float up);
 void draw_Shinura(double center_lat,double center_lon,float scale,float up);
-void draw_Biwako(double center_lat,double center_lon,float scale,float up);
+void draw_Biwako(double center_lat,double center_lon,float scale,float up,bool gmap_drawed);
 void draw_Osaka(double center_lat,double center_lon,float scale,float up);
-bool draw_circle_km(float scale, float km);
-void draw_km_circle(float scale);
+bool try_draw_km_distance(float scale, float km);
+void draw_km_distances(float scale);
 void startup_demo_tft();
 void draw_demo_biwako();
 void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);

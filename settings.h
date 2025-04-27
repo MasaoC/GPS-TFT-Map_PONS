@@ -3,11 +3,14 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20250422
-#define BUILDVERSION "0.80"
+#define BUILDDATE 20250427
+#define BUILDVERSION "0.81"
 
-#define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
-#define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
+#define PRINTREVERSEDATE_NUM 0
+#define DEBUG_P(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
+#define DEBUGW_P(num,txt)  Serial.print(txt);
+#define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.println(txt);
+#define DEBUGW_PLN(num,txt)  Serial.println(txt);
 
 
 //----------GPS---------
@@ -17,12 +20,12 @@
 //#define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  #define RELEASE_GPS
+  //#define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
   //#define DEBUG_GPS_SIM_BIWAKO         //琵琶湖固定座標
   //#define DEBUG_GPS_SIM_SAPPORO         //札幌固定座標
   //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
-  //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
+  #define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
 
@@ -35,11 +38,11 @@
 
 #define VERTICAL_FLIP
 
-//TFTスクリーン更新頻度 ms. (GPSと一致するように変更すればよい。1000ms>990ms for serial?)
-#define SCREEN_INTERVAL 990
+//TFTスクリーン更新頻度 ms.
+#define SCREEN_INTERVAL 20000
 
 //強制画面リフレッシュ時間
-#define SCREEN_FRESH_INTERVAL 60000
+#define SCREEN_FRESH_INTERVAL 1050
 
 
 #define MAX_TRACK_CORDS 500
@@ -144,11 +147,8 @@
 #define MODE_MAP 2
 #define MODE_GPSDETAIL 3
 #define MODE_MAPLIST 4
+#define MODE_SDDETAIL 5
 
-
-//destination mode
-#define DMODE_FLYINTO 0
-#define DMODE_FLYAWAY 1
 
 #if !defined(TEMP)
   #define TEMP
