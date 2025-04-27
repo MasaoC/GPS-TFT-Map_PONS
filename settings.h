@@ -4,7 +4,7 @@
 #define RELEASE
 
 #define BUILDDATE 20250427
-#define BUILDVERSION "0.81"
+#define BUILDVERSION "0.82"
 
 #define PRINTREVERSEDATE_NUM 0
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
@@ -20,12 +20,12 @@
 //#define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  //#define RELEASE_GPS
+  #define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
   //#define DEBUG_GPS_SIM_BIWAKO         //琵琶湖固定座標
   //#define DEBUG_GPS_SIM_SAPPORO         //札幌固定座標
   //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
-  #define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
+  //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
   //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
 

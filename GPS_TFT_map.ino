@@ -279,7 +279,6 @@ void loop() {
       redraw_screen = true;
     }
     if (millis() - lastfresh_millis > SCREEN_FRESH_INTERVAL) {
-      DEBUGW_PLN(20240424,"FORCE FRESH");
       redraw_screen = true;
     }
   }
