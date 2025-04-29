@@ -533,6 +533,7 @@ void setup_sd(){
   #endif
   
   //sdInitialized = SD.begin(SD_CS_PIN,SD_SCK_MHZ(50));
+  
   sdInitialized = SD.begin(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO);
 
 
@@ -635,13 +636,6 @@ bool browse_sd(int page) {
 }
 
 void setup1(void){
-
-  #ifndef RELEASE
-  while(!Serial){
-    delay(10);
-  }
-  #endif
-
   mutex_init(&taskQueueMutex);
   init_destinations();
   setup_sd();

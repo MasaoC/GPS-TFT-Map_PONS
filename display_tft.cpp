@@ -5,7 +5,6 @@
 #include "navdata.h"
 #include "font_data.h"
 #include "sound.h"
-#include "hardware/adc.h"
 #include "button.h"
 #include <cstring>  // for strlen and strcpy
 #include <string>
@@ -132,20 +131,6 @@ void setup_tft() {
   gpio_put(28, 0);
 
 
-  adc_gpio_init(BATTERY_PIN);  // Initialize GPIO26 as ADC
-
-  pinMode(24,INPUT);
-  pinMode(BATTERY_PIN, INPUT);
-  analogReadResolution(12);
-
-#ifdef BRIGHTNESS_SETTING_AVAIL
-  // Initialize backlight control pin
-  pinMode(TFT_BL, OUTPUT);
-  analogWriteFreq(BL_PWM_FRQ);  // 1000Hz
-  analogWrite(TFT_BL, BRIGHTNESS(0));
-  analogWrite(TFT_BL, BRIGHTNESS(screen_brightness));
-#endif
-
   tft.begin();
 
 #ifdef VERTICAL_FLIP
@@ -155,11 +140,10 @@ void setup_tft() {
 #endif
 
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
-  //tft.setTextFont(2);
-
-
   tft.fillScreen(COLOR_WHITE);
+
   createNeedle();
+
   if(!backscreen.created()){
     backscreen.setColorDepth(16);
     backscreen.createSprite(SCREEN_WIDTH, BACKSCREEN_SIZE);
@@ -170,15 +154,6 @@ void setup_tft() {
     header_footer.createSprite(SCREEN_WIDTH, 40);
     header_footer.loadFont(NM_FONT_LARGE);
   }
-
-  DEBUG_P(20250430, "SETUP C0 free/used heap and free stack/Pointer:");
-  DEBUG_P(20250430, rp2040.getFreeHeap());
-  DEBUG_P(20250430, "/");
-  DEBUG_P(20250430, rp2040.getUsedHeap());
-  DEBUG_P(20250430, "/");
-  DEBUG_P(20250430, rp2040.getFreeStack());
-  DEBUG_P(20250430, "/");
-  Serial.println(rp2040.getStackPointer(),HEX);
 }
 
 
@@ -851,17 +826,6 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 cord_tft points[MAX_TRACK_CORDS];
 
 void draw_track(double center_lat, double center_lon, float scale, float up) {
-  DEBUG_P(20250430, "C0 free/used heap and free stack/Pointer:");
-  DEBUG_P(20250430, rp2040.getFreeHeap());
-  DEBUG_P(20250430, "/");
-  DEBUG_P(20250430, rp2040.getUsedHeap());
-  DEBUG_P(20250430, "/");
-  DEBUG_P(20250430, rp2040.getFreeStack());
-  DEBUG_P(20250430, "/");
-  Serial.println(rp2040.getStackPointer(),HEX);
-  
-  delay(10);
-  
   int sizetrack = latlon_manager.getCount();
   if(sizetrack <= 0){
     return;
@@ -874,7 +838,6 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
 
   if(p0.x != 120 || p0.y != 120){
     backscreen.drawWideLine(p0.x,p0.y,120,120,2,COLOR_GREEN);
-    //backscreen.drawWideLine(p0.x,p0.y,120,120,2,COLOR_GREEN);
   }
 
   for (int i = 0; i < sizetrack-1; i++) {
@@ -890,7 +853,6 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     //Only if cordinates are different.
     if (p0.x != p1.x || p0.y != p1.y) {
       backscreen.drawWideLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
-      //backscreen.drawWideLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
     }
     
   }
@@ -1128,27 +1090,6 @@ bool draw_gmap(float drawupward_direction){
 }
 
 
-unsigned long last_loading_image = 0;
-void draw_loading_image() {
-  if (millis() - last_loading_image > 15) {  //50Hz
-    last_loading_image = millis();
-
-    int x = (last_loading_image / 20) % SCREEN_WIDTH;
-    int color = isTaskRunning(TASK_LOAD_MAPIMAGE) ? COLOR_ORANGE : COLOR_GRAY;
-    if (isTaskRunning(TASK_LOG_SD) || isTaskRunning(TASK_LOG_SDF) || isTaskRunning(TASK_SAVE_CSV)) {
-      color = COLOR_RED;
-    }
-
-    if (last_loading_image - time_lastnmea < 15) {
-      color = COLOR_BLUE;
-    }
-    /*
-    tft.drawFastVLine(x, SCREEN_HEIGHT -30, 2, color);
-    tft.drawFastVLine((x + 1) % SCREEN_WIDTH, SCREEN_HEIGHT -30, 2, COLOR_WHITE);
-    tft.drawFastVLine((x + 2) % SCREEN_WIDTH, SCREEN_HEIGHT -30, 2, COLOR_WHITE);
-    */
-  }
-}
 
 int last_written_mh = 0;
 unsigned long last_maxadr_time = 0;

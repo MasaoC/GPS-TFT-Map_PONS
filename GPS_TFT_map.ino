@@ -8,6 +8,7 @@
 #include "button.h"
 #include "gps.h"
 #include "sound.h"
+#include "hardware/adc.h"
 
 // we need to do bool core1_separate_stack = true; for stack running out.
 bool core1_separate_stack = true;//DO NOT REMOVE THIS LINE.
@@ -19,7 +20,6 @@ bool redraw_screen = false;           //次の描画では、黒塗りして新�
 volatile bool quick_redraw = false;   //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
 bool bank_warning = false;
 
-const int sampleInterval = 500;    // Sample interval in milliseconds
 const int NUM_SAMPLES = 4;          // Number of samples to take over 2 seconds
 float upward_samples[NUM_SAMPLES];  // Array to store truetrack values
 unsigned long lastSampleTime = 0;  // Time when the last sample was taken
@@ -30,7 +30,7 @@ float degpersecond = 0;            // The calculated average differential
 
 int screen_mode = MODE_MAP;
 int detail_page = 0;
-int scaleindex = 3;
+volatile int scaleindex = 3;
 double scalelist[6];
 double scale;
 
@@ -39,7 +39,7 @@ int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
 
-int sound_volume = 50;
+volatile int sound_volume = 50;
 
 extern int setting_size;
 
@@ -122,6 +122,16 @@ void setup(void) {
   setup_switch();
   setup_tft();
 
+  adc_gpio_init(BATTERY_PIN);  // Initialize GPIO26 as ADC
+  pinMode(24,INPUT);
+  pinMode(BATTERY_PIN, INPUT);
+  analogReadResolution(12);
+
+  gps_setup();
+
+
+  startup_demo_tft();
+
 
   scalelist[0] = SCALE_EXSMALL_GMAP;//pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT;
   scalelist[1] = SCALE_SMALL_GMAP;//pixelsPerDegreeLat(7,35)/KM_PER_DEG_LAT;
@@ -129,23 +139,10 @@ void setup(void) {
   scalelist[3] = SCALE_LARGE_GMAP;//pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
   scalelist[4] = SCALE_EXLARGE_GMAP;//pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
   scalelist[5] = 200.0;
-
   scale = scalelist[scaleindex];
-
-  gps_setup();
-  startup_demo_tft();
-
   redraw_screen = true;
   quick_redraw = true;
-
-
-  // Enqueue log_sd task
-  Task task;
-  task.type = TASK_LOG_SD;
-  task.logText = "SETUP DONE";
-  enqueueTask(task);
-
-  DEBUG_PLN(20240801, "SETUP DONE");
+  enqueueTask(createLogSdTask("SETUP DONE"));
 }
 
 int course_warning_index = 0;
@@ -161,6 +158,7 @@ extern bool newcourse_arrived;
 void loop() {
   switch_handling();
   gps_loop(0);
+  
   #ifndef RELEASE
   if(Serial.available()){
     GPS_SERIAL.write(Serial.read());
@@ -188,10 +186,7 @@ void loop() {
     redraw_screen = false;
     return;
   }
-  update_degpersecond();
-  //check_bankwarning();  
 
-  draw_loading_image();
   bool new_gps_info = gps_newdata_arrived();
 
   if(new_gps_info && destination_mode == DMODE_AUTO10K){
@@ -203,7 +198,7 @@ void loop() {
         enqueueTask(createPlayMultiToneTask(3136,500,1));
         enqueueTask(createPlayMultiToneTask(2793,500,1));
         enqueueTask(createPlayMultiToneTask(3136,500,1));
-        enqueueTask(createPlayWavTask("wav/destination_change.wav",2));
+        enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
       }
     }
     if(auto10k_status == AUTO10K_INTO && distance_frm_plathome < 1.0){//折り返し用。
@@ -212,12 +207,13 @@ void loop() {
       enqueueTask(createPlayMultiToneTask(3136,500,1));
       enqueueTask(createPlayMultiToneTask(2793,500,1));
       enqueueTask(createPlayMultiToneTask(3136,500,1));
-      enqueueTask(createPlayWavTask("wav/destination_change.wav",2));
+      enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
     }
   }
 
 
   if(newcourse_arrived){
+    update_degpersecond();
     update_tone(degpersecond);
     update_course_warning(degpersecond);
     newcourse_arrived = false;
@@ -382,39 +378,35 @@ void reset_degpersecond() {
 
 
 void update_degpersecond() {
-  unsigned long currentTime = millis();
-  // Check if it's time to take a new sample
-  if (currentTime - lastSampleTime >= sampleInterval) {
-    lastSampleTime = currentTime;
-    // Update the truetrack value
-    // This is where you would get the new truetrack value from your sensor
-    upward_samples[sampleIndex] = get_gps_truetrack();
-    // Calculate the differential if we have enough samples
-    if (sampleIndex >= NUM_SAMPLES - 1) {
-      float totalDifference = 0;
-      // Calculate the differences between consecutive samples
-      for (int i = 1; i < NUM_SAMPLES; i++) {
-        float degchange = (upward_samples[i] - upward_samples[i - 1]);
-        if (degchange < -180) {
-          degchange += 360;
-        } else if (degchange > 180) {
-          degchange -= 360;
-        }
-        float difference = degchange / (sampleInterval / 1000.0);  // deg/s
-        totalDifference += difference;
+  lastSampleTime = millis();
+  // Update the truetrack value
+  // This is where you would get the new truetrack value from your sensor
+  upward_samples[sampleIndex] = get_gps_truetrack();
+  // Calculate the differential if we have enough samples
+  if (sampleIndex >= NUM_SAMPLES - 1) {
+    float totalDifference = 0;
+    // Calculate the differences between consecutive samples
+    for (int i = 1; i < NUM_SAMPLES; i++) {
+      float degchange = (upward_samples[i] - upward_samples[i - 1]);
+      if (degchange < -180) {
+        degchange += 360;
+      } else if (degchange > 180) {
+        degchange -= 360;
       }
-      // Calculate the average differential
-      degpersecond = totalDifference / (NUM_SAMPLES - 1);
-      // Shift samples to make room for new ones
-      for (int i = 1; i < NUM_SAMPLES; i++) {
-        upward_samples[i - 1] = upward_samples[i];
-      }
-      // Adjust the sample index to the last position
-      sampleIndex = NUM_SAMPLES - 2;
+      float difference = degchange;  // deg/s
+      totalDifference += difference;
     }
-    // Move to the next sample
-    sampleIndex++;
+    // Calculate the average differential
+    degpersecond = totalDifference / (NUM_SAMPLES - 1);
+    // Shift samples to make room for new ones
+    for (int i = 1; i < NUM_SAMPLES; i++) {
+      upward_samples[i - 1] = upward_samples[i];
+    }
+    // Adjust the sample index to the last position
+    sampleIndex = NUM_SAMPLES - 2;
   }
+  // Move to the next sample
+  sampleIndex++;
 }
 
 //一秒に一回まで。

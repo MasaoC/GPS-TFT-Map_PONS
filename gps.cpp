@@ -220,9 +220,8 @@ int setupcounter = 1;
 
 // Try to establish connection with GPS module.  Either ublox or mediatek.
 void gps_setup() {
-  Serial.println("GPS SETUP");
-  Serial.print("setup");
-  Serial.println(setupcounter);
+  DEBUG_P(20250429,"GPS SETUP:");
+  DEBUG_PLN(20250429,setupcounter);
   
   readfail_counter = 0;
   GPS_SERIAL.setTX(GPS_TX);

@@ -1,9 +1,9 @@
 //====== 設定画面 =======
 
 // リリース時
-//#define RELEASE
+#define RELEASE
 
-#define BUILDDATE 20250428
+#define BUILDDATE 20250429
 #define BUILDVERSION "0.83"
 
 #define PRINTREVERSEDATE_NUM 0
