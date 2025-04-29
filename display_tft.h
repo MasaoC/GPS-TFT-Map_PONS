@@ -109,7 +109,6 @@ void clean_backscreen();
 void push_backscreen();
 
 
-void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
 void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
@@ -125,7 +124,8 @@ void startup_demo_tft();
 void draw_demo_biwako();
 void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
-void draw_triangle();
+void draw_triangle(int ttrack,int steer_angle);
+void draw_course_warning(int steer_angle);
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 
 

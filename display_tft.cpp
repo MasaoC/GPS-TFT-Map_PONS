@@ -105,7 +105,7 @@ void createNeedle(void) {
   needle.createSprite(4, NEEDLE_LEN);  // create the needle Sprite 3x120
 
   needle.fillSprite(TFT_BLACK);  // Fill with black
-  needle.fillRect(0, 10, 4, 12, COLOR_RED);
+  //needle.fillRect(0, 10, 4, 12, COLOR_RED);
 
   // Define needle pivot point
   uint16_t piv_x = needle.width() / 2;   // x pivot of Sprite (middle)
@@ -171,6 +171,14 @@ void setup_tft() {
     header_footer.loadFont(NM_FONT_LARGE);
   }
 
+  DEBUG_P(20250430, "SETUP C0 free/used heap and free stack/Pointer:");
+  DEBUG_P(20250430, rp2040.getFreeHeap());
+  DEBUG_P(20250430, "/");
+  DEBUG_P(20250430, rp2040.getUsedHeap());
+  DEBUG_P(20250430, "/");
+  DEBUG_P(20250430, rp2040.getFreeStack());
+  DEBUG_P(20250430, "/");
+  Serial.println(rp2040.getStackPointer(),HEX);
 }
 
 
@@ -436,7 +444,7 @@ public:
         if (strokes[strkid].thickness == 1)
           backscreen.drawLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, col);
         else
-          drawThickLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, strokes[strkid].thickness, col);
+          backscreen.drawWideLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, strokes[strkid].thickness, col);
       }
     }
   }
@@ -485,7 +493,7 @@ public:
         if (strokes[i].thickness == 1)
           backscreen.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
         else
-          drawThickLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, strokes[i].thickness, COLOR_WHITE);
+          backscreen.drawWideLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, strokes[i].thickness, COLOR_WHITE);
       }
     }
   }
@@ -525,44 +533,8 @@ bool try_draw_km_distance(float scale, float km) {
   backscreen.setCursor(xpos-12,ypos-distance_px);
   backscreen.print("km");
   return true;
-  /*
-
-  if (ypos > 30) {
-    backscreen.drawCircle(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, radius, COLOR_PINK);
-    backscreen.setCursor(BACKSCREEN_SIZE / 2 + 2, ypos + 1);
-    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    backscreen.setTextSize(1);
-    
-    if (km > 0.999f) {
-      backscreen.print(int(km));
-    } else {
-      backscreen.print(km, 1);
-    }
-    
-    backscreen.println("km");
-    return true;
-  } else {
-    return false;
-  }
-  */
 }
 
-void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color) {
-  // Calculate the direction of the line
-  float angle = atan2(y1 - y0, x1 - x0);
-  float halfThickness = thickness / 2.0;
-
-  // Calculate the perpendicular offset for the thickness
-  float offsetX = halfThickness * sin(angle);
-  float offsetY = halfThickness * -cos(angle);
-
-  // Draw parallel lines to create the thick effect
-  for (float t = -halfThickness; t <= halfThickness; t++) {
-    int dx = round(t * sin(angle));
-    int dy = round(t * -cos(angle));
-    backscreen.drawLine(x0 + dx, y0 + dy, x1 + dx, y1 + dy, color);
-  }
-}
 
 // draw magnetic north east west south according to truetrack, where truetrack is direction of upward display.
 // However direction of y-axis is downward for tft display.
@@ -673,26 +645,45 @@ bool nomap_drawn = true;
 #endif
 
 
-double steer_to = 0.0;
 
 
 
 extern float last_tone_tt;
 extern unsigned long trackwarning_until;
 
-void draw_triangle() {
+
+
+void draw_course_warning(int steer_angle){ 
+  if((millis()/1000)%2 == 0){
+    backscreen.fillRect(5, 175, SCREEN_WIDTH-5*2, 25, COLOR_WHITE);
+    backscreen.drawRect(5, 175, SCREEN_WIDTH-5*2, 25, COLOR_RED);
+    backscreen.drawRect(6, 176, SCREEN_WIDTH-5*2-2, 25-2, COLOR_RED);
+    backscreen.setTextColor(COLOR_RED);
+    if(steer_angle > 0){  
+      backscreen.setCursor(23,180);
+      backscreen.print("Turn RIGHT! Turn RIGHT!");
+    }
+    else{
+      backscreen.setCursor(30,180);
+      backscreen.print("Turn LEFT! Turn LEFT!");
+    }
+  }
+}
+
+extern int course_warning_index;
+
+void draw_triangle(int ttrack,int steer_angle) {
+  float tt_radians = deg2rad(ttrack);
   if (upward_mode == MODE_NORTHUP) {
-    int ttrack = get_gps_truetrack();
-    float tt_radians = deg2rad(ttrack);
     float tone_left = deg2rad(last_tone_tt-15);
     float tone_right = deg2rad(last_tone_tt+15);
     float tone_center = deg2rad(last_tone_tt);
-    float x1 = (NEEDLE_LEN-10) * sin(tone_left) + BACKSCREEN_SIZE/2;
-    float y1 = (NEEDLE_LEN-10) * -cos(tone_left) + BACKSCREEN_SIZE/2;
-    float x2 = (NEEDLE_LEN-10) * sin(tone_right) + BACKSCREEN_SIZE/2;
-    float y2 = (NEEDLE_LEN-10) * -cos(tone_right) + BACKSCREEN_SIZE/2;
-    float x3 = (NEEDLE_LEN-4) * sin(tone_center) + BACKSCREEN_SIZE/2;
-    float y3 = (NEEDLE_LEN-4) * -cos(tone_center) + BACKSCREEN_SIZE/2;
+    float x1 = (NEEDLE_LEN-6) * sin(tone_left) + BACKSCREEN_SIZE/2;
+    float y1 = (NEEDLE_LEN-6) * -cos(tone_left) + BACKSCREEN_SIZE/2;
+    float x2 = (NEEDLE_LEN-6) * sin(tone_right) + BACKSCREEN_SIZE/2;
+    float y2 = (NEEDLE_LEN-6) * -cos(tone_right) + BACKSCREEN_SIZE/2;
+    float x3 = (NEEDLE_LEN) * sin(tone_center) + BACKSCREEN_SIZE/2;
+    float y3 = (NEEDLE_LEN) * -cos(tone_center) + BACKSCREEN_SIZE/2;
     if(trackwarning_until < millis()){
       backscreen.drawTriangle(x1,y1,x2,y2,x3,y3, COLOR_BLACK);
     }else{
@@ -709,46 +700,46 @@ void draw_triangle() {
     int lb_y_new = TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
     backscreen.fillTriangle(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2 + rb_x_new, BACKSCREEN_SIZE / 2 + rb_y_new, 240 / 2 + lb_x_new, 240 / 2 + lb_y_new, COLOR_BLACK);
 
-    steer_to = (magc-8) - rad2deg(tt_radians);
-    if(steer_to < -180){
-      steer_to += 360;
-    }else if(steer_to > 180){
-      steer_to -= 360;
-    }
 
-    if((millis()/1000)%2==0){
+    if((millis()/1000)%3 != 0){
+      float arc_factor = course_warning_index/900.0;
+      if(steer_angle > 0)
+        backscreen.drawArc(240/2, 240/2, (NEEDLE_LEN-21), (NEEDLE_LEN-23), (ttrack+180)%360, (ttrack+180+(int)(arc_factor*steer_angle))%360, COLOR_RED, COLOR_WHITE);
+      else
+        backscreen.drawArc(240/2, 240/2, (NEEDLE_LEN-21), (NEEDLE_LEN-23), (ttrack+180+(int)(arc_factor*steer_angle))%360,(ttrack+180)%360, COLOR_RED, COLOR_WHITE);
+
       //約10度以上の方位違いがある場合に、指示三角形を描画する。
-      if(abs(steer_to) > 15){
-        double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.1:0.1);
-        double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.35:0.35);
-        float x1 = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + 240/2;
-        float x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + 240/2;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-      if(abs(steer_to) > 50){
-        double steer_triangle_start_rad = tt_radians + (steer_to<0?-0.7:0.7);
-        double steer_triangle_end_rad = tt_radians + (steer_to<0?-0.95:0.95);
-        float x1 = (NEEDLE_LEN-10) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (NEEDLE_LEN-10) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + 240/2;
-        float x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + 240/2;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-      if(abs(steer_to) > 100){
-        double steer_triangle_start_rad = tt_radians + (steer_to<0?-1.3:1.3);
-        double steer_triangle_end_rad = tt_radians + (steer_to<0?-1.55:1.55);
+      if(abs(steer_angle) > 15){
+        double steer_triangle_start_rad = tt_radians + (steer_angle<0?-0.1:0.1);
+        double steer_triangle_end_rad = tt_radians + (steer_angle<0?-0.35:0.35);
         float x1 = (NEEDLE_LEN-12) * sin(steer_triangle_start_rad) + 240/2;
         float y1 = (NEEDLE_LEN-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (NEEDLE_LEN-30) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (NEEDLE_LEN-30) * -cos(steer_triangle_start_rad) + 240/2;
-        float x3 = (NEEDLE_LEN-20) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (NEEDLE_LEN-20) * -cos(steer_triangle_end_rad) + 240/2;
+        float x2 = (NEEDLE_LEN-32) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (NEEDLE_LEN-32) * -cos(steer_triangle_start_rad) + 240/2;
+        float x3 = (NEEDLE_LEN-22) * sin(steer_triangle_end_rad) + 240/2;
+        float y3 = (NEEDLE_LEN-22) * -cos(steer_triangle_end_rad) + 240/2;
+        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
+      }
+      if(abs(steer_angle) > 55){
+        double steer_triangle_start_rad = tt_radians + (steer_angle<0?-0.7:0.7);
+        double steer_triangle_end_rad = tt_radians + (steer_angle<0?-0.95:0.95);
+        float x1 = (NEEDLE_LEN-12) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (NEEDLE_LEN-12) * -cos(steer_triangle_start_rad) + 240/2;
+        float x2 = (NEEDLE_LEN-32) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (NEEDLE_LEN-32) * -cos(steer_triangle_start_rad) + 240/2;
+        float x3 = (NEEDLE_LEN-22) * sin(steer_triangle_end_rad) + 240/2;
+        float y3 = (NEEDLE_LEN-22) * -cos(steer_triangle_end_rad) + 240/2;
+        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
+      }
+      if(abs(steer_angle) > 100){
+        double steer_triangle_start_rad = tt_radians + (steer_angle<0?-1.3:1.3);
+        double steer_triangle_end_rad = tt_radians + (steer_angle<0?-1.55:1.55);
+        float x1 = (NEEDLE_LEN-12) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (NEEDLE_LEN-12) * -cos(steer_triangle_start_rad) + 240/2;
+        float x2 = (NEEDLE_LEN-32) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (NEEDLE_LEN-32) * -cos(steer_triangle_start_rad) + 240/2;
+        float x3 = (NEEDLE_LEN-22) * sin(steer_triangle_end_rad) + 240/2;
+        float y3 = (NEEDLE_LEN-22) * -cos(steer_triangle_end_rad) + 240/2;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
     }
@@ -812,13 +803,12 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up) {
   draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
 
-  int thickness = 2;
   double lat3, lon3;
   cord_tft dest = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
   calculatePointC(dest_lat, dest_lon, center_lat, center_lon, distance, lat3, lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
-  drawThickLine(240/2, 240/2, targetpoint.x, targetpoint.y, thickness, COLOR_MAGENTA);
+  backscreen.drawWideLine(240/2, 240/2, targetpoint.x, targetpoint.y, 3, COLOR_MAGENTA);
 }
 
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
@@ -830,9 +820,9 @@ void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double c
     double newlat, newlon;
     calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
     goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    drawThickLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
+    backscreen.drawWideLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
   }else{
-    drawThickLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
+    backscreen.drawWideLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
     double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
     double newlat, newlon;
     calculatePointC(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
@@ -851,16 +841,27 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
     calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
     goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
   }
-  drawThickLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
+  backscreen.drawWideLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
 }
 
 
 // Im making this variable global so that it will be stored in RAM instead of Stack.
-// Core0 is running out of stack with 4KB with MAX_TRACK_CORDS>=300, when making this local variable(Stack) we need to do bool core1_separate_stack = true;
+// Core0 is running out of stack with 4KB with MAX_TRACK_CORDS>=300, when making this local variable(Stack).
 // However, we have enough RAM so, lets make points variable global for now.
 cord_tft points[MAX_TRACK_CORDS];
 
 void draw_track(double center_lat, double center_lon, float scale, float up) {
+  DEBUG_P(20250430, "C0 free/used heap and free stack/Pointer:");
+  DEBUG_P(20250430, rp2040.getFreeHeap());
+  DEBUG_P(20250430, "/");
+  DEBUG_P(20250430, rp2040.getUsedHeap());
+  DEBUG_P(20250430, "/");
+  DEBUG_P(20250430, rp2040.getFreeStack());
+  DEBUG_P(20250430, "/");
+  Serial.println(rp2040.getStackPointer(),HEX);
+  
+  delay(10);
+  
   int sizetrack = latlon_manager.getCount();
   if(sizetrack <= 0){
     return;
@@ -868,8 +869,12 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   //latest
   Coordinate c0 = latlon_manager.getData(0);
   cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
+  Serial.printf("Heap %d%% FrStk %dKB",rp2040.getFreeHeap()*100/rp2040.getTotalHeap(),rp2040.getFreeStack()/1000);
+  
+
   if(p0.x != 120 || p0.y != 120){
-    drawThickLine(p0.x,p0.y,120,120,2,COLOR_GREEN);
+    backscreen.drawWideLine(p0.x,p0.y,120,120,2,COLOR_GREEN);
+    //backscreen.drawWideLine(p0.x,p0.y,120,120,2,COLOR_GREEN);
   }
 
   for (int i = 0; i < sizetrack-1; i++) {
@@ -884,7 +889,8 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     cord_tft p1 = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
     if (p0.x != p1.x || p0.y != p1.y) {
-      drawThickLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
+      backscreen.drawWideLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
+      //backscreen.drawWideLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
     }
     
   }
@@ -1136,9 +1142,11 @@ void draw_loading_image() {
     if (last_loading_image - time_lastnmea < 15) {
       color = COLOR_BLUE;
     }
+    /*
     tft.drawFastVLine(x, SCREEN_HEIGHT -30, 2, color);
     tft.drawFastVLine((x + 1) % SCREEN_WIDTH, SCREEN_HEIGHT -30, 2, COLOR_WHITE);
     tft.drawFastVLine((x + 2) % SCREEN_WIDTH, SCREEN_HEIGHT -30, 2, COLOR_WHITE);
+    */
   }
 }
 
@@ -1210,7 +1218,7 @@ void draw_header(double degpersecond) {
 
   header_footer.drawFastHLine(0,39,240,COLOR_BLACK);
 
-  if(get_gps_numsat() == 0 && !get_demo_biwako()){
+  if(get_gps_numsat() == 0){
     header_footer.drawFastHLine(5, 19, SCREEN_WIDTH-10, COLOR_RED);
     header_footer.drawFastHLine(5, 20, SCREEN_WIDTH-10, COLOR_RED);
   }
@@ -1218,6 +1226,7 @@ void draw_header(double degpersecond) {
   header_footer.pushSprite(0,0);
 }
 
+extern int course_warning_index;
 
 void draw_footer(){
   header_footer.fillScreen(COLOR_WHITE);
@@ -1499,20 +1508,31 @@ void draw_nomapdata() {
   }
 
   int col = COLOR_BLACK;
-  if (!get_gps_fix() && !get_demo_biwako()) {
+  if (!get_gps_fix()) {
+    backscreen.fillRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
+    backscreen.drawRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
+    backscreen.drawRect(6, 146, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
+    backscreen.setCursor(23,150);
+    backscreen.setTextColor(COLOR_ORANGE);
+    backscreen.print("Scanning GNSS/GPS Signal");
+    char text[28];
+    int dotCount = (millis() / 900) % 10;
+    // Safely create the string with snprintf
+    snprintf(text, sizeof(text), "Stand by for fix%.*s", dotCount, "..........");
+    backscreen.setCursor(45,165);
+    backscreen.print(text);
+  }
+  else if (get_gps_numsat() == 0 && !get_demo_biwako()) {
     backscreen.fillRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
     backscreen.drawRect(5, 145, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
     backscreen.drawRect(6, 146, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
     backscreen.setCursor(30,150);
-    backscreen.setTextColor(COLOR_ORANGE);
+    backscreen.setTextColor(COLOR_RED);
     backscreen.print("Weak GNSS/GPS Signal");
-    int dotcounter = (millis() / 900) % 10;
-    char text[28] = "Scanning&Fixing";
-    int i = 15;
-    for (; i < 15 + dotcounter && i < 28; i++) {
-      text[i] = '.';
-    }
-    text[i] = '\0';
+    char text[28];
+    int dotCount = (millis() / 900) % 10;
+    // Safely create the string with snprintf
+    snprintf(text, sizeof(text), "Scanning signal%.*s", dotCount, "..........");
     backscreen.setCursor(45,165);
     backscreen.print(text);
   } else if (nomap_drawn) {

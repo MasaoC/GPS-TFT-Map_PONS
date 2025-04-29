@@ -322,6 +322,9 @@ double demo_biwako_truetrack = 0;
 
 void add_latlon_track(float lat,float lon){
   int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
+  if(get_demo_biwako()){
+    tracklog_interval = 900;
+  }
   if(millis() - last_latlon_manager > tracklog_interval){
     latlon_manager.addCoord({ lat, lon});
     last_latlon_manager = millis();
@@ -346,7 +349,7 @@ bool gps_newdata_arrived(){
       int basetrack = 280;
       if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
         basetrack = 100;
-      demo_biwako_truetrack = basetrack + (8.5 + 2*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+30*sin(millis() / 10000.0);
+      demo_biwako_truetrack = basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
       
       newcourse_arrived = true;
       add_latlon_track(demo_biwako_lat, demo_biwako_lon);
@@ -365,7 +368,7 @@ void set_newdata_off(){
 bool drawallow_once = false;
 unsigned long timelastgpsupdate = 0;
 void gps_loop(int id) {
-  if(GPS_SERIAL.available() > 100){
+  if(GPS_SERIAL.available() > 256){
     DEBUGW_P(20250424,"ID=");
     DEBUGW_P(20250424,id);
     DEBUGW_P(20250424," Caution, remaining FIFO buffer. avail=");
@@ -613,6 +616,9 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
+  if(demo_biwako){
+    return get_gps_numsat() != 0;
+  }
   if(stored_fixtype >= 1){
     return true;
   }

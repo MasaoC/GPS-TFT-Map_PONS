@@ -118,10 +118,9 @@ bool loadNextChunk() {
 
 extern bool sdError;
 void startPlayWav(const char* filename, int priority) {
-    Serial.println(filename);
-    Serial.println(priority);
     if(playing && playing_priority > priority){
-        DEBUGW_PLN(20250427,"Start play wav canceled due to priority.");
+        DEBUGW_P(20250427,"Start play wav canceled due to priority.:");
+        DEBUGW_PLN(20250427,filename);
         return;
     }
     // Stop current playback if any
@@ -204,25 +203,6 @@ void stopPlayback() {
     setAmplifierState(false);
     
     DEBUG_P(20250424,"Playback stopped");
-}
-
-
-void browseWav() {
-    // Print available files on SD card
-    Serial.println("Available WAV files:");
-    File root = SD.open("wav/");
-    while (true) {
-        File entry = root.openNextFile();
-        if (!entry) break;
-        if (!entry.isDirectory()) {
-            String filename = entry.name();
-            if (filename.endsWith(".wav") || filename.endsWith(".WAV")) {
-                Serial.println(entry.name());
-            }
-        }
-        entry.close();
-    }
-    root.close();
 }
 
 
@@ -391,7 +371,6 @@ void setup_sound(){
     }else{
         enqueueTask(createPlayMultiToneTask(500, 150, 10));
     }
-  browseWav();
 
 }
 

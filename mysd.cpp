@@ -66,7 +66,7 @@ bool saveSettings() {
   SD.remove("settings.txt"); // Remove old file to start fresh
   File file = SD.open("settings.txt", FILE_WRITE);
   if (!file) {
-    Serial.println("Failed to open settings.txt for writing");
+    DEBUGW_PLN(20250401,"Failed to open settings.txt for writing");
     return false;
   }
 
@@ -80,7 +80,7 @@ bool saveSettings() {
   }
 
   file.close();
-  Serial.println("Settings saved to settings.txt");
+  DEBUG_PLN(20250401,"Settings saved to settings.txt");
   return true;
 }
 
@@ -351,7 +351,8 @@ void enqueueTaskWithAbortCheck(Task newTask) {
   if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
     if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
       //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.
-      Serial.println("NOT enque the task.");
+      DEBUGW_P(20250429,"NOT enque the task:");
+      DEBUGW_PLN(20250429,newTask.type);
       return;
     }
     
@@ -650,6 +651,7 @@ void setup1(void){
 
 void loop1() {
   loop_sound();
+
   if (dequeueTask(&currentTask)) {
     switch (currentTask.type) {
       case TASK_SAVE_SETTINGS:

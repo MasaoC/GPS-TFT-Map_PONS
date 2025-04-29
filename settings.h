@@ -1,10 +1,10 @@
 //====== 設定画面 =======
 
 // リリース時
-#define RELEASE
+//#define RELEASE
 
-#define BUILDDATE 20250427
-#define BUILDVERSION "0.82"
+#define BUILDDATE 20250428
+#define BUILDVERSION "0.83"
 
 #define PRINTREVERSEDATE_NUM 0
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
