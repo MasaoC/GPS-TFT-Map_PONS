@@ -1,3 +1,6 @@
+// GPS_TFT_map. PONS v5
+// Author: Masao Chiguchi @C 2025
+
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
@@ -6,6 +9,8 @@
 #include "gps.h"
 #include "sound.h"
 
+// we need to do bool core1_separate_stack = true; for stack running out.
+bool core1_separate_stack = true;//DO NOT REMOVE THIS LINE.
 
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
@@ -144,7 +149,7 @@ void setup(void) {
 }
 
 int course_warning_index = 0;
-unsigned long last_course_warning_time = 0;//起動時にwarniingしないようにマイナス
+unsigned long last_course_warning_time = 0;
 
 double steer_angle = 0.0;
 
@@ -312,14 +317,14 @@ void loop() {
       double destlat = extradestinations[currentdestination].cords[0][0];
       double destlon = extradestinations[currentdestination].cords[0][1];
       if(destination_mode == DMODE_FLYINTO) 
-        draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
+        draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,3);
       else if(destination_mode == DMODE_FLYAWAY) 
         draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
       else if(destination_mode == DMODE_AUTO10K){
         if(auto10k_status == AUTO10K_AWAY)
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
         else if(auto10k_status == AUTO10K_INTO)
-          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,2);
+          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,3);
       }
     }
     gps_loop(5);
@@ -421,8 +426,7 @@ void update_course_warning(float degpersecond){
   //正しい方向に変化している時はindexを減らす。
   else if((degpersecond > 0.5 && steer_angle > 0) || (degpersecond < -0.5 && steer_angle < 0)){
     course_warning_index -= 15*abs(degpersecond);//修正速度に応じ、7以上のindexが減る。3deg/sの時、indexは45減る。
-    if(course_warning_index < 0)
-      course_warning_index = 0;
+    
   }
   //正しい方向に修正されていない、かつ15度以上ずれている。
   else if(abs(steer_angle) > 15){
@@ -433,9 +437,14 @@ void update_course_warning(float degpersecond){
     course_warning_index = 0;
   }
   
+  // range 0-900
+  if(course_warning_index > 900)
+    course_warning_index = 900;
+  else if(course_warning_index < 0)
+    course_warning_index = 0;
   
   //15度の修正されないズレは、15/900=60秒でwarning。90度以上の修正されないズレは、10秒でwarning。ただしwarningは、30秒に一度をmax回数とする。
-  if(course_warning_index > 900 && millis() - last_course_warning_time > 30000){
+  if(course_warning_index >= 900 && millis() - last_course_warning_time > 30000){
     last_course_warning_time = millis();
     course_warning_index = 0;
     enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1));

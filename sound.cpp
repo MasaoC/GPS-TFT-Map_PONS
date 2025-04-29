@@ -206,25 +206,6 @@ void stopPlayback() {
 }
 
 
-void browseWav() {
-    // Print available files on SD card
-    Serial.println("Available WAV files:");
-    File root = SD.open("wav/");
-    while (true) {
-        File entry = root.openNextFile();
-        if (!entry) break;
-        if (!entry.isDirectory()) {
-            String filename = entry.name();
-            if (filename.endsWith(".wav") || filename.endsWith(".WAV")) {
-                Serial.println(entry.name());
-            }
-        }
-        entry.close();
-    }
-    root.close();
-}
-
-
 
 
 void loop_sound(){
@@ -390,7 +371,6 @@ void setup_sound(){
     }else{
         enqueueTask(createPlayMultiToneTask(500, 150, 10));
     }
-  browseWav();
 
 }
 

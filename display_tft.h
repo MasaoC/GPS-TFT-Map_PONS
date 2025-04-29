@@ -109,7 +109,6 @@ void clean_backscreen();
 void push_backscreen();
 
 
-void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
 void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
