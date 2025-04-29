@@ -118,10 +118,9 @@ bool loadNextChunk() {
 
 extern bool sdError;
 void startPlayWav(const char* filename, int priority) {
-    Serial.println(filename);
-    Serial.println(priority);
     if(playing && playing_priority > priority){
-        DEBUGW_PLN(20250427,"Start play wav canceled due to priority.");
+        DEBUGW_P(20250427,"Start play wav canceled due to priority.:");
+        DEBUGW_PLN(20250427,filename);
         return;
     }
     // Stop current playback if any
