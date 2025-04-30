@@ -5,8 +5,8 @@
 #include "navdata.h"
 #include "settings.h"
 //#define DISABLE_FS_H_WARNING
-#include <SD.h>
 #include <SPI.h>
+#include "SdFat.h"
 #include "sound.h"
 
 #define MAX_SETTING_LENGTH 32
@@ -14,6 +14,7 @@
 
 extern volatile bool quick_redraw;
 
+SdFat32 SD;
 bool sdInitialized = false;
 bool sdError = false;
 #define LOGFILE_NAME "log.txt"
@@ -64,7 +65,7 @@ extern double scale;
 // Save all settings to settings.txt
 bool saveSettings() {
   SD.remove("settings.txt"); // Remove old file to start fresh
-  File file = SD.open("settings.txt", FILE_WRITE);
+  File32 file = SD.open("settings.txt", FILE_WRITE);
   if (!file) {
     DEBUGW_PLN(20250401,"Failed to open settings.txt for writing");
     return false;
@@ -87,7 +88,7 @@ bool saveSettings() {
 
 // Load settings from settings.txt
 bool loadSettings() {
-  File file = SD.open("settings.txt", FILE_READ);
+  File32 file = SD.open("settings.txt", FILE_READ);
   if (!file) {
     Serial.println("Failed to open settings.txt for reading");
     return false;
@@ -467,7 +468,7 @@ void init_mapdata() {
     DEBUG_PLN(20241006,"Map already initialized.");
     return;//only once to avoid possible memory leak.
   }
-  File myFile = SD.open("mapdata.csv");
+  File32 myFile = SD.open("mapdata.csv");
   if (!myFile) {
     return;
   }
@@ -482,38 +483,9 @@ void init_mapdata() {
   mapdatainitialized = true;
 }
 
-void init_destinations(){
-  destinations_count = 0;
-  currentdestination = 0;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("PLATHOME");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PLA_LAT, PLA_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("N_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PILON_NORTH_LAT, PILON_NORTH_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("W_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PILON_WEST_LAT, PILON_WEST_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("TAKESHIMA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("SHINURA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
-  destinations_count++;
-}
 
 void load_destinations(){
-  File myFile = SD.open("destinations.csv");
+  File32 myFile = SD.open("destinations.csv");
   if (!myFile) {
     return;
   }
@@ -527,16 +499,15 @@ void load_destinations(){
   myFile.close();
 }
 
-void setup_sd(){
-  #ifdef DISABLE_SD
-    return;
-  #endif
+void setup_sd(int trycount){
+  for(int i = 0; i < trycount; i++){
+    sdInitialized = SD.begin(SdioConfig(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO));
+    if(sdInitialized)
+      break;
+    delay(100);
+  }
+  Serial.println("SUCCESS");
   
-  //sdInitialized = SD.begin(SD_CS_PIN,SD_SCK_MHZ(50));
-  
-  sdInitialized = SD.begin(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO);
-
-
   if (!sdInitialized) {
     return;
   }else{
@@ -570,7 +541,7 @@ bool browse_sd(int page) {
     }
 
 
-    File root = SD.open("/");
+    File32 root = SD.open("/");
     if (!root || !root.isDirectory()) {
         Serial.println("Failed to open root directory");
         if (root) root.close();
@@ -583,11 +554,12 @@ bool browse_sd(int page) {
 
     // Process all entries
     while (true) {
-        File entry = root.openNextFile();
+        File32 entry = root.openNextFile();
         if (!entry) break;
 
         // Skip hidden files and macOS-specific files starting with "." or "/."
-        const char* name = entry.name();
+        char name[32];
+        entry.getName(name, 32);
         if (name[0] == '.' || (name[0] == '/' && name[1] == '.')) {
             entry.close();
             continue;
@@ -635,62 +607,8 @@ bool browse_sd(int page) {
     return matched > 0; // Return true if any entries were found
 }
 
-void setup1(void){
-  mutex_init(&taskQueueMutex);
-  init_destinations();
-  setup_sd();
 
-  setup_sound();
-}
 
-void loop1() {
-  loop_sound();
-
-  if (dequeueTask(&currentTask)) {
-    switch (currentTask.type) {
-      case TASK_SAVE_SETTINGS:
-        saveSettings();
-        break;
-      case TASK_PLAY_WAV:
-        startPlayWav(currentTask.playWavArgs.wavfilename,currentTask.playWavArgs.priority);
-        break;
-      case TASK_PLAY_MULTITONE:
-        playTone(currentTask.playMultiToneArgs.freq,currentTask.playMultiToneArgs.duration,currentTask.playMultiToneArgs.counter);
-        break;
-      case TASK_INIT_SD:
-        setup_sd();
-        break;
-      case TASK_BROWSE_SD:
-        browse_sd(currentTask.pagenum);
-        break;
-      case TASK_LOG_SD:
-        log_sd(currentTask.logText);
-        break;
-      case TASK_LOG_SDF:
-        log_sdf(currentTask.logSdfArgs.format, currentTask.logSdfArgs.buffer);
-        break;
-      case TASK_SAVE_CSV:
-        saveCSV(
-          currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
-          currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
-          currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
-          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second
-        );
-        break;
-      case TASK_LOAD_MAPIMAGE:
-        load_mapimage(
-          currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
-          currentTask.loadMapImageArgs.zoomlevel
-        );
-        break;
-    }
-    currentTask.type = TASK_NONE;
-  } else {
-    // No tasks, optionally sleep or yield
-    delay(10);
-  }
-}
 
 void dateTime(uint16_t* date, uint16_t* time) {
  // return date using FAT_DATE macro to format fields
@@ -713,13 +631,12 @@ bool good_sd(){
 }
 
 
-File logFile;
 void log_sd(const char* text){
   #ifdef DISABLE_SD
     return;
   #endif
 
-  File logFile = SD.open("log2.txt", FILE_WRITE);
+  File32 logFile = SD.open("log2.txt", FILE_WRITE);
   if(!logFile){
     Serial.println("ERR LOG");
     sdError = true;
@@ -771,7 +688,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   if(sdError){
     if(millis()-lasttrytime_sd > 10000){//10秒以上たっていたら、リトライ
       lasttrytime_sd = millis();
-      setup_sd();
+      setup_sd(1);
     }
     return;
   }
@@ -790,7 +707,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
   log_sdf("%d:%s",millis(),csv_filename);
 
-  File csvFile = SD.open(csv_filename, FILE_WRITE);
+  File32 csvFile = SD.open(csv_filename, FILE_WRITE);
 
   if (csvFile) {
     if(!headerWritten){
@@ -950,7 +867,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
 
 
   // Open BMP file
-  File bmpImage = SD.open(filename, FILE_READ);
+  File32 bmpImage = SD.open(filename, FILE_READ);
   if (!bmpImage) {
     gmap_loaded_active = false;
     return;
@@ -1111,7 +1028,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
 
 void load_push_logo(){
     // Open BMP file
-  File bmpImage = SD.open("logo.bmp", FILE_READ);
+  File32 bmpImage = SD.open("logo.bmp", FILE_READ);
   if (!bmpImage) {
     gmap_loaded_active = false;
     return;

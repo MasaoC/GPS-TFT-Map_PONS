@@ -12,6 +12,47 @@ float dest_dist = 0;
 int destination_mode = DMODE_FLYAWAY;
 int auto10k_status = AUTO10K_AWAY;
 
+
+mapdata extramaps[MAX_MAPDATAS];
+int current_id = 100;
+int mapdata_count = 0;
+
+mapdata extradestinations[MAX_DESTINATIONS];
+int destinations_count = 0;
+int currentdestination = -1;
+
+
+void init_destinations(){
+  destinations_count = 0;
+  currentdestination = 0;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("PLATHOME");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {PLA_LAT, PLA_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("N_PILON");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {PILON_NORTH_LAT, PILON_NORTH_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("W_PILON");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {PILON_WEST_LAT, PILON_WEST_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("TAKESHIMA");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
+  destinations_count++;
+  extradestinations[destinations_count].id = current_id++;
+  extradestinations[destinations_count].name = strdup("SHINURA");
+  extradestinations[destinations_count].size = 1;
+  extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
+  destinations_count++;
+}
+
+
 // Convert degrees to radians
 float deg2rad(float degrees) {
   return degrees * PI / 180.0;
@@ -124,14 +165,6 @@ bool check_within_latlon(double latdif,double londif,double lat1,double lat2,dou
   return (abs(lat1-lat2) < latdif) && (abs(lon1-lon2) < londif);
 }
 
-
-mapdata extramaps[MAX_MAPDATAS];
-int current_id = 100;
-int mapdata_count = 0;
-
-mapdata extradestinations[MAX_DESTINATIONS];
-int destinations_count = 0;
-int currentdestination = -1;
 
 char* strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case

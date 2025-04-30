@@ -25,6 +25,15 @@
         void (*getter)(char*, size_t);     // Function to get the value
     } SDSetting;
 
+
+    void setup_sd(int trycount);
+
+    bool browse_sd(int page);
+    void log_sd(const char* text);
+    void log_sdf(const char* format, ...);
+    void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second);
+    void load_mapimage(double center_lat, double center_lon,int zoomlevel);
+
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
     void getVolume(char* buffer, size_t bufferSize);

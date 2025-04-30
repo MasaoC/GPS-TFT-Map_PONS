@@ -16,7 +16,6 @@
 
 
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
-TFT_eSprite needle = TFT_eSprite(&tft);    // Sprite object for needle
 TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
 
@@ -98,24 +97,6 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
     return Coordinate{newLat, newLon};
 }
 
-const int NEEDLE_LEN = 120;
-void createNeedle(void) {
-  needle.setColorDepth(8);
-  needle.createSprite(4, NEEDLE_LEN);  // create the needle Sprite 3x120
-
-  needle.fillSprite(TFT_BLACK);  // Fill with black
-  //needle.fillRect(0, 10, 4, 12, COLOR_RED);
-
-  // Define needle pivot point
-  uint16_t piv_x = needle.width() / 2;   // x pivot of Sprite (middle)
-  uint16_t piv_y = needle.height() - 2;  // y pivot of Sprite (10 pixels from bottom)
-  needle.setPivot(piv_x, piv_y);         // Set pivot point in this Sprite
-
-  //needle.drawLine(0, 10, 0, 120, COLOR_GRAY);
-
-  // Draw needle centre boss
-  //needle.drawPixel( piv_x, piv_y, TFT_WHITE);     // Mark needle pivot point with a white pixel
-}
 
 
 
@@ -142,7 +123,7 @@ void setup_tft() {
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
   tft.fillScreen(COLOR_WHITE);
 
-  createNeedle();
+
 
   if(!backscreen.created()){
     backscreen.setColorDepth(16);
@@ -646,6 +627,7 @@ void draw_course_warning(int steer_angle){
 }
 
 extern int course_warning_index;
+const int NEEDLE_LEN = 120;
 
 void draw_triangle(int ttrack,int steer_angle) {
   float tt_radians = deg2rad(ttrack);
@@ -664,17 +646,29 @@ void draw_triangle(int ttrack,int steer_angle) {
     }else{
       backscreen.fillTriangle(x1,y1,x2,y2,x3,y3, (millis()/1000)%2==0?COLOR_RED:COLOR_BLACK);
     }
-    backscreen.setPivot(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2);
-    needle.pushRotated(&backscreen,ttrack);
-    //needle.pushRotated(ttrack);
-
+    
     //Center black triangle (my position)
-    int rb_x_new = -TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
-    int rb_y_new = -TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
-    int lb_x_new = TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
-    int lb_y_new = TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
-    backscreen.fillTriangle(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2 + rb_x_new, BACKSCREEN_SIZE / 2 + rb_y_new, 240 / 2 + lb_x_new, 240 / 2 + lb_y_new, COLOR_BLACK);
-
+    
+    //int rb_x_new = -TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
+    //int rb_y_new = -TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
+    //int lb_x_new = TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
+    //int lb_y_new = TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
+    //backscreen.fillTriangle(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2 + rb_x_new, BACKSCREEN_SIZE / 2 + rb_y_new, 240 / 2 + lb_x_new, 240 / 2 + lb_y_new, COLOR_BLACK);
+    
+    int left_wing_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * cos(tt_radians);
+    int left_wing_tip_y = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * sin(tt_radians);
+    int right_wing_tip_x = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * cos(tt_radians);
+    int right_wing_tip_y = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * sin(tt_radians);
+    int left_tail_tip_x = BACKSCREEN_SIZE / 2 + (-TRIANGLE_HWIDTH / 2) * cos(tt_radians) - (0.5 * TRIANGLE_SIZE) * sin(tt_radians);
+    int left_tail_tip_y = BACKSCREEN_SIZE / 2 + (-TRIANGLE_HWIDTH / 2) * sin(tt_radians) + (0.5 * TRIANGLE_SIZE) * cos(tt_radians);
+    int right_tail_tip_x = BACKSCREEN_SIZE / 2 + (TRIANGLE_HWIDTH / 2) * cos(tt_radians) - (0.5 * TRIANGLE_SIZE) * sin(tt_radians);
+    int right_tail_tip_y = BACKSCREEN_SIZE / 2 + (TRIANGLE_HWIDTH / 2) * sin(tt_radians) + (0.5 * TRIANGLE_SIZE) * cos(tt_radians);
+    int body_tail_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_SIZE/2 * sin(tt_radians);
+    int body_tail_tip_y = BACKSCREEN_SIZE / 2 + TRIANGLE_SIZE/2 * cos(tt_radians);
+    backscreen.drawWideLine(left_wing_tip_x, left_wing_tip_y, right_wing_tip_x, right_wing_tip_y, 3, COLOR_BLACK);
+    backscreen.drawWideLine(left_tail_tip_x, left_tail_tip_y, right_tail_tip_x, right_tail_tip_y, 2, COLOR_BLACK);
+    backscreen.drawWideLine(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, body_tail_tip_x, body_tail_tip_y, 2, COLOR_BLACK);
+    
 
     if((millis()/1000)%3 != 0){
       float arc_factor = course_warning_index/900.0;
@@ -718,6 +712,10 @@ void draw_triangle(int ttrack,int steer_angle) {
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
     }
+    
+    // Needle
+    backscreen.drawWideLine(240/2+sin(tt_radians)*9, 240/2-cos(tt_radians)*9, 120+sin(tt_radians)*NEEDLE_LEN, 120-cos(tt_radians)*NEEDLE_LEN, 3,COLOR_BLACK);
+    
   }
   if (upward_mode == MODE_TRACKUP) {
     int shortening = 30;
@@ -800,9 +798,10 @@ void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double c
     backscreen.drawWideLine(240 / 2, 240 / 2, goal.x, goal.y, thickness, COLOR_MAGENTA);
     double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
     double newlat, newlon;
-    calculatePointC(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
-    goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    backscreen.drawLine(240 / 2, 240 / 2,goal.x, goal.y, COLOR_MAGENTA);
+    //
+    calculatePointC(dest_lat, dest_lon, center_lat, center_lon, -distance, newlat, newlon);
+    cord_tft outside_tft = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
+    backscreen.drawLine(goal.x, goal.y,outside_tft.x,outside_tft.y, COLOR_MAGENTA);
   }
 }
 
@@ -1227,7 +1226,8 @@ void draw_footer(){
   } else if (millis() - last_maxadr_time > 3000L) {
     max_adreading += (adreading - max_adreading) * 0.4;
   }
-  double input_voltage = BATTERY_MULTIPLYER(max_adreading);
+  double input_voltage = min(BATTERY_MULTIPLYER(max_adreading),4.3);
+
   header_footer.setCursor(SCREEN_WIDTH - 37, 13);
   header_footer.setTextColor(COLOR_GREEN);
   if (digitalRead(24)) {
@@ -1260,6 +1260,8 @@ void draw_footer(){
     header_footer.fillRect(SCREEN_WIDTH-101,12, 44,15, COLOR_RED);
   } else if (get_gps_numsat() < 10) {
     header_footer.setTextColor(COLOR_DARKORANGE);
+  }else{
+    header_footer.setTextColor(COLOR_GREEN);
   }
   header_footer.setCursor(SCREEN_WIDTH-100,13);
   header_footer.printf("%dsats", get_gps_numsat());
@@ -1755,7 +1757,7 @@ void draw_setting_mode(bool redraw_screen, int selectedLine, int cursorLine) {
 
     #ifdef RELEASE
     header_footer.setCursor(100,15);
-    header_footer.printf("Heap %d%% FrStk %dKB",rp2040.getFreeHeap()*100/rp2040.getTotalHeap(),rp2040.getFreeStack()/1000);
+    header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
     #endif
 
     header_footer.loadFont(AA_FONT_SMALL);

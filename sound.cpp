@@ -5,13 +5,14 @@
 #include "hardware/pwm.h"
 #include "hardware/timer.h"
 #include "pico/stdlib.h"
-#include <SD.h>
+#include "SdFat.h"
 
 #define PWM_PIN 9           // PWM output pin
 #define AMP_SHUTDOWN_PIN 10 // PAM8302 shutdown pin
 
 //makesure file does not contain meta data.  8 bit unsigned PCM , 16kHz.
-#define OPENING_FILENAME "wav/opening.wav"
+
+extern SdFat32 SD;
 const int sampleRate = 16000;  // 16 kHz sample rate
 // Audio parameters
 const int WAV_HEADER_SIZE = 45;  // Standard WAV header size
@@ -31,7 +32,7 @@ volatile bool bufferSwapRequest = false;  // Flag to request buffer swap
 
 
 // File object and size tracking
-File audioFile;
+File32 audioFile;
 uint32_t totalAudioSize = 0;    // Total size of audio data
 uint32_t audioDataRead = 0;     // How much data we've read so far
 uint32_t chunksLoaded = 0;      // Counter for tracking how many chunks were loaded
@@ -365,11 +366,6 @@ void setup_sound(){
   
     for (int i = 0; i < tableSize; i++) {
         sineTable[i] = 128 + 127 *SIN_VOLUME* sin(2 * M_PI * i / tableSize);
-    }
-    if(good_sd()){
-        startPlayWav(OPENING_FILENAME);
-    }else{
-        enqueueTask(createPlayMultiToneTask(500, 150, 10));
     }
 
 }

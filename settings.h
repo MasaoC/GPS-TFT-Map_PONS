@@ -3,8 +3,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20250429
-#define BUILDVERSION "0.83"
+#define BUILDDATE 20250430
+#define BUILDVERSION "0.84"
 
 #define PRINTREVERSEDATE_NUM 0
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);

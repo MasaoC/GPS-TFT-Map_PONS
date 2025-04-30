@@ -26,8 +26,6 @@ unsigned long lastSampleTime = 0;  // Time when the last sample was taken
 int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;            // The calculated average differential
 
-
-
 int screen_mode = MODE_MAP;
 int detail_page = 0;
 volatile int scaleindex = 3;
@@ -38,78 +36,29 @@ double scale;
 int selectedLine = -1;
 int cursorLine = 0;
 unsigned long lastfresh_millis = 0;
-
 volatile int sound_volume = 50;
-
-extern int setting_size;
-
-
 int lastload_zoomlevel;
 
-// Callback function for short press
-void shortPressCallback() {
-  quick_redraw = true;
-  redraw_screen = true;
-  DEBUG_PLN(20240801, "short press");
 
-
-  if (screen_mode == MODE_SETTING) {  //Setting mode
-    if (selectedLine == -1) {         //No active selected line.
-      cursorLine = (cursorLine + 1) % setting_size;
-    } else {
-      menu_settings[selectedLine].CallbackToggle();
-    }
-  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_SDDETAIL) {
-    detail_page++;
-  } else {
-    gmap_loaded_active = false;
-    scaleindex = (scaleindex+1) % (sizeof(scalelist) / sizeof(scalelist[0]));
-    scale = scalelist[scaleindex];
-  }
-}
-
-// Callback function for long press
-void longPressCallback() {
-  quick_redraw = true;
-  redraw_screen = true;
-
-  if (screen_mode != MODE_SETTING) {
-    if (screen_mode == MODE_GPSDETAIL)
-      gps_getposition_mode();
-    screen_mode = MODE_SETTING;
-    cursorLine = 0;
-    selectedLine = -1;
-    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
-  } else {
-    if (selectedLine == -1 && menu_settings[cursorLine].CallbackEnter != nullptr) {
-      menu_settings[cursorLine].CallbackEnter();
-      selectedLine = cursorLine;
-    } else {
-      if (selectedLine == -1) {
-        //Entering changing value mode.
-        selectedLine = cursorLine;
-      } else {
-        //exiting changing value mode.
-        if(menu_settings[cursorLine].CallbackExit != nullptr)
-          menu_settings[cursorLine].CallbackExit();
-        selectedLine = -1;
-      }
-    }
-  }
-}
+void shortPressCallback();
+void longPressCallback();
 
 // Create Button objects
 Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
 
-void setup_switch() {
-  pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
-}
+int course_warning_index = 0;
+unsigned long last_course_warning_time = 0;
 
-void switch_handling() {
-  sw_push.read();
-}
+double steer_angle = 0.0;
 
+void reset_degpersecond();
+void update_degpersecond();
+void update_course_warning(float degpersecond);
 
+extern int setting_size;
+extern bool newcourse_arrived;
+
+//===============SET UP CORE0=================
 void setup(void) {
   Serial.begin(38400);
 
@@ -119,7 +68,8 @@ void setup(void) {
   }
   #endif
 
-  setup_switch();
+  //setup switch
+  pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
   setup_tft();
 
   adc_gpio_init(BATTERY_PIN);  // Initialize GPIO26 as ADC
@@ -145,18 +95,34 @@ void setup(void) {
   enqueueTask(createLogSdTask("SETUP DONE"));
 }
 
-int course_warning_index = 0;
-unsigned long last_course_warning_time = 0;
 
-double steer_angle = 0.0;
+//===============SET UP CORE1=================
+void setup1(void){
+  Serial.begin(38400);
+  mutex_init(&taskQueueMutex);
+  init_destinations();
+  setup_sound();
 
-void reset_degpersecond();
-void update_degpersecond();
-void update_course_warning(float degpersecond);
+  //====core1_separate_stack = true の時、Serial.printがないとSDが動かない。詳細不明だが、消すな！
+  Serial.println("");//消すな
+  // call to Serial.println() might force the Arduino runtime or the RP2350’s FreeRTOS (used in the RP2040/RP2350 Arduino core for dual-core support) to fully initialize Core1’s context,
+  // ensuring that the SD library’s internal state to set up.
+  // Without this call, Core1 might attempt to initialize the SD card before its runtime environment is fully ready, especially with a separate stack.
+  //====
+  
+  setup_sd(5);
 
-extern bool newcourse_arrived;
+  if(good_sd()){
+      enqueueTask(createPlayWavTask( "wav/opening.wav"));
+  }else{
+      enqueueTask(createPlayMultiToneTask(500, 150, 10));
+  }
+}
+
+//===============MAIN LOOP CORE0=================
 void loop() {
-  switch_handling();
+  //switch handling
+  sw_push.read();
   gps_loop(0);
   
   #ifndef RELEASE
@@ -367,6 +333,111 @@ void loop() {
   }
 }
 
+
+//===============MAIN LOOP CORE1=================
+void loop1() {
+  loop_sound();
+  if (dequeueTask(&currentTask)) {
+    switch (currentTask.type) {
+      case TASK_SAVE_SETTINGS:
+        saveSettings();
+        break;
+      case TASK_PLAY_WAV:
+        startPlayWav(currentTask.playWavArgs.wavfilename,currentTask.playWavArgs.priority);
+        break;
+      case TASK_PLAY_MULTITONE:
+        playTone(currentTask.playMultiToneArgs.freq,currentTask.playMultiToneArgs.duration,currentTask.playMultiToneArgs.counter);
+        break;
+      case TASK_INIT_SD:
+        setup_sd(1);
+        break;
+      case TASK_BROWSE_SD:
+        browse_sd(currentTask.pagenum);
+        break;
+      case TASK_LOG_SD:
+        log_sd(currentTask.logText);
+        break;
+      case TASK_LOG_SDF:
+        log_sdf(currentTask.logSdfArgs.format, currentTask.logSdfArgs.buffer);
+        break;
+      case TASK_SAVE_CSV:
+        saveCSV(
+          currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
+          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
+          currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
+          currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
+          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second
+        );
+        break;
+      case TASK_LOAD_MAPIMAGE:
+        load_mapimage(
+          currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
+          currentTask.loadMapImageArgs.zoomlevel
+        );
+        break;
+    }
+    currentTask.type = TASK_NONE;
+  } else {
+    // No tasks, optionally sleep or yield
+    delay(10);
+  }
+}
+
+
+//==========BUTTON==========
+//Callback function for short press
+void shortPressCallback() {
+  quick_redraw = true;
+  redraw_screen = true;
+  DEBUG_PLN(20240801, "short press");
+
+
+  if (screen_mode == MODE_SETTING) {  //Setting mode
+    if (selectedLine == -1) {         //No active selected line.
+      cursorLine = (cursorLine + 1) % setting_size;
+    } else {
+      menu_settings[selectedLine].CallbackToggle();
+    }
+  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_SDDETAIL) {
+    detail_page++;
+  } else {
+    gmap_loaded_active = false;
+    scaleindex = (scaleindex+1) % (sizeof(scalelist) / sizeof(scalelist[0]));
+    scale = scalelist[scaleindex];
+  }
+}
+
+// Callback function for long press
+void longPressCallback() {
+  quick_redraw = true;
+  redraw_screen = true;
+
+  if (screen_mode != MODE_SETTING) {
+    if (screen_mode == MODE_GPSDETAIL)
+      gps_getposition_mode();
+    screen_mode = MODE_SETTING;
+    cursorLine = 0;
+    selectedLine = -1;
+    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+  } else {
+    if (selectedLine == -1 && menu_settings[cursorLine].CallbackEnter != nullptr) {
+      menu_settings[cursorLine].CallbackEnter();
+      selectedLine = cursorLine;
+    } else {
+      if (selectedLine == -1) {
+        //Entering changing value mode.
+        selectedLine = cursorLine;
+      } else {
+        //exiting changing value mode.
+        if(menu_settings[cursorLine].CallbackExit != nullptr)
+          menu_settings[cursorLine].CallbackExit();
+        selectedLine = -1;
+      }
+    }
+  }
+}
+
+// reset deg per second to 0.
 void reset_degpersecond() {
   float track = get_gps_truetrack();
   for (int i = 1; i < NUM_SAMPLES; i++) {
@@ -376,7 +447,7 @@ void reset_degpersecond() {
   bank_warning = false;
 }
 
-
+// deg per second being updated. call this once a second.
 void update_degpersecond() {
   lastSampleTime = millis();
   // Update the truetrack value

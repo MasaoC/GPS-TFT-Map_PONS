@@ -124,6 +124,7 @@
   #define AUTO10K_INTO 1
   extern int auto10k_status;
 
+  void init_destinations();
 
 
   extern mapdata map_shinura;
