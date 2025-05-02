@@ -1,0 +1,4 @@
+volume:10
+destination:PLATHOME
+navigation_mode:AUTO10K
+scaleindex:4

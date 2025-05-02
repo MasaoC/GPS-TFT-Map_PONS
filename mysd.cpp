@@ -51,7 +51,7 @@ void dateTime(uint16_t* date, uint16_t* time);
 SDSetting settings[] = {
   {"volume", setVolume, getVolume},
   {"destination", setDestination, getDestination},
-  {"destination_mode", setDestinationMode, getDestinationMode},
+  {"navigation_mode", setNavigationMode, getNavigationMode},
   {"scaleindex", setScaleIndex, getScaleIndex}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
@@ -167,7 +167,7 @@ void getVolume(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", sound_volume);
 }
 
-void setDestinationMode(const char *value){
+void setNavigationMode(const char *value){
   if(strcmp(value,"INTO") == 0){
     destination_mode = DMODE_FLYINTO;
   }
@@ -180,7 +180,7 @@ void setDestinationMode(const char *value){
     Serial.println("err mode");
   }
 }
-void getDestinationMode(char* buffer, size_t bufferSize) {
+void getNavigationMode(char* buffer, size_t bufferSize) {
   if(destination_mode == DMODE_FLYINTO)
     strncpy(buffer,"INTO", bufferSize);
   else if(destination_mode == DMODE_FLYAWAY)
@@ -295,12 +295,13 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
   return task;
 }
 
-Task createPlayMultiToneTask(int freq, int duration, int count){
+Task createPlayMultiToneTask(int freq, int duration, int count,int priority){
   Task task;
   task.type = TASK_PLAY_MULTITONE;
   task.playMultiToneArgs.freq = freq;
   task.playMultiToneArgs.duration = duration;
   task.playMultiToneArgs.counter = count;
+  task.playMultiToneArgs.priority = priority;
   return task;
 }
 

@@ -647,14 +647,6 @@ void draw_triangle(int ttrack,int steer_angle) {
       backscreen.fillTriangle(x1,y1,x2,y2,x3,y3, (millis()/1000)%2==0?COLOR_RED:COLOR_BLACK);
     }
     
-    //Center black triangle (my position)
-    
-    //int rb_x_new = -TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
-    //int rb_y_new = -TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
-    //int lb_x_new = TRIANGLE_HWIDTH * cos(tt_radians) - TRIANGLE_SIZE * sin(tt_radians);
-    //int lb_y_new = TRIANGLE_HWIDTH * sin(tt_radians) + TRIANGLE_SIZE * cos(tt_radians);
-    //backscreen.fillTriangle(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2 + rb_x_new, BACKSCREEN_SIZE / 2 + rb_y_new, 240 / 2 + lb_x_new, 240 / 2 + lb_y_new, COLOR_BLACK);
-    
     int left_wing_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * cos(tt_radians);
     int left_wing_tip_y = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * sin(tt_radians);
     int right_wing_tip_x = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * cos(tt_radians);
@@ -718,10 +710,13 @@ void draw_triangle(int ttrack,int steer_angle) {
     
   }
   if (upward_mode == MODE_TRACKUP) {
-    int shortening = 30;
-    backscreen.drawFastVLine(240 / 2, shortening, 240 / 2 - shortening, COLOR_BLACK);
-    backscreen.drawFastVLine(240 / 2 + 1, shortening, 240 / 2 - shortening, COLOR_BLACK);
-    backscreen.fillTriangle(240 / 2, 240 / 2, 240 / 2 - TRIANGLE_HWIDTH, 240 / 2 + TRIANGLE_SIZE, 240 / 2 + TRIANGLE_HWIDTH, 240 / 2 + TRIANGLE_SIZE, COLOR_BLACK);
+    int shortening = 15;
+    backscreen.drawFastVLine(240 / 2, shortening, 240 / 2 - shortening-5, COLOR_BLACK);
+    backscreen.drawFastVLine(240 / 2 + 1, shortening, 240 / 2 - shortening-5, COLOR_BLACK);
+
+    backscreen.drawWideLine(BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2, BACKSCREEN_SIZE/2, 3, COLOR_BLACK);
+    backscreen.drawWideLine(BACKSCREEN_SIZE / 2 -TRIANGLE_HWIDTH/2, BACKSCREEN_SIZE / 2 + TRIANGLE_SIZE/2, BACKSCREEN_SIZE/2 + TRIANGLE_HWIDTH/2, BACKSCREEN_SIZE / 2 + TRIANGLE_SIZE/2, 2, COLOR_BLACK);
+    backscreen.drawWideLine(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2 + TRIANGLE_SIZE/2, 2, COLOR_BLACK);
   }
 }
 
@@ -832,7 +827,6 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   //latest
   Coordinate c0 = latlon_manager.getData(0);
   cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
-  Serial.printf("Heap %d%% FrStk %dKB",rp2040.getFreeHeap()*100/rp2040.getTotalHeap(),rp2040.getFreeStack()/1000);
   
 
   if(p0.x != 120 || p0.y != 120){
@@ -905,13 +899,13 @@ void draw_Biwako(double center_lat, double center_lon, float scale, float up, bo
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
-  draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
   if(!gmap_drawed){//if (! && !isTaskInQueue(TASK_LOAD_MAPIMAGE))
     //Run gps_loop 
     gps_loop(2);
     fill_sea_land(center_lat, center_lon, scale, up);
     gps_loop(3);
   }
+  draw_pilon_takeshima_line(center_lat, center_lon, scale, up);
   nomap_drawn = false;
 }
 
@@ -1000,12 +994,12 @@ void startup_demo_tft() {
   }
 }
 void draw_demo_biwako(){
-  backscreen.fillRect(5, 165, SCREEN_WIDTH-5*2, 25+5*2, COLOR_WHITE);
-  backscreen.drawRect(5, 165, SCREEN_WIDTH-5*2, 25+5*2, COLOR_ORANGE);
-  backscreen.setCursor(25,170);
+  backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_WHITE);
+  backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_ORANGE);
+  backscreen.setCursor(25,200);
   backscreen.setTextColor(COLOR_ORANGE);
   backscreen.print("LAKE BIWA DEMO x10 SPD");
-  backscreen.setCursor(17,185);
+  backscreen.setCursor(17,215);
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
@@ -1093,7 +1087,23 @@ bool draw_gmap(float drawupward_direction){
 int last_written_mh = 0;
 unsigned long last_maxadr_time = 0;
 int max_adreading = 0;
+unsigned long last_battery_warning_time = 0;
 
+float get_input_voltage(){
+  int adreading = analogRead(BATTERY_PIN);
+  if (adreading < max_adreading - 200) {//急激に低下=USBが外れた時。 0.4V相当。
+    max_adreading = adreading;
+  }
+  else if (adreading > max_adreading) {
+    Serial.println("bat");
+    Serial.println(BATTERY_MULTIPLYER(max_adreading));
+    max_adreading = adreading;
+    last_maxadr_time = millis();
+  } else if (millis() - last_maxadr_time > 3000L) {
+    max_adreading += (adreading - max_adreading) * 0.2;
+  }
+  return min(BATTERY_MULTIPLYER(max_adreading),4.3);
+}
 
 
 void draw_header(double degpersecond) {
@@ -1175,12 +1185,12 @@ void draw_footer(){
 
   // ====Navigation.==== Distance to plathome.
   if(currentdestination != -1 && currentdestination < destinations_count){
-    header_footer.setCursor(1, 12);
+    header_footer.setCursor(1, 11);
     header_footer.setTextColor(COLOR_MAGENTA);
     header_footer.printf("MC%3d", magc);
 
 
-    header_footer.setCursor(60, 12);
+    header_footer.setCursor(60, 11);
     header_footer.setTextColor(COLOR_BLACK);
     if(!get_gps_fix() && !get_demo_biwako())
       header_footer.print("---km");
@@ -1218,35 +1228,31 @@ void draw_footer(){
   }
 
   // ====Battery====
-  int adreading = analogRead(BATTERY_PIN);
 
-  if (adreading > max_adreading) {
-    max_adreading = adreading;
-    last_maxadr_time = millis();
-  } else if (millis() - last_maxadr_time > 3000L) {
-    max_adreading += (adreading - max_adreading) * 0.4;
-  }
-  double input_voltage = min(BATTERY_MULTIPLYER(max_adreading),4.3);
-
-  header_footer.setCursor(SCREEN_WIDTH - 37, 13);
+  header_footer.setCursor(SCREEN_WIDTH - 37, 11);
   header_footer.setTextColor(COLOR_GREEN);
-  if (digitalRead(24)) {
+  if (digitalRead(USB_DETECT)) {
     header_footer.print("USB");
   } else {
-    if (input_voltage > 4.25) {
-      header_footer.setCursor(SCREEN_WIDTH - 45, 13);
-      header_footer.setTextColor(COLOR_RED);
+    header_footer.setCursor(SCREEN_WIDTH - 45, 11);
+    float input_voltage = get_input_voltage();
+    if (input_voltage <= BAT_LOW_VOLTAGE) {
+      if((millis()/1000)%2 != 0){
+        header_footer.setTextColor(COLOR_RED);
+      }else{
+        header_footer.fillRect(SCREEN_WIDTH-47,10, 47,15, COLOR_RED);
+        header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
+      }
       header_footer.printf("%.2fV", input_voltage);
-    } else if (input_voltage < BAT_LOW_VOLTAGE) {
-      header_footer.setCursor(SCREEN_WIDTH - 67, 13);
-      header_footer.setTextColor(COLOR_RED);
-      header_footer.print("BATLOW");
-    } else if (input_voltage < 3.75) {
-      header_footer.setCursor(SCREEN_WIDTH - 45, 13);
+      //最後のバッテリー警告から60秒以上経過。
+      if(millis() > last_battery_warning_time+60*1000){
+        last_battery_warning_time = millis();
+        enqueueTask(createPlayWavTask( "wav/battery_low.wav"));
+      }
+    } else if (input_voltage < 3.7) {
       header_footer.setTextColor(COLOR_MAGENTA);
       header_footer.printf("%.2fV", input_voltage);
-    } else {//between 3.75-4.25
-      header_footer.setCursor(SCREEN_WIDTH - 45, 13);
+    } else {//between 3.7-4.3
       header_footer.setTextColor(COLOR_GREEN);
       header_footer.printf("%.2fV", input_voltage);
     }
@@ -1257,13 +1263,13 @@ void draw_footer(){
   int col = COLOR_GREEN;
   if (get_gps_numsat() < 5) {
     header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
-    header_footer.fillRect(SCREEN_WIDTH-101,12, 44,15, COLOR_RED);
+    header_footer.fillRect(SCREEN_WIDTH-101,10, 44,15, COLOR_RED);
   } else if (get_gps_numsat() < 10) {
     header_footer.setTextColor(COLOR_DARKORANGE);
   }else{
     header_footer.setTextColor(COLOR_GREEN);
   }
-  header_footer.setCursor(SCREEN_WIDTH-100,13);
+  header_footer.setCursor(SCREEN_WIDTH-100,11);
   header_footer.printf("%dsats", get_gps_numsat());
 
   // 5 decimal places latitude, longitude print.
@@ -1337,6 +1343,22 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
   backscreen.drawLine(pla.x, pla.y, w_pilon.x, w_pilon.y, COLOR_GREEN);
   backscreen.drawCircle(pla.x, pla.y, scale*10.55f/cos(radians(35)),COLOR_GREEN);
+
+  if(!n_pilon.isOutsideTft()){
+    backscreen.fillTriangle(n_pilon.x-2,n_pilon.y,n_pilon.x+2,n_pilon.y,n_pilon.x,n_pilon.y-6, COLOR_ORANGE);
+    backscreen.drawTriangle(n_pilon.x-2,n_pilon.y,n_pilon.x+2,n_pilon.y,n_pilon.x,n_pilon.y-6, COLOR_BLACK);
+  }
+  if(!w_pilon.isOutsideTft()){
+    backscreen.fillTriangle(w_pilon.x-2,w_pilon.y,w_pilon.x+2,w_pilon.y,w_pilon.x,w_pilon.y-6, COLOR_ORANGE);
+    backscreen.drawTriangle(w_pilon.x-2,w_pilon.y,w_pilon.x+2,w_pilon.y,w_pilon.x,w_pilon.y-6, COLOR_BLACK);
+  }
+  if(!pla.isOutsideTft()){
+    backscreen.fillRect(pla.x-3, pla.y-2, 6, 8, COLOR_BLUE);
+    backscreen.fillTriangle(pla.x-2, pla.y-1, pla.x+1, pla.y-1, pla.x, pla.y+3, COLOR_YELLOW);
+    backscreen.drawLine(pla.x-2, pla.y-2, pla.x+2, pla.y-2, COLOR_RED);
+    backscreen.drawLine(pla.x-2, pla.y-3, pla.x+2, pla.y-3, COLOR_RED);
+  }
+
 }
 
 
@@ -1487,17 +1509,11 @@ unsigned long lastdrawn_sddetail = 0;
 extern char sdfiles[20][32];
 extern int sdfiles_size[20]; 
 extern int max_page;     // Global variable to store maximum page number
-bool loading_sddetail = true;
+volatile bool loading_sddetail = true;
+bool sd_detail_loading_displayed = false;
 
 void draw_sddetail(bool redraw_screen, int page) {
-  if(redraw_screen){
-    loading_sddetail = true;
-    if(max_page <= 0)
-      enqueueTask(createBrowseSDTask(0));
-    else
-      enqueueTask(createBrowseSDTask(page%(max_page+1)));
-  }
-  if(redraw_screen || millis() - lastdrawn_sddetail > 500) {
+  if(redraw_screen || (sd_detail_loading_displayed && !loading_sddetail)) {
 
     lastdrawn_sddetail = millis();
     header_footer.fillScreen(COLOR_WHITE);
@@ -1508,52 +1524,43 @@ void draw_sddetail(bool redraw_screen, int page) {
       header_footer.printf("SD DETAIL  %d/%d",page%(max_page+1)+1,max_page+1);
     else
       header_footer.printf("SD DETAIL  loading...");
+    
     header_footer.pushSprite(0,0);
+    
     backscreen.fillScreen(COLOR_WHITE);
-    for(int i= 0; i< 20; i++){
-      backscreen.setCursor(10,i*12);
-      backscreen.print(sdfiles[i]);
-    }
-
-    backscreen.unloadFont();
-    backscreen.setTextSize(1);
-    for(int i= 0; i< 20; i++){
-      if(sdfiles_size[i] != 0){
-        backscreen.setCursor(SCREEN_WIDTH-40,i*12+4);
-        backscreen.printf("%dKB",(int)(sdfiles_size[i]/1024)+1);
+    
+    if(!loading_sddetail){
+      for(int i= 0; i< 20; i++){
+        backscreen.setCursor(10,i*12);
+        backscreen.print(sdfiles[i]);
       }
+
+      backscreen.unloadFont();
+      backscreen.setTextSize(1);
+      for(int i= 0; i< 20; i++){
+        if(sdfiles_size[i] != 0){
+          backscreen.setCursor(SCREEN_WIDTH-40,i*12+4);
+          backscreen.printf("%dKB",(int)(sdfiles_size[i]/1024)+1);
+        }
+      }
+      backscreen.loadFont(AA_FONT_SMALL);
+      sd_detail_loading_displayed = false;
+    }else{
+      sd_detail_loading_displayed = true;
+      backscreen.setCursor(80,100);
+      backscreen.print("Stabd by ...");
     }
-    backscreen.loadFont(AA_FONT_SMALL);
     backscreen.pushSprite(0,40);
     header_footer.fillScreen(COLOR_WHITE);
     header_footer.pushSprite(0,SCREEN_HEIGHT-40);
-    /*
-    // Print available files on SD card
-    Serial.println("Available WAV files:");
-    File root = SD.open("wav/");
-    while (true) {
-        File entry = root.openNextFile();
-        if (!entry) break;
-        if (!entry.isDirectory()) {
-            String filename = entry.name();
-            if (filename.endsWith(".wav") || filename.endsWith(".WAV")) {
-                Serial.println(entry.name());
-            }
-        }
-        entry.close();
-    }
-    root.close();
-    */
   }
 }
 
 
 
 //==================MODE DRAWS===============
-unsigned long lastdrawn_const = 0;
 void draw_gpsdetail(bool redraw_screen, int page) {
-  if (redraw_screen || millis() - lastdrawn_const > 1000) {
-    lastdrawn_const = millis();
+  if (redraw_screen) {
     bool aru = false;
     for (int i = 0; i < 32; i++) {
       if (satellites[i].PRN != 0) aru = true;  // Skip empty entries
@@ -1674,8 +1681,7 @@ void draw_gpsdetail(bool redraw_screen, int page) {
 
 
 void draw_maplist_mode(bool redraw_screen, int maplist_page) {
-  if (redraw_screen || millis() - lastdrawn_const > 10000L) {
-    lastdrawn_const = millis();
+  if (redraw_screen) {
 
     mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
                             &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
@@ -1751,12 +1757,25 @@ void draw_setting_mode(bool redraw_screen, int selectedLine, int cursorLine) {
     header_footer.fillScreen(COLOR_WHITE);
 
     header_footer.setTextSize(1);
-    header_footer.setCursor(2, 15);
+
+
+    header_footer.setCursor(2, 40-25);
+
+
     header_footer.setTextColor(COLOR_GRAY);
+    if (digitalRead(24)) {
+      header_footer.print("Battery Time: Unknown. USB connected.");
+    }else{
+      double input_voltage = get_input_voltage();
+      int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
+      header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
+    }
+
+    header_footer.setCursor(2, 40-11);
     header_footer.printf("CPU temp %.1fC",analogReadTemp());
 
     #ifdef RELEASE
-    header_footer.setCursor(100,15);
+    header_footer.setCursor(100,40-11);
     header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
     #endif
 

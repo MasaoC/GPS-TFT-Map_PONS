@@ -3,8 +3,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20250430
-#define BUILDVERSION "0.84"
+#define BUILDDATE 20250502
+#define BUILDVERSION "0.85"
 
 #define PRINTREVERSEDATE_NUM 0
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
@@ -37,9 +37,6 @@
   //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
 
 #define VERTICAL_FLIP
-
-//TFTスクリーン更新頻度 ms.
-#define SCREEN_INTERVAL 20000
 
 //強制画面リフレッシュ時間
 #define SCREEN_FRESH_INTERVAL 1050
@@ -111,6 +108,9 @@
 #define GPS_RX 1
 
 
+#define USB_DETECT 24
+
+
 
 //#define DISABLE_SD
 //#define SD_RX 4    //MISO
@@ -124,7 +124,7 @@
 
 
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
-#define BAT_LOW_VOLTAGE 3.3
+#define BAT_LOW_VOLTAGE 3.4
 #define PIN_TONE 9
 #define PIN_AMP_SD 10 //アンプシャットダウン(HIGHでON)
 

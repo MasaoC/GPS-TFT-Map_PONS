@@ -23,8 +23,9 @@ uint8_t audioBuffer[2][CHUNK_SIZE];  // Double buffer
 volatile int activeBuffer = 0;  // Currently playing buffer (0 or 1)
 volatile int loadBuffer = 1;    // Buffer to load data into (0 or 1, opposite of activeBuffer)
 volatile uint32_t bufferPos = 0;  // Position in active buffer
-volatile bool playing = false;  // Playback state
-volatile int playing_priority = 0;
+volatile bool wav_playing = false;  // Playback state
+volatile int wav_playing_priority = 0;
+volatile int tone_playing_priority = 0;
 
 volatile bool endOfFile = false;  // Flag to indicate end of file reached
 volatile bool bufferReady[2] = {false, false};  // Flags to indicate if buffers are loaded
@@ -56,7 +57,7 @@ bool sinmode = true;
 // Timer interrupt callback
 bool timerCallback(struct repeating_timer *t) {
   if(wavmode){
-    if (!playing || !bufferReady[activeBuffer]) {
+    if (!wav_playing || !bufferReady[activeBuffer]) {
         return true;  // Nothing to play
     }
     // Output PCM value directly from active buffer
@@ -119,15 +120,17 @@ bool loadNextChunk() {
 
 extern bool sdError;
 void startPlayWav(const char* filename, int priority) {
-    if(playing && playing_priority > priority){
-        DEBUGW_P(20250427,"Start play wav canceled due to priority.:");
+    if(wav_playing && wav_playing_priority > priority){
+        DEBUGW_P(20250503,"Start play wav canceled due to priority.:");
         DEBUGW_PLN(20250427,filename);
         return;
     }
+    DEBUGW_P(20250503,"wav start:");
+    DEBUGW_PLN(20250503,priority);
     // Stop current playback if any
     wavmode = true;
     sinmode = false;
-    playing = false;
+    wav_playing = false;
     delay(50);  // Give time for interrupt to stop
     
     // Reset state
@@ -188,8 +191,8 @@ void startPlayWav(const char* filename, int priority) {
         
         // Start playback
         bufferPos = 0;
-        playing = true;
-        playing_priority = priority;
+        wav_playing = true;
+        wav_playing_priority = priority;
         DEBUG_P(20250424,"Playback started");
     } else {
         DEBUG_P(20250424,"Failed to load initial audio data");
@@ -197,7 +200,7 @@ void startPlayWav(const char* filename, int priority) {
 }
 
 void stopPlayback() {
-    playing = false;
+    wav_playing = false;
     delay(50);  // Short delay to ensure the interrupt handler stops
     
     // Disable the amplifier when playback stops
@@ -213,7 +216,7 @@ void loop_sound(){
     unsigned long currentTime = millis();
     
     // Handle buffer swap request outside of interrupt
-    if (bufferSwapRequest && playing) {
+    if (bufferSwapRequest && wav_playing) {
         bufferSwapRequest = false;
         bufferReady[activeBuffer] = false;  // Mark current buffer as processed
         
@@ -237,7 +240,7 @@ void loop_sound(){
     }
     
     // If we're playing, try to load the next chunk into the load buffer
-    if (playing && !bufferReady[loadBuffer] && !endOfFile) {
+    if (wav_playing && !bufferReady[loadBuffer] && !endOfFile) {
         if (loadNextChunk()) {
             DEBUG_P(20240424,"Loaded chunk #");
             DEBUG_P(20240424,chunksLoaded);
@@ -249,7 +252,7 @@ void loop_sound(){
     
     // Simple playback status indicator - but not too often
     static unsigned long lastStatusTime = 0;
-    if (playing && (currentTime - lastStatusTime >= 1000)) {  // Update every second
+    if (wav_playing && (currentTime - lastStatusTime >= 1000)) {  // Update every second
         lastStatusTime = currentTime;
         float percentComplete = (float)audioDataRead / totalAudioSize * 100.0;
         DEBUG_P(20250424,"Playing: ");
@@ -429,15 +432,19 @@ void myTone(int freq,int duration){
 
 
 
-void playTone(int freq, int duration, int counter){
-    if(playing){//wait maximum of 3 seconds.
-        DEBUG_P(20250424,"failed playTone due to Wav file playing.");
+void playTone(int freq, int duration, int counter,int priority){
+    if(wav_playing && wav_playing_priority >= priority){
+        DEBUG_P(20250503,"failed playTone due to Wav file playing.");
+        DEBUG_PLN(20250503,priority);
         //caution.  Do not wait wav file finish playing here, because that will stop loop1 and cause wav file unable finish playing.
-       return;
+        return;
     }
-    DEBUG_P(20250412,"playTone:counter");
-    DEBUG_PLN(20250412,counter);
-  wavmode = false;
+    tone_playing_priority = priority;
+
+    wavmode = false;
+    wav_playing = false;
+    endOfFile = true;
+  
   sinmode = true;
   myTone(freq, duration);
   if(counter <= 1){

@@ -68,9 +68,9 @@ Setting menu_settings[] = {
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
       if(currentdestination != -1 && currentdestination < destinations_count){
-        sprintf(buff, selected ? " Set destination: %s(%d)" : "Set destination: %s(%d)", extradestinations[currentdestination].name, currentdestination);
+        sprintf(buff, selected ? " Destination: %s(%d)" : "Destination: %s(%d)", extradestinations[currentdestination].name, currentdestination);
       }else
-        sprintf(buff, selected ? " Set destination: %d/%d" : "Set destination: %d/%d", currentdestination,destinations_count);
+        sprintf(buff, selected ? " Destination: %d/%d" : "Destination: %d/%d", currentdestination,destinations_count);
       return std::string(buff);  // return as std::string
     },nullptr,
     []() {
@@ -87,11 +87,11 @@ Setting menu_settings[] = {
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
       if(destination_mode == DMODE_FLYINTO)
-        strcpy(buff, selected ? " Destination Mode: Fly into" : "Destination Mode: Fly into");
+        strcpy(buff, selected ? " Navigation Mode: Fly into" : "Navigation Mode: Fly into");
       else if(destination_mode == DMODE_FLYAWAY)
-        strcpy(buff, selected ? " Destination Mode: Fly away" : "Destination Mode: Fly away");
+        strcpy(buff, selected ? " Navigation Mode: Fly away" : "Navigation Mode: Fly away");
       else if(destination_mode == DMODE_AUTO10K)
-        strcpy(buff, selected ? " Destination Mode: Auto10km" : "Destination Mode: Auto10km");
+        strcpy(buff, selected ? " Navigation Mode: Auto10km" : "Navigation Mode: Auto10km");
       return std::string(buff);  // return as std::string
     },nullptr,
     []() {
@@ -204,6 +204,7 @@ Setting menu_settings[] = {
     []() {
       screen_mode = MODE_SDDETAIL;
       detail_page = 0;
+      enqueueTask(createBrowseSDTask(0));
     },
     nullptr,
     nullptr

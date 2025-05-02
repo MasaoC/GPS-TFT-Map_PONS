@@ -59,6 +59,7 @@
   #define COLOR_BRIGHTGRAY 0xc618
   #define COLOR_LIGHT_BLUE 0x3dbf
   #define COLOR_PINK TFT_PINK
+  #define COLOR_YELLOW TFT_YELLOW
 
   extern TFT_eSPI tft;
   extern bool fresh_display;

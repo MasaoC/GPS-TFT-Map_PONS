@@ -317,7 +317,7 @@ unsigned long last_demo_gpsupdate = 0;
 double demo_biwako_lat = PLA_LAT;
 double demo_biwako_lon = PLA_LON;
 double demo_biwako_mps = 0;
-double demo_biwako_truetrack = 0;
+double demo_biwako_truetrack = 280;
 
 void add_latlon_track(float lat,float lon){
   int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
@@ -348,8 +348,22 @@ bool gps_newdata_arrived(){
       int basetrack = 280;
       if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
         basetrack = 100;
-      demo_biwako_truetrack = basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+
       
+      int target_angle = basetrack+(10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+
+      int demo_steer_angle = target_angle - demo_biwako_truetrack;
+      if(demo_steer_angle < -180){
+        demo_steer_angle += 360;
+      }else if(demo_steer_angle > 180){
+        demo_steer_angle -= 360;
+      }
+      demo_biwako_truetrack += demo_steer_angle*0.2;//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      if(demo_biwako_truetrack > 360)
+        demo_biwako_truetrack -= 360;
+      else if(demo_biwako_truetrack < 0)
+        demo_biwako_truetrack += 360;
+
       newcourse_arrived = true;
       add_latlon_track(demo_biwako_lat, demo_biwako_lon);
     }

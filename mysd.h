@@ -39,8 +39,8 @@
     void getVolume(char* buffer, size_t bufferSize);
     void setDestination(const char* value);
     void getDestination(char* buffer, size_t bufferSize);
-    void setDestinationMode(const char* value);
-    void getDestinationMode(char* buffer, size_t bufferSize);
+    void setNavigationMode(const char* value);
+    void getNavigationMode(char* buffer, size_t bufferSize);
     void setScaleIndex(const char* value);
     void getScaleIndex(char* buffer, size_t bufferSize);
     bool loadSettings();
@@ -75,6 +75,7 @@
               int freq;
               int duration;
               int counter;
+              int priority;
           } playMultiToneArgs;
           struct{
               const char* wavfilename;
@@ -96,7 +97,7 @@
   Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
-  Task createPlayMultiToneTask(int freq, int duration, int count);
+  Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
   Task createPlayWavTask(const char* logText,int priority=1);
   Task createBrowseSDTask(int page);
 
