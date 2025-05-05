@@ -112,14 +112,13 @@ void parseGSV(char *nmea) {
   int satelliteType = SATELLITE_TYPE_UNKNOWN;
   if (strstr(nmea, "$GPGSV")) {
     satelliteType = SATELLITE_TYPE_GPS;
+    //satelliteType = SATELLITE_TYPE_QZSS;//Undistinguishable from the GPGSV.
   } else if (strstr(nmea, "$GLGSV")) {
     satelliteType = SATELLITE_TYPE_GLONASS;
   } else if (strstr(nmea, "$GAGSV")) {
     satelliteType = SATELLITE_TYPE_GALILEO;
   } else if (strstr(nmea, "$GBGSV")) {//$BDGSV
     satelliteType = SATELLITE_TYPE_BEIDOU;
-  } else if (strstr(nmea, "$GQGSV")) {//GQGSVQZGSV
-    satelliteType = SATELLITE_TYPE_QZSS;
   }
 
 
@@ -175,6 +174,8 @@ void parseGSV(char *nmea) {
           satellites[j].azimuth = (azimuth >= 0 && azimuth < 360) ? azimuth : satellites[j].azimuth;
           satellites[j].SNR = (snr >= 0) ? snr : satellites[j].SNR;
           satellites[j].satelliteType = satelliteType;
+          if(193 <= prn && prn  <= 199)
+            satellites[j].satelliteType = SATELLITE_TYPE_QZSS;
           satellites[j].lastReceived = millis();
           break;
         }

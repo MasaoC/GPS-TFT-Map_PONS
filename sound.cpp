@@ -408,7 +408,7 @@ void update_tone(float degpersecond){
       freq = 3136;// スピーカー性能都合 ソの音
     }
     //精度が低い状況や角度変化少ない状況では、音は短めにする。
-    int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?80:150;
+    int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?80:160;
     enqueueTask(createPlayMultiToneTask(nearest_note_frequency(freq), newduration,1));
   }
 }

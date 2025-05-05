@@ -45,11 +45,12 @@ void init_destinations(){
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
   destinations_count++;
+  /*
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("SHINURA");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
-  destinations_count++;
+  destinations_count++;*/
 }
 
 

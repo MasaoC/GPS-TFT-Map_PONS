@@ -1468,7 +1468,8 @@ void draw_nomapdata() {
   } else {
     backscreen.setCursor(3,150);
     backscreen.setTextColor(COLOR_MAGENTA);
-    backscreen.print("GPS connection not found !! Check connection, or try reset.");
+    backscreen.println("GPS connection not found !!");
+    backscreen.println("Try reset (Power off and on).");
     return;
   }
 
