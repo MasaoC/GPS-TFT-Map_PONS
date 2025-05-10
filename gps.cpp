@@ -345,6 +345,7 @@ bool gps_new_location_arrived(){
       new_location_arrived = true;
       demo_biwako_mps = 7 + sin(millis() / 1500.0);
       
+      
       int basetrack = 280;
       if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
         basetrack = 100;
@@ -358,7 +359,7 @@ bool gps_new_location_arrived(){
       }else if(demo_steer_angle > 180){
         demo_steer_angle -= 360;
       }
-      demo_biwako_truetrack += demo_steer_angle*0.4*(max(0,0.7+sin(millis() / 10000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      demo_biwako_truetrack += demo_steer_angle*0.2*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
       if(demo_biwako_truetrack > 360)
         demo_biwako_truetrack -= 360;
       else if(demo_biwako_truetrack < 0)

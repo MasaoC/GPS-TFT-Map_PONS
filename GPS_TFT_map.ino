@@ -157,8 +157,11 @@ void loop() {
     if(new_gps_info){
       // Automatic destination change for AUTO 10KM mode.
       if(destination_mode == DMODE_AUTO10K){
-        double distance_frm_plathome = calculateDistanceKm(get_gps_lat(), get_gps_lon(), PLA_LAT, PLA_LON);
+        double destlat = extradestinations[currentdestination].cords[0][0];
+        double destlon = extradestinations[currentdestination].cords[0][1];
+        double distance_frm_plathome = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
         if(auto10k_status == AUTO10K_AWAY){
+
           if(distance_frm_plathome > 10.0){//10.54 だけど、540mの誤差を引いておく。
             auto10k_status = AUTO10K_INTO;
             enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
@@ -182,7 +185,7 @@ void loop() {
 
     // Called only once per second.
     if(newcourse_arrived){
-      DEBUG_PLN(20250520,"newcourse_arrived");
+
 
       int ttrack = get_gps_truetrack();
       update_degpersecond(ttrack);

@@ -3,7 +3,7 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20250508
+#define BUILDDATE 20250511
 #define BUILDVERSION "0.87"
 
 #define PRINTREVERSEDATE_NUM 0

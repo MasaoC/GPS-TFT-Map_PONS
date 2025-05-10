@@ -1747,7 +1747,7 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   header_footer.setCursor(2, 40-11);
   header_footer.printf("CPU temp %.1fC",analogReadTemp());
 
-  #ifdef RELEASE
+  #ifndef RELEASE
   header_footer.setCursor(100,40-11);
   header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
   #endif
