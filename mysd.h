@@ -98,7 +98,7 @@
   Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
-  Task createPlayWavTask(const char* logText,int priority=1);
+  Task createPlayWavTask(const char* filename,int priority=1);
   Task createBrowseSDTask(int page);
 
   // Functions to handle the queue (declarations)

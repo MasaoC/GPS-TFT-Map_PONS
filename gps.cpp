@@ -1,3 +1,4 @@
+// Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
 
 #include "gps.h"
@@ -39,7 +40,7 @@ char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
 unsigned long last_nmea_time[MAX_LAST_NMEA];
 int stored_nmea_index = 0;
 int readfail_counter = 0;
-bool newdata_arrived = false;
+bool new_location_arrived = false;
 bool newcourse_arrived = false;
 
 void utcToJst(int *year, int *month, int *day, int *hour) {
@@ -103,8 +104,8 @@ void removeStaleSatellites() {
 void parseGSV(char *nmea) {
   // Print the received NMEA sentence for debugging
   #ifdef DEBUG_NMEA
-  Serial.print("Received NMEA: ");
-  Serial.println(nmea);
+  DEBUG_P(20250508,"Received NMEA: ");
+  DEBUG_PLN(20250508,nmea);
   #endif
 
 
@@ -124,8 +125,8 @@ void parseGSV(char *nmea) {
 
   #ifdef DEBUG_NMEA
   // Print the satellite type for debugging
-  Serial.print("Satellite Type: ");
-  Serial.println(satelliteType);
+  DEBUG_P(20250508,"Satellite Type: ");
+  DEBUG_PLN(20250508,satelliteType);
   #endif
 
   
@@ -159,10 +160,10 @@ void parseGSV(char *nmea) {
 
     #ifdef DEBUG_NMEA
     // Debugging: Print parsed values
-    Serial.print("PRN: "); Serial.print(prn);
-    Serial.print(", Elevation: "); Serial.print(elevation);
-    Serial.print(", Azimuth: "); Serial.print(azimuth);
-    Serial.print(", SNR: "); Serial.println(snr);
+    DEBUG_P(20250508,"PRN: "); DEBUG_P(20250508,prn);
+    DEBUG_P(20250508,", Elevation: "); DEBUG_P(20250508,elevation);
+    DEBUG_P(20250508,", Azimuth: "); DEBUG_P(20250508,azimuth);
+    DEBUG_P(20250508,", SNR: "); DEBUG_P(20250508,snr);
     #endif
 
     // Validate parsed values and update satellite data
@@ -181,8 +182,9 @@ void parseGSV(char *nmea) {
         }
       }
     } else {
-      Serial.println("Invalid PRN parsed");
-      Serial.print("PRN: "); Serial.print(prn);
+      DEBUGW_P(20250508,"Invalid PRN parsed");
+      DEBUGW_P(20250508,"PRN: ");
+      DEBUGW_PLN(20250508,prn);
     }
   }
 }
@@ -191,8 +193,6 @@ void parseGSV(char *nmea) {
 
 //Due compability
 void gps_getposition_mode() {
-  Serial.println("POS MODE");
-
   #ifdef QUECTEL_GPS
     GPS_SERIAL.println(PAIR_DISABLE_GSV);
     delay(3);
@@ -205,7 +205,6 @@ void gps_getposition_mode() {
 }
 //Due compability
 void gps_constellation_mode() {
-  Serial.println("CONST MODE");
   #ifdef QUECTEL_GPS
     GPS_SERIAL.println(PAIR_ENABLE_GSV);
     delay(3);
@@ -261,7 +260,7 @@ void gps_setup() {
   }else{
     //2nd try
     if(setupcounter%3 == 2){
-      Serial.println("115200 to 38400 LC86G try ");
+      DEBUG_PLN(20250508,"115200 to 38400 LC86G try ");
       GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(115200);
       GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
@@ -331,27 +330,27 @@ void add_latlon_track(float lat,float lon){
   }
 }
 
-bool gps_newdata_arrived(){
+bool gps_new_location_arrived(){
   if(get_demo_biwako()){
     if(millis() > last_demo_gpsupdate + 1000){
       int biwa_spd = 10;
-      demo_biwako_lat += 0.0001*biwa_spd*cos(radians(get_gps_truetrack()));
-      if(calculateDistance(demo_biwako_lat,demo_biwako_lon,PLA_LAT,PLA_LON) > 15){
+      demo_biwako_lat += 0.00005*biwa_spd*cos(radians(get_gps_truetrack()));
+      if(calculateDistanceKm(demo_biwako_lat,demo_biwako_lon,PLA_LAT,PLA_LON) > 15){
         demo_biwako_lat = PLA_LAT;
         demo_biwako_lon = PLA_LON;
         latlon_manager.reset();
       }
-      demo_biwako_lon += 0.0001*biwa_spd*sin(radians(get_gps_truetrack()));
+      demo_biwako_lon += 0.00005*biwa_spd*sin(radians(get_gps_truetrack()));
       last_demo_gpsupdate = millis();
-      newdata_arrived = true;
-      demo_biwako_mps = 7 + 2 * sin(millis() / 1500.0);
+      new_location_arrived = true;
+      demo_biwako_mps = 7 + sin(millis() / 1500.0);
       
       int basetrack = 280;
       if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
         basetrack = 100;
 
       
-      int target_angle = basetrack+(10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      int target_angle = basetrack+(20 + 10*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
 
       int demo_steer_angle = target_angle - demo_biwako_truetrack;
       if(demo_steer_angle < -180){
@@ -359,7 +358,7 @@ bool gps_newdata_arrived(){
       }else if(demo_steer_angle > 180){
         demo_steer_angle -= 360;
       }
-      demo_biwako_truetrack += demo_steer_angle*0.2;//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      demo_biwako_truetrack += demo_steer_angle*0.4*(max(0,0.7+sin(millis() / 10000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
       if(demo_biwako_truetrack > 360)
         demo_biwako_truetrack -= 360;
       else if(demo_biwako_truetrack < 0)
@@ -369,28 +368,22 @@ bool gps_newdata_arrived(){
       add_latlon_track(demo_biwako_lat, demo_biwako_lon);
     }
   }
-  return newdata_arrived;
+  return new_location_arrived;
 }
 
-void set_newdata_off(){
-  newdata_arrived = false;
+void set_new_location_off(){
+  new_location_arrived = false;
 }
 
-// return true if all the gps msgs received. Hardware Serialの受信を行う。
-// UART受信とTFTの描画が同時に発生すると、バッファーオーバーフローでデータ受信が失敗する恐れがある。
-// そのため画面描画する際に true　を返す。
-bool drawallow_once = false;
-unsigned long timelastgpsupdate = 0;
+// GNSSモジュールからのHardware Serialの受信を行う。
 void gps_loop(int id) {
   if(GPS_SERIAL.available() > 256){
     DEBUGW_P(20250424,"ID=");
     DEBUGW_P(20250424,id);
     DEBUGW_P(20250424," Caution, remaining FIFO buffer. avail=");
     DEBUGW_PLN(20250424,GPS_SERIAL.available());
-    DEBUGW_P(20250424,"Time=");
-    DEBUGW_PLN(20250424,millis()-timelastgpsupdate);
   }
-  timelastgpsupdate = millis();
+
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
     if(GPS_SERIAL.overflow()){
@@ -416,19 +409,13 @@ void gps_loop(int id) {
     if(index_buffer1 >= (NMEA_BUFFER_SIZE-1) || c == '\n'){
       if(index_buffer1 >= 2){
         time_lastnmea = millis();
-        drawallow_once = true;
         nmea_buffer1[index_buffer1-1] = '\0';
         strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
         last_nmea_time[stored_nmea_index] = millis();
         stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
         #ifdef DEBUG_NMEA
-        Serial.println(nmea_buffer1);
+        DEBUG_PLN(20250508,nmea_buffer1);
         #endif
-        // Usually last message of ublox is GNGLL for ublox M10Q.  
-        // This will be the key message to start drawing TFT (So we dont miss hardware serial RX with overflow while long wait for TFT update).
-        //if(strstr(nmea_buffer1, "$GNGLL")){
-        //  return true;
-        //}
         if(strstr(nmea_buffer1, "GSV")){
           parseGSV(nmea_buffer1);
         }
@@ -442,17 +429,17 @@ void gps_loop(int id) {
     last_gps_time = millis();
     if(stored_latitude != gps.location.lat() || stored_longitude != gps.location.lng()){
       if(!get_demo_biwako())
-        newdata_arrived = true;
+        new_location_arrived = true;
     }
     stored_latitude = gps.location.lat();
     stored_longitude = gps.location.lng();
     
 
     #ifdef DEBUG_NMEA
-    Serial.print(F("Location: "));
-    Serial.print(stored_latitude, 6);
-    Serial.print(F(", "));
-    Serial.println(stored_longitude, 6);
+    DEBUG_P(20250508,F("Location: "));
+    DEBUG_P(20250508,stored_latitude, 6);
+    DEBUG_P(20250508,F(", "));
+    DEBUG_PLN(20250508,stored_longitude, 6);
     #endif
     bool all_valid = true;
     if (gps.location.isValid()) {
@@ -463,7 +450,7 @@ void gps_loop(int id) {
         stored_fixtype = 1;
       }
     } else {
-      Serial.println("Location: Not Available");
+      DEBUG_PLN(20250508,"Location: Not Available");
       all_valid = false;
       stored_fixtype = 0;
     }
@@ -471,13 +458,13 @@ void gps_loop(int id) {
 
     // Print date
     if (!gps.date.isValid()) {
-      Serial.println("Date: Not Available");
+      DEBUG_PLN(20250508,"Date: Not Available");
       all_valid = false;
     }
     
     // Print time
     if (!gps.time.isValid()) {
-      Serial.println("Time: Not Available");
+      DEBUG_PLN(20250508,"Time: Not Available");
       all_valid = false;
     }
 
@@ -499,8 +486,8 @@ void gps_loop(int id) {
 
   if (gps.altitude.isUpdated()) {
     #ifdef DEBUG_NMEA
-    Serial.print(F("Altitude: "));
-    Serial.println(stored_altitude);
+    DEBUG_P(20250508,F("Altitude: "));
+    DEBUG_PLN(20250508,stored_altitude);
     #endif
     stored_altitude = gps.altitude.meters();
   }
@@ -508,23 +495,23 @@ void gps_loop(int id) {
   if (gps.speed.isUpdated()) {
     stored_gs = gps.speed.mps();
     #ifdef DEBUG_NMEA
-    Serial.print(F("Speed: "));
-    Serial.print(stored_gs);  // Speed in meters per second
-    Serial.println(F(" mps"));
+    DEBUG_P(20250508,F("Speed: "));
+    DEBUG_P(20250508,stored_gs);  // Speed in meters per second
+    DEBUG_PLN(20250508,F(" mps"));
     #endif
   }
 
   if (gps.course.isUpdated()) {
     #ifdef DEBUG_NMEA
-    Serial.print(F("Course: "));
-    Serial.println(stored_truetrack);
+    DEBUG_P(20250508,F("Course: "));
+    DEBUG_PLN(20250508,stored_truetrack);
     #endif
     if(!get_demo_biwako())
       newcourse_arrived = true;
     stored_truetrack = gps.course.deg();
     if(stored_truetrack < 0 || stored_truetrack > 360){
-      Serial.print("ERROR:MT");
-      Serial.println(stored_truetrack);
+      DEBUGW_P(20250508,"ERROR:MT");
+      DEBUGW_PLN(20250508,stored_truetrack);
       stored_truetrack = 0;
     }
   }
@@ -534,19 +521,10 @@ void gps_loop(int id) {
     removeStaleSatellites();
     stored_numsats = gps.satellites.value();
     #ifdef DEBUG_NMEA
-    Serial.print(F("Satellites: "));
-    Serial.println(stored_numsats);
+    DEBUG_P(20250508,F("Satellites: "));
+    DEBUG_PLN(20250508,stored_numsats);
     #endif
   }
-  /*
-
-  //with 38400, usually nmea sentence will be sent within 10ms.
-  if(millis()-time_lastnmea > 20 && drawallow_once){
-    drawallow_once = false;
-    return true;
-  }
-  return false;
-  */
 }
 
 

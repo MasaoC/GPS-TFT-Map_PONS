@@ -1,3 +1,4 @@
+// Handle button updates
 #include "Button.h"
 #include "mysd.h"
 #include "gps.h"
@@ -229,7 +230,7 @@ Setting menu_settings[] = {
 };
 
 
-int setting_size = sizeof(menu_settings) / sizeof(menu_settings[0]);
+const int setting_size = sizeof(menu_settings) / sizeof(menu_settings[0]);
 
 
 

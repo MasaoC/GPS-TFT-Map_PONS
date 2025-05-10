@@ -7,6 +7,7 @@
 
 
 #define SCREEN_WIDTH 240
+#define HEADERFOOTER_HEIGHT 50
 #define SCREEN_HEIGHT 320
 #define BACKSCREEN_SIZE 240
 
@@ -79,11 +80,13 @@ void draw_headertext(double degpersecond);
 void draw_loading_image();
 void draw_nogmap(double scale);
 bool draw_gmap(float drawupward_direction);
-void draw_header(double degpersecond);
-void draw_footer();
+void draw_degpersec(double degpersecond);
+void draw_map_footer();
 void setup_tft();
-void clean_display();
 void draw_strokes();
+
+void draw_header();
+void draw_footer();
 
 
 
@@ -98,14 +101,12 @@ void draw_nomapdata();
 
 
 //mode draws
-void draw_setting_mode(bool redraw_screen, int selectedLine, int cursorLine);
-void draw_gpsdetail(bool redraw_screen, int page);
-void draw_sddetail(bool redraw_screen, int page);
-void draw_maplist_mode(bool redraw_screen, int maplist_page);
+void draw_setting_mode(int selectedLine, int cursorLine);
+void draw_gpsdetail(int page);
+void draw_sddetail(int page);
+void draw_maplist_mode(int maplist_page);
 
 
-
-//void draw_bankwarning();
 void clean_backscreen();
 void push_backscreen();
 

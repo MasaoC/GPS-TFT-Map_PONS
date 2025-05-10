@@ -25,6 +25,7 @@
   extern char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
   extern int stored_nmea_index;
   extern unsigned long time_lastnmea;
+  extern bool newcourse_arrived;
 
   void utcToJst(int *year, int *month, int *day, int *hour);
   void parseGSV(char *nmea);
@@ -33,8 +34,8 @@
   void gps_setup();
   void gps_loop(int id);
   
-  bool gps_newdata_arrived();
-  void set_newdata_off();
+  bool gps_new_location_arrived();
+  void set_new_location_off();
 
   void gps_getposition_mode();
   void gps_constellation_mode();

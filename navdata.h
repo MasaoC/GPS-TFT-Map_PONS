@@ -98,7 +98,7 @@
 
 
 
-  double calculateDistance(double lat1, double lon1, double lat2, double lon2);
+  double calculateDistanceKm(double lat1, double lon1, double lat2, double lon2);
   double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2);
   void nav_update();
 

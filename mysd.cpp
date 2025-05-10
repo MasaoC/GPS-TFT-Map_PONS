@@ -1,18 +1,18 @@
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
 
+#include <SPI.h>
+
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
 //#define DISABLE_FS_H_WARNING
-#include <SPI.h>
 #include "SdFat.h"
 #include "sound.h"
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value + separator and newline
 
-extern volatile bool quick_redraw;
 
 SdFat32 SD;
 bool sdInitialized = false;
@@ -55,7 +55,7 @@ SDSetting settings[] = {
   {"scaleindex", setScaleIndex, getScaleIndex}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
-extern int sound_volume;
+extern volatile int sound_volume;
 extern int destination_mode;
 extern int scaleindex;
 extern double scalelist[6];
@@ -90,7 +90,7 @@ bool saveSettings() {
 bool loadSettings() {
   File32 file = SD.open("settings.txt", FILE_READ);
   if (!file) {
-    Serial.println("Failed to open settings.txt for reading");
+    ("Failed to open settings.txt for reading");
     return false;
   }
 
@@ -150,7 +150,7 @@ bool loadSettings() {
   }
 
   file.close();
-  Serial.println("Settings loaded from settings.txt");
+  DEBUG_PLN(20250508,"Settings loaded from settings.txt");
   return true;
 }
 
@@ -159,8 +159,8 @@ bool loadSettings() {
 // Example setter and getter functions
 void setVolume(const char* value) {
   sound_volume = atoi(value);
-  Serial.print("Set volume to: ");
-  Serial.println(sound_volume);
+  DEBUG_P(20250508,"Set volume to: ");
+  DEBUG_PLN(20250508,sound_volume);
 }
 
 void getVolume(char* buffer, size_t bufferSize) {
@@ -177,10 +177,12 @@ void setNavigationMode(const char *value){
   else if(strcmp(value,"AUTO10K") == 0){
     destination_mode = DMODE_AUTO10K;
   }else{
-    Serial.println("err mode");
+    DEBUGW_PLN(20250509,"ERR MODE");
   }
 }
 void getNavigationMode(char* buffer, size_t bufferSize) {
+  if(bufferSize <= 0)
+    return;
   if(destination_mode == DMODE_FLYINTO)
     strncpy(buffer,"INTO", bufferSize);
   else if(destination_mode == DMODE_FLYAWAY)
@@ -197,11 +199,15 @@ void setDestination(const char* value) {
       return;
     }
   }
-  Serial.println("err dest");
+  DEBUGW_P(20250508,"ERR DEST:");
+  DEBUGW_PLN(20250508,value);
+  enqueueTask(createLogSdfTask("ERR setDestination(%s)",value));
 }
 
 
 void getScaleIndex(char* buffer, size_t bufferSize) {
+  if(bufferSize <= 0)
+    return;
   snprintf(buffer, bufferSize, "%d", scaleindex);
 }
 
@@ -210,15 +216,16 @@ void setScaleIndex(const char* value) {
   if(indexofsetting >= 0 && indexofsetting < (sizeof(scalelist) / sizeof(scalelist[0]))){
     scaleindex = indexofsetting;
     scale = scalelist[scaleindex];
-    Serial.print("scale index set to: ");
-    Serial.println(scaleindex);
   }else{
-    Serial.print("error scale index:");
-    Serial.println(scaleindex);
+    DEBUGW_P(20250508,"ERR scale index:");
+    DEBUGW_PLN(20250508,indexofsetting);
+    enqueueTask(createLogSdfTask("ERR scale index(%s)",value));
   }
 }
 
 void getDestination(char* buffer, size_t bufferSize) {
+  if(bufferSize <= 0)
+    return;
   strncpy(buffer, extradestinations[currentdestination].name, bufferSize);
   buffer[bufferSize - 1] = '\0';
 }
@@ -507,7 +514,7 @@ void setup_sd(int trycount){
       break;
     delay(100);
   }
-  Serial.println("SUCCESS");
+  DEBUG_PLN(20250508, "SUCCESS SD setup");
   
   if (!sdInitialized) {
     return;
@@ -519,7 +526,7 @@ void setup_sd(int trycount){
     init_mapdata();
     load_destinations();
     if(!loadSettings()){
-      Serial.println("Error loading settings.");
+      DEBUGW_PLN(20250508,"Error loading settings.");
     }
   }
 }
@@ -531,7 +538,7 @@ extern bool loading_sddetail;
 bool browse_sd(int page) {
     // Input validation
     if (page < 0) {
-        Serial.println("Invalid page number");
+        DEBUGW_PLN(20250508,"Invalid page number");
         return false;
     }
 
@@ -544,7 +551,7 @@ bool browse_sd(int page) {
 
     File32 root = SD.open("/");
     if (!root || !root.isDirectory()) {
-        Serial.println("Failed to open root directory");
+        DEBUGW_PLN(20250508,"Failed to open root directory");
         if (root) root.close();
         return false;
     }
@@ -600,10 +607,10 @@ bool browse_sd(int page) {
 
     // Print results for debugging
     for (int i = 0; i < matched; i++) {
-        Serial.println(sdfiles[i]);
+        DEBUG_PLN(20250508,sdfiles[i]);
     }
-    Serial.print("Max page: ");
-    Serial.println(max_page);
+    DEBUG_P(20250508,"Max page: ");
+    DEBUG_PLN(20250508,max_page);
     loading_sddetail = false;
     return matched > 0; // Return true if any entries were found
 }
@@ -639,7 +646,7 @@ void log_sd(const char* text){
 
   File32 logFile = SD.open("log2.txt", FILE_WRITE);
   if(!logFile){
-    Serial.println("ERR LOG");
+    DEBUGW_PLN(20250508,"ERR LOG");
     sdError = true;
     return;
   }

@@ -1,6 +1,8 @@
+// Geo calculations and navdata.
+#include <Arduino.h>
+
 #include "navdata.h"
 #include "gps.h"
-#include <Arduino.h>
 
 
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
@@ -65,8 +67,8 @@ double rad2deg(double rad) {
 }
 
 
-// Function to calculate distance using Haversine formula
-double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+// Function to calculate distance using Haversine formula in km.
+double calculateDistanceKm(double lat1, double lon1, double lat2, double lon2) {
   // Convert latitude and longitude from degrees to radians
   lat1 = deg2rad(lat1);
   lon1 = deg2rad(lon1);
@@ -95,7 +97,7 @@ void nav_update(){
   if(currentdestination != -1 && currentdestination < destinations_count){
     double destlat = extradestinations[currentdestination].cords[0][0];
     double destlon = extradestinations[currentdestination].cords[0][1];
-    dest_dist = calculateDistance(get_gps_lat(), get_gps_lon(), destlat, destlon);
+    dest_dist = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
     
     //Fly into magc
     magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
@@ -122,12 +124,12 @@ int LatLonManager::getCount() {
 
 void LatLonManager::printData() {
   for (int i = 0; i < count; i++) {
-    Serial.print("Coordinate ");
-    Serial.print(i + 1);
-    Serial.print(": Latitude = ");
-    Serial.print(coords[i].latitude, 6);
-    Serial.print(", Longitude = ");
-    Serial.println(coords[i].longitude, 6);
+    DEBUG_P(20250508,"Coordinate ");
+    DEBUG_P(20250508,i + 1);
+    DEBUG_P(20250508,": Latitude = ");
+    DEBUG_P(20250508,coords[i].latitude);
+    DEBUG_P(20250508,", Longitude = ");
+    DEBUG_PLN(20250508,coords[i].longitude);
   }
 }
 
@@ -138,7 +140,7 @@ void LatLonManager::reset(){
 
 Coordinate LatLonManager::getData(int newest_index) {
   if (newest_index >= count || newest_index < 0) {
-    Serial.println("Invalid index");
+    DEBUG_PLN(20250508,"Invalid index");
     return {0, 0};
   }
   int index = (currentIndex - 1 - newest_index + MAX_TRACK_CORDS) % MAX_TRACK_CORDS;

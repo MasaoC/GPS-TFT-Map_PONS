@@ -1,3 +1,9 @@
+// Updates TFT display using TFT-eSPI library.
+
+#include <cstring>  // for strlen and strcpy
+#include <string>
+#include <cstdlib>  // for malloc and free
+
 #include "settings.h"
 #include "display_tft.h"
 #include "gps.h"
@@ -6,13 +12,10 @@
 #include "font_data.h"
 #include "sound.h"
 #include "button.h"
-#include <cstring>  // for strlen and strcpy
-#include <string>
-#include <cstdlib>  // for malloc and free
 
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_MEDIUM Arial_Black22
-#define NM_FONT_LARGE Arial_Black46
+#define NM_FONT_LARGE Arial_Black56
 
 
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
@@ -34,7 +37,7 @@ int upward_mode = MODE_NORTHUP;
 
 
 
-extern int sound_volume;
+extern volatile int sound_volume;
 extern int screen_mode;
 extern int destination_mode;
 
@@ -132,7 +135,7 @@ void setup_tft() {
   }
   if(!header_footer.created()){
     header_footer.setColorDepth(16);
-    header_footer.createSprite(SCREEN_WIDTH, 40);
+    header_footer.createSprite(SCREEN_WIDTH, HEADERFOOTER_HEIGHT);
     header_footer.loadFont(NM_FONT_LARGE);
   }
 }
@@ -340,9 +343,9 @@ public:
 
   bool addStroke(stroke_group id, int maxPoints, int thickness = 1) {
     if (strokeCount >= maxStrokes) {
-      DEBUG_PLN(20240912, id);
-      DEBUG_PLN(20240912, maxPoints);
-      DEBUG_PLN(20240912, "ERR max stroke reached");
+      DEBUGW_PLN(20240912, id);
+      DEBUGW_PLN(20240912, maxPoints);
+      DEBUGW_PLN(20240912, "ERR max stroke reached");
       enqueueTask(createLogSdfTask("ERR max stroke reached(id,max) %d,%d", id, maxPoints));
       return false;  // No more space for new strokes
     }
@@ -418,30 +421,6 @@ public:
     strokeCount = 0;
   }
 
-  void printStrokes() {
-    for (int i = 0; i < strokeCount; i++) {
-      Serial.print("Stroke ");
-      Serial.print(i);
-      Serial.print(":type");
-      Serial.print(strokes[i].id);
-      Serial.print(":maxP");
-      Serial.print(strokes[i].maxPoints);
-      Serial.print(":count");
-      Serial.print(strokes[i].pointCount);
-      Serial.print(":thickness");
-      Serial.print(strokes[i].thickness);
-      Serial.println(":");
-      for (int j = 0; j < strokes[i].pointCount; j++) {
-        Serial.print("(");
-        Serial.print(strokes[i].points[j].x);
-        Serial.print(", ");
-        Serial.print(strokes[i].points[j].y);
-        Serial.print(") ");
-      }
-      Serial.println();
-    }
-  }
-
 
   void drawAllStrokes() {
     for (int i = 0; i < strokeCount; i++) {
@@ -511,6 +490,7 @@ void draw_compass(float truetrack, uint16_t col) {
   float radian45offset = deg2rad(truetrack + 8.0 + 45);
   backscreen.setTextColor(col, COLOR_WHITE);
   backscreen.setTextSize(2);
+  backscreen.loadFont(AA_FONT_SMALL);
   
 
   cord_tft n = { int(centerx + sin(-radian) * dist), int(centery - cos(radian) * dist) };
@@ -706,7 +686,7 @@ void draw_triangle(int ttrack,int steer_angle) {
     }
     
     // Needle
-    backscreen.drawWideLine(240/2+sin(tt_radians)*9, 240/2-cos(tt_radians)*9, 120+sin(tt_radians)*NEEDLE_LEN, 120-cos(tt_radians)*NEEDLE_LEN, 3,COLOR_BLACK);
+    backscreen.drawWideLine(240/2+sin(tt_radians)*9, 240/2-cos(tt_radians)*9, 120+sin(tt_radians)*NEEDLE_LEN, 120-cos(tt_radians)*NEEDLE_LEN, 5,COLOR_BLACK);
     
   }
   if (upward_mode == MODE_TRACKUP) {
@@ -776,7 +756,7 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
   calculatePointC(dest_lat, dest_lon, center_lat, center_lon, distance, lat3, lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
-  backscreen.drawWideLine(240/2, 240/2, targetpoint.x, targetpoint.y, 3, COLOR_MAGENTA);
+  backscreen.drawWideLine(240/2, 240/2, targetpoint.x, targetpoint.y, 5, COLOR_MAGENTA);
 }
 
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
@@ -837,7 +817,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     Coordinate c0 = latlon_manager.getData(i);
     Coordinate c1 = latlon_manager.getData(i+1);
     if(c0.latitude == 0 && c1.longitude == 0){
-      DEBUG_PLN(20250424,"ERR lat lon 0");
+      DEBUGW_PLN(20250510,"ERR lat lon 0");
       break;
     }
     
@@ -998,7 +978,7 @@ void draw_demo_biwako(){
   backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_ORANGE);
   backscreen.setCursor(25,200);
   backscreen.setTextColor(COLOR_ORANGE);
-  backscreen.print("LAKE BIWA DEMO x10 SPD");
+  backscreen.print("LAKE BIWA DEMO x5 SPD");
   backscreen.setCursor(17,215);
   backscreen.unloadFont();
   backscreen.setTextSize(1);
@@ -1012,7 +992,7 @@ void clean_backscreen(){
   backscreen.fillScreen(COLOR_WHITE);
 }
 void push_backscreen(){
-  backscreen.pushSprite(0, 40);
+  backscreen.pushSprite(0, 50);
 }
 
 void draw_headertext(double degpersecond){
@@ -1025,32 +1005,10 @@ void draw_headertext(double degpersecond){
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
     backscreen.drawString("MT", SCREEN_WIDTH - 40, 1);
   }
-  backscreen.drawString("GS      m/s", 18, 1);
+  backscreen.drawString("GS", 1, 1);
+  backscreen.drawString("m/s", 100, 1);
 }
 
-/*
-bool bankwarning_flipflop = true;
-void draw_bankwarning() {
-  int starty = 55;
-  bankwarning_flipflop = !bankwarning_flipflop;
-  int bgcolor = COLOR_BLACK;
-  int tcolor = COLOR_WHITE;
-  if (bankwarning_flipflop) {
-    bgcolor = COLOR_WHITE;
-    tcolor = COLOR_BLACK;
-  }
-  tft.fillRect(0, starty, SCREEN_WIDTH, 36, bgcolor);
-  int x = SCREEN_WIDTH / 2 - 37;
-  tft.setCursor(x, starty + 18);
-  tft.setTextColor(COLOR_RED, bgcolor);
-  tft.setTextSize(4);
-  tft.print("!  BANK  !");
-  tft.setCursor(x, starty + 2);
-  tft.setTextColor(tcolor, bgcolor);
-  tft.print("!  BANK  !");
-  tft.setTextSize(1);
-}
-*/
 
 void draw_nogmap(double scale) {
   backscreen.setCursor(5, BACKSCREEN_SIZE - 15);
@@ -1095,8 +1053,8 @@ float get_input_voltage(){
     max_adreading = adreading;
   }
   else if (adreading > max_adreading) {
-    Serial.println("bat");
-    Serial.println(BATTERY_MULTIPLYER(max_adreading));
+    DEBUG_P(20250508,"bat");
+    DEBUG_PLN(20250508,BATTERY_MULTIPLYER(max_adreading));
     max_adreading = adreading;
     last_maxadr_time = millis();
   } else if (millis() - last_maxadr_time > 3000L) {
@@ -1105,55 +1063,72 @@ float get_input_voltage(){
   return min(BATTERY_MULTIPLYER(max_adreading),4.3);
 }
 
-
-void draw_header(double degpersecond) {
-  header_footer.fillScreen(COLOR_WHITE);
-  header_footer.loadFont(AA_FONT_SMALL);  // Must load the font first
-
+void draw_degpersec(double degpersecond){
+  if(abs(degpersecond) < 0.5)
+    return;
+  backscreen.loadFont(AA_FONT_SMALL);  // Must load the font first
   int col = COLOR_GRAY;
-  int posx = SCREEN_WIDTH / 2 - 8;
-  
   if(get_gps_mps() > 2.0){
     if (degpersecond > 1.0)
       col = COLOR_GREEN;
     if (degpersecond < -1.0)
       col = COLOR_BLUE;
     if(abs(degpersecond) > 3.0){
-      header_footer.setTextColor(COLOR_WHITE,col);
-      header_footer.fillRect(102, 0, 48, 40, col);
-      if(abs(degpersecond) > 10.0){
-        header_footer.drawRect(102, 0, 48, 40, COLOR_RED);
-        header_footer.drawRect(103, 1, 46, 38, COLOR_RED);
+      backscreen.setTextColor(COLOR_WHITE,col);
+      if(degpersecond < 0)
+        backscreen.fillRect(0, 15, 48, 35, col);
+      else
+        backscreen.fillRect(SCREEN_WIDTH-48, 15, 48, 35, col);
+      
+      if(abs(degpersecond) > 4.0){
+        if(degpersecond > 0){
+          backscreen.drawRect(SCREEN_WIDTH-48, 15, 48, 35, COLOR_RED);
+          backscreen.drawRect(SCREEN_WIDTH-47, 16, 46, 33, COLOR_RED);
+        }else{
+          backscreen.drawRect(0, 15, 48, 35, COLOR_RED);
+          backscreen.drawRect(1, 16, 46, 33, COLOR_RED);
+        }
       }
     }else{
-      header_footer.setTextColor(col);
+      backscreen.setTextColor(col);
     }
   }else{
-    header_footer.setTextColor(col);
+    backscreen.setTextColor(col);
   }
-  if (degpersecond != 0)
-    posx -= 5;
+  int posx;
+  if(degpersecond > 0)
+    posx = SCREEN_WIDTH - 45;
+  else
+    posx = 5;
+  backscreen.setTextWrap(false);
+  backscreen.setCursor(posx, 17);
+  backscreen.printf("%+.1f",degpersecond);
+  backscreen.setCursor(posx - 2, 31);
+  backscreen.print("deg/s");
+}
 
-  header_footer.setCursor(posx, 8);
-  header_footer.printf("%+.1f",degpersecond);
-  header_footer.drawString("deg/s", SCREEN_WIDTH / 2 - 15, 23);
 
-
-  //drawbar(degpersecond, -1);
-
-
-  const int mtlx = SCREEN_WIDTH - 40;
-  const int mtvx = SCREEN_WIDTH - 92;
+//Height 50px
+void draw_header() {
+  header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextWrap(false);
   header_footer.loadFont(NM_FONT_LARGE);  // Must load the font first
   int sel_col = get_gps_mps()<2?COLOR_GRAY:COLOR_BLACK;
+  header_footer.setTextColor(sel_col, TFT_WHITE);
 
+
+  header_footer.setCursor(-1, 3);
+  header_footer.printf("%4.1f", get_gps_mps());
+
+
+  const int mtvx = SCREEN_WIDTH - 111;
+  header_footer.drawFastVLine(mtvx, 0, HEADERFOOTER_HEIGHT, COLOR_GRAY);
   header_footer.setCursor(mtvx, 3);
   if(trackwarning_until > millis()){
     if((millis()/1000)%2==0){
       header_footer.setTextColor(COLOR_RED, TFT_WHITE);
     }else{
-      header_footer.fillRect(mtvx,0,92,3,COLOR_RED);
+      header_footer.fillRect(mtvx,0,111,3,COLOR_RED);
       header_footer.setTextColor(COLOR_WHITE, TFT_RED,true);
     }
     header_footer.printf("%03d", (int)get_gps_magtrack());
@@ -1163,14 +1138,11 @@ void draw_header(double degpersecond) {
     header_footer.printf("%03d", (int)get_gps_magtrack());
   }
 
-  header_footer.setCursor(1, 3);
-  header_footer.printf("%4.1f", get_gps_mps());
-
-  header_footer.drawFastHLine(0,39,240,COLOR_BLACK);
+  header_footer.drawFastHLine(0,49,240,COLOR_BLACK);
 
   if(get_gps_numsat() == 0){
-    header_footer.drawFastHLine(5, 19, SCREEN_WIDTH-10, COLOR_RED);
-    header_footer.drawFastHLine(5, 20, SCREEN_WIDTH-10, COLOR_RED);
+    for(int i = 0; i < 4; i++)
+      header_footer.drawFastHLine(5, 22+i, SCREEN_WIDTH-10, COLOR_RED);
   }
 
   header_footer.pushSprite(0,0);
@@ -1178,6 +1150,38 @@ void draw_header(double degpersecond) {
 
 extern int course_warning_index;
 
+
+// backscreen map footer.
+void draw_map_footer(){
+  //JST Time
+  TinyGPSTime time = get_gpstime();
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_BLACK);
+
+  if (time.isValid()) {
+    backscreen.setCursor(1, BACKSCREEN_SIZE-9);
+    backscreen.printf("%02d:%02d:%02d JST", (time.hour()+9)%24, time.minute(), time.second());
+  }
+
+  // 5 decimal places latitude, longitude print.
+  backscreen.setCursor(115,BACKSCREEN_SIZE-9);
+  backscreen.printf("%.5f", get_gps_lat());
+  if(get_gps_lat() >= 0)
+    backscreen.print("N");
+  else
+    backscreen.print("S");
+
+  backscreen.setCursor(175,BACKSCREEN_SIZE-9);
+  backscreen.printf("%.5f", get_gps_lon());
+  if(get_gps_lon() >= 0)
+    backscreen.print("E");
+  else
+    backscreen.print("W");
+  backscreen.loadFont(AA_FONT_SMALL);
+}
+
+//HEIGHT: 30px. The footer.
 void draw_footer(){
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.loadFont(AA_FONT_SMALL);
@@ -1185,12 +1189,12 @@ void draw_footer(){
 
   // ====Navigation.==== Distance to plathome.
   if(currentdestination != -1 && currentdestination < destinations_count){
-    header_footer.setCursor(1, 11);
+    header_footer.setCursor(1, 1);
     header_footer.setTextColor(COLOR_MAGENTA);
     header_footer.printf("MC%3d", magc);
 
 
-    header_footer.setCursor(60, 11);
+    header_footer.setCursor(60, 1);
     header_footer.setTextColor(COLOR_BLACK);
     if(!get_gps_fix() && !get_demo_biwako())
       header_footer.print("---km");
@@ -1200,7 +1204,7 @@ void draw_footer(){
 
     if(currentdestination != -1 && currentdestination < destinations_count){
       header_footer.setTextColor(COLOR_MAGENTA);
-      header_footer.setCursor(1, 27);
+      header_footer.setCursor(1, 17);
       if(destination_mode == DMODE_FLYAWAY)
         header_footer.print("FLY AWAY");
       if(destination_mode == DMODE_FLYINTO)
@@ -1212,35 +1216,26 @@ void draw_footer(){
           header_footer.print("10K AWAY");
       }
 
-      header_footer.setCursor(80, 27);
+      header_footer.setCursor(80, 17);
       header_footer.setTextWrap(false);
       header_footer.print(extradestinations[currentdestination].name);
     }
-    TinyGPSTime time = get_gpstime();
-    header_footer.unloadFont();
-    if (time.isValid()) {
-      header_footer.setCursor(1, 2);
-      header_footer.setTextSize(1);
-      header_footer.setTextColor(COLOR_BLACK);
-      header_footer.printf("%02d:%02d:%02d JST", (time.hour()+9)%24, time.minute(), time.second());
-    }
-    header_footer.loadFont(AA_FONT_SMALL);  // Must load the font first
   }
 
   // ====Battery====
 
-  header_footer.setCursor(SCREEN_WIDTH - 37, 11);
+  header_footer.setCursor(SCREEN_WIDTH - 37, 1);
   header_footer.setTextColor(COLOR_GREEN);
   if (digitalRead(USB_DETECT)) {
     header_footer.print("USB");
   } else {
-    header_footer.setCursor(SCREEN_WIDTH - 45, 11);
+    header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_input_voltage();
     if (input_voltage <= BAT_LOW_VOLTAGE) {
       if((millis()/1000)%2 != 0){
         header_footer.setTextColor(COLOR_RED);
       }else{
-        header_footer.fillRect(SCREEN_WIDTH-47,10, 47,15, COLOR_RED);
+        header_footer.fillRect(SCREEN_WIDTH-47,0, 47,15, COLOR_RED);
         header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
       }
       header_footer.printf("%.2fV", input_voltage);
@@ -1263,46 +1258,29 @@ void draw_footer(){
   int col = COLOR_GREEN;
   if (get_gps_numsat() < 5) {
     header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
-    header_footer.fillRect(SCREEN_WIDTH-101,10, 44,15, COLOR_RED);
+    header_footer.fillRect(SCREEN_WIDTH-101,1, 44,15, COLOR_RED);
   } else if (get_gps_numsat() < 10) {
     header_footer.setTextColor(COLOR_DARKORANGE);
   }else{
     header_footer.setTextColor(COLOR_GREEN);
   }
-  header_footer.setCursor(SCREEN_WIDTH-100,11);
+  header_footer.setCursor(SCREEN_WIDTH-100,1);
   header_footer.printf("%dsats", get_gps_numsat());
 
-  // 5 decimal places latitude, longitude print.
-  header_footer.unloadFont();
-  header_footer.setTextColor(COLOR_BLACK);
-  header_footer.setCursor(115,2);
-  header_footer.printf("%.5f", get_gps_lat());
-  if(get_gps_lat() >= 0)
-    header_footer.print("N");
-  else
-    header_footer.print("S");
-
-  header_footer.setCursor(175,2);
-  header_footer.printf("%.5f", get_gps_lon());
-  if(get_gps_lon() >= 0)
-    header_footer.print("E");
-  else
-    header_footer.print("W");
-  header_footer.loadFont(AA_FONT_SMALL);
   
 
   // ====SD==== draw
   if (good_sd()) {
-    header_footer.fillRect(SCREEN_WIDTH - 22, 25, 22, 15, COLOR_GREEN);
+    header_footer.fillRect(SCREEN_WIDTH - 22, 15, 22, 15, COLOR_GREEN);
     header_footer.setTextColor(COLOR_WHITE, COLOR_GREEN);
   } else {
-    header_footer.fillRect(SCREEN_WIDTH - 22, 25, 22, 15, COLOR_RED);
+    header_footer.fillRect(SCREEN_WIDTH - 22, 15, 22, 15, COLOR_RED);
     header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
   }
-  header_footer.setCursor(SCREEN_WIDTH - 20,26);
+  header_footer.setCursor(SCREEN_WIDTH - 20,16);
   header_footer.print("SD");
 
-  header_footer.pushSprite(0,280);
+  header_footer.pushSprite(0,290);
 }
 
 void draw_headingupmode() {
@@ -1345,12 +1323,12 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   backscreen.drawCircle(pla.x, pla.y, scale*10.55f/cos(radians(35)),COLOR_GREEN);
 
   if(!n_pilon.isOutsideTft()){
-    backscreen.fillTriangle(n_pilon.x-2,n_pilon.y,n_pilon.x+2,n_pilon.y,n_pilon.x,n_pilon.y-6, COLOR_ORANGE);
-    backscreen.drawTriangle(n_pilon.x-2,n_pilon.y,n_pilon.x+2,n_pilon.y,n_pilon.x,n_pilon.y-6, COLOR_BLACK);
+    backscreen.fillTriangle(n_pilon.x-3,n_pilon.y,n_pilon.x+3,n_pilon.y,n_pilon.x,n_pilon.y-9, COLOR_ORANGE);
+    backscreen.drawTriangle(n_pilon.x-3,n_pilon.y,n_pilon.x+3,n_pilon.y,n_pilon.x,n_pilon.y-9, COLOR_BLACK);
   }
   if(!w_pilon.isOutsideTft()){
-    backscreen.fillTriangle(w_pilon.x-2,w_pilon.y,w_pilon.x+2,w_pilon.y,w_pilon.x,w_pilon.y-6, COLOR_ORANGE);
-    backscreen.drawTriangle(w_pilon.x-2,w_pilon.y,w_pilon.x+2,w_pilon.y,w_pilon.x,w_pilon.y-6, COLOR_BLACK);
+    backscreen.fillTriangle(w_pilon.x-3,w_pilon.y,w_pilon.x+3,w_pilon.y,w_pilon.x,w_pilon.y-9, COLOR_ORANGE);
+    backscreen.drawTriangle(w_pilon.x-3,w_pilon.y,w_pilon.x+3,w_pilon.y,w_pilon.x,w_pilon.y-9, COLOR_BLACK);
   }
   if(!pla.isOutsideTft()){
     backscreen.fillRect(pla.x-3, pla.y-2, 6, 8, COLOR_BLUE);
@@ -1480,6 +1458,7 @@ void draw_nomapdata() {
     backscreen.drawRect(6, 146, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
     backscreen.setCursor(23,150);
     backscreen.setTextColor(COLOR_ORANGE);
+    backscreen.loadFont(AA_FONT_SMALL);
     backscreen.print("Scanning GNSS/GPS Signal");
     char text[28];
     int dotCount = (millis() / 900) % 10;
@@ -1513,274 +1492,266 @@ extern int max_page;     // Global variable to store maximum page number
 volatile bool loading_sddetail = true;
 bool sd_detail_loading_displayed = false;
 
-void draw_sddetail(bool redraw_screen, int page) {
-  if(redraw_screen || (sd_detail_loading_displayed && !loading_sddetail)) {
-
-    lastdrawn_sddetail = millis();
-    header_footer.fillScreen(COLOR_WHITE);
-    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    header_footer.setTextSize(2);
-    header_footer.setCursor(1, 1);
-    if(max_page >= 0 && !loading_sddetail)
-      header_footer.printf("SD DETAIL  %d/%d",page%(max_page+1)+1,max_page+1);
-    else
-      header_footer.printf("SD DETAIL  loading...");
-    
-    header_footer.pushSprite(0,0);
-    
-    backscreen.fillScreen(COLOR_WHITE);
-    
-    if(!loading_sddetail){
-      for(int i= 0; i< 20; i++){
-        backscreen.setCursor(10,i*12);
-        backscreen.print(sdfiles[i]);
-      }
-
-      backscreen.unloadFont();
-      backscreen.setTextSize(1);
-      for(int i= 0; i< 20; i++){
-        if(sdfiles_size[i] != 0){
-          backscreen.setCursor(SCREEN_WIDTH-40,i*12+4);
-          backscreen.printf("%dKB",(int)(sdfiles_size[i]/1024)+1);
-        }
-      }
-      backscreen.loadFont(AA_FONT_SMALL);
-      sd_detail_loading_displayed = false;
-    }else{
-      sd_detail_loading_displayed = true;
-      backscreen.setCursor(80,100);
-      backscreen.print("Stabd by ...");
+void draw_sddetail(int page) {
+  lastdrawn_sddetail = millis();
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 1);
+  if(max_page >= 0 && !loading_sddetail)
+    header_footer.printf("SD DETAIL  %d/%d",page%(max_page+1)+1,max_page+1);
+  else
+    header_footer.printf("SD DETAIL  loading...");
+  
+  header_footer.pushSprite(0,0);
+  
+  backscreen.fillScreen(COLOR_WHITE);
+  
+  if(!loading_sddetail){
+    for(int i= 0; i< 20; i++){
+      backscreen.setCursor(10,i*12);
+      backscreen.print(sdfiles[i]);
     }
-    backscreen.pushSprite(0,40);
-    header_footer.fillScreen(COLOR_WHITE);
-    header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    for(int i= 0; i< 20; i++){
+      if(sdfiles_size[i] != 0){
+        backscreen.setCursor(SCREEN_WIDTH-40,i*12+4);
+        backscreen.printf("%dKB",(int)(sdfiles_size[i]/1024)+1);
+      }
+    }
+    backscreen.loadFont(AA_FONT_SMALL);
+    sd_detail_loading_displayed = false;
+  }else{
+    sd_detail_loading_displayed = true;
+    backscreen.setCursor(80,100);
+    backscreen.print("Stabd by ...");
   }
+  backscreen.pushSprite(0,40);
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.pushSprite(0,SCREEN_HEIGHT-40);
 }
 
 
 
 //==================MODE DRAWS===============
-void draw_gpsdetail(bool redraw_screen, int page) {
-  if (redraw_screen) {
-    bool aru = false;
-    for (int i = 0; i < 32; i++) {
-      if (satellites[i].PRN != 0) aru = true;  // Skip empty entries
-    }
-
-    header_footer.fillScreen(COLOR_WHITE);
-
-    if (page % 2 == 1) {
-      tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
-      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      header_footer.setTextSize(2);
-      header_footer.setCursor(1, 1);
-      header_footer.println("GPS DETAIL 2: raw NMEAs");
-      header_footer.pushSprite(0,0);
-
-      tft.unloadFont();
-      tft.setTextSize(1);
-      int posy = 0;
-      tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      for (int i = 0; i < MAX_LAST_NMEA; i++) {
-        posy += 18;
-        tft.setCursor(1, posy);
-        if(get_gps_nmea_time(i) < millis()-1000){
-          tft.setTextColor(COLOR_GRAY);
-        }else{
-          tft.setTextColor(COLOR_BLACK);
-        }
-        tft.println(get_gps_nmea(i));
-      }
-      tft.loadFont(AA_FONT_SMALL);  // Must load the font first
-    }
-    if (page % 2 == 0) {
-      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      header_footer.setTextSize(2);
-      header_footer.setCursor(1, 1);
-      header_footer.println("GPS DETAIL 1:CONSTELLATION");
-
-      header_footer.setTextColor(COLOR_CYAN, COLOR_WHITE);
-      header_footer.setCursor(0,18);
-      header_footer.print("GPS ");
-      header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      header_footer.print("GLO ");
-      header_footer.setTextColor(COLOR_BLUE, COLOR_WHITE);
-      header_footer.print("GAL ");
-      header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
-      header_footer.print("QZS ");
-      header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-      header_footer.print("BEI ");
-      header_footer.pushSprite(0,0);
-
-      
-
-      header_footer.fillSprite(COLOR_WHITE);
-      header_footer.setCursor(23, 5);
-      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      TinyGPSDate date = get_gpsdate();
-      TinyGPSTime time = get_gpstime();
-      if (date.isValid() && time.isValid()) {
-        header_footer.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
-      }
-      header_footer.setCursor(23, 17);
-      header_footer.printf("%d sats, Fix=%s",get_gps_numsat(),get_gps_fix()?"yes":"no");
-
-      header_footer.pushSprite(0,SCREEN_HEIGHT-40);
-
-
-
-      backscreen.fillSprite(COLOR_WHITE);
-      backscreen.drawCircle(240 / 2, 240 / 2, 240 / 2 - 2, COLOR_BLACK);
-      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-
-      if (!aru){
-        backscreen.pushSprite(0,40);
-        return;
-      }
-
-
-      for (int i = 0; i < 32; i++) {
-        if (satellites[i].PRN == 0) continue;  // Skip empty entries
-        //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
-
-        // Calculate position on display based on azimuth and elevation
-        float azimuth = satellites[i].azimuth;
-        float elevation = satellites[i].elevation;
-
-        int x = calculateGPS_X(azimuth, elevation);
-        int y = calculateGPS_Y(azimuth, elevation);
-        int size = 5;
-        if (satellites[i].SNR <= 0) {
-          size = 2;
-        }
-
-        if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
-          backscreen.fillCircle(x, y, size, COLOR_RED);
-        else if (satellites[i].satelliteType == SATELLITE_TYPE_GPS)
-          backscreen.fillCircle(x, y, size, COLOR_CYAN);
-        else if (satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
-          backscreen.fillCircle(x, y, size, COLOR_GREEN);
-        else if (satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
-          backscreen.fillCircle(x, y, size, COLOR_BLUE);
-        else if (satellites[i].satelliteType == SATELLITE_TYPE_BEIDOU)
-          backscreen.fillCircle(x, y, size, COLOR_ORANGE);
-        else
-          backscreen.fillCircle(x, y, size, COLOR_BLACK);
-
-        int textx = constrain(x + 6, 0, SCREEN_WIDTH - 20);
-        if (satellites[i].PRN >= 10)
-          textx -= 10;
-        if (satellites[i].PRN >= 100)
-          textx -= 10;
-        backscreen.setCursor(textx, y - 3);
-        backscreen.print(satellites[i].PRN);
-      }
-      backscreen.pushSprite(0,40);
-    }
+void draw_gpsdetail(int page) {
+  bool aru = false;
+  for (int i = 0; i < 32; i++) {
+    if (satellites[i].PRN != 0) aru = true;  // Skip empty entries
   }
-}
 
+  header_footer.fillScreen(COLOR_WHITE);
 
-void draw_maplist_mode(bool redraw_screen, int maplist_page) {
-  if (redraw_screen) {
-
-    mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
-                            &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
-    int sizeof_mapflash = sizeof(mapdatas) / sizeof(mapdatas[0]);
-    tft.fillScreen(COLOR_WHITE);
-    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    tft.setCursor(1, 1);
-
-
-    int pagetotal = 1 + (sizeof_mapflash + mapdata_count) / 30;
-    int pagenow = maplist_page % pagetotal;
-
-    tft.printf("MAPLIST FLSH:%d/SD:%d (%d/%d)", sizeof_mapflash, mapdata_count, pagenow + 1, pagetotal);
+  if (page % 2 == 1) {
+    tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    header_footer.setTextSize(2);
+    header_footer.setCursor(1, 1);
+    header_footer.println("GPS DETAIL 2: raw NMEAs");
+    header_footer.pushSprite(0,0);
 
     tft.unloadFont();
     tft.setTextSize(1);
-    int posy = 20;
-    tft.setCursor(1, posy);
-    tft.setTextColor(COLOR_BLACK);
-    if (pagenow == 0) {
-      for (int i = 0; i < sizeof_mapflash; i++) {
-        tft.printf("FLSH %d: %s,%4.2f,%4.2f,%d", mapdatas[i]->id, mapdatas[i]->name, mapdatas[i]->cords[0][0], mapdatas[i]->cords[0][1], mapdatas[i]->size);
-        posy += 10;
-        tft.setCursor(1, posy);
+    int posy = 0;
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    for (int i = 0; i < MAX_LAST_NMEA; i++) {
+      posy += 18;
+      tft.setCursor(1, posy);
+      if(get_gps_nmea_time(i) < millis()-1000){
+        tft.setTextColor(COLOR_GRAY);
+      }else{
+        tft.setTextColor(COLOR_BLACK);
       }
+      tft.println(get_gps_nmea(i));
+    }
+    tft.loadFont(AA_FONT_SMALL);  // Must load the font first
+  }
+  if (page % 2 == 0) {
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    header_footer.setTextSize(2);
+    header_footer.setCursor(1, 1);
+    header_footer.println("GPS DETAIL 1:CONSTELLATION");
+
+    header_footer.setTextColor(COLOR_CYAN, COLOR_WHITE);
+    header_footer.setCursor(0,18);
+    header_footer.print("GPS ");
+    header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    header_footer.print("GLO ");
+    header_footer.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    header_footer.print("GAL ");
+    header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
+    header_footer.print("QZS ");
+    header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    header_footer.print("BEI ");
+    header_footer.pushSprite(0,0);
+
+    
+
+    header_footer.fillSprite(COLOR_WHITE);
+    header_footer.setCursor(23, 5);
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    TinyGPSDate date = get_gpsdate();
+    TinyGPSTime time = get_gpstime();
+    if (date.isValid() && time.isValid()) {
+      header_footer.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
+    }
+    header_footer.setCursor(23, 17);
+    header_footer.printf("%d sats, Fix=%s",get_gps_numsat(),get_gps_fix()?"yes":"no");
+
+    header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+
+
+
+    backscreen.fillSprite(COLOR_WHITE);
+    backscreen.drawCircle(240 / 2, 240 / 2, 240 / 2 - 2, COLOR_BLACK);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+    if (!aru){
+      backscreen.pushSprite(0,40);
+      return;
     }
 
-    int sd_start_index = 0;
-    if (pagenow > 0) {
-      sd_start_index = 30 * pagenow - sizeof_mapflash;
-    }
 
-    for (int i = sd_start_index; i < mapdata_count; i++) {
-      if (extramaps[i].size <= 1) {
-        continue;
+    for (int i = 0; i < 32; i++) {
+      if (satellites[i].PRN == 0) continue;  // Skip empty entries
+      //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
+
+      // Calculate position on display based on azimuth and elevation
+      float azimuth = satellites[i].azimuth;
+      float elevation = satellites[i].elevation;
+
+      int x = calculateGPS_X(azimuth, elevation);
+      int y = calculateGPS_Y(azimuth, elevation);
+      int size = 5;
+      if (satellites[i].SNR <= 0) {
+        size = 2;
       }
-      double lon1 = extramaps[i].cords[0][0];
-      double lat1 = extramaps[i].cords[0][1];
-      char name_firstchar = extramaps[i].name[0];
 
-      tft.printf("SD %d:%s,%4.2f,%4.2f,%d,%c", i, extramaps[i].name, lat1, lon1, extramaps[i].size, name_firstchar);
+      if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
+        backscreen.fillCircle(x, y, size, COLOR_RED);
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_GPS)
+        backscreen.fillCircle(x, y, size, COLOR_CYAN);
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
+        backscreen.fillCircle(x, y, size, COLOR_GREEN);
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
+        backscreen.fillCircle(x, y, size, COLOR_BLUE);
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_BEIDOU)
+        backscreen.fillCircle(x, y, size, COLOR_ORANGE);
+      else
+        backscreen.fillCircle(x, y, size, COLOR_BLACK);
+
+      int textx = constrain(x + 6, 0, SCREEN_WIDTH - 20);
+      if (satellites[i].PRN >= 10)
+        textx -= 10;
+      if (satellites[i].PRN >= 100)
+        textx -= 10;
+      backscreen.setCursor(textx, y - 3);
+      backscreen.print(satellites[i].PRN);
+    }
+    backscreen.pushSprite(0,40);
+  }
+}
+
+
+void draw_maplist_mode(int maplist_page) {
+
+  mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
+                          &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
+  int sizeof_mapflash = sizeof(mapdatas) / sizeof(mapdatas[0]);
+  tft.fillScreen(COLOR_WHITE);
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  tft.setCursor(1, 1);
+
+
+  int pagetotal = 1 + (sizeof_mapflash + mapdata_count) / 30;
+  int pagenow = maplist_page % pagetotal;
+
+  tft.printf("MAPLIST FLSH:%d/SD:%d (%d/%d)", sizeof_mapflash, mapdata_count, pagenow + 1, pagetotal);
+
+  tft.unloadFont();
+  tft.setTextSize(1);
+  int posy = 20;
+  tft.setCursor(1, posy);
+  tft.setTextColor(COLOR_BLACK);
+  if (pagenow == 0) {
+    for (int i = 0; i < sizeof_mapflash; i++) {
+      tft.printf("FLSH %d: %s,%4.2f,%4.2f,%d", mapdatas[i]->id, mapdatas[i]->name, mapdatas[i]->cords[0][0], mapdatas[i]->cords[0][1], mapdatas[i]->size);
       posy += 10;
       tft.setCursor(1, posy);
     }
-
-    tft.loadFont(AA_FONT_SMALL);  // Must load the font first
   }
+
+  int sd_start_index = 0;
+  if (pagenow > 0) {
+    sd_start_index = 30 * pagenow - sizeof_mapflash;
+  }
+
+  for (int i = sd_start_index; i < mapdata_count; i++) {
+    if (extramaps[i].size <= 1) {
+      continue;
+    }
+    double lon1 = extramaps[i].cords[0][0];
+    double lat1 = extramaps[i].cords[0][1];
+    char name_firstchar = extramaps[i].name[0];
+
+    tft.printf("SD %d:%s,%4.2f,%4.2f,%d,%c", i, extramaps[i].name, lat1, lon1, extramaps[i].size, name_firstchar);
+    posy += 10;
+    tft.setCursor(1, posy);
+  }
+
+  tft.loadFont(AA_FONT_SMALL);  // Must load the font first
+
 }
 
 
 
 
-void draw_setting_mode(bool redraw_screen, int selectedLine, int cursorLine) {
-  if(redraw_screen){
-    const int separation = 25;
-    textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
-    tft.setTextColor(COLOR_BLACK);
-    backscreen.fillScreen(COLOR_WHITE);
+void draw_setting_mode(int selectedLine, int cursorLine) {
+  const int separation = 25;
+  textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
+  tft.setTextColor(COLOR_BLACK);
+  backscreen.fillScreen(COLOR_WHITE);
 
-    for (int i = 0; i < setting_size; ++i) {
-      uint16_t col = COLOR_BLACK;
-      if (cursorLine == i) {
-        col = (selectedLine == i) ? COLOR_RED : COLOR_MAGENTA;
-      }
-      backscreen.setCursor(10,i * separation);
-      backscreen.setTextColor(col,COLOR_WHITE);
-      backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
-      //textmanager.drawTextf(menu_settings[i].id, 2, 10, startY + i * separation, col, menu_settings[i].getLabel(selectedLine == i).c_str());
+  for (int i = 0; i < setting_size; ++i) {
+    uint16_t col = COLOR_BLACK;
+    if (cursorLine == i) {
+      col = (selectedLine == i) ? COLOR_RED : COLOR_MAGENTA;
     }
-    backscreen.pushSprite(0,30);
-
-    header_footer.unloadFont();
-    header_footer.fillScreen(COLOR_WHITE);
-
-    header_footer.setTextSize(1);
-
-
-    header_footer.setCursor(2, 40-25);
-
-
-    header_footer.setTextColor(COLOR_GRAY);
-    if (digitalRead(24)) {
-      header_footer.print("Battery Time: Unknown. USB connected.");
-    }else{
-      double input_voltage = get_input_voltage();
-      int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
-      header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
-    }
-
-    header_footer.setCursor(2, 40-11);
-    header_footer.printf("CPU temp %.1fC",analogReadTemp());
-
-    #ifdef RELEASE
-    header_footer.setCursor(100,40-11);
-    header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
-    #endif
-
-    header_footer.loadFont(AA_FONT_SMALL);
-    header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+    backscreen.setCursor(10,i * separation);
+    backscreen.setTextColor(col,COLOR_WHITE);
+    backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
+    //textmanager.drawTextf(menu_settings[i].id, 2, 10, startY + i * separation, col, menu_settings[i].getLabel(selectedLine == i).c_str());
   }
+  backscreen.pushSprite(0,30);
+
+  header_footer.unloadFont();
+  header_footer.fillScreen(COLOR_WHITE);
+
+  header_footer.setTextSize(1);
+
+
+  header_footer.setCursor(2, 40-25);
+
+
+  header_footer.setTextColor(COLOR_GRAY);
+  if (digitalRead(24)) {
+    header_footer.print("Battery Time: Unknown. USB connected.");
+  }else{
+    double input_voltage = get_input_voltage();
+    int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
+    header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
+  }
+
+  header_footer.setCursor(2, 40-11);
+  header_footer.printf("CPU temp %.1fC",analogReadTemp());
+
+  #ifdef RELEASE
+  header_footer.setCursor(100,40-11);
+  header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
+  #endif
+
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.pushSprite(0,SCREEN_HEIGHT-40);
 }

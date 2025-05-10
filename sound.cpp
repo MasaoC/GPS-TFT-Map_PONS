@@ -1,3 +1,4 @@
+// Handle speaker, amplifier, PWM-audio signals.
 #include "settings.h"
 #include "sound.h"
 #include "gps.h"
@@ -40,7 +41,7 @@ uint32_t chunksLoaded = 0;      // Counter for tracking how many chunks were loa
 
 // Timing variables
 const unsigned long playInterval = 10000;  // 2 seconds between plays
-extern int sound_volume;
+extern volatile int sound_volume;
 
 //------
 const int tableSize = 256;     // Sine wave table size
@@ -235,7 +236,7 @@ void loop_sound(){
             stopPlayback();  // This will disable the amplifier
         } else {
             // Buffer underrun - this is bad, we couldn't load the next buffer in time
-            Serial.println("WARNING: Buffer underrun detected!");
+            DEBUGW_PLN(20250508,"WARNING: Buffer underrun detected!");
         }
     }
     
@@ -378,7 +379,7 @@ unsigned long trackwarning_until;
 unsigned long last_update_tone = 0;
 void update_tone(float degpersecond){
     if(millis() - last_update_tone < 900){
-        Serial.println("errrr");
+        DEBUG_PLN(20250508,"errrr");
         return;
     }
     last_update_tone - millis();

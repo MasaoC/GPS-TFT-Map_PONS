@@ -1,5 +1,6 @@
-// GPS_TFT_map. PONS v5
-// Author: Masao Chiguchi @C 2025
+// GPS_TFT_map. PONS v5 ( Pilot oriented navigation system for HPA )
+// Author: Masao Chiguchi
+// Date: 2025/05/08
 
 #include "navdata.h"
 #include "display_tft.h"
@@ -10,53 +11,47 @@
 #include "sound.h"
 #include "hardware/adc.h"
 
-// we need to do bool core1_separate_stack = true; for stack running out.
+// we need to do bool core1_separate_stack = true; to avoid stack running out.
+// (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
 bool core1_separate_stack = true;//DO NOT REMOVE THIS LINE.
 
-unsigned long last_newtrack_time = 0;
-float truetrack_now = 0;
-unsigned long last_screen_update = 0;  //GPSを最後に受信した時間 millis()
+unsigned long screen_update_time = 0;  // 最後に画面更新した時間 millis()
 bool redraw_screen = false;           //次の描画では、黒塗りして新たに画面を描画する
-volatile bool quick_redraw = false;   //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画する
-bool bank_warning = false;
 
-const int NUM_SAMPLES = 4;          // Number of samples to take over 2 seconds
-float upward_samples[NUM_SAMPLES];  // Array to store truetrack values
-unsigned long lastSampleTime = 0;  // Time when the last sample was taken
+const int NUM_SAMPLES = 4;          // Number of samples for deg/s
+float truetrack_samples[NUM_SAMPLES];  // Array to store truetrack values
 int sampleIndex = 0;               // Index to keep track of current sample
 float degpersecond = 0;            // The calculated average differential
 
 int screen_mode = MODE_MAP;
 int detail_page = 0;
-volatile int scaleindex = 3;
 double scalelist[6];
 double scale;
 
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
-unsigned long lastfresh_millis = 0;
+int lastload_zoomlevel; 
+int course_warning_index = 0;     //From 0 to 900
+unsigned long last_course_warning_time = 0; //millis
+unsigned long last_destination_toofar_time = 0;//millis
+double steer_angle = 0.0;     //-180 to 180.
+
+//次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画するフラグ。BMPロード完了時にフラグが立つ。
+volatile int scaleindex = 3;
 volatile int sound_volume = 50;
-int lastload_zoomlevel;
 
-
-void shortPressCallback();
-void longPressCallback();
-
-// Create Button objects
-Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
-
-int course_warning_index = 0;
-unsigned long last_course_warning_time = 0;
-
-double steer_angle = 0.0;
+extern volatile bool loading_sddetail;
+extern bool sd_detail_loading_displayed;
 
 void reset_degpersecond();
-void update_degpersecond();
+void update_degpersecond(int true_track);
+void check_destination_toofar();
 void update_course_warning(float degpersecond);
-
-extern int setting_size;
-extern bool newcourse_arrived;
+void shortPressCallback();
+void longPressCallback();
+// Create Button objects
+Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
 
 //===============SET UP CORE0=================
 void setup(void) {
@@ -91,7 +86,6 @@ void setup(void) {
   scalelist[5] = 200.0;
   scale = scalelist[scaleindex];
   redraw_screen = true;
-  quick_redraw = true;
   enqueueTask(createLogSdTask("SETUP DONE"));
 }
 
@@ -119,6 +113,8 @@ void setup1(void){
   }
 }
 
+
+
 //===============MAIN LOOP CORE0=================
 void loop() {
   //switch handling
@@ -131,212 +127,190 @@ void loop() {
   }
   #endif
 
-  if((millis() - last_screen_update > SCREEN_FRESH_INTERVAL) || quick_redraw){
+  
+
+  if((millis() - screen_update_time > SCREEN_FRESH_INTERVAL)){
     redraw_screen = true;
-    last_screen_update = millis();
-    quick_redraw = false;
   }
+
 
   if (screen_mode == MODE_SETTING) {
-    draw_setting_mode(redraw_screen, selectedLine, cursorLine);
-    redraw_screen = false;
-    return;
+    if(redraw_screen){
+      draw_setting_mode(selectedLine, cursorLine);
+    }
   }
-  if (screen_mode == MODE_GPSDETAIL) {
-    draw_gpsdetail(redraw_screen, detail_page);
-    redraw_screen = false;
-    return;
+  else if (screen_mode == MODE_GPSDETAIL) {
+    if(redraw_screen)
+      draw_gpsdetail(detail_page);
   }
-
-  if (screen_mode == MODE_SDDETAIL) {
-    draw_sddetail(redraw_screen, detail_page);
-    redraw_screen = false;
-    return;
+  else if (screen_mode == MODE_SDDETAIL) {
+    if(sd_detail_loading_displayed && !loading_sddetail)
+      redraw_screen = true;
+    if(redraw_screen)
+      draw_sddetail(detail_page);
   }
-  if (screen_mode == MODE_MAPLIST) {
-    draw_maplist_mode(redraw_screen, detail_page);
-    redraw_screen = false;
-    return;
-  }
-
-  bool new_gps_info = gps_newdata_arrived();
-
-  if(new_gps_info && destination_mode == DMODE_AUTO10K){
-    double distance_frm_plathome = calculateDistance(get_gps_lat(), get_gps_lon(), PLA_LAT, PLA_LON);
-    if(auto10k_status == AUTO10K_AWAY){
-      if(distance_frm_plathome > 10.0){//10.54 だけど、540mの誤差を引いておく。
-        auto10k_status = AUTO10K_INTO;
-        enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
-        enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-        enqueueTask(createPlayMultiToneTask(2793,500,1,2));
-        enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-        enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
+  else if (screen_mode == MODE_MAPLIST) {
+    if(redraw_screen)
+      draw_maplist_mode(detail_page);
+  }else if(screen_mode == MODE_MAP){
+    bool new_gps_info = gps_new_location_arrived();
+    if(new_gps_info){
+      // Automatic destination change for AUTO 10KM mode.
+      if(destination_mode == DMODE_AUTO10K){
+        double distance_frm_plathome = calculateDistanceKm(get_gps_lat(), get_gps_lon(), PLA_LAT, PLA_LON);
+        if(auto10k_status == AUTO10K_AWAY){
+          if(distance_frm_plathome > 10.0){//10.54 だけど、540mの誤差を引いておく。
+            auto10k_status = AUTO10K_INTO;
+            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
+            enqueueTask(createPlayMultiToneTask(3136,500,1,2));
+            enqueueTask(createPlayMultiToneTask(2793,500,1,2));
+            enqueueTask(createPlayMultiToneTask(3136,500,1,2));
+            enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
+          }
+        }
+        if(auto10k_status == AUTO10K_INTO && distance_frm_plathome < 1.0){//折り返し用。
+          auto10k_status = AUTO10K_AWAY;
+          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
+          enqueueTask(createPlayMultiToneTask(3136,500,1,2));
+          enqueueTask(createPlayMultiToneTask(2793,500,1,2));
+          enqueueTask(createPlayMultiToneTask(3136,500,1,2));
+          enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
+        }
       }
+      check_destination_toofar();
     }
-    if(auto10k_status == AUTO10K_INTO && distance_frm_plathome < 1.0){//折り返し用。
-      auto10k_status = AUTO10K_AWAY;
-      enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
-      enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-      enqueueTask(createPlayMultiToneTask(2793,500,1,2));
-      enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-      enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
+
+    // Called only once per second.
+    if(newcourse_arrived){
+      DEBUG_PLN(20250520,"newcourse_arrived");
+
+      int ttrack = get_gps_truetrack();
+      update_degpersecond(ttrack);
+      update_tone(degpersecond);
+      update_course_warning(degpersecond);
+      steer_angle = (magc-8) - ttrack;
+      if(steer_angle < -180){
+        steer_angle += 360;
+      }else if(steer_angle > 180){
+        steer_angle -= 360;
+      }
+
+      newcourse_arrived = false;
     }
-  }
 
 
-  if(newcourse_arrived){
-    update_degpersecond();
-    update_tone(degpersecond);
-    update_course_warning(degpersecond);
-    newcourse_arrived = false;
-
-    int ttrack = get_gps_truetrack();
-    float tt_radians = deg2rad(ttrack);
-    steer_angle = (magc-8) - ttrack;
-    if(steer_angle < -180){
-      steer_angle += 360;
-    }else if(steer_angle > 180){
-      steer_angle -= 360;
-    }
-  }
-  /*
-  if(!redraw_screen){
-    // (GPSが不作動 && (画面更新インターバルが経過している) or 強制描画タイミング(スイッチ操作など)
-    // TFT のSPI 通信とGPS module RX Interruptのタイミング競合によりGPS受信失敗するので、GPS受信直後にTFT更新を限定している。
-    //redraw_screen = (( !get_gps_connection()) && (millis() - last_screen_update > SCREEN_INTERVAL)) || quick_redraw;
-    //redraw_screen = quick_redraw;
-    // 新しいgmapのロードが完了していて、GPS受信中ではない(longdraw_allowed)の場合。
+    // BMPロード完了 or GPSの情報が更新された。
     if (new_gmap_ready || new_gps_info) {
       redraw_screen = true;
     }
-  }*/
-  if (new_gmap_ready || new_gps_info) {
-    redraw_screen = true;
+    
+    // GPSデータを受信した時と、bmpロード完了した時、両方でcallされるので毎秒二回は redraw_screen = true になる。
+    if (redraw_screen) {
+      float new_truetrack = get_gps_truetrack();
+      double new_lat = get_gps_lat();
+      double new_long = get_gps_lon();
+      set_new_location_off();
+
+      //画面上の方向設定
+      float drawupward_direction = new_truetrack;
+      if (is_northupmode()) {
+        drawupward_direction = 0;
+      }
+
+      nav_update();// MC や dist を更新する。
+      draw_header();
+
+      new_gmap_ready = false;
+
+      clean_backscreen();
+
+
+      int zoomlevel = 0;
+      if (scaleindex == 0) zoomlevel = 5;//SCALE_EXSMALL_GMAP
+      if (scaleindex == 1) zoomlevel = 7;//SCALE_SMALL_GMAP
+      if (scaleindex == 2) zoomlevel = 9;//SCALE_MEDIUM_GMAP
+      if (scaleindex == 3) zoomlevel = 11;//SCALE_LARGE_GMAP
+      if (scaleindex == 4) zoomlevel = 13;//SCALE_EXLARGE_GMAP
+
+      bool gmap_drawed = false;
+      if(gmap_loaded_active)
+        gmap_drawed = draw_gmap(drawupward_direction);
+
+      // If new gps
+      if(new_gps_info || lastload_zoomlevel != zoomlevel){
+        lastload_zoomlevel = zoomlevel;
+        //If loadImagetask already running in Core1, abort.
+        enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
+      }
+
+      if (scale > SCALE_SMALL_GMAP) {
+        if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
+          draw_Biwako(new_lat, new_long, scale, drawupward_direction,gmap_drawed);
+        } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
+          draw_Osaka(new_lat, new_long, scale, drawupward_direction);
+        } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
+          draw_Shinura(new_lat, new_long, scale, drawupward_direction);
+        }
+        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
+      } else {
+        //near japan.
+        if (check_within_latlon(20, 40, new_lat, 35, new_long, 138)) {
+          draw_Japan(new_lat, new_long, scale, drawupward_direction);
+        }
+      }
+
+      gps_loop(4);
+
+      draw_track(new_lat, new_long, scale, drawupward_direction);
+
+      if(currentdestination != -1 && currentdestination < destinations_count){
+        double destlat = extradestinations[currentdestination].cords[0][0];
+        double destlon = extradestinations[currentdestination].cords[0][1];
+        if(destination_mode == DMODE_FLYINTO) 
+          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,5);
+        else if(destination_mode == DMODE_FLYAWAY) 
+          draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+        else if(destination_mode == DMODE_AUTO10K){
+          if(auto10k_status == AUTO10K_AWAY)
+            draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
+          else if(auto10k_status == AUTO10K_INTO)
+            draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,5);
+        }
+      }
+      gps_loop(5);
+      draw_compass(drawupward_direction, COLOR_BLACK);
+      draw_degpersec(degpersecond);
+      if (get_demo_biwako()) {
+        draw_demo_biwako();
+      }
+      draw_km_distances(scale);
+
+      draw_triangle(new_truetrack, steer_angle);
+
+      //10秒間 warning 表示
+      if(millis() - last_course_warning_time < 10000 && millis()  > 10000){
+        draw_course_warning(steer_angle);
+      }
+      
+      if (!gmap_drawed) {
+        draw_nogmap(scale);
+      }
+      
+      draw_headertext(degpersecond);
+      draw_map_footer();
+      draw_nomapdata();
+      gps_loop(6);
+      push_backscreen();
+      draw_footer();
+    }
+  }else{
+    DEBUGW_PLN(20250510,"ERR screen mode");
   }
 
-  
-  // GPSデータを受信した時と、bmpロード完了した時、両方でcallされるので毎秒二回は redraw_screen = true になる。
-  if (redraw_screen) {
-    DEBUG_PLN(20250424, "redraw map");
-    quick_redraw = false;
-    float new_truetrack = get_gps_truetrack();
-    double new_lat = get_gps_lat();
-    double new_long = get_gps_lon();
-    last_screen_update = millis();
-    set_newdata_off();
-
-    //画面上の方向設定
-    float drawupward_direction = truetrack_now;
-    if (is_northupmode()) {
-      drawupward_direction = 0;
-    }
-
-    nav_update();// MC や dist を更新する。
-    draw_header(degpersecond);
-
-    truetrack_now = new_truetrack;
-    new_gmap_ready = false;
-
-    //clean_map();
-
-
-    clean_backscreen();
-
-
-    int zoomlevel = 0;
-    if (scaleindex == 0) zoomlevel = 5;//SCALE_EXSMALL_GMAP
-    if (scaleindex == 1) zoomlevel = 7;//SCALE_SMALL_GMAP
-    if (scaleindex == 2) zoomlevel = 9;//SCALE_MEDIUM_GMAP
-    if (scaleindex == 3) zoomlevel = 11;//SCALE_LARGE_GMAP
-    if (scaleindex == 4) zoomlevel = 13;//SCALE_EXLARGE_GMAP
-
-    bool gmap_drawed = false;
-    if(gmap_loaded_active)
-      gmap_drawed = draw_gmap(drawupward_direction);
-    
-    
-
-    //If loadImagetask already running in Core1, abort.
-    if(new_gps_info || lastload_zoomlevel != zoomlevel){
-      lastload_zoomlevel = zoomlevel;
-      enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
-    }
-
-    if (scale > SCALE_SMALL_GMAP) {
-      if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-        draw_Biwako(new_lat, new_long, scale, drawupward_direction,gmap_drawed);
-      } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
-        draw_Osaka(new_lat, new_long, scale, drawupward_direction);
-      } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
-        draw_Shinura(new_lat, new_long, scale, drawupward_direction);
-      }
-      draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
-    } else {
-      //near japan.
-      if (check_within_latlon(20, 40, new_lat, 35, new_long, 138)) {
-        draw_Japan(new_lat, new_long, scale, drawupward_direction);
-      }
-    }
-
-    gps_loop(4);
-
-    draw_track(new_lat, new_long, scale, drawupward_direction);
-
-    if(currentdestination != -1 && currentdestination < destinations_count){
-      double destlat = extradestinations[currentdestination].cords[0][0];
-      double destlon = extradestinations[currentdestination].cords[0][1];
-      if(destination_mode == DMODE_FLYINTO) 
-        draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,3);
-      else if(destination_mode == DMODE_FLYAWAY) 
-        draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
-      else if(destination_mode == DMODE_AUTO10K){
-        if(auto10k_status == AUTO10K_AWAY)
-          draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
-        else if(auto10k_status == AUTO10K_INTO)
-          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,3);
-      }
-    }
-    gps_loop(5);
-    draw_compass(drawupward_direction, COLOR_BLACK);
-    if (get_demo_biwako()) {
-      draw_demo_biwako();
-    }
-    draw_km_distances(scale);
-    //google map load成功している間は、古いものを削除する必要はない。
-    //if (!gmap_loaded_active) {
-    //  redraw_compass(drawupward_direction, COLOR_BLACK, COLOR_WHITE);
-    //} else {
-    //  draw_compass(drawupward_direction, COLOR_BLACK);
-    //}
-    draw_triangle(new_truetrack, steer_angle);
-
-    //10秒間 warning 表示
-    if(millis() - last_course_warning_time < 10000 && millis()  > 10000){
-      draw_course_warning(steer_angle);
-    }
-    
-    if (!gmap_drawed) {
-      draw_nogmap(scale);
-    }
-    draw_headertext(degpersecond);
-    draw_nomapdata();
-    gps_loop(6);
-    push_backscreen();
-    draw_footer();
-    lastfresh_millis = millis();
-    
-
-    //地図が更新されていない時でも、更新するもの。
-
-    /*
-    if (bank_warning) {
-      draw_bankwarning();
-    }*/
-
-
-    //更新終了
-    redraw_screen = false;
-
+  if(redraw_screen){
+      //更新終了
+      redraw_screen = false;
+      screen_update_time = millis();
   }
 }
 
@@ -389,13 +363,11 @@ void loop1() {
     delay(10);
   }
 }
-extern bool loading_sddetail;
 extern int max_page;     // Global variable to store maximum page number
 
 //==========BUTTON==========
 //Callback function for short press
 void shortPressCallback() {
-  quick_redraw = true;
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
 
@@ -425,7 +397,6 @@ void shortPressCallback() {
 
 // Callback function for long press
 void longPressCallback() {
-  quick_redraw = true;
   redraw_screen = true;
 
   if (screen_mode != MODE_SETTING) {
@@ -457,24 +428,22 @@ void longPressCallback() {
 void reset_degpersecond() {
   float track = get_gps_truetrack();
   for (int i = 1; i < NUM_SAMPLES; i++) {
-    upward_samples[i] = track;
+    truetrack_samples[i] = track;
   }
   degpersecond = 0;
-  bank_warning = false;
 }
 
 // deg per second being updated. call this once a second.
-void update_degpersecond() {
-  lastSampleTime = millis();
+void update_degpersecond(int true_track) {
   // Update the truetrack value
   // This is where you would get the new truetrack value from your sensor
-  upward_samples[sampleIndex] = get_gps_truetrack();
+  truetrack_samples[sampleIndex] = true_track;
   // Calculate the differential if we have enough samples
   if (sampleIndex >= NUM_SAMPLES - 1) {
     float totalDifference = 0;
     // Calculate the differences between consecutive samples
     for (int i = 1; i < NUM_SAMPLES; i++) {
-      float degchange = (upward_samples[i] - upward_samples[i - 1]);
+      float degchange = (truetrack_samples[i] - truetrack_samples[i - 1]);
       if (degchange < -180) {
         degchange += 360;
       } else if (degchange > 180) {
@@ -487,13 +456,26 @@ void update_degpersecond() {
     degpersecond = totalDifference / (NUM_SAMPLES - 1);
     // Shift samples to make room for new ones
     for (int i = 1; i < NUM_SAMPLES; i++) {
-      upward_samples[i - 1] = upward_samples[i];
+      truetrack_samples[i - 1] = truetrack_samples[i];
     }
     // Adjust the sample index to the last position
     sampleIndex = NUM_SAMPLES - 2;
   }
   // Move to the next sample
   sampleIndex++;
+}
+
+
+
+void check_destination_toofar(){
+  double destlat = extradestinations[currentdestination].cords[0][0];
+  double destlon = extradestinations[currentdestination].cords[0][1];
+  if(calculateDistanceKm(get_gps_lat(),get_gps_lon(),destlat,destlon) > 100.0){
+    if(millis() - last_destination_toofar_time > 1000*60){//60sec
+      last_destination_toofar_time = millis();
+      enqueueTask(createPlayWavTask("wav/destination_toofar.wav",1));
+    }
+  }
 }
 
 //一秒に一回まで。
