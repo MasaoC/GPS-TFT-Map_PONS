@@ -1011,7 +1011,7 @@ void draw_headertext(double degpersecond){
 
 
 void draw_nogmap(double scale) {
-  backscreen.setCursor(5, BACKSCREEN_SIZE - 15);
+  backscreen.setCursor(5, BACKSCREEN_SIZE - 25);
   if(scale > SCALE_EXLARGE_GMAP){
       backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
       backscreen.print("No map image at this scale.");

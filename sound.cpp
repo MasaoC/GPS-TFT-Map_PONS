@@ -126,8 +126,8 @@ void startPlayWav(const char* filename, int priority) {
         DEBUGW_PLN(20250427,filename);
         return;
     }
-    DEBUGW_P(20250503,"wav start:");
-    DEBUGW_PLN(20250503,priority);
+    DEBUG_P(20250503,"wav start:");
+    DEBUG_PLN(20250503,priority);
     // Stop current playback if any
     wavmode = true;
     sinmode = false;
