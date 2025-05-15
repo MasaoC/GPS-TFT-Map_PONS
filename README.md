@@ -1,6 +1,8 @@
+# Pilot Oriented Navigation System v5
+<img width="220" alt="ponsv5" src="https://github.com/user-attachments/assets/42279b57-4c61-43eb-a7d4-d60ea7dddddf" />
+
 # GPS_TFT_map 概要/Abstract
  * PONSデバイスの使い方や画面の見方などの詳細は、[docsフォルダ](docs)に説明書があります。このREADMEファイルの方が情報が古い場合があります。
-   ![image](https://github.com/user-attachments/assets/e5c458c2-ea0e-470b-8ae2-00049514d380)
  * Arduinoを使用して、TFTにGPSマップや位置・速度・方位の情報を表示します。琵琶湖での鳥人間コンテスト用に特化されています。
  * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft = 人力飛行機用パイロット向けナビゲーションシステム
  * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。琵琶湖上空を飛行するパイロットの支援を目的としています。
