@@ -10,26 +10,19 @@
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
-下記二ついずれかを推奨。
- * Raspberry Pi Pico / Raspberry Pi Pico 2
+ * Raspberry Pi Pico 2
    
- TFTとの通信では、PicoのPIOを使用し 16 bit Paralel 接続を使う事で高速描画可能になっています。これは、TFT_eSPIライブラリによるものです。
+ TFTとの通信では、PicoのPIOを使用し 8 bit Paralel 接続を使う事で高速描画可能になっています。これは、TFT_eSPIライブラリによるものです。
 
-## TFT  Recommended TFT panel. (動作確認済みTFT)
- Tested on ILI9341 and ST7789 using TFT_eSPI library.  Aliexpress で安価に購入もできるが、屋外で使用する場合は輝度が高く画質も綺麗なDigikeyにて購入を推奨する。
- * Aliexpress TZT Choice Store
-   * Arduino、2.8 "、240x320、spi、tft、pcbアダプター、マイクロsd、il9341、st7789v、5v、3.3v、2.8" 用のLCDシリアルポートモジュール、LEDディスプレイ  (v1で使用)
+## TFT  Recommended TFT panel. (推奨の動作確認済みTFT)
  * Digikey
-   * NHD-2.4-240320CF-BSXV-F-ND (v2：2023大会ボート用で使用)
-   * NHD-2.4-240320CF-CSXN#-F-ND (v3:追走ボート用で使用)
-   * NHD-2.8-240320AF-CSXP-F-ND (v4:パイロット用で使用)
+   * NHD-2.8-240320AF-CSXP-F-ND (v4,v5:パイロット用で使用)
+   * NHD-2.4-240320CF-CSXN#-F-ND (v3:追走ボート用で使用。1000ニト)
 
 ## GNSS Module モジュール
  UART NMEA0183 で通信するため、任意のモジュール使用可能。下記のGNSSモジュールで実験済み。ただし、Mediatek or ubloxで、初期化処理が異なるため、settings.hを変更すること。
- * GT-502MGG-N (v1,2: 2023大会ボート用で使用) https://akizukidenshi.com/catalog/g/g117980/
  * ublox M-10Q (v3:追走ボート用で使用)
- * Quectel LC86G (v4:パイロット用で使用。LC86GPAMD)
-
+ * Quectel LC86G (v4,v5:パイロット用で使用。LC86GPAMD)
 
 # 機能 Detail.
  * 基本機能
@@ -47,15 +40,4 @@
  * 琵琶湖付近にいる場合
     * 自動的にプラットホームから離れる方向にピンク色で線が引かれる。
     * タケシマ・北パイロン・西パイロンに向けて自動で線が引かれる。
-
-
-# SD：Creating map.  地図作成
- * 追加地図（独自地図）の作り方・使い方
- * Google Earthでパスを作り、KMLファイルをダウンロードする。
- * kml_to_mapcsv.py を使って、KMLファイル名を入力すると、自動でmapdata.csvファイルが作成される。
- * 作成された 「mapdata.csv」ファイルをSDカードのルートフォルダに追加する。
- * 捕捉：CSVデータ形式＝名前,point数,lon1,lat1,lon2,lat2,lon3,lat3....(point数分続く）。改行ごとに線が引かれる。
- * 捕捉：名前は英語のみ対応。また1文字目によって線の色が決まる。r:RED,o=ORANGE,g=GRAY,m=MAGENTA,c=CYAN
-   * 赤色の線の例：r_warningline,2,135.0,46.0,135.1,46.1
- * 捕捉：描ける線の数を便宜上200に制限している。上限はプログラムで変更可能。
 
