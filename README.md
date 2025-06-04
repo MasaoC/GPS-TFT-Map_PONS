@@ -1,5 +1,6 @@
 # Pilot Oriented Navigation System v5
 <img width="220" alt="ponsv5" src="https://github.com/user-attachments/assets/42279b57-4c61-43eb-a7d4-d60ea7dddddf" />
+GPS/GNSS navigation for human-powered aircraft specialized for the Japan International Birdman at Biwako, Japan.
 
 # GPS_TFT_map 概要/Abstract
  * PONSデバイスの使い方や画面の見方などの詳細は、[docsフォルダ](docs)に説明書があります。このREADMEファイルの方が情報が古い場合があります。
