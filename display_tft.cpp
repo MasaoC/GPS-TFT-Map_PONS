@@ -1314,13 +1314,17 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft pilon_1km = latLonToXY(PILON_1KM_LAT, PILON_1KM_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft takeshima = latLonToXY(TAKESHIMA_LAT, TAKESHIMA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
 
   
   backscreen.drawLine(pla.x, pla.y, n_pilon.x, n_pilon.y, COLOR_GREEN);
   backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
   backscreen.drawLine(pla.x, pla.y, w_pilon.x, w_pilon.y, COLOR_GREEN);
-  backscreen.drawCircle(pla.x, pla.y, scale*10.55f/cos(radians(35)),COLOR_GREEN);
+  // 公式ルール2025 10.975km for first leg outbound.
+  backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
+  // 公式ルール2025 1.0km リターンフライト。
+  backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35)),COLOR_GREEN);
 
   if(!n_pilon.isOutsideTft()){
     backscreen.fillTriangle(n_pilon.x-3,n_pilon.y,n_pilon.x+3,n_pilon.y,n_pilon.x,n_pilon.y-9, COLOR_ORANGE);
@@ -1329,6 +1333,10 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   if(!w_pilon.isOutsideTft()){
     backscreen.fillTriangle(w_pilon.x-3,w_pilon.y,w_pilon.x+3,w_pilon.y,w_pilon.x,w_pilon.y-9, COLOR_ORANGE);
     backscreen.drawTriangle(w_pilon.x-3,w_pilon.y,w_pilon.x+3,w_pilon.y,w_pilon.x,w_pilon.y-9, COLOR_BLACK);
+  }
+  if(!pilon_1km.isOutsideTft()){
+    backscreen.fillTriangle(pilon_1km.x-3,pilon_1km.y,pilon_1km.x+3,pilon_1km.y,pilon_1km.x,pilon_1km.y-9, COLOR_ORANGE);
+    backscreen.drawTriangle(pilon_1km.x-3,pilon_1km.y,pilon_1km.x+3,pilon_1km.y,pilon_1km.x,pilon_1km.y-9, COLOR_BLACK);
   }
   if(!pla.isOutsideTft()){
     backscreen.fillRect(pla.x-3, pla.y-2, 6, 8, COLOR_BLUE);
