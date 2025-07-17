@@ -192,6 +192,7 @@ void gps_setup() {
   readfail_counter = 0;
   GPS_SERIAL.setTX(GPS_TX);
   GPS_SERIAL.setRX(GPS_RX);// Initialize GNSS
+  GPS_SERIAL.setFIFOSize(512);
   GPS_SERIAL.begin(9600);
 
   #ifdef MEADIATEK_GPS
@@ -256,7 +257,7 @@ bool gps_loop() {
 
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
-    if(GPS_SERIAL.available() >= 29){
+    if(GPS_SERIAL.available() >= 510){
       Serial.print("!!WARNING!! Buffer Overflow ");
       Serial.println(GPS_SERIAL.available());
       Serial.println(c);

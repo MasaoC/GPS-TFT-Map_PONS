@@ -138,7 +138,7 @@ void removeDuplicateTask(TaskType type) {
 
 void enqueueTaskWithAbortCheck(Task newTask) {
   loop0pos = 26;
-  Serial.println("enq task");
+  //Serial.println("enq task");
   if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
     if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
       //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.

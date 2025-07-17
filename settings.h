@@ -1,18 +1,18 @@
 //====== 設定画面 =======
 
 // リリース時 削除
-#define BUILDDATE 20240915
-#define BUILDVERSION "0.5"
+#define BUILDDATE 20250717
+#define BUILDVERSION "0.501"
 
-//#define RELEASE
+#define RELEASE
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
 
 
 //----------GPS---------
-#define DEBUG_NMEA
-#define MEADIATEK_GPS
-//#define UBLOX_GPS
+//#define DEBUG_NMEA
+//#define MEADIATEK_GPS
+#define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
