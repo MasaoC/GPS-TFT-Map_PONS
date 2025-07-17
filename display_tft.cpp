@@ -521,7 +521,7 @@ double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
 
 
 bool draw_circle_km(float scale, float km) {
-  int radius = scale * km;  //scale is px/km
+  int radius = scale * km / cos(radians(35));  //scale is px/km
   int ypos = SCREEN_HEIGHT / 2 - radius;
   if (ypos > 30) {
     tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, radius, COLOR_PINK);
@@ -1012,7 +1012,7 @@ void startup_demo_tft() {
     tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
-    tft.print("SOFT VERSION:");
+    tft.print("SOFT VER:");
     tft.print(BUILDVERSION);
     tft.print("(b");
     tft.print(BUILDDATE);

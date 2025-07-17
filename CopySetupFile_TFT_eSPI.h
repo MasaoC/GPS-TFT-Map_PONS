@@ -3,7 +3,7 @@
 #define USER_SETUP_ID 105
 #define TFT_PARALLEL_16_BIT
 #define ST7789_DRIVER
-#define TFT_INVERSION_OFF
+//#define TFT_INVERSION_OFF
 #define TFT_RGB_ORDER TFT_BGR  // Colour order Blue-Green-Red
 //#define TFT_CS   -1  // Do not define, chip select control pin permanently connected to 0V
 #define TFT_DC    27    // Data Command control pin
