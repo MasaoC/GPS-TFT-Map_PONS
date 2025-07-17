@@ -63,6 +63,12 @@ int Button::getPin() {
     return pin;
 }
 
+bool is10K_NotAllowed_Destination(const char *name) {
+    return strcmp(name, "N_PILON") == 0 ||
+           strcmp(name, "W_PILON") == 0 ||
+           strcmp(name, "TAKESHIMA") == 0;
+}
+
 
 Setting menu_settings[] = {
   { SETTING_SETDESTINATION,
@@ -82,7 +88,17 @@ Setting menu_settings[] = {
         }
       }
     },
-    nullptr
+    []() {
+      // 間違い防止のため、10KM禁止の目的地で10KMモードを設定しようとしたら、エラー音を出してINTOに変える。
+      if(is10K_NotAllowed_Destination(extradestinations[currentdestination].name)){
+        if(destination_mode == DMODE_AUTO10K){
+          destination_mode = DMODE_FLYINTO;
+          //error tone.
+          enqueueTask(createPlayMultiToneTask(294,140,1,2));
+          enqueueTask(createPlayMultiToneTask(294,500,1,2));
+        }
+      }
+    }
   },
   { SETTING_DESTINATIONMODE,
     [](bool selected) -> std::string {
@@ -106,8 +122,18 @@ Setting menu_settings[] = {
         destination_mode = DMODE_FLYINTO;
         
     },
-    nullptr
-    },
+    []() {
+      // 間違い防止のため、10KM禁止の目的地で10KMモードを設定しようとしたら、エラー音を出してINTOに変える。
+      if(is10K_NotAllowed_Destination(extradestinations[currentdestination].name)){
+        if(destination_mode == DMODE_AUTO10K){
+          destination_mode = DMODE_FLYINTO;
+          //error tone.
+          enqueueTask(createPlayMultiToneTask(294,140,1,2));
+          enqueueTask(createPlayMultiToneTask(294,500,1,2));
+        }
+      }
+    }
+  },
 #ifdef BRIGHTNESS_SETTING_AVAIL
   { SETTING_BRIGHTNESS,
     [](bool selected) -> std::string {

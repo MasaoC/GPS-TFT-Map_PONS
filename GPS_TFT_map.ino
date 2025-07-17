@@ -159,10 +159,10 @@ void loop() {
       if(destination_mode == DMODE_AUTO10K){
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
-        double distance_frm_plathome = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
+        double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
         if(auto10k_status == AUTO10K_AWAY){
 
-          if(distance_frm_plathome > 10.0){//10.54 だけど、540mの誤差を引いておく。
+          if(distance_frm_destination > 10.475){//10.975 だけど、500mの誤差を引いておく。
             auto10k_status = AUTO10K_INTO;
             enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
             enqueueTask(createPlayMultiToneTask(3136,500,1,2));
@@ -171,7 +171,7 @@ void loop() {
             enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
           }
         }
-        if(auto10k_status == AUTO10K_INTO && distance_frm_plathome < 1.0){//折り返し用。
+        if(auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5){//折り返し用。だけど、500mの誤差を引いておく。
           auto10k_status = AUTO10K_AWAY;
           enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
           enqueueTask(createPlayMultiToneTask(3136,500,1,2));

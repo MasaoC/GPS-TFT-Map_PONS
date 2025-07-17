@@ -1534,7 +1534,7 @@ void draw_sddetail(int page) {
   }else{
     sd_detail_loading_displayed = true;
     backscreen.setCursor(80,100);
-    backscreen.print("Stabd by ...");
+    backscreen.print("Stand by ...");
   }
   backscreen.pushSprite(0,40);
   header_footer.fillScreen(COLOR_WHITE);
