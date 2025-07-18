@@ -1,5 +1,7 @@
 //====== 設定画面 =======
 
+  #define SVERSION "SOFT VER:0.201 (2025.7.18)"
+
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
   //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
@@ -25,11 +27,11 @@
 // =====Hardware Settings =====
 
 //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
-#define SINGLE_SWITCH
+//#define SINGLE_SWITCH
 
 // TFTのBL調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
-#define NPN_BL
-//#define PNP_BL
+//#define NPN_BL  //Ver2
+#define PNP_BL  //Ver1
 
 // Hardware Ver1,2
 

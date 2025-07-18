@@ -399,7 +399,7 @@ double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
 
 
 bool draw_circle_km(float scale, float km) {
-  int radius = PX_PER_KM(scale) * km;
+  int radius = PX_PER_KM(scale) * km ;
   int ypos = SCREEN_HEIGHT / 2 + map_shift_down - radius;
   if (ypos > 16) {
     tft.drawCircle(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + map_shift_down, radius, COLOR_PINK);
@@ -744,9 +744,7 @@ void startup_demo_tft() {
     tft.print("SD MAP COUNT:  ");
     tft.print(mapdata_count);
     tft.setCursor(1, SCREEN_HEIGHT / 2 + 135);
-    tft.print("SOFT VERSION:0.2 (2024.7.25)");
-
-
+    tft.print(SVERSION);
     delay(300);
   }
 }
