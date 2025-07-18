@@ -12,6 +12,9 @@
 #define SCALE_SMALL_GMAP 0.81765545      //zoom7
 #define SCALE_EXSMALL_GMAP 0.2044138625  //zoom5
 
+
+bool core1_separate_stack = true;//DO NOT REMOVE THIS LINE.
+
 unsigned long last_newtrack_time = 0;
 float truetrack_now = 0;
 float lat_now = 0;

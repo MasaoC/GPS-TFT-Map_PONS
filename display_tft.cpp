@@ -886,6 +886,7 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 // Im making this variable global so that it will be stored in RAM instead of Stack.
 // Core0 is running out of stack with 4KB with MAX_TRACK_CORDS>=300, when making this local variable(Stack) we need to do bool core1_separate_stack = true;
 // However, we have enough RAM so, lets make points variable global for now.
+// Anyway, we added core1_separate_stack = true at GPS_TFT_map.ino (2025/7/18) for trying to solve a bug (SD save error).
 cord_tft points[MAX_TRACK_CORDS];
 
 void draw_track(double center_lat, double center_lon, float scale, float up) {

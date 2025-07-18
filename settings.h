@@ -3,8 +3,8 @@
 // リリース時 削除
 #define RELEASE
 
-#define BUILDDATE 20250717
-#define BUILDVERSION "0.601"
+#define BUILDDATE 20250718
+#define BUILDVERSION "0.602"
 
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
@@ -48,60 +48,7 @@
 
 // =====Hardware Settings =====
 
-// TFTのBL調整があれば、BRIGHTNESS_SETTING_AVAIL。また、調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
-//#define BRIGHTNESS_SETTING_AVAIL
-//#define NPN_BL
-//#define PNP_BL
-
-
-
-// Hardware Ver1,2
-/*
-#define MEDIATEK_GPS
-#define RP2040_ZERO
-#define SW_PUSH   14
-#define BATTERY_PIN 26 //A0
-#define SW_UP     10
-#define SW_DOWN   11
-#define TFT_BL     7
-#define GPS_SERIAL Serial2
-#define GPS_TX 8
-#define GPS_RX 9
-
-#define SD_RX 0
-#define SD_CS_PIN 1
-#define SD_SCK 2
-#define SD_TX 3
-#define BATTERY_MULTIPLYER(adr) (adr/4096.0*3.3*2)
-#define BAT_LOW_VOLTAGE 3.55
-*/
-
-
-
-
-// Hardware Ver3
-/*
-#define RP2040_PICO
-#define SW_PUSH 5
-#define BATTERY_PIN 26 //A0
-#define SW_UP   -1
-#define SW_DOWN -1
-#define TFT_BL  -1
-#define GPS_SERIAL Serial1
-#define GPS_TX 0
-#define GPS_RX 1
-//#define DISABLE_SD
-#define SD_RX 4    //MISO
-#define SD_CS_PIN -1
-#define SD_SCK 2
-#define SD_TX 3    //CMD MOSI
-#define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になった数値。
-#define BAT_LOW_VOLTAGE 3.49
-#define SINGLE_SWITCH //外部スイッチ（up,down,push)がない場合。SINGLE。３個ある場合は comment out。
-*/
-
 // Hardware Ver4
-#define RP2040_PICO
 #define SW_PUSH 26
 #define BATTERY_PIN 29 //A0
 #define SW_UP   -1

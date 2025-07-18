@@ -112,40 +112,32 @@ Task createPlayMultiToneTask(double freq, double duration, int count){
   return task;
 }
 
-void removeDuplicateTask(TaskType type) {
-  loop0pos = 29;
-  mutex_enter_blocking(&taskQueueMutex);
-  loop0pos = 30;
-  int newTail = taskQueue.tail;
-  int originalHead = taskQueue.head;
 
-  // Iterate through the queue from tail to head
-  while (newTail != originalHead) {
-    // Check if the task at the current position matches the type to be removed
-    loop0pos = 31;
-    if (taskQueue.tasks[newTail].type == type) {
-      // Shift the remaining tasks forward in the queue
-      int current = newTail;
-      loop0pos = 32;
-      while (current != originalHead) {
-          int next = (current + 1) % TASK_QUEUE_SIZE;
-          loop0pos = 33;
-          taskQueue.tasks[current] = taskQueue.tasks[next];
-          current = next;
-      }
-      loop0pos = 34;
-      // Update the head pointer to reflect the removal
-      taskQueue.head = (taskQueue.head - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
-      loop0pos = 35;
-      originalHead = taskQueue.head; // Update the new head after the removal
-    } else {
-      // Move to the next task in the queue
-      loop0pos = 36;
-      newTail = (newTail + 1) % TASK_QUEUE_SIZE;
+void removeDuplicateTask(TaskType type) {
+    mutex_enter_blocking(&taskQueueMutex);
+
+    if (taskQueue.head == taskQueue.tail) {
+        mutex_exit(&taskQueueMutex);
+        return;
     }
-  }
-  loop0pos = 37;
-  mutex_exit(&taskQueueMutex);
+
+    int read = taskQueue.head;
+    int write = taskQueue.head;
+
+    // Loop through the queue from head to tail
+    while (read != taskQueue.tail) {
+        if (taskQueue.tasks[read].type != type) {
+            if (write != read) {
+                taskQueue.tasks[write] = taskQueue.tasks[read];
+            }
+            write = (write + 1) % TASK_QUEUE_SIZE;
+        }
+        read = (read + 1) % TASK_QUEUE_SIZE;
+    }
+
+    taskQueue.tail = write;
+
+    mutex_exit(&taskQueueMutex);
 }
 
 void enqueueTaskWithAbortCheck(Task newTask) {
@@ -353,18 +345,13 @@ void setup_sd(){
   SPI.setRX(SD_RX);
   SPI.setSCK(SD_SCK);
   SPI.setTX(SD_TX);
-  #ifdef RP2040_ZERO
-  SPI.setCS(SD_CS_PIN);
-  SPI.begin();
-  #endif
-  #ifdef RP2040_PICO
   SPI.begin(true);
-  #endif
   
   
-  sdInitialized = SD.begin(SD_CS_PIN,SD_SCK_MHZ(50));
+  sdInitialized = SD.begin(SD_CS_PIN, SD_SCK_MHZ(16));
 
   if (!sdInitialized) {
+    sdError = true;
     return;
   }else{
     sdError = false;
@@ -385,8 +372,17 @@ unsigned long last_loop1counter = 0;
 unsigned long time_loop1counter_updated = 0;
 
 void setup1(void){
+  Serial.begin(38400);
   mutex_init(&taskQueueMutex);
   init_destinations();
+
+  //====core1_separate_stack = true の時、Serial.printがないとSDが動かない。詳細不明だが、消すな！
+  Serial.println("");//消すな
+  // call to Serial.println() might force the Arduino runtime or the RP2350’s FreeRTOS (used in the RP2040/RP2350 Arduino core for dual-core support) to fully initialize Core1’s context,
+  // ensuring that the SD library’s internal state to set up.
+  // Without this call, Core1 might attempt to initialize the SD card before its runtime environment is fully ready, especially with a separate stack.
+  //====
+  
   setup_sd();
 }
 
@@ -524,9 +520,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   #endif
 
   if (!sdInitialized && !sdError) {
-    sdInitialized = SD.begin(SD_CS_PIN);
+    setup_sd();
     if (!sdInitialized) {
-      sdError = true;
       return;
     }
   }
@@ -537,7 +532,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
       lasttrytime_sd = millis();
       setup_sd();
     }
-    return;
+    if(sdError)
+      return;
   }
   loop1pos = 202;
 
