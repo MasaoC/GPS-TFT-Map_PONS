@@ -1,15 +1,15 @@
-# Pilot Oriented Navigation System v5
+# PONS=Pilot Oriented Navigation System v5
 <img width="220" alt="ponsv5" src="https://github.com/user-attachments/assets/42279b57-4c61-43eb-a7d4-d60ea7dddddf" />
 GPS/GNSS navigation for human-powered aircraft specialized for the Japan International Birdman at Biwako, Japan.
 
 # GPS_TFT_map 概要/Abstract
- * PONSデバイスの使い方や画面の見方などの詳細は、[docsフォルダ](docs)に説明書があります。このREADMEファイルの方が情報が古い場合があります。
- * Arduinoを使用して、TFTにGPSマップや位置・速度・方位の情報を表示します。琵琶湖での鳥人間コンテスト用に特化されています。
+ * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。琵琶湖上空を飛行するパイロットの支援を目的としています。Arduinoを使用して、TFTにGPSマップや位置・速度・方位の情報を表示します。琵琶湖での鳥人間コンテスト用に特化されています。
+ * 3Dプリントケース及び基板データ（KiCad)あり。ケースは、PLA_LWが軽量化でオススメです。
+ * PONSデバイスの使い方や画面の見方などの詳細は、docsフォルダに説明書があります。このREADMEファイルの方が情報が古い場合があります。
  * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft = 人力飛行機用パイロット向けナビゲーションシステム
- * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。琵琶湖上空を飛行するパイロットの支援を目的としています。
- * 地図データは、Google earthから出力された緯度経度の他、Google map APIにて事前ダウンロードしたbmp画像をSDカードから読み込んで表示も可能です。
- * 日本地図・琵琶湖（沖島・竹生島・多景島）などがプログラムに事前登録されています。
-
+ * 地図データは自作したGoogle earthから出力された緯度経度列の他、Google map APIにて事前ダウンロードしたbmp画像をSDカードから読み込んで表示も可能です。
+   * Google map APIを利用した画像データは、各自がAPIを利用登録する必要があります。APIへのアクセスとbmpへの変換は、支援ツール（Python）がtoolsフォルダにあります。
+ * 日本地図・琵琶湖（沖島・竹生島・多景島）などは、プログラムに事前登録されています。パイロン座標は2025ルールに合わせてありますが、現実のパイロン位置はズレることがあるようです。（2025：600m程度）
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
