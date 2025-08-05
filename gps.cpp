@@ -43,6 +43,12 @@ int readfail_counter = 0;
 bool new_location_arrived = false;
 bool newcourse_arrived = false;
 
+//Replay mode related variables
+bool replaymode_gpsoff = false;
+unsigned long last_check_nmea_time = 0;
+unsigned long replay_start_time = 0;
+
+
 void utcToJst(int *year, int *month, int *day, int *hour) {
   if(*month <= 0 || *month > 12){
     DEBUGW_P(20250424,"month invalid:");
@@ -296,6 +302,10 @@ bool get_demo_biwako() {
   return demo_biwako;
 }
 
+void set_demo_biwako(bool biwakomode){
+  demo_biwako = biwakomode;
+}
+
 unsigned long last_latlon_manager = 0;
 unsigned long last_gps_save_time = 0;
 unsigned long last_gps_time = 0;// last position update time.
@@ -376,6 +386,43 @@ void set_new_location_off(){
   new_location_arrived = false;
 }
 
+
+// NMEAのcharが入力された。
+void process_char(char c){
+  gps.encode(c);
+  if(c == '$')
+    index_buffer1 = 0;
+  
+  nmea_buffer1[index_buffer1++] = c;
+  if(index_buffer1 >= (NMEA_BUFFER_SIZE-1) || c == '\n'){
+    if(index_buffer1 >= 2){
+      time_lastnmea = millis();
+      nmea_buffer1[index_buffer1-1] = '\0';
+      strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
+      last_nmea_time[stored_nmea_index] = millis();
+      stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
+      #ifdef DEBUG_NMEA
+      DEBUG_PLN(20250508,nmea_buffer1);
+      #endif
+      if(strstr(nmea_buffer1, "GSV")){
+        parseGSV(nmea_buffer1);
+      }
+    }
+    index_buffer1 = 0;
+  }
+}
+
+void toggleReplayMode(){
+  replaymode_gpsoff = !replaymode_gpsoff;
+}
+
+bool getReplayMode(){
+  return replaymode_gpsoff;
+}
+
+void set_replaymode(bool replaymode){
+  replaymode_gpsoff = replaymode;
+}
 // GNSSモジュールからのHardware Serialの受信を行う。
 void gps_loop(int id) {
   if(GPS_SERIAL.available() > 256){
@@ -400,28 +447,26 @@ void gps_loop(int id) {
       }
       continue;
     }
-    gps.encode(c);
     gps_connection = true;
+    if(!replaymode_gpsoff)
+      process_char(c);
+  }
 
-    if(c == '$')
-      index_buffer1 = 0;
-    
-    nmea_buffer1[index_buffer1++] = c;
-    if(index_buffer1 >= (NMEA_BUFFER_SIZE-1) || c == '\n'){
-      if(index_buffer1 >= 2){
-        time_lastnmea = millis();
-        nmea_buffer1[index_buffer1-1] = '\0';
-        strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
-        last_nmea_time[stored_nmea_index] = millis();
-        stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
-        #ifdef DEBUG_NMEA
-        DEBUG_PLN(20250508,nmea_buffer1);
-        #endif
-        if(strstr(nmea_buffer1, "GSV")){
-          parseGSV(nmea_buffer1);
-        }
+
+  //Replay mode
+  if(replaymode_gpsoff){
+    if(loaded_replay_nmea){
+      for(int i = 0; i < 128; i++){
+        process_char(replay_nmea[i]);
+        if(replay_nmea[i] == '\n')
+          break;
       }
-      index_buffer1 = 0;
+      loaded_replay_nmea = false;
+    }
+
+    if(last_check_nmea_time+300 < millis()){
+      last_check_nmea_time = millis();
+      enqueueTask(createLoadReplayTask(millis()-replay_start_time));
     }
   }
 

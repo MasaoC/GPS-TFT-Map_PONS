@@ -14,7 +14,8 @@
       TASK_PLAY_MULTITONE,
       TASK_PLAY_WAV,
       TASK_SAVE_SETTINGS,
-      TASK_BROWSE_SD
+      TASK_BROWSE_SD,
+      TASK_LOAD_REPLAY
   } TaskType;
 
 
@@ -28,6 +29,7 @@
 
     void setup_sd(int trycount);
 
+    void load_replay(int timems);
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
@@ -55,6 +57,7 @@
       union {
           int pagenum;                         //For browsesd
           const char* logText;               // For log_sd
+          unsigned long timems; //For load replay
           struct {                           // For log_sdf
               const char* format;
               char buffer[256];
@@ -100,6 +103,7 @@
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
   Task createPlayWavTask(const char* filename,int priority=1);
   Task createBrowseSDTask(int page);
+  Task createLoadReplayTask(unsigned long timems);
 
   // Functions to handle the queue (declarations)
   void enqueueTask(Task task);
@@ -124,8 +128,9 @@
   extern Task currentTask;
   extern mutex_t taskQueueMutex;
   extern TFT_eSprite gmap_sprite;
+  extern char replay_nmea[128];
+  extern volatile unsigned long replay_seekpos;
+  extern volatile bool loaded_replay_nmea;
   extern volatile bool gmap_loaded_active;
   extern volatile bool new_gmap_ready;
-  extern volatile unsigned long loop1counter;
-  extern volatile int restartcount;
 #endif

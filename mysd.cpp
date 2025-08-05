@@ -329,6 +329,13 @@ Task createBrowseSDTask(int page){
 }
 
 
+Task createLoadReplayTask(unsigned long timems){
+  Task task;
+  task.type = TASK_LOAD_REPLAY;
+  task.timems = timems;
+  return task;
+}
+
 void removeDuplicateTask(TaskType type) {
     mutex_enter_blocking(&taskQueueMutex);
 
@@ -529,6 +536,70 @@ void setup_sd(int trycount){
       DEBUGW_PLN(20250508,"Error loading settings.");
     }
   }
+}
+
+char replay_nmea[128];
+volatile unsigned long replay_seekpos;
+volatile bool loaded_replay_nmea;
+
+void load_replay(int timems) {
+  File32 myFile = SD.open("replay.csv");
+  if (!myFile) {
+    loaded_replay_nmea = false;
+    return;
+  }
+  if(loaded_replay_nmea){
+    DEBUG_PLN(20250804,"Already loaded waiting");
+    return;
+  }
+
+  while (myFile.seek(replay_seekpos)) {
+    String line = myFile.readStringUntil('\n');
+    unsigned long next_replay_seekpos = myFile.position(); // Update seek position for next read
+
+    DEBUG_PLN(20250804,"Loading replay");
+    DEBUG_PLN(20250804,next_replay_seekpos);
+
+    // Skip empty or malformed lines
+    if (line.length() < 10) continue;
+
+    // Parse CSV: time_ms,NMEA
+    int commaIndex = line.indexOf(',');
+    if (commaIndex == -1) continue; // Skip if no comma found
+
+    // Extract and convert timestamp
+    String timeStr = line.substring(0, commaIndex);
+    int lineTimeMs = timeStr.toInt();
+    if (lineTimeMs < 0) continue; // Skip invalid timestamp
+    Serial.print(lineTimeMs);
+    Serial.print("<=?");
+    Serial.println(timems);
+
+    // Check if timestamp is >= timems
+    if (lineTimeMs <= timems) {
+      // Extract NMEA sentence (remove quotes)
+      String nmea = line.substring(commaIndex + 2, line.length() - 1); // Skip comma and quotes
+      if (nmea.length() < sizeof(replay_nmea) - 2) {
+        nmea += '\n';
+        nmea.toCharArray(replay_nmea, sizeof(replay_nmea));
+
+        loaded_replay_nmea = true;
+      } else {
+        loaded_replay_nmea = false; // NMEA too long for buffer
+      }
+      replay_seekpos = next_replay_seekpos;
+      myFile.close();
+      return;
+    }else{
+
+      myFile.close();
+      return;
+    }
+  }
+
+  // No matching timestamp found
+  loaded_replay_nmea = false;
+  myFile.close();
 }
 
 char sdfiles[20][32]; 

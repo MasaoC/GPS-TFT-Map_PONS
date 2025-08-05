@@ -25,6 +25,7 @@
   extern char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
   extern int stored_nmea_index;
   extern unsigned long time_lastnmea;
+  extern unsigned long replay_start_time;
   extern bool newcourse_arrived;
 
   void utcToJst(int *year, int *month, int *day, int *hour);
@@ -55,5 +56,9 @@
 
   void toggle_demo_biwako();
   bool get_demo_biwako();
+  void set_demo_biwako(bool biwakomode);
+  void toggleReplayMode();
+  bool getReplayMode();
+  void set_replaymode(bool replaymode);
 
 #endif

@@ -70,6 +70,17 @@ bool is10K_NotAllowed_Destination(const char *name) {
 }
 
 
+void exit_setting(){
+    enqueueTask(createSaveSettingTask());
+    if((millis()/1000)%3 == 0)
+      enqueueTask(createPlayWavTask("wav/matane.wav"));
+    else if((millis()/1000)%3 == 1)
+      enqueueTask(createPlayWavTask("wav/baibai.wav"));
+    else if((millis()/1000)%3 == 2)
+      enqueueTask(createPlayWavTask("wav/arigato.wav"));
+    screen_mode = MODE_MAP;
+}
+
 Setting menu_settings[] = {
   { SETTING_SETDESTINATION,
     [](bool selected) -> std::string {
@@ -199,7 +210,33 @@ Setting menu_settings[] = {
       toggle_demo_biwako();
       reset_degpersecond();
       gmap_loaded_active = false;
-    },nullptr
+    },[](){
+      if(get_demo_biwako()){
+        set_replaymode(false);
+        exit_setting();
+      }
+    }
+  },
+  { SETTING_REPLAY,
+    [](bool selected) -> std::string {
+      char buff[32];  // temporary buffer
+      sprintf(buff, selected ? " REPLAY mode: %s" : "REPLAY mode: %s", getReplayMode() ? "YES" : "NO");
+      return std::string(buff);  // return as std::string
+    },
+    nullptr,
+    []() {
+      latlon_manager.reset();
+      reset_degpersecond();
+      toggleReplayMode();
+      gmap_loaded_active = false;
+    },[](){
+      if(getReplayMode()){
+        set_demo_biwako(false);
+        replay_start_time = millis()-1000;
+        replay_seekpos = 0;
+        exit_setting();
+      }
+    }
   },
   { SETTING_GPSDETAIL,
     [](bool selected) -> std::string {
@@ -241,14 +278,7 @@ Setting menu_settings[] = {
       return "Save & Exit >>";
     },
     []() {
-      enqueueTask(createSaveSettingTask());
-      if((millis()/1000)%3 == 0)
-        enqueueTask(createPlayWavTask("wav/matane.wav"));
-      else if((millis()/1000)%3 == 1)
-        enqueueTask(createPlayWavTask("wav/baibai.wav"));
-      else if((millis()/1000)%3 == 2)
-        enqueueTask(createPlayWavTask("wav/arigato.wav"));
-      screen_mode = MODE_MAP;
+      exit_setting();
     },
     nullptr,
     nullptr

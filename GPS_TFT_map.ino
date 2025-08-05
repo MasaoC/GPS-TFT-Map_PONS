@@ -1,6 +1,6 @@
 // GPS_TFT_map. PONS v5 ( Pilot oriented navigation system for HPA )
-// Author: Masao Chiguchi
-// Date: 2025/05/08
+// Author: MasaoC  (@masao_mobile)
+// Last update date: 2025/07/29
 
 #include "navdata.h"
 #include "display_tft.h"
@@ -337,6 +337,9 @@ void loop1() {
         break;
       case TASK_BROWSE_SD:
         browse_sd(currentTask.pagenum);
+        break;
+      case TASK_LOAD_REPLAY:
+        load_replay(currentTask.timems);
         break;
       case TASK_LOG_SD:
         log_sd(currentTask.logText);
