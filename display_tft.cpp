@@ -957,23 +957,29 @@ void startup_demo_tft() {
   backscreen.pushSprite(0,52);
   delay(3200);
 
-  float speedfactor = 1.5;
-  int countermax = 40/speedfactor;
+  float zoomin_speedfactor = 1.5;
+  int countermax = 40/zoomin_speedfactor;
   float scalenow = 0;
   for (int i = 0; i <= countermax; i++) {
     backscreen.fillScreen(COLOR_WHITE);
-    scalenow = 2 + i * 0.25*speedfactor;
+    scalenow = 2 + i * 0.25*zoomin_speedfactor;
     draw_Biwako(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0, false);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
   delay(10);
 
-  
+
+  float zoomout_speedfactor = 1.0;
+  countermax = 40/zoomout_speedfactor;
+
   for (int i = 0; i < countermax; i++) {
-    scalenow *= 0.83;
+    scalenow *= 0.89;
     if(scalenow < 0.07)
       scalenow = 0.07;
+    else
+      center_lat += 0.005*i;
+
     bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
     if(scalenow < 0.5){
