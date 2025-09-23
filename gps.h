@@ -34,6 +34,7 @@
   unsigned long get_gps_nmea_time(int i);
   void gps_setup();
   void gps_loop(int id);
+  void try_enque_savecsv();
   
   bool gps_new_location_arrived();
   void set_new_location_off();

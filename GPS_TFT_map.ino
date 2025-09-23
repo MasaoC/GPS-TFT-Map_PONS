@@ -73,8 +73,6 @@ void setup(void) {
   analogReadResolution(12);
 
   gps_setup();
-
-
   startup_demo_tft();
 
 
@@ -350,7 +348,7 @@ void loop1() {
       case TASK_SAVE_CSV:
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
+          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack, currentTask.saveCsvArgs.altitude,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
           currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second

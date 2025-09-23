@@ -9,6 +9,7 @@
       void (*CallbackEnter)();
       void (*CallbackToggle)();
       void (*CallbackExit)();
+      int (*iconColor)();
   };
   extern Setting menu_settings[];
   extern const int setting_size;

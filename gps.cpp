@@ -38,6 +38,7 @@ bool demo_biwako = false;
 SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
 char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
 unsigned long last_nmea_time[MAX_LAST_NMEA];
+unsigned long last_gps_setup_time = 0;
 int stored_nmea_index = 0;
 int readfail_counter = 0;
 bool new_location_arrived = false;
@@ -226,8 +227,9 @@ int setupcounter = 1;
 
 // Try to establish connection with GPS module.  Either ublox or mediatek.
 void gps_setup() {
-  DEBUG_P(20250429,"GPS SETUP:");
-  DEBUG_PLN(20250429,setupcounter);
+  last_gps_setup_time = millis();
+  DEBUG_P(20250906,"GPS SETUP:setupcounter=");
+  DEBUG_PLN(20250906,setupcounter);
   
   readfail_counter = 0;
   GPS_SERIAL.setTX(GPS_TX);
@@ -237,9 +239,11 @@ void gps_setup() {
   if(setupcounter == 1){
 
     #ifdef QUECTEL_GPS
+      DEBUG_PLN(20250906,"QUECTEL 38400");
       GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
-      GPS_SERIAL.begin(115200);
+      GPS_SERIAL.begin(38400);
     #elif MEADIATEK_GPS
+      DEBUG_PLN(20250906,"MEDIATEK 38400");
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
       gps_getposition_mode();
       delay(100);//（Do not delete without care.)
@@ -249,6 +253,7 @@ void gps_setup() {
       delay(50);//（Do not delete without care.)
       GPS_SERIAL.begin(38400);
     #elif UBLOX_GPS
+      DEBUG_PLN(20250906,"UBLOX 38400");
       // Configure GPS baud rate
       const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
       delay (50);// なぜか必要（Do not delete without care.)
@@ -265,19 +270,26 @@ void gps_setup() {
     
   }else{
     //2nd try
-    if(setupcounter%3 == 2){
-      DEBUG_PLN(20250508,"115200 to 38400 LC86G try ");
+    if(setupcounter%3 == 1){
+      DEBUG_PLN(20250906,"from 115200 to 38400 (For QUECTEL)");
       GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(115200);
       GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
       delay (100);//なぜか必要（Do not delete without care.)
       GPS_SERIAL.end();
       delay(50);//なぜか必要（Do not delete without care.)
+      GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(38400);
-    }else if(setupcounter%3 == 1){
+    }else if(setupcounter%3 == 2){
+      DEBUG_PLN(20250906,"Simple setup try 115200");
       //4th try
+      GPS_SERIAL.begin(115200);
+    }else if(setupcounter%3 == 3){
+      DEBUG_PLN(20250906,"Simple setup try 38400");
+      //3rd try
       GPS_SERIAL.begin(38400);
     }else{
+      DEBUG_PLN(20250906,"Simple setup try 9600");
       //3rd try
       GPS_SERIAL.begin(9600);
     }
@@ -402,7 +414,8 @@ void process_char(char c){
       last_nmea_time[stored_nmea_index] = millis();
       stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
       #ifdef DEBUG_NMEA
-      DEBUG_PLN(20250508,nmea_buffer1);
+      //DEBUG_P(20250923,index_buffer1);
+      //DEBUG_PLN(20250923,nmea_buffer1);
       #endif
       if(strstr(nmea_buffer1, "GSV")){
         parseGSV(nmea_buffer1);
@@ -425,24 +438,30 @@ void set_replaymode(bool replaymode){
 }
 // GNSSモジュールからのHardware Serialの受信を行う。
 void gps_loop(int id) {
+  
+  if(GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 10000 && millis() - last_gps_setup_time > 10000){
+    // NMEA message is lost for 10 seconds. and gps_setup has not happened for last 10 seconds.
+    DEBUGW_P(20250923,"Lost NMEA MSG for 10 seconds. resetup.");
+    gps_setup();
+  }
   if(GPS_SERIAL.available() > 256){
-    DEBUGW_P(20250424,"ID=");
-    DEBUGW_P(20250424,id);
-    DEBUGW_P(20250424," Caution, remaining FIFO buffer. avail=");
-    DEBUGW_PLN(20250424,GPS_SERIAL.available());
+    DEBUGW_P(20250923,"ID=");
+    DEBUGW_P(20250923,id);
+    DEBUGW_P(20250923," Caution, remaining FIFO buffer. avail=");
+    DEBUGW_PLN(20250923,GPS_SERIAL.available());
   }
 
   while (GPS_SERIAL.available() > 0) {
     char c = GPS_SERIAL.read();
     if(GPS_SERIAL.overflow()){
-      DEBUGW_P(20250424,"!!WARNING!! Buffer Overflow ");
-      DEBUGW_PLN(20250424,GPS_SERIAL.available());
+      DEBUGW_P(20250923,"!!WARNING!! Buffer Overflow ");
+      DEBUGW_PLN(20250923,GPS_SERIAL.available());
     }
     if((int)c >= 128){
       readfail_counter++;
       if(readfail_counter > 10){
-        DEBUGW_P(20250424,"Read Failed 10 times, non ascii char:");
-        DEBUGW_P(20250424,(int)c);
+        DEBUGW_P(20250923,"Read Failed 10 times, non ascii char:");
+        DEBUGW_PLN(20250923,(int)c);
         gps_setup();
       }
       continue;
@@ -482,58 +501,23 @@ void gps_loop(int id) {
     
 
     #ifdef DEBUG_NMEA
-    DEBUG_P(20250508,F("Location: "));
-    DEBUG_P(20250508,stored_latitude, 6);
-    DEBUG_P(20250508,F(", "));
-    DEBUG_PLN(20250508,stored_longitude, 6);
+    DEBUG_P(20250923,F("Location: "));
+    DEBUG_PN(20250923,stored_latitude, 6);
+    DEBUG_P(20250923,F(", "));
+    DEBUG_PNLN(20250923,stored_longitude, 6);
     #endif
-    bool all_valid = true;
-    if (gps.location.isValid()) {
-      // Check if the location fix is valid
-      if (gps.satellites.isValid()) {
-        stored_fixtype = 2;
-      } else {
-        stored_fixtype = 1;
-      }
-    } else {
-      DEBUG_PLN(20250508,"Location: Not Available");
-      all_valid = false;
-      stored_fixtype = 0;
-    }
-    
 
-    // Print date
-    if (!gps.date.isValid()) {
-      DEBUG_PLN(20250508,"Date: Not Available");
-      all_valid = false;
-    }
-    
-    // Print time
-    if (!gps.time.isValid()) {
-      DEBUG_PLN(20250508,"Time: Not Available");
-      all_valid = false;
-    }
-
-    if(all_valid && ! get_demo_biwako()){
-      add_latlon_track(get_gps_lat(),get_gps_lon());
-    }
-
-    if(all_valid && millis() - last_gps_save_time > 1000){
-      int year = gps.date.year();
-      int month = gps.date.month();
-      int day = gps.date.day();
-      int hour = gps.time.hour();
-      utcToJst(&year,&month,&day,&hour);
-      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, year, month, day, hour, gps.time.minute(), gps.time.second()));
-      last_gps_save_time = millis();
-    }
+    #ifndef QUECTEL_GPS
+    // QUECTELの場合は、ここで保存しない。courseで保存する。
+    try_enque_savecsv();
+    #endif
   }
 
 
   if (gps.altitude.isUpdated()) {
     #ifdef DEBUG_NMEA
-    DEBUG_P(20250508,F("Altitude: "));
-    DEBUG_PLN(20250508,stored_altitude);
+    DEBUG_P(20250923,F("Altitude: "));
+    DEBUG_PLN(20250923,stored_altitude);
     #endif
     stored_altitude = gps.altitude.meters();
   }
@@ -541,25 +525,30 @@ void gps_loop(int id) {
   if (gps.speed.isUpdated()) {
     stored_gs = gps.speed.mps();
     #ifdef DEBUG_NMEA
-    DEBUG_P(20250508,F("Speed: "));
-    DEBUG_P(20250508,stored_gs);  // Speed in meters per second
-    DEBUG_PLN(20250508,F(" mps"));
+    DEBUG_P(20250923,F("Speed: "));
+    DEBUG_P(20250923,stored_gs);  // Speed in meters per second
+    DEBUG_PLN(20250923,F(" mps"));
     #endif
   }
 
   if (gps.course.isUpdated()) {
     #ifdef DEBUG_NMEA
-    DEBUG_P(20250508,F("Course: "));
-    DEBUG_PLN(20250508,stored_truetrack);
+    DEBUG_P(20250923,F("Course: "));
+    DEBUG_PLN(20250923,stored_truetrack);
     #endif
     if(!get_demo_biwako())
       newcourse_arrived = true;
     stored_truetrack = gps.course.deg();
     if(stored_truetrack < 0 || stored_truetrack > 360){
-      DEBUGW_P(20250508,"ERROR:MT");
-      DEBUGW_PLN(20250508,stored_truetrack);
+      DEBUGW_P(20250923,"ERROR:MT");
+      DEBUGW_PLN(20250923,stored_truetrack);
       stored_truetrack = 0;
     }
+
+    #ifdef QUECTEL_GPS
+    // LC86GPAMD において、 NMEAのcourseが最後であるため、ここでCSV保存処理を行う。
+    try_enque_savecsv();
+    #endif
   }
 
   if (gps.satellites.isUpdated()) {
@@ -567,9 +556,58 @@ void gps_loop(int id) {
     removeStaleSatellites();
     stored_numsats = gps.satellites.value();
     #ifdef DEBUG_NMEA
-    DEBUG_P(20250508,F("Satellites: "));
-    DEBUG_PLN(20250508,stored_numsats);
+    DEBUG_P(20250923,F("Satellites: "));
+    DEBUG_PLN(20250923,stored_numsats);
     #endif
+  }
+}
+
+//GPS情報のCSV保存を試みる。
+void try_enque_savecsv(){
+  bool all_valid = true;
+  if (gps.location.isValid()) {
+    // Check if the location fix is valid
+    if (gps.satellites.isValid()) {
+      stored_fixtype = 2;
+    } else {
+      stored_fixtype = 1;
+    }
+  } else {
+    DEBUG_PLN(20250923,"Location: Not Available");
+    all_valid = false;
+    stored_fixtype = 0;
+  }
+  // Print date
+  if (!gps.date.isValid()) {
+    DEBUG_PLN(20250923,"Date: Not Available");
+    all_valid = false;
+  }
+  // Print time
+  if (!gps.time.isValid()) {
+    DEBUG_PLN(20250923,"Time: Not Available");
+    all_valid = false;
+  }
+
+  if(all_valid && millis() - last_gps_save_time > 900){ //NMEAの都合で1秒あたり2,3回のlocation update があり、1秒に１度のみ更新したい。max 995程度だが900にしておく。
+    if(!get_demo_biwako()){ //デモは別の場所で登録済み。
+      add_latlon_track(get_gps_lat(),get_gps_lon());
+    }
+    
+    //リプレイは保存しない。
+    if(!getReplayMode()){
+      DEBUG_P(20250923,"SAVED!");
+      static int lastsavedtime = 0;
+      DEBUG_PLN(20250923,millis()-lastsavedtime);
+
+      lastsavedtime = millis();
+      int year = gps.date.year();
+      int month = gps.date.month();
+      int day = gps.date.day();
+      int hour = gps.time.hour();
+      utcToJst(&year,&month,&day,&hour);
+      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, stored_altitude, year, month, day, hour, gps.time.minute(), gps.time.second()));
+      last_gps_save_time = millis();
+    }
   }
 }
 

@@ -276,13 +276,14 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // Initializer for TASK_SAVE_CSV
-Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int year, int month, int day, int hour, int minute, int second) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
   task.saveCsvArgs.longitude = longitude;
   task.saveCsvArgs.gs = gs;
   task.saveCsvArgs.mtrack = mtrack;
+  task.saveCsvArgs.altitude = altitude;
   task.saveCsvArgs.year = year;
   task.saveCsvArgs.month = month;
   task.saveCsvArgs.day = day;
@@ -751,7 +752,7 @@ void log_sdf(const char* format, ...){
 
 
 
-void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second) {
+void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int year, int month, int day, int hour, int minute, int second) {
   #ifdef DISABLE_SD
     return;
   #endif
@@ -801,6 +802,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
     csvFile.print(gs, 1);
     csvFile.print(",");
     csvFile.print(ttrack);
+    csvFile.print(",");
+    csvFile.print(altitude,2);
     csvFile.print(",");
 
     // Format date as YYYY-MM-DD

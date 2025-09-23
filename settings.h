@@ -3,14 +3,16 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20250804
-#define BUILDVERSION "0.88"
+#define BUILDDATE 20250923
+#define BUILDVERSION "0.89"
 
-#define PRINTREVERSEDATE_NUM 0
-#define DEBUG_P(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
-#define DEBUGW_P(num,txt)  Serial.print(txt);
-#define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.println(txt);
-#define DEBUGW_PLN(num,txt)  Serial.println(txt);
+#define PRINTREVERSEDATE_NUM 100
+#define DEBUG_P(date,txt)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
+#define DEBUG_PN(date,txt,num)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt,num);
+#define DEBUGW_P(date,txt)  Serial.print(txt);
+#define DEBUG_PLN(date,txt)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.println(txt);
+#define DEBUG_PNLN(date,txt,num)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.println(txt,num);
+#define DEBUGW_PLN(date,txt)  Serial.println(txt);
 
 
 //----------GPS---------

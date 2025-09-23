@@ -109,6 +109,12 @@ Setting menu_settings[] = {
           enqueueTask(createPlayMultiToneTask(294,500,1,2));
         }
       }
+    },
+    [](){
+      if(strcmp(extradestinations[currentdestination].name, "PLATHOME") == 0)
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
     }
   },
   { SETTING_DESTINATIONMODE,
@@ -143,6 +149,12 @@ Setting menu_settings[] = {
           enqueueTask(createPlayMultiToneTask(294,500,1,2));
         }
       }
+    },
+    [](){
+      if(destination_mode == DMODE_AUTO10K)
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
     }
   },
 #ifdef BRIGHTNESS_SETTING_AVAIL
@@ -156,7 +168,8 @@ Setting menu_settings[] = {
     []() {
       tft_change_brightness(1);
     },
-    nullptr
+    nullptr,
+    nullptr,
   },
 #endif
   { SETTING_VOLUME,
@@ -184,7 +197,13 @@ Setting menu_settings[] = {
         enqueueTask(createPlayMultiToneTask(440,200,1));
       }
     },
-    nullptr
+    nullptr,
+    [](){
+      if(sound_volume >= 30)
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
+    }
   },
   { SETTING_UPWARD,
     [](bool selected) -> std::string {
@@ -196,7 +215,13 @@ Setting menu_settings[] = {
     []() {
       toggle_mode();
     },
-    nullptr
+    nullptr,
+    [](){
+      if(! is_trackupmode())
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
+    }
   },
   { SETTING_DEMOBIWA,
     [](bool selected) -> std::string {
@@ -215,6 +240,12 @@ Setting menu_settings[] = {
         set_replaymode(false);
         exit_setting();
       }
+    },
+    [](){
+      if(!get_demo_biwako())
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
     }
   },
   { SETTING_REPLAY,
@@ -236,6 +267,12 @@ Setting menu_settings[] = {
         replay_seekpos = 0;
         exit_setting();
       }
+    },
+    [](){
+      if(!getReplayMode())
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
     }
   },
   { SETTING_GPSDETAIL,
@@ -248,6 +285,7 @@ Setting menu_settings[] = {
       screen_mode = MODE_GPSDETAIL;
     },
     nullptr,
+    nullptr,
     nullptr
   },
   { SETTING_MAPDETAIL,
@@ -258,6 +296,7 @@ Setting menu_settings[] = {
       DEBUG_P(20240801, "MAP DETAIL MODE");
       screen_mode = MODE_MAPLIST;
     },
+    nullptr,
     nullptr,
     nullptr
   },
@@ -271,6 +310,7 @@ Setting menu_settings[] = {
       enqueueTask(createBrowseSDTask(0));
     },
     nullptr,
+    nullptr,
     nullptr
   },
   { SETTING_EXIT,
@@ -280,6 +320,7 @@ Setting menu_settings[] = {
     []() {
       exit_setting();
     },
+    nullptr,
     nullptr,
     nullptr
   }

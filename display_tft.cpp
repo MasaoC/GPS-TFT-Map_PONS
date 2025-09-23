@@ -957,21 +957,35 @@ void startup_demo_tft() {
   backscreen.pushSprite(0,52);
   delay(3200);
 
-  for (int i = 0; i <= 40; i++) {
+  float speedfactor = 1.5;
+  int countermax = 40/speedfactor;
+  float scalenow = 0;
+  for (int i = 0; i <= countermax; i++) {
     backscreen.fillScreen(COLOR_WHITE);
-    draw_Biwako(mapf(i,0,40,center_lat,PLA_LAT), mapf(i,0,40,center_lon,PLA_LON), 2 + i * 0.25, 0, false);
+    scalenow = 2 + i * 0.25*speedfactor;
+    draw_Biwako(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0, false);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
   delay(10);
 
   
-  for (int i = 0; i < 40; i++) {
+  for (int i = 0; i < countermax; i++) {
+    scalenow *= 0.83;
+    if(scalenow < 0.07)
+      scalenow = 0.07;
+    bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
-    draw_Biwako(mapf(i,0,100,PLA_LAT,center_lat), mapf(i,0,100,PLA_LON,center_lon), (2+40*0.25)*(40.0 - i)/40.0, 0, false);
+    if(scalenow < 0.5){
+      draw_Japan(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0);
+      draw_map(STRK_MAP1, 0, center_lat, center_lon, scalenow, &map_biwako, COLOR_GREEN);
+    }
+    else
+      draw_Biwako(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0, false);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
+  delay(500);
 }
 void draw_demo_biwako(){
   backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_WHITE);
@@ -1729,6 +1743,10 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     }
     backscreen.setCursor(10,i * separation);
     backscreen.setTextColor(col,COLOR_WHITE);
+
+    if(menu_settings[i].iconColor != nullptr)
+      backscreen.fillCircle(SCREEN_WIDTH-7,i * separation+7, 5, menu_settings[i].iconColor());
+
     backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
     //textmanager.drawTextf(menu_settings[i].id, 2, 10, startY + i * separation, col, menu_settings[i].getLabel(selectedLine == i).c_str());
   }
