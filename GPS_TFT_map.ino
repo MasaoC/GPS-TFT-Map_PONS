@@ -13,15 +13,15 @@
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
-bool core1_separate_stack = true;//DO NOT REMOVE THIS LINE.
+bool core1_separate_stack = true;  //DO NOT REMOVE THIS LINE.
 
 unsigned long screen_update_time = 0;  // 最後に画面更新した時間 millis()
-bool redraw_screen = false;           //次の描画では、黒塗りして新たに画面を描画する
+bool redraw_screen = false;            //次の描画では、黒塗りして新たに画面を描画する
 
-const int NUM_SAMPLES = 4;          // Number of samples for deg/s
+const int NUM_SAMPLES = 4;             // Number of samples for deg/s
 float truetrack_samples[NUM_SAMPLES];  // Array to store truetrack values
-int sampleIndex = 0;               // Index to keep track of current sample
-float degpersecond = 0;            // The calculated average differential
+int sampleIndex = 0;                   // Index to keep track of current sample
+float degpersecond = 0;                // The calculated average differential
 
 int screen_mode = MODE_MAP;
 int detail_page = 0;
@@ -31,11 +31,11 @@ double scale;
 // Variables for setting selection
 int selectedLine = -1;
 int cursorLine = 0;
-int lastload_zoomlevel; 
-int course_warning_index = 0;     //From 0 to 900
-unsigned long last_course_warning_time = 0; //millis
-unsigned long last_destination_toofar_time = 0;//millis
-double steer_angle = 0.0;     //-180 to 180.
+int lastload_zoomlevel;
+int course_warning_index = 0;                    //From 0 to 900
+unsigned long last_course_warning_time = 0;      //millis
+unsigned long last_destination_toofar_time = 0;  //millis
+double steer_angle = 0.0;                        //-180 to 180.
 
 //次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画するフラグ。BMPロード完了時にフラグが立つ。
 volatile int scaleindex = 3;
@@ -57,30 +57,29 @@ Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
 void setup(void) {
   Serial.begin(38400);
 
-  #ifndef RELEASE
-  while(!Serial){
+#ifndef RELEASE
+  while (!Serial) {
     delay(10);
   }
-  #endif
+#endif
 
   //setup switch
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
   setup_tft();
 
   adc_gpio_init(BATTERY_PIN);
-  pinMode(USB_DETECT,INPUT);
+  pinMode(USB_DETECT, INPUT);
   pinMode(BATTERY_PIN, INPUT);
   analogReadResolution(12);
 
-  gps_setup();
   startup_demo_tft();
+  gps_setup();  //To avoid overflow, after tft setup recommend.
 
-
-  scalelist[0] = SCALE_EXSMALL_GMAP;//pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT;
-  scalelist[1] = SCALE_SMALL_GMAP;//pixelsPerDegreeLat(7,35)/KM_PER_DEG_LAT;
-  scalelist[2] = SCALE_MEDIUM_GMAP;//pixelsPerDegreeLat(9,35)/KM_PER_DEG_LAT;
-  scalelist[3] = SCALE_LARGE_GMAP;//pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
-  scalelist[4] = SCALE_EXLARGE_GMAP;//pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
+  scalelist[0] = SCALE_EXSMALL_GMAP;  //pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT;
+  scalelist[1] = SCALE_SMALL_GMAP;    //pixelsPerDegreeLat(7,35)/KM_PER_DEG_LAT;
+  scalelist[2] = SCALE_MEDIUM_GMAP;   //pixelsPerDegreeLat(9,35)/KM_PER_DEG_LAT;
+  scalelist[3] = SCALE_LARGE_GMAP;    //pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
+  scalelist[4] = SCALE_EXLARGE_GMAP;  //pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
   scalelist[5] = 200.0;
   scale = scalelist[scaleindex];
   redraw_screen = true;
@@ -89,25 +88,25 @@ void setup(void) {
 
 
 //===============SET UP CORE1=================
-void setup1(void){
+void setup1(void) {
   Serial.begin(38400);
   mutex_init(&taskQueueMutex);
   init_destinations();
   setup_sound();
 
   //====core1_separate_stack = true の時、Serial.printがないとSDが動かない。詳細不明だが、消すな！
-  Serial.println("");//消すな
+  Serial.println("");  //消すな
   // call to Serial.println() might force the Arduino runtime or the RP2350’s FreeRTOS (used in the RP2040/RP2350 Arduino core for dual-core support) to fully initialize Core1’s context,
   // ensuring that the SD library’s internal state to set up.
   // Without this call, Core1 might attempt to initialize the SD card before its runtime environment is fully ready, especially with a separate stack.
   //====
-  
+
   setup_sd(5);
 
-  if(good_sd()){
-      enqueueTask(createPlayWavTask( "wav/opening.wav"));
-  }else{
-      enqueueTask(createPlayMultiToneTask(500, 150, 10));
+  if (good_sd()) {
+    enqueueTask(createPlayWavTask("wav/opening.wav"));
+  } else {
+    enqueueTask(createPlayMultiToneTask(500, 150, 10));
   }
 }
 
@@ -118,81 +117,78 @@ void loop() {
   //switch handling
   sw_push.read();
   gps_loop(0);
-  
-  #ifndef RELEASE
-  if(Serial.available()){
+
+#ifndef RELEASE
+  if (Serial.available()) {
     GPS_SERIAL.write(Serial.read());
   }
-  #endif
+#endif
 
-  
 
-  if((millis() - screen_update_time > SCREEN_FRESH_INTERVAL)){
+
+  if ((millis() - screen_update_time > SCREEN_FRESH_INTERVAL)) {
     redraw_screen = true;
   }
 
 
   if (screen_mode == MODE_SETTING) {
-    if(redraw_screen){
+    if (redraw_screen) {
       draw_setting_mode(selectedLine, cursorLine);
     }
-  }
-  else if (screen_mode == MODE_GPSDETAIL) {
-    if(redraw_screen)
+  } else if (screen_mode == MODE_GPSDETAIL) {
+    if (redraw_screen)
       draw_gpsdetail(detail_page);
-  }
-  else if (screen_mode == MODE_SDDETAIL) {
-    if(sd_detail_loading_displayed && !loading_sddetail)
+  } else if (screen_mode == MODE_SDDETAIL) {
+    if (sd_detail_loading_displayed && !loading_sddetail)
       redraw_screen = true;
-    if(redraw_screen)
+    if (redraw_screen)
       draw_sddetail(detail_page);
-  }
-  else if (screen_mode == MODE_MAPLIST) {
-    if(redraw_screen)
+  } else if (screen_mode == MODE_MAPLIST) {
+    if (redraw_screen)
       draw_maplist_mode(detail_page);
-  }else if(screen_mode == MODE_MAP){
+  } else if (screen_mode == MODE_MAP) {
     bool new_gps_info = gps_new_location_arrived();
-    if(new_gps_info){
+    if (new_gps_info) {
       // Automatic destination change for AUTO 10KM mode.
-      if(destination_mode == DMODE_AUTO10K){
+      if (destination_mode == DMODE_AUTO10K) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
-        if(auto10k_status == AUTO10K_AWAY){
+        if (auto10k_status == AUTO10K_AWAY) {
 
-          if(distance_frm_destination > 10.475){//10.975 だけど、500mの誤差を引いておく。
+          if (distance_frm_destination > 10.475) {  //10.975 だけど、500mの誤差を引いておく。
             auto10k_status = AUTO10K_INTO;
-            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
-            enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-            enqueueTask(createPlayMultiToneTask(2793,500,1,2));
-            enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-            enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
+            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+            enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
           }
         }
-        if(auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5){//折り返し用。だけど、500mの誤差を引いておく。
+        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し用。だけど、500mの誤差を引いておく。
           auto10k_status = AUTO10K_AWAY;
-          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
-          enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-          enqueueTask(createPlayMultiToneTask(2793,500,1,2));
-          enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-          enqueueTask(createPlayWavTask("wav/destination_change.wav",3));
+          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+          enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
         }
       }
       check_destination_toofar();
     }
 
     // Called only once per second.
-    if(newcourse_arrived){
+    if (newcourse_arrived) {
 
 
       int ttrack = get_gps_truetrack();
       update_degpersecond(ttrack);
       update_tone(degpersecond);
       update_course_warning(degpersecond);
-      steer_angle = (magc-8) - ttrack;
-      if(steer_angle < -180){
+      steer_angle = (magc - 8) - ttrack;
+      if (steer_angle < -180) {
         steer_angle += 360;
-      }else if(steer_angle > 180){
+      } else if (steer_angle > 180) {
         steer_angle -= 360;
       }
 
@@ -204,7 +200,7 @@ void loop() {
     if (new_gmap_ready || new_gps_info) {
       redraw_screen = true;
     }
-    
+
     // GPSデータを受信した時と、bmpロード完了した時、両方でcallされるので毎秒二回は redraw_screen = true になる。
     if (redraw_screen) {
       float new_truetrack = get_gps_truetrack();
@@ -218,7 +214,7 @@ void loop() {
         drawupward_direction = 0;
       }
 
-      nav_update();// MC や dist を更新する。
+      nav_update();  // MC や dist を更新する。
       draw_header();
 
       new_gmap_ready = false;
@@ -227,18 +223,18 @@ void loop() {
 
 
       int zoomlevel = 0;
-      if (scaleindex == 0) zoomlevel = 5;//SCALE_EXSMALL_GMAP
-      if (scaleindex == 1) zoomlevel = 7;//SCALE_SMALL_GMAP
-      if (scaleindex == 2) zoomlevel = 9;//SCALE_MEDIUM_GMAP
-      if (scaleindex == 3) zoomlevel = 11;//SCALE_LARGE_GMAP
-      if (scaleindex == 4) zoomlevel = 13;//SCALE_EXLARGE_GMAP
+      if (scaleindex == 0) zoomlevel = 5;   //SCALE_EXSMALL_GMAP
+      if (scaleindex == 1) zoomlevel = 7;   //SCALE_SMALL_GMAP
+      if (scaleindex == 2) zoomlevel = 9;   //SCALE_MEDIUM_GMAP
+      if (scaleindex == 3) zoomlevel = 11;  //SCALE_LARGE_GMAP
+      if (scaleindex == 4) zoomlevel = 13;  //SCALE_EXLARGE_GMAP
 
       bool gmap_drawed = false;
-      if(gmap_loaded_active)
+      if (gmap_loaded_active)
         gmap_drawed = draw_gmap(drawupward_direction);
 
       // If new gps
-      if(new_gps_info || lastload_zoomlevel != zoomlevel){
+      if (new_gps_info || lastload_zoomlevel != zoomlevel) {
         lastload_zoomlevel = zoomlevel;
         //If loadImagetask already running in Core1, abort.
         enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
@@ -246,7 +242,7 @@ void loop() {
 
       if (scale > SCALE_SMALL_GMAP) {
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-          draw_Biwako(new_lat, new_long, scale, drawupward_direction,gmap_drawed);
+          draw_Biwako(new_lat, new_long, scale, drawupward_direction, gmap_drawed);
         } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
           draw_Osaka(new_lat, new_long, scale, drawupward_direction);
         } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
@@ -264,18 +260,18 @@ void loop() {
 
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
-      if(currentdestination != -1 && currentdestination < destinations_count){
+      if (currentdestination != -1 && currentdestination < destinations_count) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
-        if(destination_mode == DMODE_FLYINTO) 
-          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,5);
-        else if(destination_mode == DMODE_FLYAWAY) 
+        if (destination_mode == DMODE_FLYINTO)
+          draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction, 5);
+        else if (destination_mode == DMODE_FLYAWAY)
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
-        else if(destination_mode == DMODE_AUTO10K){
-          if(auto10k_status == AUTO10K_AWAY)
+        else if (destination_mode == DMODE_AUTO10K) {
+          if (auto10k_status == AUTO10K_AWAY)
             draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
-          else if(auto10k_status == AUTO10K_INTO)
-            draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction,5);
+          else if (auto10k_status == AUTO10K_INTO)
+            draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction, 5);
         }
       }
       gps_loop(5);
@@ -289,14 +285,14 @@ void loop() {
       draw_triangle(new_truetrack, steer_angle);
 
       //10秒間 warning 表示
-      if(millis() - last_course_warning_time < 10000 && millis()  > 10000){
+      if (millis() - last_course_warning_time < 10000 && millis() > 10000) {
         draw_course_warning(steer_angle);
       }
-      
+
       if (!gmap_drawed) {
         draw_nogmap(scale);
       }
-      
+
       draw_headertext(degpersecond);
       draw_map_footer();
       draw_nomapdata();
@@ -304,14 +300,14 @@ void loop() {
       push_backscreen();
       draw_footer();
     }
-  }else{
-    DEBUGW_PLN(20250510,"ERR screen mode");
+  } else {
+    DEBUGW_PLN(20250510, "ERR screen mode");
   }
 
-  if(redraw_screen){
-      //更新終了
-      redraw_screen = false;
-      screen_update_time = millis();
+  if (redraw_screen) {
+    //更新終了
+    redraw_screen = false;
+    screen_update_time = millis();
   }
 }
 
@@ -325,10 +321,10 @@ void loop1() {
         saveSettings();
         break;
       case TASK_PLAY_WAV:
-        startPlayWav(currentTask.playWavArgs.wavfilename,currentTask.playWavArgs.priority);
+        startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority);
         break;
       case TASK_PLAY_MULTITONE:
-        playTone(currentTask.playMultiToneArgs.freq,currentTask.playMultiToneArgs.duration,currentTask.playMultiToneArgs.counter,currentTask.playMultiToneArgs.priority);
+        playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority);
         break;
       case TASK_INIT_SD:
         setup_sd(1);
@@ -349,16 +345,15 @@ void loop1() {
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
           currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack, currentTask.saveCsvArgs.altitude,
+          currentTask.saveCsvArgs.numsats, currentTask.saveCsvArgs.voltage,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
           currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
-          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second
-        );
+          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second);
         break;
       case TASK_LOAD_MAPIMAGE:
         load_mapimage(
           currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
-          currentTask.loadMapImageArgs.zoomlevel
-        );
+          currentTask.loadMapImageArgs.zoomlevel);
         break;
     }
     currentTask.type = TASK_NONE;
@@ -367,7 +362,7 @@ void loop1() {
     delay(10);
   }
 }
-extern int max_page;     // Global variable to store maximum page number
+extern int max_page;  // Global variable to store maximum page number
 
 //==========BUTTON==========
 //Callback function for short press
@@ -382,19 +377,18 @@ void shortPressCallback() {
     } else {
       menu_settings[selectedLine].CallbackToggle();
     }
-  } else if(screen_mode == MODE_SDDETAIL){
+  } else if (screen_mode == MODE_SDDETAIL) {
     detail_page++;
     loading_sddetail = true;
-    if(max_page <= 0)
+    if (max_page <= 0)
       enqueueTask(createBrowseSDTask(0));
     else
-      enqueueTask(createBrowseSDTask(detail_page%(max_page+1)));
-  }
-  else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL) {
+      enqueueTask(createBrowseSDTask(detail_page % (max_page + 1)));
+  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL) {
     detail_page++;
   } else {
     gmap_loaded_active = false;
-    scaleindex = (scaleindex+1) % (sizeof(scalelist) / sizeof(scalelist[0]));
+    scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
     scale = scalelist[scaleindex];
   }
 }
@@ -420,7 +414,7 @@ void longPressCallback() {
         selectedLine = cursorLine;
       } else {
         //exiting changing value mode.
-        if(menu_settings[cursorLine].CallbackExit != nullptr)
+        if (menu_settings[cursorLine].CallbackExit != nullptr)
           menu_settings[cursorLine].CallbackExit();
         selectedLine = -1;
       }
@@ -471,54 +465,54 @@ void update_degpersecond(int true_track) {
 
 
 
-void check_destination_toofar(){
+void check_destination_toofar() {
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
-  if(calculateDistanceKm(get_gps_lat(),get_gps_lon(),destlat,destlon) > 100.0){
-    if(millis() - last_destination_toofar_time > 1000*60){//60sec
+  if (calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon) > 100.0) {
+    if (millis() - last_destination_toofar_time > 1000 * 60) {  //60sec
       last_destination_toofar_time = millis();
-      enqueueTask(createPlayWavTask("wav/destination_toofar.wav",1));
+      enqueueTask(createPlayWavTask("wav/destination_toofar.wav", 1));
     }
   }
 }
 
 //一秒に一回まで。
-void update_course_warning(float degpersecond){
+void update_course_warning(float degpersecond) {
   //移動していない時,GPSロスト時は発動しない。
-  if(get_gps_mps() < 2 || get_gps_numsat() == 0){
+  if (get_gps_mps() < 2 || get_gps_numsat() == 0) {
     course_warning_index = 0;
   }
   //正しい方向に変化している時はindexを減らす。
-  else if((degpersecond > 0.5 && steer_angle > 0) || (degpersecond < -0.5 && steer_angle < 0)){
-    course_warning_index -= 15*abs(degpersecond);//修正速度に応じ、7以上のindexが減る。3deg/sの時、indexは45減る。
-    
+  else if ((degpersecond > 0.5 && steer_angle > 0) || (degpersecond < -0.5 && steer_angle < 0)) {
+    course_warning_index -= 15 * abs(degpersecond);  //修正速度に応じ、7以上のindexが減る。3deg/sの時、indexは45減る。
+
   }
   //正しい方向に修正されていない、かつ15度以上ずれている。
-  else if(abs(steer_angle) > 15){
-      course_warning_index += min(abs(steer_angle),90);//15以上、90を最大値として、indexに加算する。
+  else if (abs(steer_angle) > 15) {
+    course_warning_index += min(abs(steer_angle), 90);  //15以上、90を最大値として、indexに加算する。
   }
   //15度未満のズレ、index 0 reset。
-  else{
+  else {
     course_warning_index = 0;
   }
-  
+
   // range 0-900
-  if(course_warning_index > 900)
+  if (course_warning_index > 900)
     course_warning_index = 900;
-  else if(course_warning_index < 0)
+  else if (course_warning_index < 0)
     course_warning_index = 0;
-  
+
   //15度の修正されないズレは、15/900=60秒でwarning。90度以上の修正されないズレは、10秒でwarning。ただしwarningは、30秒に一度をmax回数とする。
-  if(course_warning_index >= 900 && millis() - last_course_warning_time > 30000){
+  if (course_warning_index >= 900 && millis() - last_course_warning_time > 30000) {
     last_course_warning_time = millis();
     course_warning_index = 0;
-    enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793,500,1,2));
-    enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-    enqueueTask(createPlayMultiToneTask(2793,500,1,2));
-    enqueueTask(createPlayMultiToneTask(3136,500,1,2));
-    if(steer_angle > 0)
-      enqueueTask(createPlayWavTask("wav/course_right.wav",2));
+    enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2));
+    enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+    enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2));
+    enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+    if (steer_angle > 0)
+      enqueueTask(createPlayWavTask("wav/course_right.wav", 2));
     else
-      enqueueTask(createPlayWavTask("wav/course_left.wav",2));
+      enqueueTask(createPlayWavTask("wav/course_left.wav", 2));
   }
 }

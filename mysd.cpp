@@ -39,7 +39,6 @@ Task currentTask;
 
 
 void load_mapimage(double center_lat, double center_lon,int zoomlevel);
-void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second);
 void log_sd(const char* text);
 void log_sdf(const char* format, ...);
 void dateTime(uint16_t* date, uint16_t* time);
@@ -276,7 +275,7 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // Initializer for TASK_SAVE_CSV
-Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int year, int month, int day, int hour, int minute, int second) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -284,6 +283,8 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, fl
   task.saveCsvArgs.gs = gs;
   task.saveCsvArgs.mtrack = mtrack;
   task.saveCsvArgs.altitude = altitude;
+  task.saveCsvArgs.numsats = numsats;
+  task.saveCsvArgs.voltage = voltage;
   task.saveCsvArgs.year = year;
   task.saveCsvArgs.month = month;
   task.saveCsvArgs.day = day;
@@ -716,7 +717,7 @@ void log_sd(const char* text){
     return;
   #endif
 
-  File32 logFile = SD.open("log2.txt", FILE_WRITE);
+  File32 logFile = SD.open("log.txt", FILE_WRITE);
   if(!logFile){
     DEBUGW_PLN(20250508,"ERR LOG");
     sdError = true;
@@ -747,12 +748,7 @@ void log_sdf(const char* format, ...){
   return log_sd(buffer);
 }
 
-
-
-
-
-
-void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int year, int month, int day, int hour, int minute, int second) {
+void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
   #ifdef DISABLE_SD
     return;
   #endif
@@ -785,13 +781,12 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
 
   char csv_filename[30];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
-  log_sdf("%d:%s",millis(),csv_filename);
 
   File32 csvFile = SD.open(csv_filename, FILE_WRITE);
 
   if (csvFile) {
     if(!headerWritten){
-      csvFile.println("latitude,longitude,gs,TrueTrack,date,time");
+      csvFile.println("latitude,longitude,gs,TrueTrack,Altitude,numsat,voltage,date,time");
       headerWritten = true;
     }
 
@@ -804,6 +799,10 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     csvFile.print(ttrack);
     csvFile.print(",");
     csvFile.print(altitude,2);
+    csvFile.print(",");
+    csvFile.print(numsat);
+    csvFile.print(",");
+    csvFile.print(voltage,2);
     csvFile.print(",");
 
     // Format date as YYYY-MM-DD

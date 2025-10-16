@@ -33,7 +33,7 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int year, int month, int day, int hour, int minute, int second);
+    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second);
     void load_mapimage(double center_lat, double center_lon,int zoomlevel);
 
     // Forward declarations of example getter/setter functions
@@ -68,6 +68,8 @@
               float gs;
               int mtrack;
               float altitude;
+              int numsats;
+              float voltage;
               int year, month, day, hour, minute, second;
           } saveCsvArgs;
           struct {                           // For load_mapimage
@@ -99,7 +101,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int year, int month, int day, int hour, int minute, int second);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
   Task createPlayWavTask(const char* filename,int priority=1);
@@ -114,12 +116,6 @@
   bool good_sd();
   bool isTaskRunning(int taskType);
   bool isTaskInQueue(int taskType);
-  /*
-  void log_sd(const char* text);
-  void log_sdf(const char* format, ...);
-  void saveCSV(float latitude, float longitude,float gs,int mtrack, int year, int month, int day, int hour, int minute, int second) ;
-  void load_mapimage(double center_lat, double center_lon,int zoomlevel);
-  */
   void load_push_logo();
 
 

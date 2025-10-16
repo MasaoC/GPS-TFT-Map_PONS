@@ -232,6 +232,9 @@ void gps_setup() {
   DEBUG_PLN(20250906,setupcounter);
   
   readfail_counter = 0;
+  if(setupcounter != 1){
+    GPS_SERIAL.end();
+  }
   GPS_SERIAL.setTX(GPS_TX);
   GPS_SERIAL.setRX(GPS_RX);// Initialize GNSS
 
@@ -562,6 +565,8 @@ void gps_loop(int id) {
   }
 }
 
+
+extern int max_adreading;
 //GPS情報のCSV保存を試みる。
 void try_enque_savecsv(){
   bool all_valid = true;
@@ -605,7 +610,8 @@ void try_enque_savecsv(){
       int day = gps.date.day();
       int hour = gps.time.hour();
       utcToJst(&year,&month,&day,&hour);
-      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, stored_altitude, year, month, day, hour, gps.time.minute(), gps.time.second()));
+      float calc_voltage = min(BATTERY_MULTIPLYER(max_adreading),4.3);
+      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, stored_altitude, stored_numsats, calc_voltage,year, month, day, hour, gps.time.minute(), gps.time.second()));
       last_gps_save_time = millis();
     }
   }

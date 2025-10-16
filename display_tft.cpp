@@ -957,7 +957,7 @@ void startup_demo_tft() {
   backscreen.pushSprite(0,52);
   delay(3200);
 
-  float zoomin_speedfactor = 1.5;
+  float zoomin_speedfactor = 1.0;
   int countermax = 40/zoomin_speedfactor;
   float scalenow = 0;
   for (int i = 0; i <= countermax; i++) {
@@ -1472,10 +1472,11 @@ void draw_nomapdata() {
   if (get_gps_connection()) {
     //"GPS Module connected."
   } else {
-    backscreen.setCursor(3,150);
+    backscreen.setCursor(3,50);
     backscreen.setTextColor(COLOR_MAGENTA);
-    backscreen.println("GPS connection not found !!");
-    backscreen.println("Try reset (Power off and on).");
+    backscreen.println("NO GNSS connection !!");
+    backscreen.println(" Please wait up to 2min for");
+    backscreen.println(" backup battery to be charged");
     return;
   }
 
