@@ -15,7 +15,8 @@
       TASK_PLAY_WAV,
       TASK_SAVE_SETTINGS,
       TASK_BROWSE_SD,
-      TASK_LOAD_REPLAY
+      TASK_LOAD_REPLAY,
+      TASK_INIT_REPLAY
   } TaskType;
 
 
@@ -29,7 +30,8 @@
 
     void setup_sd(int trycount);
 
-    void load_replay(int timems);
+    void init_replay();
+    void load_replay();
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
@@ -57,7 +59,6 @@
       union {
           int pagenum;                         //For browsesd
           const char* logText;               // For log_sd
-          unsigned long timems; //For load replay
           struct {                           // For log_sdf
               const char* format;
               char buffer[256];
@@ -106,7 +107,8 @@
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
   Task createPlayWavTask(const char* filename,int priority=1);
   Task createBrowseSDTask(int page);
-  Task createLoadReplayTask(unsigned long timems);
+  Task createLoadReplayTask();
+  Task createInitReplayTask();
 
   // Functions to handle the queue (declarations)
   void enqueueTask(Task task);

@@ -1475,7 +1475,7 @@ void draw_nomapdata() {
     backscreen.setCursor(3,50);
     backscreen.setTextColor(COLOR_MAGENTA);
     backscreen.println("NO GNSS connection !!");
-    backscreen.println(" Please wait up to 2min for");
+    backscreen.println(" Please wait up to 30sec. for");
     backscreen.println(" backup battery to be charged");
     return;
   }

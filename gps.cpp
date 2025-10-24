@@ -47,7 +47,6 @@ bool newcourse_arrived = false;
 //Replay mode related variables
 bool replaymode_gpsoff = false;
 unsigned long last_check_nmea_time = 0;
-unsigned long replay_start_time = 0;
 
 
 void utcToJst(int *year, int *month, int *day, int *hour) {
@@ -488,7 +487,7 @@ void gps_loop(int id) {
 
     if(last_check_nmea_time+300 < millis()){
       last_check_nmea_time = millis();
-      enqueueTask(createLoadReplayTask(millis()-replay_start_time));
+      enqueueTask(createLoadReplayTask());
     }
   }
 
@@ -734,6 +733,8 @@ double get_gps_magtrack() {
 int get_gps_numsat() {
   if(get_demo_biwako()){
     return (int)(20.0*sin(millis()/5000))+20;
+  }else if(getReplayMode()){
+    return 99;
   }
   return stored_numsats;
 }

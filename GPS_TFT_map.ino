@@ -333,7 +333,10 @@ void loop1() {
         browse_sd(currentTask.pagenum);
         break;
       case TASK_LOAD_REPLAY:
-        load_replay(currentTask.timems);
+        load_replay();
+        break;
+      case TASK_INIT_REPLAY:
+        init_replay();
         break;
       case TASK_LOG_SD:
         log_sd(currentTask.logText);

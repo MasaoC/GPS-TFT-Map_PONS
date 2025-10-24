@@ -263,8 +263,7 @@ Setting menu_settings[] = {
     },[](){
       if(getReplayMode()){
         set_demo_biwako(false);
-        replay_start_time = millis()-1000;
-        replay_seekpos = 0;
+        enqueueTask(createInitReplayTask());
         exit_setting();
       }
     },
