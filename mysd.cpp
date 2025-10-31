@@ -331,12 +331,18 @@ Task createBrowseSDTask(int page){
 }
 
 
-Task createLoadReplayTask(unsigned long timems){
+Task createLoadReplayTask(){
   Task task;
   task.type = TASK_LOAD_REPLAY;
-  task.timems = timems;
   return task;
 }
+
+Task createInitReplayTask(){
+  Task task;
+  task.type = TASK_INIT_REPLAY;
+  return task;
+}
+
 
 void removeDuplicateTask(TaskType type) {
     mutex_enter_blocking(&taskQueueMutex);
@@ -541,10 +547,19 @@ void setup_sd(int trycount){
 }
 
 char replay_nmea[128];
-volatile unsigned long replay_seekpos;
-volatile bool loaded_replay_nmea;
+volatile unsigned long replay_seekpos = 0;
+volatile bool loaded_replay_nmea = false;
+unsigned long replay_start_time = 0;
 
-void load_replay(int timems) {
+void init_replay(){
+  replay_start_time = millis();
+  replay_seekpos = 0;
+}
+
+
+void load_replay() {
+  unsigned long timems = millis() - replay_start_time;
+
   File32 myFile = SD.open("replay.csv");
   if (!myFile) {
     loaded_replay_nmea = false;
@@ -555,7 +570,15 @@ void load_replay(int timems) {
     return;
   }
 
+  
   while (myFile.seek(replay_seekpos)) {
+    DEBUG_PLN(20251025,myFile.available());
+    if(myFile.available() == 0){
+      DEBUG_PLN(20251025,"Most likely, end of file of replay reached.");
+      init_replay();
+      return;
+    }
+
     String line = myFile.readStringUntil('\n');
     unsigned long next_replay_seekpos = myFile.position(); // Update seek position for next read
 
@@ -573,9 +596,10 @@ void load_replay(int timems) {
     String timeStr = line.substring(0, commaIndex);
     int lineTimeMs = timeStr.toInt();
     if (lineTimeMs < 0) continue; // Skip invalid timestamp
-    Serial.print(lineTimeMs);
-    Serial.print("<=?");
-    Serial.println(timems);
+
+    DEBUG_P(20251025,lineTimeMs);
+    DEBUG_P(20251025,"<=?");
+    DEBUG_PLN(20251025,timems);
 
     // Check if timestamp is >= timems
     if (lineTimeMs <= timems) {
@@ -593,7 +617,8 @@ void load_replay(int timems) {
       myFile.close();
       return;
     }else{
-
+      loaded_replay_nmea = false;
+      // Too early to call for new NMEA.
       myFile.close();
       return;
     }

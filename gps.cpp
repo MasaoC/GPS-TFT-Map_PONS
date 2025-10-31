@@ -227,8 +227,8 @@ int setupcounter = 1;
 // Try to establish connection with GPS module.  Either ublox or mediatek.
 void gps_setup() {
   last_gps_setup_time = millis();
-  DEBUG_P(20250906,"GPS SETUP:setupcounter=");
-  DEBUG_PLN(20250906,setupcounter);
+  DEBUG_P(20251025,"GPS SETUP:setupcounter=");
+  DEBUG_PLN(20251025,setupcounter);
   
   readfail_counter = 0;
   if(setupcounter != 1){
@@ -241,11 +241,11 @@ void gps_setup() {
   if(setupcounter == 1){
 
     #ifdef QUECTEL_GPS
-      DEBUG_PLN(20250906,"QUECTEL 38400");
+      DEBUG_PLN(20251025,"QUECTEL 38400");
       GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
       GPS_SERIAL.begin(38400);
     #elif MEADIATEK_GPS
-      DEBUG_PLN(20250906,"MEDIATEK 38400");
+      DEBUG_PLN(20251025,"MEDIATEK 38400");
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
       gps_getposition_mode();
       delay(100);//（Do not delete without care.)
@@ -255,7 +255,7 @@ void gps_setup() {
       delay(50);//（Do not delete without care.)
       GPS_SERIAL.begin(38400);
     #elif UBLOX_GPS
-      DEBUG_PLN(20250906,"UBLOX 38400");
+      DEBUG_PLN(20251025,"UBLOX 38400");
       // Configure GPS baud rate
       const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
       delay (50);// なぜか必要（Do not delete without care.)
@@ -273,7 +273,7 @@ void gps_setup() {
   }else{
     //2nd try
     if(setupcounter%3 == 1){
-      DEBUG_PLN(20250906,"from 115200 to 38400 (For QUECTEL)");
+      DEBUG_PLN(20251025,"from 115200 to 38400 (For QUECTEL)");
       GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(115200);
       GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
@@ -283,15 +283,15 @@ void gps_setup() {
       GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(38400);
     }else if(setupcounter%3 == 2){
-      DEBUG_PLN(20250906,"Simple setup try 115200");
+      DEBUG_PLN(20251025,"Simple setup try 115200");
       //4th try
       GPS_SERIAL.begin(115200);
     }else if(setupcounter%3 == 3){
-      DEBUG_PLN(20250906,"Simple setup try 38400");
+      DEBUG_PLN(20251025,"Simple setup try 38400");
       //3rd try
       GPS_SERIAL.begin(38400);
     }else{
-      DEBUG_PLN(20250906,"Simple setup try 9600");
+      DEBUG_PLN(20251025,"Simple setup try 9600");
       //3rd try
       GPS_SERIAL.begin(9600);
     }

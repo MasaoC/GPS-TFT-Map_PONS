@@ -3,8 +3,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20251025
-#define BUILDVERSION "0.891"
+#define BUILDDATE 20251031
+#define BUILDVERSION "0.892"
 
 #define PRINTREVERSEDATE_NUM 100
 #define DEBUG_P(date,txt)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
@@ -126,7 +126,7 @@
 
 
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
-#define BAT_LOW_VOLTAGE 3.4
+#define BAT_LOW_VOLTAGE 3.5
 #define PIN_TONE 9
 #define PIN_AMP_SD 10 //アンプシャットダウン(HIGHでON)
 
