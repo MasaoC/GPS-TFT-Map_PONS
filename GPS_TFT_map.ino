@@ -1,6 +1,12 @@
-// GPS_TFT_map. PONS v5 ( Pilot oriented navigation system for HPA )
-// Author: MasaoC  (@masao_mobile)
-// Last update date: 2025/07/29
+// ============================================================
+// File    : GPS_TFT_map.ino
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : メインエントリポイント。
+//           Core0: 画面描画・GPS処理・ボタン入力・コース警告
+//           Core1: SDカード操作・音声再生（タスクキュー経由）
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 
 #include "navdata.h"
 #include "display_tft.h"
@@ -10,36 +16,49 @@
 #include "gps.h"
 #include "sound.h"
 #include "hardware/adc.h"
+#include "airdata.h"
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
 bool core1_separate_stack = true;  //DO NOT REMOVE THIS LINE.
 
+// --- 画面更新タイミング管理 ---
 unsigned long screen_update_time = 0;  // 最後に画面更新した時間 millis()
-bool redraw_screen = false;            //次の描画では、黒塗りして新たに画面を描画する
+bool redraw_screen = false;            // true にすると次のループで画面を再描画する
 
-const int NUM_SAMPLES = 4;             // Number of samples for deg/s
-float truetrack_samples[NUM_SAMPLES];  // Array to store truetrack values
-int sampleIndex = 0;                   // Index to keep track of current sample
-float degpersecond = 0;                // The calculated average differential
+// --- 旋回角速度 (deg/s) 計算用 ---
+// GPS の真方位 (truetrack) を NUM_SAMPLES 個のスライディングウィンドウで保持し、
+// 連続サンプル間の変化量の平均として degpersecond を算出する（毎秒更新）。
+const int NUM_SAMPLES = 4;             // スライディングウィンドウのサンプル数
+float truetrack_samples[NUM_SAMPLES];  // 過去の真方位サンプル配列
+int sampleIndex = 0;                   // 次に書き込むサンプルのインデックス
+float degpersecond = 0;                // 算出された旋回角速度 [deg/s]
 
-int screen_mode = MODE_MAP;
-int detail_page = 0;
-double scalelist[6];
-double scale;
+// --- 画面モード・スケール管理 ---
+int screen_mode = MODE_MAP;  // 現在の画面モード（MODE_MAP / MODE_SETTING など）
+int detail_page = 0;         // サブ画面（GPSDetail / SDDetail）のページ番号
+double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
+double scale;                // 現在のマップスケール [pixels/km]
 
-// Variables for setting selection
+// --- 設定画面カーソル状態 ---
+// selectedLine == -1: 値変更モードでない（カーソル移動のみ）
+// selectedLine >= 0:  その行の値を変更中
 int selectedLine = -1;
 int cursorLine = 0;
-int lastload_zoomlevel;
-int course_warning_index = 0;                    //From 0 to 900
-unsigned long last_course_warning_time = 0;      //millis
-unsigned long last_destination_toofar_time = 0;  //millis
-double steer_angle = 0.0;                        //-180 to 180.
+int lastload_zoomlevel;  // 前回 BMP ロードを要求したズームレベル（変化検知用）
 
-//次の描画時間を待たずに、次のループで黒塗りして新たに画面を描画するフラグ。BMPロード完了時にフラグが立つ。
-volatile int scaleindex = 3;
-volatile int sound_volume = 50;
+// --- コース警告 ---
+// course_warning_index: 0〜900 の積算値。
+// コースから外れているほど増加し、900 に達すると音声警告を発する。
+int course_warning_index = 0;
+unsigned long last_course_warning_time = 0;      // 直近の警告発報時刻 [millis]
+unsigned long last_destination_toofar_time = 0;  // 直近の「目的地が遠すぎる」警告時刻 [millis]
+double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 度。正=右、負=左)
+
+// Core1 からの BMP ロード完了を受けて次ループで即再描画させるための volatile フラグ
+// （Core1 が書き込み、Core0 が読む。volatile で最適化を防ぐ）
+volatile int scaleindex = 3;    // scalelist のインデックス（初期値 3 = SCALE_LARGE_GMAP）
+volatile int sound_volume = 50; // 音量 0〜100
 
 extern volatile bool loading_sddetail;
 extern bool sd_detail_loading_displayed;
@@ -54,10 +73,15 @@ void longPressCallback();
 Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
 
 //===============SET UP CORE0=================
+// Core0 の初期化処理。
+// 初期化順の注意:
+//   1. TFT を先に初期化しないとボタンピン設定が正常に動作しない（TFT_eSPI の制約）。
+//   2. GPS は TFT 初期化後に setup する（バッファオーバーフロー防止のため）。
 void setup(void) {
   Serial.begin(38400);
 
 #ifndef RELEASE
+  // デバッグ時はシリアルモニタが繋がるまで待機（RELEASE では即開始）
   while (!Serial) {
     delay(10);
   }
@@ -67,32 +91,48 @@ void setup(void) {
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
   setup_tft();
 
+  // バッテリー電圧監視用 ADC の初期化
   adc_gpio_init(BATTERY_PIN);
   pinMode(USB_DETECT, INPUT);
   pinMode(BATTERY_PIN, INPUT);
-  analogReadResolution(12);
+  analogReadResolution(12);  // 12bit = 0〜4095
 
   startup_demo_tft();
   gps_setup();  //To avoid overflow, after tft setup recommend.
 
+  // スケールリストの初期化（Google Map のズームレベルに対応する pixel/km 値）
   scalelist[0] = SCALE_EXSMALL_GMAP;  //pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT;
   scalelist[1] = SCALE_SMALL_GMAP;    //pixelsPerDegreeLat(7,35)/KM_PER_DEG_LAT;
   scalelist[2] = SCALE_MEDIUM_GMAP;   //pixelsPerDegreeLat(9,35)/KM_PER_DEG_LAT;
   scalelist[3] = SCALE_LARGE_GMAP;    //pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
   scalelist[4] = SCALE_EXLARGE_GMAP;  //pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
-  scalelist[5] = 200.0;
+  scalelist[5] = 200.0;               // 最広域（日本全体スケール）
   scale = scalelist[scaleindex];
   redraw_screen = true;
   enqueueTask(createLogSdTask("SETUP DONE"));
+
+  //under construciton.
+  //airdata_setup();
+  //airdata_test();
 }
 
 
 //===============SET UP CORE1=================
+// Core1 の初期化処理。タスクキュー・音声・SD を準備する。
+// Core0 と独立して動作し、重いSD処理・音声再生を引き受けることで
+// Core0 の描画ループをブロックしない設計になっている。
 void setup1(void) {
   Serial.begin(38400);
-  mutex_init(&taskQueueMutex);
-  init_destinations();
-  setup_sound();
+
+  #ifndef RELEASE
+    while (!Serial) {
+      delay(10);
+    }
+  #endif
+
+  mutex_init(&taskQueueMutex);  // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
+  init_destinations();           // 目的地リストを SD から読み込む
+  setup_sound();                 // スピーカー・アンプ・PWM を初期化
 
   //====core1_separate_stack = true の時、Serial.printがないとSDが動かない。詳細不明だが、消すな！
   Serial.println("");  //消すな
@@ -104,28 +144,34 @@ void setup1(void) {
   setup_sd(5);
 
   if (good_sd()) {
-    enqueueTask(createPlayWavTask("wav/opening.wav"));
+    enqueueTask(createPlayWavTask("wav/opening.wav"));     // SD 正常: 起動音を再生
   } else {
-    enqueueTask(createPlayMultiToneTask(500, 150, 10));
+    enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
   }
 }
 
 
 
 //===============MAIN LOOP CORE0=================
+// Core0 のメインループ。以下の処理を毎ループ実行する:
+//   1. ボタン状態の読み取り
+//   2. GPS データの受信・解析（gps_loop は描画中にも分散して呼ぶ）
+//   3. 画面モードに応じた描画（地図 / 設定 / GPS詳細 など）
+// gps_loop(id) の id はデバッグ用の呼び出し箇所識別子。
 void loop() {
   //switch handling
   sw_push.read();
-  gps_loop(0);
+  gps_loop(0);  // ループ先頭で GPS データを受信
 
 #ifndef RELEASE
+  // デバッグ時: PC シリアルから GPS モジュールへコマンドを転送可能
   if (Serial.available()) {
     GPS_SERIAL.write(Serial.read());
   }
 #endif
 
-
-
+  // GPS 更新や BMP ロードがなくても、一定間隔で強制再描画する
+  // （時刻表示など時間経過で変わる表示の更新保証）
   if ((millis() - screen_update_time > SCREEN_FRESH_INTERVAL)) {
     redraw_screen = true;
   }
@@ -177,14 +223,17 @@ void loop() {
       check_destination_toofar();
     }
 
-    // Called only once per second.
+    // 毎秒1回: GPS からコース更新が届いた時のみ実行する処理
     if (newcourse_arrived) {
-
-
       int ttrack = get_gps_truetrack();
-      update_degpersecond(ttrack);
-      update_tone(degpersecond);
-      update_course_warning(degpersecond);
+
+      update_degpersecond(ttrack);        // 旋回角速度 [deg/s] を更新
+      update_tone(degpersecond);          // 旋回音の音程を更新
+      update_course_warning(degpersecond); // コース逸脱警告の積算値を更新
+
+      // 針路誤差 (steer_angle) の計算:
+      // magc はナビが指示する磁気コース、-8 は機体取り付け角補正オフセット、
+      // ttrack は GPS 実測の真方位。結果を -180〜+180 に正規化する。
       steer_angle = (magc - 8) - ttrack;
       if (steer_angle < -180) {
         steer_angle += 360;
@@ -201,27 +250,31 @@ void loop() {
       redraw_screen = true;
     }
 
-    // GPSデータを受信した時と、bmpロード完了した時、両方でcallされるので毎秒二回は redraw_screen = true になる。
+    // GPS 更新と BMP ロード完了の両方で redraw_screen が立つため、
+    // 通常は毎秒 2 回程度この描画ブロックが実行される。
     if (redraw_screen) {
       float new_truetrack = get_gps_truetrack();
       double new_lat = get_gps_lat();
       double new_long = get_gps_lon();
-      set_new_location_off();
+      set_new_location_off();  // GPS の「新位置フラグ」をクリア
 
-      //画面上の方向設定
+      // 画面の上方向を設定: トラックアップ時は機首方向、ノースアップ時は 0（北）
       float drawupward_direction = new_truetrack;
       if (is_northupmode()) {
         drawupward_direction = 0;
       }
 
-      nav_update();  // MC や dist を更新する。
-      draw_header();
+      nav_update();   // 磁気コース(MC)・目的地距離(dist)を最新 GPS 位置で再計算
+      draw_header();  // ヘッダー（速度・衛星数など）を TFT に直接描画
 
       new_gmap_ready = false;
 
+      // ---- バックスクリーン（ダブルバッファ）を黒でクリア ----
+      // 描画はすべてバックスクリーンに対して行い、最後に push_backscreen() で
+      // 一括転送することでちらつきを防ぐ。
       clean_backscreen();
 
-
+      // scaleindex → Google Map ズームレベルの変換
       int zoomlevel = 0;
       if (scaleindex == 0) zoomlevel = 5;   //SCALE_EXSMALL_GMAP
       if (scaleindex == 1) zoomlevel = 7;   //SCALE_SMALL_GMAP
@@ -229,17 +282,21 @@ void loop() {
       if (scaleindex == 3) zoomlevel = 11;  //SCALE_LARGE_GMAP
       if (scaleindex == 4) zoomlevel = 13;  //SCALE_EXLARGE_GMAP
 
+      // ---- レイヤー 1: Google Map 画像（BMP）を背景として描画 ----
       bool gmap_drawed = false;
       if (gmap_loaded_active)
         gmap_drawed = draw_gmap(drawupward_direction);
 
-      // If new gps
+      // GPS 位置が変わった or ズームレベルが変わった時に新しい BMP を Core1 に要求
       if (new_gps_info || lastload_zoomlevel != zoomlevel) {
         lastload_zoomlevel = zoomlevel;
-        //If loadImagetask already running in Core1, abort.
+        // 前回のロードタスクがまだ実行中なら中断してから新タスクを追加する
         enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
       }
 
+      // ---- レイヤー 2: ベクターポリゴン地図 ----
+      // 詳細ズーム時は現在地周辺のエリア別地図を描画。
+      // 広域ズーム時は日本全体の海岸線ポリゴンを描画。
       if (scale > SCALE_SMALL_GMAP) {
         if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
           draw_Biwako(new_lat, new_long, scale, drawupward_direction, gmap_drawed);
@@ -248,18 +305,20 @@ void loop() {
         } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
           draw_Shinura(new_lat, new_long, scale, drawupward_direction);
         }
-        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
+        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);  // SD から読んだカスタム地図
       } else {
-        //near japan.
+        // 広域スケール: 日本全国の海岸線を描画
         if (check_within_latlon(20, 40, new_lat, 35, new_long, 138)) {
           draw_Japan(new_lat, new_long, scale, drawupward_direction);
         }
       }
 
-      gps_loop(4);
+      gps_loop(4);  // 描画の合間に GPS データを受信（取りこぼし防止）
 
+      // ---- レイヤー 3: 飛行軌跡 ----
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
+      // ---- レイヤー 4: 目的地ライン ----
       if (currentdestination != -1 && currentdestination < destinations_count) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
@@ -268,37 +327,40 @@ void loop() {
         else if (destination_mode == DMODE_FLYAWAY)
           draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
         else if (destination_mode == DMODE_AUTO10K) {
+          // AUTO10K: 折り返しの状態に応じて AWAY/INTO を自動切り替え
           if (auto10k_status == AUTO10K_AWAY)
             draw_flyawayfrom(destlat, destlon, new_lat, new_long, scale, drawupward_direction);
           else if (auto10k_status == AUTO10K_INTO)
             draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction, 5);
         }
       }
-      gps_loop(5);
+      gps_loop(5);  // 描画の合間に GPS データを受信
+
+      // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
       draw_compass(drawupward_direction, COLOR_BLACK);
       draw_degpersec(degpersecond);
       if (get_demo_biwako()) {
-        draw_demo_biwako();
+        draw_demo_biwako();  // 琵琶湖デモ表示（見た目や警告音などに慣れるための練習用）
       }
-      draw_km_distances(scale);
+      draw_km_distances(scale);  // 画面左下のスケールバー
 
-      draw_triangle(new_truetrack, steer_angle);
+      draw_triangle(new_truetrack, steer_angle);  // 自機位置の三角形マーカー
 
-      //10秒間 warning 表示
+      // コース警告表示（警告発報から 10 秒間だけ表示する）
       if (millis() - last_course_warning_time < 10000 && millis() > 10000) {
         draw_course_warning(steer_angle);
       }
 
       if (!gmap_drawed) {
-        draw_nogmap(scale);
+        draw_nogmap(scale);  // BMP がない時は「地図なし」インジケータを表示
       }
 
-      draw_headertext(degpersecond);
+      draw_headertext(degpersecond);  // ヘッダーに速度・コースなどのテキストを描画
       draw_map_footer();
       draw_nomapdata();
-      gps_loop(6);
-      push_backscreen();
-      draw_footer();
+      gps_loop(6);        // 描画の合間に GPS データを受信
+      push_backscreen();  // バックスクリーンを TFT に一括転送（描画完了）
+      draw_footer();      // フッターは TFT に直接描画（バックスクリーン外）
     }
   } else {
     DEBUGW_PLN(20250510, "ERR screen mode");
@@ -313,8 +375,11 @@ void loop() {
 
 
 //===============MAIN LOOP CORE1=================
+// Core1 のメインループ。タスクキューからタスクを取り出して順番に実行するディスパッチャー。
+// SD アクセス・音声再生はすべて Core1 で行い、Core0 の描画をブロックしない。
+// loop_sound() は毎ループ呼んでPWM音声の継続再生を維持する。
 void loop1() {
-  loop_sound();
+  loop_sound();  // 音声の継続再生処理（WAV 送出など）
   if (dequeueTask(&currentTask)) {
     switch (currentTask.type) {
       case TASK_SAVE_SETTINGS:
@@ -368,16 +433,19 @@ void loop1() {
 extern int max_page;  // Global variable to store maximum page number
 
 //==========BUTTON==========
-//Callback function for short press
+// 短押しコールバック: 画面モードごとに動作が変わる。
+//   MAP モード:      スケール（ズームレベル）を順番に切り替える
+//   SETTING モード:  カーソル移動 or 値のトグル変更
+//   SDDETAIL:       次のページを SD から読み込む
+//   MAPLIST/GPSDETAIL: 次のページへ
 void shortPressCallback() {
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
 
-
-  if (screen_mode == MODE_SETTING) {  //Setting mode
-    if (selectedLine == -1) {         //No active selected line.
+  if (screen_mode == MODE_SETTING) {
+    if (selectedLine == -1) {  // 値変更モードでない → カーソルを次の行へ
       cursorLine = (cursorLine + 1) % setting_size;
-    } else {
+    } else {                   // 値変更モード中 → 現在行の値をトグル
       menu_settings[selectedLine].CallbackToggle();
     }
   } else if (screen_mode == MODE_SDDETAIL) {
@@ -386,37 +454,45 @@ void shortPressCallback() {
     if (max_page <= 0)
       enqueueTask(createBrowseSDTask(0));
     else
-      enqueueTask(createBrowseSDTask(detail_page % (max_page + 1)));
+      enqueueTask(createBrowseSDTask(detail_page % (max_page + 1)));  // ページをループ
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL) {
     detail_page++;
   } else {
-    gmap_loaded_active = false;
+    // MAP モード: スケールを次のレベルに切り替える
+    gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
     scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
     scale = scalelist[scaleindex];
   }
 }
 
-// Callback function for long press
+// 長押しコールバック: 設定画面への出入り、または設定項目の確定/解除。
+// 状態遷移:
+//   MAP/他 → 長押し → SETTING 画面へ移行
+//   SETTING（未選択）→ 長押し → 現在行を「値変更モード」に入る
+//   SETTING（変更中）→ 長押し → 値変更モードを終了し確定する
 void longPressCallback() {
   redraw_screen = true;
 
   if (screen_mode != MODE_SETTING) {
+    // 設定画面以外から長押し → 設定画面へ遷移
     if (screen_mode == MODE_GPSDETAIL)
-      gps_getposition_mode();
+      gps_getposition_mode();  // GPS 詳細画面での位置取得モード解除
     screen_mode = MODE_SETTING;
     cursorLine = 0;
     selectedLine = -1;
-    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);  // 画面を白でクリア
   } else {
+    // 設定画面内での長押し
     if (selectedLine == -1 && menu_settings[cursorLine].CallbackEnter != nullptr) {
+      // CallbackEnter がある項目（サブ画面に入る項目）: Enter を実行して選択状態へ
       menu_settings[cursorLine].CallbackEnter();
       selectedLine = cursorLine;
     } else {
       if (selectedLine == -1) {
-        //Entering changing value mode.
+        // 値変更モードへ入る
         selectedLine = cursorLine;
       } else {
-        //exiting changing value mode.
+        // 値変更モードから抜ける（確定）
         if (menu_settings[cursorLine].CallbackExit != nullptr)
           menu_settings[cursorLine].CallbackExit();
         selectedLine = -1;
@@ -425,7 +501,8 @@ void longPressCallback() {
   }
 }
 
-// reset deg per second to 0.
+// 旋回角速度をリセットする。GPS 受信開始時や停止時などに呼ぶ。
+// サンプル配列を現在の真方位で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
 void reset_degpersecond() {
   float track = get_gps_truetrack();
   for (int i = 1; i < NUM_SAMPLES; i++) {
@@ -434,52 +511,60 @@ void reset_degpersecond() {
   degpersecond = 0;
 }
 
-// deg per second being updated. call this once a second.
+// 旋回角速度を更新する。毎秒1回呼ぶこと。
+// アルゴリズム: スライディングウィンドウ平均
+//   1. 新しい真方位を配列に追加
+//   2. 配列が満杯になったら連続サンプル間の差分を合計し平均を出す
+//   3. 配列を1つずらして古いサンプルを捨てる
+//   ※ 360度またぎ（例: 359→1度）を -180〜+180 に正規化して計算する
 void update_degpersecond(int true_track) {
-  // Update the truetrack value
-  // This is where you would get the new truetrack value from your sensor
   truetrack_samples[sampleIndex] = true_track;
-  // Calculate the differential if we have enough samples
+
+  // サンプルが揃ったら平均 deg/s を計算する
   if (sampleIndex >= NUM_SAMPLES - 1) {
     float totalDifference = 0;
-    // Calculate the differences between consecutive samples
     for (int i = 1; i < NUM_SAMPLES; i++) {
       float degchange = (truetrack_samples[i] - truetrack_samples[i - 1]);
+      // 360度またぎを正規化（例: -359 → +1, +359 → -1）
       if (degchange < -180) {
         degchange += 360;
       } else if (degchange > 180) {
         degchange -= 360;
       }
-      float difference = degchange;  // deg/s
-      totalDifference += difference;
+      totalDifference += degchange;
     }
-    // Calculate the average differential
     degpersecond = totalDifference / (NUM_SAMPLES - 1);
-    // Shift samples to make room for new ones
+
+    // 配列を1つ前にシフト（最古のサンプルを捨てる）
     for (int i = 1; i < NUM_SAMPLES; i++) {
       truetrack_samples[i - 1] = truetrack_samples[i];
     }
-    // Adjust the sample index to the last position
-    sampleIndex = NUM_SAMPLES - 2;
+    sampleIndex = NUM_SAMPLES - 2;  // 次回は末尾に書き込む位置に調整
   }
-  // Move to the next sample
   sampleIndex++;
 }
 
 
 
+// 目的地が 100km 以上離れている場合に警告音を鳴らす。
+// 60秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
   if (calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon) > 100.0) {
-    if (millis() - last_destination_toofar_time > 1000 * 60) {  //60sec
+    if (millis() - last_destination_toofar_time > 1000 * 60) {  // 60秒クールダウン
       last_destination_toofar_time = millis();
       enqueueTask(createPlayWavTask("wav/destination_toofar.wav", 1));
     }
   }
 }
 
-//一秒に一回まで。
+// コース逸脱の警告を管理する（毎秒1回呼ぶこと）。
+// 積算型アルゴリズム:
+//   - コースのズレ角 (steer_angle) に比例して course_warning_index を増加させる
+//   - 正しい方向に修正中はインデックスを減らす
+//   - index が 900 に達したら音声警告を発報し、30秒のクールダウンに入る
+//   - 低速・GPS ロスト時は発動しない（誤警告防止）
 void update_course_warning(float degpersecond) {
   //移動していない時,GPSロスト時は発動しない。
   if (get_gps_mps() < 2 || get_gps_numsat() == 0) {

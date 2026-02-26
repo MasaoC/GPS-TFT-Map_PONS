@@ -1,3 +1,12 @@
+// ============================================================
+// File    : navdata.h
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : ナビゲーションデータの中核ヘッダー。
+//           座標変換（Mercator投影）・距離・真方位計算の宣言、
+//           マップポリゴンデータ・目的地・飛行コースモードの定義。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 #include "settings.h"
 
 

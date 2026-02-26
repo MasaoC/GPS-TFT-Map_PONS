@@ -1,3 +1,13 @@
+// ============================================================
+// File    : navdata.cpp
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : ナビゲーション計算の実装。
+//           Mercator投影による緯度→Y座標変換、距離・真方位計算、
+//           マップポリゴンデータ実体、目的地リスト、
+//           コース・目的地モード管理（FLYINTO / FLYAWAY / AUTO10K）。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>
 
@@ -5,43 +15,59 @@
 #include "gps.h"
 
 
+// LatLonManager コンストラクタ：リングバッファのインデックスとカウントを 0 で初期化
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
 
+// magc: 現在地→目的地の磁方位（表示用）。nav_update() で毎回更新される。
 int magc = 0;
+// dest_dist: 現在地→目的地の距離 [km]。nav_update() で毎回更新される。
 float dest_dist = 0;
 
+// destination_mode: ナビモード（FLYINTO / FLYAWAY / AUTO10K）。設定画面から変更可。
 int destination_mode = DMODE_FLYAWAY;
+// auto10k_status: AUTO10K モード時のフェーズ（AWAY=折り返し前 / INTO=折り返し後）。
 int auto10k_status = AUTO10K_AWAY;
 
 
+// extramaps[]: SD カードから読み込んだ地図ポリゴンを格納する配列。
 mapdata extramaps[MAX_MAPDATAS];
+// current_id: mapdata や destination に割り当てる ID のカウンタ（100 から始まる）。
 int current_id = 100;
-int mapdata_count = 0;
+int mapdata_count = 0;  // SD から読み込んだ地図ポリゴンの数
 
+// extradestinations[]: 目的地リスト。init_destinations() で固定値を登録し、
+//                      SD ファイルから追加ロードも可能。
 mapdata extradestinations[MAX_DESTINATIONS];
-int destinations_count = 0;
-int currentdestination = -1;
+int destinations_count = 0;  // 登録済み目的地の数
+int currentdestination = -1; // 現在選択中の目的地インデックス（-1 = 未選択）
 
 
+// 起動時に固定の目的地を登録する。
+// 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ W_PILON（西パイロン）→ TAKESHIMA（竹島）
+// SHINURA（新浦安）はコメントアウト中（現時点では使用しない）。
 void init_destinations(){
   destinations_count = 0;
   currentdestination = 0;
+  // PLATHOME: 出発地（プラットフォーム）の緯度経度
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("PLATHOME");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {PLA_LAT, PLA_LON} };
   destinations_count++;
+  // N_PILON: 北パイロン（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("N_PILON");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {PILON_NORTH_LAT, PILON_NORTH_LON} };
   destinations_count++;
+  // W_PILON: 西パイロン（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("W_PILON");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {PILON_WEST_LAT, PILON_WEST_LON} };
   destinations_count++;
+  // TAKESHIMA: 竹島（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("TAKESHIMA");
   extradestinations[destinations_count].size = 1;
@@ -56,18 +82,20 @@ void init_destinations(){
 }
 
 
-// Convert degrees to radians
+// 度 → ラジアン変換（float 版。三角関数を使う前に角度を変換するユーティリティ）
 float deg2rad(float degrees) {
   return degrees * PI / 180.0;
 }
 
-
+// ラジアン → 度 変換（double 版）
 double rad2deg(double rad) {
   return rad * (180.0 / PI);
 }
 
 
-// Function to calculate distance using Haversine formula in km.
+// Haversine 式を使って 2 点間の球面距離を計算する [km]。
+// 経緯度をラジアンに変換してから Haversine 公式を適用し、
+// 地球半径（RADIUS_EARTH_KM ≒ 6371km）を掛けて距離を返す。
 double calculateDistanceKm(double lat1, double lon1, double lat2, double lon2) {
   // Convert latitude and longitude from degrees to radians
   lat1 = deg2rad(lat1);
@@ -86,22 +114,32 @@ double calculateDistanceKm(double lat1, double lon1, double lat2, double lon2) {
 }
 
 
+// 2 点間の真方位（True Course）をラジアンで返す。
+// atan2 を使った球面三角法による計算。返り値の範囲は -π ～ +π（北基準・時計回り）。
 double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2) {
   double deltaLon = lon2 - lon1;
   return atan2(sin(deltaLon) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(deltaLon));
 }
 
 
+// ナビゲーション情報を更新する（毎ループ呼ばれる）。
+// 処理内容:
+//   1. 現在の GPS 位置 → 選択中目的地 の距離（dest_dist）を Haversine 式で計算
+//   2. 目的地への真方位を求め、磁気偏角 +8° を加味して magc（表示用磁方位）を算出
+//      magc = (true_course_deg + 368) % 360  ← +368 は +8°(偏角) + 360(負値防止)
+//   3. FLYAWAY モード、または AUTO10K の AWAY フェーズ（折り返し前）では
+//      方位を 180° 反転させ「目的地から離れる方向」を示す
 void nav_update(){
   // ====Navigation.==== Distance to plathome.
   if(currentdestination != -1 && currentdestination < destinations_count){
     double destlat = extradestinations[currentdestination].cords[0][0];
     double destlon = extradestinations[currentdestination].cords[0][1];
     dest_dist = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
-    
+
     //Fly into magc
     magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
-    
+
+    // FLYAWAY または AUTO10K の AWAY フェーズでは 180° 反転（目的地から離れる方向を示す）
     if(destination_mode == DMODE_FLYAWAY || (destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_AWAY)){
       magc = (magc+180)%360;
     }
@@ -110,18 +148,34 @@ void nav_update(){
 
 
 
+// ======================================================================
+// LatLonManager — 飛行軌跡の座標をリングバッファで管理するクラス
+//
+// 内部構造:
+//   coords[]     : Coordinate（緯度・経度ペア）を格納する固定長配列（MAX_TRACK_CORDS 個）
+//   currentIndex : 次回書き込み位置（0 ～ MAX_TRACK_CORDS-1 をループ）
+//   count        : 実際に格納済みのデータ数（MAX_TRACK_CORDS を超えない）
+//
+// 最新データは currentIndex-1 の位置にあり、
+// getData(0) が最新、getData(1) がその 1 つ前 ... のように「新しい順」で取得できる。
+// ======================================================================
+
+// リングバッファに座標を 1 件追加する。
+// バッファが満杯になると最古のデータを上書きする（ループ動作）。
 void LatLonManager::addCoord(Coordinate position) {
   coords[currentIndex] = position;
-  currentIndex = (currentIndex + 1) % MAX_TRACK_CORDS;
+  currentIndex = (currentIndex + 1) % MAX_TRACK_CORDS;  // 書き込み位置を次に進める
   if (count < MAX_TRACK_CORDS) {
-    count++;
+    count++;  // バッファが満杯になるまでカウントを増やす
   }
 }
 
+// 現在格納されているデータ件数を返す
 int LatLonManager::getCount() {
   return count;
 }
 
+// デバッグ用：全座標をシリアル出力する
 void LatLonManager::printData() {
   for (int i = 0; i < count; i++) {
     DEBUG_P(20250508,"Coordinate ");
@@ -133,28 +187,37 @@ void LatLonManager::printData() {
   }
 }
 
+// バッファをクリアする（カウントとインデックスを 0 にリセット）
 void LatLonManager::reset(){
   count = 0;
   currentIndex = 0;
 }
 
+// newest_index 番目（0=最新）の座標を返す。
+// リングバッファを逆順にたどることで「最新から n 個前」のデータを O(1) で取得できる。
+// インデックスが範囲外の場合は {0,0} を返す。
 Coordinate LatLonManager::getData(int newest_index) {
   if (newest_index >= count || newest_index < 0) {
     DEBUG_PLN(20250508,"Invalid index");
     return {0, 0};
   }
+  // リングバッファを逆向きにたどる: (書き込み位置 - 1 - n) を循環インデックスで計算
   int index = (currentIndex - 1 - newest_index + MAX_TRACK_CORDS) % MAX_TRACK_CORDS;
   return coords[index];
 }
 
+// グローバルインスタンス（プロジェクト全体で共有する唯一の軌跡バッファ）
 LatLonManager latlon_manager;
 
 
-// Function to convert latitude from degrees to radians
+// 度 → ラジアン変換（double 版。Mercator 投影など高精度計算で使用）
 double deg2rad(double degrees) {
   return degrees * PI / 180.0;
 }
-// Function to calculate y-coordinate in Mercator projection
+
+// Mercator 投影で緯度を Y 座標に変換する。
+// 式: Y = ln( tan(π/4 + lat/2) )
+// 地図上の Y 方向スケーリングに使用（経度は X として線形に扱う）。
 double latitudeToMercatorY(double latitude) {
   double radLatitude = deg2rad(latitude);
   return log(tan(PI / 4.0 + radLatitude / 2.0));
@@ -164,11 +227,16 @@ double latitudeToMercatorY(double latitude) {
 
 
 
+// 2 点が指定した緯度差・経度差の範囲内にあるかを判定する。
+// 主に「現在地が地図の表示範囲に入っているか」のクイックチェックに使う。
 bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2){
   return (abs(lat1-lat2) < latdif) && (abs(lon1-lon2) < londif);
 }
 
 
+// Arduino 環境には標準 C の strdup() がないため、独自実装。
+// 引数の文字列をヒープ（new）にコピーして返す。
+// 呼び出し側は使い終わったら delete[] で解放する責任がある。
 char* strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case
     // Calculate the length of the input string
@@ -185,7 +253,9 @@ char* strdup(const char* str) {
     return dup;
 }
 
-// Static mapdata definition using a helper function
+// フラット配列（経度, 緯度, 経度, 緯度...の繰り返し）から mapdata 構造体を生成するヘルパー。
+// 引数 cords[] は "lon, lat" のペアが size 個連続した 1 次元配列を想定。
+// 内部で new を使って 2 次元配列を確保し、cords[i][0]=lon, cords[i][1]=lat に変換して格納。
 mapdata create_static_mapdata(int id, const char* name, int size, const double cords[]) {
   mapdata new_mapdata;
   new_mapdata.id = id;
@@ -193,14 +263,18 @@ mapdata create_static_mapdata(int id, const char* name, int size, const double c
   new_mapdata.size = size;
   new_mapdata.cords = new double[size][2];
   for (int i = 0; i < size; i++) {
-    new_mapdata.cords[i][0] = cords[i * 2];
-    new_mapdata.cords[i][1] = cords[i * 2 + 1];
+    new_mapdata.cords[i][0] = cords[i * 2];     // 経度
+    new_mapdata.cords[i][1] = cords[i * 2 + 1]; // 緯度
   }
   return new_mapdata;
 }
 
 
 
+// filldata[ROW_FILLDATA][COL_FILLDATA] — 琵琶湖の「塗りつぶし判定」用 2D ビットマップ。
+// 行 = 緯度方向（北→南）、列 = 経度方向（西→東）のグリッドに対応。
+// true のセルが琵琶湖の水面エリアを表し、地図描画時に湖面色で塗りつぶすために参照する。
+// (ROW_FILLDATA × COL_FILLDATA のサイズは settings.h で定義)
 const bool filldata[ROW_FILLDATA][COL_FILLDATA] = {
 false,false,false,false,false,true,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,
 false,false,false,false,true,true,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,
@@ -233,6 +307,12 @@ false,false,false,false,false,false,false,false,false,false,false,false,false,fa
 
 
 
+// ============================================================
+// 以下、地図ポリゴンの座標データ（経度, 緯度 のペアが連続するフラット配列）
+// 各配列は create_static_mapdata() に渡して mapdata 構造体に変換される。
+// ============================================================
+
+// 沖島（琵琶湖の島）の輪郭座標
 const double map_okishima_coords[] = {
   136.0769088607755, 35.21038374683805,
   136.0708233623226, 35.21241872134723,
@@ -247,6 +327,7 @@ const double map_okishima_coords[] = {
 };
 
 
+// 新浦安エリア（東京湾）の輪郭座標
 const double map_shinura_coords[] = {
   139.8946356790473,35.63477147414148,
   139.8993962764904,35.63110435074648,
@@ -281,6 +362,7 @@ const double map_shinura_coords[] = {
 };
 
 
+// 竹島（琵琶湖の島）の輪郭座標
 const double map_takeshima_coords[] = {
   136.1791589861376,35.29716068038715,
   136.1777344333285,35.29669382781091,
@@ -288,6 +370,7 @@ const double map_takeshima_coords[] = {
   136.1782442605164,35.29614077343304,
   136.1791589861376,35.29716068038715,
 };
+// 竹生島（琵琶湖の島）の輪郭座標
 const double map_chikubushima_coords[] = {
   136.1408267964406,35.41939915652542,
   136.1439237744329,35.41973966541397,
@@ -300,6 +383,7 @@ const double map_chikubushima_coords[] = {
   136.1408267964406,35.41939915652542
 };
 
+// 琵琶湖の外周輪郭座標（飛行コース表示用ポリゴン）
 const double map_biwako_coords[] = {
   136.2453288454566,35.28236467197092,
   136.2429652046184,35.28373280870955,
@@ -398,6 +482,7 @@ const double map_biwako_coords[] = {
   136.2353234416846,35.27505406888672,
   136.2453288454566,35.28236467197092
 };
+// 阪大（大阪大学・豊中キャンパス）外周の輪郭座標
 const double map_handaioutside_coords[] = {
   135.4886236527158,34.83002026530426,
 135.4889962188252,34.82469915723961,
@@ -486,6 +571,7 @@ const double map_handaioutside_coords[] = {
 135.4886236527158,34.83002026530426
 };
 
+// 阪大周辺 幹線道路（中央環状線など）の座標その1
 const double map_handaihighway_coords[] = {
   135.2919766703268,34.82837511747447,
 135.320657991067,34.82133520007292,
@@ -517,6 +603,7 @@ const double map_handaihighway_coords[] = {
 135.5826770973382,34.72666339598693,
 135.5891073948839,34.7156394011711
 };
+// 阪大周辺 幹線道路の座標その2
 const double map_handaihighway2_coords[] = {
   135.44588145832,34.7444489641071,
   135.466505306639,34.75482092807188,
@@ -534,6 +621,7 @@ const double map_handaihighway2_coords[] = {
   135.6403605373168,34.86235625685767,
   135.6509362801736,34.86817838427577
 };
+// 阪大キャンパス内部 区画1（建物・施設の輪郭）
 const double map_handaiinside1_coords[] = {
   135.5192546630597,34.82290122322834,
   135.5202608927341,34.82473714307037,
@@ -552,6 +640,7 @@ const double map_handaiinside1_coords[] = {
   135.5252446824773,34.81694258980153,
   135.5257522649573,34.81629080476041
 };
+// 阪大キャンパス内部 区画2
 const double map_handaiinside2_coords[] = {
   135.5286365645366,34.82568485125642,
   135.5273128013348,34.82549139911511,
@@ -559,6 +648,7 @@ const double map_handaiinside2_coords[] = {
   135.5254161526343,34.82517085459351,
   135.5244468888839,34.82354534706387
 };
+// 阪大キャンパス内部 区画3
 const double map_handaiinside3_coords[] = {
   135.5267331073241,34.82133387379517,
   135.5272059493836,34.82108416686005,
@@ -570,6 +660,7 @@ const double map_handaiinside3_coords[] = {
   135.5295209430969,34.81975800482471,
   135.5301028726996,34.81969461270889
 };
+// 阪大キャンパス内部 区画4
 const double map_handaiinside4_coords[] = {
   135.5298121242363,34.81706877893021,
   135.5283966354298,34.8177316121194,
@@ -595,6 +686,7 @@ const double map_handaiinside4_coords[] = {
   135.5209487140366,34.82070440413926,
   135.5203786293369,34.82175959067454
 };
+// 阪大キャンパス内部 区画5
 const double map_handaiinside5_coords[] = {
   135.5224490054155,34.81983638295585,
   135.5217425718252,34.81894459807737,
@@ -606,6 +698,7 @@ const double map_handaiinside5_coords[] = {
   135.5247054321576,34.81729110638855,
   135.5217293474069,34.81895734917615,
 };
+// 阪大周辺 鉄道路線（モノレール等）の座標
 const double map_handairailway_coords[] = {
   135.6512900479658,34.86505554647611,
   135.6261271246183,34.8558228850904,
@@ -631,6 +724,7 @@ const double map_handairailway_coords[] = {
   135.4980560274448,34.70786384018691,
   135.4985417876908,34.7048003408009
 };
+// 阪大キャンパス内 特定施設（カフェ周辺）の座標
 const double map_handaicafe_coords[] = {
   135.5221316636889,34.82304448212256,
   135.5219602001092,34.8231062484271,
@@ -643,6 +737,7 @@ const double map_handaicafe_coords[] = {
   135.5220290308307,34.82283299191694,
   135.5221316636889,34.82304448212256
 };
+// 日本本土 海岸線ポリゴン その1（主に九州・四国周辺）
 const double map_japan1_coords[] = {
   131.65979027600008, 32.47681957400005,
 131.619476759, 32.337103583000044,
@@ -743,6 +838,7 @@ const double map_japan1_coords[] = {
 131.7490340500001, 32.59406159100007,
 131.71892337300005, 32.50873444200005
 };
+// 日本本土 海岸線ポリゴン その2（主に四国・中国地方）
 const double map_japan2_coords[] = {
   134.689789259, 33.82807038000004,
 134.57937739500005, 33.76417006200006,
@@ -793,6 +889,7 @@ const double map_japan2_coords[] = {
 134.70289147200003, 33.906236070000034,
 134.6982528000001, 33.83624909100007
 };
+// 日本本土 海岸線ポリゴン その3（主に本州・近畿〜東北）
 const double map_japan3_coords[] = {
   133.422211134, 34.445013739000046,
 133.2959090500001, 34.345038153000075,
@@ -1043,6 +1140,7 @@ const double map_japan3_coords[] = {
 133.58619225400003, 34.47573476800005,
 133.5224715500001, 34.48305898600006,
 };
+// 日本本土 海岸線ポリゴン その4（主に北海道）
 const double map_japan4_coords[] = {
   145.76742597700002, 43.38727448100008,
 145.70850670700008, 43.32632070500006,
@@ -1110,22 +1208,29 @@ const double map_japan4_coords[] = {
 };
 
 
-mapdata map_shinura = create_static_mapdata(0,"Urayasu", 68-39+1, map_shinura_coords);
-mapdata map_okishima = create_static_mapdata(1,"g_Okishima", 10, map_okishima_coords);
-mapdata map_takeshima = create_static_mapdata(2,"g_Takeshima", 79-75+1, map_takeshima_coords);
-mapdata map_chikubushima = create_static_mapdata(3,"g_Chikubushima", 94-86+1, map_chikubushima_coords);
-mapdata map_biwako = create_static_mapdata(4,"Biwako", 211-116+1, map_biwako_coords);
-mapdata map_handaioutside = create_static_mapdata(5,"Handai_O", 302-218+1, map_handaioutside_coords);
-mapdata map_handaihighway = create_static_mapdata(6,"Handai_H1", 339-311+1, map_handaihighway_coords);
-mapdata map_handaihighway2 = create_static_mapdata(7,"Handai_H2", 359-345+1, map_handaihighway2_coords);
-mapdata map_handaiinside1 = create_static_mapdata(8,"Handai_I1",381-366+1 , map_handaiinside1_coords);
-mapdata map_handaiinside2 = create_static_mapdata(9,"Handai_I2",391-387+1 , map_handaiinside2_coords);
-mapdata map_handaiinside3 = create_static_mapdata(10,"Handai_I3",406-398+1 , map_handaiinside3_coords);
-mapdata map_handaiinside4 = create_static_mapdata(11,"Handai_I4", 435-413+1, map_handaiinside4_coords);
-mapdata map_handaiinside5 = create_static_mapdata(12,"Handai_I5", 452-444+1, map_handaiinside5_coords);
-mapdata map_handairailway = create_static_mapdata(13,"Handai_R", 481-459+1, map_handairailway_coords);
-mapdata map_handaicafe = create_static_mapdata(14,"Handai_C", 499-490+1, map_handaicafe_coords);
-mapdata map_japan1 = create_static_mapdata(15,"Japan1", 604-507+1, map_japan1_coords);
-mapdata map_japan2 = create_static_mapdata(16,"Japan2", 657-610+1, map_japan2_coords);
-mapdata map_japan3 = create_static_mapdata(17,"Japan3",912-665+1 , map_japan3_coords);
-mapdata map_japan4 = create_static_mapdata(18,"Japan4", 981-919+1, map_japan4_coords);
+// ============================================================
+// 各ポリゴン座標配列から mapdata 構造体を生成する。
+// create_static_mapdata(id, name, vertex_count, coords[]) の形式。
+// vertex_count は「元ファイルの行番号差 + 1」で計算されている
+//（コメントアウトされた元データの行番号が由来）。
+// 生成した変数は display_tft.cpp の描画関数から参照される。
+// ============================================================
+mapdata map_shinura       = create_static_mapdata(0,  "Urayasu",   68-39+1,    map_shinura_coords);
+mapdata map_okishima      = create_static_mapdata(1,  "g_Okishima", 10,         map_okishima_coords);
+mapdata map_takeshima     = create_static_mapdata(2,  "g_Takeshima",79-75+1,   map_takeshima_coords);
+mapdata map_chikubushima  = create_static_mapdata(3,  "g_Chikubushima",94-86+1, map_chikubushima_coords);
+mapdata map_biwako        = create_static_mapdata(4,  "Biwako",    211-116+1,   map_biwako_coords);
+mapdata map_handaioutside = create_static_mapdata(5,  "Handai_O",  302-218+1,  map_handaioutside_coords);
+mapdata map_handaihighway = create_static_mapdata(6,  "Handai_H1", 339-311+1,  map_handaihighway_coords);
+mapdata map_handaihighway2= create_static_mapdata(7,  "Handai_H2", 359-345+1,  map_handaihighway2_coords);
+mapdata map_handaiinside1 = create_static_mapdata(8,  "Handai_I1", 381-366+1,  map_handaiinside1_coords);
+mapdata map_handaiinside2 = create_static_mapdata(9,  "Handai_I2", 391-387+1,  map_handaiinside2_coords);
+mapdata map_handaiinside3 = create_static_mapdata(10, "Handai_I3", 406-398+1,  map_handaiinside3_coords);
+mapdata map_handaiinside4 = create_static_mapdata(11, "Handai_I4", 435-413+1,  map_handaiinside4_coords);
+mapdata map_handaiinside5 = create_static_mapdata(12, "Handai_I5", 452-444+1,  map_handaiinside5_coords);
+mapdata map_handairailway = create_static_mapdata(13, "Handai_R",  481-459+1,  map_handairailway_coords);
+mapdata map_handaicafe    = create_static_mapdata(14, "Handai_C",  499-490+1,  map_handaicafe_coords);
+mapdata map_japan1        = create_static_mapdata(15, "Japan1",    604-507+1,   map_japan1_coords);
+mapdata map_japan2        = create_static_mapdata(16, "Japan2",    657-610+1,   map_japan2_coords);
+mapdata map_japan3        = create_static_mapdata(17, "Japan3",    912-665+1,   map_japan3_coords);
+mapdata map_japan4        = create_static_mapdata(18, "Japan4",    981-919+1,   map_japan4_coords);

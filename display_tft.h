@@ -1,3 +1,13 @@
+// ============================================================
+// File    : display_tft.h
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : TFTディスプレイ描画モジュールのヘッダー。
+//           画面サイズ・カラー定数・座標構造体・enum定義と、
+//           マップ/コンパス/ヘッダー/フッター/設定画面など
+//           全描画関数のプロトタイプ宣言。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
 #include "settings.h"

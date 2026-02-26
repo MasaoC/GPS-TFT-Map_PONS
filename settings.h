@@ -1,12 +1,22 @@
+// ============================================================
+// File    : settings.h
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : プロジェクト全体の設定・定数・マクロ定義。
+//           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
+//           画面モード定数、バッテリー計算式など全設定の司令塔。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 //====== 設定画面 =======
 
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20251031
-#define BUILDVERSION "0.892"
+#define BUILDDATE 20260220
+#define BUILDVERSION "0.9"
+#define VERSION_TEXT "Version 6"
 
-#define PRINTREVERSEDATE_NUM 100
+#define PRINTREVERSEDATE_NUM 360
 #define DEBUG_P(date,txt)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt);
 #define DEBUG_PN(date,txt,num)  if(date >= BUILDDATE-PRINTREVERSEDATE_NUM)Serial.print(txt,num);
 #define DEBUGW_P(date,txt)  Serial.print(txt);
@@ -50,85 +60,29 @@
 
 // =====Hardware Settings =====
 
-// TFTのBL調整があれば、BRIGHTNESS_SETTING_AVAIL。また、調整に使われているトランジスタ。NPN or PNP を指定する。（画面の明るさ設定のため）
-//#define BRIGHTNESS_SETTING_AVAIL
-//#define NPN_BL
-//#define PNP_BL
-
-
-
-// Hardware Ver1,2
-/*
-#define MEDIATEK_GPS
-#define RP2040_ZERO
-#define SW_PUSH   14
-#define BATTERY_PIN 26 //A0
-#define SW_UP     10
-#define SW_DOWN   11
-#define TFT_BL     7
-#define GPS_SERIAL Serial2
-#define GPS_TX 8
-#define GPS_RX 9
-
-#define SD_RX 0
-#define SD_CS_PIN 1
-#define SD_SCK 2
-#define SD_TX 3
-#define BATTERY_MULTIPLYER(adr) (adr/4096.0*3.3*2)
-#define BAT_LOW_VOLTAGE 3.55
-*/
-
-
-
-
-// Hardware Ver3
-/*
-#define RP2040_PICO
-#define SW_PUSH 5
-#define BATTERY_PIN 26 //A0
-#define SW_UP   -1
-#define SW_DOWN -1
-#define TFT_BL  -1
-#define GPS_SERIAL Serial1
-#define GPS_TX 0
-#define GPS_RX 1
-//#define DISABLE_SD
-#define SD_RX 4    //MISO
-#define SD_CS_PIN -1
-#define SD_SCK 2
-#define SD_TX 3    //CMD MOSI
-#define BATTERY_MULTIPLYER(adr) (0.0088*adr - 0.5357)  //いろいろトラブルシュートしているうちに、Vref2.95, 分圧1/11 になった数値。
-#define BAT_LOW_VOLTAGE 3.49
-*/
-
-// Hardware Ver5
-#define SW_PUSH 26
-#define BATTERY_PIN 29 //A0
+// Hardware Ver6
+#define SW_PUSH 30//35  //30(v6 proto)
+#define BATTERY_PIN 40 //A0
 #define TFT_BL  -1
 #define GPS_SERIAL Serial1
 #define GPS_TX 0
 #define GPS_RX 1
 
+#define USB_DETECT 31
 
-#define USB_DETECT 24
-
-
-
-//#define DISABLE_SD
-//#define SD_RX 4    //MISO
 #define SD_CS_PIN -1
-//#define SD_SCK 2
-//#define SD_TX 3    //CMD MOSI
-// If you have all 4 DAT pins wired up to the Pico you can use SDIO mode
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected.
+#define SD_DETECT 8
 
 
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
 #define BAT_LOW_VOLTAGE 3.5
-#define PIN_TONE 9
-#define PIN_AMP_SD 10 //アンプシャットダウン(HIGHでON)
+
+
+#define PIN_PWMTONE 38
+#define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
 
 
 #define SIN_VOLUME 0.15f // WAVファイルの音量と合わせるために、Sin wave音の音量は下げられていますが、ここで調整可能です。0〜1.0f

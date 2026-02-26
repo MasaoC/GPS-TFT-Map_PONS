@@ -1,3 +1,13 @@
+// ============================================================
+// File    : gps.h
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : GPS受信・解析モジュールのヘッダー。
+//           衛星データ構造体(SatelliteData)、NMEAバッファ定義、
+//           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
+//           リプレイモード・デモモード切替関数も含む。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 
 #ifndef GPS_H
   #define GPS_H

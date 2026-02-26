@@ -1,3 +1,14 @@
+// ============================================================
+// File    : mysd.cpp
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : SDカード操作の実装（全処理はCore1で実行）。
+//           SdFatライブラリによるファイル読み書き、
+//           設定ファイル保存/読込、CSVフライトログ追記、
+//           Googleマップ画像(BMP)のロード、
+//           Core1タスクキューのエンキュー/デキュー管理。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
 
@@ -11,17 +22,19 @@
 #include "sound.h"
 
 #define MAX_SETTING_LENGTH 32
-#define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value + separator and newline
+#define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
 
 
-SdFat32 SD;
-bool sdInitialized = false;
-bool sdError = false;
+SdFs SD;                     // SdFat ライブラリのファイルシステムオブジェクト
+bool sdInitialized = false;  // SD カードの初期化が完了しているか
+bool sdError = false;        // SD アクセス中にエラーが発生したか
 #define LOGFILE_NAME "log.txt"
 
-unsigned long lasttrytime_sd = 0;
-bool headerWritten = false;
-int fileyear = 0;
+unsigned long lasttrytime_sd = 0; // SD エラー時の最後の再試行時刻（10秒ごとにリトライする）
+bool headerWritten = false;       // CSV ファイルにヘッダ行を書いたか（1フライト1回だけ書く）
+
+// CSV ファイル名の生成に使う起動時の日時（初回書き込み時に確定する）
+int fileyear = 0;//意図的に0で初期化して、最初のGPS時刻取得時に確定させる。変えるな。
 int filemonth;
 int fileday;
 int filehour;
@@ -29,13 +42,21 @@ int fileminute;
 int filesecond;
 
 
-
-mutex_t sdMutex;
-volatile bool core0NeedsAccess = false;
-volatile bool abortTask = false;
-TaskQueue taskQueue;
-mutex_t taskQueueMutex;
-Task currentTask;
+// ============================================================
+// Core0↔Core1 間タスクキュー（ミューテックス保護）
+//
+// Core0（表示・GPS・ボタン）から Core1（SD・音声）へ
+// 非同期で処理を依頼するためのリングバッファ。
+//   - enqueueTask(): Core0 がタスクを積む
+//   - dequeueTask(): Core1 がタスクを取り出して実行
+//   - taskQueueMutex でアトミック操作を保証
+// ============================================================
+mutex_t sdMutex;                   // SD カードアクセス排他制御用（現在は主に legacy）
+volatile bool core0NeedsAccess = false;  // 予約（将来の双方向アクセス用）
+volatile bool abortTask = false;   // 実行中タスクに中断を要求するフラグ（ズームレベル変更時など）
+TaskQueue taskQueue;               // タスクのリングバッファ本体
+mutex_t taskQueueMutex;            // タスクキューへのアクセスを保護するミューテックス
+Task currentTask;                  // Core1 が現在実行中のタスク（isTaskRunning() で参照）
 
 
 void load_mapimage(double center_lat, double center_lon,int zoomlevel);
@@ -45,13 +66,25 @@ void dateTime(uint16_t* date, uint16_t* time);
 
 
 
-//====================SD settings.txt=========
-// Array of settings (extend this as needed)
+// ============================================================
+// SD カード設定ファイル（settings.txt）の管理
+//
+// ファイル形式: テキスト、1 行に 1 項目、"id:value\n" の形式
+//   例:
+//     volume:50
+//     destination:PLATHOME
+//     navigation_mode:INTO
+//     scaleindex:2
+//
+// SDSetting 構造体が id（識別子文字列）と setter/getter を持ち、
+// loadSettings() / saveSettings() がこのテーブルを走査して一括処理する。
+// 新しい設定項目を追加するときはこの配列に 1 行追加するだけでよい。
+// ============================================================
 SDSetting settings[] = {
-  {"volume", setVolume, getVolume},
-  {"destination", setDestination, getDestination},
+  {"volume",          setVolume,         getVolume},
+  {"destination",     setDestination,    getDestination},
   {"navigation_mode", setNavigationMode, getNavigationMode},
-  {"scaleindex", setScaleIndex, getScaleIndex}
+  {"scaleindex",      setScaleIndex,     getScaleIndex}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -61,10 +94,12 @@ extern double scalelist[6];
 extern double scale;
 
 
-// Save all settings to settings.txt
+// 全設定を settings.txt に保存する。
+// 一度ファイルを削除してから新規書き込みすることで、
+// 古い項目が残らないようにしている。
 bool saveSettings() {
-  SD.remove("settings.txt"); // Remove old file to start fresh
-  File32 file = SD.open("settings.txt", FILE_WRITE);
+  SD.remove("settings.txt"); // 古いファイルを消してから書き直す
+  FsFile file = SD.open("settings.txt", FILE_WRITE);
   if (!file) {
     DEBUGW_PLN(20250401,"Failed to open settings.txt for writing");
     return false;
@@ -85,9 +120,11 @@ bool saveSettings() {
 }
 
 
-// Load settings from settings.txt
+// settings.txt から設定を読み込み、各 setter を呼んで反映する。
+// ファイルを 1 文字ずつ読んで行を組み立て、"id:value" 形式でパースする。
+// ファイル末尾に改行がない場合も処理できるよう、ループ後に残余バッファをチェックする。
 bool loadSettings() {
-  File32 file = SD.open("settings.txt", FILE_READ);
+  FsFile file = SD.open("settings.txt", FILE_READ);
   if (!file) {
     ("Failed to open settings.txt for reading");
     return false;
@@ -155,7 +192,13 @@ bool loadSettings() {
 
 
 
-// Example setter and getter functions
+// ============================================================
+// 設定項目ごとの setter / getter の実装
+// setter: 文字列を受け取り、該当するグローバル変数に変換・格納する。
+// getter: グローバル変数を文字列に変換して buffer に書き込む。
+// ============================================================
+
+// 音量: 文字列を int に変換して sound_volume に反映
 void setVolume(const char* value) {
   sound_volume = atoi(value);
   DEBUG_P(20250508,"Set volume to: ");
@@ -166,6 +209,7 @@ void getVolume(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", sound_volume);
 }
 
+// ナビゲーションモード: "INTO" / "AWAY" / "AUTO10K" を destination_mode 定数に変換
 void setNavigationMode(const char *value){
   if(strcmp(value,"INTO") == 0){
     destination_mode = DMODE_FLYINTO;
@@ -191,6 +235,8 @@ void getNavigationMode(char* buffer, size_t bufferSize) {
   buffer[bufferSize - 1] = '\0';
 }
 
+// 目的地: 名前で extradestinations を線形探索して currentdestination インデックスを設定する。
+// 見つからない場合はエラーログを残す。
 void setDestination(const char* value) {
   for(int i = 0; i < destinations_count; i++){
     if(strcmp(extradestinations[i].name,value) == 0){
@@ -230,13 +276,14 @@ void getDestination(char* buffer, size_t bufferSize) {
 }
 
 
+// 現在 Core1 が実行中のタスクが指定タイプかを確認する
 bool isTaskRunning(int taskType) {
   return currentTask.type == taskType;
 }
 
+// キュー内に指定タイプのタスクが存在するかを確認する（head〜tail を線形探索）
 bool isTaskInQueue(int taskType){
     int current = taskQueue.head;
-    // Iterate from head to tail-1
     while (current != taskQueue.tail) {
         if (taskQueue.tasks[current].type == taskType) {
             return true;
@@ -246,6 +293,15 @@ bool isTaskInQueue(int taskType){
     return false;
 }
 
+// ============================================================
+// タスク生成ファクトリ関数（create〜Task）
+//
+// 各タスクは Task 構造体として表現され、
+// type フィールドで種別を識別し、union のフィールドで引数を渡す。
+// Core0 がこれらを呼んで enqueueTask() に渡し、Core1 がデキューして実行する。
+// ============================================================
+
+// 設定ファイル保存タスクを生成する
 Task createSaveSettingTask(){
   Task task;
   task.type = TASK_SAVE_SETTINGS;
@@ -253,7 +309,7 @@ Task createSaveSettingTask(){
 }
 
 
-// Initializer for TASK_LOG_SD
+// テキストをログファイルに書き込むタスクを生成する
 Task createLogSdTask(const char* logText) {
   Task task;
   task.type = TASK_LOG_SD;
@@ -261,7 +317,7 @@ Task createLogSdTask(const char* logText) {
   return task;
 }
 
-// Initializer for TASK_LOG_SDF
+// printf 形式のフォーマット文字列でログタスクを生成する（可変引数対応）
 Task createLogSdfTask(const char* format, ...) {
   Task task;
   task.type = TASK_LOG_SDF;
@@ -274,7 +330,7 @@ Task createLogSdfTask(const char* format, ...) {
 }
 
 
-// Initializer for TASK_SAVE_CSV
+// 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
 Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second) {
   Task task;
   task.type = TASK_SAVE_CSV;
@@ -294,7 +350,7 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, fl
   return task;
 }
 
-// Initializer for TASK_LOAD_MAPIMAGE
+// Google マップ BMP 画像の読み込みタスクを生成する（中心座標とズームレベルを指定）
 Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel) {
   Task task;
   task.type = TASK_LOAD_MAPIMAGE;
@@ -344,18 +400,19 @@ Task createInitReplayTask(){
 }
 
 
+// キュー内の指定タイプのタスクを全て除去する（重複防止用）。
+// in-place 削除: read ポインタで走査し、対象でない要素だけ write 位置に詰める。
 void removeDuplicateTask(TaskType type) {
     mutex_enter_blocking(&taskQueueMutex);
 
     if (taskQueue.head == taskQueue.tail) {
         mutex_exit(&taskQueueMutex);
-        return;
+        return;  // キューが空
     }
 
     int read = taskQueue.head;
     int write = taskQueue.head;
 
-    // Loop through the queue from head to tail
     while (read != taskQueue.tail) {
         if (taskQueue.tasks[read].type != type) {
             if (write != read) {
@@ -366,41 +423,48 @@ void removeDuplicateTask(TaskType type) {
         read = (read + 1) % TASK_QUEUE_SIZE;
     }
 
-    taskQueue.tail = write;
-
+    taskQueue.tail = write;  // 新しい末尾位置（削除後）
     mutex_exit(&taskQueueMutex);
 }
 
+// 中断チェック付きでタスクをキューに追加する。
+// 地図画像ロード (TASK_LOAD_MAPIMAGE) に特化した特殊処理を行う:
+//   - 同じズームレベルの地図を既にロード中なら、重複追加しない（待つ）
+//   - ズームレベルが変わった場合は abortTask フラグを立てて現在のロードを中断し、
+//     キュー内の重複を削除して新しいタスクを追加する
 void enqueueTaskWithAbortCheck(Task newTask) {
-  if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
+  if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {
     if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
-      //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.
+      // 同じズームの地図を既にロード中 → 重複追加しない
       DEBUGW_P(20250429,"NOT enque the task:");
       DEBUGW_PLN(20250429,newTask.type);
       return;
     }
-    
-    // Abort the old task with different zoomlevel = meaning user changed zoom level while loading image.
-    abortTask = true;  // Notify the running task to abort
+    // ズームレベルが変わった → 実行中のロードを中断して新しいタスクを優先する
+    abortTask = true;
   }
-  removeDuplicateTask(newTask.type);
-  enqueueTask(newTask);  // Enqueue the new task
+  removeDuplicateTask(newTask.type);  // キュー内の同種タスクを削除してから追加
+  enqueueTask(newTask);
 }
 
+// タスクをリングバッファに追加する（ミューテックス保護）。
+// バッファが満杯の場合は追加せずにスキップする（タスクロスト）。
 void enqueueTask(Task task) {
   mutex_enter_blocking(&taskQueueMutex);
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
-  if (nextTail != taskQueue.head) {  // Queue not full
+  if (nextTail != taskQueue.head) {  // キューに空きがある場合だけ追加
     taskQueue.tasks[taskQueue.tail] = task;
     taskQueue.tail = nextTail;
   }
   mutex_exit(&taskQueueMutex);
 }
 
+// タスクをリングバッファから取り出す（ミューテックス保護）。
+// 取り出せた場合は *task に格納して true を返す、空なら false を返す。
 bool dequeueTask(Task* task) {
   bool success = false;
   mutex_enter_blocking(&taskQueueMutex);
-  if (taskQueue.head != taskQueue.tail) {  // Queue not empty
+  if (taskQueue.head != taskQueue.tail) {  // キューが空でない
     *task = taskQueue.tasks[taskQueue.head];
     taskQueue.head = (taskQueue.head + 1) % TASK_QUEUE_SIZE;
     success = true;
@@ -409,7 +473,8 @@ bool dequeueTask(Task* task) {
   return success;
 }
 
-//
+// mapdata.csv の 1 行を解析して extramaps[] に追加する。
+// CSV 形式: "ポリゴン名,頂点数,lon1,lat1,lon2,lat2,..."
 void process_mapcsv_line(String line) {
   int index = 0;
   int commaIndex = line.indexOf(',');
@@ -448,6 +513,8 @@ void process_mapcsv_line(String line) {
 }
 
 
+// destinations.csv の 1 行を解析して extradestinations[] に追加する。
+// CSV 形式: "目的地名,lon,lat"（頂点は 1 点だけ）
 void process_destinationcsv_line(String line) {
   int index = 0;
   int commaIndex = line.indexOf(',');
@@ -482,16 +549,15 @@ void process_destinationcsv_line(String line) {
   destinations_count++;
 }
 
+// SD カードの mapdata.csv から地図ポリゴンを読み込み extramaps[] に格納する。
+// メモリリーク防止のため 1 回だけ実行する（mapdatainitialized フラグで管理）。
 bool mapdatainitialized = false;
 void init_mapdata() {
-  #ifdef DISABLE_SD
-    return;
-  #endif
   if(mapdatainitialized){
     DEBUG_PLN(20241006,"Map already initialized.");
-    return;//only once to avoid possible memory leak.
+    return; // 2 回目以降はスキップ（重複ロードによるメモリリークを防ぐ）
   }
-  File32 myFile = SD.open("mapdata.csv");
+  FsFile myFile = SD.open("mapdata.csv");
   if (!myFile) {
     return;
   }
@@ -507,8 +573,10 @@ void init_mapdata() {
 }
 
 
+// SD カードの destinations.csv から目的地を読み込み extradestinations[] に追加する。
+// init_destinations() で固定目的地を登録した後に呼ぶことで、SD 側の追加目的地を上書きせず後ろに追加できる。
 void load_destinations(){
-  File32 myFile = SD.open("destinations.csv");
+  FsFile myFile = SD.open("destinations.csv");
   if (!myFile) {
     return;
   }
@@ -522,6 +590,10 @@ void load_destinations(){
   myFile.close();
 }
 
+// SD カードを初期化し、地図・目的地・設定を読み込む。
+// trycount: 初期化を試みる最大回数。失敗時は 100ms 待って再試行する。
+// 成功時: FAT タイムスタンプコールバック登録 → ログ記録 → init_mapdata / load_destinations / loadSettings を実行。
+// 失敗時: sdInitialized=false のまま処理を戻す（Core1 タスクはエラーをユーザーに報告する）。
 void setup_sd(int trycount){
   for(int i = 0; i < trycount; i++){
     sdInitialized = SD.begin(SdioConfig(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO));
@@ -530,8 +602,11 @@ void setup_sd(int trycount){
     delay(100);
   }
   DEBUG_PLN(20250508, "SUCCESS SD setup");
-  
+
   if (!sdInitialized) {
+    DEBUG_P(20260208, "SD setup failed ");
+    DEBUG_P(20260208, trycount);
+    DEBUG_P(20260208, "times");
     return;
   }else{
     sdError = false;
@@ -546,21 +621,34 @@ void setup_sd(int trycount){
   }
 }
 
-char replay_nmea[128];
-volatile unsigned long replay_seekpos = 0;
-volatile bool loaded_replay_nmea = false;
-unsigned long replay_start_time = 0;
+// ===== リプレイ再生用変数 =====
+char replay_nmea[128];            // 読み込んだ NMEA 文字列を格納するバッファ
+volatile unsigned long replay_seekpos = 0;  // replay.csv の次回読み込み位置（バイトオフセット）
+volatile bool loaded_replay_nmea = false;   // 新しい NMEA データが用意できたかどうかのフラグ
+unsigned long replay_start_time = 0;        // 再生開始時刻（millis()）。タイムスタンプとの比較基準
 
+// リプレイ再生を先頭から再開するために変数をリセットする。
+// replay.csv の先頭から読み直し、再生経過時間を 0 にする（ファイル末尾到達時にもループ再生に利用）。
 void init_replay(){
   replay_start_time = millis();
   replay_seekpos = 0;
 }
 
 
+// replay.csv から現在の再生経過時間に対応する NMEA 文を 1 行読み込む。
+// フォーマット: time_ms,"NMEA_SENTENCE"\n （例: 1500,"$GNRMC,..."）
+//
+// 動作フロー:
+//   1. millis() - replay_start_time で現在の再生経過時間(ms)を求める。
+//   2. replay_seekpos から読み始め、タイムスタンプが経過時間以内の行を探す。
+//   3. 見つかれば replay_nmea[] に NMEA 文字列をコピーし loaded_replay_nmea=true にする。
+//   4. タイムスタンプが経過時間を超えていたら「まだ早い」として待機（loaded_replay_nmea=false）。
+//   5. ファイル末尾に達したら init_replay() でループ再生に戻る。
+// gps.cpp 側は loaded_replay_nmea を監視して replay_nmea を GPS パーサに送る。
 void load_replay() {
   unsigned long timems = millis() - replay_start_time;
 
-  File32 myFile = SD.open("replay.csv");
+  FsFile myFile = SD.open("replay.csv");
   if (!myFile) {
     loaded_replay_nmea = false;
     return;
@@ -629,10 +717,19 @@ void load_replay() {
   myFile.close();
 }
 
-char sdfiles[20][32]; 
-int sdfiles_size[20]; 
-int max_page = -1;
+// ===== SD ブラウザ用変数 =====
+char sdfiles[20][32];  // 現在のページに表示するファイル/フォルダ名（最大20エントリ）。フォルダは先頭に'/'を付与
+int sdfiles_size[20];  // 対応するファイルのサイズ（バイト）。フォルダは 0
+int max_page = -1;     // SD ルートの総ファイル数から計算した最大ページ番号（0-based）
+
 extern bool loading_sddetail;
+
+// SD カードのルートディレクトリをページ単位で列挙し sdfiles[] に格納する。
+// page: 0-based のページ番号。1 ページあたり最大 20 エントリ。
+// 戻り値: エントリが 1 件以上あれば true、ゼロまたはエラーなら false。
+// - 隠しファイル（'.'または"/."で始まるもの）はスキップする（macOS の ._ ファイル除外）。
+// - フォルダは名前の先頭に '/' を付けて区別する。
+// - 処理完了後に loading_sddetail=false をセットし、表示側に完了を通知する。
 bool browse_sd(int page) {
     // Input validation
     if (page < 0) {
@@ -647,9 +744,10 @@ bool browse_sd(int page) {
     }
 
 
-    File32 root = SD.open("/");
+    FsFile root = SD.open("/");
     if (!root || !root.isDirectory()) {
         DEBUGW_PLN(20250508,"Failed to open root directory");
+
         if (root) root.close();
         return false;
     }
@@ -660,7 +758,7 @@ bool browse_sd(int page) {
 
     // Process all entries
     while (true) {
-        File32 entry = root.openNextFile();
+        FsFile entry = root.openNextFile();
         if (!entry) break;
 
         // Skip hidden files and macOS-specific files starting with "." or "/."
@@ -716,6 +814,10 @@ bool browse_sd(int page) {
 
 
 
+// SdFat ライブラリのファイルタイムスタンプコールバック関数。
+// setup_sd() 内で SdFile::dateTimeCallback(dateTime) として登録しておくと、
+// ファイル作成・更新時にこの関数が呼ばれて FAT タイムスタンプが書き込まれる。
+// fileyear 等は saveCSV() 内で GPS 時刻が最初に取得された瞬間に初期化される。
 void dateTime(uint16_t* date, uint16_t* time) {
  // return date using FAT_DATE macro to format fields
  *date = FAT_DATE(fileyear, filemonth, fileday);
@@ -732,19 +834,19 @@ void dateTime(uint16_t* date, uint16_t* time) {
 
 
 
+// SD カードが正常に使用できる状態かどうかを返す。
+// sdInitialized（初期化成功）かつ sdError（書き込みエラーなし）の両方が満たされているとき true。
 bool good_sd(){
   return sdInitialized && !sdError;
 }
 
 
+// log.txt に「起動からの経過秒:テキスト」の形式で 1 行追記する。
+// 書き込み失敗時は sdError=true にして以降の書き込みを無効化する。
 void log_sd(const char* text){
-  #ifdef DISABLE_SD
-    return;
-  #endif
-
-  File32 logFile = SD.open("log.txt", FILE_WRITE);
+  FsFile logFile = SD.open("log.txt", FILE_WRITE);
   if(!logFile){
-    DEBUGW_PLN(20250508,"ERR LOG");
+    DEBUGW_PLN(20250508,"ERR LOG. SD FAIL");
     sdError = true;
     return;
   }
@@ -760,11 +862,9 @@ void log_sd(const char* text){
 }
 
 
+// printf 書式でフォーマットした文字列を log.txt に追記する。
+// 内部で vsnprintf によりバッファに文字列化してから log_sd() を呼ぶ。最大 256 バイト。
 void log_sdf(const char* format, ...){
-  #ifdef DISABLE_SD
-    return;
-  #endif
-
   char buffer[256]; // Temporary buffer for formatted text
   va_list args;
   va_start(args, format);
@@ -773,11 +873,14 @@ void log_sdf(const char* format, ...){
   return log_sd(buffer);
 }
 
+// GPS の飛行データを CSV ファイルに 1 行追記するフライトログ関数。
+// 列: latitude, longitude, gs(m/s), TrueTrack(°), Altitude(m), numsat, voltage, date, time
+//
+// ファイル名は最初に GPS 時刻が取得された瞬間に確定し、
+// 以降は同じファイルに追記し続ける（例: 2025-05-08_1230.csv）。
+// ヘッダ行は headerWritten フラグで 1 回だけ書く。
+// SD エラー時は 10 秒ごとに setup_sd(1) でリトライを試みる。
 void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
-  #ifdef DISABLE_SD
-    return;
-  #endif
-
   if (!sdInitialized && !sdError) {
     sdInitialized = SD.begin(SD_CS_PIN);
     if (!sdInitialized) {
@@ -807,7 +910,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
   char csv_filename[30];
   sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
 
-  File32 csvFile = SD.open(csv_filename, FILE_WRITE);
+  FsFile csvFile = SD.open(csv_filename, FILE_WRITE);
 
   if (csvFile) {
     if(!headerWritten){
@@ -851,7 +954,10 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
   }
 }
 
-// Define BMP header structures
+// ===== BMP ファイルヘッダー構造体 =====
+// Windows Bitmap（BMP）のバイナリ構造に対応した構造体定義。
+// BITMAPFILEHEADER と BITMAPINFOHEADER を分けて定義し、SdFat の read() で直接読み込む。
+// このプロジェクトでは 640×640 ピクセル、16-bit RGB565 の BMP を前提としている。
 struct bmp_file_header_t {
   uint16_t signature;       // 2 bytes: should be 'BM'
   uint32_t file_size;       // 4 bytes: total file size
@@ -876,39 +982,75 @@ struct bmp_image_header_t {
 
 
 
-// Warning Only applicable at equator.
+// ⚠️ 赤道上のみで正確。緯度補正なし。
+// 指定ズームレベルでの 1 経度度あたりのピクセル数を返す（赤道基準）。
+// Google Maps タイル仕様: ズーム0で全世界が 256px の 1 タイルに収まり、
+// ズームが 1 増えるごとにピクセル数は 2 倍になる（256 * 2^zoom / 360）。
 double pixelsPerDegreeEQ(int zoom) {
   // Google Maps API approximation: pixels per degree at the given zoom level
   // Zoom 5 is used as the base reference in this example
   return 256 * pow(2, zoom) / 360.0;
 }
 
-// Warning Only applicable at equator.
+// ⚠️ 赤道上のみで正確。緯度補正なし。
+// 指定ズームレベルでの 1km あたりのピクセル数を返す（赤道基準）。
+// 単位変換: px/deg ÷ km/deg = px/km （KM_PER_DEG_LAT ≈ 111.0 km/deg）
 double pixelsPerKMEQ_zoom(int zoom){
   return pixelsPerDegreeEQ(zoom)/KM_PER_DEG_LAT;//px/deg / (km/deg) = px /km
 }
 
+// 指定緯度・ズームレベルでの緯度方向 1 度あたりのピクセル数を返す。
+// Mercator 投影では高緯度ほど地図が伸びる（1 度あたりのピクセルが増える）。
+// cos(latitude) で赤道基準値を現地スケールに補正する。緯度 90° に近づくと無限大になるため注意。
 double pixelsPerDegreeLat(int zoom,double latitude) {
   // Calculate pixels per degree for latitude
   return pixelsPerDegreeEQ(zoom) / cos(radians(latitude)); // Reference latitude
 }
 
 
-// Function to round a value to the nearest 5 degrees
+// 値 value を x 度単位のグリッドに丸める汎用ユーティリティ。
+// 地図ファイル名に使うグリッド座標の計算に使用する。
+// 例: roundToNearestXDegrees(0.2, 35.123) → 35.0（zoom11 の 0.2° グリッド）
 double roundToNearestXDegrees(double x, double value) {
   return round(value / x) * x;
 }
 
+// ===== 地図スプライト管理変数 =====
+// gmap_sprite     : 240×240 ピクセルの地図画像を保持する TFT スプライト（描画バッファ）。
+// gmap_loaded_active : スプライトに有効な地図データが入っているかどうか（display_tft.cpp が参照）。
+//                     BMP 読み込み中は false に落とし、完了後に true にする。
+// new_gmap_ready  : 新しい地図データが準備できたことを display_tft.cpp に通知するフラグ。
+// lastsprite_id   : 現在スプライトに読み込まれている BMP の識別子文字列
+//                   （ズームレベル + 座標 × 100 + start_x/y を連結した文字列）。
+// last_start_x/y  : 前回の地図切り出し開始座標（スクロール差分計算に使う）。
 TFT_eSprite gmap_sprite = TFT_eSprite(&tft);
-bool init_gmap = false;
 volatile bool gmap_loaded_active = false;
 volatile bool new_gmap_ready = false;
 char lastsprite_id[20] = "\0";
 int last_start_x,last_start_y = 0;
 
+// 指定した緯度・経度・ズームレベルに対応する BMP ファイルを SD から読み込み、
+// gmap_sprite に 240×240 ピクセルの地図画像として展開する。
+//
+// ファイル名規則: z{zoom}/{lat*100}_{lon*100}_z{zoom}.bmp
+//   例: z13/3512_13570_z13.bmp  → zoom=13, lat=35.12°, lon=135.70°
+//
+// ズームレベルとグリッド間隔（BMP 1 枚がカバーする度数）の対応:
+//   zoom5=12°, zoom7=3°, zoom9=0.8°, zoom11=0.2°, zoom13=0.05°
+//
+// 【スクロール最適化】
+//   同一 BMP ファイルを使いつつ中心座標が少しずれた場合（start_x/y の変化のみ）、
+//   スプライトを scroll() でシフトし、露出した端の列/行だけを BMP から差分再読み込みする。
+//   全ピクセル再読み込みを避けることで SD 読み込み時間を大幅に短縮できる。
+//
+// 【中断対応】
+//   abortTask フラグが true になるとピクセルループを途中で抜ける。
+//   BMP 読み込み中は gmap_loaded_active=false にし、完了後に true に戻す。
 void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   DEBUG_PLN(20250417,"load mapimage begin");
-  //Setting up resolution of bmp image according to zoomlevel.
+  // ズームレベルに対応したグリッド間隔（度数）を決定する。
+  // BMP ファイル 1 枚が round_degrees 度単位のグリッドに配置されているため、
+  // center_lat/lon を round_degrees 単位に丸めて対応するファイルを特定する。
   double round_degrees = 0.0;
   if(zoomlevel == 5) round_degrees = 12.0;
   else if(zoomlevel == 7) round_degrees = 3.0;
@@ -923,17 +1065,24 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   }
 
   double map_lat,map_lon;
-  // Round latitude and longitude to the nearest 5 degrees
+  // BMP ファイルの基準座標（グリッドに丸めた lat/lon）を算出する
   map_lat = roundToNearestXDegrees(round_degrees, center_lat);
   map_lon = roundToNearestXDegrees(round_degrees, center_lon);
-  
-  // Calculate pixel coordinates for given latitude and longitude
+
+  // BMP 画像（640×640px）の中心が map_lat/map_lon に対応するため、
+  // center_lat/lon の差分をピクセルオフセットに変換して BMP 上の現在位置を求める。
+  // BMP の中心は (320, 320)。緯度方向は上が北なので符号が負になる。
   int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegreeEQ(zoomlevel));
   int center_y = (int)(320.0 - (center_lat - map_lat) * pixelsPerDegreeLat(zoomlevel,center_lat));
-  // Calculate top-left corner of 240x240 region
+  // TFT 画面（240×240）は BMP の一部を切り出して表示する。
+  // start_x/y は BMP 上の切り出し左上座標（現在位置が画面中央になるよう計算）。
   int start_x = center_x - 120;
   int start_y = center_y - 120;
 
+  // スプライト識別子を生成する。
+  // フォーマット: "zoom(2桁) + lat*100(4桁) + lon*100(5桁) + start_x(3桁) + start_y(3桁)"
+  // 同じ識別子なら既にスプライトが最新状態なのでスキップできる。
+  // 最初の 11 文字（zoom+lat+lon）が一致すれば同一 BMP ファイルを示す（スクロール判定に使う）。
   char current_sprite_id[36];
   int maplat4 = round(map_lat*100);
   int maplon5 = round(map_lon*100);
@@ -950,7 +1099,9 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     return;
   }
   
-  //Check to scroll bmp
+  // 識別子の先頭 11 文字（ズーム+緯度+経度）が一致するか確認する。
+  // 一致 → 同じ BMP ファイルで切り出し位置だけが変わった（スクロール可能）。
+  // 不一致 → 異なる BMP ファイルが必要（全面再描画）。
   bool samefile = true;
   for(int i = 0; i< 11; i++){
     if(current_sprite_id[i] != lastsprite_id[i]){
@@ -960,7 +1111,8 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   }
   int scrollx = 0;
   int scrolly = 0;
-  //If exact same file already loaded.
+  // 同一 BMP かつ既に読み込み済みの場合のみ差分スクロール計算を行う。
+  // scrollx/y はスプライトをシフトするピクセル量。正なら右/下へ移動。
   if(samefile && gmap_loaded_active){
     scrollx = (start_x-last_start_x);
     scrolly = (start_y-last_start_y);
@@ -973,7 +1125,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
 
 
   // Open BMP file
-  File32 bmpImage = SD.open(filename, FILE_READ);
+  FsFile bmpImage = SD.open(filename, FILE_READ);
   if (!bmpImage) {
     gmap_loaded_active = false;
     return;
@@ -1022,19 +1174,21 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   }
   int tloadbmp_start = millis();
 
-  //From nowon, gmap under edit. so unload gmap.
+  // この時点からスプライトの書き換えが始まるため、表示側が参照しないよう gmap_loaded_active を落とす。
   gmap_loaded_active = false;
 
-  //Scroll
+  // ===== スクロール差分描画 =====
+  // scrollx/y が 0 以外なら同一 BMP の切り出し位置がずれた → スクロール最適化を使う。
   if(scrollx != 0 || scrolly != 0){
-    //gmap_sprite is already loaded.
-    // Step 1: Horizontal Scroll
-
+    // スプライトは既にロード済みなので、scroll() でシフトして端だけ補充する。
+    // Step 1: 水平スクロール
+    // scroll(-scrollx, 0) でスプライトを左右にシフトし、露出した縦帯を BMP から読み込む。
     if (scrollx != 0) {
         gmap_sprite.setScrollRect(0, 0, 240, 240);
         gmap_sprite.scroll(-scrollx, 0);
 
-        // Horizontal filling
+        // 水平補充: スクロール後に露出した縦帯の x 範囲を決める。
+        // scrollx > 0（右へ移動）→ 右端が露出。scrollx < 0（左へ移動）→ 左端が露出。
         int x_start = scrollx > 0 ? 240 - scrollx : 0;
         int x_end = scrollx > 0 ? 240 : -scrollx;
 
@@ -1056,11 +1210,13 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
         }
     }
 
-    // Step 2: Vertical Scroll
+    // Step 2: 垂直スクロール
+    // scroll(0, -scrolly) でスプライトを上下にシフトし、露出した横帯を BMP から読み込む。
     if (scrolly != 0) {
         gmap_sprite.scroll(0, -scrolly);
 
-        // Vertical filling
+        // 垂直補充: スクロール後に露出した横帯の y 範囲を決める。
+        // scrolly > 0（下へ移動）→ 下端が露出。scrolly < 0（上へ移動）→ 上端が露出。
         int y_start = scrolly > 0 ? 240 - scrolly : 0;
         int y_end = scrolly > 0 ? 240 : -scrolly;
 
@@ -1089,14 +1245,16 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     DEBUG_P(20240815,millis()-tloadbmp_start);
     DEBUG_PLN(20240815,"ms");
   }
-  // scrollx and scrolly is zero = New file loading.
+  // scrollx/y がともに 0 = 新しい BMP ファイルを全面読み込みする。
+  // BMP は bottom-up 格納（row 0 が画像の最下行）なので、
+  // seek 計算で行を逆順に参照する: row = (640 - bmp_y - 1)。
   else{
-    
     for (int y = 0; y < 240; y++) {
       if(abortTask)
         break;
       int bmp_y = start_y + y;
       if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
+      // BMP の该当行の start_x 列目にシーク
       bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2);
       for (int x = 0; x < 240; x++) {
         int bmp_x = start_x + x;
@@ -1115,6 +1273,8 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   
   bmpImage.close();
   
+  // abortTask が立っていた場合は中断扱いとし、スプライトを無効にして終了する。
+  // display_tft.cpp 側は gmap_loaded_active=false のままなのでこのスプライトは使わない。
   if(abortTask){
     DEBUG_PLN(20240828,"aborted task! gmap unloaded");
     gmap_loaded_active = false;
@@ -1122,6 +1282,8 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     return;
   }
 
+  // 正常完了: 切り出し位置を記憶して次回のスクロール差分計算に備える。
+  // new_gmap_ready=true で display_tft.cpp に「新しい地図が使える」ことを通知する。
   last_start_x = start_x;
   last_start_y = start_y;
   gmap_loaded_active = true;
@@ -1132,14 +1294,19 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
 
 
 
+// SD カードの logo.bmp を読み込んで TFT 画面の左上（0, 0）に直接描画する。
+// 主に起動時のスプラッシュロゴ表示に使用する。
+// 期待するフォーマット: 240×52 ピクセル、16-bit RGB565 BMP。
+// gmap_sprite に一時展開してから pushSprite(0,0) で TFT に転送する。
+// シグネチャ不一致またはサイズ不一致の場合は描画をスキップする。
 void load_push_logo(){
     // Open BMP file
-  File32 bmpImage = SD.open("logo.bmp", FILE_READ);
+  FsFile bmpImage = SD.open("logo.bmp", FILE_READ);
   if (!bmpImage) {
     gmap_loaded_active = false;
     return;
   }
-  const int sizey = 52;
+  const int sizey = 52; // ロゴ画像の高さ（ピクセル）
   // Read the file header
   bmp_file_header_t fileHeader;
   bmpImage.read((uint8_t*)&fileHeader.signature, sizeof(fileHeader.signature));

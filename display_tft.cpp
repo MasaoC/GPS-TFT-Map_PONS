@@ -1,3 +1,13 @@
+// ============================================================
+// File    : display_tft.cpp
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : TFTディスプレイ描画の実装。
+//           地図（ポリゴン・Googleマップ画像）、コンパス、
+//           飛行コース矢印、ヘッダー/フッター、設定画面、
+//           GPSDetail/SDDetail/マップリスト画面など全UI描画。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 // Updates TFT display using TFT-eSPI library.
 
 #include <cstring>  // for strlen and strcpy
@@ -13,22 +23,26 @@
 #include "sound.h"
 #include "button.h"
 
-#define AA_FONT_SMALL NotoSansBold15
-#define NM_FONT_MEDIUM Arial_Black22
-#define NM_FONT_LARGE Arial_Black56
+// フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
+#define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
+#define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（未使用）
+#define NM_FONT_LARGE Arial_Black56    // 大サイズフォント（ヘッダーの速度・磁方位表示）
 
-
+// ===== TFT スプライト =====
+// tft        : TFT_eSPI 本体（240×320px）。直接描画は非推奨で、スプライト経由が基本。
+// backscreen : メインの 240×240 マップ描画用スプライト。描画後 pushSprite(0,50) で転送。
+// header_footer: ヘッダー（50px）・フッター（30px）共有スプライト。pushSprite で位置を変えて転送。
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
 TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
 
+// ===== 画面輝度 =====
+int screen_brightness = 255;                                // 現在の輝度値（PWMデューティ 0-255）
+const int brightnessLevels[] = { 10, 100, 150, 200, 255 };  // 選択可能な輝度ステップ
+int brightnessIndex = 4;                                    // デフォルト: 最大輝度（255）
 
-int screen_brightness = 255;                                // Example brightness value
-const int brightnessLevels[] = { 10, 100, 150, 200, 255 };  // Example brightness levels
-int brightnessIndex = 4;                                    // Default to 60
-
-
-
+// ===== 地図方向モード =====
+// NORTHUP: 地図は常に北が上。TRACKUP: 進行方向が上に来るように回転する。
 #define MODE_TRACKUP 0
 #define MODE_NORTHUP 1
 #define MODE_SIZE 2
@@ -42,19 +56,22 @@ extern int screen_mode;
 extern int destination_mode;
 
 
+// 地図方向モードを NORTHUP ↔ TRACKUP で切り替える。
 void toggle_mode() {
   upward_mode = (upward_mode + 1) % MODE_SIZE;
 }
 
-bool is_northupmode() {
-  return upward_mode == MODE_NORTHUP;
-}
-bool is_trackupmode() {
-  return upward_mode == MODE_TRACKUP;
-}
+bool is_northupmode() { return upward_mode == MODE_NORTHUP; }
+bool is_trackupmode() { return upward_mode == MODE_TRACKUP; }
 
 
 
+// 緯度経度をスプライト（backscreen）上のピクセル座標に変換する。
+// Mercator 投影で X（経度差）・Y（緯度差）を km 距離に変換し、
+// mapScale（px/km）を掛けてピクセル量にする。
+// mapUpDirection（度）だけ回転させることで TRACKUP モードに対応する。
+// スプライト中心が現在位置（mapCenterLat/Lon）に対応する。
+// 戻り値の Y 座標は TFT 座標系（下が正）のため yDist を反転させる。
 cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection) {
   // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
   float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
@@ -78,7 +95,9 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 }
 
 
-// Function to convert x, y coordinates on the TFT screen to latitude and longitude
+// TFT スクリーン上のピクセル座標 (x, y) を緯度経度に逆変換する（latLonToXY の逆関数）。
+// mapshiftdown: 地図表示領域の Y 軸オフセット（ヘッダー分のシフト量）。
+// 主にタッチ入力や目的地座標の逆引きに使用する。
 Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
     // Translate screen coordinates to map coordinates
     float screenX = x - (SCREEN_WIDTH / 2);
@@ -103,6 +122,11 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
 
 
 
+// TFT ディスプレイと描画スプライトを初期化する。
+// 1. GPIO27(WR) / GPIO28(DC) を LOW にしてから TFT を起動する。
+// 2. VERTICAL_FLIP マクロでパネル向きを切り替える（setRotation）。
+// 3. backscreen（240×BACKSCREEN_SIZE）と header_footer（240×HEADERFOOTER_HEIGHT）スプライトを作成する。
+// スプライトは一度だけ作成すれば再利用できるため、created() で二重作成を防ぐ。
 void setup_tft() {
 
   //TFT_WR
@@ -143,11 +167,13 @@ void setup_tft() {
 
 
 
+// 単純な線分を表す構造体（現在はコード中で直接使用していないが定義は残してある）
 struct line {
   int x1, y1, x2, y2;
 };
 
-
+// TFT スクリーン上のピクセル座標を表すクラス。
+// isOutsideTft() で画面外判定を行い、不要な drawLine 呼び出しを省略するために使う。
 class Point {
 public:
   int x, y;
@@ -160,6 +186,10 @@ public:
   }
 };
 
+// 画面上のテキスト要素を表すクラス。
+// id で識別し、同一 id が既に表示されている場合は旧テキストを白で上書きしてから新テキストを描画する
+//（ちらつきなしに動的テキストを更新するための仕組み）。
+// textchar は heap に動的確保され、デストラクタで解放される。
 class Text {
 private:
   int id;
@@ -231,6 +261,9 @@ public:
   friend class TextManager;
 };
 
+// Text オブジェクトの配列を管理し、ID ベースの差分更新描画を提供するクラス。
+// drawText()/drawTextf() を呼ぶと、同 ID の古いテキストを自動消去してから新しいテキストを描画する。
+// 最大 50 テキスト（textmanager(50) で確保）。
 class TextManager {
 private:
   Text** draw_texts;  // Array of pointers to Text objects
@@ -313,14 +346,19 @@ public:
 
 TextManager textmanager(50);
 
+// ポリラインの描画と消去を管理するクラス。
+// addStroke() でストロークを追加し、addPointToStroke() で頂点を追加する。
+// drawCurrentStroke() で最後に追加したストロークだけを描画、
+// drawAllStrokes() で全ストロークを白で上書き（消去）する。
+// backscreen スプライトへ drawLine / drawWideLine で線を引く。
 class StrokeManager {
 
   struct Stroke {
-    stroke_group id;
-    Point* points;
-    int pointCount;
-    int maxPoints;
-    int thickness;
+    stroke_group id;      // ストロークの種類識別子（stroke_group 列挙型）
+    Point* points;        // 頂点座標配列（heap 確保）
+    int pointCount;       // 現在の頂点数
+    int maxPoints;        // 最大頂点数（addStroke 時に確保）
+    int thickness;        // 線の太さ（1=drawLine, >1=drawWideLine）
   };
 
   Stroke* strokes;
@@ -437,6 +475,9 @@ public:
 
 
 
+// 指定した km 値のスケールバーを backscreen の右下端に描画する。
+// 画面に収まるサイズ（140px 以内）のときのみ描画し、true を返す。
+// 緯度補正（cos(lat)）を加えることで Mercator 歪みに対応したスケールを表示する。
 bool try_draw_km_distance(float scale, float km) {
   double latnow = get_gps_lat();
   if(latnow <-80 || latnow > 80){
@@ -471,8 +512,11 @@ bool try_draw_km_distance(float scale, float km) {
 }
 
 
-// draw magnetic north east west south according to truetrack, where truetrack is direction of upward display.
-// However direction of y-axis is downward for tft display.
+// コンパスの N/E/S/W ラベルを backscreen 上に描画する。
+// truetrack: 現在の真方位（度）。N/E/S/W の位置は truetrack 方向を基準に算出する。
+// NORTHUP モードでは dist=100px（広め）、TRACKUP モードでは dist=73px（狭め）にして
+// 進行方向矢印（draw_triangle）と重ならないようにする。
+// 偏差補正: +8.0° を加えて磁北を表示する（日本の平均的な磁気偏差）。
 void draw_compass(float truetrack, uint16_t col) {
   backscreen.setTextWrap(false);
   int dist = 73;
@@ -544,6 +588,9 @@ void draw_compass(float truetrack, uint16_t col) {
 
 
 
+// 現在のスケールに適した距離スケールバーを最大 2 本描画する。
+// 候補リストを大きい順に試し、140px 以内に収まる最初の 2 候補を表示する。
+// 2 本描画したら終了（それ以上は画面が煩雑になるため）。
 void draw_km_distances(float scale) {
   const float distances[] = {400, 200, 100, 50, 20, 10, 5, 2, 1, 0.4, 0.2};
   int draw_counter = 0;
@@ -561,10 +608,11 @@ void draw_km_distances(float scale) {
   }
 }
 
-bool fresh = false;
-float last_scale = 1.0;
-float last_up = 0;
-bool nomap_drawn = true;
+// ===== マップ描画管理変数 =====
+bool fresh = false;         // 地図の強制再描画フラグ（スケール変更時などに true にする）
+float last_scale = 1.0;     // 前回描画時のスケール（変化を検知するための記憶値）
+float last_up = 0;          // 前回描画時の mapUpDirection
+bool nomap_drawn = true;    // いずれのマップポリゴンも描画されていない場合 true（テキスト表示の切り替えに使用）
 
 
 
@@ -589,7 +637,11 @@ extern unsigned long trackwarning_until;
 
 
 
-void draw_course_warning(int steer_angle){ 
+// コース逸脱警告ボックスを backscreen に描画する。
+// 1 秒おきに点滅（(millis()/1000)%2 == 0 のときだけ描画）し、
+// steer_angle の符号で "Turn RIGHT" / "Turn LEFT" を切り替える。
+// 呼び出しはメインの draw ループから angle_diff > 15° のときに行われる。
+void draw_course_warning(int steer_angle){
   if((millis()/1000)%2 == 0){
     backscreen.fillRect(5, 175, SCREEN_WIDTH-5*2, 25, COLOR_WHITE);
     backscreen.drawRect(5, 175, SCREEN_WIDTH-5*2, 25, COLOR_RED);
@@ -607,8 +659,19 @@ void draw_course_warning(int steer_angle){
 }
 
 extern int course_warning_index;
-const int NEEDLE_LEN = 120;
+const int NEEDLE_LEN = 120;  // 針の長さ（px）。スプライト半径の最大値に合わせてある。
 
+// 機体位置マーカー（飛行機アイコン）とコース逸脱表示を backscreen に描画する。
+//
+// NORTHUP モード（自機マーカー + コース針）:
+//   - 機体アイコン: 主翼の横棒、尾翼の横棒、胴体線の 3 本で表現（進行方向 = ttrack）。
+//   - 目標方位針: 長さ NEEDLE_LEN の太線（last_tone_tt 方向へ伸びる）。
+//   - コース逸脱 arc: steer_angle に比例した赤い弧で偏差を視覚化。
+//   - 誘導三角形: steer_angle > 15°, 55°, 100° の 3 段階で赤い三角形を追加表示。
+//     ※ trackwarning_until で警告持続時間を管理し、時間切れ後は黒枠のみに戻る。
+//
+// TRACKUP モード（固定マーカー）:
+//   - 進行方向は常に上なので、中心の垂直線 + 翼横棒の固定アイコンのみ描画する。
 void draw_triangle(int ttrack,int steer_angle) {
   float tt_radians = deg2rad(ttrack);
   if (upward_mode == MODE_NORTHUP) {
@@ -702,7 +765,9 @@ void draw_triangle(int ttrack,int steer_angle) {
 
 
 
-// point A -> B -(distance)> C
+// A→B 方向の B 側を distance km 延長した点 C を計算する（球面上の Vincenty 近似）。
+// B で見た A→B の方位を反転させて（+PI）B 基準の正確な方向を求める。
+// 目的地の「手前」や「飛び越した先」の座標計算に使用する。
 void calculatePointC(double lat1, double lon1, double lat2, double lon2, double distance, double& lat3, double& lon3) {
   const double R = 6371.0;  // Radius of the Earth in kilometers
   lat1 = deg2rad(lat1);
@@ -723,7 +788,9 @@ void calculatePointC(double lat1, double lon1, double lat2, double lon2, double 
 }
 
 
-// Point A -(distance)> D -> B
+// A から A→B 方向へ distance km 進んだ点 D を計算する（calculatePointC とは始点が異なる）。
+// A と B が同一点の場合は方位が未定義のためスキップする。
+// 目的地が画面外にある場合に画面端付近の仮想点を計算し、矢印を描画するために使う。
 void calculatePointD(double lat1, double lon1, double lat2, double lon2, double distance, double& lat3, double& lon3) {
   const double R = 6371.0;  // Radius of the Earth in kilometers
   lat1 = deg2rad(lat1);
@@ -748,6 +815,9 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
 
 }
 
+// FLYAWAY モード用の描画。目的地から「離れていく」方向への矢印を描く。
+// 1. draw_flyinto() で目的地への基本矢印を描画する。
+// 2. 目的地から「自機方向→その先」へのマゼンタ線を追加し、「飛び越した先」を示す。
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up) {
   draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
 
@@ -759,6 +829,10 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   backscreen.drawWideLine(240/2, 240/2, targetpoint.x, targetpoint.y, 5, COLOR_MAGENTA);
 }
 
+// FLYINTO 拡張版。目的地が画面外の場合は仮想点を計算して矢印の終点に使う。
+// 目的地が画面内の場合は目的地の「先」まで線を延長して通過線も描画する（draw_flyinto と異なる点）。
+// 画面外オーバーフロー対策: goal の座標が int 範囲を超えると処理が重くなるため、
+//   distance = 200/scale px 相当の仮想点を calculatePointD で求めて代替する。
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
   cord_tft goal = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   if (goal.isOutsideTft()) {
@@ -780,6 +854,9 @@ void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double c
   }
 }
 
+// 自機位置（画面中央）から目的地への誘導線（マゼンタの太線）を描画する。
+// 目的地が画面外の場合: calculatePointD で画面端付近の仮想点を求めて矢印の向きを示す。
+// thickness パラメータで線の太さを調整できる（通常 = 1、強調時 = 5）。
 void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness) {
   cord_tft goal = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   if (goal.isOutsideTft()) {
@@ -794,11 +871,14 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 }
 
 
-// Im making this variable global so that it will be stored in RAM instead of Stack.
-// Core0 is running out of stack with 4KB with MAX_TRACK_CORDS>=300, when making this local variable(Stack).
-// However, we have enough RAM so, lets make points variable global for now.
+// ★グローバル変数として宣言（スタック節約のため）★
+// Core0 のスタックは 4KB しかなく、MAX_TRACK_CORDS>=300 のときにローカル宣言すると
+// スタックオーバーフローになるため、RAM（グローバル領域）に置いてある。
 cord_tft points[MAX_TRACK_CORDS];
 
+// LatLonManager（latlon_manager）に蓄積されたフライトトラックを backscreen に描画する。
+// 最新座標（getData(0)）から自機位置（画面中央）への緑線を引き、
+// その後 getData(i) → getData(i+1) を順に繋いでトラック履歴を表示する。
 void draw_track(double center_lat, double center_lon, float scale, float up) {
   int sizetrack = latlon_manager.getCount();
   if(sizetrack <= 0){
@@ -831,6 +911,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   }
 }
 
+// 日本列島の概略ポリゴン（map_japan1〜4）を緑で描画する。広域表示時に使用。
 void draw_Japan(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan1, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
@@ -839,6 +920,10 @@ void draw_Japan(double center_lat, double center_lon, float scale, float up) {
   nomap_drawn = false;
 }
 
+// SD カードの mapdata.csv から読み込んだ追加ポリゴン（extramaps[]）を描画する。
+// ポリゴンの最初の座標点が現在位置から 1°×1° 以内にある場合のみ描画する（遠方の不要描画を省略）。
+// ポリゴンの描画色はマップ名の先頭文字で決まる:
+//   r=赤, o=オレンジ, g=明るいグレー, m=マゼンタ, c=シアン, b=青, その他=緑
 void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up) {
   for (int i = 0; i < mapdata_count; i++) {
     if (extramaps[i].size <= 1) {
@@ -874,6 +959,10 @@ void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
   nomap_drawn = false;
 }
 
+// 琵琶湖エリアのポリゴン（湖岸・島）と 10km コースの基準線/円を描画する。
+// gmap_drawed=false のときは fill_sea_land() で水面・陸地の色塗りも行う
+//（BMP 地図画像がない状態でも水面を水色、陸地をオレンジで色分けするため）。
+// gps_loop(2/3) を fill_sea_land の前後で呼んでいるのは、色塗りに時間がかかるためその間も GPS を処理するため。
 void draw_Biwako(double center_lat, double center_lon, float scale, float up, bool gmap_drawed) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
@@ -889,6 +978,8 @@ void draw_Biwako(double center_lat, double center_lon, float scale, float up, bo
   nomap_drawn = false;
 }
 
+// 大阪（阪大エリア）のポリゴン群を描画する。
+// 外周（シアン）、高速道路（マゼンタ）、構内エリア（グレー）、鉄道（オレンジ）、カフェ（緑）を色分け表示。
 void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaioutside, COLOR_CYAN);
   draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway, COLOR_MAGENTA);
@@ -905,6 +996,8 @@ void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
   nomap_drawn = false;
 }
 
+// backscreen の左下にソフトウェアバージョン文字列を、右上にバージョンテキストを描画する。
+// 主に startup_demo_tft() のデモ画面で使用する。
 void draw_version_backscreen(){
   backscreen.setCursor(10, 240-12);
   backscreen.unloadFont();
@@ -915,15 +1008,22 @@ void draw_version_backscreen(){
   backscreen.print(BUILDDATE);
   backscreen.print(")");
 
-  backscreen.setCursor(150,0);
+  backscreen.setCursor(160,0);
   backscreen.loadFont(AA_FONT_SMALL);
-  backscreen.println(" Version 5 ");
+  backscreen.println(VERSION_TEXT);
 }
 
+// Arduino の map() 関数の float 版。x を [in_min, in_max] から [out_min, out_max] に線形変換する。
+// startup_demo_tft() のアニメーション（スケール・座標の補間）に使用する。
 float mapf(float x, float in_min, float in_max, float out_min, float out_max){
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
+// 起動時のスプラッシュアニメーションを表示する。
+// 1. ロゴ BMP を SD から読み込んで表示。SD 状態を画面下部に表示。
+// 2. 琵琶湖マップをズームイン（遠→近）しながら PLA 位置に移動するアニメーション（約 40 フレーム）。
+// 3. 続いてズームアウト（近→遠）しながら日本地図へ引くアニメーション。
+// mapf() で中心座標とスケールを線形補間してスムーズなアニメーションを実現している。
 void startup_demo_tft() {
   tft.fillScreen(COLOR_WHITE);
   tft.setTextColor(COLOR_RED, COLOR_WHITE);
@@ -993,6 +1093,8 @@ void startup_demo_tft() {
   }
   delay(500);
 }
+// デモモード（GPS 固定前に琵琶湖をデモ飛行）中の通知ボックスを backscreen に描画する。
+// 「LAKE BIWA DEMO x5 SPD」と設定変更の案内を表示する。
 void draw_demo_biwako(){
   backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_WHITE);
   backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_ORANGE);
@@ -1008,13 +1110,18 @@ void draw_demo_biwako(){
 }
 
 
+// backscreen スプライトを白でクリアする（毎フレームの描画前に呼ぶ）。
 void clean_backscreen(){
   backscreen.fillScreen(COLOR_WHITE);
 }
+// backscreen スプライトを TFT の (0, 50) に転送する（ヘッダー 50px の下から表示）。
 void push_backscreen(){
   backscreen.pushSprite(0, 50);
 }
 
+// backscreen の最上部に小さなテキスト（GS・m/s・MT ラベル）を描画する。
+// trackwarning_until が有効な間は「MT」ラベルを赤/黒で点滅させてコース警告を示す。
+// 現在は draw_header() ではなく backscreen に直接描画している（ヘッダースプライトとは別）。
 void draw_headertext(double degpersecond){
   backscreen.setTextWrap(false);
   if(trackwarning_until > millis()){
@@ -1030,6 +1137,10 @@ void draw_headertext(double degpersecond){
 }
 
 
+// 地図 BMP 画像が表示できないときのステータスメッセージを backscreen に描画する。
+// - scale > SCALE_EXLARGE_GMAP: このスケールでは地図画像なし（灰色文字で静的表示）。
+// - タスクキューに TASK_LOAD_MAPIMAGE がある: "Loading image..." を灰色で表示。
+// - GPS 固定済みで画像なし: "No map image available." をオレンジで表示（ファイルが見つからない警告）。
 void draw_nogmap(double scale) {
   backscreen.setCursor(5, BACKSCREEN_SIZE - 25);
   if(scale > SCALE_EXLARGE_GMAP){
@@ -1048,6 +1159,10 @@ void draw_nogmap(double scale) {
   }
 }
 
+// gmap_sprite に読み込まれている地図画像を backscreen に転送する。
+// TRACKUP モード: pushRotated() で -drawupward_direction 度回転させて転送（進行方向が上になる）。
+// NORTHUP モード: pushToSprite() でそのまま (0,0) に転送。
+// gmap_loaded_active=false の場合は何もしないで false を返す。
 bool draw_gmap(float drawupward_direction){
   if (gmap_loaded_active) {
     if(is_trackupmode())
@@ -1062,11 +1177,17 @@ bool draw_gmap(float drawupward_direction){
 
 
 
-int last_written_mh = 0;
-unsigned long last_maxadr_time = 0;
-int max_adreading = 0;
-unsigned long last_battery_warning_time = 0;
+// ===== バッテリー監視変数 =====
+unsigned long last_maxadr_time = 0;           // max_adreading が最後に更新された時刻
+int max_adreading = 0;                        // AD 読み値のピーク保持値（ノイズ対策のためピーク追跡）
+unsigned long last_battery_warning_time = 0;  // 最後のバッテリー低下警告を再生した時刻
 
+// バッテリー入力電圧を読み取って返す（単位: V、上限 4.3V）。
+// ピーク追跡方式でノイズを除去する:
+//   - 急激な低下（200カウント以上）はリセット（USB が外れた瞬間の値落ち対策）。
+//   - 上昇時はすぐにピークを更新し、時刻を記録する。
+//   - ピーク更新から 3 秒経過したら指数移動平均（α=0.2）でゆっくり追従させる。
+// BATTERY_MULTIPLYER() マクロで AD 値を電圧に変換している（settings.h 参照）。
 float get_input_voltage(){
   int adreading = analogRead(BATTERY_PIN);
   if (adreading < max_adreading - 200) {//急激に低下=USBが外れた時。 0.4V相当。
@@ -1083,6 +1204,12 @@ float get_input_voltage(){
   return min(BATTERY_MULTIPLYER(max_adreading),4.3);
 }
 
+// 旋回角速度（deg/s）を backscreen の左端または右端に表示する。
+// - 0.5 deg/s 未満は非表示。
+// - 正（右旋回）: 右端に表示。負（左旋回）: 左端に表示。
+// - GPS 速度 2.0 m/s 以上のとき色分け: 1 deg/s 超=緑（適切な右旋回）、-1 deg/s 未満=青（左旋回）。
+// - 3 deg/s 超: 背景を塗りつぶして強調（背景色 = 旋回方向色）。
+// - 4 deg/s 超: さらに赤枠で警告強調。
 void draw_degpersec(double degpersecond){
   if(abs(degpersecond) < 0.5)
     return;
@@ -1128,6 +1255,11 @@ void draw_degpersec(double degpersecond){
 }
 
 
+// 画面上部 50px のヘッダーを描画して TFT の (0, 0) に転送する。
+// 左: 対地速度 m/s（GPS 速度 < 2m/s のときは灰色）。
+// 右半分: 磁方位 3 桁。コース警告中は赤/白反転で点滅する。
+// GNSS 衛星数 = 0 のときは赤い横線で「GPS 無効」を示す。
+// 区切り縦線（mtvx）でスピードエリアと方位エリアを分けている。
 //Height 50px
 void draw_header() {
   header_footer.fillScreen(COLOR_WHITE);
@@ -1171,7 +1303,9 @@ void draw_header() {
 extern int course_warning_index;
 
 
-// backscreen map footer.
+// backscreen の最下部に地図サポート情報を描画する（地図モード専用フッター）。
+// 左: GPS 時刻（UTC+9 = JST 変換済み）。
+// 中央〜右: 緯度（〜N/S）・経度（〜E/W）を 5 桁精度で表示。
 void draw_map_footer(){
   //JST Time
   TinyGPSTime time = get_gpstime();
@@ -1201,6 +1335,11 @@ void draw_map_footer(){
   backscreen.loadFont(AA_FONT_SMALL);
 }
 
+// 画面下部 30px のフッターを描画して TFT の (0, 290) に転送する（HEIGHT: 30px）。
+// 左: MC（磁方位コース）と目的地までの距離 km。その下にナビモード名と目的地名。
+// 右: バッテリー電圧（USB 接続時は "USB"。低電圧時は赤点滅 + 音声警告 60 秒ごと）。
+// 右中: GNSS 衛星数（5 未満=赤背景、10 未満=オレンジ、それ以上=緑）。
+// 右端: SD カード状態（緑=正常、赤=エラー）。
 //HEIGHT: 30px. The footer.
 void draw_footer(){
   header_footer.fillScreen(COLOR_WHITE);
@@ -1303,6 +1442,7 @@ void draw_footer(){
   header_footer.pushSprite(0,290);
 }
 
+// 画面下部に「HDG UP」テキストを直接 TFT に描画する（TRACKUP モードを示す補助表示）。
 void draw_headingupmode() {
   tft.setCursor(SCREEN_WIDTH / 2 - 18, SCREEN_HEIGHT - 21);
   tft.setTextColor(COLOR_BLACK);  // Highlight selected line
@@ -1310,6 +1450,8 @@ void draw_headingupmode() {
 }
 
 
+// mapdata 構造体が持つポリゴン座標列を backscreen に折れ線（drawLine）で描画する。
+// 各座標を latLonToXY() でスクリーン座標に変換し、両端いずれかが画面内の辺のみ描画する（画面外スキップ最適化）。
 void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, double center_lon, float mapScale, const mapdata* mp, uint16_t color) {
   int mapsize = mp->size;
   cord_tft points[mapsize];
@@ -1330,6 +1472,12 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
 
 
 
+// 琵琶湖 HPA 競技コース関連のシンボルを描画する:
+//   - PLA（スタート）から N パイロン・W パイロン・竹島 への緑の基準線
+//   - PLA を中心とした 10.975km 円（公式ルール 2025: 第 1 レグ往路距離）
+//   - PLA を中心とした 1.0km 円（公式ルール 2025: 折り返し後の距離）
+//   - N パイロン・W パイロン・1km 地点: オレンジ塗りつぶし三角形（パイロンマーク）
+//   - PLA: 青地に黄色の小三角形 + 赤線（スタート台の簡易表示）
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
   cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
@@ -1368,6 +1516,13 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 }
 
 
+// navdata.cpp の filldata[][] ビットマップを使って琵琶湖エリアの水面・陸地を色分けする。
+// filldata は 0.02° グリッドの 2D 配列で、true=水面、false=陸地。
+// 各グリッド点に水色（水面）またはオレンジ（陸地）の + 記号を描画する。
+// lenbar はスケールに応じた + の長さ（拡大率が高いほど長くして隙間を埋める）。
+//
+// scale > 36 のとき（高ズーム）は近傍グリッドをサブ補完して塗りつぶし密度を上げる。
+// ただし陸海が混在しているグリッドセルは補完しない（誤塗りを防ぐため）。
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
 
   int lenbar = 5;
@@ -1438,10 +1593,15 @@ void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, floa
   }
 }
 
+// 負の値にも対応した剰余演算（C++ の % は負の結果になる場合がある）。
+// brightnessIndex のループ計算（tft_change_brightness）で使用する。
 int mod(int x, int y) {
   return x < 0 ? ((x + 1) % y) + y - 1 : x % y;
 }
 
+// 画面輝度を brightnessLevels[] 配列から 1 ステップ進める（輝度設定の切り替え）。
+// increment = +1 で明るく、-1 で暗くなる（リングバッファ方式でループする）。
+// BRIGHTNESS_SETTING_AVAIL が定義されていない場合は何もしない。
 void tft_change_brightness(int increment) {
 #ifdef BRIGHTNESS_SETTING_AVAIL
   brightnessIndex = mod(brightnessIndex + increment, sizeof(brightnessLevels) / sizeof(brightnessLevels[0]));
@@ -1451,13 +1611,15 @@ void tft_change_brightness(int increment) {
 }
 
 
+// 衛星の方位角・仰角をスカイプロット（円形の衛星配置図）上の X 座標に変換する。
+// 仰角 0°（水平）→ 外周、90°（天頂）→ 中心。方位角が X/Y の方向を決める。
 int calculateGPS_X(float azimuth, float elevation) {
   const int shift_left = 10;
   const int radius = SCREEN_WIDTH / 2 - shift_left;
-
   return (SCREEN_WIDTH / 2) + (int)(cos(radians(azimuth)) * (radius) * (1 - elevation / 90.0)) - shift_left;
 }
 
+// 衛星の方位角・仰角をスカイプロット上の Y 座標に変換する（calculateGPS_X の Y 版）。
 int calculateGPS_Y(float azimuth, float elevation) {
   const int height = SCREEN_WIDTH;
   const int radius = SCREEN_WIDTH / 2 - 20;
@@ -1466,9 +1628,15 @@ int calculateGPS_Y(float azimuth, float elevation) {
 }
 
 
+// GPS 状態に応じたステータスメッセージを backscreen に表示する（地図データなし時のみ呼ばれる）。
+// 優先順位:
+//   1. GPS モジュール未接続 → "NO GNSS connection !!" 表示して終了。
+//   2. GPS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
+//   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示。
+//   4. nomap_drawn=false → 地図は描画済みなので何も表示しない。
 void draw_nomapdata() {
   int posy = SCREEN_HEIGHT - 130;
-  
+
   if (get_gps_connection()) {
     //"GPS Module connected."
   } else {
@@ -1521,6 +1689,11 @@ extern int max_page;     // Global variable to store maximum page number
 volatile bool loading_sddetail = true;
 bool sd_detail_loading_displayed = false;
 
+// SD カードのファイル一覧画面を描画する（screen_mode == MODE_SD_DETAIL 時）。
+// browse_sd() の結果（sdfiles[]）を使って 20 エントリ / ページで表示する。
+// loading_sddetail=true の間は "Stand by..." または "No SD card" を表示。
+// ファイルサイズは KB 単位で右端に表示する。
+// 描画完了後に sd_detail_loading_displayed フラグを更新する。
 void draw_sddetail(int page) {
   lastdrawn_sddetail = millis();
   header_footer.fillScreen(COLOR_WHITE);
@@ -1555,7 +1728,10 @@ void draw_sddetail(int page) {
   }else{
     sd_detail_loading_displayed = true;
     backscreen.setCursor(80,100);
-    backscreen.print("Stand by ...");
+    if(!digitalRead(SD_DETECT)){
+      backscreen.print("No SD card ...");
+    }else
+      backscreen.print("Stand by ...");
   }
   backscreen.pushSprite(0,40);
   header_footer.fillScreen(COLOR_WHITE);
@@ -1565,6 +1741,14 @@ void draw_sddetail(int page) {
 
 
 //==================MODE DRAWS===============
+
+// GPS 詳細画面を描画する（screen_mode == MODE_GPS_DETAIL 時）。
+// page % 2 == 0: スカイプロット画面（全衛星の方位・仰角を円形に描画）。
+//   - 衛星種別（GPS=シアン, GLONASS=緑, GALILEO=青, QZSS=赤, BeiDou=オレンジ）で色分け。
+//   - SNR=0 の衛星は小さい丸（追跡中だが信号弱い）。
+//   - フッターに UTC 時刻と衛星数・フィックス状態を表示。
+// page % 2 == 1: 生 NMEA 文字列の最新 MAX_LAST_NMEA 件を表示。
+//   1 秒以内に受信した文字列は黒、古いものは灰色で表示（鮮度の視覚化）。
 void draw_gpsdetail(int page) {
   bool aru = false;
   for (int i = 0; i < 32; i++) {
@@ -1684,6 +1868,9 @@ void draw_gpsdetail(int page) {
 }
 
 
+// フラッシュ（ROM）に書き込まれた地図ポリゴンと SD から読み込んだ追加マップの一覧を表示する。
+// "MAPLIST FLSH:N/SD:M (page/total)" 形式でヘッダーに表示。
+// フラッシュマップはページ 0 に全表示、SD マップは 30 エントリ / ページでページング表示。
 void draw_maplist_mode(int maplist_page) {
 
   mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
@@ -1737,6 +1924,12 @@ void draw_maplist_mode(int maplist_page) {
 
 
 
+// 設定画面を描画する（screen_mode == MODE_SETTING 時）。
+// selectedLine: 現在値が変更中の行（ダイヤルを押している間）→ 赤色表示。
+// cursorLine  : カーソル位置の行 → マゼンタ色表示。その他は黒。
+// menu_settings[].getLabel() で現在の設定値を含むラベル文字列を取得して表示する。
+// iconColor() が返す色の丸アイコンを各行の右端に描画する（NULL の場合は描画しない）。
+// フッターにはバッテリー残量推定・CPU 温度・空きヒープ（デバッグビルド時のみ）を表示する。
 void draw_setting_mode(int selectedLine, int cursorLine) {
   const int separation = 25;
   textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");

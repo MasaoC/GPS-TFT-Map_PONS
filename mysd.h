@@ -1,3 +1,13 @@
+// ============================================================
+// File    : mysd.h
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : SDカード操作とCore1タスクキューのヘッダー。
+//           タスク種別(TaskType)・タスク構造体・キュー定義と、
+//           設定保存/読込・CSVフライトログ・BMP地図画像読込・
+//           音声再生タスク生成関数のプロトタイプ宣言。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 
 #ifndef MYSD_H
   #define MYSD_H

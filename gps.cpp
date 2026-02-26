@@ -1,3 +1,13 @@
+// ============================================================
+// File    : gps.cpp
+// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Role    : GPS受信・解析の実装（Quectel LC86G向けに最適化）。
+//           TinyGPS++を使ったNMEA解析、衛星情報収集(GSV)、
+//           位置・速度・時刻の取得、リプレイ/デモモード管理、
+//           フライトログCSVへの定期保存トリガー。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/02/26
+// ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
 
@@ -13,42 +23,52 @@
 // Create a UBLOX instance
 TinyGPSPlus gps;
 
-//mediatek
-#define PMTK_ENABLE_SBAS "$PMTK313,1*2E"
-#define PMTK_SET_NMEA_OUTPUT_GSVONLY "$PMTK314,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0*29"
-#define PMTK_SET_NMEA_OUTPUT_RMCGGA "$PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28"
-#define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"
-#define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"
+// --- Mediatek GPS 用 NMEA コマンド ---
+// PMTK コマンドは Mediatek チップセット GPS モジュールの設定コマンド。
+// 文字列末尾の *XX はチェックサム。
+#define PMTK_ENABLE_SBAS "$PMTK313,1*2E"                                          // SBAS（補強システム）を有効化
+#define PMTK_SET_NMEA_OUTPUT_GSVONLY "$PMTK314,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0*29"  // GSV（衛星情報）のみ出力
+#define PMTK_SET_NMEA_OUTPUT_RMCGGA "$PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28"  // RMC+GGA（位置・速度・時刻）出力
+#define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"    // 更新レート 2Hz
+#define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"   // 更新レート 1Hz
 
-//quectel
-#define PAIR_SET_38400 "$PAIR864,0,0,38400*23"
-#define PAIR_DISABLE_GSV "$PAIR062,3,0*3D"
-#define PAIR_ENABLE_GSV "$PAIR062,3,1*3C"
-#define PAIR_DISABLE_GSA "$PAIR062,2,0*3C"
-#define PAIR_ENABLE_GSA "$PAIR062,2,1*3D"
+// --- Quectel GPS 用 PAIR コマンド ---
+// LC86GPAMD 等 Quectel チップ向けの独自拡張コマンド。
+#define PAIR_SET_38400 "$PAIR864,0,0,38400*23"    // ボーレートを 38400 に変更（モジュール再起動が必要）
+#define PAIR_DISABLE_GSV "$PAIR062,3,0*3D"        // GSV 文（衛星情報）の出力を停止
+#define PAIR_ENABLE_GSV "$PAIR062,3,1*3C"         // GSV 文の出力を再開
+#define PAIR_DISABLE_GSA "$PAIR062,2,0*3C"        // GSA 文（測位精度）の出力を停止
+#define PAIR_ENABLE_GSA "$PAIR062,2,1*3D"         // GSA 文の出力を再開
 #define PAIR_SET_38400 "$PAIR864,0,0,38400*23"
 //#define PQTM_OFF "$PQTMCFGMSGRATE,W,PQTMANTENNASTATUS,0,2*39"
 
 
+// --- GPS 最新値の保持変数 ---
+// TinyGPS++ から取り出した値をここに保存し、getter 関数経由で他モジュールに公開する。
 double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
 int stored_numsats;
-bool gps_connection = false;
-bool demo_biwako = false;
+bool gps_connection = false;  // GPS モジュールから1文字でも受信したら true
+bool demo_biwako = false;     // 琵琶湖デモモード（GPS を使わず仮想位置を生成する）
 
-SatelliteData satellites[32];  // Array to hold data for up to 32 satellites
-char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
-unsigned long last_nmea_time[MAX_LAST_NMEA];
-unsigned long last_gps_setup_time = 0;
-int stored_nmea_index = 0;
-int readfail_counter = 0;
-bool new_location_arrived = false;
-bool newcourse_arrived = false;
+// --- 衛星情報・NMEA ログ ---
+SatelliteData satellites[32];              // 最大 32 衛星分のデータを保持（PRN 0 = 空き）
+char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];   // 直近 NMEA 文のリングバッファ
+unsigned long last_nmea_time[MAX_LAST_NMEA];     // 各 NMEA 文の受信時刻
+unsigned long last_gps_setup_time = 0;   // 最後に gps_setup() を呼んだ時刻（再接続ガード用）
+int stored_nmea_index = 0;               // リングバッファの書き込み位置
+int readfail_counter = 0;                // 非 ASCII 文字の連続受信カウンタ（ボーレート不一致の検知）
+bool new_location_arrived = false;       // 新しい位置情報が届いたことを Core0 に知らせるフラグ
+bool newcourse_arrived = false;          // 新しいコース情報が届いたフラグ（毎秒更新）
 
-//Replay mode related variables
+// --- リプレイモード ---
+// replaymode_gpsoff = true の時、実 GPS の代わりに SD から読んだ NMEA を再生する。
 bool replaymode_gpsoff = false;
 unsigned long last_check_nmea_time = 0;
 
 
+// GPS の時刻は UTC（協定世界時）で送られてくる。
+// この関数で日本標準時（JST = UTC+9）に変換する。
+// 日付またぎ・月またぎ・うるう年も正しく処理する。
 void utcToJst(int *year, int *month, int *day, int *hour) {
   if(*month <= 0 || *month > 12){
     DEBUGW_P(20250424,"month invalid:");
@@ -81,6 +101,8 @@ void utcToJst(int *year, int *month, int *day, int *hour) {
   }
 }
 
+// i 番目に古い NMEA 文字列を返す（i=0 が最新）。
+// last_nmea はリングバッファなので、stored_nmea_index を基準に逆算してインデックスを求める。
 char* get_gps_nmea(int i){
   int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
   if(index < 0){
@@ -89,6 +111,7 @@ char* get_gps_nmea(int i){
   return last_nmea[index];
 }
 
+// i 番目に古い NMEA の受信時刻を返す（i=0 が最新）。
 unsigned long get_gps_nmea_time(int i){
   int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
   if(index < 0){
@@ -98,22 +121,27 @@ unsigned long get_gps_nmea_time(int i){
 }
 
 
+// 30 秒以上 GSV を受信していない衛星を配列から削除する。
+// 衛星が地平線以下に沈んだり、受信が途絶えた場合に古い情報が残らないようにするため。
 void removeStaleSatellites() {
   unsigned long currentMillis = millis();
   for (int i = 0; i < 32; i++) {
     if (satellites[i].PRN != 0 && (currentMillis - satellites[i].lastReceived > 30000)) {
-      satellites[i].PRN = 0;  // Mark as stale and remove
+      satellites[i].PRN = 0;  // PRN を 0 にリセットして「空き」とみなす
     }
   }
 }
 
+// GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
+// TinyGPS++ は GSV を解析しないため、自前でパースする必要がある。
+// GSV 文の形式: $GPGSV,総文数,文番号,衛星数,PRN,仰角,方位角,SNR,...*チェックサム
+// 衛星種別は文の先頭識別子から判定する（GP=GPS, GL=GLONASS, GA=Galileo, GB=BeiDou）。
 void parseGSV(char *nmea) {
   // Print the received NMEA sentence for debugging
   #ifdef DEBUG_NMEA
   DEBUG_P(20250508,"Received NMEA: ");
   DEBUG_PLN(20250508,nmea);
   #endif
-
 
   // Determine the satellite type based on the NMEA sentence identifier
   int satelliteType = SATELLITE_TYPE_UNKNOWN;
@@ -197,7 +225,9 @@ void parseGSV(char *nmea) {
 
 
 
-//Due compability
+// GPS モジュールを「位置取得優先モード」に切り替える。
+// GSV（衛星情報）出力を停止することで NMEA の量を減らし、位置・速度の更新レートを上げる。
+// 設定画面の GPS 詳細からメインマップへ戻る際に呼ばれる。
 void gps_getposition_mode() {
   #ifdef QUECTEL_GPS
     GPS_SERIAL.println(PAIR_DISABLE_GSV);
@@ -209,7 +239,10 @@ void gps_getposition_mode() {
   GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
   #endif
 }
-//Due compability
+
+// GPS モジュールを「星座表示モード」に切り替える。
+// GSV を有効化して衛星の仰角・方位・SNR を表示できるようにする。
+// GPS 詳細画面に入る際に呼ばれる。
 void gps_constellation_mode() {
   #ifdef QUECTEL_GPS
     GPS_SERIAL.println(PAIR_ENABLE_GSV);
@@ -222,20 +255,28 @@ void gps_constellation_mode() {
   #endif
 }
 
-int setupcounter = 1;
+int setupcounter = 1;  // gps_setup() の呼び出し回数（1=初回、2以降=リトライ）
 
-// Try to establish connection with GPS module.  Either ublox or mediatek.
+// GPS モジュールとのシリアル接続を確立する。
+// 初回は settings.h で選択したモジュール種別に合わせて初期化する。
+// NMEA が 10 秒届かない場合は gps_loop() から自動的に再呼出しされる。
+//
+// リトライ時は複数のボーレートを順番に試す:
+//   1回目: 設定済みボーレートで直接接続
+//   2回目: 115200bps で PAIR コマンドを送り 38400 に切り替えてから接続（Quectel が工場出荷時設定の場合）
+//   3回目: 115200 bps で直接接続
+//   4回目: 38400 bps で直接接続
 void gps_setup() {
   last_gps_setup_time = millis();
   DEBUG_P(20251025,"GPS SETUP:setupcounter=");
   DEBUG_PLN(20251025,setupcounter);
-  
+
   readfail_counter = 0;
   if(setupcounter != 1){
     GPS_SERIAL.end();
   }
   GPS_SERIAL.setTX(GPS_TX);
-  GPS_SERIAL.setRX(GPS_RX);// Initialize GNSS
+  GPS_SERIAL.setRX(GPS_RX);
 
   //初回SETUP
   if(setupcounter == 1){
@@ -343,10 +384,14 @@ double demo_biwako_lon = PLA_LON;
 double demo_biwako_mps = 0;
 double demo_biwako_truetrack = 280;
 
+// 飛行軌跡（トラックログ）に現在位置を追加する。
+// 追加間隔を速度に応じて調整することで、約 50m おきに記録する。
+//   低速（停止近く）→ 最大 15 秒間隔（静止中に大量の点が積まれるのを防ぐ）
+//   高速（約 20m/s）→ 最小 1 秒間隔
 void add_latlon_track(float lat,float lon){
   int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
   if(get_demo_biwako()){
-    tracklog_interval = 900;
+    tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
   }
   if(millis() - last_latlon_manager > tracklog_interval){
     latlon_manager.addCoord({ lat, lon});
@@ -401,17 +446,21 @@ void set_new_location_off(){
 }
 
 
-// NMEAのcharが入力された。
+// GPS から受信した 1 文字を処理する。
+// TinyGPS++ に渡して位置・速度・時刻を自動解析させるとともに、
+// GSV 文については自前でバッファに蓄積して parseGSV() を呼ぶ。
+// '$' で文の先頭を検知してバッファをリセットし、'\n' で1文の終端を検知する。
 void process_char(char c){
-  gps.encode(c);
+  gps.encode(c);  // TinyGPS++ に文字を渡す（内部で NMEA を解析する）
   if(c == '$')
-    index_buffer1 = 0;
-  
+    index_buffer1 = 0;  // 新しい NMEA 文の開始 → バッファをリセット
+
   nmea_buffer1[index_buffer1++] = c;
   if(index_buffer1 >= (NMEA_BUFFER_SIZE-1) || c == '\n'){
     if(index_buffer1 >= 2){
       time_lastnmea = millis();
-      nmea_buffer1[index_buffer1-1] = '\0';
+      nmea_buffer1[index_buffer1-1] = '\0';  // 末尾の改行を null で置換して文字列化
+      // 直近 NMEA ログのリングバッファに追記
       strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
       last_nmea_time[stored_nmea_index] = millis();
       stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
@@ -419,6 +468,7 @@ void process_char(char c){
       //DEBUG_P(20250923,index_buffer1);
       //DEBUG_PLN(20250923,nmea_buffer1);
       #endif
+      // GSV 文は TinyGPS++ が解析しないため、自前でパースする
       if(strstr(nmea_buffer1, "GSV")){
         parseGSV(nmea_buffer1);
       }
@@ -438,12 +488,18 @@ bool getReplayMode(){
 void set_replaymode(bool replaymode){
   replaymode_gpsoff = replaymode;
 }
-// GNSSモジュールからのHardware Serialの受信を行う。
+// GPS モジュールからの Serial データを受信・解析するメインループ処理。
+// 描画の途中でも複数回呼ばれることで、GPS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
+//
+// 異常検知:
+//   - 10 秒間 NMEA が届かない → gps_setup() で再接続を試みる
+//   - 非 ASCII 文字が 10 回連続 → ボーレート不一致とみなして gps_setup()
+//   - FIFO バッファが 256 を超えている → 警告ログを出す
 void gps_loop(int id) {
-  
+
+  // 10 秒以上 NMEA が途絶えた場合は GPS を再初期化する
   if(GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 10000 && millis() - last_gps_setup_time > 10000){
-    // NMEA message is lost for 10 seconds. and gps_setup has not happened for last 10 seconds.
-    DEBUGW_P(20250923,"Lost NMEA MSG for 10 seconds. resetup.");
+    DEBUGW_PLN(20250923,"Lost NMEA MSG for 10 seconds. resetup.");
     gps_setup();
   }
   if(GPS_SERIAL.available() > 256){
@@ -459,22 +515,22 @@ void gps_loop(int id) {
       DEBUGW_P(20250923,"!!WARNING!! Buffer Overflow ");
       DEBUGW_PLN(20250923,GPS_SERIAL.available());
     }
+    // 128 以上の文字（非 ASCII）が続く場合、ボーレート不一致の可能性がある
     if((int)c >= 128){
       readfail_counter++;
       if(readfail_counter > 10){
         DEBUGW_P(20250923,"Read Failed 10 times, non ascii char:");
         DEBUGW_PLN(20250923,(int)c);
-        gps_setup();
+        gps_setup();  // 異なるボーレートで再試行
       }
       continue;
     }
     gps_connection = true;
     if(!replaymode_gpsoff)
-      process_char(c);
+      process_char(c);  // 通常モード: 実 GPS データを処理
   }
 
-
-  //Replay mode
+  // リプレイモード: SD から読み込んだ NMEA を 300ms ごとに1文ずつ流す
   if(replaymode_gpsoff){
     if(loaded_replay_nmea){
       for(int i = 0; i < 128; i++){
@@ -487,7 +543,7 @@ void gps_loop(int id) {
 
     if(last_check_nmea_time+300 < millis()){
       last_check_nmea_time = millis();
-      enqueueTask(createLoadReplayTask());
+      enqueueTask(createLoadReplayTask());  // Core1 に次の NMEA 行の読み込みを依頼
     }
   }
 
@@ -565,12 +621,15 @@ void gps_loop(int id) {
 }
 
 
-extern int max_adreading;
-//GPS情報のCSV保存を試みる。
+extern int max_adreading;  // display_tft.cpp で計測したバッテリー ADC 最大値
+
+// GPS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
+// 1秒に1回だけ保存するようにクールダウンを設けている（NMEA の都合で同一秒に複数回 update が来るため）。
+// リプレイモードとデモモードでは保存しない。
 void try_enque_savecsv(){
   bool all_valid = true;
   if (gps.location.isValid()) {
-    // Check if the location fix is valid
+    // 衛星数が有効なら fixtype=2（3D フィックス相当）とする
     if (gps.satellites.isValid()) {
       stored_fixtype = 2;
     } else {
@@ -581,22 +640,21 @@ void try_enque_savecsv(){
     all_valid = false;
     stored_fixtype = 0;
   }
-  // Print date
   if (!gps.date.isValid()) {
     DEBUG_PLN(20250923,"Date: Not Available");
     all_valid = false;
   }
-  // Print time
   if (!gps.time.isValid()) {
     DEBUG_PLN(20250923,"Time: Not Available");
     all_valid = false;
   }
 
-  if(all_valid && millis() - last_gps_save_time > 900){ //NMEAの都合で1秒あたり2,3回のlocation update があり、1秒に１度のみ更新したい。max 995程度だが900にしておく。
+  // 位置・日時が全て揃っていて、前回保存から 900ms 以上経過した時のみ保存
+  if(all_valid && millis() - last_gps_save_time > 900){
     if(!get_demo_biwako()){ //デモは別の場所で登録済み。
       add_latlon_track(get_gps_lat(),get_gps_lon());
     }
-    
+
     //リプレイは保存しない。
     if(!getReplayMode()){
       DEBUG_P(20250923,"SAVED!");
@@ -621,6 +679,9 @@ void try_enque_savecsv(){
 
 
 
+// 現在の緯度を返す。
+// デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
+// 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
 double get_gps_lat() {
   if (demo_biwako) {
     return demo_biwako_lat;
@@ -722,6 +783,9 @@ double get_gps_truetrack() {
 }
 
 
+// 磁気方位（Magnetic Track）を返す。
+// 日本の磁気偏差はおよそ +7〜+9 度（西偏）なので、真方位に +8 度加算する。
+// 正確な偏差は地域・年によって変わるため、settings.h で調整する。
 double get_gps_magtrack() {
   double temp = get_gps_truetrack() + 8.0;
   if (temp > 360.0) {
