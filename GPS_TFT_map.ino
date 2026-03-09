@@ -55,6 +55,13 @@ unsigned long last_course_warning_time = 0;      // 直近の警告発報時刻 
 unsigned long last_destination_toofar_time = 0;  // 直近の「目的地が遠すぎる」警告時刻 [millis]
 double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 度。正=右、負=左)
 
+// --- 大気データ シリアル出力タイミング管理 ---
+unsigned long last_airdata_print_time = 0;  // 最後に気温・気圧を Serial 出力した時間 [millis]
+
+// --- ユーザーLED 制御 ---
+// userled_forced_on: タスクキュー溢れなど重篤エラー時に永続点灯させるフラグ（一度 true になったらリセットまで戻らない）
+volatile bool userled_forced_on = false;
+
 // Core1 からの BMP ロード完了を受けて次ループで即再描画させるための volatile フラグ
 // （Core1 が書き込み、Core0 が読む。volatile で最適化を防ぐ）
 volatile int scaleindex = 3;    // scalelist のインデックス（初期値 3 = SCALE_LARGE_GMAP）
@@ -72,6 +79,32 @@ void longPressCallback();
 // Create Button objects
 Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
 
+// USERLED フラッシュ制御（Core0 のループから毎回呼ぶ）。
+// 条件ごとの LED 動作:
+//   永続点灯 (userled_forced_on): タスクキュー溢れなどの致命エラー → 消灯しない
+//   フラッシュ: 0衛星 or SDエラー → 1秒に1回、20ms だけ点灯
+//   正常時: LED 消灯
+void loop_userled() {
+  if (userled_forced_on) return;  // 致命エラー時は永続点灯のまま
+
+  bool should_flash = (get_gps_numsat() == 0) || !good_sd();
+
+  if (!should_flash) {
+    digitalWrite(USERLED_PIN, LOW);
+    return;
+  }
+
+  // 1秒周期で 20ms だけ点灯
+  static unsigned long last_flash_time = 0;
+  unsigned long now = millis();
+  if (now - last_flash_time >= 1000) {
+    last_flash_time = now;
+    digitalWrite(USERLED_PIN, HIGH);
+  } else if (now - last_flash_time >= 20) {
+    digitalWrite(USERLED_PIN, LOW);
+  }
+}
+
 //===============SET UP CORE0=================
 // Core0 の初期化処理。
 // 初期化順の注意:
@@ -79,6 +112,10 @@ Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
 //   2. GPS は TFT 初期化後に setup する（バッファオーバーフロー防止のため）。
 void setup(void) {
   Serial.begin(38400);
+
+  // ユーザーLED 初期化（起動時は消灯）
+  pinMode(USERLED_PIN, OUTPUT);
+  digitalWrite(USERLED_PIN, LOW);
 
 #ifndef RELEASE
   // デバッグ時はシリアルモニタが繋がるまで待機（RELEASE では即開始）
@@ -111,9 +148,8 @@ void setup(void) {
   redraw_screen = true;
   enqueueTask(createLogSdTask("SETUP DONE"));
 
-  //under construciton.
-  //airdata_setup();
-  //airdata_test();
+  // 大気データ（MS5611）初期化（Core0 で実行）
+  airdata_setup();
 }
 
 
@@ -162,6 +198,20 @@ void loop() {
   //switch handling
   sw_push.read();
   gps_loop(0);  // ループ先頭で GPS データを受信
+  loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
+
+  // 大気データ更新（非ブロッキングのステートマシン。毎ループ呼ぶことで約50Hzで計測）
+  airdata_update();
+
+  // 1秒ごとに気温・気圧を Serial に出力
+  if (millis() - last_airdata_print_time >= 1000) {
+    last_airdata_print_time = millis();
+    if (get_airdata_ok()) {
+      //Serial.print("Temp: ");    Serial.print(get_airdata_temperature(), 2);
+      //Serial.print(" C  Press: "); Serial.print(get_airdata_pressure(), 2);
+      //Serial.println(" hPa");
+    }
+  }
 
 #ifndef RELEASE
   // デバッグ時: PC シリアルから GPS モジュールへコマンドを転送可能
@@ -342,6 +392,9 @@ void loop() {
       if (get_demo_biwako()) {
         draw_demo_biwako();  // 琵琶湖デモ表示（見た目や警告音などに慣れるための練習用）
       }
+      if (getReplayMode()) {
+        draw_replay_indicator();  // リプレイモード中であることを赤枠付きで通知
+      }
       draw_km_distances(scale);  // 画面左下のスケールバー
 
       draw_triangle(new_truetrack, steer_angle);  // 自機位置の三角形マーカー
@@ -355,7 +408,7 @@ void loop() {
         draw_nogmap(scale);  // BMP がない時は「地図なし」インジケータを表示
       }
 
-      draw_headertext(degpersecond);  // ヘッダーに速度・コースなどのテキストを描画
+      draw_gs_track();  // ヘッダーに速度・コースなどのテキストを描画
       draw_map_footer();
       draw_nomapdata();
       gps_loop(6);        // 描画の合間に GPS データを受信
@@ -505,7 +558,7 @@ void longPressCallback() {
 // サンプル配列を現在の真方位で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
 void reset_degpersecond() {
   float track = get_gps_truetrack();
-  for (int i = 1; i < NUM_SAMPLES; i++) {
+  for (int i = 0; i < NUM_SAMPLES; i++) {
     truetrack_samples[i] = track;
   }
   degpersecond = 0;

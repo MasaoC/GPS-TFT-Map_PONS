@@ -51,7 +51,7 @@ bool gps_connection = false;  // GPS モジュールから1文字でも受信し
 bool demo_biwako = false;     // 琵琶湖デモモード（GPS を使わず仮想位置を生成する）
 
 // --- 衛星情報・NMEA ログ ---
-SatelliteData satellites[32];              // 最大 32 衛星分のデータを保持（PRN 0 = 空き）
+SatelliteData satellites[MAX_SATELLITES];  // 最大 MAX_SATELLITES 衛星分のデータを保持（PRN 0 = 空き）
 char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];   // 直近 NMEA 文のリングバッファ
 unsigned long last_nmea_time[MAX_LAST_NMEA];     // 各 NMEA 文の受信時刻
 unsigned long last_gps_setup_time = 0;   // 最後に gps_setup() を呼んだ時刻（再接続ガード用）
@@ -125,7 +125,7 @@ unsigned long get_gps_nmea_time(int i){
 // 衛星が地平線以下に沈んだり、受信が途絶えた場合に古い情報が残らないようにするため。
 void removeStaleSatellites() {
   unsigned long currentMillis = millis();
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < MAX_SATELLITES; i++) {
     if (satellites[i].PRN != 0 && (currentMillis - satellites[i].lastReceived > 30000)) {
       satellites[i].PRN = 0;  // PRN を 0 にリセットして「空き」とみなす
     }
@@ -147,13 +147,15 @@ void parseGSV(char *nmea) {
   int satelliteType = SATELLITE_TYPE_UNKNOWN;
   if (strstr(nmea, "$GPGSV")) {
     satelliteType = SATELLITE_TYPE_GPS;
-    //satelliteType = SATELLITE_TYPE_QZSS;//Undistinguishable from the GPGSV.
+    //satelliteType = SATELLITE_TYPE_QZSS;//LC86GPAMD のとき、Undistinguishable from the GPGSV.
   } else if (strstr(nmea, "$GLGSV")) {
     satelliteType = SATELLITE_TYPE_GLONASS;
   } else if (strstr(nmea, "$GAGSV")) {
     satelliteType = SATELLITE_TYPE_GALILEO;
   } else if (strstr(nmea, "$GBGSV")) {//$BDGSV
     satelliteType = SATELLITE_TYPE_BEIDOU;
+  } else if (strstr(nmea, "$GQGSV")) {
+    satelliteType = SATELLITE_TYPE_QZSS;  // QZSS専用talker（NMEA 4.11）。PRNは1〜10のままで保存。
   }
 
 
@@ -202,18 +204,27 @@ void parseGSV(char *nmea) {
 
     // Validate parsed values and update satellite data
     if (prn > 0 && prn < 200) {
-      for (int j = 0; j < 32; j++) {
-        if (satellites[j].PRN == prn || satellites[j].PRN == 0) {
+      bool satellite_stored = false;
+      for (int j = 0; j < MAX_SATELLITES; j++) {
+        // 複合キー（PRN + satelliteType）で重複検索 — 同PRNでも星座が違えば別スロット
+        if ((satellites[j].PRN == prn && satellites[j].satelliteType == satelliteType) || satellites[j].PRN == 0) {
           satellites[j].PRN = prn;
           satellites[j].elevation = (elevation >= 0 && elevation <= 90) ? elevation : satellites[j].elevation;
           satellites[j].azimuth = (azimuth >= 0 && azimuth < 360) ? azimuth : satellites[j].azimuth;
-          satellites[j].SNR = (snr >= 0) ? snr : satellites[j].SNR;
+          satellites[j].SNR = (snr >= 0 && snr <= 99) ? snr : satellites[j].SNR;  // 上限チェック（390など異常値を棄却）
           satellites[j].satelliteType = satelliteType;
           if(193 <= prn && prn  <= 199)
             satellites[j].satelliteType = SATELLITE_TYPE_QZSS;
           satellites[j].lastReceived = millis();
+          satellite_stored = true;
           break;
         }
+      }
+      if (!satellite_stored) {
+        // MAX_SATELLITES を超過して格納できなかった → SDログ＋シリアル警告
+        DEBUGW_P(20250509, "WARN: satellites[] full, dropped PRN=");
+        DEBUGW_PLN(20250509, prn);
+        enqueueTask(createLogSdfTask("WARN:sat full PRN=%d type=%d", prn, satelliteType));
       }
     } else {
       DEBUGW_P(20250508,"Invalid PRN parsed");
@@ -268,8 +279,8 @@ int setupcounter = 1;  // gps_setup() の呼び出し回数（1=初回、2以降
 //   4回目: 38400 bps で直接接続
 void gps_setup() {
   last_gps_setup_time = millis();
-  DEBUG_P(20251025,"GPS SETUP:setupcounter=");
-  DEBUG_PLN(20251025,setupcounter);
+  DEBUG_P(20260307,"GPS SETUP:setupcounter=");
+  DEBUG_PLN(20260307,setupcounter);
 
   readfail_counter = 0;
   if(setupcounter != 1){
@@ -285,7 +296,7 @@ void gps_setup() {
       DEBUG_PLN(20251025,"QUECTEL 38400");
       GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
       GPS_SERIAL.begin(38400);
-    #elif MEADIATEK_GPS
+    #elif defined(MEADIATEK_GPS)
       DEBUG_PLN(20251025,"MEDIATEK 38400");
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
       gps_getposition_mode();
@@ -295,8 +306,10 @@ void gps_setup() {
       GPS_SERIAL.end();
       delay(50);//（Do not delete without care.)
       GPS_SERIAL.begin(38400);
-    #elif UBLOX_GPS
+    #elif defined(UBLOX_GPS)
       DEBUG_PLN(20251025,"UBLOX 38400");
+      GPS_SERIAL.setFIFOSize(1024);//バッファオーバーフロー防止（デフォルト32バイトでは不足）
+      GPS_SERIAL.begin(9600);  // u-blox工場デフォルトは9600bps。まずこのボーレートで開いてからコマンドを送る
       // Configure GPS baud rate
       const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
       delay (50);// なぜか必要（Do not delete without care.)
@@ -461,12 +474,14 @@ void process_char(char c){
       time_lastnmea = millis();
       nmea_buffer1[index_buffer1-1] = '\0';  // 末尾の改行を null で置換して文字列化
       // 直近 NMEA ログのリングバッファに追記
-      strcpy(last_nmea[stored_nmea_index],nmea_buffer1);
+      strncpy(last_nmea[stored_nmea_index], nmea_buffer1, NMEA_MAX_CHAR - 1);
+      last_nmea[stored_nmea_index][NMEA_MAX_CHAR - 1] = '\0';
       last_nmea_time[stored_nmea_index] = millis();
       stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
       #ifdef DEBUG_NMEA
-      //DEBUG_P(20250923,index_buffer1);
-      //DEBUG_PLN(20250923,nmea_buffer1);
+      DEBUG_P(20250923,index_buffer1);
+      DEBUG_PLN(20250923,nmea_buffer1);
+      //enqueueTask(createLogSdTask(nmea_buffer1));  // NMEA全文をSDに保存
       #endif
       // GSV 文は TinyGPS++ が解析しないため、自前でパースする
       if(strstr(nmea_buffer1, "GSV")){
@@ -497,9 +512,9 @@ void set_replaymode(bool replaymode){
 //   - FIFO バッファが 256 を超えている → 警告ログを出す
 void gps_loop(int id) {
 
-  // 10 秒以上 NMEA が途絶えた場合は GPS を再初期化する
-  if(GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 10000 && millis() - last_gps_setup_time > 10000){
-    DEBUGW_PLN(20250923,"Lost NMEA MSG for 10 seconds. resetup.");
+  // 30 秒以上 NMEA が途絶えた場合は GPS を再初期化する
+  if(GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 30000 && millis() - last_gps_setup_time > 30000){
+    DEBUGW_PLN(20250923,"Lost NMEA MSG for 30 seconds. resetup.");
     gps_setup();
   }
   if(GPS_SERIAL.available() > 256){

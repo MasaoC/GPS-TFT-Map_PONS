@@ -12,7 +12,7 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20260220
+#define BUILDDATE 20260309
 #define BUILDVERSION "0.9"
 #define VERSION_TEXT "Version 6"
 
@@ -27,9 +27,9 @@
 
 //----------GPS---------
 //#define DEBUG_NMEA
-#define QUECTEL_GPS
+//#define QUECTEL_GPS
 //#define MEADIATEK_GPS
-//#define UBLOX_GPS
+#define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
@@ -61,7 +61,7 @@
 // =====Hardware Settings =====
 
 // Hardware Ver6
-#define SW_PUSH 30//35  //30(v6 proto)
+#define SW_PUSH 35  //30(v6 proto)
 #define BATTERY_PIN 40 //A0
 #define TFT_BL  -1
 #define GPS_SERIAL Serial1
@@ -69,6 +69,7 @@
 #define GPS_RX 1
 
 #define USB_DETECT 31
+#define USERLED_PIN 34
 
 #define SD_CS_PIN -1
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
@@ -83,6 +84,7 @@
 
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
+#define USERLED_PIN 34 //ユーザーLED（エラー表示用。エラー時 HIGH）
 
 
 #define SIN_VOLUME 0.15f // WAVファイルの音量と合わせるために、Sin wave音の音量は下げられていますが、ここで調整可能です。0〜1.0f

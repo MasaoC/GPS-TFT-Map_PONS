@@ -57,11 +57,13 @@
     void getNavigationMode(char* buffer, size_t bufferSize);
     void setScaleIndex(const char* value);
     void getScaleIndex(char* buffer, size_t bufferSize);
+    void setUpwardMode(const char* value);
+    void getUpwardMode(char* buffer, size_t bufferSize);
     bool loadSettings();
     bool saveSettings();
 
 
-  #define TASK_QUEUE_SIZE 10
+  #define TASK_QUEUE_SIZE 20  // ピーク時（コース警告4トーン+WAV+地図+CSV+ログ）で約10タスク。余裕を持たせて20。RAM増加は+2.6KBのみ。
 
 
   typedef struct {

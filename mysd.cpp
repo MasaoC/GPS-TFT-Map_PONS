@@ -84,7 +84,8 @@ SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"destination",     setDestination,    getDestination},
   {"navigation_mode", setNavigationMode, getNavigationMode},
-  {"scaleindex",      setScaleIndex,     getScaleIndex}
+  {"scaleindex",      setScaleIndex,     getScaleIndex},
+  {"upward_mode",     setUpwardMode,     getUpwardMode}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -92,6 +93,7 @@ extern int destination_mode;
 extern int scaleindex;
 extern double scalelist[6];
 extern double scale;
+extern int upward_mode;  // display_tft.cpp で定義。0=TRACKUP, 1=NORTHUP
 
 
 // 全設定を settings.txt に保存する。
@@ -265,6 +267,19 @@ void setScaleIndex(const char* value) {
     DEBUGW_P(20250508,"ERR scale index:");
     DEBUGW_PLN(20250508,indexofsetting);
     enqueueTask(createLogSdfTask("ERR scale index(%s)",value));
+  }
+}
+
+// 地図方向モード（NORTHUP=1 / TRACKUP=0）の getter / setter
+void getUpwardMode(char* buffer, size_t bufferSize) {
+  if (bufferSize <= 0) return;
+  snprintf(buffer, bufferSize, "%d", upward_mode);
+}
+
+void setUpwardMode(const char* value) {
+  int mode = atoi(value);
+  if (mode >= 0 && mode < 2) {  // 0=TRACKUP, 1=NORTHUP
+    upward_mode = mode;
   }
 }
 
@@ -447,14 +462,20 @@ void enqueueTaskWithAbortCheck(Task newTask) {
   enqueueTask(newTask);
 }
 
+extern volatile bool userled_forced_on;  // GPS_TFT_map.ino で定義
+
 // タスクをリングバッファに追加する（ミューテックス保護）。
 // バッファが満杯の場合は追加せずにスキップする（タスクロスト）。
+// タスクロスト時は USERLED_PIN を永続点灯してエラーを通知する。
 void enqueueTask(Task task) {
   mutex_enter_blocking(&taskQueueMutex);
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
   if (nextTail != taskQueue.head) {  // キューに空きがある場合だけ追加
     taskQueue.tasks[taskQueue.tail] = task;
     taskQueue.tail = nextTail;
+  } else {
+    userled_forced_on = true;         // 永続点灯フラグを立てる（loop_userled がフラッシュで消さないよう保護）
+    digitalWrite(USERLED_PIN, HIGH);  // キュー満杯によるタスクロスト → LED 永続点灯
   }
   mutex_exit(&taskQueueMutex);
 }
@@ -834,31 +855,62 @@ void dateTime(uint16_t* date, uint16_t* time) {
 
 
 
+// SD の状態に応じて 10秒クールダウン付きで setup_sd(1) による回復を試みる。
+// 複数の SD 操作関数から共通で呼ぶヘルパー。
+// ケース1: 未初期化かつエラーなし（起動直後に setup_sd が失敗した状態）→ 即時リトライ
+// ケース2: sdError 中 → 10秒ごとにリトライ
+// どちらも lasttrytime_sd でクールダウンを管理する。
+static void try_sd_recovery() {
+  if (!sdInitialized && !sdError) {
+    if (millis() - lasttrytime_sd > 10000) {
+      lasttrytime_sd = millis();
+      setup_sd(1);
+    }
+  } else if (sdError) {
+    if (millis() - lasttrytime_sd > 10000) {
+      lasttrytime_sd = millis();
+      setup_sd(1);
+    }
+  }
+}
+
 // SD カードが正常に使用できる状態かどうかを返す。
 // sdInitialized（初期化成功）かつ sdError（書き込みエラーなし）の両方が満たされているとき true。
+// sdError 中は try_sd_recovery() で回復を試み、10秒ごとにリトライする。
 bool good_sd(){
+  try_sd_recovery();
   return sdInitialized && !sdError;
 }
 
 
 // log.txt に「起動からの経過秒:テキスト」の形式で 1 行追記する。
+// good_sd() で回復チェックも兼ねて使用可否を確認する。
 // 書き込み失敗時は sdError=true にして以降の書き込みを無効化する。
+//
+// SD.open()/close() を毎回呼ぶのではなく、静的 FsFile を使い回すことで
+// open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
+static FsFile logFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
+
 void log_sd(const char* text){
-  FsFile logFile = SD.open("log.txt", FILE_WRITE);
-  if(!logFile){
+  if (!good_sd()) {
+    if (logFileStatic.isOpen()) logFileStatic.close();  // SDエラー時はファイルをリセット
+    return;
+  }
+
+  // ファイルが未オープンの場合のみ open する（毎回 open/close しない）
+  if (!logFileStatic.isOpen()) {
+    logFileStatic = SD.open("log.txt", FILE_WRITE);
+  }
+  if(!logFileStatic){
     DEBUGW_PLN(20250508,"ERR LOG. SD FAIL");
     sdError = true;
     return;
   }
 
-  // if the file opened okay, write to it:
-  if (logFile) {
-    char logtext[100];   // array to hold the result.
-    sprintf(logtext,"%d:%s",(int)(millis()/1000),text);
-    logFile.println(logtext);
-    // close the file:
-    logFile.close();
-  }
+  char logtext[100];   // array to hold the result.
+  snprintf(logtext, sizeof(logtext), "%d:%s",(int)(millis()/1000),text);
+  logFileStatic.println(logtext);
+  logFileStatic.flush();  // close() の代わりに flush() でデータを確定する
 }
 
 
@@ -880,20 +932,15 @@ void log_sdf(const char* format, ...){
 // 以降は同じファイルに追記し続ける（例: 2025-05-08_1230.csv）。
 // ヘッダ行は headerWritten フラグで 1 回だけ書く。
 // SD エラー時は 10 秒ごとに setup_sd(1) でリトライを試みる。
-void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
-  if (!sdInitialized && !sdError) {
-    sdInitialized = SD.begin(SD_CS_PIN);
-    if (!sdInitialized) {
-      sdError = true;
-      return;
-    }
-  }
+//
+// SD.open()/close() を毎回呼ぶのではなく、静的 FsFile を使い回すことで
+// open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
+static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
 
-  if(sdError){
-    if(millis()-lasttrytime_sd > 10000){//10秒以上たっていたら、リトライ
-      lasttrytime_sd = millis();
-      setup_sd(1);
-    }
+void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
+  // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
+  if (!good_sd()) {
+    if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
     return;
   }
 
@@ -908,43 +955,46 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
   }
 
   char csv_filename[30];
-  sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  snprintf(csv_filename, sizeof(csv_filename), "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
 
-  FsFile csvFile = SD.open(csv_filename, FILE_WRITE);
+  // ファイルが未オープンの場合のみ open する（毎回 open/close しない）
+  if (!csvFileStatic.isOpen()) {
+    csvFileStatic = SD.open(csv_filename, FILE_WRITE);
+  }
 
-  if (csvFile) {
+  if (csvFileStatic) {
     if(!headerWritten){
-      csvFile.println("latitude,longitude,gs,TrueTrack,Altitude,numsat,voltage,date,time");
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,Altitude,numsat,voltage,date,time");
       headerWritten = true;
     }
 
-    csvFile.print(latitude, 6);
-    csvFile.print(",");
-    csvFile.print(longitude, 6);
-    csvFile.print(",");
-    csvFile.print(gs, 1);
-    csvFile.print(",");
-    csvFile.print(ttrack);
-    csvFile.print(",");
-    csvFile.print(altitude,2);
-    csvFile.print(",");
-    csvFile.print(numsat);
-    csvFile.print(",");
-    csvFile.print(voltage,2);
-    csvFile.print(",");
+    csvFileStatic.print(latitude, 6);
+    csvFileStatic.print(",");
+    csvFileStatic.print(longitude, 6);
+    csvFileStatic.print(",");
+    csvFileStatic.print(gs, 1);
+    csvFileStatic.print(",");
+    csvFileStatic.print(ttrack);
+    csvFileStatic.print(",");
+    csvFileStatic.print(altitude,2);
+    csvFileStatic.print(",");
+    csvFileStatic.print(numsat);
+    csvFileStatic.print(",");
+    csvFileStatic.print(voltage,2);
+    csvFileStatic.print(",");
 
     // Format date as YYYY-MM-DD
     char date[11];
-    sprintf(date, "%04d-%02d-%02d", year, month, day);
-    csvFile.print(date);
-    csvFile.print(",");
+    snprintf(date, sizeof(date), "%04d-%02d-%02d", year, month, day);
+    csvFileStatic.print(date);
+    csvFileStatic.print(",");
 
     // Format time as HH:MM:SS
     char time[9];
-    sprintf(time, "%02d:%02d:%02d", hour, minute, second);
-    csvFile.println(time);
+    snprintf(time, sizeof(time), "%02d:%02d:%02d", hour, minute, second);
+    csvFileStatic.println(time);
 
-    csvFile.close();
+    csvFileStatic.flush();  // close() の代わりに flush() でデータを確定する
     sdError = false; // Reset SD error flag after successful write
   } else {
     if (!sdError) {
@@ -1086,7 +1136,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   char current_sprite_id[36];
   int maplat4 = round(map_lat*100);
   int maplon5 = round(map_lon*100);
-  sprintf(current_sprite_id,"%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
+  snprintf(current_sprite_id, sizeof(current_sprite_id), "%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
 
   //Already loaded.
   if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded_active){
@@ -1121,7 +1171,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   strcpy(lastsprite_id,current_sprite_id);
 
   char filename[36];
-  sprintf(filename, "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);
+  snprintf(filename, sizeof(filename), "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);
 
 
   // Open BMP file

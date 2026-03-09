@@ -284,12 +284,7 @@ Setting menu_settings[] = {
       toggle_mode();
     },
     nullptr,
-    [](){
-      if(! is_trackupmode())
-        return COLOR_GREEN;
-      else
-        return COLOR_RED;
-    }
+    nullptr
   },
 
   // ----------------------------------------------------------

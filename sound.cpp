@@ -247,9 +247,10 @@ void startPlayWav(const char* filename, int priority) {
         activeBuffer = loadBuffer;
         loadBuffer = temp;
 
-        setAmplifierState(true);   // アンプを ON にする
         bufferPos = 0;
         wav_playing = true;
+        if(sound_volume == 0){ return; }  // volume=0 ならアンプ ON しない（ポップノイズ防止）
+        setAmplifierState(true);   // アンプを ON にする
         wav_playing_priority = priority;
         DEBUG_P(20250424,"Playback started");
     } else {
@@ -260,7 +261,9 @@ void startPlayWav(const char* filename, int priority) {
 // 再生を停止し、アンプをシャットダウンする。
 void stopPlayback() {
     wav_playing = false;
-    delay(50);  // 割り込みが確実に止まるまで待つ
+    delay(5);  // 割り込みが確実に止まるまで待つ
+    pwm_set_gpio_level(PIN_PWMTONE, 128);  // 無音レベルに戻す（プツッ防止）
+    delay(5);  // 信号が 128 に安定してからアンプを切る
     setAmplifierState(false);
     DEBUG_P(20250424,"Playback stopped");
 }
@@ -330,7 +333,7 @@ void loop_sound(){
 }
 
 
-
+// 最後に音が鳴った時のtrue track、つまり "track" 音声再生用のために、前回の GPS 真方位を記録しておく変数。
 float last_tone_tt = 0;  // 前回の update_tone() 呼び出し時の GPS 真方位 [deg]
 
 // ============================================================
@@ -483,14 +486,14 @@ void update_tone(float degpersecond){
         DEBUG_PLN(20250508,"errrr");
         return;
     }
-    last_update_tone - millis();
+    last_update_tone = millis();
 
   // 前回の方位との差を計算し、-180〜+180 の範囲に収める
   int relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
-    relativedif -= 180;
+    relativedif -= 360;
   if(relativedif < -180)
-    relativedif += 180;
+    relativedif += 360;
   int angle_diff = abs(relativedif);
 
   //【警告1】方位変化が 15° 超 → コース逸脱警告
@@ -528,7 +531,9 @@ void update_tone(float degpersecond){
 //   - → 1 秒間に frequency 回テーブルをループすることで周波数が決まる
 void playNextNote(int frequency) {
     phaseAcc = 0;  // 位相をリセット（音が途切れないよう最初は 0 から）
+    
     phaseInc = (frequency * tableSize * (1ULL << 24)) / 16150; // 1ULL で 64bit 演算してオーバーフロー防止
+    //16150 は sampleRate より少し高めにして、実際の周波数がやや高く出るように補正（耳で聞いた感じの補正、スピーカーの特性を考慮）
     DEBUG_P(20250412,"FRQ: ");
     DEBUG_PLN(20250412,frequency);
 }

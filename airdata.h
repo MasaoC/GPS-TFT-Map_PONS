@@ -2,15 +2,32 @@
 // File    : airdata.h
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : 大気データ取得モジュールのヘッダー（開発中）。
-//           気圧センサー（MS5611）から高度・気圧を取得する予定。
-//           現時点は setup / test 関数の宣言のみ。
+//           気圧センサー（MS5611）から高度・気圧・気温を取得する。
+//           airdata_update() をループから毎回呼ぶ非ブロッキング方式。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/04
 // ============================================================
 
 #ifndef AIRDATA_H
   #define AIRDATA_H
   #include <Arduino.h>
+
+  // 初期化・テスト
   void airdata_setup();
   void airdata_test();
+
+  // 非ブロッキング計測（ループから毎回呼ぶ）
+  // 1サイクル（気圧＋温度）完了時に true を返す（約20msごと）
+  bool airdata_update();
+
+  // MS5611 が正常に接続・初期化されているか（airdata_setup() 後に確定）
+  bool  get_airdata_ok();
+
+  // 最新計測値のゲッター（airdata_update() が true を返した後に更新）
+  float get_airdata_altitude();     // 気圧高度 [m]
+  float get_airdata_pressure();     // 気圧 [hPa]
+  float get_airdata_temperature();  // 気温 [℃]
+
+  // 気圧→高度変換（QNH 指定可能）
+  float pressure_to_altitude(float pressure_hpa, float sea_level_hpa = 1013.25f);
 #endif

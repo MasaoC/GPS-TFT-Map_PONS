@@ -22,6 +22,7 @@
 
   #define MAX_LAST_NMEA 16
   #define NMEA_MAX_CHAR 100
+  #define MAX_SATELLITES 48  // GPS(12)+GLONASS(8)+Galileo(8)+BeiDou(8)+QZSS(4) 最大同時可視≒40、余裕を持たせて48
 
   struct SatelliteData {
     int PRN = 0;
@@ -31,7 +32,7 @@
     int satelliteType = SATELLITE_TYPE_UNKNOWN;
     unsigned long lastReceived = 0;
   };
-  extern SatelliteData satellites[32];
+  extern SatelliteData satellites[MAX_SATELLITES];
   extern char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
   extern int stored_nmea_index;
   extern unsigned long time_lastnmea;

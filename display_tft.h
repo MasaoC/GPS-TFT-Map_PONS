@@ -86,7 +86,7 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
 
 
 
-void draw_headertext(double degpersecond);
+void draw_gs_track();
 void draw_loading_image();
 void draw_nogmap(double scale);
 bool draw_gmap(float drawupward_direction);
@@ -134,6 +134,7 @@ bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
 void startup_demo_tft();
 void draw_demo_biwako();
+void draw_replay_indicator();
 void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 void draw_triangle(int ttrack,int steer_angle);
