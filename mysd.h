@@ -38,14 +38,16 @@
     } SDSetting;
 
 
-    void setup_sd(int trycount);
+    void setup_sd(int trycount, bool load_settings = true);
+    bool get_sd_use_spi();    // 現在 SPI モードで動作中なら true（通常は SDIO = false）
+    int  get_sd_setup_count(); // setup_sd() の累計呼び出し回数
 
     void init_replay();
     void load_replay();
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second);
+    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second);
     void load_mapimage(double center_lat, double center_lon,int zoomlevel);
 
     // Forward declarations of example getter/setter functions
@@ -81,6 +83,7 @@
               float gs;
               int mtrack;
               float altitude;
+              float pressure;
               int numsats;
               float voltage;
               int year, month, day, hour, minute, second;
@@ -114,7 +117,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
   Task createPlayWavTask(const char* filename,int priority=1);

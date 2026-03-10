@@ -47,6 +47,55 @@ volatile bool endOfFile = false;            // ファイル末尾に達したフ
 volatile bool bufferReady[2] = {false, false};  // 各バッファにデータが入っているか
 volatile bool bufferSwapRequest = false;    // 割り込み→メインへのバッファスワップ依頼フラグ
 
+// ============================================================
+// 優先度付き WAV 再生制御 — ペンディングキュー（最大2件）
+//
+// 高優先 WAV が割り込んで低優先 WAV を中断した場合、中断された WAV を
+// pending_wav[] に保存する。再生終了後に最も高優先の pending を自動再生。
+//
+// ポインタは文字列リテラルを指すため寿命は無限（コピー不要）。
+// filename == nullptr のスロットは「空き」。
+// ============================================================
+struct PendingWav { const char* filename; int priority; };
+static const char* current_wav_filename  = nullptr;  // 現在再生中のファイル名
+static PendingWav  pending_wav[2]        = {{nullptr, 0}, {nullptr, 0}};
+
+// pending_wav[] に filename を追加する。
+// 空きスロットがあれば追加、両方埋まっている場合は最も低優先なスロットを上書き。
+static void push_pending_wav(const char* filename, int priority) {
+    // 同じファイルが既に pending にあれば無視（重複防止）
+    for (int i = 0; i < 2; i++) {
+        if (pending_wav[i].filename == filename) return;
+    }
+    // 空きスロットを探す
+    for (int i = 0; i < 2; i++) {
+        if (pending_wav[i].filename == nullptr) {
+            pending_wav[i] = {filename, priority};
+            return;
+        }
+    }
+    // 両方埋まっている → 最も低優先なスロットを上書き
+    int lowest = (pending_wav[0].priority <= pending_wav[1].priority) ? 0 : 1;
+    if (priority > pending_wav[lowest].priority) {
+        pending_wav[lowest] = {filename, priority};
+    }
+}
+
+// pending_wav[] から最も高優先のエントリを取り出してクリアする。なければ nullptr。
+static const char* pop_best_pending_wav(int &out_priority) {
+    int best = -1;
+    for (int i = 0; i < 2; i++) {
+        if (pending_wav[i].filename != nullptr) {
+            if (best < 0 || pending_wav[i].priority > pending_wav[best].priority) best = i;
+        }
+    }
+    if (best < 0) return nullptr;
+    const char* f = pending_wav[best].filename;
+    out_priority  = pending_wav[best].priority;
+    pending_wav[best] = {nullptr, 0};
+    return f;
+}
+
 
 // File object and size tracking
 FsFile audioFile;
@@ -101,7 +150,11 @@ bool timerCallback(struct repeating_timer *t) {
         return true;  // バッファが準備できていなければスキップ
     }
     // activeBuffer の現在位置から 1 サンプルを PWM に出力（音量スケール適用）
-    pwm_set_gpio_level(PIN_PWMTONE, audioBuffer[activeBuffer][bufferPos]*sound_volume/100.0);
+    // 8-bit unsigned PCM の無音値は 128。中心 128 を基準に振幅をスケールする。
+    // 単純に sample*volume/100 すると無音時に 128→0（最大負圧）になりポップノイズの原因になる。
+    // 8bit unsigned PCM (0〜255, 中心128) を 10bit PWM (0〜1023, 中心512) にスケール変換
+    // (sample - 128) で符号付き振幅 (-128〜+127) にしてから×4 で 10bit幅に拡張し、音量を掛ける
+    pwm_set_gpio_level(PIN_PWMTONE, 512 + (int)(audioBuffer[activeBuffer][bufferPos] - 128) * 4 * sound_volume / 100);
     bufferPos++;
 
     // バッファ末尾まで再生したら、メインループへスワップを依頼
@@ -114,7 +167,8 @@ bool timerCallback(struct repeating_timer *t) {
   if(sinmode){
     // 位相アキュムレータを進め、上位 8bit でテーブルを引いて Sin 波を出力
     phaseAcc += phaseInc;
-    pwm_set_gpio_level(PIN_PWMTONE, sineTable[(phaseAcc >> 24) % tableSize]*sound_volume/100.0);
+    // sineTable (0〜255, 中心128) を 10bit PWM (0〜1023, 中心512) にスケール変換
+    pwm_set_gpio_level(PIN_PWMTONE, 512 + (int)(sineTable[(phaseAcc >> 24) % tableSize] - 128) * 4 * sound_volume / 100);
   }
   //keep running
   return true;
@@ -150,9 +204,20 @@ bool loadNextChunk() {
             audioDataRead += bytesRead;
             chunksLoaded++;
             if (bytesRead < CHUNK_SIZE) {
+                // 末尾の 0x00 パディングを 128（無音）で上書きする（memset より先に行う）
+                // 8-bit unsigned PCM では 0x00 = 最大負圧（≠無音）のため、そのまま再生するとノイズになる
+                // 末尾から遡って 0x00 が続く間だけ 128 に置換する
+                int i = (int)bytesRead - 1;
+                while (i >= 0 && audioBuffer[loadBuffer][i] == 0x00) {
+                    audioBuffer[loadBuffer][i] = 128;
+                    i--;
+                }
+            
+
                 // ファイル末尾：残りバッファを 128（無音）で埋める
                 // 0 で埋めると直流成分でポップノイズが出るため 128 を使う
                 memset(audioBuffer[loadBuffer] + bytesRead, 128, CHUNK_SIZE - bytesRead);
+
                 endOfFile = true;
                 DEBUG_PLN(20250424,"endOfFile");
             }
@@ -179,11 +244,18 @@ extern bool sdError;
 //   4. 最初のチャンクを loadBuffer に読み込む
 //   5. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
 void startPlayWav(const char* filename, int priority) {
-    // 優先度チェック：再生中ファイルの優先度の方が高ければキャンセル
+    // 優先度チェック：再生中ファイルの優先度の方が高ければ新リクエストを pending に保存してリターン
     if(wav_playing && wav_playing_priority > priority){
-        DEBUGW_P(20250503,"Start play wav canceled due to priority.:");
+        push_pending_wav(filename, priority);  // 低優先の新リクエストを後で再生するために保存
+        DEBUGW_P(20250503,"Start play wav pending due to priority.:");
         DEBUGW_PLN(20250427,filename);
         return;
+    }
+    // 現在再生中の低優先 WAV を pending に退避してから上書き
+    if(wav_playing && current_wav_filename != nullptr){
+        push_pending_wav(current_wav_filename, wav_playing_priority);
+        DEBUGW_P(20250503,"Interrupted wav saved to pending.:");
+        DEBUGW_PLN(20250503,current_wav_filename);
     }
     DEBUG_P(20250503,"wav start:");
     DEBUG_PLN(20250503,priority);
@@ -216,6 +288,7 @@ void startPlayWav(const char* filename, int priority) {
         sdError = true;
         DEBUG_P(20250424,"Error opening file: ");
         DEBUG_PLN(20250424,filename);
+        enqueueTask(createLogSdTask(filename));  // SD にエラーログを保存
         enqueueTask(createPlayMultiToneTask(500, 200, 2)); // エラー音を鳴らす
         return;
     }
@@ -249,6 +322,7 @@ void startPlayWav(const char* filename, int priority) {
 
         bufferPos = 0;
         wav_playing = true;
+        current_wav_filename = filename;   // 現在再生中のファイル名を記録
         if(sound_volume == 0){ return; }  // volume=0 ならアンプ ON しない（ポップノイズ防止）
         setAmplifierState(true);   // アンプを ON にする
         wav_playing_priority = priority;
@@ -262,8 +336,8 @@ void startPlayWav(const char* filename, int priority) {
 void stopPlayback() {
     wav_playing = false;
     delay(5);  // 割り込みが確実に止まるまで待つ
-    pwm_set_gpio_level(PIN_PWMTONE, 128);  // 無音レベルに戻す（プツッ防止）
-    delay(5);  // 信号が 128 に安定してからアンプを切る
+    pwm_set_gpio_level(PIN_PWMTONE, 512); // 10bit 中点 (=無音) に戻す。これを忘れるとポップノイズが出る。
+    delay(5);  // 信号が 12 に安定してからアンプを切る
     setAmplifierState(false);
     DEBUG_P(20250424,"Playback stopped");
 }
@@ -302,7 +376,16 @@ void loop_sound(){
         } else if (endOfFile) {
             // ファイル末尾でバッファも尽きた → 再生終了
             DEBUG_PLN(20240424,"End of file reached");
+            current_wav_filename = nullptr;
             stopPlayback();
+            // pending WAV があれば最高優先のものを再生する
+            int prio = 0;
+            const char* pf = pop_best_pending_wav(prio);
+            if (pf != nullptr) {
+                DEBUGW_P(20250503,"Replaying pending wav:");
+                DEBUGW_PLN(20250503, pf);
+                startPlayWav(pf, prio);
+            }
         } else {
             // バッファアンダーラン: SD 読み込みが再生に追いつかなかった（警告のみ）
             DEBUGW_PLN(20250508,"WARNING: Buffer underrun detected!");
@@ -423,8 +506,8 @@ float nearest_note_frequency(float input_freq) {
 // 処理内容:
 //   1. アンプ制御ピン (PIN_AMP_SD) を出力に設定し、シャットダウン状態で開始
 //   2. PWM を音声出力用に設定する
-//      - clkdiv=8: 125MHz / 8 / 256 ≒ 61kHz の PWM 周波数（可聴域の十分上）
-//      - wrap=255: 8bit 分解能（0〜255）
+//      - clkdiv=2: 125MHz / 2 / 1024 ≒ 61kHz の PWM 周波数（可聴域の十分上）
+//      - wrap=1023: 10bit 分解能（0〜1023）中心=512
 //   3. 16kHz のリピートタイマーを設定して timerCallback を登録する
 //      - add_repeating_timer_us(-62, ...) ≒ 62.5μs ごとに割り込み
 //      - 負値は「前回の起動から計測」を意味し、ジッターを減らす
@@ -442,14 +525,14 @@ void setup_sound(){
   uint slice_num = pwm_gpio_to_slice_num(PIN_PWMTONE);
   pwm_config config = pwm_get_default_config();
 
-  pwm_config_set_clkdiv(&config, 8);   // クロック分周: 音質に影響するため 32 以下推奨
-  pwm_config_set_wrap(&config, 255);   // 8bit 分解能（0〜255 のデューティ比）
+  pwm_config_set_clkdiv(&config, 2);   // クロック分周: 125MHz / 2 / 1024 ≒ 61kHz の PWM 周波数
+  pwm_config_set_wrap(&config, 1023);  // 10bit 分解能（0〜1023 のデューティ比）
 
   pwm_init(slice_num, &config, true);
   gpio_set_function(PIN_PWMTONE, GPIO_FUNC_PWM);
 
-  // 初期値を中点（128）に設定して無音状態にする
-  pwm_set_gpio_level(PIN_PWMTONE, 128);
+  // 初期値を 10bit 中点（512）に設定して無音状態にする
+  pwm_set_gpio_level(PIN_PWMTONE, 512);
 
   // 16kHz の繰り返しタイマーを登録する（-62.5μs → 1/16000 秒ごとに呼ばれる）
   static struct repeating_timer timer;

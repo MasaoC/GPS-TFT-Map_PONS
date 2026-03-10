@@ -527,8 +527,10 @@ void draw_compass(float truetrack, uint16_t col) {
   cord_tft s = { int(centerx + sin(radian) * dist), int(centery + cos(radian) * dist) };
   cord_tft w = { int(centerx - cos(-radian) * dist), int(centery - sin(-radian) * dist) };
   if (!n.isOutsideTft()) {
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);  // N は赤
     backscreen.setCursor(n.x - 5, n.y - 5);
     backscreen.print("N");
+    backscreen.setTextColor(col, COLOR_WHITE);         // 残りは元の色に戻す
   }
   if (!e.isOutsideTft()) {
     backscreen.setCursor(e.x - 5, e.y - 5);
@@ -1148,17 +1150,11 @@ void startup_demo_tft() {
 // デモモード（GPS 固定前に琵琶湖をデモ飛行）中の通知ボックスを backscreen に描画する。
 // 「LAKE BIWA DEMO x5 SPD」と設定変更の案内を表示する。
 void draw_demo_biwako(){
-  backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_WHITE);
-  backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 25+5*2, COLOR_ORANGE);
+  backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 15+5*2, COLOR_WHITE);
+  backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 15+5*2, COLOR_ORANGE);
   backscreen.setCursor(25,200);
   backscreen.setTextColor(COLOR_ORANGE);
   backscreen.print("LAKE BIWA DEMO x5 SPD");
-  backscreen.setCursor(17,215);
-  backscreen.unloadFont();
-  backscreen.setTextSize(1);
-  backscreen.setTextColor(COLOR_BLACK);
-  backscreen.print("Change setting to turn on/off demo.");
-  backscreen.loadFont(AA_FONT_SMALL);
 }
 
 
@@ -1205,7 +1201,7 @@ void draw_gs_track(){
 // - タスクキューに TASK_LOAD_MAPIMAGE がある: "Loading image..." を灰色で表示。
 // - GPS 固定済みで画像なし: "No map image available." をオレンジで表示（ファイルが見つからない警告）。
 void draw_nogmap(double scale) {
-  backscreen.setCursor(5, BACKSCREEN_SIZE - 25);
+  backscreen.setCursor(5, BACKSCREEN_SIZE - 36);  // hPa 表示(BACKSCREEN_SIZE-18)との重複を避けて上にずらす
   if(scale > SCALE_EXLARGE_GMAP){
       backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
       backscreen.print("No map image at this scale.");
@@ -1378,18 +1374,9 @@ void draw_map_footer(){
 
   // 気圧高度・鉛直速度を JST 時刻の真上に表示（airdata 正常時のみ）
   if (get_airdata_ok()) {
-    static float prev_alt = 0;
-    static unsigned long prev_alt_time = 0;
-    float cur_alt = get_airdata_altitude();
-    unsigned long now = millis();
-    float vspeed = 0;
-    if (prev_alt_time > 0 && (now - prev_alt_time) > 0) {
-      vspeed = (cur_alt - prev_alt) / ((now - prev_alt_time) / 1000.0f);
-    }
-    prev_alt = cur_alt;
-    prev_alt_time = now;
     backscreen.setCursor(1, BACKSCREEN_SIZE-18);
-    backscreen.printf("%.1fhPa %.0fm %+.1fm/sV", get_airdata_pressure(), cur_alt, vspeed);
+    backscreen.printf("%.2fhPa %.1fm %+.1fm/sV",
+      get_airdata_pressure(), get_airdata_altitude(), get_airdata_vspeed());
   }
 
   if (time.isValid()) {
@@ -1814,8 +1801,23 @@ void draw_sddetail(int page) {
       backscreen.print("Stand by ...");
   }
   backscreen.pushSprite(0,40);
+
+  // フッター: setup回数（左） / SDIO or SPI 状態（右）
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_BLACK);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setCursor(1, 1);
+  header_footer.printf("SETUP: %d", get_sd_setup_count());
+  header_footer.setCursor(SCREEN_WIDTH - 55, 1);
+  if (get_sd_use_spi()) {
+    header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
+    header_footer.print("SPI");
+  } else {
+    header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    header_footer.print("SDIO");
+  }
+  header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }
 
 
@@ -1823,21 +1825,18 @@ void draw_sddetail(int page) {
 //==================MODE DRAWS===============
 
 // GPS 詳細画面を描画する（screen_mode == MODE_GPS_DETAIL 時）。
-// page % 2 == 0: スカイプロット画面（全衛星の方位・仰角を円形に描画）。
+// page % 3 == 0: スカイプロット画面（全衛星の方位・仰角を円形に描画）。
 //   - 衛星種別（GPS=シアン, GLONASS=緑, GALILEO=青, QZSS=赤, BeiDou=オレンジ）で色分け。
 //   - SNR=0 の衛星は小さい丸（追跡中だが信号弱い）。
 //   - フッターに UTC 時刻と衛星数・フィックス状態を表示。
-// page % 2 == 1: 生 NMEA 文字列の最新 MAX_LAST_NMEA 件を表示。
+// page % 3 == 1: 生 NMEA 文字列の最新 MAX_LAST_NMEA 件を表示。
 //   1 秒以内に受信した文字列は黒、古いものは灰色で表示（鮮度の視覚化）。
+// page % 3 == 2: GSA 情報画面（フィックス種別・DOP・緯度経度・使用衛星 PRN リスト）。
 void draw_gpsdetail(int page) {
-  bool aru = false;
-  for (int i = 0; i < MAX_SATELLITES; i++) {
-    if (satellites[i].PRN != 0) aru = true;  // Skip empty entries
-  }
 
   header_footer.fillScreen(COLOR_WHITE);
 
-  if (page % 2 == 1) {
+  if (page % 3 == 1) {
     tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
     header_footer.setTextSize(2);
@@ -1861,27 +1860,21 @@ void draw_gpsdetail(int page) {
     }
     tft.loadFont(AA_FONT_SMALL);  // Must load the font first
   }
-  if (page % 2 == 0) {
+  if (page % 3 == 0) {
+    // ヘッダー（凡例）: y を +10 してから pushSprite(0,-10) で push
+    // → ヘッダー底辺が screen y=39 になり backscreen(y=40) との重複10px が解消する
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
     header_footer.setTextSize(2);
-    header_footer.setCursor(1, 1);
+    header_footer.setCursor(1, 11);  // +10
     header_footer.println("GPS DETAIL 1:CONSTELLATION");
+    header_footer.setTextColor(COLOR_CYAN,   COLOR_WHITE); header_footer.setCursor(0, 28); header_footer.print("GPS ");  // +10
+    header_footer.setTextColor(COLOR_GREEN,  COLOR_WHITE); header_footer.print("GLO ");
+    header_footer.setTextColor(COLOR_BLUE,   COLOR_WHITE); header_footer.print("GAL ");
+    header_footer.setTextColor(COLOR_RED,    COLOR_WHITE); header_footer.print("QZS ");
+    header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE); header_footer.print("BEI ");
+    header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に
 
-    header_footer.setTextColor(COLOR_CYAN, COLOR_WHITE);
-    header_footer.setCursor(0,18);
-    header_footer.print("GPS ");
-    header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    header_footer.print("GLO ");
-    header_footer.setTextColor(COLOR_BLUE, COLOR_WHITE);
-    header_footer.print("GAL ");
-    header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
-    header_footer.print("QZS ");
-    header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-    header_footer.print("BEI ");
-    header_footer.pushSprite(0,0);
-
-    
-
+    // フッター（UTC・衛星数）
     header_footer.fillSprite(COLOR_WHITE);
     header_footer.setCursor(23, 5);
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
@@ -1892,19 +1885,19 @@ void draw_gpsdetail(int page) {
     }
     header_footer.setCursor(23, 17);
     header_footer.printf("%d sats, Fix=%s",get_gps_numsat(),get_gps_fix()?"yes":"no");
-
     header_footer.pushSprite(0,SCREEN_HEIGHT-40);
 
+    backscreen.fillSprite(COLOR_BLACK);                         // 暗い背景
+    backscreen.drawCircle(120, 120, 118, COLOR_GRAY);           // 外周円（地平線 0°）
+    backscreen.drawCircle(120, 120, 79, COLOR_BRIGHTGRAY);      // 仰角 30° リング
+    backscreen.drawCircle(120, 120, 39, COLOR_BRIGHTGRAY);      // 仰角 60° リング
 
-
-    backscreen.fillSprite(COLOR_WHITE);
-    backscreen.drawCircle(240 / 2, 240 / 2, 240 / 2 - 2, COLOR_BLACK);
-    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-
-    if (!aru){
-      backscreen.pushSprite(0,40);
-      return;
-    }
+    // N/E/S/W ラベルを外周に描画（N は赤）
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_RED,   COLOR_BLACK); backscreen.setCursor(116, 4);   backscreen.print("N");
+    backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK); backscreen.setCursor(116, 228); backscreen.print("S");
+    backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK); backscreen.setCursor(228, 116); backscreen.print("E");
+    backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK); backscreen.setCursor(4,   116); backscreen.print("W");
 
 
     for (int i = 0; i < MAX_SATELLITES; i++) {
@@ -1917,33 +1910,141 @@ void draw_gpsdetail(int page) {
 
       int x = calculateGPS_X(azimuth, elevation);
       int y = calculateGPS_Y(azimuth, elevation);
-      int size = 5;
-      if (satellites[i].SNR <= 0) {
-        size = 2;
-      }
 
-      if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)
-        backscreen.fillCircle(x, y, size, COLOR_RED);
-      else if (satellites[i].satelliteType == SATELLITE_TYPE_GPS)
-        backscreen.fillCircle(x, y, size, COLOR_CYAN);
-      else if (satellites[i].satelliteType == SATELLITE_TYPE_GLONASS)
-        backscreen.fillCircle(x, y, size, COLOR_GREEN);
-      else if (satellites[i].satelliteType == SATELLITE_TYPE_GALILEO)
-        backscreen.fillCircle(x, y, size, COLOR_BLUE);
-      else if (satellites[i].satelliteType == SATELLITE_TYPE_BEIDOU)
-        backscreen.fillCircle(x, y, size, COLOR_ORANGE);
-      else
-        backscreen.fillCircle(x, y, size, COLOR_BLACK);
+      uint16_t color;
+      if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)        color = COLOR_RED;
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_GPS)     color = COLOR_CYAN;
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_GLONASS) color = COLOR_GREEN;
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_GALILEO) color = COLOR_BLUE;
+      else if (satellites[i].satelliteType == SATELLITE_TYPE_BEIDOU)  color = COLOR_ORANGE;
+      else                                                             color = COLOR_GRAY;
+
+      // SNR あり: 塗りつぶし円、SNR なし: 枠線のみ（信号未確認の衛星）
+      if (satellites[i].SNR > 0) {
+        backscreen.fillCircle(x, y, 5, color);
+      } else {
+        backscreen.drawCircle(x, y, 4, color);
+      }
 
       int textx = constrain(x + 6, 0, SCREEN_WIDTH - 20);
       if (satellites[i].PRN >= 10)
         textx -= 10;
       if (satellites[i].PRN >= 100)
         textx -= 10;
+      backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
       backscreen.setCursor(textx, y - 3);
       backscreen.print(satellites[i].PRN);
     }
     backscreen.pushSprite(0,40);
+  }
+
+  // ---- page % 3 == 2: GSA 情報画面 ----------------------------------------
+  // フィックス種別・DOP値・緯度経度・UTC時刻・測位使用衛星 PRN リストを表示する。
+  if (page % 3 == 2) {
+    tft.fillScreen(COLOR_WHITE);
+
+    // ヘッダー
+    header_footer.fillSprite(COLOR_WHITE);
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    header_footer.setTextSize(2);
+    header_footer.setCursor(1, 1);
+    header_footer.println("GPS DETAIL 3: GSA INFO");
+    header_footer.pushSprite(0, 0);
+
+    tft.unloadFont();
+    tft.setTextSize(1);
+    int y = 22;
+
+    // ---- Fix Status ----
+    int fixtype = get_gps_fixtype();
+    const char* fixstr;
+    uint16_t fixcolor;
+    if      (fixtype == 3) { fixstr = "3D Fix"; fixcolor = COLOR_GREEN; }
+    else if (fixtype == 2) { fixstr = "2D Fix"; fixcolor = COLOR_ORANGE; }
+    else                   { fixstr = "No Fix"; fixcolor = COLOR_RED; }
+
+    tft.setTextSize(2);
+    tft.setTextColor(fixcolor, COLOR_WHITE);
+    tft.setCursor(1, y);
+    tft.printf("Fix: %s", fixstr);
+    y += 20;
+
+    // ---- 衛星使用数 ----
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.setCursor(1, y);
+    tft.printf("Sats used: %d / total: %d", get_gsa_numsat(), get_gps_numsat());
+    y += 14;
+
+    // ---- DOP ----
+    // DOP 値: 1未満=非常に良好(緑), 2未満=良好(黒), 5未満=やや悪い(オレンジ), 5以上=悪い(赤)
+    auto dopColor = [](float d) -> uint16_t {
+      if (d < 1.0f) return COLOR_GREEN;
+      if (d < 2.0f) return COLOR_BLACK;
+      if (d < 5.0f) return COLOR_ORANGE;
+      return COLOR_RED;
+    };
+    float pdop = get_gps_pdop();
+    float hdop = get_gps_hdop();
+    float vdop = get_gps_vdop();
+
+    tft.setCursor(1, y);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("PDOP:");
+    tft.setTextColor(dopColor(pdop), COLOR_WHITE);
+    tft.printf("%.2f  ", pdop);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("HDOP:");
+    tft.setTextColor(dopColor(hdop), COLOR_WHITE);
+    tft.printf("%.2f", hdop);
+    y += 14;
+
+    tft.setCursor(1, y);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("VDOP:");
+    tft.setTextColor(dopColor(vdop), COLOR_WHITE);
+    tft.printf("%.2f", vdop);
+    y += 18;
+
+    // ---- 緯度・経度 ----
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.setCursor(1, y);
+    tft.printf("Lat: %.6f", get_gps_lat());
+    y += 12;
+    tft.setCursor(1, y);
+    tft.printf("Lon: %.6f", get_gps_lon());
+    y += 18;
+
+    // ---- UTC 時刻・日付 ----
+    TinyGPSDate date = get_gpsdate();
+    TinyGPSTime time = get_gpstime();
+    tft.setCursor(1, y);
+    if (date.isValid() && time.isValid()) {
+      tft.printf("UTC %04d-%02d-%02d  %02d:%02d:%02d",
+        date.year(), date.month(), date.day(),
+        time.hour(), time.minute(), time.second());
+    } else {
+      tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      tft.print("UTC: --");
+    }
+    y += 18;
+
+    // ---- 測位使用衛星 PRN リスト ----
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.setCursor(1, y);
+    tft.print("PRNs in fix:");
+    y += 12;
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.setCursor(1, y);
+    int col = 0;
+    for (int i = 0; i < 12; i++) {
+      int prn = get_gsa_prn(i);
+      if (prn == 0) continue;
+      if (col > 0) tft.print(" ");
+      tft.printf("%3d", prn);
+      col++;
+      if (col == 8) { y += 12; tft.setCursor(1, y); col = 0; }
+    }
   }
 }
 
@@ -2043,7 +2144,12 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
 
   header_footer.setTextColor(COLOR_GRAY);
   if (digitalRead(USB_DETECT)) {
-    header_footer.print("Battery Time: Unknown. USB connected.");
+    double input_voltage = get_input_voltage();
+    if (input_voltage >= 4.2) {
+      header_footer.printf("Battery:Charged %.2fV", input_voltage);
+    } else {
+      header_footer.printf("Charging %.2fV", input_voltage);
+    }
   }else{
     double input_voltage = get_input_voltage();
     int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
@@ -2051,7 +2157,16 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   }
 
   header_footer.setCursor(2, 40-11);
-  header_footer.printf("CPU temp %.1fC",analogReadTemp());
+  {
+    float cpu_temp = analogReadTemp();
+    header_footer.setTextColor(cpu_temp >= 55.0f ? COLOR_RED : COLOR_GRAY);
+    header_footer.printf("CPU %.1fC", cpu_temp);
+    if (get_airdata_ok()) {
+      float sensor_temp = get_airdata_temperature();
+      header_footer.setTextColor(sensor_temp >= 45.0f ? COLOR_RED : COLOR_GRAY);
+      header_footer.printf("  Sensor %.1fC", sensor_temp);
+    }
+  }
 
   #ifndef RELEASE
   header_footer.setCursor(100,40-11);

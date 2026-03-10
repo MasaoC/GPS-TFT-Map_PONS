@@ -5,7 +5,7 @@
 //           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/09
 // ============================================================
 //====== 設定画面 =======
 
@@ -13,7 +13,7 @@
 #define RELEASE
 
 #define BUILDDATE 20260309
-#define BUILDVERSION "0.9"
+#define BUILDVERSION "0.901"
 #define VERSION_TEXT "Version 6"
 
 #define PRINTREVERSEDATE_NUM 360
@@ -74,7 +74,8 @@
 #define SD_CS_PIN -1
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
-#define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected.
+#define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
+#define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
 #define SD_DETECT 8
 
 

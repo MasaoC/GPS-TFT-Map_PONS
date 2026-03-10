@@ -346,7 +346,7 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
-Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -354,6 +354,7 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, fl
   task.saveCsvArgs.gs = gs;
   task.saveCsvArgs.mtrack = mtrack;
   task.saveCsvArgs.altitude = altitude;
+  task.saveCsvArgs.pressure = pressure;
   task.saveCsvArgs.numsats = numsats;
   task.saveCsvArgs.voltage = voltage;
   task.saveCsvArgs.year = year;
@@ -612,32 +613,68 @@ void load_destinations(){
 }
 
 // SD カードを初期化し、地図・目的地・設定を読み込む。
-// trycount: 初期化を試みる最大回数。失敗時は 100ms 待って再試行する。
+// trycount: 1回の呼び出しで SDIO を試みる最大回数。失敗時は 100ms 待って再試行する。
 // 成功時: FAT タイムスタンプコールバック登録 → ログ記録 → init_mapdata / load_destinations / loadSettings を実行。
 // 失敗時: sdInitialized=false のまま処理を戻す（Core1 タスクはエラーをユーザーに報告する）。
-void setup_sd(int trycount){
-  for(int i = 0; i < trycount; i++){
-    sdInitialized = SD.begin(SdioConfig(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO));
-    if(sdInitialized)
-      break;
-    delay(100);
+// SDIO / SPI フォールバック状態
+// setup_sd() 自体が SDIO 失敗を 5 回繰り返した場合に SPI に切り替える（呼び出し回数カウント方式）。
+// SDIO が復活した場合は自動的に SDIO に戻る。
+static bool sd_use_spi = false;
+static int sdio_fail_count = 0;  // setup_sd() が SDIO 失敗した累計呼び出し回数
+static int sd_setup_count = 0;   // setup_sd() の累計呼び出し回数
+
+bool get_sd_use_spi()    { return sd_use_spi; }
+int  get_sd_setup_count(){ return sd_setup_count; }
+
+void setup_sd(int trycount, bool load_settings){
+  sd_setup_count++;
+  sdInitialized = false;
+
+  // --- SDIO 試行（SPI モード中はスキップ）---
+  if (!sd_use_spi) {
+    for (int i = 0; i < trycount; i++) {  // trycount 回だけ試行
+      sdInitialized = SD.begin(SdioConfig(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO));
+      if (sdInitialized) break;
+      delay(100);
+    }
   }
-  DEBUG_PLN(20250508, "SUCCESS SD setup");
+
+  if (sdInitialized) {
+    sdio_fail_count = 0;  // SDIO 成功 → カウンターリセット
+    sd_use_spi = false;
+  } else {
+    sdio_fail_count++;    // SDIO 失敗 → 呼び出し回数をカウント
+    DEBUG_PLN(20260309, "SDIO failed.");
+
+    // --- setup_sd が 5 回連続 SDIO 失敗したら SPI にフォールバック ---
+    if (sdio_fail_count >= 5) {
+      DEBUG_PLN(20260309, "5 SDIO failures. Trying SPI fallback...");
+      SPI.setRX(RP_DAT0_GPIO);   // GPIO4 = DAT0 → MISO
+      SPI.setTX(RP_CMD_GPIO);    // GPIO3 = CMD  → MOSI
+      SPI.setSCK(RP_CLK_GPIO);   // GPIO2 = CLK  → SCK
+      SPI.begin();
+      sdInitialized = SD.begin(SdSpiConfig(SD_CS_SPI_PIN, DEDICATED_SPI, SD_SCK_MHZ(16)));
+      if (sdInitialized) {
+        sd_use_spi = true;
+        sdio_fail_count = 0;  // SPI 成功 → カウンターリセット
+        DEBUG_PLN(20260309, "SD SPI fallback OK.");
+      }
+    }
+  }
 
   if (!sdInitialized) {
-    DEBUG_P(20260208, "SD setup failed ");
-    DEBUG_P(20260208, trycount);
-    DEBUG_P(20260208, "times");
+    DEBUG_PLN(20260208, "SD init failed.");
     return;
-  }else{
-    sdError = false;
-    // set date time callback function
-    SdFile::dateTimeCallback(dateTime);
-    log_sd("SD INIT");
-    init_mapdata();
-    load_destinations();
-    if(!loadSettings()){
-      DEBUGW_PLN(20250508,"Error loading settings.");
+  }
+
+  sdError = false;
+  SdFile::dateTimeCallback(dateTime);
+  log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
+  init_mapdata();
+  load_destinations();
+  if (load_settings) {
+    if (!loadSettings()) {
+      DEBUGW_PLN(20250508, "Error loading settings.");
     }
   }
 }
@@ -860,16 +897,17 @@ void dateTime(uint16_t* date, uint16_t* time) {
 // ケース1: 未初期化かつエラーなし（起動直後に setup_sd が失敗した状態）→ 即時リトライ
 // ケース2: sdError 中 → 10秒ごとにリトライ
 // どちらも lasttrytime_sd でクールダウンを管理する。
+// load_settings=false にすることで、復旧時に設定値（scaleindex 等）を上書きしない。
 static void try_sd_recovery() {
   if (!sdInitialized && !sdError) {
     if (millis() - lasttrytime_sd > 10000) {
       lasttrytime_sd = millis();
-      setup_sd(1);
+      setup_sd(1, false);  // 復旧時は設定を再読み込みしない（ユーザー操作中の設定値を保護）
     }
   } else if (sdError) {
     if (millis() - lasttrytime_sd > 10000) {
       lasttrytime_sd = millis();
-      setup_sd(1);
+      setup_sd(1, false);  // 復旧時は設定を再読み込みしない（ユーザー操作中の設定値を保護）
     }
   }
 }
@@ -937,7 +975,7 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
 
-void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
+void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
@@ -964,7 +1002,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
 
   if (csvFileStatic) {
     if(!headerWritten){
-      csvFileStatic.println("latitude,longitude,gs,TrueTrack,Altitude,numsat,voltage,date,time");
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,Altitude,pressure,numsat,voltage,date,time");
       headerWritten = true;
     }
 
@@ -977,6 +1015,8 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     csvFileStatic.print(ttrack);
     csvFileStatic.print(",");
     csvFileStatic.print(altitude,2);
+    csvFileStatic.print(",");
+    csvFileStatic.print(pressure,2);
     csvFileStatic.print(",");
     csvFileStatic.print(numsat);
     csvFileStatic.print(",");
@@ -994,7 +1034,15 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     snprintf(time, sizeof(time), "%02d:%02d:%02d", hour, minute, second);
     csvFileStatic.println(time);
 
-    csvFileStatic.flush();  // close() の代わりに flush() でデータを確定する
+    // flush() は SD への物理書き込みを伴うため消費電力が大きい。
+    // 2秒に1回だけ flush し、それ以外は SdFat の内部バッファに留めることで消費電力を抑制する。
+    // 2Hz×2秒 = 4行×約80バイト ≈ 320バイト → 512バイトブロックバッファに収まるため安全。
+    { static unsigned long last_flush_ms = 0;
+      if (millis() - last_flush_ms >= 2000) {
+        csvFileStatic.flush();
+        last_flush_ms = millis();
+      }
+    }
     sdError = false; // Reset SD error flag after successful write
   } else {
     if (!sdError) {

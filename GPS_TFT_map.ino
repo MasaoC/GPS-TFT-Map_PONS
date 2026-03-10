@@ -177,7 +177,7 @@ void setup1(void) {
   // Without this call, Core1 might attempt to initialize the SD card before its runtime environment is fully ready, especially with a separate stack.
   //====
 
-  setup_sd(5);
+  setup_sd(1);  // 起動時も1回のみ。接触不良時の長時間ブロック防止。失敗後は try_sd_recovery() が10秒ごとにリトライ。
 
   if (good_sd()) {
     enqueueTask(createPlayWavTask("wav/opening.wav"));     // SD 正常: 起動音を再生
@@ -199,6 +199,24 @@ void loop() {
   sw_push.read();
   gps_loop(0);  // ループ先頭で GPS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
+
+  // GPS Fix 取得時に音声で通知（false→true の立ち上がりエッジを検出）
+  // SDカードが使えれば "wav/fixed.wav" を再生、使えなければチャイム音（ド・ミ・ソの上昇 3音）で代替する。
+  {
+    static bool prev_gps_fix = false;
+    bool cur_fix = get_gps_fix();
+    if (!prev_gps_fix && cur_fix) {
+      if (good_sd()) {
+        enqueueTask(createPlayWavTask("wav/fixed.wav", 3));
+      } else {
+        enqueueTask(createPlayMultiToneTask(523, 150, 1, 1));  // ド
+        enqueueTask(createPlayMultiToneTask(659, 150, 1, 1));  // ミ
+        enqueueTask(createPlayMultiToneTask(784, 300, 1, 1));  // ソ
+      }
+      enqueueTask(createLogSdTask("GPS FIX acquired"));
+    }
+    prev_gps_fix = cur_fix;
+  }
 
   // 大気データ更新（非ブロッキングのステートマシン。毎ループ呼ぶことで約50Hzで計測）
   airdata_update();
@@ -466,6 +484,7 @@ void loop1() {
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
           currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack, currentTask.saveCsvArgs.altitude,
+          currentTask.saveCsvArgs.pressure,
           currentTask.saveCsvArgs.numsats, currentTask.saveCsvArgs.voltage,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
           currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,

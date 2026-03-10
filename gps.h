@@ -22,7 +22,7 @@
 
   #define MAX_LAST_NMEA 16
   #define NMEA_MAX_CHAR 100
-  #define MAX_SATELLITES 48  // GPS(12)+GLONASS(8)+Galileo(8)+BeiDou(8)+QZSS(4) 最大同時可視≒40、余裕を持たせて48
+  #define MAX_SATELLITES 64  // 実測で48超えが発生したため64に拡大（SAM-M10Qは5星座で最大55衛星程度が可視）
 
   struct SatelliteData {
     int PRN = 0;
@@ -40,6 +40,7 @@
 
   void utcToJst(int *year, int *month, int *day, int *hour);
   void parseGSV(char *nmea);
+  void parseGSA(char *nmea);
   char* get_gps_nmea(int i);
   unsigned long get_gps_nmea_time(int i);
   void gps_setup();
@@ -57,7 +58,12 @@
   double get_gps_mps();
   double get_gps_truetrack();
   double get_gps_magtrack();
-  double get_gps_pdop();
+  int   get_gps_fixtype();   // GSA フィックスタイプ (1=No Fix, 2=2D, 3=3D)
+  float get_gps_pdop();      // PDOP（Position DOP）
+  float get_gps_hdop();      // HDOP（Horizontal DOP）
+  float get_gps_vdop();      // VDOP（Vertical DOP）
+  int   get_gsa_numsat();    // 測位使用衛星数
+  int   get_gsa_prn(int i);  // 測位使用衛星 PRN (i=0..11)
   double get_gps_lat();
   double get_gps_lon();
   double get_gps_altitude();
