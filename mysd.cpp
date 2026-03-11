@@ -1162,6 +1162,10 @@ int last_start_x,last_start_y = 0;
 //   abortTask フラグが true になるとピクセルループを途中で抜ける。
 //   BMP 読み込み中は gmap_loaded_active=false にし、完了後に true に戻す。
 void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
+  // Core1 スタック使用量を計測。
+  // load_mapimage() は SD からの BMP 読み込み + gmap_sprite への描画を行うため
+  // Core1 で最もスタックを消費する（5 秒に 1 回出力）。
+  DEBUG_STACK_C1("load_mapimage");
   DEBUG_PLN(20250417,"load mapimage begin");
   // ズームレベルに対応したグリッド間隔（度数）を決定する。
   // BMP ファイル 1 枚が round_degrees 度単位のグリッドに配置されているため、
@@ -1286,7 +1290,13 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   if(!gmap_sprite.created()){
     gmap_sprite.setColorDepth(16);
     gmap_sprite.createSprite(240, 240);
+    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+gmap_sprite(115KB)が同時確保された直後
+    DEBUG_P(20260311, "[RAMピーク] gmap_sprite生成後 FreeHeap=");
+    DEBUG_PN(20260311, rp2040.getFreeHeap(), DEC);
+    DEBUG_P(20260311, " / Total=");
+    DEBUG_PNLN(20260311, rp2040.getTotalHeap(), DEC);
   }
+  DEBUG_STACK_C1("after_createSprite");  // スプライト生成直後のスタック使用量
   int tloadbmp_start = millis();
 
   // この時点からスプライトの書き換えが始まるため、表示側が参照しないよう gmap_loaded_active を落とす。
@@ -1371,6 +1381,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
       if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
       // BMP の该当行の start_x 列目にシーク
       bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2);
+      DEBUG_STACK_C1("bmp_seek");  // SdFat seek 呼び出し直後のスタック使用量（深い呼び出しのピーク付近）
       for (int x = 0; x < 240; x++) {
         int bmp_x = start_x + x;
         if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
@@ -1455,6 +1466,11 @@ void load_push_logo(){
   if(!gmap_sprite.created()){
     gmap_sprite.setColorDepth(16);
     gmap_sprite.createSprite(240, 240);
+    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+gmap_sprite(115KB)が同時確保された直後
+    DEBUG_P(20260311, "[RAMピーク] gmap_sprite生成後 FreeHeap=");
+    DEBUG_PN(20260311, rp2040.getFreeHeap(), DEC);
+    DEBUG_P(20260311, " / Total=");
+    DEBUG_PNLN(20260311, rp2040.getTotalHeap(), DEC);
   }
   int tloadbmp_start = millis();
 

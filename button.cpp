@@ -297,14 +297,10 @@ Setting menu_settings[] = {
         vario_volume += 20;
       }
       if (vario_volume >= 101) vario_volume = 0;
+      if (vario_volume <= 0) vario_volume = 0;
     },
     nullptr,
-    []() {
-      if (vario_volume >= 10)
-        return COLOR_GREEN;
-      else
-        return COLOR_RED;
-    }
+    nullptr
   },
 
   // ----------------------------------------------------------

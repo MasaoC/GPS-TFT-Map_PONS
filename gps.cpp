@@ -356,6 +356,8 @@ void gps_constellation_mode() {
 }
 
 int setupcounter = 1;  // gps_setup() の呼び出し回数（1=初回、2以降=リトライ）
+uint32_t gps_current_baudrate = 0;  // GPS シリアルの現在ボーレート（gps_setup() で更新）
+uint32_t get_gps_baudrate() { return gps_current_baudrate; }
 
 // GPS モジュールとのシリアル接続を確立する。
 // 初回は settings.h で選択したモジュール種別に合わせて初期化する。
@@ -384,7 +386,7 @@ void gps_setup() {
     #ifdef QUECTEL_GPS
       DEBUG_PLN(20251025,"QUECTEL 38400");
       GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
-      GPS_SERIAL.begin(38400);
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
     #elif defined(MEADIATEK_GPS)
       DEBUG_PLN(20251025,"MEDIATEK 38400");
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
@@ -394,11 +396,11 @@ void gps_setup() {
       delay(100);//（Do not delete without care.)
       GPS_SERIAL.end();
       delay(50);//（Do not delete without care.)
-      GPS_SERIAL.begin(38400);
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
     #elif defined(UBLOX_GPS)
       DEBUG_PLN(20251025,"UBLOX 38400");
       GPS_SERIAL.setFIFOSize(1024);//バッファオーバーフロー防止（デフォルト32バイトでは不足）
-      GPS_SERIAL.begin(9600);  // u-blox工場デフォルトは9600bps。まずこのボーレートで開いてからコマンドを送る
+      GPS_SERIAL.begin(gps_current_baudrate = 9600);  // u-blox工場デフォルトは9600bps。まずこのボーレートで開いてからコマンドを送る
       // Configure GPS baud rate
       const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
       delay (50);// なぜか必要（Do not delete without care.)
@@ -408,7 +410,7 @@ void gps_setup() {
       delay (100);//なぜか必要（Do not delete without care.)
       GPS_SERIAL.end();
       delay(50);//なぜか必要（Do not delete without care.)
-      GPS_SERIAL.begin(38400);
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
       // UBX-CFG-RATE: 測位レートを 2Hz（500ms）に設定
       // Payload: measRate=0x01F4(500ms), navRate=0x0001, timeRef=0x0001(GPS)
       // Checksum: 0x0B 0x77
@@ -448,7 +450,7 @@ void gps_setup() {
         delay(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
     #else
-      GPS_SERIAL.begin(9600);
+      GPS_SERIAL.begin(gps_current_baudrate = 9600);
     #endif
     
   }else{
@@ -456,25 +458,25 @@ void gps_setup() {
     if(setupcounter%3 == 1){
       DEBUG_PLN(20251025,"from 115200 to 38400 (For QUECTEL)");
       GPS_SERIAL.setFIFOSize(1024);
-      GPS_SERIAL.begin(115200);
+      GPS_SERIAL.begin(gps_current_baudrate = 115200);
       GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
       delay (100);//なぜか必要（Do not delete without care.)
       GPS_SERIAL.end();
       delay(50);//なぜか必要（Do not delete without care.)
       GPS_SERIAL.setFIFOSize(1024);
-      GPS_SERIAL.begin(38400);
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
     }else if(setupcounter%3 == 2){
       DEBUG_PLN(20251025,"Simple setup try 115200");
       //4th try
-      GPS_SERIAL.begin(115200);
+      GPS_SERIAL.begin(gps_current_baudrate = 115200);
     }else if(setupcounter%3 == 3){
       DEBUG_PLN(20251025,"Simple setup try 38400");
       //3rd try
-      GPS_SERIAL.begin(38400);
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
     }else{
       DEBUG_PLN(20251025,"Simple setup try 9600");
       //3rd try
-      GPS_SERIAL.begin(9600);
+      GPS_SERIAL.begin(gps_current_baudrate = 9600);
     }
   }
 

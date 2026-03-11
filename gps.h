@@ -58,6 +58,7 @@
   double get_gps_mps();
   double get_gps_truetrack();
   double get_gps_magtrack();
+  uint32_t get_gps_baudrate();  // GPS シリアルの現在ボーレート
   int   get_gps_fixtype();   // GSA フィックスタイプ (1=No Fix, 2=2D, 3=3D)
   float get_gps_pdop();      // PDOP（Position DOP）
   float get_gps_hdop();      // HDOP（Horizontal DOP）
