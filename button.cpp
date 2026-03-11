@@ -15,6 +15,7 @@
 
 
 extern int sound_volume;
+extern int vario_volume;
 extern int screen_mode;
 extern int destination_mode;
 extern int detail_page;
@@ -273,7 +274,41 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [5] マップ向き設定 (UPWARD)
+  // [5] バリオメーター音量 (VARIO_VOLUME)
+  //   ・Toggle: 0 → 5 → 10 → 20 → 30 → 40 → 60 → 80 → 100 → 0 のステップ
+  //   ・アイコン色: 10以上なら緑（有効）、0なら赤（ミュート）
+  // ----------------------------------------------------------
+  { SETTING_VARIO_VOLUME,
+    [](bool selected) -> std::string {
+      char buff[32];
+      sprintf(buff, selected ? " Vario: %d/100" : "Vario: %d/100", vario_volume);
+      return std::string(buff);
+    },
+    nullptr,
+    []() {
+      // Volume と同じステップ: 0 → 5 → 10 → 20 → 30 → 40 → 60 → 80 → 100 → 0
+      if (vario_volume == 0) {
+        vario_volume = 5;
+      } else if (vario_volume == 5) {
+        vario_volume = 10;
+      } else if (vario_volume < 40) {
+        vario_volume += 10;
+      } else {
+        vario_volume += 20;
+      }
+      if (vario_volume >= 101) vario_volume = 0;
+    },
+    nullptr,
+    []() {
+      if (vario_volume >= 10)
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
+    }
+  },
+
+  // ----------------------------------------------------------
+  // [6] マップ向き設定 (UPWARD)
   //   ・Toggle: NORTH UP ↔ TRACK UP を切り替え（toggle_mode() が内部状態を反転）
   //   ・アイコン色: NORTH UP なら緑（安定方向）、TRACK UP なら赤
   // ----------------------------------------------------------

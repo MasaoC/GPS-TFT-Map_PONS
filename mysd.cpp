@@ -82,6 +82,7 @@ void dateTime(uint16_t* date, uint16_t* time);
 // ============================================================
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
+  {"vario_volume",    setVarioVolume,    getVarioVolume},
   {"destination",     setDestination,    getDestination},
   {"navigation_mode", setNavigationMode, getNavigationMode},
   {"scaleindex",      setScaleIndex,     getScaleIndex},
@@ -89,6 +90,7 @@ SDSetting settings[] = {
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
+extern volatile int vario_volume;
 extern int destination_mode;
 extern int scaleindex;
 extern double scalelist[6];
@@ -209,6 +211,15 @@ void setVolume(const char* value) {
 
 void getVolume(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", sound_volume);
+}
+
+// バリオメーター音量: 文字列を int に変換して vario_volume に反映
+void setVarioVolume(const char* value) {
+  vario_volume = atoi(value);
+}
+
+void getVarioVolume(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", vario_volume);
 }
 
 // ナビゲーションモード: "INTO" / "AWAY" / "AUTO10K" を destination_mode 定数に変換
@@ -346,7 +357,7 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
-Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -363,6 +374,7 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, fl
   task.saveCsvArgs.hour = hour;
   task.saveCsvArgs.minute = minute;
   task.saveCsvArgs.second = second;
+  task.saveCsvArgs.centisecond = centisecond;
   return task;
 }
 
@@ -899,6 +911,11 @@ void dateTime(uint16_t* date, uint16_t* time) {
 // どちらも lasttrytime_sd でクールダウンを管理する。
 // load_settings=false にすることで、復旧時に設定値（scaleindex 等）を上書きしない。
 static void try_sd_recovery() {
+  // SD カードが物理的に挿入されていない場合はリトライしない
+  if (digitalRead(SD_DETECT)){
+    DEBUG_PLN(20250508,"SD card not detected. Skipping SD recovery.");
+    return;
+  }
   if (!sdInitialized && !sdError) {
     if (millis() - lasttrytime_sd > 10000) {
       lasttrytime_sd = millis();
@@ -975,7 +992,7 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
 
-void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second) {
+void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
@@ -1029,9 +1046,9 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     csvFileStatic.print(date);
     csvFileStatic.print(",");
 
-    // Format time as HH:MM:SS
-    char time[9];
-    snprintf(time, sizeof(time), "%02d:%02d:%02d", hour, minute, second);
+    // Format time as HH:MM:SS.ss（スプレッドシートで時刻値として読み込める形式）
+    char time[12];
+    snprintf(time, sizeof(time), "%02d:%02d:%02d.%02d", hour, minute, second, centisecond);
     csvFileStatic.println(time);
 
     // flush() は SD への物理書き込みを伴うため消費電力が大きい。

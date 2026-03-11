@@ -57,6 +57,7 @@ double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 
 
 // --- 大気データ シリアル出力タイミング管理 ---
 unsigned long last_airdata_print_time = 0;  // 最後に気温・気圧を Serial 出力した時間 [millis]
+bool airdata_updated = false;               // airdata_update() が true を返した直後フラグ（VSI 更新トリガー）
 
 // --- ユーザーLED 制御 ---
 // userled_forced_on: タスクキュー溢れなど重篤エラー時に永続点灯させるフラグ（一度 true になったらリセットまで戻らない）
@@ -65,7 +66,8 @@ volatile bool userled_forced_on = false;
 // Core1 からの BMP ロード完了を受けて次ループで即再描画させるための volatile フラグ
 // （Core1 が書き込み、Core0 が読む。volatile で最適化を防ぐ）
 volatile int scaleindex = 3;    // scalelist のインデックス（初期値 3 = SCALE_LARGE_GMAP）
-volatile int sound_volume = 50; // 音量 0〜100
+volatile int sound_volume  = 50; // 音量 0〜100
+volatile int vario_volume  = 10; // バリオメーター音量 0〜100（設定画面から変更可）
 
 extern volatile bool loading_sddetail;
 extern bool sd_detail_loading_displayed;
@@ -132,6 +134,7 @@ void setup(void) {
   adc_gpio_init(BATTERY_PIN);
   pinMode(USB_DETECT, INPUT);
   pinMode(BATTERY_PIN, INPUT);
+  pinMode(SD_DETECT, INPUT_PULLUP);  // SDカード検出ピン（挿入時 LOW）
   analogReadResolution(12);  // 12bit = 0〜4095
 
   startup_demo_tft();
@@ -146,7 +149,10 @@ void setup(void) {
   scalelist[5] = 200.0;               // 最広域（日本全体スケール）
   scale = scalelist[scaleindex];
   redraw_screen = true;
-  enqueueTask(createLogSdTask("SETUP DONE"));
+  {
+    float startup_voltage = min(BATTERY_MULTIPLYER(analogRead(BATTERY_PIN)), 4.3f);
+    enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
+  }
 
   // 大気データ（MS5611）初期化（Core0 で実行）
   airdata_setup();
@@ -219,7 +225,10 @@ void loop() {
   }
 
   // 大気データ更新（非ブロッキングのステートマシン。毎ループ呼ぶことで約50Hzで計測）
-  airdata_update();
+  airdata_updated = airdata_update();
+
+  // バリオメーター音更新（内部で 100ms レート制限。毎ループ呼んでよい）
+  update_vario();
 
   // 1秒ごとに気温・気圧を Serial に出力
   if (millis() - last_airdata_print_time >= 1000) {
@@ -430,8 +439,15 @@ void loop() {
       draw_map_footer();
       draw_nomapdata();
       gps_loop(6);        // 描画の合間に GPS データを受信
-      push_backscreen();  // バックスクリーンを TFT に一括転送（描画完了）
+      push_backscreen();  // バックスクリーンを TFT に一括転送（VSI合成済み）
       draw_footer();      // フッターは TFT に直接描画（バックスクリーン外）
+    }
+
+    // backscreen 非更新時、airdata が更新されたタイミングで VSI を TFT へ直接転写
+    // バリオ音量が 0 の場合は非表示
+    if (!redraw_screen && vario_volume > 0 && airdata_updated) {
+      draw_vsi();
+      vsi_sprite.pushSprite(235, 50);  // TFT座標: X=235, Y=50（backscreenオフセット）
     }
   } else {
     DEBUGW_PLN(20250510, "ERR screen mode");
@@ -488,7 +504,8 @@ void loop1() {
           currentTask.saveCsvArgs.numsats, currentTask.saveCsvArgs.voltage,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
           currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
-          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second);
+          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
+          currentTask.saveCsvArgs.centisecond);
         break;
       case TASK_LOAD_MAPIMAGE:
         load_mapimage(
@@ -619,12 +636,12 @@ void update_degpersecond(int true_track) {
 
 
 // 目的地が 100km 以上離れている場合に警告音を鳴らす。
-// 60秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
+// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
   if (calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon) > 100.0) {
-    if (millis() - last_destination_toofar_time > 1000 * 60) {  // 60秒クールダウン
+    if (millis() - last_destination_toofar_time > 1000 * 120) {  // 120秒クールダウン
       last_destination_toofar_time = millis();
       enqueueTask(createPlayWavTask("wav/destination_toofar.wav", 1));
     }

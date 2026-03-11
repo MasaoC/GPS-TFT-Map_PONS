@@ -13,6 +13,7 @@
 #include "sound.h"
 #include "gps.h"
 #include "mysd.h"
+#include "airdata.h"
 #include "hardware/pwm.h"
 #include "hardware/timer.h"
 #include "pico/stdlib.h"
@@ -63,6 +64,8 @@ static PendingWav  pending_wav[2]        = {{nullptr, 0}, {nullptr, 0}};
 // pending_wav[] に filename を追加する。
 // 空きスロットがあれば追加、両方埋まっている場合は最も低優先なスロットを上書き。
 static void push_pending_wav(const char* filename, int priority) {
+    // 現在再生中と同じファイルなら追加しない（連続再生不要）
+    if (current_wav_filename == filename) return;
     // 同じファイルが既に pending にあれば無視（重複防止）
     for (int i = 0; i < 2; i++) {
         if (pending_wav[i].filename == filename) return;
@@ -105,6 +108,23 @@ uint32_t chunksLoaded = 0;      // ロード済みチャンク数（デバッグ
 
 const unsigned long playInterval = 10000;  // 将来的な連続再生用インターバル（現状未使用）
 extern volatile int sound_volume;          // 音量（0〜100）。button.cpp の設定画面から変更。
+extern volatile int vario_volume;          // バリオメーター音量（0〜100）。設定画面から変更。
+
+// ============================================================
+// バリオメーター音声用変数
+//
+// タイマー割り込みが vario_mode=true のとき、WAV/Sinトーンより低優先で
+// 鉛直速度に応じたバリオ音（上昇: 断続ビープ / 下降: 連続低音）を出力する。
+// update_vario() が Core0 から約100ms ごとに呼ばれ、vspeed に応じてパラメータを更新する。
+// ============================================================
+volatile bool     vario_mode          = false; // true のとき割り込みがバリオ音を出力
+volatile uint32_t vario_phase_inc     = 0;     // バリオ音の周波数（位相増分）
+volatile uint32_t vario_on_samples    = 1280;  // ON サンプル数 (80ms × 16kHz = 1280)
+volatile uint32_t vario_cycle_samples = 0;     // サイクル長（0=連続, >0=断続）
+volatile bool     vario_ascending     = false; // true=上昇中, false=下降中（音量補正用）
+volatile bool     sin_playing         = false; // myTone() がアンプ ON 中だけ true
+static uint32_t   s_vario_phase_acc   = 0;     // バリオ位相アキュムレータ（割り込み専用）
+static uint32_t   s_vario_cycle_pos   = 0;     // バリオサイクル位置（割り込み専用）
 
 // ============================================================
 // Sin 波トーン生成用変数（位相アキュムレータ方式）
@@ -130,47 +150,46 @@ bool sinmode = true;   // true のとき割り込みが Sin 波を出力する
 // ============================================================
 // タイマー割り込みコールバック（16kHz = 62.5μs ごとに呼ばれる）
 //
-// wavmode が true のとき:
-//   activeBuffer の bufferPos 位置から 1 サンプルを読み出し、
-//   PWM デューティ比として出力する。
-//   bufferPos が CHUNK_SIZE に達したら bufferSwapRequest を立て、
-//   メインループにバッファスワップを依頼する。
+// 優先順位（高い順）:
+//   1. WAV 再生中 (wavmode && wav_playing && bufferReady)
+//   2. Sin トーン再生中 (sinmode && sin_playing) ← sin_playing はアンプ ON 中だけ true
+//   3. バリオメーター音 (vario_mode) ← WAV/Sinトーンがないときだけ鳴る
 //
-// sinmode が true のとき:
-//   位相アキュムレータ (phaseAcc) を phaseInc 分進め、
-//   sineTable[(phaseAcc >> 24)] の値を PWM 出力する。
-//   → 上位 8bit がテーブルインデックス = 周波数を決める。
-//
-// ※ 両モードを同時に true にすると両方が PWM に書き込むため、
-//    呼び出し元で必ずどちらか一方だけを有効にすること。
+// ※ 以前は if(wavmode){}if(sinmode){} の並列構造だったが、
+//    バリオ追加にともない cascaded else-if 構造に変更。
 // ============================================================
 bool timerCallback(struct repeating_timer *t) {
-  if(wavmode){
-    if (!wav_playing || !bufferReady[activeBuffer]) {
-        return true;  // バッファが準備できていなければスキップ
-    }
-    // activeBuffer の現在位置から 1 サンプルを PWM に出力（音量スケール適用）
-    // 8-bit unsigned PCM の無音値は 128。中心 128 を基準に振幅をスケールする。
-    // 単純に sample*volume/100 すると無音時に 128→0（最大負圧）になりポップノイズの原因になる。
-    // 8bit unsigned PCM (0〜255, 中心128) を 10bit PWM (0〜1023, 中心512) にスケール変換
-    // (sample - 128) で符号付き振幅 (-128〜+127) にしてから×4 で 10bit幅に拡張し、音量を掛ける
+  if (wavmode && wav_playing && bufferReady[activeBuffer]) {
+    // 【優先1】WAV 再生: activeBuffer から 1 サンプルを出力
+    // 8bit unsigned PCM (0〜255, 中心128) → 10bit PWM (0〜1023, 中心512) に変換
     pwm_set_gpio_level(PIN_PWMTONE, 512 + (int)(audioBuffer[activeBuffer][bufferPos] - 128) * 4 * sound_volume / 100);
     bufferPos++;
-
-    // バッファ末尾まで再生したら、メインループへスワップを依頼
     if (bufferPos >= CHUNK_SIZE) {
-        bufferPos = 0;          // 位置をリセット（スワップ後すぐに使えるように）
-        bufferSwapRequest = true;  // メインループで処理するフラグを立てる
+        bufferPos = 0;
+        bufferSwapRequest = true;
         DEBUG_P(20250424,"bufferSwapRequest");
     }
-  }
-  if(sinmode){
-    // 位相アキュムレータを進め、上位 8bit でテーブルを引いて Sin 波を出力
+  } else if (sinmode && sin_playing) {
+    // 【優先2】Sin トーン: アンプ ON 中（sin_playing=true）のときだけ出力
     phaseAcc += phaseInc;
-    // sineTable (0〜255, 中心128) を 10bit PWM (0〜1023, 中心512) にスケール変換
     pwm_set_gpio_level(PIN_PWMTONE, 512 + (int)(sineTable[(phaseAcc >> 24) % tableSize] - 128) * 4 * sound_volume / 100);
+  } else if (vario_mode) {
+    // 【優先3】バリオメーター音: WAV/Sinトーンがないときだけ出力
+    s_vario_cycle_pos++;
+    if (vario_cycle_samples == 0 || s_vario_cycle_pos <= vario_on_samples) {
+      // ON 区間: sin 波を出力
+      // 上昇中（高音）はスピーカー能率が高いため音量を半分にする
+      s_vario_phase_acc += vario_phase_inc;
+      int vario_vol_adj = vario_ascending ? vario_volume * 2 / 5 : vario_volume;
+      pwm_set_gpio_level(PIN_PWMTONE, 512 + (int)(sineTable[(s_vario_phase_acc >> 24) % tableSize] - 128) * 4 * vario_vol_adj / 100);
+    } else {
+      // OFF 区間: 無音（中点）
+      pwm_set_gpio_level(PIN_PWMTONE, 512);
+      if (s_vario_cycle_pos >= vario_cycle_samples) {
+        s_vario_cycle_pos = 0;  // サイクルをリセット（位相は継続してピッチを維持）
+      }
+    }
   }
-  //keep running
   return true;
 }
 
@@ -333,12 +352,15 @@ void startPlayWav(const char* filename, int priority) {
 }
 
 // 再生を停止し、アンプをシャットダウンする。
+// バリオメーターが使用中の場合はアンプを切らない（バリオ音がすぐ再開するため）。
 void stopPlayback() {
     wav_playing = false;
     delay(5);  // 割り込みが確実に止まるまで待つ
     pwm_set_gpio_level(PIN_PWMTONE, 512); // 10bit 中点 (=無音) に戻す。これを忘れるとポップノイズが出る。
-    delay(5);  // 信号が 12 に安定してからアンプを切る
-    setAmplifierState(false);
+    delay(5);  // 信号が安定してからアンプを切る
+    if (!vario_mode) {
+        setAmplifierState(false);  // バリオ使用中はアンプ維持
+    }
     DEBUG_P(20250424,"Playback stopped");
 }
 
@@ -593,14 +615,9 @@ void update_tone(float degpersecond){
   }
   //【警告2】旋回角速度トーン: 2.0 deg/s 以上 かつ 2.0 m/s 以上のとき発動
   // angle_diff > 15 のときは警告1 が優先されるためここには来ない
+  // バリオ音（700〜1300Hz）と混同しないよう、固定高音 2093Hz（C7）のピピ2回に統一
   else if(abs(degpersecond) > 2.0 && get_gps_mps() > 2.0){
-    int freq = abs(degpersecond)*600-680; // 旋回強度を周波数にマッピング（最低 520Hz 程度）
-    if(freq > 3136){
-      freq = 3136; // スピーカー性能の上限でクリップ
-    }
-    // 旋回が穏やかまたは速度が遅い場合はトーンを短くする（誤報感を減らす）
-    int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?80:160;
-    enqueueTask(createPlayMultiToneTask(nearest_note_frequency(freq), newduration,1));
+    enqueueTask(createPlayMultiToneTask(2093, 80, 2));
   }
 }
 
@@ -624,11 +641,17 @@ void playNextNote(int frequency) {
 
 // 指定した周波数・時間のトーンを 1 回だけ鳴らす低レベル関数。
 // アンプを ON にして duration ms 待ってから OFF にする。
+// sin_playing フラグで「アンプ ON 中」を割り込みに通知する（バリオとの優先制御用）。
+// バリオ使用中はアンプを OFF にしない（バリオ音が即時再開できるよう amp を維持）。
 void myTone(int freq,int duration){
+  sin_playing = true;              // Sin トーン開始を割り込みに通知
   digitalWrite(PIN_AMP_SD,HIGH);  // アンプ ON
   playNextNote(freq);              // 周波数を設定（割り込みが出力を開始）
   delay(duration);                 // 指定時間鳴らし続ける
-  digitalWrite(PIN_AMP_SD,LOW);   // アンプ OFF
+  sin_playing = false;             // Sin トーン終了を割り込みに通知
+  if (!vario_mode) {
+    digitalWrite(PIN_AMP_SD,LOW); // バリオ未使用時のみアンプ OFF
+  }
 }
 
 
@@ -664,4 +687,83 @@ void playTone(int freq, int duration, int counter,int priority){
     delay(duration);
     myTone(freq, duration);
   }
+}
+
+
+// ============================================================
+// バリオメーター音声更新関数（Core0 のメインループから毎ループ呼ぶ）
+//
+// 内部で 100ms レート制限しているので毎ループ呼んでよい。
+// get_airdata_vspeed() で 1Hz 更新される鉛直速度を読み、
+// デッドバンド ±0.2 m/s を超えたときにバリオ音パラメータを更新する。
+//
+// 上昇（vspeed > +0.2 m/s）: 断続ビープ
+//   ピッチ = 700 + vspeed*300 Hz（0.2→760Hz, 1.0→1000Hz, 3.0→1600Hz, 上限 2200Hz）
+//   ON 時間 80ms 固定 / OFF 時間 = 700/vspeed - 80 ms（最小 50ms）
+//
+// 下降（vspeed < -0.2 m/s）: 連続低音
+//   ピッチ = 400 - |vspeed|*30 Hz（0.2→394Hz, 2.0→340Hz, 下限 220Hz）
+//
+// アンプ管理:
+//   バリオ開始エッジで amp を ON（WAV/Sinトーン未使用時）。
+//   バリオ停止エッジで amp を OFF（WAV/Sinトーン未使用時）。
+//   WAV/Sinトーンが使用中の場合は amp を操作しない（相手任せ）。
+// CORE0
+// ============================================================
+void update_vario() {
+    static unsigned long last_call = 0;
+    if (millis() - last_call < 100) return;
+    last_call = millis();
+
+    float vspeed = get_airdata_vspeed();
+    bool should_vario = (vspeed > 0.4f || vspeed < -0.4f) && (vario_volume > 0);
+
+    static bool prev_vario = false;
+
+    if (should_vario) {
+        // パラメータを vspeed に応じて毎回更新（10Hz 解像度で音が変わる）
+        if (vspeed > 0.2f) {
+            // 上昇: 断続ビープ
+            float v = vspeed < 2.0f ? vspeed : 2.0f;  // 2.0 m/s で振り切り
+            int freq = (int)(700 + v * 300);        // 820〜2200 Hz（2.0 m/s → 1300Hz）
+            vario_phase_inc = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
+            int off_ms = (int)(700.0f / v) - 120;
+            if (off_ms < 50) off_ms = 50;
+            vario_on_samples     = 120 * 16;         // 120ms × 16kHz = 1920 サンプル
+            vario_cycle_samples  = (uint32_t)((120 + off_ms) * 16);
+            vario_ascending      = true;             // 上昇フラグ ON（音量補正用）
+        } else {
+            // 下降: 連続低音
+            float v = (-vspeed) < 2.0f ? (-vspeed) : 2.0f;  // 2.0 m/s で振り切り
+            int freq = (int)(480 - v * 30);
+            if (freq < 300) freq = 300;              // 下限 300Hz
+            vario_phase_inc     = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
+            vario_cycle_samples = 0;                 // 0 = 連続出力
+            vario_ascending     = false;             // 下降フラグ（音量補正なし）
+        }
+
+        if (!prev_vario) {
+            // バリオ開始エッジ: 位相/サイクルをリセットしてアンプ ON
+            s_vario_phase_acc = 0;
+            s_vario_cycle_pos = 0;
+            vario_mode = true;
+            if (!wav_playing && !sin_playing) {
+                setAmplifierState(true);
+            }
+        } else {
+            vario_mode = true;  // パラメータ更新後に確実に true を維持
+        }
+    } else {
+        if (prev_vario) {
+            // バリオ停止エッジ: アンプ OFF（WAV/Sinトーン未使用時のみ）
+            vario_mode = false;
+            if (!wav_playing && !sin_playing) {
+                pwm_set_gpio_level(PIN_PWMTONE, 512);
+                delay(3);
+                setAmplifierState(false);
+            }
+        }
+    }
+
+    prev_vario = should_vario;
 }

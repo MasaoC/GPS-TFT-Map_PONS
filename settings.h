@@ -12,8 +12,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20260309
-#define BUILDVERSION "0.901"
+#define BUILDDATE 20260311
+#define BUILDVERSION "0.902"
 #define VERSION_TEXT "Version 6"
 
 #define PRINTREVERSEDATE_NUM 360

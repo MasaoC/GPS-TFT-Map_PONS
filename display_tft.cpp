@@ -36,6 +36,7 @@
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
 TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
+TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240px, 16bit, 2,400 Byte)
 
 // ===== 画面輝度 =====
 int screen_brightness = 255;                                // 現在の輝度値（PWMデューティ 0-255）
@@ -53,6 +54,7 @@ int upward_mode = MODE_NORTHUP;
 
 
 extern volatile int sound_volume;
+extern volatile int vario_volume;
 extern int screen_mode;
 extern int destination_mode;
 
@@ -162,6 +164,11 @@ void setup_tft() {
     header_footer.setColorDepth(16);
     header_footer.createSprite(SCREEN_WIDTH, HEADERFOOTER_HEIGHT);
     header_footer.loadFont(NM_FONT_LARGE);
+  }
+  // VSIスプライト: 5px幅 × 240px高さ、16bit色深度（RAM消費 2,400 Byte）
+  if(!vsi_sprite.created()){
+    vsi_sprite.setColorDepth(16);
+    vsi_sprite.createSprite(5, BACKSCREEN_SIZE);
   }
 }
 
@@ -473,7 +480,7 @@ bool try_draw_km_distance(float scale, float km) {
     return false;
 
   int ypos = 240-2;
-  int xpos = 240-2;
+  int xpos = 240-2-5;  // VSI（右端5px）と重ならないよう5px左にオフセット
 
   backscreen.drawFastVLine(xpos, ypos-distance_px, distance_px, COLOR_BLACK);
   backscreen.drawFastHLine(xpos-5, ypos, 5, COLOR_BLACK);
@@ -1174,8 +1181,42 @@ void draw_replay_indicator(){
 void clean_backscreen(){
   backscreen.fillScreen(COLOR_WHITE);
 }
+// VSIスプライト（5×240px）を鉛直速度に応じて描画する。
+// 中心 Y=120 が 0 m/s の基準線（白）。上昇=緑バー、下降=シアンバー。
+// 不感域なし。最大バー長 120px（±2.0 m/s で振り切り）。
+// バーの上にグレー線（±0.4 m/s バリオ閾値）と白線（±1.0 m/s）を重ねて描画。
+void draw_vsi() {
+    float vspeed = get_airdata_vspeed();
+    vsi_sprite.fillScreen(TFT_BLACK);
+    vsi_sprite.drawFastHLine(0, 120, 5, TFT_WHITE);  // 0 m/s 基準線
+    if (!get_airdata_ok()) return;
+    const float MAX_VSPEED = 2.0f;
+    const int   BAR_MAX_PX = 120;
+    if (vspeed > 0) {
+        // 上昇: 中心から上方向に緑バー（2.0 m/s で振り切り）
+        int bar = (int)(min(vspeed, MAX_VSPEED) / MAX_VSPEED * BAR_MAX_PX);
+        vsi_sprite.fillRect(0, 120 - bar, 5, bar, TFT_GREEN);
+    } else if (vspeed < 0) {
+        // 下降: 中心から下方向にシアンバー（2.0 m/s で振り切り）
+        int bar = (int)(min(-vspeed, MAX_VSPEED) / MAX_VSPEED * BAR_MAX_PX);
+        vsi_sprite.fillRect(0, 121, 5, bar, TFT_CYAN);
+    }
+    // 閾値ラインをバーの上に重ねて描画（バーがなくても常に表示）
+    // グレー線: ±0.4 m/s（バリオ音が鳴り始める閾値）= ±24px
+    vsi_sprite.drawFastHLine(0, 120 - 24, 5, TFT_DARKGREY);  // +0.4 m/s
+    vsi_sprite.drawFastHLine(0, 120 + 24, 5, TFT_DARKGREY);  // -0.4 m/s
+    // 白線: ±1.0 m/s = ±60px
+    vsi_sprite.drawFastHLine(0, 120 - 60, 5, TFT_WHITE);     // +1.0 m/s
+    vsi_sprite.drawFastHLine(0, 120 + 60, 5, TFT_WHITE);     // -1.0 m/s
+}
+
 // backscreen スプライトを TFT の (0, 50) に転送する（ヘッダー 50px の下から表示）。
+// 転送前に VSI を backscreen の右端 X=235 に合成する。
 void push_backscreen(){
+  if (vario_volume > 0) {
+    draw_vsi();
+    vsi_sprite.pushToSprite(&backscreen, 235, 0);  // Sprite→Sprite 合成
+  }
   backscreen.pushSprite(0, 50);
 }
 
@@ -1372,13 +1413,6 @@ void draw_map_footer(){
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
 
-  // 気圧高度・鉛直速度を JST 時刻の真上に表示（airdata 正常時のみ）
-  if (get_airdata_ok()) {
-    backscreen.setCursor(1, BACKSCREEN_SIZE-18);
-    backscreen.printf("%.2fhPa %.1fm %+.1fm/sV",
-      get_airdata_pressure(), get_airdata_altitude(), get_airdata_vspeed());
-  }
-
   if (time.isValid()) {
     backscreen.setCursor(1, BACKSCREEN_SIZE-9);
     backscreen.printf("%02d:%02d:%02d JST", (time.hour()+9)%24, time.minute(), time.second());
@@ -1456,6 +1490,7 @@ void draw_footer(){
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_input_voltage();
+    int bat_pct = constrain((int)((input_voltage - 3.2f) / (4.2f - 3.2f) * 100.0f), 0, 100);
     if (input_voltage <= BAT_LOW_VOLTAGE) {
       if((millis()/1000)%2 != 0){
         header_footer.setTextColor(COLOR_RED);
@@ -1463,18 +1498,19 @@ void draw_footer(){
         header_footer.fillRect(SCREEN_WIDTH-47,0, 47,15, COLOR_RED);
         header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
       }
-      header_footer.printf("%.2fV", input_voltage);
+      header_footer.printf("%d%%", bat_pct);
       //最後のバッテリー警告から60秒以上経過。
       if(millis() > last_battery_warning_time+60*1000){
         last_battery_warning_time = millis();
         enqueueTask(createPlayWavTask( "wav/battery_low.wav"));
+        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)", bat_pct, input_voltage));
       }
-    } else if (input_voltage < 3.7) {
+    } else if (input_voltage < 3.7) {  // 50%未満
       header_footer.setTextColor(COLOR_MAGENTA);
-      header_footer.printf("%.2fV", input_voltage);
-    } else {//between 3.7-4.3
+      header_footer.printf("%d%%", bat_pct);
+    } else {  // 50%以上
       header_footer.setTextColor(COLOR_GREEN);
-      header_footer.printf("%.2fV", input_voltage);
+      header_footer.printf("%d%%", bat_pct);
     }
   }
 
@@ -1795,20 +1831,28 @@ void draw_sddetail(int page) {
   }else{
     sd_detail_loading_displayed = true;
     backscreen.setCursor(80,100);
-    if(!digitalRead(SD_DETECT)){
+    if(digitalRead(SD_DETECT)){
       backscreen.print("No SD card ...");
     }else
       backscreen.print("Stand by ...");
   }
   backscreen.pushSprite(0,40);
 
-  // フッター: setup回数（左） / SDIO or SPI 状態（右）
+  // フッター: setup回数（左） / SD検出状態（中央） / SDIO or SPI 状態（右）
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_BLACK);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setCursor(1, 1);
   header_footer.printf("SETUP: %d", get_sd_setup_count());
+  header_footer.setCursor(SCREEN_WIDTH / 2 - 30, 1);
+  if (!digitalRead(SD_DETECT)) {
+    header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    header_footer.print("DET:OK");
+  } else {
+    header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
+    header_footer.print("DET:NO");
+  }
   header_footer.setCursor(SCREEN_WIDTH - 55, 1);
   if (get_sd_use_spi()) {
     header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
@@ -2112,7 +2156,8 @@ void draw_maplist_mode(int maplist_page) {
 // iconColor() が返す色の丸アイコンを各行の右端に描画する（NULL の場合は描画しない）。
 // フッターにはバッテリー残量推定・CPU 温度・空きヒープ（デバッグビルド時のみ）を表示する。
 void draw_setting_mode(int selectedLine, int cursorLine) {
-  const int separation = 25;
+  const int separation = 20;
+  tft.loadFont(AA_FONT_SMALL);
   textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
   tft.setTextColor(COLOR_BLACK);
   backscreen.fillScreen(COLOR_WHITE);
@@ -2139,24 +2184,18 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   header_footer.setTextSize(1);
 
 
-  header_footer.setCursor(2, 40-25);
-
-
+  header_footer.setCursor(2, 5);
   header_footer.setTextColor(COLOR_GRAY);
   if (digitalRead(USB_DETECT)) {
     double input_voltage = get_input_voltage();
-    if (input_voltage >= 4.2) {
-      header_footer.printf("Battery:Charged %.2fV", input_voltage);
-    } else {
-      header_footer.printf("Charging %.2fV", input_voltage);
-    }
+    header_footer.printf("Battery: Charging %.2fV", input_voltage);
   }else{
     double input_voltage = get_input_voltage();
     int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
     header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
   }
 
-  header_footer.setCursor(2, 40-11);
+  header_footer.setCursor(2, 18);
   {
     float cpu_temp = analogReadTemp();
     header_footer.setTextColor(cpu_temp >= 55.0f ? COLOR_RED : COLOR_GRAY);
@@ -2169,9 +2208,18 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   }
 
   #ifndef RELEASE
-  header_footer.setCursor(100,40-11);
+  header_footer.setCursor(100, 18);
   header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
   #endif
+
+  // hPa / m / m/s / V: airdata 正常時のみ温度の下に表示
+  if (get_airdata_ok()) {
+    header_footer.setCursor(2, 33);
+    header_footer.setTextColor(COLOR_GRAY);
+    header_footer.printf("%.2fhPa %.1fm %+.1fm/sV n=%d %.1fHz",
+      get_airdata_pressure(), get_airdata_altitude(), get_airdata_vspeed(),
+      get_airdata_win_samples(), get_airdata_win_hz());
+  }
 
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.pushSprite(0,SCREEN_HEIGHT-40);

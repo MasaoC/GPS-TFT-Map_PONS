@@ -10,6 +10,7 @@
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"
+#include "mysd.h"
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
 #define MS5611_ADDR 0x77
 
@@ -20,8 +21,8 @@
 #define CMD_CONVERT_D2 0x58  // 温度 ADC 変換コマンド（OSR=4096）
 #define CMD_ADC_READ   0x00  // ADC 変換結果読み出しコマンド
 
-// OSR=4096 の最大変換時間は 9.04ms。余裕を持たせて 10ms 待つ。
-#define OSR_DELAY_MS   10
+// OSR=4096 の最大変換時間は 9.04ms。余裕を持たせて 12ms 待つ。
+#define OSR_DELAY_MS   12
 
 // i2c0 バスを使用（SDA=GPIO32, SCL=GPIO33）。
 // RP2350 の Wire ライブラリはデフォルトで i2c0 を使うが、ピン番号が異なるため明示的に指定。
@@ -43,20 +44,30 @@ enum MS5611State { MS5611_IDLE, MS5611_WAIT_D1, MS5611_WAIT_D2 };
 static MS5611State ms5611_state  = MS5611_IDLE;
 static uint32_t    convert_start = 0;    // 変換コマンド送信時刻 [ms]
 static uint32_t    D1_raw        = 0;    // 気圧 ADC 生値（WAIT_D2 ステートで使用）
+static uint32_t    last_D2_raw   = 0;    // D2（温度）ADC 生値
 
 // airdata_update() が true を返すたびに更新される最新計測値
 static float last_temperature = 0.0f;  // [℃]
 static float last_pressure    = 0.0f;  // [hPa]
-static float last_altitude    = 0.0f;  // [m]（1秒ウィンドウ平均値）
+static float last_altitude    = 0.0f;  // [m]（VSPEED_WINDOW_MS ウィンドウ平均値）
 
-// 垂直速度 (vspeed) 計算用: 1秒ウィンドウ平均によるオーバーサンプリング
-// 40Hz+ のサンプルを1秒分累積し、連続する2ウィンドウの平均差分から vspeed を求める。
-// これにより個別サンプルのノイズを大幅に低減できる。
-static double  alt_win_sum   = 0.0;    // 現在ウィンドウの高度累積値（GND相対）
-static int     alt_win_count = 0;      // 現在ウィンドウのサンプル数
-static float   alt_win_prev  = 0.0f;   // 直前ウィンドウの平均高度 [m]（GND相対）
-static float   last_vspeed   = 0.0f;   // 最新の垂直速度 [m/s]
-static unsigned long win_start = 0;    // 現在ウィンドウ開始時刻 [ms]
+// オーバーサンプリング ウィンドウ幅 [ms]。
+// 短くすると vspeed の応答が速くなるがノイズが増える。
+// 長くすると平滑化されるがバリオの反応が遅くなる。
+#define VSPEED_WINDOW_MS 500
+
+// 垂直速度 (vspeed) 計算用: ウィンドウ トリム平均によるオーバーサンプリング
+// 24ms周期（D1+D2）のサンプルを VSPEED_WINDOW_MS 分バッファに蓄積し、挿入ソート後に上下10%を棄却した
+// トリム平均（20%トリム）で代表値を求める。
+// プロペラ（135rpm 2枚ペラ）が ~4.5Hz で干渉して生じる周期的外れ値を除去するのが目的。
+#define ALT_WIN_BUF_SIZE 32             // 24ms周期×500ms ≈ 20 サンプル、余裕込みで 32
+static float alt_win_buf[ALT_WIN_BUF_SIZE]; // ウィンドウ内の高度サンプルバッファ
+static int   alt_win_count = 0;             // バッファ内の有効サンプル数
+static float alt_win_prev  = 0.0f;          // 直前ウィンドウのトリム平均高度 [m]（GND相対）
+static float last_vspeed   = 0.0f;          // 最新の垂直速度 [m/s]
+static int   last_win_samples = 0;          // 直前ウィンドウのトリム後有効サンプル数（診断用）
+static float last_win_hz      = 0.0f;       // 直前ウィンドウの総サンプル数から算出した更新レート [Hz]
+static unsigned long win_start = 0;         // 現在ウィンドウ開始時刻 [ms]
 
 // 起動時を 0m 基準とするグランドレベル
 static float   ground_alt_abs = 0.0f;  // 起動時の絶対高度（標準大気基準）[m]
@@ -72,19 +83,19 @@ static bool ms5611_ok = false;
 // MS5611 が認識されているか確認するときに airdata_setup() 内から手動で呼ぶ。
 // ----------------------------
 void i2c_scan() {
-    Serial.println("=== I2C Scan ===");
+    DEBUG_PLN(20260310, "=== I2C Scan ===");
     bool found = false;
     for (uint8_t addr = 0x01; addr < 0x7F; addr++) {
         myWire.beginTransmission(addr);
         uint8_t err = myWire.endTransmission();
         if (err == 0) {
-            Serial.print("Found: 0x");
-            Serial.println(addr, HEX);
+            DEBUG_P(20260310, "Found: 0x");
+            DEBUG_PNLN(20260310, addr, HEX);
             found = true;
         }
     }
-    if (!found) Serial.println("No devices found!");
-    Serial.println("================");
+    if (!found) DEBUG_PLN(20260310, "No devices found!");
+    DEBUG_PLN(20260310, "================");
 }
 
 // ----------------------------
@@ -98,8 +109,9 @@ bool ms5611_write_cmd(uint8_t cmd) {
     myWire.write(cmd);
     uint8_t err = myWire.endTransmission();
     if (err != 0) {
-        Serial.print("I2C write error: ");
-        Serial.println(err);
+        DEBUGW_P(20260310, "I2C write error: ");
+        DEBUGW_PLN(20260310, err);
+        enqueueTask(createLogSdfTask("MS5611 I2C write error: %d", err));
         return false;
     }
     return true;
@@ -121,15 +133,17 @@ bool ms5611_read_prom(uint8_t coef_num, uint16_t &val) {
     myWire.write(CMD_READ_PROM + (coef_num << 1));
     uint8_t err = myWire.endTransmission();
     if (err != 0) {
-        Serial.print("PROM write error: ");
-        Serial.println(err);
+        DEBUGW_P(20260310, "PROM write error: ");
+        DEBUGW_PLN(20260310, err);
+        enqueueTask(createLogSdfTask("MS5611 PROM write error: %d", err));
         return false;
     }
 
     uint8_t n = myWire.requestFrom((uint8_t)MS5611_ADDR, (uint8_t)2);
     if (n != 2) {
-        Serial.print("PROM read error, got bytes: ");
-        Serial.println(n);
+        DEBUGW_P(20260310, "PROM read error, got bytes: ");
+        DEBUGW_PLN(20260310, n);
+        enqueueTask(createLogSdfTask("MS5611 PROM read error: got %d bytes", n));
         return false;
     }
     val = (uint16_t)myWire.read() << 8;
@@ -219,9 +233,10 @@ bool ms5611_init() {
   // skip reset
     for (uint8_t i = 0; i <= 6; i++) {
         if (!ms5611_read_prom(i, C[i])) {
-            Serial.print("PROM read failed at C[");
-            Serial.print(i);
-            Serial.println("]");
+            DEBUGW_P(20260310, "PROM read failed at C[");
+            DEBUGW_P(20260310, i);
+            DEBUGW_PLN(20260310, "]");
+            enqueueTask(createLogSdfTask("MS5611 PROM read failed at C[%d]", i));
             return false;
         }
         //Serial.print("C["); Serial.print(i); Serial.print("] = ");
@@ -234,14 +249,72 @@ bool ms5611_init() {
 // 非ブロッキング計測（ステートマシン）
 // ----------------------------
 
+// D1_raw と last_D2_raw から補正計算・高度計算・ウィンドウ処理を実行する。
+// WAIT_D2 完了時に呼ばれる（D1→D2 の毎サイクル完了時）。
+static bool ms5611_process_data() {
+    ms5611_calculate(D1_raw, last_D2_raw, last_temperature, last_pressure);
+    float raw_alt_abs = pressure_to_altitude(last_pressure);
+
+    // 起動時の高度をグランドレベル（0m）として記録
+    if (!ground_set) {
+        ground_alt_abs = raw_alt_abs;
+        ground_set = true;
+        enqueueTask(createLogSdfTask("Initial airdata: Temp=%.2f C, Press=%.2f hPa, Alt=%.1f m",
+            last_temperature, last_pressure, raw_alt_abs));
+    }
+    float raw_alt = raw_alt_abs - ground_alt_abs;  // 起動地点からの相対高度 [m]
+
+    // トリム平均によるオーバーサンプリング:
+    // VSPEED_WINDOW_MS 分のサンプルをバッファに蓄積し、挿入ソート後に上下15%を棄却して
+    // トリム平均を求める。プロペラ干渉（~4.5Hz）による周期的外れ値を除去する。
+    if (win_start == 0) win_start = millis();
+    // 異常値（NaN・Inf・範囲外）はバッファに追加しない
+    // D1 がゴミ値のとき pressure_to_altitude() が極端な値や NaN を返すことがある
+    bool raw_alt_valid = !isnan(raw_alt) && !isinf(raw_alt) && raw_alt > -200.0f && raw_alt < 6000.0f;
+    if (alt_win_count < ALT_WIN_BUF_SIZE && raw_alt_valid) {
+        alt_win_buf[alt_win_count++] = raw_alt;
+    }
+    if (millis() - win_start >= VSPEED_WINDOW_MS && alt_win_count > 0) {
+        // 挿入ソート（最大32サンプルなので十分高速）
+        for (int i = 1; i < alt_win_count; i++) {
+            float key = alt_win_buf[i];
+            int j = i - 1;
+            while (j >= 0 && alt_win_buf[j] > key) {
+                alt_win_buf[j + 1] = alt_win_buf[j];
+                j--;
+            }
+            alt_win_buf[j + 1] = key;
+        }
+        // 上下2つずつカット
+        int trim = 2;
+        int lo = trim;
+        int hi = alt_win_count - trim;  // exclusive
+        float sum = 0.0f;
+        for (int i = lo; i < hi; i++) sum += alt_win_buf[i];
+        float avg_cur = (hi > lo) ? sum / (hi - lo) : alt_win_buf[alt_win_count / 2];
+        // vspeed 計算（ウィンドウ幅に依らず m/s に正規化）
+        if (alt_win_prev != 0.0f) last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / VSPEED_WINDOW_MS);
+        last_altitude     = avg_cur;
+        alt_win_prev      = avg_cur;
+        last_win_samples  = hi - lo;                                    // トリム後の有効サンプル数
+        last_win_hz       = alt_win_count * 1000.0f / VSPEED_WINDOW_MS; // 総サンプルから算出した Hz
+        alt_win_count     = 0;
+        win_start         = millis();
+        return true;   // last_vspeed 更新完了
+    } else {
+        last_altitude = raw_alt;    // ウィンドウ未完了時は瞬時値
+        return false;  // ウィンドウ未完了、last_vspeed 未更新
+    }
+}
+
 // ステートマシン方式で MS5611 の計測サイクルを進める。
 // loop() から毎回呼ぶことで D1→D2 の変換を非同期に実行する。
 //
 // 動作フロー:
-//   IDLE → D1 変換開始 → WAIT_D1 → (10ms後) D1 読取＋D2 変換開始
-//        → WAIT_D2 → (10ms後) D2 読取＋計算 → IDLE（1サイクル完了）
+//   IDLE → D1 変換開始 → WAIT_D1 → (12ms後) D1 読取＋D2 変換開始
+//        → WAIT_D2 → (12ms後) D2 読取＋計算 → IDLE（1サイクル完了、約24ms）
 //
-// 戻り値: 1 サイクル（気圧＋温度）が完了したとき true（約 20ms ごと）。
+// 戻り値: 1 サイクル（気圧＋温度）が完了したとき true（約 24ms ごと）。
 //         完了時に last_temperature / last_pressure / last_altitude が更新される。
 bool airdata_update() {
     if (!ms5611_ok) return false;  // 未接続・初期化失敗時は何もしない
@@ -271,39 +344,12 @@ bool airdata_update() {
         case MS5611_WAIT_D2: {
             // 変換時間が経過するまで待機
             if (millis() - convert_start < OSR_DELAY_MS) return false;
-            uint32_t D2_raw;
-            if (!ms5611_read_adc_result(D2_raw)) {
+            if (!ms5611_read_adc_result(last_D2_raw)) {
                 ms5611_state = MS5611_IDLE;  // エラー時はリセット
                 return false;
             }
-            // 補正計算して結果を保存
-            ms5611_calculate(D1_raw, D2_raw, last_temperature, last_pressure);
-            float raw_alt_abs = pressure_to_altitude(last_pressure);  // 標準大気基準の絶対高度
-            ms5611_state  = MS5611_IDLE;
-
-            // 起動時の高度をグランドレベル（0m）として記録
-            if (!ground_set) { ground_alt_abs = raw_alt_abs; ground_set = true; }
-            float raw_alt = raw_alt_abs - ground_alt_abs;  // 起動地点からの相対高度 [m]
-
-            // 1秒ウィンドウによるオーバーサンプリング:
-            // 40Hz+ のサンプルを1秒分累積し、ウィンドウ平均の差分から vspeed を計算する。
-            // 個別サンプルのノイズを大幅に低減できる。
-            if (win_start == 0) win_start = millis();
-            alt_win_sum += raw_alt;
-            alt_win_count++;
-            if (millis() - win_start >= 1000 && alt_win_count > 0) {
-                float avg_cur = (float)(alt_win_sum / alt_win_count);
-                if (alt_win_prev != 0.0f) last_vspeed = avg_cur - alt_win_prev;
-                last_altitude = avg_cur;    // 1秒平均高度に更新
-                alt_win_prev  = avg_cur;
-                alt_win_sum   = 0.0;
-                alt_win_count = 0;
-                win_start     = millis();
-            } else {
-                last_altitude = raw_alt;    // ウィンドウ未完了時は瞬時値
-            }
-
-            return true;  // 新しいデータ取得完了
+            ms5611_state = MS5611_IDLE;
+            return ms5611_process_data();
         }
     }
     return false;
@@ -317,8 +363,12 @@ float get_airdata_altitude()    { return last_altitude; }
 float get_airdata_pressure()    { return last_pressure; }
 // 最新の気温 [℃] を返す
 float get_airdata_temperature() { return last_temperature; }
-// 最新の鉛直速度 [m/s] を返す（1秒ウィンドウ平均差分。初回ウィンドウ完了まで 0）
+// 最新の鉛直速度 [m/s] を返す（トリム平均差分。初回ウィンドウ完了まで 0）
 float get_airdata_vspeed()      { return last_vspeed; }
+// 直前ウィンドウのトリム後有効サンプル数を返す（診断用）
+int   get_airdata_win_samples() { return last_win_samples; }
+// 直前ウィンドウの総サンプルから算出した更新レート [Hz] を返す（診断用）
+float get_airdata_win_hz()      { return last_win_hz; }
 
 // ----------------------------
 // setup / loop
@@ -328,7 +378,7 @@ float get_airdata_vspeed()      { return last_vspeed; }
 // 初期化失敗時は while(1) で停止する（開発中のため意図的なハルト）。
 // GPS_TFT_map.ino の setup1() から呼ばれる予定（現在は開発中で未使用）。
 void airdata_setup() {
-    Serial.println("MS5611 + RP2354B Start");
+    DEBUG_PLN(20260310, "MS5611 + RP2354B Start");
 
     myWire.begin();
     myWire.setClock(100000);  // I2C クロック 100kHz（標準モード）
@@ -339,16 +389,19 @@ void airdata_setup() {
     bool connected = (myWire.endTransmission() == 0);
 
     if (!connected) {
-        Serial.println("MS5611 not found. Skipping.");
+        DEBUGW_PLN(20260310, "MS5611 not found. Skipping.");
+        enqueueTask(createLogSdTask("MS5611 not found"));
         ms5611_ok = false;
         return;
     }
 
     ms5611_ok = ms5611_init();
     if (!ms5611_ok) {
-        Serial.println("MS5611 init FAILED. Continuing without airdata.");
+        DEBUGW_PLN(20260310, "MS5611 init FAILED. Continuing without airdata.");
+        enqueueTask(createLogSdTask("MS5611 init FAILED"));
     } else {
-        Serial.println("MS5611 init OK!");
+        DEBUGW_PLN(20260310, "MS5611 init OK!");
+        enqueueTask(createLogSdTask("MS5611 init OK"));
     }
 }
 
@@ -356,9 +409,9 @@ void airdata_setup() {
 // loop() から毎回呼ぶことで非ブロッキングに動作する。
 void airdata_test() {
     if (airdata_update()) {
-        Serial.print("Temp: "); Serial.print(get_airdata_temperature(), 2);
-        Serial.print(" C  |  Press: "); Serial.print(get_airdata_pressure(), 2);
-        Serial.print(" hPa  |  Alt: "); Serial.print(get_airdata_altitude(), 1);
-        Serial.println(" m");
+        DEBUG_P(20260310, "Temp: "); DEBUG_PN(20260310, get_airdata_temperature(), 2);
+        DEBUG_P(20260310, " C  |  Press: "); DEBUG_PN(20260310, get_airdata_pressure(), 2);
+        DEBUG_P(20260310, " hPa  |  Alt: "); DEBUG_PN(20260310, get_airdata_altitude(), 1);
+        DEBUG_PLN(20260310, " m");
     }
 }

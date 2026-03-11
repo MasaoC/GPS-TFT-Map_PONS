@@ -747,6 +747,7 @@ void gps_loop(int id) {
     if(stored_truetrack < 0 || stored_truetrack > 360){
       DEBUGW_P(20250923,"ERROR:MT");
       DEBUGW_PLN(20250923,stored_truetrack);
+      enqueueTask(createLogSdfTask("ERR truetrack=%.1f (forced 0)", stored_truetrack));
       stored_truetrack = 0;
     }
 
@@ -764,6 +765,17 @@ void gps_loop(int id) {
     DEBUG_P(20250923,F("Satellites: "));
     DEBUG_PLN(20250923,stored_numsats);
     #endif
+  }
+
+  // 初回 GPS 時刻取得時に UTC 時刻を SD ログに記録（1回だけ）
+  if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
+    static bool first_time_logged = false;
+    if (!first_time_logged) {
+      first_time_logged = true;
+      enqueueTask(createLogSdfTask("GPS TIME: %04d-%02d-%02d %02d:%02d:%02d UTC",
+        gps.date.year(), gps.date.month(), gps.date.day(),
+        gps.time.hour(), gps.time.minute(), gps.time.second()));
+    }
   }
 }
 
@@ -816,7 +828,7 @@ void try_enque_savecsv(){
       utcToJst(&year,&month,&day,&hour);
       float calc_voltage = min(BATTERY_MULTIPLYER(max_adreading),4.3);
       float csv_pressure = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
-      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, stored_altitude, csv_pressure, stored_numsats, calc_voltage,year, month, day, hour, gps.time.minute(), gps.time.second()));
+      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, stored_altitude, csv_pressure, stored_numsats, calc_voltage,year, month, day, hour, gps.time.minute(), gps.time.second(), gps.time.centisecond()));
       last_gps_save_time = millis();
     }
   }

@@ -24,10 +24,12 @@
   bool  get_airdata_ok();
 
   // 最新計測値のゲッター（airdata_update() が true を返した後に更新）
-  float get_airdata_altitude();     // 気圧高度 [m]（1秒ウィンドウ平均）
+  float get_airdata_altitude();     // 気圧高度 [m]（トリム平均）
   float get_airdata_pressure();     // 気圧 [hPa]
   float get_airdata_temperature();  // 気温 [℃]
-  float get_airdata_vspeed();       // 鉛直速度 [m/s]（1秒ウィンドウ平均差分）
+  float get_airdata_vspeed();       // 鉛直速度 [m/s]（トリム平均差分）
+  int   get_airdata_win_samples();  // 直前ウィンドウのトリム後有効サンプル数（診断用）
+  float get_airdata_win_hz();       // 直前ウィンドウの更新レート [Hz]（診断用）
 
   // 気圧→高度変換（QNH 指定可能）
   float pressure_to_altitude(float pressure_hpa, float sea_level_hpa = 1013.25f);

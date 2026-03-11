@@ -47,12 +47,14 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second);
+    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
     void load_mapimage(double center_lat, double center_lon,int zoomlevel);
 
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
     void getVolume(char* buffer, size_t bufferSize);
+    void setVarioVolume(const char* value);
+    void getVarioVolume(char* buffer, size_t bufferSize);
     void setDestination(const char* value);
     void getDestination(char* buffer, size_t bufferSize);
     void setNavigationMode(const char* value);
@@ -86,7 +88,7 @@
               float pressure;
               int numsats;
               float voltage;
-              int year, month, day, hour, minute, second;
+              int year, month, day, hour, minute, second, centisecond;
           } saveCsvArgs;
           struct {                           // For load_mapimage
               double center_lat;
@@ -117,7 +119,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
   Task createPlayWavTask(const char* filename,int priority=1);
