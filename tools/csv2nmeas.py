@@ -4,7 +4,7 @@
 
 '''
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Read the input CSV file
 df = pd.read_csv('./PONSv5_planelog_2025-07-26_1539.csv')
@@ -59,6 +59,8 @@ def row_to_nmea(row, utc_time):
 
 # Convert date and time to datetime object
 df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'])
+# To UTC
+df['datetime'] -= timedelta(hours=9)
 
 # Calculate time in milliseconds relative to the first row
 base_time = df['datetime'].iloc[0]
@@ -77,4 +79,4 @@ output_df['time_ms'] = output_df['time_ms'].astype(int)
 output_df['nmea'] =  output_df['nmea'] 
 
 # Save to output CSV
-output_df.to_csv('output.csv', index=False, columns=['time_ms', 'nmea'])
+output_df.to_csv('csv2nmea_output.csv', index=False, columns=['time_ms', 'nmea'])

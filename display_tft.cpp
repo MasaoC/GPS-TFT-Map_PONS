@@ -1421,6 +1421,19 @@ void draw_map_footer(){
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
 
+  // 最大 G/S 表示（JST 時刻の 1 行上）
+  // 5分保持と全時間が同値の場合は片側のみ表示。異なる場合は両方表示。
+  backscreen.setCursor(1, BACKSCREEN_SIZE-18);
+  if (get_maxgs_5min() == get_maxgs()) {
+    // 同じ値なので全時間最大のみ表示
+    backscreen.printf("Max GS %.1fm/s(%02d:%02d)",
+      get_maxgs(), get_maxgs_hour(), get_maxgs_min());
+  } else {
+    backscreen.printf("Max GS %.1fm/s(%02d:%02d) %.1fm/s(%02d:%02d)",
+      get_maxgs_5min(), get_maxgs_5min_hour(), get_maxgs_5min_min(),
+      get_maxgs(),      get_maxgs_hour(),      get_maxgs_min());
+  }
+
   if (time.isValid()) {
     backscreen.setCursor(1, BACKSCREEN_SIZE-9);
     backscreen.printf("%02d:%02d:%02d JST", (time.hour()+9)%24, time.minute(), time.second());
@@ -1434,7 +1447,7 @@ void draw_map_footer(){
   else
     backscreen.print("S");
 
-  backscreen.setCursor(175,BACKSCREEN_SIZE-9);
+  backscreen.setCursor(170,BACKSCREEN_SIZE-9);
   backscreen.printf("%.5f", get_gps_lon());
   if(get_gps_lon() >= 0)
     backscreen.print("E");
@@ -1753,7 +1766,7 @@ void draw_nomapdata() {
       backscreen.setCursor(3,50);
       backscreen.setTextColor(COLOR_MAGENTA);
       backscreen.println("NO GNSS connection !!");
-      backscreen.println(" Try power off and on.");
+      backscreen.println(" Try power off then on.");
       backscreen.println(" Please contact developer.");
       return;
     }

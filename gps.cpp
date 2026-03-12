@@ -60,6 +60,18 @@ TinyGPSPlus gps;
 // TinyGPS++ から取り出した値をここに保存し、getter 関数経由で他モジュールに公開する。
 double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
 int stored_numsats;
+
+// --- 最大 G/S 保持変数 ---
+// maxgs        : 起動後の全時間最大 G/S [m/s]
+// maxgs_5min   : 直近 5 分間の最大 G/S [m/s]（5分間更新がなければ現在値にリセット）
+// *_hour / *_min : 最大値を記録した時刻（JST 時・分）
+static float  maxgs            = 0.0f;
+static int    maxgs_hour       = 0;
+static int    maxgs_min        = 0;
+static float  maxgs_5min       = 0.0f;
+static int    maxgs_5min_hour  = 0;
+static int    maxgs_5min_min   = 0;
+static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
 bool gps_connection = false;  // GPS モジュールから1文字でも受信したら true
 bool demo_biwako = false;     // 琵琶湖デモモード（GPS を使わず仮想位置を生成する）
 
@@ -491,8 +503,49 @@ void gps_setup() {
   setupcounter++;
 }
 
+// 最大 G/S の全情報をリセットする（デモ/リプレイモード切替時に呼ぶ）
+static void reset_maxgs() {
+  maxgs                  = 0.0f;
+  maxgs_hour             = 0;
+  maxgs_min              = 0;
+  maxgs_5min             = 0.0f;
+  maxgs_5min_hour        = 0;
+  maxgs_5min_min         = 0;
+  maxgs_5min_last_update = 0;
+}
+
+// 最大 G/S を更新する（NMEAパス・DEMOパス共通）。
+// gps.time が有効な場合は JST 時刻を記録し、無効な場合は 0:00 として速度値だけ更新する。
+static void update_maxgs(float gs) {
+  int jst_h = 0, jst_m = 0;
+  if (gps.time.isValid()) {
+    jst_h = (gps.time.hour() + 9) % 24;
+    jst_m = gps.time.minute();
+  }
+  // 全時間最大 G/S
+  if (gs > maxgs) {
+    maxgs      = gs;
+    maxgs_hour = jst_h;
+    maxgs_min  = jst_m;
+  }
+  // 5 分保持最大 G/S
+  if (gs > maxgs_5min) {
+    maxgs_5min             = gs;
+    maxgs_5min_hour        = jst_h;
+    maxgs_5min_min         = jst_m;
+    maxgs_5min_last_update = millis();
+  } else if (millis() - maxgs_5min_last_update > 5UL * 60 * 1000) {
+    // 5 分間更新がなければ現在の G/S にリセット
+    maxgs_5min             = gs;
+    maxgs_5min_hour        = jst_h;
+    maxgs_5min_min         = jst_m;
+    maxgs_5min_last_update = millis();
+  }
+}
+
 void toggle_demo_biwako() {
   demo_biwako = !demo_biwako;
+  reset_maxgs();  // モード切替時に最大 G/S をリセット
 }
 
 bool get_demo_biwako() {
@@ -501,6 +554,7 @@ bool get_demo_biwako() {
 
 void set_demo_biwako(bool biwakomode){
   demo_biwako = biwakomode;
+  reset_maxgs();  // モード切替時に最大 G/S をリセット
 }
 
 unsigned long last_latlon_manager = 0;
@@ -554,6 +608,7 @@ bool gps_new_location_arrived(){
       last_demo_gpsupdate = millis();
       new_location_arrived = true;
       demo_biwako_mps = 7 + sin(millis() / 1500.0);
+      update_maxgs(demo_biwako_mps);  // DEMOモードでも最大 G/S を更新
       
       
       int basetrack = 280;
@@ -625,6 +680,7 @@ void process_char(char c){
 
 void toggleReplayMode(){
   replaymode_gpsoff = !replaymode_gpsoff;
+  reset_maxgs();  // モード切替時に最大 G/S をリセット
 }
 
 bool getReplayMode(){
@@ -633,6 +689,7 @@ bool getReplayMode(){
 
 void set_replaymode(bool replaymode){
   replaymode_gpsoff = replaymode;
+  reset_maxgs();  // モード切替時に最大 G/S をリセット
 }
 // GPS モジュールからの Serial データを受信・解析するメインループ処理。
 // 描画の途中でも複数回呼ばれることで、GPS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
@@ -736,6 +793,8 @@ void gps_loop(int id) {
     DEBUG_P(20250923,stored_gs);  // Speed in meters per second
     DEBUG_PLN(20250923,F(" mps"));
     #endif
+
+    update_maxgs(stored_gs);  // 最大 G/S を更新
   }
 
   if (gps.course.isUpdated()) {
@@ -914,6 +973,14 @@ double get_gps_mps() {
   }
   return stored_gs;
 }
+
+// 最大 G/S getter 関数群
+float get_maxgs()           { return maxgs; }
+int   get_maxgs_hour()      { return maxgs_hour; }
+int   get_maxgs_min()       { return maxgs_min; }
+float get_maxgs_5min()      { return maxgs_5min; }
+int   get_maxgs_5min_hour() { return maxgs_5min_hour; }
+int   get_maxgs_5min_min()  { return maxgs_5min_min; }
 
 
 bool get_gps_connection() {

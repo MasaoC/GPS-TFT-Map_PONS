@@ -72,6 +72,14 @@
   TinyGPSDate get_gpsdate();
   TinyGPSTime get_gpstime();
 
+  // 最大 G/S 取得関数
+  float get_maxgs();            // 全時間最大 G/S [m/s]
+  int   get_maxgs_hour();       // 全時間最大 G/S の記録時刻（JST 時）
+  int   get_maxgs_min();        // 全時間最大 G/S の記録時刻（JST 分）
+  float get_maxgs_5min();       // 5分保持最大 G/S [m/s]
+  int   get_maxgs_5min_hour();  // 5分保持最大 G/S の記録時刻（JST 時）
+  int   get_maxgs_5min_min();   // 5分保持最大 G/S の記録時刻（JST 分）
+
   void toggle_demo_biwako();
   bool get_demo_biwako();
   void set_demo_biwako(bool biwakomode);
