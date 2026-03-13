@@ -1511,7 +1511,7 @@ void draw_footer(){
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_input_voltage();
-    int bat_pct = constrain((int)((input_voltage - 3.2f) / (4.2f - 3.2f) * 100.0f), 0, 100);
+    int bat_pct = constrain((int)((input_voltage - 3.4f) / (4.2f - 3.4f) * 100.0f), 0, 100);
     if (input_voltage <= BAT_LOW_VOLTAGE) {
       if((millis()/1000)%2 != 0){
         header_footer.setTextColor(COLOR_RED);
@@ -1523,7 +1523,15 @@ void draw_footer(){
       //最後のバッテリー警告から60秒以上経過。
       if(millis() > last_battery_warning_time+60*1000){
         last_battery_warning_time = millis();
-        enqueueTask(createPlayWavTask( "wav/battery_low.wav"));
+        if(good_sd()){
+          // SD認識済み: WAVファイルを再生（最低volume60保証）
+          enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
+        } else {
+          // SD未認識: 高音ビープ3回で代替警告（最低volume60保証）
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 400, 1, 1, 60));
+        }
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)", bat_pct, input_voltage));
       }
     } else if (input_voltage < 3.7) {  // 50%未満

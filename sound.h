@@ -17,8 +17,8 @@
 
 
   void setup_sound();
-  void startPlayWav(const char* filename, int priority = 1);
+  void startPlayWav(const char* filename, int priority = 1, int min_volume = 0);
   void update_tone(float degpersecond);
-  void playTone(int freq,int duration, int counter,int priority = 1);
+  void playTone(int freq,int duration, int counter,int priority = 1, int min_volume = 0);
   void update_vario();  // バリオメーター音更新（Core0 から毎ループ呼ぶ）
 #endif

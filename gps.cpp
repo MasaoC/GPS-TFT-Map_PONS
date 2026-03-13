@@ -672,6 +672,13 @@ void process_char(char c){
       }
       if(strstr(nmea_buffer1, "GSA")){
         parseGSA(nmea_buffer1);
+        // GSA 受信時に DOP 情報を 10 秒に 1 回 SD ログに保存する
+        static unsigned long last_dop_log = 0;
+        if (millis() - last_dop_log >= 10000) {
+          enqueueTask(createLogSdfTask("DOP PDOP=%.1f HDOP=%.1f VDOP=%.1f fix=%d sats=%d",
+            gsa_pdop, gsa_hdop, gsa_vdop, gsa_fixtype, gsa_numsat));
+          last_dop_log = millis();
+        }
       }
     }
     index_buffer1 = 0;

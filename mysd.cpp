@@ -388,21 +388,23 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
   return task;
 }
 
-Task createPlayMultiToneTask(int freq, int duration, int count,int priority){
+Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int min_volume){
   Task task;
   task.type = TASK_PLAY_MULTITONE;
   task.playMultiToneArgs.freq = freq;
   task.playMultiToneArgs.duration = duration;
   task.playMultiToneArgs.counter = count;
   task.playMultiToneArgs.priority = priority;
+  task.playMultiToneArgs.min_volume = min_volume;
   return task;
 }
 
-Task createPlayWavTask(const char* filename, int priority){
+Task createPlayWavTask(const char* filename, int priority, int min_volume){
   Task task;
   task.type = TASK_PLAY_WAV;
   task.playWavArgs.wavfilename = filename;
   task.playWavArgs.priority = priority;
+  task.playWavArgs.min_volume = min_volume;
   return task;
 }
 

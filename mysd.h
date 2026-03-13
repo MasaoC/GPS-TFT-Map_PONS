@@ -100,10 +100,12 @@
               int duration;
               int counter;
               int priority;
+              int min_volume;  // 最低保証ボリューム（0=制限なし）
           } playMultiToneArgs;
           struct{
               const char* wavfilename;
               int priority;
+              int min_volume;  // 最低保証ボリューム（0=制限なし）
           }playWavArgs;
       };
   } Task;
@@ -121,8 +123,8 @@
   Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
-  Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1);
-  Task createPlayWavTask(const char* filename,int priority=1);
+  Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0);
+  Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
   Task createLoadReplayTask();
   Task createInitReplayTask();

@@ -470,7 +470,7 @@ void loop1() {
   // そのため loop1() 最初の1回だけ SP をキャプチャしてベース値にする。
   if (_core1_base_sp == 0) {
     uint32_t _sp_; asm volatile ("mov %0, sp" : "=r" (_sp_)); _core1_base_sp = _sp_;
-    Serial.print("[C1 loop1 base SP]=0x"); Serial.println(_core1_base_sp, HEX);
+    DEBUG_P(20260312, "[C1 loop1 base SP]=0x"); DEBUG_PNLN(20260312, _core1_base_sp, HEX);
   }
   loop_sound();  // 音声の継続再生処理（WAV 送出など）
   if (dequeueTask(&currentTask)) {
@@ -479,10 +479,10 @@ void loop1() {
         saveSettings();
         break;
       case TASK_PLAY_WAV:
-        startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority);
+        startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume);
         break;
       case TASK_PLAY_MULTITONE:
-        playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority);
+        playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority, currentTask.playMultiToneArgs.min_volume);
         break;
       case TASK_INIT_SD:
         setup_sd(1);
