@@ -1511,7 +1511,7 @@ void draw_footer(){
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_input_voltage();
-    int bat_pct = constrain((int)((input_voltage - 3.4f) / (4.2f - 3.4f) * 100.0f), 0, 100);
+    int bat_pct = constrain((int)((input_voltage - BAT_ZERO_VOLTAGE) / (4.2f - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
     if (input_voltage <= BAT_LOW_VOLTAGE) {
       if((millis()/1000)%2 != 0){
         header_footer.setTextColor(COLOR_RED);
@@ -1534,7 +1534,7 @@ void draw_footer(){
         }
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)", bat_pct, input_voltage));
       }
-    } else if (input_voltage < 3.7) {  // 50%未満
+    } else if (input_voltage < 3.8) {  // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
       header_footer.setTextColor(COLOR_MAGENTA);
       header_footer.printf("%d%%", bat_pct);
     } else {  // 50%以上
@@ -2243,7 +2243,7 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   }
 
   #ifndef RELEASE
-  header_footer.setCursor(140, 18);
+  header_footer.setCursor(145, 18);
   header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
   #endif
 

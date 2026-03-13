@@ -14,7 +14,7 @@
 #define RELEASE
 
 #define BUILDDATE 20260313
-#define BUILDVERSION "0.905"
+#define BUILDVERSION "0.906"
 #define VERSION_TEXT "Version 6"
 
 
@@ -73,6 +73,7 @@
 
 #define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
 #define BAT_LOW_VOLTAGE 3.5
+#define BAT_ZERO_VOLTAGE 3.4
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
 #define USERLED_PIN 34 //ユーザーLED（エラー表示用。エラー時 HIGH）

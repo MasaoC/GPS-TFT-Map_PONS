@@ -159,7 +159,7 @@ bool sinmode = true;   // true のとき割り込みが Sin 波を出力する
 // ※ 以前は if(wavmode){}if(sinmode){} の並列構造だったが、
 //    バリオ追加にともない cascaded else-if 構造に変更。
 // ============================================================
-bool timerCallback(struct repeating_timer *t) {
+bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
   if (wavmode && wav_playing && bufferReady[activeBuffer]) {
     // 【優先1】WAV 再生: activeBuffer から 1 サンプルを出力
     // 8bit unsigned PCM (0〜255, 中心128) → 10bit PWM (0〜1023, 中心512) に変換
@@ -213,7 +213,7 @@ void setAmplifierState(bool enable) {
 //   3. チャンクが途中で終わった場合（ファイル末尾）、残りを 128（無音）でパディング
 //      ※ 8bit unsigned PCM の無音値は 128（0 は最大負圧でノイズになる）
 //   4. bufferReady[loadBuffer] = true にして割り込みが使える状態にする
-bool loadNextChunk() {
+bool __not_in_flash_func(loadNextChunk)() {
     if (audioFile && !bufferReady[loadBuffer] && audioDataRead < totalAudioSize) {
         uint32_t remaining = totalAudioSize - audioDataRead;
         uint32_t toRead = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
@@ -381,7 +381,7 @@ void stopPlayback() {
 // 役割2: 先読みロード
 //   再生中に loadBuffer が空ならば loadNextChunk() を呼んで次のデータを先読みする。
 //   これにより、再生と読み込みが並行して進む。
-void loop_sound(){
+void __not_in_flash_func(loop_sound)(){
     unsigned long currentTime = millis();
 
     // バッファスワップ依頼を処理（割り込みの外側で実行するのでメモリ競合が起きない）
