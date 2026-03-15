@@ -11,7 +11,7 @@
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
 
 // リリース時
-#define RELEASE
+//#define RELEASE
 
 #define BUILDDATE 20260313
 #define BUILDVERSION "0.906"
@@ -71,7 +71,7 @@
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
 #define SD_DETECT 8
 
-#define BATTERY_MULTIPLYER(adr) (0.002415812*adr) //VSYS 1/4098*3.3*3
+#define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
 #define BAT_LOW_VOLTAGE 3.5
 #define BAT_ZERO_VOLTAGE 3.4
 #define PIN_PWMTONE 38
