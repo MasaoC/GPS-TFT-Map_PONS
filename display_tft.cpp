@@ -23,11 +23,18 @@
 #include "sound.h"
 #include "button.h"
 #include "airdata.h"
+#include "imu.h"
 
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
 #define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
 #define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（未使用）
 #define NM_FONT_LARGE Arial_Black56    // 大サイズフォント（ヘッダーの速度・磁方位表示）
+
+// ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
+#ifndef RELEASE
+TimingStat ts_draw_header     = TSTAT_INIT("C0_draw_header");
+TimingStat ts_push_backscreen = TSTAT_INIT("C0_push_backscreen");
+#endif
 
 // ===== TFT スプライト =====
 // tft        : TFT_eSPI 本体（240×320px）。直接描画は非推奨で、スプライト経由が基本。
@@ -1104,16 +1111,22 @@ void startup_demo_tft() {
     load_push_logo();//240x52
   }
 
+  tft.setCursor(20, SCREEN_HEIGHT - 28);//320-292=28
   if(good_sd()){
     tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    tft.setCursor(20, SCREEN_HEIGHT - 28);//320-292=28
     tft.print("SD OK! MAP COUNT: ");
     tft.print(mapdata_count);
   }else{
     tft.setTextColor(COLOR_RED, COLOR_WHITE);
-    tft.setCursor(10, SCREEN_HEIGHT - 28);
     tft.print("[ERROR: CHECK SD CARD !]");
   }
+  // MS5611 / BNO085 接続状態（SD表示の1行下）
+  tft.setCursor(10, SCREEN_HEIGHT - 16);
+  tft.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+  tft.print(get_airdata_ok() ? "MS5611:OK" : "MS5611:NG");
+  tft.print("  ");
+  tft.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+  tft.print(get_imu_ok() ? "BNO085:OK" : "BNO085:NG");
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
 
@@ -1121,7 +1134,13 @@ void startup_demo_tft() {
   draw_Biwako(center_lat,center_lon,2.5, 0,false);
   draw_version_backscreen();
   backscreen.pushSprite(0,52);
-  delay(3200);
+
+  if (good_sd()) {
+    enqueueTask(createPlayWavTask("wav/opening.wav"));     // SD 正常: 起動音を再生
+  } else {
+    enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
+  }
+  delay(2500);
 
   float zoomin_speedfactor = 1.0f;
   int countermax = 40/zoomin_speedfactor;
@@ -1192,9 +1211,11 @@ void clean_backscreen(){
 // VSIスプライト（5×240px）を鉛直速度に応じて描画する。
 // 中心 Y=120 が 0 m/s の基準線（白）。上昇=緑バー、下降=シアンバー。
 // 不感域なし。最大バー長 120px（±2.0 m/s で振り切り）。
-// バーの上にグレー線（±0.4 m/s バリオ閾値）と白線（±1.0 m/s）を重ねて描画。
+// バーの上にグレー線（バリオ閾値 KF:±0.3 / MS5611単独:±0.6 m/s）と白線（±1.0 m/s）を重ねて描画。
 void draw_vsi() {
-    float vspeed = get_airdata_vspeed();
+    // BNO085 が使えるときは Kalman 融合済みの上昇率を使う。
+    // BNO085 非接続時は MS5611 単独の上昇率にフォールバックする。
+    float vspeed = get_imu_ok() ? get_imu_vspeed() : get_airdata_vspeed();
     vsi_sprite.fillScreen(TFT_BLACK);
     vsi_sprite.drawFastHLine(0, 120, 5, TFT_WHITE);  // 0 m/s 基準線
     if (!get_airdata_ok()) return;
@@ -1210,9 +1231,12 @@ void draw_vsi() {
         vsi_sprite.fillRect(0, 121, 5, bar, TFT_CYAN);
     }
     // 閾値ラインをバーの上に重ねて描画（バーがなくても常に表示）
-    // グレー線: ±0.4 m/s（バリオ音が鳴り始める閾値）= ±24px
-    vsi_sprite.drawFastHLine(0, 120 - 24, 5, TFT_DARKGREY);  // +0.4 m/s
-    vsi_sprite.drawFastHLine(0, 120 + 24, 5, TFT_DARKGREY);  // -0.4 m/s
+    // グレー線: バリオ音デッドバンド閾値（sound.cpp の dead_band と一致させる）
+    //   KF融合中（BNO085+MS5611）: ±0.3 m/s = ±18px
+    //   MS5611単独              : ±0.6 m/s = ±36px
+    int db_px = (get_imu_ok() && get_airdata_ok()) ? 18 : 36;
+    vsi_sprite.drawFastHLine(0, 120 - db_px, 5, TFT_DARKGREY);
+    vsi_sprite.drawFastHLine(0, 120 + db_px, 5, TFT_DARKGREY);
     // 白線: ±1.0 m/s = ±60px
     vsi_sprite.drawFastHLine(0, 120 - 60, 5, TFT_WHITE);     // +1.0 m/s
     vsi_sprite.drawFastHLine(0, 120 + 60, 5, TFT_WHITE);     // -1.0 m/s
@@ -1221,11 +1245,13 @@ void draw_vsi() {
 // backscreen スプライトを TFT の (0, 50) に転送する（ヘッダー 50px の下から表示）。
 // 転送前に VSI を backscreen の右端 X=235 に合成する。
 void push_backscreen(){
+  TIMING_START(push_bs);
   if (vario_volume > 0) {
     draw_vsi();
     vsi_sprite.pushToSprite(&backscreen, 235, 0);  // Sprite→Sprite 合成
   }
   backscreen.pushSprite(0, 50);
+  TIMING_END(ts_push_backscreen, push_bs);
 }
 
 // backscreen の最上部に小さなテキスト（GS・m/s・MT ラベル）を描画する。
@@ -1370,6 +1396,7 @@ void draw_degpersec(double degpersecond){
 // 区切り縦線（mtvx）でスピードエリアと方位エリアを分けている。
 //Height 50px
 void draw_header() {
+  TIMING_START(hdr);
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextWrap(false);
   header_footer.loadFont(NM_FONT_LARGE);  // Must load the font first
@@ -1406,6 +1433,7 @@ void draw_header() {
   }
 
   header_footer.pushSprite(0,0);
+  TIMING_END(ts_draw_header, hdr);
 }
 
 extern int course_warning_index;
@@ -1420,6 +1448,14 @@ void draw_map_footer(){
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
+
+  // Magnetic Heading 表示（Max G/S の 1 行上）
+  if (get_imu_ok()) {
+    float roll, pitch, yaw;
+    get_imu_euler(roll, pitch, yaw);
+    backscreen.setCursor(1, BACKSCREEN_SIZE-27);
+    backscreen.printf("MH%03d", (int)yaw);
+  }
 
   // 最大 G/S 表示（JST 時刻の 1 行上）
   // 5分保持と全時間が同値の場合は片側のみ表示。異なる場合は両方表示。
@@ -1895,6 +1931,282 @@ void draw_sddetail(int page) {
 
 
 
+
+// ============================================================
+// Vario 詳細画面を描画する（screen_mode == MODE_VARIODETAIL 時）。
+// page % 3 == 0: センサー接続状況 + MS5611 気圧データ。
+// page % 3 == 1: BNO085 IMU データ（垂直加速度・Kalman 推定値）。
+// page % 3 == 2: Kalman フィルター設定パラメーター。
+// ヘッダーは GPS DETAIL 同様に 10px 上にずらして pushSprite(0,-10) で転送。
+// VSI バーは GPS_TFT_map.ino のループ内で airdata_updated タイミングに更新される。
+void draw_variodetail(int page) {
+  // ---- ヘッダー: GPS DETAIL と同様に 10px 上ずらし ----
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+
+  const char* page_titles[] = {
+    "VARIO DETAIL 1:SENSORS",
+    "VARIO DETAIL 2:IMU",
+    "VARIO DETAIL 3:KALMAN"
+  };
+  header_footer.setCursor(1, 11);  // +10px（GPS DETAIL と同じオフセット）
+  header_footer.print(page_titles[page % 3]);
+  header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に合わせる
+
+  // ---- バックスクリーン ----
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+  int y = 2;
+
+  if (page % 3 == 0) {
+    // ---- Page 1: センサー接続状況 + MS5611 気圧データ ----
+
+    // センサー接続状況
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("--- Sensor Status ---");
+    y += 16;
+
+    // MS5611
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    backscreen.printf("MS5611 : %s", get_airdata_ok() ? "OK" : "NOT CONNECTED");
+    y += 14;
+
+    // BNO085
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    backscreen.printf("BNO085 : %s", get_imu_ok() ? "OK" : "NOT CONNECTED");
+    y += 14;
+
+    // 動作モード
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    if      (get_imu_ok() && get_airdata_ok()) backscreen.print("Mode: Kalman Fusion");
+    else if (get_airdata_ok())                  backscreen.print("Mode: MS5611 only");
+    else if (get_imu_ok())                      backscreen.print("Mode: BNO085 only");
+    else                                         backscreen.print("Mode: No sensors");
+    y += 20;
+
+    // MS5611 データ
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("--- MS5611 Data ---");
+    y += 16;
+
+    if (get_airdata_ok()) {
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+      backscreen.setCursor(2, y);
+      backscreen.printf("Pressure: %.2f hPa", get_airdata_pressure());
+      y += 14;
+
+      backscreen.setCursor(2, y);
+      backscreen.printf("Altitude: %.1f m", get_airdata_altitude());
+      y += 14;
+
+      backscreen.setCursor(2, y);
+      backscreen.printf("Temp    : %.1f C", get_airdata_temperature());
+      y += 14;
+
+      float baro_vsi = get_airdata_vspeed();
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor((baro_vsi > 0.1f) ? COLOR_GREEN : (baro_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("VSI(baro): %+.2f m/s", baro_vsi);
+      y += 14;
+
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.printf("n=%d  %.1f Hz", get_airdata_win_samples(), get_airdata_win_hz());
+      y += 20;
+
+      // VSI Comparison（BNO085 も接続済みのとき）
+      if (get_imu_ok()) {
+        float kf_vsi  = get_imu_vspeed();
+        float baro_vsi = get_airdata_vspeed();
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+        backscreen.print("--- VSI Comparison ---");
+        y += 16;
+        backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+        backscreen.setCursor(2, y);
+        backscreen.printf("Baro VSI : %+.2f m/s", baro_vsi);
+        y += 14;
+        backscreen.setCursor(2, y);
+        backscreen.printf("KF   VSI : %+.2f m/s", kf_vsi);
+        y += 14;
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+        backscreen.printf("Delta    : %+.2f m/s", kf_vsi - baro_vsi);
+      }
+    } else {
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.print("(no data)");
+    }
+
+  } else if (page % 3 == 1) {
+    // ---- Page 2: BNO085 IMU データ ----
+
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("--- BNO085 IMU Data ---");
+    y += 16;
+
+    if (get_imu_ok()) {
+      // イベント受信レート
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.printf("GRV:%.1fHz LACC:%.1fHz RV:%.1fHz",
+                        get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz());
+      y += 16;
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+      float az = get_imu_az();
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor((az > 0.2f) ? COLOR_GREEN : (az < -0.2f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("Vert Accel : %+.3f m/s2", az);
+      y += 14;
+
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("KF Altitude: %.1f m", get_imu_altitude());
+      y += 14;
+
+      float kf_vsi = get_imu_vspeed();
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor((kf_vsi > 0.1f) ? COLOR_GREEN : (kf_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("KF VSI     : %+.2f m/s", kf_vsi);
+      y += 20;
+
+      // ---- 線形加速度（ボディフレーム）----
+      float lax, lay, laz;
+      get_imu_linaccel(lax, lay, laz);
+      y += 8;
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("--- Linear Accel [body] ---");
+      y += 15;
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("X: %+.3f   Y: %+.3f", lax, lay);
+      y += 14;
+      backscreen.setCursor(2, y);
+      backscreen.printf("Z: %+.3f m/s2", laz);
+      y += 18;
+
+      // ---- Euler 角（Roll/Pitch: GAME RV、Yaw: RV+Mag）----
+      float roll, pitch, yaw;
+      get_imu_euler(roll, pitch, yaw);
+      float mag_acc = get_imu_mag_accuracy_deg();
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("--- Euler Angles ---");
+      y += 15;
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      backscreen.setCursor(2, y);
+      backscreen.printf("Roll : %+.1f deg  (GAME RV)", roll);
+      y += 14;
+      backscreen.setCursor(2, y);
+      backscreen.printf("Pitch: %+.1f deg  (GAME RV)", pitch);
+      y += 14;
+      backscreen.setCursor(2, y);
+      if (mag_acc >= 0.0f) {
+        // ROTATION_VECTOR 受信済み: 磁北基準のヨーと精度を表示
+        backscreen.printf("Yaw  : %+.1f deg  (mag)", yaw);
+        y += 14;
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(mag_acc < 5.0f ? COLOR_GREEN : mag_acc < 15.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
+        backscreen.printf("  Heading acc: +/-%.1f deg", mag_acc);
+      } else {
+        // 未受信: GAME RV のヨーをグレーでフォールバック表示
+        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+        backscreen.printf("Yaw  : %+.1f deg  (game, no mag)", yaw);
+      }
+
+    } else {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.setCursor(2, y);
+      backscreen.print("BNO085 not connected.");
+      y += 14;
+
+      if (get_airdata_ok()) {
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+        backscreen.print("Using baro VSI only.");
+        y += 14;
+
+        float baro_vsi = get_airdata_vspeed();
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+        backscreen.printf("Baro VSI : %+.2f m/s", baro_vsi);
+      }
+    }
+
+  } else {
+    // ---- Page 3: Kalman フィルター設定 ----
+
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("--- Kalman Filter Config ---");
+    y += 16;
+
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+    backscreen.setCursor(2, y);
+    backscreen.print("Process Noise (Q):");
+    y += 14;
+
+    backscreen.setCursor(2, y);
+    backscreen.printf("  Q_vel  : %.4f", KF_Q_VEL);
+    y += 13;
+
+    backscreen.setCursor(2, y);
+    backscreen.printf("  Q_bias : %.4f", KF_Q_BIAS);
+    y += 20;
+
+    backscreen.setCursor(2, y);
+    backscreen.print("Observation Noise (R):");
+    y += 14;
+
+    backscreen.setCursor(2, y);
+    backscreen.printf("  R      : %.4f m2", KF_R);
+    y += 20;
+
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("State: x = [z, z_dot, b]");
+    y += 14;
+
+    backscreen.setCursor(2, y);
+    if (get_imu_ok() && get_airdata_ok()) {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.print("KF: Active (fused)");
+    } else if (get_imu_ok()) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print("KF: BNO085 only (baro absent)");
+    } else {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.print("KF: Inactive");
+    }
+  }
+
+  backscreen.pushSprite(0, 40);
+
+  // ---- フッター: ページ番号 ----
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_BLACK);
+  header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  header_footer.setCursor(2, 5);
+  header_footer.printf("Page %d/3  (short: next / long: back)", page % 3 + 1);
+  header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
+}
+
+
 //==================MODE DRAWS===============
 
 // GPS 詳細画面を描画する（screen_mode == MODE_GPS_DETAIL 時）。
@@ -2246,15 +2558,6 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   header_footer.setCursor(145, 18);
   header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
   #endif
-
-  // hPa / m / m/s / V: airdata 正常時のみ温度の下に表示
-  if (get_airdata_ok()) {
-    header_footer.setCursor(2, 32);
-    header_footer.setTextColor(COLOR_GRAY);
-    header_footer.printf("%.2fhPa %.1fm %+.1fm/sV n=%d %.1fHz",
-      get_airdata_pressure(), get_airdata_altitude(), get_airdata_vspeed(),
-      get_airdata_win_samples(), get_airdata_win_hz());
-  }
 
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.pushSprite(0,SCREEN_HEIGHT-40);

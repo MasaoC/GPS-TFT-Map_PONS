@@ -11,9 +11,15 @@
 #ifndef AIRDATA_H
   #define AIRDATA_H
   #include <Arduino.h>
+  #include <Wire.h>
+
+  // MS5611 が使用する I2C バス（i2c0, GPIO32=SDA, GPIO33=SCL）。
+  // BNO085 など同じバスに繋ぐセンサーはこれを extern で参照する。
+  extern TwoWire myWire;
 
   // 初期化・テスト
-  void airdata_setup();
+  void airdata_wire_begin(); // I2C バス初期化（imu_setup() より前に呼ぶ）
+  void airdata_setup();      // MS5611 初期化（imu_setup() の後に呼ぶ）
   void airdata_test();
 
   // 非ブロッキング計測（ループから毎回呼ぶ）

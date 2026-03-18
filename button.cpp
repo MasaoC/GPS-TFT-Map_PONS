@@ -448,7 +448,26 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [11] 保存して終了 (EXIT)
+  // [11] Vario 詳細画面へ (VARIO_DETAIL)
+  //   ・Enter: ページ番号を 0 にリセットし、Vario 詳細画面へ遷移
+  //            （センサー状況・BNO085 IMU データ・Kalman 設定を 3 ページで表示）
+  //   ・Toggle/Exit/アイコン色: なし
+  // ----------------------------------------------------------
+  { SETTING_VARIO_DETAIL,
+    [](bool selected) -> std::string {
+      return "Vario detail >";
+    },
+    []() {
+      screen_mode = MODE_VARIODETAIL;  // Vario 詳細画面に切り替え
+      detail_page = 0;                 // ページを先頭に戻す
+    },
+    nullptr,
+    nullptr,
+    nullptr
+  },
+
+  // ----------------------------------------------------------
+  // [12] 保存して終了 (EXIT)
   //   ・Enter: exit_setting() を呼び出し、設定を保存してマップ画面に戻る
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------

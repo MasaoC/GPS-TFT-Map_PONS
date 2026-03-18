@@ -27,6 +27,10 @@ extern volatile bool userled_forced_on;
 // Create a UBLOX instance
 TinyGPSPlus gps;
 
+// GPS時刻を最後に受信したときのmillis()（Euler角ログの時刻推定用）
+static uint32_t gps_fix_millis = 0;
+uint32_t get_gps_fix_millis() { return gps_fix_millis; }
+
 // --- Mediatek GPS 用 NMEA コマンド ---
 // PMTK コマンドは Mediatek チップセット GPS モジュールの設定コマンド。
 // 文字列末尾の *XX はチェックサム。
@@ -844,6 +848,8 @@ void gps_loop(int id) {
         gps.date.year(), gps.date.month(), gps.date.day(),
         gps.time.hour(), gps.time.minute(), gps.time.second()));
     }
+    // GPS時刻更新のたびにmillis()を記録（Euler角ログの時刻推定に使用）
+    gps_fix_millis = millis();
   }
 }
 

@@ -30,6 +30,14 @@ bool sdInitialized = false;  // SD カードの初期化が完了しているか
 bool sdError = false;        // SD アクセス中にエラーが発生したか
 #define LOGFILE_NAME "log.txt"
 
+// ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
+#ifndef RELEASE
+TimingStat ts_load_mapimage = TSTAT_INIT("C1_load_mapimage");
+TimingStat ts_savecsv_flush = TSTAT_INIT("C1_savecsv_flush");
+extern volatile bool c0_is_redrawing;  // Core0 描画中フラグ（重複検出用）
+uint32_t _c1_overlap_count = 0;        // Core0描画中にCore1重処理が重なった回数
+#endif
+
 unsigned long lasttrytime_sd = 0; // SD エラー時の最後の再試行時刻（10秒ごとにリトライする）
 bool headerWritten = false;       // CSV ファイルにヘッダ行を書いたか（1フライト1回だけ書く）
 
@@ -1058,7 +1066,9 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     // 2Hz×2秒 = 4行×約80バイト ≈ 320バイト → 512バイトブロックバッファに収まるため安全。
     { static unsigned long last_flush_ms = 0;
       if (millis() - last_flush_ms >= 2000) {
+        TIMING_START(csv_fl);
         csvFileStatic.flush();
+        TIMING_END(ts_savecsv_flush, csv_fl);
         last_flush_ms = millis();
       }
     }
@@ -1069,6 +1079,63 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     }
     sdInitialized = false; // Mark SD card as not initialized for the next attempt
   }
+}
+
+// ===== Euler角ログ（BNO085 ROTATION_VECTOR 5Hz） =====
+// eulerフォルダに JST 日付のファイルを追記モードで書き込む。
+// flush()は呼ばない → SdFat 512バイトバッファが溜まったら自動書き込み（省電力）。
+static FsFile eulerFileStatic;
+static char eulerOpenedFilename[24] = "";  // 現在開いているファイル名
+
+void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename) {
+  if (!good_sd()) return;
+
+  // ファイル名が変わった場合（日付変更等）は閉じて開き直す
+  if (eulerFileStatic.isOpen() && strcmp(eulerOpenedFilename, filename) != 0) {
+    eulerFileStatic.close();
+    eulerOpenedFilename[0] = '\0';
+  }
+
+  if (!eulerFileStatic.isOpen()) {
+    // eulerフォルダがなければ作成
+    if (!SD.exists("euler")) {
+      SD.mkdir("euler");
+    }
+    // 既存ファイルかどうか確認（ヘッダー書き込み判定用）
+    bool fileExisted = SD.exists(filename);
+
+    // 追記モードで開く
+    if (!eulerFileStatic.open(filename, O_RDWR | O_CREAT | O_APPEND)) return;
+    strncpy(eulerOpenedFilename, filename, sizeof(eulerOpenedFilename) - 1);
+    eulerOpenedFilename[sizeof(eulerOpenedFilename) - 1] = '\0';
+
+    // 新規ファイルのみヘッダー書き込み
+    if (!fileExisted) {
+      eulerFileStatic.println("time,roll,pitch,yaw");
+    }
+  }
+
+  // HH:MM:SS.cc,roll,pitch,yaw 形式で書き込み
+  char line[64];
+  snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f",
+           h, m, s, cs, roll, pitch, yaw);
+  eulerFileStatic.println(line);
+  // flush()は呼ばない → バッファ(512byte)が溜まったら自動書き込み
+}
+
+Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename) {
+  Task t;
+  t.type = TASK_LOG_EULER;
+  t.logEulerArgs.hour        = h;
+  t.logEulerArgs.minute      = m;
+  t.logEulerArgs.second      = s;
+  t.logEulerArgs.centisecond = cs;
+  t.logEulerArgs.roll        = roll;
+  t.logEulerArgs.pitch       = pitch;
+  t.logEulerArgs.yaw         = yaw;
+  strncpy(t.logEulerArgs.filename, filename, sizeof(t.logEulerArgs.filename) - 1);
+  t.logEulerArgs.filename[sizeof(t.logEulerArgs.filename) - 1] = '\0';
+  return t;
 }
 
 // ===== BMP ファイルヘッダー構造体 =====
@@ -1169,6 +1236,10 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   // Core1 で最もスタックを消費する（5 秒に 1 回出力）。
   DEBUG_STACK_C1("load_mapimage");
   DEBUG_PLN(20250417,"load mapimage begin");
+  TIMING_START(lmi);
+#ifndef RELEASE
+  if (c0_is_redrawing) _c1_overlap_count++;  // Core0描画と重なったらカウント
+#endif
   // ズームレベルに対応したグリッド間隔（度数）を決定する。
   // BMP ファイル 1 枚が round_degrees 度単位のグリッドに配置されているため、
   // center_lat/lon を round_degrees 単位に丸めて対応するファイルを特定する。
@@ -1407,6 +1478,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     DEBUG_PLN(20240828,"aborted task! gmap unloaded");
     gmap_loaded_active = false;
     abortTask = false;
+    TIMING_END(ts_load_mapimage, lmi);  // 中断時もここまでの実時間を計測
     return;
   }
 
@@ -1416,6 +1488,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   last_start_y = start_y;
   gmap_loaded_active = true;
   new_gmap_ready = true;
+  TIMING_END(ts_load_mapimage, lmi);
 
   DEBUG_PLN(20250424,"gmap_loaded_active! new_gmap_ready!");
 }

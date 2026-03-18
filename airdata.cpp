@@ -54,7 +54,7 @@ static float last_altitude    = 0.0f;  // [m]（VSPEED_WINDOW_MS ウィンドウ
 // オーバーサンプリング ウィンドウ幅 [ms]。
 // 短くすると vspeed の応答が速くなるがノイズが増える。
 // 長くすると平滑化されるがバリオの反応が遅くなる。
-#define VSPEED_WINDOW_MS 500
+#define VSPEED_WINDOW_MS 250
 
 // 垂直速度 (vspeed) 計算用: ウィンドウ トリム平均によるオーバーサンプリング
 // 24ms周期（D1+D2）のサンプルを VSPEED_WINDOW_MS 分バッファに蓄積し、挿入ソート後に上下10%を棄却した
@@ -65,6 +65,8 @@ static float alt_win_buf[ALT_WIN_BUF_SIZE]; // ウィンドウ内の高度サン
 static int   alt_win_count = 0;             // バッファ内の有効サンプル数
 static float alt_win_prev  = 0.0f;          // 直前ウィンドウのトリム平均高度 [m]（GND相対）
 static float last_vspeed   = 0.0f;          // 最新の垂直速度 [m/s]
+static unsigned long last_vspeed_update_ms = 0; // 最後に vspeed が正常更新された時刻 [ms]
+                                                // I2C エラー等で途絶えた場合のタイムアウト判定に使う
 static int   last_win_samples = 0;          // 直前ウィンドウのトリム後有効サンプル数（診断用）
 static float last_win_hz      = 0.0f;       // 直前ウィンドウの総サンプル数から算出した更新レート [Hz]
 static unsigned long win_start = 0;         // 現在ウィンドウ開始時刻 [ms]
@@ -300,6 +302,7 @@ static bool ms5611_process_data() {
         last_win_hz       = alt_win_count * 1000.0f / VSPEED_WINDOW_MS; // 総サンプルから算出した Hz
         alt_win_count     = 0;
         win_start         = millis();
+        last_vspeed_update_ms = millis();  // 正常更新時刻を記録
         return true;   // last_vspeed 更新完了
     } else {
         last_altitude = raw_alt;    // ウィンドウ未完了時は瞬時値
@@ -364,7 +367,13 @@ float get_airdata_pressure()    { return last_pressure; }
 // 最新の気温 [℃] を返す
 float get_airdata_temperature() { return last_temperature; }
 // 最新の鉛直速度 [m/s] を返す（トリム平均差分。初回ウィンドウ完了まで 0）
-float get_airdata_vspeed()      { return last_vspeed; }
+// I2C エラー等で 2 秒以上更新が途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
+// 2 秒 = VSPEED_WINDOW_MS(500ms) の 4 倍。正常時は 500ms ごとに更新されるため十分な余裕。
+float get_airdata_vspeed() {
+    if (last_vspeed_update_ms == 0 ||
+        millis() - last_vspeed_update_ms > 2000UL) return 0.0f;
+    return last_vspeed;
+}
 // 直前ウィンドウのトリム後有効サンプル数を返す（診断用）
 int   get_airdata_win_samples() { return last_win_samples; }
 // 直前ウィンドウの総サンプルから算出した更新レート [Hz] を返す（診断用）
@@ -374,15 +383,24 @@ float get_airdata_win_hz()      { return last_win_hz; }
 // setup / loop
 // ----------------------------
 
-// MS5611 の I2C バスを初期化し、センサーのキャリブレーション係数を読み込む。
-// 初期化失敗時は while(1) で停止する（開発中のため意図的なハルト）。
-// GPS_TFT_map.ino の setup1() から呼ばれる予定（現在は開発中で未使用）。
+// I2C バス（myWire）を初期化する。
+// imu_setup()（BNO085）と airdata_setup()（MS5611）の両方が使うバスであるため、
+// どちらよりも先に呼ぶ必要がある。GPS_TFT_map.ino の setup() 冒頭から呼ぶこと。
+void airdata_wire_begin() {
+    myWire.begin();
+    // BNO085 は起動時にクロックストレッチングを多用するため 100kHz に設定する。
+    // 400kHz では RP2350 側がタイムアウト（error: 5）して I2C バスがロックする。
+    // MS5611 は 100kHz でも動作に問題ない。
+    myWire.setClock(400000);
+    delay(100);
+}
+
+// MS5611 の接続確認とキャリブレーション係数の読み込みを行う。
+// airdata_wire_begin() と imu_setup() の後に呼ぶこと。
 void airdata_setup() {
     DEBUG_PLN(20260310, "MS5611 + RP2354B Start");
 
-    myWire.begin();
-    myWire.setClock(100000);  // I2C クロック 100kHz（標準モード）
-    delay(100);
+    i2c_scan();
 
     // I2C アドレスに応答があるか確認（接続チェック）
     myWire.beginTransmission(MS5611_ADDR);

@@ -14,6 +14,7 @@
 #include "gps.h"
 #include "mysd.h"
 #include "airdata.h"
+#include "imu.h"
 #include "hardware/pwm.h"
 #include "hardware/timer.h"
 #include "pico/stdlib.h"
@@ -700,14 +701,16 @@ void playTone(int freq, int duration, int counter, int priority, int min_volume)
 //
 // 内部で 100ms レート制限しているので毎ループ呼んでよい。
 // get_airdata_vspeed() で 1Hz 更新される鉛直速度を読み、
-// デッドバンド ±0.2 m/s を超えたときにバリオ音パラメータを更新する。
+// デッドバンド閾値を超えたときにバリオ音パラメータを更新する。
+//   KF融合中（BNO085+MS5611）: ±0.3 m/s
+//   MS5611単独            : ±0.6 m/s
 //
-// 上昇（vspeed > +0.2 m/s）: 断続ビープ
-//   ピッチ = 700 + vspeed*300 Hz（0.2→760Hz, 1.0→1000Hz, 3.0→1600Hz, 上限 2200Hz）
+// 上昇（vspeed > dead_band）: 断続ビープ
+//   ピッチ = 700 + vspeed*300 Hz（1.0→1000Hz, 3.0→1600Hz, 上限 2200Hz）
 //   ON 時間 80ms 固定 / OFF 時間 = 700/vspeed - 80 ms（最小 50ms）
 //
-// 下降（vspeed < -0.2 m/s）: 連続低音
-//   ピッチ = 400 - |vspeed|*30 Hz（0.2→394Hz, 2.0→340Hz, 下限 220Hz）
+// 下降（vspeed < -dead_band）: 連続低音
+//   ピッチ = 480 - |vspeed|*30 Hz（2.0→420Hz, 下限 220Hz）
 //
 // アンプ管理:
 //   バリオ開始エッジで amp を ON（WAV/Sinトーン未使用時）。
@@ -720,14 +723,18 @@ void update_vario() {
     if (millis() - last_call < 100) return;
     last_call = millis();
 
-    float vspeed = get_airdata_vspeed();
-    bool should_vario = (vspeed > 0.4f || vspeed < -0.4f) && (vario_volume > 0);
+    // BNO085 が使えるときは Kalman 融合済みの上昇率を使う（応答が速く正確）。
+    // BNO085 非接続時は MS5611 単独の上昇率にフォールバックする。
+    float vspeed = get_imu_ok() ? get_imu_vspeed() : get_airdata_vspeed();
+    // デッドバンド閾値: Kalman 融合中（BNO085+MS5611 両方接続）は精度が高いため狭くする。
+    float dead_band = (get_imu_ok() && get_airdata_ok()) ? 0.3f : 0.6f;
+    bool should_vario = (vspeed > dead_band || vspeed < -dead_band) && (vario_volume > 0);
 
     static bool prev_vario = false;
 
     if (should_vario) {
         // パラメータを vspeed に応じて毎回更新（10Hz 解像度で音が変わる）
-        if (vspeed > 0.2f) {
+        if (vspeed > dead_band) {
             // 上昇: 断続ビープ
             float v = vspeed < 2.0f ? vspeed : 2.0f;  // 2.0 m/s で振り切り
             int freq = (int)(700 + v * 300);        // 820〜2200 Hz（2.0 m/s → 1300Hz）

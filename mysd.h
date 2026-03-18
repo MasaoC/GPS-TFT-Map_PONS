@@ -26,7 +26,8 @@
       TASK_SAVE_SETTINGS,
       TASK_BROWSE_SD,
       TASK_LOAD_REPLAY,
-      TASK_INIT_REPLAY
+      TASK_INIT_REPLAY,
+      TASK_LOG_EULER
   } TaskType;
 
 
@@ -49,6 +50,7 @@
     void log_sdf(const char* format, ...);
     void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
     void load_mapimage(double center_lat, double center_lon,int zoomlevel);
+    void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename);
 
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
@@ -107,6 +109,11 @@
               int priority;
               int min_volume;  // 最低保証ボリューム（0=制限なし）
           }playWavArgs;
+          struct {                           // For saveEuler
+              int hour, minute, second, centisecond;
+              float roll, pitch, yaw;
+              char filename[24];             // "euler/20260316.txt" = 19文字
+          } logEulerArgs;
       };
   } Task;
 
@@ -128,6 +135,7 @@
   Task createBrowseSDTask(int page);
   Task createLoadReplayTask();
   Task createInitReplayTask();
+  Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename);
 
   // Functions to handle the queue (declarations)
   void enqueueTask(Task task);

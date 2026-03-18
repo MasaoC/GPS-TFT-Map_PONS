@@ -87,4 +87,6 @@
   bool getReplayMode();
   void set_replaymode(bool replaymode);
 
+  uint32_t get_gps_fix_millis();  // 最後にGPS時刻を受信したときのmillis()（時刻推定用）
+
 #endif
