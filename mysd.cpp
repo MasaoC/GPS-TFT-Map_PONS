@@ -26,8 +26,10 @@
 
 
 SdFs SD;                     // SdFat ライブラリのファイルシステムオブジェクト
-bool sdInitialized = false;  // SD カードの初期化が完了しているか
-bool sdError = false;        // SD アクセス中にエラーが発生したか
+volatile bool sdInitialized = false;  // SD カードの初期化が完了しているか（Core0/Core1 両方から参照）
+volatile bool sdError = false;        // SD アクセス中にエラーが発生したか（Core0/Core1 両方から参照）
+volatile bool sd_setup_complete = false;  // Core1 の setup_sd() が完了したことを示すフラグ（Core0 が待機に使用）
+volatile bool logo_ready = false;  // Core1 でロゴ BMP 読み込みが完了したら true（Core0 が pushSprite に使用）
 #define LOGFILE_NAME "log.txt"
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
@@ -59,8 +61,6 @@ int filesecond;
 //   - dequeueTask(): Core1 がタスクを取り出して実行
 //   - taskQueueMutex でアトミック操作を保証
 // ============================================================
-mutex_t sdMutex;                   // SD カードアクセス排他制御用（現在は主に legacy）
-volatile bool core0NeedsAccess = false;  // 予約（将来の双方向アクセス用）
 volatile bool abortTask = false;   // 実行中タスクに中断を要求するフラグ（ズームレベル変更時など）
 TaskQueue taskQueue;               // タスクのリングバッファ本体
 mutex_t taskQueueMutex;            // タスクキューへのアクセスを保護するミューテックス
@@ -138,7 +138,7 @@ bool saveSettings() {
 bool loadSettings() {
   FsFile file = SD.open("settings.txt", FILE_READ);
   if (!file) {
-    ("Failed to open settings.txt for reading");
+    DEBUGW_PLN(20250401,"Failed to open settings.txt for reading");
     return false;
   }
 
@@ -365,13 +365,13 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
-Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
   task.saveCsvArgs.longitude = longitude;
   task.saveCsvArgs.gs = gs;
-  task.saveCsvArgs.mtrack = mtrack;
+  task.saveCsvArgs.ttrack = ttrack;
   task.saveCsvArgs.altitude = altitude;
   task.saveCsvArgs.pressure = pressure;
   task.saveCsvArgs.numsats = numsats;
@@ -499,6 +499,8 @@ void enqueueTask(Task task) {
   } else {
     userled_forced_on = true;         // 永続点灯フラグを立てる（loop_userled がフラッシュで消さないよう保護）
     digitalWrite(USERLED_PIN, HIGH);  // キュー満杯によるタスクロスト → LED 永続点灯
+    // ※ mutex 保持中のため enqueueTask() の再帰呼び出し不可。Serial 出力のみ。
+    Serial.println("ERR: task queue full, task dropped");
   }
   mutex_exit(&taskQueueMutex);
 }
@@ -686,6 +688,7 @@ void setup_sd(int trycount, bool load_settings){
 
   if (!sdInitialized) {
     DEBUG_PLN(20260208, "SD init failed.");
+    sd_setup_complete = true;  // 失敗でも完了を通知（Core0 が無限待機しないように）
     return;
   }
 
@@ -699,6 +702,7 @@ void setup_sd(int trycount, bool load_settings){
       DEBUGW_PLN(20250508, "Error loading settings.");
     }
   }
+  sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }
 
 // ===== リプレイ再生用変数 =====
@@ -921,11 +925,13 @@ void dateTime(uint16_t* date, uint16_t* time) {
 // どちらも lasttrytime_sd でクールダウンを管理する。
 // load_settings=false にすることで、復旧時に設定値（scaleindex 等）を上書きしない。
 static void try_sd_recovery() {
+
   // SD カードが物理的に挿入されていない場合はリトライしない
   if (digitalRead(SD_DETECT)){
     DEBUG_PLN(20250508,"SD card not detected. Skipping SD recovery.");
     return;
   }
+
   if (!sdInitialized && !sdError) {
     if (millis() - lasttrytime_sd > 10000) {
       lasttrytime_sd = millis();
@@ -937,13 +943,20 @@ static void try_sd_recovery() {
       setup_sd(1, false);  // 復旧時は設定を再読み込みしない（ユーザー操作中の設定値を保護）
     }
   }
+
 }
 
 // SD カードが正常に使用できる状態かどうかを返す。
 // sdInitialized（初期化成功）かつ sdError（書き込みエラーなし）の両方が満たされているとき true。
 // sdError 中は try_sd_recovery() で回復を試み、10秒ごとにリトライする。
 bool good_sd(){
-  try_sd_recovery();
+
+  // SD リカバリ（setup_sd 再呼出し）は Core1 でのみ実行する。
+  // Core0 から try_sd_recovery() を呼ぶと SDIO バスを両コアが同時にアクセスし、
+  // バスハングでフリーズする原因になる。
+  if (get_core_num() == 1) {
+    try_sd_recovery();
+  }
   return sdInitialized && !sdError;
 }
 
@@ -1138,6 +1151,13 @@ Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, fl
   return t;
 }
 
+// 起動時ロゴ BMP 読み込みタスクを生成する（引数なし、ファイル名はハードコード）
+Task createLoadLogoTask(){
+  Task task;
+  task.type = TASK_LOAD_LOGO;
+  return task;
+}
+
 // ===== BMP ファイルヘッダー構造体 =====
 // Windows Bitmap（BMP）のバイナリ構造に対応した構造体定義。
 // BITMAPFILEHEADER と BITMAPINFOHEADER を分けて定義し、SdFat の read() で直接読み込む。
@@ -1211,7 +1231,7 @@ TFT_eSprite gmap_sprite = TFT_eSprite(&tft);
 volatile bool gmap_loaded_active = false;
 volatile bool new_gmap_ready = false;
 char lastsprite_id[20] = "\0";
-int last_start_x,last_start_y = 0;
+int last_start_x = 0, last_start_y = 0;
 
 // 指定した緯度・経度・ズームレベルに対応する BMP ファイルを SD から読み込み、
 // gmap_sprite に 240×240 ピクセルの地図画像として展開する。
@@ -1559,6 +1579,6 @@ void load_push_logo(){
   }
   bmpImage.close();
 
-  gmap_sprite.pushSprite(0,0);
+  logo_ready = true;  // Core0 に読み込み完了を通知（pushSprite は Core0 が行う）
 }
 

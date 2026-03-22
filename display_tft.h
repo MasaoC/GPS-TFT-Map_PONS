@@ -140,6 +140,8 @@ void draw_demo_biwako();
 void draw_replay_indicator();
 void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
 void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+void draw_nofix_cross();                         // GPS fix なし時のグレー × 描画
+void draw_hdop_circle(double scale, float hdop); // HDOP 不良時の不確かさ円描画
 void draw_triangle(int ttrack,int steer_angle);
 void draw_course_warning(int steer_angle);
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);

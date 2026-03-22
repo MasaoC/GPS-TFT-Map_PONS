@@ -21,7 +21,7 @@
 ## マイコン  Recommended Microcontroller
  * Raspberry Pi Pico 2 (RP2350)
 
- TFTとの通信では、PicoのPIOを使用し 8 bit Paralel 接続を使う事で高速描画可能になっています。これは、TFT_eSPIライブラリによるものです。
+ TFTとの通信では、PicoのPIOを使用し 16 bit Paralel 接続を使う事で高速描画可能になっています。これは、TFT_eSPIライブラリによるものです。
 
 ## TFT  Recommended TFT panel. (推奨の動作確認済みTFT)
  * Digikey

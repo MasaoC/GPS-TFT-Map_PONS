@@ -27,7 +27,8 @@
       TASK_BROWSE_SD,
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
-      TASK_LOG_EULER
+      TASK_LOG_EULER,
+      TASK_LOAD_LOGO      // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
   } TaskType;
 
 
@@ -85,7 +86,7 @@
               float latitude;
               float longitude;
               float gs;
-              int mtrack;
+              int ttrack;  // 真方位（true track）を格納
               float altitude;
               float pressure;
               int numsats;
@@ -128,7 +129,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
@@ -136,6 +137,7 @@
   Task createLoadReplayTask();
   Task createInitReplayTask();
   Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename);
+  Task createLoadLogoTask();
 
   // Functions to handle the queue (declarations)
   void enqueueTask(Task task);
@@ -153,6 +155,8 @@
 
   extern Task currentTask;
   extern mutex_t taskQueueMutex;
+  extern volatile bool sd_setup_complete;
+  extern volatile bool logo_ready;
   extern TFT_eSprite gmap_sprite;
   extern char replay_nmea[128];
   extern volatile unsigned long replay_seekpos;

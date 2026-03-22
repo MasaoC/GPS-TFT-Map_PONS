@@ -14,7 +14,7 @@
   #include <Arduino.h>
   #include "mysd.h"
   void __not_in_flash_func(loop_sound)();
-
+  void loop_tone();
 
   void setup_sound();
   void startPlayWav(const char* filename, int priority = 1, int min_volume = 0);

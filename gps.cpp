@@ -176,7 +176,7 @@ void removeStaleSatellites() {
 
 // GSA（GPS DOP and Active Satellites）NMEA 文をパースして DOP・フィックスタイプ・使用衛星を更新する。
 // 形式: $GNGSA,A,3,19,06,17,02,28,09,12,,,,,,,1.33,0.74,1.10*05
-//   field[1] = fix type (1=No Fix, 2=2D, 3=3D)
+//   field[2] = fix type (1=No Fix, 2=2D, 3=3D)
 //   field[3..14] = 測位使用衛星 PRN (空フィールドは "")
 //   field[15] = PDOP, field[16] = HDOP, field[17] = VDOP（チェックサム付き可）
 void parseGSA(char *nmea) {
@@ -403,7 +403,7 @@ void gps_setup() {
       DEBUG_PLN(20251025,"QUECTEL 38400");
       GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
       GPS_SERIAL.begin(gps_current_baudrate = 38400);
-    #elif defined(MEADIATEK_GPS)
+    #elif defined(MEDIATEK_GPS)
       DEBUG_PLN(20251025,"MEDIATEK 38400");
       GPS_SERIAL.println(PMTK_ENABLE_SBAS);
       gps_getposition_mode();
@@ -830,7 +830,7 @@ void gps_loop(int id) {
   }
 
   if (gps.satellites.isUpdated()) {
-    // Remove satellites not received for 60 seconds
+    // Remove satellites not received for 30 seconds
     removeStaleSatellites();
     stored_numsats = gps.satellites.value();
     #ifdef DEBUG_NMEA

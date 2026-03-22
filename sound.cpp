@@ -79,10 +79,15 @@ static void push_pending_wav(const char* filename, int priority) {
             return;
         }
     }
-    // 両方埋まっている → 最も低優先なスロットを上書き
+    // 両方埋まっている → 最も低優先なスロットを上書き（または追加を破棄）
     int lowest = (pending_wav[0].priority <= pending_wav[1].priority) ? 0 : 1;
     if (priority > pending_wav[lowest].priority) {
+        DEBUGW_P(20260322, "WARN: pending wav overwritten: ");
+        DEBUGW_PLN(20260322, pending_wav[lowest].filename);
         pending_wav[lowest] = {filename, priority};
+    } else {
+        DEBUGW_P(20260322, "WARN: pending wav dropped (queue full): ");
+        DEBUGW_PLN(20260322, filename);
     }
 }
 
@@ -101,6 +106,41 @@ static const char* pop_best_pending_wav(int &out_priority) {
     return f;
 }
 
+
+// ============================================================
+// トーン専用バッファ（最大 TONE_BUFFER_SIZE 件、Core1 内でのみアクセス）
+//
+// loop1() が TASK_PLAY_MULTITONE を受け取ると pushToneBuffer() で積み、
+// loop_tone() が WAV 再生状況に応じて順番に非ブロッキングで再生する。
+// ミューテックス不要（Core1 の loop1 / loop_tone のみがアクセス）。
+// ============================================================
+#define TONE_BUFFER_SIZE 10
+struct ToneEntry { int freq, duration, count, priority, min_volume; };
+static ToneEntry     toneBuffer[TONE_BUFFER_SIZE];
+static int           toneBufHead    = 0;
+static int           toneBufTail    = 0;
+
+// 現在再生中のトーン状態（loop_tone() が管理する）
+static int           tone_remaining = 0;     // 現在エントリの残りカウント
+static int           tone_cur_freq  = 0;     // 現在のトーン周波数
+static int           tone_cur_dur   = 0;     // 1 トーン / ギャップの長さ [ms]
+static bool          tone_in_gap    = false; // true = カウント間の無音ギャップ中
+static bool          tone_paused    = false; // true = WAV 割込みで一時停止中
+static unsigned long tone_stop_time = 0;     // 現在フェーズの終了時刻 [ms]
+
+// トーンをバッファに追加する。
+// 満杯の場合はエラーを Serial と SD に記録してスキップする。
+static bool pushToneBuffer(int freq, int dur, int cnt, int pri, int vol) {
+    int next = (toneBufTail + 1) % TONE_BUFFER_SIZE;
+    if (next == toneBufHead) {
+        DEBUGW_PLN(20260322, "ERR: tone buffer full, tone dropped");
+        enqueueTask(createLogSdTask("ERR: tone buffer full, tone dropped"));
+        return false;
+    }
+    toneBuffer[toneBufTail] = {freq, dur, cnt, pri, vol};
+    toneBufTail = next;
+    return true;
+}
 
 // File object and size tracking
 FsFile audioFile;
@@ -124,7 +164,7 @@ volatile uint32_t vario_phase_inc     = 0;     // バリオ音の周波数（位
 volatile uint32_t vario_on_samples    = 1280;  // ON サンプル数 (80ms × 16kHz = 1280)
 volatile uint32_t vario_cycle_samples = 0;     // サイクル長（0=連続, >0=断続）
 volatile bool     vario_ascending     = false; // true=上昇中, false=下降中（音量補正用）
-volatile bool     sin_playing         = false; // myTone() がアンプ ON 中だけ true
+volatile bool     sin_playing         = false; // トーン出力中だけ true（割り込みが参照）
 static uint32_t   s_vario_phase_acc   = 0;     // バリオ位相アキュムレータ（割り込み専用）
 static uint32_t   s_vario_cycle_pos   = 0;     // バリオサイクル位置（割り込み専用）
 
@@ -265,15 +305,37 @@ extern bool sdError;
 //   4. 最初のチャンクを loadBuffer に読み込む
 //   5. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
 void startPlayWav(const char* filename, int priority, int min_volume) {
-    // 優先度チェック：再生中ファイルの優先度の方が高ければ新リクエストを pending に保存してリターン
-    if(wav_playing && wav_playing_priority > priority){
-        push_pending_wav(filename, priority);  // 低優先の新リクエストを後で再生するために保存
-        DEBUGW_P(20250503,"Start play wav pending due to priority.:");
+    // 優先度チェック①：再生中 WAV の方が高優先なら新リクエストを pending に保存
+    if (wav_playing && wav_playing_priority > priority) {
+        push_pending_wav(filename, priority);
+        DEBUGW_P(20250503,"WAV pending (lower priority than playing WAV): ");
         DEBUGW_PLN(20250427,filename);
         return;
     }
+
+    // 優先度チェック②：トーンが進行中かつ同等以上の優先度なら WAV を pending に回す
+    // （トーン完了後に loop_tone() が pending WAV を再生する）
+    bool tone_in_progress = sin_playing || tone_in_gap || tone_paused;
+    if (tone_in_progress && tone_playing_priority >= priority) {
+        push_pending_wav(filename, priority);
+        DEBUGW_P(20250503,"WAV pending (lower priority than playing tone): ");
+        DEBUGW_PLN(20250503,filename);
+        return;
+    }
+
+    // トーンが進行中で WAV の優先度が高い → トーンを一時停止して WAV を開始
+    // （WAV 終了後に loop_tone() がトーンを再開する）
+    if (tone_in_progress) {
+        sin_playing = false;
+        tone_paused = true;
+        pwm_set_gpio_level(PIN_PWMTONE, 512);
+        if (!vario_mode) setAmplifierState(false);
+        DEBUGW_P(20250503,"Tone paused by higher-priority WAV: ");
+        DEBUGW_PLN(20250503,filename);
+    }
+
     // 現在再生中の低優先 WAV を pending に退避してから上書き
-    if(wav_playing && current_wav_filename != nullptr){
+    if (wav_playing && current_wav_filename != nullptr) {
         push_pending_wav(current_wav_filename, wav_playing_priority);
         DEBUGW_P(20250503,"Interrupted wav saved to pending.:");
         DEBUGW_PLN(20250503,current_wav_filename);
@@ -592,7 +654,7 @@ unsigned long last_update_tone = 0;
 void update_tone(float degpersecond){
     // 前回の呼び出しから 900ms 以上経過していなければスキップ（過剰な再生防止）
     if(millis() - last_update_tone < 900){
-        DEBUG_PLN(20250508,"errrr");
+        DEBUG_PLN(20250508,"update_tone: rate limited, skip");
         return;
     }
     last_update_tone = millis();
@@ -643,56 +705,115 @@ void playNextNote(int frequency) {
 }
 
 
-// 指定した周波数・時間のトーンを 1 回だけ鳴らす低レベル関数。
-// アンプを ON にして duration ms 待ってから OFF にする。
-// sin_playing フラグで「アンプ ON 中」を割り込みに通知する（バリオとの優先制御用）。
-// バリオ使用中はアンプを OFF にしない（バリオ音が即時再開できるよう amp を維持）。
-void myTone(int freq,int duration){
-  sin_playing = true;              // Sin トーン開始を割り込みに通知
-  digitalWrite(PIN_AMP_SD,HIGH);  // アンプ ON
-  playNextNote(freq);              // 周波数を設定（割り込みが出力を開始）
-  delay(duration);                 // 指定時間鳴らし続ける
-  sin_playing = false;             // Sin トーン終了を割り込みに通知
-  if (!vario_mode) {
-    digitalWrite(PIN_AMP_SD,LOW); // バリオ未使用時のみアンプ OFF
-  }
+// トーン再生要求をバッファに積む。実際の再生は loop_tone() が担当する。
+// WAV 優先制御・タイミング管理は loop_tone() / startPlayWav() が行う。
+void playTone(int freq, int duration, int counter, int priority, int min_volume) {
+    pushToneBuffer(freq, duration, counter, priority, min_volume);
 }
 
 
-// 指定した周波数・時間・回数・優先度で Sin 波トーンを再生する。
-// WAV 再生中（かつ優先度が同等以上）の場合はキャンセルする。
+// toneBuffer から次のエントリを取り出してトーン再生を開始する。
+// loop_tone() から呼ばれる（WAV 未再生時のみ）。
+static void startNextToneEntry() {
+    ToneEntry& e    = toneBuffer[toneBufHead];
+    toneBufHead     = (toneBufHead + 1) % TONE_BUFFER_SIZE;
+
+    tone_remaining        = e.count;
+    tone_cur_freq         = e.freq;
+    tone_cur_dur          = e.duration;
+    tone_playing_priority = e.priority;
+    wav_override_volume   = e.min_volume;
+    tone_in_gap           = false;
+
+    sinmode     = true;
+    sin_playing = true;
+    setAmplifierState(true);
+    playNextNote(tone_cur_freq);
+    tone_stop_time = millis() + tone_cur_dur;
+}
+
+// ============================================================
+// Core1 のメインループから毎ループ呼ばれるトーン再生管理関数。
 //
-// 注意: このループ中は WAV 再生を一時停止させている（wavmode=false）。
-// ただし WAV 再生を「ここで待ってはいけない」。
-// Core1 が WAV 再生を続けるためには loop1() が動き続ける必要があり、
-// このブロックが長すぎると WAV が止まる可能性がある。
-void playTone(int freq, int duration, int counter, int priority, int min_volume){
-    // 優先度チェック: WAV の方が同等以上に優先なら再生しない
-    if(wav_playing && wav_playing_priority >= priority){
-        DEBUG_P(20250503,"failed playTone due to Wav file playing.");
-        DEBUG_PLN(20250503,priority);
-        // ここで WAV 終了を待ってはいけない（loop1 が止まるため）
+// toneBuffer に積まれたトーンを非ブロッキングで順番に再生する。
+// delay() を使わず millis() でタイミングを管理する。
+//
+// WAV との優先制御:
+//   WAV 再生中 (wav_playing=true): 出力を停止し、WAV 終了まで待機
+//   WAV 終了後: 一時停止していたトーンを再開（tone_paused=true の場合）
+//   WAV 開始時の優先度制御は startPlayWav() が行う
+//     - WAV priority > tone priority: WAV 割込み → トーン一時停止・WAV 後に再開
+//     - WAV priority ≤ tone priority: WAV を pending に退避 → トーン完了後に再生
+// ============================================================
+void loop_tone() {
+    // WAV 再生中はトーン出力を停止して待機（WAV 終了後に resume）
+    if (wav_playing) {
+        if (sin_playing) {
+            sin_playing = false;
+            tone_paused = true;
+            pwm_set_gpio_level(PIN_PWMTONE, 512);  // 無音（中点）
+            if (!vario_mode) setAmplifierState(false);
+        }
         return;
     }
-    wav_override_volume = min_volume;  // 最低保証ボリュームをセット（0=制限なし）
-    tone_playing_priority = priority;
 
-    // WAV モードを無効にして Sin 波モードで再生する
-    wavmode = false;
-    wav_playing = false;
-    endOfFile = true;
+    // WAV 割込みからの再開
+    if (tone_paused) {
+        tone_paused = false;
+        sinmode     = true;
+        sin_playing = true;
+        setAmplifierState(true);
+        playNextNote(tone_cur_freq);
+        tone_stop_time = millis() + tone_cur_dur;
+        return;
+    }
 
-  sinmode = true;
-  myTone(freq, duration);   // 1 回目
-  if(counter <= 1){
-    return;
-  }
-  // 2 回目以降: duration ms 待ってから繰り返す
-  for(int i = counter; i > 1; i--){
-    delay(duration);
-    myTone(freq, duration);
-  }
-  wav_override_volume = 0;  // 最低保証ボリュームをリセット
+    // ギャップ中: 時間が経過したら次のトーンを開始
+    if (tone_in_gap) {
+        if (millis() >= tone_stop_time) {
+            tone_in_gap = false;
+            sin_playing = true;
+            setAmplifierState(true);
+            playNextNote(tone_cur_freq);
+            tone_stop_time = millis() + tone_cur_dur;
+        }
+        return;
+    }
+
+    // トーン再生中: 時間が経過したら終了処理
+    if (sin_playing) {
+        if (millis() >= tone_stop_time) {
+            sin_playing = false;
+            pwm_set_gpio_level(PIN_PWMTONE, 512);  // 無音（中点）
+            if (!vario_mode) setAmplifierState(false);
+
+            tone_remaining--;
+            if (tone_remaining > 0) {
+                // カウント残り → ギャップ（無音）を挟んで次のトーンへ
+                tone_in_gap    = true;
+                tone_stop_time = millis() + tone_cur_dur;
+            } else {
+                // このエントリ完了 → クリーンアップ
+                sinmode               = false;
+                tone_playing_priority = 0;
+                wav_override_volume   = 0;
+                if (toneBufHead != toneBufTail) {
+                    startNextToneEntry();  // 次のエントリを開始
+                } else {
+                    // 全トーン完了 → pending WAV があれば再生
+                    int prio = 0;
+                    const char* pf = pop_best_pending_wav(prio);
+                    if (pf != nullptr) startPlayWav(pf, prio);
+                }
+            }
+        }
+        return;
+    }
+
+    // 未再生: バッファに積まれていれば開始
+    if (toneBufHead != toneBufTail) {
+        startNextToneEntry();
+    }
 }
 
 
@@ -707,7 +828,7 @@ void playTone(int freq, int duration, int counter, int priority, int min_volume)
 //
 // 上昇（vspeed > dead_band）: 断続ビープ
 //   ピッチ = 700 + vspeed*300 Hz（1.0→1000Hz, 3.0→1600Hz, 上限 2200Hz）
-//   ON 時間 80ms 固定 / OFF 時間 = 700/vspeed - 80 ms（最小 50ms）
+//   ON 時間 120ms 固定 / OFF 時間 = 700/vspeed - 120 ms（最小 50ms）
 //
 // 下降（vspeed < -dead_band）: 連続低音
 //   ピッチ = 480 - |vspeed|*30 Hz（2.0→420Hz, 下限 220Hz）

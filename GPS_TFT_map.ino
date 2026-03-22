@@ -5,7 +5,7 @@
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/20
 // ============================================================
 
 #include "navdata.h"
@@ -29,7 +29,7 @@ bool redraw_screen = false;            // true にすると次のループで画
 
 // --- 旋回角速度 (deg/s) 計算用 ---
 // GPS の真方位 (truetrack) を NUM_SAMPLES 個のスライディングウィンドウで保持し、
-// 連続サンプル間の変化量の平均として degpersecond を算出する（毎秒更新）。
+// 連続サンプル間の変化量の平均として degpersecond を算出する（GPS コース更新時＝newcourse_arrived 時に実行。GPS が毎秒更新なら結果的に毎秒更新）。
 const int NUM_SAMPLES = 4;             // スライディングウィンドウのサンプル数
 float truetrack_samples[NUM_SAMPLES];  // 過去の真方位サンプル配列
 int sampleIndex = 0;                   // 次に書き込むサンプルのインデックス
@@ -177,12 +177,12 @@ void setup(void) {
   gps_setup();  //To avoid overflow, after tft setup recommend.
 
   // スケールリストの初期化（Google Map のズームレベルに対応する pixel/km 値）
-  scalelist[0] = SCALE_EXSMALL_GMAP;  //pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT;
+  scalelist[0] = SCALE_EXSMALL_GMAP;  //pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT; 最広域（日本全体スケール）
   scalelist[1] = SCALE_SMALL_GMAP;    //pixelsPerDegreeLat(7,35)/KM_PER_DEG_LAT;
   scalelist[2] = SCALE_MEDIUM_GMAP;   //pixelsPerDegreeLat(9,35)/KM_PER_DEG_LAT;
   scalelist[3] = SCALE_LARGE_GMAP;    //pixelsPerDegreeLat(11,35)/KM_PER_DEG_LAT;
   scalelist[4] = SCALE_EXLARGE_GMAP;  //pixelsPerDegreeLat(13,35)/KM_PER_DEG_LAT;
-  scalelist[5] = 200.0;               // 最広域（日本全体スケール）
+  scalelist[5] = 200.0;               // 最大拡大
   scale = scalelist[scaleindex];
   redraw_screen = true;
   {
@@ -198,9 +198,7 @@ void setup(void) {
 // Core0 と独立して動作し、重いSD処理・音声再生を引き受けることで
 // Core0 の描画ループをブロックしない設計になっている。
 void setup1(void) {
-
   Serial.begin(38400);
-
   #ifndef RELEASE
     while (!Serial) {
       delay(10);
@@ -221,12 +219,7 @@ void setup1(void) {
   //====
 
   setup_sd(1);  // 起動時も1回のみ。接触不良時の長時間ブロック防止。失敗後は try_sd_recovery() が10秒ごとにリトライ。
-
-  if (good_sd()) {
-    enqueueTask(createPlayWavTask("wav/opening.wav"));     // SD 正常: 起動音を再生
-  } else {
-    enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
-  }
+  // 起動音（opening.wav）は startup_demo_tft() 内でエンキューする（重複防止）
 }
 
 
@@ -349,8 +342,11 @@ void loop() {
     if (redraw_screen)
       draw_maplist_mode(detail_page);
   } else if (screen_mode == MODE_VARIODETAIL) {
-    if (redraw_screen)
+    if (redraw_screen) {
       draw_variodetail(detail_page);
+      draw_vsi();                      // 全画面再描画直後に即座に VSI を上書き（白フリッカー防止）
+      vsi_sprite.pushSprite(235, 40);
+    }
     // airdata 更新タイミングで VSI バーを直接転写（メイン画面と同じ頻度）
     if (airdata_updated) {
       draw_vsi();
@@ -366,21 +362,21 @@ void loop() {
         double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
         if (auto10k_status == AUTO10K_AWAY) {
 
-          if (distance_frm_destination > 10.475) {  //10.975 だけど、500mの誤差を引いておく。
+          if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
             auto10k_status = AUTO10K_INTO;
-            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
-            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
+            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
             enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
           }
         }
-        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し用。だけど、500mの誤差を引いておく。
+        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
           auto10k_status = AUTO10K_AWAY;
-          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
-          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
+          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
           enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
         }
       }
@@ -487,7 +483,8 @@ void loop() {
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
       // ---- レイヤー 4: 目的地ライン ----
-      if (currentdestination != -1 && currentdestination < destinations_count) {
+      // fix 取得前は自機位置が不明なため、誘導線は描画しない
+      if (get_gps_fix() && currentdestination != -1 && currentdestination < destinations_count) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         if (destination_mode == DMODE_FLYINTO)
@@ -504,6 +501,12 @@ void loop() {
       }
       gps_loop(5);  // 描画の合間に GPS データを受信
 
+      // ---- レイヤー 4.5: パイロン・PLA アイコン ----
+      // マゼンタラインより後に描画してアイコンが隠れないようにする。
+      if (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
+        draw_pilon_takeshima_line(new_lat, new_long, scale, drawupward_direction);
+      }
+
       // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
       draw_compass(drawupward_direction, COLOR_BLACK);
       draw_degpersec(degpersecond);
@@ -515,7 +518,16 @@ void loop() {
       }
       draw_km_distances(scale);  // 画面左下のスケールバー
 
-      draw_triangle(new_truetrack, steer_angle);  // 自機位置の三角形マーカー
+      // GPS fix 状態と HDOP に応じて自機位置マーカーを切り替える
+      // リプレイ・デモモードは実際の HDOP と無関係なので、常に通常の飛行機マーカーを表示する
+      float cur_hdop = get_gps_hdop();
+      if (!get_gps_fix() && !get_demo_biwako() && !getReplayMode()) {
+        draw_nofix_cross();                         // fix なし（通常モードのみ）: グレーの ×
+      } else if (cur_hdop >= HDOP_THRESHOLD && !get_demo_biwako() && !getReplayMode()) {
+        draw_hdop_circle(scale, cur_hdop);          // fix あり・HDOP 不良（通常モードのみ）: 青い不確かさ円
+      } else {
+        draw_triangle(new_truetrack, steer_angle);  // fix あり・HDOP 良好、またはリプレイ/デモ: 飛行機マーカー
+      }
 
       // コース警告表示（警告発報から 10 秒間だけ表示する）
       if (millis() - last_course_warning_time < 10000 && millis() > 10000) {
@@ -589,6 +601,7 @@ void loop1() {
     DEBUG_P(20260312, "[C1 loop1 base SP]=0x"); DEBUG_PNLN(20260312, _core1_base_sp, HEX);
   }
   loop_sound();  // 音声の継続再生処理（WAV 送出など）
+  loop_tone();   // トーンバッファの非ブロッキング再生管理
   if (dequeueTask(&currentTask)) {
     switch (currentTask.type) {
       case TASK_SAVE_SETTINGS:
@@ -621,7 +634,7 @@ void loop1() {
       case TASK_SAVE_CSV:
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack, currentTask.saveCsvArgs.altitude,
+          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.altitude,
           currentTask.saveCsvArgs.pressure,
           currentTask.saveCsvArgs.numsats, currentTask.saveCsvArgs.voltage,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
@@ -643,6 +656,9 @@ void loop1() {
                   currentTask.logEulerArgs.pitch,
                   currentTask.logEulerArgs.yaw,
                   currentTask.logEulerArgs.filename);
+        break;
+      case TASK_LOAD_LOGO:
+        load_push_logo();  // SD からロゴ BMP を gmap_sprite に読み込む（pushSprite は Core0 が行う）
         break;
     }
     currentTask.type = TASK_NONE;

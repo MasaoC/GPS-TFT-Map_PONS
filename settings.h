@@ -14,8 +14,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20260316
-#define BUILDVERSION "0.91"
+#define BUILDDATE 20260322
+#define BUILDVERSION "0.911"
 #define VERSION_TEXT "Version 6"
 
 
@@ -64,7 +64,6 @@
 #define GPS_TX 0
 #define GPS_RX 1
 #define USB_DETECT 31
-#define USERLED_PIN 34
 #define SD_CS_PIN -1
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
@@ -82,6 +81,13 @@
 
 // =====追加設定項目====
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
+
+// HDOP 不確かさ円 設定
+// GPS fix があっても HDOP が悪い場合、飛行機マークの代わりに青い不確かさ円を表示する。
+#define HDOP_THRESHOLD         5.0f  // この値以上で不確かさ円モードに切替え（HDOP 5 = Moderate/Poor 境界）
+#define GPS_BASE_ACCURACY_M    5.0f  // HDOP=1 時の基準精度 [m]（95% 信頼円相当 ≈ 2σ）
+#define HDOP_MIN_CIRCLE_RADIUS 2     // 輪郭円を描画する最小半径 [px]（未満はテキスト表示に切替え）
+#define HDOP_CENTER_DOT_RADIUS 3     // 中心位置を示す塗りつぶし小円の半径 [px]
 
 
 
