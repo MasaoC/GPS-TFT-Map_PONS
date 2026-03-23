@@ -17,6 +17,7 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
+#include "imu.h"
 //#define DISABLE_FS_H_WARNING
 #include "SdFat.h"
 #include "sound.h"
@@ -91,14 +92,19 @@ void dateTime(uint16_t* date, uint16_t* time);
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"vario_volume",    setVarioVolume,    getVarioVolume},
+  {"vario_inhibit",   setVarioInhibit,   getVarioInhibit},
   {"destination",     setDestination,    getDestination},
   {"navigation_mode", setNavigationMode, getNavigationMode},
   {"scaleindex",      setScaleIndex,     getScaleIndex},
-  {"upward_mode",     setUpwardMode,     getUpwardMode}
+  {"upward_mode",     setUpwardMode,     getUpwardMode},
+  {"kf_q_vel",        setKfQVel,         getKfQVel},
+  {"kf_q_bias",       setKfQBias,        getKfQBias},
+  {"kf_R",            setKfR,            getKfR}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
 extern volatile int vario_volume;
+extern volatile bool vario_inhibit;
 extern int destination_mode;
 extern int scaleindex;
 extern double scalelist[6];
@@ -230,6 +236,14 @@ void getVarioVolume(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", vario_volume);
 }
 
+// バリオ抑止フラグ: "true" なら vario を完全無効化する（SDカード手動設定のみ）
+void setVarioInhibit(const char* value) {
+  vario_inhibit = (strcmp(value, "true") == 0);
+}
+void getVarioInhibit(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%s", vario_inhibit ? "true" : "false");
+}
+
 // ナビゲーションモード: "INTO" / "AWAY" / "AUTO10K" を destination_mode 定数に変換
 void setNavigationMode(const char *value){
   if(strcmp(value,"INTO") == 0){
@@ -300,6 +314,33 @@ void setUpwardMode(const char* value) {
   if (mode >= 0 && mode < 2) {  // 0=TRACKUP, 1=NORTHUP
     upward_mode = mode;
   }
+}
+
+// Kalman フィルター係数: 速度プロセスノイズ（デフォルト KF_Q_VEL）
+void setKfQVel(const char* value) {
+  float v = atof(value);
+  if (v > 0.0f) imu_set_kf_params(v, get_imu_kf_q_bias(), get_imu_kf_R());
+}
+void getKfQVel(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.6g", get_imu_kf_q_vel());
+}
+
+// Kalman フィルター係数: バイアスプロセスノイズ（デフォルト KF_Q_BIAS）
+void setKfQBias(const char* value) {
+  float v = atof(value);
+  if (v > 0.0f) imu_set_kf_params(get_imu_kf_q_vel(), v, get_imu_kf_R());
+}
+void getKfQBias(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.6g", get_imu_kf_q_bias());
+}
+
+// Kalman フィルター係数: 気圧高度観測ノイズ [m²]（デフォルト KF_R）
+void setKfR(const char* value) {
+  float v = atof(value);
+  if (v > 0.0f) imu_set_kf_params(get_imu_kf_q_vel(), get_imu_kf_q_bias(), v);
+}
+void getKfR(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.6g", get_imu_kf_R());
 }
 
 void getDestination(char* buffer, size_t bufferSize) {

@@ -586,3 +586,8 @@ void imu_set_kf_params(float q_vel, float q_bias, float R) {
     kf_q_bias = q_bias;
     kf_R      = R;
 }
+
+// Kalman パラメーターのゲッター（SD設定保存用）
+float get_imu_kf_q_vel()  { return kf_q_vel; }
+float get_imu_kf_q_bias() { return kf_q_bias; }
+float get_imu_kf_R()      { return kf_R; }

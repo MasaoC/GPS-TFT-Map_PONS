@@ -81,6 +81,7 @@ volatile uint32_t _core1_base_sp = 0;
 volatile int scaleindex = 3;    // scalelist のインデックス（初期値 3 = SCALE_LARGE_GMAP）
 volatile int sound_volume  = 50; // 音量 0〜100
 volatile int vario_volume  = 10; // バリオメーター音量 0〜100（設定画面から変更可）
+volatile bool vario_inhibit = false; // true のとき vario は完全無効（SDカード settings.txt でのみ設定可）
 
 extern volatile bool loading_sddetail;
 extern bool sd_detail_loading_displayed;
@@ -552,7 +553,7 @@ void loop() {
 
     // backscreen 非更新時、airdata が更新されたタイミングで VSI を TFT へ直接転写
     // バリオ音量が 0 の場合は非表示
-    if (!redraw_screen && vario_volume > 0 && airdata_updated) {
+    if (!redraw_screen && vario_volume > 0 && !vario_inhibit && airdata_updated) {
       draw_vsi();
       vsi_sprite.pushSprite(235, 50);  // TFT座標: X=235, Y=50（backscreenオフセット）
     }

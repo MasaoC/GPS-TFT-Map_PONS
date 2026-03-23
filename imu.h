@@ -68,4 +68,9 @@ bool  get_imu_rv_updated(); // ROTATION_VECTOR 新着フラグ（読み出しで
 // ---- Kalman パラメーターの動的変更（実行時チューニング用）----
 void imu_set_kf_params(float q_vel, float q_bias, float R);
 
+// ---- Kalman パラメーターのゲッター（SD設定保存用）----
+float get_imu_kf_q_vel();   // 速度プロセスノイズ
+float get_imu_kf_q_bias();  // バイアスプロセスノイズ
+float get_imu_kf_R();       // 気圧高度観測ノイズ [m²]
+
 #endif // IMU_H

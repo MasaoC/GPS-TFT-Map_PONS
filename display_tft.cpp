@@ -62,6 +62,7 @@ int upward_mode = MODE_NORTHUP;
 
 extern volatile int sound_volume;
 extern volatile int vario_volume;
+extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
 
@@ -1211,6 +1212,7 @@ void startup_demo_tft() {
 
   backscreen.fillScreen(COLOR_WHITE);
   draw_Biwako(center_lat,center_lon,2.5, 0,false);
+  draw_pilon_takeshima_line(center_lat, center_lon, 2.5, 0);
   draw_version_backscreen();
   backscreen.pushSprite(0,52);
 
@@ -1218,7 +1220,7 @@ void startup_demo_tft() {
   // Core1 がロゴ BMP を gmap_sprite に読み込むのを待ち、完了したら pushSprite で表示する。
   // 残り時間は delay で消費して起動タイミングを維持する。
   {
-    const int wait_timeout_ms = 2000;
+    const int wait_timeout_ms = 1900;
     unsigned long wait_start = millis();
     while (!logo_ready && millis() - wait_start < wait_timeout_ms) {
       delay(10);
@@ -1241,6 +1243,7 @@ void startup_demo_tft() {
     backscreen.fillScreen(COLOR_WHITE);
     scalenow = 2.5 + i * 0.25*zoomin_speedfactor;
     draw_Biwako(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0, false);
+    draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
@@ -1266,8 +1269,10 @@ void startup_demo_tft() {
       draw_Japan(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0);
       draw_map(STRK_MAP1, 0, center_lat, center_lon, scalenow, &map_biwako, COLOR_GREEN);
     }
-    else
+    else{
       draw_Biwako(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0, false);
+      draw_pilon_takeshima_line(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
+    }
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
@@ -1343,7 +1348,7 @@ void draw_vsi() {
 // 転送前に VSI を backscreen の右端 X=235 に合成する。
 void push_backscreen(){
   TIMING_START(push_bs);
-  if (vario_volume > 0) {
+  if (vario_volume > 0 && !vario_inhibit) {
     draw_vsi();
     vsi_sprite.pushToSprite(&backscreen, 235, 0);  // Sprite→Sprite 合成
   }

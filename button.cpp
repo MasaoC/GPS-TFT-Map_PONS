@@ -16,6 +16,7 @@
 
 extern int sound_volume;
 extern int vario_volume;
+extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
 extern int detail_page;
@@ -280,12 +281,15 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   { SETTING_VARIO_VOLUME,
     [](bool selected) -> std::string {
+      if (vario_inhibit)
+        return std::string(selected ? " Vario: Inhibited" : "Vario: Inhibited");
       char buff[32];
       sprintf(buff, selected ? " Vario: %d/100" : "Vario: %d/100", vario_volume);
       return std::string(buff);
     },
     nullptr,
     []() {
+      if (vario_inhibit) return;  // inhibit 中は変更不可
       // Volume と同じステップ: 0 → 5 → 10 → 20 → 30 → 40 → 60 → 80 → 100 → 0
       if (vario_volume == 0) {
         vario_volume = 5;

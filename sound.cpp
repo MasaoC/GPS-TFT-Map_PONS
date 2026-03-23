@@ -151,6 +151,7 @@ uint32_t chunksLoaded = 0;      // ロード済みチャンク数（デバッグ
 const unsigned long playInterval = 10000;  // 将来的な連続再生用インターバル（現状未使用）
 extern volatile int sound_volume;          // 音量（0〜100）。button.cpp の設定画面から変更。
 extern volatile int vario_volume;          // バリオメーター音量（0〜100）。設定画面から変更。
+extern volatile bool vario_inhibit;        // true のとき vario を完全無効化する
 
 // ============================================================
 // バリオメーター音声用変数
@@ -840,6 +841,7 @@ void loop_tone() {
 // CORE0
 // ============================================================
 void update_vario() {
+    if (vario_inhibit) return;  // inhibit 中はバリオ音を出さない
     static unsigned long last_call = 0;
     if (millis() - last_call < 100) return;
     last_call = millis();

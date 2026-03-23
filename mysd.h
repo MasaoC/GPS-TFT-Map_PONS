@@ -66,6 +66,14 @@
     void getScaleIndex(char* buffer, size_t bufferSize);
     void setUpwardMode(const char* value);
     void getUpwardMode(char* buffer, size_t bufferSize);
+    void setVarioInhibit(const char* value);
+    void getVarioInhibit(char* buffer, size_t bufferSize);
+    void setKfQVel(const char* value);
+    void getKfQVel(char* buffer, size_t bufferSize);
+    void setKfQBias(const char* value);
+    void getKfQBias(char* buffer, size_t bufferSize);
+    void setKfR(const char* value);
+    void getKfR(char* buffer, size_t bufferSize);
     bool loadSettings();
     bool saveSettings();
 
