@@ -7,7 +7,7 @@
 //           Googleマップ画像(BMP)のロード、
 //           Core1タスクキューのエンキュー/デキュー管理。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -406,7 +406,7 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
-Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -414,9 +414,9 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   task.saveCsvArgs.gs = gs;
   task.saveCsvArgs.ttrack = ttrack;
   task.saveCsvArgs.altitude = altitude;
+  task.saveCsvArgs.kf_altitude = kf_altitude;
+  task.saveCsvArgs.kf_vspeed  = kf_vspeed;
   task.saveCsvArgs.pressure = pressure;
-  task.saveCsvArgs.numsats = numsats;
-  task.saveCsvArgs.voltage = voltage;
   task.saveCsvArgs.year = year;
   task.saveCsvArgs.month = month;
   task.saveCsvArgs.day = day;
@@ -437,7 +437,7 @@ Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel)
   return task;
 }
 
-Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int min_volume){
+Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int min_volume,bool solo_play){
   Task task;
   task.type = TASK_PLAY_MULTITONE;
   task.playMultiToneArgs.freq = freq;
@@ -445,6 +445,7 @@ Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int 
   task.playMultiToneArgs.counter = count;
   task.playMultiToneArgs.priority = priority;
   task.playMultiToneArgs.min_volume = min_volume;
+  task.playMultiToneArgs.solo_play = solo_play;
   return task;
 }
 
@@ -1045,7 +1046,7 @@ void log_sdf(const char* format, ...){
 }
 
 // GPS の飛行データを CSV ファイルに 1 行追記するフライトログ関数。
-// 列: latitude, longitude, gs(m/s), TrueTrack(°), Altitude(m), numsat, voltage, date, time
+// 列: latitude, longitude, gs(m/s), TrueTrack(°), Altitude(m), KF_Altitude(m), KF_Vspeed(m/s), pressure, date, time
 //
 // ファイル名は最初に GPS 時刻が取得された瞬間に確定し、
 // 以降は同じファイルに追記し続ける（例: 2025-05-08_1230.csv）。
@@ -1056,7 +1057,7 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
 
-void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
@@ -1083,7 +1084,7 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
 
   if (csvFileStatic) {
     if(!headerWritten){
-      csvFileStatic.println("latitude,longitude,gs,TrueTrack,Altitude,pressure,numsat,voltage,date,time");
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,Altitude,KF_Altitude,KF_Vspeed,pressure,date,time");
       headerWritten = true;
     }
 
@@ -1097,11 +1098,11 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
     csvFileStatic.print(",");
     csvFileStatic.print(altitude,2);
     csvFileStatic.print(",");
+    csvFileStatic.print(kf_altitude,2);  // KF推定高度 [m]（気圧基準）
+    csvFileStatic.print(",");
+    csvFileStatic.print(kf_vspeed,2);   // KF推定上昇率 [m/s]
+    csvFileStatic.print(",");
     csvFileStatic.print(pressure,2);
-    csvFileStatic.print(",");
-    csvFileStatic.print(numsat);
-    csvFileStatic.print(",");
-    csvFileStatic.print(voltage,2);
     csvFileStatic.print(",");
 
     // Format date as YYYY-MM-DD
@@ -1137,17 +1138,20 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude
 
 // ===== Euler角ログ（BNO085 ROTATION_VECTOR 5Hz） =====
 // eulerフォルダに JST 日付のファイルを追記モードで書き込む。
-// flush()は呼ばない → SdFat 512バイトバッファが溜まったら自動書き込み（省電力）。
+// 50レコードごとに sync() してファイルサイズ・更新タイムスタンプをFATに反映する。
 static FsFile eulerFileStatic;
 static char eulerOpenedFilename[24] = "";  // 現在開いているファイル名
+static int eulerWriteCount = 0;            // sync() タイミング管理カウンタ
 
-void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename) {
+void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day) {
   if (!good_sd()) return;
 
-  // ファイル名が変わった場合（日付変更等）は閉じて開き直す
+  // ファイル名が変わった場合（日付変更等）は sync してから閉じて開き直す
   if (eulerFileStatic.isOpen() && strcmp(eulerOpenedFilename, filename) != 0) {
+    eulerFileStatic.sync();
     eulerFileStatic.close();
     eulerOpenedFilename[0] = '\0';
+    eulerWriteCount = 0;
   }
 
   if (!eulerFileStatic.isOpen()) {
@@ -1163,6 +1167,9 @@ void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, 
     strncpy(eulerOpenedFilename, filename, sizeof(eulerOpenedFilename) - 1);
     eulerOpenedFilename[sizeof(eulerOpenedFilename) - 1] = '\0';
 
+    // GPS 日時でファイルタイムスタンプを設定（作成・アクセス・更新の全3種）
+    eulerFileStatic.timestamp(T_CREATE | T_ACCESS | T_WRITE, year, month, day, h, m, s);
+
     // 新規ファイルのみヘッダー書き込み
     if (!fileExisted) {
       eulerFileStatic.println("time,roll,pitch,yaw");
@@ -1174,16 +1181,25 @@ void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, 
   snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f",
            h, m, s, cs, roll, pitch, yaw);
   eulerFileStatic.println(line);
-  // flush()は呼ばない → バッファ(512byte)が溜まったら自動書き込み
+
+  // 50レコードごと（約10秒@5Hz）に sync() → FATのファイルサイズ・タイムスタンプを更新
+  if (++eulerWriteCount >= 50) {
+    eulerFileStatic.timestamp(T_WRITE, year, month, day, h, m, s);  // 更新タイムスタンプを現在時刻に
+    eulerFileStatic.sync();
+    eulerWriteCount = 0;
+  }
 }
 
-Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename) {
+Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day) {
   Task t;
   t.type = TASK_LOG_EULER;
   t.logEulerArgs.hour        = h;
   t.logEulerArgs.minute      = m;
   t.logEulerArgs.second      = s;
   t.logEulerArgs.centisecond = cs;
+  t.logEulerArgs.year        = year;
+  t.logEulerArgs.month       = month;
+  t.logEulerArgs.day         = day;
   t.logEulerArgs.roll        = roll;
   t.logEulerArgs.pitch       = pitch;
   t.logEulerArgs.yaw         = yaw;
@@ -1452,6 +1468,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
         int x_end = scrollx > 0 ? 240 : -scrollx;
 
         for (int y = 0; y < 240; y++) {
+            loop_tone(); // SDロード中もtone終了判定を維持する
             int bmp_y = last_start_y + y;//Y must be old start_y since we have not scrolled vertically yet.
             if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
             if(abortTask)
@@ -1480,6 +1497,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
         int y_end = scrolly > 0 ? 240 : -scrolly;
 
         for (int y = y_start; y < y_end; y++) {
+            loop_tone(); // SDロード中もtone終了判定を維持する
             if(abortTask)
               break;
             int bmp_y = start_y + y;
@@ -1509,6 +1527,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
   // seek 計算で行を逆順に参照する: row = (640 - bmp_y - 1)。
   else{
     for (int y = 0; y < 240; y++) {
+      loop_tone(); // SDロード中もtone終了判定を維持する
       if(abortTask)
         break;
       int bmp_y = start_y + y;

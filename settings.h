@@ -6,7 +6,7 @@
 //           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/11
+// Updated : 2026/03/23
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -14,15 +14,15 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20260323
-#define BUILDVERSION "0.912"
+#define BUILDDATE 20260324
+#define BUILDVERSION "0.914"
 #define VERSION_TEXT "Version 6"
 
 
 
 
 //----------GPS---------
-//#define DEBUG_NMEA
+//#define DEBUG_GBX_NMEA
 //#define QUECTEL_GPS
 //#define MEADIATEK_GPS
 #define UBLOX_GPS
@@ -82,10 +82,10 @@
 // =====追加設定項目====
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
-// HDOP 不確かさ円 設定
-// GPS fix があっても HDOP が悪い場合、飛行機マークの代わりに青い不確かさ円を表示する。
-#define HDOP_THRESHOLD         5.0f  // この値以上で不確かさ円モードに切替え（HDOP 5 = Moderate/Poor 境界）
-#define GPS_BASE_ACCURACY_M    5.0f  // HDOP=1 時の基準精度 [m]（95% 信頼円相当 ≈ 2σ）
+// hAcc 不確かさ円 設定
+// GPS fix があっても hAcc（NAV-PVT 水平精度推定）が大きい場合、飛行機マークの代わりに青い不確かさ円を表示する。
+// gnssFixOK=false の場合は常に不確かさ円を表示する。
+#define HACC_THRESHOLD_M       10.0f // この値（m）以上で不確かさ円モードに切替え（旧 HDOP=2×5m 相当）
 #define HDOP_MIN_CIRCLE_RADIUS 2     // 輪郭円を描画する最小半径 [px]（未満はテキスト表示に切替え）
 #define HDOP_CENTER_DOT_RADIUS 3     // 中心位置を示す塗りつぶし小円の半径 [px]
 
@@ -249,3 +249,62 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define KF_Q_VEL    0.05f   // 速度プロセスノイズ  (旧 0.5 → 1/10。静止ノイズ抑制)
 #define KF_Q_BIAS   0.005f  // バイアスプロセスノイズ（変更なし）
 #define KF_R        4.0f    // 気圧高度観測ノイズ [m²] (旧 0.5 → 8倍。気圧ノイズを薄める)
+
+// ============================================================
+// 水平加速度による速度プロセスノイズ動的増幅（imu.cpp kf_predict で使用）
+// ============================================================
+// 水平加速度が大きいと BNO085 の重力ベクトル推定がずれ、
+// 地球座標系の鉛直加速度 a_k に誤差が混入する。
+// predict ステップで速度プロセスノイズを下式で増幅することで、
+// IMU 加速度への依存を自動的に弱め、気圧・GNSS 観測の重みを上げる。
+//
+//   q_vel_eff = KF_Q_VEL + KF_HORIZ_ACCEL_GAIN × horiz_accel²
+//
+// KF_HORIZ_ACCEL_GAIN : 増幅ゲイン [s²/m²]
+//   0    → 従来どおり（水平加速度による補正なし）
+//   大きい → 少しの水平加速度でも IMU の影響を早く落とす
+//
+// 参考: gain=0.01 のときの q_vel_eff
+//   horiz 0 m/s² → 0.050 (×1.0)
+//   horiz 2 m/s² → 0.090 (×1.8)
+//   horiz 4 m/s² → 0.210 (×4.2)
+//   horiz 8 m/s² → 0.690 (×13.8)
+#define KF_HORIZ_ACCEL_GAIN  0.01f
+
+// ============================================================
+// GNSS高度補正パラメーター（imu_kalman_gnss_update で使用）
+// ============================================================
+// GNSS高度は気圧高度より誤差が大きいが、長期ドリフトのない絶対基準として使える。
+// 気圧基準（ground_alt_abs）をゆっくり修正することで、高度をGNSS基準に近づける。
+// Vertical speedへの影響は補正レート（最大 GNSS_MAX_DELTA_M m/s）に留まり無視できる。
+//
+// GNSS_VACC_MAX_M   : これ以上の垂直精度（vAcc）は補正に使わない [m]
+// GNSS_INIT_SAMPLES : 起動地MSL高度を平均する初期化サンプル数
+// GNSS_CORRECT_RATE : 補正ゲイン（イノベーション×精度係数に掛ける比率）
+// GNSS_MAX_DELTA_M  : 1更新あたりの最大補正量 [m]（varioへの影響を極小化）
+#define GNSS_VACC_MAX_M     10.0f  // 垂直精度閾値 [m]
+#define GNSS_INIT_SAMPLES   10     // 初期化サンプル数
+#define GNSS_CORRECT_RATE   0.005f // 補正ゲイン比率
+#define GNSS_MAX_DELTA_M    0.02f  // 1回あたりの最大補正量 [m]
+//
+// ============================================================
+// GNSS VSI Kalman 速度観測パラメーター（imu_kalman_gnss_vel_update で使用）
+// ============================================================
+// GNSS velD（上昇正）を KF の速度観測（H=[0,1,0]）として取り込む。
+// 観測ノイズ R_vel は sAcc²（速度精度の二乗）× R_SCALE を使用。
+// ゲートは sAcc のみで判断する（vAcc=垂直位置精度 は速度品質の指標として不適切なため使用しない）。
+//
+// GNSS_VSI_SACC_MAX_MPS: sAcc がこの値以上なら速度観測更新をスキップ [m/s]
+//                        sAcc = NAV-PVT Speed Accuracy Estimate（速度精度 1-sigma）。
+//                        この値未満では R_vel = sAcc² × R_SCALE の連続曲線が機能する。
+// GNSS_VSI_R_SCALE     : 観測ノイズ R_vel の倍率（1.0 = sAcc² そのまま）
+//                        大きくするほど GNSS VSI の影響が弱まり、気圧・IMU 主体になる。
+//                        K[1] ≈ P/(P+R) なので R を 16 倍にするとゲインが大幅に減少する。
+//
+// 参考: sAcc² × R_SCALE のカルマンゲイン K[1] ≈ P/(P+R) への影響（P≈0.2 の場合）
+//   sAcc=0.1 → R=0.16  K≈0.56（有効に補正）
+//   sAcc=0.2 → R=0.64  K≈0.24（緩やかに補正）
+//   sAcc=0.3 → [GNSS_VSI_SACC_MAX_MPS でスキップ]
+//
+#define GNSS_VSI_SACC_MAX_MPS  0.3f  // 速度精度ハードゲート [m/s]（以上はスキップ）
+#define GNSS_VSI_R_SCALE      16.0f  // R_vel 倍率（sAcc 小さい時のみ有効に機能させる）

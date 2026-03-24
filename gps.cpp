@@ -6,10 +6,11 @@
 //           位置・速度・時刻の取得、リプレイ/デモモード管理、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
+#include <TinyGPS++.h>  // リプレイモード（SD の NMEA 再生）用に引き続き使用
 
 #include "gps.h"
 #include "mysd.h"
@@ -17,6 +18,7 @@
 #include "settings.h"
 #include "display_tft.h"
 #include "airdata.h"
+#include "imu.h"
 #include "mysd.h"
 #include "display_tft.h"
 #include "gps.h"
@@ -51,14 +53,29 @@ uint32_t get_gps_fix_millis() { return gps_fix_millis; }
 //#define PQTM_OFF "$PQTMCFGMSGRATE,W,PQTMANTENNASTATUS,0,2*39"
 
 
-// --- u-blox UBX-CFG-MSG: NMEA メッセージ出力レート制御 ---
-// UBX-CFG-MSG: B5 62 06 01 03 00 [msgClass] [msgID] [rate] [CK_A] [CK_B]
-// rate=N: N回の測位に1回出力。rate=0で無効化。2Hz時: rate=2→1Hz, rate=20→0.1Hz(10秒に1回)
+// --- u-blox UBX バイナリ NAV メッセージ設定 ---
 // チェックサムは Fletcher-8（class〜payloadの全バイトに対して計算）
-#define UBLOX_GSV_RATE_2  {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x03,0x02,0xFF,0x17}  // GSV(F0 03): 1Hz
-#define UBLOX_GSV_RATE_20 {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x03,0x14,0x11,0x29}  // GSV(F0 03): 0.1Hz (10秒に1回)
-#define UBLOX_GSA_RATE_2  {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x02,0x02,0xFE,0x15}  // GSA(F0 02): 1Hz
-#define UBLOX_GSA_RATE_20 {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x02,0x14,0x10,0x27}  // GSA(F0 02): 0.1Hz (10秒に1回)
+//
+// UBX-CFG-PRT: UART1 を 38400bps・UBX プロトコルのみ（NMEA 無効）に設定
+//   inProtoMask=0x0001(UBX only), outProtoMask=0x0001(UBX only)
+#define UBLOX_CFG_PRT_38400_UBXONLY {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x7B,0x54}
+// UBX-CFG-MSG: NAV-PVT(01 07) rate=1（毎測位で送信 → 2Hz）
+#define UBLOX_ENABLE_NAVPVT  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x07,0x01,0x13,0x51}
+// UBX-CFG-MSG: NAV-SAT(01 35) rate=2(1Hz) / rate=20(0.1Hz=10秒に1回)
+#define UBLOX_NAVSAT_RATE_2  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x35,0x02,0x42,0xAE}
+#define UBLOX_NAVSAT_RATE_20 {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x35,0x14,0x54,0xC0}
+// UBX-CFG-MSG: NAV-DOP(01 04) rate=2（1Hz）
+#define UBLOX_ENABLE_NAVDOP  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x04,0x02,0x11,0x4C}
+// UBX-CFG-NAV5: ダイナミックモデルを Airborne <1g（dynModel=6）に設定
+//   mask=0x0001（dynModel のみ変更）、payload 36 bytes
+#define UBLOX_CFG_NAV5_AIRBORNE1G \
+  {0xB5,0x62,0x06,0x24,0x24,0x00, \
+   0x01,0x00,0x06,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x55,0xB4}
 
 // --- GPS 最新値の保持変数 ---
 // TinyGPS++ から取り出した値をここに保存し、getter 関数経由で他モジュールに公開する。
@@ -101,6 +118,366 @@ static float  gsa_hdop    = 0.0f;             // Horizontal DOP
 static float  gsa_vdop    = 0.0f;             // Vertical DOP
 static int    gsa_prns[GSA_MAX_PRN] = {};     // 測位に使用中の衛星 PRN（0=未使用）
 static int    gsa_numsat  = 0;                // 測位使用衛星数
+
+// UBX ハンドラーから参照するため前方宣言
+void removeStaleSatellites();
+
+// ============================================================
+// UBX バイナリ受信パーサー（実 GPS 受信用）
+// リプレイモードは引き続き NMEA + TinyGPS++ を使用する。
+// ============================================================
+#define UBX_PAYLOAD_BUF_SIZE 768  // NAV-SAT 最大ペイロード (55 SVs×12+8=668) を余裕で収容
+
+// UBX パーサー ステートマシン状態
+enum UbxParseState {
+  UBX_SYNC1=0, UBX_SYNC2, UBX_CLASS_ST, UBX_ID_ST,
+  UBX_LEN1_ST, UBX_LEN2_ST, UBX_PAYLOAD_ST, UBX_CKA_ST, UBX_CKB_ST
+};
+static UbxParseState ubx_state   = UBX_SYNC1;
+static uint8_t  ubx_cls          = 0;   // 受信中フレームのクラス
+static uint8_t  ubx_msgid        = 0;   // 受信中フレームの ID
+static uint16_t ubx_paylen       = 0;   // ペイロード長（バイト）
+static uint16_t ubx_payidx       = 0;   // ペイロード書き込み位置
+static uint8_t  ubx_cka_acc      = 0;   // チェックサム計算用 CK_A 累積
+static uint8_t  ubx_ckb_acc      = 0;   // チェックサム計算用 CK_B 累積
+static uint8_t  ubx_rx_cka       = 0;   // 受信 CK_A 一時保存
+static uint8_t  ubx_buf[UBX_PAYLOAD_BUF_SIZE];  // ペイロード受信バッファ
+
+// UBX NAV-PVT から得た GPS データ（get_gpsdate/get_gpstime・ログ保存などで参照）
+static bool     ubx_time_valid   = false;  // UTC 時刻フィールドが有効か
+static bool     ubx_date_valid   = false;  // UTC 日付フィールドが有効か
+static uint16_t ubx_year         = 0;
+static uint8_t  ubx_month        = 0;
+static uint8_t  ubx_day          = 0;
+static uint8_t  ubx_hour         = 0;
+static uint8_t  ubx_min          = 0;
+static uint8_t  ubx_sec          = 0;
+static uint8_t  ubx_cs           = 0;    // センチ秒（nano フィールドから変換）
+static bool     ubx_pos_valid    = false; // 有効な 2D/3D フィックスがあるか
+static bool     ubx_pvt_valid    = false; // NAV-PVT を1回以上受信したか
+static bool     ubx_pvt_updated  = false; // 新しい NAV-PVT が届いたことを gps_loop() に通知
+static bool     ubx_sat_updated  = false; // 新しい NAV-SAT が届いた
+static uint32_t ubx_hacc_mm      = 0;     // 水平精度推定値（NAV-PVT bytes 40-43、mm 単位）
+static uint32_t ubx_vacc_mm      = 0;     // 垂直精度推定値（NAV-PVT bytes 44-47、mm 単位）
+static uint32_t ubx_sacc_mmps    = 0;     // 速度精度推定値（NAV-PVT bytes 68-71、mm/s 単位）
+static float    ubx_veld_mps     = 0.0f;  // 垂直速度（NAV-PVT velD bytes 56-59、上昇正、m/s）
+static bool     ubx_gnssFixOK    = false; // NAV-PVT flags bit0: gnssFixOK（GNSS フィックスが有効かつ品質 OK）
+
+// UBX-NAV-PVT (class=0x01, id=0x07, payload=92 bytes) ハンドラー
+// 位置・速度・時刻・衛星数・フィックスタイプをすべて解析して内部変数を更新する。
+static void handle_navpvt(const uint8_t *p, uint16_t len) {
+  if (len < 84) return;
+
+  // UTC 日時フィールド（valid bits: bit0=validDate, bit1=validTime）
+  uint8_t valid  = p[11];
+  ubx_date_valid = (valid & 0x01) != 0;
+  ubx_time_valid = (valid & 0x02) != 0;
+  if (ubx_date_valid) {
+    ubx_year  = (uint16_t)(p[4] | (p[5] << 8));
+    ubx_month = p[6];
+    ubx_day   = p[7];
+    // u-blox は起動直後に validDate=1 でも year=2000/month=0/day=0 を返すことがある。
+    // 2020 年以前・月日ゼロは未取得と同じく無効とみなす。
+    if (ubx_year < 2020 || ubx_month == 0 || ubx_day == 0) {
+      ubx_date_valid = false;
+    }
+  }
+  if (ubx_time_valid) {
+    ubx_hour  = p[8];
+    ubx_min   = p[9];
+    ubx_sec   = p[10];
+  }
+  // nano (int32, ナノ秒) → センチ秒に変換
+  int32_t nano = (int32_t)(p[16] | (p[17]<<8) | (p[18]<<16) | (p[19]<<24));
+  ubx_cs = (nano >= 0) ? (uint8_t)(nano / 10000000) : 0;
+  // ubx_cs が確定した直後のファームウェア時刻を記録する。
+  // ubx_pvt_updated ブロックで記録するより遅延が少なく、パケット間の揺れを抑えられる。
+  gps_fix_millis = millis();
+
+  // フィックスタイプ・フラグ（u-blox fixType: 0=NoFix,1=DR,2=2D,3=3D,4=GNSS+DR）
+  uint8_t fixType   = p[20];
+  bool    gnssFixOK = (p[21] & 0x01) != 0;
+  uint8_t numSV     = p[23];
+
+  // 位置（1e-7 度単位の int32）
+  int32_t lon  = (int32_t)(p[24]|(p[25]<<8)|(p[26]<<16)|(p[27]<<24));
+  int32_t lat  = (int32_t)(p[28]|(p[29]<<8)|(p[30]<<16)|(p[31]<<24));
+  int32_t hMSL = (int32_t)(p[36]|(p[37]<<8)|(p[38]<<16)|(p[39]<<24));  // mm above MSL
+
+  // 水平・垂直精度推定値（bytes 40-43: hAcc mm、bytes 44-47: vAcc mm）
+  ubx_hacc_mm   = (uint32_t)(p[40]|(p[41]<<8)|(p[42]<<16)|((uint32_t)p[43]<<24));
+  ubx_vacc_mm   = (uint32_t)(p[44]|(p[45]<<8)|(p[46]<<16)|((uint32_t)p[47]<<24));
+  ubx_gnssFixOK = gnssFixOK;
+
+  // 速度（mm/s）・方向（1e-5 度）
+  // velD (bytes 56-59): NED Down 方向（正=下降）→ 上昇正に反転して保存
+  int32_t velD    = (int32_t)(p[56]|(p[57]<<8)|(p[58]<<16)|(p[59]<<24));
+  int32_t gSpeed  = (int32_t)(p[60]|(p[61]<<8)|(p[62]<<16)|(p[63]<<24));
+  int32_t headMot = (int32_t)(p[64]|(p[65]<<8)|(p[66]<<16)|(p[67]<<24));
+  ubx_veld_mps  = -velD * 1e-3f;  // mm/s 下降正 → m/s 上昇正
+  // 速度精度推定値（bytes 68-71: sAcc mm/s）
+  ubx_sacc_mmps = (uint32_t)(p[68]|(p[69]<<8)|(p[70]<<16)|((uint32_t)p[71]<<24));
+
+  // pDOP（0.01 スケール）
+  uint16_t pDOP = (uint16_t)(p[76] | (p[77]<<8));
+  gsa_pdop  = pDOP * 0.01f;
+
+  // GSA 互換フィックスタイプ（1=NoFix, 2=2D, 3=3D）
+  if      (fixType == 2)  gsa_fixtype = 2;
+  else if (fixType >= 3)  gsa_fixtype = 3;
+  else                    gsa_fixtype = 1;
+
+  ubx_pos_valid = (fixType >= 2) && gnssFixOK;
+  ubx_pvt_valid = true;
+
+  if (ubx_pos_valid) {
+    double new_lat = lat  * 1e-7;
+    double new_lon = lon  * 1e-7;
+    stored_latitude  = new_lat;
+    stored_longitude = new_lon;
+    stored_altitude  = hMSL * 1e-3;  // mm → m
+  }
+
+  stored_gs         = gSpeed * 1e-3f;  // mm/s → m/s
+  double trk        = headMot * 1e-5;  // 1e-5 deg → deg
+  if (trk <   0)  trk += 360.0;
+  if (trk >= 360) trk -= 360.0;
+  stored_truetrack  = trk;
+  stored_numsats    = numSV;
+  stored_fixtype    = ubx_pos_valid ? 2 : 0;
+  gsa_numsat        = numSV;
+
+  ubx_pvt_updated   = true;
+}
+
+// UBX-NAV-SAT (class=0x01, id=0x35) ハンドラー
+// 各衛星の gnssId, svId, cno, elev, azim を satellites[] 配列に格納する。
+// svUsed フラグが立っている衛星の PRN を gsa_prns[] に記録する。
+static void handle_navsat(const uint8_t *p, uint16_t len) {
+  if (len < 8) return;
+  uint8_t numSvs = p[5];
+  if ((uint16_t)(8 + numSvs * 12) > len) numSvs = (len - 8) / 12;
+
+  // gsa_prns をリセットして使用中衛星 PRN を再構築
+  int prn_idx = 0;
+  for (int i = 0; i < GSA_MAX_PRN; i++) gsa_prns[i] = 0;
+
+  for (int s = 0; s < numSvs; s++) {
+    const uint8_t *sv = p + 8 + s * 12;
+    uint8_t gnssId = sv[0];
+    uint8_t svId   = sv[1];
+    uint8_t cno    = sv[2];
+    int8_t  elev   = (int8_t)sv[3];
+    int16_t azim   = (int16_t)(sv[4] | (sv[5] << 8));
+    uint32_t flags = (uint32_t)(sv[8]|(sv[9]<<8)|(sv[10]<<16)|(sv[11]<<24));
+    bool svUsed    = (flags & 0x08) != 0;  // bit3=svUsed
+
+    if (svId == 0) continue;
+
+    // gnssId → satelliteType 変換
+    int satType;
+    switch (gnssId) {
+      case 0: satType = SATELLITE_TYPE_GPS;     break;
+      case 2: satType = SATELLITE_TYPE_GALILEO; break;
+      case 3: satType = SATELLITE_TYPE_BEIDOU;  break;
+      case 5: satType = SATELLITE_TYPE_QZSS;    break;
+      case 6: satType = SATELLITE_TYPE_GLONASS; break;
+      default: satType = SATELLITE_TYPE_UNKNOWN; break;
+    }
+
+    bool stored = false;
+    for (int j = 0; j < MAX_SATELLITES; j++) {
+      if ((satellites[j].PRN == svId && satellites[j].satelliteType == satType) || satellites[j].PRN == 0) {
+        satellites[j].PRN          = svId;
+        satellites[j].elevation    = (elev >= -90 && elev <= 90) ? elev : satellites[j].elevation;
+        satellites[j].azimuth      = (azim >= 0 && azim < 360)   ? azim : satellites[j].azimuth;
+        satellites[j].SNR          = (cno <= 99) ? cno : satellites[j].SNR;
+        satellites[j].satelliteType = satType;
+        satellites[j].lastReceived = millis();
+        stored = true;
+        break;
+      }
+    }
+    if (!stored) {
+      enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
+    }
+    // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
+    if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;
+  }
+  ubx_sat_updated = true;
+}
+
+// UBX-NAV-DOP (class=0x01, id=0x04, payload=18 bytes) ハンドラー
+// PDOP / HDOP / VDOP を更新し、10 秒に 1 回 SD ログに保存する。
+static void handle_navdop(const uint8_t *p, uint16_t len) {
+  if (len < 18) return;
+  gsa_pdop = (uint16_t)(p[6]  | (p[7]  << 8)) * 0.01f;
+  gsa_hdop = (uint16_t)(p[12] | (p[13] << 8)) * 0.01f;
+  gsa_vdop = (uint16_t)(p[10] | (p[11] << 8)) * 0.01f;
+  // 10 秒に 1 回 Acc 情報を SD ログに保存（DOP より直感的な精度指標）
+  static unsigned long last_dop_log = 0;
+  if (millis() - last_dop_log >= 10000) {
+    enqueueTask(createLogSdfTask("ACC hAcc=%.1fm vAcc=%.1fm sAcc=%.2fm/s fix=%d sats=%d",
+      ubx_hacc_mm / 1000.0f, ubx_vacc_mm / 1000.0f, ubx_sacc_mmps / 1000.0f,
+      gsa_fixtype, stored_numsats));
+    last_dop_log = millis();
+  }
+}
+
+// UBX バイナリフレームを 1 バイトずつ処理するステートマシン。
+// B5 62 ヘッダーを検出し、クラス・ID・ペイロードを組み立ててチェックサムを確認する。
+// チェックサム OK でハンドラーを呼び出し、last_nmea[] にラベルを記録する。
+static void process_ubx(uint8_t b) {
+  switch (ubx_state) {
+    case UBX_SYNC1:
+      if (b == 0xB5) ubx_state = UBX_SYNC2;
+      break;
+    case UBX_SYNC2:
+      ubx_state = (b == 0x62) ? UBX_CLASS_ST : UBX_SYNC1;
+      break;
+    case UBX_CLASS_ST:
+      ubx_cls = b;
+      ubx_cka_acc = b; ubx_ckb_acc = b;  // Fletcher-8 初期化
+      ubx_state = UBX_ID_ST;
+      break;
+    case UBX_ID_ST:
+      ubx_msgid = b;
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      ubx_state = UBX_LEN1_ST;
+      break;
+    case UBX_LEN1_ST:
+      ubx_paylen = b;
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      ubx_state = UBX_LEN2_ST;
+      break;
+    case UBX_LEN2_ST:
+      ubx_paylen |= ((uint16_t)b << 8);
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      ubx_payidx = 0;
+      ubx_state  = (ubx_paylen == 0) ? UBX_CKA_ST : UBX_PAYLOAD_ST;
+      break;
+    case UBX_PAYLOAD_ST:
+      if (ubx_payidx < UBX_PAYLOAD_BUF_SIZE) ubx_buf[ubx_payidx] = b;
+      ubx_payidx++;
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      if (ubx_payidx >= ubx_paylen) ubx_state = UBX_CKA_ST;
+      break;
+    case UBX_CKA_ST:
+      ubx_rx_cka = b;  // 受信 CK_A を一時保存
+      ubx_state  = UBX_CKB_ST;
+      break;
+    case UBX_CKB_ST: {
+      ubx_state = UBX_SYNC1;
+      if (ubx_rx_cka != ubx_cka_acc || b != ubx_ckb_acc) {
+        #ifdef DEBUG_GBX_NMEA
+        // チェックサム NG: クラス・ID と期待値を出力
+        static unsigned long last_ckerr_log = 0;
+        if (millis() - last_ckerr_log > 2000) {
+          last_ckerr_log = millis();
+          Serial.print("[UBX] CK NG cls="); Serial.print(ubx_cls, HEX);
+          Serial.print(" id="); Serial.print(ubx_msgid, HEX);
+          Serial.print(" len="); Serial.print(ubx_paylen);
+          Serial.print(" exp="); Serial.print(ubx_cka_acc, HEX); Serial.print("/"); Serial.print(ubx_ckb_acc, HEX);
+          Serial.print(" got="); Serial.print(ubx_rx_cka, HEX); Serial.print("/"); Serial.println(b, HEX);
+        }
+        #endif
+        break;
+      }
+      // チェックサム OK: タイムスタンプ更新 + ハンドラー呼び出し
+      gps_connection = true;
+      time_lastnmea  = millis();
+      uint16_t used_len = (ubx_paylen < UBX_PAYLOAD_BUF_SIZE) ? ubx_paylen : UBX_PAYLOAD_BUF_SIZE;
+      if (ubx_cls == 0x01) {
+        if (ubx_msgid == 0x07) {
+          // NAV-PVT: 位置・速度・時刻を解析
+          handle_navpvt(ubx_buf, used_len);
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-NAV-PVT fix=%d sv=%d lat=%.5f", gsa_fixtype, stored_numsats, stored_latitude);
+          #ifdef DEBUG_GBX_NMEA
+          // デバッグ: 5秒に1回 NAV-PVT の主要値を出力
+          {
+            static unsigned long last_pvt_dbg = 0;
+            if (millis() - last_pvt_dbg > 5000) {
+              last_pvt_dbg = millis();
+              Serial.print("[UBX] NAV-PVT fix="); Serial.print(gsa_fixtype);
+              Serial.print(" sv="); Serial.print(stored_numsats);
+              Serial.print(" lat="); Serial.print(stored_latitude, 6);
+              Serial.print(" lon="); Serial.print(stored_longitude, 6);
+              Serial.print(" alt="); Serial.print(stored_altitude, 1);
+              Serial.print(" gs="); Serial.print(stored_gs, 2);
+              Serial.print("m/s hdg="); Serial.print(stored_truetrack, 1);
+              Serial.print(" time="); Serial.print(ubx_hour); Serial.print(":"); Serial.print(ubx_min); Serial.print(":"); Serial.print(ubx_sec);
+              Serial.print(" valid="); Serial.print(ubx_date_valid?"D":"d"); Serial.println(ubx_time_valid?"T":"t");
+              Serial.print(" hAcc="); Serial.print(ubx_hacc_mm); Serial.print("mm gnssOK="); Serial.println(ubx_gnssFixOK?"Y":"N");
+            }
+          }
+          #endif
+        } else if (ubx_msgid == 0x35) {
+          // NAV-SAT: 衛星情報を解析
+          removeStaleSatellites();
+          handle_navsat(ubx_buf, used_len);
+          #ifdef DEBUG_GBX_NMEA
+          {
+            static unsigned long last_sat_dbg = 0;
+            if (millis() - last_sat_dbg > 10000) {
+              last_sat_dbg = millis();
+              Serial.print("[UBX] NAV-SAT numSvs="); Serial.println(ubx_buf[5]);
+            }
+          }
+          #endif
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR, "UBX-NAV-SAT svs=%d", ubx_buf[5]);
+        } else if (ubx_msgid == 0x04) {
+          // NAV-DOP: 精度低下率を解析
+          handle_navdop(ubx_buf, used_len);
+          #ifdef DEBUG_GBX_NMEA
+          {
+            static unsigned long last_dop_dbg = 0;
+            if (millis() - last_dop_dbg > 10000) {
+              last_dop_dbg = millis();
+              Serial.print("[UBX] NAV-DOP P="); Serial.print(gsa_pdop, 2);
+              Serial.print(" H="); Serial.print(gsa_hdop, 2);
+              Serial.print(" V="); Serial.println(gsa_vdop, 2);
+            }
+          }
+          #endif
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-NAV-DOP P=%.1f H=%.1f V=%.1f", gsa_pdop, gsa_hdop, gsa_vdop);
+        } else {
+          #ifdef DEBUG_GBX_NMEA
+          Serial.print("[UBX] unknown NAV cls=01 id="); Serial.print(ubx_msgid, HEX);
+          Serial.print(" len="); Serial.println(ubx_paylen);
+          #endif
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-%02X-%02X len=%d", ubx_cls, ubx_msgid, ubx_paylen);
+        }
+      } else if (ubx_cls == 0x05) {
+        // ACK-ACK (01) / ACK-NAK (00)
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] "); Serial.print((ubx_msgid==0x01)?"ACK-ACK":"ACK-NAK");
+        Serial.print(" for cls="); Serial.print((used_len>=1?ubx_buf[0]:0), HEX);
+        Serial.print(" id="); Serial.println((used_len>=2?ubx_buf[1]:0), HEX);
+        #endif
+        snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+          "%s %02X%02X", (ubx_msgid==0x01)?"UBX-ACK-ACK":"UBX-ACK-NAK",
+          (used_len>=1?ubx_buf[0]:0), (used_len>=2?ubx_buf[1]:0));
+      } else {
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] frame cls="); Serial.print(ubx_cls, HEX);
+        Serial.print(" id="); Serial.print(ubx_msgid, HEX);
+        Serial.print(" len="); Serial.println(ubx_paylen);
+        #endif
+        snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+          "UBX-%02X-%02X len=%d", ubx_cls, ubx_msgid, ubx_paylen);
+      }
+      last_nmea_time[stored_nmea_index] = millis();
+      stored_nmea_index = (stored_nmea_index + 1) % MAX_LAST_NMEA;
+      break;
+    }
+    default:
+      ubx_state = UBX_SYNC1;
+      break;
+  }
+}
 
 // --- リプレイモード ---
 // replaymode_gpsoff = true の時、実 GPS の代わりに SD から読んだ NMEA を再生する。
@@ -216,12 +593,17 @@ void parseGSA(char *nmea) {
 }
 
 // ゲッター
-int   get_gps_fixtype()  { return gsa_fixtype; }
-float get_gps_pdop()     { return gsa_pdop; }
-float get_gps_hdop()     { return gsa_hdop; }
-float get_gps_vdop()     { return gsa_vdop; }
-int   get_gsa_numsat()   { return gsa_numsat; }
-int   get_gsa_prn(int i) { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0; }
+int      get_gps_fixtype()    { return gsa_fixtype; }
+float    get_gps_pdop()       { return gsa_pdop; }
+float    get_gps_hdop()       { return gsa_hdop; }
+float    get_gps_vdop()       { return gsa_vdop; }
+int      get_gsa_numsat()     { return gsa_numsat; }
+int      get_gsa_prn(int i)   { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0; }
+uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度推定値, mm）
+uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
+uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
+float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
+bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
 // TinyGPS++ は GSV を解析しないため、自前でパースする必要がある。
@@ -229,7 +611,7 @@ int   get_gsa_prn(int i) { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0;
 // 衛星種別は文の先頭識別子から判定する（GP=GPS, GL=GLONASS, GA=Galileo, GB=BeiDou）。
 void parseGSV(char *nmea) {
   // Print the received NMEA sentence for debugging
-  #ifdef DEBUG_NMEA
+  #ifdef DEBUG_GBX_NMEA
   DEBUG_P(20250508,"Received NMEA: ");
   DEBUG_PLN(20250508,nmea);
   #endif
@@ -250,7 +632,7 @@ void parseGSV(char *nmea) {
   }
 
 
-  #ifdef DEBUG_NMEA
+  #ifdef DEBUG_GBX_NMEA
   // Print the satellite type for debugging
   DEBUG_P(20250508,"Satellite Type: ");
   DEBUG_PLN(20250508,satelliteType);
@@ -285,7 +667,7 @@ void parseGSV(char *nmea) {
     int snr = (*p != ',' && *p != '*') ? atoi(p) : -1;
     p = strchr(p, ','); if (!p) break; p++;
 
-    #ifdef DEBUG_NMEA
+    #ifdef DEBUG_GBX_NMEA
     // Debugging: Print parsed values
     DEBUG_P(20250508,"PRN: "); DEBUG_P(20250508,prn);
     DEBUG_P(20250508,", Elevation: "); DEBUG_P(20250508,elevation);
@@ -341,10 +723,8 @@ void gps_getposition_mode() {
   GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
   #endif
   #ifdef UBLOX_GPS
-  // ナビ画面ではGSV/GSAともに10秒に1回で十分
-  { const unsigned char cmd[] = UBLOX_GSV_RATE_20;
-    for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
-  { const unsigned char cmd[] = UBLOX_GSA_RATE_20;
+  // ナビ画面では NAV-SAT を 0.1Hz（10秒に1回）に落としてトラフィックを抑制
+  { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
     for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
   #endif
 }
@@ -363,10 +743,8 @@ void gps_constellation_mode() {
     GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);
   #endif
   #ifdef UBLOX_GPS
-  // 星座画面ではGSV/GSAともに1Hzに上げて衛星情報を更新しやすくする
-  { const unsigned char cmd[] = UBLOX_GSV_RATE_2;
-    for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
-  { const unsigned char cmd[] = UBLOX_GSA_RATE_2;
+  // 星座画面では NAV-SAT を 1Hz に上げて衛星情報をリアルタイム更新
+  { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
     for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
   #endif
 }
@@ -374,6 +752,37 @@ void gps_constellation_mode() {
 int setupcounter = 1;  // gps_setup() の呼び出し回数（1=初回、2以降=リトライ）
 uint32_t gps_current_baudrate = 0;  // GPS シリアルの現在ボーレート（gps_setup() で更新）
 uint32_t get_gps_baudrate() { return gps_current_baudrate; }
+
+// UBX フレームを1パケットずつ読み、ACK-ACK なら true を返す。
+// NAV-PVT など非 ACK パケットはヘッダ・ペイロード・チェックサムを
+// 丸ごと読み飛ばすため、固定バッファに収まらない問題が起きない。
+#ifdef UBLOX_GPS
+static bool ubxWaitAck(uint32_t timeout_ms) {
+  unsigned long t0 = millis();
+  uint8_t  state = 0, cls = 0, id = 0;
+  uint16_t paylen = 0, payidx = 0;
+  while (millis() - t0 < timeout_ms) {
+    if (!GPS_SERIAL.available()) continue;
+    uint8_t b = GPS_SERIAL.read();
+    switch (state) {
+      case 0: state = (b == 0xB5) ? 1 : 0; break;
+      case 1: state = (b == 0x62) ? 2 : (b == 0xB5 ? 1 : 0); break;
+      case 2: cls = b;   state = 3; break;
+      case 3: id  = b;   state = 4; break;
+      case 4: paylen = b; state = 5; break;
+      case 5: paylen |= ((uint16_t)b << 8); payidx = 0;
+              state = (paylen > 0) ? 6 : 7; break;
+      case 6: if (++payidx >= paylen) state = 7; break;  // ペイロード読み飛ばし
+      case 7: state = 8; break;                           // ck_a
+      case 8: state = 0;                                  // ck_b → フレーム完了
+              if (cls == 0x05 && id == 0x01) return true;   // ACK-ACK
+              if (cls == 0x05 && id == 0x00) return false;  // ACK-NAK
+              break;
+    }
+  }
+  return false;  // タイムアウト
+}
+#endif
 
 // GPS モジュールとのシリアル接続を確立する。
 // 初回は settings.h で選択したモジュール種別に合わせて初期化する。
@@ -414,62 +823,163 @@ void gps_setup() {
       delay(50);//（Do not delete without care.)
       GPS_SERIAL.begin(gps_current_baudrate = 38400);
     #elif defined(UBLOX_GPS)
-      DEBUG_PLN(20251025,"UBLOX 38400");
-      GPS_SERIAL.setFIFOSize(1024);//バッファオーバーフロー防止（デフォルト32バイトでは不足）
-      GPS_SERIAL.begin(gps_current_baudrate = 9600);  // u-blox工場デフォルトは9600bps。まずこのボーレートで開いてからコマンドを送る
-      // Configure GPS baud rate
-      const unsigned char UBLOX_INIT_38400[] = {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x07,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x83,0x90,};
-      delay (50);// なぜか必要（Do not delete without care.)
-      for (int i = 0; i < sizeof(UBLOX_INIT_38400); i++) {
-        GPS_SERIAL.write(UBLOX_INIT_38400[i]);
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] setup start");
+      #endif
+      GPS_SERIAL.setFIFOSize(1024);  // バッファオーバーフロー防止（デフォルト 32 バイトでは不足）
+      GPS_SERIAL.begin(gps_current_baudrate = 9600);  // u-blox 工場デフォルトは 9600bps
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] opened 9600");
+      #endif
+
+      // ① UBX-CFG-PRT: UART1 を 38400bps・UBX 出力のみに変更（NMEA 無効化）
+      {
+        const unsigned char cmd[] = UBLOX_CFG_PRT_38400_UBXONLY;
+        delay(50);  // なぜか必要（Do not delete without care.)
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] sending CFG-PRT (bytes=");
+        Serial.print(sizeof(cmd)); Serial.println("):");
+        #endif
+        for (unsigned i = 0; i < sizeof(cmd); i++) {
+          GPS_SERIAL.write(cmd[i]);
+          #ifdef DEBUG_GBX_NMEA
+          Serial.print(cmd[i], HEX); Serial.print(" ");
+          #endif
+        }
+        #ifdef DEBUG_GBX_NMEA
+        Serial.println();
+        #endif
       }
-      delay (100);//なぜか必要（Do not delete without care.)
-      GPS_SERIAL.end();
-      delay(50);//なぜか必要（Do not delete without care.)
-      GPS_SERIAL.begin(gps_current_baudrate = 38400);
-      // UBX-CFG-RATE: 測位レートを 2Hz（500ms）に設定
-      // Payload: measRate=0x01F4(500ms), navRate=0x0001, timeRef=0x0001(GPS)
-      // Checksum: 0x0B 0x77
-      const unsigned char UBLOX_RATE_2HZ[] = {0xB5,0x62,0x06,0x08,0x06,0x00,0xF4,0x01,0x01,0x00,0x01,0x00,0x0B,0x77};
-      delay(50);
-      for (int i = 0; i < sizeof(UBLOX_RATE_2HZ); i++) {
-        GPS_SERIAL.write(UBLOX_RATE_2HZ[i]);
-      }
-      // ACK 確認: B5 62 05 01 → ACK-ACK、B5 62 05 00 → ACK-NAK
-      // u-blox は CFG コマンドに対し UBX-ACK を返す（通常 ~100ms 以内）
+      // CFG-PRT の ACK は旧ボーレート（9600）で返ってくる
       delay(100);
       {
-        uint8_t ack_buf[10] = {};
+        // ACK を読み捨ててバッファをクリアする（機能的に必要）
+        uint8_t ack_buf[32] = {};
         int ack_len = 0;
         unsigned long t = millis();
-        while (millis() - t < 200 && ack_len < 10) {
+        while (millis() - t < 300 && ack_len < 32) {
           if (GPS_SERIAL.available()) ack_buf[ack_len++] = GPS_SERIAL.read();
         }
-        // ACK-ACK: B5 62 05 01 xx xx 06 08 ...
-        // ACK-NAK: B5 62 05 00 xx xx 06 08 ...
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] CFG-PRT resp ("); Serial.print(ack_len); Serial.print(" bytes): ");
+        for (int i = 0; i < ack_len; i++) { Serial.print(ack_buf[i], HEX); Serial.print(" "); }
+        Serial.println();
         bool got_ack = false, got_nak = false;
-        for (int i = 0; i < ack_len - 3; i++) {
+        for (int i = 0; i <= ack_len - 4; i++) {
           if (ack_buf[i]==0xB5 && ack_buf[i+1]==0x62 && ack_buf[i+2]==0x05) {
             if (ack_buf[i+3] == 0x01) got_ack = true;
             if (ack_buf[i+3] == 0x00) got_nak = true;
           }
         }
-        if (got_ack)      { DEBUGW_PLN(20260309, "UBLOX CFG-RATE 2Hz: ACK OK"); }
-        else if (got_nak) { DEBUGW_PLN(20260309, "UBLOX CFG-RATE 2Hz: NAK!"); }
-        else              { DEBUGW_PLN(20260309, "UBLOX CFG-RATE 2Hz: no response"); }
+        if      (got_ack) Serial.println("[UBX] CFG-PRT: ACK OK");
+        else if (got_nak) Serial.println("[UBX] CFG-PRT: NAK!");
+        else              Serial.println("[UBX] CFG-PRT: no response (may be OK if baud change happened)");
+        #endif
       }
-      // GSV/GSA 出力を 20 回に 1 回（0.1Hz = 10秒に1回）に落とす。2Hz 測位でもトラフィックを抑制。
-      { const unsigned char cmd[] = UBLOX_GSV_RATE_20;
+      GPS_SERIAL.end();
+      delay(50);   // なぜか必要（Do not delete without care.)
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] reopened 38400");
+      #endif
+
+      // ② UBX-CFG-RATE: 測位レートを 2Hz（500ms）に設定
+      // Payload: measRate=0x01F4(500ms), navRate=0x0001, timeRef=0x0001(GPS)
+      {
+        const unsigned char UBLOX_RATE_2HZ[] = {0xB5,0x62,0x06,0x08,0x06,0x00,0xF4,0x01,0x01,0x00,0x01,0x00,0x0B,0x77};
+        delay(50);
+        #ifdef DEBUG_GBX_NMEA
+        Serial.println("[UBX] sending CFG-RATE 2Hz");
+        #endif
+        for (unsigned i = 0; i < sizeof(UBLOX_RATE_2HZ); i++) GPS_SERIAL.write(UBLOX_RATE_2HZ[i]);
+      }
+      {
+        // NAV-PVT など既存パケットを読み飛ばしながら ACK を待つ
+        bool got_ack = ubxWaitAck(600);
+        #ifdef DEBUG_GBX_NMEA
+        if      (got_ack) Serial.println("[UBX] CFG-RATE 2Hz: ACK OK");
+        else              Serial.println("[UBX] CFG-RATE 2Hz: no ACK");
+        #endif
+      }
+
+      // ③ NAV-PVT を毎測位（2Hz）で出力
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending ENABLE NAVPVT");
+      #endif
+      { const unsigned char cmd[] = UBLOX_ENABLE_NAVPVT;
         delay(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
-      { const unsigned char cmd[] = UBLOX_GSA_RATE_20;
+      {
+        bool got_ack = ubxWaitAck(600);
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAVPVT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      // ④ NAV-SAT を 0.1Hz（10秒に1回）で出力（ナビ画面用。星座画面では 1Hz に切替）
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending NAVSAT rate=20");
+      #endif
+      { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
         delay(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAVSAT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      // ⑤ NAV-DOP を 1Hz で出力
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending ENABLE NAVDOP");
+      #endif
+      { const unsigned char cmd[] = UBLOX_ENABLE_NAVDOP;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAVDOP enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+      // ⑥ CFG-NAV5: ダイナミックモデルを Airborne <1g に設定
+      // パラグライダー/HPA は加速度が小さく <1g に収まる。
+      // 地上制約（altitude snap）を除去し、高度追従精度を改善する。
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending CFG-NAV5 Airborne<1g");
+      #endif
+      { const unsigned char cmd[] = UBLOX_CFG_NAV5_AIRBORNE1G;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] CFG-NAV5 Airborne<1g: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] setup done");
+      #endif
     #else
       GPS_SERIAL.begin(gps_current_baudrate = 9600);
     #endif
     
   }else{
+    #if defined(UBLOX_GPS)
+    // u-blox リトライ: NMEA/PAIR コマンドは使わず baud 切替のみ試みる。
+    // 偶数回=9600（工場出荷デフォルト）、奇数回=38400（CFG-PRT 設定済み想定）で交互に試す。
+    if(setupcounter % 2 == 0){
+      DEBUG_PLN(20251025,"UBX retry: 9600bps (factory default)");
+      GPS_SERIAL.setFIFOSize(1024);
+      GPS_SERIAL.begin(gps_current_baudrate = 9600);
+    }else{
+      DEBUG_PLN(20251025,"UBX retry: 38400bps (UBX mode)");
+      GPS_SERIAL.setFIFOSize(1024);
+      GPS_SERIAL.begin(gps_current_baudrate = 38400);
+    }
+    #else
     //2nd try
     if(setupcounter%3 == 1){
       DEBUG_PLN(20251025,"from 115200 to 38400 (For QUECTEL)");
@@ -494,6 +1004,7 @@ void gps_setup() {
       //3rd try
       GPS_SERIAL.begin(gps_current_baudrate = 9600);
     }
+    #endif
   }
 
   for(int i = 0; i < MAX_LAST_NMEA;i++){
@@ -522,9 +1033,10 @@ static void reset_maxgs() {
 // gps.time が有効な場合は JST 時刻を記録し、無効な場合は 0:00 として速度値だけ更新する。
 static void update_maxgs(float gs) {
   int jst_h = 0, jst_m = 0;
-  if (gps.time.isValid()) {
-    jst_h = (gps.time.hour() + 9) % 24;
-    jst_m = gps.time.minute();
+  // UBX モード・リプレイモード共に ubx_hour/ubx_min を参照（両モードとも更新済み）
+  if (ubx_time_valid) {
+    jst_h = (ubx_hour + 9) % 24;
+    jst_m = ubx_min;
   }
   // 全時間最大 G/S
   if (gs > maxgs) {
@@ -570,11 +1082,24 @@ int index_buffer1 = 0;
 char nmea_buffer1[NMEA_BUFFER_SIZE];
 
 
-TinyGPSDate get_gpsdate(){
-  return gps.date;
+// ubx_* 変数（UBX NAV-PVT 解析結果 or リプレイモードでミラーされた値）から GpsDate を返す
+GpsDate get_gpsdate(){
+  GpsDate d;
+  d._year  = ubx_year;
+  d._month = ubx_month;
+  d._day   = ubx_day;
+  d._valid = ubx_date_valid;
+  return d;
 }
-TinyGPSTime get_gpstime(){
-  return gps.time;
+// ubx_* 変数から GpsTime を返す
+GpsTime get_gpstime(){
+  GpsTime t;
+  t._hour  = ubx_hour;
+  t._min   = ubx_min;
+  t._sec   = ubx_sec;
+  t._cs    = ubx_cs;
+  t._valid = ubx_time_valid;
+  return t;
 }
 
 unsigned long last_demo_gpsupdate = 0;
@@ -665,7 +1190,7 @@ void process_char(char c){
       last_nmea[stored_nmea_index][NMEA_MAX_CHAR - 1] = '\0';
       last_nmea_time[stored_nmea_index] = millis();
       stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
-      #ifdef DEBUG_NMEA
+      #ifdef DEBUG_GBX_NMEA
       DEBUG_P(20260309,index_buffer1);
       DEBUG_PLN(20260309,nmea_buffer1);
       //enqueueTask(createLogSdTask(nmea_buffer1));  // NMEA全文をSDに保存
@@ -706,14 +1231,14 @@ void set_replaymode(bool replaymode){
 // 描画の途中でも複数回呼ばれることで、GPS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
 //
 // 異常検知:
-//   - 10 秒間 NMEA が届かない → gps_setup() で再接続を試みる
-//   - 非 ASCII 文字が 10 回連続 → ボーレート不一致とみなして gps_setup()
+//   - 30 秒間 UBX フレームが届かない → gps_setup() で再接続を試みる
+//   - リプレイモードで非 ASCII 文字が 10 回連続 → gps_setup()
 //   - FIFO バッファが 256 を超えている → 警告ログを出す
 void gps_loop(int id) {
 
-  // 30 秒以上 NMEA が途絶えた場合は GPS を再初期化する
+  // 30 秒以上 UBX フレームが途絶えた場合は GPS を再初期化する
   if(GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 30000 && millis() - last_gps_setup_time > 30000){
-    DEBUGW_PLN(20250923,"Lost NMEA MSG for 30 seconds. resetup.");
+    DEBUGW_PLN(20250923,"Lost UBX frame for 30 seconds. resetup.");
     gps_setup();
   }
   if(GPS_SERIAL.available() > 256){
@@ -723,35 +1248,53 @@ void gps_loop(int id) {
     DEBUGW_PLN(20250923,GPS_SERIAL.available());
   }
 
+  #ifdef DEBUG_GBX_NMEA
+  // 起動後最初の 64 バイトを Hex ダンプ（モジュールが何を出力しているか確認用）
+  static int ubx_raw_dump_remain = 64;
+  if (ubx_raw_dump_remain > 0 && GPS_SERIAL.available() > 0) {
+    Serial.print("[UBX] raw(first64): ");
+  }
+  #endif
+
   while (GPS_SERIAL.available() > 0) {
-    char c = GPS_SERIAL.read();
+    uint8_t c = GPS_SERIAL.read();
     if(GPS_SERIAL.overflow()){
       DEBUGW_P(20250923,"!!WARNING!! GPS FIFO Overflow avail=");
       DEBUGW_PLN(20250923,GPS_SERIAL.available());
-      // SDカードへエラーログを保存し、USERLEDを永続点灯させる
       enqueueTask(createLogSdTask("!!ERROR!! GPS FIFO overflow"));
       userled_forced_on = true;
     }
-    // 128 以上の文字（非 ASCII）が続く場合、ボーレート不一致の可能性がある
-    if((int)c >= 128){
-      readfail_counter++;
-      if(readfail_counter > 10){
-        DEBUGW_P(20250923,"Read Failed 10 times, non ascii char:");
-        DEBUGW_PLN(20250923,(int)c);
-        gps_setup();  // 異なるボーレートで再試行
+    if (!replaymode_gpsoff) {
+      // UBX バイナリモード: 全バイト値が有効なので ASCII チェック不要
+      #ifdef DEBUG_GBX_NMEA
+      // 起動後最初の 64 バイトを Hex ダンプ（NMEA混在 or UBX? の確認）
+      if (ubx_raw_dump_remain > 0) {
+        Serial.print(c, HEX); Serial.print(" ");
+        ubx_raw_dump_remain--;
+        if (ubx_raw_dump_remain == 0) Serial.println("\n[UBX] raw dump done");
       }
-      continue;
+      #endif
+      gps_connection = true;
+      process_ubx(c);  // UBX バイナリパーサーに渡す
+    } else {
+      // リプレイモードでは実 GPS シリアルデータを破棄（NMEA 再生は下記で行う）
+      if(c >= 128){
+        readfail_counter++;
+        if(readfail_counter > 10){
+          DEBUGW_P(20250923,"Read Failed 10 times, non ascii char:");
+          DEBUGW_PLN(20250923,(int)c);
+          gps_setup();
+        }
+      }
+      gps_connection = true;
     }
-    gps_connection = true;
-    if(!replaymode_gpsoff)
-      process_char(c);  // 通常モード: 実 GPS データを処理
   }
 
   // リプレイモード: SD から読み込んだ NMEA を 300ms ごとに1文ずつ流す
   if(replaymode_gpsoff){
     if(loaded_replay_nmea){
       for(int i = 0; i < 128; i++){
-        process_char(replay_nmea[i]);
+        process_char(replay_nmea[i]);  // リプレイは NMEA パーサーに渡す
         if(replay_nmea[i] == '\n')
           break;
       }
@@ -764,92 +1307,104 @@ void gps_loop(int id) {
     }
   }
 
-    
-  if (gps.location.isUpdated()) {
-    last_gps_time = millis();
-    if(stored_latitude != gps.location.lat() || stored_longitude != gps.location.lng()){
-      if(!get_demo_biwako())
-        new_location_arrived = true;
+  // ============================================================
+  // リプレイモード: TinyGPS++ 解析結果を ubx_* 変数にミラーする
+  // （try_enque_savecsv / update_maxgs は ubx_* を参照するため）
+  // ============================================================
+  if (replaymode_gpsoff) {
+    if (gps.location.isUpdated()) {
+      last_gps_time = millis();
+      double new_lat = gps.location.lat();
+      double new_lon = gps.location.lng();
+      if (stored_latitude != new_lat || stored_longitude != new_lon)
+        if (!get_demo_biwako()) new_location_arrived = true;
+      stored_latitude  = new_lat;
+      stored_longitude = new_lon;
+      ubx_pos_valid    = gps.location.isValid();
+      stored_fixtype   = ubx_pos_valid ? 2 : 0;
+      try_enque_savecsv();
     }
-    stored_latitude = gps.location.lat();
-    stored_longitude = gps.location.lng();
-    
-
-    #ifdef DEBUG_NMEA
-    DEBUG_P(20250923,F("Location: "));
-    DEBUG_PN(20250923,stored_latitude, 6);
-    DEBUG_P(20250923,F(", "));
-    DEBUG_PNLN(20250923,stored_longitude, 6);
-    #endif
-
-    #ifndef QUECTEL_GPS
-    // QUECTELの場合は、ここで保存しない。courseで保存する。
-    try_enque_savecsv();
-    #endif
+    if (gps.altitude.isUpdated())
+      stored_altitude = gps.altitude.meters();
+    if (gps.speed.isUpdated()) {
+      stored_gs = gps.speed.mps();
+      update_maxgs(stored_gs);
+    }
+    if (gps.course.isUpdated()) {
+      if (!get_demo_biwako()) newcourse_arrived = true;
+      stored_truetrack = gps.course.deg();
+      if (stored_truetrack < 0 || stored_truetrack > 360) {
+        enqueueTask(createLogSdfTask("ERR truetrack=%.1f (forced 0)", stored_truetrack));
+        stored_truetrack = 0;
+      }
+    }
+    if (gps.satellites.isUpdated()) {
+      removeStaleSatellites();
+      stored_numsats = gps.satellites.value();
+    }
+    if (gps.time.isUpdated() && gps.time.isValid()) {
+      ubx_hour       = gps.time.hour();
+      ubx_min        = gps.time.minute();
+      ubx_sec        = gps.time.second();
+      ubx_cs         = gps.time.centisecond();
+      ubx_time_valid = true;
+      gps_fix_millis = millis();
+    }
+    if (gps.date.isUpdated() && gps.date.isValid()) {
+      ubx_year       = gps.date.year();
+      ubx_month      = gps.date.month();
+      ubx_day        = gps.date.day();
+      ubx_date_valid = true;
+    }
+    // 初回 GPS 時刻取得時の SD ログ（1回だけ）
+    if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
+      static bool first_time_logged_replay = false;
+      if (!first_time_logged_replay) {
+        first_time_logged_replay = true;
+        enqueueTask(createLogSdfTask("GPS TIME(REPLAY): %04d-%02d-%02d %02d:%02d:%02d UTC",
+          gps.date.year(), gps.date.month(), gps.date.day(),
+          gps.time.hour(), gps.time.minute(), gps.time.second()));
+      }
+    }
+    return;
   }
 
-
-  if (gps.altitude.isUpdated()) {
-    #ifdef DEBUG_NMEA
-    DEBUG_P(20250923,F("Altitude: "));
-    DEBUG_PLN(20250923,stored_altitude);
-    #endif
-    stored_altitude = gps.altitude.meters();
-  }
-
-  if (gps.speed.isUpdated()) {
-    stored_gs = gps.speed.mps();
-    #ifdef DEBUG_NMEA
-    DEBUG_P(20250923,F("Speed: "));
-    DEBUG_P(20250923,stored_gs);  // Speed in meters per second
-    DEBUG_PLN(20250923,F(" mps"));
-    #endif
-
-    update_maxgs(stored_gs);  // 最大 G/S を更新
-  }
-
-  if (gps.course.isUpdated()) {
-    #ifdef DEBUG_NMEA
-    DEBUG_P(20250923,F("Course: "));
-    DEBUG_PLN(20250923,stored_truetrack);
-    #endif
-    if(!get_demo_biwako())
+  // ============================================================
+  // 通常モード (UBX): handle_navpvt() がセットした ubx_pvt_updated フラグを処理する
+  // ============================================================
+  if (ubx_pvt_updated) {
+    ubx_pvt_updated = false;
+    last_gps_time = millis();
+    if (!get_demo_biwako()) {
+      if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
-    stored_truetrack = gps.course.deg();
-    if(stored_truetrack < 0 || stored_truetrack > 360){
+    }
+    update_maxgs(stored_gs);
+
+    if (stored_truetrack < 0 || stored_truetrack > 360) {
       DEBUGW_P(20250923,"ERROR:MT");
       DEBUGW_PLN(20250923,stored_truetrack);
       enqueueTask(createLogSdfTask("ERR truetrack=%.1f (forced 0)", stored_truetrack));
       stored_truetrack = 0;
     }
 
-    #ifdef QUECTEL_GPS
-    // LC86GPAMD において、 NMEAのcourseが最後であるため、ここでCSV保存処理を行う。
     try_enque_savecsv();
-    #endif
-  }
+    // gps_fix_millis は handle_navpvt() 内で ubx_cs 確定直後に記録済みのためここでは不要。
 
-  if (gps.satellites.isUpdated()) {
-    // Remove satellites not received for 30 seconds
-    removeStaleSatellites();
-    stored_numsats = gps.satellites.value();
-    #ifdef DEBUG_NMEA
-    DEBUG_P(20250923,F("Satellites: "));
-    DEBUG_PLN(20250923,stored_numsats);
-    #endif
-  }
-
-  // 初回 GPS 時刻取得時に UTC 時刻を SD ログに記録（1回だけ）
-  if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
-    static bool first_time_logged = false;
-    if (!first_time_logged) {
-      first_time_logged = true;
-      enqueueTask(createLogSdfTask("GPS TIME: %04d-%02d-%02d %02d:%02d:%02d UTC",
-        gps.date.year(), gps.date.month(), gps.date.day(),
-        gps.time.hour(), gps.time.minute(), gps.time.second()));
+    // 初回 GPS 時刻取得時の SD ログ（1回だけ）
+    if (ubx_time_valid && ubx_date_valid) {
+      static bool first_time_logged = false;
+      if (!first_time_logged) {
+        first_time_logged = true;
+        enqueueTask(createLogSdfTask("GPS TIME: %04d-%02d-%02d %02d:%02d:%02d UTC",
+          ubx_year, ubx_month, ubx_day, ubx_hour, ubx_min, ubx_sec));
+      }
     }
-    // GPS時刻更新のたびにmillis()を記録（Euler角ログの時刻推定に使用）
-    gps_fix_millis = millis();
+  }
+
+  if (ubx_sat_updated) {
+    ubx_sat_updated = false;
+    // DOP ログは handle_navdop() 内で実施済みのため、ここでは satelite staleness のみ管理
   }
 }
 
@@ -859,25 +1414,24 @@ extern int max_adreading;  // display_tft.cpp で計測したバッテリー ADC
 // GPS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
 // 1秒に1回だけ保存するようにクールダウンを設けている（NMEA の都合で同一秒に複数回 update が来るため）。
 // リプレイモードとデモモードでは保存しない。
+// GPS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
+// 400ms に1回だけ保存するようにクールダウンを設けている。
+// UBX モード・リプレイモード共に ubx_* 変数を参照する（リプレイモードでは gps_loop() でミラー済み）。
+// リプレイモードとデモモードでは保存しない。
 void try_enque_savecsv(){
   bool all_valid = true;
-  if (gps.location.isValid()) {
-    // 衛星数が有効なら fixtype=2（3D フィックス相当）とする
-    if (gps.satellites.isValid()) {
-      stored_fixtype = 2;
-    } else {
-      stored_fixtype = 1;
-    }
+  if (ubx_pos_valid) {
+    stored_fixtype = (stored_numsats > 0) ? 2 : 1;
   } else {
     DEBUG_PLN(20250923,"Location: Not Available");
     all_valid = false;
     stored_fixtype = 0;
   }
-  if (!gps.date.isValid()) {
+  if (!ubx_date_valid) {
     DEBUG_PLN(20250923,"Date: Not Available");
     all_valid = false;
   }
-  if (!gps.time.isValid()) {
+  if (!ubx_time_valid) {
     DEBUG_PLN(20250923,"Time: Not Available");
     all_valid = false;
   }
@@ -895,14 +1449,18 @@ void try_enque_savecsv(){
       DEBUG_PLN(20250923,millis()-lastsavedtime);
 
       lastsavedtime = millis();
-      int year = gps.date.year();
-      int month = gps.date.month();
-      int day = gps.date.day();
-      int hour = gps.time.hour();
-      utcToJst(&year,&month,&day,&hour);
-      float calc_voltage = min(BATTERY_MULTIPLYER(max_adreading),4.3);
-      float csv_pressure = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
-      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack, stored_altitude, csv_pressure, stored_numsats, calc_voltage,year, month, day, hour, gps.time.minute(), gps.time.second(), gps.time.centisecond()));
+      int year  = ubx_year;
+      int month = ubx_month;
+      int day   = ubx_day;
+      int hour  = ubx_hour;
+      utcToJst(&year, &month, &day, &hour);
+      float csv_pressure   = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
+      float csv_kf_alt    = get_imu_altitude();  // KF推定高度 [m]（気圧基準・GNSS補正済み）
+      float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
+      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
+        stored_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,
+        year, month, day, hour, ubx_min, ubx_sec, ubx_cs));
+
       last_gps_save_time = millis();
     }
   }

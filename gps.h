@@ -6,12 +6,29 @@
 //           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
 //           リプレイモード・デモモード切替関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 
 #ifndef GPS_H
   #define GPS_H
-  #include <TinyGPS++.h>
+  // GpsDate / GpsTime: get_gpsdate() / get_gpstime() の戻り値型
+  // TinyGPS++ の TinyGPSDate / TinyGPSTime と同じインターフェースを提供する。
+  // 実 GPS は UBX NAV-PVT から更新、リプレイモードは TinyGPS++ からミラー。
+  struct GpsDate {
+    uint16_t _year  = 0; uint8_t _month = 0; uint8_t _day = 0; bool _valid = false;
+    bool     isValid() const { return _valid;  }
+    uint16_t year()    const { return _year;   }
+    uint8_t  month()   const { return _month;  }
+    uint8_t  day()     const { return _day;    }
+  };
+  struct GpsTime {
+    uint8_t _hour=0; uint8_t _min=0; uint8_t _sec=0; uint8_t _cs=0; bool _valid=false;
+    bool    isValid()     const { return _valid; }
+    uint8_t hour()        const { return _hour;  }
+    uint8_t minute()      const { return _min;   }
+    uint8_t second()      const { return _sec;   }
+    uint8_t centisecond() const { return _cs;    }
+  };
   // Define satellite types
   #define SATELLITE_TYPE_GPS 1
   #define SATELLITE_TYPE_GLONASS 2
@@ -69,8 +86,14 @@
   double get_gps_lon();
   double get_gps_altitude();
 
-  TinyGPSDate get_gpsdate();
-  TinyGPSTime get_gpstime();
+  uint32_t get_gps_hacc_mm();     // 水平精度推定値（NAV-PVT hAcc、mm 単位）
+  uint32_t get_gps_vacc_mm();     // 垂直精度推定値（NAV-PVT vAcc、mm 単位）
+  uint32_t get_gps_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
+  float    get_gps_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
+  bool     get_gps_gnssFixOK();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
+
+  GpsDate get_gpsdate();
+  GpsTime get_gpstime();
 
   // 最大 G/S 取得関数
   float get_maxgs();            // 全時間最大 G/S [m/s]

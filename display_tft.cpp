@@ -6,7 +6,7 @@
 //           飛行コース矢印、ヘッダー/フッター、設定画面、
 //           GPSDetail/SDDetail/マップリスト画面など全UI描画。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -698,28 +698,37 @@ void draw_nofix_cross() {
   backscreen.drawWideLine(cx + arm, cy - arm, cx - arm, cy + arm, 3, COLOR_GRAY);
 }
 
-// HDOP 不良時に飛行機マークの代わりに自機位置の不確かさ円を描画する。
+// hAcc 不良時に飛行機マークの代わりに自機位置の不確かさ円を描画する。
+// gnssFixOK=false の場合は常にこの関数が呼ばれる。
 // 動作:
-//   1. 中心 (120,120) に青い塗りつぶし小円（HDOP_CENTER_DOT_RADIUS px）で位置を示す。
-//   2. 誤差半径 = hdop × GPS_BASE_ACCURACY_M [m] をピクセル換算して青い輪郭円を描画。
-//   3. 輪郭円半径 < HDOP_MIN_CIRCLE_RADIUS の場合は輪郭円を省略し、"H5.2" 形式のテキストで HDOP 値を表示する。
-void draw_hdop_circle(double scale, float hdop) {
+//   1. 中心に青い塗りつぶし小円（HDOP_CENTER_DOT_RADIUS px）で位置を示す。
+//   2. 誤差半径 = hacc_mm [mm] → [m] → [km] → ピクセル換算して青い輪郭円を描画。
+//   3. 輪郭円半径 < HDOP_MIN_CIRCLE_RADIUS の場合は輪郭円を省略し、精度数値をテキストで表示する。
+void draw_hacc_circle(double scale, uint32_t hacc_mm) {
   const int cx = BACKSCREEN_SIZE / 2;  // = 120（X は常に中央）
   const int cy = get_self_cy();        // TRACKUP=180, NORTHUP=120
 
-  // 誤差半径: [m] → [km] → ピクセル（四捨五入で正確な円サイズに）
-  int r = (int)roundf((hdop * GPS_BASE_ACCURACY_M / 1000.0f) * (float)scale);
+  // 誤差半径: [mm] → [m] → [km] → ピクセル（四捨五入で正確な円サイズに）
+  float accuracy_m = hacc_mm / 1000.0f;
+  int r = (int)roundf((accuracy_m / 1000.0f) * (float)scale);
 
   // 中心位置を示す小さい塗りつぶし青円
   backscreen.fillCircle(cx, cy, HDOP_CENTER_DOT_RADIUS, COLOR_BLUE);
 
-  if (r >= HDOP_MIN_CIRCLE_RADIUS) {
+  // 円半径がバックスクリーン半分を超えると画面外にはみ出して青い点だけに見えるため、
+  // 大きすぎる場合もテキスト表示にフォールバックする。
+  const int MAX_CIRCLE_R = BACKSCREEN_SIZE / 2;  // 120px
+
+  if (r >= HDOP_MIN_CIRCLE_RADIUS && r <= MAX_CIRCLE_R) {
     // 不確かさ範囲を示す輪郭青円
     backscreen.drawCircle(cx, cy, r, COLOR_BLUE);
   } else {
-    // 円が小さすぎて見えないため、HDOP 数値をテキストで表示（例: "H5.2"）
-    char buf[10];
-    snprintf(buf, sizeof(buf), "H%.1f", hdop);
+    // 円が小さすぎ／大きすぎる場合: 精度数値をテキストで表示（例: "Acc:8m" / "Acc:1.2km"）
+    char buf[16];
+    if (accuracy_m < 1000.0f)
+      snprintf(buf, sizeof(buf), "Acc:%.0fm", accuracy_m);
+    else
+      snprintf(buf, sizeof(buf), "Acc:%.1fkm", accuracy_m / 1000.0f);
     backscreen.setTextSize(1);
     backscreen.setTextColor(COLOR_BLUE, COLOR_BLACK);
     backscreen.setCursor(cx + HDOP_CENTER_DOT_RADIUS + 2, cy - 4);
@@ -1512,7 +1521,9 @@ void draw_header() {
 
 
   header_footer.setCursor(-1, 3);
-  header_footer.printf("%4.1f", get_gps_mps());
+  // 100m/s以上（3桁）は小数点を省略して整数表示（右側のMT表示との重なり防止）
+  float _mps = get_gps_mps();
+  header_footer.printf(_mps >= 100.0f ? "%4.0f" : "%4.1f", _mps);
 
 
   const int mtvx = SCREEN_WIDTH - 111;
@@ -1551,7 +1562,7 @@ extern int course_warning_index;
 // 中央〜右: 緯度（〜N/S）・経度（〜E/W）を 5 桁精度で表示。
 void draw_map_footer(){
   //JST Time
-  TinyGPSTime time = get_gpstime();
+  GpsTime time = get_gpstime();
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
@@ -1683,6 +1694,16 @@ void draw_footer(){
     } else {  // 50%以上
       header_footer.setTextColor(COLOR_GREEN);
       header_footer.printf("%d%%", bat_pct);
+    }
+  }
+  // 60秒ごとに電圧と JST 時刻をテキストログへ記録（USB接続中/未接続問わず）
+  {
+    static unsigned long last_volt_log_ms = 0;
+    if (millis() - last_volt_log_ms >= 60000UL) {
+      last_volt_log_ms = millis();
+      GpsTime t = get_gpstime();
+      int jst_h = (t._hour + 9) % 24;
+      enqueueTask(createLogSdfTask("volt=%.2fV %02d:%02d JST", get_input_voltage(), jst_h, t._min));
     }
   }
 
@@ -2046,9 +2067,10 @@ void draw_sddetail(int page) {
 
 // ============================================================
 // Vario 詳細画面を描画する（screen_mode == MODE_VARIODETAIL 時）。
-// page % 3 == 0: センサー接続状況 + MS5611 気圧データ。
-// page % 3 == 1: BNO085 IMU データ（垂直加速度・Kalman 推定値）。
-// page % 3 == 2: Kalman フィルター設定パラメーター。
+// page % 4 == 0: センサー接続状況（GNSS 含む）+ MS5611 気圧データ + VSI 全比較。
+// page % 4 == 1: BNO085 IMU データ（垂直加速度・Kalman 推定値）。
+// page % 4 == 2: Kalman フィルター設定 + GNSS VSI KF パラメーター（vAcc gate / R_vel）。
+// page % 4 == 3: GNSS 垂直速度・精度（NAV-PVT velD / vAcc / sAcc）詳細。
 // ヘッダーは GPS DETAIL 同様に 10px 上にずらして pushSprite(0,-10) で転送。
 // VSI バーは GPS_TFT_map.ino のループ内で airdata_updated タイミングに更新される。
 void draw_variodetail(int page) {
@@ -2060,10 +2082,11 @@ void draw_variodetail(int page) {
   const char* page_titles[] = {
     "VARIO DETAIL 1:SENSORS",
     "VARIO DETAIL 2:IMU",
-    "VARIO DETAIL 3:KALMAN"
+    "VARIO DETAIL 3:KALMAN",
+    "VARIO DETAIL 4:GNSS VSI"
   };
   header_footer.setCursor(1, 11);  // +10px（GPS DETAIL と同じオフセット）
-  header_footer.print(page_titles[page % 3]);
+  header_footer.print(page_titles[page % 4]);
   header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に合わせる
 
   // ---- バックスクリーン ----
@@ -2073,94 +2096,103 @@ void draw_variodetail(int page) {
 
   int y = 2;
 
-  if (page % 3 == 0) {
-    // ---- Page 1: センサー接続状況 + MS5611 気圧データ ----
+  if (page % 4 == 0) {
+    // ---- Page 1: センサー接続状況 + MS5611 気圧データ + VSI 全比較 ----
 
     // センサー接続状況
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.print("--- Sensor Status ---");
-    y += 16;
+    y += 15;
 
     // MS5611
     backscreen.setCursor(2, y);
     backscreen.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
     backscreen.printf("MS5611 : %s", get_airdata_ok() ? "OK" : "NOT CONNECTED");
-    y += 14;
+    y += 13;
 
     // BNO085
     backscreen.setCursor(2, y);
     backscreen.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
     backscreen.printf("BNO085 : %s", get_imu_ok() ? "OK" : "NOT CONNECTED");
-    y += 14;
+    y += 13;
 
-    // 動作モード
+    // GNSS fix 状態
+    bool _gnss3d = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
+    bool _gnssAny = get_gps_gnssFixOK();
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(_gnss3d ? COLOR_GREEN : _gnssAny ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
+    backscreen.printf("GNSS   : %s (fix=%d %dsats)",
+      _gnss3d ? "3D-OK" : _gnssAny ? "2D" : "NO FIX",
+      get_gps_fixtype(), get_gps_numsat());
+    y += 13;
+
+    // 動作モード（GNSS VSI 融合状況を含む）
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    if      (get_imu_ok() && get_airdata_ok()) backscreen.print("Mode: Kalman Fusion");
-    else if (get_airdata_ok())                  backscreen.print("Mode: MS5611 only");
-    else if (get_imu_ok())                      backscreen.print("Mode: BNO085 only");
-    else                                         backscreen.print("Mode: No sensors");
-    y += 20;
+    if      (get_imu_ok() && get_airdata_ok() && _gnss3d) backscreen.print("KF: Baro+IMU+GNSS");
+    else if (get_imu_ok() && get_airdata_ok())              backscreen.print("KF: Baro+IMU");
+    else if (get_airdata_ok() && _gnss3d)                   backscreen.print("KF: Baro+GNSS");
+    else if (get_airdata_ok())                              backscreen.print("KF: Baro only");
+    else if (get_imu_ok())                                  backscreen.print("Mode: BNO085 only");
+    else                                                     backscreen.print("Mode: No sensors");
+    y += 17;
 
-    // MS5611 データ
+    // MS5611 データ（Pres/Temp を 1 行にまとめてスペース節約）
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.print("--- MS5611 Data ---");
-    y += 16;
+    y += 14;
 
     if (get_airdata_ok()) {
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 
       backscreen.setCursor(2, y);
-      backscreen.printf("Pressure: %.2f hPa", get_airdata_pressure());
-      y += 14;
+      backscreen.printf("Pres: %.1f hPa  Temp: %.1fC", get_airdata_pressure(), get_airdata_temperature());
+      y += 13;
 
       backscreen.setCursor(2, y);
-      backscreen.printf("Altitude: %.1f m", get_airdata_altitude());
-      y += 14;
-
-      backscreen.setCursor(2, y);
-      backscreen.printf("Temp    : %.1f C", get_airdata_temperature());
-      y += 14;
+      backscreen.printf("Alt : %.1f m", get_airdata_altitude());
+      y += 13;
 
       float baro_vsi = get_airdata_vspeed();
       backscreen.setCursor(2, y);
       backscreen.setTextColor((baro_vsi > 0.1f) ? COLOR_GREEN : (baro_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("VSI(baro): %+.2f m/s", baro_vsi);
+      backscreen.printf("VSI : %+.2f m/s", baro_vsi);
+      y += 17;
+
+      // VSI 全比較（Baro / GNSS / KF）
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("--- VSI Comparison ---");
       y += 14;
 
       backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.printf("n=%d  %.1f Hz", get_airdata_win_samples(), get_airdata_win_hz());
-      y += 20;
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("Baro : %+.2f m/s", baro_vsi);
+      y += 13;
 
-      // VSI Comparison（BNO085 も接続済みのとき）
-      if (get_imu_ok()) {
-        float kf_vsi  = get_imu_vspeed();
-        float baro_vsi = get_airdata_vspeed();
-        backscreen.setCursor(2, y);
-        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-        backscreen.print("--- VSI Comparison ---");
-        y += 16;
-        backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-        backscreen.setCursor(2, y);
-        backscreen.printf("Baro VSI : %+.2f m/s", baro_vsi);
-        y += 14;
-        backscreen.setCursor(2, y);
-        backscreen.printf("KF   VSI : %+.2f m/s", kf_vsi);
-        y += 14;
-        backscreen.setCursor(2, y);
-        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-        backscreen.printf("Delta    : %+.2f m/s", kf_vsi - baro_vsi);
-      }
+      // GNSS VSI — sAcc ゲート状態を色で示す（vAcc はゲートに使用しない）
+      float _gnss_vsi  = get_gps_veld_mps();
+      float _sacc_now  = get_gps_sacc_mmps() / 1000.0f;
+      bool  _gate_ok   = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(_gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
+      backscreen.printf("GNSS : %+.2f m/s %s", _gnss_vsi, _gate_ok ? "[KF]" : "[--]");
+      y += 13;
+
+      // KF VSI（BNO085 なし時も Baro+GNSS KF から出力）
+      float kf_vsi = get_imu_vspeed();
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor((kf_vsi > 0.1f) ? COLOR_GREEN : (kf_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("KF   : %+.2f m/s", kf_vsi);
     } else {
       backscreen.setCursor(2, y);
       backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
       backscreen.print("(no data)");
     }
 
-  } else if (page % 3 == 1) {
+  } else if (page % 4 == 1) {
     // ---- Page 2: BNO085 IMU データ ----
 
     backscreen.setCursor(2, y);
@@ -2258,52 +2290,200 @@ void draw_variodetail(int page) {
       }
     }
 
-  } else {
-    // ---- Page 3: Kalman フィルター設定 ----
+  } else if (page % 4 == 2) {
+    // ---- Page 3: Kalman フィルター設定 + GNSS VSI KF パラメーター ----
 
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.print("--- Kalman Filter Config ---");
-    y += 16;
+    y += 14;
 
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 
+    // Q パラメーター（2 項を 1 行にまとめてスペース節約）
     backscreen.setCursor(2, y);
-    backscreen.print("Process Noise (Q):");
+    backscreen.printf("Q_vel : %.4f  Q_bias: %.4f", get_imu_kf_q_vel(), get_imu_kf_q_bias());
+    y += 13;
+
+    // R_baro（気圧高度観測ノイズ）
+    backscreen.setCursor(2, y);
+    backscreen.printf("R_baro: %.4f m2 (baro obs noise)", get_imu_kf_R());
+    y += 13;
+
+    // 水平加速度による Q_vel 動的増幅の現在値を表示
+    // q_vel_eff = Q_vel + KF_HORIZ_ACCEL_GAIN * horiz_accel²
+    // horiz_accel は地球座標系（姿勢補正済み）: sqrt(|a_body|² - a_world_z²)
+    {
+      float _ha   = get_imu_horiz_accel();
+      float _qeff = get_imu_kf_q_vel() + KF_HORIZ_ACCEL_GAIN * _ha * _ha;
+      backscreen.setCursor(2, y);
+      backscreen.printf("HorizA: %.2f m/s2  gain:%.3f", _ha, KF_HORIZ_ACCEL_GAIN);
+      y += 13;
+      backscreen.setCursor(2, y);
+      // Q_vel_eff が基準値より大きいとき（水平加速中）はオレンジで強調
+      backscreen.setTextColor(_ha > 1.0f ? COLOR_ORANGE : COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("Q_eff : %.4f  (base+%.4f)", _qeff, _qeff - get_imu_kf_q_vel());
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    }
+    y += 17;
+
+    // ---- GNSS VSI KF セクション ----
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("--- GNSS VSI Fusion ---");
     y += 14;
 
     backscreen.setCursor(2, y);
-    backscreen.printf("  Q_vel  : %.4f", KF_Q_VEL);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.printf("sAcc gate: <%.1fm/s  R_scale:%.1f", GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_R_SCALE);
+    y += 13;
+
+    // 現在の sAcc と計算した R_vel（スケール適用後）を表示
+    float _sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    float _vacc_m3  = get_gps_vacc_mm()   / 1000.0f;
+    float _r_vel    = _sacc_mps * _sacc_mps * GNSS_VSI_R_SCALE;
+    if (_r_vel < 0.001f) _r_vel = 0.001f;  // 下限クランプ（imu.cpp と同じ）
+
+    backscreen.setCursor(2, y);
+    // sAcc が閾値に近づくとオレンジ、超えると赤で警告
+    backscreen.setTextColor(_sacc_mps < GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_BLACK
+                          : _sacc_mps < GNSS_VSI_SACC_MAX_MPS        ? COLOR_ORANGE
+                          : COLOR_RED, COLOR_WHITE);
+    backscreen.printf("sAcc now  : %.3f m/s", _sacc_mps);
     y += 13;
 
     backscreen.setCursor(2, y);
-    backscreen.printf("  Q_bias : %.4f", KF_Q_BIAS);
-    y += 20;
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.printf("R_vel now : %.4f m2 (sAcc2 x%.1f)", _r_vel, GNSS_VSI_R_SCALE);
+    y += 13;
 
+    // ゲート判定（主: sAcc、副: 3D fix）
+    bool _gnss3d3 = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
+    bool _sacc_ok = (_sacc_mps < GNSS_VSI_SACC_MAX_MPS);
+    bool _gate3   = _gnss3d3 && _sacc_ok;
     backscreen.setCursor(2, y);
-    backscreen.print("Observation Noise (R):");
-    y += 14;
+    if (_gate3) {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.printf("Gate:PASS sAcc=%.3f", _sacc_mps);
+    } else {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      if (!_gnss3d3) backscreen.print("Gate:FAIL no 3D fix");
+      else           backscreen.printf("Gate:FAIL sAcc %.3f>=%.1f", _sacc_mps, GNSS_VSI_SACC_MAX_MPS);
+    }
+    y += 17;
 
-    backscreen.setCursor(2, y);
-    backscreen.printf("  R      : %.4f m2", KF_R);
-    y += 20;
-
+    // ---- KF 状態 ----
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.print("State: x = [z, z_dot, b]");
-    y += 14;
+    y += 13;
 
     backscreen.setCursor(2, y);
-    if (get_imu_ok() && get_airdata_ok()) {
+    bool _gnss3d_kf = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
+    if (get_imu_ok() && get_airdata_ok() && _gnss3d_kf) {
       backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      backscreen.print("KF: Active (fused)");
-    } else if (get_imu_ok()) {
+      backscreen.print("KF: Active (Baro+IMU+GNSS)");
+    } else if (get_imu_ok() && get_airdata_ok()) {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.print("KF: Active (Baro+IMU)");
+    } else if (get_airdata_ok() && _gnss3d_kf) {
       backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-      backscreen.print("KF: BNO085 only (baro absent)");
+      backscreen.print("KF: Active (Baro+GNSS)");
+    } else if (get_airdata_ok()) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print("KF: Active (Baro only)");
     } else {
       backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-      backscreen.print("KF: Inactive");
+      backscreen.print("KF: Inactive (no baro)");
     }
+
+  } else {
+    // ---- Page 4: GNSS 垂直速度・精度（NAV-PVT velD / vAcc / sAcc）詳細 ----
+    // GNSS VSI の Kalman 融合入力値（vAcc gate・sAcc→R_vel）をリアルタイム確認するページ。
+
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print("--- GNSS Vertical (NAV-PVT) ---");
+    y += 14;
+
+    float gnss_vsi = get_gps_veld_mps();
+    float vacc_m   = get_gps_vacc_mm()   / 1000.0f;
+    float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    float gnss_alt = get_gps_altitude();
+    float r_vel    = sacc_mps * sacc_mps * GNSS_VSI_R_SCALE;
+    if (r_vel < 0.001f) r_vel = 0.001f;  // 下限クランプ（imu.cpp と同じ）
+    bool  _fix_ok  = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
+    bool  _sacc_ok = sacc_mps < GNSS_VSI_SACC_MAX_MPS;
+    bool  gate_ok  = _fix_ok && _sacc_ok;
+
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor((gnss_vsi > 0.15f) ? COLOR_GREEN : (gnss_vsi < -0.15f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+    backscreen.printf("GNSS VSI : %+.2f m/s", gnss_vsi);
+    y += 13;
+
+    // sAcc — 主ゲート 0.6 m/s: 閾値近くはオレンジ、超えると赤
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(_sacc_ok ? (sacc_mps > GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_ORANGE : COLOR_BLACK)
+                                     : COLOR_RED, COLOR_WHITE);
+    backscreen.printf("sAcc     : %.3f m/s  (<%.1f) %s",
+      sacc_mps, GNSS_VSI_SACC_MAX_MPS, _sacc_ok ? "OK" : "NG");
+    y += 13;
+
+    // vAcc — 垂直位置精度（参考値のみ、ゲートには不使用）
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.printf("vAcc     : %.2f m  (ref only)", vacc_m);
+    y += 13;
+
+    // R_vel = sAcc² × GNSS_VSI_R_SCALE — 実際に KF に投入される観測ノイズ
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.printf("R_vel    : %.4f m2  (sAcc2 x%.1f)", r_vel, GNSS_VSI_R_SCALE);
+    y += 13;
+
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.printf("GNSS Alt : %.1f m (MSL)", gnss_alt);
+    y += 16;
+
+    // バロ・KF との比較
+    if (get_airdata_ok()) {
+      float baro_vsi = get_airdata_vspeed();
+      float baro_alt = get_airdata_altitude();
+
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("--- vs Baro/KF ---");
+      y += 13;
+
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      backscreen.printf("Baro VSI : %+.2f m/s", baro_vsi);
+      y += 13;
+
+      // KF VSI は BNO085 なし時も Baro+GNSS KF から出力される
+      backscreen.setCursor(2, y);
+      backscreen.printf("KF   VSI : %+.2f m/s", get_imu_vspeed());
+      y += 13;
+
+      float dvsi = gnss_vsi - baro_vsi;
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(fabsf(dvsi) < 0.5f ? COLOR_BLACK : COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf("GNSS-Baro: %+.2f m/s", dvsi);
+      y += 13;
+
+      float dalt = gnss_alt - baro_alt;
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(fabsf(dalt) < 20.0f ? COLOR_BLACK : COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf("Alt diff : %+.1f m (GNSS-Baro)", dalt);
+      y += 13;
+    }
+
+    // Fix 状態
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.printf("fix=%d gnssOK=%s sats=%d",
+      get_gps_fixtype(), get_gps_gnssFixOK() ? "Y" : "N", get_gps_numsat());
   }
 
   backscreen.pushSprite(0, 40);
@@ -2314,7 +2494,7 @@ void draw_variodetail(int page) {
   header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_BLACK);
   header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
   header_footer.setCursor(2, 5);
-  header_footer.printf("Page %d/3  (short: next / long: back)", page % 3 + 1);
+  header_footer.printf("Page %d/4  (short: next / long: back)", page % 4 + 1);
   header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }
 
@@ -2326,8 +2506,8 @@ void draw_variodetail(int page) {
 //   - 衛星種別（GPS=シアン, GLONASS=緑, GALILEO=青, QZSS=赤, BeiDou=オレンジ）で色分け。
 //   - SNR=0 の衛星は小さい丸（追跡中だが信号弱い）。
 //   - フッターに UTC 時刻と衛星数・フィックス状態を表示。
-// page % 3 == 1: 生 NMEA 文字列の最新 MAX_LAST_NMEA 件を表示。
-//   1 秒以内に受信した文字列は黒、古いものは灰色で表示（鮮度の視覚化）。
+// page % 3 == 1: 最新 MAX_LAST_NMEA 件の UBX フレームラベルを表示。
+//   1 秒以内に受信したものは黒、古いものは灰色で表示（鮮度の視覚化）。
 // page % 3 == 2: GSA 情報画面（フィックス種別・DOP・緯度経度・使用衛星 PRN リスト）。
 void draw_gpsdetail(int page) {
 
@@ -2338,7 +2518,7 @@ void draw_gpsdetail(int page) {
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
     header_footer.setTextSize(2);
     header_footer.setCursor(1, 1);
-    header_footer.println("GPS DETAIL 2: raw NMEAs");
+    header_footer.println("GPS DETAIL 2: UBX frames");
     header_footer.pushSprite(0,0);
 
     tft.unloadFont();
@@ -2375,8 +2555,8 @@ void draw_gpsdetail(int page) {
     header_footer.fillSprite(COLOR_WHITE);
     header_footer.setCursor(23, 5);
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    TinyGPSDate date = get_gpsdate();
-    TinyGPSTime time = get_gpstime();
+    GpsDate date = get_gpsdate();
+    GpsTime time = get_gpstime();
     if (date.isValid() && time.isValid()) {
       header_footer.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
     }
@@ -2513,8 +2693,8 @@ void draw_gpsdetail(int page) {
     y += 18;
 
     // ---- UTC 時刻・日付 ----
-    TinyGPSDate date = get_gpsdate();
-    TinyGPSTime time = get_gpstime();
+    GpsDate date = get_gpsdate();
+    GpsTime time = get_gpstime();
     tft.setCursor(1, y);
     if (date.isValid() && time.isValid()) {
       tft.printf("UTC %04d-%02d-%02d  %02d:%02d:%02d",
@@ -2548,6 +2728,48 @@ void draw_gpsdetail(int page) {
       col++;
       if (col == 8) { y += 12; tft.setCursor(1, y); col = 0; }
     }
+
+    // ---- UBX NAV-PVT 精度情報 ----------------------------------------
+    // gnssFixOK・hAcc・vAcc・sAcc を色分け表示する。
+    // 閾値: hAcc <5m=緑 / <25m=橙 / ≥25m=赤、vAcc <10m=緑 / <50m=橙 / ≥50m=赤
+    //        sAcc <1m/s=緑 / <3m/s=橙 / ≥3m/s=赤
+    y += 16;
+    tft.drawFastHLine(0, y - 4, SCREEN_WIDTH, COLOR_GRAY);  // 区切り線
+
+    // gnssFixOK
+    tft.setCursor(1, y);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("gnssFixOK:");
+    bool fixOK = get_gps_gnssFixOK();
+    tft.setTextColor(fixOK ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    tft.print(fixOK ? "YES" : "NO");
+    y += 12;
+
+    // hAcc / vAcc を横並び表示
+    float hacc_m = get_gps_hacc_mm() / 1000.0f;
+    float vacc_m = get_gps_vacc_mm() / 1000.0f;
+    uint16_t haccColor = (hacc_m < 5.0f)  ? COLOR_GREEN : (hacc_m < 25.0f) ? COLOR_ORANGE : COLOR_RED;
+    uint16_t vaccColor = (vacc_m < 10.0f) ? COLOR_GREEN : (vacc_m < 50.0f) ? COLOR_ORANGE : COLOR_RED;
+
+    tft.setCursor(1, y);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("hAcc:");
+    tft.setTextColor(haccColor, COLOR_WHITE);
+    tft.printf("%.1fm  ", hacc_m);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("vAcc:");
+    tft.setTextColor(vaccColor, COLOR_WHITE);
+    tft.printf("%.1fm", vacc_m);
+    y += 12;
+
+    // sAcc（速度精度）
+    float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    uint16_t saccColor = (sacc_mps < 1.0f) ? COLOR_GREEN : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
+    tft.setCursor(1, y);
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("sAcc:");
+    tft.setTextColor(saccColor, COLOR_WHITE);
+    tft.printf("%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
   }
 }
 

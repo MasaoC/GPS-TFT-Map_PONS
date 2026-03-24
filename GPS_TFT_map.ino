@@ -5,7 +5,7 @@
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/20
+// Updated : 2026/03/23
 // ============================================================
 
 #include "navdata.h"
@@ -173,9 +173,9 @@ void setup(void) {
     enqueueTask(createLogSdTask("VARIO: BNO085+MS5611 Kalman fusion enabled"));
   }
 
-
+  gps_setup();
+  
   startup_demo_tft();
-  gps_setup();  //To avoid overflow, after tft setup recommend.
 
   // スケールリストの初期化（Google Map のズームレベルに対応する pixel/km 値）
   scalelist[0] = SCALE_EXSMALL_GMAP;  //pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT; 最広域（日本全体スケール）
@@ -244,7 +244,7 @@ void loop() {
     bool cur_fix = get_gps_fix();
     if (!prev_gps_fix && cur_fix) {
       if (good_sd()) {
-        enqueueTask(createPlayWavTask("wav/fixed.wav", 3));
+        enqueueTask(createPlayWavTask("wav/fixed.wav", 4));  // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
       } else {
         enqueueTask(createPlayMultiToneTask(523, 150, 1, 1));  // ド
         enqueueTask(createPlayMultiToneTask(659, 150, 1, 1));  // ミ
@@ -299,14 +299,38 @@ void loop() {
     float euler_roll, euler_pitch, euler_yaw;
     get_imu_euler(euler_roll, euler_pitch, euler_yaw);
 
-    enqueueTask(createLogEulerTask(log_h, log_m, log_s, log_cs,
-                                   euler_roll, euler_pitch, euler_yaw, euler_fname));
+    // モノトニック保証: GPS 2Hz パケット間の処理遅延の揺れでタイムスタンプが
+    // 逆転することがあるため、前回より小さい場合はこの読み取りをスキップする。
+    static int32_t prev_jst_cs = -1;
+    int32_t this_jst_cs = (int32_t)log_h * 360000L + log_m * 6000 + log_s * 100 + log_cs;
+    if (prev_jst_cs < 0 || this_jst_cs > prev_jst_cs) {
+      prev_jst_cs = this_jst_cs;
+      enqueueTask(createLogEulerTask(log_h, log_m, log_s, log_cs,
+                                     euler_roll, euler_pitch, euler_yaw, euler_fname,
+                                     jst_year, jst_month, jst_day));
+    }
   }
 
   // 気圧高度が更新されたタイミングで Kalman 観測ステップを実行する
   // （predict は 50Hz で走り、update は気圧の更新レート ~40Hz で走る）
   if (airdata_updated) {
     imu_kalman_baro_update(get_airdata_altitude());
+  }
+
+  // GNSS高度による気圧基準補正（3Dフィックス有効時のみ、内部で1秒レート制限）
+  // Vertical speed は変更せず、高度の長期ドリフトをゆっくり修正する。
+  if (get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
+    imu_kalman_gnss_update(
+      (float)get_gps_altitude(),
+      get_gps_vacc_mm() / 1000.0f
+    );
+    // GNSS 垂直速度を KF 速度観測として追加（vAcc ゲート、sAcc で R 計算）
+    // BNO085 の有無によらず動作し、加減速中や BNO085 なし時のバリオ精度を補完する。
+    imu_kalman_gnss_vel_update(
+      get_gps_veld_mps(),
+      get_gps_vacc_mm()   / 1000.0f,
+      get_gps_sacc_mmps() / 1000.0f
+    );
   }
 
   // バリオメーター音更新（内部で 100ms レート制限。毎ループ呼んでよい）
@@ -374,10 +398,10 @@ void loop() {
         }
         if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
           auto10k_status = AUTO10K_AWAY;
-          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
-          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
+          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
           enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
         }
       }
@@ -519,15 +543,17 @@ void loop() {
       }
       draw_km_distances(scale);  // 画面左下のスケールバー
 
-      // GPS fix 状態と HDOP に応じて自機位置マーカーを切り替える
-      // リプレイ・デモモードは実際の HDOP と無関係なので、常に通常の飛行機マーカーを表示する
-      float cur_hdop = get_gps_hdop();
+      // GPS fix 状態と hAcc/gnssFixOK に応じて自機位置マーカーを切り替える
+      // リプレイ・デモモードは実際の精度と無関係なので、常に通常の飛行機マーカーを表示する
+      bool   cur_fix_ok = get_gps_gnssFixOK();
+      float  cur_hacc_m = get_gps_hacc_mm() / 1000.0f;  // mm → m
       if (!get_gps_fix() && !get_demo_biwako() && !getReplayMode()) {
-        draw_nofix_cross();                         // fix なし（通常モードのみ）: グレーの ×
-      } else if (cur_hdop >= HDOP_THRESHOLD && !get_demo_biwako() && !getReplayMode()) {
-        draw_hdop_circle(scale, cur_hdop);          // fix あり・HDOP 不良（通常モードのみ）: 青い不確かさ円
+        draw_nofix_cross();                              // fix なし（通常モードのみ）: グレーの ×
+      } else if (!get_demo_biwako() && !getReplayMode() &&
+                 (!cur_fix_ok || cur_hacc_m >= HACC_THRESHOLD_M)) {
+        draw_hacc_circle(scale, get_gps_hacc_mm());     // gnssFixOK=false または hAcc 不良: 青い不確かさ円
       } else {
-        draw_triangle(new_truetrack, steer_angle);  // fix あり・HDOP 良好、またはリプレイ/デモ: 飛行機マーカー
+        draw_triangle(new_truetrack, steer_angle);       // 精度良好、またはリプレイ/デモ: 飛行機マーカー
       }
 
       // コース警告表示（警告発報から 10 秒間だけ表示する）
@@ -612,7 +638,7 @@ void loop1() {
         startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume);
         break;
       case TASK_PLAY_MULTITONE:
-        playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority, currentTask.playMultiToneArgs.min_volume);
+        playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority, currentTask.playMultiToneArgs.min_volume, currentTask.playMultiToneArgs.solo_play);
         break;
       case TASK_INIT_SD:
         setup_sd(1);
@@ -636,8 +662,9 @@ void loop1() {
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
           currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.altitude,
+          currentTask.saveCsvArgs.kf_altitude,
+          currentTask.saveCsvArgs.kf_vspeed,
           currentTask.saveCsvArgs.pressure,
-          currentTask.saveCsvArgs.numsats, currentTask.saveCsvArgs.voltage,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
           currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
@@ -656,7 +683,10 @@ void loop1() {
                   currentTask.logEulerArgs.roll,
                   currentTask.logEulerArgs.pitch,
                   currentTask.logEulerArgs.yaw,
-                  currentTask.logEulerArgs.filename);
+                  currentTask.logEulerArgs.filename,
+                  currentTask.logEulerArgs.year,
+                  currentTask.logEulerArgs.month,
+                  currentTask.logEulerArgs.day);
         break;
       case TASK_LOAD_LOGO:
         load_push_logo();  // SD からロゴ BMP を gmap_sprite に読み込む（pushSprite は Core0 が行う）
@@ -832,10 +862,10 @@ void update_course_warning(float degpersecond) {
   if (course_warning_index >= 900 && millis() - last_course_warning_time > 30000) {
     last_course_warning_time = millis();
     course_warning_index = 0;
-    enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2));
-    enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
-    enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2));
-    enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2));
+    enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2, 0, true));
+    enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2, 0, true));
+    enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2, 0, true));
+    enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2, 0, true));
     if (steer_angle > 0)
       enqueueTask(createPlayWavTask("wav/course_right.wav", 2));
     else

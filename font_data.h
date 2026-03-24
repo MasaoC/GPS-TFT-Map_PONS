@@ -5,7 +5,7 @@
 //           Arial Black 56pt をPROGMEM（フラッシュメモリ）に配置。
 //           TFT_eSPIのloadFont()で読み込んで使用する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 
 const uint8_t Arial_Black56[] PROGMEM = {

@@ -6,7 +6,7 @@
 //           設定保存/読込・CSVフライトログ・BMP地図画像読込・
 //           音声再生タスク生成関数のプロトタイプ宣言。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 
 #ifndef MYSD_H
@@ -49,9 +49,9 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude,float gs,int ttrack, float altitude, float pressure, int numsat, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
+    void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
     void load_mapimage(double center_lat, double center_lon,int zoomlevel);
-    void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename);
+    void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
 
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
@@ -96,9 +96,9 @@
               float gs;
               int ttrack;  // 真方位（true track）を格納
               float altitude;
+              float kf_altitude;  // KF推定高度 [m]（気圧基準）
+              float kf_vspeed;   // KF推定上昇率 [m/s]
               float pressure;
-              int numsats;
-              float voltage;
               int year, month, day, hour, minute, second, centisecond;
           } saveCsvArgs;
           struct {                           // For load_mapimage
@@ -112,6 +112,7 @@
               int counter;
               int priority;
               int min_volume;  // 最低保証ボリューム（0=制限なし）
+              bool solo_play;  // true のとき WAV との同時再生を禁止する
           } playMultiToneArgs;
           struct{
               const char* wavfilename;
@@ -120,6 +121,7 @@
           }playWavArgs;
           struct {                           // For saveEuler
               int hour, minute, second, centisecond;
+              int year, month, day;          // ファイルタイムスタンプ設定用
               float roll, pitch, yaw;
               char filename[24];             // "euler/20260316.txt" = 19文字
           } logEulerArgs;
@@ -137,14 +139,14 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float pressure, int numsats, float voltage, int year, int month, int day, int hour, int minute, int second, int centisecond);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
-  Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0);
+  Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
   Task createLoadReplayTask();
   Task createInitReplayTask();
-  Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename);
+  Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
   Task createLoadLogoTask();
 
   // Functions to handle the queue (declarations)

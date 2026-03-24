@@ -6,7 +6,7 @@
 //           マップポリゴンデータ実体、目的地リスト、
 //           コース・目的地モード管理（FLYINTO / FLYAWAY / AUTO10K）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/02/26
+// Updated : 2026/03/23
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>

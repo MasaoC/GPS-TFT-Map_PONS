@@ -6,7 +6,7 @@
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/04
+// Updated : 2026/03/23
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"
@@ -222,6 +222,14 @@ static void ms5611_calculate(uint32_t D1, uint32_t D2, float &temperature, float
 // sea_level_hpa をその日の QNH に設定するとより正確な高度が得られる。
 float pressure_to_altitude(float pressure_hpa, float sea_level_hpa) {
     return 44330.0f * (1.0f - pow(pressure_hpa / sea_level_hpa, 0.1902949f));
+}
+
+// GNSS補正によるグランドレベル微調整（imu_kalman_gnss_update から呼ぶ）。
+// delta_m [m] だけ ground_alt_abs を動かす。正値で気圧相対高度が下がり、負値で上がる。
+// グランドレベルが確定していない起動直後は無視する。
+void airdata_adjust_ground_alt(float delta_m) {
+    if (!ground_set) return;
+    ground_alt_abs += delta_m;
 }
 
 // ----------------------------

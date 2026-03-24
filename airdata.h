@@ -5,7 +5,7 @@
 //           気圧センサー（MS5611）から高度・気圧・気温を取得する。
 //           airdata_update() をループから毎回呼ぶ非ブロッキング方式。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/04
+// Updated : 2026/03/23
 // ============================================================
 
 #ifndef AIRDATA_H
@@ -39,4 +39,9 @@
 
   // 気圧→高度変換（QNH 指定可能）
   float pressure_to_altitude(float pressure_hpa, float sea_level_hpa = 1013.25f);
+
+  // GNSS補正によるグランドレベル微調整（imu_kalman_gnss_update から呼ぶ）
+  // delta_m が正 → ground_alt_abs が上がり → バロ相対高度が下がる
+  // delta_m が負 → ground_alt_abs が下がり → バロ相対高度が上がる
+  void airdata_adjust_ground_alt(float delta_m);
 #endif

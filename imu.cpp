@@ -35,7 +35,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/15
+// Updated : 2026/03/23
 // ============================================================
 
 #include <Arduino.h>
@@ -121,7 +121,8 @@ static float kf_R      = KF_R;       // 気圧高度観測ノイズ [m²]
 // volatile float で Core 間の読み出し競合を安全に扱える。
 static volatile float _imu_vspeed   = 0.0f;  // Kalman 推定上昇率 [m/s]
 static volatile float _imu_altitude = 0.0f;  // Kalman 推定高度 [m]
-static volatile float _imu_az       = 0.0f;  // 地球座標系 鉛直加速度 [m/s²]（デバッグ用）
+static volatile float _imu_az           = 0.0f;  // 地球座標系 鉛直加速度 [m/s²]（デバッグ用）
+static volatile float _imu_horiz_accel  = 0.0f;  // 地球座標系 水平加速度の大きさ [m/s²]（KF Q_vel 動的増幅・表示用）
 
 // 最後に BNO085 からデータを正常受信した時刻 [ms]
 // I2C エラー等で途絶えた場合のタイムアウト判定に使う
@@ -164,16 +165,20 @@ static float compute_earth_z_accel(float ax, float ay, float az,
 // ============================================================
 // Kalman 予測ステップ（IMU 加速度で状態を時間更新する）
 // ============================================================
-// a_k : 地球座標系の鉛直加速度 [m/s²]（重力除去済み）
-// dt  : 前回 predict からの経過時間 [s]
+// a_k              : 地球座標系の鉛直加速度 [m/s²]（重力除去済み）
+// dt               : 前回 predict からの経過時間 [s]
+// horiz_accel_m_s2 : ボディフレーム水平加速度の大きさ [m/s²]（BNO085なし時は 0）
+//                    水平加速度が大きいほど IMU の垂直加速度推定に誤差が混入するため、
+//                    Q_vel を KF_HORIZ_ACCEL_GAIN × horiz_accel² 分だけ動的に増幅する。
 //
 // 状態遷移: x_pred = F*x + B*a_k
 //   F = [[1, dt, 0], [0, 1, -dt], [0, 0, 1]]
 //   B = [dt²/2, dt, 0]^T
 //
 // 共分散伝搬: P_pred = F*P*F^T + Q
-//   Q = diag(0, kf_q_vel, kf_q_bias)
-static void kf_predict(float a_k, float dt) {
+//   Q = diag(0, q_vel_eff, kf_q_bias)
+//   q_vel_eff = kf_q_vel + KF_HORIZ_ACCEL_GAIN * horiz_accel²
+static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
     // ---- 状態予測 ----
     float z_pred    = kf_x[0] + kf_x[1] * dt;
     float vz_pred   = kf_x[1] + (a_k - kf_x[2]) * dt;
@@ -197,8 +202,11 @@ static void kf_predict(float a_k, float dt) {
         kf_P[i][1] = A[i][1] - dt * A[i][2];           // A * F^T の列1
         kf_P[i][2] = A[i][2];                           // A * F^T の列2
     }
-    // Step3: Q を加算  (Q = diag([0, q_vel, q_bias]))
-    kf_P[1][1] += kf_q_vel;
+    // Step3: Q を加算  (Q = diag([0, q_vel_eff, q_bias]))
+    // 水平加速度が大きいとき IMU の鉛直加速度精度が低下するため、
+    // KF_HORIZ_ACCEL_GAIN × horiz_accel² を上乗せして IMU への依存を自動的に弱める。
+    float q_vel_eff = kf_q_vel + KF_HORIZ_ACCEL_GAIN * horiz_accel_m_s2 * horiz_accel_m_s2;
+    kf_P[1][1] += q_vel_eff;
     kf_P[2][2] += kf_q_bias;
 }
 
@@ -214,7 +222,8 @@ static void kf_predict(float a_k, float dt) {
 // 状態更新:       x = x + K * v
 // 共分散更新:     P = (I - K*H) * P  （K*H は rank-1 行列）
 void imu_kalman_baro_update(float z_baro_m) {
-    if (!bno085_ok) return;
+    // BNO085 の有無によらず気圧高度で KF を初期化・更新する。
+    // BNO085 なし時は imu_update() の恒速 predict と組み合わせてバリオとして動作。
 
     // 初回: 気圧高度で状態を初期化する（初期値のない状態で始めると発散するため）
     if (!kf_initialized) {
@@ -269,6 +278,157 @@ void imu_kalman_baro_update(float z_baro_m) {
     }
 
     // ---- 出力を更新 ----
+    _imu_altitude = kf_x[0];
+    _imu_vspeed   = kf_x[1];
+}
+
+
+// ============================================================
+// GNSS高度による気圧基準補正
+// ============================================================
+// GNSSの絶対高度（MSL）を使って、気圧の基準（ground_alt_abs）をゆっくり修正する。
+//
+// ■ なぜ kf_x[0] を直接書き換えないのか
+//   気圧観測は ~40Hz・R=4m² で KF に入力されるため、kf_x[0] を書き換えても
+//   数十ms後には気圧の観測値に上書きされてしまう。
+//   代わりに airdata.cpp の ground_alt_abs を微調整することで、
+//   気圧センサー自体の出力をシフトさせ、KF が自然に新しい基準に収束する。
+//
+// ■ 参照フレームの変換
+//   GNSS高度は MSL 基準。KF高度は起動地点を 0m とした相対高度（AGL）。
+//   起動時に 10 サンプルを平均して「GNSS MSL - KF AGL」= gnss_kf_offset を推定する。
+//   これが起動地点の MSL 高度（標準大気換算）に相当する。
+//
+// ■ 補正ロジック（フェーズ2以降）
+//   z_gnss_kf = z_gnss_msl - gnss_kf_offset      // GNSS→KFフレーム変換
+//   innov     = z_gnss_kf - kf_x[0]              // 高度誤差
+//   quality   = 1 - vacc_m / GNSS_VACC_MAX_M     // 精度係数 [0, 1]
+//   delta     = clamp(innov * quality * GNSS_CORRECT_RATE, ±GNSS_MAX_DELTA_M)
+//   ground_alt_abs -= delta  （innov>0 → 基準を下げてKF高度を上げる方向）
+//
+// ■ Varioへの影響
+//   delta 最大 GNSS_MAX_DELTA_M [m] / 更新 ≒ 0.02m/s。表示分解能（0.1m/s）以下。
+
+// GNSS補正の内部状態
+static float  _gnss_kf_offset     = 0.0f;   // GNSS MSL高度 - KF AGL高度 の推定値 [m]
+static float  _gnss_offset_sum    = 0.0f;   // 初期化用積算
+static int    _gnss_offset_n      = 0;      // 初期化サンプル数
+static bool   _gnss_offset_ready  = false;  // 初期化済みフラグ
+static uint32_t _gnss_last_ms     = 0;      // 最後に補正を実行したシステム時刻 [ms]
+
+void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
+    if (!bno085_ok || !kf_initialized) return;
+    // 精度が閾値以下、または異常値の場合は無視する
+    if (vacc_m <= 0.0f || vacc_m > GNSS_VACC_MAX_M) return;
+    if (isnan(z_gnss_msl) || isinf(z_gnss_msl)) return;
+
+    // 約1秒ごとに1回だけ実行する（ループ頻度によらず補正レートを安定させる）
+    uint32_t now_ms = millis();
+    if (now_ms - _gnss_last_ms < 1000) return;
+    _gnss_last_ms = now_ms;
+
+    // ---- フェーズ1: gnss_kf_offset の初期化 ----
+    // GNSS MSL高度 - KF AGL高度 ≈ 起動地点の MSL 高度。初回 N サンプルの平均で推定する。
+    if (!_gnss_offset_ready) {
+        _gnss_offset_sum += z_gnss_msl - kf_x[0];
+        _gnss_offset_n++;
+        if (_gnss_offset_n >= GNSS_INIT_SAMPLES) {
+            _gnss_kf_offset   = _gnss_offset_sum / _gnss_offset_n;
+            _gnss_offset_ready = true;
+            enqueueTask(createLogSdfTask(
+                "[IMU] GNSS alt offset init: %.1f m (MSL-KF, %d samples)",
+                _gnss_kf_offset, _gnss_offset_n));
+        }
+        return;  // 初期化中は補正しない
+    }
+
+    // ---- フェーズ2: 高度補正 ----
+    // GNSS高度を KF フレーム（起動地 0m 基準）に変換してイノベーションを計算する
+    float z_gnss_kf = z_gnss_msl - _gnss_kf_offset;
+    float innov     = z_gnss_kf - kf_x[0];
+
+    // 50m を超える乖離はGNSSの一時的な外れ値（マルチパス等）として無視する
+    if (fabsf(innov) > 50.0f) return;
+
+    // 精度係数: vacc が小さいほど 1 に近く、GNSS_VACC_MAX_M に近づくほど 0 になる
+    float quality = 1.0f - (vacc_m / GNSS_VACC_MAX_M);
+
+    // 補正量: イノベーション × 精度係数 × ゲイン、最大補正量でクランプ
+    float delta = innov * quality * GNSS_CORRECT_RATE;
+    if      (delta >  GNSS_MAX_DELTA_M) delta =  GNSS_MAX_DELTA_M;
+    else if (delta < -GNSS_MAX_DELTA_M) delta = -GNSS_MAX_DELTA_M;
+
+    // ground_alt_abs を調整して気圧基準を補正する（KF はそれに追従する）
+    // delta>0 (GNSSが高い): ground_alt_abs を下げてバロ相対高度を上げる
+    airdata_adjust_ground_alt(-delta);
+}
+
+
+// ============================================================
+// imu_kalman_gnss_vel_update(): GNSS 垂直速度による Kalman 速度観測更新
+// ============================================================
+// GNSS velD（上昇正、m/s）を速度観測として KF の z_dot（x[1]）を補正する。
+//
+// 観測モデル: H = [0, 1, 0]（速度のみ観測する）
+// イノベーション: innov = veld_mps - x[1]
+// R_vel = sAcc² × GNSS_VSI_R_SCALE [m²/s²]
+// ゲートは sAcc のみ（vAcc=垂直位置精度 は速度品質の指標として不適切なため使用しない）。
+//
+// BNO085 の有無によらず動作する（kf_initialized のみチェック）。
+//
+//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gps_veld_mps()
+//   vacc_m    : 垂直位置精度 [m]  — 本関数では使用しない（呼び出し元の互換性維持のため残す）
+//   sacc_mps  : 速度精度 [m/s]   — ゲート判定と観測ノイズ R の算出に使用
+// ============================================================
+void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
+    (void)vacc_m;  // 使用しない（引数互換性維持）
+    if (!kf_initialized) return;
+
+    // 無効値チェック
+    if (isnan(veld_mps) || isinf(veld_mps)) return;
+
+    // sAcc ゲート: 速度精度が閾値以上のデータは信頼性が低いためスキップ
+    if (sacc_mps >= GNSS_VSI_SACC_MAX_MPS) return;
+
+    // 観測ノイズ分散 R_vel = sAcc² × GNSS_VSI_R_SCALE [m²/s²]
+    // sAcc は u-blox の速度精度推定（1-sigma）。Kalman の R は分散 = σ² なので sAcc² が理論値。
+    // R_SCALE でさらに倍率をかけて影響度を調整する。
+    float r_vel = sacc_mps * sacc_mps * GNSS_VSI_R_SCALE;
+    if (r_vel < 0.001f) r_vel = 0.001f;  // 下限クランプ（ゼロ除算防止）
+
+    // H = [0, 1, 0] → S = H*P*H^T + R = P[1][1] + R_vel
+    float S = kf_P[1][1] + r_vel;
+    if (S < 1e-9f) return;
+
+    // Kalman ゲイン K = P * H^T / S = [P[0][1], P[1][1], P[2][1]] / S
+    float K[3] = { kf_P[0][1] / S, kf_P[1][1] / S, kf_P[2][1] / S };
+
+    // イノベーション（観測残差）
+    float innov = veld_mps - kf_x[1];
+
+    // 状態更新: x = x + K * innov
+    kf_x[0] += K[0] * innov;
+    kf_x[1] += K[1] * innov;
+    kf_x[2] += K[2] * innov;
+
+    // 共分散更新: P = (I - K*H)*P
+    // H=[0,1,0] → K*H の各行 i は [0, K[i], 0]
+    // (K*H)*P の (i,j) 要素 = K[i] * P[1][j]
+    float P_row1[3] = { kf_P[1][0], kf_P[1][1], kf_P[1][2] };
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            kf_P[i][j] -= K[i] * P_row1[j];
+
+    // 数値安定化: 対称化と対角下限クランプ
+    for (int i = 0; i < 3; i++) {
+        for (int j = i + 1; j < 3; j++) {
+            float avg = (kf_P[i][j] + kf_P[j][i]) * 0.5f;
+            kf_P[i][j] = kf_P[j][i] = avg;
+        }
+        if (kf_P[i][i] < 1e-9f) kf_P[i][i] = 1e-9f;
+    }
+
+    // 出力更新
     _imu_altitude = kf_x[0];
     _imu_vspeed   = kf_x[1];
 }
@@ -370,7 +530,25 @@ void imu_setup() {
 // 15ms 未満の呼び出しは即リターン（67Hz ポーリング → 最大 15ms 遅延）。
 // MS5611 と I2C バスを共用するため高頻度呼び出しを避ける（~90µs/回 at 100kHz）。
 void imu_update() {
-    if (!bno085_ok) return;
+    if (!bno085_ok) {
+        // BNO085 なし: KF 初期化済みなら恒速モデル（a_k=0）で共分散を伝播させる。
+        // これにより気圧・GNSS 速度観測が有効に機能するようになる。
+        if (kf_initialized) {
+            static uint32_t _fallback_predict_us = 0;
+            uint32_t _now_us = time_us_32();
+            if (_now_us - _fallback_predict_us >= 33000UL) {  // ~30Hz
+                float dt = (float)(_now_us - kf_last_predict_us) * 1e-6f;
+                kf_last_predict_us = _now_us;
+                _fallback_predict_us = _now_us;
+                if (dt > 0.0f && dt < 0.5f) {
+                    kf_predict(0.0f, dt);  // 加速度ゼロ = 恒速モデル
+                    _imu_altitude = kf_x[0];
+                    _imu_vspeed   = kf_x[1];
+                }
+            }
+        }
+        return;
+    }
 
     // 15ms ≒ 67Hz でポーリング。BNO085 の出力周期（33ms/30Hz）より短い間隔でチェック。
     static uint32_t _poll_last_us = 0;
@@ -464,6 +642,14 @@ void imu_update() {
     // 地球座標系の鉛直加速度を計算（BNO085 が重力を除去済みなので g を引く必要なし）
     float a_k = compute_earth_z_accel(_lax, _lay, _laz, _qw, _qx, _qy, _qz);
 
+    // 地球座標系の水平加速度の大きさ（ワールドフレーム X・Y 成分のノルム）
+    // 全加速度の二乗ノルムは回転で不変なので:
+    //   horiz² = |a_body|² − a_world_z²  = (lax²+lay²+laz²) − a_k²
+    // これにより姿勢変化の影響を受けず、純粋な水平加速度のみを取り出せる。
+    float _body_sq   = _lax * _lax + _lay * _lay + _laz * _laz;
+    float _horiz_sq  = _body_sq - a_k * a_k;
+    float horiz_accel = (_horiz_sq > 0.0f) ? sqrtf(_horiz_sq) : 0.0f;
+
     // dt を計算（前回 predict からの経過時間 [s]）
     uint32_t now_us = time_us_32();
     float dt = (float)(now_us - kf_last_predict_us) * 1e-6f;
@@ -472,13 +658,14 @@ void imu_update() {
     // dt の安全チェック: 起動直後・uint32 オーバーフロー・長時間停止を除外
     if (dt <= 0.0f || dt > 0.5f) return;
 
-    // Kalman 予測ステップを実行
-    kf_predict(a_k, dt);
+    // Kalman 予測ステップを実行（水平加速度を渡して Q_vel を動的増幅）
+    kf_predict(a_k, dt, horiz_accel);
 
     // 出力を更新（display 側から参照される volatile 変数）
-    _imu_az      = a_k;
-    _imu_altitude = kf_x[0];
-    _imu_vspeed   = kf_x[1];
+    _imu_az           = a_k;
+    _imu_horiz_accel  = horiz_accel;
+    _imu_altitude     = kf_x[0];
+    _imu_vspeed       = kf_x[1];
 }
 
 
@@ -560,13 +747,20 @@ float get_imu_mag_accuracy_deg() {
 // I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
 // 1 秒 = 30Hz × 33 サンプル分のタイムアウト。正常時は ~33ms ごとに更新される。
 float get_imu_vspeed() {
-    if (_last_sensor_event_ms == 0 ||
-        millis() - _last_sensor_event_ms > 1000UL) return 0.0f;
+    if (bno085_ok) {
+        // BNO085 あり: I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（誤鳴動防止）
+        if (_last_sensor_event_ms == 0 ||
+            millis() - _last_sensor_event_ms > 1000UL) return 0.0f;
+    } else {
+        // BNO085 なし: 気圧 + GNSS 速度による KF 出力を使用。未初期化なら 0 を返す。
+        if (!kf_initialized) return 0.0f;
+    }
     return _imu_vspeed;
 }
 
 float get_imu_altitude() { return _imu_altitude; }
-float get_imu_az()       { return _imu_az; }
+float get_imu_az()           { return _imu_az; }
+float get_imu_horiz_accel()  { return _imu_horiz_accel; }  // 地球座標系 水平加速度 [m/s²]
 
 // 各センサーイベントの受信レート [Hz]（1 秒ウィンドウで計測）
 float get_imu_grv_hz()  { return _grv_hz; }
