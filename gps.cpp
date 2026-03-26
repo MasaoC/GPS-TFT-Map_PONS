@@ -223,9 +223,20 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   gsa_pdop  = pDOP * 0.01f;
 
   // GSA 互換フィックスタイプ（1=NoFix, 2=2D, 3=3D）
-  if      (fixType == 2)  gsa_fixtype = 2;
-  else if (fixType >= 3)  gsa_fixtype = 3;
-  else                    gsa_fixtype = 1;
+  {
+    static int prev_fixtype = 1;  // 前回のfixtype（遷移検出用）
+    int new_fixtype;
+    if      (fixType == 2)  new_fixtype = 2;
+    else if (fixType >= 3)  new_fixtype = 3;
+    else                    new_fixtype = 1;
+    // no-fix → fix への遷移タイミングをSDに記録
+    if (prev_fixtype <= 1 && new_fixtype >= 2) {
+      enqueueTask(createLogSdfTask("GPS FIXED fix=%d sats=%d hAcc=%.1fm",
+        new_fixtype, stored_numsats, ubx_hacc_mm / 1000.0f));
+    }
+    prev_fixtype  = new_fixtype;
+    gsa_fixtype   = new_fixtype;
+  }
 
   ubx_pos_valid = (fixType >= 2) && gnssFixOK;
   ubx_pvt_valid = true;
@@ -314,13 +325,15 @@ static void handle_navdop(const uint8_t *p, uint16_t len) {
   gsa_pdop = (uint16_t)(p[6]  | (p[7]  << 8)) * 0.01f;
   gsa_hdop = (uint16_t)(p[12] | (p[13] << 8)) * 0.01f;
   gsa_vdop = (uint16_t)(p[10] | (p[11] << 8)) * 0.01f;
-  // 10 秒に 1 回 Acc 情報を SD ログに保存（DOP より直感的な精度指標）
+  // 10 秒に 1 回 Acc 情報を SD ログに保存（衛星0件=明らかに屋内の場合はスキップ）
   static unsigned long last_dop_log = 0;
   if (millis() - last_dop_log >= 10000) {
-    enqueueTask(createLogSdfTask("ACC hAcc=%.1fm vAcc=%.1fm sAcc=%.2fm/s fix=%d sats=%d",
-      ubx_hacc_mm / 1000.0f, ubx_vacc_mm / 1000.0f, ubx_sacc_mmps / 1000.0f,
-      gsa_fixtype, stored_numsats));
     last_dop_log = millis();
+    if (stored_numsats > 0) {
+      enqueueTask(createLogSdfTask("ACC hAcc=%.1fm vAcc=%.1fm sAcc=%.2fm/s fix=%d sats=%d",
+        ubx_hacc_mm / 1000.0f, ubx_vacc_mm / 1000.0f, ubx_sacc_mmps / 1000.0f,
+        gsa_fixtype, stored_numsats));
+    }
   }
 }
 
@@ -1455,7 +1468,7 @@ void try_enque_savecsv(){
       int hour  = ubx_hour;
       utcToJst(&year, &month, &day, &hour);
       float csv_pressure   = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
-      float csv_kf_alt    = get_imu_altitude();  // KF推定高度 [m]（気圧基準・GNSS補正済み）
+      float csv_kf_alt    = get_imu_altitude_msl();  // KF推定高度 [m]（MSL基準・GNSS長期収束済み）
       float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
         stored_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,

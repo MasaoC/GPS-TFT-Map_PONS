@@ -14,8 +14,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20260324
-#define BUILDVERSION "0.914"
+#define BUILDDATE 20260326
+#define BUILDVERSION "0.915"
 #define VERSION_TEXT "Version 6"
 
 
@@ -77,7 +77,8 @@
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
 #define USERLED_PIN 34 //ユーザーLED（エラー表示用。エラー時 HIGH）
-#define SIN_VOLUME 0.15f // WAVファイルの音量と合わせるために、Sin wave音の音量は下げられていますが、ここで調整可能です。0〜1.0f
+#define SIN_VOLUME 0.5f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
+#define VARIO_VOL_SCALE 3
 
 // =====追加設定項目====
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
@@ -86,7 +87,7 @@
 // GPS fix があっても hAcc（NAV-PVT 水平精度推定）が大きい場合、飛行機マークの代わりに青い不確かさ円を表示する。
 // gnssFixOK=false の場合は常に不確かさ円を表示する。
 #define HACC_THRESHOLD_M       10.0f // この値（m）以上で不確かさ円モードに切替え（旧 HDOP=2×5m 相当）
-#define HDOP_MIN_CIRCLE_RADIUS 2     // 輪郭円を描画する最小半径 [px]（未満はテキスト表示に切替え）
+#define HDOP_MIN_CIRCLE_RADIUS 4     // 輪郭円を描画する最小半径 [px]（未満はテキスト表示に切替え）
 #define HDOP_CENTER_DOT_RADIUS 3     // 中心位置を示す塗りつぶし小円の半径 [px]
 
 
@@ -246,9 +247,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   大きい → K[1] が小さくなり気圧ノイズの影響が減る（IMU 主体）
 //   小さい → 気圧を強く信頼するため気圧ノイズが VSI に直接乗る
 
-#define KF_Q_VEL    0.05f   // 速度プロセスノイズ  (旧 0.5 → 1/10。静止ノイズ抑制)
+#define KF_Q_VEL    0.02f   // 速度プロセスノイズ  (旧 0.05 → 1/2.5。VSIふらつきをさらに抑制)
 #define KF_Q_BIAS   0.005f  // バイアスプロセスノイズ（変更なし）
-#define KF_R        4.0f    // 気圧高度観測ノイズ [m²] (旧 0.5 → 8倍。気圧ノイズを薄める)
+#define KF_R       12.0f    // 気圧高度観測ノイズ [m²] (旧 4.0 → 3倍。気圧ノイズのVSI影響を低減)
 
 // ============================================================
 // 水平加速度による速度プロセスノイズ動的増幅（imu.cpp kf_predict で使用）
@@ -278,14 +279,19 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 気圧基準（ground_alt_abs）をゆっくり修正することで、高度をGNSS基準に近づける。
 // Vertical speedへの影響は補正レート（最大 GNSS_MAX_DELTA_M m/s）に留まり無視できる。
 //
-// GNSS_VACC_MAX_M   : これ以上の垂直精度（vAcc）は補正に使わない [m]
-// GNSS_INIT_SAMPLES : 起動地MSL高度を平均する初期化サンプル数
-// GNSS_CORRECT_RATE : 補正ゲイン（イノベーション×精度係数に掛ける比率）
-// GNSS_MAX_DELTA_M  : 1更新あたりの最大補正量 [m]（varioへの影響を極小化）
-#define GNSS_VACC_MAX_M     10.0f  // 垂直精度閾値 [m]
-#define GNSS_INIT_SAMPLES   10     // 初期化サンプル数
-#define GNSS_CORRECT_RATE   0.005f // 補正ゲイン比率
-#define GNSS_MAX_DELTA_M    0.02f  // 1回あたりの最大補正量 [m]
+// GNSS_VACC_MAX_M        : vAcc がこれ以上の時は補正しない（カットオフ）[m]
+// GNSS_INIT_SAMPLES      : 起動地MSL高度を平均する初期化サンプル数
+// GNSS_CORRECT_RATE      : 気圧基準補正ゲイン（イノベーション×quality に掛ける比率）
+//                          vAcc が小さい（高精度）ほど quality が高く補正が速くなる。
+// GNSS_MAX_DELTA_M       : 1更新あたりの最大補正量 [m]（バリオへの影響上限）
+// GNSS_OFFSET_UPDATE_RATE: gnss_kf_offset（起動地MSL高度）の長期更新ゲイン。
+//                          MSL絶対高度がGNSSに収束する速さを決める。quality × rate が実効値。
+//                          rate=0.005, quality=0.8 → α=0.004/s → 半減期約170秒（約3分）
+#define GNSS_VACC_MAX_M        10.0f  // 垂直精度カットオフ [m]（vAcc < 10m の時のみ補正）
+#define GNSS_INIT_SAMPLES      10     // 初期化サンプル数
+#define GNSS_CORRECT_RATE      0.02f  // 気圧基準補正ゲイン（旧 0.005 → 4倍に増速）
+#define GNSS_MAX_DELTA_M       0.05f  // 1回あたりの最大補正量 [m]（旧 0.02 → 2.5倍）
+#define GNSS_OFFSET_UPDATE_RATE 0.005f // MSL絶対基準の長期収束ゲイン
 //
 // ============================================================
 // GNSS VSI Kalman 速度観測パラメーター（imu_kalman_gnss_vel_update で使用）
@@ -308,3 +314,21 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //
 #define GNSS_VSI_SACC_MAX_MPS  0.3f  // 速度精度ハードゲート [m/s]（以上はスキップ）
 #define GNSS_VSI_R_SCALE      16.0f  // R_vel 倍率（sAcc 小さい時のみ有効に機能させる）
+
+// ============================================================
+// 高度表示設定
+// ============================================================
+// 当デバイスの GPS は UBX NAV-PVT の hMSL（EGM96 ジオイド基準）を使用する。
+// hMSL は日本の標高（T.P.=東京湾平均海面 基準）とほぼ一致する（差は ±数十cm 程度）。
+//
+// ※注意: GPS の「楕円体高（WGS84）」とは異なる。
+//   楕円体高 = hMSL + ジオイド高 N（日本では N ≈ +36〜38m）
+//   例: 関西で 0m 標高 → hMSL ≈ 0m、楕円体高 ≈ +37m
+//   当 GPS は既に hMSL を出力済みなので、-37m 補正は不要。
+//
+// ELEVATION_GEOID_OFFSET_M: B.S.L. 高度 = KF_MSL - この値 [m]
+//   表示ラベルは "B.S.L."（琵琶湖基準水位面、Biwa Standard Level）。
+//   B.S.L. 0m = T.P.（日本の標高） +84.371m（瀬田川洗堰基準・国土交通省設定値）。
+//   → 琵琶湖面で B.S.L. ≈ 0m、湖面上 100m 飛行時に B.S.L. ≈ 100m と表示される。
+//   標高（T.P.）に戻したい場合は 0.0f に変更する。
+#define ELEVATION_GEOID_OFFSET_M  84.371f  // B.S.L.基準補正 [m]（T.P.84.371m = 琵琶湖面）

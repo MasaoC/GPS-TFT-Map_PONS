@@ -22,6 +22,7 @@
 #define CMD_ADC_READ   0x00  // ADC 変換結果読み出しコマンド
 
 // OSR=4096 の最大変換時間は 9.04ms。余裕を持たせて 12ms 待つ。
+// D1変換(12ms) + D2変換(12ms) = 24ms サイクル → 約 42Hz
 #define OSR_DELAY_MS   12
 
 // i2c0 バスを使用（SDA=GPIO32, SCL=GPIO33）。
@@ -72,8 +73,9 @@ static float last_win_hz      = 0.0f;       // 直前ウィンドウの総サン
 static unsigned long win_start = 0;         // 現在ウィンドウ開始時刻 [ms]
 
 // 起動時を 0m 基準とするグランドレベル
-static float   ground_alt_abs = 0.0f;  // 起動時の絶対高度（標準大気基準）[m]
-static bool    ground_set     = false; // グランドレベル確定済みフラグ
+static float   ground_alt_abs  = 0.0f;  // 起動時の絶対高度（標準大気基準）[m]
+static float   ground_pressure = 0.0f;  // 起動時の気圧 [hPa]（グランドレベル確定時点の計測値）
+static bool    ground_set      = false; // グランドレベル確定済みフラグ
 
 // MS5611 の接続・初期化が正常に完了しているかどうか
 // airdata_setup() で設定され、airdata_update() / get_airdata_ok() で参照される
@@ -267,7 +269,8 @@ static bool ms5611_process_data() {
 
     // 起動時の高度をグランドレベル（0m）として記録
     if (!ground_set) {
-        ground_alt_abs = raw_alt_abs;
+        ground_alt_abs  = raw_alt_abs;
+        ground_pressure = last_pressure;   // 起動時気圧を保存
         ground_set = true;
         enqueueTask(createLogSdfTask("Initial airdata: Temp=%.2f C, Press=%.2f hPa, Alt=%.1f m",
             last_temperature, last_pressure, raw_alt_abs));
@@ -367,13 +370,17 @@ bool airdata_update() {
 }
 
 // MS5611 が正常に接続・初期化されているか返す
-bool  get_airdata_ok()          { return ms5611_ok; }
-// 最新の気圧高度 [m] を返す（airdata_update() が true を返した後に更新される）
-float get_airdata_altitude()    { return last_altitude; }
+bool  get_airdata_ok()             { return ms5611_ok; }
+// 最新の気圧高度 [m] を返す（起動地点からの相対高度）
+float get_airdata_altitude()       { return last_altitude; }
 // 最新の気圧 [hPa] を返す
-float get_airdata_pressure()    { return last_pressure; }
+float get_airdata_pressure()       { return last_pressure; }
 // 最新の気温 [℃] を返す
-float get_airdata_temperature() { return last_temperature; }
+float get_airdata_temperature()    { return last_temperature; }
+// 起動時の気圧 [hPa]（グランドレベル確定時点の計測値、"0m基準" に相当）
+float get_airdata_ground_pressure(){ return ground_pressure; }
+// 起動時の標準大気高度 [m]（ISA 1013.25hPa 基準。起動地点が何メートルに相当するか）
+float get_airdata_ground_altitude(){ return ground_alt_abs; }
 // 最新の鉛直速度 [m/s] を返す（トリム平均差分。初回ウィンドウ完了まで 0）
 // I2C エラー等で 2 秒以上更新が途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
 // 2 秒 = VSPEED_WINDOW_MS(500ms) の 4 倍。正常時は 500ms ごとに更新されるため十分な余裕。

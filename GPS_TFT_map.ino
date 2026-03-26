@@ -350,6 +350,16 @@ void loop() {
     redraw_screen = true;
   }
 
+  // 60秒ごとに電圧と JST 時刻をテキストログへ記録（どの画面モードでも実行）
+  {
+    static unsigned long last_volt_log_ms = 0;
+    if (millis() - last_volt_log_ms >= 60000UL) {
+      last_volt_log_ms = millis();
+      GpsTime t = get_gpstime();
+      int jst_h = (t._hour + 9) % 24;
+      enqueueTask(createLogSdfTask("volt=%.2fV %02d:%02d JST", get_input_voltage(), jst_h, t._min));
+    }
+  }
 
   if (screen_mode == MODE_SETTING) {
     if (redraw_screen) {

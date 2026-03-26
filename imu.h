@@ -66,10 +66,17 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps);
 // ---- センサー状態 ----
 // BNO085 の接続・初期化が正常に完了しているか（imu_setup() 後に確定）。
 bool get_imu_ok();
+// BNO085 が正常稼働中か（接続済み かつ 直近1秒以内にデータ受信）。
+// 通信途絶時は false を返す点が get_imu_ok() と異なる。
+// update_vario() の MS5611 フォールバック判定に使用する。
+bool get_imu_alive();
 
 // ---- 推定値ゲッター ----
-float get_imu_vspeed();    // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
-float get_imu_altitude();  // Kalman 推定高度 [m]（気圧高度基準）
+float get_imu_vspeed();          // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
+float get_imu_altitude();        // Kalman 推定高度 [m]（起動地点 0m の AGL 相対値）
+float get_imu_altitude_msl();    // Kalman 推定高度 [m]（MSL 絶対値 = AGL + gnss_kf_offset）
+                                 // gnss_kf_offset 未確定（GNSS fix 取得前）は AGL 値を返す
+bool  get_imu_gnss_offset_ready(); // gnss_kf_offset が初期化済みか（MSL 値が有効か）
 float get_imu_az();              // 地球座標系の鉛直加速度 [m/s²]（デバッグ・バリオ音用）
 float get_imu_horiz_accel();     // 地球座標系の水平加速度の大きさ [m/s²]（KF Q_vel 動的増幅用）
 void  get_imu_quaternion(float &qw, float &qx, float &qy, float &qz);  // クォータニオン (GAME_RV)

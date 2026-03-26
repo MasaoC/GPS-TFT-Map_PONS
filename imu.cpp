@@ -317,7 +317,7 @@ static bool   _gnss_offset_ready  = false;  // 初期化済みフラグ
 static uint32_t _gnss_last_ms     = 0;      // 最後に補正を実行したシステム時刻 [ms]
 
 void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
-    if (!bno085_ok || !kf_initialized) return;
+    if (!kf_initialized) return;  // BNO085 の有無によらず動作する（kf_initialized のみチェック）
     // 精度が閾値以下、または異常値の場合は無視する
     if (vacc_m <= 0.0f || vacc_m > GNSS_VACC_MAX_M) return;
     if (isnan(z_gnss_msl) || isinf(z_gnss_msl)) return;
@@ -342,7 +342,7 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
         return;  // 初期化中は補正しない
     }
 
-    // ---- フェーズ2: 高度補正 ----
+    // ---- フェーズ2: 気圧基準補正（AGL精度の維持）----
     // GNSS高度を KF フレーム（起動地 0m 基準）に変換してイノベーションを計算する
     float z_gnss_kf = z_gnss_msl - _gnss_kf_offset;
     float innov     = z_gnss_kf - kf_x[0];
@@ -350,10 +350,10 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
     // 50m を超える乖離はGNSSの一時的な外れ値（マルチパス等）として無視する
     if (fabsf(innov) > 50.0f) return;
 
-    // 精度係数: vacc が小さいほど 1 に近く、GNSS_VACC_MAX_M に近づくほど 0 になる
+    // 精度係数: vAcc が小さいほど 1 に近く、GNSS_VACC_MAX_M に近づくほど 0 になる
     float quality = 1.0f - (vacc_m / GNSS_VACC_MAX_M);
 
-    // 補正量: イノベーション × 精度係数 × ゲイン、最大補正量でクランプ
+    // 補正量: イノベーション × 精度係数（vAcc依存）× ゲイン、最大補正量でクランプ
     float delta = innov * quality * GNSS_CORRECT_RATE;
     if      (delta >  GNSS_MAX_DELTA_M) delta =  GNSS_MAX_DELTA_M;
     else if (delta < -GNSS_MAX_DELTA_M) delta = -GNSS_MAX_DELTA_M;
@@ -361,6 +361,14 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
     // ground_alt_abs を調整して気圧基準を補正する（KF はそれに追従する）
     // delta>0 (GNSSが高い): ground_alt_abs を下げてバロ相対高度を上げる
     airdata_adjust_ground_alt(-delta);
+
+    // ---- フェーズ3: gnss_kf_offset の長期更新（KF MSL絶対高度の精度向上）----
+    // GNSS_MSL - KF_AGL = 起動地MSL高度の推定値。vAcc依存レートでゆっくり更新することで
+    // 初期fix品質が低かった場合でも長時間後には正確な絶対高度に収束する。
+    // 飛行中でも正しく機能: GNSS_MSL - KF_AGL = 定数（起動地MSL高度）は高度によらず不変。
+    float msl_est = z_gnss_msl - kf_x[0];
+    float alpha   = quality * GNSS_OFFSET_UPDATE_RATE;
+    _gnss_kf_offset += (msl_est - _gnss_kf_offset) * alpha;
 }
 
 
@@ -492,11 +500,10 @@ void imu_setup() {
     }
 
     // ---- センサーレポートを有効化 ----
-    // 30Hz = 33,333 µs 間隔。
-    // Core0 の描画ブロック（avg ~64ms）により実測は ~34Hz 程度にとどまるため、
-    // 50Hz をリクエストしても余剰なI2Cトラフィックになるだけ。
-    // 実測値に合わせて 30Hz に設定し、バス負荷を下げる。
-    const uint32_t interval_us = 1000000UL / 30;  // 30Hz → 33333 µs
+    // Core0 の描画ブロック（avg ~64ms）により実測受信レートは ~17-20Hz 程度にとどまる。
+    // センサーを 15Hz で設定することで I2C バス負荷を抑えつつ十分な更新頻度を確保する。
+    // バリオ用途は 10Hz 以上あれば十分。KF は MS5611 の ~40Hz 観測更新が精度を補う。
+    const uint32_t interval_us = 1000000UL / 15;  // 15Hz → 66666 µs
 
     if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, interval_us)) {
         DEBUGW_PLN(20260315, "[IMU] Failed to enable GAME_ROTATION_VECTOR.");
@@ -524,19 +531,91 @@ void imu_setup() {
 
 
 // ============================================================
+// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数）
+// ============================================================
+// imu_update() から呼ばれる。内部で1分レート制限する。
+// NRST を LOW→HIGH してハードウェアリセット後、begin_I2C() で再初期化を試みる。
+// 成功すれば bno085_ok=true に戻し、失敗なら次の1分後に再試行する。
+// MS5611 と I2C バスを共用しているため Wire のリセットは行わない
+//（NRST による BNO085 リセットで SDA が解放されることを期待する）。
+// ※ NRST パルス＋ブート待機で Core0 が最大 410ms ブロックする。
+//   1分に1度のみ実行のため、画面の一時的な停止は許容する。
+// CORE0
+static void imu_try_recovery() {
+    static unsigned long last_recovery_ms = 0;
+    unsigned long now_ms = millis();
+    // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
+    if (last_recovery_ms > 0 && now_ms - last_recovery_ms < 60000UL) return;
+    last_recovery_ms = now_ms;
+
+    enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
+    DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+
+    // ---- BNO085 ハードウェアリセット ----
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+    pinMode(IMU_RST_PIN, OUTPUT);
+    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
+    delay(10);
+    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
+    delay(400);                        // BNO085 ブート完了待機（データシート推奨値）
+#else
+    delay(200);  // RST ピンなし: SH2 リセット完了を待つだけ
+#endif
+
+    // ---- 再初期化 ----
+    const uint32_t interval_us    = 1000000UL / 15;  // 15Hz
+    const uint32_t rv_interval_us = 1000000UL / 5;   // 5Hz
+
+    if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire)
+        && bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, interval_us)
+        && bno08x.enableReport(SH2_LINEAR_ACCELERATION, interval_us)) {
+        bno08x.enableReport(SH2_ROTATION_VECTOR, rv_interval_us);
+        // 受信時刻をリセット（クォータニオン・加速度も無効化）。
+        // millis() をセットすることで、1秒以内にデータが届かなければ再度 timeout → 再試行の
+        // サイクルに入れる。0 にすると bno085_ok=true のまま再試行が永遠に発火しなくなる。
+        _last_sensor_event_ms = millis();
+        _quat_valid     = false;
+        _linaccel_valid = false;
+        bno085_ok = true;
+        enqueueTask(createLogSdTask("[IMU] BNO085 recovery OK"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery OK");
+    } else {
+        // 失敗: bno085_ok は false のまま。次の1分後に再試行する。
+        enqueueTask(createLogSdTask("[IMU] BNO085 recovery FAILED"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery FAILED");
+    }
+}
+
+
+// ============================================================
 // imu_update(): ポーリングでデータ読み出しと Kalman predict を実行
 // ============================================================
 // loop() から毎回呼ぶ（ノンブロッキング）。
 // 15ms 未満の呼び出しは即リターン（67Hz ポーリング → 最大 15ms 遅延）。
 // MS5611 と I2C バスを共用するため高頻度呼び出しを避ける（~90µs/回 at 100kHz）。
 void imu_update() {
+    // ---- 通信途絶の自動検出 ----
+    // bno085_ok=true でも1秒以上データが届かない場合は途絶と判定し false に落とす。
+    // これにより get_imu_alive() が false を返し、update_vario() が MS5611 にフォールバックする。
+    if (bno085_ok && _last_sensor_event_ms > 0 &&
+        millis() - _last_sensor_event_ms > 1000UL) {
+        DEBUGW_PLN(20260325, "[IMU] BNO085 comm timeout, marking unavailable");
+        enqueueTask(createLogSdTask("[IMU] BNO085 comm timeout"));
+        bno085_ok = false;
+    }
+
     if (!bno085_ok) {
+        // 起動後に一度でもデータを受信した（= 途中で途絶えた）場合のみ復旧を試みる。
+        // _last_sensor_event_ms==0 は最初から未接続 → 復旧試行しない。
+        if (_last_sensor_event_ms > 0) {
+            imu_try_recovery();  // 内部で1分レート制限
+        }
         // BNO085 なし: KF 初期化済みなら恒速モデル（a_k=0）で共分散を伝播させる。
         // これにより気圧・GNSS 速度観測が有効に機能するようになる。
         if (kf_initialized) {
             static uint32_t _fallback_predict_us = 0;
             uint32_t _now_us = time_us_32();
-            if (_now_us - _fallback_predict_us >= 33000UL) {  // ~30Hz
+            if (_now_us - _fallback_predict_us >= 66000UL) {  // ~15Hz
                 float dt = (float)(_now_us - kf_last_predict_us) * 1e-6f;
                 kf_last_predict_us = _now_us;
                 _fallback_predict_us = _now_us;
@@ -550,10 +629,10 @@ void imu_update() {
         return;
     }
 
-    // 15ms ≒ 67Hz でポーリング。BNO085 の出力周期（33ms/30Hz）より短い間隔でチェック。
+    // 30ms ≒ 33Hz でポーリング。BNO085 の出力周期（67ms/15Hz）に対して 2 倍の頻度でチェック。
     static uint32_t _poll_last_us = 0;
     uint32_t _now_us = time_us_32();
-    if (_now_us - _poll_last_us < 15000UL) return;  // 15ms 未満なら即リターン
+    if (_now_us - _poll_last_us < 30000UL) return;  // 30ms 未満なら即リターン
     _poll_last_us = _now_us;
 
     // データ取り出し:
@@ -674,6 +753,16 @@ void imu_update() {
 // ============================================================
 bool  get_imu_ok()       { return bno085_ok; }
 
+// BNO085 が正常稼働中かどうかを返す（接続済み かつ 直近1秒以内にデータ受信）。
+// bno085_ok=true でも通信途絶の場合 false を返す点が get_imu_ok() と異なる。
+// ※ imu_update() が1秒タイムアウトで bno085_ok=false に落とすため、
+//    このチェックは通常 bno085_ok とほぼ同等になる。
+bool get_imu_alive() {
+    if (!bno085_ok) return false;
+    if (_last_sensor_event_ms == 0) return false;
+    return (millis() - _last_sensor_event_ms <= 1000UL);
+}
+
 // クォータニオン (GAME_ROTATION_VECTOR) を返す。未更新時は単位クォータニオン (1,0,0,0)。
 void get_imu_quaternion(float &qw, float &qx, float &qy, float &qz) {
     qw = _qw; qx = _qx; qy = _qy; qz = _qz;
@@ -758,7 +847,11 @@ float get_imu_vspeed() {
     return _imu_vspeed;
 }
 
-float get_imu_altitude() { return _imu_altitude; }
+float get_imu_altitude()     { return _imu_altitude; }
+// KF MSL高度 = KF AGL + gnss_kf_offset（起動地MSL高度の推定値）。
+// gnss_kf_offset 未確定時（GNSS 3D fix 前）は AGL 値（＝起動時 0m）を返す。
+float get_imu_altitude_msl() { return _imu_altitude + _gnss_kf_offset; }
+bool  get_imu_gnss_offset_ready() { return _gnss_offset_ready; }
 float get_imu_az()           { return _imu_az; }
 float get_imu_horiz_accel()  { return _imu_horiz_accel; }  // 地球座標系 水平加速度 [m/s²]
 

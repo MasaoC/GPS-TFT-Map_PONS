@@ -98,6 +98,7 @@ void draw_strokes();
 
 void draw_header();
 void draw_footer();
+float get_input_voltage();
 
 
 
