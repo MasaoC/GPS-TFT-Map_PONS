@@ -357,7 +357,7 @@ void loop() {
       last_volt_log_ms = millis();
       GpsTime t = get_gpstime();
       int jst_h = (t._hour + 9) % 24;
-      enqueueTask(createLogSdfTask("volt=%.2fV %02d:%02d JST", get_input_voltage(), jst_h, t._min));
+      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %02d:%02d JST", get_input_voltage(), analogReadTemp(), jst_h, t._min));
     }
   }
 
