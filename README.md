@@ -1,5 +1,7 @@
 # GPS(GNSS)-TFT-map_PONS=Pilot Oriented Navigation System v6
-<img width="220" alt="ponsv5" src="https://github.com/user-attachments/assets/42279b57-4c61-43eb-a7d4-d60ea7dddddf" />
+<img width="1312" height="368" alt="ponsv6image" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
+<img width="240" height="52" alt="logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
+
 
 # PONS 概要/Abstract
  * 人力飛行機のパイロットが使いやすいことを目標とした航法装置（ナビゲーションシステム）です。琵琶湖上空を飛行するパイロットの支援をしています。Arduinoを使用し、TFTにGNSSマップや位置・速度・方位の情報を表示します。琵琶湖での鳥人間コンテスト用に特化しています。GPS/GNSS navigation for human-powered aircraft specialized for the Japan International Birdman at Biwako, Japan.
