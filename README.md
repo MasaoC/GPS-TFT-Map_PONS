@@ -21,17 +21,18 @@
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
- * Raspberry Pi Pico 2 (RP2350)
+ * RP2354B
 
- TFTとの通信では、PicoのPIOを使用し 16 bit Paralel 接続を使う事で高速描画可能になっています。これは、TFT_eSPIライブラリによるものです。
+ TFTとの通信では、TFT_eSPIライブラリ（PicoのPIO）を使用し 16 bit Paralel 接続を使う事で高速描画可能になっています。
 
 ## TFT  Recommended TFT panel. (推奨の動作確認済みTFT)
  * Digikey
-   * NHD-2.8-240320AF-CSXP-F-ND (v4,v5,v6:パイロット用で使用)
-   * NHD-2.4-240320CF-CSXN#-F-ND (v3:追走ボート用で使用。1000ニト)
+   * NHD-2.8-240320AF-CSXP-F-ND (v4,v5,v6[Rev1B])
+   * NHD-2.4-240320CF-CSXN#-F-ND (v3:追走ボート用で使用)
 
 ## GNSS Module モジュール
- UART NMEA0183 で通信するため、任意のモジュール使用可能。下記のGNSSモジュールで実験済み。ただし、Mediatek or ubloxで、初期化処理が異なるため、settings.hを変更すること。
+ v6以降、UBX で通信するため、u-bloxモジュールで使用可能。下記のGNSSモジュールで実験済み。
+ v5までは、UART NMEA0183 で通信。ただし Mediatek or ubloxで、初期化処理が異なるため、settings.hを変更すること。
  * ublox SAM-M10Q (v6:パイロット用。基板表面実装。水平位置精度1.5m、速度精度0.05m/s)
  * Quectel LC86G (v4,v5:パイロット用で使用。LC86GPAMD)
  * ublox M-10Q (v3:追走ボート用で使用)
