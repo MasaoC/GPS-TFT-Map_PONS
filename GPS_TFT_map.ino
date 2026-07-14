@@ -29,9 +29,11 @@ bool redraw_screen = false;            // true にすると次のループで画
 
 // --- 旋回角速度 (deg/s) 計算用 ---
 // GPS の真方位 (truetrack) を NUM_SAMPLES 個のスライディングウィンドウで保持し、
-// 連続サンプル間の変化量の平均として degpersecond を算出する（GPS コース更新時＝newcourse_arrived 時に実行。GPS が毎秒更新なら結果的に毎秒更新）。
+// 連続サンプル間の変化量の合計を「最古サンプルと最新サンプルの経過時間」で割ることで
+// GPS レート（1Hz / 2Hz）に依存しない真の deg/s を算出する。
 const int NUM_SAMPLES = 4;             // スライディングウィンドウのサンプル数
 float truetrack_samples[NUM_SAMPLES];  // 過去の真方位サンプル配列
+uint32_t truetrack_sample_times[NUM_SAMPLES];  // 各サンプルの millis() タイムスタンプ
 int sampleIndex = 0;                   // 次に書き込むサンプルのインデックス
 float degpersecond = 0;                // 算出された旋回角速度 [deg/s]
 
@@ -49,9 +51,10 @@ int cursorLine = 0;
 int lastload_zoomlevel;  // 前回 BMP ロードを要求したズームレベル（変化検知用）
 
 // --- コース警告 ---
-// course_warning_index: 0〜900 の積算値。
+// course_warning_index: 0〜900 の積算値（単位: 度・秒）。
 // コースから外れているほど増加し、900 に達すると音声警告を発する。
-int course_warning_index = 0;
+// dt 乗算で小数加算が発生するため float 型で保持する。
+float course_warning_index = 0;
 unsigned long last_course_warning_time = 0;      // 直近の警告発報時刻 [millis]
 unsigned long last_destination_toofar_time = 0;  // 直近の「目的地が遠すぎる」警告時刻 [millis]
 double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 度。正=右、負=左)
@@ -418,7 +421,7 @@ void loop() {
       check_destination_toofar();
     }
 
-    // 毎秒1回: GPS からコース更新が届いた時のみ実行する処理
+    // GPS コース更新時（1Hz または 2Hz）にのみ実行する処理
     if (newcourse_arrived) {
       int ttrack = get_gps_truetrack();
 
@@ -780,25 +783,31 @@ void longPressCallback() {
 }
 
 // 旋回角速度をリセットする。GPS 受信開始時や停止時などに呼ぶ。
-// サンプル配列を現在の真方位で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
+// サンプル配列を現在の真方位と現在時刻で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
 void reset_degpersecond() {
   float track = get_gps_truetrack();
+  uint32_t now = millis();
   for (int i = 0; i < NUM_SAMPLES; i++) {
     truetrack_samples[i] = track;
+    truetrack_sample_times[i] = now;
   }
   degpersecond = 0;
 }
 
-// 旋回角速度を更新する。毎秒1回呼ぶこと。
-// アルゴリズム: スライディングウィンドウ平均
-//   1. 新しい真方位を配列に追加
-//   2. 配列が満杯になったら連続サンプル間の差分を合計し平均を出す
-//   3. 配列を1つずらして古いサンプルを捨てる
+// 旋回角速度を更新する。GPS コース更新時（newcourse_arrived）に呼ぶ。
+// アルゴリズム: スライディングウィンドウの方位変化合計を経過時間で正規化
+//   1. 新しい真方位と現在時刻を配列に追加
+//   2. 配列が満杯になったら連続サンプル間の差分を合計
+//   3. 合計を「最古サンプルと最新サンプルの時間差（秒）」で割って真の deg/s を算出
+//   4. 配列を1つずらして古いサンプルを捨てる
 //   ※ 360度またぎ（例: 359→1度）を -180〜+180 に正規化して計算する
+//   ※ 時間正規化により GPS レート（1Hz / 2Hz）に依存しない
 void update_degpersecond(int true_track) {
+  uint32_t now = millis();
   truetrack_samples[sampleIndex] = true_track;
+  truetrack_sample_times[sampleIndex] = now;
 
-  // サンプルが揃ったら平均 deg/s を計算する
+  // サンプルが揃ったら真の deg/s を計算する
   if (sampleIndex >= NUM_SAMPLES - 1) {
     float totalDifference = 0;
     for (int i = 1; i < NUM_SAMPLES; i++) {
@@ -811,11 +820,18 @@ void update_degpersecond(int true_track) {
       }
       totalDifference += degchange;
     }
-    degpersecond = totalDifference / (NUM_SAMPLES - 1);
+    // 最古サンプルと最新サンプルの時間差[ms]で正規化 → 真の deg/s
+    uint32_t elapsed_ms = truetrack_sample_times[NUM_SAMPLES - 1] - truetrack_sample_times[0];
+    if (elapsed_ms > 0) {
+      degpersecond = totalDifference * 1000.0f / (float)elapsed_ms;
+    } else {
+      degpersecond = 0;
+    }
 
     // 配列を1つ前にシフト（最古のサンプルを捨てる）
     for (int i = 1; i < NUM_SAMPLES; i++) {
       truetrack_samples[i - 1] = truetrack_samples[i];
+      truetrack_sample_times[i - 1] = truetrack_sample_times[i];
     }
     sampleIndex = NUM_SAMPLES - 2;  // 次回は末尾に書き込む位置に調整
   }
@@ -837,25 +853,42 @@ void check_destination_toofar() {
   }
 }
 
-// コース逸脱の警告を管理する（毎秒1回呼ぶこと）。
-// 積算型アルゴリズム:
-//   - コースのズレ角 (steer_angle) に比例して course_warning_index を増加させる
-//   - 正しい方向に修正中はインデックスを減らす
+// コース逸脱の警告を管理する（GPS コース更新時に呼ぶ、GPS レート非依存）。
+// 積算型アルゴリズム（単位: 度・秒）:
+//   - 前回呼び出しからの経過時間 dt[秒] を計測し、積算量に乗算することで GPS レート
+//     （1Hz / 2Hz）に依存しない実時間ベースの累積を行う
+//   - コースのズレ角 (steer_angle) × dt を course_warning_index に加算
+//   - 正しい方向に修正中は 15 × |degpersecond| × dt を減算
 //   - index が 900 に達したら音声警告を発報し、30秒のクールダウンに入る
 //   - 低速・GPS ロスト時は発動しない（誤警告防止）
+//   - 設定画面等からの復帰時に dt が過大になった場合はスキップ（誤発報防止）
 void update_course_warning(float degpersecond) {
+  // GPS レート非依存のため、前回呼び出しからの経過時間 dt[秒] を計算する
+  static uint32_t last_course_warning_update_ms = 0;
+  uint32_t now = millis();
+  float dt = 0;
+  if (last_course_warning_update_ms != 0) {
+    dt = (now - last_course_warning_update_ms) / 1000.0f;
+  }
+  last_course_warning_update_ms = now;
+  // 初回呼び出し or 設定画面/リプレイ切替等で長いギャップが発生した場合は
+  // 次回から改めて積算するためスキップ（巨大 dt による誤発報防止）
+  if (dt <= 0 || dt > 3.0f) {
+    return;
+  }
+
   //移動していない時,GPSロスト時は発動しない。
   if (get_gps_mps() < 2 || get_gps_numsat() == 0) {
     course_warning_index = 0;
   }
   //正しい方向に変化している時はindexを減らす。
   else if ((degpersecond > 0.5 && steer_angle > 0) || (degpersecond < -0.5 && steer_angle < 0)) {
-    course_warning_index -= 15 * abs(degpersecond);  //修正速度に応じ、7以上のindexが減る。3deg/sの時、indexは45減る。
+    course_warning_index -= 15 * abs(degpersecond) * dt;  //修正速度×dt に比例して減算（1Hz相当で 3deg/s の時 45/秒）
 
   }
   //正しい方向に修正されていない、かつ15度以上ずれている。
   else if (abs(steer_angle) > 15) {
-    course_warning_index += min(abs(steer_angle), 90);  //15以上、90を最大値として、indexに加算する。
+    course_warning_index += min(abs(steer_angle), 90) * dt;  //15以上、90を最大値として、dt を乗算して加算する。
   }
   //15度未満のズレ、index 0 reset。
   else {
@@ -868,7 +901,7 @@ void update_course_warning(float degpersecond) {
   else if (course_warning_index < 0)
     course_warning_index = 0;
 
-  //15度の修正されないズレは、15/900=60秒でwarning。90度以上の修正されないズレは、10秒でwarning。ただしwarningは、30秒に一度をmax回数とする。
+  //15度の修正されないズレは、900/15=60秒でwarning。90度以上の修正されないズレは、10秒でwarning。ただしwarningは、30秒に一度をmax回数とする。
   if (course_warning_index >= 900 && millis() - last_course_warning_time > 30000) {
     last_course_warning_time = millis();
     course_warning_index = 0;

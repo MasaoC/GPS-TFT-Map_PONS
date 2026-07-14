@@ -1138,15 +1138,18 @@ void add_latlon_track(float lat,float lon){
 
 bool gps_new_location_arrived(){
   if(get_demo_biwako()){
-    if(millis() > last_demo_gpsupdate + 1000){
+    // 実 GPS と同じく 2Hz (500ms 間隔) で仮想位置を更新する。
+    // 位置変位は 1Hz 時の半分 (0.00005 → 0.000025) にすることで、
+    // 1 秒あたりの移動距離を同じに保つ。
+    if(millis() > last_demo_gpsupdate + 500){
       int biwa_spd = 10;
-      demo_biwako_lat += 0.00005*biwa_spd*cos(radians(get_gps_truetrack()));
+      demo_biwako_lat += 0.000025*biwa_spd*cos(radians(get_gps_truetrack()));
       if(calculateDistanceKm(demo_biwako_lat,demo_biwako_lon,PLA_LAT,PLA_LON) > 15){
         demo_biwako_lat = PLA_LAT;
         demo_biwako_lon = PLA_LON;
         latlon_manager.reset();
       }
-      demo_biwako_lon += 0.00005*biwa_spd*sin(radians(get_gps_truetrack()));
+      demo_biwako_lon += 0.000025*biwa_spd*sin(radians(get_gps_truetrack()));
       last_demo_gpsupdate = millis();
       new_location_arrived = true;
       demo_biwako_mps = 7 + sin(millis() / 1500.0);
@@ -1166,7 +1169,8 @@ bool gps_new_location_arrived(){
       }else if(demo_steer_angle > 180){
         demo_steer_angle -= 360;
       }
-      demo_biwako_truetrack += demo_steer_angle*0.2*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      // 2Hz 化により呼び出し頻度が 2 倍になったため、1 呼び出しあたりの旋回ゲインを半分 (0.2 → 0.1) にして旋回速度を同等に保つ。
+      demo_biwako_truetrack += demo_steer_angle*0.1*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
       if(demo_biwako_truetrack > 360)
         demo_biwako_truetrack -= 360;
       else if(demo_biwako_truetrack < 0)
