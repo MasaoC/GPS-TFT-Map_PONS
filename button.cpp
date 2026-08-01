@@ -2,7 +2,7 @@
 // File    : button.cpp
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : ボタン入力処理と設定メニューの実装。
-//           Button クラスによる短押し/長押し判定、
+//           Button クラスによる短押し/長押し/ダブルクリック判定、
 //           設定画面の全メニュー項目（目的地・音量・輝度など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
@@ -22,21 +22,29 @@ extern int destination_mode;
 extern int detail_page;
 extern int replay_cursor;      // リプレイ選択画面のカーソル位置（通し番号）
 extern int replay_list_page;   // リプレイ選択画面の表示中ページ
+extern volatile int scaleindex;  // 現在のマップスケール（scalelist のインデックス）
 void reset_degpersecond();
+void next_scaleindex();          // マップスケールを次の段階へ（GPS_TFT_map.ino）
+int scaleindex_zoomlevel(int index);  // scaleindex → Google Map ズームレベル（GPS_TFT_map.ino）
 
 const unsigned long debounceTime = 5;       // チャタリング除去のための待機時間 [ms]
 const unsigned long longPressDuration = 1000; // 長押しと判定するまでの時間 [ms]
+const unsigned long doubleClickDuration = 500; // 前の短押しからこの時間内に短押しでダブルクリック [ms]
 
-Button::Button(int p, void (*shortPressCb)(), void (*longPressCb)())
-    : pin(p), switchState(HIGH), lastSwitchState(HIGH), pressTime(0), longPressHandled(false),
-      shortPressCallback(shortPressCb), longPressCallback(longPressCb) {}
+Button::Button(int p, void (*shortPressCb)(), void (*longPressCb)(), void (*doublePressCb)())
+    : pin(p), switchState(HIGH), lastSwitchState(HIGH), pressTime(0), lastShortPressTime(0), longPressHandled(false),
+      shortPressCallback(shortPressCb), longPressCallback(longPressCb), doublePressCallback(doublePressCb) {}
 
-// ボタンの状態を毎ループ読み取る。短押し・長押しを判定してコールバックを呼ぶ。
+// ボタンの状態を毎ループ読み取る。短押し・長押し・ダブルクリックを判定してコールバックを呼ぶ。
 // 判定ロジック:
 //   - 押下時 (HIGH → LOW): 押下開始時刻を記録
 //   - 離した時 (LOW → HIGH): 押下時間が longPressDuration 未満なら短押し
 //   - 押し続けている時: longPressDuration 以上経過で長押し（1 回だけ発火）
+//   - 短押しが doubleClickDuration 以内に 2 回続いたら、2 回目でダブルクリックも発火
+//     （短押し自体は毎回発火するので、ダブルクリック側の動作は短押しと重複しない処理にすること）
 // チャタリング対策として 5ms 待ってから再読みしている。
+// 短押し／ダブルクリックの操作音はコールバック側（GPS_TFT_map.ino）で鳴らす。
+// 画面によっては何も起きないため、その場合に音だけ鳴るのを避ける目的。長押し音はここで鳴らす。
 void Button::read() {
     bool currentSwitchState = digitalRead(pin);
 
@@ -54,9 +62,17 @@ void Button::read() {
                 // ボタンを離した → 押下時間で短押し判定
                 unsigned long pressDuration = millis() - pressTime;
                 if (pressDuration < longPressDuration && pressDuration > debounceTime) {
+                    unsigned long now = millis();
                     if (shortPressCallback != NULL) {
-                        enqueueTask(createPlayMultiToneTask(1046,80,1));  // 短押し音
                         shortPressCallback();
+                    }
+                    // 前回の短押しから doubleClickDuration 以内ならダブルクリック
+                    if (doublePressCallback != NULL && lastShortPressTime != 0 &&
+                        (now - lastShortPressTime) < doubleClickDuration) {
+                        doublePressCallback();
+                        lastShortPressTime = 0;  // 3 回目の短押しが続けてダブル判定にならないようリセット
+                    } else {
+                        lastShortPressTime = now;
                     }
                 }
             }
@@ -238,7 +254,7 @@ Setting menu_settings[] = {
   { SETTING_VOLUME,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " Volume: %d/100" : "Volume: %d/100", sound_volume);
+      sprintf(buff, selected ? " Volume(SE): %d/100" : "Volume(SE): %d/100", sound_volume);
       return std::string(buff);  // return as std::string
     },
     nullptr,
@@ -279,14 +295,14 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   // [5] バリオメーター音量 (VARIO_VOLUME)
   //   ・Toggle: 0 → 5 → 10 → 20 → 30 → 40 → 60 → 80 → 100 → 0 のステップ
-  //   ・アイコン色: 10以上なら緑（有効）、0なら赤（ミュート）
+  //   ・アイコン色: 30以上なら緑（飛行中でも聞こえる音量）、それ未満はオレンジ
   // ----------------------------------------------------------
   { SETTING_VARIO_VOLUME,
     [](bool selected) -> std::string {
       if (vario_inhibit)
-        return std::string(selected ? " Vario: Inhibited" : "Vario: Inhibited");
+        return std::string(selected ? " Volume(Vario): Inhibit" : "Volume(Vario): Inhibit");
       char buff[32];
-      sprintf(buff, selected ? " Vario: %d/100" : "Vario: %d/100", vario_volume);
+      sprintf(buff, selected ? " Volume(Vario): %d/100" : "Volume(Vario): %d/100", vario_volume);
       return std::string(buff);
     },
     nullptr,
@@ -306,13 +322,19 @@ Setting menu_settings[] = {
       if (vario_volume <= 0) vario_volume = 0;
     },
     nullptr,
-    nullptr
+    [](){
+      // inhibit 中は音が出ないので、音量値によらずオレンジ
+      if(!vario_inhibit && vario_volume >= 30)
+        return COLOR_GREEN;
+      else
+        return COLOR_ORANGE;
+    }
   },
 
   // ----------------------------------------------------------
   // [6] マップ向き設定 (UPWARD)
   //   ・Toggle: NORTH UP ↔ TRACK UP を切り替え（toggle_mode() が内部状態を反転）
-  //   ・アイコン色: NORTH UP なら緑（安定方向）、TRACK UP なら赤
+  //   ・アイコン色: TRACK UP なら緑（飛行時の推奨設定）、NORTH UP はオレンジ
   // ----------------------------------------------------------
   { SETTING_UPWARD,
     [](bool selected) -> std::string {
@@ -325,11 +347,45 @@ Setting menu_settings[] = {
       toggle_mode();
     },
     nullptr,
-    nullptr
+    [](){
+      if(is_trackupmode())
+        return COLOR_GREEN;
+      else
+        return COLOR_ORANGE;
+    }
   },
 
   // ----------------------------------------------------------
-  // [7] デモモード（琵琶湖）(DEMOBIWA)
+  // [7] マップ拡大率設定 (SCALE)
+  //   ・Toggle: 地図画面のダブルクリックと同じ順序でスケールを 1 段階進める
+  //             （zoom5 → 7 → 9 → 11 → 13 → MAX → zoom5 とループ）
+  //   ・アイコン色: scaleindex==3（zoom11）なら緑（通常使用する拡大率）、それ以外は赤
+  // ----------------------------------------------------------
+  { SETTING_SCALE,
+    [](bool selected) -> std::string {
+      char buff[32];  // temporary buffer
+      int zoom = scaleindex_zoomlevel(scaleindex);
+      if(zoom > 0)
+        sprintf(buff, selected ? " Map scale: zoom%d" : "Map scale: zoom%d", zoom);
+      else
+        strcpy(buff, selected ? " Map scale: MAX(no map)" : "Map scale: MAX(no map)");  // 地図画像なしの最大拡大
+      return std::string(buff);  // return as std::string
+    },
+    nullptr,
+    []() {
+      next_scaleindex();
+    },
+    nullptr,
+    [](){
+      if(scaleindex == 3)  // zoom11 = SCALE_LARGE_GMAP
+        return COLOR_GREEN;
+      else
+        return COLOR_RED;
+    }
+  },
+
+  // ----------------------------------------------------------
+  // [8] デモモード（琵琶湖）(DEMOBIWA)
   //   ・Toggle: 位置履歴をリセットし、琵琶湖デモフライトのオン/オフを切り替える。
   //             degpersecond もリセットし、地図キャッシュも無効化する。
   //   ・Exit  : デモがオンになったらリプレイを無効にして設定を閉じる（両立しない）
@@ -362,7 +418,7 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [8] フライトリプレイモード (REPLAY)
+  // [9] フライトリプレイモード (REPLAY)
   //   ・Enter : リプレイ選択画面へ遷移し、Core1 へファイル一覧の取得を依頼する。
   //             再生の開始／停止はすべて選択画面側で行う。
   //   ・Toggle/Exit: なし
@@ -399,7 +455,7 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [9] GPS 詳細画面へ (GPSDETAIL)
+  // [10] GPS 詳細画面へ (GPSDETAIL)
   //   ・Enter: GPS 星座モードを有効化し、GPS 詳細画面（衛星配置・SNR グラフ）へ遷移
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------
@@ -418,7 +474,7 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [10] マップ一覧画面へ (MAPDETAIL)
+  // [11] マップ一覧画面へ (MAPDETAIL)
   //   ・Enter: SD カード上の地図 BMP リスト画面へ遷移
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------
@@ -436,7 +492,7 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [11] SD カード詳細画面へ (SD_DETAIL)
+  // [12] SD カード詳細画面へ (SD_DETAIL)
   //   ・Enter: ページ番号を 0 にリセットし、Core1 へ SD ブラウズタスクを送信して
   //            SD カード詳細画面（ファイル一覧）へ遷移
   //   ・Toggle/Exit/アイコン色: なし
@@ -456,7 +512,7 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [12] Vario 詳細画面へ (VARIO_DETAIL)
+  // [13] Vario 詳細画面へ (VARIO_DETAIL)
   //   ・Enter: ページ番号を 0 にリセットし、Vario 詳細画面へ遷移
   //            （Status+VSI / IMU+Kalman の 2 ページで表示）
   //   ・Toggle/Exit/アイコン色: なし
@@ -475,7 +531,7 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [13] 保存して終了 (EXIT)
+  // [14] 保存して終了 (EXIT)
   //   ・Enter: exit_setting() を呼び出し、設定を保存してマップ画面に戻る
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------

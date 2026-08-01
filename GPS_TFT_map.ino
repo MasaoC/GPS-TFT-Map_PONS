@@ -94,8 +94,11 @@ void check_destination_toofar();
 void update_course_warning(float degpersecond);
 void shortPressCallback();
 void longPressCallback();
+void doublePressCallback();
+void next_scaleindex();
+int scaleindex_zoomlevel(int index);
 // Create Button objects
-Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
+Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallback);
 
 // USERLED フラッシュ制御（Core0 のループから毎回呼ぶ）。
 // 条件ごとの LED 動作:
@@ -485,12 +488,7 @@ void loop() {
       clean_backscreen();
 
       // scaleindex → Google Map ズームレベルの変換
-      int zoomlevel = 0;
-      if (scaleindex == 0) zoomlevel = 5;   //SCALE_EXSMALL_GMAP
-      if (scaleindex == 1) zoomlevel = 7;   //SCALE_SMALL_GMAP
-      if (scaleindex == 2) zoomlevel = 9;   //SCALE_MEDIUM_GMAP
-      if (scaleindex == 3) zoomlevel = 11;  //SCALE_LARGE_GMAP
-      if (scaleindex == 4) zoomlevel = 13;  //SCALE_EXLARGE_GMAP
+      int zoomlevel = scaleindex_zoomlevel(scaleindex);
 
       // ---- レイヤー 1: Google Map 画像（BMP）を背景として描画 ----
       bool gmap_drawed = false;
@@ -528,6 +526,13 @@ void loop() {
       // ---- レイヤー 3: 飛行軌跡 ----
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
+      // ---- レイヤー 3.5: パイロンへの基準線・コース円 ----
+      // マゼンタラインより先に描画して、重なったときは基準線が隠れるようにする。
+      bool draw_pilon = (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON));
+      if (draw_pilon) {
+        draw_pilon_takeshima_line(new_lat, new_long, scale, drawupward_direction);
+      }
+
       // ---- レイヤー 4: 目的地ライン ----
       // fix 取得前は自機位置が不明なため、誘導線は描画しない
       if (get_gps_fix() && currentdestination != -1 && currentdestination < destinations_count) {
@@ -549,8 +554,8 @@ void loop() {
 
       // ---- レイヤー 4.5: パイロン・PLA アイコン ----
       // マゼンタラインより後に描画してアイコンが隠れないようにする。
-      if (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-        draw_pilon_takeshima_line(new_lat, new_long, scale, drawupward_direction);
+      if (draw_pilon) {
+        draw_pilon_takeshima_marks(new_lat, new_long, scale, drawupward_direction);
       }
 
       // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
@@ -726,14 +731,41 @@ void loop1() {
 extern int max_page;  // Global variable to store maximum page number
 
 //==========BUTTON==========
+// マップスケール（ズームレベル）を次の段階へ切り替える。
+// 地図画面でのダブルクリックと、設定画面の Map scale 項目の両方から呼ばれる。
+void next_scaleindex() {
+  gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
+  scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
+  scale = scalelist[scaleindex];
+}
+
+// scaleindex → Google Map ズームレベルの変換。
+// scalelist[5]（最大拡大）に対応する地図画像は無いため 0 を返す。
+int scaleindex_zoomlevel(int index) {
+  if (index == 0) return 5;   //SCALE_EXSMALL_GMAP
+  if (index == 1) return 7;   //SCALE_SMALL_GMAP
+  if (index == 2) return 9;   //SCALE_MEDIUM_GMAP
+  if (index == 3) return 11;  //SCALE_LARGE_GMAP
+  if (index == 4) return 13;  //SCALE_EXLARGE_GMAP
+  return 0;
+}
+
 // 短押しコールバック: 画面モードごとに動作が変わる。
-//   MAP モード:      スケール（ズームレベル）を順番に切り替える
+//   MAP モード:      何もしない（誤操作防止のためスケール変更はダブルクリックに変更）
 //   SETTING モード:  カーソル移動 or 値のトグル変更
 //   SDDETAIL:       次のページを SD から読み込む
 //   MAPLIST/GPSDETAIL: 次のページへ
+// 操作音は Button クラスではなくここで鳴らす。何も起きない画面では鳴らさないため。
 void shortPressCallback() {
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
+
+  // MAP モードでは短押しは何もしない（スケール変更はダブルクリックへ移した）。
+  // 何も起きないのに音だけ鳴ると紛らわしいので、音も鳴らさずに抜ける。
+  if (screen_mode == MODE_MAP)
+    return;
+
+  enqueueTask(createPlayMultiToneTask(1046, 80, 1));  // 短押し音
 
   if (screen_mode == MODE_SETTING) {
     if (selectedLine == -1) {  // 値変更モードでない → カーソルを次の行へ
@@ -761,12 +793,24 @@ void shortPressCallback() {
     }
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
-  } else {
-    // MAP モード: スケールを次のレベルに切り替える
-    gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
-    scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
-    scale = scalelist[scaleindex];
   }
+}
+
+// ダブルクリックコールバック: 地図画面でのみスケール（ズームレベル）を切り替える。
+// 短押しは毎回発火するため、ここでは短押しと重複しない処理だけを行う。
+// 操作音は shortPressCallback() と同じ理由でここで鳴らす（効かない画面では鳴らさない）。
+void doublePressCallback() {
+  DEBUG_PLN(20240801, "double press");
+
+  // MAP モード以外（設定画面や各詳細画面）では短押しがページ送り／カーソル移動を
+  // 担っているのでダブルクリックには意味がない。音も鳴らさずに抜ける。
+  if (screen_mode != MODE_MAP)
+    return;
+
+  enqueueTask(createPlayMultiToneTask(1568, 80, 1));  // ダブルクリック音（短押しより高い音）
+
+  redraw_screen = true;
+  next_scaleindex();  // MAP モード: スケールを次のレベルに切り替える
 }
 
 // 設定画面に戻る（リプレイ選択画面から抜けるとき用）。

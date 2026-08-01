@@ -15,7 +15,7 @@
 #define RELEASE
 
 #define BUILDDATE 20260731
-#define BUILDVERSION "0.92"
+#define BUILDVERSION "0.921"
 #define VERSION_TEXT "Version 6"
 
 
@@ -71,6 +71,7 @@
 #define SD_DETECT 8
 
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
+#define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
 #define BAT_LOW_VOLTAGE 3.5
 #define BAT_ZERO_VOLTAGE 3.4
 #define PIN_PWMTONE 38

@@ -1129,8 +1129,9 @@ void draw_Biwako(double center_lat, double center_lon, float scale, float up, bo
     fill_sea_land(center_lat, center_lon, scale, up);
     gps_loop(3);
   }
-  // draw_pilon_takeshima_line はマゼンタライン描画後に呼ぶため、ここでは描画しない。
-  // GPS_TFT_map.ino のレイヤー4（目的地ライン）直後で呼ばれる。
+  // パイロン関連はレイヤー順の都合でここでは描画しない。GPS_TFT_map.ino 側で
+  // 基準線 draw_pilon_takeshima_line をマゼンタラインの前（レイヤー3.5）、
+  // アイコン draw_pilon_takeshima_marks をマゼンタラインの後（レイヤー4.5）に呼んでいる。
   nomap_drawn = false;
 }
 
@@ -1236,6 +1237,7 @@ void startup_demo_tft() {
   backscreen.fillScreen(COLOR_WHITE);
   draw_Biwako(center_lat,center_lon,2.5, 0,false);
   draw_pilon_takeshima_line(center_lat, center_lon, 2.5, 0);
+  draw_pilon_takeshima_marks(center_lat, center_lon, 2.5, 0);
   draw_version_backscreen();
   backscreen.pushSprite(0,52);
 
@@ -1268,6 +1270,7 @@ void startup_demo_tft() {
     scalenow = 2.5 + i * 0.25*zoomin_speedfactor;
     draw_Biwako(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0, false);
     draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
+    draw_pilon_takeshima_marks(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
@@ -1296,6 +1299,7 @@ void startup_demo_tft() {
     else{
       draw_Biwako(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0, false);
       draw_pilon_takeshima_line(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
+      draw_pilon_takeshima_marks(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
     }
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
@@ -1707,7 +1711,7 @@ void draw_footer(){
         }
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)", bat_pct, input_voltage));
       }
-    } else if (input_voltage < 3.8) {  // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
+    } else if (input_voltage < BAT_HALF_VOLTAGE) {  
       header_footer.setTextColor(COLOR_MAGENTA);
       header_footer.printf("%d%%", bat_pct);
     } else {  // 50%以上
@@ -1774,27 +1778,39 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
 
 
 
-// 琵琶湖 HPA 競技コース関連のシンボルを描画する:
+// 琵琶湖 HPA 競技コースの緑の基準線を描画する:
 //   - PLA（スタート）から N パイロン・W パイロン・竹島 への緑の基準線
 //   - PLA を中心とした 10.975km 円（公式ルール 2025: 第 1 レグ往路距離）
 //   - PLA を中心とした 1.0km 円（公式ルール 2025: 折り返し後の距離）
-//   - N パイロン・W パイロン・1km 地点: オレンジ塗りつぶし三角形（パイロンマーク）
-//   - PLA: 青地に黄色の小三角形 + 赤線（スタート台の簡易表示）
+// 描画順の都合でパイロンのアイコン（draw_pilon_takeshima_marks）とは分けてある。
+// 線はマゼンタの誘導ラインより先に描いて下のレイヤーに、アイコンは後に描いて上のレイヤーにする。
+#define PILON_LINE_WIDTH 3  // PLA→パイロン基準線の太さ [px]
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
   cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft pilon_1km = latLonToXY(PILON_1KM_LAT, PILON_1KM_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft takeshima = latLonToXY(TAKESHIMA_LAT, TAKESHIMA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
 
-  
-  backscreen.drawLine(pla.x, pla.y, n_pilon.x, n_pilon.y, COLOR_GREEN);
+
+  // PLA → 北/西パイロンの線は飛行中に最も見る基準線なので 3px 幅で太く描く（竹島線は 1px のまま）
+  backscreen.drawWideLine(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_GREEN);
   backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
-  backscreen.drawLine(pla.x, pla.y, w_pilon.x, w_pilon.y, COLOR_GREEN);
+  backscreen.drawWideLine(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_GREEN);
   // 公式ルール2025 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
   // 公式ルール2025 1.0km リターンフライト。
   backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35)),COLOR_GREEN);
+}
+
+// 琵琶湖 HPA 競技コースのアイコンを描画する:
+//   - N パイロン・W パイロン・1km 地点: オレンジ塗りつぶし三角形（パイロンマーク）
+//   - PLA: 青地に黄色の小三角形 + 赤線（スタート台の簡易表示）
+// マゼンタの誘導ラインより後に呼び、アイコンが隠れないようにする。
+void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
+  cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft pilon_1km = latLonToXY(PILON_1KM_LAT, PILON_1KM_LON, mapcenter_lat, mapcenter_lon, scale, upward);
 
   if(!n_pilon.isOutsideTft()){
     backscreen.fillTriangle(n_pilon.x-3,n_pilon.y,n_pilon.x+3,n_pilon.y,n_pilon.x,n_pilon.y-9, COLOR_ORANGE);
@@ -2855,14 +2871,49 @@ void draw_maplist_mode(int maplist_page) {
 
 
 
+// CPU 温度の判定しきい値 [℃]
+#define CPU_TEMP_WARN_C 50.0f  // これを超えるとオレンジ（要注意）
+#define CPU_TEMP_HOT_C  55.0f  // これを超えると赤（高温）
+
+// 設定画面フッターの電池アイコン色を返す。
+// NAV 画面ヘッダーのバッテリー残量表示（draw_header 内）と同じ配色に合わせている:
+//   USB 接続中           : 緑（"USB" 表示が緑）
+//   BAT_LOW_VOLTAGE 以下 : 赤（残量警告）
+//   BAT_HALF_VOLTAGE 未満: マゼンタ（50%未満）
+//   それ以上             : 緑
+uint16_t battery_status_color() {
+  if (digitalRead(USB_DETECT))
+    return COLOR_GREEN;
+  float input_voltage = get_input_voltage();
+  if (input_voltage <= BAT_LOW_VOLTAGE)
+    return COLOR_RED;
+  else if (input_voltage < BAT_HALF_VOLTAGE)
+    return COLOR_MAGENTA;
+  else
+    return COLOR_GREEN;
+}
+
+// 設定画面フッターの CPU 温度アイコン色を返す。
+uint16_t cpu_temp_status_color(float cpu_temp) {
+  if (cpu_temp >= CPU_TEMP_HOT_C)
+    return COLOR_RED;
+  else if (cpu_temp >= CPU_TEMP_WARN_C)
+    return COLOR_ORANGE;
+  else
+    return COLOR_GREEN;
+}
+
 // 設定画面を描画する（screen_mode == MODE_SETTING 時）。
 // selectedLine: 現在値が変更中の行（ダイヤルを押している間）→ 赤色表示。
 // cursorLine  : カーソル位置の行 → マゼンタ色表示。その他は黒。
 // menu_settings[].getLabel() で現在の設定値を含むラベル文字列を取得して表示する。
 // iconColor() が返す色の丸アイコンを各行の右端に描画する（NULL の場合は描画しない）。
-// フッターにはバッテリー残量推定・CPU 温度・空きヒープ（デバッグビルド時のみ）を表示する。
+// フッターにはバッテリー残量推定・CPU 温度・空きヒープ（デバッグビルド時のみ）を表示し、
+// 電池・CPU 温度の行にはメニューと同じ丸アイコンを右寄せで表示する。
 void draw_setting_mode(int selectedLine, int cursorLine) {
-  const int separation = 20;
+  // 行間 18px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
+  // 最終行（Save & Exit）が表示されなくなるため、項目を増やす場合はここも調整すること。
+  const int separation = 18;
   tft.loadFont(AA_FONT_SMALL);
   textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
   tft.setTextColor(COLOR_BLACK);
@@ -2901,17 +2952,21 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
     header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
   }
+  // 電池残量の丸アイコン（メニュー項目と同じ x 位置・大きさで右寄せ）
+  header_footer.fillCircle(SCREEN_WIDTH-7, 9, 5, battery_status_color());
 
   header_footer.setCursor(2, 18);
   {
     float cpu_temp = analogReadTemp();
-    header_footer.setTextColor(cpu_temp >= 55.0f ? COLOR_RED : COLOR_GRAY);
+    header_footer.setTextColor(cpu_temp >= CPU_TEMP_HOT_C ? COLOR_RED : COLOR_GRAY);
     header_footer.printf("CPU %.1fC", cpu_temp);
     if (get_airdata_ok()) {
       float sensor_temp = get_airdata_temperature();
       header_footer.setTextColor(sensor_temp >= 45.0f ? COLOR_RED : COLOR_GRAY);
       header_footer.printf("  Sensor %.1fC", sensor_temp);
     }
+    // CPU 温度の丸アイコン（電池の丸の真下）
+    header_footer.fillCircle(SCREEN_WIDTH-7, 22, 5, cpu_temp_status_color(cpu_temp));
   }
 
   #ifndef RELEASE
