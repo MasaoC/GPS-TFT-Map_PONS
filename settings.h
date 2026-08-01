@@ -15,7 +15,7 @@
 #define RELEASE
 
 #define BUILDDATE 20260731
-#define BUILDVERSION "0.921"
+#define BUILDVERSION "0.922"
 #define VERSION_TEXT "Version 6"
 
 
@@ -111,10 +111,15 @@
 #define REPLAY_2025_LABEL "2025 Taikai"
 #define REPLAY_2026_LABEL "2026 Taikai"
 
-#define REPLAY_BUF_SIZE   4    // 先読みするCSV行数（Core1が供給 → Core0が消費するリングバッファ）
+#define REPLAY_BUF_SIZE   16   // 先読みするCSV行数（Core1が供給 → Core0が消費するリングバッファ）
                                // ※ インデックス計算にビットマスクを使うので必ず 2 のべき乗にすること
+                               // 高速再生(x20)では 2Hz データを毎秒40行消費するため余裕を持たせている
 #define REPLAY_LIST_ROWS  20   // リプレイ選択画面の1ページあたり表示行数（20行×12px = 240px）
-#define REPLAY_FIXED_COUNT 4   // 一覧の先頭に並ぶ固定項目数（Replay OFF / PLAY FLIGHT ONLY / 2025 / 2026）
+#define REPLAY_FIXED_COUNT 5   // 一覧の先頭に並ぶ固定項目数
+                               // （Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / 2025 / 2026）
+// 再生速度の選択肢。x1 → x2 → x_FAST の順に切り替わる（既定は x1）。
+// 高速側の倍率を変えたいときは REPLAY_SPEED_FAST だけ書き換えればよい。
+#define REPLAY_SPEED_FAST 20
 #define REPLAY_MIN_GS 0.2f     // PLAY FLIGHT ONLY 有効時、この対地速度 [m/s] 以下を「静止」とみなす
 #define REPLAY_LEADIN_MS 5000  // 動き出しの手前この時間 [ms] 分は静止していても再生する（助走表示）。
                                // 静止区間がこの長さ未満なら一切スキップしない。

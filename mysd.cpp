@@ -778,9 +778,12 @@ volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];  // 先読みした CSV 行の�
 volatile uint8_t replay_head = 0;                 // Core1 が書き込む位置
 volatile uint8_t replay_tail = 0;                 // Core0 が読み出す位置
 volatile bool replay_eof = false;                 // ファイル末尾に到達した
-volatile unsigned long replay_start_time = 0;     // 再生開始時刻（millis()）。t_ms との比較基準
+// 再生時計のリセット通知。init_replay()（Core1）が加算し、Core0 が値の変化を見て
+// 自分の持つ仮想時刻を 0 に戻す。32bit の単純な増加なので排他は不要。
+volatile uint32_t replay_init_seq = 0;
 char replay_filename[REPLAY_FILENAME_LEN] = "";   // 再生対象ファイル（"" = 未選択）
 static bool replay_flight_only = true;            // PLAY FLIGHT ONLY（静止区間をスキップ）。既定 YES
+static int  replay_speed = 1;                     // 再生速度の倍率（1 / 2 / REPLAY_SPEED_FAST）
 
 // 飛行 CSV のファイルハンドル。SD.open()/close() を毎回呼ぶのではなく静的 FsFile を
 // 使い回すことで open/close 時の SDIO ハングリスクを最小化する（実処理は saveCSV()）。
@@ -933,6 +936,14 @@ void set_replay_filename(const char* name) {
 bool get_replay_flight_only() { return replay_flight_only; }
 void set_replay_flight_only(bool on) { replay_flight_only = on; }
 
+// 再生速度の倍率。x1 → x2 → x(REPLAY_SPEED_FAST) の順に切り替える。
+int  get_replay_speed() { return replay_speed; }
+void cycle_replay_speed() {
+  if      (replay_speed == 1) replay_speed = 2;
+  else if (replay_speed == 2) replay_speed = REPLAY_SPEED_FAST;
+  else                        replay_speed = 1;
+}
+
 // CSV のヘッダ行を解釈して replay_col[] を構築する。
 // 列名は大文字小文字を無視して照合し、未知の列や空の列名（2026大会データに存在）は無視する。
 static void replay_parse_header(const char* header) {
@@ -973,7 +984,7 @@ void init_replay(){
   replay_day_offset_ms = 0;
   replay_skipped_ms = 0;
   replay_leadin_until_abs = 0;
-  replay_start_time = millis();
+  replay_init_seq++;   // Core0 側の再生時計を 0 に戻させる
 
   // 飛行 CSV は 2 秒に 1 回しか flush していないため、リプレイに入って saveCSV() が
   // 呼ばれなくなると、直前の実飛行データ最大 2 秒分が SdFat のバッファに残ったままになる。
@@ -1314,10 +1325,11 @@ bool browse_replay_files(int start_index) {
 // 一覧の通し番号（index）は次の並びになっている:
 //   0                          : Replay OFF
 //   1                          : PLAY FLIGHT ONLY: YES/NO（トグル）
-//   2                          : 2025 Taikai
-//   3                          : 2026 Taikai
-//   4 .. 4+replayfiles_total-1 : SD ルート上の飛行 CSV
-//   4+replayfiles_total        : Return
+//   2                          : PLAY SPEED: x1/x2/x??（トグル）
+//   3                          : 2025 Taikai
+//   4                          : 2026 Taikai
+//   5 .. 5+replayfiles_total-1 : SD ルート上の飛行 CSV
+//   5+replayfiles_total        : Return
 // 先頭の固定項目数は REPLAY_FIXED_COUNT。
 // 描画側もボタン処理側もこのモデルを共有する。
 
@@ -1359,8 +1371,12 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
     snprintf(label, labelsize, "PLAY FLIGHT ONLY: %s", replay_flight_only ? "YES" : "NO");
     return RITEM_FLIGHTONLY;
   }
-  if (index == 2) { strlcpy(label, REPLAY_2025_LABEL, labelsize);         return RITEM_2025; }
-  if (index == 3) { strlcpy(label, REPLAY_2026_LABEL, labelsize);         return RITEM_2026; }
+  if (index == 2) {
+    snprintf(label, labelsize, "PLAY SPEED: x%d", replay_speed);
+    return RITEM_SPEED;
+  }
+  if (index == 3) { strlcpy(label, REPLAY_2025_LABEL, labelsize);         return RITEM_2025; }
+  if (index == 4) { strlcpy(label, REPLAY_2026_LABEL, labelsize);         return RITEM_2026; }
 
   if (index == REPLAY_FIXED_COUNT + replayfiles_total) {
     strlcpy(label, "Return", labelsize);

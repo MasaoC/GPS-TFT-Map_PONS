@@ -488,13 +488,31 @@ bool replaymode_gpsoff = false;
 static ReplayRow replay_last_row;
 static bool replay_last_valid = false;
 
+// --- 再生時計（Core0 専用）---
+// 実時間ではなく「仮想の再生経過時間」を積算する方式にしている。
+// 毎回の経過分に倍率を掛けて足すため、再生速度の変更も一時停止も、
+// 時刻の飛びを起こさずに途中で行える。
+static uint32_t replay_virtual_ms = 0;   // 再生開始からの仮想経過時間 [ms]
+static uint32_t replay_last_tick  = 0;   // 前回積算したときの millis()
+static uint32_t replay_seen_seq   = 0;   // 確認済みの replay_init_seq
+static bool     replay_paused     = false;
+
+// 再生の一時停止／再開。設定画面など地図以外を表示している間は停止させる。
+// 一時停止中は仮想時刻を進めないだけなので、再開すると続きから再生される。
+void replay_set_paused(bool paused) {
+  replay_paused = paused;
+}
+
 // リプレイ中で、かつ CSV にその項目の列が存在する場合のみ true。
 // （v5 のデータは高度・上昇率・気圧の列を持たないので false になり実センサ値へフォールバックする）
 bool replay_has_value(uint16_t havebit) {
   return replaymode_gpsoff && replay_last_valid && (replay_last_row.have & havebit);
 }
 float replay_get_kf_altitude() { return replay_last_row.kf_altitude; }
-float replay_get_kf_vspeed()   { return replay_last_row.kf_vspeed; }
+// 一時停止中は上昇率 0 を返す。停止中は新しい行が適用されないため、
+// そのままだと最後に読んだ行の上昇率が保持され続け、バリオが鳴りっぱなしになる
+// （特に下降側は連続音のため止まらない）。位置・高度・気圧は停止位置のまま保持する。
+float replay_get_kf_vspeed()   { return replay_paused ? 0.0f : replay_last_row.kf_vspeed; }
 float replay_get_pressure()    { return replay_last_row.pressure; }
 float replay_get_voltage()     { return replay_last_row.voltage; }
 
@@ -1223,7 +1241,21 @@ void gps_loop(int id) {
   if (replaymode_gpsoff) {
     static unsigned long last_replay_request = 0;
 
-    uint32_t elapsed = millis() - replay_start_time;
+    // --- 再生時計の更新 ---
+    uint32_t now = millis();
+    if (replay_seen_seq != replay_init_seq) {
+      // Core1 が init_replay() を実行した → 先頭から再生し直す
+      replay_seen_seq   = replay_init_seq;
+      replay_virtual_ms = 0;
+      replay_last_tick  = now;
+    }
+    if (replay_paused) {
+      replay_last_tick = now;   // 停止中は経過を積まない（再開時に飛ばないように基準だけ進める）
+    } else {
+      replay_virtual_ms += (now - replay_last_tick) * (uint32_t)get_replay_speed();
+      replay_last_tick   = now;
+    }
+    uint32_t elapsed = replay_virtual_ms;
     ReplayRow row;
     // 再生時刻に達した行をまとめて反映する（描画等で遅れた場合の取りこぼしを防ぐ）
     while (replay_available() && replay_peek_t_ms() <= elapsed) {
@@ -1237,7 +1269,8 @@ void gps_loop(int id) {
       if (!isTaskInQueue(TASK_INIT_REPLAY) && !isTaskRunning(TASK_INIT_REPLAY))
         enqueueTask(createInitReplayTask());
     } else if (replay_buffer_has_space() &&
-               millis() - last_replay_request > REPLAY_REQ_INTERVAL_MS &&
+               // 高速再生ほど消費が速いので補充間隔も倍率で詰める
+               millis() - last_replay_request > (REPLAY_REQ_INTERVAL_MS / (uint32_t)get_replay_speed()) &&
                !isTaskInQueue(TASK_LOAD_REPLAY) && !isTaskRunning(TASK_LOAD_REPLAY)) {
       last_replay_request = millis();
       enqueueTask(createLoadReplayTask());  // Core1 にバッファの補充を依頼

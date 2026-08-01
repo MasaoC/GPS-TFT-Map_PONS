@@ -84,6 +84,7 @@
         RITEM_NONE = 0,     // 空行（そのページに項目が無い）
         RITEM_OFF,          // リプレイ解除（通常 GPS に戻す）
         RITEM_FLIGHTONLY,   // 静止区間をスキップするか（YES/NO トグル）
+        RITEM_SPEED,        // 再生速度の倍率（x1 / x2 / x?? トグル）
         RITEM_2025,         // 固定項目: 2025 大会データ
         RITEM_2026,         // 固定項目: 2026 大会データ
         RITEM_FILE,         // SD 上の飛行 CSV
@@ -107,6 +108,9 @@
     void     set_replay_filename(const char* name);
     bool     get_replay_flight_only();
     void     set_replay_flight_only(bool on);
+    int      get_replay_speed();     // 再生速度の倍率（1 / 2 / REPLAY_SPEED_FAST）
+    void     cycle_replay_speed();   // 倍率を次の候補へ切り替える
+    void     replay_set_paused(bool paused);  // 再生の一時停止（設定画面表示中など）
 
     bool browse_sd(int page);
     void log_sd(const char* text);
@@ -236,7 +240,7 @@
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
   extern volatile uint8_t replay_head, replay_tail;
   extern volatile bool replay_eof;
-  extern volatile unsigned long replay_start_time;
+  extern volatile uint32_t replay_init_seq;  // init_replay() のたびに加算（再生時計のリセット通知）
   extern char replay_filename[REPLAY_FILENAME_LEN];
 
   // リプレイ選択画面のファイル一覧（browse_replay_files() が更新）

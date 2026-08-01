@@ -1005,7 +1005,7 @@ void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double c
     //
     calculatePointC(dest_lat, dest_lon, center_lat, center_lon, -distance, newlat, newlon);
     cord_tft outside_tft = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    backscreen.drawLine(goal.x, goal.y,outside_tft.x,outside_tft.y, COLOR_MAGENTA);
+    backscreen.drawWideLine(goal.x, goal.y,outside_tft.x,outside_tft.y, 2, COLOR_MAGENTA);
   }
 }
 
@@ -1793,9 +1793,9 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 
 
   // PLA → 北/西パイロンの線は飛行中に最も見る基準線なので 3px 幅で太く描く（竹島線は 1px のまま）
-  backscreen.drawWideLine(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_GREEN);
+  backscreen.drawWideLine(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
   backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
-  backscreen.drawWideLine(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_GREEN);
+  backscreen.drawWideLine(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
   // 公式ルール2025 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
   // 公式ルール2025 1.0km リターンフライト。
@@ -2125,7 +2125,8 @@ void draw_replayselect(int page, int cursor) {
       uint16_t col = COLOR_BLACK;
       if (index == cursor) {
         col = COLOR_MAGENTA;            // カーソル位置
-      } else if (type == RITEM_OFF || type == RITEM_RETURN || type == RITEM_FLIGHTONLY) {
+      } else if (type == RITEM_OFF || type == RITEM_RETURN ||
+                 type == RITEM_FLIGHTONLY || type == RITEM_SPEED) {
         col = COLOR_BLUE;               // 操作項目はファイル名と区別する
       } else if (getReplayMode() && strcmp(get_replay_filename(), label) == 0) {
         col = COLOR_GREEN;              // 現在再生中のファイル
@@ -2173,7 +2174,8 @@ void draw_replayselect(int page, int cursor) {
   header_footer.setCursor(1, 1);
   if (getReplayMode()) {
     header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
-    header_footer.printf("NOW: %s", get_replay_filename());
+    // この画面を開いている間は再生を一時停止しているので PAUSED と表示する
+    header_footer.printf("PAUSED x%d: %s", get_replay_speed(), get_replay_filename());
   } else {
     header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
     header_footer.print("NOW: normal GPS");

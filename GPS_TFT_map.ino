@@ -239,6 +239,9 @@ void setup1(void) {
 void loop() {
   //switch handling
   sw_push.read();
+  // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
+  // リプレイを一時停止する。戻ってきたら続きから再生される。
+  replay_set_paused(screen_mode != MODE_MAP);
   gps_loop(0);  // ループ先頭で GPS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
 
@@ -328,7 +331,13 @@ void loop() {
 
   // GNSS高度による気圧基準補正（3Dフィックス有効時のみ、内部で1秒レート制限）
   // Vertical speed は変更せず、高度の長期ドリフトをゆっくり修正する。
-  if (get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
+  //
+  // リプレイ中は実行しない。リプレイ中の GNSS 高度は CSV 由来（再生した飛行場所の高度）
+  // であり、GNSS 垂直速度に至っては更新されず直前の実測値のまま残る。これらを Kalman に
+  // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
+  // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
+  // 再生中のように動き続ける原因になる。
+  if (!getReplayMode() && get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
     imu_kalman_gnss_update(
       (float)get_gps_altitude(),
       get_gps_vacc_mm() / 1000.0f
@@ -853,6 +862,10 @@ static void handleReplaySelect() {
     case RITEM_FLIGHTONLY:
       // 静止区間をスキップするかを切り替える。画面はそのまま（続けて再生対象を選べる）
       set_replay_flight_only(!get_replay_flight_only());
+      break;
+    case RITEM_SPEED:
+      // 再生速度を x1 → x2 → x?? と切り替える。再生中でも時刻は飛ばない
+      cycle_replay_speed();
       break;
     case RITEM_2025:
       startReplay(REPLAY_2025_FILE);
