@@ -4,9 +4,9 @@
 // Role    : TFTディスプレイ描画の実装。
 //           地図（ポリゴン・Googleマップ画像）、コンパス、
 //           飛行コース矢印、ヘッダー/フッター、設定画面、
-//           GPSDetail/SDDetail/マップリスト画面など全UI描画。
+//           GPSDetail/SDDetail/マップリスト/リプレイ選択画面など全UI描画。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -2065,6 +2065,102 @@ void draw_sddetail(int page) {
   } else {
     header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
     header_footer.print("SDIO");
+  }
+  header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
+}
+
+
+// ===== リプレイ選択画面 =====
+volatile bool loading_replaylist = true;   // Core1 でファイル一覧を取得中
+bool replay_loading_displayed = false;     // "Stand by..." を表示中か（読み込み完了時の再描画判定用）
+
+// リプレイする対象を選ぶ画面を描画する（screen_mode == MODE_REPLAYSELECT 時）。
+// 1ページ 20 行（12px ピッチ）。先頭に固定項目（Replay OFF / 2025 / 2026）、
+// 続けて SD 上の飛行 CSV、最後に Return が並ぶ。項目モデルは mysd.cpp の
+// replay_menu_item() が管理しており、ボタン処理側と共有している。
+// cursor: 現在のカーソル位置（通し番号）。マゼンタで表示する。
+void draw_replayselect(int page, int cursor) {
+  int pagecount = replay_menu_page_count();
+
+  // --- ヘッダー ---
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);  // +10px（sddetail と同じオフセット）
+  if (!loading_replaylist)
+    header_footer.printf("REPLAY  %d/%d", page + 1, pagecount);
+  else
+    header_footer.printf("REPLAY  loading...");
+  header_footer.pushSprite(0, -10);
+
+  // --- リスト本体 ---
+  backscreen.fillScreen(COLOR_WHITE);
+  // variodetail 等から戻ると unloadFont() された状態のことがあるため明示的にロードする
+  backscreen.loadFont(AA_FONT_SMALL);
+
+  if (!loading_replaylist) {
+    char label[40];
+    int  fsize = 0;
+    for (int r = 0; r < REPLAY_LIST_ROWS; r++) {
+      int index = page * REPLAY_LIST_ROWS + r;
+      ReplayItemType type = replay_menu_item(index, page, label, sizeof(label), &fsize);
+      if (type == RITEM_NONE) continue;
+
+      uint16_t col = COLOR_BLACK;
+      if (index == cursor) {
+        col = COLOR_MAGENTA;            // カーソル位置
+      } else if (type == RITEM_OFF || type == RITEM_RETURN || type == RITEM_FLIGHTONLY) {
+        col = COLOR_BLUE;               // 操作項目はファイル名と区別する
+      } else if (getReplayMode() && strcmp(get_replay_filename(), label) == 0) {
+        col = COLOR_GREEN;              // 現在再生中のファイル
+      }
+      // 固定項目は現在再生中かどうかをパスで判定する
+      if (getReplayMode() && index != cursor) {
+        if ((type == RITEM_2025 && strcmp(get_replay_filename(), REPLAY_2025_FILE) == 0) ||
+            (type == RITEM_2026 && strcmp(get_replay_filename(), REPLAY_2026_FILE) == 0))
+          col = COLOR_GREEN;
+      }
+
+      backscreen.setTextColor(col, COLOR_WHITE);
+      backscreen.setCursor(10, r * 12);
+      backscreen.print(label);
+    }
+
+    // ファイルサイズは小さい内蔵フォントで右端に描く（sddetail と同じ流儀）
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    for (int r = 0; r < REPLAY_LIST_ROWS; r++) {
+      int index = page * REPLAY_LIST_ROWS + r;
+      if (replay_menu_item(index, page, label, sizeof(label), &fsize) == RITEM_FILE && fsize != 0) {
+        backscreen.setCursor(SCREEN_WIDTH - 40, r * 12 + 4);
+        backscreen.printf("%dKB", (int)(fsize / 1024) + 1);
+      }
+    }
+    backscreen.loadFont(AA_FONT_SMALL);
+    replay_loading_displayed = false;
+  } else {
+    replay_loading_displayed = true;
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.setCursor(80, 100);
+    if (digitalRead(SD_DETECT))
+      backscreen.print("No SD card ...");
+    else
+      backscreen.print("Stand by ...");
+  }
+  backscreen.pushSprite(0, 40);
+
+  // --- フッター: 現在の再生状態 ---
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_BLACK);
+  header_footer.setCursor(1, 1);
+  if (getReplayMode()) {
+    header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
+    header_footer.printf("NOW: %s", get_replay_filename());
+  } else {
+    header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    header_footer.print("NOW: normal GPS");
   }
   header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }

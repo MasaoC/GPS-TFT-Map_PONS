@@ -5,7 +5,7 @@
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 
 #include "navdata.h"
@@ -38,6 +38,8 @@ float degpersecond = 0;                // 算出された旋回角速度 [deg/s]
 // --- 画面モード・スケール管理 ---
 int screen_mode = MODE_MAP;  // 現在の画面モード（MODE_MAP / MODE_SETTING など）
 int detail_page = 0;         // サブ画面（GPSDetail / SDDetail）のページ番号
+int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（項目の通し番号）
+int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;                // 現在のマップスケール [pixels/km]
 
@@ -262,7 +264,11 @@ void loop() {
   imu_update();
 
   // ROTATION_VECTOR 更新時（5Hz）かつ GPS 日時有効時 → Euler角を JST 時刻で SD ログ
-  if (get_imu_rv_updated() && get_gpsdate().isValid() && get_gpstime().isValid()) {
+  // リプレイ中は記録しない。リプレイ中の日時は CSV 由来のため、そのまま記録すると
+  // 「再生した飛行の日付」のファイルに現在の（静止した）IMU 値を追記してしまい、
+  // 実際の飛行記録を汚してしまう。下の prev_jst_cs による単調増加チェックも
+  // 再生日時に引きずられて、通常モードに戻ったあと記録が止まる原因になる。
+  if (!getReplayMode() && get_imu_rv_updated() && get_gpsdate().isValid() && get_gpstime().isValid()) {
     // millis() オフセットで UTC 時刻を推定し JST（UTC+9）に変換
     uint32_t elapsed_ms = millis() - get_gps_fix_millis();
     int utc_cs = get_gpstime().centisecond() + (int)(elapsed_ms / 10);
@@ -373,6 +379,11 @@ void loop() {
       redraw_screen = true;
     if (redraw_screen)
       draw_sddetail(detail_page);
+  } else if (screen_mode == MODE_REPLAYSELECT) {
+    if (replay_loading_displayed && !loading_replaylist)
+      redraw_screen = true;  // Core1 のファイル一覧取得が完了したので描き直す
+    if (redraw_screen)
+      draw_replayselect(replay_list_page, replay_cursor);
   } else if (screen_mode == MODE_MAPLIST) {
     if (redraw_screen)
       draw_maplist_mode(detail_page);
@@ -656,6 +667,10 @@ void loop1() {
       case TASK_BROWSE_SD:
         browse_sd(currentTask.pagenum);
         break;
+      case TASK_BROWSE_REPLAY:
+        // pagenum にはページ番号ではなく「ファイルの開始通し番号」が入っている
+        browse_replay_files(currentTask.pagenum);
+        break;
       case TASK_LOAD_REPLAY:
         load_replay();
         break;
@@ -733,6 +748,17 @@ void shortPressCallback() {
       enqueueTask(createBrowseSDTask(0));
     else
       enqueueTask(createBrowseSDTask(detail_page % (max_page + 1)));  // ページをループ
+  } else if (screen_mode == MODE_REPLAYSELECT) {
+    // カーソルを次の項目へ（末尾まで行ったら先頭に戻る）
+    int total = replay_menu_total_items();
+    replay_cursor = (replay_cursor + 1) % total;
+    int newpage = replay_menu_page_of(replay_cursor);
+    if (newpage != replay_list_page) {
+      // ページを跨いだので、そのページ分のファイル一覧を Core1 に取り直してもらう
+      replay_list_page = newpage;
+      loading_replaylist = true;
+      enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
+    }
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
   } else {
@@ -743,6 +769,64 @@ void shortPressCallback() {
   }
 }
 
+// 設定画面に戻る（リプレイ選択画面から抜けるとき用）。
+// 汎用の「設定画面へ戻る」パスを通らないので、カーソル状態は自分でリセットする。
+static void backToSettingFromReplay() {
+  screen_mode = MODE_SETTING;
+  selectedLine = -1;   // 値変更モードを解除（REPLAY 項目に入った時に立っている）
+  tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);  // 画面を白でクリア
+}
+
+// 指定したファイルのリプレイ再生を開始し、地図画面へ戻る。
+static void startReplay(const char* filename) {
+  set_replay_filename(filename);
+  set_replaymode(true);
+  set_demo_biwako(false);       // デモとリプレイは同時使用不可 → デモを無効化
+  latlon_manager.reset();       // 位置履歴をクリア
+  reset_degpersecond();         // 旋回角速度をリセット
+  gmap_loaded_active = false;   // 地図キャッシュを無効化（再読み込みさせる）
+  enqueueTask(createInitReplayTask());  // Core1: 選択したファイルを開いて読み込み開始
+  selectedLine = -1;
+  exit_setting();               // 設定を保存して地図画面へ
+}
+
+// リプレイ選択画面での長押し（決定）を処理する。
+static void handleReplaySelect() {
+  char label[40];
+  int  fsize = 0;
+  ReplayItemType type = replay_menu_item(replay_cursor, replay_list_page, label, sizeof(label), &fsize);
+
+  switch (type) {
+    case RITEM_OFF:
+      // リプレイを解除して通常の GPS に戻す
+      set_replaymode(false);
+      set_replay_filename("");
+      latlon_manager.reset();
+      reset_degpersecond();
+      gmap_loaded_active = false;
+      backToSettingFromReplay();
+      break;
+    case RITEM_FLIGHTONLY:
+      // 静止区間をスキップするかを切り替える。画面はそのまま（続けて再生対象を選べる）
+      set_replay_flight_only(!get_replay_flight_only());
+      break;
+    case RITEM_2025:
+      startReplay(REPLAY_2025_FILE);
+      break;
+    case RITEM_2026:
+      startReplay(REPLAY_2026_FILE);
+      break;
+    case RITEM_FILE:
+      startReplay(label);  // label には SD ルート上のファイル名が入っている
+      break;
+    case RITEM_RETURN:
+      backToSettingFromReplay();
+      break;
+    default:
+      break;  // 空行を選んでいる場合は何もしない
+  }
+}
+
 // 長押しコールバック: 設定画面への出入り、または設定項目の確定/解除。
 // 状態遷移:
 //   MAP/他 → 長押し → SETTING 画面へ移行
@@ -750,6 +834,13 @@ void shortPressCallback() {
 //   SETTING（変更中）→ 長押し → 値変更モードを終了し確定する
 void longPressCallback() {
   redraw_screen = true;
+
+  // リプレイ選択画面での長押し = 「決定」。
+  // 下の汎用パス（設定画面以外 → 設定画面へ戻る）より先に処理しないと項目を選べない。
+  if (screen_mode == MODE_REPLAYSELECT) {
+    handleReplaySelect();
+    return;
+  }
 
   if (screen_mode != MODE_SETTING) {
     // 設定画面以外から長押し → 設定画面へ遷移

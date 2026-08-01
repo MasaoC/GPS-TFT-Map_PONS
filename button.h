@@ -5,7 +5,7 @@
 //           短押し/長押しコールバックを持つ Button クラスと、
 //           設定画面の各メニュー項目を表す Setting 構造体を定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 #ifndef BUTTON_H
 #define BUTTON_H
@@ -22,6 +22,10 @@
   };
   extern Setting menu_settings[];
   extern const int setting_size;
+
+  // 設定を保存して設定画面を閉じ、地図画面へ戻る。
+  void exit_setting();
+
   // Button class definition
   class Button {
   public:

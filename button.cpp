@@ -6,7 +6,7 @@
 //           設定画面の全メニュー項目（目的地・音量・輝度など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 // Handle button updates
 #include "Button.h"
@@ -20,6 +20,8 @@ extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
 extern int detail_page;
+extern int replay_cursor;      // リプレイ選択画面のカーソル位置（通し番号）
+extern int replay_list_page;   // リプレイ選択画面の表示中ページ
 void reset_degpersecond();
 
 const unsigned long debounceTime = 5;       // チャタリング除去のための待機時間 [ms]
@@ -361,31 +363,33 @@ Setting menu_settings[] = {
 
   // ----------------------------------------------------------
   // [8] フライトリプレイモード (REPLAY)
-  //   ・Toggle: 位置履歴・degpersecond をリセットし、リプレイモードをオン/オフ切り替え。
-  //             地図キャッシュも無効化する。
-  //   ・Exit  : リプレイがオンになったらデモを無効化し、
-  //             Core1 へリプレイ初期化タスクを送信してから設定を閉じる。
+  //   ・Enter : リプレイ選択画面へ遷移し、Core1 へファイル一覧の取得を依頼する。
+  //             再生の開始／停止はすべて選択画面側で行う。
+  //   ・Toggle/Exit: なし
   //   ・アイコン色: リプレイがオフなら緑（通常モード）、オンなら赤
   // ----------------------------------------------------------
   { SETTING_REPLAY,
     [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " REPLAY mode: %s" : "REPLAY mode: %s", getReplayMode() ? "YES" : "NO");
+      char buff[40];  // temporary buffer
+      // 再生中は対象ファイル名（パスを除いた部分）を表示する
+      const char* label = "OFF";
+      if (getReplayMode()) {
+        label = get_replay_filename();
+        if (strcmp(label, REPLAY_2025_FILE) == 0)      label = REPLAY_2025_LABEL;
+        else if (strcmp(label, REPLAY_2026_FILE) == 0) label = REPLAY_2026_LABEL;
+      }
+      snprintf(buff, sizeof(buff), selected ? " REPLAY: %s >" : "REPLAY: %s >", label);
       return std::string(buff);  // return as std::string
     },
-    nullptr,
     []() {
-      latlon_manager.reset();       // 位置履歴をクリア
-      reset_degpersecond();         // 旋回角速度をリセット
-      toggleReplayMode();           // リプレイオン/オフ切り替え
-      gmap_loaded_active = false;   // 地図キャッシュを無効化（再読み込みさせる）
-    },[](){
-      if(getReplayMode()){
-        set_demo_biwako(false);              // デモとリプレイは同時使用不可 → デモを無効化
-        enqueueTask(createInitReplayTask()); // Core1: リプレイ用 SD 読み込みを初期化
-        exit_setting();
-      }
+      screen_mode = MODE_REPLAYSELECT;  // リプレイ選択画面に切り替え
+      replay_cursor = 0;                // カーソルを先頭に戻す
+      replay_list_page = 0;
+      loading_replaylist = true;
+      enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(0)));
     },
+    nullptr,
+    nullptr,
     [](){
       if(!getReplayMode())
         return COLOR_GREEN;

@@ -4,10 +4,11 @@
 // Role    : SDカード操作の実装（全処理はCore1で実行）。
 //           SdFatライブラリによるファイル読み書き、
 //           設定ファイル保存/読込、CSVフライトログ追記、
+//           飛行CSVのリプレイ再生（列名索引パーサ・先読みリングバッファ）、
 //           Googleマップ画像(BMP)のロード、
 //           Core1タスクキューのエンキュー/デキュー管理。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -467,6 +468,17 @@ Task createBrowseSDTask(int page){
 }
 
 
+// リプレイ選択画面のファイル一覧取得タスク。
+// browse_sd() と違い「ページ番号」ではなく「対象CSVの通し番号の開始位置」を渡す
+// （リストの先頭に固定項目が並ぶため、ページ境界と一覧のインデックスがずれる）。
+Task createBrowseReplayTask(int start_index){
+  Task task;
+  task.type = TASK_BROWSE_REPLAY;
+  task.pagenum = start_index;
+  return task;
+}
+
+
 Task createLoadReplayTask(){
   Task task;
   task.type = TASK_LOAD_REPLAY;
@@ -747,101 +759,622 @@ void setup_sd(int trycount, bool load_settings){
   sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }
 
-// ===== リプレイ再生用変数 =====
-char replay_nmea[128];            // 読み込んだ NMEA 文字列を格納するバッファ
-volatile unsigned long replay_seekpos = 0;  // replay.csv の次回読み込み位置（バイトオフセット）
-volatile bool loaded_replay_nmea = false;   // 新しい NMEA データが用意できたかどうかのフラグ
-unsigned long replay_start_time = 0;        // 再生開始時刻（millis()）。タイムスタンプとの比較基準
-
-// リプレイ再生を先頭から再開するために変数をリセットする。
-// replay.csv の先頭から読み直し、再生経過時間を 0 にする（ファイル末尾到達時にもループ再生に利用）。
-void init_replay(){
-  replay_start_time = millis();
-  replay_seekpos = 0;
-}
-
-
-// replay.csv から現在の再生経過時間に対応する NMEA 文を 1 行読み込む。
-// フォーマット: time_ms,"NMEA_SENTENCE"\n （例: 1500,"$GNRMC,..."）
+// ============================================================
+// リプレイ再生（PONS の飛行 CSV を直接再生する）
 //
-// 動作フロー:
-//   1. millis() - replay_start_time で現在の再生経過時間(ms)を求める。
-//   2. replay_seekpos から読み始め、タイムスタンプが経過時間以内の行を探す。
-//   3. 見つかれば replay_nmea[] に NMEA 文字列をコピーし loaded_replay_nmea=true にする。
-//   4. タイムスタンプが経過時間を超えていたら「まだ早い」として待機（loaded_replay_nmea=false）。
-//   5. ファイル末尾に達したら init_replay() でループ再生に戻る。
-// gps.cpp 側は loaded_replay_nmea を監視して replay_nmea を GPS パーサに送る。
-void load_replay() {
-  unsigned long timems = millis() - replay_start_time;
+// 旧実装は Python で NMEA に変換した replay.csv 専用だったが、v6 では
+// SD に保存されている飛行 CSV（YYYY-MM-DD_HHMM.csv, 2Hz）をそのまま再生する。
+// CSV のヘッダを「列名」で解釈するため、v5（6列）～v6（10列）まで無加工で扱える。
+//
+// 役割分担:
+//   Core1 (このファイル) … ファイルを開きっぱなしにして行を読み、パースしてリングに積むだけ
+//   Core0 (gps.cpp)      … リングから「再生時刻に達した行」を取り出して stored_* に反映する
+// 単一 producer / 単一 consumer のリングなので mutex は不要。
+// （スロットへ書き込んでから head を進める順序を必ず守ること）
+// ============================================================
 
-  FsFile myFile = SD.open("replay.csv");
-  if (!myFile) {
-    loaded_replay_nmea = false;
-    return;
+// ===== リプレイ再生用変数 =====
+volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];  // 先読みした CSV 行のリングバッファ
+volatile uint8_t replay_head = 0;                 // Core1 が書き込む位置
+volatile uint8_t replay_tail = 0;                 // Core0 が読み出す位置
+volatile bool replay_eof = false;                 // ファイル末尾に到達した
+volatile unsigned long replay_start_time = 0;     // 再生開始時刻（millis()）。t_ms との比較基準
+char replay_filename[REPLAY_FILENAME_LEN] = "";   // 再生対象ファイル（"" = 未選択）
+static bool replay_flight_only = true;            // PLAY FLIGHT ONLY（静止区間をスキップ）。既定 YES
+
+// 飛行 CSV のファイルハンドル。SD.open()/close() を毎回呼ぶのではなく静的 FsFile を
+// 使い回すことで open/close 時の SDIO ハングリスクを最小化する（実処理は saveCSV()）。
+// init_replay() からも flush するため、ここで定義している。
+static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
+
+static FsFile replayFileStatic;      // セッション中は開きっぱなし（SDIOハングリスク低減のため）
+static int8_t replay_col[REPLAY_COL_COUNT];  // 列名 → CSV上の列インデックス（-1 = その列は無い）
+static uint32_t replay_csv_t0_ms = 0;        // CSV 先頭データ行の時刻（0時からのms）
+static uint32_t replay_prev_ms = 0;          // 直前行の時刻（日跨ぎ検出用）
+static uint32_t replay_day_offset_ms = 0;    // 日跨ぎ補正の累積 [ms]
+static bool replay_t0_valid = false;         // 先頭行の時刻を確定済みか
+
+// --- PLAY FLIGHT ONLY 用のタイムライン圧縮 ---
+// 静止行を捨てるだけでは、残った行が元の時刻を保持しているため再生が静止区間で
+// 待ち続けてしまう。スキップした区間の長さを累積し、以降の行の再生時刻から
+// 差し引くことで、静止区間を詰めて再生する。
+static uint32_t replay_skipped_ms = 0;         // スキップした区間の累計 [ms]
+static uint32_t replay_leadin_until_abs = 0;   // この絶対時刻までは静止していても再生する（助走区間）
+
+// 助走区間の開始位置を探すためのリングバッファ（静止行のファイル位置と時刻）
+static uint32_t replay_leadin_pos[REPLAY_LEADIN_SLOTS];
+static uint32_t replay_leadin_abs[REPLAY_LEADIN_SLOTS];
+
+// CSV ヘッダで探す列名。並びは ReplayCol の enum と一致させること。
+static const char* const replay_col_names[REPLAY_COL_COUNT] = {
+  "latitude", "longitude", "gs", "truetrack", "altitude",
+  "kf_altitude", "kf_vspeed", "pressure", "date", "time",
+  "numsat", "voltage"
+};
+
+// 大文字小文字を無視した文字列比較（strcasecmp 相当）。前後の空白も無視する。
+static bool replay_name_match(const char* token, const char* name) {
+  while (*token == ' ' || *token == '\t') token++;
+  while (*token && *name) {
+    char a = *token, b = *name;
+    if (a >= 'A' && a <= 'Z') a += 32;
+    if (b >= 'A' && b <= 'Z') b += 32;
+    if (a != b) return false;
+    token++; name++;
   }
-  if(loaded_replay_nmea){
-    DEBUG_PLN(20250804,"Already loaded waiting");
-    return;
-  }
-
-  
-  while (myFile.seek(replay_seekpos)) {
-    DEBUG_PLN(20251025,myFile.available());
-    if(myFile.available() == 0){
-      DEBUG_PLN(20251025,"Most likely, end of file of replay reached.");
-      init_replay();
-      return;
-    }
-
-    String line = myFile.readStringUntil('\n');
-    unsigned long next_replay_seekpos = myFile.position(); // Update seek position for next read
-
-    DEBUG_PLN(20250804,"Loading replay");
-    DEBUG_PLN(20250804,next_replay_seekpos);
-
-    // Skip empty or malformed lines
-    if (line.length() < 10) continue;
-
-    // Parse CSV: time_ms,NMEA
-    int commaIndex = line.indexOf(',');
-    if (commaIndex == -1) continue; // Skip if no comma found
-
-    // Extract and convert timestamp
-    String timeStr = line.substring(0, commaIndex);
-    int lineTimeMs = timeStr.toInt();
-    if (lineTimeMs < 0) continue; // Skip invalid timestamp
-
-    DEBUG_P(20251025,lineTimeMs);
-    DEBUG_P(20251025,"<=?");
-    DEBUG_PLN(20251025,timems);
-
-    // Check if timestamp is >= timems
-    if (lineTimeMs <= timems) {
-      // Extract NMEA sentence (remove quotes)
-      String nmea = line.substring(commaIndex + 2, line.length() - 1); // Skip comma and quotes
-      if (nmea.length() < sizeof(replay_nmea) - 2) {
-        nmea += '\n';
-        nmea.toCharArray(replay_nmea, sizeof(replay_nmea));
-
-        loaded_replay_nmea = true;
-      } else {
-        loaded_replay_nmea = false; // NMEA too long for buffer
-      }
-      replay_seekpos = next_replay_seekpos;
-      myFile.close();
-      return;
-    }else{
-      loaded_replay_nmea = false;
-      // Too early to call for new NMEA.
-      myFile.close();
-      return;
-    }
-  }
-
-  // No matching timestamp found
-  loaded_replay_nmea = false;
-  myFile.close();
+  // token 側の末尾に空白・CR・LF が残っていても一致とみなす
+  // （ヘッダ行の最終列は fgets が付けた改行を含むため、これを無視しないと
+  //   "time" が最終列にある CSV で列を見つけられなくなる）
+  while (*token == ' ' || *token == '\t' || *token == '\r' || *token == '\n') token++;
+  return (*token == '\0' && *name == '\0');
 }
+
+// CSV 1行から n 番目（0始まり）のフィールドを取り出して out にコピーする。
+// 戻り値: 取り出せたら true。フィールドが存在しない場合は false。
+static bool replay_get_field(const char* line, int index, char* out, size_t outsize) {
+  if (index < 0) return false;
+  int field = 0;
+  const char* p = line;
+  while (field < index) {
+    p = strchr(p, ',');
+    if (p == nullptr) return false;
+    p++;
+    field++;
+  }
+  const char* end = strchr(p, ',');
+  size_t len = (end == nullptr) ? strlen(p) : (size_t)(end - p);
+  if (len >= outsize) len = outsize - 1;
+  memcpy(out, p, len);
+  out[len] = '\0';
+  // 末尾の CR / 空白を除去
+  while (len > 0 && (out[len-1] == '\r' || out[len-1] == '\n' || out[len-1] == ' ')) {
+    out[--len] = '\0';
+  }
+  return (len > 0);
+}
+
+// 指定した列の値を float として取り出す。列が無い / 空なら false を返し val は変更しない。
+static bool replay_get_float(const char* line, ReplayCol col, float* val) {
+  char buf[24];
+  if (!replay_get_field(line, replay_col[col], buf, sizeof(buf))) return false;
+  *val = atof(buf);
+  return true;
+}
+
+// "HH:MM:SS" または "HH:MM:SS.cc" を 0時からのミリ秒に変換する。
+// 戻り値: 変換できたら true。cs には centisecond（0-99）を返す。
+static bool replay_parse_time(const char* s, uint32_t* ms, int* h, int* m, int* sec, int* cs) {
+  int hh = 0, mm = 0, ss = 0, cc = 0;
+  int n = sscanf(s, "%d:%d:%d.%d", &hh, &mm, &ss, &cc);
+  if (n < 3) return false;                   // v5 は ".cc" が無いので n==3 で正常
+  if (n < 4) cc = 0;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60) return false;
+  *ms  = ((uint32_t)hh * 3600UL + (uint32_t)mm * 60UL + (uint32_t)ss) * 1000UL + (uint32_t)cc * 10UL;
+  *h = hh; *m = mm; *sec = ss; *cs = cc;
+  return true;
+}
+
+// "YYYY-MM-DD" を分解する。
+static bool replay_parse_date(const char* s, int* y, int* mo, int* d) {
+  return (sscanf(s, "%d-%d-%d", y, mo, d) == 3);
+}
+
+// リングバッファの空きスロット数を返す（Core1 側から使用）。
+static uint8_t replay_free_slots() {
+  uint8_t used = (uint8_t)((replay_head - replay_tail) & (REPLAY_BUF_SIZE - 1));
+  return (REPLAY_BUF_SIZE - 1) - used;  // 1 スロットは満杯/空の区別用に常に空けておく
+}
+
+// Core0 から呼ぶ: 未消費の行があるか。
+bool replay_available() {
+  return replay_head != replay_tail;
+}
+
+// Core0 から呼ぶ: 次に再生すべき行の再生時刻 [ms]。行が無い場合の戻り値は不定。
+uint32_t replay_peek_t_ms() {
+  return replay_rows[replay_tail].t_ms;
+}
+
+// Core0 から呼ぶ: 先頭の行を取り出す。取り出せたら true。
+bool replay_pop(ReplayRow* out) {
+  if (replay_head == replay_tail) return false;
+  // volatile 配列からのコピー（構造体代入は volatile 不可なのでメンバ単位でコピーする）
+  volatile ReplayRow* src = &replay_rows[replay_tail];
+  out->lat = src->lat;               out->lon = src->lon;
+  out->gs = src->gs;                 out->ttrack = src->ttrack;
+  out->altitude = src->altitude;     out->kf_altitude = src->kf_altitude;
+  out->kf_vspeed = src->kf_vspeed;   out->pressure = src->pressure;
+  out->voltage = src->voltage;       out->numsat = src->numsat;
+  out->have = src->have;             out->t_ms = src->t_ms;
+  out->year = src->year;             out->month = src->month;   out->day = src->day;
+  out->hour = src->hour;             out->minute = src->minute; out->second = src->second;
+  out->centisecond = src->centisecond;
+  replay_tail = (replay_tail + 1) & (REPLAY_BUF_SIZE - 1);
+  return true;
+}
+
+// Core0 から呼ぶ: バッファに空きがあるか（補充依頼を出すかの判断用）。
+bool replay_buffer_has_space() {
+  uint8_t used = (uint8_t)((replay_head - replay_tail) & (REPLAY_BUF_SIZE - 1));
+  return used < (REPLAY_BUF_SIZE - 1);
+}
+
+// 選択中のファイル名を返す（設定画面のラベル表示用）。
+const char* get_replay_filename() {
+  return replay_filename;
+}
+
+// 再生対象ファイルを設定する。実際の読み込み開始は init_replay() で行う。
+void set_replay_filename(const char* name) {
+  strlcpy(replay_filename, name, sizeof(replay_filename));
+}
+
+// PLAY FLIGHT ONLY（静止区間をスキップして再生するか）の取得／設定。
+bool get_replay_flight_only() { return replay_flight_only; }
+void set_replay_flight_only(bool on) { replay_flight_only = on; }
+
+// CSV のヘッダ行を解釈して replay_col[] を構築する。
+// 列名は大文字小文字を無視して照合し、未知の列や空の列名（2026大会データに存在）は無視する。
+static void replay_parse_header(const char* header) {
+  for (int i = 0; i < REPLAY_COL_COUNT; i++) replay_col[i] = -1;
+
+  int index = 0;
+  const char* p = header;
+  while (p != nullptr && *p != '\0') {
+    const char* end = strchr(p, ',');
+    char token[24];
+    size_t len = (end == nullptr) ? strlen(p) : (size_t)(end - p);
+    if (len >= sizeof(token)) len = sizeof(token) - 1;
+    memcpy(token, p, len);
+    token[len] = '\0';
+
+    for (int c = 0; c < REPLAY_COL_COUNT; c++) {
+      if (replay_col[c] == -1 && replay_name_match(token, replay_col_names[c])) {
+        replay_col[c] = index;
+        break;
+      }
+    }
+    index++;
+    p = (end == nullptr) ? nullptr : end + 1;
+  }
+}
+
+// リプレイ再生をファイル先頭から開始（またはループ再生のため再開）する。
+// ファイルを開き直し、ヘッダから列マップを構築し、リングバッファを空にする。
+void init_replay(){
+  if (replayFileStatic.isOpen()) replayFileStatic.close();
+
+  replay_head = 0;
+  replay_tail = 0;
+  replay_eof = false;
+  replay_t0_valid = false;
+  replay_csv_t0_ms = 0;
+  replay_prev_ms = 0;
+  replay_day_offset_ms = 0;
+  replay_skipped_ms = 0;
+  replay_leadin_until_abs = 0;
+  replay_start_time = millis();
+
+  // 飛行 CSV は 2 秒に 1 回しか flush していないため、リプレイに入って saveCSV() が
+  // 呼ばれなくなると、直前の実飛行データ最大 2 秒分が SdFat のバッファに残ったままになる。
+  // リプレイ中に電源が切られると失われるので、ここで確実に書き出しておく。
+  // （ファイルは閉じない。リプレイ終了後は同じファイルに追記を続ける）
+  if (csvFileStatic.isOpen()) csvFileStatic.flush();
+
+  if (replay_filename[0] == '\0') {
+    DEBUGW_PLN(20260731, "REPLAY: no file selected");
+    replay_eof = true;
+    return;
+  }
+  if (!good_sd()) {
+    replay_eof = true;
+    return;
+  }
+
+  replayFileStatic = SD.open(replay_filename, FILE_READ);
+  if (!replayFileStatic) {
+    DEBUGW_P(20260731, "REPLAY: cannot open ");
+    DEBUGW_PLN(20260731, replay_filename);
+    log_sdf("ERR REPLAY open failed: %s", replay_filename);
+    replay_eof = true;
+    return;
+  }
+
+  // 1行目 = ヘッダ。列名から列マップを作る。
+  char header[160];
+  int n = replayFileStatic.fgets(header, sizeof(header));
+  if (n <= 0) {
+    replay_eof = true;
+    return;
+  }
+  replay_parse_header(header);
+
+  // 最低限 latitude / longitude / time が無ければ再生できない
+  if (replay_col[RCOL_LAT] < 0 || replay_col[RCOL_LON] < 0 || replay_col[RCOL_TIME] < 0) {
+    DEBUGW_PLN(20260731, "REPLAY: header missing lat/lon/time");
+    log_sdf("ERR REPLAY bad header: %s", replay_filename);
+    replayFileStatic.close();
+    replay_eof = true;
+    return;
+  }
+  log_sdf("REPLAY start: %s", replay_filename);
+}
+
+
+// 静止区間の先頭行に来たときに呼ぶ（PLAY FLIGHT ONLY 有効時のみ）。
+// 区間がどこで終わる（＝機体が動き出す）かを先読みし、
+//   ・静止が REPLAY_LEADIN_MS 未満  → 一切スキップせずそのまま再生する
+//   ・静止が REPLAY_LEADIN_MS 以上  → 動き出しの REPLAY_LEADIN_MS 手前まで飛ばす
+// いずれの場合もファイル位置を再生を再開すべき行まで seek で巻き戻して戻る。
+// 動き出しの手前を「助走」として残すのは、いきなり動き出すと表示や警告音が
+// 実際の飛行開始と食い違って見えるため。
+//
+// run_start_pos / run_start_abs: 静止区間の先頭行のファイル位置と絶対時刻
+// 戻り値: false なら静止のままファイル末尾に到達した
+static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_start_abs) {
+  // 走査中に進んでしまう日跨ぎ判定用の状態を保存しておき、seek で戻すときに復元する
+  uint32_t saved_prev_ms   = replay_prev_ms;
+  uint32_t saved_day_offset = replay_day_offset_ms;
+
+  // 区間の先頭を最初の候補として登録する
+  replay_leadin_pos[0] = run_start_pos;
+  replay_leadin_abs[0] = run_start_abs;
+  uint8_t head = 1, count = 1;
+
+  char line[200], buf[24];
+  uint32_t move_abs = 0;
+  uint32_t last_abs = run_start_abs;
+  bool found_move = false;
+  int scanned = 0;
+
+  while (scanned < REPLAY_SCAN_MAX) {
+    uint32_t pos = (uint32_t)replayFileStatic.position();
+    int n = replayFileStatic.fgets(line, sizeof(line));
+    if (n <= 0) {
+      // 静止したままファイル末尾。残りは再生する意味がないので終了扱いにする。
+      return false;
+    }
+    scanned++;
+
+    uint32_t tod; int hh, mm, ss, cc;
+    if (!replay_get_field(line, replay_col[RCOL_TIME], buf, sizeof(buf))) continue;
+    if (!replay_parse_time(buf, &tod, &hh, &mm, &ss, &cc)) continue;
+    // 日跨ぎ補正（本体のループと同じ処理）
+    if (tod + 60000UL < replay_prev_ms) replay_day_offset_ms += 86400000UL;
+    replay_prev_ms = tod;
+    uint32_t abs_ms = tod + replay_day_offset_ms;
+    last_abs = abs_ms;
+
+    float gs_val;
+    if (replay_get_float(line, RCOL_GS, &gs_val) && gs_val > REPLAY_MIN_GS) {
+      move_abs = abs_ms;      // ここで動き出した
+      found_move = true;
+      break;
+    }
+
+    // まだ静止 → 直近 REPLAY_LEADIN_SLOTS 行のファイル位置を保持する
+    replay_leadin_pos[head] = pos;
+    replay_leadin_abs[head] = abs_ms;
+    head = (head + 1) % REPLAY_LEADIN_SLOTS;
+    if (count < REPLAY_LEADIN_SLOTS) count++;
+  }
+
+  if (!found_move) {
+    // 走査上限に達した（非常に長い静止区間）。ここまでを飛ばしたことにして
+    // 現在位置からそのまま続行する（seek で戻さないので日跨ぎ判定の状態も進めたままにする）。
+    // 次の行もまた静止なら改めて先読みが走るので、Core1 を長時間占有せずに少しずつ処理が進む。
+    replay_skipped_ms += last_abs - run_start_abs;
+    return true;
+  }
+
+  // ここから先は seek でファイル位置を巻き戻すので、走査中に進めた
+  // 日跨ぎ判定用の状態も区間先頭の時点まで戻す（戻した行を読み直すため）
+  replay_prev_ms       = saved_prev_ms;
+  replay_day_offset_ms = saved_day_offset;
+
+  // 再生を再開する位置を決める
+  uint32_t resume_pos, resume_abs;
+  if (move_abs - run_start_abs < REPLAY_LEADIN_MS) {
+    // 短い静止 → スキップしない（区間の先頭から再生する）
+    resume_pos = run_start_pos;
+    resume_abs = run_start_abs;
+  } else {
+    // 動き出しの REPLAY_LEADIN_MS 手前以降で、最も古い行を探す
+    uint32_t target = move_abs - REPLAY_LEADIN_MS;
+    uint8_t oldest = (uint8_t)((head + REPLAY_LEADIN_SLOTS - count) % REPLAY_LEADIN_SLOTS);
+    resume_pos = replay_leadin_pos[oldest];   // 保持している中で最も古い行（既定値）
+    resume_abs = replay_leadin_abs[oldest];
+    for (uint8_t i = 0; i < count; i++) {
+      uint8_t k = (uint8_t)((oldest + i) % REPLAY_LEADIN_SLOTS);
+      if (replay_leadin_abs[k] >= target) {
+        resume_pos = replay_leadin_pos[k];
+        resume_abs = replay_leadin_abs[k];
+        break;
+      }
+    }
+  }
+
+  // 飛ばした分だけ再生タイムラインを詰める
+  replay_skipped_ms += resume_abs - run_start_abs;
+  // 動き出しまでは静止していても再生する（助走区間）
+  replay_leadin_until_abs = move_abs;
+  replayFileStatic.seek(resume_pos);
+  return true;
+}
+
+
+// リングバッファの空きスロットを埋められるだけ埋める（Core1 で実行）。
+// パースに失敗した行は読み飛ばして次へ進む（旧実装のような無限ループにはならない）。
+void load_replay() {
+  if (replay_eof) return;
+  if (!replayFileStatic.isOpen()) return;
+
+  char line[200];
+
+  while (replay_free_slots() > 0) {
+    uint32_t line_pos = (uint32_t)replayFileStatic.position();  // 静止区間の巻き戻しに使う
+    int n = replayFileStatic.fgets(line, sizeof(line));
+    if (n <= 0) {
+      // ファイル末尾。Core0 側が残りを再生し終えたら init_replay() でループ再生する。
+      replay_eof = true;
+      return;
+    }
+
+    // --- 時刻（必須） ---
+    char buf[24];
+    if (!replay_get_field(line, replay_col[RCOL_TIME], buf, sizeof(buf))) continue;
+    uint32_t tod_ms;
+    int hh, mm, ss, cc;
+    if (!replay_parse_time(buf, &tod_ms, &hh, &mm, &ss, &cc)) continue;
+
+    // 日跨ぎ補正: 時刻が前の行より大きく戻ったら 1 日進んだとみなす
+    if (replay_t0_valid && tod_ms + 60000UL < replay_prev_ms) {
+      replay_day_offset_ms += 86400000UL;
+    }
+    replay_prev_ms = tod_ms;
+    if (!replay_t0_valid) {
+      replay_csv_t0_ms = tod_ms;
+      replay_t0_valid = true;
+    }
+    uint32_t abs_ms = tod_ms + replay_day_offset_ms;
+    if (abs_ms < replay_csv_t0_ms) continue;  // 念のための保険
+
+    // --- 対地速度（PLAY FLIGHT ONLY の判定に使う） ---
+    float gs_val;
+    bool has_gs = replay_get_float(line, RCOL_GS, &gs_val);
+
+    // PLAY FLIGHT ONLY: 静止（GS が閾値以下）の区間の先頭に来たら、
+    // 区間の長さを先読みして「飛ばすか / そのまま再生するか」を決める。
+    // 助走区間（動き出し直前の REPLAY_LEADIN_MS）の中にいる間は判定しない。
+    // gs 列を持たない CSV は判定できないので全行再生する。
+    if (replay_flight_only && has_gs && gs_val <= REPLAY_MIN_GS &&
+        abs_ms >= replay_leadin_until_abs) {
+      if (!replay_handle_stationary_run(line_pos, abs_ms)) {
+        replay_eof = true;   // 静止のままファイル末尾に到達
+        return;
+      }
+      continue;  // ファイル位置は seek で調整済み。次の行から読み直す。
+    }
+
+    // --- 緯度経度（必須） ---
+    // 緯度経度は float では精度が足りないので atof() の double をそのまま使う
+    double dlat, dlon;
+    if (!replay_get_field(line, replay_col[RCOL_LAT], buf, sizeof(buf))) continue;
+    dlat = atof(buf);
+    if (!replay_get_field(line, replay_col[RCOL_LON], buf, sizeof(buf))) continue;
+    dlon = atof(buf);
+    if (dlat < -90.0 || dlat > 90.0 || dlon < -180.0 || dlon > 180.0) continue;
+
+    // --- スロットに書き込む ---
+    volatile ReplayRow* row = &replay_rows[replay_head];
+    row->have = 0;
+    row->lat = dlat;
+    row->lon = dlon;
+    // スキップした静止区間の長さを差し引いた再生時刻
+    row->t_ms = (abs_ms - replay_csv_t0_ms) - replay_skipped_ms;
+    row->hour = hh; row->minute = mm; row->second = ss; row->centisecond = cc;
+
+    float v;
+    if (has_gs)                                   { row->gs = gs_val; row->have |= RHAVE_GS; }
+    else                                          { row->gs = 0; }
+    if (replay_get_float(line, RCOL_TTRACK, &v)) { row->ttrack = v; row->have |= RHAVE_TTRACK; }
+    else                                          { row->ttrack = 0; }
+    if (replay_get_float(line, RCOL_ALT, &v))    { row->altitude = v;    row->have |= RHAVE_ALT; }
+    else                                          { row->altitude = 0; }
+    if (replay_get_float(line, RCOL_KFALT, &v))  { row->kf_altitude = v; row->have |= RHAVE_KFALT; }
+    else                                          { row->kf_altitude = 0; }
+    if (replay_get_float(line, RCOL_KFVS, &v))   { row->kf_vspeed = v;   row->have |= RHAVE_KFVS; }
+    else                                          { row->kf_vspeed = 0; }
+    if (replay_get_float(line, RCOL_PRESS, &v))  { row->pressure = v;    row->have |= RHAVE_PRESS; }
+    else                                          { row->pressure = 0; }
+    if (replay_get_float(line, RCOL_VOLT, &v))   { row->voltage = v;     row->have |= RHAVE_VOLT; }
+    else                                          { row->voltage = 0; }
+    if (replay_get_float(line, RCOL_NUMSAT, &v)) { row->numsat = (int)v; row->have |= RHAVE_NUMSAT; }
+    else                                          { row->numsat = 0; }
+
+    // --- 日付（あれば） ---
+    int yy = 0, mo = 0, dd = 0;
+    if (replay_get_field(line, replay_col[RCOL_DATE], buf, sizeof(buf)) &&
+        replay_parse_date(buf, &yy, &mo, &dd)) {
+      row->year = yy; row->month = mo; row->day = dd;
+      row->have |= RHAVE_DATE;
+    } else {
+      row->year = 0; row->month = 0; row->day = 0;
+    }
+
+    // 内容を書き終えてから head を進める（Core0 が中途半端な行を読まないようにする）
+    replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
+  }
+}
+
+// ===== リプレイ選択画面のファイル一覧 =====
+char replayfiles[REPLAY_LIST_ROWS][32];  // 現在表示中のCSVファイル名
+int  replayfiles_size[REPLAY_LIST_ROWS]; // 対応するファイルサイズ [byte]
+int  replayfiles_count = 0;              // replayfiles[] に入っている件数
+int  replayfiles_total = 0;              // SD ルート上の対象CSVの総数
+
+extern volatile bool loading_replaylist;
+
+// リプレイ対象として一覧に出さないシステムCSV。
+static const char* const replay_excluded[] = { "mapdata.csv", "destinations.csv", "replay.csv" };
+
+// ファイル名が拡張子 .csv（大小無視）で終わるか。
+static bool has_csv_ext(const char* name) {
+  size_t len = strlen(name);
+  if (len < 5) return false;  // "x.csv" が最短
+  const char* ext = name + len - 4;
+  return (ext[0] == '.' &&
+          (ext[1] == 'c' || ext[1] == 'C') &&
+          (ext[2] == 's' || ext[2] == 'S') &&
+          (ext[3] == 'v' || ext[3] == 'V'));
+}
+
+// リプレイ対象のCSVか判定する（隠しファイル・システムCSVを除外）。
+static bool is_replay_candidate(const char* name) {
+  if (name[0] == '.') return false;                 // macOS の ._ ファイル等
+  if (!has_csv_ext(name)) return false;
+  for (unsigned i = 0; i < sizeof(replay_excluded)/sizeof(replay_excluded[0]); i++) {
+    if (replay_name_match(name, replay_excluded[i])) return false;  // 大小無視で比較
+  }
+  return true;
+}
+
+// SD ルートのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
+// start_index: 対象CSVの通し番号（0始まり）のうち、どこから格納するか。
+// 戻り値: 1 件以上格納できたら true。
+// フォルダは対象外（固定の大会データは replay/ 配下だが一覧には出さず固定項目として扱う）。
+bool browse_replay_files(int start_index) {
+  if (start_index < 0) start_index = 0;
+
+  for (int i = 0; i < REPLAY_LIST_ROWS; i++) {
+    replayfiles[i][0] = '\0';
+    replayfiles_size[i] = 0;
+  }
+  replayfiles_count = 0;
+  replayfiles_total = 0;
+
+  FsFile root = SD.open("/");
+  if (!root || !root.isDirectory()) {
+    DEBUGW_PLN(20260731, "REPLAY: failed to open root");
+    if (root) root.close();
+    loading_replaylist = false;
+    return false;
+  }
+
+  while (true) {
+    FsFile entry = root.openNextFile();
+    if (!entry) break;
+
+    char name[32];
+    entry.getName(name, sizeof(name));
+    bool isdir = entry.isDirectory();
+    uint32_t fsize = isdir ? 0 : entry.size();
+    entry.close();
+
+    if (isdir || !is_replay_candidate(name)) continue;
+
+    // 該当ページの範囲内なら格納する
+    if (replayfiles_total >= start_index && replayfiles_count < REPLAY_LIST_ROWS) {
+      strlcpy(replayfiles[replayfiles_count], name, 32);
+      replayfiles_size[replayfiles_count] = (int)fsize;
+      replayfiles_count++;
+    }
+    replayfiles_total++;
+  }
+
+  root.close();
+  DEBUG_P(20260731, "REPLAY files total: ");
+  DEBUG_PLN(20260731, replayfiles_total);
+  loading_replaylist = false;
+  return replayfiles_count > 0;
+}
+
+
+// ===== リプレイ選択画面の項目モデル =====
+// 一覧の通し番号（index）は次の並びになっている:
+//   0                          : Replay OFF
+//   1                          : PLAY FLIGHT ONLY: YES/NO（トグル）
+//   2                          : 2025 Taikai
+//   3                          : 2026 Taikai
+//   4 .. 4+replayfiles_total-1 : SD ルート上の飛行 CSV
+//   4+replayfiles_total        : Return
+// 先頭の固定項目数は REPLAY_FIXED_COUNT。
+// 描画側もボタン処理側もこのモデルを共有する。
+
+// 一覧の総項目数（固定項目 + ファイル数 + Return）。
+int replay_menu_total_items() {
+  return REPLAY_FIXED_COUNT + replayfiles_total + 1;
+}
+
+// 通し番号が属するページ番号（0始まり）。
+int replay_menu_page_of(int index) {
+  if (index < 0) return 0;
+  return index / REPLAY_LIST_ROWS;
+}
+
+// 総ページ数。
+int replay_menu_page_count() {
+  int total = replay_menu_total_items();
+  return (total <= 0) ? 1 : ((total - 1) / REPLAY_LIST_ROWS) + 1;
+}
+
+// そのページを描画するために browse_replay_files() に渡すべき「ファイルの開始通し番号」。
+// ページ 0 は先頭に固定項目が入る分だけファイルの開始位置が手前にずれる。
+int replay_menu_file_start_for_page(int page) {
+  int start = page * REPLAY_LIST_ROWS - REPLAY_FIXED_COUNT;
+  return (start < 0) ? 0 : start;
+}
+
+// 通し番号 index の項目種別を返し、表示用ラベル（ファイルなら実ファイル名）を label に格納する。
+// filesize には該当ファイルのサイズ [byte] を返す（ファイル以外は 0）。
+// page: 現在 replayfiles[] に読み込まれているページ番号。
+ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsize, int* filesize) {
+  if (filesize) *filesize = 0;
+  if (label && labelsize > 0) label[0] = '\0';
+
+  if (index < 0 || index >= replay_menu_total_items()) return RITEM_NONE;
+
+  if (index == 0) { strlcpy(label, "Replay OFF (Normal GPS)", labelsize); return RITEM_OFF; }
+  if (index == 1) {
+    snprintf(label, labelsize, "PLAY FLIGHT ONLY: %s", replay_flight_only ? "YES" : "NO");
+    return RITEM_FLIGHTONLY;
+  }
+  if (index == 2) { strlcpy(label, REPLAY_2025_LABEL, labelsize);         return RITEM_2025; }
+  if (index == 3) { strlcpy(label, REPLAY_2026_LABEL, labelsize);         return RITEM_2026; }
+
+  if (index == REPLAY_FIXED_COUNT + replayfiles_total) {
+    strlcpy(label, "Return", labelsize);
+    return RITEM_RETURN;
+  }
+
+  // ファイル項目: 現在読み込まれているページ内の何番目かを求める
+  int local = (index - REPLAY_FIXED_COUNT) - replay_menu_file_start_for_page(page);
+  if (local < 0 || local >= replayfiles_count) return RITEM_NONE;  // 別ページ = 未読み込み
+  strlcpy(label, replayfiles[local], labelsize);
+  if (filesize) *filesize = replayfiles_size[local];
+  return RITEM_FILE;
+}
+
 
 // ===== SD ブラウザ用変数 =====
 char sdfiles[20][32];  // 現在のページに表示するファイル/フォルダ名（最大20エントリ）。フォルダは先頭に'/'を付与
@@ -1019,7 +1552,7 @@ void log_sd(const char* text){
 
   // ファイルが未オープンの場合のみ open する（毎回 open/close しない）
   if (!logFileStatic.isOpen()) {
-    logFileStatic = SD.open("log.txt", FILE_WRITE);
+    logFileStatic = SD.open(LOGFILE_NAME, FILE_WRITE);
   }
   if(!logFileStatic){
     DEBUGW_PLN(20250508,"ERR LOG. SD FAIL");
@@ -1055,7 +1588,7 @@ void log_sdf(const char* format, ...){
 //
 // SD.open()/close() を毎回呼ぶのではなく、静的 FsFile を使い回すことで
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
-static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
+// （実体は init_replay() から flush するためファイル前方で定義してある）
 
 void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる

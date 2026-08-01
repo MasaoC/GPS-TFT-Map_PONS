@@ -6,11 +6,12 @@
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"
 #include "mysd.h"
+#include "gps.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
 #define MS5611_ADDR 0x77
 
@@ -374,7 +375,11 @@ bool  get_airdata_ok()             { return ms5611_ok; }
 // 最新の気圧高度 [m] を返す（起動地点からの相対高度）
 float get_airdata_altitude()       { return last_altitude; }
 // 最新の気圧 [hPa] を返す
-float get_airdata_pressure()       { return last_pressure; }
+// リプレイ中で CSV に pressure 列があれば、その値をそのまま返す
+float get_airdata_pressure() {
+  if (replay_has_value(RHAVE_PRESS)) return replay_get_pressure();
+  return last_pressure;
+}
 // 最新の気温 [℃] を返す
 float get_airdata_temperature()    { return last_temperature; }
 // 起動時の気圧 [hPa]（グランドレベル確定時点の計測値、"0m基準" に相当）

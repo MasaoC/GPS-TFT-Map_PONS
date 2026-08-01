@@ -3,10 +3,10 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画モジュールのヘッダー。
 //           画面サイズ・カラー定数・座標構造体・enum定義と、
-//           マップ/コンパス/ヘッダー/フッター/設定画面など
-//           全描画関数のプロトタイプ宣言。
+//           マップ/コンパス/ヘッダー/フッター/設定画面/
+//           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -116,6 +116,9 @@ void draw_nomapdata();
 void draw_setting_mode(int selectedLine, int cursorLine);
 void draw_gpsdetail(int page);
 void draw_sddetail(int page);
+void draw_replayselect(int page, int cursor);
+extern volatile bool loading_replaylist;   // Core1 でリプレイ用ファイル一覧を取得中
+extern bool replay_loading_displayed;      // "Stand by..." 表示中（読み込み完了時の再描画判定用）
 void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
 
