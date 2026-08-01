@@ -670,7 +670,7 @@ void draw_course_warning(int steer_angle){
   }
 }
 
-extern int course_warning_index;
+extern float course_warning_index;
 const int NEEDLE_LEN_NORTHUP = 120;  // 針の長さ（px）。スプライト半径の最大値に合わせてある。
 const int NEEDLE_LEN_TRACKUP = 180;  // TRACKUP モード用: 自機が下寄りのため前方スペースが広く、長めにする。
 const int NEEDLE_LEN = NEEDLE_LEN_NORTHUP;  // 後方互換用。実際の使用箇所では get_needle_len() を推奨。
@@ -1575,7 +1575,7 @@ void draw_header() {
   TIMING_END(ts_draw_header, hdr);
 }
 
-extern int course_warning_index;
+extern float course_warning_index;
 
 
 // backscreen の最下部に地図サポート情報を描画する（地図モード専用フッター）。
