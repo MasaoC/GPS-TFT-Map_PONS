@@ -207,6 +207,13 @@ void setup(void) {
 // Core0 と独立して動作し、重いSD処理・音声再生を引き受けることで
 // Core0 の描画ループをブロックしない設計になっている。
 void setup1(void) {
+  // タスクキューの mutex は何よりも先に初期化する。
+  // arduino-pico の main() は multicore_launch_core1() を呼んでから setup() を呼ぶため、
+  // Core0 の setup() と この setup1() は並行に走る。Core0 は setup() 内で enqueueTask() を
+  // 呼ぶので、mutex_init が遅れると未初期化の mutex を掴む危険がある。
+  // 特に下の while(!Serial) は USB 接続まで待つため、その後ろに置くと窓が極端に長くなる。
+  mutex_init(&taskQueueMutex);  // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
+
   Serial.begin(38400);
   #ifndef RELEASE
     while (!Serial) {
@@ -214,9 +221,6 @@ void setup1(void) {
     }
   #endif
 
-
-    
-  mutex_init(&taskQueueMutex);  // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
   init_destinations();           // 目的地リストを SD から読み込む
   setup_sound();                 // スピーカー・アンプ・PWM を初期化
 
@@ -417,7 +421,9 @@ void loop() {
     bool new_gps_info = gps_new_location_arrived();
     if (new_gps_info) {
       // Automatic destination change for AUTO 10KM mode.
-      if (destination_mode == DMODE_AUTO10K) {
+      // currentdestination の有効性も確認する。init_destinations() は Core1 の setup1() で走るため、
+      // それが終わる前に Core0 がここへ来ると -1（未選択）のまま配列外を読んでしまう。
+      if (destination_mode == DMODE_AUTO10K && currentdestination != -1 && currentdestination < destinations_count) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
@@ -645,7 +651,7 @@ void loop() {
       extern TimingStat ts_load_mapimage, ts_savecsv_flush;
       TIMING_REPORT(ts_load_mapimage);
       TIMING_REPORT(ts_savecsv_flush);
-      extern uint32_t _c1_overlap_count;
+      extern volatile uint32_t _c1_overlap_count;
       Serial.print("[TIME] C1_overlap_count="); Serial.println(_c1_overlap_count);
       Serial.println("=========================");
     }
@@ -734,13 +740,13 @@ void loop1() {
         load_push_logo();  // SD からロゴ BMP を gmap_sprite に読み込む（pushSprite は Core0 が行う）
         break;
     }
-    currentTask.type = TASK_NONE;
+    clearCurrentTask();  // mutex 内で TASK_NONE にする（Core0 の isTaskRunning() と整合させるため）
   } else {
     // No tasks, optionally sleep or yield
     delay(10);
   }
 }
-extern int max_page;  // Global variable to store maximum page number
+extern volatile int max_page;  // Core1 が更新する（実体は mysd.cpp・volatile）
 
 //==========BUTTON==========
 // マップスケール（ズームレベル）を次の段階へ切り替える。
@@ -991,6 +997,10 @@ void update_degpersecond(int true_track) {
 // 目的地が 100km 以上離れている場合に警告音を鳴らす。
 // 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
+  // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
+  if (currentdestination == -1 || currentdestination >= destinations_count) {
+    return;
+  }
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
   if (calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon) > 100.0) {

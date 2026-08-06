@@ -224,6 +224,7 @@
   bool good_sd();
   bool isTaskRunning(int taskType);
   bool isTaskInQueue(int taskType);
+  void clearCurrentTask();  // Core1 がタスク完了時に呼ぶ（currentTask.type = TASK_NONE）
   void load_push_logo();
 
 
@@ -246,8 +247,8 @@
   // リプレイ選択画面のファイル一覧（browse_replay_files() が更新）
   extern char replayfiles[REPLAY_LIST_ROWS][32];
   extern int  replayfiles_size[REPLAY_LIST_ROWS];
-  extern int  replayfiles_count;  // 現在 replayfiles[] に入っている件数
-  extern int  replayfiles_total;  // SD 上の対象 CSV の総数
+  extern volatile int  replayfiles_count;  // 現在 replayfiles[] に入っている件数（Core1 が更新）
+  extern volatile int  replayfiles_total;  // SD 上の対象 CSV の総数（Core1 が更新）
 
   extern volatile bool gmap_loaded_active;
   extern volatile bool new_gmap_ready;

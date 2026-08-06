@@ -14,8 +14,10 @@
 #include "gps.h"
 
 
-extern int sound_volume;
-extern int vario_volume;
+// 実体は GPS_TFT_map.ino で volatile 定義。宣言側も volatile を付ける
+// （割り込み・Core1 から参照されるため、修飾子が食い違うと最適化で不整合が起きる）
+extern volatile int sound_volume;
+extern volatile int vario_volume;
 extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
@@ -143,10 +145,13 @@ Setting menu_settings[] = {
   { SETTING_SETDESTINATION,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
+      // 目的地名は destinations.csv 由来で長さが読めないため必ず snprintf を使う。
+      // 固定部分だけで " Destination: "(14)+"(N)"(3)+NUL(1)=18 バイトあり、
+      // sprintf のままだと名前が15文字以上でスタックを破壊する。
       if(currentdestination != -1 && currentdestination < destinations_count){
-        sprintf(buff, selected ? " Destination: %s(%d)" : "Destination: %s(%d)", extradestinations[currentdestination].name, currentdestination);
+        snprintf(buff, sizeof(buff), selected ? " Destination: %s(%d)" : "Destination: %s(%d)", extradestinations[currentdestination].name, currentdestination);
       }else
-        sprintf(buff, selected ? " Destination: %d/%d" : "Destination: %d/%d", currentdestination,destinations_count);
+        snprintf(buff, sizeof(buff), selected ? " Destination: %d/%d" : "Destination: %d/%d", currentdestination,destinations_count);
       return std::string(buff);  // return as std::string
     },nullptr,
     []() {
@@ -159,6 +164,9 @@ Setting menu_settings[] = {
       }
     },
     []() {
+      // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
+      if(currentdestination == -1 || currentdestination >= destinations_count)
+        return;
       // 間違い防止のため、10KM禁止の目的地で10KMモードを設定しようとしたら、エラー音を出してINTOに変える。
       if(is10K_NotAllowed_Destination(extradestinations[currentdestination].name)){
         if(destination_mode == DMODE_AUTO10K){
@@ -170,6 +178,9 @@ Setting menu_settings[] = {
       }
     },
     [](){
+      // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため既定色を返す
+      if(currentdestination == -1 || currentdestination >= destinations_count)
+        return COLOR_RED;
       if(strcmp(extradestinations[currentdestination].name, "PLATHOME") == 0)
         return COLOR_GREEN;
       else
@@ -207,6 +218,9 @@ Setting menu_settings[] = {
 
     },
     []() {
+      // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
+      if(currentdestination == -1 || currentdestination >= destinations_count)
+        return;
       // 間違い防止のため、10KM禁止の目的地で10KMモードを設定しようとしたら、エラー音を出してINTOに変える。
       if(is10K_NotAllowed_Destination(extradestinations[currentdestination].name)){
         if(destination_mode == DMODE_AUTO10K){

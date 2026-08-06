@@ -167,7 +167,9 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     ubx_day   = p[7];
     // u-blox は起動直後に validDate=1 でも year=2000/month=0/day=0 を返すことがある。
     // 2020 年以前・月日ゼロは未取得と同じく無効とみなす。
-    if (ubx_year < 2020 || ubx_month == 0 || ubx_day == 0) {
+    // 月・日は上限も確認する。月は GPS_TFT_map.ino の days_in_month[] の添字に使われるため、
+    // 13 以上が通ると配列外読み出しになる（utcToJst() は既に両側チェックしている）。
+    if (ubx_year < 2020 || ubx_month == 0 || ubx_month > 12 || ubx_day == 0 || ubx_day > 31) {
       ubx_date_valid = false;
     }
   }
@@ -299,7 +301,13 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
       }
     }
     if (!stored) {
-      enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
+      // 衛星ごとにログを積むと、1 メッセージで 20 スロットのタスクキューを溢れさせて
+      // 他のタスクを落としてしまう（キュー満杯は USERLED 点灯として現れる）。10 秒に 1 回に制限する。
+      static unsigned long last_satfull_log = 0;
+      if (millis() - last_satfull_log > 10000) {
+        last_satfull_log = millis();
+        enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
+      }
     }
     // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
     if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;

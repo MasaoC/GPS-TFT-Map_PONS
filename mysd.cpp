@@ -39,7 +39,7 @@ volatile bool logo_ready = false;  // Core1 でロゴ BMP 読み込みが完了�
 TimingStat ts_load_mapimage = TSTAT_INIT("C1_load_mapimage");
 TimingStat ts_savecsv_flush = TSTAT_INIT("C1_savecsv_flush");
 extern volatile bool c0_is_redrawing;  // Core0 描画中フラグ（重複検出用）
-uint32_t _c1_overlap_count = 0;        // Core0描画中にCore1重処理が重なった回数
+volatile uint32_t _c1_overlap_count = 0;  // Core0描画中にCore1重処理が重なった回数（Core1 が加算、Core0 が表示）
 #endif
 
 unsigned long lasttrytime_sd = 0; // SD エラー時の最後の再試行時刻（10秒ごとにリトライする）
@@ -107,7 +107,7 @@ extern volatile int sound_volume;
 extern volatile int vario_volume;
 extern volatile bool vario_inhibit;
 extern int destination_mode;
-extern int scaleindex;
+extern volatile int scaleindex;  // 実体は GPS_TFT_map.ino（volatile）。宣言側も合わせる
 extern double scalelist[6];
 extern double scale;
 extern int upward_mode;  // display_tft.cpp で定義。0=TRACKUP, 1=NORTHUP
@@ -347,26 +347,47 @@ void getKfR(char* buffer, size_t bufferSize) {
 void getDestination(char* buffer, size_t bufferSize) {
   if(bufferSize <= 0)
     return;
+  // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため空文字列を返す
+  if(currentdestination < 0 || currentdestination >= destinations_count){
+    buffer[0] = '\0';
+    return;
+  }
   strncpy(buffer, extradestinations[currentdestination].name, bufferSize);
   buffer[bufferSize - 1] = '\0';
 }
 
 
-// 現在 Core1 が実行中のタスクが指定タイプかを確認する
+// 現在 Core1 が実行中のタスクが指定タイプかを確認する（Core0 から呼ばれる）。
+// currentTask は dequeueTask() が mutex 内で丸ごと上書きするため、読む側も mutex で揃える。
 bool isTaskRunning(int taskType) {
-  return currentTask.type == taskType;
+  mutex_enter_blocking(&taskQueueMutex);
+  bool running = (currentTask.type == taskType);
+  mutex_exit(&taskQueueMutex);
+  return running;
 }
 
-// キュー内に指定タイプのタスクが存在するかを確認する（head〜tail を線形探索）
+// Core1 がタスクを処理し終えたことを記録する（mutex 内で書くことで isTaskRunning() と整合させる）
+void clearCurrentTask() {
+  mutex_enter_blocking(&taskQueueMutex);
+  currentTask.type = TASK_NONE;
+  mutex_exit(&taskQueueMutex);
+}
+
+// キュー内に指定タイプのタスクが存在するかを確認する（head〜tail を線形探索）。
+// ループ内で return せず found に受けてから抜ける（mutex の解放漏れを防ぐため）。
 bool isTaskInQueue(int taskType){
+    bool found = false;
+    mutex_enter_blocking(&taskQueueMutex);
     int current = taskQueue.head;
     while (current != taskQueue.tail) {
         if (taskQueue.tasks[current].type == taskType) {
-            return true;
+            found = true;
+            break;
         }
         current = (current + 1) % TASK_QUEUE_SIZE;
     }
-    return false;
+    mutex_exit(&taskQueueMutex);
+    return found;
 }
 
 // ============================================================
@@ -525,15 +546,30 @@ void removeDuplicateTask(TaskType type) {
 //   - ズームレベルが変わった場合は abortTask フラグを立てて現在のロードを中断し、
 //     キュー内の重複を削除して新しいタスクを追加する
 void enqueueTaskWithAbortCheck(Task newTask) {
-  if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {
-    if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
-      // 同じズームの地図を既にロード中 → 重複追加しない
-      DEBUGW_P(20250429,"NOT enque the task:");
-      DEBUGW_PLN(20250429,newTask.type);
-      return;
+  if (newTask.type == TASK_LOAD_MAPIMAGE) {
+    // type と zoomlevel は必ず「同じ mutex 区間で」読む。
+    // 別々に読むと、Core1 が currentTask を丸ごと差し替えている最中に
+    // 「type は新タスク・zoomlevel は旧タスク」という食い違った組み合わせを掴む可能性がある。
+    // isTaskRunning() は内部で mutex を取るため、ここでは呼ばずに直接読む（二重ロック＝デッドロック回避）。
+    bool running;
+    bool same_zoom = false;
+    mutex_enter_blocking(&taskQueueMutex);
+    running = (currentTask.type == TASK_LOAD_MAPIMAGE);
+    if (running) {
+      same_zoom = (newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel);
     }
-    // ズームレベルが変わった → 実行中のロードを中断して新しいタスクを優先する
-    abortTask = true;
+    mutex_exit(&taskQueueMutex);  // 以降の removeDuplicateTask()/enqueueTask() が自分で取るので先に解放する
+
+    if (running) {
+      if (same_zoom) {
+        // 同じズームの地図を既にロード中 → 重複追加しない
+        DEBUGW_P(20250429,"NOT enque the task:");
+        DEBUGW_PLN(20250429,newTask.type);
+        return;
+      }
+      // ズームレベルが変わった → 実行中のロードを中断して新しいタスクを優先する
+      abortTask = true;
+    }
   }
   removeDuplicateTask(newTask.type);  // キュー内の同種タスクを削除してから追加
   enqueueTask(newTask);
@@ -585,8 +621,21 @@ void process_mapcsv_line(String line) {
   int size = line.substring(index, commaIndex).toInt();
   index = commaIndex + 1;
 
+  // 頂点数は CSV の値をそのまま使うため、確保前に必ず妥当性を確認する。
+  // 座標 1 組は最短でも "0,0," の 4 文字を要するので、行の長さから上限を求められる。
+  // これを怠ると壊れた mapdata.csv（巨大な値・負の値）で new が失敗し、
+  // -fno-exceptions ビルドでは throw ではなく abort() して起動不能になる。
+  if (size <= 0 || size > (int)(line.length() / 4)) {
+    DEBUGW_P(20260806, "ERR mapcsv invalid size:");
+    DEBUGW_PLN(20260806, size);
+    return;
+  }
+
   // Allocate memory for the coordinates
   double (*cords)[2] = new double[size][2];
+  if (cords == nullptr) {  // nothrow 版 new の場合に備える
+    return;
+  }
 
   for (int i = 0; i < size; i++) {
     commaIndex = line.indexOf(',', index);
@@ -1241,8 +1290,9 @@ void load_replay() {
 // ===== リプレイ選択画面のファイル一覧 =====
 char replayfiles[REPLAY_LIST_ROWS][32];  // 現在表示中のCSVファイル名
 int  replayfiles_size[REPLAY_LIST_ROWS]; // 対応するファイルサイズ [byte]
-int  replayfiles_count = 0;              // replayfiles[] に入っている件数
-int  replayfiles_total = 0;              // SD ルート上の対象CSVの総数
+// どちらも Core1 の browse_replay_files() が書き、Core0 がメニュー表示・項目判定で読むため volatile
+volatile int  replayfiles_count = 0;     // replayfiles[] に入っている件数
+volatile int  replayfiles_total = 0;     // SD ルート上の対象CSVの総数
 
 extern volatile bool loading_replaylist;
 
@@ -1395,9 +1445,10 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
 // ===== SD ブラウザ用変数 =====
 char sdfiles[20][32];  // 現在のページに表示するファイル/フォルダ名（最大20エントリ）。フォルダは先頭に'/'を付与
 int sdfiles_size[20];  // 対応するファイルのサイズ（バイト）。フォルダは 0
-int max_page = -1;     // SD ルートの総ファイル数から計算した最大ページ番号（0-based）
+volatile int max_page = -1;  // SD ルートの総ファイル数から計算した最大ページ番号（0-based）
+                             // Core1 の browse_sd() が書き、Core0 が表示・ページ送りで読むため volatile
 
-extern bool loading_sddetail;
+extern volatile bool loading_sddetail;  // 実体は display_tft.cpp（volatile）。Core1 が false にして Core0 が読む
 
 // SD カードのルートディレクトリをページ単位で列挙し sdfiles[] に格納する。
 // page: 0-based のページ番号。1 ページあたり最大 20 エントリ。
@@ -1836,7 +1887,12 @@ double roundToNearestXDegrees(double x, double value) {
 TFT_eSprite gmap_sprite = TFT_eSprite(&tft);
 volatile bool gmap_loaded_active = false;
 volatile bool new_gmap_ready = false;
-char lastsprite_id[20] = "\0";
+// サイズは current_sprite_id[36] と必ず揃えること。
+// "%2d%4d%5d%3d%3d" は最小幅の指定であって上限ではないため、実際の長さは可変になる。
+//   日本国内・start_x/y が負のとき  : "13352913625-120-120" = 19文字（+NUL で 20 バイト）
+//   緯度経度が負（南半球・西半球）  : "13-3529-12000-120-120" = 21文字（+NUL で 22 バイト）
+// 以前は 20 バイトだったため、後者で直後の last_start_x を書き潰していた。
+char lastsprite_id[36] = "\0";
 int last_start_x = 0, last_start_y = 0;
 
 // 指定した緯度・経度・ズームレベルに対応する BMP ファイルを SD から読み込み、
@@ -1936,7 +1992,7 @@ void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
     scrolly = (start_y-last_start_y);
   }
 
-  strcpy(lastsprite_id,current_sprite_id);
+  strlcpy(lastsprite_id, current_sprite_id, sizeof(lastsprite_id));  // 長さ上限付きでコピー
 
   char filename[36];
   snprintf(filename, sizeof(filename), "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);

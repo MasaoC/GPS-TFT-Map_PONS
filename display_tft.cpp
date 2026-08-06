@@ -2009,7 +2009,7 @@ void draw_nomapdata() {
 unsigned long lastdrawn_sddetail = 0;
 extern char sdfiles[20][32];
 extern int sdfiles_size[20]; 
-extern int max_page;     // Global variable to store maximum page number
+extern volatile int max_page;  // Core1 が更新する（実体は mysd.cpp・volatile）
 volatile bool loading_sddetail = true;
 bool sd_detail_loading_displayed = false;
 
@@ -2847,12 +2847,22 @@ void draw_maplist_mode(int maplist_page) {
     }
   }
 
+  // このページに表示する SD 地図の範囲を決める（sd_start_index 以上 sd_end_index 未満）。
+  // 終端を決めずに mapdata_count まで回すと、どのページでも残り全件を描いてしまい
+  // ページを送っても同じ内容が続いて見える（添字自体は範囲内なので表示上の問題のみ）。
   int sd_start_index = 0;
+  int sd_rows = 30;                  // 1 ページあたりの行数
   if (pagenow > 0) {
     sd_start_index = 30 * pagenow - sizeof_mapflash;
+  } else {
+    sd_rows = 30 - sizeof_mapflash;  // ページ 0 はフラッシュ地図を並べる分だけ枠が減る
+  }
+  int sd_end_index = sd_start_index + sd_rows;
+  if (sd_end_index > mapdata_count) {
+    sd_end_index = mapdata_count;
   }
 
-  for (int i = sd_start_index; i < mapdata_count; i++) {
+  for (int i = sd_start_index; i < sd_end_index; i++) {
     if (extramaps[i].size <= 1) {
       continue;
     }
