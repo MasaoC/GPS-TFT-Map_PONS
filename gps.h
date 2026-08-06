@@ -2,18 +2,18 @@
 // File    : gps.h
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : GPS受信・解析モジュールのヘッダー。
-//           衛星データ構造体(SatelliteData)、NMEAバッファ定義、
+//           衛星データ構造体(SatelliteData)、受信バッファ定義、
 //           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
-//           リプレイモード・デモモード切替関数も含む。
+//           リプレイモード・デモモード切替関数、およびリプレイ中に
+//           センサ値を CSV の値へ差し替えるための関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 
 #ifndef GPS_H
   #define GPS_H
   // GpsDate / GpsTime: get_gpsdate() / get_gpstime() の戻り値型
-  // TinyGPS++ の TinyGPSDate / TinyGPSTime と同じインターフェースを提供する。
-  // 実 GPS は UBX NAV-PVT から更新、リプレイモードは TinyGPS++ からミラー。
+  // 実 GPS は UBX NAV-PVT から更新、リプレイモードは SD の飛行 CSV から更新する。
   struct GpsDate {
     uint16_t _year  = 0; uint8_t _month = 0; uint8_t _day = 0; bool _valid = false;
     bool     isValid() const { return _valid;  }
@@ -52,12 +52,20 @@
   extern SatelliteData satellites[MAX_SATELLITES];
   extern char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
   extern int stored_nmea_index;
-  extern unsigned long time_lastnmea;
   extern bool newcourse_arrived;
 
   void utcToJst(int *year, int *month, int *day, int *hour);
-  void parseGSV(char *nmea);
-  void parseGSA(char *nmea);
+  void jstToUtc(int *year, int *month, int *day, int *hour);
+
+  // リプレイ再生中のセンサ値オーバーライド（imu.cpp / airdata.cpp から参照）。
+  // havebit には mysd.h の RHAVE_* を渡す。CSV にその列が無ければ false を返し、
+  // 呼び出し側は実センサの値をそのまま使う。
+  bool  replay_has_value(uint16_t havebit);
+  float replay_get_kf_altitude();
+  float replay_get_kf_vspeed();
+  float replay_get_pressure();
+  float replay_get_voltage();
+
   char* get_gps_nmea(int i);
   unsigned long get_gps_nmea_time(int i);
   void gps_setup();
@@ -106,7 +114,6 @@
   void toggle_demo_biwako();
   bool get_demo_biwako();
   void set_demo_biwako(bool biwakomode);
-  void toggleReplayMode();
   bool getReplayMode();
   void set_replaymode(bool replaymode);
 

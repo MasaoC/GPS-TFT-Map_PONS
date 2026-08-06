@@ -6,7 +6,7 @@
 //           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -14,8 +14,8 @@
 // リリース時
 #define RELEASE
 
-#define BUILDDATE 20260714
-#define BUILDVERSION "0.920"
+#define BUILDDATE 20260731
+#define BUILDVERSION "0.922"
 #define VERSION_TEXT "Version 6"
 
 
@@ -24,7 +24,6 @@
 //----------GPS---------
 //#define DEBUG_GBX_NMEA
 //#define QUECTEL_GPS
-//#define MEADIATEK_GPS
 #define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
@@ -72,6 +71,7 @@
 #define SD_DETECT 8
 
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
+#define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
 #define BAT_LOW_VOLTAGE 3.5
 #define BAT_ZERO_VOLTAGE 3.4
 #define PIN_PWMTONE 38
@@ -100,6 +100,33 @@
 #define MODE_MAPLIST 4
 #define MODE_SDDETAIL 5
 #define MODE_VARIODETAIL 6
+#define MODE_REPLAYSELECT 7  // リプレイ再生ファイルの選択画面
+
+
+//======= リプレイ再生設定 ======
+// 固定エントリ（大会データ）の SD 上のパス。
+// SD ルートに置くとファイル一覧にも重複表示されるため replay/ サブフォルダに置く。
+#define REPLAY_2025_FILE "replay/2025taikai.csv"
+#define REPLAY_2026_FILE "replay/2026taikai.csv"
+#define REPLAY_2025_LABEL "2025 Taikai"
+#define REPLAY_2026_LABEL "2026 Taikai"
+
+#define REPLAY_BUF_SIZE   16   // 先読みするCSV行数（Core1が供給 → Core0が消費するリングバッファ）
+                               // ※ インデックス計算にビットマスクを使うので必ず 2 のべき乗にすること
+                               // 高速再生(x20)では 2Hz データを毎秒40行消費するため余裕を持たせている
+#define REPLAY_LIST_ROWS  20   // リプレイ選択画面の1ページあたり表示行数（20行×12px = 240px）
+#define REPLAY_FIXED_COUNT 5   // 一覧の先頭に並ぶ固定項目数
+                               // （Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / 2025 / 2026）
+// 再生速度の選択肢。x1 → x2 → x_FAST の順に切り替わる（既定は x1）。
+// 高速側の倍率を変えたいときは REPLAY_SPEED_FAST だけ書き換えればよい。
+#define REPLAY_SPEED_FAST 20
+#define REPLAY_MIN_GS 0.2f     // PLAY FLIGHT ONLY 有効時、この対地速度 [m/s] 以下を「静止」とみなす
+#define REPLAY_LEADIN_MS 5000  // 動き出しの手前この時間 [ms] 分は静止していても再生する（助走表示）。
+                               // 静止区間がこの長さ未満なら一切スキップしない。
+#define REPLAY_LEADIN_SLOTS 40 // 助走区間の先頭を探すために保持する行数（5秒 ÷ 最短サンプル間隔ぶん）
+#define REPLAY_SCAN_MAX 2000   // 静止区間の先読み走査で1回に読む最大行数（Core1 を長時間占有しないための上限）
+#define REPLAY_REQ_INTERVAL_MS 200  // Core1へのバッファ補充依頼の最短間隔 [ms]
+#define REPLAY_FILENAME_LEN 40      // リプレイ対象ファイル名（パス込み）の最大長
 
 
 #if !defined(TEMP)

@@ -1,16 +1,15 @@
 // ============================================================
 // File    : gps.cpp
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
-// Role    : GPS受信・解析の実装（Quectel LC86G向けに最適化）。
-//           TinyGPS++を使ったNMEA解析、衛星情報収集(GSV)、
+// Role    : GPS受信・解析の実装（u-blox UBX バイナリ受信）。
+//           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
 //           位置・速度・時刻の取得、リプレイ/デモモード管理、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
-#include <TinyGPS++.h>  // リプレイモード（SD の NMEA 再生）用に引き続き使用
 
 #include "gps.h"
 #include "mysd.h"
@@ -19,15 +18,9 @@
 #include "display_tft.h"
 #include "airdata.h"
 #include "imu.h"
-#include "mysd.h"
-#include "display_tft.h"
-#include "gps.h"
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
 extern volatile bool userled_forced_on;
-
-// Create a UBLOX instance
-TinyGPSPlus gps;
 
 // GPS時刻を最後に受信したときのmillis()（Euler角ログの時刻推定用）
 static uint32_t gps_fix_millis = 0;
@@ -78,7 +71,7 @@ uint32_t get_gps_fix_millis() { return gps_fix_millis; }
    0x55,0xB4}
 
 // --- GPS 最新値の保持変数 ---
-// TinyGPS++ から取り出した値をここに保存し、getter 関数経由で他モジュールに公開する。
+// UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
 double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
 int stored_numsats;
 
@@ -96,21 +89,17 @@ static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新�
 bool gps_connection = false;  // GPS モジュールから1文字でも受信したら true
 bool demo_biwako = false;     // 琵琶湖デモモード（GPS を使わず仮想位置を生成する）
 
-// NMEAバッファサイズ（parseGSA/parseGSV より前に定義）
-const int NMEA_BUFFER_SIZE = 256;
-
-// --- 衛星情報・NMEA ログ ---
+// --- 衛星情報・受信フレームログ ---
 SatelliteData satellites[MAX_SATELLITES];  // 最大 MAX_SATELLITES 衛星分のデータを保持（PRN 0 = 空き）
-char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];   // 直近 NMEA 文のリングバッファ
-unsigned long last_nmea_time[MAX_LAST_NMEA];     // 各 NMEA 文の受信時刻
+char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];   // 直近の受信フレーム概要のリングバッファ（GPS詳細画面用）
+unsigned long last_nmea_time[MAX_LAST_NMEA];     // 各フレームの受信時刻（受信途絶の監視にも使う）
 unsigned long last_gps_setup_time = 0;   // 最後に gps_setup() を呼んだ時刻（再接続ガード用）
 int stored_nmea_index = 0;               // リングバッファの書き込み位置
-int readfail_counter = 0;                // 非 ASCII 文字の連続受信カウンタ（ボーレート不一致の検知）
 bool new_location_arrived = false;       // 新しい位置情報が届いたことを Core0 に知らせるフラグ
 bool newcourse_arrived = false;          // 新しいコース情報が届いたフラグ（毎秒更新）
 
-// --- GSA 解析結果（DOP・フィックスタイプ・使用衛星 PRN） ---
-// parseGSA() で更新。複数の GNGSA が届くたびに PDOP/HDOP/VDOP/fixtype を上書きする。
+// --- 測位品質（DOP・フィックスタイプ・使用衛星 PRN） ---
+// UBX NAV-PVT / NAV-DOP / NAV-SAT の受信時に更新する。
 #define GSA_MAX_PRN 12
 static int    gsa_fixtype = 1;                // 1=No Fix, 2=2D, 3=3D
 static float  gsa_pdop    = 0.0f;             // Position DOP
@@ -124,7 +113,7 @@ void removeStaleSatellites();
 
 // ============================================================
 // UBX バイナリ受信パーサー（実 GPS 受信用）
-// リプレイモードは引き続き NMEA + TinyGPS++ を使用する。
+// リプレイモードはこの経路を通らず、SD の飛行 CSV から直接値を設定する。
 // ============================================================
 #define UBX_PAYLOAD_BUF_SIZE 768  // NAV-SAT 最大ペイロード (55 SVs×12+8=668) を余裕で収容
 
@@ -398,7 +387,6 @@ static void process_ubx(uint8_t b) {
       }
       // チェックサム OK: タイムスタンプ更新 + ハンドラー呼び出し
       gps_connection = true;
-      time_lastnmea  = millis();
       uint16_t used_len = (ubx_paylen < UBX_PAYLOAD_BUF_SIZE) ? ubx_paylen : UBX_PAYLOAD_BUF_SIZE;
       if (ubx_cls == 0x01) {
         if (ubx_msgid == 0x07) {
@@ -493,9 +481,40 @@ static void process_ubx(uint8_t b) {
 }
 
 // --- リプレイモード ---
-// replaymode_gpsoff = true の時、実 GPS の代わりに SD から読んだ NMEA を再生する。
+// replaymode_gpsoff = true の時、実 GPS の代わりに SD の飛行 CSV を再生する。
 bool replaymode_gpsoff = false;
-unsigned long last_check_nmea_time = 0;
+
+// 最後に再生した CSV 行。imu.cpp / airdata.cpp のセンサ値オーバーライドから参照される。
+static ReplayRow replay_last_row;
+static bool replay_last_valid = false;
+
+// --- 再生時計（Core0 専用）---
+// 実時間ではなく「仮想の再生経過時間」を積算する方式にしている。
+// 毎回の経過分に倍率を掛けて足すため、再生速度の変更も一時停止も、
+// 時刻の飛びを起こさずに途中で行える。
+static uint32_t replay_virtual_ms = 0;   // 再生開始からの仮想経過時間 [ms]
+static uint32_t replay_last_tick  = 0;   // 前回積算したときの millis()
+static uint32_t replay_seen_seq   = 0;   // 確認済みの replay_init_seq
+static bool     replay_paused     = false;
+
+// 再生の一時停止／再開。設定画面など地図以外を表示している間は停止させる。
+// 一時停止中は仮想時刻を進めないだけなので、再開すると続きから再生される。
+void replay_set_paused(bool paused) {
+  replay_paused = paused;
+}
+
+// リプレイ中で、かつ CSV にその項目の列が存在する場合のみ true。
+// （v5 のデータは高度・上昇率・気圧の列を持たないので false になり実センサ値へフォールバックする）
+bool replay_has_value(uint16_t havebit) {
+  return replaymode_gpsoff && replay_last_valid && (replay_last_row.have & havebit);
+}
+float replay_get_kf_altitude() { return replay_last_row.kf_altitude; }
+// 一時停止中は上昇率 0 を返す。停止中は新しい行が適用されないため、
+// そのままだと最後に読んだ行の上昇率が保持され続け、バリオが鳴りっぱなしになる
+// （特に下降側は連続音のため止まらない）。位置・高度・気圧は停止位置のまま保持する。
+float replay_get_kf_vspeed()   { return replay_paused ? 0.0f : replay_last_row.kf_vspeed; }
+float replay_get_pressure()    { return replay_last_row.pressure; }
+float replay_get_voltage()     { return replay_last_row.voltage; }
 
 
 // GPS の時刻は UTC（協定世界時）で送られてくる。
@@ -533,6 +552,37 @@ void utcToJst(int *year, int *month, int *day, int *hour) {
   }
 }
 
+// utcToJst() の逆変換（JST = UTC+9 → UTC）。
+// PONS の飛行 CSV は JST で記録されているため、リプレイ時に ubx_* へ入れる前に UTC へ戻す。
+// 日付またぎ・月またぎ・うるう年も正しく処理する。
+void jstToUtc(int *year, int *month, int *day, int *hour) {
+  if(*month <= 0 || *month > 12){
+    DEBUGW_P(20260731,"month invalid:");
+    DEBUGW_PLN(20260731,*month);
+    return;
+  }
+  // Subtract 9 hours to convert JST to UTC
+  *hour -= 9;
+  if (*hour < 0) {
+      *hour += 24;
+      (*day)--;
+  }
+  // Handle underflow of days
+  if (*day < 1) {
+      (*month)--;
+      if (*month < 1) {
+          *month = 12;
+          (*year)--;
+      }
+      int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
+      if (isLeapYear) {
+          daysInMonth[1] = 29;
+      }
+      *day = daysInMonth[*month - 1];
+  }
+}
+
 // i 番目に古い NMEA 文字列を返す（i=0 が最新）。
 // last_nmea はリングバッファなので、stored_nmea_index を基準に逆算してインデックスを求める。
 char* get_gps_nmea(int i){
@@ -564,46 +614,6 @@ void removeStaleSatellites() {
   }
 }
 
-// GSA（GPS DOP and Active Satellites）NMEA 文をパースして DOP・フィックスタイプ・使用衛星を更新する。
-// 形式: $GNGSA,A,3,19,06,17,02,28,09,12,,,,,,,1.33,0.74,1.10*05
-//   field[2] = fix type (1=No Fix, 2=2D, 3=3D)
-//   field[3..14] = 測位使用衛星 PRN (空フィールドは "")
-//   field[15] = PDOP, field[16] = HDOP, field[17] = VDOP（チェックサム付き可）
-void parseGSA(char *nmea) {
-  // カンマ分割（最大 20 フィールド）
-  char buf[NMEA_BUFFER_SIZE];
-  strncpy(buf, nmea, NMEA_BUFFER_SIZE - 1);
-  buf[NMEA_BUFFER_SIZE - 1] = '\0';
-  char *fields[20] = {};
-  int nfields = 0;
-  char *p = buf;
-  fields[nfields++] = p;
-  while (*p && nfields < 20) {
-    if (*p == ',' || *p == '*') { *p = '\0'; fields[nfields++] = p + 1; }
-    p++;
-  }
-  if (nfields < 18) return;  // フィールド不足は無視
-
-  // field[2] = fix type
-  int ft = atoi(fields[2]);
-  if (ft >= 1 && ft <= 3) gsa_fixtype = ft;
-
-  // field[3..14] = PRN（最初の GNGSA で配列を更新）
-  gsa_numsat = 0;
-  for (int i = 0; i < GSA_MAX_PRN; i++) {
-    int prn = atoi(fields[3 + i]);
-    gsa_prns[i] = (prn > 0) ? prn : 0;
-    if (prn > 0) gsa_numsat++;
-  }
-
-  // field[15..17] = PDOP, HDOP, VDOP
-  float pd = atof(fields[15]);
-  float hd = atof(fields[16]);
-  float vd = atof(fields[17]);
-  if (pd > 0.0f) gsa_pdop = pd;
-  if (hd > 0.0f) gsa_hdop = hd;
-  if (vd > 0.0f) gsa_vdop = vd;
-}
 
 // ゲッター
 int      get_gps_fixtype()    { return gsa_fixtype; }
@@ -619,106 +629,6 @@ float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（�
 bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
-// TinyGPS++ は GSV を解析しないため、自前でパースする必要がある。
-// GSV 文の形式: $GPGSV,総文数,文番号,衛星数,PRN,仰角,方位角,SNR,...*チェックサム
-// 衛星種別は文の先頭識別子から判定する（GP=GPS, GL=GLONASS, GA=Galileo, GB=BeiDou）。
-void parseGSV(char *nmea) {
-  // Print the received NMEA sentence for debugging
-  #ifdef DEBUG_GBX_NMEA
-  DEBUG_P(20250508,"Received NMEA: ");
-  DEBUG_PLN(20250508,nmea);
-  #endif
-
-  // Determine the satellite type based on the NMEA sentence identifier
-  int satelliteType = SATELLITE_TYPE_UNKNOWN;
-  if (strstr(nmea, "$GPGSV")) {
-    satelliteType = SATELLITE_TYPE_GPS;
-    //satelliteType = SATELLITE_TYPE_QZSS;//LC86GPAMD のとき、Undistinguishable from the GPGSV.
-  } else if (strstr(nmea, "$GLGSV")) {
-    satelliteType = SATELLITE_TYPE_GLONASS;
-  } else if (strstr(nmea, "$GAGSV")) {
-    satelliteType = SATELLITE_TYPE_GALILEO;
-  } else if (strstr(nmea, "$GBGSV")) {//$BDGSV
-    satelliteType = SATELLITE_TYPE_BEIDOU;
-  } else if (strstr(nmea, "$GQGSV")) {
-    satelliteType = SATELLITE_TYPE_QZSS;  // QZSS専用talker（NMEA 4.11）。PRNは1〜10のままで保存。
-  }
-
-
-  #ifdef DEBUG_GBX_NMEA
-  // Print the satellite type for debugging
-  DEBUG_P(20250508,"Satellite Type: ");
-  DEBUG_PLN(20250508,satelliteType);
-  #endif
-
-  
-  // Example NMEA GSV sentence: $GPGSV,4,4,14,194,,,,195,,,*7D
-  char *p = nmea;
-
-  // Skip past the initial part of the sentence
-  p = strchr(p, ','); if (!p) return; p++;
-  p = strchr(p, ','); if (!p) return; p++;
-  p = strchr(p, ','); if (!p) return; p++;
-  p = strchr(p, ','); if (!p) return; p++;
-
-  for (int i = 0; i < 4; i++) {
-    if (*p == '*' || *p == '\0') break; // End of sentence or no more data
-
-    // Read satellite PRN number
-    int prn = atoi(p);
-    p = strchr(p, ','); if (!p) break; p++;
-
-    // Read elevation
-    int elevation = (*p != ',' && *p != '*') ? atoi(p) : -1;
-    p = strchr(p, ','); if (!p) break; p++;
-
-    // Read azimuth
-    int azimuth = (*p != ',' && *p != '*') ? atoi(p) : -1;
-    p = strchr(p, ','); if (!p) break; p++;
-
-    // Read SNR (Signal to Noise Ratio)
-    int snr = (*p != ',' && *p != '*') ? atoi(p) : -1;
-    p = strchr(p, ','); if (!p) break; p++;
-
-    #ifdef DEBUG_GBX_NMEA
-    // Debugging: Print parsed values
-    DEBUG_P(20250508,"PRN: "); DEBUG_P(20250508,prn);
-    DEBUG_P(20250508,", Elevation: "); DEBUG_P(20250508,elevation);
-    DEBUG_P(20250508,", Azimuth: "); DEBUG_P(20250508,azimuth);
-    DEBUG_P(20250508,", SNR: "); DEBUG_P(20250508,snr);
-    #endif
-
-    // Validate parsed values and update satellite data
-    if (prn > 0 && prn < 200) {
-      bool satellite_stored = false;
-      for (int j = 0; j < MAX_SATELLITES; j++) {
-        // 複合キー（PRN + satelliteType）で重複検索 — 同PRNでも星座が違えば別スロット
-        if ((satellites[j].PRN == prn && satellites[j].satelliteType == satelliteType) || satellites[j].PRN == 0) {
-          satellites[j].PRN = prn;
-          satellites[j].elevation = (elevation >= 0 && elevation <= 90) ? elevation : satellites[j].elevation;
-          satellites[j].azimuth = (azimuth >= 0 && azimuth < 360) ? azimuth : satellites[j].azimuth;
-          satellites[j].SNR = (snr >= 0 && snr <= 99) ? snr : satellites[j].SNR;  // 上限チェック（390など異常値を棄却）
-          satellites[j].satelliteType = satelliteType;
-          if(193 <= prn && prn  <= 199)
-            satellites[j].satelliteType = SATELLITE_TYPE_QZSS;
-          satellites[j].lastReceived = millis();
-          satellite_stored = true;
-          break;
-        }
-      }
-      if (!satellite_stored) {
-        // MAX_SATELLITES を超過して格納できなかった → SDログ＋シリアル警告
-        DEBUGW_P(20250509, "WARN: satellites[] full, dropped PRN=");
-        DEBUGW_PLN(20250509, prn);
-        enqueueTask(createLogSdfTask("WARN:sat full PRN=%d type=%d", prn, satelliteType));
-      }
-    } else {
-      DEBUGW_P(20250508,"Invalid PRN parsed");
-      DEBUGW_P(20250508,"PRN: ");
-      DEBUGW_PLN(20250508,prn);
-    }
-  }
-}
 
 
 
@@ -811,7 +721,6 @@ void gps_setup() {
   DEBUG_P(20260307,"GPS SETUP:setupcounter=");
   DEBUG_PLN(20260307,setupcounter);
 
-  readfail_counter = 0;
   if(setupcounter != 1){
     GPS_SERIAL.end();
   }
@@ -1072,6 +981,73 @@ static void update_maxgs(float gs) {
   }
 }
 
+extern unsigned long last_gps_time;  // 実体は下方で定義（apply_replay_row から先に参照するため）
+
+// リプレイ: CSV 1行分の内容を GPS の内部状態に反映する。
+// 通常モードで handle_navpvt() が UBX-NAV-PVT から行っていることと同じ内容を CSV から行う。
+// CSV に列が無い項目（v5 データの高度など）は更新せず、直前の値／実センサ値のままにする。
+static void apply_replay_row(const ReplayRow* row) {
+  last_gps_time = millis();
+
+  // --- 位置 ---
+  if (stored_latitude != row->lat || stored_longitude != row->lon)
+    if (!get_demo_biwako()) new_location_arrived = true;
+  stored_latitude  = row->lat;
+  stored_longitude = row->lon;
+  ubx_pos_valid    = true;
+  stored_fixtype   = 2;
+
+  // --- 対地速度・真方位・高度 ---
+  if (row->have & RHAVE_ALT)
+    stored_altitude = row->altitude;
+  if (row->have & RHAVE_GS) {
+    stored_gs = row->gs;
+    update_maxgs(stored_gs);
+  }
+  if (row->have & RHAVE_TTRACK) {
+    if (!get_demo_biwako()) newcourse_arrived = true;
+    stored_truetrack = row->ttrack;
+    if (stored_truetrack < 0 || stored_truetrack > 360)
+      stored_truetrack = 0;
+  }
+  if (row->have & RHAVE_NUMSAT)
+    stored_numsats = row->numsat;
+
+  // --- 日時 ---
+  // CSV は JST で記録されているが ubx_* は UTC 前提で扱われるので UTC に戻す。
+  int y = row->year, mo = row->month, d = row->day, h = row->hour;
+  if (row->have & RHAVE_DATE) {
+    jstToUtc(&y, &mo, &d, &h);
+    ubx_year  = y;
+    ubx_month = mo;
+    ubx_day   = d;
+    ubx_date_valid = true;
+  } else {
+    h = (h + 24 - 9) % 24;  // 日付列が無い場合は時刻だけ 9 時間戻す
+  }
+  ubx_hour = h;
+  ubx_min  = row->minute;
+  ubx_sec  = row->second;
+  ubx_cs   = row->centisecond;
+  ubx_time_valid = true;
+  gps_fix_millis = millis();
+
+  // imu / airdata のセンサ値オーバーライド用に最後の行を保持する
+  replay_last_row   = *row;
+  replay_last_valid = true;
+
+  // リプレイ中は CSV 保存されないが、航跡の記録（add_latlon_track）はここで行われる
+  try_enque_savecsv();
+
+  // 初回のみ再生開始時刻を SD ログに残す
+  static bool first_time_logged_replay = false;
+  if (!first_time_logged_replay && (row->have & RHAVE_DATE)) {
+    first_time_logged_replay = true;
+    enqueueTask(createLogSdfTask("GPS TIME(REPLAY): %04d-%02d-%02d %02d:%02d:%02d JST",
+      row->year, row->month, row->day, row->hour, row->minute, row->second));
+  }
+}
+
 void toggle_demo_biwako() {
   demo_biwako = !demo_biwako;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
@@ -1089,10 +1065,6 @@ void set_demo_biwako(bool biwakomode){
 unsigned long last_latlon_manager = 0;
 unsigned long last_gps_save_time = 0;
 unsigned long last_gps_time = 0;// last position update time.
-unsigned long time_lastnmea = 0;//last nmea time
-
-int index_buffer1 = 0;
-char nmea_buffer1[NMEA_BUFFER_SIZE];
 
 
 // ubx_* 変数（UBX NAV-PVT 解析結果 or リプレイモードでミラーされた値）から GpsDate を返す
@@ -1188,53 +1160,6 @@ void set_new_location_off(){
 }
 
 
-// GPS から受信した 1 文字を処理する。
-// TinyGPS++ に渡して位置・速度・時刻を自動解析させるとともに、
-// GSV 文については自前でバッファに蓄積して parseGSV() を呼ぶ。
-// '$' で文の先頭を検知してバッファをリセットし、'\n' で1文の終端を検知する。
-void process_char(char c){
-  gps.encode(c);  // TinyGPS++ に文字を渡す（内部で NMEA を解析する）
-  if(c == '$')
-    index_buffer1 = 0;  // 新しい NMEA 文の開始 → バッファをリセット
-
-  nmea_buffer1[index_buffer1++] = c;
-  if(index_buffer1 >= (NMEA_BUFFER_SIZE-1) || c == '\n'){
-    if(index_buffer1 >= 2){
-      time_lastnmea = millis();
-      nmea_buffer1[index_buffer1-1] = '\0';  // 末尾の改行を null で置換して文字列化
-      // 直近 NMEA ログのリングバッファに追記
-      strncpy(last_nmea[stored_nmea_index], nmea_buffer1, NMEA_MAX_CHAR - 1);
-      last_nmea[stored_nmea_index][NMEA_MAX_CHAR - 1] = '\0';
-      last_nmea_time[stored_nmea_index] = millis();
-      stored_nmea_index = (stored_nmea_index+1)%MAX_LAST_NMEA;
-      #ifdef DEBUG_GBX_NMEA
-      DEBUG_P(20260309,index_buffer1);
-      DEBUG_PLN(20260309,nmea_buffer1);
-      //enqueueTask(createLogSdTask(nmea_buffer1));  // NMEA全文をSDに保存
-      #endif
-      // GSV/GSA 文は TinyGPS++ が解析しないため、自前でパースする
-      if(strstr(nmea_buffer1, "GSV")){
-        parseGSV(nmea_buffer1);
-      }
-      if(strstr(nmea_buffer1, "GSA")){
-        parseGSA(nmea_buffer1);
-        // GSA 受信時に DOP 情報を 10 秒に 1 回 SD ログに保存する
-        static unsigned long last_dop_log = 0;
-        if (millis() - last_dop_log >= 10000) {
-          enqueueTask(createLogSdfTask("DOP PDOP=%.1f HDOP=%.1f VDOP=%.1f fix=%d sats=%d",
-            gsa_pdop, gsa_hdop, gsa_vdop, gsa_fixtype, gsa_numsat));
-          last_dop_log = millis();
-        }
-      }
-    }
-    index_buffer1 = 0;
-  }
-}
-
-void toggleReplayMode(){
-  replaymode_gpsoff = !replaymode_gpsoff;
-  reset_maxgs();  // モード切替時に最大 G/S をリセット
-}
 
 bool getReplayMode(){
   return replaymode_gpsoff;
@@ -1243,6 +1168,9 @@ bool getReplayMode(){
 void set_replaymode(bool replaymode){
   replaymode_gpsoff = replaymode;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
+  // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
+  // 一瞬だけ表示してしまわないようにクリアする
+  replay_last_valid = false;
 }
 // GPS モジュールからの Serial データを受信・解析するメインループ処理。
 // 描画の途中でも複数回呼ばれることで、GPS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
@@ -1253,8 +1181,13 @@ void set_replaymode(bool replaymode){
 //   - FIFO バッファが 256 を超えている → 警告ログを出す
 void gps_loop(int id) {
 
-  // 30 秒以上 UBX フレームが途絶えた場合は GPS を再初期化する
-  if(GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 30000 && millis() - last_gps_setup_time > 30000){
+  // 30 秒以上 UBX フレームが途絶えた場合は GPS を再初期化する。
+  // リプレイ中は実 GPS のデータを読み捨てており last_nmea_time が更新されないため、
+  // このウォッチドッグが 30 秒ごとに誤発火してしまう。gps_setup() は合計数百 ms の
+  // delay() を含み Core0 を止めるので、リプレイ中は無効にする。
+  // （リプレイ終了後は last_nmea_time が古いままなので、必要なら一度だけ再初期化が走る）
+  if(!replaymode_gpsoff &&
+     GPS_SERIAL.available() == 0 && millis() - get_gps_nmea_time(0) > 30000 && millis() - last_gps_setup_time > 30000){
     DEBUGW_PLN(20250923,"Lost UBX frame for 30 seconds. resetup.");
     gps_setup();
   }
@@ -1294,94 +1227,57 @@ void gps_loop(int id) {
       gps_connection = true;
       process_ubx(c);  // UBX バイナリパーサーに渡す
     } else {
-      // リプレイモードでは実 GPS シリアルデータを破棄（NMEA 再生は下記で行う）
-      if(c >= 128){
-        readfail_counter++;
-        if(readfail_counter > 10){
-          DEBUGW_P(20250923,"Read Failed 10 times, non ascii char:");
-          DEBUGW_PLN(20250923,(int)c);
-          gps_setup();
-        }
-      }
+      // リプレイモードでは実 GPS シリアルデータを単純に読み捨てる。
+      // （旧実装は c>=128 で gps_setup() を呼んでいたが、UBX バイナリでは
+      //   128 以上のバイトが常に流れるため GPS 再初期化を繰り返してしまっていた）
+      (void)c;
       gps_connection = true;
     }
   }
 
-  // リプレイモード: SD から読み込んだ NMEA を 300ms ごとに1文ずつ流す
-  if(replaymode_gpsoff){
-    if(loaded_replay_nmea){
-      for(int i = 0; i < 128; i++){
-        process_char(replay_nmea[i]);  // リプレイは NMEA パーサーに渡す
-        if(replay_nmea[i] == '\n')
-          break;
-      }
-      loaded_replay_nmea = false;
-    }
-
-    if(last_check_nmea_time+300 < millis()){
-      last_check_nmea_time = millis();
-      enqueueTask(createLoadReplayTask());  // Core1 に次の NMEA 行の読み込みを依頼
-    }
-  }
-
   // ============================================================
-  // リプレイモード: TinyGPS++ 解析結果を ubx_* 変数にミラーする
-  // （try_enque_savecsv / update_maxgs は ubx_* を参照するため）
+  // リプレイモード: SD の飛行 CSV を再生する
+  //
+  // Core1 (load_replay) が CSV を1行ずつパースして replay_rows[] に積み、
+  // ここでは「再生経過時間に達した行」を取り出して stored_* / ubx_* に反映する。
+  // ペーシングを Core0 側で行うため、SD の応答待ちに再生速度が引きずられない。
   // ============================================================
   if (replaymode_gpsoff) {
-    if (gps.location.isUpdated()) {
-      last_gps_time = millis();
-      double new_lat = gps.location.lat();
-      double new_lon = gps.location.lng();
-      if (stored_latitude != new_lat || stored_longitude != new_lon)
-        if (!get_demo_biwako()) new_location_arrived = true;
-      stored_latitude  = new_lat;
-      stored_longitude = new_lon;
-      ubx_pos_valid    = gps.location.isValid();
-      stored_fixtype   = ubx_pos_valid ? 2 : 0;
-      try_enque_savecsv();
+    static unsigned long last_replay_request = 0;
+
+    // --- 再生時計の更新 ---
+    uint32_t now = millis();
+    if (replay_seen_seq != replay_init_seq) {
+      // Core1 が init_replay() を実行した → 先頭から再生し直す
+      replay_seen_seq   = replay_init_seq;
+      replay_virtual_ms = 0;
+      replay_last_tick  = now;
     }
-    if (gps.altitude.isUpdated())
-      stored_altitude = gps.altitude.meters();
-    if (gps.speed.isUpdated()) {
-      stored_gs = gps.speed.mps();
-      update_maxgs(stored_gs);
+    if (replay_paused) {
+      replay_last_tick = now;   // 停止中は経過を積まない（再開時に飛ばないように基準だけ進める）
+    } else {
+      replay_virtual_ms += (now - replay_last_tick) * (uint32_t)get_replay_speed();
+      replay_last_tick   = now;
     }
-    if (gps.course.isUpdated()) {
-      if (!get_demo_biwako()) newcourse_arrived = true;
-      stored_truetrack = gps.course.deg();
-      if (stored_truetrack < 0 || stored_truetrack > 360) {
-        enqueueTask(createLogSdfTask("ERR truetrack=%.1f (forced 0)", stored_truetrack));
-        stored_truetrack = 0;
-      }
+    uint32_t elapsed = replay_virtual_ms;
+    ReplayRow row;
+    // 再生時刻に達した行をまとめて反映する（描画等で遅れた場合の取りこぼしを防ぐ）
+    while (replay_available() && replay_peek_t_ms() <= elapsed) {
+      if (!replay_pop(&row)) break;
+      apply_replay_row(&row);
     }
-    if (gps.satellites.isUpdated()) {
-      removeStaleSatellites();
-      stored_numsats = gps.satellites.value();
-    }
-    if (gps.time.isUpdated() && gps.time.isValid()) {
-      ubx_hour       = gps.time.hour();
-      ubx_min        = gps.time.minute();
-      ubx_sec        = gps.time.second();
-      ubx_cs         = gps.time.centisecond();
-      ubx_time_valid = true;
-      gps_fix_millis = millis();
-    }
-    if (gps.date.isUpdated() && gps.date.isValid()) {
-      ubx_year       = gps.date.year();
-      ubx_month      = gps.date.month();
-      ubx_day        = gps.date.day();
-      ubx_date_valid = true;
-    }
-    // 初回 GPS 時刻取得時の SD ログ（1回だけ）
-    if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
-      static bool first_time_logged_replay = false;
-      if (!first_time_logged_replay) {
-        first_time_logged_replay = true;
-        enqueueTask(createLogSdfTask("GPS TIME(REPLAY): %04d-%02d-%02d %02d:%02d:%02d UTC",
-          gps.date.year(), gps.date.month(), gps.date.day(),
-          gps.time.hour(), gps.time.minute(), gps.time.second()));
-      }
+
+    if (replay_eof && !replay_available()) {
+      // ファイル末尾に到達 → 先頭に戻ってループ再生する
+      // （キュー内・実行中の両方を確認しないと、Core1 が処理中の間に二重投入してしまう）
+      if (!isTaskInQueue(TASK_INIT_REPLAY) && !isTaskRunning(TASK_INIT_REPLAY))
+        enqueueTask(createInitReplayTask());
+    } else if (replay_buffer_has_space() &&
+               // 高速再生ほど消費が速いので補充間隔も倍率で詰める
+               millis() - last_replay_request > (REPLAY_REQ_INTERVAL_MS / (uint32_t)get_replay_speed()) &&
+               !isTaskInQueue(TASK_LOAD_REPLAY) && !isTaskRunning(TASK_LOAD_REPLAY)) {
+      last_replay_request = millis();
+      enqueueTask(createLoadReplayTask());  // Core1 にバッファの補充を依頼
     }
     return;
   }
@@ -1615,6 +1511,9 @@ int get_gps_numsat() {
   if(get_demo_biwako()){
     return (int)(20.0*sin(millis()/5000))+20;
   }else if(getReplayMode()){
+    // CSV に numsat 列があればその値を使う。無い場合は「衛星情報なし」を示す 99 を返す。
+    if(replay_has_value(RHAVE_NUMSAT))
+      return stored_numsats;
     return 99;
   }
   return stored_numsats;

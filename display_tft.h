@@ -3,10 +3,10 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画モジュールのヘッダー。
 //           画面サイズ・カラー定数・座標構造体・enum定義と、
-//           マップ/コンパス/ヘッダー/フッター/設定画面など
-//           全描画関数のプロトタイプ宣言。
+//           マップ/コンパス/ヘッダー/フッター/設定画面/
+//           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -53,7 +53,7 @@
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_REPLAY,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL
+    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -116,6 +116,9 @@ void draw_nomapdata();
 void draw_setting_mode(int selectedLine, int cursorLine);
 void draw_gpsdetail(int page);
 void draw_sddetail(int page);
+void draw_replayselect(int page, int cursor);
+extern volatile bool loading_replaylist;   // Core1 でリプレイ用ファイル一覧を取得中
+extern bool replay_loading_displayed;      // "Stand by..." 表示中（読み込み完了時の再描画判定用）
 void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
 
@@ -146,6 +149,7 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixO
 void draw_triangle(int ttrack,int steer_angle);
 void draw_course_warning(int steer_angle);
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 
 
 

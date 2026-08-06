@@ -35,7 +35,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 
 #include <Arduino.h>
@@ -45,6 +45,7 @@
 #include "settings.h"
 #include "airdata.h"  // myWire (i2c0, GPIO32/33) を共用する
 #include "mysd.h"     // enqueueTask / createLogSdfTask
+#include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
 
 // ============================================================
 // I2C バス（MS5611 と共用: i2c0, GPIO32=SDA, GPIO33=SCL）
@@ -836,6 +837,9 @@ float get_imu_mag_accuracy_deg() {
 // I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
 // 1 秒 = 30Hz × 33 サンプル分のタイムアウト。正常時は ~33ms ごとに更新される。
 float get_imu_vspeed() {
+    // リプレイ中で CSV に KF_Vspeed 列があれば、その値を返す（バリオ音も再生される）
+    if (replay_has_value(RHAVE_KFVS)) return replay_get_kf_vspeed();
+
     if (bno085_ok) {
         // BNO085 あり: I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（誤鳴動防止）
         if (_last_sensor_event_ms == 0 ||
@@ -850,7 +854,11 @@ float get_imu_vspeed() {
 float get_imu_altitude()     { return _imu_altitude; }
 // KF MSL高度 = KF AGL + gnss_kf_offset（起動地MSL高度の推定値）。
 // gnss_kf_offset 未確定時（GNSS 3D fix 前）は AGL 値（＝起動時 0m）を返す。
-float get_imu_altitude_msl() { return _imu_altitude + _gnss_kf_offset; }
+// リプレイ中で CSV に KF_Altitude 列があれば、その値をそのまま返す。
+float get_imu_altitude_msl() {
+    if (replay_has_value(RHAVE_KFALT)) return replay_get_kf_altitude();
+    return _imu_altitude + _gnss_kf_offset;
+}
 bool  get_imu_gnss_offset_ready() { return _gnss_offset_ready; }
 float get_imu_az()           { return _imu_az; }
 float get_imu_horiz_accel()  { return _imu_horiz_accel; }  // 地球座標系 水平加速度 [m/s²]

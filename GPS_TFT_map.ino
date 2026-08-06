@@ -5,7 +5,7 @@
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 
 #include "navdata.h"
@@ -40,6 +40,8 @@ float degpersecond = 0;                // 算出された旋回角速度 [deg/s]
 // --- 画面モード・スケール管理 ---
 int screen_mode = MODE_MAP;  // 現在の画面モード（MODE_MAP / MODE_SETTING など）
 int detail_page = 0;         // サブ画面（GPSDetail / SDDetail）のページ番号
+int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（項目の通し番号）
+int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;                // 現在のマップスケール [pixels/km]
 
@@ -95,8 +97,11 @@ void check_destination_toofar();
 void update_course_warning(float degpersecond);
 void shortPressCallback();
 void longPressCallback();
+void doublePressCallback();
+void next_scaleindex();
+int scaleindex_zoomlevel(int index);
 // Create Button objects
-Button sw_push(SW_PUSH, shortPressCallback, longPressCallback);
+Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallback);
 
 // USERLED フラッシュ制御（Core0 のループから毎回呼ぶ）。
 // 条件ごとの LED 動作:
@@ -237,6 +242,9 @@ void setup1(void) {
 void loop() {
   //switch handling
   sw_push.read();
+  // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
+  // リプレイを一時停止する。戻ってきたら続きから再生される。
+  replay_set_paused(screen_mode != MODE_MAP);
   gps_loop(0);  // ループ先頭で GPS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
 
@@ -265,7 +273,11 @@ void loop() {
   imu_update();
 
   // ROTATION_VECTOR 更新時（5Hz）かつ GPS 日時有効時 → Euler角を JST 時刻で SD ログ
-  if (get_imu_rv_updated() && get_gpsdate().isValid() && get_gpstime().isValid()) {
+  // リプレイ中は記録しない。リプレイ中の日時は CSV 由来のため、そのまま記録すると
+  // 「再生した飛行の日付」のファイルに現在の（静止した）IMU 値を追記してしまい、
+  // 実際の飛行記録を汚してしまう。下の prev_jst_cs による単調増加チェックも
+  // 再生日時に引きずられて、通常モードに戻ったあと記録が止まる原因になる。
+  if (!getReplayMode() && get_imu_rv_updated() && get_gpsdate().isValid() && get_gpstime().isValid()) {
     // millis() オフセットで UTC 時刻を推定し JST（UTC+9）に変換
     uint32_t elapsed_ms = millis() - get_gps_fix_millis();
     int utc_cs = get_gpstime().centisecond() + (int)(elapsed_ms / 10);
@@ -322,7 +334,13 @@ void loop() {
 
   // GNSS高度による気圧基準補正（3Dフィックス有効時のみ、内部で1秒レート制限）
   // Vertical speed は変更せず、高度の長期ドリフトをゆっくり修正する。
-  if (get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
+  //
+  // リプレイ中は実行しない。リプレイ中の GNSS 高度は CSV 由来（再生した飛行場所の高度）
+  // であり、GNSS 垂直速度に至っては更新されず直前の実測値のまま残る。これらを Kalman に
+  // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
+  // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
+  // 再生中のように動き続ける原因になる。
+  if (!getReplayMode() && get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
     imu_kalman_gnss_update(
       (float)get_gps_altitude(),
       get_gps_vacc_mm() / 1000.0f
@@ -376,6 +394,11 @@ void loop() {
       redraw_screen = true;
     if (redraw_screen)
       draw_sddetail(detail_page);
+  } else if (screen_mode == MODE_REPLAYSELECT) {
+    if (replay_loading_displayed && !loading_replaylist)
+      redraw_screen = true;  // Core1 のファイル一覧取得が完了したので描き直す
+    if (redraw_screen)
+      draw_replayselect(replay_list_page, replay_cursor);
   } else if (screen_mode == MODE_MAPLIST) {
     if (redraw_screen)
       draw_maplist_mode(detail_page);
@@ -477,12 +500,7 @@ void loop() {
       clean_backscreen();
 
       // scaleindex → Google Map ズームレベルの変換
-      int zoomlevel = 0;
-      if (scaleindex == 0) zoomlevel = 5;   //SCALE_EXSMALL_GMAP
-      if (scaleindex == 1) zoomlevel = 7;   //SCALE_SMALL_GMAP
-      if (scaleindex == 2) zoomlevel = 9;   //SCALE_MEDIUM_GMAP
-      if (scaleindex == 3) zoomlevel = 11;  //SCALE_LARGE_GMAP
-      if (scaleindex == 4) zoomlevel = 13;  //SCALE_EXLARGE_GMAP
+      int zoomlevel = scaleindex_zoomlevel(scaleindex);
 
       // ---- レイヤー 1: Google Map 画像（BMP）を背景として描画 ----
       bool gmap_drawed = false;
@@ -520,6 +538,13 @@ void loop() {
       // ---- レイヤー 3: 飛行軌跡 ----
       draw_track(new_lat, new_long, scale, drawupward_direction);
 
+      // ---- レイヤー 3.5: パイロンへの基準線・コース円 ----
+      // マゼンタラインより先に描画して、重なったときは基準線が隠れるようにする。
+      bool draw_pilon = (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON));
+      if (draw_pilon) {
+        draw_pilon_takeshima_line(new_lat, new_long, scale, drawupward_direction);
+      }
+
       // ---- レイヤー 4: 目的地ライン ----
       // fix 取得前は自機位置が不明なため、誘導線は描画しない
       if (get_gps_fix() && currentdestination != -1 && currentdestination < destinations_count) {
@@ -541,8 +566,8 @@ void loop() {
 
       // ---- レイヤー 4.5: パイロン・PLA アイコン ----
       // マゼンタラインより後に描画してアイコンが隠れないようにする。
-      if (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-        draw_pilon_takeshima_line(new_lat, new_long, scale, drawupward_direction);
+      if (draw_pilon) {
+        draw_pilon_takeshima_marks(new_lat, new_long, scale, drawupward_direction);
       }
 
       // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
@@ -659,6 +684,10 @@ void loop1() {
       case TASK_BROWSE_SD:
         browse_sd(currentTask.pagenum);
         break;
+      case TASK_BROWSE_REPLAY:
+        // pagenum にはページ番号ではなく「ファイルの開始通し番号」が入っている
+        browse_replay_files(currentTask.pagenum);
+        break;
       case TASK_LOAD_REPLAY:
         load_replay();
         break;
@@ -714,14 +743,41 @@ void loop1() {
 extern int max_page;  // Global variable to store maximum page number
 
 //==========BUTTON==========
+// マップスケール（ズームレベル）を次の段階へ切り替える。
+// 地図画面でのダブルクリックと、設定画面の Map scale 項目の両方から呼ばれる。
+void next_scaleindex() {
+  gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
+  scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
+  scale = scalelist[scaleindex];
+}
+
+// scaleindex → Google Map ズームレベルの変換。
+// scalelist[5]（最大拡大）に対応する地図画像は無いため 0 を返す。
+int scaleindex_zoomlevel(int index) {
+  if (index == 0) return 5;   //SCALE_EXSMALL_GMAP
+  if (index == 1) return 7;   //SCALE_SMALL_GMAP
+  if (index == 2) return 9;   //SCALE_MEDIUM_GMAP
+  if (index == 3) return 11;  //SCALE_LARGE_GMAP
+  if (index == 4) return 13;  //SCALE_EXLARGE_GMAP
+  return 0;
+}
+
 // 短押しコールバック: 画面モードごとに動作が変わる。
-//   MAP モード:      スケール（ズームレベル）を順番に切り替える
+//   MAP モード:      何もしない（誤操作防止のためスケール変更はダブルクリックに変更）
 //   SETTING モード:  カーソル移動 or 値のトグル変更
 //   SDDETAIL:       次のページを SD から読み込む
 //   MAPLIST/GPSDETAIL: 次のページへ
+// 操作音は Button クラスではなくここで鳴らす。何も起きない画面では鳴らさないため。
 void shortPressCallback() {
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
+
+  // MAP モードでは短押しは何もしない（スケール変更はダブルクリックへ移した）。
+  // 何も起きないのに音だけ鳴ると紛らわしいので、音も鳴らさずに抜ける。
+  if (screen_mode == MODE_MAP)
+    return;
+
+  enqueueTask(createPlayMultiToneTask(1046, 80, 1));  // 短押し音
 
   if (screen_mode == MODE_SETTING) {
     if (selectedLine == -1) {  // 値変更モードでない → カーソルを次の行へ
@@ -736,13 +792,98 @@ void shortPressCallback() {
       enqueueTask(createBrowseSDTask(0));
     else
       enqueueTask(createBrowseSDTask(detail_page % (max_page + 1)));  // ページをループ
+  } else if (screen_mode == MODE_REPLAYSELECT) {
+    // カーソルを次の項目へ（末尾まで行ったら先頭に戻る）
+    int total = replay_menu_total_items();
+    replay_cursor = (replay_cursor + 1) % total;
+    int newpage = replay_menu_page_of(replay_cursor);
+    if (newpage != replay_list_page) {
+      // ページを跨いだので、そのページ分のファイル一覧を Core1 に取り直してもらう
+      replay_list_page = newpage;
+      loading_replaylist = true;
+      enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
+    }
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
-  } else {
-    // MAP モード: スケールを次のレベルに切り替える
-    gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
-    scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
-    scale = scalelist[scaleindex];
+  }
+}
+
+// ダブルクリックコールバック: 地図画面でのみスケール（ズームレベル）を切り替える。
+// 短押しは毎回発火するため、ここでは短押しと重複しない処理だけを行う。
+// 操作音は shortPressCallback() と同じ理由でここで鳴らす（効かない画面では鳴らさない）。
+void doublePressCallback() {
+  DEBUG_PLN(20240801, "double press");
+
+  // MAP モード以外（設定画面や各詳細画面）では短押しがページ送り／カーソル移動を
+  // 担っているのでダブルクリックには意味がない。音も鳴らさずに抜ける。
+  if (screen_mode != MODE_MAP)
+    return;
+
+  enqueueTask(createPlayMultiToneTask(1568, 80, 1));  // ダブルクリック音（短押しより高い音）
+
+  redraw_screen = true;
+  next_scaleindex();  // MAP モード: スケールを次のレベルに切り替える
+}
+
+// 設定画面に戻る（リプレイ選択画面から抜けるとき用）。
+// 汎用の「設定画面へ戻る」パスを通らないので、カーソル状態は自分でリセットする。
+static void backToSettingFromReplay() {
+  screen_mode = MODE_SETTING;
+  selectedLine = -1;   // 値変更モードを解除（REPLAY 項目に入った時に立っている）
+  tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);  // 画面を白でクリア
+}
+
+// 指定したファイルのリプレイ再生を開始し、地図画面へ戻る。
+static void startReplay(const char* filename) {
+  set_replay_filename(filename);
+  set_replaymode(true);
+  set_demo_biwako(false);       // デモとリプレイは同時使用不可 → デモを無効化
+  latlon_manager.reset();       // 位置履歴をクリア
+  reset_degpersecond();         // 旋回角速度をリセット
+  gmap_loaded_active = false;   // 地図キャッシュを無効化（再読み込みさせる）
+  enqueueTask(createInitReplayTask());  // Core1: 選択したファイルを開いて読み込み開始
+  selectedLine = -1;
+  exit_setting();               // 設定を保存して地図画面へ
+}
+
+// リプレイ選択画面での長押し（決定）を処理する。
+static void handleReplaySelect() {
+  char label[40];
+  int  fsize = 0;
+  ReplayItemType type = replay_menu_item(replay_cursor, replay_list_page, label, sizeof(label), &fsize);
+
+  switch (type) {
+    case RITEM_OFF:
+      // リプレイを解除して通常の GPS に戻す
+      set_replaymode(false);
+      set_replay_filename("");
+      latlon_manager.reset();
+      reset_degpersecond();
+      gmap_loaded_active = false;
+      backToSettingFromReplay();
+      break;
+    case RITEM_FLIGHTONLY:
+      // 静止区間をスキップするかを切り替える。画面はそのまま（続けて再生対象を選べる）
+      set_replay_flight_only(!get_replay_flight_only());
+      break;
+    case RITEM_SPEED:
+      // 再生速度を x1 → x2 → x?? と切り替える。再生中でも時刻は飛ばない
+      cycle_replay_speed();
+      break;
+    case RITEM_2025:
+      startReplay(REPLAY_2025_FILE);
+      break;
+    case RITEM_2026:
+      startReplay(REPLAY_2026_FILE);
+      break;
+    case RITEM_FILE:
+      startReplay(label);  // label には SD ルート上のファイル名が入っている
+      break;
+    case RITEM_RETURN:
+      backToSettingFromReplay();
+      break;
+    default:
+      break;  // 空行を選んでいる場合は何もしない
   }
 }
 
@@ -753,6 +894,13 @@ void shortPressCallback() {
 //   SETTING（変更中）→ 長押し → 値変更モードを終了し確定する
 void longPressCallback() {
   redraw_screen = true;
+
+  // リプレイ選択画面での長押し = 「決定」。
+  // 下の汎用パス（設定画面以外 → 設定画面へ戻る）より先に処理しないと項目を選べない。
+  if (screen_mode == MODE_REPLAYSELECT) {
+    handleReplaySelect();
+    return;
+  }
 
   if (screen_mode != MODE_SETTING) {
     // 設定画面以外から長押し → 設定画面へ遷移

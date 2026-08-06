@@ -5,8 +5,10 @@
 //           タスク種別(TaskType)・タスク構造体・キュー定義と、
 //           設定保存/読込・CSVフライトログ・BMP地図画像読込・
 //           音声再生タスク生成関数のプロトタイプ宣言。
+//           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
+//           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/07/31
 // ============================================================
 
 #ifndef MYSD_H
@@ -25,6 +27,7 @@
       TASK_PLAY_WAV,
       TASK_SAVE_SETTINGS,
       TASK_BROWSE_SD,
+      TASK_BROWSE_REPLAY, // リプレイ選択画面用の CSV ファイル列挙
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
       TASK_LOG_EULER,
@@ -44,8 +47,71 @@
     bool get_sd_use_spi();    // 現在 SPI モードで動作中なら true（通常は SDIO = false）
     int  get_sd_setup_count(); // setup_sd() の累計呼び出し回数
 
+    // ===== リプレイ再生（飛行CSVの直接再生） =====
+    // CSV から取り出す列。replay_col_names[] の並びと一致させること。
+    typedef enum {
+        RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_ALT,
+        RCOL_KFALT, RCOL_KFVS, RCOL_PRESS, RCOL_DATE, RCOL_TIME,
+        RCOL_NUMSAT, RCOL_VOLT,
+        REPLAY_COL_COUNT
+    } ReplayCol;
+
+    // ReplayRow.have のビット。その列が CSV に存在し値が読めた場合に立つ。
+    // 立っていない項目は再生時に実センサ値へフォールバックする（v5データは高度等を持たない）。
+    #define RHAVE_GS     0x0001
+    #define RHAVE_TTRACK 0x0002
+    #define RHAVE_ALT    0x0004
+    #define RHAVE_KFALT  0x0008
+    #define RHAVE_KFVS   0x0010
+    #define RHAVE_PRESS  0x0020
+    #define RHAVE_DATE   0x0040
+    #define RHAVE_NUMSAT 0x0080
+    #define RHAVE_VOLT   0x0100
+
+    // CSV 1行分のリプレイデータ。Core1 が生成し Core0 が消費する。
+    typedef struct {
+        double   lat, lon;
+        float    gs, ttrack;
+        float    altitude, kf_altitude, kf_vspeed, pressure, voltage;
+        int      numsat;
+        uint16_t have;   // RHAVE_* のビットマスク
+        int      year, month, day, hour, minute, second, centisecond;
+        uint32_t t_ms;   // CSV 先頭データ行からの経過ミリ秒
+    } ReplayRow;
+
+    // リプレイ選択画面の項目種別
+    typedef enum {
+        RITEM_NONE = 0,     // 空行（そのページに項目が無い）
+        RITEM_OFF,          // リプレイ解除（通常 GPS に戻す）
+        RITEM_FLIGHTONLY,   // 静止区間をスキップするか（YES/NO トグル）
+        RITEM_SPEED,        // 再生速度の倍率（x1 / x2 / x?? トグル）
+        RITEM_2025,         // 固定項目: 2025 大会データ
+        RITEM_2026,         // 固定項目: 2026 大会データ
+        RITEM_FILE,         // SD 上の飛行 CSV
+        RITEM_RETURN        // 設定画面に戻る
+    } ReplayItemType;
+
     void init_replay();
     void load_replay();
+    bool browse_replay_files(int start_index);
+    int  replay_menu_total_items();
+    int  replay_menu_page_of(int index);
+    int  replay_menu_page_count();
+    int  replay_menu_file_start_for_page(int page);
+    ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsize, int* filesize);
+    // 以下は Core0（gps.cpp）から呼ぶリングバッファ操作
+    bool     replay_available();
+    uint32_t replay_peek_t_ms();
+    bool     replay_pop(ReplayRow* out);
+    bool     replay_buffer_has_space();
+    const char* get_replay_filename();
+    void     set_replay_filename(const char* name);
+    bool     get_replay_flight_only();
+    void     set_replay_flight_only(bool on);
+    int      get_replay_speed();     // 再生速度の倍率（1 / 2 / REPLAY_SPEED_FAST）
+    void     cycle_replay_speed();   // 倍率を次の候補へ切り替える
+    void     replay_set_paused(bool paused);  // 再生の一時停止（設定画面表示中など）
+
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
@@ -144,6 +210,7 @@
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
+  Task createBrowseReplayTask(int start_index);
   Task createLoadReplayTask();
   Task createInitReplayTask();
   Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
@@ -168,9 +235,20 @@
   extern volatile bool sd_setup_complete;
   extern volatile bool logo_ready;
   extern TFT_eSprite gmap_sprite;
-  extern char replay_nmea[128];
-  extern volatile unsigned long replay_seekpos;
-  extern volatile bool loaded_replay_nmea;
+
+  // リプレイ再生用の共有状態（Core1 が生成 / Core0 が消費）
+  extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
+  extern volatile uint8_t replay_head, replay_tail;
+  extern volatile bool replay_eof;
+  extern volatile uint32_t replay_init_seq;  // init_replay() のたびに加算（再生時計のリセット通知）
+  extern char replay_filename[REPLAY_FILENAME_LEN];
+
+  // リプレイ選択画面のファイル一覧（browse_replay_files() が更新）
+  extern char replayfiles[REPLAY_LIST_ROWS][32];
+  extern int  replayfiles_size[REPLAY_LIST_ROWS];
+  extern int  replayfiles_count;  // 現在 replayfiles[] に入っている件数
+  extern int  replayfiles_total;  // SD 上の対象 CSV の総数
+
   extern volatile bool gmap_loaded_active;
   extern volatile bool new_gmap_ready;
 #endif

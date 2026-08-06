@@ -50,7 +50,6 @@
   #define ROW_FILLDATA 28
   #define COL_FILLDATA 28
 
-
   //公式ルール2026.06.21
   #define PLA_LAT 35.294222
   #define PLA_LON 136.254333
