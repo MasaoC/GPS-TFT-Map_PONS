@@ -72,7 +72,7 @@ uint32_t get_gps_fix_millis() { return gps_fix_millis; }
 
 // --- GPS 最新値の保持変数 ---
 // UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
-double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
+double stored_longitude, stored_latitude, stored_truetrack, stored_gnss_altitude, stored_fixtype, stored_gs;
 int stored_numsats;
 
 // --- 最大 G/S 保持変数 ---
@@ -237,7 +237,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     double new_lon = lon  * 1e-7;
     stored_latitude  = new_lat;
     stored_longitude = new_lon;
-    stored_altitude  = hMSL * 1e-3;  // mm → m
+    stored_gnss_altitude  = hMSL * 1e-3;  // mm → m
   }
 
   stored_gs         = gSpeed * 1e-3f;  // mm/s → m/s
@@ -412,7 +412,7 @@ static void process_ubx(uint8_t b) {
               Serial.print(" sv="); Serial.print(stored_numsats);
               Serial.print(" lat="); Serial.print(stored_latitude, 6);
               Serial.print(" lon="); Serial.print(stored_longitude, 6);
-              Serial.print(" alt="); Serial.print(stored_altitude, 1);
+              Serial.print(" alt="); Serial.print(stored_gnss_altitude, 1);
               Serial.print(" gs="); Serial.print(stored_gs, 2);
               Serial.print("m/s hdg="); Serial.print(stored_truetrack, 1);
               Serial.print(" time="); Serial.print(ubx_hour); Serial.print(":"); Serial.print(ubx_min); Serial.print(":"); Serial.print(ubx_sec);
@@ -1006,8 +1006,8 @@ static void apply_replay_row(const ReplayRow* row) {
   stored_fixtype   = 2;
 
   // --- 対地速度・真方位・高度 ---
-  if (row->have & RHAVE_ALT)
-    stored_altitude = row->altitude;
+  if (row->have & RHAVE_GNSSALT)
+    stored_gnss_altitude = row->gnss_altitude;
   if (row->have & RHAVE_GS) {
     stored_gs = row->gs;
     update_maxgs(stored_gs);
@@ -1379,7 +1379,7 @@ void try_enque_savecsv(){
       float csv_kf_alt    = get_imu_altitude_msl();  // KF推定高度 [m]（MSL基準・GNSS長期収束済み）
       float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
-        stored_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,
+        stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,
         year, month, day, hour, ubx_min, ubx_sec, ubx_cs));
 
       last_gps_save_time = millis();
@@ -1489,7 +1489,7 @@ bool get_gps_fix() {
 }
 
 double get_gps_altitude() {
-  return stored_altitude;
+  return stored_gnss_altitude;
 }
 
 

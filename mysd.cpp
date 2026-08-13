@@ -428,14 +428,14 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
-Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
   task.saveCsvArgs.longitude = longitude;
   task.saveCsvArgs.gs = gs;
   task.saveCsvArgs.ttrack = ttrack;
-  task.saveCsvArgs.altitude = altitude;
+  task.saveCsvArgs.gnss_altitude = gnss_altitude;
   task.saveCsvArgs.kf_altitude = kf_altitude;
   task.saveCsvArgs.kf_vspeed  = kf_vspeed;
   task.saveCsvArgs.pressure = pressure;
@@ -859,9 +859,17 @@ static uint32_t replay_leadin_abs[REPLAY_LEADIN_SLOTS];
 
 // CSV ヘッダで探す列名。並びは ReplayCol の enum と一致させること。
 static const char* const replay_col_names[REPLAY_COL_COUNT] = {
-  "latitude", "longitude", "gs", "truetrack", "altitude",
+  "latitude", "longitude", "gs", "truetrack", "gnss_altitude",
   "kf_altitude", "kf_vspeed", "pressure", "date", "time",
   "numsat", "voltage"
+};
+
+// 旧バージョンの CSV 用の別名。同じ並びで、無い列は nullptr。
+// v0.923 以前は GNSS 高度の列名が "Altitude" だったため、それも受け付ける。
+static const char* const replay_col_alias[REPLAY_COL_COUNT] = {
+  nullptr, nullptr, nullptr, nullptr, "altitude",
+  nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr
 };
 
 // 大文字小文字を無視した文字列比較（strcasecmp 相当）。前後の空白も無視する。
@@ -954,7 +962,7 @@ bool replay_pop(ReplayRow* out) {
   volatile ReplayRow* src = &replay_rows[replay_tail];
   out->lat = src->lat;               out->lon = src->lon;
   out->gs = src->gs;                 out->ttrack = src->ttrack;
-  out->altitude = src->altitude;     out->kf_altitude = src->kf_altitude;
+  out->gnss_altitude = src->gnss_altitude;     out->kf_altitude = src->kf_altitude;
   out->kf_vspeed = src->kf_vspeed;   out->pressure = src->pressure;
   out->voltage = src->voltage;       out->numsat = src->numsat;
   out->have = src->have;             out->t_ms = src->t_ms;
@@ -1009,7 +1017,9 @@ static void replay_parse_header(const char* header) {
     token[len] = '\0';
 
     for (int c = 0; c < REPLAY_COL_COUNT; c++) {
-      if (replay_col[c] == -1 && replay_name_match(token, replay_col_names[c])) {
+      if (replay_col[c] == -1 &&
+          (replay_name_match(token, replay_col_names[c]) ||
+           (replay_col_alias[c] != nullptr && replay_name_match(token, replay_col_alias[c])))) {
         replay_col[c] = index;
         break;
       }
@@ -1259,8 +1269,8 @@ void load_replay() {
     else                                          { row->gs = 0; }
     if (replay_get_float(line, RCOL_TTRACK, &v)) { row->ttrack = v; row->have |= RHAVE_TTRACK; }
     else                                          { row->ttrack = 0; }
-    if (replay_get_float(line, RCOL_ALT, &v))    { row->altitude = v;    row->have |= RHAVE_ALT; }
-    else                                          { row->altitude = 0; }
+    if (replay_get_float(line, RCOL_GNSSALT, &v))    { row->gnss_altitude = v;    row->have |= RHAVE_GNSSALT; }
+    else                                          { row->gnss_altitude = 0; }
     if (replay_get_float(line, RCOL_KFALT, &v))  { row->kf_altitude = v; row->have |= RHAVE_KFALT; }
     else                                          { row->kf_altitude = 0; }
     if (replay_get_float(line, RCOL_KFVS, &v))   { row->kf_vspeed = v;   row->have |= RHAVE_KFVS; }
@@ -1646,7 +1656,8 @@ void log_sdf(const char* format, ...){
 }
 
 // GPS の飛行データを CSV ファイルに 1 行追記するフライトログ関数。
-// 列: latitude, longitude, gs(m/s), TrueTrack(°), Altitude(m), KF_Altitude(m), KF_Vspeed(m/s), pressure, date, time
+// 列: latitude, longitude, gs(m/s), TrueTrack(°), GNSS_Altitude(m), KF_Altitude(m), KF_Vspeed(m/s), pressure, date, time
+// GNSS_Altitude は GNSS(NAV-PVT hMSL)が返す MSL 高度。KF_Altitude（気圧+GNSS融合のKF推定値）とは別物。
 //
 // ファイル名は最初に GPS 時刻が取得された瞬間に確定し、
 // 以降は同じファイルに追記し続ける（例: 2025-05-08_1230.csv）。
@@ -1657,7 +1668,7 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 // （実体は init_replay() から flush するためファイル前方で定義してある）
 
-void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
@@ -1684,7 +1695,7 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitu
 
   if (csvFileStatic) {
     if(!headerWritten){
-      csvFileStatic.println("latitude,longitude,gs,TrueTrack,Altitude,KF_Altitude,KF_Vspeed,pressure,date,time");
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,date,time");
       headerWritten = true;
     }
 
@@ -1696,7 +1707,7 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitu
     csvFileStatic.print(",");
     csvFileStatic.print(ttrack);
     csvFileStatic.print(",");
-    csvFileStatic.print(altitude,2);
+    csvFileStatic.print(gnss_altitude,2);
     csvFileStatic.print(",");
     csvFileStatic.print(kf_altitude,2);  // KF推定高度 [m]（気圧基準）
     csvFileStatic.print(",");

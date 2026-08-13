@@ -50,7 +50,7 @@
     // ===== リプレイ再生（飛行CSVの直接再生） =====
     // CSV から取り出す列。replay_col_names[] の並びと一致させること。
     typedef enum {
-        RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_ALT,
+        RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_GNSSALT,
         RCOL_KFALT, RCOL_KFVS, RCOL_PRESS, RCOL_DATE, RCOL_TIME,
         RCOL_NUMSAT, RCOL_VOLT,
         REPLAY_COL_COUNT
@@ -60,7 +60,7 @@
     // 立っていない項目は再生時に実センサ値へフォールバックする（v5データは高度等を持たない）。
     #define RHAVE_GS     0x0001
     #define RHAVE_TTRACK 0x0002
-    #define RHAVE_ALT    0x0004
+    #define RHAVE_GNSSALT    0x0004
     #define RHAVE_KFALT  0x0008
     #define RHAVE_KFVS   0x0010
     #define RHAVE_PRESS  0x0020
@@ -72,7 +72,7 @@
     typedef struct {
         double   lat, lon;
         float    gs, ttrack;
-        float    altitude, kf_altitude, kf_vspeed, pressure, voltage;
+        float    gnss_altitude, kf_altitude, kf_vspeed, pressure, voltage;
         int      numsat;
         uint16_t have;   // RHAVE_* のビットマスク
         int      year, month, day, hour, minute, second, centisecond;
@@ -115,7 +115,7 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
     void load_mapimage(double center_lat, double center_lon,int zoomlevel);
     void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
 
@@ -161,7 +161,7 @@
               float longitude;
               float gs;
               int ttrack;  // 真方位（true track）を格納
-              float altitude;
+              float gnss_altitude;
               float kf_altitude;  // KF推定高度 [m]（気圧基準）
               float kf_vspeed;   // KF推定上昇率 [m/s]
               float pressure;
@@ -205,7 +205,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);

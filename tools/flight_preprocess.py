@@ -741,6 +741,20 @@ tas_series = np.hypot(va_n, va_e)
 # こうすると TrueTrack = Yaw(True) + Beta + DA が厳密に成立する。
 da = wrap180(track - yaw_true - beta)
 
+# ただしこの分け方だと、対気速度ベクトルの実際の向き psi_air は
+# Yaw(True) + Beta とは一致しない(差 = beta_wind - beta のばらつき分)。
+# ベクトル図として
+#   対地速度ベクトル = 対気速度ベクトル + 風ベクトル
+# を厳密に閉じさせたい用途(動画のベクトル図など)のために、
+# psi_air を基準にした「幾何学的な」分け方も併せて出力する。
+#   beta_air = psi_air - Yaw(True)  … 実際に描かれる機首方位と対気ベクトルの開き
+#   da_air   = TrueTrack - psi_air  … 風だけによる偏流角
+# どちらの組でも TrueTrack = Yaw(True) + Beta + DA は成立する。
+# 違いは「風推定の誤差やGPSノイズをBeta側に残すか(beta_air)、
+# DA側に残すか(beta)」だけである。
+beta_air = wrap180(psi_air - yaw_true)
+da_air = wrap180(track - psi_air)
+
 wind_speed = np.hypot(wn, we)
 # 風が吹いてくる方位。360°をまたぐと最大最小が意味をなさないので、
 # 表示・保存用には連続値に展開したものを使う
@@ -787,6 +801,16 @@ if YAW_ALLOW_DRIFT:
 identity = np.abs(wrap180(track - (yaw_true + beta + da))).max()
 print(f"\n検証:")
 print(f"  関係式 TrueTrack = Yaw + Beta + DA の最大誤差: {identity:.4f} deg")
+# ベクトルの三角形(対地 = 対気 + 風)が閉じているか。
+# beta_air/da_air を使えば構成上ゼロになる
+_cn = vg_n - (tas_series * np.cos(np.radians(yaw_true + beta_air)) + wn)
+_ce = vg_e - (tas_series * np.sin(np.radians(yaw_true + beta_air)) + we)
+print(f"  三角形(対地 = 対気 + 風)の閉じ残り: "
+      f"beta_air使用で最大{np.hypot(_cn, _ce).max():.6f} m/s")
+_dn = vg_n - (tas_series * np.cos(np.radians(yaw_true + beta)) + wn)
+_de = vg_e - (tas_series * np.sin(np.radians(yaw_true + beta)) + we)
+print(f"    (滑らかなbetaで描くと 平均{np.hypot(_dn, _de).mean():.3f} "
+      f"最大{np.hypot(_dn, _de).max():.3f} m/s ずれる → 動画のベクトル図は beta_air を使う)")
 # DA の幾何学的な上限。sin(DA) = 風速/対地速度 * sin(...) なので |DA| <= asin(風速/対地速度)
 da_limit = np.degrees(np.arcsin(np.clip(wind_speed / np.maximum(gs, 0.1), -1, 1)))
 over = np.abs(da) > da_limit + 1.0
@@ -808,11 +832,17 @@ out = pd.DataFrame({
     'time': [daysec_to_time(s) for s in out_t],
     'beta': np.round(np.interp(out_t, tg, beta), 2),
     'da': np.round(np.interp(out_t, tg, da), 2),
+    # 幾何学的な分け方(ベクトル三角形が厳密に閉じる方)
+    'beta_air': np.round(np.interp(out_t, tg, beta_air), 2),
+    'da_air': np.round(np.interp(out_t, tg, da_air), 2),
     'wind_speed': np.round(np.interp(out_t, tg, wind_speed), 2),
     'wind_dir': np.round(np.interp(out_t, tg, wind_dir_unwrap) % 360, 1),
     'tas': np.round(np.interp(out_t, tg, tas_series), 2),
     'yaw_true': np.round(np.interp(out_t, tg, yaw_true) % 360, 2),
     'truetrack': np.round(np.interp(out_t, tg, track) % 360, 2),
+    # 推定に使った対地速度(平滑化済み)。CSVの生値と混ぜるとベクトル図が
+    # わずかに閉じなくなるため、三角形を描く側はこちらを使う
+    'gs': np.round(np.interp(out_t, tg, gs), 2),
 })
 out.to_csv(BETADA_SAVENAME, index=False)
 print(f"推定結果を保存: {BETADA_SAVENAME}")

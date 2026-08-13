@@ -709,7 +709,7 @@ void loop1() {
       case TASK_SAVE_CSV:
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.altitude,
+          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.gnss_altitude,
           currentTask.saveCsvArgs.kf_altitude,
           currentTask.saveCsvArgs.kf_vspeed,
           currentTask.saveCsvArgs.pressure,
