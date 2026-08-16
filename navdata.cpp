@@ -122,6 +122,27 @@ double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2
 }
 
 
+// PLA→N パイロン と PLA→W パイロン の「角度的にちょうど中間」の方位を返す [rad]。
+// パイロン座標（navdata.h の #define）が変わっても自動追従するよう、
+// 中間方位を定数で持たずにここで計算する。初回だけ計算して static にキャッシュする。
+// 単純な角度の平均は 0°/360° をまたぐと真逆を向くので、
+// 2 方位の単位ベクトルの和の偏角として求める（常に狭い側の二等分線になる）。
+double pla_centerline_bearing_rad() {
+  static double cached = NAN;
+  if (isnan(cached)) {
+    // calculateTrueCourseRad の引数はラジアン。deg2rad(double) はこの下で定義されており
+    // ここではまだ宣言されていない（float 版に落ちて精度が落ちる）ため、直接変換する。
+    const double D2R = PI / 180.0;
+    double bn = calculateTrueCourseRad(PLA_LAT * D2R, PLA_LON * D2R,
+                                       PILON_NORTH_LAT * D2R, PILON_NORTH_LON * D2R);
+    double bw = calculateTrueCourseRad(PLA_LAT * D2R, PLA_LON * D2R,
+                                       PILON_WEST_LAT * D2R, PILON_WEST_LON * D2R);
+    cached = atan2(sin(bn) + sin(bw), cos(bn) + cos(bw));
+  }
+  return cached;
+}
+
+
 // ナビゲーション情報を更新する（毎ループ呼ばれる）。
 // 処理内容:
 //   1. 現在の GPS 位置 → 選択中目的地 の距離（dest_dist）を Haversine 式で計算

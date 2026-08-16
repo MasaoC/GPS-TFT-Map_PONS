@@ -112,6 +112,8 @@
 
   double calculateDistanceKm(double lat1, double lon1, double lat2, double lon2);
   double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2);
+  // PLA→N パイロンと PLA→W パイロンの中間方位（センターライン）[rad]
+  double pla_centerline_bearing_rad();
   void nav_update();
 
   #define MAX_MAPDATAS 100

@@ -968,6 +968,23 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
 
 }
 
+// 始点 (lat1,lon1) から方位 bearing_rad（北基準・時計回り・ラジアン）へ
+// distance km 進んだ点を計算する。calculatePointD の「方位を外から与える版」。
+// 2 点から方位を求めるのではなく方位そのものを指定したい場合（センターライン等）に使う。
+void calculatePointFromBearing(double lat1, double lon1, double bearing_rad, double distance, double& lat2, double& lon2) {
+  const double R = 6371.0;  // Radius of the Earth in kilometers
+  lat1 = deg2rad(lat1);
+  lon1 = deg2rad(lon1);
+
+  double d = distance / R;  // Distance in radians
+
+  lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing_rad));
+  lon2 = lon1 + atan2(sin(bearing_rad) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat2));
+
+  lat2 = rad2deg(lat2);
+  lon2 = rad2deg(lon2);
+}
+
 // FLYAWAY モード用の描画。目的地から「離れていく」方向への矢印を描く。
 // 1. draw_flyinto() で目的地への基本矢印を描画する。
 // 2. 目的地から「自機方向→その先」へのマゼンタ線を追加し、「飛び越した先」を示す。
@@ -1784,7 +1801,10 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
 //   - PLA を中心とした 1.0km 円（公式ルール 2025: 折り返し後の距離）
 // 描画順の都合でパイロンのアイコン（draw_pilon_takeshima_marks）とは分けてある。
 // 線はマゼンタの誘導ラインより先に描いて下のレイヤーに、アイコンは後に描いて上のレイヤーにする。
-#define PILON_LINE_WIDTH 3  // PLA→パイロン基準線の太さ [px]
+#define PILON_LINE_WIDTH 3          // PLA→パイロン基準線の太さ [px]
+#define CENTERLINE_WIDTH 2          // PLA センターライン（N/W パイロンの中間方位線）の太さ [px]
+#define CENTERLINE_INNER_KM 1.0     // センターラインの描き始め（1km 円上）
+#define CENTERLINE_OUTER_KM 10.975  // センターラインの描き終わり（10.975km 円上）
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
   cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
@@ -1796,6 +1816,18 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   backscreen.drawWideLine(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
   backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
   backscreen.drawWideLine(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+
+  // 2本のパイロン基準線の「角度的な中間」を通るセンターライン（オレンジ）。
+  // 方位はパイロン座標から実行時に計算するので、パイロンが移動しても自動で追従する。
+  // 1km 円〜10.975km 円の間だけ描き、PLA 付近のスタート台・1km パイロンのアイコンを隠さない。
+  double centerline_bearing = pla_centerline_bearing_rad();
+  double inner_lat, inner_lon, outer_lat, outer_lon;
+  calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_INNER_KM, inner_lat, inner_lon);
+  calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_OUTER_KM, outer_lat, outer_lon);
+  cord_tft cl_inner = latLonToXY(inner_lat, inner_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft cl_outer = latLonToXY(outer_lat, outer_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  backscreen.drawWideLine(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
+
   // 公式ルール2025 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
   // 公式ルール2025 1.0km リターンフライト。
