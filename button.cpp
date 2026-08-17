@@ -3,10 +3,10 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : ボタン入力処理と設定メニューの実装。
 //           Button クラスによる短押し/長押し/ダブルクリック判定、
-//           設定画面の全メニュー項目（目的地・音量・輝度など）の
+//           設定画面の全メニュー項目（目的地・音量・輝度・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 // Handle button updates
 #include "Button.h"
@@ -27,7 +27,7 @@ extern int replay_list_page;   // リプレイ選択画面の表示中ページ
 extern volatile int scaleindex;  // 現在のマップスケール（scalelist のインデックス）
 void reset_degpersecond();
 void next_scaleindex();          // マップスケールを次の段階へ（GPS_TFT_map.ino）
-int scaleindex_zoomlevel(int index);  // scaleindex → Google Map ズームレベル（GPS_TFT_map.ino）
+float scale_screen_km(int index);  // 画面横幅が何 km か（GPS_TFT_map.ino）
 
 const unsigned long debounceTime = 5;       // チャタリング除去のための待機時間 [ms]
 const unsigned long longPressDuration = 1000; // 長押しと判定するまでの時間 [ms]
@@ -372,17 +372,19 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   // [7] マップ拡大率設定 (SCALE)
   //   ・Toggle: 地図画面のダブルクリックと同じ順序でスケールを 1 段階進める
-  //             （zoom5 → 7 → 9 → 11 → 13 → MAX → zoom5 とループ）
-  //   ・アイコン色: scaleindex==3（zoom11）なら緑（通常使用する拡大率）、それ以外は赤
+  //             （広域 → … → 最大拡大 → 広域 とループ）
+  //   ・表示は画面横幅の実距離。ベクタ地図に移行して Google タイルのズーム番号との
+  //     対応が無くなったため、pilot にとって意味のある距離表示にしてある。
+  //   ・アイコン色: scaleindex==3 なら緑（通常使用する拡大率）、それ以外は赤
   // ----------------------------------------------------------
   { SETTING_SCALE,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
-      int zoom = scaleindex_zoomlevel(scaleindex);
-      if(zoom > 0)
-        sprintf(buff, selected ? " Map scale: zoom%d" : "Map scale: zoom%d", zoom);
+      float km = scale_screen_km(scaleindex);
+      if (km >= 10.0f)
+        sprintf(buff, selected ? " Map scale: %dkm" : "Map scale: %dkm", (int)(km + 0.5f));
       else
-        strcpy(buff, selected ? " Map scale: MAX(no map)" : "Map scale: MAX(no map)");  // 地図画像なしの最大拡大
+        sprintf(buff, selected ? " Map scale: %.1fkm" : "Map scale: %.1fkm", km);
       return std::string(buff);  // return as std::string
     },
     nullptr,
@@ -391,7 +393,7 @@ Setting menu_settings[] = {
     },
     nullptr,
     [](){
-      if(scaleindex == 3)  // zoom11 = SCALE_LARGE_GMAP
+      if(scaleindex == 3)  // SCALE_LARGE_GMAP（通常使用）
         return COLOR_GREEN;
       else
         return COLOR_RED;
@@ -399,32 +401,32 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [8] デモモード（琵琶湖）(DEMOBIWA)
-  //   ・Toggle: 位置履歴をリセットし、琵琶湖デモフライトのオン/オフを切り替える。
-  //             degpersecond もリセットし、地図キャッシュも無効化する。
+  // [8] デモモード (DEMOBIWA)
+  //   ・Toggle: デモ地点を 1 つ進める（OFF → BIWAKO → SHIRAHAMA → KASAOKA
+  //             → FUJIGAWA → TOKYO → OFF）。地点ごとに仮想機体をその中心へ置き、
+  //             位置履歴と旋回角速度をリセットする。
+  //   ・各地点の地図表示を実機で確認する用途にも使える。
   //   ・Exit  : デモがオンになったらリプレイを無効にして設定を閉じる（両立しない）
   //   ・アイコン色: デモがオフなら緑（通常飛行中）、オンなら赤
   // ----------------------------------------------------------
   { SETTING_DEMOBIWA,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " DEMO mode: %s" : "DEMO mode: %s", get_demo_biwako() ? "YES" : "NO");
+      sprintf(buff, selected ? " DEMO: %s" : "DEMO: %s", get_demo_site_name(get_demo_site()));
       return std::string(buff);  // return as std::string
     },
     nullptr,
     []() {
-      latlon_manager.reset();       // 位置履歴をクリア
-      toggle_demo_biwako();         // デモオン/オフ切り替え
+      next_demo_site();             // 地点を 1 つ進める（内部で位置履歴もリセット）
       reset_degpersecond();         // 旋回角速度をリセット
-      gmap_loaded_active = false;   // 地図キャッシュを無効化（再読み込みさせる）
     },[](){
-      if(get_demo_biwako()){
+      if(is_demo_active()){
         set_replaymode(false);  // デモとリプレイは同時使用不可 → リプレイを無効化
         exit_setting();
       }
     },
     [](){
-      if(!get_demo_biwako())
+      if(!is_demo_active())
         return COLOR_GREEN;
       else
         return COLOR_RED;

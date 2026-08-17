@@ -1,9 +1,26 @@
+# ---- 解析用の大きな入出力（リポジトリには入れない）----
 *.mp4
 *.csv
 *.kml
-z5/
-z7/
-z9/
-z11/
-z13/
 *.txt
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.DS_Store
+
+# ---- ベクタ地図の生成に使う中間データ ----
+# いずれも build_vectormap.py が作り直せる。合計で数GBになるので追跡しない。
+# ※ .gitignore は行末コメントを解釈しないので、注釈は必ず独立行に書くこと。
+# Overpass 応答のキャッシュ
+vectormap/cache/
+# pbf 走査結果のキャッシュ
+vectormap/pbf_scan.pickle
+# Geofabrik の OSM 抽出と osmdata の海岸線 shapefile
+*.osm.pbf
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.zip

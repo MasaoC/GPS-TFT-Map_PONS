@@ -2,11 +2,14 @@
 // File    : display_tft.cpp
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画の実装。
-//           地図（ポリゴン・Googleマップ画像）、コンパス、
-//           飛行コース矢印、ヘッダー/フッター、設定画面、
+//           ポリゴン地図（内蔵/SD）、コンパス、飛行コース矢印、
+//           ヘッダー/フッター、設定画面、
 //           GPSDetail/SDDetail/マップリスト/リプレイ選択画面など全UI描画。
+//           地図背景そのものは vectormap.cpp が描く。
+//           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
+//           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -24,6 +27,7 @@
 #include "button.h"
 #include "airdata.h"
 #include "imu.h"
+#include "vectormap.h"
 
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
 #define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
@@ -66,6 +70,51 @@ extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
 
+
+// 地図座標から作った線を backscreen に描く際は、必ずこの 2 つを使うこと。
+// 緯度経度由来の座標は高倍率で画面外へ大きく飛び出し、そのまま TFT_eSPI に
+// 渡すと画面外を延々と走査して 1 フレームに数百 ms かかる
+// （理由は clip_line_to_screen のコメント）。
+static inline void draw_clipped_line(int x0, int y0, int x1, int y1, uint16_t col) {
+  if (!clip_line_to_screen(&x0, &y0, &x1, &y1)) return;
+  backscreen.drawLine(x0, y0, x1, y1, col);
+}
+static inline void draw_clipped_wideline(int x0, int y0, int x1, int y1, int w, uint16_t col) {
+  if (!clip_line_to_screen(&x0, &y0, &x1, &y1)) return;
+  backscreen.drawWideLine(x0, y0, x1, y1, w, col);
+}
+
+// 地図座標から作った線を、本数が多い箇所で描くための関数。
+//
+// TFT_eSPI の drawWideLine は bg_color の既定値が 0x00FFFFFF で、この経路では
+// アンチエイリアス画素ごとに readPixel() を呼んで setWindow をやり直し、さらに
+// wedgeLineDistance() の浮動小数点距離計算を画素ごとに行う（drawWedgeLine 参照）。
+// 見た目は綺麗だが単価が高く、地図の道路や 500 点のトラックのように線が数百〜数千本
+// になる描画では支配的なコストになる。
+// 240px の画面ではアンチエイリアスの効果も小さいので、平行な drawLine を重ねて太らせる。
+//
+// 誘導線やパイロン基準線のように本数が少なく目立つ線は、従来どおり
+// draw_clipped_wideline（アンチエイリアス付き）のままにしてある。
+void draw_map_line(int x0, int y0, int x1, int y1, int w, uint16_t col) {
+  if (!clip_line_to_screen(&x0, &y0, &x1, &y1)) return;
+  backscreen.drawLine(x0, y0, x1, y1, col);
+  if (w <= 1) return;
+  // 線の主方向に対して垂直側へずらして重ねる（斜めでも太さがほぼ揃う）
+  const bool steep = abs(y1 - y0) > abs(x1 - x0);
+  for (int o = 1; o <= (w - 1) / 2; o++) {
+    if (steep) {
+      backscreen.drawLine(x0 - o, y0, x1 - o, y1, col);
+      backscreen.drawLine(x0 + o, y0, x1 + o, y1, col);
+    } else {
+      backscreen.drawLine(x0, y0 - o, x1, y1 - o, col);
+      backscreen.drawLine(x0, y0 + o, x1, y1 + o, col);
+    }
+  }
+  if (w % 2 == 0) {  // 偶数幅は片側にもう 1 本足す
+    if (steep) backscreen.drawLine(x0 + w / 2, y0, x1 + w / 2, y1, col);
+    else backscreen.drawLine(x0, y0 + w / 2, x1, y1 + w / 2, col);
+  }
+}
 
 // 地図方向モードを NORTHUP ↔ TRACKUP で切り替える。
 void toggle_mode() {
@@ -622,7 +671,6 @@ void draw_km_distances(float scale) {
 bool fresh = false;         // 地図の強制再描画フラグ（スケール変更時などに true にする）
 float last_scale = 1.0;     // 前回描画時のスケール（変化を検知するための記憶値）
 float last_up = 0;          // 前回描画時の mapUpDirection
-bool nomap_drawn = true;    // いずれのマップポリゴンも描画されていない場合 true（テキスト表示の切り替えに使用）
 
 
 
@@ -998,7 +1046,7 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
   // 自機位置からtargetpoint（目的地と逆方向・画面外）へ太線を引く。
   // 細線は draw_flyinto() が目的地→自機間を描画済み。
-  backscreen.drawWideLine(BACKSCREEN_SIZE/2, get_self_cy(), targetpoint.x, targetpoint.y, 5, COLOR_MAGENTA);
+  draw_clipped_wideline(BACKSCREEN_SIZE/2, get_self_cy(), targetpoint.x, targetpoint.y, 5, COLOR_MAGENTA);
 }
 
 // FLYINTO 拡張版。目的地が画面外の場合は仮想点を計算して矢印の終点に使う。
@@ -1014,15 +1062,15 @@ void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double c
     double newlat, newlon;
     calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
     goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    backscreen.drawWideLine(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
+    draw_clipped_wideline(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
   }else{
-    backscreen.drawWideLine(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
+    draw_clipped_wideline(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
     double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
     double newlat, newlon;
     //
     calculatePointC(dest_lat, dest_lon, center_lat, center_lon, -distance, newlat, newlon);
     cord_tft outside_tft = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    backscreen.drawWideLine(goal.x, goal.y,outside_tft.x,outside_tft.y, 2, COLOR_MAGENTA);
+    draw_clipped_wideline(goal.x, goal.y, outside_tft.x, outside_tft.y, 2, COLOR_MAGENTA);
   }
 }
 
@@ -1039,7 +1087,7 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
     calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
     goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
   }
-  backscreen.drawWideLine(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
+  draw_clipped_wideline(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
 }
 
 
@@ -1062,7 +1110,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   
 
   if(p0.x != BACKSCREEN_SIZE/2 || p0.y != get_self_cy()){
-    backscreen.drawWideLine(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
+    draw_map_line(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
   }
 
   for (int i = 0; i < sizetrack-1; i++) {
@@ -1077,25 +1125,47 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     cord_tft p1 = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
     if (p0.x != p1.x || p0.y != p1.y) {
-      backscreen.drawWideLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
+      draw_map_line(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
     }
     
   }
 }
 
-// 日本列島の概略ポリゴン（map_japan1〜4）を緑で描画する。広域表示時に使用。
-void draw_Japan(double center_lat, double center_lon, float scale, float up) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan1, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan3, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan4, COLOR_GREEN);
-  nomap_drawn = false;
-}
 
 // SD カードの mapdata.csv から読み込んだ追加ポリゴン（extramaps[]）を描画する。
 // ポリゴンの最初の座標点が現在位置から 1°×1° 以内にある場合のみ描画する（遠方の不要描画を省略）。
 // ポリゴンの描画色はマップ名の先頭文字で決まる:
 //   r=赤, o=オレンジ, g=明るいグレー, m=マゼンタ, c=シアン, b=青, その他=緑
+// 地図名の先頭 1 文字で描画色を決める。SD の mapdata.csv と内蔵ポリゴンで
+// 同じ規則を使うため、ここに集約してある。
+//   r=赤 / o=オレンジ / g=グレー / m=マゼンタ / c=シアン / b=青 / それ以外=緑
+uint16_t mapdata_color(const char* name) {
+  switch (name[0]) {
+    case 'r': return COLOR_RED;
+    case 'o': return COLOR_ORANGE;
+    case 'g': return COLOR_BRIGHTGRAY;
+    case 'm': return COLOR_MAGENTA;
+    case 'c': return COLOR_CYAN;
+    case 'b': return COLOR_BLUE;
+    default:  return COLOR_GREEN;
+  }
+}
+
+// フラッシュ内蔵のポリゴン地図（mapdatas[]）を描画する。
+// SD の mapdata.csv 由来（draw_ExtraMaps）と同じ規則で描くが、
+// こちらは SD が無くても・抜けても必ず表示される点が違う。
+// 飛行に必須の注記はこちらに置くこと。
+void draw_FlashMaps(double center_lat, double center_lon, float scale, float up) {
+  for (int i = 0; i < flashmap_count; i++) {
+    const mapdata* mp = flashmaps[i];
+    if (mp->size <= 1) continue;
+    // 現在地から離れた地図は描かない（extramaps と同じ 1 度四方の判定）
+    if (!check_within_latlon(1, 1, mp->cords[0][1], get_gps_lat(),
+                             mp->cords[0][0], get_gps_lon())) continue;
+    draw_map(STRK_MAP1, up, center_lat, center_lon, scale, mp, mapdata_color(mp->name));
+  }
+}
+
 void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up) {
   for (int i = 0; i < mapdata_count; i++) {
     if (extramaps[i].size <= 1) {
@@ -1104,75 +1174,32 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
     double lon1 = extramaps[i].cords[0][0];
     double lat1 = extramaps[i].cords[0][1];
     if (check_within_latlon(1, 1, lat1, get_gps_lat(), lon1, get_gps_lon())) {
-      int col = COLOR_GREEN;
-      char name_firstchar = extramaps[i].name[0];
-      if (name_firstchar == 'r') {
-        col = COLOR_RED;
-      } else if (name_firstchar == 'o') {
-        col = COLOR_ORANGE;
-      } else if (name_firstchar == 'g') {
-        col = COLOR_BRIGHTGRAY;
-      } else if (name_firstchar == 'm') {
-        col = COLOR_MAGENTA;
-      } else if (name_firstchar == 'c') {
-        col = COLOR_CYAN;
-      } else if (name_firstchar == 'b') {
-        col = COLOR_BLUE;
-      }
+      int col = mapdata_color(extramaps[i].name);
       draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &extramaps[i], col);
-      nomap_drawn = false;
-    }
+        }
   }
 }
 
-void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_shinura, COLOR_GREEN);
 
-  nomap_drawn = false;
-}
 
-// 琵琶湖エリアのポリゴン（湖岸・島）と 10km コースの基準線/円を描画する。
-// gmap_drawed=false のときは fill_sea_land() で水面・陸地の色塗りも行う
-//（BMP 地図画像がない状態でも水面を水色、陸地をオレンジで色分けするため）。
-// gps_loop(2/3) を fill_sea_land の前後で呼んでいるのは、色塗りに時間がかかるためその間も GPS を処理するため。
-void draw_Biwako(double center_lat, double center_lon, float scale, float up, bool gmap_drawed) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
-  if(!gmap_drawed){//if (! && !isTaskInQueue(TASK_LOAD_MAPIMAGE))
-    //Run gps_loop 
-    gps_loop(2);
-    fill_sea_land(center_lat, center_lon, scale, up);
-    gps_loop(3);
-  }
-  // パイロン関連はレイヤー順の都合でここでは描画しない。GPS_TFT_map.ino 側で
-  // 基準線 draw_pilon_takeshima_line をマゼンタラインの前（レイヤー3.5）、
-  // アイコン draw_pilon_takeshima_marks をマゼンタラインの後（レイヤー4.5）に呼んでいる。
-  nomap_drawn = false;
-}
 
-// 大阪（阪大エリア）のポリゴン群を描画する。
-// 外周（シアン）、高速道路（マゼンタ）、構内エリア（グレー）、鉄道（オレンジ）、カフェ（緑）を色分け表示。
-void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaioutside, COLOR_CYAN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway, COLOR_MAGENTA);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway2, COLOR_MAGENTA);
-
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside1, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside2, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside3, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside4, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside5, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handairailway, COLOR_ORANGE);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaicafe, COLOR_GREEN);
-
-  nomap_drawn = false;
+// 起動アニメーションの地図背景。実際の地図と同じ描画関数を使う。
+static void draw_startup_map(double lat, double lon, float scale) {
+  draw_vectormap(lat, lon, scale, 0);
 }
 
 // backscreen の左下にソフトウェアバージョン文字列を、右上にバージョンテキストを描画する。
 // 主に startup_demo_tft() のデモ画面で使用する。
 void draw_version_backscreen(){
+  // OpenStreetMap の帰属表示。ODbL 4.3 と OSMF Attribution Guidelines により、
+  // 組み込みデバイスでも画面上への表示が必要（スプラッシュ画面での表示が認められている）。
+  // 起動アニメーションの間ずっと表示されるので、この位置で要件を満たす。
+  backscreen.unloadFont();
+  backscreen.setTextColor(COLOR_GRAY);
+  backscreen.setCursor(10, 240-34);
+  backscreen.print("Map data (c) OpenStreetMap");
+  backscreen.setCursor(10, 240-24);
+  backscreen.print("contributors - ODbL 1.0");
   backscreen.setCursor(10, 240-12);
   backscreen.unloadFont();
   backscreen.setTextColor(COLOR_BLACK);
@@ -1252,14 +1279,14 @@ void startup_demo_tft() {
   upward_mode = MODE_NORTHUP;
 
   backscreen.fillScreen(COLOR_WHITE);
-  draw_Biwako(center_lat,center_lon,2.5, 0,false);
+  draw_startup_map(center_lat, center_lon, 2.5);
   draw_pilon_takeshima_line(center_lat, center_lon, 2.5, 0);
   draw_pilon_takeshima_marks(center_lat, center_lon, 2.5, 0);
   draw_version_backscreen();
   backscreen.pushSprite(0,52);
 
 
-  // Core1 がロゴ BMP を gmap_sprite に読み込むのを待ち、完了したら pushSprite で表示する。
+  // Core1 がロゴ BMP を logo_sprite に読み込むのを待ち、完了したら pushSprite で表示する。
   // 残り時間は delay で消費して起動タイミングを維持する。
   {
     const int wait_timeout_ms = 1900;
@@ -1269,7 +1296,7 @@ void startup_demo_tft() {
       delay(10);
     }
     if (logo_ready) {
-      gmap_sprite.pushSprite(0, 0);  // ロゴを画面上部 (0,0) に表示
+      logo_sprite.pushSprite(0, 0);  // ロゴを画面上部 (0,0) に表示
       backscreen.pushSprite(0, 52);  // ロゴの黒エリア(y=52~239)で上書きされた琵琶湖地図を復元
       logo_ready = false;
     }
@@ -1285,7 +1312,7 @@ void startup_demo_tft() {
   for (int i = 0; i <= countermax; i++) {
     backscreen.fillScreen(COLOR_WHITE);
     scalenow = 2.5 + i * 0.25*zoomin_speedfactor;
-    draw_Biwako(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0, false);
+    draw_startup_map(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow);
     draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
     draw_pilon_takeshima_marks(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
     draw_version_backscreen();
@@ -1299,9 +1326,9 @@ void startup_demo_tft() {
 
   for (int i = 0; i < countermax; i++) {
     //scalenow *= 0.78;//for zoomout_speedfactor=2. 
-    scalenow *= 0.88;// for zoomout_speedfactor=1
-    if(scalenow < 0.07)
-      scalenow = 0.07;
+    scalenow *= 0.89;// for zoomout_speedfactor=1
+    if(scalenow < 0.08)
+      scalenow = 0.08;
     else{
       center_lat += 0.005*i;// for zoomout_speedfactor=1
       //center_lat += 0.01*i;// for zoomout_speedfactor=2
@@ -1309,30 +1336,40 @@ void startup_demo_tft() {
 
     bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
-    if(scalenow < 0.5){
-      draw_Japan(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0);
-      draw_map(STRK_MAP1, 0, center_lat, center_lon, scalenow, &map_biwako, COLOR_GREEN);
-    }
-    else{
-      draw_Biwako(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0, false);
+    {
+      draw_startup_map(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow);
       draw_pilon_takeshima_line(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
       draw_pilon_takeshima_marks(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
     }
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
-  delay(500);
+
+  // OpenStreetMap の帰属表示（draw_version_backscreen が描いている）を
+  // 読める時間だけ残す。OSMF の Attribution Guidelines はスプラッシュ画面での
+  // 表示を認めているが、一瞬で消えると「easily readable」の要件を満たさない。
+  // 最終フレームは既に表示済みなので、そのまま 2 秒保持する。
+  {
+    const unsigned long hold_ms = 3500;
+    unsigned long t0 = millis();
+    while (millis() - t0 < hold_ms) {
+      gps_loop(7);  // 待機中も GPS FIFO を読み捨てて overflow 防止
+      delay(10);
+    }
+  }
+
   upward_mode = saved_upward_mode;  // TRACKUP/NORTHUP 設定を復元
 }
-// デモモード（GPS 固定前に琵琶湖をデモ飛行）中の通知ボックスを backscreen に描画する。
-// 「LAKE BIWA DEMO x5 SPD」と設定変更の案内を表示する。
+// デモ飛行中の通知ボックスを backscreen に描画する。
+// 選択中の地点名を出すので、どの地点を表示しているか画面で分かる。
 void draw_demo_biwako(){
   if((millis()/3000)%2 == 0){  // 6秒周期（3秒点灯・3秒消灯）で点滅
     backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 15+5*2, COLOR_WHITE);
     backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 15+5*2, COLOR_ORANGE);
     backscreen.setCursor(25,200);
     backscreen.setTextColor(COLOR_ORANGE);
-    backscreen.print("LAKE BIWA DEMO x5 SPD");
+    backscreen.print("DEMO: ");
+    backscreen.print(get_demo_site_name(get_demo_site()));
   }
 }
 
@@ -1420,48 +1457,7 @@ void draw_gs_track(){
 }
 
 
-// 地図 BMP 画像が表示できないときのステータスメッセージを backscreen に描画する。
-// - scale > SCALE_EXLARGE_GMAP: このスケールでは地図画像なし（灰色文字で静的表示）。
-// - タスクキューに TASK_LOAD_MAPIMAGE がある: "Loading image..." を灰色で表示。
-// - GPS 固定済みで画像なし: "No map image available." をオレンジで表示（ファイルが見つからない警告）。
-void draw_nogmap(double scale) {
-  backscreen.setCursor(5, BACKSCREEN_SIZE - 36);  // hPa 表示(BACKSCREEN_SIZE-18)との重複を避けて上にずらす
-  if(scale > SCALE_EXLARGE_GMAP){
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("No map image at this scale.");
-  }else{
-    if(!isTaskInQueue(TASK_LOAD_MAPIMAGE) && !isTaskRunning(TASK_LOAD_MAPIMAGE)){
-      if(get_gps_fix() && !new_gmap_ready){//描画中に新しいimageがload完了している場合がある。
-        backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-        backscreen.print("No map image available.");
-      }
-    }else{
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("Loading image...");
-    }
-  }
-}
 
-// gmap_sprite に読み込まれている地図画像を backscreen に転送する。
-// TRACKUP モード: pushRotated() で -drawupward_direction 度回転させて転送（進行方向が上になる）。
-// NORTHUP モード: pushToSprite() でそのまま (0,0) に転送。
-// gmap_loaded_active=false の場合は何もしないで false を返す。
-bool draw_gmap(float drawupward_direction){
-  if (gmap_loaded_active) {
-    if(is_trackupmode()) {
-      // gmap_sprite のpivot（デフォルト=スプライト中心=自機GPS位置）が
-      // backscreen の pivot 位置に着地し、その点を軸に回転する。
-      // → gmap 中心（自機位置）が backscreen 上の自機描画位置 (cx, cy) に正確に一致する。
-      backscreen.setPivot(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE * 3 / 4);  // (120, 180)
-      gmap_sprite.pushRotated(&backscreen, -drawupward_direction);
-      backscreen.setPivot(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2);       // 後続処理のためリセット
-    } else
-      gmap_sprite.pushToSprite(&backscreen,0,0);
-    DEBUG_PLN(20240828, "pushed gmap");
-    return true;
-  }
-  return false;
-}
 
 
 
@@ -1670,7 +1666,7 @@ void draw_footer(){
 
     header_footer.setCursor(60, 1);
     header_footer.setTextColor(COLOR_BLACK);
-    if(!get_gps_fix() && !get_demo_biwako())
+    if(!get_gps_fix() && !is_demo_active())
       header_footer.print("---km");
     else
       header_footer.printf(dest_dist>1000?"%.0fkm":dest_dist>100?"%.1fkm":"%.2fkm", dest_dist);
@@ -1787,9 +1783,207 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
 
   for (int i = 0; i < mapsize - 1; i++) {
     if (!points[i].isOutsideTft() || !points[i + 1].isOutsideTft()) {
-      backscreen.drawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, color);
+      draw_clipped_line(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, color);
     }
   }
+}
+
+
+// ============================================================
+// スキャンライン多角形塗りつぶし（even-odd / 偶奇規則）
+// ------------------------------------------------------------
+// TFT_eSPI には fillTriangle / fillRect / fillCircle しかなく、琵琶湖のような
+// 凹凸のある形や「島＝穴」を塗れないため自前で実装する。
+//
+// 原理: 画面を 1 行ずつ横に走査し、その行を横切る辺との交点を全部求めて
+//       x でソートし、2 つずつペアにした区間を drawFastHLine で塗る。
+//
+//    y=100 の行 ──────────────────────────────
+//               ╱‾‾‾‾‾‾‾‾‾╲
+//              ╱    ╱▲╲    ╲        ▲ = 竹島（湖の中の島）
+//    ─────────┤    ╱   ╲    ├────────
+//             x1  x2    x3   x4      → [x1,x2] と [x3,x4] を塗る
+//
+// even-odd を使う理由:
+//   「半直線との交差回数が奇数なら内側」という規則なので、リングの回転方向
+//   （時計回り/反時計回り）を一切気にしなくてよい。もう一方の流儀である
+//   nonzero winding rule だと島リングを逆向きに格納する前処理が必要になるが、
+//   OSM データも既存の map_biwako も向きが保証されていない。
+//   湖リングと島リングをまとめて 1 回で渡すだけで、島が自動的に穴として抜ける。
+// ============================================================
+
+// ============================================================
+// 線分の画面クリップ（Cohen–Sutherland）
+// ------------------------------------------------------------
+// TFT_eSPI の drawWedgeLine は境界ボックスを clipWindow() で切るものの、
+// 走査開始行 ys に「クリップ前の端点 y」をそのまま使っている:
+//
+//     if (!clipWindow(&x0, &y0, &x1, &y1)) return;
+//     int32_t ys = ay;                      // ← クリップ前の端点
+//     for (int32_t yp = ys; yp <= y1; yp++) // ← 画面外の分だけ空回りする
+//
+// このため端点が画面から数千 px 外にあると、外側ループがその回数だけ回り、
+// 1 フレームに数百 ms かかる（最大拡大で実測 380ms）。drawLine の Bresenham も
+// 同様に画面外を 1px ずつ歩く。
+// 描画前にここで画面矩形へ切っておけば、どの縮尺でも端点は必ず画面付近に収まる。
+// ============================================================
+#define CLIP_MARGIN 4  // 太線の端キャップが画面端で欠けないよう少し外側で切る
+
+// 座標は最大倍率で ±数万 px になるため、交点計算は double で行う。
+// float だと桁落ちでクリップ後の線が元の線から最大 6px ずれる（実測）。
+static inline int clip_outcode(double x, double y) {
+  const double lo = -CLIP_MARGIN, hi = BACKSCREEN_SIZE - 1 + CLIP_MARGIN;
+  int c = 0;
+  if (x < lo) c |= 1; else if (x > hi) c |= 2;
+  if (y < lo) c |= 4; else if (y > hi) c |= 8;
+  return c;
+}
+
+// 線分を画面矩形にクリップする。完全に画面外なら false（描画不要）。
+bool clip_line_to_screen(int* px0, int* py0, int* px1, int* py1) {
+  const double lo = -CLIP_MARGIN, hi = BACKSCREEN_SIZE - 1 + CLIP_MARGIN;
+  double x0 = *px0, y0 = *py0, x1 = *px1, y1 = *py1;
+  int c0 = clip_outcode(x0, y0);
+  int c1 = clip_outcode(x1, y1);
+
+  for (int guard = 0; guard < 8; guard++) {
+    if (!(c0 | c1)) break;        // 両端とも画面内
+    if (c0 & c1) return false;    // 同じ側に両端がある = 交差しない
+    const int c = c0 ? c0 : c1;
+    double x = 0, y = 0;
+    if (c & 8) { x = x0 + (x1 - x0) * (hi - y0) / (y1 - y0); y = hi; }
+    else if (c & 4) { x = x0 + (x1 - x0) * (lo - y0) / (y1 - y0); y = lo; }
+    else if (c & 2) { y = y0 + (y1 - y0) * (hi - x0) / (x1 - x0); x = hi; }
+    else { y = y0 + (y1 - y0) * (lo - x0) / (x1 - x0); x = lo; }
+    if (c == c0) { x0 = x; y0 = y; c0 = clip_outcode(x0, y0); }
+    else { x1 = x; y1 = y; c1 = clip_outcode(x1, y1); }
+  }
+  // 切り捨てではなく四捨五入。切り捨てだと負側で外へ、正側で内へ寄り、
+  // クリップ前の線から余計にずれる。
+  *px0 = (int)lround(x0); *py0 = (int)lround(y0);
+  *px1 = (int)lround(x1); *py1 = (int)lround(y1);
+  return true;
+}
+
+
+#define VM_MAX_EDGES 2048  // 同時に扱える辺の数（12 Byte/辺 = 24KB）
+
+// スキャンライン用の辺。ET/AET のどちらか一方にしか属さないので next を共用できる。
+struct scan_edge {
+  float x;        // 現在のスキャンラインにおける交点 x
+  float dxdy;     // 1 行進むごとの x の増分（= 1/傾き）
+  int16_t y_bot;  // この y に達したら除外する（半開区間 [y_top, y_bot)）
+  int16_t next;   // 連結リストの次の辺 index（-1 = 終端）
+};
+
+static scan_edge s_edges[VM_MAX_EDGES];
+static int16_t s_et[BACKSCREEN_SIZE];  // Edge Table: 各行から開始する辺のリスト先頭
+static int16_t s_aet_buf[VM_MAX_EDGES / 4];  // Active Edge Table のソート用一時配列
+
+// 複数リングをまとめて even-odd で塗りつぶす。
+//   xs/ys      : 全リングの点を連結したスクリーン座標の配列
+//   ring_start : リング i の点は [ring_start[i], ring_start[i+1]) の範囲。要素数は nrings+1
+//   nrings     : リング数（湖本体 + 島、など）
+// 各リングは暗黙に閉じている（最後の点から最初の点へ辺を張る）。
+// 辺数が VM_MAX_EDGES を超える場合は中途半端な塗りを避けるため何も描かず false を返す。
+bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
+                          const uint16_t* ring_start, uint8_t nrings, uint16_t color) {
+  const int H = BACKSCREEN_SIZE;
+  const int W = BACKSCREEN_SIZE;
+
+  if (nrings == 0) return true;
+  if (ring_start[nrings] > VM_MAX_EDGES) return false;  // 辺の総数は点の総数と等しい
+
+  for (int i = 0; i < H; i++) s_et[i] = -1;
+
+  int nedges = 0;
+  int y_min = H, y_max = 0;
+
+  // ---- Edge Table の構築 ----
+  for (uint8_t r = 0; r < nrings; r++) {
+    const uint16_t beg = ring_start[r];
+    const uint16_t end = ring_start[r + 1];
+    const int n = end - beg;
+    if (n < 3) continue;  // 3 点未満は面にならない
+
+    for (int i = 0; i < n; i++) {
+      const int j = (i + 1 == n) ? 0 : (i + 1);  // 最後の点は最初の点へ閉じる
+      int x0 = xs[beg + i], y0 = ys[beg + i];
+      int x1 = xs[beg + j], y1 = ys[beg + j];
+
+      if (y0 == y1) continue;  // 水平な辺は交点を作らないので無視
+      if (y0 > y1) {           // 常に上から下へ向くように揃える
+        int t = x0; x0 = x1; x1 = t;
+        t = y0; y0 = y1; y1 = t;
+      }
+      if (y1 <= 0 || y0 >= H) continue;  // 画面の上下に完全に外れている
+
+      const float dxdy = (float)(x1 - x0) / (float)(y1 - y0);
+      float x_top = (float)x0;
+      int y_top = y0;
+      if (y_top < 0) {  // 画面上端でクリップし、その行での x を求め直す
+        x_top += dxdy * (float)(0 - y_top);
+        y_top = 0;
+      }
+      const int y_bot = (y1 > H) ? H : y1;  // 半開区間なので下端は含まない
+      if (y_top >= y_bot) continue;
+
+      if (nedges >= VM_MAX_EDGES) return false;
+      s_edges[nedges].x = x_top;
+      s_edges[nedges].dxdy = dxdy;
+      s_edges[nedges].y_bot = (int16_t)y_bot;
+      s_edges[nedges].next = s_et[y_top];
+      s_et[y_top] = (int16_t)nedges;
+      nedges++;
+
+      if (y_top < y_min) y_min = y_top;
+      if (y_bot > y_max) y_max = y_bot;
+    }
+  }
+  if (nedges == 0) return true;
+
+  // ---- 走査 ----
+  // ポリゴンが画面の一部にしか無い場合に全 240 行を回らないよう y_min..y_max に限定する。
+  int aet_n = 0;
+  for (int y = y_min; y < y_max; y++) {
+    // この行から始まる辺を AET に追加
+    for (int e = s_et[y]; e != -1; e = s_edges[e].next) {
+      if (aet_n < (int)(sizeof(s_aet_buf) / sizeof(s_aet_buf[0]))) s_aet_buf[aet_n++] = (int16_t)e;
+    }
+    // 下端に達した辺を除外（半開区間なので y_bot == y で抜ける）
+    int w = 0;
+    for (int i = 0; i < aet_n; i++) {
+      if (s_edges[s_aet_buf[i]].y_bot > y) s_aet_buf[w++] = s_aet_buf[i];
+    }
+    aet_n = w;
+
+    // x で挿入ソート（アクティブな辺は通常ごく少数なので十分速い）
+    for (int i = 1; i < aet_n; i++) {
+      const int16_t key = s_aet_buf[i];
+      const float kx = s_edges[key].x;
+      int j = i - 1;
+      while (j >= 0 && s_edges[s_aet_buf[j]].x > kx) {
+        s_aet_buf[j + 1] = s_aet_buf[j];
+        j--;
+      }
+      s_aet_buf[j + 1] = key;
+    }
+
+    // 交点を 2 つずつペアにして塗る（奇数番目の区間＝内側）
+    for (int i = 0; i + 1 < aet_n; i += 2) {
+      // ピクセル中心規則: 隣接ポリゴンで同じ画素を二重に塗らないよう ceil / ceil-1 で取る
+      int xa = (int)ceilf(s_edges[s_aet_buf[i]].x);
+      int xb = (int)ceilf(s_edges[s_aet_buf[i + 1]].x) - 1;
+      if (xb < 0 || xa >= W || xa > xb) continue;
+      if (xa < 0) xa = 0;
+      if (xb >= W) xb = W - 1;
+      backscreen.drawFastHLine(xa, y, xb - xa + 1, color);
+    }
+
+    // 次の行に向けて交点を進める
+    for (int i = 0; i < aet_n; i++) s_edges[s_aet_buf[i]].x += s_edges[s_aet_buf[i]].dxdy;
+  }
+  return true;
 }
 
 
@@ -1813,9 +2007,9 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 
 
   // PLA → 北/西パイロンの線は飛行中に最も見る基準線なので 3px 幅で太く描く（竹島線は 1px のまま）
-  backscreen.drawWideLine(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
-  backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
-  backscreen.drawWideLine(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+  draw_clipped_wideline(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+  draw_clipped_line(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
+  draw_clipped_wideline(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
 
   // 2本のパイロン基準線の「角度的な中間」を通るセンターライン（オレンジ）。
   // 方位はパイロン座標から実行時に計算するので、パイロンが移動しても自動で追従する。
@@ -1826,7 +2020,7 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_OUTER_KM, outer_lat, outer_lon);
   cord_tft cl_inner = latLonToXY(inner_lat, inner_lon, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft cl_outer = latLonToXY(outer_lat, outer_lon, mapcenter_lat, mapcenter_lon, scale, upward);
-  backscreen.drawWideLine(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
+  draw_clipped_wideline(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
 
   // 公式ルール2025 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
@@ -1866,82 +2060,6 @@ void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, floa
 }
 
 
-// navdata.cpp の filldata[][] ビットマップを使って琵琶湖エリアの水面・陸地を色分けする。
-// filldata は 0.02° グリッドの 2D 配列で、true=水面、false=陸地。
-// 各グリッド点に水色（水面）またはオレンジ（陸地）の + 記号を描画する。
-// lenbar はスケールに応じた + の長さ（拡大率が高いほど長くして隙間を埋める）。
-//
-// scale > 36 のとき（高ズーム）は近傍グリッドをサブ補完して塗りつぶし密度を上げる。
-// ただし陸海が混在しているグリッドセルは補完しない（誤塗りを防ぐため）。
-void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
-
-  int lenbar = 5;
-  if (scale > 1.8) lenbar = 7;
-  if (scale > 7.2) lenbar = 15;
-  if (scale > 36) lenbar = 20;
-  if (scale > 90) lenbar = 24;
-
-  //fill
-  for (int lat_i = 0; lat_i < ROW_FILLDATA; lat_i++) {
-    float latitude = 35.0 + lat_i * 0.02;
-    for (int lon_i = 0; lon_i < COL_FILLDATA; lon_i++) {
-      float longitude = 135.8 + lon_i * 0.02;
-      bool is_sea = filldata[lat_i][lon_i];
-      int indexfillp = lat_i * COL_FILLDATA + lon_i;
-      cord_tft pos = latLonToXY(latitude, longitude, mapcenter_lat, mapcenter_lon, scale, upward);
-      if (pos.isOutsideTft()) {
-        continue;
-      } else {
-        int col = is_sea ? COLOR_LIGHT_BLUE : COLOR_ORANGE;
-        backscreen.drawFastHLine(pos.x - lenbar, pos.y, 1 + lenbar * 2, col);
-
-        if (scale > 9) {
-          backscreen.drawFastVLine(pos.x, pos.y - lenbar, 1 + lenbar * 2, col);
-        }
-      }
-    }
-  }
-
-  if (scale > 36) {
-    // + マークのNavデータが登録されていない場所の+をfillする。 要するに拡大すると真っ暗にならないように対策。
-    //Big zoom
-    int latitude_index = int((mapcenter_lat - 35.0) / 0.02);
-    int longitude_index = int((mapcenter_lon - 135.8) / 0.02);
-
-    for (int x = latitude_index - 3; x < latitude_index + 3; x++) {
-      for (int y = longitude_index - 3; y < longitude_index + 3; y++) {
-        if (x >= 0 && x < ROW_FILLDATA - 1 && y >= 0 && y < COL_FILLDATA - 1) {  // ループ変数 x/y で境界チェック（latitude_index/longitude_index では不十分）
-          bool origin_sealand = filldata[x][y];
-          if (origin_sealand != filldata[x + 1][y] || origin_sealand != filldata[x][y + 1] || origin_sealand != filldata[x + 1][y + 1]) {
-            //陸海の曖昧なエリアは + マークを追加しない。
-            continue;
-          }
-          int dx_size = 2;
-          int dy_size = 2;
-          if (scale > 90) {
-            dx_size = 8;
-            dy_size = 8;
-          }
-          int col = origin_sealand ? COLOR_LIGHT_BLUE : COLOR_ORANGE;
-          for (int dx = 0; dx < dx_size; dx++) {
-            for (int dy = 0; dy < dy_size; dy++) {
-              if (dx == 0 && dy == 0) {
-                continue;
-              }
-              double lat_dx = 35.0 + x * 0.02 + 0.02 * dx / dx_size;
-              double lat_dy = 135.8 + y * 0.02 + 0.02 * dy / dy_size;
-              cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward);
-              if (!dpos.isOutsideTft()) {
-                backscreen.drawFastVLine(dpos.x, dpos.y - lenbar, 1 + lenbar * 2, col);
-                backscreen.drawFastHLine(dpos.x - lenbar, dpos.y, 1 + lenbar * 2, col);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
 
 // 負の値にも対応した剰余演算（C++ の % は負の結果になる場合がある）。
 // brightnessIndex のループ計算（tft_change_brightness）で使用する。
@@ -1983,13 +2101,12 @@ int calculateGPS_Y(float azimuth, float elevation) {
 //   1. GPS モジュール未接続 → "NO GNSS connection !!" 表示して終了。
 //   2. GPS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
 //   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示。
-//   4. nomap_drawn=false → 地図は描画済みなので何も表示しない。
 void draw_nomapdata() {
 
   if (get_gps_connection()) {
     //"GPS Module connected."
   } else {
-    if (!getReplayMode() && !get_demo_biwako()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
+    if (!getReplayMode() && !is_demo_active()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
       backscreen.setCursor(3,50);
       backscreen.setTextColor(COLOR_MAGENTA);
       backscreen.println("NO GNSS connection !!");
@@ -2020,7 +2137,7 @@ void draw_nomapdata() {
     backscreen.setCursor(45, text_y2);
     backscreen.print(text);
   }
-  else if (get_gps_numsat() == 0 && !get_demo_biwako()) {
+  else if (get_gps_numsat() == 0 && !is_demo_active()) {
     backscreen.fillRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
     backscreen.drawRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
     backscreen.drawRect(6, box_y+1, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
@@ -2033,8 +2150,6 @@ void draw_nomapdata() {
     snprintf(text, sizeof(text), "Scanning signal%.*s", dotCount, "..........");
     backscreen.setCursor(45, text_y2);
     backscreen.print(text);
-  } else if (nomap_drawn) {
-    //"NO MAPDATA.GPS Fixed."
   }
 }
 
@@ -2846,13 +2961,16 @@ void draw_gpsdetail(int page) {
 // フラッシュ（ROM）に書き込まれた地図ポリゴンと SD から読み込んだ追加マップの一覧を表示する。
 // "MAPLIST FLSH:N/SD:M (page/total)" 形式でヘッダーに表示。
 // フラッシュマップはページ 0 に全表示、SD マップは 30 エントリ / ページでページング表示。
+// MAPLIST ページ 0 の先頭に出す OSM 内訳の行数（枠計算に使う）
+// 日付1 + 合計1 + LOD2 + 見出し1 + クラス2 = 7 行
+#define MAPLIST_OSM_ROWS 7
+
 void draw_maplist_mode(int maplist_page) {
 
-  mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
-                          &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
-  int sizeof_mapflash = sizeof(mapdatas) / sizeof(mapdatas[0]);
+  mapdata** mapdatas = flashmaps;   // navdata.cpp の共有配列（draw_FlashMaps と同じもの）
+  int sizeof_mapflash = flashmap_count;
 
-  int pagetotal = 1 + (sizeof_mapflash + mapdata_count) / 30;
+  int pagetotal = 1 + (MAPLIST_OSM_ROWS + sizeof_mapflash + mapdata_count) / 30;
   int pagenow = maplist_page % pagetotal;
 
   // ヘッダー: スプライト経由で描画（tft 直接描画によるちかちかを防ぐ）
@@ -2872,6 +2990,40 @@ void draw_maplist_mode(int maplist_page) {
   backscreen.setCursor(1, posy);
 
   if (pagenow == 0) {
+    // ---- 内蔵ベクタ地図（OpenStreetMap 由来）の内訳 ----
+    // どの範囲がどれだけの容量で入っているかを実機で確認できるようにする。
+    // 数値は vectormap_data.cpp が生成時に埋め込んだもの。
+    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    backscreen.printf("OSM(ODbL) %s", vm_data_source_date);
+    posy += 10; backscreen.setCursor(1, posy);
+    backscreen.printf(" total %luKB / %u tiles",
+                      (unsigned long)(vm_blob_size / 1024), vm_tile_count);
+    posy += 10; backscreen.setCursor(1, posy);
+    // LOD ごとに「使用する最小 scale・タイル数・容量」を 2 行に詰めて出す
+    for (int l = 0; l < VM_LOD_COUNT; l += 2) {
+      for (int k = l; k < l + 2 && k < VM_LOD_COUNT; k++) {
+        if (vm_lod_min_scale[k] > 0)
+          backscreen.printf(" L%d>%.3g %ut %luK", k, vm_lod_min_scale[k],
+                            vm_lod_tiles[k], (unsigned long)(vm_lod_bytes[k] / 1024));
+        else
+          backscreen.printf(" L%d all %ut %luK", k,
+                            vm_lod_tiles[k], (unsigned long)(vm_lod_bytes[k] / 1024));
+      }
+      posy += 10; backscreen.setCursor(1, posy);
+    }
+    // 地物クラス別の点数（千点単位。点が多いほどその地物が細かい）。
+    // 画面幅は 240px = 約 40 文字しかないので、クラス名は 4 文字に切って 3 個ずつ折り返す。
+    backscreen.print(" pts x1000:");
+    posy += 10; backscreen.setCursor(1, posy);
+    int printed = 0;
+    for (int c = 0; c < VM_CLASS_COUNT; c++) {
+      if (vm_class_points[c] == 0) continue;   // 収録していないクラスは出さない
+      backscreen.printf(" %.4s%lu", vm_class_names[c], (unsigned long)(vm_class_points[c] / 1000));
+      if (++printed % 3 == 0) { posy += 10; backscreen.setCursor(1, posy); }
+    }
+    if (printed % 3 != 0) { posy += 10; backscreen.setCursor(1, posy); }
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
     for (int i = 0; i < sizeof_mapflash; i++) {
       backscreen.printf("FLSH %d: %s,%4.2f,%4.2f,%d", mapdatas[i]->id, mapdatas[i]->name, mapdatas[i]->cords[0][0], mapdatas[i]->cords[0][1], mapdatas[i]->size);
       posy += 10;
@@ -2885,9 +3037,11 @@ void draw_maplist_mode(int maplist_page) {
   int sd_start_index = 0;
   int sd_rows = 30;                  // 1 ページあたりの行数
   if (pagenow > 0) {
-    sd_start_index = 30 * pagenow - sizeof_mapflash;
+    sd_start_index = 30 * pagenow - sizeof_mapflash - MAPLIST_OSM_ROWS;
+    if (sd_start_index < 0) sd_start_index = 0;
   } else {
-    sd_rows = 30 - sizeof_mapflash;  // ページ 0 はフラッシュ地図を並べる分だけ枠が減る
+    sd_rows = 30 - sizeof_mapflash - MAPLIST_OSM_ROWS;  // ページ 0 は OSM 内訳とフラッシュ地図の分だけ枠が減る
+    if (sd_rows < 0) sd_rows = 0;
   }
   int sd_end_index = sd_start_index + sd_rows;
   if (sd_end_index > mapdata_count) {

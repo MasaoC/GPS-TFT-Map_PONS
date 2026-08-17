@@ -5,10 +5,11 @@
 //           SdFatライブラリによるファイル読み書き、
 //           設定ファイル保存/読込、CSVフライトログ追記、
 //           飛行CSVのリプレイ再生（列名索引パーサ・先読みリングバッファ）、
-//           Googleマップ画像(BMP)のロード、
+//           起動ロゴ(logo.bmp)の読み込み、
 //           Core1タスクキューのエンキュー/デキュー管理。
+//           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -63,13 +64,11 @@ int filesecond;
 //   - dequeueTask(): Core1 がタスクを取り出して実行
 //   - taskQueueMutex でアトミック操作を保証
 // ============================================================
-volatile bool abortTask = false;   // 実行中タスクに中断を要求するフラグ（ズームレベル変更時など）
 TaskQueue taskQueue;               // タスクのリングバッファ本体
 mutex_t taskQueueMutex;            // タスクキューへのアクセスを保護するミューテックス
 Task currentTask;                  // Core1 が現在実行中のタスク（isTaskRunning() で参照）
 
 
-void load_mapimage(double center_lat, double center_lon,int zoomlevel);
 void log_sd(const char* text);
 void log_sdf(const char* format, ...);
 void dateTime(uint16_t* date, uint16_t* time);
@@ -449,15 +448,6 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   return task;
 }
 
-// Google マップ BMP 画像の読み込みタスクを生成する（中心座標とズームレベルを指定）
-Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel) {
-  Task task;
-  task.type = TASK_LOAD_MAPIMAGE;
-  task.loadMapImageArgs.center_lat = center_lat;
-  task.loadMapImageArgs.center_lon = center_lon;
-  task.loadMapImageArgs.zoomlevel = zoomlevel;
-  return task;
-}
 
 Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int min_volume,bool solo_play){
   Task task;
@@ -540,38 +530,11 @@ void removeDuplicateTask(TaskType type) {
     mutex_exit(&taskQueueMutex);
 }
 
-// 中断チェック付きでタスクをキューに追加する。
-// 地図画像ロード (TASK_LOAD_MAPIMAGE) に特化した特殊処理を行う:
-//   - 同じズームレベルの地図を既にロード中なら、重複追加しない（待つ）
-//   - ズームレベルが変わった場合は abortTask フラグを立てて現在のロードを中断し、
-//     キュー内の重複を削除して新しいタスクを追加する
+// キュー内の同種タスクを削除してから追加する。
+// 以前は地図画像ロードの中断処理も担っていたが、
+// ベクタ地図への移行で地図画像ロードが無くなったため、重複排除だけが残っている。
 void enqueueTaskWithAbortCheck(Task newTask) {
-  if (newTask.type == TASK_LOAD_MAPIMAGE) {
-    // type と zoomlevel は必ず「同じ mutex 区間で」読む。
-    // 別々に読むと、Core1 が currentTask を丸ごと差し替えている最中に
-    // 「type は新タスク・zoomlevel は旧タスク」という食い違った組み合わせを掴む可能性がある。
-    // isTaskRunning() は内部で mutex を取るため、ここでは呼ばずに直接読む（二重ロック＝デッドロック回避）。
-    bool running;
-    bool same_zoom = false;
-    mutex_enter_blocking(&taskQueueMutex);
-    running = (currentTask.type == TASK_LOAD_MAPIMAGE);
-    if (running) {
-      same_zoom = (newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel);
-    }
-    mutex_exit(&taskQueueMutex);  // 以降の removeDuplicateTask()/enqueueTask() が自分で取るので先に解放する
-
-    if (running) {
-      if (same_zoom) {
-        // 同じズームの地図を既にロード中 → 重複追加しない
-        DEBUGW_P(20250429,"NOT enque the task:");
-        DEBUGW_PLN(20250429,newTask.type);
-        return;
-      }
-      // ズームレベルが変わった → 実行中のロードを中断して新しいタスクを優先する
-      abortTask = true;
-    }
-  }
-  removeDuplicateTask(newTask.type);  // キュー内の同種タスクを削除してから追加
+  removeDuplicateTask(newTask.type);
   enqueueTask(newTask);
 }
 
@@ -1854,353 +1817,28 @@ struct bmp_image_header_t {
 
 
 
-// ⚠️ 赤道上のみで正確。緯度補正なし。
-// 指定ズームレベルでの 1 経度度あたりのピクセル数を返す（赤道基準）。
-// Google Maps タイル仕様: ズーム0で全世界が 256px の 1 タイルに収まり、
-// ズームが 1 増えるごとにピクセル数は 2 倍になる（256 * 2^zoom / 360）。
-double pixelsPerDegreeEQ(int zoom) {
-  // Google Maps API approximation: pixels per degree at the given zoom level
-  // Zoom 5 is used as the base reference in this example
-  return 256 * pow(2, zoom) / 360.0;
-}
-
-// ⚠️ 赤道上のみで正確。緯度補正なし。
-// 指定ズームレベルでの 1km あたりのピクセル数を返す（赤道基準）。
-// 単位変換: px/deg ÷ km/deg = px/km （KM_PER_DEG_LAT ≈ 111.0 km/deg）
-double pixelsPerKMEQ_zoom(int zoom){
-  return pixelsPerDegreeEQ(zoom)/KM_PER_DEG_LAT;//px/deg / (km/deg) = px /km
-}
-
-// 指定緯度・ズームレベルでの緯度方向 1 度あたりのピクセル数を返す。
-// Mercator 投影では高緯度ほど地図が伸びる（1 度あたりのピクセルが増える）。
-// cos(latitude) で赤道基準値を現地スケールに補正する。緯度 90° に近づくと無限大になるため注意。
-double pixelsPerDegreeLat(int zoom,double latitude) {
-  // Calculate pixels per degree for latitude
-  return pixelsPerDegreeEQ(zoom) / cos(radians(latitude)); // Reference latitude
-}
 
 
-// 値 value を x 度単位のグリッドに丸める汎用ユーティリティ。
-// 地図ファイル名に使うグリッド座標の計算に使用する。
-// 例: roundToNearestXDegrees(0.2, 35.123) → 35.0（zoom11 の 0.2° グリッド）
-double roundToNearestXDegrees(double x, double value) {
-  return round(value / x) * x;
-}
-
-// ===== 地図スプライト管理変数 =====
-// gmap_sprite     : 240×240 ピクセルの地図画像を保持する TFT スプライト（描画バッファ）。
-// gmap_loaded_active : スプライトに有効な地図データが入っているかどうか（display_tft.cpp が参照）。
-//                     BMP 読み込み中は false に落とし、完了後に true にする。
-// new_gmap_ready  : 新しい地図データが準備できたことを display_tft.cpp に通知するフラグ。
-// lastsprite_id   : 現在スプライトに読み込まれている BMP の識別子文字列
-//                   （ズームレベル + 座標 × 100 + start_x/y を連結した文字列）。
-// last_start_x/y  : 前回の地図切り出し開始座標（スクロール差分計算に使う）。
-TFT_eSprite gmap_sprite = TFT_eSprite(&tft);
-volatile bool gmap_loaded_active = false;
-volatile bool new_gmap_ready = false;
-// サイズは current_sprite_id[36] と必ず揃えること。
-// "%2d%4d%5d%3d%3d" は最小幅の指定であって上限ではないため、実際の長さは可変になる。
-//   日本国内・start_x/y が負のとき  : "13352913625-120-120" = 19文字（+NUL で 20 バイト）
-//   緯度経度が負（南半球・西半球）  : "13-3529-12000-120-120" = 21文字（+NUL で 22 バイト）
-// 以前は 20 バイトだったため、後者で直後の last_start_x を書き潰していた。
-char lastsprite_id[36] = "\0";
-int last_start_x = 0, last_start_y = 0;
-
-// 指定した緯度・経度・ズームレベルに対応する BMP ファイルを SD から読み込み、
-// gmap_sprite に 240×240 ピクセルの地図画像として展開する。
-//
-// ファイル名規則: z{zoom}/{lat*100}_{lon*100}_z{zoom}.bmp
-//   例: z13/3512_13570_z13.bmp  → zoom=13, lat=35.12°, lon=135.70°
-//
-// ズームレベルとグリッド間隔（BMP 1 枚がカバーする度数）の対応:
-//   zoom5=12°, zoom7=3°, zoom9=0.8°, zoom11=0.2°, zoom13=0.05°
-//
-// 【スクロール最適化】
-//   同一 BMP ファイルを使いつつ中心座標が少しずれた場合（start_x/y の変化のみ）、
-//   スプライトを scroll() でシフトし、露出した端の列/行だけを BMP から差分再読み込みする。
-//   全ピクセル再読み込みを避けることで SD 読み込み時間を大幅に短縮できる。
-//
-// 【中断対応】
-//   abortTask フラグが true になるとピクセルループを途中で抜ける。
-//   BMP 読み込み中は gmap_loaded_active=false にし、完了後に true に戻す。
-void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
-  // Core1 スタック使用量を計測。
-  // load_mapimage() は SD からの BMP 読み込み + gmap_sprite への描画を行うため
-  // Core1 で最もスタックを消費する（5 秒に 1 回出力）。
-  DEBUG_STACK_C1("load_mapimage");
-  DEBUG_PLN(20250417,"load mapimage begin");
-  TIMING_START(lmi);
-#ifndef RELEASE
-  if (c0_is_redrawing) _c1_overlap_count++;  // Core0描画と重なったらカウント
-#endif
-  // ズームレベルに対応したグリッド間隔（度数）を決定する。
-  // BMP ファイル 1 枚が round_degrees 度単位のグリッドに配置されているため、
-  // center_lat/lon を round_degrees 単位に丸めて対応するファイルを特定する。
-  double round_degrees = 0.0;
-  if(zoomlevel == 5) round_degrees = 12.0;
-  else if(zoomlevel == 7) round_degrees = 3.0;
-  else if(zoomlevel == 9) round_degrees = 0.8;
-  else if(zoomlevel == 11) round_degrees = 0.2;
-  else if(zoomlevel == 13) round_degrees = 0.05;
-
-  //Invalid zoomleel
-  if(round_degrees == 0.0){
-    gmap_loaded_active = false;
-    return;
-  }
-
-  double map_lat,map_lon;
-  // BMP ファイルの基準座標（グリッドに丸めた lat/lon）を算出する
-  map_lat = roundToNearestXDegrees(round_degrees, center_lat);
-  map_lon = roundToNearestXDegrees(round_degrees, center_lon);
-
-  // BMP 画像（640×640px）の中心が map_lat/map_lon に対応するため、
-  // center_lat/lon の差分をピクセルオフセットに変換して BMP 上の現在位置を求める。
-  // BMP の中心は (320, 320)。緯度方向は上が北なので符号が負になる。
-  int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegreeEQ(zoomlevel));
-  int center_y = (int)(320.0 - (center_lat - map_lat) * pixelsPerDegreeLat(zoomlevel,center_lat));
-  // TFT 画面（240×240）は BMP の一部を切り出して表示する。
-  // start_x/y は BMP 上の切り出し左上座標（現在位置が画面中央になるよう計算）。
-  int start_x = center_x - 120;
-  int start_y = center_y - 120;
-
-  // スプライト識別子を生成する。
-  // フォーマット: "zoom(2桁) + lat*100(4桁) + lon*100(5桁) + start_x(3桁) + start_y(3桁)"
-  // 同じ識別子なら既にスプライトが最新状態なのでスキップできる。
-  // 最初の 11 文字（zoom+lat+lon）が一致すれば同一 BMP ファイルを示す（スクロール判定に使う）。
-  char current_sprite_id[36];
-  int maplat4 = round(map_lat*100);
-  int maplon5 = round(map_lon*100);
-  snprintf(current_sprite_id, sizeof(current_sprite_id), "%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
-
-  //Already loaded.
-  if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded_active){
-    //if(rotation != 0){
-      //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-      //gmap_sprite.pushRotated(-rotation);
-    //}
-    //else
-    //  gmap_sprite.pushSprite(0, 40);
-    return;
-  }
-  
-  // 識別子の先頭 11 文字（ズーム+緯度+経度）が一致するか確認する。
-  // 一致 → 同じ BMP ファイルで切り出し位置だけが変わった（スクロール可能）。
-  // 不一致 → 異なる BMP ファイルが必要（全面再描画）。
-  bool samefile = true;
-  for(int i = 0; i< 11; i++){
-    if(current_sprite_id[i] != lastsprite_id[i]){
-      samefile = false;
-      break;
-    }
-  }
-  int scrollx = 0;
-  int scrolly = 0;
-  // 同一 BMP かつ既に読み込み済みの場合のみ差分スクロール計算を行う。
-  // scrollx/y はスプライトをシフトするピクセル量。正なら右/下へ移動。
-  if(samefile && gmap_loaded_active){
-    scrollx = (start_x-last_start_x);
-    scrolly = (start_y-last_start_y);
-  }
-
-  strlcpy(lastsprite_id, current_sprite_id, sizeof(lastsprite_id));  // 長さ上限付きでコピー
-
-  char filename[36];
-  snprintf(filename, sizeof(filename), "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);
 
 
-  // Open BMP file
-  FsFile bmpImage = SD.open(filename, FILE_READ);
-  if (!bmpImage) {
-    gmap_loaded_active = false;
-    return;
-  }
 
-  // Read the file header
-  bmp_file_header_t fileHeader;
-  bmpImage.read((uint8_t*)&fileHeader.signature, sizeof(fileHeader.signature));
-  bmpImage.read((uint8_t*)&fileHeader.file_size, sizeof(fileHeader.file_size));
-  bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
-  bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
+// 起動時のスプラッシュロゴ（logo.bmp）を展開するスプライト。
+// 以前は SD 上の地図 BMP タイルも同じスプライトに読み込んでいたが、
+// フラッシュ内蔵のベクタ地図へ移行したため、用途はロゴだけになった。
+TFT_eSprite logo_sprite = TFT_eSprite(&tft);
 
-
-  // Check signature
-  if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
-    bmpImage.close();
-    gmap_loaded_active = false;
-    return;
-  }
-
-  // Image header (assuming 640x640, 16-bit RGB565 BMP file)
-  bmp_image_header_t imageHeader;
-  bmpImage.read((uint8_t*)&imageHeader.header_size, sizeof(imageHeader.header_size));
-  bmpImage.read((uint8_t*)&imageHeader.image_width, sizeof(imageHeader.image_width));
-  bmpImage.read((uint8_t*)&imageHeader.image_height, sizeof(imageHeader.image_height));
-  bmpImage.read((uint8_t*)&imageHeader.color_planes, sizeof(imageHeader.color_planes));
-  bmpImage.read((uint8_t*)&imageHeader.bits_per_pixel, sizeof(imageHeader.bits_per_pixel));
-  bmpImage.read((uint8_t*)&imageHeader.compression_method, sizeof(imageHeader.compression_method));
-  bmpImage.read((uint8_t*)&imageHeader.image_size, sizeof(imageHeader.image_size));
-  bmpImage.read((uint8_t*)&imageHeader.horizontal_resolution, sizeof(imageHeader.horizontal_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.vertical_resolution, sizeof(imageHeader.vertical_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.colors_in_palette, sizeof(imageHeader.colors_in_palette));
-  bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
-
-
-  if (imageHeader.image_width != 640 || imageHeader.image_height != 640 || imageHeader.bits_per_pixel != 16) {
-    bmpImage.close();
-    gmap_loaded_active = false;
-    return;
-  }
-
-  // Create the 240x240 sprite
-  if(!gmap_sprite.created()){
-    gmap_sprite.setColorDepth(16);
-    gmap_sprite.createSprite(240, 240);
-    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+gmap_sprite(115KB)が同時確保された直後
-    DEBUG_P(20260311, "[RAMピーク] gmap_sprite生成後 FreeHeap=");
-    DEBUG_PN(20260311, rp2040.getFreeHeap(), DEC);
-    DEBUG_P(20260311, " / Total=");
-    DEBUG_PNLN(20260311, rp2040.getTotalHeap(), DEC);
-  }
-  DEBUG_STACK_C1("after_createSprite");  // スプライト生成直後のスタック使用量
-  int tloadbmp_start = millis();
-
-  // この時点からスプライトの書き換えが始まるため、表示側が参照しないよう gmap_loaded_active を落とす。
-  gmap_loaded_active = false;
-
-  // ===== スクロール差分描画 =====
-  // scrollx/y が 0 以外なら同一 BMP の切り出し位置がずれた → スクロール最適化を使う。
-  if(scrollx != 0 || scrolly != 0){
-    // スプライトは既にロード済みなので、scroll() でシフトして端だけ補充する。
-    // Step 1: 水平スクロール
-    // scroll(-scrollx, 0) でスプライトを左右にシフトし、露出した縦帯を BMP から読み込む。
-    if (scrollx != 0) {
-        gmap_sprite.setScrollRect(0, 0, 240, 240);
-        gmap_sprite.scroll(-scrollx, 0);
-
-        // 水平補充: スクロール後に露出した縦帯の x 範囲を決める。
-        // scrollx > 0（右へ移動）→ 右端が露出。scrollx < 0（左へ移動）→ 左端が露出。
-        int x_start = scrollx > 0 ? 240 - scrollx : 0;
-        int x_end = scrollx > 0 ? 240 : -scrollx;
-
-        for (int y = 0; y < 240; y++) {
-            loop_tone(); // SDロード中もtone終了判定を維持する
-            int bmp_y = last_start_y + y;//Y must be old start_y since we have not scrolled vertically yet.
-            if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
-            if(abortTask)
-              break;
-            bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2 + x_start * 2);
-            for (int x = x_start; x < x_end; x++) {
-                int bmp_x = start_x + x;
-                if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
-
-                // Read pixel data byte by byte
-                uint16_t color = bmpImage.read(); // Read low byte
-                color |= (bmpImage.read() << 8);  // Read high byte
-                gmap_sprite.drawPixel(x, y, color);
-            }
-        }
-    }
-
-    // Step 2: 垂直スクロール
-    // scroll(0, -scrolly) でスプライトを上下にシフトし、露出した横帯を BMP から読み込む。
-    if (scrolly != 0) {
-        gmap_sprite.scroll(0, -scrolly);
-
-        // 垂直補充: スクロール後に露出した横帯の y 範囲を決める。
-        // scrolly > 0（下へ移動）→ 下端が露出。scrolly < 0（上へ移動）→ 上端が露出。
-        int y_start = scrolly > 0 ? 240 - scrolly : 0;
-        int y_end = scrolly > 0 ? 240 : -scrolly;
-
-        for (int y = y_start; y < y_end; y++) {
-            loop_tone(); // SDロード中もtone終了判定を維持する
-            if(abortTask)
-              break;
-            int bmp_y = start_y + y;
-            if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
-            bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2);
-            for (int x = 0; x < 240; x++) {
-                int bmp_x = start_x + x;
-                if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
-
-                // Read pixel data byte by byte
-                uint16_t color = bmpImage.read(); // Read low byte
-                color |= (bmpImage.read() << 8);  // Read high byte
-                gmap_sprite.drawPixel(x, y, color);
-            }
-        }
-    }
-    DEBUG_P(20240815,"scroll x/y/load time=");
-    DEBUG_P(20240815,scrollx);
-    DEBUG_P(20240815,"/");
-    DEBUG_P(20240815,scrolly);
-    DEBUG_P(20240815,"/");
-    DEBUG_P(20240815,millis()-tloadbmp_start);
-    DEBUG_PLN(20240815,"ms");
-  }
-  // scrollx/y がともに 0 = 新しい BMP ファイルを全面読み込みする。
-  // BMP は bottom-up 格納（row 0 が画像の最下行）なので、
-  // seek 計算で行を逆順に参照する: row = (640 - bmp_y - 1)。
-  else{
-    for (int y = 0; y < 240; y++) {
-      loop_tone(); // SDロード中もtone終了判定を維持する
-      if(abortTask)
-        break;
-      int bmp_y = start_y + y;
-      if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
-      // BMP の该当行の start_x 列目にシーク
-      bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2);
-      DEBUG_STACK_C1("bmp_seek");  // SdFat seek 呼び出し直後のスタック使用量（深い呼び出しのピーク付近）
-      for (int x = 0; x < 240; x++) {
-        int bmp_x = start_x + x;
-        if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
-        // Read pixel data byte by byte
-        uint16_t color = bmpImage.read();           // Read low byte
-        color |= (bmpImage.read() << 8);            // Read high byte
-        gmap_sprite.drawPixel(x, y, color);
-      }
-    }
-  }
-
-  DEBUG_P(20240815,"bmp load time=");
-  DEBUG_P(20240815,millis()-tloadbmp_start);
-  DEBUG_PLN(20240815,"ms");
-  
-  bmpImage.close();
-  
-  // abortTask が立っていた場合は中断扱いとし、スプライトを無効にして終了する。
-  // display_tft.cpp 側は gmap_loaded_active=false のままなのでこのスプライトは使わない。
-  if(abortTask){
-    DEBUG_PLN(20240828,"aborted task! gmap unloaded");
-    gmap_loaded_active = false;
-    abortTask = false;
-    TIMING_END(ts_load_mapimage, lmi);  // 中断時もここまでの実時間を計測
-    return;
-  }
-
-  // 正常完了: 切り出し位置を記憶して次回のスクロール差分計算に備える。
-  // new_gmap_ready=true で display_tft.cpp に「新しい地図が使える」ことを通知する。
-  last_start_x = start_x;
-  last_start_y = start_y;
-  gmap_loaded_active = true;
-  new_gmap_ready = true;
-  TIMING_END(ts_load_mapimage, lmi);
-
-  DEBUG_PLN(20250424,"gmap_loaded_active! new_gmap_ready!");
-}
 
 
 
 // SD カードの logo.bmp を読み込んで TFT 画面の左上（0, 0）に直接描画する。
 // 主に起動時のスプラッシュロゴ表示に使用する。
 // 期待するフォーマット: 240×52 ピクセル、16-bit RGB565 BMP。
-// gmap_sprite に一時展開してから pushSprite(0,0) で TFT に転送する。
+// logo_sprite に一時展開してから pushSprite(0,0) で TFT に転送する。
 // シグネチャ不一致またはサイズ不一致の場合は描画をスキップする。
 void load_push_logo(){
     // Open BMP file
   FsFile bmpImage = SD.open("logo.bmp", FILE_READ);
   if (!bmpImage) {
-    gmap_loaded_active = false;
     return;
   }
   const int sizey = 52; // ロゴ画像の高さ（ピクセル）
@@ -2213,10 +1851,9 @@ void load_push_logo(){
   // Check signature
   if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
     bmpImage.close();
-    gmap_loaded_active = false;
     return;
   }
-  // Image header (assuming 640x640, 16-bit RGB565 BMP file)
+  // Image header (240x52, 16-bit RGB565 BMP file)
   bmp_image_header_t imageHeader;
   bmpImage.read((uint8_t*)&imageHeader.header_size, sizeof(imageHeader.header_size));
   bmpImage.read((uint8_t*)&imageHeader.image_width, sizeof(imageHeader.image_width));
@@ -2233,12 +1870,14 @@ void load_push_logo(){
     bmpImage.close();
     return;
   }
-  // Create the 240x240 sprite
-  if(!gmap_sprite.created()){
-    gmap_sprite.setColorDepth(16);
-    gmap_sprite.createSprite(240, 240);
-    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+gmap_sprite(115KB)が同時確保された直後
-    DEBUG_P(20260311, "[RAMピーク] gmap_sprite生成後 FreeHeap=");
+  // Create the sprite
+  if(!logo_sprite.created()){
+    logo_sprite.setColorDepth(16);
+    // ロゴの高さぶんだけ確保する（240x52 = 25KB）。
+    // 地図 BMP を読んでいた頃は 240x240(115KB) が必要だったが、その用途は無くなった。
+    logo_sprite.createSprite(240, sizey);
+    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+logo_sprite が同時確保された直後
+    DEBUG_P(20260311, "[RAMピーク] logo_sprite生成後 FreeHeap=");
     DEBUG_PN(20260311, rp2040.getFreeHeap(), DEC);
     DEBUG_P(20260311, " / Total=");
     DEBUG_PNLN(20260311, rp2040.getTotalHeap(), DEC);
@@ -2250,7 +1889,7 @@ void load_push_logo(){
           bmpImage.seek(fileHeader.image_offset + 240*(sizey-y-1) * 2 + x * 2);
           uint16_t color = bmpImage.read(); // Read low byte
           color |= (bmpImage.read() << 8);  // Read high byte
-          gmap_sprite.drawPixel(x, y, color);
+          logo_sprite.drawPixel(x, y, color);
       }
   }
   bmpImage.close();

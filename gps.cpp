@@ -3,10 +3,11 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : GPS受信・解析の実装（u-blox UBX バイナリ受信）。
 //           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
-//           位置・速度・時刻の取得、リプレイ/デモモード管理、
+//           位置・速度・時刻の取得、リプレイ管理、
+//           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
@@ -87,7 +88,12 @@ static int    maxgs_5min_hour  = 0;
 static int    maxgs_5min_min   = 0;
 static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
 bool gps_connection = false;  // GPS モジュールから1文字でも受信したら true
-bool demo_biwako = false;     // 琵琶湖デモモード（GPS を使わず仮想位置を生成する）
+// デモ飛行の現在地点（DEMO_OFF でデモ停止）。GPS を使わず仮想位置を生成する。
+demo_site_t demo_site = DEMO_OFF;
+double demo_lat = PLA_LAT;        // 仮想機体の現在位置
+double demo_lon = PLA_LON;
+double demo_mps = 0;              // 仮想対地速度 [m/s]
+double demo_truetrack = 280;      // 仮想真方位 [deg]
 
 // --- 衛星情報・受信フレームログ ---
 SatelliteData satellites[MAX_SATELLITES];  // 最大 MAX_SATELLITES 衛星分のデータを保持（PRN 0 = 空き）
@@ -999,7 +1005,7 @@ static void apply_replay_row(const ReplayRow* row) {
 
   // --- 位置 ---
   if (stored_latitude != row->lat || stored_longitude != row->lon)
-    if (!get_demo_biwako()) new_location_arrived = true;
+    if (!is_demo_active()) new_location_arrived = true;
   stored_latitude  = row->lat;
   stored_longitude = row->lon;
   ubx_pos_valid    = true;
@@ -1013,7 +1019,7 @@ static void apply_replay_row(const ReplayRow* row) {
     update_maxgs(stored_gs);
   }
   if (row->have & RHAVE_TTRACK) {
-    if (!get_demo_biwako()) newcourse_arrived = true;
+    if (!is_demo_active()) newcourse_arrived = true;
     stored_truetrack = row->ttrack;
     if (stored_truetrack < 0 || stored_truetrack > 360)
       stored_truetrack = 0;
@@ -1056,18 +1062,57 @@ static void apply_replay_row(const ReplayRow* row) {
   }
 }
 
-void toggle_demo_biwako() {
-  demo_biwako = !demo_biwako;
+// ---- デモ飛行の地点定義 ----
+// lat/lon はその地点のおおよその中心。basetrack は基準となる進行方位で、
+// 海岸線や川筋に沿って飛んでいるように見える向きを選んである。
+struct demo_site_def {
+  const char* name;
+  double lat;
+  double lon;
+  int basetrack;
+};
+static const demo_site_def DEMO_SITES[DEMO_SITE_COUNT] = {
+  { "OFF",       0,             0,             0   },
+  { "BIWAKO",    PLA_LAT,       PLA_LON,       280 },
+  { "SHIRAHAMA", SHIRAHAMA_LAT, SHIRAHAMA_LON, 200 },
+  { "KASAOKA",   KASAOKA_LAT,   KASAOKA_LON,   250 },
+  { "FUJIGAWA",  FUJIGAWA_LAT,  FUJIGAWA_LON,  190 },
+  { "TOKYO",     SHINURA_LAT,   SHINURA_LON,   220 },
+};
+
+demo_site_t get_demo_site() {
+  return demo_site;
+}
+
+const char* get_demo_site_name(demo_site_t site) {
+  if (site >= DEMO_SITE_COUNT) return "?";
+  return DEMO_SITES[site].name;
+}
+
+bool is_demo_active() {
+  return demo_site != DEMO_OFF;
+}
+
+// 地点を切り替える。仮想機体をその地点の中心に置き直し、軌跡も消す
+// （前の地点の軌跡が地球の反対側に残っていると描画が破綻するため）。
+void set_demo_site(demo_site_t site) {
+  if (site >= DEMO_SITE_COUNT) site = DEMO_OFF;
+  demo_site = site;
+  if (site != DEMO_OFF) {
+    demo_lat = DEMO_SITES[site].lat;
+    demo_lon = DEMO_SITES[site].lon;
+    demo_truetrack = DEMO_SITES[site].basetrack;
+  }
+  latlon_manager.reset();
   reset_maxgs();  // モード切替時に最大 G/S をリセット
 }
 
-bool get_demo_biwako() {
-  return demo_biwako;
+void next_demo_site() {
+  set_demo_site((demo_site_t)((demo_site + 1) % DEMO_SITE_COUNT));
 }
 
-void set_demo_biwako(bool biwakomode){
-  demo_biwako = biwakomode;
-  reset_maxgs();  // モード切替時に最大 G/S をリセット
+void set_demo_off() {
+  set_demo_site(DEMO_OFF);
 }
 
 unsigned long last_latlon_manager = 0;
@@ -1096,10 +1141,6 @@ GpsTime get_gpstime(){
 }
 
 unsigned long last_demo_gpsupdate = 0;
-double demo_biwako_lat = PLA_LAT;
-double demo_biwako_lon = PLA_LON;
-double demo_biwako_mps = 0;
-double demo_biwako_truetrack = 280;
 
 // 飛行軌跡（トラックログ）に現在位置を追加する。
 // 追加間隔を速度に応じて調整することで、約 50m おきに記録する。
@@ -1107,7 +1148,7 @@ double demo_biwako_truetrack = 280;
 //   高速（約 20m/s）→ 最小 1 秒間隔
 void add_latlon_track(float lat,float lon){
   int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
-  if(get_demo_biwako()){
+  if(is_demo_active()){
     tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
   }
   if(millis() - last_latlon_manager > tracklog_interval){
@@ -1117,47 +1158,49 @@ void add_latlon_track(float lat,float lon){
 }
 
 bool gps_new_location_arrived(){
-  if(get_demo_biwako()){
+  if(is_demo_active()){
     // 実 GPS と同じく 2Hz (500ms 間隔) で仮想位置を更新する。
     // 位置変位は 1Hz 時の半分 (0.00005 → 0.000025) にすることで、
     // 1 秒あたりの移動距離を同じに保つ。
     if(millis() > last_demo_gpsupdate + 500){
-      int biwa_spd = 10;
-      demo_biwako_lat += 0.000025*biwa_spd*cos(radians(get_gps_truetrack()));
-      if(calculateDistanceKm(demo_biwako_lat,demo_biwako_lon,PLA_LAT,PLA_LON) > 15){
-        demo_biwako_lat = PLA_LAT;
-        demo_biwako_lon = PLA_LON;
+      const demo_site_def& site = DEMO_SITES[demo_site];
+      int demo_spd = 10;
+      demo_lat += 0.000025*demo_spd*cos(radians(get_gps_truetrack()));
+      // 選択中の地点から離れすぎたら中心に戻す（地図の収録範囲から出ないように）
+      if(calculateDistanceKm(demo_lat,demo_lon,site.lat,site.lon) > 15){
+        demo_lat = site.lat;
+        demo_lon = site.lon;
         latlon_manager.reset();
       }
-      demo_biwako_lon += 0.000025*biwa_spd*sin(radians(get_gps_truetrack()));
+      demo_lon += 0.000025*demo_spd*sin(radians(get_gps_truetrack()));
       last_demo_gpsupdate = millis();
       new_location_arrived = true;
-      demo_biwako_mps = 7 + sin(millis() / 1500.0);
-      update_maxgs(demo_biwako_mps);  // DEMOモードでも最大 G/S を更新
+      demo_mps = 7 + sin(millis() / 1500.0);
+      update_maxgs(demo_mps);  // DEMOモードでも最大 G/S を更新
       
       
-      int basetrack = 280;
-      if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
-        basetrack = 100;
+      int basetrack = site.basetrack;
+      if(demo_site == DEMO_BIWAKO && destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
+        basetrack = 100;  // 琵琶湖の折り返し後は東向き
 
       
       int target_angle = basetrack+(20 + 10*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
 
-      int demo_steer_angle = target_angle - demo_biwako_truetrack;
+      int demo_steer_angle = target_angle - demo_truetrack;
       if(demo_steer_angle < -180){
         demo_steer_angle += 360;
       }else if(demo_steer_angle > 180){
         demo_steer_angle -= 360;
       }
       // 2Hz 化により呼び出し頻度が 2 倍になったため、1 呼び出しあたりの旋回ゲインを半分 (0.2 → 0.1) にして旋回速度を同等に保つ。
-      demo_biwako_truetrack += demo_steer_angle*0.1*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
-      if(demo_biwako_truetrack > 360)
-        demo_biwako_truetrack -= 360;
-      else if(demo_biwako_truetrack < 0)
-        demo_biwako_truetrack += 360;
+      demo_truetrack += demo_steer_angle*0.1*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      if(demo_truetrack > 360)
+        demo_truetrack -= 360;
+      else if(demo_truetrack < 0)
+        demo_truetrack += 360;
 
       newcourse_arrived = true;
-      add_latlon_track(demo_biwako_lat, demo_biwako_lon);
+      add_latlon_track(demo_lat, demo_lon);
     }
   }
   return new_location_arrived;
@@ -1296,7 +1339,7 @@ void gps_loop(int id) {
   if (ubx_pvt_updated) {
     ubx_pvt_updated = false;
     last_gps_time = millis();
-    if (!get_demo_biwako()) {
+    if (!is_demo_active()) {
       if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
     }
@@ -1359,7 +1402,7 @@ void try_enque_savecsv(){
 
   // 位置・日時が全て揃っていて、前回保存から 400ms 以上経過した時のみ保存（2Hz GPS に合わせて調整）
   if(all_valid && millis() - last_gps_save_time > 400){
-    if(!get_demo_biwako()){ //デモは別の場所で登録済み。
+    if(!is_demo_active()){ //デモは別の場所で登録済み。
       add_latlon_track(get_gps_lat(),get_gps_lon());
     }
 
@@ -1396,8 +1439,8 @@ void try_enque_savecsv(){
 // デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
 // 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
 double get_gps_lat() {
-  if (demo_biwako) {
-    return demo_biwako_lat;
+  if (is_demo_active()) {
+    return demo_lat;
   }
 #ifdef DEBUG_GPS_SIM_BIWAKO
   return PLA_LAT;
@@ -1427,8 +1470,8 @@ double get_gps_lat() {
 }
 
 double get_gps_lon() {
-  if (demo_biwako) {
-    return demo_biwako_lon;
+  if (is_demo_active()) {
+    return demo_lon;
   }
 
 #ifdef DEBUG_GPS_SIM_BIWAKO
@@ -1460,8 +1503,8 @@ double get_gps_lon() {
 
 
 double get_gps_mps() {
-  if (demo_biwako) {
-    return demo_biwako_mps;
+  if (is_demo_active()) {
+    return demo_mps;
   }
   return stored_gs;
 }
@@ -1479,7 +1522,7 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
-  if(demo_biwako){
+  if(is_demo_active()){
     return get_gps_numsat() != 0;
   }
   if(stored_fixtype >= 1){
@@ -1497,8 +1540,8 @@ double get_gps_truetrack() {
   #ifdef DEBUG_GPS_SIM_SHINURA
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
-  if (demo_biwako) {
-    return demo_biwako_truetrack;
+  if (is_demo_active()) {
+    return demo_truetrack;
   }
   return stored_truetrack;     // Heading in degrees;
 }
@@ -1516,7 +1559,7 @@ double get_gps_magtrack() {
 }
 
 int get_gps_numsat() {
-  if(get_demo_biwako()){
+  if(is_demo_active()){
     return (int)(20.0*sin(millis()/5000))+20;
   }else if(getReplayMode()){
     // CSV に numsat 列があればその値を使う。無い場合は「衛星情報なし」を示す 99 を返す。

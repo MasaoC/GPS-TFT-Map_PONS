@@ -3,12 +3,12 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : SDカード操作とCore1タスクキューのヘッダー。
 //           タスク種別(TaskType)・タスク構造体・キュー定義と、
-//           設定保存/読込・CSVフライトログ・BMP地図画像読込・
+//           設定保存/読込・CSVフライトログ・起動ロゴ読込・
 //           音声再生タスク生成関数のプロトタイプ宣言。
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 
 #ifndef MYSD_H
@@ -22,7 +22,6 @@
       TASK_LOG_SD,
       TASK_LOG_SDF,
       TASK_SAVE_CSV,
-      TASK_LOAD_MAPIMAGE,
       TASK_PLAY_MULTITONE,
       TASK_PLAY_WAV,
       TASK_SAVE_SETTINGS,
@@ -116,7 +115,6 @@
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
     void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
-    void load_mapimage(double center_lat, double center_lon,int zoomlevel);
     void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
 
     // Forward declarations of example getter/setter functions
@@ -167,11 +165,6 @@
               float pressure;
               int year, month, day, hour, minute, second, centisecond;
           } saveCsvArgs;
-          struct {                           // For load_mapimage
-              double center_lat;
-              double center_lon;
-              int zoomlevel;
-          } loadMapImageArgs;
           struct {
               int freq;
               int duration;
@@ -206,7 +199,6 @@
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
-  Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
@@ -235,7 +227,7 @@
   extern mutex_t taskQueueMutex;
   extern volatile bool sd_setup_complete;
   extern volatile bool logo_ready;
-  extern TFT_eSprite gmap_sprite;
+  extern TFT_eSprite logo_sprite;
 
   // リプレイ再生用の共有状態（Core1 が生成 / Core0 が消費）
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
@@ -250,6 +242,4 @@
   extern volatile int  replayfiles_count;  // 現在 replayfiles[] に入っている件数（Core1 が更新）
   extern volatile int  replayfiles_total;  // SD 上の対象 CSV の総数（Core1 が更新）
 
-  extern volatile bool gmap_loaded_active;
-  extern volatile bool new_gmap_ready;
 #endif

@@ -123,8 +123,8 @@
  * `tools/kml_to_mapcsv.py`：Google EarthのKMLから独自地図用 `mapdata.csv` を生成
  * `tools/createmovie_csv2mp4.py`：ログCSVからフライト動画を生成
  * `tools/flight_preprocess.py` / `tools/flightanalysis/`：ログの前処理と飛行解析（スペクトル、横・方向安定性など）のプロット
- * `tools/mapimage/create_mapimages.py`：Google map API を使ってbmp地図画像を生成
- * `tools/png2bmp.py`：PNG画像をSDカード用bmpへ変換
+ * `tools/vectormap/build_vectormap.py`：OpenStreetMap から内蔵ベクタ地図 `vectormap_data.cpp` を生成
+ * `tools/png2bmp.py`：PNG画像を起動ロゴ用bmpへ変換
 
 # 目的地の追加方法
  SDカードに `destinations.csv` ファイルを作成し、コンマ区切りで名前（英語）、緯度、経度の順で記述。
@@ -185,3 +185,23 @@
  * 電源スイッチ故障時に備え、基板にジャンパーがある（はんだで繋げばON）。GPSバックアップ電源（リチウムボタン電池）故障時のジャンパーもある。
  * 参考動画：[PONS v5 琵琶湖 デモモード（音声誘導の例）](https://www.youtube.com/watch?v=fB5rZf2j_d8) / [PONS v5 Auto10kmモード 折り返し動作確認](https://www.youtube.com/watch?v=gKichWYD1Wk)
  * 問い合わせ：開発者 大阪大学 albatross OB 7期 MasaoC（masaochiguchi@gmail.com / LINE, X: masao_mobile）
+
+# ライセンス
+本リポジトリは 2 種類のライセンスで構成されています。
+
+| 対象 | ライセンス |
+|------|-----------|
+| ソースコード（`*.ino` / `*.cpp` / `*.h` / `tools/*.py`） | MIT License（[LICENSE](LICENSE)） |
+| 地図データ（`vectormap_data.cpp`） | ODbL 1.0（[LICENSE.ODbL](LICENSE.ODbL)） |
+
+地図データは OpenStreetMap 由来です。
+
+> Map data (c) OpenStreetMap contributors — https://www.openstreetmap.org/copyright
+> Licensed under the [Open Database License (ODbL) v1.0](https://opendatacommons.org/licenses/odbl/1-0/)
+
+`vectormap_data.cpp` は座標列を格納したベクタ形式のため、ODbL における **Derivative Database**
+（派生データベース）に該当し、share-alike の対象になります。再配布時は ODbL のままとし、
+帰属表示を保持してください。ODbL 4.5(a) の Collective Database 免除により、
+ファームウェアのソースコード本体は MIT のままで問題ありません。詳細は [LICENSE.ODbL](LICENSE.ODbL) を参照。
+
+地図データの生成方法は [tools/vectormap/build_vectormap.py](tools/vectormap/build_vectormap.py) を参照してください。

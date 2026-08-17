@@ -4,10 +4,10 @@
 // Role    : GPS受信・解析モジュールのヘッダー。
 //           衛星データ構造体(SatelliteData)、受信バッファ定義、
 //           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
-//           リプレイモード・デモモード切替関数、およびリプレイ中に
-//           センサ値を CSV の値へ差し替えるための関数も含む。
+//           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
+//           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 
 #ifndef GPS_H
@@ -111,9 +111,24 @@
   int   get_maxgs_5min_hour();  // 5分保持最大 G/S の記録時刻（JST 時）
   int   get_maxgs_5min_min();   // 5分保持最大 G/S の記録時刻（JST 分）
 
-  void toggle_demo_biwako();
-  bool get_demo_biwako();
-  void set_demo_biwako(bool biwakomode);
+  // ---- デモ飛行 ----
+  // 実 GPS を使わず仮想的に飛ばすモード。地点を選べるようにしてあるので、
+  // 各フライト地点の地図表示を実機で確認するのにも使える。
+  enum demo_site_t : uint8_t {
+    DEMO_OFF = 0,
+    DEMO_BIWAKO,
+    DEMO_SHIRAHAMA,
+    DEMO_KASAOKA,
+    DEMO_FUJIGAWA,
+    DEMO_TOKYO,
+    DEMO_SITE_COUNT
+  };
+  demo_site_t get_demo_site();
+  void set_demo_site(demo_site_t site);
+  void next_demo_site();           // 設定画面で 1 段階進める（末尾で OFF に戻る）
+  const char* get_demo_site_name(demo_site_t site);
+  bool is_demo_active();           // いずれかの地点でデモ飛行中か
+  void set_demo_off();
   bool getReplayMode();
   void set_replaymode(bool replaymode);
 

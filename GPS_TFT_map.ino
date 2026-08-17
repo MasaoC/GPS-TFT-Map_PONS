@@ -4,8 +4,10 @@
 // Role    : メインエントリポイント。
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
+//           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
+//           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 
 #include "navdata.h"
@@ -18,6 +20,7 @@
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
+#include "vectormap.h"
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
@@ -50,7 +53,6 @@ double scale;                // 現在のマップスケール [pixels/km]
 // selectedLine >= 0:  その行の値を変更中
 int selectedLine = -1;
 int cursorLine = 0;
-int lastload_zoomlevel;  // 前回 BMP ロードを要求したズームレベル（変化検知用）
 
 // --- コース警告 ---
 // course_warning_index: 0〜900 の積算値（単位: 度・秒）。
@@ -81,8 +83,6 @@ volatile bool c0_is_redrawing = false;  // Core1側の重複検出用フラグ
 // リンカシンボルでは下限がわからないため、この方法で代替する。
 volatile uint32_t _core1_base_sp = 0;
 
-// Core1 からの BMP ロード完了を受けて次ループで即再描画させるための volatile フラグ
-// （Core1 が書き込み、Core0 が読む。volatile で最適化を防ぐ）
 volatile int scaleindex = 3;    // scalelist のインデックス（初期値 3 = SCALE_LARGE_GMAP）
 volatile int sound_volume  = 50; // 音量 0〜100
 volatile int vario_volume  = 10; // バリオメーター音量 0〜100（設定画面から変更可）
@@ -99,7 +99,10 @@ void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
 void next_scaleindex();
-int scaleindex_zoomlevel(int index);
+// 設定画面のラベル用に、現在のスケールで画面横幅(240px)が何 km に相当するかを返す。
+// 以前は Google タイルのズーム番号(zoom5〜13)を表示していたが、ベクタ地図に移行して
+// タイルとの対応が無くなったため、実際の距離で表すようにした。
+float scale_screen_km(int index);
 // Create Button objects
 Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallback);
 
@@ -472,12 +475,11 @@ void loop() {
     }
 
 
-    // BMPロード完了 or GPSの情報が更新された。
-    if (new_gmap_ready || new_gps_info) {
+    if (new_gps_info) {
       redraw_screen = true;
     }
 
-    // GPS 更新と BMP ロード完了の両方で redraw_screen が立つため、
+    // GPS 更新のたびに redraw_screen が立つため、
     // 通常は毎秒 2 回程度この描画ブロックが実行される。
     if (redraw_screen) {
       TIMING_START(redraw);
@@ -498,45 +500,24 @@ void loop() {
       nav_update();   // 磁気コース(MC)・目的地距離(dist)を最新 GPS 位置で再計算
       draw_header();  // ヘッダー（速度・衛星数など）を TFT に直接描画
 
-      new_gmap_ready = false;
 
       // ---- バックスクリーン（ダブルバッファ）を黒でクリア ----
       // 描画はすべてバックスクリーンに対して行い、最後に push_backscreen() で
       // 一括転送することでちらつきを防ぐ。
       clean_backscreen();
 
-      // scaleindex → Google Map ズームレベルの変換
-      int zoomlevel = scaleindex_zoomlevel(scaleindex);
+      // ---- レイヤー 1: 地図背景 ----
+      // フラッシュ内蔵のベクタ地図（OpenStreetMap 由来）を backscreen へ直接描画する。
+      // 回転は latLonToXY と同じ座標変換に吸収されるため、TRACKUP でも画面四隅まで埋まる。
+      // SD カードは不要で、位置が動いても I/O は発生しない。
+      draw_vectormap(new_lat, new_long, scale, drawupward_direction);
 
-      // ---- レイヤー 1: Google Map 画像（BMP）を背景として描画 ----
-      bool gmap_drawed = false;
-      if (gmap_loaded_active)
-        gmap_drawed = draw_gmap(drawupward_direction);
-
-      // GPS 位置が変わった or ズームレベルが変わった時に新しい BMP を Core1 に要求
-      if (new_gps_info || lastload_zoomlevel != zoomlevel) {
-        lastload_zoomlevel = zoomlevel;
-        // 前回のロードタスクがまだ実行中なら中断してから新タスクを追加する
-        enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
-      }
-
-      // ---- レイヤー 2: ベクターポリゴン地図 ----
-      // 詳細ズーム時は現在地周辺のエリア別地図を描画。
-      // 広域ズーム時は日本全体の海岸線ポリゴンを描画。
+      // ---- レイヤー 2: ポリゴン地図（滑走路・基準線などの注記）----
+      // 内蔵（フラッシュ）と SD の mapdata.csv 由来の両方を描く。
+      // 内蔵は SD が抜けていても必ず表示されるので、飛行に必須の注記はそちらに置く。
       if (scale > SCALE_SMALL_GMAP) {
-        if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-          draw_Biwako(new_lat, new_long, scale, drawupward_direction, gmap_drawed);
-        } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
-          draw_Osaka(new_lat, new_long, scale, drawupward_direction);
-        } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
-          draw_Shinura(new_lat, new_long, scale, drawupward_direction);
-        }
-        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);  // SD から読んだカスタム地図
-      } else {
-        // 広域スケール: 日本全国の海岸線を描画
-        if (check_within_latlon(20, 40, new_lat, 35, new_long, 138)) {
-          draw_Japan(new_lat, new_long, scale, drawupward_direction);
-        }
+        draw_FlashMaps(new_lat, new_long, scale, drawupward_direction);
+        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
       }
 
       gps_loop(4);  // 描画の合間に GPS データを受信（取りこぼし防止）
@@ -579,7 +560,7 @@ void loop() {
       // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
       draw_compass(drawupward_direction, COLOR_BLACK);
       draw_degpersec(degpersecond);
-      if (get_demo_biwako()) {
+      if (is_demo_active()) {
         draw_demo_biwako();  // 琵琶湖デモ表示（見た目や警告音などに慣れるための練習用）
       }
       if (getReplayMode()) {
@@ -591,9 +572,9 @@ void loop() {
       // リプレイ・デモモードは実際の精度と無関係なので、常に通常の飛行機マーカーを表示する
       bool   cur_fix_ok = get_gps_gnssFixOK();
       float  cur_hacc_m = get_gps_hacc_mm() / 1000.0f;  // mm → m
-      if (!get_gps_fix() && !get_demo_biwako() && !getReplayMode()) {
+      if (!get_gps_fix() && !is_demo_active() && !getReplayMode()) {
         draw_nofix_cross();                              // fix なし（通常モードのみ）: グレーの ×
-      } else if (!get_demo_biwako() && !getReplayMode() &&
+      } else if (!is_demo_active() && !getReplayMode() &&
                  (!cur_fix_ok || cur_hacc_m >= HACC_THRESHOLD_M)) {
         draw_hacc_circle(scale, get_gps_hacc_mm());     // gnssFixOK=false または hAcc 不良: 青い不確かさ円
       } else {
@@ -605,9 +586,6 @@ void loop() {
         draw_course_warning(steer_angle);
       }
 
-      if (!gmap_drawed) {
-        draw_nogmap(scale);  // BMP がない時は「地図なし」インジケータを表示
-      }
 
       draw_gs_track();  // ヘッダーに速度・コースなどのテキストを描画
       draw_map_footer();
@@ -718,11 +696,6 @@ void loop1() {
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
           currentTask.saveCsvArgs.centisecond);
         break;
-      case TASK_LOAD_MAPIMAGE:
-        load_mapimage(
-          currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
-          currentTask.loadMapImageArgs.zoomlevel);
-        break;
       case TASK_LOG_EULER:
         saveEuler(currentTask.logEulerArgs.hour,
                   currentTask.logEulerArgs.minute,
@@ -737,7 +710,7 @@ void loop1() {
                   currentTask.logEulerArgs.day);
         break;
       case TASK_LOAD_LOGO:
-        load_push_logo();  // SD からロゴ BMP を gmap_sprite に読み込む（pushSprite は Core0 が行う）
+        load_push_logo();  // SD からロゴ BMP を logo_sprite に読み込む（pushSprite は Core0 が行う）
         break;
     }
     clearCurrentTask();  // mutex 内で TASK_NONE にする（Core0 の isTaskRunning() と整合させるため）
@@ -752,20 +725,14 @@ extern volatile int max_page;  // Core1 が更新する（実体は mysd.cpp・v
 // マップスケール（ズームレベル）を次の段階へ切り替える。
 // 地図画面でのダブルクリックと、設定画面の Map scale 項目の両方から呼ばれる。
 void next_scaleindex() {
-  gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
   scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
   scale = scalelist[scaleindex];
 }
 
-// scaleindex → Google Map ズームレベルの変換。
-// scalelist[5]（最大拡大）に対応する地図画像は無いため 0 を返す。
-int scaleindex_zoomlevel(int index) {
-  if (index == 0) return 5;   //SCALE_EXSMALL_GMAP
-  if (index == 1) return 7;   //SCALE_SMALL_GMAP
-  if (index == 2) return 9;   //SCALE_MEDIUM_GMAP
-  if (index == 3) return 11;  //SCALE_LARGE_GMAP
-  if (index == 4) return 13;  //SCALE_EXLARGE_GMAP
-  return 0;
+// 画面横幅 240px が何 km に相当するかを返す（設定画面のスケール表示用）。
+float scale_screen_km(int index) {
+  if (index < 0 || index >= (int)(sizeof(scalelist) / sizeof(scalelist[0]))) return 0;
+  return (float)(BACKSCREEN_SIZE / scalelist[index]);
 }
 
 // 短押しコールバック: 画面モードごとに動作が変わる。
@@ -843,10 +810,9 @@ static void backToSettingFromReplay() {
 static void startReplay(const char* filename) {
   set_replay_filename(filename);
   set_replaymode(true);
-  set_demo_biwako(false);       // デモとリプレイは同時使用不可 → デモを無効化
+  set_demo_off();       // デモとリプレイは同時使用不可 → デモを無効化
   latlon_manager.reset();       // 位置履歴をクリア
   reset_degpersecond();         // 旋回角速度をリセット
-  gmap_loaded_active = false;   // 地図キャッシュを無効化（再読み込みさせる）
   enqueueTask(createInitReplayTask());  // Core1: 選択したファイルを開いて読み込み開始
   selectedLine = -1;
   exit_setting();               // 設定を保存して地図画面へ
@@ -865,7 +831,6 @@ static void handleReplaySelect() {
       set_replay_filename("");
       latlon_manager.reset();
       reset_degpersecond();
-      gmap_loaded_active = false;
       backToSettingFromReplay();
       break;
     case RITEM_FLIGHTONLY:

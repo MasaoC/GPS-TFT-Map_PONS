@@ -5,8 +5,9 @@
 //           画面サイズ・カラー定数・座標構造体・enum定義と、
 //           マップ/コンパス/ヘッダー/フッター/設定画面/
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
+//           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -73,6 +74,7 @@
   #define COLOR_YELLOW TFT_YELLOW
 
   extern TFT_eSPI tft;
+  extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (5×240px, 16bit)
   extern bool fresh_display;
   extern int screen_brightness;
@@ -89,8 +91,6 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
 
 void draw_gs_track();
 void draw_loading_image();
-void draw_nogmap(double scale);
-bool draw_gmap(float drawupward_direction);
 void draw_degpersec(double degpersecond);
 void draw_map_footer();
 void setup_tft();
@@ -132,18 +132,28 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
+uint16_t mapdata_color(const char* name);  // 地図名の先頭文字 → 描画色
+void draw_FlashMaps(double center_lat,double center_lon,float scale,float up);  // 内蔵ポリゴン（SD不要）
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
-void draw_Japan(double center_lat,double center_lon,float scale,float up);
-void draw_Shinura(double center_lat,double center_lon,float scale,float up);
-void draw_Biwako(double center_lat,double center_lon,float scale,float up,bool gmap_drawed);
-void draw_Osaka(double center_lat,double center_lon,float scale,float up);
 bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
 void startup_demo_tft();
 void draw_demo_biwako();
 void draw_replay_indicator();
+// 線分を backscreen の矩形にクリップする。完全に画面外なら false を返す。
+// TFT_eSPI の drawWedgeLine / drawLine は画面外の端点をそのまま走査するため、
+// 高倍率で端点が数千px 外に出ると 1 フレームに数百ms かかる。描画前に必ず通すこと。
+bool clip_line_to_screen(int* x0, int* y0, int* x1, int* y1);
+// 地図座標から作った線を描く（クリップ済み・非アンチエイリアスの太線）。
+// 道路やトラックのように本数が多い描画に使う。drawWideLine は画素ごとに
+// readPixel を呼ぶため本数が多いと極端に遅い（実装のコメント参照）。
+void draw_map_line(int x0, int y0, int x1, int y1, int w, uint16_t col);
 void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
-void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+// 複数リングをまとめて even-odd 規則で塗りつぶす（島＝穴が自動的に抜ける）。
+// ring_start は要素数 nrings+1 で、リング i の点は [ring_start[i], ring_start[i+1])。
+// 辺数が上限を超える場合は何も描かず false を返す。
+bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
+                          const uint16_t* ring_start, uint8_t nrings, uint16_t color);
 void draw_nofix_cross();                              // GPS fix なし時のグレー × 描画
 void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixOK=false 時の不確かさ円描画
 void draw_triangle(int ttrack,int steer_angle);

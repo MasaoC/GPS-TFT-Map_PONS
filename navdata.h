@@ -3,9 +3,10 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : ナビゲーションデータの中核ヘッダー。
 //           座標変換（Mercator投影）・距離・真方位計算の宣言、
-//           マップポリゴンデータ・目的地・飛行コースモードの定義。
+//           内蔵ポリゴン地図・目的地・飛行コースモードの定義、
+//           各飛行地点（琵琶湖・白浜・笠岡・富士川・東京湾など）の座標。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/08/17
 // ============================================================
 #include "settings.h"
 
@@ -47,9 +48,6 @@
 
   #define RADIUS_EARTH_KM 6371.0  // Earth's radius in kilometers
 
-  #define ROW_FILLDATA 28
-  #define COL_FILLDATA 28
-
   //公式ルール2026.06.21
   #define PLA_LAT 35.294222
   #define PLA_LON 136.254333
@@ -63,6 +61,15 @@
 
   #define SHINURA_LAT 35.650433188178
   #define SHINURA_LON 139.913699521520
+
+  // ---- デモ飛行の地点（設定画面の DEMO で選択）----
+  // HPA のフライト地点。おおよその中心座標で、厳密な滑走路位置ではない。
+  #define SHIRAHAMA_LAT 33.679000    // 南紀白浜（沿岸）
+  #define SHIRAHAMA_LON 135.362000
+  #define KASAOKA_LAT   34.495000    // 笠岡ふれあい空港・笠岡湾干拓地
+  #define KASAOKA_LON   133.495000
+  #define FUJIGAWA_LAT  35.155000    // 富士川滑空場（富士川河口）
+  #define FUJIGAWA_LON  138.625000
   #define OSAKA_LAT 34.8227376
   #define OSAKA_LON 135.5213544
   #define SAPPORO_LAT 43.05989937316593
@@ -116,6 +123,14 @@
   double pla_centerline_bearing_rad();
   void nav_update();
 
+  extern mapdata map_kasaoka;
+  extern mapdata map_shirahama;
+  extern mapdata map_karasu;
+
+  // フラッシュ内蔵のポリゴン地図一覧（SD 不要で必ず描画される）
+  extern mapdata* flashmaps[];
+  extern const int flashmap_count;
+
   #define MAX_MAPDATAS 100
   extern mapdata extramaps[MAX_MAPDATAS];
   extern int current_id;
@@ -141,29 +156,17 @@
   void init_destinations();
 
 
-  extern mapdata map_shinura;
   extern mapdata map_takeshima;
   extern mapdata map_chikubushima;
-  extern mapdata map_biwako;
   extern mapdata map_okishima;
 
   extern mapdata map_handaioutside;
-  extern mapdata map_handaihighway;
-  extern mapdata map_handaihighway2;
   extern mapdata map_handaiinside1;
   extern mapdata map_handaiinside2;
   extern mapdata map_handaiinside3;
   extern mapdata map_handaiinside4;
   extern mapdata map_handaiinside5;
-  extern mapdata map_handairailway;
   extern mapdata map_handaicafe;
 
-  extern mapdata map_japan1;
-  extern mapdata map_japan2;
-  extern mapdata map_japan3;
-  extern mapdata map_japan4;
-
-
-  extern const bool filldata[ROW_FILLDATA][COL_FILLDATA];
 
 #endif
