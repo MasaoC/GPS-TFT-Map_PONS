@@ -198,10 +198,15 @@ static bool vm_has_tiles(int lod, int32_t lat_min_e7, int32_t lat_max_e7,
   return false;
 }
 
+// 背景の塗りつぶしもこの関数が担う。呼び出し側で別途クリアすると、
+// 直後にここで塗り直すことになり 240x240 の書き込みが二重に走る。
 void draw_vectormap(double center_lat, double center_lon, float scale, float up) {
   vm_last_tiles = 0;
   vm_last_points = 0;
-  if (vm_tile_count == 0) return;
+  if (vm_tile_count == 0) {
+    backscreen.fillSprite(COLOR_WHITE);  // データが無くても前フレームは消す
+    return;
+  }
 
   vm_proj proj;
   vm_make_proj(&proj, center_lat, center_lon, scale, up);
@@ -226,8 +231,9 @@ void draw_vectormap(double center_lat, double center_lon, float scale, float up)
     lod++;
   }
 
-  // 陸地ポリゴンを持つ LOD では、先に画面全体を海色で塗ってから陸を重ねる。
-  if (vm_lod_sea_background[lod]) backscreen.fillSprite(VMCOL_WATER);
+  // 背景を塗る。陸地ポリゴンを持つ LOD は海色で塗ってから陸を重ね、
+  // 持たない LOD は白（＝陸地）にして水面だけを塗る。
+  backscreen.fillSprite(vm_lod_sea_background[lod] ? VMCOL_WATER : COLOR_WHITE);
 
   const int32_t tsize = vm_lod_tilesize_e7[lod];
 

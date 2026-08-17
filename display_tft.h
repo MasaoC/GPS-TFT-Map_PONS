@@ -47,10 +47,6 @@
     }
   };
 
-  enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_TARGETLINE,STRK_TARGETLINE2
-  };  
-
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_REPLAY,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
@@ -76,7 +72,6 @@
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (5×240px, 16bit)
-  extern bool fresh_display;
   extern int screen_brightness;
   
 #endif
@@ -90,11 +85,9 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
 
 
 void draw_gs_track();
-void draw_loading_image();
 void draw_degpersec(double degpersecond);
 void draw_map_footer();
 void setup_tft();
-void draw_strokes();
 
 void draw_header();
 void draw_footer();
@@ -123,7 +116,6 @@ void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
 
 
-void clean_backscreen();
 void push_backscreen();
 void draw_vsi();
 
@@ -148,7 +140,7 @@ bool clip_line_to_screen(int* x0, int* y0, int* x1, int* y1);
 // 道路やトラックのように本数が多い描画に使う。drawWideLine は画素ごとに
 // readPixel を呼ぶため本数が多いと極端に遅い（実装のコメント参照）。
 void draw_map_line(int x0, int y0, int x1, int y1, int w, uint16_t col);
-void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
+void draw_map(float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
 // 複数リングをまとめて even-odd 規則で塗りつぶす（島＝穴が自動的に抜ける）。
 // ring_start は要素数 nrings+1 で、リング i の点は [ring_start[i], ring_start[i+1])。
 // 辺数が上限を超える場合は何も描かず false を返す。

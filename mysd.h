@@ -221,7 +221,6 @@
 
 
 
-  double pixelsPerDegreeLat(int zoom,double latitude);
 
   extern Task currentTask;
   extern mutex_t taskQueueMutex;

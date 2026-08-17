@@ -417,117 +417,6 @@ public:
 
 TextManager textmanager(50);
 
-// ポリラインの描画と消去を管理するクラス。
-// addStroke() でストロークを追加し、addPointToStroke() で頂点を追加する。
-// drawCurrentStroke() で最後に追加したストロークだけを描画、
-// drawAllStrokes() で全ストロークを白で上書き（消去）する。
-// backscreen スプライトへ drawLine / drawWideLine で線を引く。
-class StrokeManager {
-
-  struct Stroke {
-    stroke_group id;      // ストロークの種類識別子（stroke_group 列挙型）
-    Point* points;        // 頂点座標配列（heap 確保）
-    int pointCount;       // 現在の頂点数
-    int maxPoints;        // 最大頂点数（addStroke 時に確保）
-    int thickness;        // 線の太さ（1=drawLine, >1=drawWideLine）
-  };
-
-  Stroke* strokes;
-  int strokeCount;
-  int maxStrokes;
-
-public:
-  StrokeManager(int maxStrokes) {
-    this->maxStrokes = maxStrokes;
-    this->strokes = new Stroke[maxStrokes];
-    this->strokeCount = 0;
-  }
-
-  ~StrokeManager() {
-    for (int i = 0; i < strokeCount; i++) {
-      free(strokes[i].points);
-    }
-    delete[] strokes;
-  }
-
-  bool addStroke(stroke_group id, int maxPoints, int thickness = 1) {
-    if (strokeCount >= maxStrokes) {
-      DEBUGW_PLN(20240912, id);
-      DEBUGW_PLN(20240912, maxPoints);
-      DEBUGW_PLN(20240912, "ERR max stroke reached");
-      enqueueTask(createLogSdfTask("ERR max stroke reached(id,max) %d,%d", id, maxPoints));
-      return false;  // No more space for new strokes
-    }
-    strokes[strokeCount].points = (Point*)malloc(maxPoints * sizeof(Point));
-    
-    if (strokes[strokeCount].points == nullptr) {
-      DEBUG_P(20240912, id);
-      DEBUG_PLN(20240912, "malloc fail");
-      enqueueTask(createLogSdfTask("malloc failed:adding stroke:ID=%d", id));
-      return false;  // Memory allocation failed
-    }
-    strokes[strokeCount].pointCount = 0;
-    strokes[strokeCount].maxPoints = maxPoints;
-    strokes[strokeCount].id = id;
-    strokes[strokeCount].thickness = thickness;
-    strokeCount++;
-    return true;
-  }
-
-
-  bool addPointToStroke(int x, int y) {
-    if (strokeCount == 0) {
-      return false;  // No strokes to add points to
-    }
-    if (strokes[strokeCount - 1].pointCount >= strokes[strokeCount - 1].maxPoints) {
-      return false;  // No more space for new points in this stroke
-    }
-    strokes[strokeCount - 1].points[strokes[strokeCount - 1].pointCount].x = x;
-    strokes[strokeCount - 1].points[strokes[strokeCount - 1].pointCount].y = y;
-    strokes[strokeCount - 1].pointCount++;
-    return true;
-  }
-
-  void drawCurrentStroke(int col){
-    int strkid = strokeCount - 1;
-    if(strokeCount == 0 || strokes[strkid].pointCount < 2){
-      return;
-    }
-    for(int i = 0; i < strokes[strkid].pointCount-1; i++){
-      if (!strokes[strkid].points[i].isOutsideTft() || !strokes[strkid].points[i+1].isOutsideTft()) {
-        if (strokes[strkid].thickness == 1)
-          backscreen.drawLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, col);
-        else
-          backscreen.drawWideLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, strokes[strkid].thickness, col);
-      }
-    }
-  }
-
-
-  void removeAllStrokes() {
-    for (int i = 0; i < strokeCount; i++) {
-      if(strokes[i].points != nullptr){
-        free(strokes[i].points);  // Free allocated memory for each stroke
-      }
-      strokes[i].points = nullptr;
-      strokes[i].pointCount = 0;
-      strokes[i].maxPoints = 0;
-    }
-    strokeCount = 0;
-  }
-
-
-  void drawAllStrokes() {
-    for (int i = 0; i < strokeCount; i++) {
-      for (int j = 0; j < strokes[i].pointCount - 1; j++) {
-        if (strokes[i].thickness == 1)
-          backscreen.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
-        else
-          backscreen.drawWideLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, strokes[i].thickness, COLOR_WHITE);
-      }
-    }
-  }
-};
 
 
 
@@ -1162,7 +1051,7 @@ void draw_FlashMaps(double center_lat, double center_lon, float scale, float up)
     // 現在地から離れた地図は描かない（extramaps と同じ 1 度四方の判定）
     if (!check_within_latlon(1, 1, mp->cords[0][1], get_gps_lat(),
                              mp->cords[0][0], get_gps_lon())) continue;
-    draw_map(STRK_MAP1, up, center_lat, center_lon, scale, mp, mapdata_color(mp->name));
+    draw_map(up, center_lat, center_lon, scale, mp, mapdata_color(mp->name));
   }
 }
 
@@ -1175,7 +1064,7 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
     double lat1 = extramaps[i].cords[0][1];
     if (check_within_latlon(1, 1, lat1, get_gps_lat(), lon1, get_gps_lon())) {
       int col = mapdata_color(extramaps[i].name);
-      draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &extramaps[i], col);
+      draw_map(up, center_lat, center_lon, scale, &extramaps[i], col);
         }
   }
 }
@@ -1389,9 +1278,6 @@ void draw_replay_indicator(){
 }
 
 // backscreen スプライトを白でクリアする（毎フレームの描画前に呼ぶ）。
-void clean_backscreen(){
-  backscreen.fillScreen(COLOR_WHITE);
-}
 // VSIスプライト（5×240px）を鉛直速度に応じて描画する。
 // 中心 Y=120 が 0 m/s の基準線（白）。上昇=緑バー、下降=シアンバー。
 // 不感域なし。最大バー長 120px（±1.5 m/s で振り切り）。
@@ -1771,20 +1657,23 @@ void draw_headingupmode() {
 
 // mapdata 構造体が持つポリゴン座標列を backscreen に折れ線（drawLine）で描画する。
 // 各座標を latLonToXY() でスクリーン座標に変換し、両端いずれかが画面内の辺のみ描画する（画面外スキップ最適化）。
-void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, double center_lon, float mapScale, const mapdata* mp, uint16_t color) {
-  int mapsize = mp->size;
-  cord_tft points[mapsize];
+void draw_map(float mapUpDirection, double center_lat, double center_lon, float mapScale, const mapdata* mp, uint16_t color) {
+  if (mp->size < 2) return;
 
-  for (int i = 0; i < mapsize; i++) {
-    float lat1 = mp->cords[i][1];  // Example latitude
-    float lon1 = mp->cords[i][0];  // Example longitude
-    points[i] = latLonToXY(lat1, lon1, center_lat, center_lon, mapScale, mapUpDirection);
-  }
-
-  for (int i = 0; i < mapsize - 1; i++) {
-    if (!points[i].isOutsideTft() || !points[i + 1].isOutsideTft()) {
-      draw_clipped_line(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, color);
-    }
+  // 隣り合う 2 点しか使わないので、直前の点だけ持って回す。
+  // 以前は全点を可変長配列（cord_tft points[mapsize]）へ展開していたが、
+  // SD の mapdata.csv は点数に上限が無いため、大きなポリゴンを入れると
+  // スタックを圧迫した（8 Byte/点。5000 点なら 40KB）。
+  cord_tft prev = latLonToXY(mp->cords[0][1], mp->cords[0][0],
+                             center_lat, center_lon, mapScale, mapUpDirection);
+  for (int i = 1; i < mp->size; i++) {
+    cord_tft cur = latLonToXY(mp->cords[i][1], mp->cords[i][0],
+                              center_lat, center_lon, mapScale, mapUpDirection);
+    // 画面外の判定は draw_clipped_line に任せる。
+    // 以前は「両端とも画面外なら描かない」としていたが、画面を横切る長い線分は
+    // 両端とも画面外になるため、高倍率で辺が消えていた。
+    draw_clipped_line(prev.x, prev.y, cur.x, cur.y, color);
+    prev = cur;
   }
 }
 
@@ -2961,16 +2850,30 @@ void draw_gpsdetail(int page) {
 // フラッシュ（ROM）に書き込まれた地図ポリゴンと SD から読み込んだ追加マップの一覧を表示する。
 // "MAPLIST FLSH:N/SD:M (page/total)" 形式でヘッダーに表示。
 // フラッシュマップはページ 0 に全表示、SD マップは 30 エントリ / ページでページング表示。
-// MAPLIST ページ 0 の先頭に出す OSM 内訳の行数（枠計算に使う）
-// 日付1 + 合計1 + LOD2 + 見出し1 + クラス2 = 7 行
-#define MAPLIST_OSM_ROWS 7
+// MAPLIST の 1 ページに入る行数。
+// backscreen(240px) を y=40 に貼るので、10px/行で 24 行が上限。
+// 以前は 30 行想定で、SD 地図が増えると下がはみ出して切れていた。
+#define MAPLIST_ROWS 24
+
+// ページ 0 の先頭に出す OSM 内訳が何行になるかを返す。
+// 実際の描画（下の draw_maplist_mode）と同じ数え方をすること。
+// 固定値にすると、収録クラス数が変わったときに枠計算とズレる。
+static int maplist_osm_rows() {
+  int cls = 0;
+  for (int c = 0; c < VM_CLASS_COUNT; c++) if (vm_class_points[c] != 0) cls++;
+  return 2                            // 日付 + 合計
+       + (VM_LOD_COUNT + 1) / 2       // LOD は 2 個ずつ 1 行
+       + 1                            // "pts x1000:" の見出し
+       + (cls + 2) / 3;               // クラスは 3 個ずつ 1 行
+}
 
 void draw_maplist_mode(int maplist_page) {
 
   mapdata** mapdatas = flashmaps;   // navdata.cpp の共有配列（draw_FlashMaps と同じもの）
   int sizeof_mapflash = flashmap_count;
 
-  int pagetotal = 1 + (MAPLIST_OSM_ROWS + sizeof_mapflash + mapdata_count) / 30;
+  const int osm_rows = maplist_osm_rows();
+  int pagetotal = 1 + (osm_rows + sizeof_mapflash + mapdata_count) / MAPLIST_ROWS;
   int pagenow = maplist_page % pagetotal;
 
   // ヘッダー: スプライト経由で描画（tft 直接描画によるちかちかを防ぐ）
@@ -3035,12 +2938,12 @@ void draw_maplist_mode(int maplist_page) {
   // 終端を決めずに mapdata_count まで回すと、どのページでも残り全件を描いてしまい
   // ページを送っても同じ内容が続いて見える（添字自体は範囲内なので表示上の問題のみ）。
   int sd_start_index = 0;
-  int sd_rows = 30;                  // 1 ページあたりの行数
+  int sd_rows = MAPLIST_ROWS;
   if (pagenow > 0) {
-    sd_start_index = 30 * pagenow - sizeof_mapflash - MAPLIST_OSM_ROWS;
+    sd_start_index = MAPLIST_ROWS * pagenow - sizeof_mapflash - osm_rows;
     if (sd_start_index < 0) sd_start_index = 0;
   } else {
-    sd_rows = 30 - sizeof_mapflash - MAPLIST_OSM_ROWS;  // ページ 0 は OSM 内訳とフラッシュ地図の分だけ枠が減る
+    sd_rows = MAPLIST_ROWS - sizeof_mapflash - osm_rows;  // ページ 0 は OSM 内訳とフラッシュ地図の分だけ枠が減る
     if (sd_rows < 0) sd_rows = 0;
   }
   int sd_end_index = sd_start_index + sd_rows;

@@ -15,7 +15,7 @@
 #define RELEASE
 
 #define BUILDDATE 20260817
-#define BUILDVERSION "0.93"
+#define BUILDVERSION "0.931"
 #define VERSION_TEXT "Version 6"
 
 
