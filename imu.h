@@ -88,6 +88,17 @@ float get_imu_mag_accuracy_deg();                                       // ヘ�
 float get_imu_grv_hz();   // GAME_ROTATION_VECTOR
 float get_imu_lacc_hz();  // LINEAR_ACCELERATION
 float get_imu_rv_hz();    // ROTATION_VECTOR
+// 加速度サンプルの鮮度不足で Kalman predict をスキップした累計回数。
+// 正常時は 0 のまま。増えていれば BNO085 のレポート配信が滞っている。
+uint32_t get_imu_lacc_stale_skips();
+// 生ログ用レポートの受信レート [Hz]（設定値どおり出ていれば配信飢餓は起きていない）
+float get_imu_gyro_hz();   // GYROSCOPE_CALIBRATED
+float get_imu_accel_hz();  // ACCELEROMETER
+float get_imu_mag_hz();    // MAGNETIC_FIELD_CALIBRATED
+
+// 生ジャイロ・生加速度の直近値（設定画面の IMU/ESKF ページで実測値を見るため）
+void get_imu_raw_gyro(float g[3]);   // [rad/s]
+void get_imu_raw_accel(float a[3]);  // [m/s²]
 bool  get_imu_rv_updated(); // ROTATION_VECTOR 新着フラグ（読み出しでクリア）
 
 // ---- Kalman パラメーターの動的変更（実行時チューニング用）----

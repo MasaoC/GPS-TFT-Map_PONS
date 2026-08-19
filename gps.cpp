@@ -19,6 +19,8 @@
 #include "display_tft.h"
 #include "airdata.h"
 #include "imu.h"
+#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
 extern volatile bool userled_forced_on;
@@ -156,6 +158,11 @@ static uint32_t ubx_hacc_mm      = 0;     // 水平精度推定値（NAV-PVT byt
 static uint32_t ubx_vacc_mm      = 0;     // 垂直精度推定値（NAV-PVT bytes 44-47、mm 単位）
 static uint32_t ubx_sacc_mmps    = 0;     // 速度精度推定値（NAV-PVT bytes 68-71、mm/s 単位）
 static float    ubx_veld_mps     = 0.0f;  // 垂直速度（NAV-PVT velD bytes 56-59、上昇正、m/s）
+// NED 水平速度。姿勢 ESKF の速度観測に使う（旋回中の遠心加速度を分離して真の重力方向を得るため）。
+// 符号は UBX の定義どおり N/E 正のまま保持する（velD だけは従来仕様に合わせて上昇正へ反転済み）。
+static float    ubx_veln_mps     = 0.0f;  // 北向き速度（NAV-PVT velN bytes 48-51、m/s）
+static float    ubx_vele_mps     = 0.0f;  // 東向き速度（NAV-PVT velE bytes 52-55、m/s）
+static uint32_t ubx_itow_ms      = 0;     // GPS 週内時刻（NAV-PVT iTOW bytes 0-3、ms）
 static bool     ubx_gnssFixOK    = false; // NAV-PVT flags bit0: gnssFixOK（GNSS フィックスが有効かつ品質 OK）
 
 // UBX-NAV-PVT (class=0x01, id=0x07, payload=92 bytes) ハンドラー
@@ -207,13 +214,32 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   ubx_gnssFixOK = gnssFixOK;
 
   // 速度（mm/s）・方向（1e-5 度）
+  // velN (bytes 48-51) / velE (bytes 52-55): NED 水平速度。北・東が正。
   // velD (bytes 56-59): NED Down 方向（正=下降）→ 上昇正に反転して保存
+  int32_t velN    = (int32_t)(p[48]|(p[49]<<8)|(p[50]<<16)|(p[51]<<24));
+  int32_t velE    = (int32_t)(p[52]|(p[53]<<8)|(p[54]<<16)|(p[55]<<24));
   int32_t velD    = (int32_t)(p[56]|(p[57]<<8)|(p[58]<<16)|(p[59]<<24));
   int32_t gSpeed  = (int32_t)(p[60]|(p[61]<<8)|(p[62]<<16)|(p[63]<<24));
   int32_t headMot = (int32_t)(p[64]|(p[65]<<8)|(p[66]<<16)|(p[67]<<24));
+  ubx_veln_mps  = velN * 1e-3f;   // mm/s → m/s（北正）
+  ubx_vele_mps  = velE * 1e-3f;   // mm/s → m/s（東正）
   ubx_veld_mps  = -velD * 1e-3f;  // mm/s 下降正 → m/s 上昇正
   // 速度精度推定値（bytes 68-71: sAcc mm/s）
   ubx_sacc_mmps = (uint32_t)(p[68]|(p[69]<<8)|(p[70]<<16)|((uint32_t)p[71]<<24));
+  // GPS 週内時刻（bytes 0-3: iTOW ms）。生 IMU ログとの時刻対応付けに使う。
+  ubx_itow_ms   = (uint32_t)(p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24));
+
+  // 姿勢 ESKF のオフライン開発用に、GNSS 速度を生 IMU ログへ同じ時間軸で記録する。
+  // velD はここでは UBX 原義（下降正）に戻して記録し、PC 側で NED をそのまま扱えるようにする。
+  imulog_push(IMULOG_ID_GNSSVEL, ubx_itow_ms, IMULOG_ACC_NONE,
+              ubx_veln_mps, ubx_vele_mps, velD * 1e-3f, ubx_sacc_mmps * 1e-3f);
+
+  // 姿勢 ESKF の速度観測。3D フィックス時のみ渡す（品質の最終判断は sAcc で ESKF 側が行う）。
+  // リプレイ中は CSV 由来の値なので渡さない。
+  if (gnssFixOK && fixType >= 3 && !getReplayMode()) {
+    attitude_on_gnss_velocity(ubx_veln_mps, ubx_vele_mps, velD * 1e-3f,
+                              ubx_sacc_mmps * 1e-3f);
+  }
 
   // pDOP（0.01 スケール）
   uint16_t pDOP = (uint16_t)(p[76] | (p[77]<<8));
@@ -640,6 +666,9 @@ uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度�
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
+float    get_gps_veln_mps()   { return ubx_veln_mps; }  // GNSS 北向き速度（m/s）
+float    get_gps_vele_mps()   { return ubx_vele_mps; }  // GNSS 東向き速度（m/s）
+uint32_t get_gps_itow_ms()    { return ubx_itow_ms; }   // GPS 週内時刻（ms）
 bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
@@ -1000,8 +1029,55 @@ extern unsigned long last_gps_time;  // 実体は下方で定義（apply_replay_
 // リプレイ: CSV 1行分の内容を GPS の内部状態に反映する。
 // 通常モードで handle_navpvt() が UBX-NAV-PVT から行っていることと同じ内容を CSV から行う。
 // CSV に列が無い項目（v5 データの高度など）は更新せず、直前の値／実センサ値のままにする。
+// 姿勢ログ由来の値。実センサーではないので attitude_* とは別に保持する。
+static float    replay_roll_deg  = 0.0f;
+static float    replay_pitch_deg = 0.0f;
+static float    replay_yaw_deg   = 0.0f;
+static float    replay_pitch_avg = 0.0f;
+static float    replay_roll_trim = 0.0f;
+static float    replay_yaw_acc95 = 0.0f;
+static uint16_t replay_att_have  = 0;   // RHAVE_ATT* のビット
+
+// リプレイ中のロール・ピッチ。姿勢ログが無い日は false（表示しない）。
+bool get_replay_attitude(float &roll, float &pitch) {
+  if (!(replay_att_have & RHAVE_ATT)) return false;
+  roll  = replay_roll_deg;
+  pitch = replay_pitch_deg;
+  return true;
+}
+
+// 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true。
+// 旧 euler/ は BNO085 由来で、当時これらは画面に出ていなかったので再現もしない。
+bool get_replay_pitch_avg(float &avg) {
+  if (!(replay_att_have & RHAVE_ATT_AVG)) return false;
+  avg = replay_pitch_avg;
+  return true;
+}
+bool get_replay_roll_trim(float &trim) {
+  if (!(replay_att_have & RHAVE_ATT_TRIM)) return false;
+  trim = replay_roll_trim;
+  return true;
+}
+bool get_replay_yaw(float &yaw, float &acc95) {
+  if (!(replay_att_have & RHAVE_ATT_YAW)) return false;
+  yaw   = replay_yaw_deg;
+  acc95 = replay_yaw_acc95;
+  return true;
+}
+
 static void apply_replay_row(const ReplayRow* row) {
   last_gps_time = millis();
+
+  // --- 姿勢（姿勢ログがある日のみ）---
+  if (row->have & RHAVE_ATT) {
+    replay_roll_deg  = row->roll;
+    replay_pitch_deg = row->pitch;
+    replay_yaw_deg   = row->yaw;
+    replay_pitch_avg = row->pitch_avg;
+    replay_roll_trim = row->roll_trim;
+    replay_yaw_acc95 = row->yaw_acc95;
+    replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG | RHAVE_ATT_TRIM);
+  }
 
   // --- 位置 ---
   if (stored_latitude != row->lat || stored_longitude != row->lon)
@@ -1078,6 +1154,7 @@ static const demo_site_def DEMO_SITES[DEMO_SITE_COUNT] = {
   { "KASAOKA",   KASAOKA_LAT,   KASAOKA_LON,   250 },
   { "FUJIGAWA",  FUJIGAWA_LAT,  FUJIGAWA_LON,  190 },
   { "TOKYO",     SHINURA_LAT,   SHINURA_LON,   220 },
+  { "OSAKA",     OSAKA_LAT,     OSAKA_LON,     240 },
 };
 
 demo_site_t get_demo_site() {
@@ -1222,6 +1299,20 @@ void set_replaymode(bool replaymode){
   // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;
+  replay_att_have   = 0;      // 前のファイルの姿勢を残さない
+
+  // ★重要: 再生で書き込まれた「過去の日時」を捨てる。
+  // apply_replay_row() は CSV の日時を ubx_* にそのまま入れるため、リプレイを
+  // 抜けた直後は日付が再生した飛行の日のままになる。屋内など GPS フィックスが
+  // 無い場所ではこれが更新されないので、get_jst_now() が過去の日付を返し続け、
+  // 各種ログ（imu_replaydata / imuraw / 飛行CSV）が「その日のファイル」へ
+  // 机の上の値を追記してしまう。実際に imu_replaydata/20260726.txt が
+  // 実機で生成され、2026 大会のリプレイ再現を壊した。
+  // 本物の NAV-PVT が届くまで日時は無効とする。
+  ubx_date_valid = false;
+  ubx_time_valid = false;
+  ubx_pvt_valid  = false;
+  ubx_gnssFixOK  = false;   // 書き込み側の保険（get_gps_gnssFixOK()）も一緒に落とす
 }
 // GPS モジュールからの Serial データを受信・解析するメインループ処理。
 // 描画の途中でも複数回呼ばれることで、GPS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。

@@ -29,8 +29,9 @@
       TASK_BROWSE_REPLAY, // リプレイ選択画面用の CSV ファイル列挙
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
-      TASK_LOG_EULER,
-      TASK_LOAD_LOGO      // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
+      TASK_LOG_IMUREPLAY,
+      TASK_LOAD_LOGO,     // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
+      TASK_FLUSH_IMULOG   // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
   } TaskType;
 
 
@@ -66,12 +67,21 @@
     #define RHAVE_DATE   0x0040
     #define RHAVE_NUMSAT 0x0080
     #define RHAVE_VOLT   0x0100
+    // 姿勢ログ（imu_replaydata/ または euler/）から読めた項目。
+    // RHAVE_ATT 以外は ESKF の結果を持つ新形式にしか無い。
+    #define RHAVE_ATT      0x0200   // ロール・ピッチ
+    #define RHAVE_ATT_YAW  0x0400   // ヨー + ヨー精度95%値
+    #define RHAVE_ATT_AVG  0x0800   // 30 秒平均ピッチ
+    #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
 
     // CSV 1行分のリプレイデータ。Core1 が生成し Core0 が消費する。
     typedef struct {
         double   lat, lon;
         float    gs, ttrack;
         float    gnss_altitude, kf_altitude, kf_vspeed, pressure, voltage;
+        // 姿勢ログ由来の値 [度]。有効かどうかは RHAVE_ATT* のビットで判断する。
+        float    roll, pitch, yaw;
+        float    pitch_avg, roll_trim, yaw_acc95;
         int      numsat;
         uint16_t have;   // RHAVE_* のビットマスク
         int      year, month, day, hour, minute, second, centisecond;
@@ -93,6 +103,12 @@
     void init_replay();
     void load_replay();
     bool browse_replay_files(int start_index);
+    // 一覧の先頭に並ぶ固定項目数（3〜REPLAY_FIXED_COUNT）。
+    // 大会データ（2025/2026）は SD 上に実在するときだけ数に入る。
+    int  replay_menu_fixed_count();
+    // 大会データが SD 上にあるか。browse_replay_files() が更新する。
+    extern volatile bool replay_have_2025;
+    extern volatile bool replay_have_2026;
     int  replay_menu_total_items();
     int  replay_menu_page_of(int index);
     int  replay_menu_page_count();
@@ -115,7 +131,13 @@
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
     void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
-    void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
+    // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
+    // pitch_avg は 30 秒平均が溜まるまで無効。valid=false のときは空欄で書く。
+    void save_imu_replaydata(int h, int m, int s, int cs,
+                             float roll, float pitch, float yaw,
+                             float pitch_avg, bool pitch_avg_valid,
+                             float roll_trim, float yaw_acc95,
+                             const char* filename, int year, int month, int day);
 
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
@@ -138,6 +160,20 @@
     void getKfQBias(char* buffer, size_t bufferSize);
     void setKfR(const char* value);
     void getKfR(char* buffer, size_t bufferSize);
+    // 機体ゼロ点（マウント基準）のオフセット [度]。据え付け後に一度較正して永続化する。
+    void setLevelRoll(const char* value);
+    void getLevelRoll(char* buffer, size_t bufferSize);
+    void setLevelPitch(const char* value);
+    void getLevelPitch(char* buffer, size_t bufferSize);
+    // 較正時に申告するピッチ角（IMU/ESKF 画面の SET PITCH 行の値）
+    void setPitchTarget(const char* value);
+    void getPitchTarget(char* buffer, size_t bufferSize);
+    // バンク角警告の有効/無効
+    void setBankWarn(const char* value);
+    void getBankWarn(char* buffer, size_t bufferSize);
+    // 直進中のロール自動トリムの有効/無効
+    void setAutoRollTrim(const char* value);
+    void getAutoRollTrim(char* buffer, size_t bufferSize);
     bool loadSettings();
     bool saveSettings();
 
@@ -178,12 +214,20 @@
               int priority;
               int min_volume;  // 最低保証ボリューム（0=制限なし）
           }playWavArgs;
-          struct {                           // For saveEuler
+          struct {                           // For save_imu_replaydata
               int hour, minute, second, centisecond;
               int year, month, day;          // ファイルタイムスタンプ設定用
               float roll, pitch, yaw;
-              char filename[24];             // "euler/20260316.txt" = 19文字
-          } logEulerArgs;
+              float pitch_avg, roll_trim, yaw_acc95;
+              bool  pitch_avg_valid;
+              // "imu_replaydata/20260316.txt" = 27文字 + NUL。24 だと溢れるので 32。
+              char filename[32];
+          } imuReplayArgs;
+          struct {                           // For imulog_write_buffer
+              int  bufidx;                   // 書き出す二重バッファの索引（0 or 1）
+              int  year, month, day, hour, minute, second;  // ファイルタイムスタンプ用
+              char filename[24];             // "imuraw/20260316.bin" = 19文字
+          } imuLogArgs;
       };
   } Task;
 
@@ -205,12 +249,20 @@
   Task createBrowseReplayTask(int start_index);
   Task createLoadReplayTask();
   Task createInitReplayTask();
-  Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
+  Task createLogImuReplayTask(int h, int m, int s, int cs,
+                              float roll, float pitch, float yaw,
+                              float pitch_avg, bool pitch_avg_valid,
+                              float roll_trim, float yaw_acc95,
+                              const char* filename, int year, int month, int day);
   Task createLoadLogoTask();
+  Task createFlushImuLogTask(int bufidx, const char* filename,
+                             int year, int month, int day, int hour, int minute, int second);
 
   // Functions to handle the queue (declarations)
-  void enqueueTask(Task task);
-  void enqueueTaskWithAbortCheck(Task task);
+  // 戻り値: キューに入れられたら true、満杯で捨てたら false。
+  // 捨てられたタスクは実行されない。後始末が要る呼び出し側は戻り値を見ること。
+  bool enqueueTask(Task task);
+  bool enqueueTaskWithAbortCheck(Task task);
   bool dequeueTask(Task *task);
 
   bool good_sd();

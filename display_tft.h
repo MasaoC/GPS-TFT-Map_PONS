@@ -50,7 +50,8 @@
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_REPLAY,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE
+    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,
+    SETTING_IMU_DETAIL,SETTING_LEVEL_CALIB
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -116,7 +117,36 @@ void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
 
 
+// IMU / ESKF 画面（ページ1）のメニュー項目。
+// display_tft.cpp の描画と GPS_TFT_map.ino の doublePressCallback() で共有する。
+#define IMU_MENU_SETPITCH 0
+#define IMU_MENU_APPLY    1
+#define IMU_MENU_BANKWARN 2
+#define IMU_MENU_AUTOROLL 3
+#define IMU_MENU_NEXTPAGE 4
+#define IMU_MENU_EXIT     5
+#define IMU_MENU_COUNT    6
+void draw_imudetail(int page);
 void push_backscreen();
+// 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
+// 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。
+// push_backscreen() の直前に呼ぶこと（バックスクリーンに合成するのでちらつかない）。
+void draw_eskf_attitude();
+// 自機アイコンのすぐ下に ESKF のヨー角（真方位 3 桁）を描く。
+// 黒＝信頼できる（アイコンも機首方向に回っている）、グレー＝信頼できない。
+// draw_eskf_attitude() より後に呼ぶこと（TRACKUP では表示位置が近いため）。
+void draw_eskf_yaw();
+// ESKF の姿勢を画面に出してよいか。リプレイ中は IMU 生データ（.bin）を再生しない
+// ＝ 実機（机の上）の姿勢しか無いので、ロール・ピッチ・ヨーはまとめて非表示にする。
+bool eskf_display_enabled();
+// ESKF のヨーを機首方位として信用してよいか（95%値 < ESKF_YAW_TRUST_95_DEG）。
+// リプレイ中は eskf_display_enabled() が false なので常に false になる。
+bool eskf_yaw_reliable();
+#ifdef DEBUG_ESKF
+// DEBUG_ESKF 有効時のみ、比較用の詳細（BNO085 の姿勢・ヨー・収束状態）を上部に足す。
+// draw_eskf_attitude() の表示位置は変えないこと。
+void draw_eskf_debug();
+#endif
 void draw_vsi();
 
 

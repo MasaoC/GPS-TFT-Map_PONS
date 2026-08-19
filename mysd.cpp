@@ -23,6 +23,7 @@
 //#define DISABLE_FS_H_WARNING
 #include "SdFat.h"
 #include "sound.h"
+#include "attitude.h"
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -99,7 +100,12 @@ SDSetting settings[] = {
   {"upward_mode",     setUpwardMode,     getUpwardMode},
   {"kf_q_vel",        setKfQVel,         getKfQVel},
   {"kf_q_bias",       setKfQBias,        getKfQBias},
-  {"kf_R",            setKfR,            getKfR}
+  {"kf_R",            setKfR,            getKfR},
+  {"level_roll",      setLevelRoll,      getLevelRoll},
+  {"level_pitch",     setLevelPitch,     getLevelPitch},
+  {"pitch_target",    setPitchTarget,    getPitchTarget},
+  {"bank_warning",    setBankWarn,       getBankWarn},
+  {"auto_roll_trim",  setAutoRollTrim,   getAutoRollTrim}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -343,6 +349,52 @@ void getKfR(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_R());
 }
 
+// ---- 機体ゼロ点（マウント基準）のオフセット [度] ----
+// マウント形状は固定なので、据え付け後に一度較正すれば以後は使い回せる。
+// 設定画面の "Set Level 0deg" で更新し、ここで SD に永続化する。
+void setLevelRoll(const char* value) {
+  float r, p;
+  attitude_get_level_offset(r, p);
+  attitude_set_level_offset(atof(value), p);
+}
+void getLevelRoll(char* buffer, size_t bufferSize) {
+  float r, p; attitude_get_level_offset(r, p);
+  snprintf(buffer, bufferSize, "%.3f", r);
+}
+void setLevelPitch(const char* value) {
+  float r, p;
+  attitude_get_level_offset(r, p);
+  attitude_set_level_offset(r, atof(value));
+}
+
+// 較正時に申告するピッチ角（IMU/ESKF 画面の SET PITCH 行の値）。
+// 本番プラットホームは -3.5 度など決まった値を使うので、
+// 毎回選び直さずに済むよう保存する。
+void setPitchTarget(const char* value) { attitude_set_pitch_target(atof(value)); }
+
+// バンク角警告の有効/無効（IMU/ESKF 画面で切替）
+void setBankWarn(const char* value) {
+  extern volatile bool bank_warning_enabled;
+  bank_warning_enabled = (atoi(value) != 0);
+}
+void getBankWarn(char* buffer, size_t bufferSize) {
+  extern volatile bool bank_warning_enabled;
+  snprintf(buffer, bufferSize, "%d", bank_warning_enabled ? 1 : 0);
+}
+
+// 直進中のロール自動トリムの有効/無効
+void setAutoRollTrim(const char* value) { attitude_set_roll_trim_enabled(atoi(value) != 0); }
+void getAutoRollTrim(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", attitude_get_roll_trim_enabled() ? 1 : 0);
+}
+void getPitchTarget(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.1f", attitude_get_pitch_target());
+}
+void getLevelPitch(char* buffer, size_t bufferSize) {
+  float r, p; attitude_get_level_offset(r, p);
+  snprintf(buffer, bufferSize, "%.3f", p);
+}
+
 void getDestination(char* buffer, size_t bufferSize) {
   if(bufferSize <= 0)
     return;
@@ -533,9 +585,9 @@ void removeDuplicateTask(TaskType type) {
 // キュー内の同種タスクを削除してから追加する。
 // 以前は地図画像ロードの中断処理も担っていたが、
 // ベクタ地図への移行で地図画像ロードが無くなったため、重複排除だけが残っている。
-void enqueueTaskWithAbortCheck(Task newTask) {
+bool enqueueTaskWithAbortCheck(Task newTask) {
   removeDuplicateTask(newTask.type);
-  enqueueTask(newTask);
+  return enqueueTask(newTask);
 }
 
 extern volatile bool userled_forced_on;  // GPS_TFT_map.ino で定義
@@ -543,12 +595,18 @@ extern volatile bool userled_forced_on;  // GPS_TFT_map.ino で定義
 // タスクをリングバッファに追加する（ミューテックス保護）。
 // バッファが満杯の場合は追加せずにスキップする（タスクロスト）。
 // タスクロスト時は USERLED_PIN を永続点灯してエラーを通知する。
-void enqueueTask(Task task) {
+//
+// 戻り値: キューに入れられたら true、満杯で捨てたら false。
+// ※ 捨てられたタスクは二度と実行されない。後始末が必要な呼び出し側
+//   （生 IMU ログのバッファ解放など）は必ず戻り値を確認すること。
+bool enqueueTask(Task task) {
+  bool queued = false;
   mutex_enter_blocking(&taskQueueMutex);
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
   if (nextTail != taskQueue.head) {  // キューに空きがある場合だけ追加
     taskQueue.tasks[taskQueue.tail] = task;
     taskQueue.tail = nextTail;
+    queued = true;
   } else {
     userled_forced_on = true;         // 永続点灯フラグを立てる（loop_userled がフラッシュで消さないよう保護）
     digitalWrite(USERLED_PIN, HIGH);  // キュー満杯によるタスクロスト → LED 永続点灯
@@ -556,6 +614,7 @@ void enqueueTask(Task task) {
     Serial.println("ERR: task queue full, task dropped");
   }
   mutex_exit(&taskQueueMutex);
+  return queued;
 }
 
 // タスクをリングバッファから取り出す（ミューテックス保護）。
@@ -932,6 +991,12 @@ bool replay_pop(ReplayRow* out) {
   out->year = src->year;             out->month = src->month;   out->day = src->day;
   out->hour = src->hour;             out->minute = src->minute; out->second = src->second;
   out->centisecond = src->centisecond;
+  // 姿勢ログ由来の値。ここに書き忘れると have だけ立って値がスタックのゴミになる
+  // （2026 大会リプレイでロールが +168 になった不具合の原因）。
+  // ReplayRow にメンバを足したら必ずこの関数にも足すこと。
+  out->roll = src->roll;             out->pitch = src->pitch;
+  out->yaw = src->yaw;               out->pitch_avg = src->pitch_avg;
+  out->roll_trim = src->roll_trim;   out->yaw_acc95 = src->yaw_acc95;
   replay_tail = (replay_tail + 1) & (REPLAY_BUF_SIZE - 1);
   return true;
 }
@@ -994,8 +1059,178 @@ static void replay_parse_header(const char* header) {
 
 // リプレイ再生をファイル先頭から開始（またはループ再生のため再開）する。
 // ファイルを開き直し、ヘッダから列マップを構築し、リングバッファを空にする。
+// ===== リプレイ時の姿勢（imu_replaydata / euler フォルダ）=====
+// 飛行 CSV には姿勢が入っていないので、同じ日の姿勢ログから拾って ReplayRow に載せる。
+// 探す順番:
+//   1. imu_replaydata/YYYYMMDD.txt … ESKF の結果（画面に出ていた値そのもの）
+//   2. euler/YYYYMMDD.txt          … 旧形式。BNO085 由来で 4 列しかない
+//   3. どちらも無ければ非表示
+// 旧形式では 30 秒平均・自動トリム・ヨー精度が存在しないので、それらは表示しない
+// （当時 ESKF が動いていなかったので、画面にも出ていなかった）。
+//
+// 列はヘッダ行の列名で解釈する。ヘッダが無い/読めない古いファイルのために、
+// 見つからなければ time,roll,pitch,yaw の固定順とみなすフォールバックを持つ。
+enum { ATTCOL_TIME = 0, ATTCOL_ROLL, ATTCOL_PITCH, ATTCOL_YAW,
+       ATTCOL_AVG, ATTCOL_TRIM, ATTCOL_YAWACC, ATTCOL_COUNT };
+static const char* const att_col_names[ATTCOL_COUNT] = {
+  "time", "roll", "pitch", "yaw", "pitch_avg", "roll_trim", "yaw_acc95"
+};
+
+static FsFile   replayAttFile;
+// ヘッダ未解析のまま replay_att_is_new_format() が真になると、旧形式なのに
+// 30 秒平均などを表示してしまう。0 初期化ではなく必ず -1 で始める。
+static int8_t   att_col[ATTCOL_COUNT] = { -1, -1, -1, -1, -1, -1, -1 };
+static bool     replay_att_tried = false;   // 開こうと試みたか（毎行 open を叩かないため）
+static bool     replay_att_ok    = false;   // ファイルを開けたか
+static bool     replay_att_eof   = false;
+static uint32_t replay_att_ms    = 0;       // 保持中サンプルの時刻（0時からの ms）
+static float    replay_att_roll  = 0.0f;
+static float    replay_att_pitch = 0.0f;
+static float    replay_att_yaw   = 0.0f;
+static float    replay_att_avg   = 0.0f;
+static float    replay_att_trim  = 0.0f;
+static float    replay_att_yawacc = 0.0f;
+static bool     replay_att_has_avg = false;  // その行に 30 秒平均が入っていたか
+
+// ヘッダ行から att_col[] を作る。1 列も一致しなければ旧形式の固定順とみなす。
+static void replay_att_parse_header(const char* header) {
+  for (int i = 0; i < ATTCOL_COUNT; i++) att_col[i] = -1;
+
+  int index = 0;
+  const char* p = header;
+  while (p != nullptr && *p != '\0') {
+    const char* e = strchr(p, ',');
+    char token[16];
+    size_t len = (e == nullptr) ? strlen(p) : (size_t)(e - p);
+    if (len >= sizeof(token)) len = sizeof(token) - 1;
+    memcpy(token, p, len);
+    token[len] = '\0';
+    for (int c = 0; c < ATTCOL_COUNT; c++) {
+      if (att_col[c] == -1 && replay_name_match(token, att_col_names[c])) {
+        att_col[c] = index;
+        break;
+      }
+    }
+    index++;
+    p = (e == nullptr) ? nullptr : e + 1;
+  }
+
+  // ヘッダが無いファイル（1 行目からデータ）への保険
+  if (att_col[ATTCOL_TIME] < 0 || att_col[ATTCOL_ROLL] < 0 || att_col[ATTCOL_PITCH] < 0) {
+    att_col[ATTCOL_TIME]  = 0;
+    att_col[ATTCOL_ROLL]  = 1;
+    att_col[ATTCOL_PITCH] = 2;
+    att_col[ATTCOL_YAW]   = 3;
+    att_col[ATTCOL_AVG]   = -1;
+    att_col[ATTCOL_TRIM]  = -1;
+    att_col[ATTCOL_YAWACC] = -1;
+  }
+}
+
+// ESKF の結果を持つ新形式か（ヨーを機首方位として表示してよいか）の判定に使う。
+// 旧 euler は BNO085 のヨーで、実測で真方位から -30〜-65 度ずれていたため表示しない。
+static bool replay_att_is_new_format() { return att_col[ATTCOL_YAWACC] >= 0; }
+
+// 目的時刻の手前までファイル位置を一気に飛ばす（位置での二分探索）。
+// 姿勢ログは 1 日分を追記し続けるので 5Hz なら 1 日 10MB を超える。飛行 CSV が
+// 午後から始まる場合、先頭から順に読むと Core1 が数秒ブロックして SD 書き込みと
+// WAV 再生を巻き添えにする。行長がほぼ一定なので位置で二分探索して近くまで跳ぶ。
+static void replay_att_fastseek(uint32_t tod_ms) {
+  uint32_t lo = 0, hi = (uint32_t)replayAttFile.fileSize();
+  char line[96];
+  char buf[24];
+  // 残り 4KB（約80行）まで詰めたら打ち切り、あとは通常の逐次読みに任せる
+  for (int it = 0; it < 24 && (hi - lo) > 4096; it++) {
+    uint32_t mid = lo + (hi - lo) / 2;
+    if (!replayAttFile.seekSet(mid)) break;
+    replayAttFile.fgets(line, sizeof(line));            // 行の途中に着地するので 1 行捨てる
+    if (replayAttFile.fgets(line, sizeof(line)) <= 0) { hi = mid; continue; }
+    if (!replay_get_field(line, att_col[ATTCOL_TIME], buf, sizeof(buf))) { hi = mid; continue; }
+    uint32_t ms; int h, m, sec, cs;
+    // 時刻が読めない行は前後関係の判断材料にならない。lo を進めると目的時刻を
+    // 通り越して行き過ぎるので、必ず狭める側（hi）に倒す。
+    if (!replay_parse_time(buf, &ms, &h, &m, &sec, &cs)) { hi = mid; continue; }
+    if (ms < tod_ms) lo = mid; else hi = mid;
+  }
+  replayAttFile.seekSet(lo);
+  if (lo > 0) replayAttFile.fgets(line, sizeof(line));  // 行頭とは限らないので 1 行捨てる
+}
+
+// その日の姿勢ログを開く。新形式 → 旧形式の順に探し、無ければ静かに諦める。
+// tod_ms は再生を始める時刻。ここまで一気に飛ばしてから逐次読みに入る。
+static void replay_att_open(int y, int mo, int d, uint32_t tod_ms) {
+  if (replay_att_tried) return;
+  replay_att_tried = true;
+  if (y < 2000 || mo < 1 || mo > 12 || d < 1 || d > 31) return;
+
+  char fname[32];
+  const char* dirs[2] = { IMU_REPLAYDATA_DIR, IMU_REPLAYDATA_LEGACY_DIR };
+  for (int k = 0; k < 2; k++) {
+    snprintf(fname, sizeof(fname), "%s/%04d%02d%02d.txt", dirs[k], y, mo, d);
+    if (!SD.exists(fname)) continue;
+    replayAttFile = SD.open(fname, FILE_READ);
+    if (!replayAttFile) continue;
+
+    // 1 行目 = ヘッダ。列名から列マップを作る（無ければ固定順にフォールバック）。
+    char header[96];
+    if (replayAttFile.fgets(header, sizeof(header)) <= 0) {
+      replayAttFile.close();
+      continue;
+    }
+    replay_att_parse_header(header);
+    replay_att_ok = true;
+    replay_att_fastseek(tod_ms);
+    log_sdf("REPLAY att: %s%s", fname, replay_att_is_new_format() ? " (ESKF)" : " (legacy)");
+    return;
+  }
+}
+
+// CSV 行の時刻 tod_ms に追いつくまで姿勢ログを読み進める。
+// 姿勢ログは 5Hz・CSV は 2Hz なので通常は 2〜3 行進めるだけ。
+// PLAY FLIGHT ONLY の助走 seek で CSV 側が数秒巻き戻ることがあるが、
+// 1 日分を読み直すのは重すぎるので、その場合は最後のサンプルを保持し続ける
+// （CSV の時刻が追いつけば自動的に整合が戻る）。
+static bool replay_att_seek(uint32_t tod_ms) {
+  if (!replay_att_ok) return false;
+  char line[96];
+  char buf[24];
+  while (!replay_att_eof && replay_att_ms < tod_ms) {
+    if (replayAttFile.fgets(line, sizeof(line)) <= 0) { replay_att_eof = true; break; }
+    if (!replay_get_field(line, att_col[ATTCOL_TIME], buf, sizeof(buf))) continue;
+    uint32_t ms; int h, m, s2, cs;
+    if (!replay_parse_time(buf, &ms, &h, &m, &s2, &cs)) continue;   // ヘッダ行はここで弾かれる
+    replay_att_ms = ms;
+    if (replay_get_field(line, att_col[ATTCOL_ROLL],  buf, sizeof(buf))) replay_att_roll  = atof(buf);
+    if (replay_get_field(line, att_col[ATTCOL_PITCH], buf, sizeof(buf))) replay_att_pitch = atof(buf);
+    if (replay_get_field(line, att_col[ATTCOL_YAW],   buf, sizeof(buf))) replay_att_yaw   = atof(buf);
+    if (replay_get_field(line, att_col[ATTCOL_TRIM],  buf, sizeof(buf))) replay_att_trim  = atof(buf);
+    if (replay_get_field(line, att_col[ATTCOL_YAWACC],buf, sizeof(buf))) replay_att_yawacc = atof(buf);
+    // 30 秒平均は未収束の間は空欄で書かれている（replay_get_field は空欄で false）
+    replay_att_has_avg = replay_get_field(line, att_col[ATTCOL_AVG], buf, sizeof(buf));
+    if (replay_att_has_avg) replay_att_avg = atof(buf);
+  }
+  // 保持しているサンプルが再生時刻から離れすぎていたら「無い」と答える。
+  // これが無いと、姿勢ログが飛行 CSV より先に終わっている場合に最後のサンプルを
+  // 貼り付けたまま固まって見える（地図だけ動いて姿勢だけ止まる）。
+  // 飛行 CSV より後から始まっている場合も同様。
+  if (replay_att_ms == 0) return false;
+  const uint32_t age = (tod_ms > replay_att_ms) ? (tod_ms - replay_att_ms)
+                                                : (replay_att_ms - tod_ms);
+  return age <= REPLAY_ATT_MAX_AGE_MS;
+}
+
 void init_replay(){
   if (replayFileStatic.isOpen()) replayFileStatic.close();
+
+  // 姿勢ログも先頭から読み直す（ループ再生・別ファイル選択の両方に対応）
+  if (replayAttFile.isOpen()) replayAttFile.close();
+  replay_att_tried = false;
+  replay_att_ok    = false;
+  replay_att_eof   = false;
+  replay_att_ms    = 0;
+  replay_att_has_avg = false;
+  // 前のファイルの列マップを残さない（旧形式を新形式と誤判定するのを防ぐ）
+  for (int i = 0; i < ATTCOL_COUNT; i++) att_col[i] = -1;
 
   replay_head = 0;
   replay_tail = 0;
@@ -1255,6 +1490,36 @@ void load_replay() {
       row->year = 0; row->month = 0; row->day = 0;
     }
 
+    // --- 姿勢（同じ日の姿勢ログがあれば）---
+    if (!replay_att_tried) {
+      int fy = yy, fmo = mo, fdd = dd;
+      if (!(row->have & RHAVE_DATE)) {
+        // 日付列を持たない v5 データ: ファイル名 "YYYY-MM-DD_HHMM.csv" から拾う
+        const char* base = strrchr(replay_filename, '/');
+        base = (base != nullptr) ? base + 1 : replay_filename;
+        if (sscanf(base, "%d-%d-%d", &fy, &fmo, &fdd) != 3) fy = 0;
+      }
+      replay_att_open(fy, fmo, fdd, tod_ms);
+    }
+    row->roll = 0.0f; row->pitch = 0.0f; row->yaw = 0.0f;
+    row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
+    if (replay_att_seek(tod_ms)) {
+      row->roll  = replay_att_roll;
+      row->pitch = replay_att_pitch;
+      row->have |= RHAVE_ATT;
+      // 以下は新形式（ESKF の結果）にしか無い。旧 euler では表示しない。
+      if (replay_att_is_new_format()) {
+        row->yaw       = replay_att_yaw;
+        row->yaw_acc95 = replay_att_yawacc;
+        row->roll_trim = replay_att_trim;
+        row->have |= RHAVE_ATT_YAW | RHAVE_ATT_TRIM;
+        if (replay_att_has_avg) {
+          row->pitch_avg = replay_att_avg;
+          row->have |= RHAVE_ATT_AVG;
+        }
+      }
+    }
+
     // 内容を書き終えてから head を進める（Core0 が中途半端な行を読まないようにする）
     replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
   }
@@ -1293,6 +1558,15 @@ static bool is_replay_candidate(const char* name) {
   return true;
 }
 
+// 固定項目（大会データ）の実在フラグ。
+// SD が無い・replay/ にファイルが置かれていない機体では選んでも再生できないので、
+// 一覧から丸ごと隠す（存在しない項目を選ばせて無反応になるのを防ぐ）。
+// Core1 の browse_replay_files() が SD を見て更新し、Core0 がメニュー表示で読む。
+// 既定は false（未確認）＝非表示。一覧を開くたびに再確認するので、
+// SD を挿し直した場合も次に開いたときに反映される。
+volatile bool replay_have_2025 = false;
+volatile bool replay_have_2026 = false;
+
 // SD ルートのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
 // start_index: 対象CSVの通し番号（0始まり）のうち、どこから格納するか。
 // 戻り値: 1 件以上格納できたら true。
@@ -1311,9 +1585,16 @@ bool browse_replay_files(int start_index) {
   if (!root || !root.isDirectory()) {
     DEBUGW_PLN(20260731, "REPLAY: failed to open root");
     if (root) root.close();
+    // SD が読めない = 大会データも当然読めないので固定項目も隠す
+    replay_have_2025 = false;
+    replay_have_2026 = false;
     loading_replaylist = false;
     return false;
   }
+
+  // 大会データの実在確認（一覧に出すかどうかの判定）
+  replay_have_2025 = SD.exists(REPLAY_2025_FILE);
+  replay_have_2026 = SD.exists(REPLAY_2026_FILE);
 
   while (true) {
     FsFile entry = root.openNextFile();
@@ -1349,16 +1630,23 @@ bool browse_replay_files(int start_index) {
 //   0                          : Replay OFF
 //   1                          : PLAY FLIGHT ONLY: YES/NO（トグル）
 //   2                          : PLAY SPEED: x1/x2/x??（トグル）
-//   3                          : 2025 Taikai
-//   4                          : 2026 Taikai
-//   5 .. 5+replayfiles_total-1 : SD ルート上の飛行 CSV
-//   5+replayfiles_total        : Return
-// 先頭の固定項目数は REPLAY_FIXED_COUNT。
+//   3                          : 2025 Taikai   ← SD 上に実在するときだけ
+//   4                          : 2026 Taikai   ← SD 上に実在するときだけ
+//   F .. F+replayfiles_total-1 : SD ルート上の飛行 CSV
+//   F+replayfiles_total        : Return
+// 先頭の固定項目数 F は replay_menu_fixed_count()（3〜REPLAY_FIXED_COUNT）。
+// 大会データが無い機体では 2025/2026 の行そのものが消え、後続の番号が詰まる。
 // 描画側もボタン処理側もこのモデルを共有する。
+
+// 一覧の先頭に並ぶ固定項目の実数。
+// 常設の 3 項目（OFF / FLIGHT ONLY / SPEED）＋ SD にある大会データのぶん。
+int replay_menu_fixed_count() {
+  return 3 + (replay_have_2025 ? 1 : 0) + (replay_have_2026 ? 1 : 0);
+}
 
 // 一覧の総項目数（固定項目 + ファイル数 + Return）。
 int replay_menu_total_items() {
-  return REPLAY_FIXED_COUNT + replayfiles_total + 1;
+  return replay_menu_fixed_count() + replayfiles_total + 1;
 }
 
 // 通し番号が属するページ番号（0始まり）。
@@ -1376,7 +1664,7 @@ int replay_menu_page_count() {
 // そのページを描画するために browse_replay_files() に渡すべき「ファイルの開始通し番号」。
 // ページ 0 は先頭に固定項目が入る分だけファイルの開始位置が手前にずれる。
 int replay_menu_file_start_for_page(int page) {
-  int start = page * REPLAY_LIST_ROWS - REPLAY_FIXED_COUNT;
+  int start = page * REPLAY_LIST_ROWS - replay_menu_fixed_count();
   return (start < 0) ? 0 : start;
 }
 
@@ -1398,16 +1686,24 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
     snprintf(label, labelsize, "PLAY SPEED: x%d", replay_speed);
     return RITEM_SPEED;
   }
-  if (index == 3) { strlcpy(label, REPLAY_2025_LABEL, labelsize);         return RITEM_2025; }
-  if (index == 4) { strlcpy(label, REPLAY_2026_LABEL, labelsize);         return RITEM_2026; }
+  // 大会データは SD 上に実在するときだけ 1 行を占める（無ければ番号が詰まる）
+  int fixed = 3;
+  if (replay_have_2025) {
+    if (index == fixed) { strlcpy(label, REPLAY_2025_LABEL, labelsize); return RITEM_2025; }
+    fixed++;
+  }
+  if (replay_have_2026) {
+    if (index == fixed) { strlcpy(label, REPLAY_2026_LABEL, labelsize); return RITEM_2026; }
+    fixed++;
+  }
 
-  if (index == REPLAY_FIXED_COUNT + replayfiles_total) {
+  if (index == fixed + replayfiles_total) {
     strlcpy(label, "Return", labelsize);
     return RITEM_RETURN;
   }
 
   // ファイル項目: 現在読み込まれているページ内の何番目かを求める
-  int local = (index - REPLAY_FIXED_COUNT) - replay_menu_file_start_for_page(page);
+  int local = (index - fixed) - replay_menu_file_start_for_page(page);
   if (local < 0 || local >= replayfiles_count) return RITEM_NONE;  // 別ページ = 未読み込み
   strlcpy(label, replayfiles[local], labelsize);
   if (filesize) *filesize = replayfiles_size[local];
@@ -1600,7 +1896,10 @@ void log_sd(const char* text){
     return;
   }
 
-  char logtext[100];   // array to hold the result.
+  // 128 バイト。先頭に "<起動秒>:" を付けるため、稼働時間が延びるほど
+  // 本文に使える長さが減る点に注意（起動から 10 万秒で 7 文字消費）。
+  // 100 だったころは 60 秒ごとのセンサーレート行の末尾が実際に切れていた。
+  char logtext[128];   // array to hold the result.
   snprintf(logtext, sizeof(logtext), "%d:%s",(int)(millis()/1000),text);
   logFileStatic.println(logtext);
   logFileStatic.flush();  // close() の代わりに flush() でデータを確定する
@@ -1710,75 +2009,125 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
   }
 }
 
-// ===== Euler角ログ（BNO085 ROTATION_VECTOR 5Hz） =====
-// eulerフォルダに JST 日付のファイルを追記モードで書き込む。
+// ===== リプレイ用 ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz） =====
+// 目的は「そのとき画面に何が出ていたか」を後から再現すること。
+// 生データ（imuraw/*.bin）から ESKF を回し直す案もあったが、機上のフィルタは
+// シングルトンでリプレイ中に実機の姿勢推定を壊してしまうため、結果だけを残す方式にした。
+//
+// 列はヘッダ行の列名で解釈する（飛行 CSV と同じ方式）。後から列を足しても
+// 古いファイルが読めなくなることはない。
+//   time      HH:MM:SS.cc（JST）
+//   roll      ESKF ロール [度]（マウント補正・ゼロ点・自動トリム適用後＝画面の値）
+//   pitch     ESKF ピッチ [度]（同上）
+//   yaw       ESKF ヨー [度]（真方位）
+//   pitch_avg 30 秒平均ピッチ [度]。未収束のときは空欄
+//   roll_trim 自動ロールトリムの累積補正量 [度]
+//   yaw_acc95 ヨー精度の 95% 値 [度]。しきい値は再生時に判定するので生値で残す
+//
+// ESKF が未収束の間は行を書かない（行が無い＝当時も表示していない）。
+// 旧 euler/ フォルダ（BNO085 由来・4列）も再生時のフォールバックとして読める。
 // 50レコードごとに sync() してファイルサイズ・更新タイムスタンプをFATに反映する。
-static FsFile eulerFileStatic;
-static char eulerOpenedFilename[24] = "";  // 現在開いているファイル名
-static int eulerWriteCount = 0;            // sync() タイミング管理カウンタ
+static FsFile replayDataFileStatic;
+static char replayDataOpenedFilename[24] = "";  // 現在開いているファイル名
+static int replayDataWriteCount = 0;            // sync() タイミング管理カウンタ
 
-void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day) {
+void save_imu_replaydata(int h, int m, int s, int cs,
+                         float roll, float pitch, float yaw,
+                         float pitch_avg, bool pitch_avg_valid,
+                         float roll_trim, float yaw_acc95,
+                         const char* filename, int year, int month, int day) {
   if (!good_sd()) return;
 
   // ファイル名が変わった場合（日付変更等）は sync してから閉じて開き直す
-  if (eulerFileStatic.isOpen() && strcmp(eulerOpenedFilename, filename) != 0) {
-    eulerFileStatic.sync();
-    eulerFileStatic.close();
-    eulerOpenedFilename[0] = '\0';
-    eulerWriteCount = 0;
+  if (replayDataFileStatic.isOpen() && strcmp(replayDataOpenedFilename, filename) != 0) {
+    replayDataFileStatic.sync();
+    replayDataFileStatic.close();
+    replayDataOpenedFilename[0] = '\0';
+    replayDataWriteCount = 0;
   }
 
-  if (!eulerFileStatic.isOpen()) {
-    // eulerフォルダがなければ作成
-    if (!SD.exists("euler")) {
-      SD.mkdir("euler");
+  if (!replayDataFileStatic.isOpen()) {
+    // 保存先フォルダがなければ作成
+    if (!SD.exists(IMU_REPLAYDATA_DIR)) {
+      SD.mkdir(IMU_REPLAYDATA_DIR);
     }
     // 既存ファイルかどうか確認（ヘッダー書き込み判定用）
     bool fileExisted = SD.exists(filename);
 
     // 追記モードで開く
-    if (!eulerFileStatic.open(filename, O_RDWR | O_CREAT | O_APPEND)) return;
-    strncpy(eulerOpenedFilename, filename, sizeof(eulerOpenedFilename) - 1);
-    eulerOpenedFilename[sizeof(eulerOpenedFilename) - 1] = '\0';
+    if (!replayDataFileStatic.open(filename, O_RDWR | O_CREAT | O_APPEND)) return;
+    strncpy(replayDataOpenedFilename, filename, sizeof(replayDataOpenedFilename) - 1);
+    replayDataOpenedFilename[sizeof(replayDataOpenedFilename) - 1] = '\0';
 
     // GPS 日時でファイルタイムスタンプを設定（作成・アクセス・更新の全3種）
-    eulerFileStatic.timestamp(T_CREATE | T_ACCESS | T_WRITE, year, month, day, h, m, s);
+    replayDataFileStatic.timestamp(T_CREATE | T_ACCESS | T_WRITE, year, month, day, h, m, s);
 
     // 新規ファイルのみヘッダー書き込み
     if (!fileExisted) {
-      eulerFileStatic.println("time,roll,pitch,yaw");
+      replayDataFileStatic.println("time,roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95");
     }
   }
 
-  // HH:MM:SS.cc,roll,pitch,yaw 形式で書き込み
-  char line[64];
-  snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f",
-           h, m, s, cs, roll, pitch, yaw);
-  eulerFileStatic.println(line);
+  // 30 秒平均が未収束の間は空欄にする（0.00 と書くと水平だったように見えてしまう）
+  char avgbuf[10];
+  if (pitch_avg_valid) snprintf(avgbuf, sizeof(avgbuf), "%.2f", pitch_avg);
+  else                 avgbuf[0] = '\0';
+
+  char line[80];
+  snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f,%s,%.2f,%.1f",
+           h, m, s, cs, roll, pitch, yaw, avgbuf, roll_trim, yaw_acc95);
+  replayDataFileStatic.println(line);
 
   // 50レコードごと（約10秒@5Hz）に sync() → FATのファイルサイズ・タイムスタンプを更新
-  if (++eulerWriteCount >= 50) {
-    eulerFileStatic.timestamp(T_WRITE, year, month, day, h, m, s);  // 更新タイムスタンプを現在時刻に
-    eulerFileStatic.sync();
-    eulerWriteCount = 0;
+  if (++replayDataWriteCount >= 50) {
+    replayDataFileStatic.timestamp(T_WRITE, year, month, day, h, m, s);  // 更新タイムスタンプを現在時刻に
+    replayDataFileStatic.sync();
+    replayDataWriteCount = 0;
   }
 }
 
-Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day) {
+// 生 IMU ログのバッファ書き出しタスクを生成する。
+// bufidx は imulog_take_pending() が返した索引をそのまま渡すこと
+//（この索引は Core1 へ引き渡し済みとしてマークされているため、必ず enqueue する必要がある）。
+Task createFlushImuLogTask(int bufidx, const char* filename,
+                           int year, int month, int day, int hour, int minute, int second) {
   Task t;
-  t.type = TASK_LOG_EULER;
-  t.logEulerArgs.hour        = h;
-  t.logEulerArgs.minute      = m;
-  t.logEulerArgs.second      = s;
-  t.logEulerArgs.centisecond = cs;
-  t.logEulerArgs.year        = year;
-  t.logEulerArgs.month       = month;
-  t.logEulerArgs.day         = day;
-  t.logEulerArgs.roll        = roll;
-  t.logEulerArgs.pitch       = pitch;
-  t.logEulerArgs.yaw         = yaw;
-  strncpy(t.logEulerArgs.filename, filename, sizeof(t.logEulerArgs.filename) - 1);
-  t.logEulerArgs.filename[sizeof(t.logEulerArgs.filename) - 1] = '\0';
+  t.type = TASK_FLUSH_IMULOG;
+  t.imuLogArgs.bufidx = bufidx;
+  t.imuLogArgs.year   = year;
+  t.imuLogArgs.month  = month;
+  t.imuLogArgs.day    = day;
+  t.imuLogArgs.hour   = hour;
+  t.imuLogArgs.minute = minute;
+  t.imuLogArgs.second = second;
+  strncpy(t.imuLogArgs.filename, filename, sizeof(t.imuLogArgs.filename) - 1);
+  t.imuLogArgs.filename[sizeof(t.imuLogArgs.filename) - 1] = '\0';
+  return t;
+}
+
+Task createLogImuReplayTask(int h, int m, int s, int cs,
+                            float roll, float pitch, float yaw,
+                            float pitch_avg, bool pitch_avg_valid,
+                            float roll_trim, float yaw_acc95,
+                            const char* filename, int year, int month, int day) {
+  Task t;
+  t.type = TASK_LOG_IMUREPLAY;
+  t.imuReplayArgs.hour        = h;
+  t.imuReplayArgs.minute      = m;
+  t.imuReplayArgs.second      = s;
+  t.imuReplayArgs.centisecond = cs;
+  t.imuReplayArgs.year        = year;
+  t.imuReplayArgs.month       = month;
+  t.imuReplayArgs.day         = day;
+  t.imuReplayArgs.roll        = roll;
+  t.imuReplayArgs.pitch       = pitch;
+  t.imuReplayArgs.yaw         = yaw;
+  t.imuReplayArgs.pitch_avg   = pitch_avg;
+  t.imuReplayArgs.pitch_avg_valid = pitch_avg_valid;
+  t.imuReplayArgs.roll_trim   = roll_trim;
+  t.imuReplayArgs.yaw_acc95   = yaw_acc95;
+  strncpy(t.imuReplayArgs.filename, filename, sizeof(t.imuReplayArgs.filename) - 1);
+  t.imuReplayArgs.filename[sizeof(t.imuReplayArgs.filename) - 1] = '\0';
   return t;
 }
 

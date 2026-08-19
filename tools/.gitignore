@@ -3,6 +3,7 @@
 *.csv
 *.kml
 *.txt
+*.bin
 
 # ---- Python ----
 __pycache__/

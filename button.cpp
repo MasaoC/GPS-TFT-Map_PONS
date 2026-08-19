@@ -12,6 +12,7 @@
 #include "Button.h"
 #include "mysd.h"
 #include "gps.h"
+#include "attitude.h"
 
 
 // 実体は GPS_TFT_map.ino で volatile 定義。宣言側も volatile を付ける
@@ -403,7 +404,7 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   // [8] デモモード (DEMOBIWA)
   //   ・Toggle: デモ地点を 1 つ進める（OFF → BIWAKO → SHIRAHAMA → KASAOKA
-  //             → FUJIGAWA → TOKYO → OFF）。地点ごとに仮想機体をその中心へ置き、
+  //             → FUJIGAWA → TOKYO → OSAKA → OFF）。地点ごとに仮想機体をその中心へ置き、
   //             位置履歴と旋回角速度をリセットする。
   //   ・各地点の地図表示を実機で確認する用途にも使える。
   //   ・Exit  : デモがオンになったらリプレイを無効にして設定を閉じる（両立しない）
@@ -547,7 +548,39 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [14] 保存して終了 (EXIT)
+  // [14] IMU / 姿勢 ESKF 詳細 (IMU_DETAIL)
+  //   ※ 機体ゼロ点の較正はこの画面内で短押しして実行する（設定メニューには置かない）
+  //   ・Enter: IMU/ESKF 画面へ切り替え
+  //   ・静止中のジャイロ実測値・推定バイアス・ESKF と BNO085 の姿勢比較を見る
+  //   ・アイコン色: バンク警告と自動ロールトリムが両方 ON なら緑、片方でも OFF ならオレンジ
+  //     （誤警報対策を切ったまま飛ばないための目印。IMU/ESKF 画面の右上と同じ意味）
+  // ----------------------------------------------------------
+  { SETTING_IMU_DETAIL,
+    [](bool selected) -> std::string {
+      return "IMU / ESKF >";
+    },
+    []() {
+      screen_mode = MODE_IMUDETAIL;
+      detail_page = 0;
+      extern int imu_cursor;
+      imu_cursor = 0;
+      // 較正の注意点（ロールが 0 であること・飛行中に実行しないこと）を音声で案内する。
+      // 優先度 3 = コース警告と同等。誤った較正は警告機能そのものを壊すため。
+      enqueueTask(createPlayWavTask("wav/guide_eskf_setting.wav", 3));
+    },
+    nullptr,
+    nullptr,
+    [](){
+      extern volatile bool bank_warning_enabled;
+      if (bank_warning_enabled && attitude_get_roll_trim_enabled())
+        return COLOR_GREEN;
+      else
+        return COLOR_ORANGE;
+    }
+  },
+
+  // ----------------------------------------------------------
+  // [15] 保存して終了 (EXIT)
   //   ・Enter: exit_setting() を呼び出し、設定を保存してマップ画面に戻る
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------

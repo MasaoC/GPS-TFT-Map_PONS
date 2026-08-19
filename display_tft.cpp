@@ -19,6 +19,7 @@
 
 #include "settings.h"
 #include "display_tft.h"
+#include "attitude.h"
 #include "gps.h"
 #include "mysd.h"
 #include "navdata.h"
@@ -31,7 +32,7 @@
 
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
 #define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
-#define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（未使用）
+#define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（ESKF のロール・ピッチ表示）
 #define NM_FONT_LARGE Arial_Black56    // 大サイズフォント（ヘッダーの速度・磁方位表示）
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
@@ -548,12 +549,15 @@ void draw_km_distances(float scale) {
   for (float d : distances) {
     if (try_draw_km_distance(scale, d)) {
       draw_counter++;
-      if (draw_counter >= 2) {
-        backscreen.loadFont(AA_FONT_SMALL);
-        return;
-      }
+      if (draw_counter >= 2)
+        break;
     }
   }
+
+  // スケールバーが 2 本に届かなくても必ずフォントを戻す。
+  // 戻し忘れると以降に描く [GS]/[m/s]/[MT] やコース警告が内蔵フォントになり、
+  // 表示が崩れる（スケールによって発生したりしなかったりする不具合の原因）。
+  backscreen.loadFont(AA_FONT_SMALL);
 }
 
 // ===== マップ描画管理変数 =====
@@ -686,6 +690,73 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm) {
   }
 }
 
+// ESKF の姿勢を画面に出してよいかを判定する。
+// リプレイ中は CSV に IMU 生データ（.bin）が入っていないため ESKF には
+// 「いま机の上にある本体」の姿勢しか流れてこない。再生中の飛行と全く無関係な
+// ロール・ピッチ・ヨーが出てしまい誤解を招くので、リプレイ中はまとめて非表示にする。
+// （将来 .bin まで再生できるようにしたら、この判定を外せばよい）
+bool eskf_display_enabled() {
+  // リプレイ中は IMU 生データ（.bin）を再生しないので実機 ESKF の値は使えないが、
+  // 同じ日の姿勢ログ（imu_replaydata/ か旧 euler/）があれば当時の値を再現できる。
+  if (getReplayMode()) {
+    float r, p;
+    return get_replay_attitude(r, p);
+  }
+  return attitude_ready();
+}
+
+// ESKF のヨー（真方位）を表示・アイコン回転に使ってよいかを判定する。
+// ヨーは水平加速度がある間しか可観測にならず、等速直進が続くと際限なく漂うため、
+// 推定精度がしきい値以下のときだけ「機首方向」として信用する。
+// 判定は 95%(2σ) で行う。1σ のまま「これ以下なら安心」と扱うと 3 回に 1 回は外れる。
+bool eskf_yaw_reliable() {
+  if (getReplayMode()) {
+    // 記録された 95% 値で当時と同じ判定を再現する。しきい値そのものは現在の設定を
+    // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
+    float y, acc95;
+    if (!get_replay_yaw(y, acc95)) return false;
+    return acc95 < ESKF_YAW_TRUST_95_DEG;
+  }
+  return eskf_display_enabled() && attitude_get_yaw_acc95_deg() < ESKF_YAW_TRUST_95_DEG;
+}
+
+// 自機アイコン（主翼・尾翼・胴体の 3 本＝「士」の形）を任意の向きで描く。
+// screen_deg: 画面の上を 0 とした時計回りの角度 [度]。
+//   NORTHUP は画面上＝北なので、そのまま方位を渡せばよい。
+//   TRACKUP は画面上＝対地進路なので (方位 - トラック) を渡す（＝偏流角）。
+// ここを機首方位で呼べばアイコンが実際の機首を向き、トラックで呼べば従来どおり。
+static void draw_plane_icon(int cx, int cy, float screen_deg, uint16_t col) {
+  const float a = deg2rad(screen_deg);
+  const float ca = cos(a), sa = sin(a);
+
+  int left_wing_x  = cx - TRIANGLE_HWIDTH * 2 * ca;
+  int left_wing_y  = cy - TRIANGLE_HWIDTH * 2 * sa;
+  int right_wing_x = cx + TRIANGLE_HWIDTH * 2 * ca;
+  int right_wing_y = cy + TRIANGLE_HWIDTH * 2 * sa;
+  int left_tail_x  = cx + (-TRIANGLE_HWIDTH / 2) * ca - (0.5 * TRIANGLE_SIZE) * sa;
+  int left_tail_y  = cy + (-TRIANGLE_HWIDTH / 2) * sa + (0.5 * TRIANGLE_SIZE) * ca;
+  int right_tail_x = cx + (TRIANGLE_HWIDTH / 2) * ca - (0.5 * TRIANGLE_SIZE) * sa;
+  int right_tail_y = cy + (TRIANGLE_HWIDTH / 2) * sa + (0.5 * TRIANGLE_SIZE) * ca;
+  int body_tail_x  = cx - TRIANGLE_SIZE / 2 * sa;
+  int body_tail_y  = cy + TRIANGLE_SIZE / 2 * ca;
+
+  backscreen.drawWideLine(left_wing_x, left_wing_y, right_wing_x, right_wing_y, 3, col);
+  backscreen.drawWideLine(left_tail_x, left_tail_y, right_tail_x, right_tail_y, 2, col);
+  backscreen.drawWideLine(cx, cy, body_tail_x, body_tail_y, 2, col);
+}
+
+// 自機アイコンを向けるべき画面上の角度 [度]（画面の上＝0、時計回り）。
+// ESKF のヨーが信頼できるときだけ機首方位に合わせる。横風があるとトラックと機首は
+// 偏流角のぶんずれるので、信頼できないヨーで回すと逆に誤解を招く。
+// 信頼できないときは従来どおり対地進路（NORTHUP=ttrack、TRACKUP=画面上固定）。
+static float plane_icon_screen_deg(int ttrack) {
+  if (!eskf_yaw_reliable())
+    return is_trackupmode() ? 0.0f : (float)ttrack;
+  float r, p, y;
+  attitude_get_euler(r, p, y);
+  return is_trackupmode() ? (y - (float)ttrack) : y;
+}
+
 void draw_triangle(int ttrack,int steer_angle) {
   // Core0 スタック残量を計測。
   // draw_triangle() は drawWideLine を最も多く呼ぶ関数であり、
@@ -712,20 +783,11 @@ void draw_triangle(int ttrack,int steer_angle) {
       backscreen.fillTriangle(x1,y1,x2,y2,x3,y3, (millis()/1000)%2==0?COLOR_RED:COLOR_BLACK);
     }
     
-    int left_wing_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * cos(tt_radians);
-    int left_wing_tip_y = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * sin(tt_radians);
-    int right_wing_tip_x = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * cos(tt_radians);
-    int right_wing_tip_y = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * sin(tt_radians);
-    int left_tail_tip_x = BACKSCREEN_SIZE / 2 + (-TRIANGLE_HWIDTH / 2) * cos(tt_radians) - (0.5 * TRIANGLE_SIZE) * sin(tt_radians);
-    int left_tail_tip_y = BACKSCREEN_SIZE / 2 + (-TRIANGLE_HWIDTH / 2) * sin(tt_radians) + (0.5 * TRIANGLE_SIZE) * cos(tt_radians);
-    int right_tail_tip_x = BACKSCREEN_SIZE / 2 + (TRIANGLE_HWIDTH / 2) * cos(tt_radians) - (0.5 * TRIANGLE_SIZE) * sin(tt_radians);
-    int right_tail_tip_y = BACKSCREEN_SIZE / 2 + (TRIANGLE_HWIDTH / 2) * sin(tt_radians) + (0.5 * TRIANGLE_SIZE) * cos(tt_radians);
-    int body_tail_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_SIZE/2 * sin(tt_radians);
-    int body_tail_tip_y = BACKSCREEN_SIZE / 2 + TRIANGLE_SIZE/2 * cos(tt_radians);
-    backscreen.drawWideLine(left_wing_tip_x, left_wing_tip_y, right_wing_tip_x, right_wing_tip_y, 3, COLOR_BLACK);
-    backscreen.drawWideLine(left_tail_tip_x, left_tail_tip_y, right_tail_tip_x, right_tail_tip_y, 2, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, body_tail_tip_x, body_tail_tip_y, 2, COLOR_BLACK);
-    
+    // 機体アイコン。NORTHUP は画面上＝北なので、そのまま方位を渡す。
+    // ヨーが信頼できるときは機首方位、できないときは従来どおり ttrack で描かれる。
+    draw_plane_icon(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2,
+                    plane_icon_screen_deg(ttrack), COLOR_BLACK);
+
 
     if((millis()/1000)%3 != 0){
       float arc_factor = course_warning_index/900.0;
@@ -778,14 +840,17 @@ void draw_triangle(int ttrack,int steer_angle) {
     // TRACKUP モードでは自機Y位置を画面下寄り（3/4）に表示する
     const int cy = BACKSCREEN_SIZE * 3 / 4;  // = 180（X は常に BACKSCREEN_SIZE/2 = 120）
 
-    // ── 機体アイコン（固定・常に上向き）──
-    // TRACKUPでは地図が回転して機首が常に画面上を向くため、アイコンは固定座標で描く
+    // ── 進行方向の縦線（常に画面上＝対地進路）──
+    // TRACKUP では地図が回転して対地進路が常に画面上を向く。この線は進路そのものなので
+    // 機首が振れても回さない（機首とのズレ＝偏流角がアイコンとの角度差で見える）。
     int shortening = 15;
     backscreen.drawFastVLine(240 / 2,     shortening, cy - shortening - 5, COLOR_BLACK);
     backscreen.drawFastVLine(240 / 2 + 1, shortening, cy - shortening - 5, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2, cy, BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2, cy, 3, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH/2, cy + TRIANGLE_SIZE/2, BACKSCREEN_SIZE/2 + TRIANGLE_HWIDTH/2, cy + TRIANGLE_SIZE/2, 2, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2, cy, BACKSCREEN_SIZE / 2, cy + TRIANGLE_SIZE/2, 2, COLOR_BLACK);
+
+    // ── 機体アイコン ──
+    // ヨーが信頼できるときは (機首方位 - トラック) だけ傾けて実際の機首方向に合わせる。
+    // 信頼できないときは 0（画面上向き）になり、従来の固定表示と同じになる。
+    draw_plane_icon(BACKSCREEN_SIZE / 2, cy, plane_icon_screen_deg(ttrack), COLOR_BLACK);
 
     // ── True Track 維持針（last_tone_tt: 最後にトーンが鳴った時点のTT方向）──
     // TRACKUPでは機首=画面上=0°なので、last_tone_tt の画面上の角度は (last_tone_tt - ttrack)
@@ -1316,6 +1381,451 @@ void draw_vsi() {
 
 // backscreen スプライトを TFT の (0, 50) に転送する（ヘッダー 50px の下から表示）。
 // 転送前に VSI を backscreen の右端 X=235 に合成する。
+// ============================================================
+// draw_eskf_attitude(): 地図上に姿勢を 3 行で重ねる
+// ============================================================
+// 背景は敷かず地図へ直接上書きする。リプレイ中は姿勢ログがある日のみ。
+// 位置は左下。sAcc（BACKSCREEN_SIZE-27）の 1 行上からさらに ESKF_ROW_RAISE だけ
+// 持ち上げた所を最下段とし、下から上へ R → P → Avg30s P と積む。
+// DEBUG_ESKF の有無でこの位置と大きさを変えないこと。
+//
+//   Avg30s P : 30 秒平均ピッチ。大きい字（NM_FONT_MEDIUM）＝一番見るべき値。
+//   P / R    : 瞬時値。参考なので小さい字（AA_FONT_SMALL）。
+//
+// ロールは BANK_WARN_DEG を超えたら赤にする（バンク超過の気付き用）。
+// 左端に寄せてあるのは、TRACKUP のとき自機アイコン（cy=180）の真下に
+// draw_eskf_yaw() のヨー数値が入るため、中央付近を空けておく必要があるから。
+#define ESKF_LABEL_X        2
+#define ESKF_VALUE_RIGHT_X  50    // P / R の値の右端（ここへ右揃え。桁が揃う）
+#define ESKF_AVG_RIGHT_X    60   // Avg30s P の値の右端。ラベルが長いぶん右へ逃がす
+#define ESKF_ROW_GAP        2     // P 行と R 行の隙間 [px]
+#define ESKF_AVG_GAP        30     // Avg30s 行と P 行の隙間 [px]（大きい字なので少し広く）
+#define ESKF_ROW_RAISE      16    // sAcc の 1 行上からさらに持ち上げる量 [px]
+void draw_eskf_attitude() {
+  if (!eskf_display_enabled()) return;  // リプレイ中は姿勢データが無いので非表示
+
+  float r, p, y = 0.0f;
+  if (getReplayMode()) {
+    if (!get_replay_attitude(r, p)) return;  // その日の姿勢ログが無い
+  } else {
+    attitude_get_euler(r, p, y);
+  }
+
+  char rbuf[8], pbuf[8];
+  snprintf(rbuf, sizeof(rbuf), "%+5.1f", r);
+  snprintf(pbuf, sizeof(pbuf), "%+5.1f", p);
+
+  // 30 秒平均ピッチだけを NM_FONT_MEDIUM の大きい字にする。
+  // フゴイドで瞬時ピッチは±3度振れるので操縦の指標にならず、巡航のトリム状態は
+  // 平均でしか読めない（実測で 30 秒平均の std は 0.73 度＝1 度の変化が有意）。
+  // 瞬時の P / R は参考値なので AA_FONT_SMALL に落とす。
+  // リプレイでは実機（机の上）の平均ではなく、記録された当時の値を出す。
+  float avg_val = 0.0f;
+  bool  show_avg;
+  if (getReplayMode()) show_avg = get_replay_pitch_avg(avg_val);
+  else {
+    show_avg = attitude_pitch_avg_valid();
+    if (show_avg) avg_val = attitude_get_pitch_avg_deg();
+  }
+
+  backscreen.setTextWrap(false);
+  backscreen.loadFont(AA_FONT_SMALL);
+  const int fh_s = backscreen.fontHeight();
+
+  const int yroll = BACKSCREEN_SIZE - 27 - fh_s - ESKF_ROW_RAISE;  // 最下段＝ロール
+  const int ypit  = yroll - fh_s - ESKF_ROW_GAP;                   // 中段＝ピッチ
+
+  // ---- 最上段: Avg30s P（ラベルは AA_FONT_SMALL、数値は NM_FONT_MEDIUM）----
+  // NM_FONT_MEDIUM は平均を出すときだけ読み込む（地図の毎フレーム描画なので
+  // 不要なフォント切替を増やさない）。
+  if (show_avg) {
+    char abuf[8];
+    snprintf(abuf, sizeof(abuf), "%+5.1f", avg_val);
+    backscreen.loadFont(NM_FONT_MEDIUM);
+    const int fh_m = backscreen.fontHeight();
+    const int yavg = ypit - fh_m - ESKF_AVG_GAP;
+    backscreen.setTextColor(COLOR_BLACK);
+    backscreen.setCursor(ESKF_AVG_RIGHT_X - backscreen.textWidth(abuf), yavg+20);
+    backscreen.print(abuf);
+
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setTextColor(COLOR_GRAY);
+    // ラベルは大きい数値の行の高さの中央に合わせる
+    backscreen.setCursor(ESKF_LABEL_X, yavg + (fh_m - fh_s) / 2);
+    backscreen.print("Avg30s P");
+  }
+
+  // ---- 中段: P ----
+  // ピッチは色を変えない。ピッチ単独では失速余裕を判定できないため
+  // （本来は迎角が要る。実測でも 30 秒平均ピッチと対気速度の相関は -0.14 と弱く、
+  //   迎角推定も対地経路角の 30 秒平均がほぼゼロで補正にならなかった）。
+  backscreen.setTextColor(COLOR_GRAY);
+  backscreen.setCursor(ESKF_LABEL_X, ypit);
+  backscreen.print("P");
+  backscreen.setTextColor(COLOR_BLACK);
+  backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(pbuf), ypit);
+  backscreen.print(pbuf);
+
+  // ---- 最下段: R ----
+  backscreen.setTextColor(COLOR_GRAY);
+  backscreen.setCursor(ESKF_LABEL_X, yroll);
+  backscreen.print("R");
+  // バンク超過だけ赤。地図の上に直接描くので通常色は黒（フッターと同じ）。
+  backscreen.setTextColor(fabsf(r) > BANK_WARN_DEG ? COLOR_RED : COLOR_BLACK);
+  backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(rbuf), yroll);
+  backscreen.print(rbuf);
+  backscreen.setTextColor(COLOR_BLACK);
+
+  // ---- R の下: 自動ロールトリムの累積補正量（内蔵フォント 8px = 最小）----
+  // どれだけ自動補正が入っているかを飛行中にも確認できるようにする。
+  // リプレイでは記録された当時の値を出す（旧 euler 形式には無いので非表示）。
+  float trim_val = 0.0f;
+  bool  show_trim;
+  if (getReplayMode()) show_trim = get_replay_roll_trim(trim_val);
+  else { show_trim = true; trim_val = attitude_get_roll_trim_deg(); }
+  if (show_trim) {
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_GRAY);
+    backscreen.setCursor(ESKF_LABEL_X, yroll + fh_s + 2);
+    backscreen.printf("Rtrim%+.2f", trim_val);
+    backscreen.setTextColor(COLOR_BLACK);
+  }
+
+  // この後に描く コース警告 / [GS] [m/s] [MT] と同じフォントで抜けること。
+  backscreen.loadFont(AA_FONT_SMALL);
+}
+
+
+// ============================================================
+// draw_eskf_yaw(): 自機アイコンのすぐ下に ESKF のヨー角（真方位）を描く
+// ============================================================
+// フォントは [GS] [m/s] [MT] と同じ AA_FONT_SMALL。
+// 色で信頼度を表す:
+//   黒     = 信頼できる（95%値 < ESKF_YAW_TRUST_95_DEG）。このときアイコンも機首方向へ回る。
+//   グレー = 信頼できない。アイコンは回らず対地進路（トラック）向きのまま。
+// ロール・ピッチ行より後に呼ぶこと（TRACKUP では真下がその行に近いため）。
+void draw_eskf_yaw() {
+  if (!eskf_display_enabled()) return;
+
+  float r, p, y, acc95;
+  if (getReplayMode()) {
+    // 旧 euler 形式のヨーは BNO085 由来で、実測で真方位から -30〜-65 度ずれていた。
+    // 当時これを機首方位として表示していないので、再現もしない（新形式のみ表示）。
+    if (!get_replay_yaw(y, acc95)) return;
+  } else {
+    attitude_get_euler(r, p, y);
+  }
+
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%03d", ((int)lroundf(y) % 360 + 360) % 360);
+
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextWrap(false);
+  backscreen.setTextColor(eskf_yaw_reliable() ? COLOR_BLACK : COLOR_GRAY);
+  // アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下に中央揃えで置く
+  backscreen.setCursor(BACKSCREEN_SIZE / 2 - backscreen.textWidth(buf) / 2,
+                       get_self_cy() + TRIANGLE_SIZE / 2 + 3);
+  backscreen.print(buf);
+  backscreen.setTextColor(COLOR_BLACK);
+}
+
+
+#ifdef DEBUG_ESKF
+// ============================================================
+// draw_eskf_debug(): 比較用の詳細表示（DEBUG_ESKF 有効時のみ）
+// ============================================================
+// 姿勢推定の精度を実機で見比べるための評価用。地図上部に被せる。
+// draw_eskf_attitude() が使う左下の領域には触れないこと。
+//
+// 見方: 旋回中・加減速中に ESKF と BNO085 が開いていれば、その差が BNO085 の誤差。
+//   BNO085 は比力を鉛直とみなすため、定常旋回でロールを過小評価し、加減速でピッチがずれる。
+// ヨーは σ（推定標準偏差）で信頼度を示す。水平加速度が無いと可観測にならず育つ。
+void draw_eskf_debug() {
+  const int x = 0, y = 2, w = 240, h = 46;
+
+  backscreen.unloadFont();
+  backscreen.fillRect(x, y, w, h, COLOR_BLACK);
+  backscreen.drawRect(x, y, w, h, COLOR_GRAY);
+
+  if (!attitude_ready()) {
+    backscreen.setTextSize(2);
+    backscreen.setTextColor(COLOR_YELLOW, COLOR_BLACK);
+    backscreen.setCursor(x + 6, y + 6);
+    backscreen.print("ESKF INIT...");
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
+    backscreen.setCursor(x + 6, y + 28);
+    backscreen.printf("static %.1fs / need %.1fs  %s",
+                      attitude_get_static_secs(),
+                      ESKF_STATIC_INIT_US / 1000000.0f,
+                      attitude_is_static() ? "hold still" : "waiting");
+    backscreen.loadFont(AA_FONT_SMALL);  // 内蔵フォントのまま抜けない
+    return;
+  }
+
+  float er, ep, ey;  attitude_get_euler(er, ep, ey);
+  float br, bp, by;  get_imu_euler(br, bp, by);
+  float yacc = attitude_get_yaw_acc95_deg();   // 95%(2σ) 表記
+
+  // 見出し
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 44,  y + 2); backscreen.print("ROLL");
+  backscreen.setCursor(x + 110, y + 2); backscreen.print("PITCH");
+  backscreen.setCursor(x + 182, y + 2); backscreen.print("YAW");
+
+  // ESKF（ヨーだけ信頼度で色を変える。ロール・ピッチと同確度だと誤解させないため）
+  backscreen.setTextColor(COLOR_CYAN, COLOR_BLACK);
+  backscreen.setCursor(x + 2, y + 14); backscreen.print("ESKF");
+  backscreen.setTextSize(2);
+  backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+  backscreen.setCursor(x + 36,  y + 12); backscreen.printf("%+5.1f", er);
+  backscreen.setCursor(x + 108, y + 12); backscreen.printf("%+5.1f", ep);
+  backscreen.setTextColor(yacc < 10.0f ? COLOR_WHITE
+                        : yacc < 40.0f ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 186, y + 12); backscreen.printf("%4.0f", ey);
+
+  // BNO085（比較用）
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_ORANGE, COLOR_BLACK);
+  backscreen.setCursor(x + 2, y + 32); backscreen.print("BNO");
+  backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 36,  y + 32); backscreen.printf("%+6.1f", br);
+  backscreen.setCursor(x + 108, y + 32); backscreen.printf("%+6.1f", bp);
+  backscreen.setCursor(x + 186, y + 32); backscreen.printf("%4.0f", by);
+
+  // ヨーの収束状態: M=地磁気で初期化済み / -=収束待ち、数値は 95%(2σ) の精度 [度]
+  backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 142, y + 32);
+  backscreen.printf("%c%3.0f", attitude_yaw_from_mag() ? 'M' : '-', yacc);
+
+  backscreen.setTextSize(1);
+  // 内蔵フォントのまま抜けると以降の描画が崩れるので必ず戻す（draw_eskf_attitude と同様）
+  backscreen.loadFont(AA_FONT_SMALL);
+}
+#endif // DEBUG_ESKF
+
+
+// ============================================================
+// IMU / 姿勢 ESKF 画面（2 ページ構成）
+// ============================================================
+// ページ1: 姿勢の比較と、機体ゼロ点の較正操作
+// ページ2: センサーの生値・ESKF の内部状態（診断用）
+//
+// 操作: 短押し = カーソル移動 / 長押し = 実行（Exit 項目で設定画面へ戻る）
+// 他の設定画面と同じ操作系に揃えてある。
+extern int imu_cursor;   // GPS_TFT_map.ino で定義。ページ1のカーソル位置
+
+
+// タイトル右端の状態ドット。バンク警告と自動ロールトリムが両方 ON なら緑、
+// どちらかでも OFF ならオレンジ。誤警報対策を切ったまま飛ばないための目印。
+static void draw_imu_status_dot() {
+  extern volatile bool bank_warning_enabled;
+  const bool all_on = bank_warning_enabled && attitude_get_roll_trim_enabled();
+  header_footer.fillCircle(228, 18, 6, all_on ? COLOR_GREEN : COLOR_ORANGE);
+}
+
+static void draw_imu_page1() {
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("IMU / ESKF  1/2");
+  draw_imu_status_dot();
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextWrap(false);   // 長い項目名が 2 行に折り返さないように
+
+  int y = 2;
+  const int lh = 12;
+  bool ready = attitude_ready();
+
+  // ---- 姿勢の比較 ----
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("      ROLL   PITCH    YAW"); y += lh;
+  float er, ep, ey, br, bp, by;
+  attitude_get_euler(er, ep, ey);
+  get_imu_euler(br, bp, by);
+  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  // 未初期化・IMU 途絶時は数値を出さない（単位クォータニオンのままだと
+  // pitch=-90 というもっともらしい値が出て有効値と誤読される）
+  if (ready) backscreen.printf("ESKF %+6.1f %+6.1f %6.1f", er, ep, ey);
+  else       backscreen.print("ESKF   ---    ---    ---");
+  y += lh;
+  backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("BNO  %+6.1f %+6.1f %6.1f", br, bp, by);
+  y += lh;
+  // 巡航のトリム状態は瞬時ピッチではなく 30 秒平均で見る（フゴイドで±3度振れるため）。
+  // 直進中のロール自動トリムの累積量も併記して、どれだけ補正が入ったか分かるようにする。
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  if (attitude_pitch_avg_valid())
+    backscreen.printf("P avg30s %+5.1f  Rtrim %+.2f",
+                      attitude_get_pitch_avg_deg(), attitude_get_roll_trim_deg());
+  else
+    backscreen.printf("P avg30s   --    Rtrim %+.2f", attitude_get_roll_trim_deg());
+  y += lh + 6;
+
+  // ---- 注意書き ----
+  // ロールは常に 0 として較正するので、傾いた状態で APPLY してはいけない。
+  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print("Note: Make sure actual"); y += lh;
+  backscreen.setCursor(2, y);
+  backscreen.print("      aircraft roll is zero"); y += lh + 6;
+
+  // ---- 操作メニュー ----
+  const int mh = 17;
+  bool on_ground = (get_gps_mps() <= LEVEL_CALIB_MAX_MPS);
+  for (int i = 0; i < IMU_MENU_COUNT; i++) {
+    bool sel = (imu_cursor == i);
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
+    backscreen.print(sel ? ">" : " ");
+    backscreen.setCursor(14, y);
+    switch (i) {
+      case IMU_MENU_SETPITCH:
+        backscreen.printf("SET PITCH = %+.1f deg", attitude_get_pitch_target());
+        break;
+      case IMU_MENU_APPLY:
+        // 実行可否をそのまま出す。飛行中は通さない。
+        if (!ready)          backscreen.print("APPLY  (ESKF not ready)");
+        else if (!on_ground) backscreen.print("APPLY  (moving)");
+        else                 backscreen.print("APPLY  now = above");
+        break;
+      case IMU_MENU_BANKWARN: {
+        extern volatile bool bank_warning_enabled;
+        backscreen.printf("Bank warning(4deg1sec): %s",
+                          bank_warning_enabled ? "ON " : "OFF");
+        break;
+      }
+      case IMU_MENU_AUTOROLL:
+        backscreen.printf("Auto roll level detect: %s",
+                          attitude_get_roll_trim_enabled() ? "ON " : "OFF");
+        break;
+      case IMU_MENU_NEXTPAGE: backscreen.print("Next page (Detail) >"); break;
+      case IMU_MENU_EXIT:     backscreen.print("Exit >>");              break;
+    }
+    y += mh;
+  }
+
+  // ---- 現在保存されているオフセット ----
+  y += 4;
+  float lr, lp;
+  attitude_get_level_offset(lr, lp);
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("stored offset  R%+.1f  P%+.1f", lr, lp);
+
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+}
+
+
+// ページ2: センサー生値と ESKF 内部状態（診断用）
+static void draw_imu_page2() {
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("IMU / ESKF  2/2");
+  draw_imu_status_dot();
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+  int y = 2;
+  const int lh = 12;
+  const float R2D = 180.0f / (float)M_PI;
+  float g[3], a[3];
+  get_imu_raw_gyro(g);
+  get_imu_raw_accel(a);
+  float gn = sqrtf(g[0]*g[0]+g[1]*g[1]+g[2]*g[2]) * R2D;
+  float an = sqrtf(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- Gyro raw [deg/s] --"); y += lh;
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", g[0]*R2D, g[1]*R2D, g[2]*R2D); y += lh;
+  backscreen.setCursor(2, y);
+  // 静止中ならこの大きさが残留バイアス＋ノイズ。BNO085 は校正済みなので本来小さい。
+  backscreen.setTextColor(gn < 0.5f ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
+  backscreen.printf("|w| %.3f deg/s", gn); y += lh;
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- Accel raw [m/s2] --"); y += lh;
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", a[0], a[1], a[2]); y += lh;
+  backscreen.setCursor(2, y);
+  backscreen.printf("|a| %.3f  (g=9.807)", an); y += lh + 2;
+
+  bool st = attitude_is_static();
+  backscreen.setTextColor(st ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("STATIC: %s  %.1fs", st ? "YES" : "no ", attitude_get_static_secs());
+  y += lh + 2;
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- ESKF --"); y += lh;
+  bool ready = attitude_ready();
+  backscreen.setTextColor(ready ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("%s   GNSS upd:%lu", ready ? "READY" : "INIT...",
+                    (unsigned long)attitude_get_gnss_updates());
+  y += lh;
+
+  float bg[3], ba[3];
+  attitude_get_gyro_bias(bg);
+  attitude_get_accel_bias(ba);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  // 上限（1.0deg/s）に張り付いていたら初期姿勢誤差を吸っている疑い
+  backscreen.printf("bg %+5.2f %+5.2f %+5.2f d/s", bg[0]*R2D, bg[1]*R2D, bg[2]*R2D); y += lh;
+  backscreen.setCursor(2, y);
+  backscreen.printf("ba %+5.2f %+5.2f %+5.2f m/s2", ba[0], ba[1], ba[2]); y += lh + 2;
+
+  // ヨーの信頼度。水平加速度がある間しか可観測にならず、等速直進では育つ。
+  // 95%(2σ) で表記する。1σ のままだと「これ以下なら安心」と誤読されやすい。
+  float yacc = attitude_get_yaw_acc95_deg();
+  backscreen.setTextColor(yacc < 10.0f ? COLOR_GREEN
+                        : yacc < 40.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("yaw acc +-%.0f deg(95%%) init:%s",
+                    yacc, attitude_yaw_from_mag() ? "MAG" : "none");
+  y += lh + 2;
+
+  float lr, lp;
+  attitude_get_level_offset(lr, lp);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("level offset R%+.1f P%+.1f", lr, lp); y += lh + 4;
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print("long press: back to page 1");
+
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+}
+
+
+void draw_imudetail(int page) {
+  if (page % 2 == 0) draw_imu_page1();
+  else               draw_imu_page2();
+}
+
+
+
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -2143,6 +2653,8 @@ void draw_replayselect(int page, int cursor) {
     header_footer.printf("REPLAY  %d/%d", page + 1, pagecount);
   else
     header_footer.printf("REPLAY  loading...");
+  // 状態ドット。設定メニューの REPLAY 行と同じ意味（緑＝通常 GPS、赤＝再生中）。
+  header_footer.fillCircle(228, 18, 6, getReplayMode() ? COLOR_RED : COLOR_GREEN);
   header_footer.pushSprite(0, -10);
 
   // --- リスト本体 ---
@@ -3012,9 +3524,11 @@ uint16_t cpu_temp_status_color(float cpu_temp) {
 // フッターにはバッテリー残量推定・CPU 温度・空きヒープ（デバッグビルド時のみ）を表示し、
 // 電池・CPU 温度の行にはメニューと同じ丸アイコンを右寄せで表示する。
 void draw_setting_mode(int selectedLine, int cursorLine) {
-  // 行間 18px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
+  // 行間 16px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
   // 最終行（Save & Exit）が表示されなくなるため、項目を増やす場合はここも調整すること。
-  const int separation = 18;
+  // 現在の有効項目は 14（BRIGHTNESS は BRIGHTNESS_SETTING_AVAIL 未定義のため無効）。
+  //   14 x 16 = 224px < 240px。18px のままだと 252px となり Save & Exit が切れる。
+  const int separation = 16;
   tft.loadFont(AA_FONT_SMALL);
   textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
   tft.setTextColor(COLOR_BLACK);

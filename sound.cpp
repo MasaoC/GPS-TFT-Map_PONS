@@ -43,6 +43,9 @@ volatile int loadBuffer = 1;         // 次のデータを書き込む先のバ�
 volatile uint32_t bufferPos = 0;     // activeBuffer 内の現在再生位置
 volatile bool wav_playing = false;   // WAV 再生中フラグ
 volatile int wav_override_volume = 0;  // WAV再生時の最低保証ボリューム（0=制限なし）
+volatile int tone_override_volume = 0; // トーン再生時の最低保証ボリューム（0=制限なし）
+                                       // WAV とトーンは同時に鳴るため、最低保証ボリュームは
+                                       // 系統ごとに別変数で持つ（共用すると互いに上書きし合う）
 volatile int wav_playing_priority = 0;  // 現在再生中 WAV の優先度（高い方が優先）
 volatile int tone_playing_priority = 0; // 現在再生中トーンの優先度
 
@@ -241,7 +244,7 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
   // 【Sin トーン】アンプ ON 中（sin_playing=true）のときだけ加算
   if (sinmode && sin_playing) {
     phaseAcc += phaseInc;
-    mix += (int)(sineTable[(phaseAcc >> 24) % tableSize] - 128) * 4 * max((int)sound_volume, wav_override_volume) / 100;
+    mix += (int)(sineTable[(phaseAcc >> 24) % tableSize] - 128) * 4 * max((int)sound_volume, tone_override_volume) / 100;
   }
 
   // 【バリオ】WAV/トーン再生中も常時ミックス対象
@@ -250,7 +253,8 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
     if (vario_cycle_samples == 0 || s_vario_cycle_pos <= vario_on_samples) {
       // ON 区間: sin 波を加算（上昇中は能率補正で音量を絞る）
       s_vario_phase_acc += vario_phase_inc;
-      int vario_vol_adj = vario_ascending ? vario_volume * 2 / 5 : vario_volume;
+      // 上昇（高音）は小型スピーカーの能率差を補正するため VARIO_ASCEND_VOL_PCT[%] に減衰させる
+      int vario_vol_adj = vario_ascending ? vario_volume * VARIO_ASCEND_VOL_PCT / 100 : vario_volume;
       mix += (int)(sineTable[(s_vario_phase_acc >> 24) % tableSize] - 128) * 4 * VARIO_VOL_SCALE * vario_vol_adj / 100;
     } else {
       // OFF 区間: 加算なし（サイクルリセットのみ）
@@ -489,8 +493,10 @@ void stopPlayback() {
     delay(5);  // 割り込みが確実に止まるまで待つ
     pwm_set_gpio_level(PIN_PWMTONE, 512); // 10bit 中点 (=無音) に戻す。これを忘れるとポップノイズが出る。
     delay(5);  // 信号が安定してからアンプを切る
-    if (!vario_mode) {
-        setAmplifierState(false);  // バリオ使用中はアンプ維持
+    // バリオ使用中、およびトーン（SE）再生中はアンプを維持する。
+    // WAV とトーンは同時に鳴るため、WAV が先に終わってもトーンが残っていることがある。
+    if (!vario_mode && !sin_playing && !tone_in_gap) {
+        setAmplifierState(false);
     }
     DEBUG_P(20250424,"Playback stopped");
 }
@@ -814,7 +820,7 @@ static void startNextToneEntry() {
     tone_cur_freq         = e.freq;
     tone_cur_dur          = e.duration;
     tone_playing_priority = e.priority;
-    wav_override_volume   = e.min_volume;
+    tone_override_volume  = e.min_volume;
     tone_in_gap           = false;
     sin_solo              = e.solo_play;  // solo_play フラグを ISR 参照変数に反映
 
@@ -831,12 +837,16 @@ static void startNextToneEntry() {
 // toneBuffer に積まれたトーンを非ブロッキングで順番に再生する。
 // delay() を使わず millis() でタイミングを管理する。
 //
-// WAV との優先制御:
-//   WAV 再生中 (wav_playing=true): 出力を停止し、WAV 終了まで待機
-//   WAV 終了後: 一時停止していたトーンを再開（tone_paused=true の場合）
-//   WAV 開始時の優先度制御は startPlayWav() が行う
-//     - WAV priority > tone priority: WAV 割込み → トーン一時停止・WAV 後に再開
-//     - WAV priority ≤ tone priority: WAV を pending に退避 → トーン完了後に再生
+// WAV との関係:
+//   通常トーン (solo_play=false, クリック音など):
+//     WAV 再生中でも待たずに開始し、割り込み内で WAV と加算ミックスされる。
+//     優先度は見ない（短い SE が WAV を潰すことはないため）。
+//   solo_play トーン (コース外れ警告など、後続の音声 WAV より先に鳴らしたいもの):
+//     WAV 再生中 (wav_playing=true): 出力を停止し、WAV 終了まで待機
+//     WAV 終了後: 一時停止していたトーンを再開（tone_paused=true の場合）
+//     WAV 開始時の優先度制御は startPlayWav() が行う
+//       - WAV priority > tone priority: WAV 割込み → トーン一時停止・WAV 後に再開
+//       - WAV priority ≤ tone priority: WAV を pending に退避 → トーン完了後に再生
 // ============================================================
 void loop_tone() {
     // solo_play トーン再生中のみ WAV を待機させる
@@ -892,7 +902,7 @@ void loop_tone() {
                 sinmode               = false;
                 sin_solo              = false;  // solo_play フラグをリセット
                 tone_playing_priority = 0;
-                wav_override_volume   = 0;
+                tone_override_volume  = 0;
                 if (toneBufHead != toneBufTail) {
                     startNextToneEntry();  // 次のエントリを開始
                 } else if (!wav_playing) {
@@ -911,8 +921,13 @@ void loop_tone() {
 
     // 未再生: バッファに積まれていれば開始
     if (toneBufHead != toneBufTail) {
-        // 高優先度WAV再生中はトーン開始を待機（fixed.wavなどが埋もれないよう）
-        if (wav_playing && wav_playing_priority > toneBuffer[toneBufHead].priority) {
+        // solo_play トーンは WAV のバッファ送出を止めてしまうので、
+        // より高優先の WAV 再生中は開始を待機する（fixed.wav などが埋もれないよう）。
+        // 通常トーン（solo_play=false）は WAV と加算ミックスされるだけで WAV を潰さないため、
+        // 優先度に関係なく即座に開始する。ここで待たせると、WAV 再生中に押した
+        // クリック音が溜まり、WAV 終了後にまとめて鳴る不自然な挙動になる。
+        if (wav_playing && toneBuffer[toneBufHead].solo_play &&
+            wav_playing_priority > toneBuffer[toneBufHead].priority) {
             // 待機 — 次ループで再チェック
         } else {
             startNextToneEntry();

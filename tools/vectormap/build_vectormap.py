@@ -80,10 +80,13 @@ SITES = {
 #               高ズームでは簡易版(z8 相当)では海岸線が粗すぎて使えないため。
 #               低ズームは簡易版で十分で、全国分を高精細で読むと非常に遅い。
 # min_area_px : 画面上でこの大きさ未満の面（池など）を捨てる
-# min_len_px  : 画面上でこの長さ未満の線を捨てる。これは「短いスタブの除去」であって
-#               長さで幹線を選別するものではない。道路網は交差点ごとに way が分かれ、
-#               linemerge も分岐で切れるため、長さで重要度を測ることはできない。
-#               線のデータ量は simplify の許容誤差（tol_scale）で制御する。
+# min_len_px  : 画面上でこの長さ未満の線を捨てる。これは「1px 未満で見えない断片の除去」
+#               であって、長さで幹線を選別するものではない。
+#               道路網は交差点ごとに way が分かれ、linemerge もインターチェンジ等の
+#               分岐で切れるため、結合後でも断片の長さは短い（高速道路で中央値 212m）。
+#               ここを 1px より大きくすると道路が虫食いになる。実測では 3px にしていた
+#               ときに LOD2 で高速道路の総延長の 37% が消えていた。
+#               0.5px なら本数は 43% 減らせて総延長の損失は 3.6% に収まる。
 LODS = [
     dict(lod=0, min_scale=26.0, unit_e7=100, tile_e7=1_250_000, tol_scale=52.32994872,
          bboxes=list(SITES.values()), sea_bg=True, land_hires=True,
@@ -91,18 +94,21 @@ LODS = [
          # 無いと沿岸サイトで海と陸の区別がつかない。高ズームでは簡易版の
          # land polygons では粗すぎるので land-polygons-split-4326 を使うこと。
          classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
-         min_area_px=8.0, min_len_px=3.0,
+         min_area_px=8.0, min_len_px=1.0,
          desc="飛行エリア・高精細"),
     dict(lod=1, min_scale=6.5, unit_e7=100, tile_e7=2_500_000, tol_scale=13.08248718,
-         bboxes=[(a - 0.35, b - 0.45, c + 0.35, d + 0.45) for (a, b, c, d) in SITES.values()],
+         # 周辺マージン。LOD1 は 18km 表示で、画面に映るのは中心から半径 9km
+         # (=0.08度) 程度。飛行エリア枠 + 0.15 度あれば十分で、以前の 0.35/0.45 度
+         # (約 39/41km) は過大だった（収録面積が 2.7 倍＝そのままフラッシュ消費）。
+         bboxes=[(a - 0.15, b - 0.18, c + 0.15, d + 0.18) for (a, b, c, d) in SITES.values()],
          sea_bg=True, land_hires=True,
          classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
-         min_area_px=8.0, min_len_px=3.0,
+         min_area_px=8.0, min_len_px=1.0,
          desc="飛行エリア周辺・中精細"),
     dict(lod=2, min_scale=1.6, unit_e7=500, tile_e7=5_000_000, tol_scale=3.2706218,
          bboxes=[(30.00, 128.00, 42.00, 143.00)], sea_bg=True, land_hires=False,
          classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_RAIL],
-         min_area_px=6.0, min_len_px=3.0,
+         min_area_px=6.0, min_len_px=1.0,
          desc="本州・四国・九州北部"),
     # scalelist の 0.2044 と 0.8177 の 2 段を兼ねるため、幾何は 0.8177 基準で細かく、
     # 島の足切りは 0.2044 基準で粗く、と別々に指定する。
@@ -111,7 +117,7 @@ LODS = [
          # 水面を入れないと、全国ズームで琵琶湖が消えてしまう（本機の用途上ここは必須）。
          bboxes=[(24.00, 122.00, 46.50, 146.50)], sea_bg=True, land_hires=False,
          classes=[VM_LANDMASS, VM_WATER],
-         min_area_px=1.5, min_len_px=3.0,
+         min_area_px=1.5, min_len_px=1.0,
          desc="日本全国・粗"),
 ]
 
