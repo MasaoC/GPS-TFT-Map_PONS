@@ -4,8 +4,10 @@
 // Role    : メインエントリポイント。
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
+//           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
+//           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 
 #include "navdata.h"
@@ -18,6 +20,9 @@
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
+#include "imulog.h"
+#include "attitude.h"
+#include "vectormap.h"
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
@@ -42,6 +47,10 @@ int screen_mode = MODE_MAP;  // 現在の画面モード（MODE_MAP / MODE_SETTI
 int detail_page = 0;         // サブ画面（GPSDetail / SDDetail）のページ番号
 int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（項目の通し番号）
 int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
+// IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_* と対応。
+int imu_cursor = 0;
+// バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
+volatile bool bank_warning_enabled = true;
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;                // 現在のマップスケール [pixels/km]
 
@@ -50,7 +59,6 @@ double scale;                // 現在のマップスケール [pixels/km]
 // selectedLine >= 0:  その行の値を変更中
 int selectedLine = -1;
 int cursorLine = 0;
-int lastload_zoomlevel;  // 前回 BMP ロードを要求したズームレベル（変化検知用）
 
 // --- コース警告 ---
 // course_warning_index: 0〜900 の積算値（単位: 度・秒）。
@@ -81,8 +89,6 @@ volatile bool c0_is_redrawing = false;  // Core1側の重複検出用フラグ
 // リンカシンボルでは下限がわからないため、この方法で代替する。
 volatile uint32_t _core1_base_sp = 0;
 
-// Core1 からの BMP ロード完了を受けて次ループで即再描画させるための volatile フラグ
-// （Core1 が書き込み、Core0 が読む。volatile で最適化を防ぐ）
 volatile int scaleindex = 3;    // scalelist のインデックス（初期値 3 = SCALE_LARGE_GMAP）
 volatile int sound_volume  = 50; // 音量 0〜100
 volatile int vario_volume  = 10; // バリオメーター音量 0〜100（設定画面から変更可）
@@ -98,8 +104,12 @@ void update_course_warning(float degpersecond);
 void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
+static void imu_execute();
 void next_scaleindex();
-int scaleindex_zoomlevel(int index);
+// 設定画面のラベル用に、現在のスケールで画面横幅(240px)が何 km に相当するかを返す。
+// 以前は Google タイルのズーム番号(zoom5〜13)を表示していたが、ベクタ地図に移行して
+// タイルとの対応が無くなったため、実際の距離で表すようにした。
+float scale_screen_km(int index);
 // Create Button objects
 Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallback);
 
@@ -167,6 +177,7 @@ void setup(void) {
   airdata_wire_begin();
   // BNO085 を先に初期化する（リセット後のブート時間を確保するため）
   imu_setup();
+  attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gps.cpp から流し込む）
   // MS5611 初期化（BNO085 の後に呼ぶ）
   airdata_setup();
 
@@ -207,6 +218,13 @@ void setup(void) {
 // Core0 と独立して動作し、重いSD処理・音声再生を引き受けることで
 // Core0 の描画ループをブロックしない設計になっている。
 void setup1(void) {
+  // タスクキューの mutex は何よりも先に初期化する。
+  // arduino-pico の main() は multicore_launch_core1() を呼んでから setup() を呼ぶため、
+  // Core0 の setup() と この setup1() は並行に走る。Core0 は setup() 内で enqueueTask() を
+  // 呼ぶので、mutex_init が遅れると未初期化の mutex を掴む危険がある。
+  // 特に下の while(!Serial) は USB 接続まで待つため、その後ろに置くと窓が極端に長くなる。
+  mutex_init(&taskQueueMutex);  // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
+
   Serial.begin(38400);
   #ifndef RELEASE
     while (!Serial) {
@@ -214,9 +232,6 @@ void setup1(void) {
     }
   #endif
 
-
-    
-  mutex_init(&taskQueueMutex);  // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
   init_destinations();           // 目的地リストを SD から読み込む
   setup_sound();                 // スピーカー・アンプ・PWM を初期化
 
@@ -233,6 +248,47 @@ void setup1(void) {
 
 
 
+// ============================================================
+// get_jst_now(): GPS の UTC 日時から現在の JST 日時を求める
+// ============================================================
+// GPS パケット受信時刻からの millis() 経過分を足して現在時刻を推定し、
+// UTC+9 の JST に変換する。日をまたぐ場合は日付を繰り上げる（うるう年考慮）。
+// Euler 角ログと生 IMU ログの両方が同じ日付のファイル名を使うため関数化している。
+//
+// 戻り値: GPS 日時が有効なら true。false のとき出力引数の内容は不定。
+static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &cs) {
+  if (!get_gpsdate().isValid() || !get_gpstime().isValid()) return false;
+
+  // millis() オフセットで UTC 時刻を推定し JST（UTC+9）に変換
+  uint32_t elapsed_ms = millis() - get_gps_fix_millis();
+  int utc_cs = get_gpstime().centisecond() + (int)(elapsed_ms / 10);
+  int utc_s  = get_gpstime().second()      + utc_cs / 100;
+  int utc_m  = get_gpstime().minute()      + utc_s  / 60;
+  int utc_h  = get_gpstime().hour()        + utc_m  / 60;
+  cs = utc_cs % 100;
+  s  = utc_s  % 60;
+  mi = utc_m  % 60;
+  int jst_total_h = utc_h + 9;
+  bool next_day   = (jst_total_h >= 24);
+  h = jst_total_h % 24;
+
+  // JST 日付計算（日をまたぐ場合に翌日へ繰り上げ）
+  y  = get_gpsdate().year();
+  mo = get_gpsdate().month();
+  d  = get_gpsdate().day() + (next_day ? 1 : 0);
+  static const uint8_t days_in_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+  int max_day = days_in_month[mo];
+  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0))
+    max_day = 29;  // うるう年
+  if (d > max_day) {
+    d = 1;
+    mo++;
+    if (mo > 12) { mo = 1; y++; }
+  }
+  return true;
+}
+
+
 //===============MAIN LOOP CORE0=================
 // Core0 のメインループ。以下の処理を毎ループ実行する:
 //   1. ボタン状態の読み取り
@@ -245,6 +301,15 @@ void loop() {
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
   // リプレイを一時停止する。戻ってきたら続きから再生される。
   replay_set_paused(screen_mode != MODE_MAP);
+  // 生 IMU ログを止めるのはリプレイ中だけ
+  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
+  //
+  // ※ GPS 日時の有効性では止めないこと。
+  //   以前は日時未確定でも止めていたが、それだと屋内など測位できない場所で
+  //   IMU の生ログが一切取れず（wrote=0）、ベンチでの検証ができなかった。
+  //   日時が無いときは下でファイル名を imuraw/nofix.bin にフォールバックする。
+  //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
+  imulog_set_paused(getReplayMode());
   gps_loop(0);  // ループ先頭で GPS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
 
@@ -277,59 +342,86 @@ void loop() {
   // 「再生した飛行の日付」のファイルに現在の（静止した）IMU 値を追記してしまい、
   // 実際の飛行記録を汚してしまう。下の prev_jst_cs による単調増加チェックも
   // 再生日時に引きずられて、通常モードに戻ったあと記録が止まる原因になる。
-  if (!getReplayMode() && get_imu_rv_updated() && get_gpsdate().isValid() && get_gpstime().isValid()) {
-    // millis() オフセットで UTC 時刻を推定し JST（UTC+9）に変換
-    uint32_t elapsed_ms = millis() - get_gps_fix_millis();
-    int utc_cs = get_gpstime().centisecond() + (int)(elapsed_ms / 10);
-    int utc_s  = get_gpstime().second()      + utc_cs / 100;
-    int utc_m  = get_gpstime().minute()      + utc_s  / 60;
-    int utc_h  = get_gpstime().hour()        + utc_m  / 60;
-    int log_cs = utc_cs % 100;
-    int log_s  = utc_s  % 60;
-    int log_m  = utc_m  % 60;
-    int jst_total_h = utc_h + 9;
-    bool next_day   = (jst_total_h >= 24);
-    int log_h       = jst_total_h % 24;
+  int jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs;
+  bool jst_valid = get_jst_now(jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs);
 
-    // JST 日付計算（日をまたぐ場合に翌日へ繰り上げ）
-    int jst_year  = get_gpsdate().year();
-    int jst_month = get_gpsdate().month();
-    int jst_day   = get_gpsdate().day() + (next_day ? 1 : 0);
-    static const uint8_t days_in_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-    int max_day = days_in_month[jst_month];
-    if (jst_month == 2 && (jst_year % 4 == 0) && (jst_year % 100 != 0 || jst_year % 400 == 0))
-      max_day = 29;  // うるう年
-    if (jst_day > max_day) {
-      jst_day = 1;
-      jst_month++;
-      if (jst_month > 12) { jst_month = 1; jst_year++; }
-    }
+  // ---- リプレイ用 ESKF 結果ログ（画面の再現に使う）----
+  // ESKF が未収束の間は書かない。行が無い＝そのとき画面にも出ていなかった、を意味する。
+  // 契機は BNO085 のレポート到着ではなく固定周期にする。ESKF の出力は連続なので、
+  // レポートの到着ゆらぎで間隔がばらつくと再生が不均一になるため。
+  // 保険として実測の GNSS フィックスも要求する。日時が再生由来のまま残っていると
+  // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
+  static uint32_t last_replaydata_ms = 0;
+  if (!getReplayMode() && jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
+      (millis() - last_replaydata_ms) >= IMU_REPLAYDATA_INTERVAL_MS) {
 
-    // ファイルパス生成: euler/yyyymmdd.txt
-    char euler_fname[24];
-    snprintf(euler_fname, sizeof(euler_fname), "euler/%04d%02d%02d.txt",
-             jst_year, jst_month, jst_day);
-
-    // Euler 角取得（参照渡し: roll, pitch, yaw [度]）
-    float euler_roll, euler_pitch, euler_yaw;
-    get_imu_euler(euler_roll, euler_pitch, euler_yaw);
-
-    // モノトニック保証: GPS 2Hz パケット間の処理遅延の揺れでタイムスタンプが
+    // モノトニック保証: GPS パケット間の処理遅延の揺れでタイムスタンプが
     // 逆転することがあるため、前回より小さい場合はこの読み取りをスキップする。
     static int32_t prev_jst_cs = -1;
     int32_t this_jst_cs = (int32_t)log_h * 360000L + log_m * 6000 + log_s * 100 + log_cs;
     if (prev_jst_cs < 0 || this_jst_cs > prev_jst_cs) {
       prev_jst_cs = this_jst_cs;
-      enqueueTask(createLogEulerTask(log_h, log_m, log_s, log_cs,
-                                     euler_roll, euler_pitch, euler_yaw, euler_fname,
-                                     jst_year, jst_month, jst_day));
+      last_replaydata_ms = millis();
+
+      char rd_fname[32];   // "imu_replaydata/20260316.txt" = 27文字
+      snprintf(rd_fname, sizeof(rd_fname), "%s/%04d%02d%02d.txt",
+               IMU_REPLAYDATA_DIR, jst_year, jst_month, jst_day);
+
+      // 画面に出ているのと同じ値を残す（マウント補正・ゼロ点・自動トリム適用後）
+      float a_roll, a_pitch, a_yaw;
+      attitude_get_euler(a_roll, a_pitch, a_yaw);
+
+      enqueueTask(createLogImuReplayTask(log_h, log_m, log_s, log_cs,
+                                         a_roll, a_pitch, a_yaw,
+                                         attitude_get_pitch_avg_deg(),
+                                         attitude_pitch_avg_valid(),
+                                         attitude_get_roll_trim_deg(),
+                                         attitude_get_yaw_acc95_deg(),
+                                         rd_fname,
+                                         jst_year, jst_month, jst_day));
+    }
+  }
+
+  // ---- 生 IMU ログ: 満杯になったバッファを Core1 へ引き渡す ----
+  // imulog_take_pending() が 0/1 を返したら、そのバッファは「Core1 へ引き渡し済み」に
+  // マークされているため、必ずタスクを enqueue しないとバッファが解放されず Core0 が詰まる。
+  // リプレイ中は記録しない（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
+  if (!getReplayMode()) {
+    int imulog_buf = imulog_take_pending();
+    if (imulog_buf >= 0) {
+      char imu_fname[24];
+      bool queued;
+      if (jst_valid) {
+        snprintf(imu_fname, sizeof(imu_fname), "imuraw/%04d%02d%02d.bin",
+                 jst_year, jst_month, jst_day);
+        queued = enqueueTask(createFlushImuLogTask(imulog_buf, imu_fname,
+                                                  jst_year, jst_month, jst_day,
+                                                  log_h, log_m, log_s));
+      } else {
+        // GPS 未測位（屋内テスト等）。日付が決まらないので固定名へ書く。
+        // レコードはホスト時刻 t_us を持つので、これでも解析はできる。
+        // ファイルのタイムスタンプは SdFat の下限（1980 年以降）を満たす固定値にする。
+        snprintf(imu_fname, sizeof(imu_fname), "imuraw/nofix.bin");
+        queued = enqueueTask(createFlushImuLogTask(imulog_buf, imu_fname,
+                                                  2020, 1, 1, 0, 0, 0));
+      }
+      // キュー満杯でタスクが捨てられたらバッファを戻す。
+      // 戻さないと busy のままになり、2 枚とも失った時点で記録が恒久停止する。
+      if (!queued) imulog_release_pending(imulog_buf);
     }
   }
 
   // 気圧高度が更新されたタイミングで Kalman 観測ステップを実行する
-  // （predict は 50Hz で走り、update は気圧の更新レート ~40Hz で走る）
+  // ※ update の実レートは約 3.7Hz。~40Hz ではない（2026-08-18 に実ログで確認）。
+  //   MS5611 自体は ~40Hz でサンプルするが、airdata_update() が true を返すのは
+  //   VSPEED_WINDOW_MS(250ms) のトリム平均ウィンドウが完了したときだけのため
+  //   （プロペラ干渉 ~4.5Hz を除去する意図的な設計。airdata.cpp 参照）。
+  //   したがって predict:update の比はおよそ 33:3.7 ≒ 9:1 になる。
   if (airdata_updated) {
     imu_kalman_baro_update(get_airdata_altitude());
+    // 生 IMU ログにも気圧を残す（ESKF の検証と高度の突き合わせ用）
+    imulog_push(IMULOG_ID_BARO, 0, IMULOG_ACC_NONE,
+                get_airdata_pressure(), get_airdata_altitude(), get_airdata_temperature());
   }
 
   // GNSS高度による気圧基準補正（3Dフィックス有効時のみ、内部で1秒レート制限）
@@ -357,6 +449,50 @@ void loop() {
   // バリオメーター音更新（内部で 100ms レート制限。毎ループ呼んでよい）
   update_vario();
 
+  // ---- バンク角の警告 ----
+  // 実測（2026-07-26 琵琶湖 45分）では 4 度超えが 31 回あったが、中央継続は 0.2 秒。
+  // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
+  // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
+  // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
+  if (bank_warning_enabled && attitude_ready() && !getReplayMode()) {
+    static uint32_t bank_over_since_ms = 0;
+    static uint32_t bank_last_warn_ms  = 0;
+    static bool     bank_warned        = false;  // 発報済み。解除条件を満たすまで鳴らさない
+    float wr, wp, wy;
+    attitude_get_euler(wr, wp, wy);
+    uint32_t now_ms = millis();
+    const float bank_abs = fabsf(wr);
+
+    // 再武装。バンクが BANK_WARN_CLEAR_DEG 未満まで戻り、かつ発報から
+    // BANK_WARN_REARM_MS 以上経ってから。バンクが超過したままなら何時間でも鳴らさない
+    // （センサーのズレで超過が続く不具合を想定しているため、時間だけでは解除しない）。
+    if (bank_warned && bank_abs < BANK_WARN_CLEAR_DEG &&
+        (now_ms - bank_last_warn_ms) >= BANK_WARN_REARM_MS) {
+      bank_warned = false;
+    }
+
+    if (bank_abs > BANK_WARN_DEG) {
+      if (bank_over_since_ms == 0) bank_over_since_ms = now_ms;
+      if (!bank_warned && (now_ms - bank_over_since_ms) >= BANK_WARN_HOLD_MS) {
+        bank_last_warn_ms = now_ms;
+        bank_warned = true;
+        enqueueTask(createPlayWavTask("wav/bank_warning.wav", 3));
+        enqueueTask(createLogSdfTask("BANK WARN roll=%+.1f deg", wr));
+      }
+    } else {
+      bank_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
+    }
+  }
+
+  // ---- 直進中のロール自動トリムが入ったらログに残す ----
+  // 事後検証できるよう、1 回の補正量と累積量を記録する。
+  {
+    float applied, total;
+    if (attitude_take_roll_trim_event(applied, total)) {
+      enqueueTask(createLogSdfTask("ROLL TRIM %+.2f deg (total %+.2f)", applied, total));
+    }
+  }
+
 
 #ifndef RELEASE
   // デバッグ時: PC シリアルから GPS モジュールへコマンドを転送可能
@@ -367,8 +503,18 @@ void loop() {
 
   // GPS 更新や BMP ロードがなくても、一定間隔で強制再描画する
   // （時刻表示など時間経過で変わる表示の更新保証）
-  if ((millis() - screen_update_time > SCREEN_FRESH_INTERVAL)) {
-    redraw_screen = true;
+  //
+  // VARIO 詳細はセンサー値を読むための画面で、他に再描画トリガーが無いため、
+  // この間隔がそのまま表示の更新レートになる。地図画面と同じ 1050ms だと
+  // 約 0.95Hz しか出ないので、この画面だけ短い間隔を使う。
+  {
+    unsigned long fresh_interval =
+        (screen_mode == MODE_VARIODETAIL || screen_mode == MODE_IMUDETAIL)
+        ? SCREEN_FRESH_INTERVAL_DETAIL
+        : SCREEN_FRESH_INTERVAL;
+    if (millis() - screen_update_time > fresh_interval) {
+      redraw_screen = true;
+    }
   }
 
   // 60秒ごとに電圧と JST 時刻をテキストログへ記録（どの画面モードでも実行）
@@ -379,6 +525,35 @@ void loop() {
       GpsTime t = get_gpstime();
       int jst_h = (t._hour + 9) % 24;
       enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %02d:%02d JST", get_input_voltage(), analogReadTemp(), jst_h, t._min));
+
+      // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
+      // 生レポートのレート要求を変えたら必ずこの行を確認すること:
+      //   GRV=15.0 LACC=15.0 RV=5.0 なら正常。
+      //   これらが設定値より低ければ → BNO085 の配信飢餓。要求レートが過大で、
+      //     古い加速度を繰り返し積分してバリオが暴れる（2026-08-17 の回帰）。
+      //   stale が増えていれば → 上記の飢餓が実際に起きて predict を止めた回数。
+      //   MS5611 が ~40Hz から落ちていれば → 気圧観測レートの低下。
+      //   drop が増えていれば → SD 書き出しが追いつかず生ログを取りこぼしている。
+      // ※ 2 行に分けること。log_sd() は logtext[128] に "<起動秒>:" を前置するため、
+      //   1 行にまとめると稼働時間が延びるほど末尾が切り詰められる（実際 wrote= が消えた）。
+      enqueueTask(createLogSdfTask("rate GRV=%.1f LACC=%.1f RV=%.1f MS5611=%.1f Hz",
+                                   get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz(),
+                                   get_airdata_win_hz()));
+      enqueueTask(createLogSdfTask("raw GYR=%.1f ACC=%.1f MAG=%.1f Hz stale=%lu drop=%lu wrote=%lu",
+                                   get_imu_gyro_hz(), get_imu_accel_hz(), get_imu_mag_hz(),
+                                   (unsigned long)get_imu_lacc_stale_skips(),
+                                   (unsigned long)imulog_get_dropped(),
+                                   (unsigned long)imulog_get_written()));
+      // ヨーの不確かさを飛行後に確認できるよう残す。
+      // 生ログには σ そのものは入っていないが、tools/imulog/eskf.py を流せば
+      // 50Hz 全分解能で再現できる。こちらは 60 秒ごとの粗い突き合わせ用。
+      {
+        float lvr, lvp;
+        attitude_get_level_offset(lvr, lvp);
+        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f mag=%d lvl R%+.1f P%+.1f",
+                                     (int)attitude_ready(), attitude_get_yaw_sigma_deg(),
+                                     (int)attitude_yaw_from_mag(), lvr, lvp));
+      }
     }
   }
 
@@ -402,6 +577,9 @@ void loop() {
   } else if (screen_mode == MODE_MAPLIST) {
     if (redraw_screen)
       draw_maplist_mode(detail_page);
+  } else if (screen_mode == MODE_IMUDETAIL) {
+    if (redraw_screen)
+      draw_imudetail(detail_page);
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -417,7 +595,9 @@ void loop() {
     bool new_gps_info = gps_new_location_arrived();
     if (new_gps_info) {
       // Automatic destination change for AUTO 10KM mode.
-      if (destination_mode == DMODE_AUTO10K) {
+      // currentdestination の有効性も確認する。init_destinations() は Core1 の setup1() で走るため、
+      // それが終わる前に Core0 がここへ来ると -1（未選択）のまま配列外を読んでしまう。
+      if (destination_mode == DMODE_AUTO10K && currentdestination != -1 && currentdestination < destinations_count) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
@@ -466,12 +646,11 @@ void loop() {
     }
 
 
-    // BMPロード完了 or GPSの情報が更新された。
-    if (new_gmap_ready || new_gps_info) {
+    if (new_gps_info) {
       redraw_screen = true;
     }
 
-    // GPS 更新と BMP ロード完了の両方で redraw_screen が立つため、
+    // GPS 更新のたびに redraw_screen が立つため、
     // 通常は毎秒 2 回程度この描画ブロックが実行される。
     if (redraw_screen) {
       TIMING_START(redraw);
@@ -492,45 +671,23 @@ void loop() {
       nav_update();   // 磁気コース(MC)・目的地距離(dist)を最新 GPS 位置で再計算
       draw_header();  // ヘッダー（速度・衛星数など）を TFT に直接描画
 
-      new_gmap_ready = false;
 
-      // ---- バックスクリーン（ダブルバッファ）を黒でクリア ----
       // 描画はすべてバックスクリーンに対して行い、最後に push_backscreen() で
       // 一括転送することでちらつきを防ぐ。
-      clean_backscreen();
+      // 背景のクリアは draw_vectormap() が行うので、ここでは何もしない。
 
-      // scaleindex → Google Map ズームレベルの変換
-      int zoomlevel = scaleindex_zoomlevel(scaleindex);
+      // ---- レイヤー 1: 地図背景 ----
+      // フラッシュ内蔵のベクタ地図（OpenStreetMap 由来）を backscreen へ直接描画する。
+      // 回転は latLonToXY と同じ座標変換に吸収されるため、TRACKUP でも画面四隅まで埋まる。
+      // SD カードは不要で、位置が動いても I/O は発生しない。
+      draw_vectormap(new_lat, new_long, scale, drawupward_direction);
 
-      // ---- レイヤー 1: Google Map 画像（BMP）を背景として描画 ----
-      bool gmap_drawed = false;
-      if (gmap_loaded_active)
-        gmap_drawed = draw_gmap(drawupward_direction);
-
-      // GPS 位置が変わった or ズームレベルが変わった時に新しい BMP を Core1 に要求
-      if (new_gps_info || lastload_zoomlevel != zoomlevel) {
-        lastload_zoomlevel = zoomlevel;
-        // 前回のロードタスクがまだ実行中なら中断してから新タスクを追加する
-        enqueueTaskWithAbortCheck(createLoadMapImageTask(new_lat, new_long, zoomlevel));
-      }
-
-      // ---- レイヤー 2: ベクターポリゴン地図 ----
-      // 詳細ズーム時は現在地周辺のエリア別地図を描画。
-      // 広域ズーム時は日本全体の海岸線ポリゴンを描画。
+      // ---- レイヤー 2: ポリゴン地図（滑走路・基準線などの注記）----
+      // 内蔵（フラッシュ）と SD の mapdata.csv 由来の両方を描く。
+      // 内蔵は SD が抜けていても必ず表示されるので、飛行に必須の注記はそちらに置く。
       if (scale > SCALE_SMALL_GMAP) {
-        if (check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON)) {
-          draw_Biwako(new_lat, new_long, scale, drawupward_direction, gmap_drawed);
-        } else if (check_within_latlon(0.6, 0.6, new_lat, OSAKA_LAT, new_long, OSAKA_LON)) {
-          draw_Osaka(new_lat, new_long, scale, drawupward_direction);
-        } else if (check_within_latlon(0.6, 0.6, new_lat, SHINURA_LAT, new_long, SHINURA_LON)) {
-          draw_Shinura(new_lat, new_long, scale, drawupward_direction);
-        }
-        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);  // SD から読んだカスタム地図
-      } else {
-        // 広域スケール: 日本全国の海岸線を描画
-        if (check_within_latlon(20, 40, new_lat, 35, new_long, 138)) {
-          draw_Japan(new_lat, new_long, scale, drawupward_direction);
-        }
+        draw_FlashMaps(new_lat, new_long, scale, drawupward_direction);
+        draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
       }
 
       gps_loop(4);  // 描画の合間に GPS データを受信（取りこぼし防止）
@@ -573,7 +730,7 @@ void loop() {
       // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
       draw_compass(drawupward_direction, COLOR_BLACK);
       draw_degpersec(degpersecond);
-      if (get_demo_biwako()) {
+      if (is_demo_active()) {
         draw_demo_biwako();  // 琵琶湖デモ表示（見た目や警告音などに慣れるための練習用）
       }
       if (getReplayMode()) {
@@ -585,23 +742,33 @@ void loop() {
       // リプレイ・デモモードは実際の精度と無関係なので、常に通常の飛行機マーカーを表示する
       bool   cur_fix_ok = get_gps_gnssFixOK();
       float  cur_hacc_m = get_gps_hacc_mm() / 1000.0f;  // mm → m
-      if (!get_gps_fix() && !get_demo_biwako() && !getReplayMode()) {
+      if (!get_gps_fix() && !is_demo_active() && !getReplayMode()) {
         draw_nofix_cross();                              // fix なし（通常モードのみ）: グレーの ×
-      } else if (!get_demo_biwako() && !getReplayMode() &&
+      } else if (!is_demo_active() && !getReplayMode() &&
                  (!cur_fix_ok || cur_hacc_m >= HACC_THRESHOLD_M)) {
         draw_hacc_circle(scale, get_gps_hacc_mm());     // gnssFixOK=false または hAcc 不良: 青い不確かさ円
       } else {
         draw_triangle(new_truetrack, steer_angle);       // 精度良好、またはリプレイ/デモ: 飛行機マーカー
       }
 
+      // ESKF のロール・ピッチ（リプレイ中を除き常時表示）。
+      // ※ 各種ポップアップより先に描くこと。コース警告のボックス（y=175 または 192 から
+      //   高さ25）は ESKF 行と重なるため、後から描かれる側が上になる。
+      //   状態通知のほうが優先度が高いので、ESKF は下のレイヤーに置く。
+      // push の前に呼んでバックスクリーンへ合成する（TFT へ直接描くとちらつくため）。
+      draw_eskf_attitude();
+      // ヨー角は自機アイコンの真下。TRACKUP ではロール・ピッチ行と近いので、
+      // 必ず draw_eskf_attitude() の後に描いてこちらを上のレイヤーにする。
+      draw_eskf_yaw();
+#ifdef DEBUG_ESKF
+      draw_eskf_debug();   // 比較用の詳細。上の表示位置は変えない
+#endif
+
       // コース警告表示（警告発報から 10 秒間だけ表示する）
       if (millis() - last_course_warning_time < 10000 && millis() > 10000) {
         draw_course_warning(steer_angle);
       }
 
-      if (!gmap_drawed) {
-        draw_nogmap(scale);  // BMP がない時は「地図なし」インジケータを表示
-      }
 
       draw_gs_track();  // ヘッダーに速度・コースなどのテキストを描画
       draw_map_footer();
@@ -645,7 +812,7 @@ void loop() {
       extern TimingStat ts_load_mapimage, ts_savecsv_flush;
       TIMING_REPORT(ts_load_mapimage);
       TIMING_REPORT(ts_savecsv_flush);
-      extern uint32_t _c1_overlap_count;
+      extern volatile uint32_t _c1_overlap_count;
       Serial.print("[TIME] C1_overlap_count="); Serial.println(_c1_overlap_count);
       Serial.println("=========================");
     }
@@ -703,7 +870,7 @@ void loop1() {
       case TASK_SAVE_CSV:
         saveCSV(
           currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.altitude,
+          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.gnss_altitude,
           currentTask.saveCsvArgs.kf_altitude,
           currentTask.saveCsvArgs.kf_vspeed,
           currentTask.saveCsvArgs.pressure,
@@ -712,54 +879,59 @@ void loop1() {
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
           currentTask.saveCsvArgs.centisecond);
         break;
-      case TASK_LOAD_MAPIMAGE:
-        load_mapimage(
-          currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
-          currentTask.loadMapImageArgs.zoomlevel);
-        break;
-      case TASK_LOG_EULER:
-        saveEuler(currentTask.logEulerArgs.hour,
-                  currentTask.logEulerArgs.minute,
-                  currentTask.logEulerArgs.second,
-                  currentTask.logEulerArgs.centisecond,
-                  currentTask.logEulerArgs.roll,
-                  currentTask.logEulerArgs.pitch,
-                  currentTask.logEulerArgs.yaw,
-                  currentTask.logEulerArgs.filename,
-                  currentTask.logEulerArgs.year,
-                  currentTask.logEulerArgs.month,
-                  currentTask.logEulerArgs.day);
+      case TASK_LOG_IMUREPLAY:
+        save_imu_replaydata(currentTask.imuReplayArgs.hour,
+                            currentTask.imuReplayArgs.minute,
+                            currentTask.imuReplayArgs.second,
+                            currentTask.imuReplayArgs.centisecond,
+                            currentTask.imuReplayArgs.roll,
+                            currentTask.imuReplayArgs.pitch,
+                            currentTask.imuReplayArgs.yaw,
+                            currentTask.imuReplayArgs.pitch_avg,
+                            currentTask.imuReplayArgs.pitch_avg_valid,
+                            currentTask.imuReplayArgs.roll_trim,
+                            currentTask.imuReplayArgs.yaw_acc95,
+                            currentTask.imuReplayArgs.filename,
+                            currentTask.imuReplayArgs.year,
+                            currentTask.imuReplayArgs.month,
+                            currentTask.imuReplayArgs.day);
         break;
       case TASK_LOAD_LOGO:
-        load_push_logo();  // SD からロゴ BMP を gmap_sprite に読み込む（pushSprite は Core0 が行う）
+        load_push_logo();  // SD からロゴ BMP を logo_sprite に読み込む（pushSprite は Core0 が行う）
+        break;
+      case TASK_FLUSH_IMULOG:
+        // 生 IMU ログの二重バッファ片側を SD へ書き出す（約 4KB / 0.45 秒分）。
+        // 書き出し後にバッファを解放するので、この処理が滞ると Core0 側で記録が捨てられる。
+        imulog_write_buffer(currentTask.imuLogArgs.bufidx,
+                            currentTask.imuLogArgs.filename,
+                            currentTask.imuLogArgs.year,
+                            currentTask.imuLogArgs.month,
+                            currentTask.imuLogArgs.day,
+                            currentTask.imuLogArgs.hour,
+                            currentTask.imuLogArgs.minute,
+                            currentTask.imuLogArgs.second);
         break;
     }
-    currentTask.type = TASK_NONE;
+    clearCurrentTask();  // mutex 内で TASK_NONE にする（Core0 の isTaskRunning() と整合させるため）
   } else {
     // No tasks, optionally sleep or yield
     delay(10);
   }
 }
-extern int max_page;  // Global variable to store maximum page number
+extern volatile int max_page;  // Core1 が更新する（実体は mysd.cpp・volatile）
 
 //==========BUTTON==========
 // マップスケール（ズームレベル）を次の段階へ切り替える。
 // 地図画面でのダブルクリックと、設定画面の Map scale 項目の両方から呼ばれる。
 void next_scaleindex() {
-  gmap_loaded_active = false;  // 旧 BMP を無効化（新スケールで再ロードする）
   scaleindex = (scaleindex + 1) % (sizeof(scalelist) / sizeof(scalelist[0]));
   scale = scalelist[scaleindex];
 }
 
-// scaleindex → Google Map ズームレベルの変換。
-// scalelist[5]（最大拡大）に対応する地図画像は無いため 0 を返す。
-int scaleindex_zoomlevel(int index) {
-  if (index == 0) return 5;   //SCALE_EXSMALL_GMAP
-  if (index == 1) return 7;   //SCALE_SMALL_GMAP
-  if (index == 2) return 9;   //SCALE_MEDIUM_GMAP
-  if (index == 3) return 11;  //SCALE_LARGE_GMAP
-  if (index == 4) return 13;  //SCALE_EXLARGE_GMAP
-  return 0;
+// 画面横幅 240px が何 km に相当するかを返す（設定画面のスケール表示用）。
+float scale_screen_km(int index) {
+  if (index < 0 || index >= (int)(sizeof(scalelist) / sizeof(scalelist[0]))) return 0;
+  return (float)(BACKSCREEN_SIZE / scalelist[index]);
 }
 
 // 短押しコールバック: 画面モードごとに動作が変わる。
@@ -803,10 +975,76 @@ void shortPressCallback() {
       loading_replaylist = true;
       enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
     }
+  } else if (screen_mode == MODE_IMUDETAIL) {
+    // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
+    // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
+    // 誤操作で意図しない値が焼き付かないよう 2 段階にしてある。
+    if (detail_page % 2 == 0) {
+      imu_cursor = (imu_cursor + 1) % IMU_MENU_COUNT;
+    }
+    redraw_screen = true;
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
   }
 }
+
+// IMU / ESKF 画面のカーソル位置に応じた実行処理（長押しから呼ばれる）。
+// 設定画面と同じく「短押し=カーソル移動 / 長押し=実行」の操作感に揃えてある。
+// この画面を出るのは Exit 項目からのみ（長押しで戻る動作は持たせていない）。
+static void imu_execute() {
+  redraw_screen = true;
+
+  if (detail_page % 2 != 0) {     // ページ2 では長押しでページ1へ戻る
+    detail_page = 0;
+    enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+    return;
+  }
+
+  switch (imu_cursor) {
+    case IMU_MENU_SETPITCH:
+      // 「いま機体は何度か」の申告値を 0.5 度ずつ巡回させる
+      attitude_cycle_pitch_target();
+      enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      break;
+
+    case IMU_MENU_APPLY:
+      // ★ 地上でのみ通す。飛行中に実行すると傾いた姿勢を基準として焼き付けてしまい、
+      //   バンク角警告が機能しなくなる。
+      if (attitude_ready() && get_gps_mps() <= LEVEL_CALIB_MAX_MPS) {
+        attitude_calibrate_to(attitude_get_pitch_target());
+        enqueueTask(createSaveSettingTask());               // 次回起動でも効くよう保存
+        // 較正できたことを音声で知らせる（トーンは鳴らさない。WAV と重なるため）。
+        // 優先度 3 = 案内音声と同等。較正の成否は取り違えると危険なので埋もれさせない。
+        enqueueTask(createPlayWavTask("wav/eskf_apply_done.wav", 3));
+      } else {
+        enqueueTask(createPlayMultiToneTask(440, 200, 1));  // 実行不可（低い音）
+      }
+      break;
+
+    case IMU_MENU_AUTOROLL:
+      attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
+      enqueueTask(createSaveSettingTask());
+      enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      break;
+    case IMU_MENU_BANKWARN:
+      bank_warning_enabled = !bank_warning_enabled;
+      enqueueTask(createSaveSettingTask());
+      enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      break;
+
+    case IMU_MENU_NEXTPAGE:
+      detail_page = 1;
+      enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+      break;
+
+    case IMU_MENU_EXIT:
+      enqueueTask(createSaveSettingTask());
+      screen_mode = MODE_MAP;
+      enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+      break;
+  }
+}
+
 
 // ダブルクリックコールバック: 地図画面でのみスケール（ズームレベル）を切り替える。
 // 短押しは毎回発火するため、ここでは短押しと重複しない処理だけを行う。
@@ -814,8 +1052,8 @@ void shortPressCallback() {
 void doublePressCallback() {
   DEBUG_PLN(20240801, "double press");
 
-  // MAP モード以外（設定画面や各詳細画面）では短押しがページ送り／カーソル移動を
-  // 担っているのでダブルクリックには意味がない。音も鳴らさずに抜ける。
+  // MAP モード以外（設定画面や各詳細画面）では短押しがページ送り／カーソル移動を、
+  // 長押しが実行を担っているのでダブルクリックには意味がない。音も鳴らさずに抜ける。
   if (screen_mode != MODE_MAP)
     return;
 
@@ -837,10 +1075,9 @@ static void backToSettingFromReplay() {
 static void startReplay(const char* filename) {
   set_replay_filename(filename);
   set_replaymode(true);
-  set_demo_biwako(false);       // デモとリプレイは同時使用不可 → デモを無効化
+  set_demo_off();       // デモとリプレイは同時使用不可 → デモを無効化
   latlon_manager.reset();       // 位置履歴をクリア
   reset_degpersecond();         // 旋回角速度をリセット
-  gmap_loaded_active = false;   // 地図キャッシュを無効化（再読み込みさせる）
   enqueueTask(createInitReplayTask());  // Core1: 選択したファイルを開いて読み込み開始
   selectedLine = -1;
   exit_setting();               // 設定を保存して地図画面へ
@@ -859,7 +1096,6 @@ static void handleReplaySelect() {
       set_replay_filename("");
       latlon_manager.reset();
       reset_degpersecond();
-      gmap_loaded_active = false;
       backToSettingFromReplay();
       break;
     case RITEM_FLIGHTONLY:
@@ -899,6 +1135,14 @@ void longPressCallback() {
   // 下の汎用パス（設定画面以外 → 設定画面へ戻る）より先に処理しないと項目を選べない。
   if (screen_mode == MODE_REPLAYSELECT) {
     handleReplaySelect();
+    return;
+  }
+
+  // IMU / ESKF 画面での長押し = 「実行」。
+  // 設定画面が「短押し=移動 / 長押し=実行」なので、そちらに操作感を合わせる。
+  // この画面には Exit 項目があるため、長押しで設定画面へ戻る動作は持たせない。
+  if (screen_mode == MODE_IMUDETAIL) {
+    imu_execute();
     return;
   }
 
@@ -991,6 +1235,10 @@ void update_degpersecond(int true_track) {
 // 目的地が 100km 以上離れている場合に警告音を鳴らす。
 // 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
+  // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
+  if (currentdestination == -1 || currentdestination >= destinations_count) {
+    return;
+  }
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
   if (calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon) > 100.0) {

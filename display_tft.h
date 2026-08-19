@@ -5,8 +5,9 @@
 //           画面サイズ・カラー定数・座標構造体・enum定義と、
 //           マップ/コンパス/ヘッダー/フッター/設定画面/
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
+//           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -46,14 +47,11 @@
     }
   };
 
-  enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_TARGETLINE,STRK_TARGETLINE2
-  };  
-
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_REPLAY,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,SETTING_EXIT,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE
+    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,
+    SETTING_IMU_DETAIL,SETTING_LEVEL_CALIB
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -73,8 +71,8 @@
   #define COLOR_YELLOW TFT_YELLOW
 
   extern TFT_eSPI tft;
+  extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (5×240px, 16bit)
-  extern bool fresh_display;
   extern int screen_brightness;
   
 #endif
@@ -88,13 +86,9 @@ Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, floa
 
 
 void draw_gs_track();
-void draw_loading_image();
-void draw_nogmap(double scale);
-bool draw_gmap(float drawupward_direction);
 void draw_degpersec(double degpersecond);
 void draw_map_footer();
 void setup_tft();
-void draw_strokes();
 
 void draw_header();
 void draw_footer();
@@ -123,8 +117,36 @@ void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
 
 
-void clean_backscreen();
+// IMU / ESKF 画面（ページ1）のメニュー項目。
+// display_tft.cpp の描画と GPS_TFT_map.ino の doublePressCallback() で共有する。
+#define IMU_MENU_SETPITCH 0
+#define IMU_MENU_APPLY    1
+#define IMU_MENU_BANKWARN 2
+#define IMU_MENU_AUTOROLL 3
+#define IMU_MENU_NEXTPAGE 4
+#define IMU_MENU_EXIT     5
+#define IMU_MENU_COUNT    6
+void draw_imudetail(int page);
 void push_backscreen();
+// 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
+// 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。
+// push_backscreen() の直前に呼ぶこと（バックスクリーンに合成するのでちらつかない）。
+void draw_eskf_attitude();
+// 自機アイコンのすぐ下に ESKF のヨー角（真方位 3 桁）を描く。
+// 黒＝信頼できる（アイコンも機首方向に回っている）、グレー＝信頼できない。
+// draw_eskf_attitude() より後に呼ぶこと（TRACKUP では表示位置が近いため）。
+void draw_eskf_yaw();
+// ESKF の姿勢を画面に出してよいか。リプレイ中は IMU 生データ（.bin）を再生しない
+// ＝ 実機（机の上）の姿勢しか無いので、ロール・ピッチ・ヨーはまとめて非表示にする。
+bool eskf_display_enabled();
+// ESKF のヨーを機首方位として信用してよいか（95%値 < ESKF_YAW_TRUST_95_DEG）。
+// リプレイ中は eskf_display_enabled() が false なので常に false になる。
+bool eskf_yaw_reliable();
+#ifdef DEBUG_ESKF
+// DEBUG_ESKF 有効時のみ、比較用の詳細（BNO085 の姿勢・ヨー・収束状態）を上部に足す。
+// draw_eskf_attitude() の表示位置は変えないこと。
+void draw_eskf_debug();
+#endif
 void draw_vsi();
 
 
@@ -132,18 +154,28 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
 void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
 void draw_track(double center_lat,double center_lon,float scale,float up);
+uint16_t mapdata_color(const char* name);  // 地図名の先頭文字 → 描画色
+void draw_FlashMaps(double center_lat,double center_lon,float scale,float up);  // 内蔵ポリゴン（SD不要）
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
-void draw_Japan(double center_lat,double center_lon,float scale,float up);
-void draw_Shinura(double center_lat,double center_lon,float scale,float up);
-void draw_Biwako(double center_lat,double center_lon,float scale,float up,bool gmap_drawed);
-void draw_Osaka(double center_lat,double center_lon,float scale,float up);
 bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
 void startup_demo_tft();
 void draw_demo_biwako();
 void draw_replay_indicator();
-void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
-void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+// 線分を backscreen の矩形にクリップする。完全に画面外なら false を返す。
+// TFT_eSPI の drawWedgeLine / drawLine は画面外の端点をそのまま走査するため、
+// 高倍率で端点が数千px 外に出ると 1 フレームに数百ms かかる。描画前に必ず通すこと。
+bool clip_line_to_screen(int* x0, int* y0, int* x1, int* y1);
+// 地図座標から作った線を描く（クリップ済み・非アンチエイリアスの太線）。
+// 道路やトラックのように本数が多い描画に使う。drawWideLine は画素ごとに
+// readPixel を呼ぶため本数が多いと極端に遅い（実装のコメント参照）。
+void draw_map_line(int x0, int y0, int x1, int y1, int w, uint16_t col);
+void draw_map(float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
+// 複数リングをまとめて even-odd 規則で塗りつぶす（島＝穴が自動的に抜ける）。
+// ring_start は要素数 nrings+1 で、リング i の点は [ring_start[i], ring_start[i+1])。
+// 辺数が上限を超える場合は何も描かず false を返す。
+bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
+                          const uint16_t* ring_start, uint8_t nrings, uint16_t color);
 void draw_nofix_cross();                              // GPS fix なし時のグレー × 描画
 void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixOK=false 時の不確かさ円描画
 void draw_triangle(int ttrack,int steer_angle);

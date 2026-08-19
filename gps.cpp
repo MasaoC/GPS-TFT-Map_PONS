@@ -3,10 +3,11 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : GPS受信・解析の実装（u-blox UBX バイナリ受信）。
 //           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
-//           位置・速度・時刻の取得、リプレイ/デモモード管理、
+//           位置・速度・時刻の取得、リプレイ管理、
+//           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
@@ -18,6 +19,8 @@
 #include "display_tft.h"
 #include "airdata.h"
 #include "imu.h"
+#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
 extern volatile bool userled_forced_on;
@@ -72,7 +75,7 @@ uint32_t get_gps_fix_millis() { return gps_fix_millis; }
 
 // --- GPS 最新値の保持変数 ---
 // UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
-double stored_longitude, stored_latitude, stored_truetrack, stored_altitude, stored_fixtype, stored_gs;
+double stored_longitude, stored_latitude, stored_truetrack, stored_gnss_altitude, stored_fixtype, stored_gs;
 int stored_numsats;
 
 // --- 最大 G/S 保持変数 ---
@@ -87,7 +90,12 @@ static int    maxgs_5min_hour  = 0;
 static int    maxgs_5min_min   = 0;
 static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
 bool gps_connection = false;  // GPS モジュールから1文字でも受信したら true
-bool demo_biwako = false;     // 琵琶湖デモモード（GPS を使わず仮想位置を生成する）
+// デモ飛行の現在地点（DEMO_OFF でデモ停止）。GPS を使わず仮想位置を生成する。
+demo_site_t demo_site = DEMO_OFF;
+double demo_lat = PLA_LAT;        // 仮想機体の現在位置
+double demo_lon = PLA_LON;
+double demo_mps = 0;              // 仮想対地速度 [m/s]
+double demo_truetrack = 280;      // 仮想真方位 [deg]
 
 // --- 衛星情報・受信フレームログ ---
 SatelliteData satellites[MAX_SATELLITES];  // 最大 MAX_SATELLITES 衛星分のデータを保持（PRN 0 = 空き）
@@ -150,6 +158,11 @@ static uint32_t ubx_hacc_mm      = 0;     // 水平精度推定値（NAV-PVT byt
 static uint32_t ubx_vacc_mm      = 0;     // 垂直精度推定値（NAV-PVT bytes 44-47、mm 単位）
 static uint32_t ubx_sacc_mmps    = 0;     // 速度精度推定値（NAV-PVT bytes 68-71、mm/s 単位）
 static float    ubx_veld_mps     = 0.0f;  // 垂直速度（NAV-PVT velD bytes 56-59、上昇正、m/s）
+// NED 水平速度。姿勢 ESKF の速度観測に使う（旋回中の遠心加速度を分離して真の重力方向を得るため）。
+// 符号は UBX の定義どおり N/E 正のまま保持する（velD だけは従来仕様に合わせて上昇正へ反転済み）。
+static float    ubx_veln_mps     = 0.0f;  // 北向き速度（NAV-PVT velN bytes 48-51、m/s）
+static float    ubx_vele_mps     = 0.0f;  // 東向き速度（NAV-PVT velE bytes 52-55、m/s）
+static uint32_t ubx_itow_ms      = 0;     // GPS 週内時刻（NAV-PVT iTOW bytes 0-3、ms）
 static bool     ubx_gnssFixOK    = false; // NAV-PVT flags bit0: gnssFixOK（GNSS フィックスが有効かつ品質 OK）
 
 // UBX-NAV-PVT (class=0x01, id=0x07, payload=92 bytes) ハンドラー
@@ -167,7 +180,9 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     ubx_day   = p[7];
     // u-blox は起動直後に validDate=1 でも year=2000/month=0/day=0 を返すことがある。
     // 2020 年以前・月日ゼロは未取得と同じく無効とみなす。
-    if (ubx_year < 2020 || ubx_month == 0 || ubx_day == 0) {
+    // 月・日は上限も確認する。月は GPS_TFT_map.ino の days_in_month[] の添字に使われるため、
+    // 13 以上が通ると配列外読み出しになる（utcToJst() は既に両側チェックしている）。
+    if (ubx_year < 2020 || ubx_month == 0 || ubx_month > 12 || ubx_day == 0 || ubx_day > 31) {
       ubx_date_valid = false;
     }
   }
@@ -199,13 +214,32 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   ubx_gnssFixOK = gnssFixOK;
 
   // 速度（mm/s）・方向（1e-5 度）
+  // velN (bytes 48-51) / velE (bytes 52-55): NED 水平速度。北・東が正。
   // velD (bytes 56-59): NED Down 方向（正=下降）→ 上昇正に反転して保存
+  int32_t velN    = (int32_t)(p[48]|(p[49]<<8)|(p[50]<<16)|(p[51]<<24));
+  int32_t velE    = (int32_t)(p[52]|(p[53]<<8)|(p[54]<<16)|(p[55]<<24));
   int32_t velD    = (int32_t)(p[56]|(p[57]<<8)|(p[58]<<16)|(p[59]<<24));
   int32_t gSpeed  = (int32_t)(p[60]|(p[61]<<8)|(p[62]<<16)|(p[63]<<24));
   int32_t headMot = (int32_t)(p[64]|(p[65]<<8)|(p[66]<<16)|(p[67]<<24));
+  ubx_veln_mps  = velN * 1e-3f;   // mm/s → m/s（北正）
+  ubx_vele_mps  = velE * 1e-3f;   // mm/s → m/s（東正）
   ubx_veld_mps  = -velD * 1e-3f;  // mm/s 下降正 → m/s 上昇正
   // 速度精度推定値（bytes 68-71: sAcc mm/s）
   ubx_sacc_mmps = (uint32_t)(p[68]|(p[69]<<8)|(p[70]<<16)|((uint32_t)p[71]<<24));
+  // GPS 週内時刻（bytes 0-3: iTOW ms）。生 IMU ログとの時刻対応付けに使う。
+  ubx_itow_ms   = (uint32_t)(p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24));
+
+  // 姿勢 ESKF のオフライン開発用に、GNSS 速度を生 IMU ログへ同じ時間軸で記録する。
+  // velD はここでは UBX 原義（下降正）に戻して記録し、PC 側で NED をそのまま扱えるようにする。
+  imulog_push(IMULOG_ID_GNSSVEL, ubx_itow_ms, IMULOG_ACC_NONE,
+              ubx_veln_mps, ubx_vele_mps, velD * 1e-3f, ubx_sacc_mmps * 1e-3f);
+
+  // 姿勢 ESKF の速度観測。3D フィックス時のみ渡す（品質の最終判断は sAcc で ESKF 側が行う）。
+  // リプレイ中は CSV 由来の値なので渡さない。
+  if (gnssFixOK && fixType >= 3 && !getReplayMode()) {
+    attitude_on_gnss_velocity(ubx_veln_mps, ubx_vele_mps, velD * 1e-3f,
+                              ubx_sacc_mmps * 1e-3f);
+  }
 
   // pDOP（0.01 スケール）
   uint16_t pDOP = (uint16_t)(p[76] | (p[77]<<8));
@@ -235,7 +269,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     double new_lon = lon  * 1e-7;
     stored_latitude  = new_lat;
     stored_longitude = new_lon;
-    stored_altitude  = hMSL * 1e-3;  // mm → m
+    stored_gnss_altitude  = hMSL * 1e-3;  // mm → m
   }
 
   stored_gs         = gSpeed * 1e-3f;  // mm/s → m/s
@@ -299,7 +333,13 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
       }
     }
     if (!stored) {
-      enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
+      // 衛星ごとにログを積むと、1 メッセージで 20 スロットのタスクキューを溢れさせて
+      // 他のタスクを落としてしまう（キュー満杯は USERLED 点灯として現れる）。10 秒に 1 回に制限する。
+      static unsigned long last_satfull_log = 0;
+      if (millis() - last_satfull_log > 10000) {
+        last_satfull_log = millis();
+        enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
+      }
     }
     // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
     if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;
@@ -404,7 +444,7 @@ static void process_ubx(uint8_t b) {
               Serial.print(" sv="); Serial.print(stored_numsats);
               Serial.print(" lat="); Serial.print(stored_latitude, 6);
               Serial.print(" lon="); Serial.print(stored_longitude, 6);
-              Serial.print(" alt="); Serial.print(stored_altitude, 1);
+              Serial.print(" alt="); Serial.print(stored_gnss_altitude, 1);
               Serial.print(" gs="); Serial.print(stored_gs, 2);
               Serial.print("m/s hdg="); Serial.print(stored_truetrack, 1);
               Serial.print(" time="); Serial.print(ubx_hour); Serial.print(":"); Serial.print(ubx_min); Serial.print(":"); Serial.print(ubx_sec);
@@ -626,6 +666,9 @@ uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度�
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
+float    get_gps_veln_mps()   { return ubx_veln_mps; }  // GNSS 北向き速度（m/s）
+float    get_gps_vele_mps()   { return ubx_vele_mps; }  // GNSS 東向き速度（m/s）
+uint32_t get_gps_itow_ms()    { return ubx_itow_ms; }   // GPS 週内時刻（ms）
 bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
@@ -986,26 +1029,73 @@ extern unsigned long last_gps_time;  // 実体は下方で定義（apply_replay_
 // リプレイ: CSV 1行分の内容を GPS の内部状態に反映する。
 // 通常モードで handle_navpvt() が UBX-NAV-PVT から行っていることと同じ内容を CSV から行う。
 // CSV に列が無い項目（v5 データの高度など）は更新せず、直前の値／実センサ値のままにする。
+// 姿勢ログ由来の値。実センサーではないので attitude_* とは別に保持する。
+static float    replay_roll_deg  = 0.0f;
+static float    replay_pitch_deg = 0.0f;
+static float    replay_yaw_deg   = 0.0f;
+static float    replay_pitch_avg = 0.0f;
+static float    replay_roll_trim = 0.0f;
+static float    replay_yaw_acc95 = 0.0f;
+static uint16_t replay_att_have  = 0;   // RHAVE_ATT* のビット
+
+// リプレイ中のロール・ピッチ。姿勢ログが無い日は false（表示しない）。
+bool get_replay_attitude(float &roll, float &pitch) {
+  if (!(replay_att_have & RHAVE_ATT)) return false;
+  roll  = replay_roll_deg;
+  pitch = replay_pitch_deg;
+  return true;
+}
+
+// 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true。
+// 旧 euler/ は BNO085 由来で、当時これらは画面に出ていなかったので再現もしない。
+bool get_replay_pitch_avg(float &avg) {
+  if (!(replay_att_have & RHAVE_ATT_AVG)) return false;
+  avg = replay_pitch_avg;
+  return true;
+}
+bool get_replay_roll_trim(float &trim) {
+  if (!(replay_att_have & RHAVE_ATT_TRIM)) return false;
+  trim = replay_roll_trim;
+  return true;
+}
+bool get_replay_yaw(float &yaw, float &acc95) {
+  if (!(replay_att_have & RHAVE_ATT_YAW)) return false;
+  yaw   = replay_yaw_deg;
+  acc95 = replay_yaw_acc95;
+  return true;
+}
+
 static void apply_replay_row(const ReplayRow* row) {
   last_gps_time = millis();
 
+  // --- 姿勢（姿勢ログがある日のみ）---
+  if (row->have & RHAVE_ATT) {
+    replay_roll_deg  = row->roll;
+    replay_pitch_deg = row->pitch;
+    replay_yaw_deg   = row->yaw;
+    replay_pitch_avg = row->pitch_avg;
+    replay_roll_trim = row->roll_trim;
+    replay_yaw_acc95 = row->yaw_acc95;
+    replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG | RHAVE_ATT_TRIM);
+  }
+
   // --- 位置 ---
   if (stored_latitude != row->lat || stored_longitude != row->lon)
-    if (!get_demo_biwako()) new_location_arrived = true;
+    if (!is_demo_active()) new_location_arrived = true;
   stored_latitude  = row->lat;
   stored_longitude = row->lon;
   ubx_pos_valid    = true;
   stored_fixtype   = 2;
 
   // --- 対地速度・真方位・高度 ---
-  if (row->have & RHAVE_ALT)
-    stored_altitude = row->altitude;
+  if (row->have & RHAVE_GNSSALT)
+    stored_gnss_altitude = row->gnss_altitude;
   if (row->have & RHAVE_GS) {
     stored_gs = row->gs;
     update_maxgs(stored_gs);
   }
   if (row->have & RHAVE_TTRACK) {
-    if (!get_demo_biwako()) newcourse_arrived = true;
+    if (!is_demo_active()) newcourse_arrived = true;
     stored_truetrack = row->ttrack;
     if (stored_truetrack < 0 || stored_truetrack > 360)
       stored_truetrack = 0;
@@ -1048,18 +1138,58 @@ static void apply_replay_row(const ReplayRow* row) {
   }
 }
 
-void toggle_demo_biwako() {
-  demo_biwako = !demo_biwako;
+// ---- デモ飛行の地点定義 ----
+// lat/lon はその地点のおおよその中心。basetrack は基準となる進行方位で、
+// 海岸線や川筋に沿って飛んでいるように見える向きを選んである。
+struct demo_site_def {
+  const char* name;
+  double lat;
+  double lon;
+  int basetrack;
+};
+static const demo_site_def DEMO_SITES[DEMO_SITE_COUNT] = {
+  { "OFF",       0,             0,             0   },
+  { "BIWAKO",    PLA_LAT,       PLA_LON,       280 },
+  { "SHIRAHAMA", SHIRAHAMA_LAT, SHIRAHAMA_LON, 200 },
+  { "KASAOKA",   KASAOKA_LAT,   KASAOKA_LON,   250 },
+  { "FUJIGAWA",  FUJIGAWA_LAT,  FUJIGAWA_LON,  190 },
+  { "TOKYO",     SHINURA_LAT,   SHINURA_LON,   220 },
+  { "OSAKA",     OSAKA_LAT,     OSAKA_LON,     240 },
+};
+
+demo_site_t get_demo_site() {
+  return demo_site;
+}
+
+const char* get_demo_site_name(demo_site_t site) {
+  if (site >= DEMO_SITE_COUNT) return "?";
+  return DEMO_SITES[site].name;
+}
+
+bool is_demo_active() {
+  return demo_site != DEMO_OFF;
+}
+
+// 地点を切り替える。仮想機体をその地点の中心に置き直し、軌跡も消す
+// （前の地点の軌跡が地球の反対側に残っていると描画が破綻するため）。
+void set_demo_site(demo_site_t site) {
+  if (site >= DEMO_SITE_COUNT) site = DEMO_OFF;
+  demo_site = site;
+  if (site != DEMO_OFF) {
+    demo_lat = DEMO_SITES[site].lat;
+    demo_lon = DEMO_SITES[site].lon;
+    demo_truetrack = DEMO_SITES[site].basetrack;
+  }
+  latlon_manager.reset();
   reset_maxgs();  // モード切替時に最大 G/S をリセット
 }
 
-bool get_demo_biwako() {
-  return demo_biwako;
+void next_demo_site() {
+  set_demo_site((demo_site_t)((demo_site + 1) % DEMO_SITE_COUNT));
 }
 
-void set_demo_biwako(bool biwakomode){
-  demo_biwako = biwakomode;
-  reset_maxgs();  // モード切替時に最大 G/S をリセット
+void set_demo_off() {
+  set_demo_site(DEMO_OFF);
 }
 
 unsigned long last_latlon_manager = 0;
@@ -1088,10 +1218,6 @@ GpsTime get_gpstime(){
 }
 
 unsigned long last_demo_gpsupdate = 0;
-double demo_biwako_lat = PLA_LAT;
-double demo_biwako_lon = PLA_LON;
-double demo_biwako_mps = 0;
-double demo_biwako_truetrack = 280;
 
 // 飛行軌跡（トラックログ）に現在位置を追加する。
 // 追加間隔を速度に応じて調整することで、約 50m おきに記録する。
@@ -1099,7 +1225,7 @@ double demo_biwako_truetrack = 280;
 //   高速（約 20m/s）→ 最小 1 秒間隔
 void add_latlon_track(float lat,float lon){
   int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
-  if(get_demo_biwako()){
+  if(is_demo_active()){
     tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
   }
   if(millis() - last_latlon_manager > tracklog_interval){
@@ -1109,47 +1235,49 @@ void add_latlon_track(float lat,float lon){
 }
 
 bool gps_new_location_arrived(){
-  if(get_demo_biwako()){
+  if(is_demo_active()){
     // 実 GPS と同じく 2Hz (500ms 間隔) で仮想位置を更新する。
     // 位置変位は 1Hz 時の半分 (0.00005 → 0.000025) にすることで、
     // 1 秒あたりの移動距離を同じに保つ。
     if(millis() > last_demo_gpsupdate + 500){
-      int biwa_spd = 10;
-      demo_biwako_lat += 0.000025*biwa_spd*cos(radians(get_gps_truetrack()));
-      if(calculateDistanceKm(demo_biwako_lat,demo_biwako_lon,PLA_LAT,PLA_LON) > 15){
-        demo_biwako_lat = PLA_LAT;
-        demo_biwako_lon = PLA_LON;
+      const demo_site_def& site = DEMO_SITES[demo_site];
+      int demo_spd = 10;
+      demo_lat += 0.000025*demo_spd*cos(radians(get_gps_truetrack()));
+      // 選択中の地点から離れすぎたら中心に戻す（地図の収録範囲から出ないように）
+      if(calculateDistanceKm(demo_lat,demo_lon,site.lat,site.lon) > 15){
+        demo_lat = site.lat;
+        demo_lon = site.lon;
         latlon_manager.reset();
       }
-      demo_biwako_lon += 0.000025*biwa_spd*sin(radians(get_gps_truetrack()));
+      demo_lon += 0.000025*demo_spd*sin(radians(get_gps_truetrack()));
       last_demo_gpsupdate = millis();
       new_location_arrived = true;
-      demo_biwako_mps = 7 + sin(millis() / 1500.0);
-      update_maxgs(demo_biwako_mps);  // DEMOモードでも最大 G/S を更新
+      demo_mps = 7 + sin(millis() / 1500.0);
+      update_maxgs(demo_mps);  // DEMOモードでも最大 G/S を更新
       
       
-      int basetrack = 280;
-      if(destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
-        basetrack = 100;
+      int basetrack = site.basetrack;
+      if(demo_site == DEMO_BIWAKO && destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
+        basetrack = 100;  // 琵琶湖の折り返し後は東向き
 
       
       int target_angle = basetrack+(20 + 10*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
 
-      int demo_steer_angle = target_angle - demo_biwako_truetrack;
+      int demo_steer_angle = target_angle - demo_truetrack;
       if(demo_steer_angle < -180){
         demo_steer_angle += 360;
       }else if(demo_steer_angle > 180){
         demo_steer_angle -= 360;
       }
       // 2Hz 化により呼び出し頻度が 2 倍になったため、1 呼び出しあたりの旋回ゲインを半分 (0.2 → 0.1) にして旋回速度を同等に保つ。
-      demo_biwako_truetrack += demo_steer_angle*0.1*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
-      if(demo_biwako_truetrack > 360)
-        demo_biwako_truetrack -= 360;
-      else if(demo_biwako_truetrack < 0)
-        demo_biwako_truetrack += 360;
+      demo_truetrack += demo_steer_angle*0.1*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      if(demo_truetrack > 360)
+        demo_truetrack -= 360;
+      else if(demo_truetrack < 0)
+        demo_truetrack += 360;
 
       newcourse_arrived = true;
-      add_latlon_track(demo_biwako_lat, demo_biwako_lon);
+      add_latlon_track(demo_lat, demo_lon);
     }
   }
   return new_location_arrived;
@@ -1171,6 +1299,20 @@ void set_replaymode(bool replaymode){
   // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;
+  replay_att_have   = 0;      // 前のファイルの姿勢を残さない
+
+  // ★重要: 再生で書き込まれた「過去の日時」を捨てる。
+  // apply_replay_row() は CSV の日時を ubx_* にそのまま入れるため、リプレイを
+  // 抜けた直後は日付が再生した飛行の日のままになる。屋内など GPS フィックスが
+  // 無い場所ではこれが更新されないので、get_jst_now() が過去の日付を返し続け、
+  // 各種ログ（imu_replaydata / imuraw / 飛行CSV）が「その日のファイル」へ
+  // 机の上の値を追記してしまう。実際に imu_replaydata/20260726.txt が
+  // 実機で生成され、2026 大会のリプレイ再現を壊した。
+  // 本物の NAV-PVT が届くまで日時は無効とする。
+  ubx_date_valid = false;
+  ubx_time_valid = false;
+  ubx_pvt_valid  = false;
+  ubx_gnssFixOK  = false;   // 書き込み側の保険（get_gps_gnssFixOK()）も一緒に落とす
 }
 // GPS モジュールからの Serial データを受信・解析するメインループ処理。
 // 描画の途中でも複数回呼ばれることで、GPS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
@@ -1288,7 +1430,7 @@ void gps_loop(int id) {
   if (ubx_pvt_updated) {
     ubx_pvt_updated = false;
     last_gps_time = millis();
-    if (!get_demo_biwako()) {
+    if (!is_demo_active()) {
       if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
     }
@@ -1351,7 +1493,7 @@ void try_enque_savecsv(){
 
   // 位置・日時が全て揃っていて、前回保存から 400ms 以上経過した時のみ保存（2Hz GPS に合わせて調整）
   if(all_valid && millis() - last_gps_save_time > 400){
-    if(!get_demo_biwako()){ //デモは別の場所で登録済み。
+    if(!is_demo_active()){ //デモは別の場所で登録済み。
       add_latlon_track(get_gps_lat(),get_gps_lon());
     }
 
@@ -1371,7 +1513,7 @@ void try_enque_savecsv(){
       float csv_kf_alt    = get_imu_altitude_msl();  // KF推定高度 [m]（MSL基準・GNSS長期収束済み）
       float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
-        stored_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,
+        stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,
         year, month, day, hour, ubx_min, ubx_sec, ubx_cs));
 
       last_gps_save_time = millis();
@@ -1388,8 +1530,8 @@ void try_enque_savecsv(){
 // デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
 // 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
 double get_gps_lat() {
-  if (demo_biwako) {
-    return demo_biwako_lat;
+  if (is_demo_active()) {
+    return demo_lat;
   }
 #ifdef DEBUG_GPS_SIM_BIWAKO
   return PLA_LAT;
@@ -1419,8 +1561,8 @@ double get_gps_lat() {
 }
 
 double get_gps_lon() {
-  if (demo_biwako) {
-    return demo_biwako_lon;
+  if (is_demo_active()) {
+    return demo_lon;
   }
 
 #ifdef DEBUG_GPS_SIM_BIWAKO
@@ -1452,8 +1594,8 @@ double get_gps_lon() {
 
 
 double get_gps_mps() {
-  if (demo_biwako) {
-    return demo_biwako_mps;
+  if (is_demo_active()) {
+    return demo_mps;
   }
   return stored_gs;
 }
@@ -1471,7 +1613,7 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
-  if(demo_biwako){
+  if(is_demo_active()){
     return get_gps_numsat() != 0;
   }
   if(stored_fixtype >= 1){
@@ -1481,7 +1623,7 @@ bool get_gps_fix() {
 }
 
 double get_gps_altitude() {
-  return stored_altitude;
+  return stored_gnss_altitude;
 }
 
 
@@ -1489,8 +1631,8 @@ double get_gps_truetrack() {
   #ifdef DEBUG_GPS_SIM_SHINURA
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
-  if (demo_biwako) {
-    return demo_biwako_truetrack;
+  if (is_demo_active()) {
+    return demo_truetrack;
   }
   return stored_truetrack;     // Heading in degrees;
 }
@@ -1508,7 +1650,7 @@ double get_gps_magtrack() {
 }
 
 int get_gps_numsat() {
-  if(get_demo_biwako()){
+  if(is_demo_active()){
     return (int)(20.0*sin(millis()/5000))+20;
   }else if(getReplayMode()){
     // CSV に numsat 列があればその値を使う。無い場合は「衛星情報なし」を示す 99 を返す。

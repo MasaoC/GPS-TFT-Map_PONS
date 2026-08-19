@@ -46,6 +46,8 @@
 #include "airdata.h"  // myWire (i2c0, GPIO32/33) を共用する
 #include "mysd.h"     // enqueueTask / createLogSdfTask
 #include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
+#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // ============================================================
 // I2C バス（MS5611 と共用: i2c0, GPIO32=SDA, GPIO33=SCL）
@@ -61,7 +63,7 @@
 // begin_I2C() 内部のリセット待ちは ~10ms しかなく BNO085 のブートに不足するため。
 // 手動リセットは imu_setup() の先頭で行う（NRST を LOW→HIGH して 400ms 待つ）。
 static Adafruit_BNO08x  bno08x(-1);
-static sh2_SensorValue_t sv;  // getSensorEvent() の受け取りバッファ
+static sh2_SensorValue_t sv;  // imu_sensor_handler() が sh2_decodeSensorEvent() で埋める作業バッファ
 
 // センサー初期化成功フラグ（imu_setup() 後に確定）
 static bool bno085_ok = false;
@@ -86,6 +88,34 @@ static bool  _rv_updated = false;  // Euler角ログ用: 新着ROTATION_VECTOR�
 // LINEAR_ACCELERATION（重力除去済み、ボディフレーム [m/s²]）
 static float _lax = 0.0f, _lay = 0.0f, _laz = 0.0f;
 static bool  _linaccel_valid = false;
+// 最後に LINEAR_ACCELERATION を受信した時刻 [µs]。
+// kf_predict() に古いサンプルを繰り返し渡さないための鮮度チェックに使う。
+static uint32_t _lacc_last_us = 0;
+// 鮮度不足で predict をスキップした回数（診断用。正常時は 0 のまま）
+static volatile uint32_t _lacc_stale_skips = 0;
+
+#if VARIO_USE_RAW_ACCEL
+// ============================================================
+// 生比力から作る鉛直加速度の蓄積バッファ（VARIO_USE_RAW_ACCEL=1 用）
+// ============================================================
+// SH2_ACCELEROMETER は 50Hz で届くが kf_predict() は 30ms 周期でしか回らない。
+// 「最新の 1 サンプル」だけを使うと届いた 1.5 個に 1 個を捨てることになり、
+// 振動成分がエイリアシングして推定上昇率のノイズになる。
+// そこで受信のたびにここへ足し込み、predict のときに平均を取り出して使う。
+// （実ログでの静止時σ: 最新値 0.153 → 平均 0.090。動きのある区間でも平均の方が良い）
+//
+// imu_sensor_handler() は sh2_service() の中から Core0 で呼ばれるので、
+// imu_update() の predict と同じコアであり排他は不要。
+static float    _acc_vsum = 0.0f;   // 鉛直加速度の合計 [m/s²]（重力除去済み）
+static float    _acc_hsum = 0.0f;   // 水平加速度の大きさの合計 [m/s²]
+static uint16_t _acc_cnt  = 0;      // 合計したサンプル数
+static uint32_t _acc_last_us = 0;   // 最後に ACCELEROMETER を受信した時刻 [µs]（鮮度チェック用）
+static bool     _accel_valid = false;
+
+// 定義は下（Kalman セクション）にあるが、imu_sensor_handler() から先に使うため前方宣言する。
+static float compute_earth_z_accel(float ax, float ay, float az,
+                                   float qw, float qx, float qy, float qz);
+#endif
 
 // ============================================================
 // Kalman フィルター 内部状態
@@ -135,10 +165,196 @@ static unsigned long _last_sensor_event_ms = 0;
 static uint32_t _grv_cnt  = 0;  // GAME_ROTATION_VECTOR カウンター
 static uint32_t _lacc_cnt = 0;  // LINEAR_ACCELERATION カウンター
 static uint32_t _rv_cnt   = 0;  // ROTATION_VECTOR カウンター
+static uint32_t _gyro_cnt = 0;  // GYROSCOPE_CALIBRATED カウンター（生ログ用）
+static uint32_t _accel_cnt = 0; // ACCELEROMETER カウンター（生ログ用）
+static uint32_t _mag_cnt  = 0;  // MAGNETIC_FIELD_CALIBRATED カウンター（生ログ用）
 static float    _grv_hz   = 0.0f;
 static float    _lacc_hz  = 0.0f;
 static float    _rv_hz    = 0.0f;
+static volatile float _gyro_hz  = 0.0f;
+static volatile float _accel_hz = 0.0f;
+static volatile float _mag_hz   = 0.0f;
 static uint32_t _hz_last_ms = 0;
+
+// sh2_service() 1 回で処理したレポート数（imu_sensor_handler が加算する）
+static int _report_count = 0;
+
+// 生ジャイロ・生加速度の直近値（設定画面の IMU/ESKF ページ表示用）。
+// 静止しているデバイスが実際どんな値を出しているかを目視確認するために持つ。
+static volatile float _raw_gyro[3]  = {0, 0, 0};   // [rad/s]
+static volatile float _raw_accel[3] = {0, 0, 0};   // [m/s²]
+
+
+// ============================================================
+// imu_sensor_handler(): SH2 レポート受信コールバック
+// ============================================================
+// sh2_service() から、届いたレポート 1 件ごとに呼ばれる。
+// imu_setup() で sh2_setSensorCallback() により登録し、
+// Adafruit ライブラリ既定のハンドラを上書きする。
+//
+// なぜ自前のコールバックが必要か:
+//   Adafruit の sensorHandler は decode 結果を単一スロット _sensor_value に格納し、
+//   getSensorEvent() はそのうち最後の 1 件だけを返す。
+//   BNO085 は同時刻にスケジュールされた複数レポートを 1 SHTP パケットにまとめるため、
+//   その場合レポートが黙って捨てられる。ここで 1 件ずつ確実に処理する。
+static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
+    (void)cookie;
+    if (sh2_decodeSensorEvent(&sv, event) != SH2_OK) return;
+    _report_count++;
+
+    switch (sv.sensorId) {
+        case SH2_GAME_ROTATION_VECTOR:
+            // クォータニオン (qw=real, qx=i, qy=j, qz=k) を保存
+            _qw = sv.un.gameRotationVector.real;
+            _qx = sv.un.gameRotationVector.i;
+            _qy = sv.un.gameRotationVector.j;
+            _qz = sv.un.gameRotationVector.k;
+            _quat_valid = true;
+            _grv_cnt++;
+            imulog_push(IMULOG_ID_GAMERV, (uint32_t)sv.timestamp, sv.status, _qw, _qx, _qy, _qz);
+            attitude_on_grv(_qw, _qx, _qy, _qz);   // 静止中の平均で ESKF を初期化する
+            break;
+
+        case SH2_LINEAR_ACCELERATION:
+            // ボディフレームの重力除去済み加速度を保存 [m/s²]
+            // ※ BNO085 自身の姿勢推定で重力を引いた値。バリオ KF 用であり、
+            //   姿勢 ESKF の入力には使えない（SH2_ACCELEROMETER を使うこと）。
+            _lax = sv.un.linearAcceleration.x;
+            _lay = sv.un.linearAcceleration.y;
+            _laz = sv.un.linearAcceleration.z;
+            _linaccel_valid = true;
+            _lacc_last_us   = time_us_32();  // 鮮度チェック用（predict の安全網）
+            _lacc_cnt++;
+            imulog_push(IMULOG_ID_LINACC, (uint32_t)sv.timestamp, sv.status, _lax, _lay, _laz);
+            break;
+
+        // ---- 以下は姿勢 ESKF のオフライン開発用。機上の推定には使わない ----
+        case SH2_GYROSCOPE_CALIBRATED: {
+            _gyro_cnt++;
+            imulog_push(IMULOG_ID_GYRO, (uint32_t)sv.timestamp, sv.status,
+                        sv.un.gyroscope.x, sv.un.gyroscope.y, sv.un.gyroscope.z);
+            // ESKF の伝播はジャイロ到着で回す（加速度は直近値を使う）。
+            // ※ sv.timestamp は sh2 のアンダーフローで壊れているので使わず、
+            //   受信時刻を渡す。バーストで届く分は attitude.cpp 側が窓平均で吸収する。
+            const float g[3] = { sv.un.gyroscope.x, sv.un.gyroscope.y, sv.un.gyroscope.z };
+            _raw_gyro[0] = g[0]; _raw_gyro[1] = g[1]; _raw_gyro[2] = g[2];
+            attitude_on_gyro(g, time_us_32());
+            break;
+        }
+
+        case SH2_ACCELEROMETER: {
+            // 重力込みの生比力 [m/s²]。ESKF はこれを伝播に使う。
+            _accel_cnt++;
+            imulog_push(IMULOG_ID_ACCEL, (uint32_t)sv.timestamp, sv.status,
+                        sv.un.accelerometer.x, sv.un.accelerometer.y, sv.un.accelerometer.z);
+            const float a[3] = { sv.un.accelerometer.x, sv.un.accelerometer.y,
+                                 sv.un.accelerometer.z };
+            _raw_accel[0] = a[0]; _raw_accel[1] = a[1]; _raw_accel[2] = a[2];
+            attitude_on_accel(a);
+#if VARIO_USE_RAW_ACCEL
+            // ---- バリオ KF 用: 地球座標系の鉛直/水平加速度をここで作って足し込む ----
+            // 重力込みの比力を GRV で回し、鉛直成分から重力を引く。
+            // BNO085 の LINEAR_ACCELERATION と違い、引く重力が固定値なので
+            // 「動作に相関した誤差」が入らない（settings.h の VARIO_USE_RAW_ACCEL 参照）。
+            if (_quat_valid) {
+                float az_world = compute_earth_z_accel(a[0], a[1], a[2], _qw, _qx, _qy, _qz);
+                // 水平成分: 二乗ノルムは回転で不変なので |a|² − a_world_z²。
+                // ここでの a_world_z は重力を引く前の値である点に注意。
+                float body_sq  = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
+                float horiz_sq = body_sq - az_world * az_world;
+                _acc_vsum += az_world - GRAVITY_MPS2;
+                _acc_hsum += (horiz_sq > 0.0f) ? sqrtf(horiz_sq) : 0.0f;
+                if (_acc_cnt < 60000) _acc_cnt++;   // 念のための飽和ガード
+                _acc_last_us = time_us_32();
+                _accel_valid = true;
+            }
+#endif
+            break;
+        }
+
+        case SH2_MAGNETIC_FIELD_CALIBRATED:
+            _mag_cnt++;
+            imulog_push(IMULOG_ID_MAG, (uint32_t)sv.timestamp, sv.status,
+                        sv.un.magneticField.x, sv.un.magneticField.y, sv.un.magneticField.z);
+            break;
+
+        case SH2_ROTATION_VECTOR:
+            // 地磁気補正付きクォータニオン（ヨー：磁北基準）
+            // accuracy: ヘディング精度推定値 [rad]（0 に近いほど磁気キャリブ良好）
+            _rv_qw = sv.un.rotationVector.real;
+            _rv_qx = sv.un.rotationVector.i;
+            _rv_qy = sv.un.rotationVector.j;
+            _rv_qz = sv.un.rotationVector.k;
+            _rv_accuracy = sv.un.rotationVector.accuracy;
+            _rv_valid = true;
+            _rv_cnt++;
+            _rv_updated = true;  // Euler角ログ用 新着フラグ
+            imulog_push(IMULOG_ID_RV, (uint32_t)sv.timestamp, sv.status, _rv_qw, _rv_qx, _rv_qy, _rv_qz);
+            // 地磁気補正付きの方位を ESKF の初期ヨーに使う（収束を待たずに絶対方位を持つため）
+            attitude_on_rv(_rv_qw, _rv_qx, _rv_qy, _rv_qz, _rv_accuracy);
+            break;
+
+        default:
+            break;
+    }
+}
+
+
+// ============================================================
+// imu_enable_reports(): レポート有効化と SH2 コールバック登録
+// ============================================================
+// imu_setup() と imu_try_recovery() の両方から呼ぶ。
+// 復旧時にここを通さないと、begin_I2C() が Adafruit 既定のハンドラを
+// 再登録してしまい、レポート取りこぼしのバグが静かに復活する。
+//
+// レートは settings.h の IMU_RATE_*_HZ で一元管理する。
+//
+// 【既存レポート（バリオ KF・姿勢表示用）】
+//   15Hz。バリオ用途は 10Hz 以上あれば十分。
+//   ※ 気圧による観測更新は約 3.7Hz（MS5611 のサンプルは ~40Hz だが、
+//     airdata_update() が true を返すのは 250ms のトリム平均ウィンドウ完了時のみ）。
+//   ※ このレートを変えるとバリオのチューニングに影響するので触らないこと。
+//
+// 【生データレポート（姿勢 ESKF のオフライン開発用）】
+//   ACCELEROMETER は「重力込みの生比力」であることが重要。
+//   LINEAR_ACCELERATION は BNO085 自身の（旋回中に誤る）姿勢推定で重力を除去した値なので、
+//   まさに信用できない情報が混入しており ESKF の入力には使えない。
+//
+// 戻り値: 全レポートの有効化に成功したら true。
+static bool imu_enable_reports() {
+    struct { sh2_SensorId_t id; uint16_t hz; const char* name; } reports[] = {
+        // 既存（バリオ KF・表示用）
+        { SH2_GAME_ROTATION_VECTOR,      IMU_RATE_GRV_HZ,   "GRV"   },
+        { SH2_LINEAR_ACCELERATION,       IMU_RATE_LACC_HZ,  "LACC"  },
+        { SH2_ROTATION_VECTOR,           IMU_RATE_RV_HZ,    "RV"    },
+#if VARIO_USE_RAW_ACCEL && !IMULOG_RAW_REPORTS_ENABLED
+        // 生比力はバリオ KF が使うので、生ログを止めていても ACCEL だけは必要。
+        { SH2_ACCELEROMETER,             IMU_RATE_ACCEL_HZ, "ACCEL" },
+#endif
+#if IMULOG_RAW_REPORTS_ENABLED
+        // 生データ（ESKF 開発用）。settings.h のスイッチで無効化できる。
+        // ACCEL は VARIO_USE_RAW_ACCEL=1 のときバリオ KF も使う。
+        { SH2_GYROSCOPE_CALIBRATED,      IMU_RATE_GYRO_HZ,  "GYRO"  },
+        { SH2_ACCELEROMETER,             IMU_RATE_ACCEL_HZ, "ACCEL" },
+        { SH2_MAGNETIC_FIELD_CALIBRATED, IMU_RATE_MAG_HZ,   "MAG"   },
+#endif
+    };
+    bool all_ok = true;
+    for (unsigned i = 0; i < sizeof(reports) / sizeof(reports[0]); i++) {
+        if (!bno08x.enableReport(reports[i].id, 1000000UL / reports[i].hz)) {
+            all_ok = false;
+            DEBUGW_P(20260315,   "[IMU] Failed to enable ");
+            DEBUGW_PLN(20260315, reports[i].name);
+            enqueueTask(createLogSdfTask("BNO085 enableReport %s failed", reports[i].name));
+        }
+    }
+
+    // ---- 自前の SH2 コールバックを登録（Adafruit 既定のものを上書きする）----
+    // begin_I2C() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
+    // これにより 1 パケットに複数レポートが載っていても全件処理できる（取りこぼし解消）。
+    sh2_setSensorCallback(imu_sensor_handler, NULL);
+    return all_ok;
+}
 
 
 // ============================================================
@@ -500,28 +716,39 @@ void imu_setup() {
         return;
     }
 
-    // ---- センサーレポートを有効化 ----
-    // Core0 の描画ブロック（avg ~64ms）により実測受信レートは ~17-20Hz 程度にとどまる。
-    // センサーを 15Hz で設定することで I2C バス負荷を抑えつつ十分な更新頻度を確保する。
-    // バリオ用途は 10Hz 以上あれば十分。KF は MS5611 の ~40Hz 観測更新が精度を補う。
-    const uint32_t interval_us = 1000000UL / 15;  // 15Hz → 66666 µs
-
-    if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, interval_us)) {
-        DEBUGW_PLN(20260315, "[IMU] Failed to enable GAME_ROTATION_VECTOR.");
-        enqueueTask(createLogSdTask("BNO085 enableReport GRV failed"));
-    }
-    if (!bno08x.enableReport(SH2_LINEAR_ACCELERATION, interval_us)) {
-        DEBUGW_PLN(20260315, "[IMU] Failed to enable LINEAR_ACCELERATION.");
-        enqueueTask(createLogSdTask("BNO085 enableReport LACC failed"));
+    if (!imu_enable_reports()) {
+        // 個々の失敗はログに残すが、致命ではないので続行する
     }
 
-    // ROTATION_VECTOR (加速度計＋ジャイロ＋地磁気): 磁北基準のヨー取得用。
-    // Kalman には使わないため 5Hz で有効化。I2C トラフィックを抑える。
-    // ヘディング精度推定値 (_rv_accuracy) が -1 のままならキャリブレーション未完了。
-    const uint32_t rv_interval_us = 1000000UL / 5;   // 5Hz → 200000 µs
-    if (!bno08x.enableReport(SH2_ROTATION_VECTOR, rv_interval_us)) {
-        DEBUGW_PLN(20260315, "[IMU] Failed to enable ROTATION_VECTOR.");
-        enqueueTask(createLogSdTask("BNO085 enableReport RV failed"));
+    // ---- センサーが自己申告する レンジ / 分解能 を SD に記録する ----
+    // 実ログから求めた実効分解能（加速度 0.039 m/s²、ジャイロ 約1.0 deg/s）が
+    // センサー本体の上限なのか、設定で上げられるのかを確定させるため。
+    //
+    // 調査済みの事実:
+    //   ・sh2_SensorConfig_t にレンジ／分解能の項目は無い
+    //     （設定できるのは reportInterval / batchInterval / wakeup / changeSensitivity のみ）
+    //   ・changeSensitivity は Adafruit の enableReport が 0 にしているので
+    //     「変化閾値による間引き」でもない
+    //   ・FRS レコードは META_* すなわち読み取り専用の仕様記述しかない
+    //   → SH2 API 経由では分解能を変更できない。ここではその裏付けを取る。
+    {
+        struct { sh2_SensorId_t id; const char* name; } q[] = {
+            { SH2_ACCELEROMETER,        "ACCEL" },
+            { SH2_GYROSCOPE_CALIBRATED, "GYRO"  },
+        };
+        for (unsigned i = 0; i < sizeof(q) / sizeof(q[0]); i++) {
+            sh2_SensorMetadata_t md;
+            if (sh2_getMetadata(q[i].id, &md) == SH2_OK) {
+                // range / resolution はレポートと同じ固定小数点表現なので qPoint1 で実単位に直す
+                const float sc = 1.0f / (float)(1UL << md.qPoint1);
+                enqueueTask(createLogSdfTask(
+                    "%s meta range=%.4f res=%.5f q=%u minPeriod=%luus",
+                    q[i].name, md.range * sc, md.resolution * sc,
+                    (unsigned)md.qPoint1, (unsigned long)md.minPeriod_uS));
+            } else {
+                enqueueTask(createLogSdfTask("%s meta read FAILED", q[i].name));
+            }
+        }
     }
 
     bno085_ok = true;
@@ -564,19 +791,24 @@ static void imu_try_recovery() {
 #endif
 
     // ---- 再初期化 ----
-    const uint32_t interval_us    = 1000000UL / 15;  // 15Hz
-    const uint32_t rv_interval_us = 1000000UL / 5;   // 5Hz
-
-    if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire)
-        && bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, interval_us)
-        && bno08x.enableReport(SH2_LINEAR_ACCELERATION, interval_us)) {
-        bno08x.enableReport(SH2_ROTATION_VECTOR, rv_interval_us);
+    // レポート有効化と SH2 コールバック登録は imu_enable_reports() に集約している。
+    // ここで直接 enableReport() を並べてはいけない:
+    //   ・settings.h のレート設定と二重管理になる
+    //   ・生レポート（ESKF 用）が復旧後に復活しない
+    //   ・begin_I2C() が再登録した Adafruit 既定ハンドラを上書きし損ね、
+    //     レポート取りこぼしのバグが静かに戻る
+    if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire) && imu_enable_reports()) {
         // 受信時刻をリセット（クォータニオン・加速度も無効化）。
         // millis() をセットすることで、1秒以内にデータが届かなければ再度 timeout → 再試行の
         // サイクルに入れる。0 にすると bno085_ok=true のまま再試行が永遠に発火しなくなる。
         _last_sensor_event_ms = millis();
         _quat_valid     = false;
         _linaccel_valid = false;
+#if VARIO_USE_RAW_ACCEL
+        _accel_valid = false;
+        _acc_vsum = _acc_hsum = 0.0f;
+        _acc_cnt  = 0;
+#endif
         bno085_ok = true;
         enqueueTask(createLogSdTask("[IMU] BNO085 recovery OK"));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery OK");
@@ -592,8 +824,12 @@ static void imu_try_recovery() {
 // imu_update(): ポーリングでデータ読み出しと Kalman predict を実行
 // ============================================================
 // loop() から毎回呼ぶ（ノンブロッキング）。
-// 15ms 未満の呼び出しは即リターン（67Hz ポーリング → 最大 15ms 遅延）。
-// MS5611 と I2C バスを共用するため高頻度呼び出しを避ける（~90µs/回 at 100kHz）。
+// 30ms 未満の呼び出しは即リターン（33Hz ポーリング → 最大 30ms 遅延）。
+// MS5611 と I2C バスを共用するため高頻度呼び出しを避ける（i2c0）。
+// ※ バスクロックは airdata.cpp:414 の setClock() が実際の設定値。
+//   現在 400000 が書かれているが、同ファイルの直上コメントは
+//   「100kHz にする／400kHz では error:5 でバスがロックする」と逆のことを述べており、
+//   両者は同一コミットで同時に入っている（要確認事項）。
 void imu_update() {
     // ---- 通信途絶の自動検出 ----
     // bno085_ok=true でも1秒以上データが届かない場合は途絶と判定し false に落とす。
@@ -630,56 +866,33 @@ void imu_update() {
         return;
     }
 
-    // 30ms ≒ 33Hz でポーリング。BNO085 の出力周期（67ms/15Hz）に対して 2 倍の頻度でチェック。
+    // ポーリング周期は IMU_POLL_INTERVAL_US（settings.h）。
+    //   生レポート有効時: 4ms ≒ 250Hz。高レートのレポートを溜めずに引き取るため。
+    //                     このときバリオ KF の predict はこの周期では動かさず、
+    //                     関数末尾の IMU_KF_PREDICT_INTERVAL_US ゲートで 30ms に保つ
+    //                     （Q の注入量が変わってしまうため）。
+    //   無効時          : 30ms ≒ 33Hz。変更前と同一で、ポーリング毎に predict が走る。
     static uint32_t _poll_last_us = 0;
     uint32_t _now_us = time_us_32();
-    if (_now_us - _poll_last_us < 30000UL) return;  // 30ms 未満なら即リターン
+    if (_now_us - _poll_last_us < IMU_POLL_INTERVAL_US) return;
     _poll_last_us = _now_us;
 
-    // データ取り出し:
-    // getSensorEvent() は利用可能なレポートを 1 件取り出して sv に格納する。
-    // false が返るまで繰り返してキューを空にする。
-    // 最大 10 回でガードして無限ループを防ぐ（通常は 2 件 = GRV + LACC で終わる）。
-    int read_count = 0;
-    while (read_count < 10 && bno08x.getSensorEvent(&sv)) {
-        read_count++;
-        switch (sv.sensorId) {
-            case SH2_GAME_ROTATION_VECTOR:
-                // クォータニオン (qw=real, qx=i, qy=j, qz=k) を保存
-                _qw = sv.un.gameRotationVector.real;
-                _qx = sv.un.gameRotationVector.i;
-                _qy = sv.un.gameRotationVector.j;
-                _qz = sv.un.gameRotationVector.k;
-                _quat_valid = true;
-                _grv_cnt++;
-                break;
+    // ---- データ取り出し ----
+    // sh2_service() は届いている SHTP パケットを全部処理し、
+    // レポート 1 件ごとに imu_sensor_handler() を呼ぶ。取りこぼしは発生しない。
+    //
+    // ※ Adafruit の bno08x.getSensorEvent() は使わない。
+    //   あちらは sh2_service() の結果を単一スロット _sensor_value に上書きするため、
+    //   1 パケットに複数レポートが載っていると最後の 1 件しか返さず、残りを黙って捨てる
+    //   （Adafruit_BNO08x.cpp の sensorHandler / getSensorEvent 参照）。
+    //   BNO085 は同時刻にスケジュールされたレポートをまとめて 1 パケットで送るため、
+    //   要求レートを上げるほどこの取りこぼしが増える。
+    //   2026-08-17 に GRV/LACC/RV が 15/15/5Hz 設定に対し 4/5/1Hz まで飢餓になり、
+    //   古い加速度を繰り返し積分してバリオが暴れた原因がこれだった。
+    _report_count = 0;
+    sh2_service();
+    int read_count = _report_count;
 
-            case SH2_LINEAR_ACCELERATION:
-                // ボディフレームの重力除去済み加速度を保存 [m/s²]
-                _lax = sv.un.linearAcceleration.x;
-                _lay = sv.un.linearAcceleration.y;
-                _laz = sv.un.linearAcceleration.z;
-                _linaccel_valid = true;
-                _lacc_cnt++;
-                break;
-
-            case SH2_ROTATION_VECTOR:
-                // 地磁気補正付きクォータニオン（ヨー：磁北基準）
-                // accuracy: ヘディング精度推定値 [rad]（0 に近いほど磁気キャリブ良好）
-                _rv_qw = sv.un.rotationVector.real;
-                _rv_qx = sv.un.rotationVector.i;
-                _rv_qy = sv.un.rotationVector.j;
-                _rv_qz = sv.un.rotationVector.k;
-                _rv_accuracy = sv.un.rotationVector.accuracy;
-                _rv_valid = true;
-                _rv_cnt++;
-                _rv_updated = true;  // Euler角ログ用 新着フラグ
-                break;
-
-            default:
-                break;
-        }
-    }
     // データを 1 件以上受信できた場合のみ最終受信時刻を更新する
     if (read_count > 0) _last_sensor_event_ms = millis();
 
@@ -689,10 +902,14 @@ void imu_update() {
         uint32_t elapsed = now_ms - _hz_last_ms;
         if (elapsed >= 1000UL) {
             float dt_s = elapsed * 0.001f;
-            _grv_hz  = _grv_cnt  / dt_s;
-            _lacc_hz = _lacc_cnt / dt_s;
-            _rv_hz   = _rv_cnt   / dt_s;
+            _grv_hz   = _grv_cnt   / dt_s;
+            _lacc_hz  = _lacc_cnt  / dt_s;
+            _rv_hz    = _rv_cnt    / dt_s;
+            _gyro_hz  = _gyro_cnt  / dt_s;
+            _accel_hz = _accel_cnt / dt_s;
+            _mag_hz   = _mag_cnt   / dt_s;
             _grv_cnt = _lacc_cnt = _rv_cnt = 0;
+            _gyro_cnt = _accel_cnt = _mag_cnt = 0;
             _hz_last_ms = now_ms;
 
 #ifndef RELEASE
@@ -715,10 +932,68 @@ void imu_update() {
     }
 
     // ---- Kalman predict ステップ ----
-    // クォータニオンと線形加速度の両方が揃っており、かつ Kalman が初期化済みのときのみ実行。
+    // クォータニオンと加速度の両方が揃っており、かつ Kalman が初期化済みのときのみ実行。
     // （初期化は最初の気圧高度到着時に imu_kalman_baro_update() が行う）
+#if VARIO_USE_RAW_ACCEL
+    if (!_quat_valid || !_accel_valid || !kf_initialized) {
+        // KF 初期化前（最初の気圧高度が来る前）は predict しない。
+        // ここで捨てておかないと、初期化されるまで蓄積が伸び続けてしまう。
+        _acc_vsum = _acc_hsum = 0.0f;
+        _acc_cnt  = 0;
+        return;
+    }
+#else
     if (!_quat_valid || !_linaccel_valid || !kf_initialized) return;
+#endif
 
+    // ---- 安全網: 古い加速度サンプルでは predict しない ----
+    // 加速度レポートの配信が滞ったとき、同じサンプルを何度も積分してしまうと
+    // 加速度スパイクが数倍に増幅されて数秒尾を引く（2026-08-17 の回帰）。
+    // 正常時は ACCEL 50Hz = 20ms 周期（LACC 使用時は 15Hz = 67ms 周期）なので
+    // 150ms を超えることはなく、このゲートは発火しない。
+    // 発火時は predict を止めるだけで、出力は imu_kalman_baro_update() が
+    // 気圧更新のたびに更新し続けるため、気圧ベースのバリオに劣化するだけで済む。
+    // ※ VARIO_USE_RAW_ACCEL=1 では受信時に足し込む方式なので「同じサンプルの重複積分」
+    //   自体は起きないが、通信途絶からの復帰で巨大な dt を積分しない意味は変わらない。
+#if VARIO_USE_RAW_ACCEL
+    if ((uint32_t)(time_us_32() - _acc_last_us) > IMU_LACC_MAX_AGE_US) {
+        _lacc_stale_skips++;
+        kf_last_predict_us = time_us_32();  // 復帰時に巨大な dt で積分しないよう進めておく
+        _acc_vsum = _acc_hsum = 0.0f;       // 溜まった古い分は捨てる
+        _acc_cnt  = 0;
+        return;
+    }
+#else
+    if ((uint32_t)(time_us_32() - _lacc_last_us) > IMU_LACC_MAX_AGE_US) {
+        _lacc_stale_skips++;
+        kf_last_predict_us = time_us_32();  // 復帰時に巨大な dt で積分しないよう進めておく
+        return;
+    }
+#endif
+
+#if IMULOG_RAW_REPORTS_ENABLED
+    // ---- predict はポーリング周期ではなく専用周期（30ms）で回す ----
+    // kf_predict() は Q を dt でスケールせず「1 ステップあたり」で加算するため
+    // （kf_P[1][1] += q_vel_eff）、predict 周期を変えると単位時間あたりの
+    // プロセスノイズ注入量が変わり、チューニング済みのバリオが壊れる。
+    // ポーリングを 30ms → 4ms に上げても、ここで従来の 30ms 周期を維持することで
+    // バリオの挙動を変えずに生ログのレートだけを上げられる。
+    //
+    // ※ ポーリングが 30ms のとき（生レポート無効時）はこのゲートを通してはいけない。
+    //   周期が同じだとジッタでゲートを 1 回外し、predict が 60ms 間隔になる回が混ざる。
+    //   そのため #if で丸ごと除外し、変更前と同じ「ポーリング毎に predict」に戻す。
+    if ((uint32_t)(time_us_32() - kf_last_predict_us) < IMU_KF_PREDICT_INTERVAL_US) return;
+#endif
+
+#if VARIO_USE_RAW_ACCEL
+    // 前回 predict からこの瞬間までに届いた生比力サンプルの平均を使う。
+    // 変換（回転 → 重力除去）は受信のたびに済ませてあるので、ここでは平均するだけ。
+    if (_acc_cnt == 0) return;   // 新しいサンプルが1つも無ければ predict しない
+    float a_k         = _acc_vsum / _acc_cnt;
+    float horiz_accel = _acc_hsum / _acc_cnt;
+    _acc_vsum = _acc_hsum = 0.0f;
+    _acc_cnt  = 0;
+#else
     // 地球座標系の鉛直加速度を計算（BNO085 が重力を除去済みなので g を引く必要なし）
     float a_k = compute_earth_z_accel(_lax, _lay, _laz, _qw, _qx, _qy, _qz);
 
@@ -729,6 +1004,7 @@ void imu_update() {
     float _body_sq   = _lax * _lax + _lay * _lay + _laz * _laz;
     float _horiz_sq  = _body_sq - a_k * a_k;
     float horiz_accel = (_horiz_sq > 0.0f) ? sqrtf(_horiz_sq) : 0.0f;
+#endif
 
     // dt を計算（前回 predict からの経過時間 [s]）
     uint32_t now_us = time_us_32();
@@ -867,6 +1143,16 @@ float get_imu_horiz_accel()  { return _imu_horiz_accel; }  // 地球座標系 �
 float get_imu_grv_hz()  { return _grv_hz; }
 float get_imu_lacc_hz() { return _lacc_hz; }
 float get_imu_rv_hz()   { return _rv_hz; }
+// 加速度サンプルの鮮度不足で Kalman predict をスキップした累計回数。
+// 正常時は 0。増えていれば BNO085 のレポート配信が滞っている（レート要求過大など）。
+uint32_t get_imu_lacc_stale_skips() { return _lacc_stale_skips; }
+// 生ログ用レポートの受信レート（設定値どおり出ていれば飢餓は起きていない）
+float get_imu_gyro_hz()  { return _gyro_hz; }
+// 生ジャイロ [rad/s] / 生加速度 [m/s²] の直近値（IMU/ESKF 画面の表示用）
+void get_imu_raw_gyro(float g[3])  { for (int i=0;i<3;i++) g[i] = _raw_gyro[i]; }
+void get_imu_raw_accel(float a[3]) { for (int i=0;i<3;i++) a[i] = _raw_accel[i]; }
+float get_imu_accel_hz() { return _accel_hz; }
+float get_imu_mag_hz()   { return _mag_hz; }
 
 // 新着ROTATION_VECTORフラグ: trueを返し同時にクリア（Euler角ログのトリガー用）
 bool get_imu_rv_updated() {

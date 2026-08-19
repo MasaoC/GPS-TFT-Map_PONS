@@ -4,10 +4,10 @@
 // Role    : GPS受信・解析モジュールのヘッダー。
 //           衛星データ構造体(SatelliteData)、受信バッファ定義、
 //           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
-//           リプレイモード・デモモード切替関数、およびリプレイ中に
-//           センサ値を CSV の値へ差し替えるための関数も含む。
+//           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
+//           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 
 #ifndef GPS_H
@@ -98,6 +98,10 @@
   uint32_t get_gps_vacc_mm();     // 垂直精度推定値（NAV-PVT vAcc、mm 単位）
   uint32_t get_gps_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
   float    get_gps_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
+  // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
+  float    get_gps_veln_mps();    // GNSS 北向き速度（NAV-PVT velN、m/s）
+  float    get_gps_vele_mps();    // GNSS 東向き速度（NAV-PVT velE、m/s）
+  uint32_t get_gps_itow_ms();     // GPS 週内時刻（NAV-PVT iTOW、ms）
   bool     get_gps_gnssFixOK();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 
   GpsDate get_gpsdate();
@@ -111,10 +115,33 @@
   int   get_maxgs_5min_hour();  // 5分保持最大 G/S の記録時刻（JST 時）
   int   get_maxgs_5min_min();   // 5分保持最大 G/S の記録時刻（JST 分）
 
-  void toggle_demo_biwako();
-  bool get_demo_biwako();
-  void set_demo_biwako(bool biwakomode);
+  // ---- デモ飛行 ----
+  // 実 GPS を使わず仮想的に飛ばすモード。地点を選べるようにしてあるので、
+  // 各フライト地点の地図表示を実機で確認するのにも使える。
+  enum demo_site_t : uint8_t {
+    DEMO_OFF = 0,
+    DEMO_BIWAKO,
+    DEMO_SHIRAHAMA,
+    DEMO_KASAOKA,
+    DEMO_FUJIGAWA,
+    DEMO_TOKYO,
+    DEMO_OSAKA,
+    DEMO_SITE_COUNT
+  };
+  demo_site_t get_demo_site();
+  void set_demo_site(demo_site_t site);
+  void next_demo_site();           // 設定画面で 1 段階進める（末尾で OFF に戻る）
+  const char* get_demo_site_name(demo_site_t site);
+  bool is_demo_active();           // いずれかの地点でデモ飛行中か
+  void set_demo_off();
   bool getReplayMode();
+  // リプレイ中の姿勢 [度]（imu_replaydata/ または旧 euler/ の記録由来）。
+  // 実機の ESKF ではないので、表示側は getReplayMode() で参照先を切り替えること。
+  bool get_replay_attitude(float &roll, float &pitch);
+  // 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true を返す。
+  bool get_replay_pitch_avg(float &avg);
+  bool get_replay_roll_trim(float &trim);
+  bool get_replay_yaw(float &yaw, float &acc95);
   void set_replaymode(bool replaymode);
 
   uint32_t get_gps_fix_millis();  // 最後にGPS時刻を受信したときのmillis()（時刻推定用）

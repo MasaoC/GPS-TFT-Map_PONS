@@ -2,11 +2,14 @@
 // File    : display_tft.cpp
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画の実装。
-//           地図（ポリゴン・Googleマップ画像）、コンパス、
-//           飛行コース矢印、ヘッダー/フッター、設定画面、
+//           ポリゴン地図（内蔵/SD）、コンパス、飛行コース矢印、
+//           ヘッダー/フッター、設定画面、
 //           GPSDetail/SDDetail/マップリスト/リプレイ選択画面など全UI描画。
+//           地図背景そのものは vectormap.cpp が描く。
+//           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
+//           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -16,6 +19,7 @@
 
 #include "settings.h"
 #include "display_tft.h"
+#include "attitude.h"
 #include "gps.h"
 #include "mysd.h"
 #include "navdata.h"
@@ -24,10 +28,11 @@
 #include "button.h"
 #include "airdata.h"
 #include "imu.h"
+#include "vectormap.h"
 
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
 #define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
-#define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（未使用）
+#define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（ESKF のロール・ピッチ表示）
 #define NM_FONT_LARGE Arial_Black56    // 大サイズフォント（ヘッダーの速度・磁方位表示）
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
@@ -66,6 +71,51 @@ extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
 
+
+// 地図座標から作った線を backscreen に描く際は、必ずこの 2 つを使うこと。
+// 緯度経度由来の座標は高倍率で画面外へ大きく飛び出し、そのまま TFT_eSPI に
+// 渡すと画面外を延々と走査して 1 フレームに数百 ms かかる
+// （理由は clip_line_to_screen のコメント）。
+static inline void draw_clipped_line(int x0, int y0, int x1, int y1, uint16_t col) {
+  if (!clip_line_to_screen(&x0, &y0, &x1, &y1)) return;
+  backscreen.drawLine(x0, y0, x1, y1, col);
+}
+static inline void draw_clipped_wideline(int x0, int y0, int x1, int y1, int w, uint16_t col) {
+  if (!clip_line_to_screen(&x0, &y0, &x1, &y1)) return;
+  backscreen.drawWideLine(x0, y0, x1, y1, w, col);
+}
+
+// 地図座標から作った線を、本数が多い箇所で描くための関数。
+//
+// TFT_eSPI の drawWideLine は bg_color の既定値が 0x00FFFFFF で、この経路では
+// アンチエイリアス画素ごとに readPixel() を呼んで setWindow をやり直し、さらに
+// wedgeLineDistance() の浮動小数点距離計算を画素ごとに行う（drawWedgeLine 参照）。
+// 見た目は綺麗だが単価が高く、地図の道路や 500 点のトラックのように線が数百〜数千本
+// になる描画では支配的なコストになる。
+// 240px の画面ではアンチエイリアスの効果も小さいので、平行な drawLine を重ねて太らせる。
+//
+// 誘導線やパイロン基準線のように本数が少なく目立つ線は、従来どおり
+// draw_clipped_wideline（アンチエイリアス付き）のままにしてある。
+void draw_map_line(int x0, int y0, int x1, int y1, int w, uint16_t col) {
+  if (!clip_line_to_screen(&x0, &y0, &x1, &y1)) return;
+  backscreen.drawLine(x0, y0, x1, y1, col);
+  if (w <= 1) return;
+  // 線の主方向に対して垂直側へずらして重ねる（斜めでも太さがほぼ揃う）
+  const bool steep = abs(y1 - y0) > abs(x1 - x0);
+  for (int o = 1; o <= (w - 1) / 2; o++) {
+    if (steep) {
+      backscreen.drawLine(x0 - o, y0, x1 - o, y1, col);
+      backscreen.drawLine(x0 + o, y0, x1 + o, y1, col);
+    } else {
+      backscreen.drawLine(x0, y0 - o, x1, y1 - o, col);
+      backscreen.drawLine(x0, y0 + o, x1, y1 + o, col);
+    }
+  }
+  if (w % 2 == 0) {  // 偶数幅は片側にもう 1 本足す
+    if (steep) backscreen.drawLine(x0 + w / 2, y0, x1 + w / 2, y1, col);
+    else backscreen.drawLine(x0, y0 + w / 2, x1, y1 + w / 2, col);
+  }
+}
 
 // 地図方向モードを NORTHUP ↔ TRACKUP で切り替える。
 void toggle_mode() {
@@ -368,117 +418,6 @@ public:
 
 TextManager textmanager(50);
 
-// ポリラインの描画と消去を管理するクラス。
-// addStroke() でストロークを追加し、addPointToStroke() で頂点を追加する。
-// drawCurrentStroke() で最後に追加したストロークだけを描画、
-// drawAllStrokes() で全ストロークを白で上書き（消去）する。
-// backscreen スプライトへ drawLine / drawWideLine で線を引く。
-class StrokeManager {
-
-  struct Stroke {
-    stroke_group id;      // ストロークの種類識別子（stroke_group 列挙型）
-    Point* points;        // 頂点座標配列（heap 確保）
-    int pointCount;       // 現在の頂点数
-    int maxPoints;        // 最大頂点数（addStroke 時に確保）
-    int thickness;        // 線の太さ（1=drawLine, >1=drawWideLine）
-  };
-
-  Stroke* strokes;
-  int strokeCount;
-  int maxStrokes;
-
-public:
-  StrokeManager(int maxStrokes) {
-    this->maxStrokes = maxStrokes;
-    this->strokes = new Stroke[maxStrokes];
-    this->strokeCount = 0;
-  }
-
-  ~StrokeManager() {
-    for (int i = 0; i < strokeCount; i++) {
-      free(strokes[i].points);
-    }
-    delete[] strokes;
-  }
-
-  bool addStroke(stroke_group id, int maxPoints, int thickness = 1) {
-    if (strokeCount >= maxStrokes) {
-      DEBUGW_PLN(20240912, id);
-      DEBUGW_PLN(20240912, maxPoints);
-      DEBUGW_PLN(20240912, "ERR max stroke reached");
-      enqueueTask(createLogSdfTask("ERR max stroke reached(id,max) %d,%d", id, maxPoints));
-      return false;  // No more space for new strokes
-    }
-    strokes[strokeCount].points = (Point*)malloc(maxPoints * sizeof(Point));
-    
-    if (strokes[strokeCount].points == nullptr) {
-      DEBUG_P(20240912, id);
-      DEBUG_PLN(20240912, "malloc fail");
-      enqueueTask(createLogSdfTask("malloc failed:adding stroke:ID=%d", id));
-      return false;  // Memory allocation failed
-    }
-    strokes[strokeCount].pointCount = 0;
-    strokes[strokeCount].maxPoints = maxPoints;
-    strokes[strokeCount].id = id;
-    strokes[strokeCount].thickness = thickness;
-    strokeCount++;
-    return true;
-  }
-
-
-  bool addPointToStroke(int x, int y) {
-    if (strokeCount == 0) {
-      return false;  // No strokes to add points to
-    }
-    if (strokes[strokeCount - 1].pointCount >= strokes[strokeCount - 1].maxPoints) {
-      return false;  // No more space for new points in this stroke
-    }
-    strokes[strokeCount - 1].points[strokes[strokeCount - 1].pointCount].x = x;
-    strokes[strokeCount - 1].points[strokes[strokeCount - 1].pointCount].y = y;
-    strokes[strokeCount - 1].pointCount++;
-    return true;
-  }
-
-  void drawCurrentStroke(int col){
-    int strkid = strokeCount - 1;
-    if(strokeCount == 0 || strokes[strkid].pointCount < 2){
-      return;
-    }
-    for(int i = 0; i < strokes[strkid].pointCount-1; i++){
-      if (!strokes[strkid].points[i].isOutsideTft() || !strokes[strkid].points[i+1].isOutsideTft()) {
-        if (strokes[strkid].thickness == 1)
-          backscreen.drawLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, col);
-        else
-          backscreen.drawWideLine(strokes[strkid].points[i].x, strokes[strkid].points[i].y, strokes[strkid].points[i + 1].x, strokes[strkid].points[i + 1].y, strokes[strkid].thickness, col);
-      }
-    }
-  }
-
-
-  void removeAllStrokes() {
-    for (int i = 0; i < strokeCount; i++) {
-      if(strokes[i].points != nullptr){
-        free(strokes[i].points);  // Free allocated memory for each stroke
-      }
-      strokes[i].points = nullptr;
-      strokes[i].pointCount = 0;
-      strokes[i].maxPoints = 0;
-    }
-    strokeCount = 0;
-  }
-
-
-  void drawAllStrokes() {
-    for (int i = 0; i < strokeCount; i++) {
-      for (int j = 0; j < strokes[i].pointCount - 1; j++) {
-        if (strokes[i].thickness == 1)
-          backscreen.drawLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, COLOR_WHITE);
-        else
-          backscreen.drawWideLine(strokes[i].points[j].x, strokes[i].points[j].y, strokes[i].points[j + 1].x, strokes[i].points[j + 1].y, strokes[i].thickness, COLOR_WHITE);
-      }
-    }
-  }
-};
 
 
 
@@ -610,19 +549,21 @@ void draw_km_distances(float scale) {
   for (float d : distances) {
     if (try_draw_km_distance(scale, d)) {
       draw_counter++;
-      if (draw_counter >= 2) {
-        backscreen.loadFont(AA_FONT_SMALL);
-        return;
-      }
+      if (draw_counter >= 2)
+        break;
     }
   }
+
+  // スケールバーが 2 本に届かなくても必ずフォントを戻す。
+  // 戻し忘れると以降に描く [GS]/[m/s]/[MT] やコース警告が内蔵フォントになり、
+  // 表示が崩れる（スケールによって発生したりしなかったりする不具合の原因）。
+  backscreen.loadFont(AA_FONT_SMALL);
 }
 
 // ===== マップ描画管理変数 =====
 bool fresh = false;         // 地図の強制再描画フラグ（スケール変更時などに true にする）
 float last_scale = 1.0;     // 前回描画時のスケール（変化を検知するための記憶値）
 float last_up = 0;          // 前回描画時の mapUpDirection
-bool nomap_drawn = true;    // いずれのマップポリゴンも描画されていない場合 true（テキスト表示の切り替えに使用）
 
 
 
@@ -749,6 +690,73 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm) {
   }
 }
 
+// ESKF の姿勢を画面に出してよいかを判定する。
+// リプレイ中は CSV に IMU 生データ（.bin）が入っていないため ESKF には
+// 「いま机の上にある本体」の姿勢しか流れてこない。再生中の飛行と全く無関係な
+// ロール・ピッチ・ヨーが出てしまい誤解を招くので、リプレイ中はまとめて非表示にする。
+// （将来 .bin まで再生できるようにしたら、この判定を外せばよい）
+bool eskf_display_enabled() {
+  // リプレイ中は IMU 生データ（.bin）を再生しないので実機 ESKF の値は使えないが、
+  // 同じ日の姿勢ログ（imu_replaydata/ か旧 euler/）があれば当時の値を再現できる。
+  if (getReplayMode()) {
+    float r, p;
+    return get_replay_attitude(r, p);
+  }
+  return attitude_ready();
+}
+
+// ESKF のヨー（真方位）を表示・アイコン回転に使ってよいかを判定する。
+// ヨーは水平加速度がある間しか可観測にならず、等速直進が続くと際限なく漂うため、
+// 推定精度がしきい値以下のときだけ「機首方向」として信用する。
+// 判定は 95%(2σ) で行う。1σ のまま「これ以下なら安心」と扱うと 3 回に 1 回は外れる。
+bool eskf_yaw_reliable() {
+  if (getReplayMode()) {
+    // 記録された 95% 値で当時と同じ判定を再現する。しきい値そのものは現在の設定を
+    // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
+    float y, acc95;
+    if (!get_replay_yaw(y, acc95)) return false;
+    return acc95 < ESKF_YAW_TRUST_95_DEG;
+  }
+  return eskf_display_enabled() && attitude_get_yaw_acc95_deg() < ESKF_YAW_TRUST_95_DEG;
+}
+
+// 自機アイコン（主翼・尾翼・胴体の 3 本＝「士」の形）を任意の向きで描く。
+// screen_deg: 画面の上を 0 とした時計回りの角度 [度]。
+//   NORTHUP は画面上＝北なので、そのまま方位を渡せばよい。
+//   TRACKUP は画面上＝対地進路なので (方位 - トラック) を渡す（＝偏流角）。
+// ここを機首方位で呼べばアイコンが実際の機首を向き、トラックで呼べば従来どおり。
+static void draw_plane_icon(int cx, int cy, float screen_deg, uint16_t col) {
+  const float a = deg2rad(screen_deg);
+  const float ca = cos(a), sa = sin(a);
+
+  int left_wing_x  = cx - TRIANGLE_HWIDTH * 2 * ca;
+  int left_wing_y  = cy - TRIANGLE_HWIDTH * 2 * sa;
+  int right_wing_x = cx + TRIANGLE_HWIDTH * 2 * ca;
+  int right_wing_y = cy + TRIANGLE_HWIDTH * 2 * sa;
+  int left_tail_x  = cx + (-TRIANGLE_HWIDTH / 2) * ca - (0.5 * TRIANGLE_SIZE) * sa;
+  int left_tail_y  = cy + (-TRIANGLE_HWIDTH / 2) * sa + (0.5 * TRIANGLE_SIZE) * ca;
+  int right_tail_x = cx + (TRIANGLE_HWIDTH / 2) * ca - (0.5 * TRIANGLE_SIZE) * sa;
+  int right_tail_y = cy + (TRIANGLE_HWIDTH / 2) * sa + (0.5 * TRIANGLE_SIZE) * ca;
+  int body_tail_x  = cx - TRIANGLE_SIZE / 2 * sa;
+  int body_tail_y  = cy + TRIANGLE_SIZE / 2 * ca;
+
+  backscreen.drawWideLine(left_wing_x, left_wing_y, right_wing_x, right_wing_y, 3, col);
+  backscreen.drawWideLine(left_tail_x, left_tail_y, right_tail_x, right_tail_y, 2, col);
+  backscreen.drawWideLine(cx, cy, body_tail_x, body_tail_y, 2, col);
+}
+
+// 自機アイコンを向けるべき画面上の角度 [度]（画面の上＝0、時計回り）。
+// ESKF のヨーが信頼できるときだけ機首方位に合わせる。横風があるとトラックと機首は
+// 偏流角のぶんずれるので、信頼できないヨーで回すと逆に誤解を招く。
+// 信頼できないときは従来どおり対地進路（NORTHUP=ttrack、TRACKUP=画面上固定）。
+static float plane_icon_screen_deg(int ttrack) {
+  if (!eskf_yaw_reliable())
+    return is_trackupmode() ? 0.0f : (float)ttrack;
+  float r, p, y;
+  attitude_get_euler(r, p, y);
+  return is_trackupmode() ? (y - (float)ttrack) : y;
+}
+
 void draw_triangle(int ttrack,int steer_angle) {
   // Core0 スタック残量を計測。
   // draw_triangle() は drawWideLine を最も多く呼ぶ関数であり、
@@ -775,20 +783,11 @@ void draw_triangle(int ttrack,int steer_angle) {
       backscreen.fillTriangle(x1,y1,x2,y2,x3,y3, (millis()/1000)%2==0?COLOR_RED:COLOR_BLACK);
     }
     
-    int left_wing_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * cos(tt_radians);
-    int left_wing_tip_y = BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2 * sin(tt_radians);
-    int right_wing_tip_x = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * cos(tt_radians);
-    int right_wing_tip_y = BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2 * sin(tt_radians);
-    int left_tail_tip_x = BACKSCREEN_SIZE / 2 + (-TRIANGLE_HWIDTH / 2) * cos(tt_radians) - (0.5 * TRIANGLE_SIZE) * sin(tt_radians);
-    int left_tail_tip_y = BACKSCREEN_SIZE / 2 + (-TRIANGLE_HWIDTH / 2) * sin(tt_radians) + (0.5 * TRIANGLE_SIZE) * cos(tt_radians);
-    int right_tail_tip_x = BACKSCREEN_SIZE / 2 + (TRIANGLE_HWIDTH / 2) * cos(tt_radians) - (0.5 * TRIANGLE_SIZE) * sin(tt_radians);
-    int right_tail_tip_y = BACKSCREEN_SIZE / 2 + (TRIANGLE_HWIDTH / 2) * sin(tt_radians) + (0.5 * TRIANGLE_SIZE) * cos(tt_radians);
-    int body_tail_tip_x = BACKSCREEN_SIZE / 2 - TRIANGLE_SIZE/2 * sin(tt_radians);
-    int body_tail_tip_y = BACKSCREEN_SIZE / 2 + TRIANGLE_SIZE/2 * cos(tt_radians);
-    backscreen.drawWideLine(left_wing_tip_x, left_wing_tip_y, right_wing_tip_x, right_wing_tip_y, 3, COLOR_BLACK);
-    backscreen.drawWideLine(left_tail_tip_x, left_tail_tip_y, right_tail_tip_x, right_tail_tip_y, 2, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2, body_tail_tip_x, body_tail_tip_y, 2, COLOR_BLACK);
-    
+    // 機体アイコン。NORTHUP は画面上＝北なので、そのまま方位を渡す。
+    // ヨーが信頼できるときは機首方位、できないときは従来どおり ttrack で描かれる。
+    draw_plane_icon(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2,
+                    plane_icon_screen_deg(ttrack), COLOR_BLACK);
+
 
     if((millis()/1000)%3 != 0){
       float arc_factor = course_warning_index/900.0;
@@ -841,14 +840,17 @@ void draw_triangle(int ttrack,int steer_angle) {
     // TRACKUP モードでは自機Y位置を画面下寄り（3/4）に表示する
     const int cy = BACKSCREEN_SIZE * 3 / 4;  // = 180（X は常に BACKSCREEN_SIZE/2 = 120）
 
-    // ── 機体アイコン（固定・常に上向き）──
-    // TRACKUPでは地図が回転して機首が常に画面上を向くため、アイコンは固定座標で描く
+    // ── 進行方向の縦線（常に画面上＝対地進路）──
+    // TRACKUP では地図が回転して対地進路が常に画面上を向く。この線は進路そのものなので
+    // 機首が振れても回さない（機首とのズレ＝偏流角がアイコンとの角度差で見える）。
     int shortening = 15;
     backscreen.drawFastVLine(240 / 2,     shortening, cy - shortening - 5, COLOR_BLACK);
     backscreen.drawFastVLine(240 / 2 + 1, shortening, cy - shortening - 5, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH*2, cy, BACKSCREEN_SIZE / 2 + TRIANGLE_HWIDTH*2, cy, 3, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2 - TRIANGLE_HWIDTH/2, cy + TRIANGLE_SIZE/2, BACKSCREEN_SIZE/2 + TRIANGLE_HWIDTH/2, cy + TRIANGLE_SIZE/2, 2, COLOR_BLACK);
-    backscreen.drawWideLine(BACKSCREEN_SIZE / 2, cy, BACKSCREEN_SIZE / 2, cy + TRIANGLE_SIZE/2, 2, COLOR_BLACK);
+
+    // ── 機体アイコン ──
+    // ヨーが信頼できるときは (機首方位 - トラック) だけ傾けて実際の機首方向に合わせる。
+    // 信頼できないときは 0（画面上向き）になり、従来の固定表示と同じになる。
+    draw_plane_icon(BACKSCREEN_SIZE / 2, cy, plane_icon_screen_deg(ttrack), COLOR_BLACK);
 
     // ── True Track 維持針（last_tone_tt: 最後にトーンが鳴った時点のTT方向）──
     // TRACKUPでは機首=画面上=0°なので、last_tone_tt の画面上の角度は (last_tone_tt - ttrack)
@@ -968,6 +970,23 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
 
 }
 
+// 始点 (lat1,lon1) から方位 bearing_rad（北基準・時計回り・ラジアン）へ
+// distance km 進んだ点を計算する。calculatePointD の「方位を外から与える版」。
+// 2 点から方位を求めるのではなく方位そのものを指定したい場合（センターライン等）に使う。
+void calculatePointFromBearing(double lat1, double lon1, double bearing_rad, double distance, double& lat2, double& lon2) {
+  const double R = 6371.0;  // Radius of the Earth in kilometers
+  lat1 = deg2rad(lat1);
+  lon1 = deg2rad(lon1);
+
+  double d = distance / R;  // Distance in radians
+
+  lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing_rad));
+  lon2 = lon1 + atan2(sin(bearing_rad) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat2));
+
+  lat2 = rad2deg(lat2);
+  lon2 = rad2deg(lon2);
+}
+
 // FLYAWAY モード用の描画。目的地から「離れていく」方向への矢印を描く。
 // 1. draw_flyinto() で目的地への基本矢印を描画する。
 // 2. 目的地から「自機方向→その先」へのマゼンタ線を追加し、「飛び越した先」を示す。
@@ -981,7 +1000,7 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
   // 自機位置からtargetpoint（目的地と逆方向・画面外）へ太線を引く。
   // 細線は draw_flyinto() が目的地→自機間を描画済み。
-  backscreen.drawWideLine(BACKSCREEN_SIZE/2, get_self_cy(), targetpoint.x, targetpoint.y, 5, COLOR_MAGENTA);
+  draw_clipped_wideline(BACKSCREEN_SIZE/2, get_self_cy(), targetpoint.x, targetpoint.y, 5, COLOR_MAGENTA);
 }
 
 // FLYINTO 拡張版。目的地が画面外の場合は仮想点を計算して矢印の終点に使う。
@@ -997,15 +1016,15 @@ void draw_flyinto2(double dest_lat, double dest_lon, double center_lat, double c
     double newlat, newlon;
     calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
     goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    backscreen.drawWideLine(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
+    draw_clipped_wideline(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
   }else{
-    backscreen.drawWideLine(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
+    draw_clipped_wideline(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
     double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
     double newlat, newlon;
     //
     calculatePointC(dest_lat, dest_lon, center_lat, center_lon, -distance, newlat, newlon);
     cord_tft outside_tft = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
-    backscreen.drawWideLine(goal.x, goal.y,outside_tft.x,outside_tft.y, 2, COLOR_MAGENTA);
+    draw_clipped_wideline(goal.x, goal.y, outside_tft.x, outside_tft.y, 2, COLOR_MAGENTA);
   }
 }
 
@@ -1022,7 +1041,7 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
     calculatePointD(center_lat, center_lon, dest_lat, dest_lon, distance, newlat, newlon);
     goal = latLonToXY(newlat, newlon, center_lat, center_lon, scale, up);
   }
-  backscreen.drawWideLine(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
+  draw_clipped_wideline(240 / 2, get_self_cy(), goal.x, goal.y, thickness, COLOR_MAGENTA);
 }
 
 
@@ -1045,7 +1064,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   
 
   if(p0.x != BACKSCREEN_SIZE/2 || p0.y != get_self_cy()){
-    backscreen.drawWideLine(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
+    draw_map_line(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
   }
 
   for (int i = 0; i < sizetrack-1; i++) {
@@ -1060,25 +1079,47 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     cord_tft p1 = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
     if (p0.x != p1.x || p0.y != p1.y) {
-      backscreen.drawWideLine(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
+      draw_map_line(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
     }
     
   }
 }
 
-// 日本列島の概略ポリゴン（map_japan1〜4）を緑で描画する。広域表示時に使用。
-void draw_Japan(double center_lat, double center_lon, float scale, float up) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan1, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan2, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan3, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_japan4, COLOR_GREEN);
-  nomap_drawn = false;
-}
 
 // SD カードの mapdata.csv から読み込んだ追加ポリゴン（extramaps[]）を描画する。
 // ポリゴンの最初の座標点が現在位置から 1°×1° 以内にある場合のみ描画する（遠方の不要描画を省略）。
 // ポリゴンの描画色はマップ名の先頭文字で決まる:
 //   r=赤, o=オレンジ, g=明るいグレー, m=マゼンタ, c=シアン, b=青, その他=緑
+// 地図名の先頭 1 文字で描画色を決める。SD の mapdata.csv と内蔵ポリゴンで
+// 同じ規則を使うため、ここに集約してある。
+//   r=赤 / o=オレンジ / g=グレー / m=マゼンタ / c=シアン / b=青 / それ以外=緑
+uint16_t mapdata_color(const char* name) {
+  switch (name[0]) {
+    case 'r': return COLOR_RED;
+    case 'o': return COLOR_ORANGE;
+    case 'g': return COLOR_BRIGHTGRAY;
+    case 'm': return COLOR_MAGENTA;
+    case 'c': return COLOR_CYAN;
+    case 'b': return COLOR_BLUE;
+    default:  return COLOR_GREEN;
+  }
+}
+
+// フラッシュ内蔵のポリゴン地図（mapdatas[]）を描画する。
+// SD の mapdata.csv 由来（draw_ExtraMaps）と同じ規則で描くが、
+// こちらは SD が無くても・抜けても必ず表示される点が違う。
+// 飛行に必須の注記はこちらに置くこと。
+void draw_FlashMaps(double center_lat, double center_lon, float scale, float up) {
+  for (int i = 0; i < flashmap_count; i++) {
+    const mapdata* mp = flashmaps[i];
+    if (mp->size <= 1) continue;
+    // 現在地から離れた地図は描かない（extramaps と同じ 1 度四方の判定）
+    if (!check_within_latlon(1, 1, mp->cords[0][1], get_gps_lat(),
+                             mp->cords[0][0], get_gps_lon())) continue;
+    draw_map(up, center_lat, center_lon, scale, mp, mapdata_color(mp->name));
+  }
+}
+
 void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up) {
   for (int i = 0; i < mapdata_count; i++) {
     if (extramaps[i].size <= 1) {
@@ -1087,75 +1128,32 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
     double lon1 = extramaps[i].cords[0][0];
     double lat1 = extramaps[i].cords[0][1];
     if (check_within_latlon(1, 1, lat1, get_gps_lat(), lon1, get_gps_lon())) {
-      int col = COLOR_GREEN;
-      char name_firstchar = extramaps[i].name[0];
-      if (name_firstchar == 'r') {
-        col = COLOR_RED;
-      } else if (name_firstchar == 'o') {
-        col = COLOR_ORANGE;
-      } else if (name_firstchar == 'g') {
-        col = COLOR_BRIGHTGRAY;
-      } else if (name_firstchar == 'm') {
-        col = COLOR_MAGENTA;
-      } else if (name_firstchar == 'c') {
-        col = COLOR_CYAN;
-      } else if (name_firstchar == 'b') {
-        col = COLOR_BLUE;
-      }
-      draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &extramaps[i], col);
-      nomap_drawn = false;
-    }
+      int col = mapdata_color(extramaps[i].name);
+      draw_map(up, center_lat, center_lon, scale, &extramaps[i], col);
+        }
   }
 }
 
-void draw_Shinura(double center_lat, double center_lon, float scale, float up) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_shinura, COLOR_GREEN);
 
-  nomap_drawn = false;
-}
 
-// 琵琶湖エリアのポリゴン（湖岸・島）と 10km コースの基準線/円を描画する。
-// gmap_drawed=false のときは fill_sea_land() で水面・陸地の色塗りも行う
-//（BMP 地図画像がない状態でも水面を水色、陸地をオレンジで色分けするため）。
-// gps_loop(2/3) を fill_sea_land の前後で呼んでいるのは、色塗りに時間がかかるためその間も GPS を処理するため。
-void draw_Biwako(double center_lat, double center_lon, float scale, float up, bool gmap_drawed) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_biwako, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_takeshima, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_chikubushima, COLOR_GREEN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_okishima, COLOR_GREEN);
-  if(!gmap_drawed){//if (! && !isTaskInQueue(TASK_LOAD_MAPIMAGE))
-    //Run gps_loop 
-    gps_loop(2);
-    fill_sea_land(center_lat, center_lon, scale, up);
-    gps_loop(3);
-  }
-  // パイロン関連はレイヤー順の都合でここでは描画しない。GPS_TFT_map.ino 側で
-  // 基準線 draw_pilon_takeshima_line をマゼンタラインの前（レイヤー3.5）、
-  // アイコン draw_pilon_takeshima_marks をマゼンタラインの後（レイヤー4.5）に呼んでいる。
-  nomap_drawn = false;
-}
 
-// 大阪（阪大エリア）のポリゴン群を描画する。
-// 外周（シアン）、高速道路（マゼンタ）、構内エリア（グレー）、鉄道（オレンジ）、カフェ（緑）を色分け表示。
-void draw_Osaka(double center_lat, double center_lon, float scale, float up) {
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaioutside, COLOR_CYAN);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway, COLOR_MAGENTA);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaihighway2, COLOR_MAGENTA);
-
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside1, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside2, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside3, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside4, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaiinside5, COLOR_BRIGHTGRAY);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handairailway, COLOR_ORANGE);
-  draw_map(STRK_MAP1, up, center_lat, center_lon, scale, &map_handaicafe, COLOR_GREEN);
-
-  nomap_drawn = false;
+// 起動アニメーションの地図背景。実際の地図と同じ描画関数を使う。
+static void draw_startup_map(double lat, double lon, float scale) {
+  draw_vectormap(lat, lon, scale, 0);
 }
 
 // backscreen の左下にソフトウェアバージョン文字列を、右上にバージョンテキストを描画する。
 // 主に startup_demo_tft() のデモ画面で使用する。
 void draw_version_backscreen(){
+  // OpenStreetMap の帰属表示。ODbL 4.3 と OSMF Attribution Guidelines により、
+  // 組み込みデバイスでも画面上への表示が必要（スプラッシュ画面での表示が認められている）。
+  // 起動アニメーションの間ずっと表示されるので、この位置で要件を満たす。
+  backscreen.unloadFont();
+  backscreen.setTextColor(COLOR_GRAY);
+  backscreen.setCursor(10, 240-34);
+  backscreen.print("Map data (c) OpenStreetMap");
+  backscreen.setCursor(10, 240-24);
+  backscreen.print("contributors - ODbL 1.0");
   backscreen.setCursor(10, 240-12);
   backscreen.unloadFont();
   backscreen.setTextColor(COLOR_BLACK);
@@ -1235,14 +1233,14 @@ void startup_demo_tft() {
   upward_mode = MODE_NORTHUP;
 
   backscreen.fillScreen(COLOR_WHITE);
-  draw_Biwako(center_lat,center_lon,2.5, 0,false);
+  draw_startup_map(center_lat, center_lon, 2.5);
   draw_pilon_takeshima_line(center_lat, center_lon, 2.5, 0);
   draw_pilon_takeshima_marks(center_lat, center_lon, 2.5, 0);
   draw_version_backscreen();
   backscreen.pushSprite(0,52);
 
 
-  // Core1 がロゴ BMP を gmap_sprite に読み込むのを待ち、完了したら pushSprite で表示する。
+  // Core1 がロゴ BMP を logo_sprite に読み込むのを待ち、完了したら pushSprite で表示する。
   // 残り時間は delay で消費して起動タイミングを維持する。
   {
     const int wait_timeout_ms = 1900;
@@ -1252,7 +1250,7 @@ void startup_demo_tft() {
       delay(10);
     }
     if (logo_ready) {
-      gmap_sprite.pushSprite(0, 0);  // ロゴを画面上部 (0,0) に表示
+      logo_sprite.pushSprite(0, 0);  // ロゴを画面上部 (0,0) に表示
       backscreen.pushSprite(0, 52);  // ロゴの黒エリア(y=52~239)で上書きされた琵琶湖地図を復元
       logo_ready = false;
     }
@@ -1268,7 +1266,7 @@ void startup_demo_tft() {
   for (int i = 0; i <= countermax; i++) {
     backscreen.fillScreen(COLOR_WHITE);
     scalenow = 2.5 + i * 0.25*zoomin_speedfactor;
-    draw_Biwako(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0, false);
+    draw_startup_map(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow);
     draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
     draw_pilon_takeshima_marks(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
     draw_version_backscreen();
@@ -1282,9 +1280,9 @@ void startup_demo_tft() {
 
   for (int i = 0; i < countermax; i++) {
     //scalenow *= 0.78;//for zoomout_speedfactor=2. 
-    scalenow *= 0.88;// for zoomout_speedfactor=1
-    if(scalenow < 0.07)
-      scalenow = 0.07;
+    scalenow *= 0.89;// for zoomout_speedfactor=1
+    if(scalenow < 0.08)
+      scalenow = 0.08;
     else{
       center_lat += 0.005*i;// for zoomout_speedfactor=1
       //center_lat += 0.01*i;// for zoomout_speedfactor=2
@@ -1292,30 +1290,40 @@ void startup_demo_tft() {
 
     bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
-    if(scalenow < 0.5){
-      draw_Japan(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0);
-      draw_map(STRK_MAP1, 0, center_lat, center_lon, scalenow, &map_biwako, COLOR_GREEN);
-    }
-    else{
-      draw_Biwako(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon),scalenow, 0, false);
+    {
+      draw_startup_map(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow);
       draw_pilon_takeshima_line(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
       draw_pilon_takeshima_marks(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
     }
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
-  delay(500);
+
+  // OpenStreetMap の帰属表示（draw_version_backscreen が描いている）を
+  // 読める時間だけ残す。OSMF の Attribution Guidelines はスプラッシュ画面での
+  // 表示を認めているが、一瞬で消えると「easily readable」の要件を満たさない。
+  // 最終フレームは既に表示済みなので、そのまま 2 秒保持する。
+  {
+    const unsigned long hold_ms = 3500;
+    unsigned long t0 = millis();
+    while (millis() - t0 < hold_ms) {
+      gps_loop(7);  // 待機中も GPS FIFO を読み捨てて overflow 防止
+      delay(10);
+    }
+  }
+
   upward_mode = saved_upward_mode;  // TRACKUP/NORTHUP 設定を復元
 }
-// デモモード（GPS 固定前に琵琶湖をデモ飛行）中の通知ボックスを backscreen に描画する。
-// 「LAKE BIWA DEMO x5 SPD」と設定変更の案内を表示する。
+// デモ飛行中の通知ボックスを backscreen に描画する。
+// 選択中の地点名を出すので、どの地点を表示しているか画面で分かる。
 void draw_demo_biwako(){
   if((millis()/3000)%2 == 0){  // 6秒周期（3秒点灯・3秒消灯）で点滅
     backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 15+5*2, COLOR_WHITE);
     backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 15+5*2, COLOR_ORANGE);
     backscreen.setCursor(25,200);
     backscreen.setTextColor(COLOR_ORANGE);
-    backscreen.print("LAKE BIWA DEMO x5 SPD");
+    backscreen.print("DEMO: ");
+    backscreen.print(get_demo_site_name(get_demo_site()));
   }
 }
 
@@ -1335,9 +1343,6 @@ void draw_replay_indicator(){
 }
 
 // backscreen スプライトを白でクリアする（毎フレームの描画前に呼ぶ）。
-void clean_backscreen(){
-  backscreen.fillScreen(COLOR_WHITE);
-}
 // VSIスプライト（5×240px）を鉛直速度に応じて描画する。
 // 中心 Y=120 が 0 m/s の基準線（白）。上昇=緑バー、下降=シアンバー。
 // 不感域なし。最大バー長 120px（±1.5 m/s で振り切り）。
@@ -1376,6 +1381,451 @@ void draw_vsi() {
 
 // backscreen スプライトを TFT の (0, 50) に転送する（ヘッダー 50px の下から表示）。
 // 転送前に VSI を backscreen の右端 X=235 に合成する。
+// ============================================================
+// draw_eskf_attitude(): 地図上に姿勢を 3 行で重ねる
+// ============================================================
+// 背景は敷かず地図へ直接上書きする。リプレイ中は姿勢ログがある日のみ。
+// 位置は左下。sAcc（BACKSCREEN_SIZE-27）の 1 行上からさらに ESKF_ROW_RAISE だけ
+// 持ち上げた所を最下段とし、下から上へ R → P → Avg30s P と積む。
+// DEBUG_ESKF の有無でこの位置と大きさを変えないこと。
+//
+//   Avg30s P : 30 秒平均ピッチ。大きい字（NM_FONT_MEDIUM）＝一番見るべき値。
+//   P / R    : 瞬時値。参考なので小さい字（AA_FONT_SMALL）。
+//
+// ロールは BANK_WARN_DEG を超えたら赤にする（バンク超過の気付き用）。
+// 左端に寄せてあるのは、TRACKUP のとき自機アイコン（cy=180）の真下に
+// draw_eskf_yaw() のヨー数値が入るため、中央付近を空けておく必要があるから。
+#define ESKF_LABEL_X        2
+#define ESKF_VALUE_RIGHT_X  50    // P / R の値の右端（ここへ右揃え。桁が揃う）
+#define ESKF_AVG_RIGHT_X    60   // Avg30s P の値の右端。ラベルが長いぶん右へ逃がす
+#define ESKF_ROW_GAP        2     // P 行と R 行の隙間 [px]
+#define ESKF_AVG_GAP        30     // Avg30s 行と P 行の隙間 [px]（大きい字なので少し広く）
+#define ESKF_ROW_RAISE      16    // sAcc の 1 行上からさらに持ち上げる量 [px]
+void draw_eskf_attitude() {
+  if (!eskf_display_enabled()) return;  // リプレイ中は姿勢データが無いので非表示
+
+  float r, p, y = 0.0f;
+  if (getReplayMode()) {
+    if (!get_replay_attitude(r, p)) return;  // その日の姿勢ログが無い
+  } else {
+    attitude_get_euler(r, p, y);
+  }
+
+  char rbuf[8], pbuf[8];
+  snprintf(rbuf, sizeof(rbuf), "%+5.1f", r);
+  snprintf(pbuf, sizeof(pbuf), "%+5.1f", p);
+
+  // 30 秒平均ピッチだけを NM_FONT_MEDIUM の大きい字にする。
+  // フゴイドで瞬時ピッチは±3度振れるので操縦の指標にならず、巡航のトリム状態は
+  // 平均でしか読めない（実測で 30 秒平均の std は 0.73 度＝1 度の変化が有意）。
+  // 瞬時の P / R は参考値なので AA_FONT_SMALL に落とす。
+  // リプレイでは実機（机の上）の平均ではなく、記録された当時の値を出す。
+  float avg_val = 0.0f;
+  bool  show_avg;
+  if (getReplayMode()) show_avg = get_replay_pitch_avg(avg_val);
+  else {
+    show_avg = attitude_pitch_avg_valid();
+    if (show_avg) avg_val = attitude_get_pitch_avg_deg();
+  }
+
+  backscreen.setTextWrap(false);
+  backscreen.loadFont(AA_FONT_SMALL);
+  const int fh_s = backscreen.fontHeight();
+
+  const int yroll = BACKSCREEN_SIZE - 27 - fh_s - ESKF_ROW_RAISE;  // 最下段＝ロール
+  const int ypit  = yroll - fh_s - ESKF_ROW_GAP;                   // 中段＝ピッチ
+
+  // ---- 最上段: Avg30s P（ラベルは AA_FONT_SMALL、数値は NM_FONT_MEDIUM）----
+  // NM_FONT_MEDIUM は平均を出すときだけ読み込む（地図の毎フレーム描画なので
+  // 不要なフォント切替を増やさない）。
+  if (show_avg) {
+    char abuf[8];
+    snprintf(abuf, sizeof(abuf), "%+5.1f", avg_val);
+    backscreen.loadFont(NM_FONT_MEDIUM);
+    const int fh_m = backscreen.fontHeight();
+    const int yavg = ypit - fh_m - ESKF_AVG_GAP;
+    backscreen.setTextColor(COLOR_BLACK);
+    backscreen.setCursor(ESKF_AVG_RIGHT_X - backscreen.textWidth(abuf), yavg+20);
+    backscreen.print(abuf);
+
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setTextColor(COLOR_GRAY);
+    // ラベルは大きい数値の行の高さの中央に合わせる
+    backscreen.setCursor(ESKF_LABEL_X, yavg + (fh_m - fh_s) / 2);
+    backscreen.print("Avg30s P");
+  }
+
+  // ---- 中段: P ----
+  // ピッチは色を変えない。ピッチ単独では失速余裕を判定できないため
+  // （本来は迎角が要る。実測でも 30 秒平均ピッチと対気速度の相関は -0.14 と弱く、
+  //   迎角推定も対地経路角の 30 秒平均がほぼゼロで補正にならなかった）。
+  backscreen.setTextColor(COLOR_GRAY);
+  backscreen.setCursor(ESKF_LABEL_X, ypit);
+  backscreen.print("P");
+  backscreen.setTextColor(COLOR_BLACK);
+  backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(pbuf), ypit);
+  backscreen.print(pbuf);
+
+  // ---- 最下段: R ----
+  backscreen.setTextColor(COLOR_GRAY);
+  backscreen.setCursor(ESKF_LABEL_X, yroll);
+  backscreen.print("R");
+  // バンク超過だけ赤。地図の上に直接描くので通常色は黒（フッターと同じ）。
+  backscreen.setTextColor(fabsf(r) > BANK_WARN_DEG ? COLOR_RED : COLOR_BLACK);
+  backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(rbuf), yroll);
+  backscreen.print(rbuf);
+  backscreen.setTextColor(COLOR_BLACK);
+
+  // ---- R の下: 自動ロールトリムの累積補正量（内蔵フォント 8px = 最小）----
+  // どれだけ自動補正が入っているかを飛行中にも確認できるようにする。
+  // リプレイでは記録された当時の値を出す（旧 euler 形式には無いので非表示）。
+  float trim_val = 0.0f;
+  bool  show_trim;
+  if (getReplayMode()) show_trim = get_replay_roll_trim(trim_val);
+  else { show_trim = true; trim_val = attitude_get_roll_trim_deg(); }
+  if (show_trim) {
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_GRAY);
+    backscreen.setCursor(ESKF_LABEL_X, yroll + fh_s + 2);
+    backscreen.printf("Rtrim%+.2f", trim_val);
+    backscreen.setTextColor(COLOR_BLACK);
+  }
+
+  // この後に描く コース警告 / [GS] [m/s] [MT] と同じフォントで抜けること。
+  backscreen.loadFont(AA_FONT_SMALL);
+}
+
+
+// ============================================================
+// draw_eskf_yaw(): 自機アイコンのすぐ下に ESKF のヨー角（真方位）を描く
+// ============================================================
+// フォントは [GS] [m/s] [MT] と同じ AA_FONT_SMALL。
+// 色で信頼度を表す:
+//   黒     = 信頼できる（95%値 < ESKF_YAW_TRUST_95_DEG）。このときアイコンも機首方向へ回る。
+//   グレー = 信頼できない。アイコンは回らず対地進路（トラック）向きのまま。
+// ロール・ピッチ行より後に呼ぶこと（TRACKUP では真下がその行に近いため）。
+void draw_eskf_yaw() {
+  if (!eskf_display_enabled()) return;
+
+  float r, p, y, acc95;
+  if (getReplayMode()) {
+    // 旧 euler 形式のヨーは BNO085 由来で、実測で真方位から -30〜-65 度ずれていた。
+    // 当時これを機首方位として表示していないので、再現もしない（新形式のみ表示）。
+    if (!get_replay_yaw(y, acc95)) return;
+  } else {
+    attitude_get_euler(r, p, y);
+  }
+
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%03d", ((int)lroundf(y) % 360 + 360) % 360);
+
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextWrap(false);
+  backscreen.setTextColor(eskf_yaw_reliable() ? COLOR_BLACK : COLOR_GRAY);
+  // アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下に中央揃えで置く
+  backscreen.setCursor(BACKSCREEN_SIZE / 2 - backscreen.textWidth(buf) / 2,
+                       get_self_cy() + TRIANGLE_SIZE / 2 + 3);
+  backscreen.print(buf);
+  backscreen.setTextColor(COLOR_BLACK);
+}
+
+
+#ifdef DEBUG_ESKF
+// ============================================================
+// draw_eskf_debug(): 比較用の詳細表示（DEBUG_ESKF 有効時のみ）
+// ============================================================
+// 姿勢推定の精度を実機で見比べるための評価用。地図上部に被せる。
+// draw_eskf_attitude() が使う左下の領域には触れないこと。
+//
+// 見方: 旋回中・加減速中に ESKF と BNO085 が開いていれば、その差が BNO085 の誤差。
+//   BNO085 は比力を鉛直とみなすため、定常旋回でロールを過小評価し、加減速でピッチがずれる。
+// ヨーは σ（推定標準偏差）で信頼度を示す。水平加速度が無いと可観測にならず育つ。
+void draw_eskf_debug() {
+  const int x = 0, y = 2, w = 240, h = 46;
+
+  backscreen.unloadFont();
+  backscreen.fillRect(x, y, w, h, COLOR_BLACK);
+  backscreen.drawRect(x, y, w, h, COLOR_GRAY);
+
+  if (!attitude_ready()) {
+    backscreen.setTextSize(2);
+    backscreen.setTextColor(COLOR_YELLOW, COLOR_BLACK);
+    backscreen.setCursor(x + 6, y + 6);
+    backscreen.print("ESKF INIT...");
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
+    backscreen.setCursor(x + 6, y + 28);
+    backscreen.printf("static %.1fs / need %.1fs  %s",
+                      attitude_get_static_secs(),
+                      ESKF_STATIC_INIT_US / 1000000.0f,
+                      attitude_is_static() ? "hold still" : "waiting");
+    backscreen.loadFont(AA_FONT_SMALL);  // 内蔵フォントのまま抜けない
+    return;
+  }
+
+  float er, ep, ey;  attitude_get_euler(er, ep, ey);
+  float br, bp, by;  get_imu_euler(br, bp, by);
+  float yacc = attitude_get_yaw_acc95_deg();   // 95%(2σ) 表記
+
+  // 見出し
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 44,  y + 2); backscreen.print("ROLL");
+  backscreen.setCursor(x + 110, y + 2); backscreen.print("PITCH");
+  backscreen.setCursor(x + 182, y + 2); backscreen.print("YAW");
+
+  // ESKF（ヨーだけ信頼度で色を変える。ロール・ピッチと同確度だと誤解させないため）
+  backscreen.setTextColor(COLOR_CYAN, COLOR_BLACK);
+  backscreen.setCursor(x + 2, y + 14); backscreen.print("ESKF");
+  backscreen.setTextSize(2);
+  backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+  backscreen.setCursor(x + 36,  y + 12); backscreen.printf("%+5.1f", er);
+  backscreen.setCursor(x + 108, y + 12); backscreen.printf("%+5.1f", ep);
+  backscreen.setTextColor(yacc < 10.0f ? COLOR_WHITE
+                        : yacc < 40.0f ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 186, y + 12); backscreen.printf("%4.0f", ey);
+
+  // BNO085（比較用）
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_ORANGE, COLOR_BLACK);
+  backscreen.setCursor(x + 2, y + 32); backscreen.print("BNO");
+  backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 36,  y + 32); backscreen.printf("%+6.1f", br);
+  backscreen.setCursor(x + 108, y + 32); backscreen.printf("%+6.1f", bp);
+  backscreen.setCursor(x + 186, y + 32); backscreen.printf("%4.0f", by);
+
+  // ヨーの収束状態: M=地磁気で初期化済み / -=収束待ち、数値は 95%(2σ) の精度 [度]
+  backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(x + 142, y + 32);
+  backscreen.printf("%c%3.0f", attitude_yaw_from_mag() ? 'M' : '-', yacc);
+
+  backscreen.setTextSize(1);
+  // 内蔵フォントのまま抜けると以降の描画が崩れるので必ず戻す（draw_eskf_attitude と同様）
+  backscreen.loadFont(AA_FONT_SMALL);
+}
+#endif // DEBUG_ESKF
+
+
+// ============================================================
+// IMU / 姿勢 ESKF 画面（2 ページ構成）
+// ============================================================
+// ページ1: 姿勢の比較と、機体ゼロ点の較正操作
+// ページ2: センサーの生値・ESKF の内部状態（診断用）
+//
+// 操作: 短押し = カーソル移動 / 長押し = 実行（Exit 項目で設定画面へ戻る）
+// 他の設定画面と同じ操作系に揃えてある。
+extern int imu_cursor;   // GPS_TFT_map.ino で定義。ページ1のカーソル位置
+
+
+// タイトル右端の状態ドット。バンク警告と自動ロールトリムが両方 ON なら緑、
+// どちらかでも OFF ならオレンジ。誤警報対策を切ったまま飛ばないための目印。
+static void draw_imu_status_dot() {
+  extern volatile bool bank_warning_enabled;
+  const bool all_on = bank_warning_enabled && attitude_get_roll_trim_enabled();
+  header_footer.fillCircle(228, 18, 6, all_on ? COLOR_GREEN : COLOR_ORANGE);
+}
+
+static void draw_imu_page1() {
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("IMU / ESKF  1/2");
+  draw_imu_status_dot();
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextWrap(false);   // 長い項目名が 2 行に折り返さないように
+
+  int y = 2;
+  const int lh = 12;
+  bool ready = attitude_ready();
+
+  // ---- 姿勢の比較 ----
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("      ROLL   PITCH    YAW"); y += lh;
+  float er, ep, ey, br, bp, by;
+  attitude_get_euler(er, ep, ey);
+  get_imu_euler(br, bp, by);
+  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  // 未初期化・IMU 途絶時は数値を出さない（単位クォータニオンのままだと
+  // pitch=-90 というもっともらしい値が出て有効値と誤読される）
+  if (ready) backscreen.printf("ESKF %+6.1f %+6.1f %6.1f", er, ep, ey);
+  else       backscreen.print("ESKF   ---    ---    ---");
+  y += lh;
+  backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("BNO  %+6.1f %+6.1f %6.1f", br, bp, by);
+  y += lh;
+  // 巡航のトリム状態は瞬時ピッチではなく 30 秒平均で見る（フゴイドで±3度振れるため）。
+  // 直進中のロール自動トリムの累積量も併記して、どれだけ補正が入ったか分かるようにする。
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  if (attitude_pitch_avg_valid())
+    backscreen.printf("P avg30s %+5.1f  Rtrim %+.2f",
+                      attitude_get_pitch_avg_deg(), attitude_get_roll_trim_deg());
+  else
+    backscreen.printf("P avg30s   --    Rtrim %+.2f", attitude_get_roll_trim_deg());
+  y += lh + 6;
+
+  // ---- 注意書き ----
+  // ロールは常に 0 として較正するので、傾いた状態で APPLY してはいけない。
+  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print("Note: Make sure actual"); y += lh;
+  backscreen.setCursor(2, y);
+  backscreen.print("      aircraft roll is zero"); y += lh + 6;
+
+  // ---- 操作メニュー ----
+  const int mh = 17;
+  bool on_ground = (get_gps_mps() <= LEVEL_CALIB_MAX_MPS);
+  for (int i = 0; i < IMU_MENU_COUNT; i++) {
+    bool sel = (imu_cursor == i);
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
+    backscreen.print(sel ? ">" : " ");
+    backscreen.setCursor(14, y);
+    switch (i) {
+      case IMU_MENU_SETPITCH:
+        backscreen.printf("SET PITCH = %+.1f deg", attitude_get_pitch_target());
+        break;
+      case IMU_MENU_APPLY:
+        // 実行可否をそのまま出す。飛行中は通さない。
+        if (!ready)          backscreen.print("APPLY  (ESKF not ready)");
+        else if (!on_ground) backscreen.print("APPLY  (moving)");
+        else                 backscreen.print("APPLY  now = above");
+        break;
+      case IMU_MENU_BANKWARN: {
+        extern volatile bool bank_warning_enabled;
+        backscreen.printf("Bank warning(4deg1sec): %s",
+                          bank_warning_enabled ? "ON " : "OFF");
+        break;
+      }
+      case IMU_MENU_AUTOROLL:
+        backscreen.printf("Auto roll level detect: %s",
+                          attitude_get_roll_trim_enabled() ? "ON " : "OFF");
+        break;
+      case IMU_MENU_NEXTPAGE: backscreen.print("Next page (Detail) >"); break;
+      case IMU_MENU_EXIT:     backscreen.print("Exit >>");              break;
+    }
+    y += mh;
+  }
+
+  // ---- 現在保存されているオフセット ----
+  y += 4;
+  float lr, lp;
+  attitude_get_level_offset(lr, lp);
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("stored offset  R%+.1f  P%+.1f", lr, lp);
+
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+}
+
+
+// ページ2: センサー生値と ESKF 内部状態（診断用）
+static void draw_imu_page2() {
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("IMU / ESKF  2/2");
+  draw_imu_status_dot();
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+  int y = 2;
+  const int lh = 12;
+  const float R2D = 180.0f / (float)M_PI;
+  float g[3], a[3];
+  get_imu_raw_gyro(g);
+  get_imu_raw_accel(a);
+  float gn = sqrtf(g[0]*g[0]+g[1]*g[1]+g[2]*g[2]) * R2D;
+  float an = sqrtf(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- Gyro raw [deg/s] --"); y += lh;
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", g[0]*R2D, g[1]*R2D, g[2]*R2D); y += lh;
+  backscreen.setCursor(2, y);
+  // 静止中ならこの大きさが残留バイアス＋ノイズ。BNO085 は校正済みなので本来小さい。
+  backscreen.setTextColor(gn < 0.5f ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
+  backscreen.printf("|w| %.3f deg/s", gn); y += lh;
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- Accel raw [m/s2] --"); y += lh;
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", a[0], a[1], a[2]); y += lh;
+  backscreen.setCursor(2, y);
+  backscreen.printf("|a| %.3f  (g=9.807)", an); y += lh + 2;
+
+  bool st = attitude_is_static();
+  backscreen.setTextColor(st ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("STATIC: %s  %.1fs", st ? "YES" : "no ", attitude_get_static_secs());
+  y += lh + 2;
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- ESKF --"); y += lh;
+  bool ready = attitude_ready();
+  backscreen.setTextColor(ready ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("%s   GNSS upd:%lu", ready ? "READY" : "INIT...",
+                    (unsigned long)attitude_get_gnss_updates());
+  y += lh;
+
+  float bg[3], ba[3];
+  attitude_get_gyro_bias(bg);
+  attitude_get_accel_bias(ba);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  // 上限（1.0deg/s）に張り付いていたら初期姿勢誤差を吸っている疑い
+  backscreen.printf("bg %+5.2f %+5.2f %+5.2f d/s", bg[0]*R2D, bg[1]*R2D, bg[2]*R2D); y += lh;
+  backscreen.setCursor(2, y);
+  backscreen.printf("ba %+5.2f %+5.2f %+5.2f m/s2", ba[0], ba[1], ba[2]); y += lh + 2;
+
+  // ヨーの信頼度。水平加速度がある間しか可観測にならず、等速直進では育つ。
+  // 95%(2σ) で表記する。1σ のままだと「これ以下なら安心」と誤読されやすい。
+  float yacc = attitude_get_yaw_acc95_deg();
+  backscreen.setTextColor(yacc < 10.0f ? COLOR_GREEN
+                        : yacc < 40.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("yaw acc +-%.0f deg(95%%) init:%s",
+                    yacc, attitude_yaw_from_mag() ? "MAG" : "none");
+  y += lh + 2;
+
+  float lr, lp;
+  attitude_get_level_offset(lr, lp);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("level offset R%+.1f P%+.1f", lr, lp); y += lh + 4;
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print("long press: back to page 1");
+
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+}
+
+
+void draw_imudetail(int page) {
+  if (page % 2 == 0) draw_imu_page1();
+  else               draw_imu_page2();
+}
+
+
+
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -1403,48 +1853,7 @@ void draw_gs_track(){
 }
 
 
-// 地図 BMP 画像が表示できないときのステータスメッセージを backscreen に描画する。
-// - scale > SCALE_EXLARGE_GMAP: このスケールでは地図画像なし（灰色文字で静的表示）。
-// - タスクキューに TASK_LOAD_MAPIMAGE がある: "Loading image..." を灰色で表示。
-// - GPS 固定済みで画像なし: "No map image available." をオレンジで表示（ファイルが見つからない警告）。
-void draw_nogmap(double scale) {
-  backscreen.setCursor(5, BACKSCREEN_SIZE - 36);  // hPa 表示(BACKSCREEN_SIZE-18)との重複を避けて上にずらす
-  if(scale > SCALE_EXLARGE_GMAP){
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("No map image at this scale.");
-  }else{
-    if(!isTaskInQueue(TASK_LOAD_MAPIMAGE) && !isTaskRunning(TASK_LOAD_MAPIMAGE)){
-      if(get_gps_fix() && !new_gmap_ready){//描画中に新しいimageがload完了している場合がある。
-        backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-        backscreen.print("No map image available.");
-      }
-    }else{
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("Loading image...");
-    }
-  }
-}
 
-// gmap_sprite に読み込まれている地図画像を backscreen に転送する。
-// TRACKUP モード: pushRotated() で -drawupward_direction 度回転させて転送（進行方向が上になる）。
-// NORTHUP モード: pushToSprite() でそのまま (0,0) に転送。
-// gmap_loaded_active=false の場合は何もしないで false を返す。
-bool draw_gmap(float drawupward_direction){
-  if (gmap_loaded_active) {
-    if(is_trackupmode()) {
-      // gmap_sprite のpivot（デフォルト=スプライト中心=自機GPS位置）が
-      // backscreen の pivot 位置に着地し、その点を軸に回転する。
-      // → gmap 中心（自機位置）が backscreen 上の自機描画位置 (cx, cy) に正確に一致する。
-      backscreen.setPivot(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE * 3 / 4);  // (120, 180)
-      gmap_sprite.pushRotated(&backscreen, -drawupward_direction);
-      backscreen.setPivot(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2);       // 後続処理のためリセット
-    } else
-      gmap_sprite.pushToSprite(&backscreen,0,0);
-    DEBUG_PLN(20240828, "pushed gmap");
-    return true;
-  }
-  return false;
-}
 
 
 
@@ -1653,7 +2062,7 @@ void draw_footer(){
 
     header_footer.setCursor(60, 1);
     header_footer.setTextColor(COLOR_BLACK);
-    if(!get_gps_fix() && !get_demo_biwako())
+    if(!get_gps_fix() && !is_demo_active())
       header_footer.print("---km");
     else
       header_footer.printf(dest_dist>1000?"%.0fkm":dest_dist>100?"%.1fkm":"%.2fkm", dest_dist);
@@ -1758,21 +2167,222 @@ void draw_headingupmode() {
 
 // mapdata 構造体が持つポリゴン座標列を backscreen に折れ線（drawLine）で描画する。
 // 各座標を latLonToXY() でスクリーン座標に変換し、両端いずれかが画面内の辺のみ描画する（画面外スキップ最適化）。
-void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, double center_lon, float mapScale, const mapdata* mp, uint16_t color) {
-  int mapsize = mp->size;
-  cord_tft points[mapsize];
+void draw_map(float mapUpDirection, double center_lat, double center_lon, float mapScale, const mapdata* mp, uint16_t color) {
+  if (mp->size < 2) return;
 
-  for (int i = 0; i < mapsize; i++) {
-    float lat1 = mp->cords[i][1];  // Example latitude
-    float lon1 = mp->cords[i][0];  // Example longitude
-    points[i] = latLonToXY(lat1, lon1, center_lat, center_lon, mapScale, mapUpDirection);
+  // 隣り合う 2 点しか使わないので、直前の点だけ持って回す。
+  // 以前は全点を可変長配列（cord_tft points[mapsize]）へ展開していたが、
+  // SD の mapdata.csv は点数に上限が無いため、大きなポリゴンを入れると
+  // スタックを圧迫した（8 Byte/点。5000 点なら 40KB）。
+  cord_tft prev = latLonToXY(mp->cords[0][1], mp->cords[0][0],
+                             center_lat, center_lon, mapScale, mapUpDirection);
+  for (int i = 1; i < mp->size; i++) {
+    cord_tft cur = latLonToXY(mp->cords[i][1], mp->cords[i][0],
+                              center_lat, center_lon, mapScale, mapUpDirection);
+    // 画面外の判定は draw_clipped_line に任せる。
+    // 以前は「両端とも画面外なら描かない」としていたが、画面を横切る長い線分は
+    // 両端とも画面外になるため、高倍率で辺が消えていた。
+    draw_clipped_line(prev.x, prev.y, cur.x, cur.y, color);
+    prev = cur;
   }
+}
 
-  for (int i = 0; i < mapsize - 1; i++) {
-    if (!points[i].isOutsideTft() || !points[i + 1].isOutsideTft()) {
-      backscreen.drawLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, color);
+
+// ============================================================
+// スキャンライン多角形塗りつぶし（even-odd / 偶奇規則）
+// ------------------------------------------------------------
+// TFT_eSPI には fillTriangle / fillRect / fillCircle しかなく、琵琶湖のような
+// 凹凸のある形や「島＝穴」を塗れないため自前で実装する。
+//
+// 原理: 画面を 1 行ずつ横に走査し、その行を横切る辺との交点を全部求めて
+//       x でソートし、2 つずつペアにした区間を drawFastHLine で塗る。
+//
+//    y=100 の行 ──────────────────────────────
+//               ╱‾‾‾‾‾‾‾‾‾╲
+//              ╱    ╱▲╲    ╲        ▲ = 竹島（湖の中の島）
+//    ─────────┤    ╱   ╲    ├────────
+//             x1  x2    x3   x4      → [x1,x2] と [x3,x4] を塗る
+//
+// even-odd を使う理由:
+//   「半直線との交差回数が奇数なら内側」という規則なので、リングの回転方向
+//   （時計回り/反時計回り）を一切気にしなくてよい。もう一方の流儀である
+//   nonzero winding rule だと島リングを逆向きに格納する前処理が必要になるが、
+//   OSM データも既存の map_biwako も向きが保証されていない。
+//   湖リングと島リングをまとめて 1 回で渡すだけで、島が自動的に穴として抜ける。
+// ============================================================
+
+// ============================================================
+// 線分の画面クリップ（Cohen–Sutherland）
+// ------------------------------------------------------------
+// TFT_eSPI の drawWedgeLine は境界ボックスを clipWindow() で切るものの、
+// 走査開始行 ys に「クリップ前の端点 y」をそのまま使っている:
+//
+//     if (!clipWindow(&x0, &y0, &x1, &y1)) return;
+//     int32_t ys = ay;                      // ← クリップ前の端点
+//     for (int32_t yp = ys; yp <= y1; yp++) // ← 画面外の分だけ空回りする
+//
+// このため端点が画面から数千 px 外にあると、外側ループがその回数だけ回り、
+// 1 フレームに数百 ms かかる（最大拡大で実測 380ms）。drawLine の Bresenham も
+// 同様に画面外を 1px ずつ歩く。
+// 描画前にここで画面矩形へ切っておけば、どの縮尺でも端点は必ず画面付近に収まる。
+// ============================================================
+#define CLIP_MARGIN 4  // 太線の端キャップが画面端で欠けないよう少し外側で切る
+
+// 座標は最大倍率で ±数万 px になるため、交点計算は double で行う。
+// float だと桁落ちでクリップ後の線が元の線から最大 6px ずれる（実測）。
+static inline int clip_outcode(double x, double y) {
+  const double lo = -CLIP_MARGIN, hi = BACKSCREEN_SIZE - 1 + CLIP_MARGIN;
+  int c = 0;
+  if (x < lo) c |= 1; else if (x > hi) c |= 2;
+  if (y < lo) c |= 4; else if (y > hi) c |= 8;
+  return c;
+}
+
+// 線分を画面矩形にクリップする。完全に画面外なら false（描画不要）。
+bool clip_line_to_screen(int* px0, int* py0, int* px1, int* py1) {
+  const double lo = -CLIP_MARGIN, hi = BACKSCREEN_SIZE - 1 + CLIP_MARGIN;
+  double x0 = *px0, y0 = *py0, x1 = *px1, y1 = *py1;
+  int c0 = clip_outcode(x0, y0);
+  int c1 = clip_outcode(x1, y1);
+
+  for (int guard = 0; guard < 8; guard++) {
+    if (!(c0 | c1)) break;        // 両端とも画面内
+    if (c0 & c1) return false;    // 同じ側に両端がある = 交差しない
+    const int c = c0 ? c0 : c1;
+    double x = 0, y = 0;
+    if (c & 8) { x = x0 + (x1 - x0) * (hi - y0) / (y1 - y0); y = hi; }
+    else if (c & 4) { x = x0 + (x1 - x0) * (lo - y0) / (y1 - y0); y = lo; }
+    else if (c & 2) { y = y0 + (y1 - y0) * (hi - x0) / (x1 - x0); x = hi; }
+    else { y = y0 + (y1 - y0) * (lo - x0) / (x1 - x0); x = lo; }
+    if (c == c0) { x0 = x; y0 = y; c0 = clip_outcode(x0, y0); }
+    else { x1 = x; y1 = y; c1 = clip_outcode(x1, y1); }
+  }
+  // 切り捨てではなく四捨五入。切り捨てだと負側で外へ、正側で内へ寄り、
+  // クリップ前の線から余計にずれる。
+  *px0 = (int)lround(x0); *py0 = (int)lround(y0);
+  *px1 = (int)lround(x1); *py1 = (int)lround(y1);
+  return true;
+}
+
+
+#define VM_MAX_EDGES 2048  // 同時に扱える辺の数（12 Byte/辺 = 24KB）
+
+// スキャンライン用の辺。ET/AET のどちらか一方にしか属さないので next を共用できる。
+struct scan_edge {
+  float x;        // 現在のスキャンラインにおける交点 x
+  float dxdy;     // 1 行進むごとの x の増分（= 1/傾き）
+  int16_t y_bot;  // この y に達したら除外する（半開区間 [y_top, y_bot)）
+  int16_t next;   // 連結リストの次の辺 index（-1 = 終端）
+};
+
+static scan_edge s_edges[VM_MAX_EDGES];
+static int16_t s_et[BACKSCREEN_SIZE];  // Edge Table: 各行から開始する辺のリスト先頭
+static int16_t s_aet_buf[VM_MAX_EDGES / 4];  // Active Edge Table のソート用一時配列
+
+// 複数リングをまとめて even-odd で塗りつぶす。
+//   xs/ys      : 全リングの点を連結したスクリーン座標の配列
+//   ring_start : リング i の点は [ring_start[i], ring_start[i+1]) の範囲。要素数は nrings+1
+//   nrings     : リング数（湖本体 + 島、など）
+// 各リングは暗黙に閉じている（最後の点から最初の点へ辺を張る）。
+// 辺数が VM_MAX_EDGES を超える場合は中途半端な塗りを避けるため何も描かず false を返す。
+bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
+                          const uint16_t* ring_start, uint8_t nrings, uint16_t color) {
+  const int H = BACKSCREEN_SIZE;
+  const int W = BACKSCREEN_SIZE;
+
+  if (nrings == 0) return true;
+  if (ring_start[nrings] > VM_MAX_EDGES) return false;  // 辺の総数は点の総数と等しい
+
+  for (int i = 0; i < H; i++) s_et[i] = -1;
+
+  int nedges = 0;
+  int y_min = H, y_max = 0;
+
+  // ---- Edge Table の構築 ----
+  for (uint8_t r = 0; r < nrings; r++) {
+    const uint16_t beg = ring_start[r];
+    const uint16_t end = ring_start[r + 1];
+    const int n = end - beg;
+    if (n < 3) continue;  // 3 点未満は面にならない
+
+    for (int i = 0; i < n; i++) {
+      const int j = (i + 1 == n) ? 0 : (i + 1);  // 最後の点は最初の点へ閉じる
+      int x0 = xs[beg + i], y0 = ys[beg + i];
+      int x1 = xs[beg + j], y1 = ys[beg + j];
+
+      if (y0 == y1) continue;  // 水平な辺は交点を作らないので無視
+      if (y0 > y1) {           // 常に上から下へ向くように揃える
+        int t = x0; x0 = x1; x1 = t;
+        t = y0; y0 = y1; y1 = t;
+      }
+      if (y1 <= 0 || y0 >= H) continue;  // 画面の上下に完全に外れている
+
+      const float dxdy = (float)(x1 - x0) / (float)(y1 - y0);
+      float x_top = (float)x0;
+      int y_top = y0;
+      if (y_top < 0) {  // 画面上端でクリップし、その行での x を求め直す
+        x_top += dxdy * (float)(0 - y_top);
+        y_top = 0;
+      }
+      const int y_bot = (y1 > H) ? H : y1;  // 半開区間なので下端は含まない
+      if (y_top >= y_bot) continue;
+
+      if (nedges >= VM_MAX_EDGES) return false;
+      s_edges[nedges].x = x_top;
+      s_edges[nedges].dxdy = dxdy;
+      s_edges[nedges].y_bot = (int16_t)y_bot;
+      s_edges[nedges].next = s_et[y_top];
+      s_et[y_top] = (int16_t)nedges;
+      nedges++;
+
+      if (y_top < y_min) y_min = y_top;
+      if (y_bot > y_max) y_max = y_bot;
     }
   }
+  if (nedges == 0) return true;
+
+  // ---- 走査 ----
+  // ポリゴンが画面の一部にしか無い場合に全 240 行を回らないよう y_min..y_max に限定する。
+  int aet_n = 0;
+  for (int y = y_min; y < y_max; y++) {
+    // この行から始まる辺を AET に追加
+    for (int e = s_et[y]; e != -1; e = s_edges[e].next) {
+      if (aet_n < (int)(sizeof(s_aet_buf) / sizeof(s_aet_buf[0]))) s_aet_buf[aet_n++] = (int16_t)e;
+    }
+    // 下端に達した辺を除外（半開区間なので y_bot == y で抜ける）
+    int w = 0;
+    for (int i = 0; i < aet_n; i++) {
+      if (s_edges[s_aet_buf[i]].y_bot > y) s_aet_buf[w++] = s_aet_buf[i];
+    }
+    aet_n = w;
+
+    // x で挿入ソート（アクティブな辺は通常ごく少数なので十分速い）
+    for (int i = 1; i < aet_n; i++) {
+      const int16_t key = s_aet_buf[i];
+      const float kx = s_edges[key].x;
+      int j = i - 1;
+      while (j >= 0 && s_edges[s_aet_buf[j]].x > kx) {
+        s_aet_buf[j + 1] = s_aet_buf[j];
+        j--;
+      }
+      s_aet_buf[j + 1] = key;
+    }
+
+    // 交点を 2 つずつペアにして塗る（奇数番目の区間＝内側）
+    for (int i = 0; i + 1 < aet_n; i += 2) {
+      // ピクセル中心規則: 隣接ポリゴンで同じ画素を二重に塗らないよう ceil / ceil-1 で取る
+      int xa = (int)ceilf(s_edges[s_aet_buf[i]].x);
+      int xb = (int)ceilf(s_edges[s_aet_buf[i + 1]].x) - 1;
+      if (xb < 0 || xa >= W || xa > xb) continue;
+      if (xa < 0) xa = 0;
+      if (xb >= W) xb = W - 1;
+      backscreen.drawFastHLine(xa, y, xb - xa + 1, color);
+    }
+
+    // 次の行に向けて交点を進める
+    for (int i = 0; i < aet_n; i++) s_edges[s_aet_buf[i]].x += s_edges[s_aet_buf[i]].dxdy;
+  }
+  return true;
 }
 
 
@@ -1784,7 +2394,10 @@ void draw_map(stroke_group strokeid, float mapUpDirection, double center_lat, do
 //   - PLA を中心とした 1.0km 円（公式ルール 2025: 折り返し後の距離）
 // 描画順の都合でパイロンのアイコン（draw_pilon_takeshima_marks）とは分けてある。
 // 線はマゼンタの誘導ラインより先に描いて下のレイヤーに、アイコンは後に描いて上のレイヤーにする。
-#define PILON_LINE_WIDTH 3  // PLA→パイロン基準線の太さ [px]
+#define PILON_LINE_WIDTH 3          // PLA→パイロン基準線の太さ [px]
+#define CENTERLINE_WIDTH 2          // PLA センターライン（N/W パイロンの中間方位線）の太さ [px]
+#define CENTERLINE_INNER_KM 1.0     // センターラインの描き始め（1km 円上）
+#define CENTERLINE_OUTER_KM 10.975  // センターラインの描き終わり（10.975km 円上）
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
   cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
@@ -1793,9 +2406,21 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 
 
   // PLA → 北/西パイロンの線は飛行中に最も見る基準線なので 3px 幅で太く描く（竹島線は 1px のまま）
-  backscreen.drawWideLine(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
-  backscreen.drawLine(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
-  backscreen.drawWideLine(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+  draw_clipped_wideline(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+  draw_clipped_line(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
+  draw_clipped_wideline(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+
+  // 2本のパイロン基準線の「角度的な中間」を通るセンターライン（オレンジ）。
+  // 方位はパイロン座標から実行時に計算するので、パイロンが移動しても自動で追従する。
+  // 1km 円〜10.975km 円の間だけ描き、PLA 付近のスタート台・1km パイロンのアイコンを隠さない。
+  double centerline_bearing = pla_centerline_bearing_rad();
+  double inner_lat, inner_lon, outer_lat, outer_lon;
+  calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_INNER_KM, inner_lat, inner_lon);
+  calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_OUTER_KM, outer_lat, outer_lon);
+  cord_tft cl_inner = latLonToXY(inner_lat, inner_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft cl_outer = latLonToXY(outer_lat, outer_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  draw_clipped_wideline(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
+
   // 公式ルール2025 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
   // 公式ルール2025 1.0km リターンフライト。
@@ -1834,82 +2459,6 @@ void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, floa
 }
 
 
-// navdata.cpp の filldata[][] ビットマップを使って琵琶湖エリアの水面・陸地を色分けする。
-// filldata は 0.02° グリッドの 2D 配列で、true=水面、false=陸地。
-// 各グリッド点に水色（水面）またはオレンジ（陸地）の + 記号を描画する。
-// lenbar はスケールに応じた + の長さ（拡大率が高いほど長くして隙間を埋める）。
-//
-// scale > 36 のとき（高ズーム）は近傍グリッドをサブ補完して塗りつぶし密度を上げる。
-// ただし陸海が混在しているグリッドセルは補完しない（誤塗りを防ぐため）。
-void fill_sea_land(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
-
-  int lenbar = 5;
-  if (scale > 1.8) lenbar = 7;
-  if (scale > 7.2) lenbar = 15;
-  if (scale > 36) lenbar = 20;
-  if (scale > 90) lenbar = 24;
-
-  //fill
-  for (int lat_i = 0; lat_i < ROW_FILLDATA; lat_i++) {
-    float latitude = 35.0 + lat_i * 0.02;
-    for (int lon_i = 0; lon_i < COL_FILLDATA; lon_i++) {
-      float longitude = 135.8 + lon_i * 0.02;
-      bool is_sea = filldata[lat_i][lon_i];
-      int indexfillp = lat_i * COL_FILLDATA + lon_i;
-      cord_tft pos = latLonToXY(latitude, longitude, mapcenter_lat, mapcenter_lon, scale, upward);
-      if (pos.isOutsideTft()) {
-        continue;
-      } else {
-        int col = is_sea ? COLOR_LIGHT_BLUE : COLOR_ORANGE;
-        backscreen.drawFastHLine(pos.x - lenbar, pos.y, 1 + lenbar * 2, col);
-
-        if (scale > 9) {
-          backscreen.drawFastVLine(pos.x, pos.y - lenbar, 1 + lenbar * 2, col);
-        }
-      }
-    }
-  }
-
-  if (scale > 36) {
-    // + マークのNavデータが登録されていない場所の+をfillする。 要するに拡大すると真っ暗にならないように対策。
-    //Big zoom
-    int latitude_index = int((mapcenter_lat - 35.0) / 0.02);
-    int longitude_index = int((mapcenter_lon - 135.8) / 0.02);
-
-    for (int x = latitude_index - 3; x < latitude_index + 3; x++) {
-      for (int y = longitude_index - 3; y < longitude_index + 3; y++) {
-        if (x >= 0 && x < ROW_FILLDATA - 1 && y >= 0 && y < COL_FILLDATA - 1) {  // ループ変数 x/y で境界チェック（latitude_index/longitude_index では不十分）
-          bool origin_sealand = filldata[x][y];
-          if (origin_sealand != filldata[x + 1][y] || origin_sealand != filldata[x][y + 1] || origin_sealand != filldata[x + 1][y + 1]) {
-            //陸海の曖昧なエリアは + マークを追加しない。
-            continue;
-          }
-          int dx_size = 2;
-          int dy_size = 2;
-          if (scale > 90) {
-            dx_size = 8;
-            dy_size = 8;
-          }
-          int col = origin_sealand ? COLOR_LIGHT_BLUE : COLOR_ORANGE;
-          for (int dx = 0; dx < dx_size; dx++) {
-            for (int dy = 0; dy < dy_size; dy++) {
-              if (dx == 0 && dy == 0) {
-                continue;
-              }
-              double lat_dx = 35.0 + x * 0.02 + 0.02 * dx / dx_size;
-              double lat_dy = 135.8 + y * 0.02 + 0.02 * dy / dy_size;
-              cord_tft dpos = latLonToXY(lat_dx, lat_dy, mapcenter_lat, mapcenter_lon, scale, upward);
-              if (!dpos.isOutsideTft()) {
-                backscreen.drawFastVLine(dpos.x, dpos.y - lenbar, 1 + lenbar * 2, col);
-                backscreen.drawFastHLine(dpos.x - lenbar, dpos.y, 1 + lenbar * 2, col);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
 
 // 負の値にも対応した剰余演算（C++ の % は負の結果になる場合がある）。
 // brightnessIndex のループ計算（tft_change_brightness）で使用する。
@@ -1951,13 +2500,12 @@ int calculateGPS_Y(float azimuth, float elevation) {
 //   1. GPS モジュール未接続 → "NO GNSS connection !!" 表示して終了。
 //   2. GPS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
 //   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示。
-//   4. nomap_drawn=false → 地図は描画済みなので何も表示しない。
 void draw_nomapdata() {
 
   if (get_gps_connection()) {
     //"GPS Module connected."
   } else {
-    if (!getReplayMode() && !get_demo_biwako()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
+    if (!getReplayMode() && !is_demo_active()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
       backscreen.setCursor(3,50);
       backscreen.setTextColor(COLOR_MAGENTA);
       backscreen.println("NO GNSS connection !!");
@@ -1988,7 +2536,7 @@ void draw_nomapdata() {
     backscreen.setCursor(45, text_y2);
     backscreen.print(text);
   }
-  else if (get_gps_numsat() == 0 && !get_demo_biwako()) {
+  else if (get_gps_numsat() == 0 && !is_demo_active()) {
     backscreen.fillRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
     backscreen.drawRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
     backscreen.drawRect(6, box_y+1, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
@@ -2001,15 +2549,13 @@ void draw_nomapdata() {
     snprintf(text, sizeof(text), "Scanning signal%.*s", dotCount, "..........");
     backscreen.setCursor(45, text_y2);
     backscreen.print(text);
-  } else if (nomap_drawn) {
-    //"NO MAPDATA.GPS Fixed."
   }
 }
 
 unsigned long lastdrawn_sddetail = 0;
 extern char sdfiles[20][32];
 extern int sdfiles_size[20]; 
-extern int max_page;     // Global variable to store maximum page number
+extern volatile int max_page;  // Core1 が更新する（実体は mysd.cpp・volatile）
 volatile bool loading_sddetail = true;
 bool sd_detail_loading_displayed = false;
 
@@ -2107,6 +2653,8 @@ void draw_replayselect(int page, int cursor) {
     header_footer.printf("REPLAY  %d/%d", page + 1, pagecount);
   else
     header_footer.printf("REPLAY  loading...");
+  // 状態ドット。設定メニューの REPLAY 行と同じ意味（緑＝通常 GPS、赤＝再生中）。
+  header_footer.fillCircle(228, 18, 6, getReplayMode() ? COLOR_RED : COLOR_GREEN);
   header_footer.pushSprite(0, -10);
 
   // --- リスト本体 ---
@@ -2814,13 +3362,30 @@ void draw_gpsdetail(int page) {
 // フラッシュ（ROM）に書き込まれた地図ポリゴンと SD から読み込んだ追加マップの一覧を表示する。
 // "MAPLIST FLSH:N/SD:M (page/total)" 形式でヘッダーに表示。
 // フラッシュマップはページ 0 に全表示、SD マップは 30 エントリ / ページでページング表示。
+// MAPLIST の 1 ページに入る行数。
+// backscreen(240px) を y=40 に貼るので、10px/行で 24 行が上限。
+// 以前は 30 行想定で、SD 地図が増えると下がはみ出して切れていた。
+#define MAPLIST_ROWS 24
+
+// ページ 0 の先頭に出す OSM 内訳が何行になるかを返す。
+// 実際の描画（下の draw_maplist_mode）と同じ数え方をすること。
+// 固定値にすると、収録クラス数が変わったときに枠計算とズレる。
+static int maplist_osm_rows() {
+  int cls = 0;
+  for (int c = 0; c < VM_CLASS_COUNT; c++) if (vm_class_points[c] != 0) cls++;
+  return 2                            // 日付 + 合計
+       + (VM_LOD_COUNT + 1) / 2       // LOD は 2 個ずつ 1 行
+       + 1                            // "pts x1000:" の見出し
+       + (cls + 2) / 3;               // クラスは 3 個ずつ 1 行
+}
+
 void draw_maplist_mode(int maplist_page) {
 
-  mapdata* mapdatas[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
-                          &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
-  int sizeof_mapflash = sizeof(mapdatas) / sizeof(mapdatas[0]);
+  mapdata** mapdatas = flashmaps;   // navdata.cpp の共有配列（draw_FlashMaps と同じもの）
+  int sizeof_mapflash = flashmap_count;
 
-  int pagetotal = 1 + (sizeof_mapflash + mapdata_count) / 30;
+  const int osm_rows = maplist_osm_rows();
+  int pagetotal = 1 + (osm_rows + sizeof_mapflash + mapdata_count) / MAPLIST_ROWS;
   int pagenow = maplist_page % pagetotal;
 
   // ヘッダー: スプライト経由で描画（tft 直接描画によるちかちかを防ぐ）
@@ -2840,6 +3405,40 @@ void draw_maplist_mode(int maplist_page) {
   backscreen.setCursor(1, posy);
 
   if (pagenow == 0) {
+    // ---- 内蔵ベクタ地図（OpenStreetMap 由来）の内訳 ----
+    // どの範囲がどれだけの容量で入っているかを実機で確認できるようにする。
+    // 数値は vectormap_data.cpp が生成時に埋め込んだもの。
+    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    backscreen.printf("OSM(ODbL) %s", vm_data_source_date);
+    posy += 10; backscreen.setCursor(1, posy);
+    backscreen.printf(" total %luKB / %u tiles",
+                      (unsigned long)(vm_blob_size / 1024), vm_tile_count);
+    posy += 10; backscreen.setCursor(1, posy);
+    // LOD ごとに「使用する最小 scale・タイル数・容量」を 2 行に詰めて出す
+    for (int l = 0; l < VM_LOD_COUNT; l += 2) {
+      for (int k = l; k < l + 2 && k < VM_LOD_COUNT; k++) {
+        if (vm_lod_min_scale[k] > 0)
+          backscreen.printf(" L%d>%.3g %ut %luK", k, vm_lod_min_scale[k],
+                            vm_lod_tiles[k], (unsigned long)(vm_lod_bytes[k] / 1024));
+        else
+          backscreen.printf(" L%d all %ut %luK", k,
+                            vm_lod_tiles[k], (unsigned long)(vm_lod_bytes[k] / 1024));
+      }
+      posy += 10; backscreen.setCursor(1, posy);
+    }
+    // 地物クラス別の点数（千点単位。点が多いほどその地物が細かい）。
+    // 画面幅は 240px = 約 40 文字しかないので、クラス名は 4 文字に切って 3 個ずつ折り返す。
+    backscreen.print(" pts x1000:");
+    posy += 10; backscreen.setCursor(1, posy);
+    int printed = 0;
+    for (int c = 0; c < VM_CLASS_COUNT; c++) {
+      if (vm_class_points[c] == 0) continue;   // 収録していないクラスは出さない
+      backscreen.printf(" %.4s%lu", vm_class_names[c], (unsigned long)(vm_class_points[c] / 1000));
+      if (++printed % 3 == 0) { posy += 10; backscreen.setCursor(1, posy); }
+    }
+    if (printed % 3 != 0) { posy += 10; backscreen.setCursor(1, posy); }
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
     for (int i = 0; i < sizeof_mapflash; i++) {
       backscreen.printf("FLSH %d: %s,%4.2f,%4.2f,%d", mapdatas[i]->id, mapdatas[i]->name, mapdatas[i]->cords[0][0], mapdatas[i]->cords[0][1], mapdatas[i]->size);
       posy += 10;
@@ -2847,12 +3446,24 @@ void draw_maplist_mode(int maplist_page) {
     }
   }
 
+  // このページに表示する SD 地図の範囲を決める（sd_start_index 以上 sd_end_index 未満）。
+  // 終端を決めずに mapdata_count まで回すと、どのページでも残り全件を描いてしまい
+  // ページを送っても同じ内容が続いて見える（添字自体は範囲内なので表示上の問題のみ）。
   int sd_start_index = 0;
+  int sd_rows = MAPLIST_ROWS;
   if (pagenow > 0) {
-    sd_start_index = 30 * pagenow - sizeof_mapflash;
+    sd_start_index = MAPLIST_ROWS * pagenow - sizeof_mapflash - osm_rows;
+    if (sd_start_index < 0) sd_start_index = 0;
+  } else {
+    sd_rows = MAPLIST_ROWS - sizeof_mapflash - osm_rows;  // ページ 0 は OSM 内訳とフラッシュ地図の分だけ枠が減る
+    if (sd_rows < 0) sd_rows = 0;
+  }
+  int sd_end_index = sd_start_index + sd_rows;
+  if (sd_end_index > mapdata_count) {
+    sd_end_index = mapdata_count;
   }
 
-  for (int i = sd_start_index; i < mapdata_count; i++) {
+  for (int i = sd_start_index; i < sd_end_index; i++) {
     if (extramaps[i].size <= 1) {
       continue;
     }
@@ -2913,9 +3524,11 @@ uint16_t cpu_temp_status_color(float cpu_temp) {
 // フッターにはバッテリー残量推定・CPU 温度・空きヒープ（デバッグビルド時のみ）を表示し、
 // 電池・CPU 温度の行にはメニューと同じ丸アイコンを右寄せで表示する。
 void draw_setting_mode(int selectedLine, int cursorLine) {
-  // 行間 18px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
+  // 行間 16px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
   // 最終行（Save & Exit）が表示されなくなるため、項目を増やす場合はここも調整すること。
-  const int separation = 18;
+  // 現在の有効項目は 14（BRIGHTNESS は BRIGHTNESS_SETTING_AVAIL 未定義のため無効）。
+  //   14 x 16 = 224px < 240px。18px のままだと 252px となり Save & Exit が切れる。
+  const int separation = 16;
   tft.loadFont(AA_FONT_SMALL);
   textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
   tft.setTextColor(COLOR_BLACK);

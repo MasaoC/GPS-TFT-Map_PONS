@@ -3,12 +3,12 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : SDカード操作とCore1タスクキューのヘッダー。
 //           タスク種別(TaskType)・タスク構造体・キュー定義と、
-//           設定保存/読込・CSVフライトログ・BMP地図画像読込・
+//           設定保存/読込・CSVフライトログ・起動ロゴ読込・
 //           音声再生タスク生成関数のプロトタイプ宣言。
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/08/17
 // ============================================================
 
 #ifndef MYSD_H
@@ -22,7 +22,6 @@
       TASK_LOG_SD,
       TASK_LOG_SDF,
       TASK_SAVE_CSV,
-      TASK_LOAD_MAPIMAGE,
       TASK_PLAY_MULTITONE,
       TASK_PLAY_WAV,
       TASK_SAVE_SETTINGS,
@@ -30,8 +29,9 @@
       TASK_BROWSE_REPLAY, // リプレイ選択画面用の CSV ファイル列挙
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
-      TASK_LOG_EULER,
-      TASK_LOAD_LOGO      // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
+      TASK_LOG_IMUREPLAY,
+      TASK_LOAD_LOGO,     // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
+      TASK_FLUSH_IMULOG   // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
   } TaskType;
 
 
@@ -50,7 +50,7 @@
     // ===== リプレイ再生（飛行CSVの直接再生） =====
     // CSV から取り出す列。replay_col_names[] の並びと一致させること。
     typedef enum {
-        RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_ALT,
+        RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_GNSSALT,
         RCOL_KFALT, RCOL_KFVS, RCOL_PRESS, RCOL_DATE, RCOL_TIME,
         RCOL_NUMSAT, RCOL_VOLT,
         REPLAY_COL_COUNT
@@ -60,19 +60,28 @@
     // 立っていない項目は再生時に実センサ値へフォールバックする（v5データは高度等を持たない）。
     #define RHAVE_GS     0x0001
     #define RHAVE_TTRACK 0x0002
-    #define RHAVE_ALT    0x0004
+    #define RHAVE_GNSSALT    0x0004
     #define RHAVE_KFALT  0x0008
     #define RHAVE_KFVS   0x0010
     #define RHAVE_PRESS  0x0020
     #define RHAVE_DATE   0x0040
     #define RHAVE_NUMSAT 0x0080
     #define RHAVE_VOLT   0x0100
+    // 姿勢ログ（imu_replaydata/ または euler/）から読めた項目。
+    // RHAVE_ATT 以外は ESKF の結果を持つ新形式にしか無い。
+    #define RHAVE_ATT      0x0200   // ロール・ピッチ
+    #define RHAVE_ATT_YAW  0x0400   // ヨー + ヨー精度95%値
+    #define RHAVE_ATT_AVG  0x0800   // 30 秒平均ピッチ
+    #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
 
     // CSV 1行分のリプレイデータ。Core1 が生成し Core0 が消費する。
     typedef struct {
         double   lat, lon;
         float    gs, ttrack;
-        float    altitude, kf_altitude, kf_vspeed, pressure, voltage;
+        float    gnss_altitude, kf_altitude, kf_vspeed, pressure, voltage;
+        // 姿勢ログ由来の値 [度]。有効かどうかは RHAVE_ATT* のビットで判断する。
+        float    roll, pitch, yaw;
+        float    pitch_avg, roll_trim, yaw_acc95;
         int      numsat;
         uint16_t have;   // RHAVE_* のビットマスク
         int      year, month, day, hour, minute, second, centisecond;
@@ -94,6 +103,12 @@
     void init_replay();
     void load_replay();
     bool browse_replay_files(int start_index);
+    // 一覧の先頭に並ぶ固定項目数（3〜REPLAY_FIXED_COUNT）。
+    // 大会データ（2025/2026）は SD 上に実在するときだけ数に入る。
+    int  replay_menu_fixed_count();
+    // 大会データが SD 上にあるか。browse_replay_files() が更新する。
+    extern volatile bool replay_have_2025;
+    extern volatile bool replay_have_2026;
     int  replay_menu_total_items();
     int  replay_menu_page_of(int index);
     int  replay_menu_page_count();
@@ -115,9 +130,14 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
-    void load_mapimage(double center_lat, double center_lon,int zoomlevel);
-    void saveEuler(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
+    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+    // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
+    // pitch_avg は 30 秒平均が溜まるまで無効。valid=false のときは空欄で書く。
+    void save_imu_replaydata(int h, int m, int s, int cs,
+                             float roll, float pitch, float yaw,
+                             float pitch_avg, bool pitch_avg_valid,
+                             float roll_trim, float yaw_acc95,
+                             const char* filename, int year, int month, int day);
 
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
@@ -140,6 +160,20 @@
     void getKfQBias(char* buffer, size_t bufferSize);
     void setKfR(const char* value);
     void getKfR(char* buffer, size_t bufferSize);
+    // 機体ゼロ点（マウント基準）のオフセット [度]。据え付け後に一度較正して永続化する。
+    void setLevelRoll(const char* value);
+    void getLevelRoll(char* buffer, size_t bufferSize);
+    void setLevelPitch(const char* value);
+    void getLevelPitch(char* buffer, size_t bufferSize);
+    // 較正時に申告するピッチ角（IMU/ESKF 画面の SET PITCH 行の値）
+    void setPitchTarget(const char* value);
+    void getPitchTarget(char* buffer, size_t bufferSize);
+    // バンク角警告の有効/無効
+    void setBankWarn(const char* value);
+    void getBankWarn(char* buffer, size_t bufferSize);
+    // 直進中のロール自動トリムの有効/無効
+    void setAutoRollTrim(const char* value);
+    void getAutoRollTrim(char* buffer, size_t bufferSize);
     bool loadSettings();
     bool saveSettings();
 
@@ -161,17 +195,12 @@
               float longitude;
               float gs;
               int ttrack;  // 真方位（true track）を格納
-              float altitude;
+              float gnss_altitude;
               float kf_altitude;  // KF推定高度 [m]（気圧基準）
               float kf_vspeed;   // KF推定上昇率 [m/s]
               float pressure;
               int year, month, day, hour, minute, second, centisecond;
           } saveCsvArgs;
-          struct {                           // For load_mapimage
-              double center_lat;
-              double center_lon;
-              int zoomlevel;
-          } loadMapImageArgs;
           struct {
               int freq;
               int duration;
@@ -185,12 +214,20 @@
               int priority;
               int min_volume;  // 最低保証ボリューム（0=制限なし）
           }playWavArgs;
-          struct {                           // For saveEuler
+          struct {                           // For save_imu_replaydata
               int hour, minute, second, centisecond;
               int year, month, day;          // ファイルタイムスタンプ設定用
               float roll, pitch, yaw;
-              char filename[24];             // "euler/20260316.txt" = 19文字
-          } logEulerArgs;
+              float pitch_avg, roll_trim, yaw_acc95;
+              bool  pitch_avg_valid;
+              // "imu_replaydata/20260316.txt" = 27文字 + NUL。24 だと溢れるので 32。
+              char filename[32];
+          } imuReplayArgs;
+          struct {                           // For imulog_write_buffer
+              int  bufidx;                   // 書き出す二重バッファの索引（0 or 1）
+              int  year, month, day, hour, minute, second;  // ファイルタイムスタンプ用
+              char filename[24];             // "imuraw/20260316.bin" = 19文字
+          } imuLogArgs;
       };
   } Task;
 
@@ -205,36 +242,43 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
-  Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
   Task createBrowseReplayTask(int start_index);
   Task createLoadReplayTask();
   Task createInitReplayTask();
-  Task createLogEulerTask(int h, int m, int s, int cs, float roll, float pitch, float yaw, const char* filename, int year, int month, int day);
+  Task createLogImuReplayTask(int h, int m, int s, int cs,
+                              float roll, float pitch, float yaw,
+                              float pitch_avg, bool pitch_avg_valid,
+                              float roll_trim, float yaw_acc95,
+                              const char* filename, int year, int month, int day);
   Task createLoadLogoTask();
+  Task createFlushImuLogTask(int bufidx, const char* filename,
+                             int year, int month, int day, int hour, int minute, int second);
 
   // Functions to handle the queue (declarations)
-  void enqueueTask(Task task);
-  void enqueueTaskWithAbortCheck(Task task);
+  // 戻り値: キューに入れられたら true、満杯で捨てたら false。
+  // 捨てられたタスクは実行されない。後始末が要る呼び出し側は戻り値を見ること。
+  bool enqueueTask(Task task);
+  bool enqueueTaskWithAbortCheck(Task task);
   bool dequeueTask(Task *task);
 
   bool good_sd();
   bool isTaskRunning(int taskType);
   bool isTaskInQueue(int taskType);
+  void clearCurrentTask();  // Core1 がタスク完了時に呼ぶ（currentTask.type = TASK_NONE）
   void load_push_logo();
 
 
 
-  double pixelsPerDegreeLat(int zoom,double latitude);
 
   extern Task currentTask;
   extern mutex_t taskQueueMutex;
   extern volatile bool sd_setup_complete;
   extern volatile bool logo_ready;
-  extern TFT_eSprite gmap_sprite;
+  extern TFT_eSprite logo_sprite;
 
   // リプレイ再生用の共有状態（Core1 が生成 / Core0 が消費）
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
@@ -246,9 +290,7 @@
   // リプレイ選択画面のファイル一覧（browse_replay_files() が更新）
   extern char replayfiles[REPLAY_LIST_ROWS][32];
   extern int  replayfiles_size[REPLAY_LIST_ROWS];
-  extern int  replayfiles_count;  // 現在 replayfiles[] に入っている件数
-  extern int  replayfiles_total;  // SD 上の対象 CSV の総数
+  extern volatile int  replayfiles_count;  // 現在 replayfiles[] に入っている件数（Core1 が更新）
+  extern volatile int  replayfiles_total;  // SD 上の対象 CSV の総数（Core1 が更新）
 
-  extern volatile bool gmap_loaded_active;
-  extern volatile bool new_gmap_ready;
 #endif
