@@ -33,7 +33,7 @@
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
 #define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
 #define NM_FONT_MEDIUM Arial_Black22   // 中サイズフォント（ESKF のロール・ピッチ表示）
-#define NM_FONT_LARGE Arial_Black56    // 大サイズフォント（ヘッダーの速度・磁方位表示）
+#define NM_FONT_LARGE Arial_Black56    // 大サイズフォント（ヘッダーの速度・真方位表示）
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
 #ifndef RELEASE
@@ -463,22 +463,24 @@ bool try_draw_km_distance(float scale, float km) {
 // truetrack: 現在の真方位（度）。N/E/S/W の位置は truetrack 方向を基準に算出する。
 // NORTHUP モードでは dist=100px（広め）、TRACKUP モードでは dist=73px（狭め）にして
 // 進行方向矢印（draw_triangle）と重ならないようにする。
-// 偏差補正: +8.0° を加えて磁北を表示する（日本の平均的な磁気偏差）。
+// N/E/S/W は真方位。磁気コンパスを載せない方針になったので偏角補正はしない。
 void draw_compass(float truetrack, uint16_t col) {
   backscreen.setTextWrap(false);
-  int dist = 73;
+  // 半径は元の 2/3。地図左下のピッチ・ロール表示と N/E/S/W が重なって
+  // 読みにくかったため縮めてある（針の長さ get_needle_len() は変えていない）。
+  int dist = 73 * 2 / 3 - 4;
   if (is_northupmode()) {
 #ifdef TFT_USE_ST7735
-    dist = 50;
+    dist = 50 * 2 / 3 - 4;
 #else
-    dist = 100;
+    dist = 100 * 2 / 3 - 4;
 #endif
   }
   int centerx = BACKSCREEN_SIZE / 2;
   int centery = get_self_cy();  // TRACKUP=180, NORTHUP=120
-  //Varietion 8 degrees.
-  float radian = deg2rad(truetrack + 8.0);
-  float radian45offset = deg2rad(truetrack + 8.0 + 45);
+  // 偏角は加えない（真方位表示）
+  float radian = deg2rad(truetrack);
+  float radian45offset = deg2rad(truetrack + 45);
   backscreen.setTextColor(col, COLOR_WHITE);
   backscreen.setTextSize(2);
   backscreen.loadFont(AA_FONT_SMALL);
@@ -696,6 +698,9 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm) {
 // ロール・ピッチ・ヨーが出てしまい誤解を招くので、リプレイ中はまとめて非表示にする。
 // （将来 .bin まで再生できるようにしたら、この判定を外せばよい）
 bool eskf_display_enabled() {
+  // マスタースイッチ。OFF なら地図上の姿勢表示は一切出さない（リプレイ含む）。
+  // 表示系はすべてこの関数を通るので、ここ 1 か所で塞げる。
+  if (!attitude_get_rpy_enabled()) return false;
   // リプレイ中は IMU 生データ（.bin）を再生しないので実機 ESKF の値は使えないが、
   // 同じ日の姿勢ログ（imu_replaydata/ か旧 euler/）があれば当時の値を再現できる。
   if (getReplayMode()) {
@@ -709,6 +714,18 @@ bool eskf_display_enabled() {
 // ヨーは水平加速度がある間しか可観測にならず、等速直進が続くと際限なく漂うため、
 // 推定精度がしきい値以下のときだけ「機首方向」として信用する。
 // 判定は 95%(2σ) で行う。1σ のまま「これ以下なら安心」と扱うと 3 回に 1 回は外れる。
+bool eskf_calib_allowed() {
+  if (!attitude_ready()) return false;
+  // 通常は対地速度で「地上にいる」ことを確認する。
+  if (!getReplayMode() && !is_demo_active())
+    return get_gps_mps() <= LEVEL_CALIB_MAX_MPS;
+  // デモ・リプレイ中は get_gps_mps() が再生データの速度を返すため、実機が机の上で
+  // 止まっていても「飛行中」と判定されて APPLY できなくなる。
+  // GPS が偽物なので、代わりに IMU 由来の静止判定を使う。これは再生データでは
+  // 偽装できない実機の物理状態なので、飛行中に誤って較正する危険も無い。
+  return attitude_is_static();
+}
+
 bool eskf_yaw_reliable() {
   if (getReplayMode()) {
     // 記録された 95% 値で当時と同じ判定を再現する。しきい値そのものは現在の設定を
@@ -718,6 +735,31 @@ bool eskf_yaw_reliable() {
     return acc95 < ESKF_YAW_TRUST_95_DEG;
   }
   return eskf_display_enabled() && attitude_get_yaw_acc95_deg() < ESKF_YAW_TRUST_95_DEG;
+}
+
+// ヨーが「著しく信頼できる」か（95%値 < ESKF_YAW_DRIFT_95_DEG）。
+// 偏流角を示す点線を出してよいかの判定に使う。eskf_yaw_reliable() より厳しい。
+static bool eskf_yaw_high_confidence() {
+  if (getReplayMode()) {
+    float y, acc95;
+    if (!get_replay_yaw(y, acc95)) return false;
+    return acc95 < ESKF_YAW_DRIFT_95_DEG;
+  }
+  return eskf_display_enabled() && attitude_get_yaw_acc95_deg() < ESKF_YAW_DRIFT_95_DEG;
+}
+
+// 自機アイコンの色。ESKF のヨーで機首を向けているときは黒、
+// 単に対地進路（トラック）を向けているだけのときはグレー。
+// 「いま見えている向きが機首なのかトラックなのか」を色で区別できるようにする。
+// ※ ヨーの情報源が無い場合（BNO085 非搭載機、姿勢ログの無いリプレイ）は
+//   区別する意味が無いので従来どおり黒。ここを入れないと IMU の無い個体で
+//   アイコンが永久にグレーになってしまう。
+static uint16_t plane_icon_color() {
+  bool have_yaw_source;
+  if (getReplayMode()) { float y, a; have_yaw_source = get_replay_yaw(y, a); }
+  else                 { have_yaw_source = get_imu_ok(); }
+  if (!have_yaw_source) return COLOR_BLACK;
+  return eskf_yaw_reliable() ? COLOR_BLACK : COLOR_GRAY;
 }
 
 // 自機アイコン（主翼・尾翼・胴体の 3 本＝「士」の形）を任意の向きで描く。
@@ -743,6 +785,22 @@ static void draw_plane_icon(int cx, int cy, float screen_deg, uint16_t col) {
   backscreen.drawWideLine(left_wing_x, left_wing_y, right_wing_x, right_wing_y, 3, col);
   backscreen.drawWideLine(left_tail_x, left_tail_y, right_tail_x, right_tail_y, 2, col);
   backscreen.drawWideLine(cx, cy, body_tail_x, body_tail_y, 2, col);
+
+  // ヨーが著しく信頼できるときだけ、機首の先へ点線を伸ばす。
+  // TRACKUP では画面上＝トラックなので、この点線の傾きがそのまま偏流角になる。
+  // NORTHUP では針（トラック）との開きが偏流角。
+  // 前方は screen_deg=0 で画面上向き＝(+sa, -ca)。
+  if (eskf_yaw_high_confidence()) {
+    const int step = ESKF_DRIFT_LINE_DASH_PX + ESKF_DRIFT_LINE_SKIP_PX;  // 実線 + 空白
+    for (int d = ESKF_DRIFT_LINE_GAP_PX;
+         d < ESKF_DRIFT_LINE_GAP_PX + ESKF_DRIFT_LINE_LEN_PX; d += step) {
+      int x0 = cx + (int)lroundf(sa * d);
+      int y0 = cy - (int)lroundf(ca * d);
+      int x1 = cx + (int)lroundf(sa * (d + ESKF_DRIFT_LINE_DASH_PX));
+      int y1 = cy - (int)lroundf(ca * (d + ESKF_DRIFT_LINE_DASH_PX));
+      backscreen.drawWideLine(x0, y0, x1, y1, 2, col);
+    }
+  }
 }
 
 // 自機アイコンを向けるべき画面上の角度 [度]（画面の上＝0、時計回り）。
@@ -756,6 +814,15 @@ static float plane_icon_screen_deg(int ttrack) {
   attitude_get_euler(r, p, y);
   return is_trackupmode() ? (y - (float)ttrack) : y;
 }
+
+// ヘッダー右の大きい枠が平均ピッチを出しているか（定義は draw_header の直前）。
+static bool header_shows_pitch();
+
+// TRACKUP 専用の半径縮小量 [px]。画面中央上部に "TT xxx" を出すようになり、
+// 従来の半径（針の長さ nlen = 180）だと三角形の頂点が文字に届いてしまうため。
+// STEER 側も一緒に縮めないと、内側へ寄った 30 度幅の三角形と誘導矢印が重なる。
+#define TRACKUP_TONE_SHRINK   26
+#define TRACKUP_STEER_SHRINK  24
 
 void draw_triangle(int ttrack,int steer_angle) {
   // Core0 スタック残量を計測。
@@ -786,7 +853,7 @@ void draw_triangle(int ttrack,int steer_angle) {
     // 機体アイコン。NORTHUP は画面上＝北なので、そのまま方位を渡す。
     // ヨーが信頼できるときは機首方位、できないときは従来どおり ttrack で描かれる。
     draw_plane_icon(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2,
-                    plane_icon_screen_deg(ttrack), COLOR_BLACK);
+                    plane_icon_screen_deg(ttrack), plane_icon_color());
 
 
     if((millis()/1000)%3 != 0){
@@ -843,27 +910,31 @@ void draw_triangle(int ttrack,int steer_angle) {
     // ── 進行方向の縦線（常に画面上＝対地進路）──
     // TRACKUP では地図が回転して対地進路が常に画面上を向く。この線は進路そのものなので
     // 機首が振れても回さない（機首とのズレ＝偏流角がアイコンとの角度差で見える）。
-    int shortening = 15;
+    // 画面中央上部の "TT xxx"（NM_FONT_MEDIUM、高さ約24px）の下から始める。
+    // ヘッダーがトラックを出しているときは中央の TT が無いので、その分だけ上へ伸ばせる。
+    int shortening = header_shows_pitch() ? 28 : 16;
     backscreen.drawFastVLine(240 / 2,     shortening, cy - shortening - 5, COLOR_BLACK);
     backscreen.drawFastVLine(240 / 2 + 1, shortening, cy - shortening - 5, COLOR_BLACK);
 
     // ── 機体アイコン ──
     // ヨーが信頼できるときは (機首方位 - トラック) だけ傾けて実際の機首方向に合わせる。
     // 信頼できないときは 0（画面上向き）になり、従来の固定表示と同じになる。
-    draw_plane_icon(BACKSCREEN_SIZE / 2, cy, plane_icon_screen_deg(ttrack), COLOR_BLACK);
+    draw_plane_icon(BACKSCREEN_SIZE / 2, cy, plane_icon_screen_deg(ttrack), plane_icon_color());
 
     // ── True Track 維持針（last_tone_tt: 最後にトーンが鳴った時点のTT方向）──
     // TRACKUPでは機首=画面上=0°なので、last_tone_tt の画面上の角度は (last_tone_tt - ttrack)
+    // 画面中央上部の "TT xxx" と重ならないよう、TRACKUP では半径を縮める
+    const int tlen = nlen - TRACKUP_TONE_SHRINK;
     float screen_tone = last_tone_tt - ttrack;
     float tone_left   = deg2rad(screen_tone - 15);
     float tone_right  = deg2rad(screen_tone + 15);
     float tone_center = deg2rad(screen_tone);
-    float tx1 = (nlen-6) * sin(tone_left)   + BACKSCREEN_SIZE/2;
-    float ty1 = (nlen-6) * -cos(tone_left)  + cy;
-    float tx2 = (nlen-6) * sin(tone_right)  + BACKSCREEN_SIZE/2;
-    float ty2 = (nlen-6) * -cos(tone_right) + cy;
-    float tx3 = nlen     * sin(tone_center) + BACKSCREEN_SIZE/2;
-    float ty3 = nlen     * -cos(tone_center)+ cy;
+    float tx1 = (tlen-6) * sin(tone_left)   + BACKSCREEN_SIZE/2;
+    float ty1 = (tlen-6) * -cos(tone_left)  + cy;
+    float tx2 = (tlen-6) * sin(tone_right)  + BACKSCREEN_SIZE/2;
+    float ty2 = (tlen-6) * -cos(tone_right) + cy;
+    float tx3 = tlen     * sin(tone_center) + BACKSCREEN_SIZE/2;
+    float ty3 = tlen     * -cos(tone_center)+ cy;
     if (trackwarning_until < millis()) {
       backscreen.drawTriangle(tx1,ty1,tx2,ty2,tx3,ty3, COLOR_BLACK);
     } else {
@@ -874,44 +945,46 @@ void draw_triangle(int ttrack,int steer_angle) {
     // drawArcの座標系: 0°=6時方向（画面下）、時計回り。機首方向（画面上）= drawArc 180°
     // NORTHUPの (ttrack+180)%360 は方位角→drawArc角への変換。TRACKUPは機首固定なので 180 を使う。
     if ((millis()/1000)%3 != 0) {
+      // 上で縮めた 30 度幅の三角形と重ならないよう、こちらも内側へ寄せる
+      const int slen = nlen - TRACKUP_STEER_SHRINK;
       float arc_factor = course_warning_index / 900.0;
       if (steer_angle > 0)
-        backscreen.drawArc(240/2, cy, (nlen-21), (nlen-23), 180, (180 + (int)(arc_factor*steer_angle)) % 360, COLOR_RED, COLOR_WHITE);
+        backscreen.drawArc(240/2, cy, (slen-21), (slen-23), 180, (180 + (int)(arc_factor*steer_angle)) % 360, COLOR_RED, COLOR_WHITE);
       else
-        backscreen.drawArc(240/2, cy, (nlen-21), (nlen-23), (360 + 180 + (int)(arc_factor*steer_angle)) % 360, 180, COLOR_RED, COLOR_WHITE);
+        backscreen.drawArc(240/2, cy, (slen-21), (slen-23), (360 + 180 + (int)(arc_factor*steer_angle)) % 360, 180, COLOR_RED, COLOR_WHITE);
 
       // 誘導三角形: 機首=0ラジアン（画面上）を基準に offset。NORTHUPの tt_radians に相当
       if (abs(steer_angle) > 15) {
         double steer_triangle_start_rad = (steer_angle<0?-0.1:0.1);
         double steer_triangle_end_rad   = (steer_angle<0?-0.35:0.35);
-        float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + cy;
-        float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + cy;
-        float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + cy;
+        float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
+        float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
+        float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
+        float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
       if (abs(steer_angle) > 55) {
         double steer_triangle_start_rad = (steer_angle<0?-0.7:0.7);
         double steer_triangle_end_rad   = (steer_angle<0?-0.95:0.95);
-        float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + cy;
-        float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + cy;
-        float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + cy;
+        float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
+        float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
+        float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
+        float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
       if (abs(steer_angle) > 100) {
         double steer_triangle_start_rad = (steer_angle<0?-1.3:1.3);
         double steer_triangle_end_rad   = (steer_angle<0?-1.55:1.55);
-        float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + cy;
-        float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + cy;
-        float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + cy;
+        float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
+        float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
+        float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
+        float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
+        float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
+        float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
         backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
       }
     }
@@ -1385,24 +1458,97 @@ void draw_vsi() {
 // draw_eskf_attitude(): 地図上に姿勢を 3 行で重ねる
 // ============================================================
 // 背景は敷かず地図へ直接上書きする。リプレイ中は姿勢ログがある日のみ。
-// 位置は左下。sAcc（BACKSCREEN_SIZE-27）の 1 行上からさらに ESKF_ROW_RAISE だけ
-// 持ち上げた所を最下段とし、下から上へ R → P → Avg30s P と積む。
+// 位置は左下。最下行(JST 時刻)のすぐ上を最下段とし、下から上へ
+// Rtrim → R → P → 風/Y95 と積む。
+// 平均ピッチはヘッダー右の大きい枠へ移した（同じ情報を 2 か所に出さない）。
 // DEBUG_ESKF の有無でこの位置と大きさを変えないこと。
 //
-//   Avg30s P : 30 秒平均ピッチ。大きい字（NM_FONT_MEDIUM）＝一番見るべき値。
+//   Avg**s P : 平均ピッチ。大きい字（NM_FONT_MEDIUM）＝一番見るべき値。
 //   P / R    : 瞬時値。参考なので小さい字（AA_FONT_SMALL）。
 //
 // ロールは BANK_WARN_DEG を超えたら赤にする（バンク超過の気付き用）。
 // 左端に寄せてあるのは、TRACKUP のとき自機アイコン（cy=180）の真下に
 // draw_eskf_yaw() のヨー数値が入るため、中央付近を空けておく必要があるから。
+// 自動ロールトリムの累積補正量の表示色。
+// 正しく取り付いていれば実測上ほぼ 0 のままなので、大きな累積は
+// 「取り付けか機体に異常があり、バンク警報の基準がずれている」ことを意味する。
+// 表示は 8px と小さいが、色なら周辺視野でも気づける。
+static uint16_t roll_trim_color(float trim) {
+  const float a = fabsf(trim);
+  if (a >= ROLL_TRIM_ALERT_DEG) return COLOR_RED;
+  if (a >= ROLL_TRIM_WARN_DEG)  return COLOR_ORANGE;
+  return COLOR_GRAY;
+}
+
+// 姿勢の値が「ありえない」範囲か（設置ミス・較正忘れの疑い）。
+// true のとき数値を灰色にして、機体の姿勢としては信用できないことを示す。
+static inline bool attitude_implausible(float deg) {
+  return fabsf(deg) >= ATTITUDE_IMPLAUSIBLE_DEG;
+}
+
+// 風速に応じた矢印の色。しきい値は settings.h。
+static uint16_t wind_arrow_color(float mps) {
+  if (mps <= WIND_COL_LOW_MAX) return COLOR_GREEN;        // 濃い緑
+  if (mps <= WIND_COL_MID_MAX) return COLOR_WIND_PURPLE;    // 青
+  return COLOR_RED;                               // 紫
+}
+
+// デモモード用の疑似風。表示の確認だけが目的で、実機の推定（attitude.cpp）には触れない。
+// 風速 0〜6 m/s を 24 秒周期で往復させ、風向は 30 秒で 1 回転させる。
+// これで 3 色すべてと全方位を机の上で一通り確認できる。
+// ※ ESKF が収束していないと draw_eskf_attitude() 自体が描かれないので、
+//   GNSS の入る場所（屋外・窓際）でデモを動かすこと。
+static bool demo_wind(float &speed_mps, float &dir_to_deg) {
+  const uint32_t ms = millis();
+  speed_mps  = 3.0f * (1.0f - cosf((float)(ms % 24000u) * (2.0f * (float)M_PI / 24000.0f)));
+  dir_to_deg = (float)(ms % 30000u) * (360.0f / 30000.0f);
+  return true;
+}
+
+// 風ベクトルの矢印を (cx,cy) を中心に描く。長さは固定で、強さは色で表す。
+// screen_deg: 画面の上を 0 とした時計回りの角度。前方は (+sin, -cos)。
+// 矢印は「風が吹いていく向き」を指す（気象通報の風向とは逆なので注意）。
+static void draw_wind_arrow(int cx, int cy, float screen_deg, uint16_t col) {
+  const float a = deg2rad(screen_deg);
+  const float ca = cosf(a), sa = sinf(a);
+  const int h = WIND_ARROW_LEN_PX / 2;
+  const int tipx  = cx + (int)lroundf(sa * h),  tipy  = cy - (int)lroundf(ca * h);
+  const int tailx = cx - (int)lroundf(sa * h),  taily = cy + (int)lroundf(ca * h);
+  backscreen.drawWideLine(tailx, taily, tipx, tipy, WIND_ARROW_WIDTH_PX, col);
+  // 矢じり。先端から WIND_ARROW_HEAD_PX 手前を底辺の中心にする。
+  const int hw = WIND_ARROW_HEAD_PX;
+  const int bx = cx + (int)lroundf(sa * (h - hw)), by = cy - (int)lroundf(ca * (h - hw));
+  const int px = (int)lroundf(ca * hw * 0.55f),    py = (int)lroundf(sa * hw * 0.55f);
+  backscreen.fillTriangle(tipx, tipy, bx + px, by + py, bx - px, by - py, col);
+}
+
 #define ESKF_LABEL_X        2
 #define ESKF_VALUE_RIGHT_X  50    // P / R の値の右端（ここへ右揃え。桁が揃う）
-#define ESKF_AVG_RIGHT_X    60   // Avg30s P の値の右端。ラベルが長いぶん右へ逃がす
-#define ESKF_ROW_GAP        2     // P 行と R 行の隙間 [px]
-#define ESKF_AVG_GAP        30     // Avg30s 行と P 行の隙間 [px]（大きい字なので少し広く）
-#define ESKF_ROW_RAISE      16    // sAcc の 1 行上からさらに持ち上げる量 [px]
+#define ESKF_ROW_GAP        1     // 各行の隙間 [px]
+// 最下段(Rtrim, 内蔵フォント8px)の下端から最下行(JST 時刻)までの余白 [px]。
+// sAcc と MaxGS を他所へ移して空いたので、ブロック全体を下へ寄せてある。
+#define ESKF_BOTTOM_GAP     2
 void draw_eskf_attitude() {
-  if (!eskf_display_enabled()) return;  // リプレイ中は姿勢データが無いので非表示
+  // 機能そのものが OFF なら何も出さない（ESKF 導入前と同じ見た目に戻す）。
+  if (!attitude_get_rpy_enabled()) return;
+
+  // 機能は ON なのに姿勢が出せない状態。何も描かないと「表示が壊れた」のか
+  // 「まだ準備中」なのか区別できないので、理由だけ 1 行出す。
+  // 屋外で GNSS 速度が入れば 0.5 秒ほどで READY になるので、通常は一瞬しか見えない。
+  // BNO085 非搭載機は姿勢機能自体が無いので対象外（出しっぱなしになってしまう）。
+  if (!getReplayMode() && get_imu_ok() && !attitude_ready()) {
+    backscreen.setTextWrap(false);
+    backscreen.loadFont(AA_FONT_SMALL);
+    const int fh = backscreen.fontHeight();
+    backscreen.setTextColor(COLOR_ORANGE);
+    backscreen.setCursor(ESKF_LABEL_X,
+                         BACKSCREEN_SIZE - 9 - 8 - ESKF_BOTTOM_GAP - fh - ESKF_ROW_GAP);
+    backscreen.print("ESKF Not ready");
+    backscreen.setTextColor(COLOR_BLACK);
+    return;
+  }
+
+  if (!eskf_display_enabled()) return;  // リプレイで姿勢ログが無い日
 
   float r, p, y = 0.0f;
   if (getReplayMode()) {
@@ -1415,54 +1561,103 @@ void draw_eskf_attitude() {
   snprintf(rbuf, sizeof(rbuf), "%+5.1f", r);
   snprintf(pbuf, sizeof(pbuf), "%+5.1f", p);
 
-  // 30 秒平均ピッチだけを NM_FONT_MEDIUM の大きい字にする。
-  // フゴイドで瞬時ピッチは±3度振れるので操縦の指標にならず、巡航のトリム状態は
-  // 平均でしか読めない（実測で 30 秒平均の std は 0.73 度＝1 度の変化が有意）。
+  // 平均ピッチだけを NM_FONT_MEDIUM の大きい字にする。
+  // 瞬時ピッチは周期 2〜6.7 秒の振動が主で std 1.23 度あり操縦の指標にならない。
+  // 平均なら std 0.37 度まで落ちて 1 度の変化が有意に読める（窓長は PITCH_AVG_SEC）。
   // 瞬時の P / R は参考値なので AA_FONT_SMALL に落とす。
   // リプレイでは実機（机の上）の平均ではなく、記録された当時の値を出す。
-  float avg_val = 0.0f;
-  bool  show_avg;
-  if (getReplayMode()) show_avg = get_replay_pitch_avg(avg_val);
-  else {
-    show_avg = attitude_pitch_avg_valid();
-    if (show_avg) avg_val = attitude_get_pitch_avg_deg();
-  }
-
   backscreen.setTextWrap(false);
   backscreen.loadFont(AA_FONT_SMALL);
   const int fh_s = backscreen.fontHeight();
 
-  const int yroll = BACKSCREEN_SIZE - 27 - fh_s - ESKF_ROW_RAISE;  // 最下段＝ロール
-  const int ypit  = yroll - fh_s - ESKF_ROW_GAP;                   // 中段＝ピッチ
+  // 下から積む。最下段は Rtrim（内蔵フォント 8px）で、その下は JST 時刻の行。
+  const int yrtrim = BACKSCREEN_SIZE - 9 - 8 - ESKF_BOTTOM_GAP;
+  const int yroll  = yrtrim - fh_s - ESKF_ROW_GAP;                 // ロール
+  const int ypit   = yroll  - fh_s - ESKF_ROW_GAP;                 // ピッチ
 
-  // ---- 最上段: Avg30s P（ラベルは AA_FONT_SMALL、数値は NM_FONT_MEDIUM）----
-  // NM_FONT_MEDIUM は平均を出すときだけ読み込む（地図の毎フレーム描画なので
-  // 不要なフォント切替を増やさない）。
-  if (show_avg) {
-    char abuf[8];
-    snprintf(abuf, sizeof(abuf), "%+5.1f", avg_val);
-    backscreen.loadFont(NM_FONT_MEDIUM);
-    const int fh_m = backscreen.fontHeight();
-    const int yavg = ypit - fh_m - ESKF_AVG_GAP;
-    backscreen.setTextColor(COLOR_BLACK);
-    backscreen.setCursor(ESKF_AVG_RIGHT_X - backscreen.textWidth(abuf), yavg+20);
-    backscreen.print(abuf);
+  // ---- P の上: ヨー精度（常時）と風ベクトル ----
+  // 風は「対気速度の向き＝機首方位」を前提にするので、ヨーが著しく信頼できて、かつ
+  // 直進が累計 WIND_LPF_SEC 秒たまるまで出ない。出ていない間も理由が分かるよう
+  // ヨー精度の 95% 値は常に出す（風が出ているときも隠さない）。
+  // リプレイでは記録された値をそのまま出す。
+  {
+    const int yacc95 = ypit - ESKF_ROW_GAP - fh_s;   // ヨー精度の行（P のすぐ上）
 
-    backscreen.loadFont(AA_FONT_SMALL);
-    backscreen.setTextColor(COLOR_GRAY);
-    // ラベルは大きい数値の行の高さの中央に合わせる
-    backscreen.setCursor(ESKF_LABEL_X, yavg + (fh_m - fh_s) / 2);
-    backscreen.print("Avg30s P");
+    float wspd = 0.0f, wdir = 0.0f;
+    float acc95 = 0.0f;
+    bool  has_wind, has_acc;
+    if (is_demo_active()) {
+      // デモは表示確認用。実機の推定条件（直進 10 秒など）を待たずに矢印を出す。
+      has_wind = attitude_get_wind_enabled() && demo_wind(wspd, wdir);
+      has_acc  = attitude_ready();
+      if (has_acc) acc95 = attitude_get_yaw_acc95_deg();
+    } else if (getReplayMode()) {
+      float yaw_rec;
+      has_wind = get_replay_wind(wspd, wdir);
+      has_acc  = get_replay_yaw(yaw_rec, acc95);
+    } else {
+      has_wind = eskf_yaw_high_confidence() && attitude_get_wind_enabled() &&
+                 attitude_get_wind(wspd, wdir);
+      has_acc  = attitude_ready();
+      if (has_acc) acc95 = attitude_get_yaw_acc95_deg();
+    }
+
+    // σ はフォント(NotoSansBold15)に無いので "Y95" と書く。意味は 95% 値（=2σ）。
+    if (has_acc) {
+      backscreen.setTextColor(COLOR_GRAY);
+      backscreen.setCursor(ESKF_LABEL_X, yacc95);
+      backscreen.printf("Y95%%%.0f\xC2\xB0", acc95);
+    }
+
+    int yblock_top = yacc95;
+    if (has_wind) {
+      // 数値だけ NM_FONT_MEDIUM。Arial_Black22 は数字と +-. しか持たないので、
+      // "W" と "m/s" は AA_FONT_SMALL のまま描いて数字だけ大きくする。
+      char nbuf[8];
+      snprintf(nbuf, sizeof(nbuf), "%.1f", wspd);
+      const int wlw = backscreen.textWidth("W");
+      backscreen.loadFont(NM_FONT_MEDIUM);
+      const int fh_m = backscreen.fontHeight();
+      const int nw   = backscreen.textWidth(nbuf);
+      const int ywtxt = yacc95 - ESKF_ROW_GAP - fh_m;
+      const int ylbl  = ywtxt + (fh_m - fh_s) / 2;   // 小文字は数値の高さの中央へ
+      backscreen.setTextColor(COLOR_BLACK);
+      backscreen.setCursor(ESKF_LABEL_X + wlw + 3, ywtxt);
+      backscreen.print(nbuf);
+      backscreen.loadFont(AA_FONT_SMALL);
+      backscreen.setCursor(ESKF_LABEL_X, ylbl);
+      backscreen.print("W");
+      backscreen.setCursor(ESKF_LABEL_X + wlw + 3 + nw + 2, ylbl);
+      backscreen.print("m/s");
+
+      // 矢印は地図と同じ向き合わせ（TRACKUP は画面上＝トラック、NORTHUP は北）
+      const float wscreen = is_trackupmode()
+                            ? (wdir - (float)get_gps_truetrack()) : wdir;
+      draw_wind_arrow(ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2,
+                      ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2,
+                      wscreen, wind_arrow_color(wspd));
+      yblock_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
+    }
+
+    // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
+    // この状態では表示している姿勢そのものが信用できないので、設定画面まで
+    // 行かないと分からないのでは遅い。地図上でも赤字で出す。
+    if (attitude_needs_apply()) {
+      backscreen.setTextColor(COLOR_RED);
+      backscreen.setCursor(ESKF_LABEL_X, yblock_top - ESKF_ROW_GAP - fh_s);
+      backscreen.print("ESKF CALIBRATION REQUIRED!");
+      backscreen.setTextColor(COLOR_BLACK);
+    }
   }
 
   // ---- 中段: P ----
   // ピッチは色を変えない。ピッチ単独では失速余裕を判定できないため
-  // （本来は迎角が要る。実測でも 30 秒平均ピッチと対気速度の相関は -0.14 と弱く、
-  //   迎角推定も対地経路角の 30 秒平均がほぼゼロで補正にならなかった）。
+  // （本来は迎角が要る。実測でも 平均ピッチと対気速度の相関は -0.14 と弱く、
+  //   迎角推定も対地経路角の 平均がほぼゼロで補正にならなかった）。
   backscreen.setTextColor(COLOR_GRAY);
   backscreen.setCursor(ESKF_LABEL_X, ypit);
   backscreen.print("P");
-  backscreen.setTextColor(COLOR_BLACK);
+  backscreen.setTextColor(attitude_implausible(p) ? COLOR_GRAY : COLOR_BLACK);
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(pbuf), ypit);
   backscreen.print(pbuf);
 
@@ -1470,8 +1665,10 @@ void draw_eskf_attitude() {
   backscreen.setTextColor(COLOR_GRAY);
   backscreen.setCursor(ESKF_LABEL_X, yroll);
   backscreen.print("R");
-  // バンク超過だけ赤。地図の上に直接描くので通常色は黒（フッターと同じ）。
-  backscreen.setTextColor(fabsf(r) > BANK_WARN_DEG ? COLOR_RED : COLOR_BLACK);
+  // ありえない値なら灰色（設置ミスの疑い）。それ以外はバンク超過だけ赤。
+  // 地図の上に直接描くので通常色は黒（フッターと同じ）。
+  backscreen.setTextColor(attitude_implausible(r) ? COLOR_GRAY
+                          : (fabsf(r) > BANK_WARN_DEG ? COLOR_RED : COLOR_BLACK));
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(rbuf), yroll);
   backscreen.print(rbuf);
   backscreen.setTextColor(COLOR_BLACK);
@@ -1486,8 +1683,8 @@ void draw_eskf_attitude() {
   if (show_trim) {
     backscreen.unloadFont();
     backscreen.setTextSize(1);
-    backscreen.setTextColor(COLOR_GRAY);
-    backscreen.setCursor(ESKF_LABEL_X, yroll + fh_s + 2);
+    backscreen.setTextColor(roll_trim_color(trim_val));
+    backscreen.setCursor(ESKF_LABEL_X, yrtrim);
     backscreen.printf("Rtrim%+.2f", trim_val);
     backscreen.setTextColor(COLOR_BLACK);
   }
@@ -1618,12 +1815,42 @@ void draw_eskf_debug() {
 extern int imu_cursor;   // GPS_TFT_map.ino で定義。ページ1のカーソル位置
 
 
-// タイトル右端の状態ドット。バンク警告と自動ロールトリムが両方 ON なら緑、
-// どちらかでも OFF ならオレンジ。誤警報対策を切ったまま飛ばないための目印。
+// タイトル右端の状態ドット。緑になる条件は次の 3 つを全て満たすとき。
+//   ・バンク警告が ON
+//   ・自動ロールトリムが ON
+//   ・自動トリムの累積が小さい（ROLL_TRIM_WARN_DEG 未満）
+// 3 つ目を入れているのは、累積が大きい＝取り付けがずれていて
+// バンク警報の基準が信用できない状態だから。飛行前点検で気づけるようにする。
+// 右上の状態ドットが緑になる条件を 1 か所にまとめる。
+// 各メニュー行の丸もここを参照するので、条件と表示が食い違わない。
+//   緑になるのは次の 3 つを全て満たすとき:
+//     1. ESKF が収束している（READY）        … ページ1の ESKF 行 / ページ2の READY 行
+//     2. Roll/Pitch/Yaw func が ON          … ページ1
+//     3. Roll trim during flight が ON      … ページ2
+//     4. 自動トリムの累積が ROLL_TRIM_WARN_DEG 未満  … ページ1の Rtrim 表示
+// 1 は「まだ姿勢が出せていない」状態なので、これを緑にすると準備完了と誤解する。
+static bool imu_ok_ready() { return attitude_ready(); }
+static bool imu_ok_rpy()   { return attitude_get_rpy_enabled(); }
+static bool imu_ok_trim()  { return attitude_get_roll_trim_enabled(); }
+static bool imu_ok_rtrim() { return fabsf(attitude_get_roll_trim_deg()) < ROLL_TRIM_WARN_DEG; }
+
+// メニュー行の右端に状態の丸を描く（行の縦中央）。x は全行で揃える。
+static void draw_imu_row_dot(int y, uint16_t col) {
+  backscreen.fillCircle(232, y + 7, 4, col);
+}
+static uint16_t imu_row_col(bool ok) { return ok ? COLOR_GREEN : COLOR_ORANGE; }
+
 static void draw_imu_status_dot() {
-  extern volatile bool bank_warning_enabled;
-  const bool all_on = bank_warning_enabled && attitude_get_roll_trim_enabled();
-  header_footer.fillCircle(228, 18, 6, all_on ? COLOR_GREEN : COLOR_ORANGE);
+  // BNO085 非搭載機。姿勢機能そのものが無いので緑（＝準備OK）にはしない。
+  if (!get_imu_ok()) { header_footer.fillCircle(228, 18, 6, COLOR_GRAY); return; }
+  // マウントから外されたあと APPLY していない＝較正が無効。これだけは赤にする。
+  // 姿勢の基準そのものが失われている状態で、他の設定の良し悪しより深刻なため。
+  if (attitude_needs_apply() && attitude_get_rpy_enabled()) {
+    header_footer.fillCircle(228, 18, 6, COLOR_RED);
+    return;
+  }
+  const bool ok = imu_ok_ready() && imu_ok_rpy() && imu_ok_trim() && imu_ok_rtrim();
+  header_footer.fillCircle(228, 18, 6, ok ? COLOR_GREEN : COLOR_ORANGE);
 }
 
 static void draw_imu_page1() {
@@ -1655,33 +1882,47 @@ static void draw_imu_page1() {
   // pitch=-90 というもっともらしい値が出て有効値と誤読される）
   if (ready) backscreen.printf("ESKF %+6.1f %+6.1f %6.1f", er, ep, ey);
   else       backscreen.print("ESKF   ---    ---    ---");
+  draw_imu_row_dot(y - 2, imu_row_col(imu_ok_ready()));
   y += lh;
   backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("BNO  %+6.1f %+6.1f %6.1f", br, bp, by);
   y += lh;
-  // 巡航のトリム状態は瞬時ピッチではなく 30 秒平均で見る（フゴイドで±3度振れるため）。
+  // 巡航のトリム状態は瞬時ピッチではなく 平均で見る（瞬時値は std 1.23 度の振動があるため）。
   // 直進中のロール自動トリムの累積量も併記して、どれだけ補正が入ったか分かるようにする。
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y);
   if (attitude_pitch_avg_valid())
-    backscreen.printf("P avg30s %+5.1f  Rtrim %+.2f",
-                      attitude_get_pitch_avg_deg(), attitude_get_roll_trim_deg());
+    backscreen.printf("P avg%.0fs %+5.1f  ", PITCH_AVG_SEC, attitude_get_pitch_avg_deg());
   else
-    backscreen.printf("P avg30s   --    Rtrim %+.2f", attitude_get_roll_trim_deg());
+    backscreen.printf("P avg%.0fs   --    ", PITCH_AVG_SEC);
+  // Rtrim は緑条件の 3 つ目。しきい値を超えていることが分かるよう色を変える。
+  backscreen.setTextColor(imu_ok_rtrim() ? COLOR_GRAY : COLOR_ORANGE, COLOR_WHITE);
+  backscreen.printf("Rtrim %+.2f", attitude_get_roll_trim_deg());
+  draw_imu_row_dot(y - 2, imu_row_col(imu_ok_rtrim()));
   y += lh + 6;
 
   // ---- 注意書き ----
-  // ロールは常に 0 として較正するので、傾いた状態で APPLY してはいけない。
-  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  // 色で意味を分ける。赤は「異常＝対処が要る」、青は「操作前に確認すること」。
+  // Note: 〜 を赤にしていたが、エラーが起きているように見えるので青にした。
   backscreen.setCursor(2, y);
-  backscreen.print("Note: Make sure actual"); y += lh;
-  backscreen.setCursor(2, y);
-  backscreen.print("      aircraft roll is zero"); y += lh + 6;
+  if (attitude_needs_apply() && attitude_get_rpy_enabled()) {
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    // マウントから外された形跡がある。較正をやり直すまで姿勢は信用できない。
+    backscreen.print("!! REMOVED FROM MOUNT"); y += lh;
+    backscreen.setCursor(2, y);
+    backscreen.print("   APPLY required"); y += lh + 6;
+  } else {
+    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    backscreen.print("Note: Make sure actual aircraft"); y += lh;
+    backscreen.setCursor(2, y);
+    backscreen.print("  attitude matches SET attitude"); y += lh + 6;
+  }
 
   // ---- 操作メニュー ----
+  // 項目数 6。8 項目のときは 15 まで詰めていたが、2 ページ目へ移して余裕ができた。
   const int mh = 17;
-  bool on_ground = (get_gps_mps() <= LEVEL_CALIB_MAX_MPS);
+  bool on_ground = eskf_calib_allowed();
   for (int i = 0; i < IMU_MENU_COUNT; i++) {
     bool sel = (imu_cursor == i);
     backscreen.setCursor(2, y);
@@ -1692,23 +1933,38 @@ static void draw_imu_page1() {
       case IMU_MENU_SETPITCH:
         backscreen.printf("SET PITCH = %+.1f deg", attitude_get_pitch_target());
         break;
+      case IMU_MENU_SETROLL:
+        // 通常は 0。0 以外は「傾けたまま較正する」宣言なので目立たせる。
+        // 0 以外は「傾けたまま較正する」宣言なので、カーソル位置でなくても目立たせる
+        if (!sel && attitude_get_roll_target() != 0.0f)
+          backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+        backscreen.printf("SET ROLL  = %+.1f deg", attitude_get_roll_target());
+        break;
       case IMU_MENU_APPLY:
         // 実行可否をそのまま出す。飛行中は通さない。
-        if (!ready)          backscreen.print("APPLY  (ESKF not ready)");
-        else if (!on_ground) backscreen.print("APPLY  (moving)");
-        else                 backscreen.print("APPLY  now = above");
+        if (attitude_calib_pending())
+                             backscreen.print("APPLY  ... hold still");
+        else if (!ready)     backscreen.print("APPLY  (ESKF not ready)");
+        else if (!on_ground) backscreen.print((getReplayMode() || is_demo_active())
+                                              ? "APPLY  (hold still)" : "APPLY  (moving)");
+        else                 backscreen.print("APPLY above=calibrate now");
+        // 較正が必要なときは赤丸。画面右上の赤丸だけでは「何をすれば消えるのか」が
+        // 分からないので、対処すべき項目に同じ色の印を並べて対応付ける。
+        if (attitude_needs_apply() && attitude_get_rpy_enabled())
+          draw_imu_row_dot(y, COLOR_RED);
         break;
-      case IMU_MENU_BANKWARN: {
-        extern volatile bool bank_warning_enabled;
-        backscreen.printf("Bank warning(4deg1sec): %s",
-                          bank_warning_enabled ? "ON " : "OFF");
+      case IMU_MENU_RPYFUNC:
+        // 姿勢表示・各種警報・自動トリム・風推定・姿勢ログを一括で ON/OFF する
+        backscreen.printf("Roll/Pitch/Yaw func: %s",
+                          attitude_get_rpy_enabled() ? "ON " : "OFF");
+        draw_imu_row_dot(y, imu_row_col(imu_ok_rpy()));
         break;
-      }
-      case IMU_MENU_AUTOROLL:
-        backscreen.printf("Auto roll level detect: %s",
-                          attitude_get_roll_trim_enabled() ? "ON " : "OFF");
+      case IMU_MENU_NEXTPAGE:
+        backscreen.print("Next page (Detail) >");
+        // ページ2 で見る項目の状態をここに集約して見せる。
+        // 緑にならない原因がページ2 にあるとき、ページ1 だけ見ても分かるようにする。
+        draw_imu_row_dot(y, imu_row_col(imu_ok_trim() && imu_ok_ready()));
         break;
-      case IMU_MENU_NEXTPAGE: backscreen.print("Next page (Detail) >"); break;
       case IMU_MENU_EXIT:     backscreen.print("Exit >>");              break;
     }
     y += mh;
@@ -1781,6 +2037,7 @@ static void draw_imu_page2() {
   backscreen.setCursor(2, y);
   backscreen.printf("%s   GNSS upd:%lu", ready ? "READY" : "INIT...",
                     (unsigned long)attitude_get_gnss_updates());
+  backscreen.fillCircle(232, y + 6, 4, imu_row_col(imu_ok_ready()));
   y += lh;
 
   float bg[3], ba[3];
@@ -1809,9 +2066,33 @@ static void draw_imu_page2() {
   backscreen.setCursor(2, y);
   backscreen.printf("level offset R%+.1f P%+.1f", lr, lp); y += lh + 4;
 
-  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.setCursor(2, y);
-  backscreen.print("long press: back to page 1");
+  // ---- 調整メニュー ----
+  // 日常の運用では触らない項目。実飛行での検証がまだなので、片方だけ切って
+  // 切り分けられるよう残してある（ページ1のマスタースイッチとは別物）。
+  y += 2;
+  const int mh2 = 15;
+  for (int i = 0; i < IMU2_MENU_COUNT; i++) {
+    const bool sel = (imu2_cursor == i);
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
+    backscreen.print(sel ? ">" : " ");
+    backscreen.setCursor(14, y);
+    switch (i) {
+      case IMU2_MENU_AUTOROLL:
+        backscreen.printf("Roll trim during flight: %s",
+                          attitude_get_roll_trim_enabled() ? "ON " : "OFF");
+        backscreen.fillCircle(232, y + 6, 4, imu_row_col(imu_ok_trim()));
+        break;
+      case IMU2_MENU_WIND:
+        backscreen.printf("Wind estimate: %s",
+                          attitude_get_wind_enabled() ? "ON " : "OFF");
+        break;
+      case IMU2_MENU_BACK:
+        backscreen.print("< Back to page 1");
+        break;
+    }
+    y += mh2;
+  }
 
   backscreen.unloadFont();
   backscreen.pushSprite(0, 40);
@@ -1836,20 +2117,76 @@ void push_backscreen(){
   TIMING_END(ts_push_backscreen, push_bs);
 }
 
-// backscreen の最上部に小さなテキスト（GS・m/s・MT ラベル）を描画する。
-// trackwarning_until が有効な間は「MT」ラベルを赤/黒で点滅させてコース警告を示す。
+// backscreen の最上部に小さなテキスト（GS・m/s・TT ラベル）を描画する。
+// trackwarning_until が有効な間は「TT」ラベルを赤/黒で点滅させてコース警告を示す。
+// TT = True Track。機体に磁気コンパスを載せない方針になったので、表示は全て真方位。
+// 画面に出す真方位の 3 桁表示値。ヘッダーと地図内で必ず同じ値になるよう
+// 1 か所に集約する（以前ヘッダーは切り捨て、地図内は四捨五入で 1 度ずれていた）。
+// 四捨五入した上で 0〜359 に丸め込む（359.7 度 → 360 ではなく 000）。
+static int truetrack_display_deg() {
+  return ((int)lroundf(get_gps_truetrack()) % 360 + 360) % 360;
+}
+
 void draw_gs_track(){
   backscreen.setTextWrap(false);
-  if(trackwarning_until > millis()){
+  // ヘッダー右の大きい枠が何を出しているかに合わせてラベルを変える。
+  // 同じ位置に別の量が出るので、ラベル無しでは機体間で取り違える危険がある。
+  const bool hdr_pitch = header_shows_pitch();
+  const char* hdr_label = hdr_pitch ? "Pavg" : "TT";
+  const int   hdr_lx    = SCREEN_WIDTH - (hdr_pitch ? 52 : 40);
+  // コース警報の点滅はトラック表示のときだけ（ピッチ表示中は無関係なので点滅させない）
+  if(trackwarning_until > millis() && !hdr_pitch){
     backscreen.setTextColor((millis()/1000)%2==0?COLOR_RED:COLOR_BLACK, TFT_WHITE);
-    backscreen.drawString("MT", SCREEN_WIDTH - 40, 1);
+    backscreen.drawString(hdr_label, hdr_lx, 1);
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
   }else{
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
-    backscreen.drawString("MT", SCREEN_WIDTH - 40, 1);
+    backscreen.drawString(hdr_label, hdr_lx, 1);
   }
   backscreen.drawString("GS", 1, 1);
-  backscreen.drawString("m/s", 100, 1);
+
+  // "m/s" はヘッダーへ縦書き("m p s")で移動した（draw_header 参照）。
+  // 空いた画面中央上部に真方位を出す。ヘッダーがピッチを出しているときだけで、
+  // ヘッダーが真方位のときは重複するので出さない。
+  // NORTHUP でも出す（地図が回らないぶん数値の方位が要るため）。
+  // 数値は NM_FONT_MEDIUM。ただし Arial_Black22 は数字と +-. しか持たないので、
+  // ラベル "TT" は AA_FONT_SMALL のまま描いて数字だけ大きくする。
+  if (hdr_pitch) {
+    backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
+    const int lw = backscreen.textWidth("TT");
+    const int lh = backscreen.fontHeight();
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%03d", truetrack_display_deg());
+    backscreen.loadFont(NM_FONT_MEDIUM);
+    const int nw = backscreen.textWidth(buf);
+    const int nh = backscreen.fontHeight();
+    const int x0 = (SCREEN_WIDTH - (lw + 4 + nw)) / 2;   // ラベル＋数値で中央寄せ
+    backscreen.setCursor(x0 + lw + 4, 1);
+    backscreen.print(buf);
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setCursor(x0, 1 + (nh - lh) / 2);         // ラベルは数値の高さの中央
+    backscreen.print("TT");
+  }
+
+  // sAcc（速度精度）は GS のすぐ右。下に置くと旋回角速度(deg/s)の表示と重なるため。
+  // 常時見るものではないので内蔵フォントの最小サイズ(8px)で控えめに出す。
+  {
+    // 幅と高さは AA_FONT_SMALL が読み込まれているうちに取る（unloadFont の後だと
+    // 内蔵フォントの値になってしまい、中央合わせが効かない）。
+    const int gsw = backscreen.textWidth("GS");
+    const int gsh = backscreen.fontHeight();
+    const float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    // 背景は塗らない（1引数の setTextColor）。地図の上に白い箱が出ないようにする。
+    backscreen.setTextColor((sacc_mps < 1.0f) ? COLOR_GREEN
+                          : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED);
+    // GS(AA_FONT_SMALL) の行の高さの中央に合わせる
+    backscreen.setCursor(1 + gsw + 4, 1 + (gsh - 8) / 2);
+    backscreen.printf("sAcc%.2f", sacc_mps);
+    backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
+    backscreen.loadFont(AA_FONT_SMALL);   // 呼び出し側は地図用フォントを期待している
+  }
 }
 
 
@@ -1935,9 +2272,60 @@ void draw_degpersec(double degpersecond){
 }
 
 
+// ヘッダー右の大きい枠に平均ピッチを出すか（出さないときは従来どおり真方位）。
+// BNO085 非搭載機・機能 OFF・平均がまだ溜まっていない間は真方位のまま。
+static bool header_shows_pitch() {
+  // リプレイでは imu_replaydata に記録された平均ピッチを再現する
+  // （実機の平均ではなく当時の画面を出す。地図側の表示を廃止したのでここが唯一の出口）。
+  if (getReplayMode()) { float a; return get_replay_pitch_avg(a); }
+  return get_imu_ok() && attitude_get_rpy_enabled() && attitude_pitch_avg_valid();
+}
+
+// ヘッダーに出す平均ピッチの値。リプレイでは記録値。
+static float header_pitch_value() {
+  if (getReplayMode()) { float a = 0.0f; get_replay_pitch_avg(a); return a; }
+  return attitude_get_pitch_avg_deg();
+}
+
+// ヘッダー右に平均ピッチを描く。
+// NM_FONT_LARGE(Arial_Black56) は数字と小数点しか持っておらず、符号を出せない。
+// また字送りが 数字37px / 点19px / プラス38px(22ptからの換算) で、
+// "+3.5" を字形だけで組むと 131px となり枠(111px)に入らない。
+// そこで符号と小数点だけ塗り矩形で描き、数字だけフォントに任せる。
+//   符号25 + 数字37 + 点10 + 数字37 = 109px（枠 111px をほぼ使い切る）
+// 絶対値が 10 度以上なら小数を落として "±dd"（25+37+37 = 99px）にする。
+// 符号の枠を 18→25px に広げて横棒を長くしてある。プラスとマイナスは横棒の有無だけで
+// 見分けるので、棒が短いと遠目に区別できない。
+static void draw_header_pitch(int x, float deg, uint16_t col) {
+  const int SIGN_W = 25, DIGIT_W = 37, DOT_W = 10;
+  const int ytop = 3;               // 数字の描画開始 y（従来の方位表示と同じ）
+  const bool neg = (deg < 0.0f);
+  float a = fabsf(deg);
+  if (a > 99.9f) a = 99.9f;
+
+  // 符号。マイナスは横棒、プラスは十字。数字の高さの中央に合わせる。
+  const int bar_w = 21, bar_t = 7, cx = x + SIGN_W / 2, cy = ytop + 21;
+  header_footer.fillRect(cx - bar_w/2, cy - bar_t/2, bar_w, bar_t, col);
+  if (!neg) header_footer.fillRect(cx - bar_t/2, cy - bar_w/2, bar_t, bar_w, col);
+  x += SIGN_W;
+
+  header_footer.setCursor(x, ytop);
+  if (a < 10.0f) {
+    const int i = (int)a, f = (int)((a - i) * 10.0f + 0.5f);
+    header_footer.printf("%d", i);
+    x += DIGIT_W;
+    header_footer.fillRect(x + 2, ytop + 36, 6, 6, col);   // 小数点
+    x += DOT_W;
+    header_footer.setCursor(x, ytop);
+    header_footer.printf("%d", f > 9 ? 9 : f);
+  } else {
+    header_footer.printf("%02d", (int)(a + 0.5f));
+  }
+}
+
 // 画面上部 50px のヘッダーを描画して TFT の (0, 0) に転送する。
 // 左: 対地速度 m/s（GPS 速度 < 2m/s のときは灰色）。
-// 右半分: 磁方位 3 桁。コース警告中は赤/白反転で点滅する。
+// 右半分: 真方位 3 桁。コース警告中は赤/白反転で点滅する。
 // GNSS 衛星数 = 0 のときは赤い横線で「GPS 無効」を示す。
 // 区切り縦線（mtvx）でスピードエリアと方位エリアを分けている。
 //Height 50px
@@ -1958,26 +2346,58 @@ void draw_header() {
 
   const int mtvx = SCREEN_WIDTH - 111;
   header_footer.drawFastVLine(mtvx, 0, HEADERFOOTER_HEIGHT, COLOR_GRAY);
-  header_footer.setCursor(mtvx, 3);
-  if(trackwarning_until > millis()){
-    if((millis()/1000)%2==0){
-      header_footer.setTextColor(COLOR_RED, TFT_WHITE);
-    }else{
-      header_footer.fillRect(mtvx,0,111,3,COLOR_RED);
-      header_footer.setTextColor(COLOR_WHITE, TFT_RED,true);
+
+  // 速度の単位を縦書き("m","p","s")で中央縦線のすぐ左に置く。
+  // 横書き "m/s" を地図面に置いていたが、姿勢表示の場所を確保するため
+  // ヘッダーの余白へ移した。右下寄せ（縦線より左）。
+  {
+    header_footer.loadFont(AA_FONT_SMALL);
+    header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    const int uh = header_footer.fontHeight()-2;  // 文字の高さ（縦書きの行間に使う）
+    static const char* const kUnit[3] = {"m", "p", "s"};
+    for (int i = 0; i < 3; i++) {
+      const int w = header_footer.textWidth(kUnit[i]);
+      header_footer.setCursor(mtvx - 2 - w - i*2, HEADERFOOTER_HEIGHT - 1 - uh * (3 - i));
+      header_footer.print(kUnit[i]);
     }
-    header_footer.printf("%03d", (int)get_gps_magtrack());
-    header_footer.setTextColor(sel_col, TFT_WHITE);
-  }else{
-    header_footer.setTextColor(sel_col, TFT_WHITE);
-    header_footer.printf("%03d", (int)get_gps_magtrack());
+    header_footer.loadFont(NM_FONT_LARGE);   // 方位の3桁表示へ戻す
+  }
+  if (header_shows_pitch()) {
+    // ---- 平均ピッチ ----
+    // パイロットは対地進路を地図から読めるが、平均ピッチは他に得る手段が無い。
+    // 一番目立つ枠はこちらに使う（パイロットからのフィードバックによる）。
+    // 対地速度が遅いと sel_col が灰色になるが、それは速度表示の都合。
+    // ピッチの信頼性とは無関係なので巻き込まない。灰色にするのは「ありえない値」のときだけ。
+    const float pv = header_pitch_value();
+    const uint16_t pcol = attitude_implausible(pv) ? COLOR_GRAY : COLOR_BLACK;
+    header_footer.setTextColor(pcol, TFT_WHITE);
+    draw_header_pitch(mtvx, pv, pcol);
+  } else {
+    // ---- 真方位 ----
+    header_footer.setCursor(mtvx, 3);
+    if(trackwarning_until > millis()){
+      if((millis()/1000)%2==0){
+        header_footer.setTextColor(COLOR_RED, TFT_WHITE);
+      }else{
+        header_footer.fillRect(mtvx,0,111,3,COLOR_RED);
+        header_footer.setTextColor(COLOR_WHITE, TFT_RED,true);
+      }
+      header_footer.printf("%03d", truetrack_display_deg());
+      header_footer.setTextColor(sel_col, TFT_WHITE);
+    }else{
+      header_footer.setTextColor(sel_col, TFT_WHITE);
+      header_footer.printf("%03d", truetrack_display_deg());
+    }
   }
 
   header_footer.drawFastHLine(0,49,240,COLOR_BLACK);
 
   if(get_gps_numsat() == 0){
+    // この赤線は「GNSS が無いので値が無効」を示すもの。対地速度と真方位は無効になるが、
+    // 平均ピッチは GNSS が無くても（ESKF が生きていれば）意味を持つので線を引かない。
+    const int len = header_shows_pitch() ? (mtvx - 5 - 2) : (SCREEN_WIDTH - 10);
     for(int i = 0; i < 4; i++)
-      header_footer.drawFastHLine(5, 22+i, SCREEN_WIDTH-10, COLOR_RED);
+      header_footer.drawFastHLine(5, 22+i, len, COLOR_RED);
   }
 
   header_footer.pushSprite(0,0);
@@ -1988,8 +2408,8 @@ extern float course_warning_index;
 
 
 // backscreen の最下部に地図サポート情報を描画する（地図モード専用フッター）。
-// 左: GPS 時刻（UTC+9 = JST 変換済み）。
-// 中央〜右: 緯度（〜N/S）・経度（〜E/W）を 5 桁精度で表示。
+// 最下行に JST 時刻と Max G/S を横に並べるだけ。sAcc は左上（GS の下）へ移した。
+// 緯度・経度は v0.94 で削除した（飛行中に読む場面が無く、姿勢表示の場所を圧迫していたため）。
 void draw_map_footer(){
   //JST Time
   GpsTime time = get_gpstime();
@@ -1997,53 +2417,27 @@ void draw_map_footer(){
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
 
-  // sAcc（速度精度）表示（Max G/S の 1 行上）
-  {
-    float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
-    uint16_t saccColor = (sacc_mps < 1.0f) ? COLOR_GREEN : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
-    backscreen.setCursor(1, BACKSCREEN_SIZE-27);
-    backscreen.setTextColor(saccColor);
-    backscreen.printf("sAcc:%.2fm/s", sacc_mps);
-    backscreen.setTextColor(COLOR_BLACK);
+  if (time.isValid()) {
+    backscreen.setCursor(1, BACKSCREEN_SIZE-9);
+    backscreen.printf("%02d:%02d:%02dJST", (time.hour()+9)%24, time.minute(), time.second());
   }
 
-  // 最大 G/S 表示（JST 時刻の 1 行上）
+  // 最大 G/S（JST 時刻のすぐ右）。
   // 5分保持と全時間が同値の場合は片側のみ表示。異なる場合は両方表示。
-  backscreen.setCursor(1, BACKSCREEN_SIZE-18);
+  backscreen.setCursor(75, BACKSCREEN_SIZE-9);
   if (get_maxgs_5min() == get_maxgs()) {
-    // 同じ値なので全時間最大のみ表示
-    backscreen.printf("MaxGS %.1fm/s(%02d:%02d)",
+    backscreen.printf("MaxGS %.1f(%02d:%02d)",
       get_maxgs(), get_maxgs_hour(), get_maxgs_min());
   } else {
-    backscreen.printf("MaxGS %.1fm/s(%02d:%02d) %.1fm/s(%02d:%02d)",
+    backscreen.printf("MaxGS%.1f(%02d:%02d)%.1f(%02d:%02d)",
       get_maxgs_5min(), get_maxgs_5min_hour(), get_maxgs_5min_min(),
       get_maxgs(),      get_maxgs_hour(),      get_maxgs_min());
   }
-
-  if (time.isValid()) {
-    backscreen.setCursor(1, BACKSCREEN_SIZE-9);
-    backscreen.printf("%02d:%02d:%02d JST", (time.hour()+9)%24, time.minute(), time.second());
-  }
-
-  // 5 decimal places latitude, longitude print.
-  backscreen.setCursor(115,BACKSCREEN_SIZE-9);
-  backscreen.printf("%.5f", get_gps_lat());
-  if(get_gps_lat() >= 0)
-    backscreen.print("N");
-  else
-    backscreen.print("S");
-
-  backscreen.setCursor(170,BACKSCREEN_SIZE-9);
-  backscreen.printf("%.5f", get_gps_lon());
-  if(get_gps_lon() >= 0)
-    backscreen.print("E");
-  else
-    backscreen.print("W");
   backscreen.loadFont(AA_FONT_SMALL);
 }
 
 // 画面下部 30px のフッターを描画して TFT の (0, 290) に転送する（HEIGHT: 30px）。
-// 左: MC（磁方位コース）と目的地までの距離 km。その下にナビモード名と目的地名。
+// 左: TC（真方位コース）と目的地までの距離 km。その下にナビモード名と目的地名。
 // 右: バッテリー電圧（USB 接続時は "USB"。低電圧時は赤点滅 + 音声警告 60 秒ごと）。
 // 右中: GNSS 衛星数（5 未満=赤背景、10 未満=オレンジ、それ以上=緑）。
 // 右端: SD カード状態（緑=正常、赤=エラー）。
@@ -2057,7 +2451,7 @@ void draw_footer(){
   if(currentdestination != -1 && currentdestination < destinations_count){
     header_footer.setCursor(1, 1);
     header_footer.setTextColor(COLOR_MAGENTA);
-    header_footer.printf("MC%3d", magc);
+    header_footer.printf("TC%3d", truec);
 
 
     header_footer.setCursor(60, 1);

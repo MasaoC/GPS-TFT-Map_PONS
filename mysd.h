@@ -71,8 +71,9 @@
     // RHAVE_ATT 以外は ESKF の結果を持つ新形式にしか無い。
     #define RHAVE_ATT      0x0200   // ロール・ピッチ
     #define RHAVE_ATT_YAW  0x0400   // ヨー + ヨー精度95%値
-    #define RHAVE_ATT_AVG  0x0800   // 30 秒平均ピッチ
+    #define RHAVE_ATT_AVG  0x0800   // 平均ピッチ
     #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
+    #define RHAVE_ATT_WIND 0x2000   // 風速・風向（推定できていた区間のみ）
 
     // CSV 1行分のリプレイデータ。Core1 が生成し Core0 が消費する。
     typedef struct {
@@ -82,6 +83,7 @@
         // 姿勢ログ由来の値 [度]。有効かどうかは RHAVE_ATT* のビットで判断する。
         float    roll, pitch, yaw;
         float    pitch_avg, roll_trim, yaw_acc95;
+        float    wind_mps, wind_dir;
         int      numsat;
         uint16_t have;   // RHAVE_* のビットマスク
         int      year, month, day, hour, minute, second, centisecond;
@@ -132,11 +134,12 @@
     void log_sdf(const char* format, ...);
     void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
     // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
-    // pitch_avg は 30 秒平均が溜まるまで無効。valid=false のときは空欄で書く。
+    // pitch_avg は 平均が溜まるまで無効。valid=false のときは空欄で書く。
     void save_imu_replaydata(int h, int m, int s, int cs,
                              float roll, float pitch, float yaw,
                              float pitch_avg, bool pitch_avg_valid,
                              float roll_trim, float yaw_acc95,
+                             float wind_mps, float wind_dir, bool wind_valid,
                              const char* filename, int year, int month, int day);
 
     // Forward declarations of example getter/setter functions
@@ -168,12 +171,21 @@
     // 較正時に申告するピッチ角（IMU/ESKF 画面の SET PITCH 行の値）
     void setPitchTarget(const char* value);
     void getPitchTarget(char* buffer, size_t bufferSize);
-    // バンク角警告の有効/無効
-    void setBankWarn(const char* value);
-    void getBankWarn(char* buffer, size_t bufferSize);
+    // Roll/Pitch/Yaw 機能のマスタースイッチ
+    void setRpyFunctions(const char* value);
+    void getRpyFunctions(char* buffer, size_t bufferSize);
     // 直進中のロール自動トリムの有効/無効
     void setAutoRollTrim(const char* value);
     void getAutoRollTrim(char* buffer, size_t bufferSize);
+    // 風推定の有効/無効
+    void setWindEstimate(const char* value);
+    void getWindEstimate(char* buffer, size_t bufferSize);
+    // APPLY 時に申告するロール角
+    void setRollTarget(const char* value);
+    void getRollTarget(char* buffer, size_t bufferSize);
+    // マウントから外されたまま APPLY されていない状態
+    void setNeedsApply(const char* value);
+    void getNeedsApply(char* buffer, size_t bufferSize);
     bool loadSettings();
     bool saveSettings();
 
@@ -219,7 +231,8 @@
               int year, month, day;          // ファイルタイムスタンプ設定用
               float roll, pitch, yaw;
               float pitch_avg, roll_trim, yaw_acc95;
-              bool  pitch_avg_valid;
+              float wind_mps, wind_dir;
+              bool  pitch_avg_valid, wind_valid;
               // "imu_replaydata/20260316.txt" = 27文字 + NUL。24 だと溢れるので 32。
               char filename[32];
           } imuReplayArgs;
@@ -253,6 +266,7 @@
                               float roll, float pitch, float yaw,
                               float pitch_avg, bool pitch_avg_valid,
                               float roll_trim, float yaw_acc95,
+                              float wind_mps, float wind_dir, bool wind_valid,
                               const char* filename, int year, int month, int day);
   Task createLoadLogoTask();
   Task createFlushImuLogTask(int bufidx, const char* filename,

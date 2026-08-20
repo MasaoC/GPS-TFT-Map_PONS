@@ -49,8 +49,8 @@ int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（
 int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
 // IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_* と対応。
 int imu_cursor = 0;
+int imu2_cursor = 0;   // IMU/ESKF ページ2 のカーソル位置
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
-volatile bool bank_warning_enabled = true;
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;                // 現在のマップスケール [pixels/km]
 
@@ -353,6 +353,7 @@ void loop() {
   // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
   static uint32_t last_replaydata_ms = 0;
   if (!getReplayMode() && jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
+      attitude_get_rpy_enabled() &&
       (millis() - last_replaydata_ms) >= IMU_REPLAYDATA_INTERVAL_MS) {
 
     // モノトニック保証: GPS パケット間の処理遅延の揺れでタイムスタンプが
@@ -371,12 +372,17 @@ void loop() {
       float a_roll, a_pitch, a_yaw;
       attitude_get_euler(a_roll, a_pitch, a_yaw);
 
+      // 風は推定できていない区間があるので、有効フラグ付きで渡す（無効なら空欄で書かれる）
+      float a_wspd = 0.0f, a_wdir = 0.0f;
+      const bool a_wind_ok = attitude_get_wind(a_wspd, a_wdir);
+
       enqueueTask(createLogImuReplayTask(log_h, log_m, log_s, log_cs,
                                          a_roll, a_pitch, a_yaw,
                                          attitude_get_pitch_avg_deg(),
                                          attitude_pitch_avg_valid(),
                                          attitude_get_roll_trim_deg(),
                                          attitude_get_yaw_acc95_deg(),
+                                         a_wspd, a_wdir, a_wind_ok,
                                          rd_fname,
                                          jst_year, jst_month, jst_day));
     }
@@ -454,10 +460,14 @@ void loop() {
   // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
   // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
   // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
-  if (bank_warning_enabled && attitude_ready() && !getReplayMode()) {
+  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode()) {
     static uint32_t bank_over_since_ms = 0;
     static uint32_t bank_last_warn_ms  = 0;
-    static bool     bank_warned        = false;  // 発報済み。解除条件を満たすまで鳴らさない
+    // 発報済みフラグ。解除条件（バンクが戻る＋時間経過）を満たすまで鳴らさない。
+    // ★ true で始める。起動時点で既に 4 度を超えていた場合（マウントのズレ、
+    //   傾いた場所に置いてある、較正前など）に、一度も水平に戻らないまま
+    //   鳴り出すのを防ぐため。一度でも 3 度未満に戻れば通常動作に入る。
+    static bool     bank_warned        = true;
     float wr, wp, wy;
     attitude_get_euler(wr, wp, wy);
     uint32_t now_ms = millis();
@@ -486,6 +496,85 @@ void loop() {
 
   // ---- 直進中のロール自動トリムが入ったらログに残す ----
   // 事後検証できるよう、1 回の補正量と累積量を記録する。
+  // ---- 地上待機中のバンクチェック ----
+  // 自動ロールトリムは対地速度 3m/s 超でしか働かないので地上では動かない。
+  // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
+  // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
+  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
+      get_gps_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
+    static uint32_t gnd_over_since_ms = 0;
+    static uint32_t gnd_last_warn_ms  = 0;
+    static uint32_t gndp_over_since_ms = 0;
+    static uint32_t gndp_last_warn_ms  = 0;
+    float gr, gp, gy;
+    attitude_get_euler(gr, gp, gy);
+    const uint32_t now_ms = millis();
+
+    // ロール: 0（または SET ROLL で申告した値）からのズレ
+    if (fabsf(gr - attitude_get_roll_target()) > GROUND_ROLL_WARN_DEG) {
+      if (gnd_over_since_ms == 0) gnd_over_since_ms = now_ms;
+      if ((now_ms - gnd_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS &&
+          (gnd_last_warn_ms == 0 ||
+           (now_ms - gnd_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
+        gnd_last_warn_ms = now_ms;
+        enqueueTask(createPlayWavTask("wav/roll_check.wav", 3));
+        enqueueTask(createLogSdfTask("GROUND ROLL %+.1f deg (check mount / APPLY)", gr));
+      }
+    } else {
+      gnd_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
+    }
+
+    // ピッチ: 申告値 SET PITCH からのズレで見る。
+    // 地上の機体ピッチは場所によって変わる（プラットホーム -3.5 度、平地 0 度）ので、
+    // ロールのように絶対値 0 を基準にはできない。
+    if (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG) {
+      if (gndp_over_since_ms == 0) gndp_over_since_ms = now_ms;
+      if ((now_ms - gndp_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS &&
+          (gndp_last_warn_ms == 0 ||
+           (now_ms - gndp_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
+        gndp_last_warn_ms = now_ms;
+        enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
+        enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f)",
+                                     gp, attitude_get_pitch_target()));
+      }
+    } else {
+      gndp_over_since_ms = 0;
+    }
+  }
+
+  // APPLY の待ち時間は「指を離してから」数える。
+  // 長押しコールバックは閾値に達した時点で呼ばれるので、押しっぱなしのまま
+  // 実行されてしまう（3 秒押すと押下中に焼き付いていた）。押している間は
+  // カウントダウンを進めず、離した瞬間から改めて 1 秒待つ。
+  {
+    static bool calib_btn_held = false;
+    if (attitude_calib_pending()) {
+      if (digitalRead(SW_PUSH) == LOW) {        // 押下中（アクティブ LOW）
+        attitude_hold_calibrate();
+        calib_btn_held = true;
+      } else if (calib_btn_held) {
+        calib_btn_held = false;
+        // 離した合図。ここから 1 秒じっとしていれば較正される。
+        enqueueTask(createPlayMultiToneTask(2093, 60, 1));
+      }
+    } else {
+      calib_btn_held = false;
+    }
+  }
+
+  // 予約していた APPLY が実行された
+  if (attitude_take_calib_done()) {
+    enqueueTask(createSaveSettingTask());                  // 次回起動でも効くよう保存
+    // 成功トーン（上がり 2 音）。SD に eskf_apply_done.wav が無くても、
+    // 較正が実行されたことが分かるようにする。WAV の直前に鳴らす。
+    enqueueTask(createPlayMultiToneTask(1568, 70, 1));
+    enqueueTask(createPlayMultiToneTask(2093, 90, 1));
+    // 較正できたことを音声で知らせる。優先度 3 = 案内音声と同等。
+    // 較正の成否は取り違えると危険なので埋もれさせない。
+    enqueueTask(createPlayWavTask("wav/eskf_apply_done.wav", 3));
+    enqueueTask(createLogSdfTask("ESKF APPLY done"));
+  }
+
   {
     float applied, total;
     if (attitude_take_roll_trim_event(applied, total)) {
@@ -633,9 +722,12 @@ void loop() {
       update_course_warning(degpersecond); // コース逸脱警告の積算値を更新
 
       // 針路誤差 (steer_angle) の計算:
-      // magc はナビが指示する磁気コース、-8 は機体取り付け角補正オフセット、
-      // ttrack は GPS 実測の真方位。結果を -180〜+180 に正規化する。
-      steer_angle = (magc - 8) - ttrack;
+      // truec はナビが指示する真方位コース、ttrack は GPS 実測の真方位。
+      // 結果を -180〜+180 に正規化する。
+      // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
+      //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
+      //   真方位へ統一しても操縦指示の挙動は変わらない。
+      steer_angle = truec - ttrack;
       if (steer_angle < -180) {
         steer_angle += 360;
       } else if (steer_angle > 180) {
@@ -727,8 +819,7 @@ void loop() {
         draw_pilon_takeshima_marks(new_lat, new_long, scale, drawupward_direction);
       }
 
-      // ---- レイヤー 5: オーバーレイ（コンパス・速度グラフ・スケールバーなど）----
-      draw_compass(drawupward_direction, COLOR_BLACK);
+      // ---- レイヤー 5: オーバーレイ（速度グラフ・スケールバーなど）----
       draw_degpersec(degpersecond);
       if (is_demo_active()) {
         draw_demo_biwako();  // 琵琶湖デモ表示（見た目や警告音などに慣れるための練習用）
@@ -750,6 +841,9 @@ void loop() {
       } else {
         draw_triangle(new_truetrack, steer_angle);       // 精度良好、またはリプレイ/デモ: 飛行機マーカー
       }
+
+      // コンパス(N/E/S/W)は自機マーカー・進行方向縦線より後に描いて上のレイヤーにする。
+      draw_compass(drawupward_direction, COLOR_BLACK);
 
       // ESKF のロール・ピッチ（リプレイ中を除き常時表示）。
       // ※ 各種ポップアップより先に描くこと。コース警告のボックス（y=175 または 192 から
@@ -891,6 +985,9 @@ void loop1() {
                             currentTask.imuReplayArgs.pitch_avg_valid,
                             currentTask.imuReplayArgs.roll_trim,
                             currentTask.imuReplayArgs.yaw_acc95,
+                            currentTask.imuReplayArgs.wind_mps,
+                            currentTask.imuReplayArgs.wind_dir,
+                            currentTask.imuReplayArgs.wind_valid,
                             currentTask.imuReplayArgs.filename,
                             currentTask.imuReplayArgs.year,
                             currentTask.imuReplayArgs.month,
@@ -979,9 +1076,8 @@ void shortPressCallback() {
     // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
     // 誤操作で意図しない値が焼き付かないよう 2 段階にしてある。
-    if (detail_page % 2 == 0) {
-      imu_cursor = (imu_cursor + 1) % IMU_MENU_COUNT;
-    }
+    if (detail_page % 2 == 0) imu_cursor  = (imu_cursor  + 1) % IMU_MENU_COUNT;
+    else                      imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
     redraw_screen = true;
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
@@ -994,9 +1090,24 @@ void shortPressCallback() {
 static void imu_execute() {
   redraw_screen = true;
 
-  if (detail_page % 2 != 0) {     // ページ2 では長押しでページ1へ戻る
-    detail_page = 0;
-    enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+  if (detail_page % 2 != 0) {     // ページ2 の調整メニュー
+    switch (imu2_cursor) {
+      case IMU2_MENU_AUTOROLL:
+        attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
+        enqueueTask(createSaveSettingTask());
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+        break;
+      case IMU2_MENU_WIND:
+        attitude_set_wind_enabled(!attitude_get_wind_enabled());
+        enqueueTask(createSaveSettingTask());
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+        break;
+      case IMU2_MENU_BACK:
+        detail_page = 0;
+        imu2_cursor = 0;
+        enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+        break;
+    }
     return;
   }
 
@@ -1007,27 +1118,34 @@ static void imu_execute() {
       enqueueTask(createPlayMultiToneTask(1568, 60, 1));
       break;
 
+    case IMU_MENU_SETROLL: {
+      // 横風でウィングロー保持のまま較正する場合の申告値。通常は 0。
+      const bool was_zero = (attitude_get_roll_target() == 0.0f);
+      attitude_cycle_roll_target();
+      // 0 から離れた瞬間だけ注意喚起する。0.5 度刻みで巡回するたびに音声を流すと
+      // 耳障りなうえキューに溜まるので、状態が変わった 1 回に絞る。
+      if (was_zero && attitude_get_roll_target() != 0.0f)
+        enqueueTask(createPlayWavTask("wav/change_setroll_caution.wav", 3));
+      else
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      break;
+    }
+
     case IMU_MENU_APPLY:
       // ★ 地上でのみ通す。飛行中に実行すると傾いた姿勢を基準として焼き付けてしまい、
       //   バンク角警告が機能しなくなる。
-      if (attitude_ready() && get_gps_mps() <= LEVEL_CALIB_MAX_MPS) {
-        attitude_calibrate_to(attitude_get_pitch_target());
-        enqueueTask(createSaveSettingTask());               // 次回起動でも効くよう保存
-        // 較正できたことを音声で知らせる（トーンは鳴らさない。WAV と重なるため）。
-        // 優先度 3 = 案内音声と同等。較正の成否は取り違えると危険なので埋もれさせない。
-        enqueueTask(createPlayWavTask("wav/eskf_apply_done.wav", 3));
+      if (eskf_calib_allowed()) {
+        // すぐには実行しない。スイッチを押す力でデバイスが傾くので、指を離して
+        // 落ち着いてから attitude 側が実行する（ESKF_APPLY_DELAY_US）。
+        attitude_request_calibrate(attitude_get_pitch_target(), attitude_get_roll_target());
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1));  // 受け付けた合図
       } else {
         enqueueTask(createPlayMultiToneTask(440, 200, 1));  // 実行不可（低い音）
       }
       break;
 
-    case IMU_MENU_AUTOROLL:
-      attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
-      enqueueTask(createSaveSettingTask());
-      enqueueTask(createPlayMultiToneTask(1568, 60, 1));
-      break;
-    case IMU_MENU_BANKWARN:
-      bank_warning_enabled = !bank_warning_enabled;
+    case IMU_MENU_RPYFUNC:
+      attitude_set_rpy_enabled(!attitude_get_rpy_enabled());
       enqueueTask(createSaveSettingTask());
       enqueueTask(createPlayMultiToneTask(1568, 60, 1));
       break;

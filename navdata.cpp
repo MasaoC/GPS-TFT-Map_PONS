@@ -21,8 +21,9 @@
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
 
-// magc: 現在地→目的地の磁方位（表示用）。nav_update() で毎回更新される。
-int magc = 0;
+// truec: 現在地→目的地の真方位（表示用）。nav_update() で毎回更新される。
+// 機体に磁気コンパスを載せない方針になったため、v0.94 で磁方位から真方位へ変更した。
+int truec = 0;
 // dest_dist: 現在地→目的地の距離 [km]。nav_update() で毎回更新される。
 float dest_dist = 0;
 
@@ -148,8 +149,7 @@ double pla_centerline_bearing_rad() {
 // ナビゲーション情報を更新する（毎ループ呼ばれる）。
 // 処理内容:
 //   1. 現在の GPS 位置 → 選択中目的地 の距離（dest_dist）を Haversine 式で計算
-//   2. 目的地への真方位を求め、磁気偏角 +8° を加味して magc（表示用磁方位）を算出
-//      magc = (true_course_deg + 368) % 360  ← +368 は +8°(偏角) + 360(負値防止)
+//   2. 目的地への真方位 truec を算出（偏角補正はしない）
 //   3. FLYAWAY モード、または AUTO10K の AWAY フェーズ（折り返し前）では
 //      方位を 180° 反転させ「目的地から離れる方向」を示す
 void nav_update(){
@@ -159,12 +159,12 @@ void nav_update(){
     double destlon = extradestinations[currentdestination].cords[0][1];
     dest_dist = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
 
-    //Fly into magc
-    magc = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 368)) % 360;
+    //Fly into truec
+    truec = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 360)) % 360;
 
     // FLYAWAY または AUTO10K の AWAY フェーズでは 180° 反転（目的地から離れる方向を示す）
     if(destination_mode == DMODE_FLYAWAY || (destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_AWAY)){
-      magc = (magc+180)%360;
+      truec = (truec+180)%360;
     }
   }
 }

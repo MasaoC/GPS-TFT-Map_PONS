@@ -13,6 +13,7 @@
 #include "mysd.h"
 #include "gps.h"
 #include "attitude.h"
+#include "imu.h"      // get_imu_ok(): BNO085 非搭載機の判定
 
 
 // 実体は GPS_TFT_map.ino で volatile 定義。宣言側も volatile を付ける
@@ -554,8 +555,9 @@ Setting menu_settings[] = {
   //   ※ 機体ゼロ点の較正はこの画面内で短押しして実行する（設定メニューには置かない）
   //   ・Enter: IMU/ESKF 画面へ切り替え
   //   ・静止中のジャイロ実測値・推定バイアス・ESKF と BNO085 の姿勢比較を見る
-  //   ・アイコン色: バンク警告と自動ロールトリムが両方 ON なら緑、片方でも OFF ならオレンジ
-  //     （誤警報対策を切ったまま飛ばないための目印。IMU/ESKF 画面の右上と同じ意味）
+  //   ・アイコン色: バンク警告 ON・自動ロールトリム ON・トリム累積が小さい、の 3 つを
+  //     満たすとき緑。それ以外はオレンジ（IMU/ESKF 画面の右上と同じ意味）。
+  //     累積が大きい＝取り付けがずれていてバンク警報の基準が信用できない状態。
   // ----------------------------------------------------------
   { SETTING_IMU_DETAIL,
     [](bool selected) -> std::string {
@@ -573,8 +575,14 @@ Setting menu_settings[] = {
     nullptr,
     nullptr,
     [](){
-      extern volatile bool bank_warning_enabled;
-      if (bank_warning_enabled && attitude_get_roll_trim_enabled())
+      // BNO085 非搭載機は姿勢機能そのものが無いのでグレー（緑＝準備OK にしない）
+      if (!get_imu_ok())
+        return COLOR_GRAY;
+      // 較正が無効（マウントから外された後 APPLY していない）は赤で最優先
+      if (attitude_needs_apply() && attitude_get_rpy_enabled())
+        return COLOR_RED;
+      if (attitude_get_rpy_enabled() && attitude_get_roll_trim_enabled() &&
+          fabsf(attitude_get_roll_trim_deg()) < ROLL_TRIM_WARN_DEG)
         return COLOR_GREEN;
       else
         return COLOR_ORANGE;

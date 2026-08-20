@@ -104,8 +104,11 @@ SDSetting settings[] = {
   {"level_roll",      setLevelRoll,      getLevelRoll},
   {"level_pitch",     setLevelPitch,     getLevelPitch},
   {"pitch_target",    setPitchTarget,    getPitchTarget},
-  {"bank_warning",    setBankWarn,       getBankWarn},
-  {"auto_roll_trim",  setAutoRollTrim,   getAutoRollTrim}
+  {"rpy_functions",   setRpyFunctions,   getRpyFunctions},
+  {"auto_roll_trim",  setAutoRollTrim,   getAutoRollTrim},
+  {"wind_estimate",   setWindEstimate,   getWindEstimate},
+  {"roll_target",     setRollTarget,     getRollTarget},
+  {"needs_apply",     setNeedsApply,     getNeedsApply}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -372,14 +375,29 @@ void setLevelPitch(const char* value) {
 // 毎回選び直さずに済むよう保存する。
 void setPitchTarget(const char* value) { attitude_set_pitch_target(atof(value)); }
 
-// バンク角警告の有効/無効（IMU/ESKF 画面で切替）
-void setBankWarn(const char* value) {
-  extern volatile bool bank_warning_enabled;
-  bank_warning_enabled = (atoi(value) != 0);
+// APPLY 時に申告するロール角（通常 0）
+void setRollTarget(const char* value) { attitude_set_roll_target(atof(value)); }
+void getRollTarget(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.1f", attitude_get_roll_target());
 }
-void getBankWarn(char* buffer, size_t bufferSize) {
-  extern volatile bool bank_warning_enabled;
-  snprintf(buffer, bufferSize, "%d", bank_warning_enabled ? 1 : 0);
+
+// マウントから外されたまま APPLY されていない状態。
+// 充電のために電源を切っても保持したいので SD に残す。
+void setNeedsApply(const char* value) { attitude_set_needs_apply(atoi(value) != 0); }
+void getNeedsApply(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", attitude_needs_apply() ? 1 : 0);
+}
+
+// Roll/Pitch/Yaw 機能のマスタースイッチ（IMU/ESKF 画面で切替）
+void setRpyFunctions(const char* value) { attitude_set_rpy_enabled(atoi(value) != 0); }
+void getRpyFunctions(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", attitude_get_rpy_enabled() ? 1 : 0);
+}
+
+// 風推定の有効/無効
+void setWindEstimate(const char* value) { attitude_set_wind_enabled(atoi(value) != 0); }
+void getWindEstimate(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", attitude_get_wind_enabled() ? 1 : 0);
 }
 
 // 直進中のロール自動トリムの有効/無効
@@ -997,6 +1015,7 @@ bool replay_pop(ReplayRow* out) {
   out->roll = src->roll;             out->pitch = src->pitch;
   out->yaw = src->yaw;               out->pitch_avg = src->pitch_avg;
   out->roll_trim = src->roll_trim;   out->yaw_acc95 = src->yaw_acc95;
+  out->wind_mps = src->wind_mps;     out->wind_dir = src->wind_dir;
   replay_tail = (replay_tail + 1) & (REPLAY_BUF_SIZE - 1);
   return true;
 }
@@ -1065,21 +1084,23 @@ static void replay_parse_header(const char* header) {
 //   1. imu_replaydata/YYYYMMDD.txt … ESKF の結果（画面に出ていた値そのもの）
 //   2. euler/YYYYMMDD.txt          … 旧形式。BNO085 由来で 4 列しかない
 //   3. どちらも無ければ非表示
-// 旧形式では 30 秒平均・自動トリム・ヨー精度が存在しないので、それらは表示しない
+// 旧形式では 平均・自動トリム・ヨー精度が存在しないので、それらは表示しない
 // （当時 ESKF が動いていなかったので、画面にも出ていなかった）。
 //
 // 列はヘッダ行の列名で解釈する。ヘッダが無い/読めない古いファイルのために、
 // 見つからなければ time,roll,pitch,yaw の固定順とみなすフォールバックを持つ。
 enum { ATTCOL_TIME = 0, ATTCOL_ROLL, ATTCOL_PITCH, ATTCOL_YAW,
-       ATTCOL_AVG, ATTCOL_TRIM, ATTCOL_YAWACC, ATTCOL_COUNT };
+       ATTCOL_AVG, ATTCOL_TRIM, ATTCOL_YAWACC, ATTCOL_WSPD, ATTCOL_WDIR,
+       ATTCOL_COUNT };
 static const char* const att_col_names[ATTCOL_COUNT] = {
-  "time", "roll", "pitch", "yaw", "pitch_avg", "roll_trim", "yaw_acc95"
+  "time", "roll", "pitch", "yaw", "pitch_avg", "roll_trim", "yaw_acc95",
+  "wind_mps", "wind_dir"
 };
 
 static FsFile   replayAttFile;
 // ヘッダ未解析のまま replay_att_is_new_format() が真になると、旧形式なのに
-// 30 秒平均などを表示してしまう。0 初期化ではなく必ず -1 で始める。
-static int8_t   att_col[ATTCOL_COUNT] = { -1, -1, -1, -1, -1, -1, -1 };
+// 平均などを表示してしまう。0 初期化ではなく必ず -1 で始める。
+static int8_t   att_col[ATTCOL_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 static bool     replay_att_tried = false;   // 開こうと試みたか（毎行 open を叩かないため）
 static bool     replay_att_ok    = false;   // ファイルを開けたか
 static bool     replay_att_eof   = false;
@@ -1090,7 +1111,10 @@ static float    replay_att_yaw   = 0.0f;
 static float    replay_att_avg   = 0.0f;
 static float    replay_att_trim  = 0.0f;
 static float    replay_att_yawacc = 0.0f;
-static bool     replay_att_has_avg = false;  // その行に 30 秒平均が入っていたか
+static bool     replay_att_has_avg = false;  // その行に 平均が入っていたか
+static float    replay_att_wspd  = 0.0f;
+static float    replay_att_wdir  = 0.0f;
+static bool     replay_att_has_wind = false; // その行に風の推定値が入っていたか
 
 // ヘッダ行から att_col[] を作る。1 列も一致しなければ旧形式の固定順とみなす。
 static void replay_att_parse_header(const char* header) {
@@ -1124,6 +1148,8 @@ static void replay_att_parse_header(const char* header) {
     att_col[ATTCOL_AVG]   = -1;
     att_col[ATTCOL_TRIM]  = -1;
     att_col[ATTCOL_YAWACC] = -1;
+    att_col[ATTCOL_WSPD]   = -1;
+    att_col[ATTCOL_WDIR]   = -1;
   }
 }
 
@@ -1205,9 +1231,16 @@ static bool replay_att_seek(uint32_t tod_ms) {
     if (replay_get_field(line, att_col[ATTCOL_YAW],   buf, sizeof(buf))) replay_att_yaw   = atof(buf);
     if (replay_get_field(line, att_col[ATTCOL_TRIM],  buf, sizeof(buf))) replay_att_trim  = atof(buf);
     if (replay_get_field(line, att_col[ATTCOL_YAWACC],buf, sizeof(buf))) replay_att_yawacc = atof(buf);
-    // 30 秒平均は未収束の間は空欄で書かれている（replay_get_field は空欄で false）
+    // 平均は未収束の間は空欄で書かれている（replay_get_field は空欄で false）
     replay_att_has_avg = replay_get_field(line, att_col[ATTCOL_AVG], buf, sizeof(buf));
     if (replay_att_has_avg) replay_att_avg = atof(buf);
+    // 風も推定できていない区間は空欄なので、両方読めたときだけ有効
+    replay_att_has_wind = replay_get_field(line, att_col[ATTCOL_WSPD], buf, sizeof(buf));
+    if (replay_att_has_wind) {
+      replay_att_wspd = atof(buf);
+      replay_att_has_wind = replay_get_field(line, att_col[ATTCOL_WDIR], buf, sizeof(buf));
+      if (replay_att_has_wind) replay_att_wdir = atof(buf);
+    }
   }
   // 保持しているサンプルが再生時刻から離れすぎていたら「無い」と答える。
   // これが無いと、姿勢ログが飛行 CSV より先に終わっている場合に最後のサンプルを
@@ -1229,6 +1262,7 @@ void init_replay(){
   replay_att_eof   = false;
   replay_att_ms    = 0;
   replay_att_has_avg = false;
+  replay_att_has_wind = false;
   // 前のファイルの列マップを残さない（旧形式を新形式と誤判定するのを防ぐ）
   for (int i = 0; i < ATTCOL_COUNT; i++) att_col[i] = -1;
 
@@ -1503,6 +1537,7 @@ void load_replay() {
     }
     row->roll = 0.0f; row->pitch = 0.0f; row->yaw = 0.0f;
     row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
+    row->wind_mps = 0.0f; row->wind_dir = 0.0f;
     if (replay_att_seek(tod_ms)) {
       row->roll  = replay_att_roll;
       row->pitch = replay_att_pitch;
@@ -1516,6 +1551,11 @@ void load_replay() {
         if (replay_att_has_avg) {
           row->pitch_avg = replay_att_avg;
           row->have |= RHAVE_ATT_AVG;
+        }
+        if (replay_att_has_wind) {
+          row->wind_mps = replay_att_wspd;
+          row->wind_dir = replay_att_wdir;
+          row->have |= RHAVE_ATT_WIND;
         }
       }
     }
@@ -2020,9 +2060,11 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
 //   roll      ESKF ロール [度]（マウント補正・ゼロ点・自動トリム適用後＝画面の値）
 //   pitch     ESKF ピッチ [度]（同上）
 //   yaw       ESKF ヨー [度]（真方位）
-//   pitch_avg 30 秒平均ピッチ [度]。未収束のときは空欄
+//   pitch_avg 平均ピッチ [度]。未収束のときは空欄
 //   roll_trim 自動ロールトリムの累積補正量 [度]
 //   yaw_acc95 ヨー精度の 95% 値 [度]。しきい値は再生時に判定するので生値で残す
+//   wind_mps  推定風速 [m/s]。推定できていない区間は空欄
+//   wind_dir  風が吹いていく方向の真方位 [度]。同上
 //
 // ESKF が未収束の間は行を書かない（行が無い＝当時も表示していない）。
 // 旧 euler/ フォルダ（BNO085 由来・4列）も再生時のフォールバックとして読める。
@@ -2035,6 +2077,7 @@ void save_imu_replaydata(int h, int m, int s, int cs,
                          float roll, float pitch, float yaw,
                          float pitch_avg, bool pitch_avg_valid,
                          float roll_trim, float yaw_acc95,
+                         float wind_mps, float wind_dir, bool wind_valid,
                          const char* filename, int year, int month, int day) {
   if (!good_sd()) return;
 
@@ -2064,18 +2107,24 @@ void save_imu_replaydata(int h, int m, int s, int cs,
 
     // 新規ファイルのみヘッダー書き込み
     if (!fileExisted) {
-      replayDataFileStatic.println("time,roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95");
+      replayDataFileStatic.println(
+        "time,roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir");
     }
   }
 
-  // 30 秒平均が未収束の間は空欄にする（0.00 と書くと水平だったように見えてしまう）
+  // 平均が未収束の間は空欄にする（0.00 と書くと水平だったように見えてしまう）
   char avgbuf[10];
   if (pitch_avg_valid) snprintf(avgbuf, sizeof(avgbuf), "%.2f", pitch_avg);
   else                 avgbuf[0] = '\0';
 
-  char line[80];
-  snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f,%s,%.2f,%.1f",
-           h, m, s, cs, roll, pitch, yaw, avgbuf, roll_trim, yaw_acc95);
+  // 風も推定できていない区間は空欄にする（0.0 と書くと「無風」と読めてしまう）
+  char wbuf[20];
+  if (wind_valid) snprintf(wbuf, sizeof(wbuf), "%.2f,%.1f", wind_mps, wind_dir);
+  else            snprintf(wbuf, sizeof(wbuf), ",");
+
+  char line[96];
+  snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f,%s,%.2f,%.1f,%s",
+           h, m, s, cs, roll, pitch, yaw, avgbuf, roll_trim, yaw_acc95, wbuf);
   replayDataFileStatic.println(line);
 
   // 50レコードごと（約10秒@5Hz）に sync() → FATのファイルサイズ・タイムスタンプを更新
@@ -2109,6 +2158,7 @@ Task createLogImuReplayTask(int h, int m, int s, int cs,
                             float roll, float pitch, float yaw,
                             float pitch_avg, bool pitch_avg_valid,
                             float roll_trim, float yaw_acc95,
+                            float wind_mps, float wind_dir, bool wind_valid,
                             const char* filename, int year, int month, int day) {
   Task t;
   t.type = TASK_LOG_IMUREPLAY;
@@ -2126,6 +2176,9 @@ Task createLogImuReplayTask(int h, int m, int s, int cs,
   t.imuReplayArgs.pitch_avg_valid = pitch_avg_valid;
   t.imuReplayArgs.roll_trim   = roll_trim;
   t.imuReplayArgs.yaw_acc95   = yaw_acc95;
+  t.imuReplayArgs.wind_mps    = wind_mps;
+  t.imuReplayArgs.wind_dir    = wind_dir;
+  t.imuReplayArgs.wind_valid  = wind_valid;
   strncpy(t.imuReplayArgs.filename, filename, sizeof(t.imuReplayArgs.filename) - 1);
   t.imuReplayArgs.filename[sizeof(t.imuReplayArgs.filename) - 1] = '\0';
   return t;

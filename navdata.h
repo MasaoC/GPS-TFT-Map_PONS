@@ -112,7 +112,7 @@
 
   float deg2rad(float degrees);
   double rad2deg(double rad);
-  extern int magc;
+  extern int truec;
   extern float dest_dist;
 
 

@@ -82,7 +82,6 @@
   int get_gps_numsat();
   double get_gps_mps();
   double get_gps_truetrack();
-  double get_gps_magtrack();
   uint32_t get_gps_baudrate();  // GPS シリアルの現在ボーレート
   int   get_gps_fixtype();   // GSA フィックスタイプ (1=No Fix, 2=2D, 3=3D)
   float get_gps_pdop();      // PDOP（Position DOP）
@@ -142,6 +141,7 @@
   bool get_replay_pitch_avg(float &avg);
   bool get_replay_roll_trim(float &trim);
   bool get_replay_yaw(float &yaw, float &acc95);
+  bool get_replay_wind(float &speed_mps, float &dir_to_deg);
   void set_replaymode(bool replaymode);
 
   uint32_t get_gps_fix_millis();  // 最後にGPS時刻を受信したときのmillis()（時刻推定用）
