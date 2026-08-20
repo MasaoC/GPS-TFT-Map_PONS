@@ -46,35 +46,53 @@ int destinations_count = 0;  // 登録済み目的地の数
 int currentdestination = -1; // 現在選択中の目的地インデックス（-1 = 未選択）
 
 
+// ---- 実行時のコース座標 ----
+// 既定は navdata.h の #define。SD の override_pilon_coordinate.csv があれば
+// load_pilon_override()（mysd.cpp）が起動時に上書きする。
+double pla_lat = PLA_LAT,                 pla_lon = PLA_LON;
+double pilon_north_lat = PILON_NORTH_LAT, pilon_north_lon = PILON_NORTH_LON;
+double pilon_south_lat = PILON_SOUTH_LAT, pilon_south_lon = PILON_SOUTH_LON;
+double pilon_1km_lat = PILON_1KM_LAT,     pilon_1km_lon = PILON_1KM_LON;
+double takeshima_lat_v = TAKESHIMA_LAT,   takeshima_lon_v = TAKESHIMA_LON;
+bool   pilon_override_loaded = false;
+
 // 起動時に固定の目的地を登録する。
-// 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ W_PILON（西パイロン）→ TAKESHIMA（竹島）
+// 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ S_PILON（南パイロン）→ TAKESHIMA（竹島）
 // SHINURA（新浦安）はコメントアウト中（現時点では使用しない）。
+// 座標は上の実行時変数を使う。SD で上書きした後に呼び直せば新しい座標で登録し直せる。
 void init_destinations(){
+  // 呼び直しに備えて前回分を解放する（上書き適用後に再登録するため）
+  for (int i = 0; i < destinations_count; i++) {
+    delete[] extradestinations[i].cords;
+    free((void*)extradestinations[i].name);   // strdup で確保している
+    extradestinations[i].cords = nullptr;
+    extradestinations[i].name  = nullptr;
+  }
   destinations_count = 0;
   currentdestination = 0;
   // PLATHOME: 出発地（プラットフォーム）の緯度経度
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("PLATHOME");
   extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PLA_LAT, PLA_LON} };
+  extradestinations[destinations_count].cords = new double[][2]{ {pla_lat, pla_lon} };
   destinations_count++;
   // N_PILON: 北パイロン（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("N_PILON");
   extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PILON_NORTH_LAT, PILON_NORTH_LON} };
+  extradestinations[destinations_count].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
   destinations_count++;
-  // W_PILON: 西パイロン（10km コース折り返し地点）
+  // S_PILON: 南パイロン（10km コース折り返し地点）。公式ルールの呼称は「南」。
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("W_PILON");
+  extradestinations[destinations_count].name = strdup("S_PILON");
   extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PILON_WEST_LAT, PILON_WEST_LON} };
+  extradestinations[destinations_count].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
   destinations_count++;
   // TAKESHIMA: 竹島（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup("TAKESHIMA");
   extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
+  extradestinations[destinations_count].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
   destinations_count++;
   /*
   extradestinations[destinations_count].id = current_id++;
@@ -136,10 +154,10 @@ double pla_centerline_bearing_rad() {
     // calculateTrueCourseRad の引数はラジアン。deg2rad(double) はこの下で定義されており
     // ここではまだ宣言されていない（float 版に落ちて精度が落ちる）ため、直接変換する。
     const double D2R = PI / 180.0;
-    double bn = calculateTrueCourseRad(PLA_LAT * D2R, PLA_LON * D2R,
-                                       PILON_NORTH_LAT * D2R, PILON_NORTH_LON * D2R);
-    double bw = calculateTrueCourseRad(PLA_LAT * D2R, PLA_LON * D2R,
-                                       PILON_WEST_LAT * D2R, PILON_WEST_LON * D2R);
+    double bn = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
+                                       pilon_north_lat * D2R, pilon_north_lon * D2R);
+    double bw = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
+                                       pilon_south_lat * D2R, pilon_south_lon * D2R);
     cached = atan2(sin(bn) + sin(bw), cos(bn) + cos(bw));
   }
   return cached;

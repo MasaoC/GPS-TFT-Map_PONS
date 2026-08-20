@@ -16,7 +16,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260820
-#define BUILDVERSION "0.942"
+#define BUILDVERSION "0.943"
 #define VERSION_TEXT "Version 6"
 
 
@@ -97,6 +97,14 @@
 // 下降音側は VARIO_VOL_SCALE=3 で既にほぼ振幅上限（vario_volume 33%程度でクリップ開始）なので、
 // バランス調整は原則こちらの値で行う。小さくするほど高音が控えめになる（目安 15〜40）。
 #define VARIO_ASCEND_VOL_PCT 25
+
+// バリオ音のデッドバンド [m/s]。この範囲では音を出さない。
+// KF 融合中（BNO085 生存 + MS5611 接続）は推定精度が高いので狭くできる。
+// 0.30 → 0.25 に縮小（GNSS 垂直速度の取り込みで精度が上がったため, v0.942）。
+// ※ sound.cpp の音の判定と display_tft.cpp の VSI のグレー線が同じ値を使う。
+//   片方だけ変えると「線は出ているのに鳴らない」状態になるので必ずここで変える。
+#define VARIO_DEADBAND_KF_MPS    0.25f
+#define VARIO_DEADBAND_BARO_MPS  0.60f
 
 // =====追加設定項目====
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
@@ -629,6 +637,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define WIND_ARROW_WIDTH_PX         3   // 軸の太さ [px]
 // 矢印の色分けのしきい値 [m/s]。地図が白背景なので、いずれも暗い色を使う
 // （黄色やオレンジは白地でほぼ見えなかった）。
+// ---- デモモードの疑似値（表示確認用。実機の推定には一切影響しない）----
+// 機首の振れは疑似風から計算するが、横風が強いと偏流角が 60 度近くになり
+// デモの見た目として不自然なのでここで頭打ちにする。
+#define DEMO_CRAB_MAX_DEG       12.0f
+#define DEMO_YAW_ACC95_DEG       3.0f   // 偏流点線が出る条件を満たす値にしておく
+
 #define WIND_COL_LOW_MAX         2.0f   // これ以下は暗い緑
 #define WIND_COL_MID_MAX         4.0f   // これ以下は暗い青。超えたら暗い紫
 

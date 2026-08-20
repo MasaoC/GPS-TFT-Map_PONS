@@ -697,6 +697,59 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm) {
 // 「いま机の上にある本体」の姿勢しか流れてこない。再生中の飛行と全く無関係な
 // ロール・ピッチ・ヨーが出てしまい誤解を招くので、リプレイ中はまとめて非表示にする。
 // （将来 .bin まで再生できるようにしたら、この判定を外せばよい）
+// デモモード用の疑似風。表示の確認だけが目的で、実機の推定（attitude.cpp）には触れない。
+// 風速 0〜6 m/s を 24 秒周期で往復させ、風向は 30 秒で 1 回転させる。
+// これで 3 色すべてと全方位を机の上で一通り確認できる。
+// ※ ESKF が収束していないと draw_eskf_attitude() 自体が描かれないので、
+//   GNSS の入る場所（屋外・窓際）でデモを動かすこと。
+static bool demo_wind(float &speed_mps, float &dir_to_deg) {
+  const uint32_t ms = millis();
+  speed_mps  = 3.0f * (1.0f - cosf((float)(ms % 24000u) * (2.0f * (float)M_PI / 24000.0f)));
+  dir_to_deg = (float)(ms % 30000u) * (360.0f / 30000.0f);
+  return true;
+}
+
+// デモ用の機首方位（真方位）。デモの疑似風と対地速度から偏流角を作るので、
+// 風の矢印の向きと機首の振れが連動して見え、デモとして自然になる。
+//   対気速度ベクトル = 対地速度ベクトル - 風ベクトル、その向きが機首方位。
+// 実際の偏流角は横風が強いと 60 度近くになるが、デモの見た目としては大きすぎるので
+// DEMO_CRAB_MAX_DEG に制限する。
+static bool demo_heading(float &yaw_deg) {
+  float ws, wd;
+  if (!demo_wind(ws, wd)) return false;
+  const float trk = (float)get_gps_truetrack();
+  float vg = (float)get_gps_mps();
+  if (vg < 1.0f) vg = 1.0f;
+  const float te = vg * sinf(deg2rad(trk)) - ws * sinf(deg2rad(wd));
+  const float tn = vg * cosf(deg2rad(trk)) - ws * cosf(deg2rad(wd));
+  float crab = atan2f(te, tn) * 180.0f / (float)M_PI - trk;
+  while (crab >  180.0f) crab -= 360.0f;
+  while (crab < -180.0f) crab += 360.0f;
+  if (crab >  DEMO_CRAB_MAX_DEG) crab =  DEMO_CRAB_MAX_DEG;
+  if (crab < -DEMO_CRAB_MAX_DEG) crab = -DEMO_CRAB_MAX_DEG;
+  yaw_deg = trk + crab;
+  return true;
+}
+
+// 表示に使うヨー（真方位）と、その 95% 精度。
+// デモは疑似値、リプレイは記録値、通常は ESKF の推定値。ここに集約して、
+// 自機アイコンの向き・ヨー数値・偏流点線・信頼度判定が食い違わないようにする。
+static bool eskf_display_yaw(float &yaw_deg) {
+  if (is_demo_active()) return demo_heading(yaw_deg);
+  if (getReplayMode())  { float a; return get_replay_yaw(yaw_deg, a); }
+  if (!attitude_ready()) return false;
+  float r, p;
+  attitude_get_euler(r, p, yaw_deg);
+  return true;
+}
+static bool eskf_display_yaw_acc(float &acc95) {
+  if (is_demo_active()) { acc95 = DEMO_YAW_ACC95_DEG; return true; }
+  if (getReplayMode())  { float y; return get_replay_yaw(y, acc95); }
+  if (!attitude_ready()) return false;
+  acc95 = attitude_get_yaw_acc95_deg();
+  return true;
+}
+
 bool eskf_display_enabled() {
   // マスタースイッチ。OFF なら地図上の姿勢表示は一切出さない（リプレイ含む）。
   // 表示系はすべてこの関数を通るので、ここ 1 か所で塞げる。
@@ -727,25 +780,19 @@ bool eskf_calib_allowed() {
 }
 
 bool eskf_yaw_reliable() {
-  if (getReplayMode()) {
-    // 記録された 95% 値で当時と同じ判定を再現する。しきい値そのものは現在の設定を
-    // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
-    float y, acc95;
-    if (!get_replay_yaw(y, acc95)) return false;
-    return acc95 < ESKF_YAW_TRUST_95_DEG;
-  }
-  return eskf_display_enabled() && attitude_get_yaw_acc95_deg() < ESKF_YAW_TRUST_95_DEG;
+  // リプレイは記録された 95% 値で当時と同じ判定を再現する。しきい値は現在の設定を
+  // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
+  float acc95;
+  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) return false;
+  return acc95 < ESKF_YAW_TRUST_95_DEG;
 }
 
 // ヨーが「著しく信頼できる」か（95%値 < ESKF_YAW_DRIFT_95_DEG）。
 // 偏流角を示す点線を出してよいかの判定に使う。eskf_yaw_reliable() より厳しい。
 static bool eskf_yaw_high_confidence() {
-  if (getReplayMode()) {
-    float y, acc95;
-    if (!get_replay_yaw(y, acc95)) return false;
-    return acc95 < ESKF_YAW_DRIFT_95_DEG;
-  }
-  return eskf_display_enabled() && attitude_get_yaw_acc95_deg() < ESKF_YAW_DRIFT_95_DEG;
+  float acc95;
+  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) return false;
+  return acc95 < ESKF_YAW_DRIFT_95_DEG;
 }
 
 // 自機アイコンの色。ESKF のヨーで機首を向けているときは黒、
@@ -808,10 +855,9 @@ static void draw_plane_icon(int cx, int cy, float screen_deg, uint16_t col) {
 // 偏流角のぶんずれるので、信頼できないヨーで回すと逆に誤解を招く。
 // 信頼できないときは従来どおり対地進路（NORTHUP=ttrack、TRACKUP=画面上固定）。
 static float plane_icon_screen_deg(int ttrack) {
-  if (!eskf_yaw_reliable())
+  float y;
+  if (!eskf_yaw_reliable() || !eskf_display_yaw(y))
     return is_trackupmode() ? 0.0f : (float)ttrack;
-  float r, p, y;
-  attitude_get_euler(r, p, y);
   return is_trackupmode() ? (y - (float)ttrack) : y;
 }
 
@@ -1339,9 +1385,9 @@ void startup_demo_tft() {
   for (int i = 0; i <= countermax; i++) {
     backscreen.fillScreen(COLOR_WHITE);
     scalenow = 2.5 + i * 0.25*zoomin_speedfactor;
-    draw_startup_map(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow);
-    draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
-    draw_pilon_takeshima_marks(mapf(i,0,countermax,center_lat,PLA_LAT), mapf(i,0,countermax,center_lon,PLA_LON), scalenow, 0);
+    draw_startup_map(mapf(i,0,countermax,center_lat,pla_lat), mapf(i,0,countermax,center_lon,pla_lon), scalenow);
+    draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,pla_lat), mapf(i,0,countermax,center_lon,pla_lon), scalenow, 0);
+    draw_pilon_takeshima_marks(mapf(i,0,countermax,center_lat,pla_lat), mapf(i,0,countermax,center_lon,pla_lon), scalenow, 0);
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
   }
@@ -1364,9 +1410,9 @@ void startup_demo_tft() {
     bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
     {
-      draw_startup_map(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow);
-      draw_pilon_takeshima_line(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
-      draw_pilon_takeshima_marks(mapf(i,0,countermax,PLA_LAT,center_lat), mapf(i,0,countermax,PLA_LON,center_lon), scalenow, 0);
+      draw_startup_map(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow);
+      draw_pilon_takeshima_line(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow, 0);
+      draw_pilon_takeshima_marks(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow, 0);
     }
     draw_version_backscreen();
     backscreen.pushSprite(0,52);
@@ -1439,10 +1485,12 @@ void draw_vsi() {
         vsi_sprite.fillRect(0, 121, 5, bar, TFT_CYAN);
     }
     // 閾値ラインをバーの上に重ねて描画（バーがなくても常に表示）
-    // グレー線: バリオ音デッドバンド閾値（sound.cpp の dead_band と一致させる）
-    //   KF融合中（BNO085+MS5611）: ±0.3 m/s = ±24px  (0.3/1.5*120)
-    //   MS5611単独              : ±0.6 m/s = ±48px  (0.6/1.5*120)
-    int db_px = (get_imu_ok() && get_airdata_ok()) ? 24 : 48;
+    // グレー線: バリオ音デッドバンド閾値。sound.cpp と同じ定数から px を計算するので、
+    // 値を変えても線と音がずれない（以前は px を直書きしていて二重管理だった）。
+    //   KF融合中(BNO085+MS5611): ±0.25 m/s = ±20px / MS5611単独: ±0.60 m/s = ±48px
+    const float db_mps = (get_imu_ok() && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
+                                                            : VARIO_DEADBAND_BARO_MPS;
+    const int db_px = (int)(db_mps / MAX_VSPEED * BAR_MAX_PX + 0.5f);
     vsi_sprite.drawFastHLine(0, 120 - db_px, 5, TFT_DARKGREY);
     vsi_sprite.drawFastHLine(0, 120 + db_px, 5, TFT_DARKGREY);
     // 白線: ±0.5 m/s = ±40px, ±1.0 m/s = ±80px  (v/1.5*120)
@@ -1493,17 +1541,6 @@ static uint16_t wind_arrow_color(float mps) {
   return COLOR_RED;                               // 紫
 }
 
-// デモモード用の疑似風。表示の確認だけが目的で、実機の推定（attitude.cpp）には触れない。
-// 風速 0〜6 m/s を 24 秒周期で往復させ、風向は 30 秒で 1 回転させる。
-// これで 3 色すべてと全方位を机の上で一通り確認できる。
-// ※ ESKF が収束していないと draw_eskf_attitude() 自体が描かれないので、
-//   GNSS の入る場所（屋外・窓際）でデモを動かすこと。
-static bool demo_wind(float &speed_mps, float &dir_to_deg) {
-  const uint32_t ms = millis();
-  speed_mps  = 3.0f * (1.0f - cosf((float)(ms % 24000u) * (2.0f * (float)M_PI / 24000.0f)));
-  dir_to_deg = (float)(ms % 30000u) * (360.0f / 30000.0f);
-  return true;
-}
 
 // 風ベクトルの矢印を (cx,cy) を中心に描く。長さは固定で、強さは色で表す。
 // screen_deg: 画面の上を 0 とした時計回りの角度。前方は (+sin, -cos)。
@@ -1586,20 +1623,15 @@ void draw_eskf_attitude() {
     float wspd = 0.0f, wdir = 0.0f;
     float acc95 = 0.0f;
     bool  has_wind, has_acc;
+    has_acc = eskf_display_yaw_acc(acc95);
     if (is_demo_active()) {
       // デモは表示確認用。実機の推定条件（直進 10 秒など）を待たずに矢印を出す。
       has_wind = attitude_get_wind_enabled() && demo_wind(wspd, wdir);
-      has_acc  = attitude_ready();
-      if (has_acc) acc95 = attitude_get_yaw_acc95_deg();
     } else if (getReplayMode()) {
-      float yaw_rec;
       has_wind = get_replay_wind(wspd, wdir);
-      has_acc  = get_replay_yaw(yaw_rec, acc95);
     } else {
       has_wind = eskf_yaw_high_confidence() && attitude_get_wind_enabled() &&
                  attitude_get_wind(wspd, wdir);
-      has_acc  = attitude_ready();
-      if (has_acc) acc95 = attitude_get_yaw_acc95_deg();
     }
 
     // σ はフォント(NotoSansBold15)に無いので "Y95" と書く。意味は 95% 値（=2σ）。
@@ -1705,14 +1737,11 @@ void draw_eskf_attitude() {
 void draw_eskf_yaw() {
   if (!eskf_display_enabled()) return;
 
-  float r, p, y, acc95;
-  if (getReplayMode()) {
-    // 旧 euler 形式のヨーは BNO085 由来で、実測で真方位から -30〜-65 度ずれていた。
-    // 当時これを機首方位として表示していないので、再現もしない（新形式のみ表示）。
-    if (!get_replay_yaw(y, acc95)) return;
-  } else {
-    attitude_get_euler(r, p, y);
-  }
+  // 旧 euler 形式のヨーは BNO085 由来で、実測で真方位から -30〜-65 度ずれていた。
+  // 当時これを機首方位として表示していないので、リプレイでも再現しない
+  // （eskf_display_yaw() が新形式のときだけ true を返す）。
+  float y;
+  if (!eskf_display_yaw(y)) return;
 
   char buf[8];
   snprintf(buf, sizeof(buf), "%03d", ((int)lroundf(y) % 360 + 360) % 360);
@@ -2793,24 +2822,24 @@ bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
 #define CENTERLINE_INNER_KM 1.0     // センターラインの描き始め（1km 円上）
 #define CENTERLINE_OUTER_KM 10.975  // センターラインの描き終わり（10.975km 円上）
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
-  cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft takeshima = latLonToXY(TAKESHIMA_LAT, TAKESHIMA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft pla = latLonToXY(pla_lat, pla_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft n_pilon = latLonToXY(pilon_north_lat, pilon_north_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft s_pilon = latLonToXY(pilon_south_lat, pilon_south_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft takeshima = latLonToXY(takeshima_lat_v, takeshima_lon_v, mapcenter_lat, mapcenter_lon, scale, upward);
 
 
-  // PLA → 北/西パイロンの線は飛行中に最も見る基準線なので 3px 幅で太く描く（竹島線は 1px のまま）
+  // PLA → 北/南パイロンの線は飛行中に最も見る基準線なので 3px 幅で太く描く（竹島線は 1px のまま）
   draw_clipped_wideline(pla.x, pla.y, n_pilon.x, n_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
   draw_clipped_line(pla.x, pla.y, takeshima.x, takeshima.y, COLOR_GREEN);
-  draw_clipped_wideline(pla.x, pla.y, w_pilon.x, w_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
+  draw_clipped_wideline(pla.x, pla.y, s_pilon.x, s_pilon.y, PILON_LINE_WIDTH, COLOR_BLUE);
 
   // 2本のパイロン基準線の「角度的な中間」を通るセンターライン（オレンジ）。
   // 方位はパイロン座標から実行時に計算するので、パイロンが移動しても自動で追従する。
   // 1km 円〜10.975km 円の間だけ描き、PLA 付近のスタート台・1km パイロンのアイコンを隠さない。
   double centerline_bearing = pla_centerline_bearing_rad();
   double inner_lat, inner_lon, outer_lat, outer_lon;
-  calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_INNER_KM, inner_lat, inner_lon);
-  calculatePointFromBearing(PLA_LAT, PLA_LON, centerline_bearing, CENTERLINE_OUTER_KM, outer_lat, outer_lon);
+  calculatePointFromBearing(pla_lat, pla_lon, centerline_bearing, CENTERLINE_INNER_KM, inner_lat, inner_lon);
+  calculatePointFromBearing(pla_lat, pla_lon, centerline_bearing, CENTERLINE_OUTER_KM, outer_lat, outer_lon);
   cord_tft cl_inner = latLonToXY(inner_lat, inner_lon, mapcenter_lat, mapcenter_lon, scale, upward);
   cord_tft cl_outer = latLonToXY(outer_lat, outer_lon, mapcenter_lat, mapcenter_lon, scale, upward);
   draw_clipped_wideline(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
@@ -2826,18 +2855,18 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
 //   - PLA: 青地に黄色の小三角形 + 赤線（スタート台の簡易表示）
 // マゼンタの誘導ラインより後に呼び、アイコンが隠れないようにする。
 void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, float scale, float upward) {
-  cord_tft pla = latLonToXY(PLA_LAT, PLA_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft n_pilon = latLonToXY(PILON_NORTH_LAT, PILON_NORTH_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft w_pilon = latLonToXY(PILON_WEST_LAT, PILON_WEST_LON, mapcenter_lat, mapcenter_lon, scale, upward);
-  cord_tft pilon_1km = latLonToXY(PILON_1KM_LAT, PILON_1KM_LON, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft pla = latLonToXY(pla_lat, pla_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft n_pilon = latLonToXY(pilon_north_lat, pilon_north_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft s_pilon = latLonToXY(pilon_south_lat, pilon_south_lon, mapcenter_lat, mapcenter_lon, scale, upward);
+  cord_tft pilon_1km = latLonToXY(pilon_1km_lat, pilon_1km_lon, mapcenter_lat, mapcenter_lon, scale, upward);
 
   if(!n_pilon.isOutsideTft()){
     backscreen.fillTriangle(n_pilon.x-3,n_pilon.y,n_pilon.x+3,n_pilon.y,n_pilon.x,n_pilon.y-9, COLOR_ORANGE);
     backscreen.drawTriangle(n_pilon.x-3,n_pilon.y,n_pilon.x+3,n_pilon.y,n_pilon.x,n_pilon.y-9, COLOR_BLACK);
   }
-  if(!w_pilon.isOutsideTft()){
-    backscreen.fillTriangle(w_pilon.x-3,w_pilon.y,w_pilon.x+3,w_pilon.y,w_pilon.x,w_pilon.y-9, COLOR_ORANGE);
-    backscreen.drawTriangle(w_pilon.x-3,w_pilon.y,w_pilon.x+3,w_pilon.y,w_pilon.x,w_pilon.y-9, COLOR_BLACK);
+  if(!s_pilon.isOutsideTft()){
+    backscreen.fillTriangle(s_pilon.x-3,s_pilon.y,s_pilon.x+3,s_pilon.y,s_pilon.x,s_pilon.y-9, COLOR_ORANGE);
+    backscreen.drawTriangle(s_pilon.x-3,s_pilon.y,s_pilon.x+3,s_pilon.y,s_pilon.x,s_pilon.y-9, COLOR_BLACK);
   }
   if(!pilon_1km.isOutsideTft()){
     backscreen.fillTriangle(pilon_1km.x-3,pilon_1km.y,pilon_1km.x+3,pilon_1km.y,pilon_1km.x,pilon_1km.y-9, COLOR_ORANGE);
@@ -3831,6 +3860,28 @@ void draw_maplist_mode(int maplist_page) {
       if (++printed % 3 == 0) { posy += 10; backscreen.setCursor(1, posy); }
     }
     if (printed % 3 != 0) { posy += 10; backscreen.setCursor(1, posy); }
+
+    // ---- コース座標（パイロン等）----
+    // SD の override_pilon_coordinate.csv で上書きできるので、実際に使われている
+    // 値をここで確認できるようにする。上書きが効いていれば見出しが OVERRIDE になる。
+    backscreen.setTextColor(pilon_override_loaded ? COLOR_MAGENTA : COLOR_GRAY, COLOR_WHITE);
+    backscreen.printf("COURSE %s", pilon_override_loaded ? "SD OVERRIDE" : "built-in");
+    posy += 10; backscreen.setCursor(1, posy);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    {
+      const struct { const char* n; double la, lo; } pts[] = {
+        { "PLA ", pla_lat,         pla_lon         },
+        { "NPIL", pilon_north_lat, pilon_north_lon },
+        { "SPIL", pilon_south_lat, pilon_south_lon },
+        { "1KM ", pilon_1km_lat,   pilon_1km_lon   },
+        { "TAKE", takeshima_lat_v, takeshima_lon_v },
+      };
+      for (unsigned i = 0; i < sizeof(pts)/sizeof(pts[0]); i++) {
+        backscreen.printf(" %s %10.6f,%11.6f", pts[i].n, pts[i].la, pts[i].lo);
+        posy += 10; backscreen.setCursor(1, posy);
+      }
+    }
+
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 
     for (int i = 0; i < sizeof_mapflash; i++) {

@@ -764,6 +764,54 @@ void init_mapdata() {
 
 // SD カードの destinations.csv から目的地を読み込み extradestinations[] に追加する。
 // init_destinations() で固定目的地を登録した後に呼ぶことで、SD 側の追加目的地を上書きせず後ろに追加できる。
+// ===== パイロン座標の上書き（override_pilon_coordinate.csv）=====
+// パイロンの座標は毎年変わり得るが、大会直前にファームウェアを再ビルドするのは難しい。
+// SD のトップに override_pilon_coordinate.csv があれば、起動時にその値で上書きする。
+//
+//   # で始まる行と空行は無視
+//   NAME,緯度,経度   の 1 行 1 地点。書かれた地点だけが上書きされる。
+//   NAME: PLATHOME / N_PILON / S_PILON / PILON_1KM / TAKESHIMA
+//
+// 上書きは navdata.cpp の実行時変数に対して行う。目的地リスト・地図上のアイコン・
+// 基準線がすべてこの変数を見るので、1 か所直せば全部が一致して変わる。
+// ※ Auto 10km の折り返し判定は「選択中の目的地からの距離」で行うので、
+//   パイロン座標ではなく PLATHOME の座標が効く。
+static bool apply_pilon_override(const char* name, double lat, double lon) {
+  // 明らかな打ち間違いを弾く。ここを通ると誘導が丸ごと狂うため。
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+  if (lat == 0.0 && lon == 0.0) return false;
+  if      (!strcmp(name, "PLATHOME"))  { pla_lat = lat;         pla_lon = lon; }
+  else if (!strcmp(name, "N_PILON"))   { pilon_north_lat = lat; pilon_north_lon = lon; }
+  else if (!strcmp(name, "S_PILON"))   { pilon_south_lat = lat; pilon_south_lon = lon; }
+  else if (!strcmp(name, "PILON_1KM")) { pilon_1km_lat = lat;   pilon_1km_lon = lon; }
+  else if (!strcmp(name, "TAKESHIMA")) { takeshima_lat_v = lat; takeshima_lon_v = lon; }
+  else return false;
+  log_sdf("PILON OVERRIDE %s %.6f %.6f", name, lat, lon);
+  return true;
+}
+
+void load_pilon_override(){
+  FsFile f = SD.open("override_pilon_coordinate.csv");
+  if (!f) return;
+  int applied = 0, rejected = 0;
+  char line[80];
+  while (f.fgets(line, sizeof(line)) > 0) {
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == '\r' || *p == '\n' || *p == '\0') continue;
+    char name[16];
+    double lat = 0.0, lon = 0.0;
+    if (sscanf(p, "%15[^,],%lf,%lf", name, &lat, &lon) != 3) { rejected++; continue; }
+    // 名前の末尾の空白を落とす
+    for (int i = (int)strlen(name) - 1; i >= 0 && (name[i]==' '||name[i]=='\t'); i--) name[i] = '\0';
+    if (apply_pilon_override(name, lat, lon)) applied++;
+    else rejected++;
+  }
+  f.close();
+  if (applied > 0) pilon_override_loaded = true;
+  log_sdf("PILON OVERRIDE: %d applied, %d ignored", applied, rejected);
+}
+
 void load_destinations(){
   FsFile myFile = SD.open("destinations.csv");
   if (!myFile) {
@@ -839,6 +887,11 @@ void setup_sd(int trycount, bool load_settings){
   SdFile::dateTimeCallback(dateTime);
   log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
   init_mapdata();
+  // パイロン座標の上書きを先に適用してから目的地を作り直す。
+  // init_destinations() は setup1() で既定値のまま一度呼ばれているので、
+  // 上書きがあったときだけ新しい座標で登録し直す（内部で前回分を解放する）。
+  load_pilon_override();
+  if (pilon_override_loaded) init_destinations();
   load_destinations();
   if (load_settings) {
     if (!loadSettings()) {

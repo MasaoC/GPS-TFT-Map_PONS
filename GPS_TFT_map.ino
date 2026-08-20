@@ -789,7 +789,7 @@ void loop() {
 
       // ---- レイヤー 3.5: パイロンへの基準線・コース円 ----
       // マゼンタラインより先に描画して、重なったときは基準線が隠れるようにする。
-      bool draw_pilon = (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, PLA_LAT, new_long, PLA_LON));
+      bool draw_pilon = (scale > SCALE_SMALL_GMAP && check_within_latlon(0.6, 0.6, new_lat, pla_lat, new_long, pla_lon));
       if (draw_pilon) {
         draw_pilon_takeshima_line(new_lat, new_long, scale, drawupward_direction);
       }

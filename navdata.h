@@ -53,8 +53,9 @@
   #define PLA_LON 136.254333
   #define PILON_NORTH_LAT 35.377878
   #define PILON_NORTH_LON 136.189907
-  #define PILON_WEST_LAT 35.274220
-  #define PILON_WEST_LON 136.136183
+  // 南パイロン。公式ルールの呼称は「南」。以前は西パイロン(W_PILON)と呼んでいた。
+  #define PILON_SOUTH_LAT 35.274220
+  #define PILON_SOUTH_LON 136.136183
   #define PILON_1KM_LAT 35.297961
   #define PILON_1KM_LON 136.243624
 
@@ -83,8 +84,8 @@
 /*. old
   #define PILON_NORTH_LAT 35.41640778478595
   #define PILON_NORTH_LON 136.1183001762145
-  #define PILON_WEST_LAT 35.23295479141404
-  #define PILON_WEST_LON 136.0493286559818
+  #define PILON_SOUTH_LAT 35.23295479141404
+  #define PILON_SOUTH_LON 136.0493286559818
 */
 
   #define TAKESHIMA_LAT 35.296584352454964
@@ -113,6 +114,17 @@
   float deg2rad(float degrees);
   double rad2deg(double rad);
   extern int truec;
+
+  // ---- 実行時のコース座標 ----
+  // 既定値は上の #define。SD の override_pilon_coordinate.csv があれば起動時に上書きする。
+  // 表示・誘導・地図描画はすべてこの変数を見るので、上書きすれば全部が一致して変わる。
+  // パイロン座標は毎年変わり得るのに対しファームウェアの再ビルドは大会直前には難しいため。
+  extern double pla_lat, pla_lon;                  // プラットホーム
+  extern double pilon_north_lat, pilon_north_lon;  // 北パイロン
+  extern double pilon_south_lat, pilon_south_lon;  // 南パイロン（旧称 西パイロン）
+  extern double pilon_1km_lat, pilon_1km_lon;      // 1km パイロン
+  extern double takeshima_lat_v, takeshima_lon_v;  // 竹島
+  extern bool   pilon_override_loaded;             // SD から上書きしたか（表示用）
   extern float dest_dist;
 
 

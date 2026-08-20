@@ -99,11 +99,11 @@ int Button::getPin() {
 }
 
 // AUTO10K モードで使用できない目的地かどうかを判定する。
-// N_PILON / W_PILON / TAKESHIMA は 10km コースの折り返し地点そのものであり、
+// N_PILON / S_PILON / TAKESHIMA は 10km コースの折り返し地点そのものであり、
 // そこを「目的地」として AUTO10K に設定すると経路計算がおかしくなるため禁止している。
 bool is10K_NotAllowed_Destination(const char *name) {
     return strcmp(name, "N_PILON") == 0 ||
-           strcmp(name, "W_PILON") == 0 ||
+           strcmp(name, "S_PILON") == 0 ||
            strcmp(name, "TAKESHIMA") == 0;
 }
 
@@ -115,14 +115,16 @@ bool is10K_NotAllowed_Destination(const char *name) {
 // 3. screen_mode を MODE_MAP に変えて設定画面を閉じる。
 void exit_setting(){
     enqueueTask(createSaveSettingTask());
-    if((millis()/1000)%4 == 0)
+    if((millis()/1000)%5 == 0)
       enqueueTask(createPlayWavTask("wav/matane.wav"));
-    else if((millis()/1000)%4 == 1)
+    else if((millis()/1000)%5 == 1)
       enqueueTask(createPlayWavTask("wav/baibai.wav"));
-    else if((millis()/1000)%4 == 2)
+    else if((millis()/1000)%5 == 2)
       enqueueTask(createPlayWavTask("wav/arigato.wav"));
-    else if((millis()/1000)%4 == 3)
+    else if((millis()/1000)%5 == 3)
       enqueueTask(createPlayWavTask("wav/makenna.wav"));
+    else if((millis()/1000)%5 == 4)
+      enqueueTask(createPlayWavTask("wav/tsuyoi.wav"));
     screen_mode = MODE_MAP;
 }
 
