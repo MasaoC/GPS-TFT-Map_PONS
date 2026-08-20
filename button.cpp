@@ -109,17 +109,19 @@ bool is10K_NotAllowed_Destination(const char *name) {
 
 // 設定画面を終了してマップ画面に戻る。
 // 1. 現在の設定内容を SD カードへ保存するタスクをキューに積む。
-// 2. 起動からの経過秒を 3 で割った余りで別れの音声を切り替える（毎回同じにならないランダム感）。
-//    0: "またね"  1: "バイバイ"  2: "ありがとう"
+// 2. 起動からの経過秒を 4 で割った余りで別れの音声を切り替える（毎回同じにならないランダム感）。
+//    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな"
 // 3. screen_mode を MODE_MAP に変えて設定画面を閉じる。
 void exit_setting(){
     enqueueTask(createSaveSettingTask());
-    if((millis()/1000)%3 == 0)
+    if((millis()/1000)%4 == 0)
       enqueueTask(createPlayWavTask("wav/matane.wav"));
-    else if((millis()/1000)%3 == 1)
+    else if((millis()/1000)%4 == 1)
       enqueueTask(createPlayWavTask("wav/baibai.wav"));
-    else if((millis()/1000)%3 == 2)
+    else if((millis()/1000)%4 == 2)
       enqueueTask(createPlayWavTask("wav/arigato.wav"));
+    else if((millis()/1000)%4 == 3)
+      enqueueTask(createPlayWavTask("wav/makenna.wav"));
     screen_mode = MODE_MAP;
 }
 
