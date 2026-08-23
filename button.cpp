@@ -99,11 +99,11 @@ int Button::getPin() {
 }
 
 // AUTO10K モードで使用できない目的地かどうかを判定する。
-// N_PILON / W_PILON / TAKESHIMA は 10km コースの折り返し地点そのものであり、
+// N_PILON / S_PILON / TAKESHIMA は 10km コースの折り返し地点そのものであり、
 // そこを「目的地」として AUTO10K に設定すると経路計算がおかしくなるため禁止している。
 bool is10K_NotAllowed_Destination(const char *name) {
     return strcmp(name, "N_PILON") == 0 ||
-           strcmp(name, "W_PILON") == 0 ||
+           strcmp(name, "S_PILON") == 0 ||
            strcmp(name, "TAKESHIMA") == 0;
 }
 
