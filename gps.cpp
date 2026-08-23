@@ -1036,6 +1036,8 @@ static float    replay_yaw_deg   = 0.0f;
 static float    replay_pitch_avg = 0.0f;
 static float    replay_roll_trim = 0.0f;
 static float    replay_yaw_acc95 = 0.0f;
+static float    replay_wind_mps  = 0.0f;
+static float    replay_wind_dir  = 0.0f;
 static uint16_t replay_att_have  = 0;   // RHAVE_ATT* のビット
 
 // リプレイ中のロール・ピッチ。姿勢ログが無い日は false（表示しない）。
@@ -1058,6 +1060,12 @@ bool get_replay_roll_trim(float &trim) {
   trim = replay_roll_trim;
   return true;
 }
+bool get_replay_wind(float &speed_mps, float &dir_to_deg) {
+  if (!(replay_att_have & RHAVE_ATT_WIND)) return false;
+  speed_mps  = replay_wind_mps;
+  dir_to_deg = replay_wind_dir;
+  return true;
+}
 bool get_replay_yaw(float &yaw, float &acc95) {
   if (!(replay_att_have & RHAVE_ATT_YAW)) return false;
   yaw   = replay_yaw_deg;
@@ -1076,7 +1084,10 @@ static void apply_replay_row(const ReplayRow* row) {
     replay_pitch_avg = row->pitch_avg;
     replay_roll_trim = row->roll_trim;
     replay_yaw_acc95 = row->yaw_acc95;
-    replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG | RHAVE_ATT_TRIM);
+    replay_wind_mps  = row->wind_mps;
+    replay_wind_dir  = row->wind_dir;
+    replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG |
+                                    RHAVE_ATT_TRIM | RHAVE_ATT_WIND);
   }
 
   // --- 位置 ---
@@ -1637,17 +1648,6 @@ double get_gps_truetrack() {
   return stored_truetrack;     // Heading in degrees;
 }
 
-
-// 磁気方位（Magnetic Track）を返す。
-// 日本の磁気偏差はおよそ +7〜+9 度（西偏）なので、真方位に +8 度加算する。
-// 正確な偏差は地域・年によって変わるため、settings.h で調整する。
-double get_gps_magtrack() {
-  double temp = get_gps_truetrack() + 8.0;
-  if (temp > 360.0) {
-    temp -= 360.0;
-  }
-  return temp;
-}
 
 int get_gps_numsat() {
   if(is_demo_active()){

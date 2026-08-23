@@ -49,7 +49,7 @@
 
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_REPLAY,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,SETTING_EXIT,
-    ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
+    ND_MPS,ND_MPS_LGND,ND_SATS,ND_TT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_TC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
     ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,
     SETTING_IMU_DETAIL,SETTING_LEVEL_CALIB
   };
@@ -69,6 +69,9 @@
   #define COLOR_LIGHT_BLUE 0x3dbf
   #define COLOR_PINK TFT_PINK
   #define COLOR_YELLOW TFT_YELLOW
+  // 風矢印用。白地の地図に重ねるので、濃すぎず薄すぎない彩度の高い色を選ぶ。
+  // TFT_PURPLE は暗すぎて判別できなかった。
+  #define COLOR_WIND_PURPLE 0xA81F       // RGB(173,0,255) 明るい紫
 
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
@@ -119,13 +122,21 @@ void draw_maplist_mode(int maplist_page);
 
 // IMU / ESKF 画面（ページ1）のメニュー項目。
 // display_tft.cpp の描画と GPS_TFT_map.ino の doublePressCallback() で共有する。
+// ページ1: 飛行前の点検手順どおりに「申告 → 較正 → 機能ON」と並べる。
 #define IMU_MENU_SETPITCH 0
-#define IMU_MENU_APPLY    1
-#define IMU_MENU_BANKWARN 2
-#define IMU_MENU_AUTOROLL 3
+#define IMU_MENU_SETROLL  1
+#define IMU_MENU_APPLY    2
+#define IMU_MENU_RPYFUNC  3   // Roll/Pitch/Yaw 機能のマスタースイッチ
 #define IMU_MENU_NEXTPAGE 4
 #define IMU_MENU_EXIT     5
 #define IMU_MENU_COUNT    6
+
+// ページ2: 調整用。日常の運用では触らない項目を置く。
+#define IMU2_MENU_AUTOROLL 0
+#define IMU2_MENU_WIND     1
+#define IMU2_MENU_BACK     2
+#define IMU2_MENU_COUNT    3
+extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2のカーソル位置
 void draw_imudetail(int page);
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
@@ -142,6 +153,10 @@ bool eskf_display_enabled();
 // ESKF のヨーを機首方位として信用してよいか（95%値 < ESKF_YAW_TRUST_95_DEG）。
 // リプレイ中は eskf_display_enabled() が false なので常に false になる。
 bool eskf_yaw_reliable();
+// APPLY（機体ゼロ点の較正）を実行してよい状態か。
+// 飛行中に実行すると傾いた姿勢を基準として焼き付けてしまうため、地上に限る。
+// デモ・リプレイ中は GPS が再生データなので、IMU 由来の静止判定で代替する。
+bool eskf_calib_allowed();
 #ifdef DEBUG_ESKF
 // DEBUG_ESKF 有効時のみ、比較用の詳細（BNO085 の姿勢・ヨー・収束状態）を上部に足す。
 // draw_eskf_attitude() の表示位置は変えないこと。

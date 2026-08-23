@@ -73,8 +73,8 @@ float attitude_get_yaw_sigma_deg();
 // 判断すると 3 回に 1 回は外れることになるため。
 float attitude_get_yaw_acc95_deg();
 
-// ---- 30 秒平均ピッチ [度] ----
-// フゴイドで瞬時値は±3度振れるので、巡航のトリム状態はこちらで見る。
+// ---- 平均ピッチ [度] ----
+// 瞬時値は周期 2〜6.7 秒の振動が主で std 1.23 度あるので、巡航のトリム状態はこちらで見る。
 float attitude_get_pitch_avg_deg();
 bool  attitude_pitch_avg_valid();          // 平均が十分たまったか
 
@@ -86,6 +86,29 @@ float attitude_get_roll_trim_deg();        // 現在の累積補正量
 // OFF にすると累積補正量は 0 に戻る。
 bool  attitude_get_roll_trim_enabled();
 void  attitude_set_roll_trim_enabled(bool on);
+
+// ---- Roll/Pitch/Yaw 機能のマスタースイッチ ----
+// ESKF から得た姿勢を「使う」機能を一括で ON/OFF する（既定 ON）。対象は
+//   表示 : 平均ピッチ / P / R / Rtrim / 風矢印 / ESKF ヨー / 自機アイコンの機首向き / 偏流点線
+//   警報 : バンク警報、地上ロール・ピッチチェック、マウント外れ検出
+//   処理 : 自動ロールトリム、風推定、imu_replaydata への記録
+// OFF にすると見た目も動作も ESKF 導入前と同じになる。
+// ESKF の計算自体は止めない（診断ページの表示と、ON に戻したときの即応性のため）。
+bool  attitude_get_rpy_enabled();
+void  attitude_set_rpy_enabled(bool on);
+
+// ---- 風の推定 ----
+// 「ピッチ0度で7.0m/s」という設計前提からピッチ→対気速度を引き、
+//   風ベクトル = 対地速度ベクトル - 対気速度ベクトル
+// で求める。対気速度の向きは機首方位（横滑り 0 と仮定）なので、
+// ESKF のヨーが信頼できるときにしか意味を持たない。判定は呼び出し側で行うこと。
+//   speed_mps  : 風速 [m/s]
+//   dir_to_deg : 風が吹いていく方向の真方位 [度]（北=0、東=90）
+// 30 秒の平滑化が溜まる前・地上・OFF のときは false。
+bool  attitude_get_wind(float &speed_mps, float &dir_to_deg);
+float attitude_get_airspeed_est();          // 平均ピッチから引いた対気速度 [m/s]
+bool  attitude_get_wind_enabled();
+void  attitude_set_wind_enabled(bool on);
 // 補正が入った瞬間に一度だけ true を返す（ログ記録用）。
 // applied にその回の補正量、total に累積量が入る。
 bool  attitude_take_roll_trim_event(float &applied, float &total);
@@ -108,7 +131,18 @@ uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回
 //
 // ※ 地上でのみ実行すること。飛行中に呼ぶと傾いた姿勢を基準として焼き付けてしまい、
 //   バンク角警告が機能しなくなる（呼び出し側で対地速度による地上判定を必ず入れる）。
-void attitude_calibrate_to(float target_pitch_deg);
+// target_roll_deg は通常 0。横風でウィングロー保持のまま較正せざるを得ないときだけ
+// 実際の値を申告する（申告を誤るとバンク警報の基準が黙ってずれるので注意）。
+void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg);
+// APPLY の予約。スイッチを押す力でデバイスが傾くため、すぐには実行せず
+// ESKF_APPLY_DELAY_US だけ待ってから attitude_on_gyro() の中で実行する。
+void attitude_request_calibrate(float target_pitch_deg, float target_roll_deg);
+bool attitude_calib_pending();               // 予約中か（画面表示用）
+// 待ち時間を先送りする。ボタンを押している間これを呼び続けると、実際の実行は
+// 「指を離してから ESKF_APPLY_DELAY_US 後」になる。押している間はまだ傾いているため。
+void attitude_hold_calibrate();
+// 実行が完了した瞬間に一度だけ true を返す（保存と音声の合図用）。
+bool attitude_take_calib_done();
 // 従来どおり「いま水平」として較正する（target 0 度と同じ）。
 void attitude_calibrate_level();
 void attitude_reset_level();                 // 較正を破棄して既定（オフセット 0）へ戻す
@@ -119,6 +153,17 @@ void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定�
 // 次に較正するときの目標値。SD に保存して次回起動でも同じ値から始められるようにする。
 float attitude_get_pitch_target();
 void  attitude_set_pitch_target(float deg);
+// ---- 較正時に申告するロール角（画面の SET ROLL 行の値）----
+float attitude_get_roll_target();
+void  attitude_set_roll_target(float deg);
+void  attitude_cycle_roll_target();
+
+// ---- マウントから外された状態 ----
+// ロールかピッチが OFF_MOUNT_DEG を超えると「手に持って外した」とみなして true になり、
+// APPLY するまで戻らない。SD に保存して起動をまたいで保持する。
+bool  attitude_needs_apply();
+void  attitude_clear_needs_apply();
+void  attitude_set_needs_apply(bool on);   // SD 設定からの復元用
 // 目標値を 1 段進める（範囲の端まで行ったら先頭へ戻る）
 void  attitude_cycle_pitch_target();
 

@@ -985,7 +985,8 @@ void update_vario() {
     bool imu_alive = get_imu_alive();
     float vspeed = imu_alive ? get_imu_vspeed() : get_airdata_vspeed();
     // デッドバンド閾値: KF 融合中（BNO085 生存中+MS5611 接続）は精度が高いため狭くする。
-    float dead_band = (imu_alive && get_airdata_ok()) ? 0.3f : 0.6f;
+    float dead_band = (imu_alive && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
+                                                     : VARIO_DEADBAND_BARO_MPS;
     bool should_vario = (vspeed > dead_band || vspeed < -dead_band) && (vario_volume > 0);
 
     static bool prev_vario = false;

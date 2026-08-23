@@ -53,9 +53,33 @@ static float level_roll_off_ = 0.0f;
 static float level_pitch_off_ = 0.0f;
 // 次に較正するときに申告するピッチ角。画面の SET PITCH 行で選ぶ値。
 static float pitch_target_ = 0.0f;
+static float roll_target_  = 0.0f;   // APPLY 時に申告するロール角（既定 0）
+// マウントから外されたことを検出したあと、APPLY されていない状態か。
+// SD の設定に保存して起動をまたいで保持する（充電のために電源を切る運用のため）。
+static volatile bool needs_apply_ = false;
+// APPLY の予約。スイッチを押す力でマウント上のデバイスが傾くため、押した瞬間ではなく
+// 指を離して落ち着いてから実行する。時刻はジャイロの t_us を使う（millis に依存しない）。
+static volatile bool calib_pending_ = false;
+static uint32_t      calib_req_us_  = 0;
+static float         calib_pitch_   = 0.0f;
+static float         calib_roll_    = 0.0f;
+static volatile bool calib_done_    = false;
 
-// ---- 30 秒平均ピッチ ----
-// フゴイドで瞬時値は±3度振れるので、巡航のトリム状態は平均で見る。
+// ---- Roll/Pitch/Yaw 機能のマスタースイッチ ----
+// ESKF から得た姿勢を「使う」機能を一括で ON/OFF する。既定 ON。
+// OFF にすると地図上の姿勢表示・各種警報・自動トリム・風推定・姿勢ログが全て止まり、
+// 見た目も動作も ESKF 導入前と同じになる。ESKF の計算自体は止めない
+// （2 ページ目の診断表示と、再び ON にしたときの即応性のため）。
+static volatile bool rpy_enabled_ = true;
+
+// ---- 風の推定 ----
+// Core0（ESKF）が書き、表示が読む。
+static volatile bool  wind_enabled_ = true;    // 設定画面で ON/OFF（既定 ON）
+static float    wind_e_ = 0.0f, wind_n_ = 0.0f; // 平滑化した風ベクトル ENU [m/s]
+static float    wind_fill_s_ = 0.0f;            // 平滑化がたまった秒数
+
+// ---- 平均ピッチ ----
+// 瞬時値は周期 2〜6.7 秒の振動が主で std 1.23 度あるので、巡航のトリム状態は平均で見る。
 static float pitch_avg_ = 0.0f;
 static float pitch_avg_fill_s_ = 0.0f;    // 平均がたまった時間 [s]
 
@@ -65,10 +89,31 @@ static float pitch_avg_fill_s_ = 0.0f;    // 平均がたまった時間 [s]
 // Core0（設定画面・ESKF）が書き、Core1（設定保存）も読むので volatile
 static volatile bool roll_trim_enabled_ = true;   // 設定画面で ON/OFF（既定 ON）
 static float    roll_trim_deg_ = 0.0f;    // 累積補正量（出力から引く）
+static float    trim_prev_avg_ = 0.0f;    // 直前の窓の平均ロール（2窓一致の確認用）
+static bool     trim_prev_valid_ = false;
 static float    trim_roll_sum_ = 0.0f;    // 直進中のロール積算
 static float    trim_time_s_   = 0.0f;    // 直進が続いた時間 [s]
 static float    yaw_rate_lp_   = 0.0f;    // ワールド系ヨーレートの平滑値 [deg/s]
-// 前方宣言。attitude_on_gyro() が 30 秒平均ピッチとロール自動トリムの
+// ピッチ [度] から対気速度 [m/s] を引く区分線形。定数は settings.h（機体依存）。
+// ピッチが上がるほど遅く、下がるほど速い。範囲外は端点でクランプし、
+// この機体で起こり得ない対気速度を出さないようにする。
+static float airspeed_from_pitch(float pitch_deg) {
+    float v;
+    if (pitch_deg >= AIRSPEED_PITCH_MID_DEG) {
+        const float t = (pitch_deg - AIRSPEED_PITCH_MID_DEG) /
+                        (AIRSPEED_PITCH_HI_DEG - AIRSPEED_PITCH_MID_DEG);
+        v = AIRSPEED_AT_PITCH_MID + t * (AIRSPEED_AT_PITCH_HI - AIRSPEED_AT_PITCH_MID);
+    } else {
+        const float t = (pitch_deg - AIRSPEED_PITCH_MID_DEG) /
+                        (AIRSPEED_PITCH_LO_DEG - AIRSPEED_PITCH_MID_DEG);
+        v = AIRSPEED_AT_PITCH_MID + t * (AIRSPEED_AT_PITCH_LO - AIRSPEED_AT_PITCH_MID);
+    }
+    if (v < AIRSPEED_AT_PITCH_HI) v = AIRSPEED_AT_PITCH_HI;
+    if (v > AIRSPEED_AT_PITCH_LO) v = AIRSPEED_AT_PITCH_LO;
+    return v;
+}
+
+// 前方宣言。attitude_on_gyro() が 平均ピッチとロール自動トリムの
 // 判定に使うが、定義はファイル後方（出力セクション）にあるため。
 static void euler_from_state(float &roll, float &pitch, float &yaw);
 
@@ -170,10 +215,15 @@ static void apply_declination(float q[4]) {
 // ============================================================
 // 初期化
 // ============================================================
-static void reset_covariance(float att_sigma_deg) {
+// att_sigma_deg はロール・ピッチ、yaw_sigma_deg はヨーの初期標準偏差。
+// 誤差状態はワールド系（global error）なので、添字 2 が鉛直軸まわり＝ヨーになる。
+// ヨーを別扱いにする理由は settings.h の ESKF_INIT_YAW_SIGMA_DEG のコメント参照。
+static void reset_covariance(float att_sigma_deg, float yaw_sigma_deg) {
     memset(P_, 0, sizeof(P_));
     float a = att_sigma_deg * (float)M_PI / 180.0f;
-    for (int i = 0; i < 3; i++)  P_[i][i]       = a * a;
+    float yy = yaw_sigma_deg * (float)M_PI / 180.0f;
+    for (int i = 0; i < 2; i++)  P_[i][i]       = a * a;
+    P_[2][2]                                    = yy * yy;
     for (int i = 3; i < 6; i++)  P_[i][i]       = 1.0f;                 // 速度 [m/s]²
     for (int i = 6; i < 9; i++)  P_[i][i]       = powf(1.0f * (float)M_PI/180.0f, 2);
     for (int i = 9; i < 12; i++) P_[i][i]       = 0.01f;                // 加速度バイアス
@@ -183,7 +233,7 @@ void attitude_setup() {
     q_[0] = 1; q_[1] = q_[2] = q_[3] = 0;
     v_[0] = v_[1] = v_[2] = 0;
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
-    reset_covariance(10.0f);
+    reset_covariance(10.0f, ESKF_INIT_YAW_SIGMA_DEG);
     initialized_ = false;
     accel_valid_ = false;
     grv_have_ = false;
@@ -205,8 +255,13 @@ void attitude_setup() {
     roll_trim_deg_ = 0.0f;
     trim_roll_sum_ = 0.0f;
     trim_time_s_ = 0.0f;
+    trim_prev_valid_ = false;
     yaw_rate_lp_ = 0.0f;
     trim_event_ = false;
+    wind_e_ = wind_n_ = 0.0f;
+    wind_fill_s_ = 0.0f;
+    calib_pending_ = false;
+    calib_done_    = false;
 }
 
 
@@ -244,7 +299,7 @@ static bool init_from_static_grv() {
     for (int i = 0; i < 4; i++) q_[i] = q[i];
     v_[0] = v_[1] = v_[2] = 0.0f;
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
-    reset_covariance(ESKF_INIT_ATT_SIGMA_DEG);
+    reset_covariance(ESKF_INIT_ATT_SIGMA_DEG, ESKF_INIT_YAW_SIGMA_DEG);
     initialized_ = true;
     return true;
 }
@@ -271,7 +326,9 @@ static bool init_from_last_grv() {
         quat_normalize(q_);
     }
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
-    reset_covariance(ESKF_INIT_ATT_SIGMA_MOVING_DEG);
+    reset_covariance(ESKF_INIT_ATT_SIGMA_MOVING_DEG,
+                     ESKF_INIT_ATT_SIGMA_MOVING_DEG > ESKF_INIT_YAW_SIGMA_DEG
+                       ? ESKF_INIT_ATT_SIGMA_MOVING_DEG : ESKF_INIT_YAW_SIGMA_DEG);
     initialized_ = true;
     return true;
 }
@@ -363,6 +420,14 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 
     update_static(g, t_us);
 
+    // 予約された APPLY を、要求から ESKF_APPLY_DELAY_US 経過してから実行する。
+    if (calib_pending_ && initialized_ &&
+        (uint32_t)(t_us - calib_req_us_) >= ESKF_APPLY_DELAY_US) {
+        calib_pending_ = false;
+        attitude_calibrate_to(calib_pitch_, calib_roll_);
+        calib_done_ = true;      // 呼び出し側が保存と音声再生を行う
+    }
+
     // ---- 初期化 ----
     if (!initialized_) {
         if (static_now_ && (t_us - static_since_us_) >= ESKF_STATIC_INIT_US) {
@@ -435,6 +500,15 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         p -= level_pitch_off_;
         r -= level_roll_off_ + roll_trim_deg_;
 
+        // マウントから外されたか。機体に付いている限りこの角度には達しない。
+        // 検出したら、次に APPLY するまで「較正が無効」の警告を出し続ける。
+        // ここは較正オフセット適用後の値で見る（生値だとマウント自体の傾きで誤検出する）。
+        // 右バンク（r > 0）だけしきい値を緩める。プラットホームへ上げるときの
+        // 大きな右バンクを「外した」と誤判定しないため。左バンクとピッチは従来どおり。
+        const float roll_limit = (r > 0.0f) ? OFF_MOUNT_RIGHT_ROLL_DEG : OFF_MOUNT_DEG;
+        if (rpy_enabled_ && (fabsf(r) > roll_limit || fabsf(p) > OFF_MOUNT_DEG))
+            needs_apply_ = true;
+
         // 30 秒の一次遅れで平均ピッチを作る
         const float a = dt / (PITCH_AVG_SEC + dt);
         pitch_avg_ += (p - pitch_avg_) * a;
@@ -446,17 +520,59 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         yaw_rate_lp_ += (wz_dps - yaw_rate_lp_) * (dt / (2.0f + dt));
 
         const float sp = sqrtf(v_[0]*v_[0] + v_[1]*v_[1]);
-        const bool straight = roll_trim_enabled_ &&
-                              (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
-                              (sp > ROLL_TRIM_MIN_SPEED);
+        // 直進しているか。ロール自動トリムと風推定で共用する。
+        const bool straight_flight = (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
+                                     (sp > ROLL_TRIM_MIN_SPEED);
+
+        // ---- 風の推定 ----
+        // 対気速度の大きさはピッチから引き、向きは機首方位とする。
+        //   風ベクトル = 対地速度ベクトル - 対気速度ベクトル
+        // 対地速度は ESKF の推定値 v_（ENU）を使う。GNSS 生値より滑らかで、
+        // 観測の無い区間も慣性で埋まっている。
+        // 使うピッチは 平均。瞬時値は std 1.23 度の振動があり、そのまま入れると
+        // 対気速度が 5.8〜9.0 の全域を往復してしまう。
+        //
+        // ★ 直進中だけ更新する。「対気速度の向き＝機首方位」は横滑り 0 の仮定であり、
+        //   旋回中の人力飛行機はラダー権限が弱く大きく横滑りする。横滑り角 beta が
+        //   あると風速の誤差は 対気速度 × sin(beta) になり、beta=30 度なら 3.5m/s に達する。
+        //   実測（2026 大会）でも旋回中は直進中より 0.86m/s ずれていた。
+        //   風はゆっくりしか変わらないので、旋回中は更新を止めて直前の値を保持すればよい。
+        //   同飛行の 94% は直進だったので、捨てる情報はごくわずか。
+        //   ※ ESKF のヨー推定自体は beta の影響を受けない（空力の仮定を含まないため）。
+        if (rpy_enabled_ && wind_enabled_ && straight_flight &&
+            pitch_avg_fill_s_ >= PITCH_AVG_SEC) {
+            const float va  = airspeed_from_pitch(pitch_avg_);
+            // y は真方位（北=0・東=90）。ENU では E=sin, N=cos。
+            const float ya  = y * (float)M_PI / 180.0f;
+            const float we  = v_[0] - va * sinf(ya);
+            const float wn  = v_[1] - va * cosf(ya);
+            const float aw  = dt / (WIND_LPF_SEC + dt);
+            wind_e_ += (we - wind_e_) * aw;
+            wind_n_ += (wn - wind_n_) * aw;
+            if (wind_fill_s_ < WIND_LPF_SEC) wind_fill_s_ += dt;
+        } else if (!rpy_enabled_ || !wind_enabled_ || sp <= WIND_MIN_SPEED_MPS) {
+            // 地上・OFF のときだけ捨てる。旋回中は「保持」であって破棄ではない。
+            wind_fill_s_ = 0.0f;
+            wind_e_ = wind_n_ = 0.0f;
+        }
+
+        const bool straight = straight_flight && rpy_enabled_ && roll_trim_enabled_;
         if (straight) {
             trim_roll_sum_ += r * dt;
             trim_time_s_   += dt;
             if (trim_time_s_ >= ROLL_TRIM_WINDOW_S) {
                 const float avg = trim_roll_sum_ / trim_time_s_;
-                // 不感帯を超えたときだけ、1 回あたりの上限を守って少しずつ寄せる
-                if (fabsf(avg) >= ROLL_TRIM_DEADBAND_DEG) {
-                    float step = avg;
+                // 2 窓連続で同符号・不感帯超過のときだけ補正する。
+                // 60 秒窓の平均ロールは実測で std 0.27 度あり、不感帯 0.5 度でも
+                // 約 10% の窓がノイズだけで超える。1 窓で補正すると 50 分の飛行で
+                // ±0.7 度ほどランダムウォークするため、一致を要求して潰す。
+                const bool over = (fabsf(avg) >= ROLL_TRIM_DEADBAND_DEG);
+                const bool confirmed = over && trim_prev_valid_ &&
+                                       (fabsf(trim_prev_avg_) >= ROLL_TRIM_DEADBAND_DEG) &&
+                                       ((avg > 0.0f) == (trim_prev_avg_ > 0.0f));
+                if (confirmed) {
+                    // 補正量は 2 窓の平均。1 窓だけより測定ノイズが 1/√2 になる。
+                    float step = 0.5f * (avg + trim_prev_avg_);
                     if (step >  ROLL_TRIM_STEP_DEG) step =  ROLL_TRIM_STEP_DEG;
                     if (step < -ROLL_TRIM_STEP_DEG) step = -ROLL_TRIM_STEP_DEG;
                     float next = roll_trim_deg_ + step;
@@ -468,12 +584,22 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
                         trim_event_applied_ = step;
                         trim_event_ = true;      // 呼び出し側がログに残す
                     }
+                    // 使った観測は捨てる。次の補正には新たに 2 窓ぶん必要。
+                    trim_prev_valid_ = false;
+                } else {
+                    // 今回の窓は次回の確認材料として持ち越す
+                    trim_prev_avg_   = avg;
+                    trim_prev_valid_ = over;
                 }
+                // 窓だけリセットする。trim_prev_valid_ はここで触らないこと
+                // （上の else で持ち越した確認材料を消してしまう）。
                 trim_roll_sum_ = 0.0f;
                 trim_time_s_   = 0.0f;
             }
         } else {
-            // 旋回に入ったら積算を捨てる（旋回中のロールを平均に混ぜない）
+            // 旋回に入ったら積算を捨てる（旋回中のロールを平均に混ぜない）。
+            // 直前の窓の平均は保持する。取り付けのズレは静的なので、旋回を挟んでも
+            // その前後の窓は同じ量を測っているとみなしてよい。
             trim_roll_sum_ = 0.0f;
             trim_time_s_   = 0.0f;
         }
@@ -642,6 +768,35 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
 bool  attitude_pitch_avg_valid()   { return pitch_avg_fill_s_ >= PITCH_AVG_SEC; }
 float attitude_get_roll_trim_deg() { return roll_trim_deg_; }
+
+bool attitude_get_wind(float &speed_mps, float &dir_to_deg) {
+    if (!wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;
+    speed_mps = sqrtf(wind_e_*wind_e_ + wind_n_*wind_n_);
+    // 「風が吹いていく方向」の真方位（北=0、東=90）
+    dir_to_deg = atan2f(wind_e_, wind_n_) * 180.0f / (float)M_PI;
+    if (dir_to_deg < 0.0f) dir_to_deg += 360.0f;
+    return true;
+}
+float attitude_get_airspeed_est() { return airspeed_from_pitch(pitch_avg_); }
+bool  attitude_get_rpy_enabled() { return rpy_enabled_; }
+void  attitude_set_rpy_enabled(bool on) {
+    rpy_enabled_ = on;
+    if (!on) {
+        // OFF にしたら派生状態を捨てる。再び ON にしたとき古い値が一瞬出ないように。
+        roll_trim_deg_ = 0.0f;
+        trim_roll_sum_ = 0.0f;
+        trim_time_s_   = 0.0f;
+        trim_prev_valid_ = false;
+        wind_e_ = wind_n_ = 0.0f;
+        wind_fill_s_ = 0.0f;
+    }
+}
+
+bool  attitude_get_wind_enabled() { return wind_enabled_; }
+void  attitude_set_wind_enabled(bool on) {
+    wind_enabled_ = on;
+    if (!on) { wind_fill_s_ = 0.0f; wind_e_ = wind_n_ = 0.0f; }
+}
 bool  attitude_get_roll_trim_enabled() { return roll_trim_enabled_; }
 void  attitude_set_roll_trim_enabled(bool on) {
   roll_trim_enabled_ = on;
@@ -650,6 +805,7 @@ void  attitude_set_roll_trim_enabled(bool on) {
     roll_trim_deg_ = 0.0f;
     trim_roll_sum_ = 0.0f;
     trim_time_s_   = 0.0f;
+    trim_prev_valid_ = false;
   }
 }
 
@@ -691,13 +847,14 @@ float attitude_get_static_secs() {
 // ============================================================
 // 機体ゼロ点（マウント基準）の較正
 // ============================================================
-void attitude_calibrate_to(float target_pitch_deg) {
+void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg) {
     if (!initialized_) return;
     float r, p, y;
     euler_from_state(r, p, y);      // オフセット適用前の生の値を基準にする
     // 表示は (生の値 - オフセット) なので、target になるように差を取る
-    level_roll_off_  = r;                        // ロールは常に 0 にする
+    level_roll_off_  = r - target_roll_deg;      // ロールも申告値になるようにする
     level_pitch_off_ = p - target_pitch_deg;     // ピッチは申告値になるようにする
+    needs_apply_ = false;                        // 較正したので警告を解除
 
     // 自動トリムの累積量は捨てる。ここでロールのゼロ点を取り直したので、
     // 残したままだと表示が -roll_trim_deg_ になり「APPLY したのに 0 にならない」
@@ -705,10 +862,27 @@ void attitude_calibrate_to(float target_pitch_deg) {
     roll_trim_deg_ = 0.0f;
     trim_roll_sum_ = 0.0f;
     trim_time_s_   = 0.0f;
+    trim_prev_valid_ = false;
+}
+
+void attitude_request_calibrate(float target_pitch_deg, float target_roll_deg) {
+    calib_pitch_  = target_pitch_deg;
+    calib_roll_   = target_roll_deg;
+    calib_req_us_ = last_gyro_us_;   // 直近のジャイロ時刻を基準にする
+    calib_pending_ = true;
+}
+bool attitude_calib_pending() { return calib_pending_; }
+void attitude_hold_calibrate() {
+    if (calib_pending_) calib_req_us_ = last_gyro_us_;
+}
+bool attitude_take_calib_done() {
+    if (!calib_done_) return false;
+    calib_done_ = false;
+    return true;
 }
 
 void attitude_calibrate_level() {
-    attitude_calibrate_to(0.0f);
+    attitude_calibrate_to(0.0f, 0.0f);
 }
 
 void attitude_reset_level() {
@@ -717,6 +891,7 @@ void attitude_reset_level() {
     roll_trim_deg_ = 0.0f;   // 較正を捨てるので自動トリムの累積も捨てる
     trim_roll_sum_ = 0.0f;
     trim_time_s_   = 0.0f;
+    trim_prev_valid_ = false;
 }
 
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg) {
@@ -728,6 +903,17 @@ void attitude_set_level_offset(float roll_deg, float pitch_deg) {
     level_roll_off_ = roll_deg;
     level_pitch_off_ = pitch_deg;
 }
+
+float attitude_get_roll_target() { return roll_target_; }
+void  attitude_set_roll_target(float deg) { roll_target_ = deg; }
+void  attitude_cycle_roll_target() {
+    roll_target_ += ROLL_TARGET_STEP_DEG;
+    if (roll_target_ > ROLL_TARGET_MAX_DEG + 0.01f)
+        roll_target_ = ROLL_TARGET_MIN_DEG;
+}
+bool  attitude_needs_apply() { return needs_apply_; }
+void  attitude_clear_needs_apply() { needs_apply_ = false; }
+void  attitude_set_needs_apply(bool on) { needs_apply_ = on; }
 
 float attitude_get_pitch_target() { return pitch_target_; }
 void  attitude_set_pitch_target(float deg) { pitch_target_ = deg; }
