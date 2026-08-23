@@ -527,15 +527,35 @@ void loop() {
     // ピッチ: 申告値 SET PITCH からのズレで見る。
     // 地上の機体ピッチは場所によって変わる（プラットホーム -3.5 度、平地 0 度）ので、
     // ロールのように絶対値 0 を基準にはできない。
-    if (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG) {
+    //
+    // ただしプラットホーム近傍だけは例外。台の上と台の手前の地面は装置から
+    // 区別がつかないため、基準を一点ではなく PITCH_TARGET_MIN_DEG 〜 0 度の
+    // 区間とみなす（平地で APPLY してから台へ上げても鳴らないようにする）。
+    // 測位できていないときは近傍とみなさず、従来どおりの厳しい判定を使う。
+    //
+    // ※ 距離計算（haversine, double）は loop() 毎に回すには重いので 1 秒に 1 回だけ
+    //   更新して結果を使い回す。60 秒継続してから発報する判定なので粒度は足りる。
+    static uint32_t gndp_geo_ms   = 0;
+    static bool     gndp_near_pla = false;
+    if (gndp_geo_ms == 0 || (now_ms - gndp_geo_ms) >= PLATFORM_NEAR_RECHECK_MS) {
+      gndp_geo_ms   = now_ms;
+      gndp_near_pla = get_gps_fix() &&
+          calculateDistanceKm(get_gps_lat(), get_gps_lon(), pla_lat, pla_lon) <= PLATFORM_NEAR_KM;
+    }
+    const bool near_platform = gndp_near_pla;
+    bool pitch_bad = near_platform
+        ? (gp > GROUND_PITCH_WARN_DEG ||
+           gp < PITCH_TARGET_MIN_DEG - GROUND_PITCH_WARN_DEG)
+        : (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG);
+    if (pitch_bad) {
       if (gndp_over_since_ms == 0) gndp_over_since_ms = now_ms;
       if ((now_ms - gndp_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS &&
           (gndp_last_warn_ms == 0 ||
            (now_ms - gndp_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
         gndp_last_warn_ms = now_ms;
         enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
-        enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f)",
-                                     gp, attitude_get_pitch_target()));
+        enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f, nearPLA %d)",
+                                     gp, attitude_get_pitch_target(), (int)near_platform));
       }
     } else {
       gndp_over_since_ms = 0;

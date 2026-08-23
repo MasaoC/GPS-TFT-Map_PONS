@@ -16,7 +16,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260823
-#define BUILDVERSION "0.945"
+#define BUILDVERSION "0.946"
 #define VERSION_TEXT "Version 6"
 
 
@@ -492,6 +492,22 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ※ 較正した場所と違う場所で静止していると誤検出する。運用上は
 //   プラットホーム上で APPLY してからそのまま待機する流れを想定している。
 #define GROUND_PITCH_WARN_DEG        3.0f
+// ---- プラットホーム近傍ではピッチ基準を「区間」にする ----
+// 台の上（-3.5 度）と台の手前の地面（0 度）は、装置からは区別がつかない。
+// 平地で APPLY してから台へ上げると SET PITCH との差が 3.5 度になり、
+// マウントは正常なのにピッチ警告が鳴ってしまう。
+// そこでプラットホームからこの距離以内では、基準を一点（SET PITCH）ではなく
+// PITCH_TARGET_MIN_DEG 〜 0 度の区間とみなし、その外へ GROUND_PITCH_WARN_DEG
+// 出たときだけ発報する（実質 -6.5 〜 +3.0 度が許容）。
+// ※ SET PITCH は書き換えない。あれは次回 APPLY の申告値も兼ねており、勝手に
+//   変えると平地で APPLY したときに姿勢オフセットへ誤差が黙って焼き付くため。
+// ※ この緩和が効くのはプラットホーム周辺だけ。試験飛行場では pla_lat/lon が
+//   遠いので従来どおりの判定になる。ロール警告は無関係に効いたままなので、
+//   マウントずれの検出経路自体は残る。
+#define PLATFORM_NEAR_KM             0.1
+// 距離判定の再計算間隔 [ms]。haversine は double 演算で重く、毎ループ回す価値がない。
+// 地上で静止しているときにしか使わず、発報まで 60 秒かかる判定なので 1 秒で十分。
+#define PLATFORM_NEAR_RECHECK_MS   1000UL
 #define GROUND_ROLL_WARN_HOLD_MS   60000UL   // この時間continuous に超えたら発報
 #define GROUND_ROLL_WARN_INTERVAL_MS 120000UL // 発報間隔の下限（鳴り続けない）
 
