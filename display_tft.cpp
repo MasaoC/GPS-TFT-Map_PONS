@@ -1674,7 +1674,11 @@ void draw_eskf_attitude() {
     // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
     // この状態では表示している姿勢そのものが信用できないので、設定画面まで
     // 行かないと分からないのでは遅い。地図上でも赤字で出す。
-    if (attitude_needs_apply()) {
+    // ただしリプレイ中は出さない。リプレイ中の姿勢は記録済みの値であり、
+    // 手元でデバイスを傾けて OFF MOUNT 判定が出ても、その飛行時には
+    // 起きていなかった警告になるため。フラグ自体は消さないので、
+    // リプレイを抜けて通常の地図画面に戻れば再び表示される。
+    if (attitude_needs_apply() && !getReplayMode()) {
       backscreen.setTextColor(COLOR_RED);
       backscreen.setCursor(ESKF_LABEL_X, yblock_top - ESKF_ROW_GAP - fh_s);
       backscreen.print("ESKF CALIBRATION REQUIRED!");

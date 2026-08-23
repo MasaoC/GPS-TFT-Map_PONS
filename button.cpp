@@ -99,19 +99,19 @@ int Button::getPin() {
 }
 
 // AUTO10K モードで使用できない目的地かどうかを判定する。
-// N_PILON / S_PILON / TAKESHIMA は 10km コースの折り返し地点そのものであり、
+// N_PILON / W_PILON / TAKESHIMA は 10km コースの折り返し地点そのものであり、
 // そこを「目的地」として AUTO10K に設定すると経路計算がおかしくなるため禁止している。
 bool is10K_NotAllowed_Destination(const char *name) {
     return strcmp(name, "N_PILON") == 0 ||
-           strcmp(name, "S_PILON") == 0 ||
+           strcmp(name, "W_PILON") == 0 ||
            strcmp(name, "TAKESHIMA") == 0;
 }
 
 
 // 設定画面を終了してマップ画面に戻る。
 // 1. 現在の設定内容を SD カードへ保存するタスクをキューに積む。
-// 2. 起動からの経過秒を 4 で割った余りで別れの音声を切り替える（毎回同じにならないランダム感）。
-//    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな"
+// 2. 起動からの経過秒を 5 で割った余りで別れの音声を切り替える（毎回同じにならないランダム感）。
+//    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな" 4: "強い"
 // 3. screen_mode を MODE_MAP に変えて設定画面を閉じる。
 void exit_setting(){
     enqueueTask(createSaveSettingTask());
@@ -502,7 +502,7 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   { SETTING_MAPDETAIL,
     [](bool selected) -> std::string {
-      return "Maplist detail >";
+      return "Map data detail >";
     },
     []() {
       DEBUG_P(20240801, "MAP DETAIL MODE");
