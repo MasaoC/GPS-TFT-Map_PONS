@@ -3,7 +3,7 @@
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
 // Role    : ボタン入力処理と設定メニューの実装。
 //           Button クラスによる短押し/長押し/ダブルクリック判定、
-//           設定画面の全メニュー項目（目的地・音量・輝度・デモ地点など）の
+//           設定画面の全メニュー項目（目的地・音量・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/08/17
@@ -245,26 +245,6 @@ Setting menu_settings[] = {
     }
   },
 
-#ifdef BRIGHTNESS_SETTING_AVAIL
-  // ----------------------------------------------------------
-  // [3] 輝度設定 (BRIGHTNESS)  ※ BRIGHTNESS_SETTING_AVAIL 定義時のみ有効
-  //   ・Toggle: tft_change_brightness(1) で輝度を 1 ステップ上げる（上限で折り返す）
-  // ----------------------------------------------------------
-  { SETTING_BRIGHTNESS,
-    [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " Brightness: %03d" : "Brightness: %03d", screen_brightness);
-      return std::string(buff);  // return as std::string
-    },
-    nullptr,
-    []() {
-      tft_change_brightness(1);
-    },
-    nullptr,
-    nullptr,
-  },
-#endif
-
   // ----------------------------------------------------------
   // [4] 音量設定 (VOLUME)
   //   ・Toggle: 0→5→10→20→30→40→60→80→100→0 の順に切り替わる。
@@ -497,7 +477,7 @@ Setting menu_settings[] = {
 
   // ----------------------------------------------------------
   // [11] マップ一覧画面へ (MAPDETAIL)
-  //   ・Enter: SD カード上の地図 BMP リスト画面へ遷移
+  //   ・Enter: 地図データ一覧画面へ遷移（フラッシュ内蔵ベクタ地図 + SD の mapdata.csv）
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------
   { SETTING_MAPDETAIL,

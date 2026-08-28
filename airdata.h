@@ -1,7 +1,7 @@
 // ============================================================
 // File    : airdata.h
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
-// Role    : 大気データ取得モジュールのヘッダー（開発中）。
+// Role    : 大気データ取得モジュールのヘッダー。
 //           気圧センサー（MS5611）から高度・気圧・気温を取得する。
 //           airdata_update() をループから毎回呼ぶ非ブロッキング方式。
 // Author  : MasaoC (@masao_mobile)
@@ -20,7 +20,6 @@
   // 初期化・テスト
   void airdata_wire_begin(); // I2C バス初期化（imu_setup() より前に呼ぶ）
   void airdata_setup();      // MS5611 初期化（imu_setup() の後に呼ぶ）
-  void airdata_test();
 
   // 非ブロッキング計測（ループから毎回呼ぶ）
   // 1サイクル（気圧＋温度）完了時に true を返す（約20msごと）
@@ -34,7 +33,6 @@
   float get_airdata_pressure();          // 気圧 [hPa]
   float get_airdata_temperature();       // 気温 [℃]
   float get_airdata_vspeed();            // 鉛直速度 [m/s]（トリム平均差分）
-  int   get_airdata_win_samples();       // 直前ウィンドウのトリム後有効サンプル数（診断用）
   float get_airdata_win_hz();            // 直前ウィンドウの更新レート [Hz]（診断用）
 
   // 起動時グランドレベル情報（Vario 詳細画面の高度 KF セクションで使用）

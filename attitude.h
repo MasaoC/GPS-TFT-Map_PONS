@@ -63,7 +63,6 @@ void attitude_get_euler_raw(float &roll, float &pitch, float &yaw);
 // ---- 診断（設定画面の IMU/ESKF ページ用）----
 void  attitude_get_gyro_bias(float b[3]);    // 推定ジャイロバイアス [rad/s]
 void  attitude_get_accel_bias(float b[3]);   // 推定加速度バイアス [m/s²]
-void  attitude_get_velocity(float v[3]);     // 推定速度 ENU [m/s]
 // ヨーの推定標準偏差 [度]。共分散 P の該当対角成分から求める。
 // ヨーは水平加速度がある間しか可観測にならないため、等速直進が続くとこの値が育つ。
 // 画面表示の信頼度判定に使う（大きいときは方位を信用しない）。
@@ -106,7 +105,6 @@ void  attitude_set_rpy_enabled(bool on);
 //   dir_to_deg : 風が吹いていく方向の真方位 [度]（北=0、東=90）
 // 30 秒の平滑化が溜まる前・地上・OFF のときは false。
 bool  attitude_get_wind(float &speed_mps, float &dir_to_deg);
-float attitude_get_airspeed_est();          // 平均ピッチから引いた対気速度 [m/s]
 bool  attitude_get_wind_enabled();
 void  attitude_set_wind_enabled(bool on);
 // 補正が入った瞬間に一度だけ true を返す（ログ記録用）。
@@ -143,9 +141,6 @@ bool attitude_calib_pending();               // 予約中か（画面表示用�
 void attitude_hold_calibrate();
 // 実行が完了した瞬間に一度だけ true を返す（保存と音声の合図用）。
 bool attitude_take_calib_done();
-// 従来どおり「いま水平」として較正する（target 0 度と同じ）。
-void attitude_calibrate_level();
-void attitude_reset_level();                 // 較正を破棄して既定（オフセット 0）へ戻す
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg);
 void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定からの復元用
 
@@ -162,7 +157,6 @@ void  attitude_cycle_roll_target();
 // ロールかピッチが OFF_MOUNT_DEG を超えると「手に持って外した」とみなして true になり、
 // APPLY するまで戻らない。SD に保存して起動をまたいで保持する。
 bool  attitude_needs_apply();
-void  attitude_clear_needs_apply();
 void  attitude_set_needs_apply(bool on);   // SD 設定からの復元用
 // 目標値を 1 段進める（範囲の端まで行ったら先頭へ戻る）
 void  attitude_cycle_pitch_target();

@@ -132,7 +132,7 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
     // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
     // pitch_avg は 平均が溜まるまで無効。valid=false のときは空欄で書く。
     void save_imu_replaydata(int h, int m, int s, int cs,
@@ -211,6 +211,8 @@
               float kf_altitude;  // KF推定高度 [m]（気圧基準）
               float kf_vspeed;   // KF推定上昇率 [m/s]
               float pressure;
+              float voltage;      // バッテリー電圧 [V]（リプレイで当時の電池表示を再現するため）
+              int numsat;         // 測位に使用した衛星数（同上）
               int year, month, day, hour, minute, second, centisecond;
           } saveCsvArgs;
           struct {
@@ -255,7 +257,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);

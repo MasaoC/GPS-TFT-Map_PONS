@@ -206,7 +206,17 @@ void setup(void) {
   scale = scalelist[scaleindex];
   redraw_screen = true;
   {
-    float startup_voltage = min(BATTERY_MULTIPLYER(analogRead(BATTERY_PIN)), 4.3f);
+    // get_input_voltage() のピーク追跡（max_adreading）を通した値を記録する。
+    // analogRead() の 1 発読みだと ADC のノイズがそのまま乗り、USB を抜いた直後などに
+    // 実際より低い値がログに残ることがあった。
+    // 起動直後は max_adreading が 0 なので、数サンプル回して追跡を立ち上げてから読む。
+    // ここは setup() の末尾なので、16ms 程度の待ちは起動時間に影響しない。
+    // 併せて、この後の最初のヘッダー描画も落ち着いた値から始められる。
+    float startup_voltage = 0.0f;
+    for (int i = 0; i < 16; i++) {
+      startup_voltage = get_input_voltage();
+      delay(1);
+    }
     enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
   }
 
@@ -923,8 +933,7 @@ void loop() {
       extern TimingStat ts_draw_header, ts_push_backscreen;
       TIMING_REPORT(ts_draw_header);
       TIMING_REPORT(ts_push_backscreen);
-      extern TimingStat ts_load_mapimage, ts_savecsv_flush;
-      TIMING_REPORT(ts_load_mapimage);
+      extern TimingStat ts_savecsv_flush;
       TIMING_REPORT(ts_savecsv_flush);
       extern volatile uint32_t _c1_overlap_count;
       Serial.print("[TIME] C1_overlap_count="); Serial.println(_c1_overlap_count);
@@ -988,6 +997,8 @@ void loop1() {
           currentTask.saveCsvArgs.kf_altitude,
           currentTask.saveCsvArgs.kf_vspeed,
           currentTask.saveCsvArgs.pressure,
+          currentTask.saveCsvArgs.voltage,
+          currentTask.saveCsvArgs.numsat,
           currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
           currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,

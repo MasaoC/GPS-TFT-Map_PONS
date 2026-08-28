@@ -216,18 +216,6 @@ int LatLonManager::getCount() {
   return count;
 }
 
-// デバッグ用：全座標をシリアル出力する
-void LatLonManager::printData() {
-  for (int i = 0; i < count; i++) {
-    DEBUG_P(20250508,"Coordinate ");
-    DEBUG_P(20250508,i + 1);
-    DEBUG_P(20250508,": Latitude = ");
-    DEBUG_P(20250508,coords[i].latitude);
-    DEBUG_P(20250508,", Longitude = ");
-    DEBUG_PLN(20250508,coords[i].longitude);
-  }
-}
-
 // バッファをクリアする（カウントとインデックスを 0 にリセット）
 void LatLonManager::reset(){
   count = 0;

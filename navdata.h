@@ -31,7 +31,6 @@
     LatLonManager();
     void addCoord(Coordinate position);
     int getCount();
-    void printData();
     void reset();
     Coordinate getData(int newest_index);
   };

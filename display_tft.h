@@ -22,15 +22,9 @@
 #define SCREEN_HEIGHT 320
 #define BACKSCREEN_SIZE 240
 
-// For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
-#ifdef PNP_BL
-  #define BRIGHTNESS(brt) (255-brt)
-#endif
-#ifdef NPN_BL
-  #define BRIGHTNESS(brt) (brt)
-#endif
-
-#define BL_PWM_FRQ 1000   //1000Hz
+// ※ v6 基板にはバックライト制御線が無いため、輝度調整機能
+//    （BRIGHTNESS_SETTING_AVAIL / TFT_BL / PNP_BL / NPN_BL / BL_PWM_FRQ）は
+//    v0.947 で削除した。復活させる場合は git 履歴を参照。
 
 
 
@@ -47,11 +41,13 @@
     }
   };
 
+  // 設定画面のメニュー項目 ID（button.cpp の menu_settings[].id）。
+  // 以前は地図画面の各テキストにも ID を振って差分更新していたが（ND_* / COUNTER）、
+  // その仕組み（TextManager）ごと v0.947 で廃止したのでメニュー分だけ残っている。
   enum text_id{
-    SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_REPLAY,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,SETTING_EXIT,
-    ND_MPS,ND_MPS_LGND,ND_SATS,ND_TT,ND_DIST_PLAT,ND_DESTNAME,ND_TEMP,ND_TIME,ND_DESTMODE,ND_TC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,
-    SETTING_IMU_DETAIL,SETTING_LEVEL_CALIB
+    SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_DEMOBIWA,SETTING_REPLAY,
+    SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
+    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -76,14 +72,11 @@
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (5×240px, 16bit)
-  extern int screen_brightness;
-  
+
 #endif
 
-// Function to convert x, y coordinates on the TFT screen to latitude and longitude
-
+// 緯度経度を TFT スクリーン上のピクセル座標へ変換する。
 cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection);
-Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown);
 // Function to calculate the distance between two points (latitude and longitude) using an optimized formula
 
 
@@ -95,11 +88,12 @@ void setup_tft();
 
 void draw_header();
 void draw_footer();
-float get_input_voltage();
+float get_input_voltage();      // 実測のバッテリー電圧 [V]（ピーク追跡込み）
+float get_display_voltage();    // 画面表示用。リプレイ中は CSV の電圧を返す
+bool  replay_voltage_active();  // リプレイの電圧を表示中か（USB 判定の抑止に使う）
 
 
 
-void tft_change_brightness(int increment);
 void toggle_mode();
 bool is_trackupmode();
 bool is_northupmode();
@@ -198,7 +192,4 @@ void draw_course_warning(int steer_angle);
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 
-
-
-int mod( int x, int y );
 

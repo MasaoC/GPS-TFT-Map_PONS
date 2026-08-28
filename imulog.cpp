@@ -32,7 +32,7 @@ static volatile bool     imulog_pending[2] = {false, false};  // 満杯・引き
 static volatile bool     imulog_busy[2]    = {false, false};  // Core1 が書き出し中
 static volatile uint8_t  imulog_active     = 0;        // Core0 が詰めている側
 
-static volatile bool     imulog_enabled = IMULOG_DEFAULT_ENABLED;  // 設定による有効/無効
+static const bool        imulog_enabled = IMULOG_DEFAULT_ENABLED;  // ビルド時固定（実行時の切替手段は無い）
 static volatile bool     imulog_paused  = false;  // リプレイ中などの一時停止
 static uint16_t          imulog_seq     = 0;
 
@@ -45,8 +45,6 @@ static char   imuOpenedFilename[24] = "";
 static int    imuFlushCount = 0;
 
 
-void imulog_set_enabled(bool on) { imulog_enabled = on; }
-bool imulog_get_enabled()        { return imulog_enabled; }
 
 // リプレイ中の一時停止。Core0 から呼ぶ。
 // 停止に入る瞬間、書き出し待ちのバッファは捨てる。
