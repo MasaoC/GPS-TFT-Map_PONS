@@ -254,7 +254,10 @@ void attitude_setup() {
     last_gyro_us_ = 0;
     pitch_avg_ = 0.0f;
     pitch_avg_fill_s_ = 0.0f;
-    roll_trim_deg_ = 0.0f;
+    // roll_trim_deg_ はここでは触らない。level_roll_off_ と同じく SD から復元する値で、
+    // 設定の読み込み（Core1 の setup_sd）と この関数（Core0 の setup）は並行に走るため、
+    // ここで 0 にすると復元済みの値を消してしまうことがある。
+    // 電源投入時の初期値は静的初期化（= 0.0f）が保証する。
     trim_roll_sum_ = 0.0f;
     trim_time_s_ = 0.0f;
     trim_run_count_ = 0;
@@ -778,6 +781,28 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
 bool  attitude_pitch_avg_valid()   { return pitch_avg_fill_s_ >= PITCH_AVG_SEC; }
 float attitude_get_roll_trim_deg() { return roll_trim_deg_; }
+void  attitude_set_roll_trim_deg(float deg) {
+    // 壊れた設定ファイルでとんでもない値が入っても、飛行中の姿勢表示を狂わせないよう
+    // 通常動作と同じ上限でクランプする。
+    if (deg >  ROLL_TRIM_LIMIT_DEG) deg =  ROLL_TRIM_LIMIT_DEG;
+    if (deg < -ROLL_TRIM_LIMIT_DEG) deg = -ROLL_TRIM_LIMIT_DEG;
+    roll_trim_deg_ = deg;
+}
+// 設定ファイルは行の順序が保証されない（roll_trim が needs_apply より先に来ることがある）ため、
+// 読み込みが全部終わってからまとめて判定する。
+void  attitude_finish_settings_load() {
+    if (roll_trim_deg_ == 0.0f) return;
+    // 復元した累積補正量を捨てる条件:
+    //  ・needs_apply … マウントから外したまま APPLY していない。取り付け角が
+    //                  変わった可能性があるので、前回の補正量は当てにならない。
+    //  ・機能が OFF  … ON/OFF の設定行が roll_trim より後に来た場合に、
+    //                  OFF なのに補正量だけ残るのを防ぐ（setter 側と同じ扱いにする）。
+    if (needs_apply_ || !roll_trim_enabled_ || !rpy_enabled_) {
+        roll_trim_deg_ = 0.0f;
+        trim_run_count_ = 0;
+        trim_run_sum_   = 0.0f;
+    }
+}
 
 bool attitude_get_wind(float &speed_mps, float &dir_to_deg) {
     if (!wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;

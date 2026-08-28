@@ -100,6 +100,7 @@ extern bool sd_detail_loading_displayed;
 void reset_degpersecond();
 void update_degpersecond(int true_track);
 void check_destination_toofar();
+static void apply_auto10k_status(int st);
 void update_course_warning(float degpersecond);
 void shortPressCallback();
 void longPressCallback();
@@ -609,6 +610,11 @@ void loop() {
     float applied, total;
     if (attitude_take_roll_trim_event(applied, total)) {
       enqueueTask(createLogSdfTask("ROLL TRIM %+.2f deg (total %+.2f)", applied, total));
+      // 次回起動でも効くよう保存する。設定画面を開かない運用（パイロットに預けたまま）
+      // でも残す必要があるため、ここで保存する。
+      // 補正は最短でも ROLL_TRIM_WINDOW_S × ROLL_TRIM_CONFIRM_WINDOWS 間隔でしか
+      // 起きないので、SD 書き込みの頻度は問題にならない。
+      enqueueTask(createSaveSettingTask());
     }
   }
 
@@ -720,10 +726,14 @@ void loop() {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
+        // フェーズが変わったときは、起動直後・リプレイ切替直後であっても必ず鳴らす。
+        // 保存した INTO を復元した状態でプラットホーム付近にいると、下の
+        // 「1.5km 以内なら AWAY」が即座に成立して起動直後に鳴ることがあるが、
+        // 黙って向きが変わるより、鳴らして確認を促す方が安全という判断。
         if (auto10k_status == AUTO10K_AWAY) {
 
           if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
-            auto10k_status = AUTO10K_INTO;
+            apply_auto10k_status(AUTO10K_INTO);
             enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
             enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
             enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
@@ -732,7 +742,7 @@ void loop() {
           }
         }
         if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
-          auto10k_status = AUTO10K_AWAY;
+          apply_auto10k_status(AUTO10K_AWAY);
           enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
@@ -1383,6 +1393,20 @@ void update_degpersecond(int true_track) {
 
 // 目的地が 100km 以上離れている場合に警告音を鳴らす。
 // 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
+// AUTO10K の折返しフェーズを変更する。
+// リプレイ再生中は表示だけ変え、SD には保存しない。再生した過去フライトの
+// フェーズが実飛行の設定を上書きしてしまうため。
+static void apply_auto10k_status(int st) {
+  if (getReplayMode()) {
+    auto10k_status = st;
+    return;
+  }
+  set_auto10k_status_flight(st);
+  // 飛行中に再起動しても復路のナビ方位が逆にならないよう、遷移のたびに保存する。
+  // 遷移は 1 周あたり数回しか起きないので SD 書き込みの頻度は問題にならない。
+  enqueueTask(createSaveSettingTask());
+}
+
 void check_destination_toofar() {
   // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
   if (currentdestination == -1 || currentdestination >= destinations_count) {

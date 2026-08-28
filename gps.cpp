@@ -1213,8 +1213,12 @@ bool getReplayMode(){
 }
 
 void set_replaymode(bool replaymode){
+  const bool was_replay = replaymode_gpsoff;
   replaymode_gpsoff = replaymode;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
+  // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
+  // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
+  if (was_replay && !replaymode) auto10k_leave_replay();
   // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;

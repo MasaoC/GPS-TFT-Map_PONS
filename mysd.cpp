@@ -107,7 +107,9 @@ SDSetting settings[] = {
   {"auto_roll_trim",  setAutoRollTrim,   getAutoRollTrim},
   {"wind_estimate",   setWindEstimate,   getWindEstimate},
   {"roll_target",     setRollTarget,     getRollTarget},
-  {"needs_apply",     setNeedsApply,     getNeedsApply}
+  {"needs_apply",     setNeedsApply,     getNeedsApply},
+  {"roll_trim",       setRollTrim,       getRollTrim},
+  {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -212,6 +214,9 @@ bool loadSettings() {
   }
 
   file.close();
+  // 設定どうしの整合を取る（roll_trim と needs_apply の関係など）。
+  // 行の順序に依存しないよう、全部読み終えてから呼ぶ。
+  attitude_finish_settings_load();
   DEBUG_PLN(20250508,"Settings loaded from settings.txt");
   return true;
 }
@@ -383,6 +388,23 @@ void getRollTarget(char* buffer, size_t bufferSize) {
 // マウントから外されたまま APPLY されていない状態。
 // 充電のために電源を切っても保持したいので SD に残す。
 void setNeedsApply(const char* value) { attitude_set_needs_apply(atoi(value) != 0); }
+// 自動ロールトリムの累積補正量。取り付けのズレは電源を切っても変わらないので保存する。
+// ただし needs_apply が立っている（マウントから外した）場合は
+// attitude_finish_settings_load() が読み込み後に捨てる。
+void setRollTrim(const char* value) { attitude_set_roll_trim_deg(atof(value)); }
+// AUTO10K の折返しフェーズ。飛行中に再起動しても復路のナビ方位が 180 度逆に
+// ならないよう保存する（距離だけでは往路と復路を区別できないため）。
+// 保存されるのは実飛行の遷移だけで、リプレイ再生中の遷移は書き込まれない。
+void setAuto10kStatus(const char* value) {
+  restore_auto10k_status(strcmp(value, "INTO") == 0 ? AUTO10K_INTO : AUTO10K_AWAY);
+}
+void getAuto10kStatus(char* buffer, size_t bufferSize) {
+  strncpy(buffer, get_auto10k_status_flight() == AUTO10K_INTO ? "INTO" : "AWAY", bufferSize);
+  buffer[bufferSize - 1] = '\0';
+}
+void getRollTrim(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.3f", attitude_get_roll_trim_deg());
+}
 void getNeedsApply(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", attitude_needs_apply() ? 1 : 0);
 }

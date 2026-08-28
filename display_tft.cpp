@@ -566,20 +566,31 @@ bool eskf_calib_allowed() {
   return attitude_is_static();
 }
 
+// 95%値としきい値の比較にヒステリシスを掛ける共通処理。
+// held: 直前の判定結果（呼び出し側が保持する）。
+// 入るときは limit、出るときは limit + ESKF_YAW_TRUST_HYST_DEG で判定する。
+static bool yaw_acc_ok_hyst(float acc95, float limit, bool &held) {
+  held = held ? (acc95 < limit + ESKF_YAW_TRUST_HYST_DEG)
+              : (acc95 < limit);
+  return held;
+}
+
 bool eskf_yaw_reliable() {
   // リプレイは記録された 95% 値で当時と同じ判定を再現する。しきい値は現在の設定を
   // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
+  static bool held = false;
   float acc95;
-  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) return false;
-  return acc95 < ESKF_YAW_TRUST_95_DEG;
+  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) { held = false; return false; }
+  return yaw_acc_ok_hyst(acc95, ESKF_YAW_TRUST_95_DEG, held);
 }
 
 // ヨーが「著しく信頼できる」か（95%値 < ESKF_YAW_DRIFT_95_DEG）。
 // 偏流角を示す点線を出してよいかの判定に使う。eskf_yaw_reliable() より厳しい。
 static bool eskf_yaw_high_confidence() {
+  static bool held = false;
   float acc95;
-  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) return false;
-  return acc95 < ESKF_YAW_DRIFT_95_DEG;
+  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) { held = false; return false; }
+  return yaw_acc_ok_hyst(acc95, ESKF_YAW_DRIFT_95_DEG, held);
 }
 
 // 自機アイコンの色。ESKF のヨーで機首を向けているときは黒、
@@ -2306,10 +2317,18 @@ void draw_footer(){
       if(destination_mode == DMODE_FLYINTO)
         header_footer.print("FLY INTO");
       if(destination_mode == DMODE_AUTO10K){
-        if(auto10k_status == AUTO10K_INTO)
+        // 往路(AWAY)と復路(INTO)を色でも区別する。ナビ方位は AWAY で 180 度反転
+        // するため、フェーズを取り違えると矢印が真逆を指す。文字だけだと
+        // "10K INTO" / "10K AWAY" が似ていて飛行中に見分けにくい。
+        if(auto10k_status == AUTO10K_INTO){
+          header_footer.setTextColor(COLOR_BLUE);
           header_footer.print("10K INTO");
-        if(auto10k_status == AUTO10K_AWAY)
+        }
+        if(auto10k_status == AUTO10K_AWAY){
+          header_footer.setTextColor(COLOR_DARKORANGE);
           header_footer.print("10K AWAY");
+        }
+        header_footer.setTextColor(COLOR_MAGENTA);  // 以降の目的地名は元の色に戻す
       }
 
       header_footer.setCursor(80, 17);

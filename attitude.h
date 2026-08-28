@@ -81,6 +81,11 @@ bool  attitude_pitch_avg_valid();          // 平均が十分たまったか
 // 直進中はロールが 0 のはずなので、ズレをゆっくり戻す（誤警報の連発を防ぐ）。
 // 真のバンクを消さないよう、旋回中は一切働かない。
 float attitude_get_roll_trim_deg();        // 現在の累積補正量
+// SD 設定からの復元用。ROLL_TRIM_LIMIT_DEG でクランプする。
+void  attitude_set_roll_trim_deg(float deg);
+// 設定の読み込みが終わった直後に呼ぶ。needs_apply（マウントから外した）が
+// 立っていれば、復元した累積補正量を捨てる。
+void  attitude_finish_settings_load();
 // 自動トリムの有効/無効（設定画面で切替、SD に保存）。既定は ON。
 // OFF にすると累積補正量は 0 に戻る。
 bool  attitude_get_roll_trim_enabled();
