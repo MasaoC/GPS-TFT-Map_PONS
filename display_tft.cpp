@@ -2310,16 +2310,23 @@ void draw_footer(){
     
 
     if(currentdestination != -1 && currentdestination < destinations_count){
-      header_footer.setTextColor(COLOR_MAGENTA);
       header_footer.setCursor(1, 17);
-      if(destination_mode == DMODE_FLYAWAY)
+      // 目的地へ「向かう(INTO)」か「離れる(AWAY)」かを色で区別する。
+      //   INTO = 青 / AWAY = 暗いオレンジ
+      // AWAY はナビ方位を 180 度反転させるモードなので、取り違えると矢印が真逆を
+      // 指す。文字だけだと INTO / AWAY が似ていて飛行中に見分けにくいため色を分ける。
+      // AUTO10K と通常モードで同じ配色にして、「青なら目的地の方へ」と
+      // モードによらず同じ読み方ができるようにしてある。
+      // ※ 白背景なので明るいオレンジ(COLOR_ORANGE)は使わない（ほぼ見えないため）。
+      if(destination_mode == DMODE_FLYAWAY){
+        header_footer.setTextColor(COLOR_DARKORANGE);
         header_footer.print("FLY AWAY");
-      if(destination_mode == DMODE_FLYINTO)
+      }
+      if(destination_mode == DMODE_FLYINTO){
+        header_footer.setTextColor(COLOR_BLUE);
         header_footer.print("FLY INTO");
+      }
       if(destination_mode == DMODE_AUTO10K){
-        // 往路(AWAY)と復路(INTO)を色でも区別する。ナビ方位は AWAY で 180 度反転
-        // するため、フェーズを取り違えると矢印が真逆を指す。文字だけだと
-        // "10K INTO" / "10K AWAY" が似ていて飛行中に見分けにくい。
         if(auto10k_status == AUTO10K_INTO){
           header_footer.setTextColor(COLOR_BLUE);
           header_footer.print("10K INTO");
@@ -2328,9 +2335,9 @@ void draw_footer(){
           header_footer.setTextColor(COLOR_DARKORANGE);
           header_footer.print("10K AWAY");
         }
-        header_footer.setTextColor(COLOR_MAGENTA);  // 以降の目的地名は元の色に戻す
       }
 
+      header_footer.setTextColor(COLOR_MAGENTA);  // 目的地名は元の色に戻す
       header_footer.setCursor(80, 17);
       header_footer.setTextWrap(false);
       header_footer.print(extradestinations[currentdestination].name);

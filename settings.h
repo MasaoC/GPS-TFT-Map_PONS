@@ -15,8 +15,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260828
-#define BUILDVERSION "0.948"
+#define BUILDDATE 20260901
+#define BUILDVERSION "0.949"
 #define VERSION_TEXT "Version 6"
 
 
