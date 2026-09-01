@@ -29,24 +29,8 @@ extern volatile bool userled_forced_on;
 static uint32_t gps_fix_millis = 0;
 uint32_t get_gps_fix_millis() { return gps_fix_millis; }
 
-// --- Mediatek GPS 用 NMEA コマンド ---
-// PMTK コマンドは Mediatek チップセット GPS モジュールの設定コマンド。
-// 文字列末尾の *XX はチェックサム。
-#define PMTK_ENABLE_SBAS "$PMTK313,1*2E"                                          // SBAS（補強システム）を有効化
-#define PMTK_SET_NMEA_OUTPUT_GSVONLY "$PMTK314,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0*29"  // GSV（衛星情報）のみ出力
-#define PMTK_SET_NMEA_OUTPUT_RMCGGA "$PMTK314,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*28"  // RMC+GGA（位置・速度・時刻）出力
-#define PMTK_SET_NMEA_UPDATE_2HZ "$PMTK220,500*2B"    // 更新レート 2Hz
-#define PMTK_SET_NMEA_UPDATE_1HZ "$PMTK220,1000*1F"   // 更新レート 1Hz
-
-// --- Quectel GPS 用 PAIR コマンド ---
-// LC86GPAMD 等 Quectel チップ向けの独自拡張コマンド。
-#define PAIR_SET_38400 "$PAIR864,0,0,38400*23"    // ボーレートを 38400 に変更（モジュール再起動が必要）
-#define PAIR_DISABLE_GSV "$PAIR062,3,0*3D"        // GSV 文（衛星情報）の出力を停止
-#define PAIR_ENABLE_GSV "$PAIR062,3,1*3C"         // GSV 文の出力を再開
-#define PAIR_DISABLE_GSA "$PAIR062,2,0*3C"        // GSA 文（測位精度）の出力を停止
-#define PAIR_ENABLE_GSA "$PAIR062,2,1*3D"         // GSA 文の出力を再開
-#define PAIR_SET_38400 "$PAIR864,0,0,38400*23"
-//#define PQTM_OFF "$PQTMCFGMSGRATE,W,PQTMANTENNASTATUS,0,2*39"
+// v6 は u-blox SAM-M10Q 専用。Mediatek(PMTK) / Quectel(PAIR) 用のコマンド定義は
+// v5 以前のモジュール向けだったため削除した（必要になったら git 履歴から戻す）。
 
 
 // --- u-blox UBX バイナリ NAV メッセージ設定 ---
@@ -666,9 +650,6 @@ uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度�
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
-float    get_gps_veln_mps()   { return ubx_veln_mps; }  // GNSS 北向き速度（m/s）
-float    get_gps_vele_mps()   { return ubx_vele_mps; }  // GNSS 東向き速度（m/s）
-uint32_t get_gps_itow_ms()    { return ubx_itow_ms; }   // GPS 週内時刻（ms）
 bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
@@ -679,40 +660,18 @@ bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 // GSV（衛星情報）出力を停止することで NMEA の量を減らし、位置・速度の更新レートを上げる。
 // 設定画面の GPS 詳細からメインマップへ戻る際に呼ばれる。
 void gps_getposition_mode() {
-  #ifdef QUECTEL_GPS
-    GPS_SERIAL.println(PAIR_DISABLE_GSV);
-    delay(3);
-    GPS_SERIAL.println(PAIR_DISABLE_GSA);
-  #endif
-  #ifdef MEDIATEK_GPS
-  GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);  // 1 Hz update rate
-  #endif
-  #ifdef UBLOX_GPS
   // ナビ画面では NAV-SAT を 0.1Hz（10秒に1回）に落としてトラフィックを抑制
   { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
     for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
-  #endif
 }
 
 // GPS モジュールを「星座表示モード」に切り替える。
 // GSV を有効化して衛星の仰角・方位・SNR を表示できるようにする。
 // GPS 詳細画面に入る際に呼ばれる。
 void gps_constellation_mode() {
-  #ifdef QUECTEL_GPS
-    GPS_SERIAL.println(PAIR_ENABLE_GSV);
-    delay(3);
-    GPS_SERIAL.println(PAIR_ENABLE_GSA);
-  #endif
-  #ifdef MEDIATEK_GPS
-    GPS_SERIAL.println(PMTK_SET_NMEA_OUTPUT_GSVONLY);
-    GPS_SERIAL.println(PMTK_SET_NMEA_UPDATE_1HZ);
-  #endif
-  #ifdef UBLOX_GPS
   // 星座画面では NAV-SAT を 1Hz に上げて衛星情報をリアルタイム更新
   { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
     for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
-  #endif
 }
 
 int setupcounter = 1;  // gps_setup() の呼び出し回数（1=初回、2以降=リトライ）
@@ -722,7 +681,6 @@ uint32_t get_gps_baudrate() { return gps_current_baudrate; }
 // UBX フレームを1パケットずつ読み、ACK-ACK なら true を返す。
 // NAV-PVT など非 ACK パケットはヘッダ・ペイロード・チェックサムを
 // 丸ごと読み飛ばすため、固定バッファに収まらない問題が起きない。
-#ifdef UBLOX_GPS
 static bool ubxWaitAck(uint32_t timeout_ms) {
   unsigned long t0 = millis();
   uint8_t  state = 0, cls = 0, id = 0;
@@ -748,17 +706,15 @@ static bool ubxWaitAck(uint32_t timeout_ms) {
   }
   return false;  // タイムアウト
 }
-#endif
 
-// GPS モジュールとのシリアル接続を確立する。
-// 初回は settings.h で選択したモジュール種別に合わせて初期化する。
+// GPS モジュール（u-blox SAM-M10Q）とのシリアル接続を確立する。
 // NMEA が 10 秒届かない場合は gps_loop() から自動的に再呼出しされる。
 //
-// リトライ時は複数のボーレートを順番に試す:
-//   1回目: 設定済みボーレートで直接接続
-//   2回目: 115200bps で PAIR コマンドを送り 38400 に切り替えてから接続（Quectel が工場出荷時設定の場合）
-//   3回目: 115200 bps で直接接続
-//   4回目: 38400 bps で直接接続
+//   1回目 : 工場デフォルトの 9600bps で開き、UBX-CFG-PRT で 38400bps・UBX 出力のみに
+//           切り替えたうえで NAV-PVT / NAV-SAT / NAV-DOP / CFG-NAV5 を設定する。
+//   2回目以降（リトライ）: ボーレートだけを交互に試す。設定コマンドは送らない。
+//           偶数回 = 9600（工場出荷デフォルトのまま起動した場合）
+//           奇数回 = 38400（CFG-PRT 設定済みのモジュールを掴み直す場合）
 void gps_setup() {
   last_gps_setup_time = millis();
   DEBUG_P(20260307,"GPS SETUP:setupcounter=");
@@ -773,21 +729,6 @@ void gps_setup() {
   //初回SETUP
   if(setupcounter == 1){
 
-    #ifdef QUECTEL_GPS
-      DEBUG_PLN(20251025,"QUECTEL 38400");
-      GPS_SERIAL.setFIFOSize(1024);//LC86GPAMD Bufferサイズ、128では不足するケースあり。
-      GPS_SERIAL.begin(gps_current_baudrate = 38400);
-    #elif defined(MEDIATEK_GPS)
-      DEBUG_PLN(20251025,"MEDIATEK 38400");
-      GPS_SERIAL.println(PMTK_ENABLE_SBAS);
-      gps_getposition_mode();
-      delay(100);//（Do not delete without care.)
-      GPS_SERIAL.println("$PMTK251,38400*27");
-      delay(100);//（Do not delete without care.)
-      GPS_SERIAL.end();
-      delay(50);//（Do not delete without care.)
-      GPS_SERIAL.begin(gps_current_baudrate = 38400);
-    #elif defined(UBLOX_GPS)
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] setup start");
       #endif
@@ -927,13 +868,9 @@ void gps_setup() {
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] setup done");
       #endif
-    #else
-      GPS_SERIAL.begin(gps_current_baudrate = 9600);
-    #endif
-    
+
   }else{
-    #if defined(UBLOX_GPS)
-    // u-blox リトライ: NMEA/PAIR コマンドは使わず baud 切替のみ試みる。
+    // u-blox リトライ: 設定コマンドは送らず baud 切替のみ試みる。
     // 偶数回=9600（工場出荷デフォルト）、奇数回=38400（CFG-PRT 設定済み想定）で交互に試す。
     if(setupcounter % 2 == 0){
       DEBUG_PLN(20251025,"UBX retry: 9600bps (factory default)");
@@ -944,41 +881,12 @@ void gps_setup() {
       GPS_SERIAL.setFIFOSize(1024);
       GPS_SERIAL.begin(gps_current_baudrate = 38400);
     }
-    #else
-    //2nd try
-    if(setupcounter%3 == 1){
-      DEBUG_PLN(20251025,"from 115200 to 38400 (For QUECTEL)");
-      GPS_SERIAL.setFIFOSize(1024);
-      GPS_SERIAL.begin(gps_current_baudrate = 115200);
-      GPS_SERIAL.println(PAIR_SET_38400);//Need restart of LC86G module.
-      delay (100);//なぜか必要（Do not delete without care.)
-      GPS_SERIAL.end();
-      delay(50);//なぜか必要（Do not delete without care.)
-      GPS_SERIAL.setFIFOSize(1024);
-      GPS_SERIAL.begin(gps_current_baudrate = 38400);
-    }else if(setupcounter%3 == 2){
-      DEBUG_PLN(20251025,"Simple setup try 115200");
-      //4th try
-      GPS_SERIAL.begin(gps_current_baudrate = 115200);
-    }else if(setupcounter%3 == 3){
-      DEBUG_PLN(20251025,"Simple setup try 38400");
-      //3rd try
-      GPS_SERIAL.begin(gps_current_baudrate = 38400);
-    }else{
-      DEBUG_PLN(20251025,"Simple setup try 9600");
-      //3rd try
-      GPS_SERIAL.begin(gps_current_baudrate = 9600);
-    }
-    #endif
   }
 
   for(int i = 0; i < MAX_LAST_NMEA;i++){
     last_nmea[i][0] = 0;
     last_nmea_time[i] = millis();
   }
-
-  //効果なし 調査中
-  //GPS_SERIAL.println(PQTM_OFF);
 
   setupcounter++;
 }
@@ -1305,8 +1213,12 @@ bool getReplayMode(){
 }
 
 void set_replaymode(bool replaymode){
+  const bool was_replay = replaymode_gpsoff;
   replaymode_gpsoff = replaymode;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
+  // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
+  // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
+  if (was_replay && !replaymode) auto10k_leave_replay();
   // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;
@@ -1523,8 +1435,11 @@ void try_enque_savecsv(){
       float csv_pressure   = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
       float csv_kf_alt    = get_imu_altitude_msl();  // KF推定高度 [m]（MSL基準・GNSS長期収束済み）
       float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
+      // 実測の電圧を書く（リプレイ中の表示値ではない）。リプレイ再生中は
+      // そもそもこのパスを通らないが、意図を明示するため get_input_voltage() を使う。
+      float csv_voltage   = get_input_voltage();
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
-        stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure,
+        stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure, csv_voltage, stored_numsats,
         year, month, day, hour, ubx_min, ubx_sec, ubx_cs));
 
       last_gps_save_time = millis();

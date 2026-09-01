@@ -38,7 +38,6 @@ volatile bool logo_ready = false;  // Core1 でロゴ BMP 読み込みが完了�
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
 #ifndef RELEASE
-TimingStat ts_load_mapimage = TSTAT_INIT("C1_load_mapimage");
 TimingStat ts_savecsv_flush = TSTAT_INIT("C1_savecsv_flush");
 extern volatile bool c0_is_redrawing;  // Core0 描画中フラグ（重複検出用）
 volatile uint32_t _c1_overlap_count = 0;  // Core0描画中にCore1重処理が重なった回数（Core1 が加算、Core0 が表示）
@@ -108,7 +107,9 @@ SDSetting settings[] = {
   {"auto_roll_trim",  setAutoRollTrim,   getAutoRollTrim},
   {"wind_estimate",   setWindEstimate,   getWindEstimate},
   {"roll_target",     setRollTarget,     getRollTarget},
-  {"needs_apply",     setNeedsApply,     getNeedsApply}
+  {"needs_apply",     setNeedsApply,     getNeedsApply},
+  {"roll_trim",       setRollTrim,       getRollTrim},
+  {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -213,6 +214,9 @@ bool loadSettings() {
   }
 
   file.close();
+  // 設定どうしの整合を取る（roll_trim と needs_apply の関係など）。
+  // 行の順序に依存しないよう、全部読み終えてから呼ぶ。
+  attitude_finish_settings_load();
   DEBUG_PLN(20250508,"Settings loaded from settings.txt");
   return true;
 }
@@ -384,6 +388,23 @@ void getRollTarget(char* buffer, size_t bufferSize) {
 // マウントから外されたまま APPLY されていない状態。
 // 充電のために電源を切っても保持したいので SD に残す。
 void setNeedsApply(const char* value) { attitude_set_needs_apply(atoi(value) != 0); }
+// 自動ロールトリムの累積補正量。取り付けのズレは電源を切っても変わらないので保存する。
+// ただし needs_apply が立っている（マウントから外した）場合は
+// attitude_finish_settings_load() が読み込み後に捨てる。
+void setRollTrim(const char* value) { attitude_set_roll_trim_deg(atof(value)); }
+// AUTO10K の折返しフェーズ。飛行中に再起動しても復路のナビ方位が 180 度逆に
+// ならないよう保存する（距離だけでは往路と復路を区別できないため）。
+// 保存されるのは実飛行の遷移だけで、リプレイ再生中の遷移は書き込まれない。
+void setAuto10kStatus(const char* value) {
+  restore_auto10k_status(strcmp(value, "INTO") == 0 ? AUTO10K_INTO : AUTO10K_AWAY);
+}
+void getAuto10kStatus(char* buffer, size_t bufferSize) {
+  strncpy(buffer, get_auto10k_status_flight() == AUTO10K_INTO ? "INTO" : "AWAY", bufferSize);
+  buffer[bufferSize - 1] = '\0';
+}
+void getRollTrim(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.3f", attitude_get_roll_trim_deg());
+}
 void getNeedsApply(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", attitude_needs_apply() ? 1 : 0);
 }
@@ -497,7 +518,7 @@ Task createLogSdfTask(const char* format, ...) {
 
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
-Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   Task task;
   task.type = TASK_SAVE_CSV;
   task.saveCsvArgs.latitude = latitude;
@@ -508,6 +529,8 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   task.saveCsvArgs.kf_altitude = kf_altitude;
   task.saveCsvArgs.kf_vspeed  = kf_vspeed;
   task.saveCsvArgs.pressure = pressure;
+  task.saveCsvArgs.voltage = voltage;
+  task.saveCsvArgs.numsat = numsat;
   task.saveCsvArgs.year = year;
   task.saveCsvArgs.month = month;
   task.saveCsvArgs.day = day;
@@ -2023,7 +2046,7 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 // （実体は init_replay() から flush するためファイル前方で定義してある）
 
-void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
@@ -2050,7 +2073,7 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
 
   if (csvFileStatic) {
     if(!headerWritten){
-      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,date,time");
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,voltage,numsat,date,time");
       headerWritten = true;
     }
 
@@ -2070,6 +2093,10 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
     csvFileStatic.print(",");
     csvFileStatic.print(pressure,2);
     csvFileStatic.print(",");
+    csvFileStatic.print(voltage,2);   // バッテリー電圧 [V]（リプレイ時の電池表示に使う）
+    csvFileStatic.print(",");
+    csvFileStatic.print(numsat);      // 測位衛星数（リプレイ時の衛星数表示に使う）
+    csvFileStatic.print(",");
 
     // Format date as YYYY-MM-DD
     char date[11];
@@ -2084,7 +2111,8 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
 
     // flush() は SD への物理書き込みを伴うため消費電力が大きい。
     // 2秒に1回だけ flush し、それ以外は SdFat の内部バッファに留めることで消費電力を抑制する。
-    // 2Hz×2秒 = 4行×約80バイト ≈ 320バイト → 512バイトブロックバッファに収まるため安全。
+    // 2Hz×2秒 = 4行×約89バイト ≈ 356バイト → 512バイトブロックバッファに収まるため安全。
+    // （voltage・numsat 列の追加で 1 行あたり約 9 バイト増えたが、まだ余裕がある）
     { static unsigned long last_flush_ms = 0;
       if (millis() - last_flush_ms >= 2000) {
         TIMING_START(csv_fl);

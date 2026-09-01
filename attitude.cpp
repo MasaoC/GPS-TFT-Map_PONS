@@ -89,8 +89,10 @@ static float pitch_avg_fill_s_ = 0.0f;    // 平均がたまった時間 [s]
 // Core0（設定画面・ESKF）が書き、Core1（設定保存）も読むので volatile
 static volatile bool roll_trim_enabled_ = true;   // 設定画面で ON/OFF（既定 ON）
 static float    roll_trim_deg_ = 0.0f;    // 累積補正量（出力から引く）
-static float    trim_prev_avg_ = 0.0f;    // 直前の窓の平均ロール（2窓一致の確認用）
-static bool     trim_prev_valid_ = false;
+// 連続して「同符号・不感帯超過」だった窓の情報。
+// ROLL_TRIM_CONFIRM_WINDOWS 個ぶん溜まったら補正する。
+static float    trim_run_sum_   = 0.0f;   // 連続中の窓の平均ロールの合計
+static int      trim_run_count_ = 0;      // 連続した窓の数（0 = 連続なし）
 static float    trim_roll_sum_ = 0.0f;    // 直進中のロール積算
 static float    trim_time_s_   = 0.0f;    // 直進が続いた時間 [s]
 static float    yaw_rate_lp_   = 0.0f;    // ワールド系ヨーレートの平滑値 [deg/s]
@@ -252,10 +254,14 @@ void attitude_setup() {
     last_gyro_us_ = 0;
     pitch_avg_ = 0.0f;
     pitch_avg_fill_s_ = 0.0f;
-    roll_trim_deg_ = 0.0f;
+    // roll_trim_deg_ はここでは触らない。level_roll_off_ と同じく SD から復元する値で、
+    // 設定の読み込み（Core1 の setup_sd）と この関数（Core0 の setup）は並行に走るため、
+    // ここで 0 にすると復元済みの値を消してしまうことがある。
+    // 電源投入時の初期値は静的初期化（= 0.0f）が保証する。
     trim_roll_sum_ = 0.0f;
     trim_time_s_ = 0.0f;
-    trim_prev_valid_ = false;
+    trim_run_count_ = 0;
+    trim_run_sum_   = 0.0f;
     yaw_rate_lp_ = 0.0f;
     trim_event_ = false;
     wind_e_ = wind_n_ = 0.0f;
@@ -562,17 +568,27 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             trim_time_s_   += dt;
             if (trim_time_s_ >= ROLL_TRIM_WINDOW_S) {
                 const float avg = trim_roll_sum_ / trim_time_s_;
-                // 2 窓連続で同符号・不感帯超過のときだけ補正する。
+                // ROLL_TRIM_CONFIRM_WINDOWS 窓連続で同符号・不感帯超過のときだけ補正する。
                 // 60 秒窓の平均ロールは実測で std 0.27 度あり、不感帯 0.5 度でも
                 // 約 10% の窓がノイズだけで超える。1 窓で補正すると 50 分の飛行で
                 // ±0.7 度ほどランダムウォークするため、一致を要求して潰す。
                 const bool over = (fabsf(avg) >= ROLL_TRIM_DEADBAND_DEG);
-                const bool confirmed = over && trim_prev_valid_ &&
-                                       (fabsf(trim_prev_avg_) >= ROLL_TRIM_DEADBAND_DEG) &&
-                                       ((avg > 0.0f) == (trim_prev_avg_ > 0.0f));
-                if (confirmed) {
-                    // 補正量は 2 窓の平均。1 窓だけより測定ノイズが 1/√2 になる。
-                    float step = 0.5f * (avg + trim_prev_avg_);
+                if (!over) {
+                    // 不感帯の内側 → 連続は途切れる
+                    trim_run_count_ = 0;
+                    trim_run_sum_   = 0.0f;
+                } else if (trim_run_count_ > 0 && ((avg > 0.0f) != (trim_run_sum_ > 0.0f))) {
+                    // 符号が反転した → これまでの連続は無効。今回の窓から数え直す
+                    trim_run_count_ = 1;
+                    trim_run_sum_   = avg;
+                } else {
+                    trim_run_count_++;
+                    trim_run_sum_  += avg;
+                }
+                if (trim_run_count_ >= ROLL_TRIM_CONFIRM_WINDOWS) {
+                    // 補正量は連続した窓の平均。N 窓ぶん平均するので
+                    // 1 窓だけより測定ノイズが 1/√N になる。
+                    float step = trim_run_sum_ / (float)trim_run_count_;
                     if (step >  ROLL_TRIM_STEP_DEG) step =  ROLL_TRIM_STEP_DEG;
                     if (step < -ROLL_TRIM_STEP_DEG) step = -ROLL_TRIM_STEP_DEG;
                     float next = roll_trim_deg_ + step;
@@ -584,15 +600,12 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
                         trim_event_applied_ = step;
                         trim_event_ = true;      // 呼び出し側がログに残す
                     }
-                    // 使った観測は捨てる。次の補正には新たに 2 窓ぶん必要。
-                    trim_prev_valid_ = false;
-                } else {
-                    // 今回の窓は次回の確認材料として持ち越す
-                    trim_prev_avg_   = avg;
-                    trim_prev_valid_ = over;
+                    // 使った観測は捨てる。次の補正には新たに N 窓ぶん必要。
+                    trim_run_count_ = 0;
+                    trim_run_sum_   = 0.0f;
                 }
-                // 窓だけリセットする。trim_prev_valid_ はここで触らないこと
-                // （上の else で持ち越した確認材料を消してしまう）。
+                // 窓だけリセットする。trim_run_count_ はここで触らないこと
+                // （まだ N 窓に届いていない連続を消してしまう）。
                 trim_roll_sum_ = 0.0f;
                 trim_time_s_   = 0.0f;
             }
@@ -768,6 +781,28 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
 bool  attitude_pitch_avg_valid()   { return pitch_avg_fill_s_ >= PITCH_AVG_SEC; }
 float attitude_get_roll_trim_deg() { return roll_trim_deg_; }
+void  attitude_set_roll_trim_deg(float deg) {
+    // 壊れた設定ファイルでとんでもない値が入っても、飛行中の姿勢表示を狂わせないよう
+    // 通常動作と同じ上限でクランプする。
+    if (deg >  ROLL_TRIM_LIMIT_DEG) deg =  ROLL_TRIM_LIMIT_DEG;
+    if (deg < -ROLL_TRIM_LIMIT_DEG) deg = -ROLL_TRIM_LIMIT_DEG;
+    roll_trim_deg_ = deg;
+}
+// 設定ファイルは行の順序が保証されない（roll_trim が needs_apply より先に来ることがある）ため、
+// 読み込みが全部終わってからまとめて判定する。
+void  attitude_finish_settings_load() {
+    if (roll_trim_deg_ == 0.0f) return;
+    // 復元した累積補正量を捨てる条件:
+    //  ・needs_apply … マウントから外したまま APPLY していない。取り付け角が
+    //                  変わった可能性があるので、前回の補正量は当てにならない。
+    //  ・機能が OFF  … ON/OFF の設定行が roll_trim より後に来た場合に、
+    //                  OFF なのに補正量だけ残るのを防ぐ（setter 側と同じ扱いにする）。
+    if (needs_apply_ || !roll_trim_enabled_ || !rpy_enabled_) {
+        roll_trim_deg_ = 0.0f;
+        trim_run_count_ = 0;
+        trim_run_sum_   = 0.0f;
+    }
+}
 
 bool attitude_get_wind(float &speed_mps, float &dir_to_deg) {
     if (!wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;
@@ -777,7 +812,6 @@ bool attitude_get_wind(float &speed_mps, float &dir_to_deg) {
     if (dir_to_deg < 0.0f) dir_to_deg += 360.0f;
     return true;
 }
-float attitude_get_airspeed_est() { return airspeed_from_pitch(pitch_avg_); }
 bool  attitude_get_rpy_enabled() { return rpy_enabled_; }
 void  attitude_set_rpy_enabled(bool on) {
     rpy_enabled_ = on;
@@ -786,7 +820,8 @@ void  attitude_set_rpy_enabled(bool on) {
         roll_trim_deg_ = 0.0f;
         trim_roll_sum_ = 0.0f;
         trim_time_s_   = 0.0f;
-        trim_prev_valid_ = false;
+        trim_run_count_ = 0;
+        trim_run_sum_   = 0.0f;
         wind_e_ = wind_n_ = 0.0f;
         wind_fill_s_ = 0.0f;
     }
@@ -805,7 +840,8 @@ void  attitude_set_roll_trim_enabled(bool on) {
     roll_trim_deg_ = 0.0f;
     trim_roll_sum_ = 0.0f;
     trim_time_s_   = 0.0f;
-    trim_prev_valid_ = false;
+    trim_run_count_ = 0;
+    trim_run_sum_   = 0.0f;
   }
 }
 
@@ -819,7 +855,6 @@ bool attitude_take_roll_trim_event(float &applied, float &total) {
 
 void attitude_get_gyro_bias(float b[3])  { for (int i=0;i<3;i++) b[i] = bg_[i]; }
 void attitude_get_accel_bias(float b[3]) { for (int i=0;i<3;i++) b[i] = ba_[i]; }
-void attitude_get_velocity(float v[3])   { for (int i=0;i<3;i++) v[i] = v_[i]; }
 
 // ヨー誤差の標準偏差 [度]。誤差状態 dtheta の Z 成分（ワールド系＝鉛直軸まわり）。
 // 等速直進では観測が入らず単調に育ち、旋回や加減速が入ると縮む。
@@ -862,7 +897,8 @@ void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg) {
     roll_trim_deg_ = 0.0f;
     trim_roll_sum_ = 0.0f;
     trim_time_s_   = 0.0f;
-    trim_prev_valid_ = false;
+    trim_run_count_ = 0;
+    trim_run_sum_   = 0.0f;
 }
 
 void attitude_request_calibrate(float target_pitch_deg, float target_roll_deg) {
@@ -879,19 +915,6 @@ bool attitude_take_calib_done() {
     if (!calib_done_) return false;
     calib_done_ = false;
     return true;
-}
-
-void attitude_calibrate_level() {
-    attitude_calibrate_to(0.0f, 0.0f);
-}
-
-void attitude_reset_level() {
-    level_roll_off_ = 0.0f;
-    level_pitch_off_ = 0.0f;
-    roll_trim_deg_ = 0.0f;   // 較正を捨てるので自動トリムの累積も捨てる
-    trim_roll_sum_ = 0.0f;
-    trim_time_s_   = 0.0f;
-    trim_prev_valid_ = false;
 }
 
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg) {
@@ -912,7 +935,6 @@ void  attitude_cycle_roll_target() {
         roll_target_ = ROLL_TARGET_MIN_DEG;
 }
 bool  attitude_needs_apply() { return needs_apply_; }
-void  attitude_clear_needs_apply() { needs_apply_ = false; }
 void  attitude_set_needs_apply(bool on) { needs_apply_ = on; }
 
 float attitude_get_pitch_target() { return pitch_target_; }

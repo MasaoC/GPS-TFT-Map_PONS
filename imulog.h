@@ -91,8 +91,6 @@ typedef struct __attribute__((packed)) {
 } ImuLogRec;
 
 // ---- 有効/無効（SD 設定で切り替え）----
-void imulog_set_enabled(bool on);
-bool imulog_get_enabled();
 
 // リプレイ中の一時停止（Core0 から呼ぶ）。
 // 停止に入る瞬間に書き出し待ちバッファを捨てるため、

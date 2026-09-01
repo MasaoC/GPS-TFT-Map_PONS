@@ -161,7 +161,6 @@ uint32_t totalAudioSize = 0;    // WAV ファイルのオーディオデータ�
 uint32_t audioDataRead = 0;     // これまでに読み込んだバイト数
 uint32_t chunksLoaded = 0;      // ロード済みチャンク数（デバッグ用カウンタ）
 
-const unsigned long playInterval = 10000;  // 将来的な連続再生用インターバル（現状未使用）
 extern volatile int sound_volume;          // 音量（0〜100）。button.cpp の設定画面から変更。
 extern volatile int vario_volume;          // バリオメーター音量（0〜100）。設定画面から変更。
 extern volatile bool vario_inhibit;        // true のとき vario を完全無効化する

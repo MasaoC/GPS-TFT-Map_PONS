@@ -132,7 +132,7 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
     // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
     // pitch_avg は 平均が溜まるまで無効。valid=false のときは空欄で書く。
     void save_imu_replaydata(int h, int m, int s, int cs,
@@ -186,11 +186,24 @@
     // マウントから外されたまま APPLY されていない状態
     void setNeedsApply(const char* value);
     void getNeedsApply(char* buffer, size_t bufferSize);
+    // 自動ロールトリムの累積補正量（度）
+    void setRollTrim(const char* value);
+    void getRollTrim(char* buffer, size_t bufferSize);
+    // AUTO10K の折返しフェーズ（"AWAY" / "INTO"）
+    void setAuto10kStatus(const char* value);
+    void getAuto10kStatus(char* buffer, size_t bufferSize);
     bool loadSettings();
     bool saveSettings();
 
 
-  #define TASK_QUEUE_SIZE 20  // ピーク時（コース警告4トーン+WAV+地図+CSV+ログ）で約10タスク。余裕を持たせて20。RAM増加は+2.6KBのみ。
+  // ピーク時の見積り: コース警告(4トーン+WAV=5) + AUTO10K折返し(5) + バンク警告(2)
+  // が近接し、背景で CSV(2Hz) + 姿勢ログ(5Hz) + テキストログが流れる。Core1 が SD 書き込みで
+  // 数百ms 止まると 20 本では溢れ得た。溢れると音（＝一番鳴ってほしい警告）が捨てられるため 40 にする。
+  // sizeof(Task)=264B（logSdfArgs の char[256] が最大メンバ）なので 40 本で 10.3KB。
+  // 20 本(5.2KB)からの増加は +5.2KB。RP2350 の SRAM 520KB に対し約 1%。
+  // ※ 1 本あたりが大きいのは logSdfArgs のバッファのため。さらに増やしたい場合は
+  //   本数より先にそのバッファを見直す方が効率が良い。
+  #define TASK_QUEUE_SIZE 40
 
 
   typedef struct {
@@ -211,6 +224,8 @@
               float kf_altitude;  // KF推定高度 [m]（気圧基準）
               float kf_vspeed;   // KF推定上昇率 [m/s]
               float pressure;
+              float voltage;      // バッテリー電圧 [V]（リプレイで当時の電池表示を再現するため）
+              int numsat;         // 測位に使用した衛星数（同上）
               int year, month, day, hour, minute, second, centisecond;
           } saveCsvArgs;
           struct {
@@ -255,7 +270,7 @@
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
-  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, int year, int month, int day, int hour, int minute, int second, int centisecond);
+  Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);

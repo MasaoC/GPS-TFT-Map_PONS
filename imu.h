@@ -73,13 +73,11 @@ bool get_imu_alive();
 
 // ---- 推定値ゲッター ----
 float get_imu_vspeed();          // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
-float get_imu_altitude();        // Kalman 推定高度 [m]（起動地点 0m の AGL 相対値）
 float get_imu_altitude_msl();    // Kalman 推定高度 [m]（MSL 絶対値 = AGL + gnss_kf_offset）
                                  // gnss_kf_offset 未確定（GNSS fix 取得前）は AGL 値を返す
 bool  get_imu_gnss_offset_ready(); // gnss_kf_offset が初期化済みか（MSL 値が有効か）
 float get_imu_az();              // 地球座標系の鉛直加速度 [m/s²]（デバッグ・バリオ音用）
 float get_imu_horiz_accel();     // 地球座標系の水平加速度の大きさ [m/s²]（KF Q_vel 動的増幅用）
-void  get_imu_quaternion(float &qw, float &qx, float &qy, float &qz);  // クォータニオン (GAME_RV)
 void  get_imu_linaccel(float &ax, float &ay, float &az);                // 線形加速度 ボディフレーム [m/s²]
 void  get_imu_euler(float &roll, float &pitch, float &yaw);             // Euler 角 [度] ZYX 規約（ヨーは地磁気補正）
 float get_imu_mag_accuracy_deg();                                       // ヘディング精度推定値 [度]（-1: 未受信）
@@ -99,7 +97,6 @@ float get_imu_mag_hz();    // MAGNETIC_FIELD_CALIBRATED
 // 生ジャイロ・生加速度の直近値（設定画面の IMU/ESKF ページで実測値を見るため）
 void get_imu_raw_gyro(float g[3]);   // [rad/s]
 void get_imu_raw_accel(float a[3]);  // [m/s²]
-bool  get_imu_rv_updated(); // ROTATION_VECTOR 新着フラグ（読み出しでクリア）
 
 // ---- Kalman パラメーターの動的変更（実行時チューニング用）----
 void imu_set_kf_params(float q_vel, float q_bias, float R);

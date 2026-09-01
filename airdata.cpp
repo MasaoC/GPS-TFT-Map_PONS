@@ -1,7 +1,7 @@
 // ============================================================
 // File    : airdata.cpp
 // Project : PONS v6 (Pilot Oriented Navigation System for HPA)
-// Role    : 大気データ取得の実装（開発中）。
+// Role    : 大気データ取得の実装。
 //           気圧センサー MS5611（I2C接続）から気圧・気温を読み取り、
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
@@ -16,7 +16,7 @@
 #define MS5611_ADDR 0x77
 
 // MS5611 コマンドバイト定義（データシート Table 1 より）
-#define CMD_RESET      0x1E  // リセットコマンド（起動時に必ず実行する）
+#define CMD_RESET      0x1E  // リセットコマンド（PROM 読み出し失敗時のリカバリーにだけ使う）
 #define CMD_READ_PROM  0xA0  // PROM 読み出しコマンドの先頭アドレス。係数番号を左シフトして加算する
 #define CMD_CONVERT_D1 0x48  // 気圧 ADC 変換コマンド（OSR=4096: 最高精度、変換時間 ≈ 9ms）
 #define CMD_CONVERT_D2 0x58  // 温度 ADC 変換コマンド（OSR=4096）
@@ -69,7 +69,6 @@ static float alt_win_prev  = 0.0f;          // 直前ウィンドウのトリム
 static float last_vspeed   = 0.0f;          // 最新の垂直速度 [m/s]
 static unsigned long last_vspeed_update_ms = 0; // 最後に vspeed が正常更新された時刻 [ms]
                                                 // I2C エラー等で途絶えた場合のタイムアウト判定に使う
-static int   last_win_samples = 0;          // 直前ウィンドウのトリム後有効サンプル数（診断用）
 static float last_win_hz      = 0.0f;       // 直前ウィンドウの総サンプル数から算出した更新レート [Hz]
 static unsigned long win_start = 0;         // 現在ウィンドウ開始時刻 [ms]
 
@@ -119,14 +118,6 @@ bool ms5611_write_cmd(uint8_t cmd) {
         enqueueTask(createLogSdfTask("MS5611 I2C write error: %d", err));
         return false;
     }
-    return true;
-}
-
-// MS5611 にリセットコマンドを送り、内部 PROM データをリロードさせる。
-// リセット後 50ms 待機することでデバイスが安定するのを待つ（データシートでは約 2.8ms 必要）。
-bool ms5611_reset() {
-    if (!ms5611_write_cmd(CMD_RESET)) return false;
-    delay(50);  // 余裕を持たせる
     return true;
 }
 
@@ -242,20 +233,54 @@ void airdata_adjust_ground_alt(float delta_m) {
 // MS5611 の初期化処理。PROM から 7 つのキャリブレーション係数をすべて読み取り C[] に格納する。
 // 通常はリセット後に呼ぶべきだが、現在はリセットをスキップしている（コメントより）。
 // 係数の読み取りに 1 つでも失敗したら false を返す。
-bool ms5611_init() {
-  // skip reset
+// MS5611 にリセットコマンドを送り、内部 PROM を再ロードさせる。
+// データシート上の復帰時間は約 2.8ms。余裕を見て 10ms 待つ。
+// 送り先は 0x77 なので、同じ i2c0 にいる BNO085(0x4B) には影響しない。
+static bool ms5611_reset() {
+    if (!ms5611_write_cmd(CMD_RESET)) return false;
+    delay(10);
+    return true;
+}
+
+// 補正係数 C[0..6] を PROM から読み込む。
+// 読めない、または明らかに異常な値だった場合は false。
+static bool ms5611_load_prom() {
     for (uint8_t i = 0; i <= 6; i++) {
         if (!ms5611_read_prom(i, C[i])) {
             DEBUGW_P(20260310, "PROM read failed at C[");
             DEBUGW_P(20260310, i);
             DEBUGW_PLN(20260310, "]");
-            enqueueTask(createLogSdfTask("MS5611 PROM read failed at C[%d]", i));
             return false;
         }
-        //Serial.print("C["); Serial.print(i); Serial.print("] = ");
-        //Serial.println(C[i]);
+    }
+    // C[1]〜C[6] が全部 0x0000 か全部 0xFFFF なら、I2C は応答しているのに
+    // 中身が読めていない（バスが不安定・デバイスが未起動）。
+    // このまま計算に使うと気圧高度がでたらめな値になるので、失敗扱いにする。
+    bool all_zero = true, all_ff = true;
+    for (uint8_t i = 1; i <= 6; i++) {
+        if (C[i] != 0x0000) all_zero = false;
+        if (C[i] != 0xFFFF) all_ff   = false;
+    }
+    if (all_zero || all_ff) {
+        DEBUGW_PLN(20260310, "MS5611 PROM looks invalid");
+        return false;
     }
     return true;
+}
+
+bool ms5611_init() {
+    // 通常はリセットを送らない。電源投入で PROM は既にロードされており、
+    // 送ると 2.8ms 以上の待ちが要るだけで得が無いため。
+    if (ms5611_load_prom()) return true;
+
+    // 読めなかった場合だけ、リセットして 1 回だけやり直す。
+    // 起動時に I2C が不安定だった場合の救済で、ここは airdata_setup() からしか
+    // 呼ばれない（＝起動時のみ）ため、飛行中に余計な待ちが入ることはない。
+    // 失敗しても呼び出し側が ms5611_ok = false にして気圧なしで動作を続ける。
+    DEBUGW_PLN(20260310, "MS5611 PROM read failed. retry with reset.");
+    enqueueTask(createLogSdTask("MS5611 PROM read failed, retry with reset"));
+    if (!ms5611_reset()) return false;
+    return ms5611_load_prom();
 }
 
 // ----------------------------
@@ -310,7 +335,6 @@ static bool ms5611_process_data() {
         if (alt_win_prev != 0.0f) last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / VSPEED_WINDOW_MS);
         last_altitude     = avg_cur;
         alt_win_prev      = avg_cur;
-        last_win_samples  = hi - lo;                                    // トリム後の有効サンプル数
         last_win_hz       = alt_win_count * 1000.0f / VSPEED_WINDOW_MS; // 総サンプルから算出した Hz
         alt_win_count     = 0;
         win_start         = millis();
@@ -394,8 +418,6 @@ float get_airdata_vspeed() {
         millis() - last_vspeed_update_ms > 2000UL) return 0.0f;
     return last_vspeed;
 }
-// 直前ウィンドウのトリム後有効サンプル数を返す（診断用）
-int   get_airdata_win_samples() { return last_win_samples; }
 // 直前ウィンドウの総サンプルから算出した更新レート [Hz] を返す（診断用）
 float get_airdata_win_hz()      { return last_win_hz; }
 
@@ -443,13 +465,3 @@ void airdata_setup() {
     }
 }
 
-// airdata_update() を呼び出し、計測完了時のみ Serial に結果を出力するテスト関数。
-// loop() から毎回呼ぶことで非ブロッキングに動作する。
-void airdata_test() {
-    if (airdata_update()) {
-        DEBUG_P(20260310, "Temp: "); DEBUG_PN(20260310, get_airdata_temperature(), 2);
-        DEBUG_P(20260310, " C  |  Press: "); DEBUG_PN(20260310, get_airdata_pressure(), 2);
-        DEBUG_P(20260310, " hPa  |  Alt: "); DEBUG_PN(20260310, get_airdata_altitude(), 1);
-        DEBUG_PLN(20260310, " m");
-    }
-}

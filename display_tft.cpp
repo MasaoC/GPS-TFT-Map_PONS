@@ -50,11 +50,6 @@ TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
 TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240px, 16bit, 2,400 Byte)
 
-// ===== 画面輝度 =====
-int screen_brightness = 255;                                // 現在の輝度値（PWMデューティ 0-255）
-const int brightnessLevels[] = { 10, 100, 150, 200, 255 };  // 選択可能な輝度ステップ
-int brightnessIndex = 4;                                    // デフォルト: 最大輝度（255）
-
 // ===== 地図方向モード =====
 // NORTHUP: 地図は常に北が上。TRACKUP: 進行方向が上に来るように回転する。
 #define MODE_TRACKUP 0
@@ -163,31 +158,6 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 }
 
 
-// TFT スクリーン上のピクセル座標 (x, y) を緯度経度に逆変換する（latLonToXY の逆関数）。
-// mapshiftdown: 地図表示領域の Y 軸オフセット（ヘッダー分のシフト量）。
-// 主にタッチ入力や目的地座標の逆引きに使用する。
-Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown) {
-    // Translate screen coordinates to map coordinates
-    // TRACKUP: 自機は (HEADERFOOTER_HEIGHT + get_self_cy()) に表示されるため Y 基準を更新
-    float screenX = x - (SCREEN_WIDTH / 2);
-    float screenY = (HEADERFOOTER_HEIGHT + get_self_cy()) - y + mapshiftdown;
-
-    // Apply rotation inverse for map up direction
-    float angleRad = mapUpDirection * DEG_TO_RAD;
-    float rotatedX = screenX * cos(angleRad) + screenY * sin(angleRad);
-    float rotatedY = -screenX * sin(angleRad) + screenY * cos(angleRad);
-
-    // Convert map distances to degrees
-    float lonDist = rotatedX / (111320.0 * cos(mapCenterLat * DEG_TO_RAD) * mapScale);
-    float latDist = rotatedY / (110540.0 * mapScale);
-
-    // Calculate latitude and longitude
-    float newLon = mapCenterLon + (lonDist * RAD_TO_DEG);
-    float newLat = mapCenterLat + (latDist * RAD_TO_DEG);
-
-    return Coordinate{newLat, newLon};
-}
-
 
 
 
@@ -240,183 +210,9 @@ void setup_tft() {
 
 
 
-// TFT スクリーン上のピクセル座標を表すクラス。
-// isOutsideTft() で画面外判定を行い、不要な drawLine 呼び出しを省略するために使う。
-class Point {
-public:
-  int x, y;
-  Point(int x = 0, int y = 0)
-    : x(x), y(y) {};
-
-  //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
-  bool isOutsideTft(){
-    return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
-  }
-};
-
-// 画面上のテキスト要素を表すクラス。
-// id で識別し、同一 id が既に表示されている場合は旧テキストを白で上書きしてから新テキストを描画する
-//（ちらつきなしに動的テキストを更新するための仕組み）。
-// textchar は heap に動的確保され、デストラクタで解放される。
-class Text {
-private:
-  int id;
-  int size;
-  Point cord;
-  char* textchar;
-
-public:
-  Text()
-    : id(0), size(0), cord(0, 0), textchar(NULL) {}
-
-  Text(int id, int size, int x, int y, const char* text_in)
-    : id(id), size(size), cord(x, y), textchar(NULL) {
-    setText(text_in);
-  }
-
-  ~Text() {
-    if (textchar != NULL) {
-      free(textchar);  // Free dynamically allocated memory
-    }
-  }
-
-  // Copy constructor
-  Text(const Text& other)
-    : id(other.id), size(other.size), cord(other.cord), textchar(NULL) {
-    setText(other.textchar);  // Use setText to allocate new memory
-  }
-
-  // Assignment operator (handles self-assignment and memory leak prevention)
-  Text& operator=(const Text& other) {
-    if (this != &other) {  // Check for self-assignment
-      if (textchar != NULL) {
-        free(textchar);  // Free the existing memory
-      }
-      id = other.id;
-      size = other.size;
-      cord = other.cord;
-      setText(other.textchar);  // Allocate and copy the new string
-    }
-    return *this;
-  }
-
-  bool setText(const char* text_in) {
-    if (textchar != NULL) {
-      free(textchar);
-      textchar = NULL;
-    }
-    if (text_in == NULL) {
-      return false;  // null ポインタは受け付けない
-    }
-    size_t length = strlen(text_in);
-    textchar = (char*)malloc((length + 1) * sizeof(char));
-    if (textchar == NULL) {
-      return false;  // メモリ確保失敗
-    }
-    memcpy(textchar, text_in, length + 1);  // strcpy の代わりに長さ付きコピー
-    return true;
-  }
-
-  int getId() const {
-    return id;
-  }
-  int getSize() const {
-    return size;
-  }
-  Point getCord() const {
-    return cord;
-  }
-  const char* getTextChar() const {
-    return textchar;
-  }
-
-  friend class TextManager;
-};
-
-// Text オブジェクトの配列を管理し、ID ベースの差分更新描画を提供するクラス。
-// drawText()/drawTextf() を呼ぶと、同 ID の古いテキストを自動消去してから新しいテキストを描画する。
-// 最大 50 テキスト（textmanager(50) で確保）。
-class TextManager {
-private:
-  Text** draw_texts;  // Array of pointers to Text objects
-  int textCount;
-  int maxtext;
-
-  Text* createNewText(int id, int size, int x, int y, const char* text_in) {
-    if (textCount >= maxtext) {
-      return nullptr;
-    }
-    Text* newText = new Text(id, size, x, y, text_in);
-    draw_texts[textCount++] = newText;
-    return newText;
-  }
-
-public:
-  TextManager(int maxTexts)
-    : textCount(0), maxtext(maxTexts) {
-    draw_texts = new Text*[maxTexts];
-    for (int i = 0; i < maxTexts; ++i) {
-      draw_texts[i] = nullptr;
-    }
-  }
-
-  ~TextManager() {
-    for (int i = 0; i < textCount; ++i) {
-      delete draw_texts[i];
-    }
-    delete[] draw_texts;
-  }
-
-  bool drawText(int id, int size, int x, int y, uint16_t col, const char* text_in) {
-    Text* foundText = nullptr;
-    // Search for text with the same id.
-    for (int i = 0; i < textCount; i++) {
-      if (draw_texts[i]->getId() == id) {
-        foundText = draw_texts[i];
-        break;
-      }
-    }
-    // If found, overwrite text with white.
-    if (foundText != nullptr) {
-      tft.setCursor(foundText->getCord().x, foundText->getCord().y);
-      tft.setTextColor(COLOR_WHITE);
-      tft.setTextSize(foundText->getSize());
-      tft.print(foundText->getTextChar());
-      // Update value.
-      foundText->cord.x = x;
-      foundText->cord.y = y;
-      foundText->size = size;
-      foundText->setText(text_in);  // Update textchar
-    }
-    // If not found, create new Text with the id
-    if (foundText == nullptr) {
-      foundText = createNewText(id, size, x, y, text_in);
-      if (foundText == nullptr) {
-        return false;
-      }
-    }
-    // Print the text.
-    tft.setCursor(foundText->cord.x, foundText->cord.y);
-    tft.setTextColor(col, COLOR_WHITE);
-    tft.setTextSize(foundText->size);
-    tft.print(foundText->getTextChar());
-    return true;
-  }
-
-
-  bool drawTextf(int id, int size, int x, int y, uint16_t col, const char* format, ...) {
-    char buffer[256];  // Temporary buffer for formatted text
-
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-
-    return drawText(id, size, x, y, col, buffer);
-  }
-};
-
-TextManager textmanager(50);
+// ※ かつてここに Point / Text / TextManager（ID 付きテキストの差分更新描画）があったが、
+//    最終的な利用箇所が設定画面のタイトル 1 箇所だけになったため v0.947 で削除した。
+//    画面外判定は cord_tft::isOutsideTft()（display_tft.h）を使うこと。
 
 
 
@@ -470,11 +266,7 @@ void draw_compass(float truetrack, uint16_t col) {
   // 読みにくかったため縮めてある（針の長さ get_needle_len() は変えていない）。
   int dist = 73 * 2 / 3 - 4;
   if (is_northupmode()) {
-#ifdef TFT_USE_ST7735
-    dist = 50 * 2 / 3 - 4;
-#else
     dist = 100 * 2 / 3 - 4;
-#endif
   }
   int centerx = BACKSCREEN_SIZE / 2;
   int centery = get_self_cy();  // TRACKUP=180, NORTHUP=120
@@ -573,13 +365,8 @@ float last_up = 0;          // 前回描画時の mapUpDirection
 
 
 
-#ifdef TFT_USE_ST7735
-#define TRIANGLE_HWIDTH 4
-#define TRIANGLE_SIZE 12
-#else
 #define TRIANGLE_HWIDTH 6
 #define TRIANGLE_SIZE 18
-#endif
 
 
 
@@ -779,20 +566,31 @@ bool eskf_calib_allowed() {
   return attitude_is_static();
 }
 
+// 95%値としきい値の比較にヒステリシスを掛ける共通処理。
+// held: 直前の判定結果（呼び出し側が保持する）。
+// 入るときは limit、出るときは limit + ESKF_YAW_TRUST_HYST_DEG で判定する。
+static bool yaw_acc_ok_hyst(float acc95, float limit, bool &held) {
+  held = held ? (acc95 < limit + ESKF_YAW_TRUST_HYST_DEG)
+              : (acc95 < limit);
+  return held;
+}
+
 bool eskf_yaw_reliable() {
   // リプレイは記録された 95% 値で当時と同じ判定を再現する。しきい値は現在の設定を
   // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
+  static bool held = false;
   float acc95;
-  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) return false;
-  return acc95 < ESKF_YAW_TRUST_95_DEG;
+  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) { held = false; return false; }
+  return yaw_acc_ok_hyst(acc95, ESKF_YAW_TRUST_95_DEG, held);
 }
 
 // ヨーが「著しく信頼できる」か（95%値 < ESKF_YAW_DRIFT_95_DEG）。
 // 偏流角を示す点線を出してよいかの判定に使う。eskf_yaw_reliable() より厳しい。
 static bool eskf_yaw_high_confidence() {
+  static bool held = false;
   float acc95;
-  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) return false;
-  return acc95 < ESKF_YAW_DRIFT_95_DEG;
+  if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) { held = false; return false; }
+  return yaw_acc_ok_hyst(acc95, ESKF_YAW_DRIFT_95_DEG, held);
 }
 
 // 自機アイコンの色。ESKF のヨーで機首を向けているときは黒、
@@ -2254,6 +2052,22 @@ float get_input_voltage(){
   return min(BATTERY_MULTIPLYER(max_adreading),4.3);
 }
 
+// リプレイ中で、CSV に電圧列（RHAVE_VOLT）がある間だけ true。
+// 電圧をリプレイ値に差し替えてよいかの判定に使う。
+bool replay_voltage_active() {
+  return replay_has_value(RHAVE_VOLT);
+}
+
+// 画面に出すバッテリー電圧 [V]。
+// リプレイ中に CSV の電圧列があればその値を返す（「そのとき画面に何が出ていたか」の再現）。
+// それ以外は実測値。
+// ※ リプレイ中でも get_input_voltage() は必ず呼ぶこと。ピーク追跡（max_adreading）を
+//   止めると、リプレイを抜けた直後に古いピークのままの電圧が出るため。
+float get_display_voltage() {
+  float real_voltage = get_input_voltage();
+  return replay_voltage_active() ? replay_get_voltage() : real_voltage;
+}
+
 // 旋回角速度（deg/s）を backscreen の左端または右端に表示する。
 // - 0.5 deg/s 未満は非表示。
 // - 正（右旋回）: 右端に表示。負（左旋回）: 左端に表示。
@@ -2496,19 +2310,34 @@ void draw_footer(){
     
 
     if(currentdestination != -1 && currentdestination < destinations_count){
-      header_footer.setTextColor(COLOR_MAGENTA);
       header_footer.setCursor(1, 17);
-      if(destination_mode == DMODE_FLYAWAY)
+      // 目的地へ「向かう(INTO)」か「離れる(AWAY)」かを色で区別する。
+      //   INTO = 青 / AWAY = 暗いオレンジ
+      // AWAY はナビ方位を 180 度反転させるモードなので、取り違えると矢印が真逆を
+      // 指す。文字だけだと INTO / AWAY が似ていて飛行中に見分けにくいため色を分ける。
+      // AUTO10K と通常モードで同じ配色にして、「青なら目的地の方へ」と
+      // モードによらず同じ読み方ができるようにしてある。
+      // ※ 白背景なので明るいオレンジ(COLOR_ORANGE)は使わない（ほぼ見えないため）。
+      if(destination_mode == DMODE_FLYAWAY){
+        header_footer.setTextColor(COLOR_DARKORANGE);
         header_footer.print("FLY AWAY");
-      if(destination_mode == DMODE_FLYINTO)
+      }
+      if(destination_mode == DMODE_FLYINTO){
+        header_footer.setTextColor(COLOR_BLUE);
         header_footer.print("FLY INTO");
+      }
       if(destination_mode == DMODE_AUTO10K){
-        if(auto10k_status == AUTO10K_INTO)
+        if(auto10k_status == AUTO10K_INTO){
+          header_footer.setTextColor(COLOR_BLUE);
           header_footer.print("10K INTO");
-        if(auto10k_status == AUTO10K_AWAY)
+        }
+        if(auto10k_status == AUTO10K_AWAY){
+          header_footer.setTextColor(COLOR_DARKORANGE);
           header_footer.print("10K AWAY");
+        }
       }
 
+      header_footer.setTextColor(COLOR_MAGENTA);  // 目的地名は元の色に戻す
       header_footer.setCursor(80, 17);
       header_footer.setTextWrap(false);
       header_footer.print(extradestinations[currentdestination].name);
@@ -2519,11 +2348,13 @@ void draw_footer(){
 
   header_footer.setCursor(SCREEN_WIDTH - 37, 1);
   header_footer.setTextColor(COLOR_GREEN);
-  if (digitalRead(USB_DETECT)) {
+  // リプレイ中は USB 接続でも電池表示にする。飛行時は USB が刺さっていないため、
+  // "USB" のままだと当時の画面を再現できない。
+  if (digitalRead(USB_DETECT) && !replay_voltage_active()) {
     header_footer.print("USB");
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
-    float input_voltage = get_input_voltage();
+    float input_voltage = get_display_voltage();
     int bat_pct = constrain((int)((input_voltage - BAT_ZERO_VOLTAGE) / (4.2f - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
     if (input_voltage <= BAT_LOW_VOLTAGE) {
       if((millis()/1000)%2 != 0){
@@ -2534,7 +2365,9 @@ void draw_footer(){
       }
       header_footer.printf("%d%%", bat_pct);
       //最後のバッテリー警告から60秒以上経過。
-      if(millis() > last_battery_warning_time+60*1000){
+      //リプレイ中は鳴らさない。過去のログの電圧で今の機体の警告を出しても意味がなく、
+      //SD のテキストログにも当時の値が「今の警告」として混ざってしまうため。
+      if(!replay_voltage_active() && millis() > last_battery_warning_time+60*1000){
         last_battery_warning_time = millis();
         if(good_sd()){
           // SD認識済み: WAVファイルを再生（最低volume60保証）
@@ -2582,13 +2415,6 @@ void draw_footer(){
   header_footer.print("SD");
 
   header_footer.pushSprite(0,290);
-}
-
-// 画面下部に「HDG UP」テキストを直接 TFT に描画する（TRACKUP モードを示す補助表示）。
-void draw_headingupmode() {
-  tft.setCursor(SCREEN_WIDTH / 2 - 18, SCREEN_HEIGHT - 21);
-  tft.setTextColor(COLOR_BLACK);  // Highlight selected line
-  tft.println("HDG UP");
 }
 
 
@@ -2885,24 +2711,6 @@ void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, floa
 
 }
 
-
-
-// 負の値にも対応した剰余演算（C++ の % は負の結果になる場合がある）。
-// brightnessIndex のループ計算（tft_change_brightness）で使用する。
-int mod(int x, int y) {
-  return x < 0 ? ((x + 1) % y) + y - 1 : x % y;
-}
-
-// 画面輝度を brightnessLevels[] 配列から 1 ステップ進める（輝度設定の切り替え）。
-// increment = +1 で明るく、-1 で暗くなる（リングバッファ方式でループする）。
-// BRIGHTNESS_SETTING_AVAIL が定義されていない場合は何もしない。
-void tft_change_brightness(int increment) {
-#ifdef BRIGHTNESS_SETTING_AVAIL
-  brightnessIndex = mod(brightnessIndex + increment, sizeof(brightnessLevels) / sizeof(brightnessLevels[0]));
-  screen_brightness = brightnessLevels[brightnessIndex];
-  analogWrite(TFT_BL, BRIGHTNESS(screen_brightness));  // For PNP transistor. 255= No backlight, 0=always on. Around 200 should be enough for lighting TFT.
-#endif
-}
 
 
 // 衛星の方位角・仰角をスカイプロット（円形の衛星配置図）上の X 座標に変換する。
@@ -3944,9 +3752,9 @@ void draw_maplist_mode(int maplist_page) {
 //   BAT_HALF_VOLTAGE 未満: マゼンタ（50%未満）
 //   それ以上             : 緑
 uint16_t battery_status_color() {
-  if (digitalRead(USB_DETECT))
+  if (digitalRead(USB_DETECT) && !replay_voltage_active())
     return COLOR_GREEN;
-  float input_voltage = get_input_voltage();
+  float input_voltage = get_display_voltage();
   if (input_voltage <= BAT_LOW_VOLTAGE)
     return COLOR_RED;
   else if (input_voltage < BAT_HALF_VOLTAGE)
@@ -3975,11 +3783,18 @@ uint16_t cpu_temp_status_color(float cpu_temp) {
 void draw_setting_mode(int selectedLine, int cursorLine) {
   // 行間 16px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
   // 最終行（Save & Exit）が表示されなくなるため、項目を増やす場合はここも調整すること。
-  // 現在の有効項目は 14（BRIGHTNESS は BRIGHTNESS_SETTING_AVAIL 未定義のため無効）。
+  // 現在の有効項目は 14。
   //   14 x 16 = 224px < 240px。18px のままだと 252px となり Save & Exit が切れる。
   const int separation = 16;
   tft.loadFont(AA_FONT_SMALL);
-  textmanager.drawText(SETTING_TITLE, 2, 5, 5, COLOR_BLUE, "SETTINGS");
+  // 背景色に COLOR_WHITE を指定して、前回のタイトルを上書き消去しながら描く。
+  tft.setCursor(5, 5);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  tft.print("SETTINGS");
+  // タイトルで上げたテキストサイズを戻す。tft は他画面と共有しているので、
+  // 2 のまま抜けると次にサイズを設定せずに描く箇所が巻き添えになる。
+  tft.setTextSize(1);
   tft.setTextColor(COLOR_BLACK);
   backscreen.fillScreen(COLOR_WHITE);
   backscreen.loadFont(AA_FONT_SMALL);  // variodetail から戻った時に unloadFont() されている場合があるため明示的にロード
@@ -3996,7 +3811,6 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
       backscreen.fillCircle(SCREEN_WIDTH-7,i * separation+7, 5, menu_settings[i].iconColor());
 
     backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
-    //textmanager.drawTextf(menu_settings[i].id, 2, 10, startY + i * separation, col, menu_settings[i].getLabel(selectedLine == i).c_str());
   }
   backscreen.pushSprite(0,30);
 
@@ -4008,11 +3822,11 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
 
   header_footer.setCursor(2, 5);
   header_footer.setTextColor(COLOR_GRAY);
-  if (digitalRead(USB_DETECT)) {
-    double input_voltage = get_input_voltage();
+  if (digitalRead(USB_DETECT) && !replay_voltage_active()) {
+    double input_voltage = get_display_voltage();
     header_footer.printf("Battery: Charging %.2fV", input_voltage);
   }else{
-    double input_voltage = get_input_voltage();
+    double input_voltage = get_display_voltage();
     int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
     header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
   }

@@ -83,7 +83,6 @@ static bool  _quat_valid = false;  // 少なくとも1回更新されたか
 static float _rv_qw = 1.0f, _rv_qx = 0.0f, _rv_qy = 0.0f, _rv_qz = 0.0f;
 static float _rv_accuracy = -1.0f;  // -1 = 未受信
 static bool  _rv_valid = false;
-static bool  _rv_updated = false;  // Euler角ログ用: 新着ROTATION_VECTORフラグ（読み出しでクリア）
 
 // LINEAR_ACCELERATION（重力除去済み、ボディフレーム [m/s²]）
 static float _lax = 0.0f, _lay = 0.0f, _laz = 0.0f;
@@ -288,7 +287,6 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
             _rv_accuracy = sv.un.rotationVector.accuracy;
             _rv_valid = true;
             _rv_cnt++;
-            _rv_updated = true;  // Euler角ログ用 新着フラグ
             imulog_push(IMULOG_ID_RV, (uint32_t)sv.timestamp, sv.status, _rv_qw, _rv_qx, _rv_qy, _rv_qz);
             // 地磁気補正付きの方位を ESKF の初期ヨーに使う（収束を待たずに絶対方位を持つため）
             attitude_on_rv(_rv_qw, _rv_qx, _rv_qy, _rv_qz, _rv_accuracy);
@@ -1041,10 +1039,6 @@ bool get_imu_alive() {
 }
 
 // クォータニオン (GAME_ROTATION_VECTOR) を返す。未更新時は単位クォータニオン (1,0,0,0)。
-void get_imu_quaternion(float &qw, float &qx, float &qy, float &qz) {
-    qw = _qw; qx = _qx; qy = _qy; qz = _qz;
-}
-
 // 線形加速度（重力除去済み、ボディフレーム [m/s²]）を返す。未更新時は 0。
 void get_imu_linaccel(float &ax, float &ay, float &az) {
     ax = _lax; ay = _lay; az = _laz;
@@ -1127,7 +1121,6 @@ float get_imu_vspeed() {
     return _imu_vspeed;
 }
 
-float get_imu_altitude()     { return _imu_altitude; }
 // KF MSL高度 = KF AGL + gnss_kf_offset（起動地MSL高度の推定値）。
 // gnss_kf_offset 未確定時（GNSS 3D fix 前）は AGL 値（＝起動時 0m）を返す。
 // リプレイ中で CSV に KF_Altitude 列があれば、その値をそのまま返す。
@@ -1155,12 +1148,6 @@ float get_imu_accel_hz() { return _accel_hz; }
 float get_imu_mag_hz()   { return _mag_hz; }
 
 // 新着ROTATION_VECTORフラグ: trueを返し同時にクリア（Euler角ログのトリガー用）
-bool get_imu_rv_updated() {
-    if (!_rv_updated) return false;
-    _rv_updated = false;
-    return true;
-}
-
 // Kalman パラメーターの動的変更（設定画面からのチューニング用）
 void imu_set_kf_params(float q_vel, float q_bias, float R) {
     kf_q_vel  = q_vel;

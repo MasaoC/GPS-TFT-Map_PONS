@@ -15,17 +15,17 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260821
-#define BUILDVERSION "0.944"
+#define BUILDDATE 20260901
+#define BUILDVERSION "0.949"
 #define VERSION_TEXT "Version 6"
 
 
 
 
 //----------GPS---------
+// GPS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
+// v5 以前の Quectel LC86G / Mediatek 対応コードは v0.947 で削除した。
 //#define DEBUG_GBX_NMEA
-//#define QUECTEL_GPS
-#define UBLOX_GPS
 
 //GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
   #define RELEASE_GPS
@@ -39,10 +39,9 @@
 
 
 //---------TFT----------
-// TFTを選択
-  #define TFT_USE_ST7789    //Tested well. Change User Setting at TFT_eSPI
-  //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
-  //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
+// パネル種別（ST7789 / ILI9341）の選択は TFT_eSPI の User_Setup で行う。
+// このファイルには選択用マクロは無い（コード側に分岐が無く、置いても効かないため）。
+// 設定サンプルは CopySetupFile_TFT_eSPI.h を参照。
 
 #define VERTICAL_FLIP
 
@@ -71,12 +70,10 @@
 // Hardware Ver6
 #define SW_PUSH 35  //30(v6 proto)
 #define BATTERY_PIN 40 //A0
-#define TFT_BL  -1
 #define GPS_SERIAL Serial1
 #define GPS_TX 0
 #define GPS_RX 1
 #define USB_DETECT 31
-#define SD_CS_PIN -1
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
@@ -206,6 +203,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
     } \
   } while(0)
 
+  // ※ 現在 DEBUG_STACK_C1 の呼び出し箇所は無い。Core1 のスタックを測りたくなったら
+  //   loop1() などに挿して使う（RELEASE ビルドでは空マクロになる）。
   #define DEBUG_STACK_C1(label) do { \
     static unsigned long _t1_; \
     if (millis() - _t1_ >= 5000) { \
@@ -264,9 +263,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ============================================================
 // MS5611 と I2C バスを共用する（i2c0, GPIO32=SDA, GPIO33=SCL, 100kHz）。
 // Core0 で imu_update() を実行する。
-// H_INT を使わない場合は -1 のまま（ポーリングモード, 15ms 間隔, バリオ用途で十分）。
-// 接続する場合はピン番号を設定（割り込みドリブンモード, 応答遅延 <1ms）。
-#define IMU_INT_PIN   -1   // BNO085 H_INT ピン（未使用: -1 → ポーリング）
+// H_INT は配線しておらず、割り込みドリブンのコードも存在しない（ポーリング専用）。
+// 割り込み化するには基板の改造とコード追加の両方が要る。
 #define IMU_RST_PIN   46   // BNO085 NRST ピン（GPIO46）
 #define IMU_I2C_ADDR  0x4B // GY-BNO080 の I2C アドレス（PS1=HIGH → 0x4B）
 
@@ -281,7 +279,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // バス負荷: i2c0 は MS5611 と共用だが、下記レートでも占有率は約 20%（400kHz）。
 //           MS5611 ~1.9% + 既存レポート ~2.2% を足しても十分余裕がある。
 // SD 負荷 : 約 260 レコード/秒 × 28B ≒ 7.3kB/s（30 分飛行で約 13MB）。
-#define IMULOG_DEFAULT_ENABLED  true  // 起動時の既定。SD 設定 imulog で切替可能
+#define IMULOG_DEFAULT_ENABLED  true  // ビルド時固定（実行時・SD からの切替手段は無い）
 
 // ============================================================
 // ★ 生レポートの有効化スイッチ ★
@@ -492,6 +490,22 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ※ 較正した場所と違う場所で静止していると誤検出する。運用上は
 //   プラットホーム上で APPLY してからそのまま待機する流れを想定している。
 #define GROUND_PITCH_WARN_DEG        3.0f
+// ---- プラットホーム近傍ではピッチ基準を「区間」にする ----
+// 台の上（-3.5 度）と台の手前の地面（0 度）は、装置からは区別がつかない。
+// 平地で APPLY してから台へ上げると SET PITCH との差が 3.5 度になり、
+// マウントは正常なのにピッチ警告が鳴ってしまう。
+// そこでプラットホームからこの距離以内では、基準を一点（SET PITCH）ではなく
+// PITCH_TARGET_MIN_DEG 〜 0 度の区間とみなし、その外へ GROUND_PITCH_WARN_DEG
+// 出たときだけ発報する（実質 -6.5 〜 +3.0 度が許容）。
+// ※ SET PITCH は書き換えない。あれは次回 APPLY の申告値も兼ねており、勝手に
+//   変えると平地で APPLY したときに姿勢オフセットへ誤差が黙って焼き付くため。
+// ※ この緩和が効くのはプラットホーム周辺だけ。試験飛行場では pla_lat/lon が
+//   遠いので従来どおりの判定になる。ロール警告は無関係に効いたままなので、
+//   マウントずれの検出経路自体は残る。
+#define PLATFORM_NEAR_KM             0.1
+// 距離判定の再計算間隔 [ms]。haversine は double 演算で重く、毎ループ回す価値がない。
+// 地上で静止しているときにしか使わず、発報まで 60 秒かかる判定なので 1 秒で十分。
+#define PLATFORM_NEAR_RECHECK_MS   1000UL
 #define GROUND_ROLL_WARN_HOLD_MS   60000UL   // この時間continuous に超えたら発報
 #define GROUND_ROLL_WARN_INTERVAL_MS 120000UL // 発報間隔の下限（鳴り続けない）
 
@@ -551,7 +565,17 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 約 10% の窓がノイズだけで発動する。1 窓で補正すると 51 分の飛行で ±0.7 度ほど
 // ランダムウォークするので、2 窓の一致を要求してこれを約 0.5% まで落とす。
 // 代償は収束が 2 倍遅くなること（1 度のズレが約 3.3 分 → 約 6.6 分）。
+// 何窓連続で「同符号・不感帯超過」なら補正するか。想定値は 1〜4。
+//   1 : 毎窓補正する。収束は速いがノイズだけで動く（実測で 50 分に ±0.7 度の
+//       ランダムウォーク）。試験用。
+//   2 : 推奨。誤発動を約 10% → 約 0.5% に落とせる。収束は 1 窓の 2 倍遅くなる
+//       （1 度のズレが約 3.3 分 → 約 6.6 分）。実運用はこの値を使うこと。
+//   3,4: さらに厳しくする。誤発動はほぼ無くなるが、60 秒窓 × N なので
+//       短い試験飛行では一度も補正が入らなくなる。
 #define ROLL_TRIM_CONFIRM_WINDOWS  2
+#if (ROLL_TRIM_CONFIRM_WINDOWS < 1) || (ROLL_TRIM_CONFIRM_WINDOWS > 4)
+  #error "ROLL_TRIM_CONFIRM_WINDOWS must be 1, 2, 3 or 4 (2 recommended)"
+#endif
 // 累積補正量の表示色としきい値 [度]。正しく取り付いていれば実測上ほぼ 0 のままなので、
 // 大きな累積は「取り付けか機体に異常がある」ことを意味する。
 #define ROLL_TRIM_WARN_DEG      1.5f    // これ以上でオレンジ（ステータス丸も緑から外す）
@@ -598,6 +622,18 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 実測（模擬）: 直進＋フゴイド±0.3m/s で 5 分後に 2σ=18.8度、10 分後に 14.4度。
 //               完全等速だと 15 分でも 37度で閾値を割らない（安全側で正しい）。
 #define ESKF_YAW_TRUST_95_DEG  20.0f
+// しきい値まわりのばたつきを防ぐヒステリシス幅 [度]。
+// 一度「信頼できる」と判定したら、95%値が (しきい値 + この幅) を超えるまでは
+// 信頼できる扱いを続ける。逆方向（信頼できない → できる）はしきい値そのままで判定する。
+//
+// ヨーの 95%値は直進で育ち旋回で縮むため、長い直進脚のある本番では
+// しきい値付近を行き来する。ヒステリシスが無いと、自機アイコンの向きが
+// 「機首方位」と「対地進路」の間で切り替わり、偏流点線も出たり消えたりする。
+// 変化は分オーダーなので高速なちらつきではないが、飛行中に見え方が変わるのは紛らわしい。
+//
+// 3 度は 20 度に対して 15%。偏流角（巡航 7m/s・横風 1m/s で約 8 度）に比べて
+// 十分小さいので、23 度まで許容しても表示の意味は変わらない。
+#define ESKF_YAW_TRUST_HYST_DEG 3.0f
 // これを下回るときだけ、機首の先に偏流角を示す点線を描く。
 // TRUST より厳しくしてあるのは、点線は「トラックとのわずかな差」を読ませる表示なので、
 // ヨーの誤差が偏流角そのものと同程度あると意味を成さないため。
@@ -631,7 +667,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 10 秒で既に 0.37 m/s まで落ちており、色分けの刻み(2.0 m/s)に対して誤差の桁が違う。
 // 30 秒まで延ばしても 0.09 m/s しか改善しないので、表示が出るまでの待ち時間を優先する。
 #define WIND_LPF_SEC            10.0f
-#define WIND_MIN_SPEED_MPS       3.0f   // これ以上の対地速度でのみ推定する（地上で回さない）
+#define WIND_MIN_SPEED_MPS       2.0f   // これ以上の対地速度でのみ推定する（地上で回さない）
 #define WIND_ARROW_LEN_PX          44   // 矢印の全長 [px]（強さは色で表すので長さは固定）
 #define WIND_ARROW_HEAD_PX         14   // 矢じりの長さ [px]
 #define WIND_ARROW_WIDTH_PX         3   // 軸の太さ [px]
@@ -663,7 +699,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //
 // VSI = x[1] (速度) は以下の2ステップで更新される:
 //
-//   ① predict (50Hz, IMU 加速度):
+//   ① predict (約33Hz = IMU_KF_PREDICT_INTERVAL_US 30ms 周期, IMU 加速度):
 //       x[1] += (a_k - x[2]) * dt
 //       P[1][1] += KF_Q_VEL    ← 速度の不確かさを毎ステップ KF_Q_VEL だけ増やす
 //
@@ -717,11 +753,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   0    → 従来どおり（水平加速度による補正なし）
 //   大きい → 少しの水平加速度でも IMU の影響を早く落とす
 //
-// 参考: gain=0.01 のときの q_vel_eff
-//   horiz 0 m/s² → 0.050 (×1.0)
-//   horiz 2 m/s² → 0.090 (×1.8)
-//   horiz 4 m/s² → 0.210 (×4.2)
-//   horiz 8 m/s² → 0.690 (×13.8)
+// 参考: gain=0.01・KF_Q_VEL=0.02（既定値）のときの q_vel_eff
+//   horiz 0 m/s² → 0.020 (×1.0)
+//   horiz 2 m/s² → 0.060 (×3.0)
+//   horiz 4 m/s² → 0.180 (×9.0)
+//   horiz 8 m/s² → 0.660 (×33.0)
+// ※ KF_Q_VEL は SD 設定 kf_q_vel で実行時に変わるので、実際の倍率もそれに追従する。
 #define KF_HORIZ_ACCEL_GAIN  0.01f
 
 // ============================================================

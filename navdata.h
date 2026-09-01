@@ -31,7 +31,6 @@
     LatLonManager();
     void addCoord(Coordinate position);
     int getCount();
-    void printData();
     void reset();
     Coordinate getData(int newest_index);
   };
@@ -78,15 +77,6 @@
   #define SHISHI_LAT 36.4734161//36.44641973
   #define SHISHI_LON 136.9234498//136.64713865
 
-
-
-
-/*. old
-  #define PILON_NORTH_LAT 35.41640778478595
-  #define PILON_NORTH_LON 136.1183001762145
-  #define PILON_SOUTH_LAT 35.23295479141404
-  #define PILON_SOUTH_LON 136.0493286559818
-*/
 
   #define TAKESHIMA_LAT 35.296584352454964
   #define TAKESHIMA_LON 136.1780537684742
@@ -160,10 +150,19 @@
   extern int destination_mode;
 
 
-  extern int auto10k_status;
   #define AUTO10K_AWAY 0
   #define AUTO10K_INTO 1
+  // 表示・ナビ方位に使う現在のフェーズ。リプレイ再生中は再生データで書き換わる。
   extern int auto10k_status;
+
+  // ---- 折返しフェーズの永続化 ----
+  // 飛行中に再起動すると AWAY に戻り、復路ではナビ方位が 180 度逆を指したまま
+  // 自動復帰しない（距離だけでは往路と復路を区別できないため）。そこで SD に保存する。
+  // リプレイ再生でも状態遷移は起きるので、保存用の値は実飛行の遷移だけで更新する。
+  void set_auto10k_status_flight(int st);   // 実飛行の遷移。現在値と保存値の両方を更新
+  int  get_auto10k_status_flight();         // SD へ書く値（リプレイの影響を受けない）
+  void restore_auto10k_status(int st);      // SD 設定からの復元
+  void auto10k_leave_replay();              // リプレイを抜けたとき実飛行の値へ戻す
 
   void init_destinations();
 

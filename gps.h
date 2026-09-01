@@ -98,9 +98,6 @@
   uint32_t get_gps_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
   float    get_gps_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
-  float    get_gps_veln_mps();    // GNSS 北向き速度（NAV-PVT velN、m/s）
-  float    get_gps_vele_mps();    // GNSS 東向き速度（NAV-PVT velE、m/s）
-  uint32_t get_gps_itow_ms();     // GPS 週内時刻（NAV-PVT iTOW、ms）
   bool     get_gps_gnssFixOK();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 
   GpsDate get_gpsdate();

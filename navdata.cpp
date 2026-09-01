@@ -30,7 +30,27 @@ float dest_dist = 0;
 // destination_mode: ナビモード（FLYINTO / FLYAWAY / AUTO10K）。設定画面から変更可。
 int destination_mode = DMODE_FLYAWAY;
 // auto10k_status: AUTO10K モード時のフェーズ（AWAY=折り返し前 / INTO=折り返し後）。
+// リプレイ再生中は再生データに従って動くので、実飛行の値とは別に持つ。
 int auto10k_status = AUTO10K_AWAY;
+// SD に保存する値。実飛行の遷移だけで更新し、リプレイでは触らない。
+static int auto10k_status_flight = AUTO10K_AWAY;
+void set_auto10k_status_flight(int st) {
+  auto10k_status = st;
+  auto10k_status_flight = st;
+}
+int  get_auto10k_status_flight() { return auto10k_status_flight; }
+
+void restore_auto10k_status(int st) {
+  auto10k_status_flight = st;
+  // 設定の読み込みは起動時（リプレイ前）にしか走らないが、念のため
+  // リプレイ中は表示側の値を書き換えない。
+  if (!getReplayMode()) auto10k_status = st;
+}
+
+void auto10k_leave_replay() {
+  // 再生した過去フライトのフェーズを実飛行に持ち込まない。
+  auto10k_status = auto10k_status_flight;
+}
 
 
 // extramaps[]: SD カードから読み込んだ地図ポリゴンを格納する配列。
@@ -214,18 +234,6 @@ void LatLonManager::addCoord(Coordinate position) {
 // 現在格納されているデータ件数を返す
 int LatLonManager::getCount() {
   return count;
-}
-
-// デバッグ用：全座標をシリアル出力する
-void LatLonManager::printData() {
-  for (int i = 0; i < count; i++) {
-    DEBUG_P(20250508,"Coordinate ");
-    DEBUG_P(20250508,i + 1);
-    DEBUG_P(20250508,": Latitude = ");
-    DEBUG_P(20250508,coords[i].latitude);
-    DEBUG_P(20250508,", Longitude = ");
-    DEBUG_PLN(20250508,coords[i].longitude);
-  }
 }
 
 // バッファをクリアする（カウントとインデックスを 0 にリセット）
