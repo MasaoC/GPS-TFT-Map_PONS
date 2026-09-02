@@ -43,25 +43,42 @@
 
 #include "imu.h"
 #include "settings.h"
-#include "airdata.h"  // myWire (i2c0, GPIO32/33) を共用する
+#include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
 #include "mysd.h"     // enqueueTask / createLogSdfTask
 #include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
 #include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // ============================================================
-// I2C バス（MS5611 と共用: i2c0, GPIO32=SDA, GPIO33=SCL）
+// 注意: BNO085 は MS5611 とはバスを共有していない
 // ============================================================
-// airdata.cpp で定義された myWire を extern で参照する。
-// バスの begin() / setClock() は airdata_setup() で完了済みのため
-// imu_setup() では呼ばない。
+// MS5611 は i2c0(GPIO32/33、airdata.cpp の myWire)。
+// BNO085 は SPI1(GPIO41-44) または i2c1(GPIO34/35) で、下の imuWire を使う。
+// v6 までは両方 i2c0 だったが、v7 基板で分離した。
+
+// ============================================================
+// BNO085 ホストバス（SPI / I2C）
+// ============================================================
+// settings.h の IMU_BUS_SPI で切り替える。ハード側の半田ジャンパ JP1（PS1）と
+// 必ず一致させること（SPI: JP1=+3V3 / I2C: JP1=GND）。
+//
+// v7 基板では BNO085 の H_SCL/H_SDA に SPI1 と I2C1 の両方が繋がっている
+// （R46/R47 の 0Ω で連結）。使わない側は begin() を呼ばないことで
+// 高インピーダンスのまま放置し、バス衝突を避ける。
+//   → SPI モードでは Wire1 を絶対に begin() しないこと
+//   → I2C モードでは SPI1 を絶対に begin() しないこと
+#ifdef IMU_BUS_SPI
+  #include <SPI.h>
+#else
+  static TwoWire imuWire(i2c1, IMU_I2C_SDA, IMU_I2C_SCL);
+#endif
 
 // ============================================================
 // BNO085 ドライバーオブジェクト
 // ============================================================
 // ライブラリ側のリセット機能は無効(-1)にする。
-// begin_I2C() 内部のリセット待ちは ~10ms しかなく BNO085 のブートに不足するため。
-// 手動リセットは imu_setup() の先頭で行う（NRST を LOW→HIGH して 400ms 待つ）。
+// begin_*() 内部のリセット待ちは ~10ms しかなく BNO085 のブートに不足するため。
+// 手動リセットは imu_bus_reset() で行う（NRST を LOW→HIGH して 400ms 待つ）。
 static Adafruit_BNO08x  bno08x(-1);
 static sh2_SensorValue_t sv;  // imu_sensor_handler() が sh2_decodeSensorEvent() で埋める作業バッファ
 
@@ -302,7 +319,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
 // imu_enable_reports(): レポート有効化と SH2 コールバック登録
 // ============================================================
 // imu_setup() と imu_try_recovery() の両方から呼ぶ。
-// 復旧時にここを通さないと、begin_I2C() が Adafruit 既定のハンドラを
+// 復旧時にここを通さないと、begin_*() が Adafruit 既定のハンドラを
 // 再登録してしまい、レポート取りこぼしのバグが静かに復活する。
 //
 // レートは settings.h の IMU_RATE_*_HZ で一元管理する。
@@ -348,7 +365,7 @@ static bool imu_enable_reports() {
     }
 
     // ---- 自前の SH2 コールバックを登録（Adafruit 既定のものを上書きする）----
-    // begin_I2C() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
+    // begin_*() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
     // これにより 1 パケットに複数レポートが載っていても全件処理できる（取りこぼし解消）。
     sh2_setSensorCallback(imu_sensor_handler, NULL);
     return all_ok;
@@ -657,62 +674,135 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
 }
 
 
+
+// ============================================================
+// BNO085 ホストバスの共通処理（SPI / I2C 両対応）
+// ============================================================
+// imu_setup() と imu_try_recovery() の両方から使う。
+// リセット手順とバス初期化を 1 箇所に集約して、片方だけ直し忘れるのを防ぐ。
+
+// プロトコル選択ピン（PS0）を、これから使うバスに合わせて駆動する。
+// データシート Figure 1-5:  PS1=1,PS0=1 → SPI /  PS1=0,PS0=0 → I2C
+// PS1 は半田ジャンパ JP1 側で固定されているので、ソフトが触るのは PS0 だけ。
+// ※ SPI では「リセット前から、最初の H_INTN アサートまで」HIGH を保つ必要がある
+//   （データシート 1.2.4 の注記5）。ここで HIGH にしてからリセットを掛ける。
+static void imu_bus_select_protocol() {
+    pinMode(IMU_PS0_WAKE_PIN, OUTPUT);
+#ifdef IMU_BUS_SPI
+    digitalWrite(IMU_PS0_WAKE_PIN, HIGH);   // PS0=1 → SPI
+    // SA0/H_MOSI は SPI ではデータ線なので、ここでは触らない。
+#else
+    digitalWrite(IMU_PS0_WAKE_PIN, LOW);    // PS0=0 → I2C
+    // I2C ではこのピンが SA0（アドレス下位ビット）になる。HIGH で 0x4B。
+    pinMode(IMU_I2C_SA0_PIN, OUTPUT);
+    digitalWrite(IMU_I2C_SA0_PIN, (IMU_I2C_ADDR & 1) ? HIGH : LOW);
+#endif
+}
+
+// NRST パルスで BNO085 を確実にリセットする。
+// USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は前回実行時の
+// SHTP/SH2 状態を保持したままになる。この状態では begin_*() が失敗するため必ず通す。
+//   LOW 期間 : 10ms（最小パルス幅 100µs を大幅に超える）
+//   ブート待機: 400ms（データシート推奨値）
+// ※ プロトコル選択ピンはリセット時にラッチされるので、
+//   必ず imu_bus_select_protocol() を先に呼んでから使うこと。
+static void imu_bus_reset() {
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+    pinMode(IMU_RST_PIN, OUTPUT);
+    digitalWrite(IMU_RST_PIN, LOW);
+    delay(10);
+    digitalWrite(IMU_RST_PIN, HIGH);
+    delay(400);
+#else
+    delay(200);
+#endif
+}
+
+// バスを初期化して Adafruit_BNO08x を開始する。成功で true。
+// リトライは呼び出し側が行う。
+static bool imu_bus_begin() {
+#ifdef IMU_BUS_SPI
+    // arduino-pico では begin() の前にピンを割り当てる。
+    // CS はライブラリ（Adafruit_SPIDevice）が digitalWrite で叩くので setCS() は呼ばない。
+    static bool spi_pins_done = false;
+    if (!spi_pins_done) {
+        SPI1.setSCK(IMU_SPI_SCK);
+        SPI1.setTX(IMU_SPI_MOSI);
+        SPI1.setRX(IMU_SPI_MISO);
+        spi_pins_done = true;   // begin() 後は setSCK() 等が false を返すだけなので一度きり
+    }
+    // begin_SPI() が内部で SPI1.begin() と pinMode(INT, INPUT_PULLUP) を行う。
+    // 転送設定は 1MHz / SPI_MODE3 / MSB first（BNO085 の要求どおり）。
+    return bno08x.begin_SPI(IMU_SPI_CS, IMU_INT_PIN, &SPI1);
+#else
+    // 先にアドレス応答を確認しておく（失敗時のログを分かりやすくするため）。
+    imuWire.beginTransmission(IMU_I2C_ADDR);
+    if (imuWire.endTransmission() != 0) {
+        DEBUGW_PLN(20260901, "[IMU] BNO085 no ACK on i2c1");
+        return false;
+    }
+    return bno08x.begin_I2C(IMU_I2C_ADDR, &imuWire);
+#endif
+}
+
+// SPI モードで、初期化完了後に WAKE を有効な状態へ落ち着かせる。
+// BNO085 の PS0 はリセット後 WAKE（負論理）に役割が変わる。
+// Adafruit のライブラリは WAKE を駆動しないため、こちらで LOW に保持して
+// デバイスをスリープさせない。本機は 250Hz でポーリングし続けるので、
+// スリープさせる意味が無く、保持しておく方が取りこぼしが起きない。
+static void imu_bus_post_init() {
+#ifdef IMU_BUS_SPI
+    digitalWrite(IMU_PS0_WAKE_PIN, LOW);
+#endif
+}
+
+// バスの名前（ログ用）
+static const char* imu_bus_name() {
+#ifdef IMU_BUS_SPI
+    return "SPI1";
+#else
+    return "i2c1";
+#endif
+}
+
 // ============================================================
 // imu_setup(): BNO085 の初期化
 // ============================================================
 void imu_setup() {
     DEBUG_PLN(20260315, "[IMU] imu_setup() start");
+    DEBUGW_P(20260901, "[IMU] host bus = "); DEBUGW_PLN(20260901, imu_bus_name());
 
-    // ---- NRST によるハードウェアリセット ----
-    // USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は
-    // 前回実行時の SHTP/SH2 状態を保持したままになる。
-    // この状態では I2C が不整合のまま begin_I2C() が失敗するため、
-    // setup() 冒頭で NRST を手動でアサートして BNO085 自体を確実にリセットする。
-    //   LOW 期間: 10ms（最小パルス幅 100µs を大幅に超える）
-    //   ブート待機: 400ms（BNO085 データシート推奨値。電源投入後のブート時間と同等）
-    //
-    // ※ NRST は負論理: LOW でリセットアサート、HIGH で通常動作。
-    // ※ setup() で INPUT_PULLUP 設定済みだが、ここで OUTPUT に切り替えてパルスを出す。
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-    pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート
-    delay(10);                         // 10ms 保持（min 100µs）
-    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
-    delay(400);                        // BNO085 ブート完了を待つ（~400ms）
-    DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
+    // ---- プロトコル選択 → ハードウェアリセット ----
+    // PS1/PS0 はリセット時にラッチされるので、必ずこの順で行う。
+    // I2C バス（i2c1）は BNO085 専用。MS5611 の i2c0 とは別系統なので独立に初期化する。
+    imu_bus_select_protocol();
+#ifndef IMU_BUS_SPI
+    imuWire.begin();
+    imuWire.setClock(IMU_I2C_HZ);
 #endif
-
-    // I2C バスは airdata_wire_begin() で初期化済みのため begin()/setClock() は不要。
-    // myWire (i2c0, GPIO32/33, 100kHz) をそのまま使う。
-
-    // BNO085 への接続確認（アドレス応答チェック）
-    myWire.beginTransmission(IMU_I2C_ADDR);
-    if (myWire.endTransmission() != 0) {
-        DEBUGW_PLN(20260315, "[IMU] BNO085 not found on I2C bus. Check wiring/address.");
-        bno085_ok = false;
-        enqueueTask(createLogSdTask("BNO085 not found"));
-        return;
-    }
+    imu_bus_reset();
+    DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
 
     // Adafruit_BNO08x でセンサーを初期化する。
-    // BNO085 は I2C アドレスに ACK を返せても SH2/SHTP 層の Ready まで時間がかかるため、
-    // begin_I2C() を最大 5 回リトライする（各リトライ前に 200ms 待機）。
+    // BNO085 はバスに応答できても SH2/SHTP 層の Ready まで時間がかかるため、
+    // 最大 5 回リトライする（各リトライ前に 200ms 待機）。
     bool imu_begun = false;
     for (int retry = 0; retry < 5; retry++) {
-        if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire)) {
+        if (imu_bus_begin()) {
             imu_begun = true;
             break;
         }
-        DEBUGW_P(20260315, "[IMU] begin_I2C retry ");
+        DEBUGW_P(20260315, "[IMU] begin retry ");
         DEBUGW_PLN(20260315, retry + 1);
         delay(200);
     }
     if (!imu_begun) {
-        DEBUGW_PLN(20260315, "[IMU] BNO085 begin_I2C() FAILED.");
-        enqueueTask(createLogSdTask("BNO085 begin_I2C FAILED"));
+        DEBUGW_PLN(20260315, "[IMU] BNO085 begin() FAILED.");
+        enqueueTask(createLogSdfTask("BNO085 begin FAILED (%s)", imu_bus_name()));
         bno085_ok = false;
         return;
     }
+    imu_bus_post_init();
 
     if (!imu_enable_reports()) {
         // 個々の失敗はログに残すが、致命ではないので続行する
@@ -760,10 +850,9 @@ void imu_setup() {
 // imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数）
 // ============================================================
 // imu_update() から呼ばれる。内部で1分レート制限する。
-// NRST を LOW→HIGH してハードウェアリセット後、begin_I2C() で再初期化を試みる。
+// NRST を LOW→HIGH してハードウェアリセット後、begin_*() で再初期化を試みる。
 // 成功すれば bno085_ok=true に戻し、失敗なら次の1分後に再試行する。
-// MS5611 と I2C バスを共用しているため Wire のリセットは行わない
-//（NRST による BNO085 リセットで SDA が解放されることを期待する）。
+// v7 では BNO085 専用バス（SPI1 / i2c1）なので、MS5611 側への影響は無い。
 // ※ NRST パルス＋ブート待機で Core0 が最大 410ms ブロックする。
 //   1分に1度のみ実行のため、画面の一時的な停止は許容する。
 // CORE0
@@ -777,25 +866,25 @@ static void imu_try_recovery() {
     enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
     DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
 
-    // ---- BNO085 ハードウェアリセット ----
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-    pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
-    delay(10);
-    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
-    delay(400);                        // BNO085 ブート完了待機（データシート推奨値）
-#else
-    delay(200);  // RST ピンなし: SH2 リセット完了を待つだけ
-#endif
+    // ---- プロトコル再選択 → ハードウェアリセット ----
+    // PS0 は SPI 運用中 WAKE として LOW に落としてあるので、リセット前に
+    // プロトコル選択のレベル（SPI なら HIGH）へ戻してからパルスを掛ける。
+    imu_bus_select_protocol();
+    imu_bus_reset();
 
     // ---- 再初期化 ----
     // レポート有効化と SH2 コールバック登録は imu_enable_reports() に集約している。
     // ここで直接 enableReport() を並べてはいけない:
     //   ・settings.h のレート設定と二重管理になる
     //   ・生レポート（ESKF 用）が復旧後に復活しない
-    //   ・begin_I2C() が再登録した Adafruit 既定ハンドラを上書きし損ね、
+    //   ・begin_*() が再登録した Adafruit 既定ハンドラを上書きし損ね、
     //     レポート取りこぼしのバグが静かに戻る
-    if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire) && imu_enable_reports()) {
+    bool recovered = imu_bus_begin();
+    if (recovered) {
+        imu_bus_post_init();
+        recovered = imu_enable_reports();
+    }
+    if (recovered) {
         // 受信時刻をリセット（クォータニオン・加速度も無効化）。
         // millis() をセットすることで、1秒以内にデータが届かなければ再度 timeout → 再試行の
         // サイクルに入れる。0 にすると bno085_ok=true のまま再試行が永遠に発火しなくなる。
@@ -876,8 +965,16 @@ void imu_update() {
     _poll_last_us = _now_us;
 
     // ---- データ取り出し ----
-    // sh2_service() は届いている SHTP パケットを全部処理し、
-    // レポート 1 件ごとに imu_sensor_handler() を呼ぶ。取りこぼしは発生しない。
+    // sh2_service() は HAL の read() を「1 回だけ」呼び、SHTP パケットを 1 個処理する
+    // （shtp.c の shtp_service() はループしない）。1 パケットに複数レポートが載っている
+    // 場合は、その全部が imu_sensor_handler() に配られる。
+    // つまり「1 ポーリング = 1 パケット」で、パケット内の取りこぼしは無いが、
+    // パケットが溜まっている場合は 1 回の呼び出しでは 1 個しか引き取れない。
+    // 溜まった分は BNO085 内部のキューに残り、次のポーリングで順に引き取る。
+    // ドレイン能力 = 1/IMU_POLL_INTERVAL_US（4ms なら 250 パケット/秒）。
+    // 要求レート（合計 145 レポート/秒。同時刻のものは 1 パケットにまとまる）に対する
+    // 余裕がこれで決まる。足りないと BNO085 側でレポートが捨てられる
+    // （settings.h の IMULOG_RAW_REPORTS_ENABLED に書いた 2026-08-17 の飢餓事件）。
     //
     // ※ Adafruit の bno08x.getSensorEvent() は使わない。
     //   あちらは sh2_service() の結果を単一スロット _sensor_value に上書きするため、
@@ -887,6 +984,15 @@ void imu_update() {
     //   要求レートを上げるほどこの取りこぼしが増える。
     //   2026-08-17 に GRV/LACC/RV が 15/15/5Hz 設定に対し 4/5/1Hz まで飢餓になり、
     //   古い加速度を繰り返し積分してバリオが暴れた原因がこれだった。
+#ifdef IMU_BUS_SPI
+    // ★SPI では H_INTN がアサート（LOW）されている時だけ sh2_service() を呼ぶこと。
+    //   Adafruit の SPI HAL は読み出しの度に spihal_wait_for_int() で INT を待ち、
+    //   来なければ delay(1) を 500 回まわす（= Core0 が最大 500ms 止まる）。
+    //   BNO085 の SPI は「INT が来たら転送する」プロトコルなので、
+    //   ここで見てから入れば待たされない。I2C にはこの制約は無い。
+    if (digitalRead(IMU_INT_PIN) != LOW) return;
+#endif
+
     _report_count = 0;
     sh2_service();
     int read_count = _report_count;

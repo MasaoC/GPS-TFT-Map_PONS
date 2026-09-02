@@ -29,6 +29,7 @@
 #include "airdata.h"
 #include "imu.h"
 #include "vectormap.h"
+#include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）
 #define AA_FONT_SMALL NotoSansBold15   // アンチエイリアス付き小サイズフォント（地図テキスト等）
@@ -162,20 +163,22 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 
 
 // TFT ディスプレイと描画スプライトを初期化する。
-// 1. GPIO27(WR) / GPIO28(DC) を LOW にしてから TFT を起動する。
+// 1. TFT_WR / TFT_DC を LOW にしてから TFT を起動する。
 // 2. VERTICAL_FLIP マクロでパネル向きを切り替える（setRotation）。
 // 3. backscreen（240×BACKSCREEN_SIZE）と header_footer（240×HEADERFOOTER_HEIGHT）スプライトを作成する。
 // スプライトは一度だけ作成すれば再利用できるため、created() で二重作成を防ぐ。
 void setup_tft() {
 
-  //TFT_WR
-  gpio_init(27);
-  gpio_set_dir(27, GPIO_OUT);
-  gpio_put(27, 0);
+  //TFT_WR 
+  gpio_init(TFT_WR);
+  gpio_set_dir(TFT_WR, GPIO_OUT);
+  gpio_put(TFT_WR, 0);
+
+
   //TFT_DC
-  gpio_init(28);
-  gpio_set_dir(28, GPIO_OUT);
-  gpio_put(28, 0);
+  gpio_init(TFT_DC);
+  gpio_set_dir(TFT_DC, GPIO_OUT);
+  gpio_put(TFT_DC, 0);
 
 
   tft.begin();

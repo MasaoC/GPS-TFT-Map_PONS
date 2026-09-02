@@ -16,8 +16,8 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260901
-#define BUILDVERSION "0.949"
-#define VERSION_TEXT "Version 6"
+#define BUILDVERSION "0.950"
+#define VERSION_TEXT "Version 7"
 
 
 
@@ -68,7 +68,7 @@
 // =====Hardware Settings =====
 
 // Hardware Ver6
-#define SW_PUSH 35  //30(v6 proto)
+#define SW_PUSH 37  // v7 35->37に変更
 #define BATTERY_PIN 40 //A0
 #define GPS_SERIAL Serial1
 #define GPS_TX 0
@@ -78,7 +78,7 @@
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
-#define SD_DETECT 8
+#define SD_DETECT 10  //v7 8->10に変更
 
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
 #define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
@@ -86,7 +86,7 @@
 #define BAT_ZERO_VOLTAGE 3.4
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
-#define USERLED_PIN 34 //ユーザーLED（エラー表示用。エラー時 HIGH）
+#define USERLED_PIN 36 //ユーザーLED（エラー表示用。エラー時 HIGH） v7 34->36に変更
 #define SIN_VOLUME 0.15f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
 #define VARIO_VOL_SCALE 3
 // 上昇ビープ（高音）の音量を、下降音（低音）に対して何%にするかの補正。
@@ -259,14 +259,53 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #endif
 
 // ============================================================
-// BNO085 IMU (GY-BNO080) ハードウェア設定
+// BNO085 IMU ハードウェア設定
 // ============================================================
-// MS5611 と I2C バスを共用する（i2c0, GPIO32=SDA, GPIO33=SCL, 100kHz）。
 // Core0 で imu_update() を実行する。
-// H_INT は配線しておらず、割り込みドリブンのコードも存在しない（ポーリング専用）。
-// 割り込み化するには基板の改造とコード追加の両方が要る。
-#define IMU_RST_PIN   46   // BNO085 NRST ピン（GPIO46）
-#define IMU_I2C_ADDR  0x4B // GY-BNO080 の I2C アドレス（PS1=HIGH → 0x4B）
+//
+// ---- ホストバスの選択（SPI / I2C）----
+// v7 基板は BNO085 のホスト側を SPI と I2C の両方に配線してある。
+// 同じ 2 本の線に SPI1 と I2C1 の両方が繋がっており（R46/R47 の 0Ω で連結）、
+// 使わない側の周辺機能を初期化しないことで高インピーダンスに保つ。
+//
+// ★ソフトとハード（半田ジャンパ JP1）の両方を合わせること。
+//   BNO085 は PS1/PS0 の組み合わせでプロトコルを決める（データシート Figure 1-5）:
+//       PS1=1, PS0=1 → SPI
+//       PS1=0, PS0=0 → I2C
+//   PS1 は JP1（既定は 1-2 ブリッジ＝+3V3）、PS0 は GPIO47 でソフトが駆動する。
+//
+//   SPI にする場合: IMU_BUS_SPI を定義 + JP1 は既定（1-2 = +3V3）のまま
+//   I2C にする場合: IMU_BUS_SPI をコメントアウト + JP1 を 2-3（GND）へ付け替え
+//
+// ※ SD の settings.txt では切り替えられない。設定の読み込みは Core1 の setup_sd() で、
+//   imu_setup()（Core0）より後に走るため間に合わないため。ビルド時に決める。
+#define IMU_BUS_SPI        // ← コメントアウトすると I2C（バックアップ経路）になる
+
+#define IMU_RST_PIN   46   // BNO085 NRST（負論理）
+// H_INTN（負論理）。SPI では必須:
+//   ・Adafruit のライブラリが begin_SPI() に渡して転送前の待ち合わせに使う
+//   ・imu_update() は INT がアサートされている時だけ sh2_service() を呼ぶ
+//     （そうしないと SPI HAL の待ちで Core0 が最大 500ms 止まる）
+// I2C では未使用（ポーリングのみ）。
+#define IMU_INT_PIN   45
+#define IMU_PS0_WAKE_PIN 47 // BNO085 PS0/WAKE。リセット時はプロトコル選択、以降は WAKE
+
+// ---- SPI（既定）----
+// RP2350 の SPI1 固定割り当て。BNO085 は SPI Mode 3 / MSB first（ライブラリ側で設定）。
+#define IMU_SPI_CS    41   // H_CSN
+#define IMU_SPI_SCK   42   // H_SCL/SCK
+#define IMU_SPI_MOSI  43   // SA0/H_MOSI
+#define IMU_SPI_MISO  44   // H_SDA/H_MISO
+
+// ---- I2C（バックアップ）----
+// i2c1。MS5611 の i2c0(GPIO32/33) とは別バス。
+#define IMU_I2C_SDA   34
+#define IMU_I2C_SCL   35
+#define IMU_I2C_HZ    400000
+// SA0 が下位 1bit を決める（0x4A / 0x4B）。SA0 は SPI の MOSI と同じ GPIO43 なので、
+// I2C モードでは HIGH に固定して 0x4B にする。
+#define IMU_I2C_ADDR  0x4B
+#define IMU_I2C_SA0_PIN  43
 
 // ============================================================
 // 生 IMU ロガー（姿勢 ESKF のオフライン開発用）
