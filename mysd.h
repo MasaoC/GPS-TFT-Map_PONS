@@ -15,6 +15,7 @@
   #define MYSD_H
   #include "display_tft.h"
   #include <Arduino.h>
+  #include "lora_link/link_proto.h"
 
   typedef enum {
       TASK_NONE,
@@ -30,8 +31,8 @@
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
       TASK_LOG_IMUREPLAY,
-      TASK_LOAD_LOGO,     // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
-      TASK_FLUSH_IMULOG   // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
+      TASK_FLUSH_IMULOG,  // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
+      TASK_SAVE_RXCSV     // 無線で受信したテレメトリを received/ へ書き出す
   } TaskType;
 
 
@@ -58,22 +59,9 @@
 
     // ReplayRow.have のビット。その列が CSV に存在し値が読めた場合に立つ。
     // 立っていない項目は再生時に実センサ値へフォールバックする（v5データは高度等を持たない）。
-    #define RHAVE_GS     0x0001
-    #define RHAVE_TTRACK 0x0002
-    #define RHAVE_GNSSALT    0x0004
-    #define RHAVE_KFALT  0x0008
-    #define RHAVE_KFVS   0x0010
-    #define RHAVE_PRESS  0x0020
-    #define RHAVE_DATE   0x0040
-    #define RHAVE_NUMSAT 0x0080
-    #define RHAVE_VOLT   0x0100
-    // 姿勢ログ（imu_replaydata/ または euler/）から読めた項目。
-    // RHAVE_ATT 以外は ESKF の結果を持つ新形式にしか無い。
-    #define RHAVE_ATT      0x0200   // ロール・ピッチ
-    #define RHAVE_ATT_YAW  0x0400   // ヨー + ヨー精度95%値
-    #define RHAVE_ATT_AVG  0x0800   // 平均ピッチ
-    #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
-    #define RHAVE_ATT_WIND 0x2000   // 風速・風向（推定できていた区間のみ）
+    // ★ RHAVE_* の定義は lora_link/link_proto.h へ移した（上で include 済み）。
+    //   電波に載せるテレメトリでも同じビットを使うため、実体は共有ヘッダに 1 つだけ置く。
+    //   2 か所に書くと必ずずれて、無線とリプレイで意味が食い違う。
 
     // CSV 1行分のリプレイデータ。Core1 が生成し Core0 が消費する。
     typedef struct {
@@ -227,6 +215,10 @@
               float voltage;      // バッテリー電圧 [V]（リプレイで当時の電池表示を再現するため）
               int numsat;         // 測位に使用した衛星数（同上）
               int year, month, day, hour, minute, second, centisecond;
+              // ---- 受信ログ（received/）用の追加列。TASK_SAVE_RXCSV でのみ使う ----
+              int      rssi;      // 受信強度 [dBm]
+              uint16_t seq;       // 送信側の連番。取りこぼしの解析に使う
+              uint16_t age_ms;    // 受信から書き出しまでの経過
           } saveCsvArgs;
           struct {
               int freq;
@@ -271,6 +263,12 @@
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
+
+  // 無線で受信したテレメトリを received/ へ書き出すタスク。
+  // 列は自機のフライト CSV と同じ並びにし、末尾に rssi/seq/age/src を足す。
+  // 揃えてあるので、既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
+  Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms);
+  void saveRxCSV(const Task& tk);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
@@ -283,7 +281,6 @@
                               float roll_trim, float yaw_acc95,
                               float wind_mps, float wind_dir, bool wind_valid,
                               const char* filename, int year, int month, int day);
-  Task createLoadLogoTask();
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
 
@@ -298,7 +295,6 @@
   bool isTaskRunning(int taskType);
   bool isTaskInQueue(int taskType);
   void clearCurrentTask();  // Core1 がタスク完了時に呼ぶ（currentTask.type = TASK_NONE）
-  void load_push_logo();
 
 
 
@@ -306,8 +302,6 @@
   extern Task currentTask;
   extern mutex_t taskQueueMutex;
   extern volatile bool sd_setup_complete;
-  extern volatile bool logo_ready;
-  extern TFT_eSprite logo_sprite;
 
   // リプレイ再生用の共有状態（Core1 が生成 / Core0 が消費）
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];

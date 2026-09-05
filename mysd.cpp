@@ -5,7 +5,6 @@
 //           SdFatライブラリによるファイル読み書き、
 //           設定ファイル保存/読込、CSVフライトログ追記、
 //           飛行CSVのリプレイ再生（列名索引パーサ・先読みリングバッファ）、
-//           起動ロゴ(logo.bmp)の読み込み、
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
@@ -24,6 +23,7 @@
 #include "SdFat.h"
 #include "sound.h"
 #include "attitude.h"
+#include "link.h"
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -33,7 +33,6 @@ SdFs SD;                     // SdFat ライブラリのファイルシステム
 volatile bool sdInitialized = false;  // SD カードの初期化が完了しているか（Core0/Core1 両方から参照）
 volatile bool sdError = false;        // SD アクセス中にエラーが発生したか（Core0/Core1 両方から参照）
 volatile bool sd_setup_complete = false;  // Core1 の setup_sd() が完了したことを示すフラグ（Core0 が待機に使用）
-volatile bool logo_ready = false;  // Core1 でロゴ BMP 読み込みが完了したら true（Core0 が pushSprite に使用）
 #define LOGFILE_NAME "log.txt"
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
@@ -89,6 +88,27 @@ void dateTime(uint16_t* date, uint16_t* time);
 // loadSettings() / saveSettings() がこのテーブルを走査して一括処理する。
 // 新しい設定項目を追加するときはこの配列に 1 行追加するだけでよい。
 // ============================================================
+// ---- PONS Link（機体⇄ボート無線）----
+// 電波の ch / profile は「数値を保存するだけ」で、意味は無線層（e220.cpp）が決める。
+// LoRa では ch = E220 のチャネル(CH0-12)、profile = SF のプリセット(0=SF7 … 4=SF11)。
+void getLinkMode(char* b, size_t n)      { snprintf(b, n, "%u", link_mode_setting); }
+void setLinkMode(const char* v) {
+  int m = atoi(v);
+  // 壊れた設定ファイルで機体が勝手に受信モードになる事故を防ぐため、
+  // 範囲外は必ず OFF に倒す（docs/pons_link.md §1）。
+  link_mode_setting = (m >= 0 && m <= LINK_MODE_RX) ? (uint8_t)m : LINK_MODE_OFF;
+}
+void getLinkRadioCh(char* b, size_t n)   { snprintf(b, n, "%u", link_radio_ch); }
+void setLinkRadioCh(const char* v) {
+  int c = atoi(v);
+  if (c >= 0 && c <= LINK_RADIO_CH_MAX) link_radio_ch = (uint8_t)c;
+}
+void getLinkRadioProf(char* b, size_t n) { snprintf(b, n, "%u", link_radio_profile); }
+void setLinkRadioProf(const char* v) {
+  int p = atoi(v);
+  if (p >= 0 && p < LINK_PROFILE_COUNT) link_radio_profile = (uint8_t)p;
+}
+
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"vario_volume",    setVarioVolume,    getVarioVolume},
@@ -109,7 +129,10 @@ SDSetting settings[] = {
   {"roll_target",     setRollTarget,     getRollTarget},
   {"needs_apply",     setNeedsApply,     getNeedsApply},
   {"roll_trim",       setRollTrim,       getRollTrim},
-  {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus}
+  {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus},
+  {"link_mode",       setLinkMode,       getLinkMode},
+  {"link_radio_ch",   setLinkRadioCh,    getLinkRadioCh},
+  {"link_radio_prof", setLinkRadioProf,  getLinkRadioProf}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -516,6 +539,32 @@ Task createLogSdfTask(const char* format, ...) {
   return task;
 }
 
+
+// 無線で受信した 1 フレームを received/ へ書き出すタスクを生成する。
+// 自機のフライト CSV とは**別のファイル・別のハンドル**にしてある。
+// received/ は「無線で得た情報」だけを置く場所なので、自機の GNSS は混ぜない。
+Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
+  Task task;
+  task.type = TASK_SAVE_RXCSV;
+  task.saveCsvArgs.latitude      = t->lat_1e7 / 1e7;
+  task.saveCsvArgs.longitude     = t->lon_1e7 / 1e7;
+  task.saveCsvArgs.gs            = t->gs_cms / 100.0f;
+  task.saveCsvArgs.ttrack        = (int)(t->track_cdeg / 100);
+  task.saveCsvArgs.gnss_altitude = t->gnss_alt_dm / 10.0f;
+  task.saveCsvArgs.kf_altitude   = t->kf_alt_dm / 10.0f;
+  task.saveCsvArgs.kf_vspeed     = t->kf_vs_cms / 100.0f;
+  task.saveCsvArgs.pressure      = t->press_dpa / 10.0f;
+  task.saveCsvArgs.voltage       = link_unpack_volt(t->volt_cv);
+  task.saveCsvArgs.numsat        = t->numsat;
+  task.saveCsvArgs.year   = t->year;   task.saveCsvArgs.month  = t->month;
+  task.saveCsvArgs.day    = t->day;    task.saveCsvArgs.hour   = t->hour;
+  task.saveCsvArgs.minute = t->minute; task.saveCsvArgs.second = t->second;
+  task.saveCsvArgs.centisecond = t->centi;
+  task.saveCsvArgs.rssi   = rssi;
+  task.saveCsvArgs.seq    = t->seq;
+  task.saveCsvArgs.age_ms = age_ms;
+  return task;
+}
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
 Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
@@ -2046,6 +2095,65 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 // （実体は init_replay() から flush するためファイル前方で定義してある）
 
+// ============================================================
+//  受信ログ（received/）
+//    自機のフライト CSV とは別ファイル・別ハンドル。
+//    received/ は「無線で得た情報」だけを置く場所なので自機 GNSS は混ぜない。
+//    列は自機 CSV と同じ並びにし、末尾に rssi/seq/age/src を足す。
+//    揃えてあるので既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
+// ============================================================
+static FsFile rxcsvFile;
+static bool   rxHeaderWritten = false;
+static int    rxfileyear = 0, rxfilemonth, rxfileday, rxfilehour, rxfileminute;
+
+void saveRxCSV(const Task& tk) {
+  const auto& a = tk.saveCsvArgs;
+  if (!good_sd()) return;
+
+  // ファイル名は最初に受信した時刻で固定する（自機 CSV と同じ流儀）。
+  if (rxfileyear == 0 && a.year != 0) {
+    rxfileyear = a.year; rxfilemonth = a.month; rxfileday = a.day;
+    rxfilehour = a.hour; rxfileminute = a.minute;
+  }
+  if (rxfileyear == 0) return;          // まだ時刻が取れていない
+
+  if (!rxcsvFile.isOpen()) {
+    if (!SD.exists("received")) SD.mkdir("received");
+    char fn[48];
+    snprintf(fn, sizeof(fn), "received/%04d-%02d-%02d_%02d%02d.csv",
+             rxfileyear, rxfilemonth, rxfileday, rxfilehour, rxfileminute);
+    rxcsvFile = SD.open(fn, FILE_WRITE);
+  }
+  if (!rxcsvFile) return;
+
+  if (!rxHeaderWritten) {
+    rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
+                      "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms");
+    rxHeaderWritten = true;
+  }
+  rxcsvFile.print(a.latitude, 6);  rxcsvFile.print(",");
+  rxcsvFile.print(a.longitude, 6); rxcsvFile.print(",");
+  rxcsvFile.print(a.gs, 1);        rxcsvFile.print(",");
+  rxcsvFile.print(a.ttrack);       rxcsvFile.print(",");
+  rxcsvFile.print(a.gnss_altitude, 2); rxcsvFile.print(",");
+  rxcsvFile.print(a.kf_altitude, 2);   rxcsvFile.print(",");
+  rxcsvFile.print(a.kf_vspeed, 2);     rxcsvFile.print(",");
+  rxcsvFile.print(a.pressure, 2);      rxcsvFile.print(",");
+  rxcsvFile.print(a.voltage, 2);       rxcsvFile.print(",");
+  rxcsvFile.print(a.numsat);           rxcsvFile.print(",");
+  char d[11]; snprintf(d, sizeof(d), "%04d-%02d-%02d", a.year, a.month, a.day);
+  rxcsvFile.print(d); rxcsvFile.print(",");
+  char t[12]; snprintf(t, sizeof(t), "%02d:%02d:%02d.%02d",
+                       a.hour, a.minute, a.second, a.centisecond);
+  rxcsvFile.print(t); rxcsvFile.print(",");
+  rxcsvFile.print(a.rssi);   rxcsvFile.print(",");
+  rxcsvFile.print(a.seq);    rxcsvFile.print(",");
+  rxcsvFile.println(a.age_ms);
+
+  // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
+  rxcsvFile.flush();
+}
+
 void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
@@ -2266,117 +2374,9 @@ Task createLogImuReplayTask(int h, int m, int s, int cs,
 }
 
 // 起動時ロゴ BMP 読み込みタスクを生成する（引数なし、ファイル名はハードコード）
-Task createLoadLogoTask(){
-  Task task;
-  task.type = TASK_LOAD_LOGO;
-  return task;
-}
 
-// ===== BMP ファイルヘッダー構造体 =====
-// Windows Bitmap（BMP）のバイナリ構造に対応した構造体定義。
-// BITMAPFILEHEADER と BITMAPINFOHEADER を分けて定義し、SdFat の read() で直接読み込む。
-// このプロジェクトでは 640×640 ピクセル、16-bit RGB565 の BMP を前提としている。
-struct bmp_file_header_t {
-  uint16_t signature;       // 2 bytes: should be 'BM'
-  uint32_t file_size;       // 4 bytes: total file size
-  uint16_t reserved[2];     // 4 bytes: reserved, should be 0
-  uint32_t image_offset;    // 4 bytes: offset to image data
-};
-
-struct bmp_image_header_t {
-  uint32_t header_size;         // 4 bytes: header size (40 bytes for BITMAPINFOHEADER)
-  uint32_t image_width;         // 4 bytes: width of the image in pixels
-  uint32_t image_height;        // 4 bytes: height of the image in pixels
-  uint16_t color_planes;        // 2 bytes: number of color planes (should be 1)
-  uint16_t bits_per_pixel;      // 2 bytes: bits per pixel (1, 4, 8, 16, 24, 32)
-  uint32_t compression_method;  // 4 bytes: compression method (0 for no compression)
-  uint32_t image_size;          // 4 bytes: size of the image data
-  uint32_t horizontal_resolution;  // 4 bytes: horizontal resolution (pixels per meter)
-  uint32_t vertical_resolution;    // 4 bytes: vertical resolution (pixels per meter)
-  uint32_t colors_in_palette;      // 4 bytes: number of colors in the palette
-  uint32_t important_colors;       // 4 bytes: number of important colors
-};
-
-
-
-
-
-
-
-
-
-// 起動時のスプラッシュロゴ（logo.bmp）を展開するスプライト。
-// 以前は SD 上の地図 BMP タイルも同じスプライトに読み込んでいたが、
-// フラッシュ内蔵のベクタ地図へ移行したため、用途はロゴだけになった。
-TFT_eSprite logo_sprite = TFT_eSprite(&tft);
-
-
-
-
-// SD カードの logo.bmp を読み込んで TFT 画面の左上（0, 0）に直接描画する。
-// 主に起動時のスプラッシュロゴ表示に使用する。
-// 期待するフォーマット: 240×52 ピクセル、16-bit RGB565 BMP。
-// logo_sprite に一時展開してから pushSprite(0,0) で TFT に転送する。
-// シグネチャ不一致またはサイズ不一致の場合は描画をスキップする。
-void load_push_logo(){
-    // Open BMP file
-  FsFile bmpImage = SD.open("logo.bmp", FILE_READ);
-  if (!bmpImage) {
-    return;
-  }
-  const int sizey = 52; // ロゴ画像の高さ（ピクセル）
-  // Read the file header
-  bmp_file_header_t fileHeader;
-  bmpImage.read((uint8_t*)&fileHeader.signature, sizeof(fileHeader.signature));
-  bmpImage.read((uint8_t*)&fileHeader.file_size, sizeof(fileHeader.file_size));
-  bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
-  bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
-  // Check signature
-  if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
-    bmpImage.close();
-    return;
-  }
-  // Image header (240x52, 16-bit RGB565 BMP file)
-  bmp_image_header_t imageHeader;
-  bmpImage.read((uint8_t*)&imageHeader.header_size, sizeof(imageHeader.header_size));
-  bmpImage.read((uint8_t*)&imageHeader.image_width, sizeof(imageHeader.image_width));
-  bmpImage.read((uint8_t*)&imageHeader.image_height, sizeof(imageHeader.image_height));
-  bmpImage.read((uint8_t*)&imageHeader.color_planes, sizeof(imageHeader.color_planes));
-  bmpImage.read((uint8_t*)&imageHeader.bits_per_pixel, sizeof(imageHeader.bits_per_pixel));
-  bmpImage.read((uint8_t*)&imageHeader.compression_method, sizeof(imageHeader.compression_method));
-  bmpImage.read((uint8_t*)&imageHeader.image_size, sizeof(imageHeader.image_size));
-  bmpImage.read((uint8_t*)&imageHeader.horizontal_resolution, sizeof(imageHeader.horizontal_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.vertical_resolution, sizeof(imageHeader.vertical_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.colors_in_palette, sizeof(imageHeader.colors_in_palette));
-  bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
-  if (imageHeader.image_width != 240 || imageHeader.image_height != sizey || imageHeader.bits_per_pixel != 16) {
-    bmpImage.close();
-    return;
-  }
-  // Create the sprite
-  if(!logo_sprite.created()){
-    logo_sprite.setColorDepth(16);
-    // ロゴの高さぶんだけ確保する（240x52 = 25KB）。
-    // 地図 BMP を読んでいた頃は 240x240(115KB) が必要だったが、その用途は無くなった。
-    logo_sprite.createSprite(240, sizey);
-    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+logo_sprite が同時確保された直後
-    DEBUG_P(20260311, "[RAMピーク] logo_sprite生成後 FreeHeap=");
-    DEBUG_PN(20260311, rp2040.getFreeHeap(), DEC);
-    DEBUG_P(20260311, " / Total=");
-    DEBUG_PNLN(20260311, rp2040.getTotalHeap(), DEC);
-  }
-  int tloadbmp_start = millis();
-
-  for (int y = 0; y < sizey; y++) {
-      for (int x = 0; x < 240; x++) {
-          bmpImage.seek(fileHeader.image_offset + 240*(sizey-y-1) * 2 + x * 2);
-          uint16_t color = bmpImage.read(); // Read low byte
-          color |= (bmpImage.read() << 8);  // Read high byte
-          logo_sprite.drawPixel(x, y, color);
-      }
-  }
-  bmpImage.close();
-
-  logo_ready = true;  // Core0 に読み込み完了を通知（pushSprite は Core0 が行う）
-}
+// ※ 起動ロゴは src/flashdata/logo_data.cpp（FLASH）へ移した。
+//   SD の logo.bmp を読む仕組みと BMP ヘッダー構造体はもう使わないので削除した。
+//   SD が読めない機体でもロゴが出るようになり、起動時の 1.9 秒待ちと
+//   logo_sprite の RAM 24KB も不要になっている。
 

@@ -15,8 +15,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260901
-#define BUILDVERSION "0.950"
+#define BUILDDATE 20260905
+#define BUILDVERSION "0.960"
 #define VERSION_TEXT "Version 7"
 
 
@@ -125,6 +125,7 @@
 #define MODE_VARIODETAIL 6
 #define MODE_REPLAYSELECT 7  // リプレイ再生ファイルの選択画面
 #define MODE_IMUDETAIL 8     // IMU / 姿勢 ESKF の詳細画面
+#define MODE_WIRELESS 9      // PONS Link（機体⇄ボート無線）の設定画面
 
 
 //======= リプレイ再生設定 ======

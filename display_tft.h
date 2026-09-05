@@ -47,7 +47,8 @@
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_DEMOBIWA,SETTING_REPLAY,
     SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
-    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL
+    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL,
+    SETTING_WIRELESS
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -132,6 +133,12 @@ void draw_maplist_mode(int maplist_page);
 #define IMU2_MENU_COUNT    3
 extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2のカーソル位置
 void draw_imudetail(int page);
+
+// PONS Link（機体⇄ボート無線）の設定画面。
+// 無線方式に依存しない表示にしてある。
+void draw_wireless(int cursor);
+#define WIRELESS_MENU_COUNT 4    // MODE / CH / PROFILE / RETURN
+extern int wireless_cursor;
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
 // 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。

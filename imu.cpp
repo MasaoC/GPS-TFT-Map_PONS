@@ -42,6 +42,7 @@
 #include <Adafruit_BNO08x.h>
 
 #include "imu.h"
+#include "link.h"
 #include "settings.h"
 #include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
 #include "mysd.h"     // enqueueTask / createLogSdfTask
@@ -1212,7 +1213,14 @@ float get_imu_mag_accuracy_deg() {
 // Kalman 推定上昇率を返す。
 // I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
 // 1 秒 = 30Hz × 33 サンプル分のタイムアウト。正常時は ~33ms ごとに更新される。
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_imu_vspeed_raw() に残してある。
 float get_imu_vspeed() {
+  if (link_mirror_active()) return link_rx_telem()->kf_vs_cms / 100.0f;
+  return get_imu_vspeed_raw();
+}
+
+float get_imu_vspeed_raw() {
     // リプレイ中で CSV に KF_Vspeed 列があれば、その値を返す（バリオ音も再生される）
     if (replay_has_value(RHAVE_KFVS)) return replay_get_kf_vspeed();
 
@@ -1230,7 +1238,14 @@ float get_imu_vspeed() {
 // KF MSL高度 = KF AGL + gnss_kf_offset（起動地MSL高度の推定値）。
 // gnss_kf_offset 未確定時（GNSS 3D fix 前）は AGL 値（＝起動時 0m）を返す。
 // リプレイ中で CSV に KF_Altitude 列があれば、その値をそのまま返す。
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_imu_altitude_msl_raw() に残してある。
 float get_imu_altitude_msl() {
+  if (link_mirror_active()) return link_rx_telem()->kf_alt_dm / 10.0f;
+  return get_imu_altitude_msl_raw();
+}
+
+float get_imu_altitude_msl_raw() {
     if (replay_has_value(RHAVE_KFALT)) return replay_get_kf_altitude();
     return _imu_altitude + _gnss_kf_offset;
 }

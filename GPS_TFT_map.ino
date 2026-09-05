@@ -20,6 +20,7 @@
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
+#include "link.h"   // PONS Link（機体⇄ボート無線）
 #include "imulog.h"
 #include "attitude.h"
 #include "vectormap.h"
@@ -65,6 +66,8 @@ int cursorLine = 0;
 // コースから外れているほど増加し、900 に達すると音声警告を発する。
 // dt 乗算で小数加算が発生するため float 型で保持する。
 float course_warning_index = 0;
+// バンク角警告でミラー値を受けるための一時変数（判定式の中で使う）
+static float bank_roll_tmp = 0.0f, bank_pitch_tmp = 0.0f;
 unsigned long last_course_warning_time = 0;      // 直近の警告発報時刻 [millis]
 unsigned long last_destination_toofar_time = 0;  // 直近の「目的地が遠すぎる」警告時刻 [millis]
 double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 度。正=右、負=左)
@@ -221,6 +224,10 @@ void setup(void) {
     enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
   }
 
+  // 無線（PONS Link）の UART を開き、現在の設定を無線モジュールへ送る。
+  // 設定ファイルの読み込みが終わった後でなければ意味が無いので、ここで呼ぶ。
+  // 無線モジュールが未接続でも UART を開くだけなので害は無い。
+  link_setup();
 }
 
 
@@ -307,6 +314,9 @@ static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &c
 //   3. 画面モードに応じた描画（地図 / 設定 / GPS詳細 など）
 // gps_loop(id) の id はデバッグ用の呼び出し箇所識別子。
 void loop() {
+  // 無線モジュールとの UART。1Hz・数十バイトなので負荷は無視できる。
+  // 無線モジュールが繋がっていなくても、link_module_alive() が false になるだけで無害。
+  link_loop();
   //switch handling
   sw_push.read();
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
@@ -363,7 +373,9 @@ void loop() {
   // 保険として実測の GNSS フィックスも要求する。日時が再生由来のまま残っていると
   // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
   static uint32_t last_replaydata_ms = 0;
-  if (!getReplayMode() && jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
+  // ミラー中も記録しない（受信した機体の日時のファイルに、自機の姿勢を書いてしまう）
+  if (!getReplayMode() && !link_mirror_active() &&
+      jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
       attitude_get_rpy_enabled() &&
       (millis() - last_replaydata_ms) >= IMU_REPLAYDATA_INTERVAL_MS) {
 
@@ -449,7 +461,11 @@ void loop() {
   // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
   // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
   // 再生中のように動き続ける原因になる。
-  if (!getReplayMode() && get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
+  // ★ 無線のミラー中も同じ理由で通さない。ミラー中の get_gps_altitude() は
+  //   受信した「機体」の高度なので、これを自機のカルマンに入れると
+  //   気圧基準と _gnss_kf_offset が壊れ、リプレイと同様に受信をやめた後まで残る。
+  if (!getReplayMode() && !link_mirror_active() &&
+      get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
     imu_kalman_gnss_update(
       (float)get_gps_altitude(),
       get_gps_vacc_mm() / 1000.0f
@@ -471,7 +487,13 @@ void loop() {
   // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
   // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
   // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
-  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode()) {
+  // ★ ミラー中は「受信した機体のロール」で判定する。
+  //   受信側は警告をビットで受け取るのではなく**自分で再計算する**方針なので
+  //   （link_proto.h の status 設計を参照）、入力をミラー値に差し替えるだけでよい。
+  //   計算が 1 本のままなので、送信側と受信側で挙動がずれる余地が無い。
+  if (attitude_get_rpy_enabled() && !getReplayMode() &&
+      (link_mirror_active() ? link_get_attitude(bank_roll_tmp, bank_pitch_tmp)
+                            : attitude_ready())) {
     static uint32_t bank_over_since_ms = 0;
     static uint32_t bank_last_warn_ms  = 0;
     // 発報済みフラグ。解除条件（バンクが戻る＋時間経過）を満たすまで鳴らさない。
@@ -480,7 +502,10 @@ void loop() {
     //   鳴り出すのを防ぐため。一度でも 3 度未満に戻れば通常動作に入る。
     static bool     bank_warned        = true;
     float wr, wp, wy;
-    attitude_get_euler(wr, wp, wy);
+    // ミラー中は受信した機体のロール、それ以外は自機の姿勢。
+    // 入力をここで差し替えるだけで、以降の判定ロジックは 1 本のまま使える。
+    if (link_mirror_active()) { wr = bank_roll_tmp; wp = bank_pitch_tmp; wy = 0.0f; }
+    else                       attitude_get_euler(wr, wp, wy);
     uint32_t now_ms = millis();
     const float bank_abs = fabsf(wr);
 
@@ -511,7 +536,9 @@ void loop() {
   // 自動ロールトリムは対地速度 3m/s 超でしか働かないので地上では動かない。
   // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
   // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
+  // ミラー中は get_gps_mps() が機体の対地速度になるため、判定が噛み合わない。
   if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
+      !link_mirror_active() &&
       get_gps_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
     static uint32_t gnd_over_since_ms = 0;
     static uint32_t gnd_last_warn_ms  = 0;
@@ -705,6 +732,9 @@ void loop() {
   } else if (screen_mode == MODE_IMUDETAIL) {
     if (redraw_screen)
       draw_imudetail(detail_page);
+  } else if (screen_mode == MODE_WIRELESS) {
+    if (redraw_screen)
+      draw_wireless(wireless_cursor);
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -793,6 +823,11 @@ void loop() {
       double new_lat = get_gps_lat();
       double new_long = get_gps_lon();
       set_new_location_off();  // GPS の「新位置フラグ」をクリア
+
+      // ※ 無線へのテレメトリ送出はここでは行わない。
+      //   送信の刻み（1Hz）は link_tx_tick() が持っている（link_loop() 参照）。
+      //   ここは GPS 更新のたび（2Hz）に走るので、投げると倍のレートになり、
+      //   電波の占有時間と送信電流がそのまま倍になる。
 
       // 画面の上方向を設定: トラックアップ時は機首方向、ノースアップ時は 0（北）
       float drawupward_direction = new_truetrack;
@@ -1014,6 +1049,9 @@ void loop1() {
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
           currentTask.saveCsvArgs.centisecond);
         break;
+      case TASK_SAVE_RXCSV:
+        saveRxCSV(currentTask);
+        break;
       case TASK_LOG_IMUREPLAY:
         save_imu_replaydata(currentTask.imuReplayArgs.hour,
                             currentTask.imuReplayArgs.minute,
@@ -1033,9 +1071,6 @@ void loop1() {
                             currentTask.imuReplayArgs.year,
                             currentTask.imuReplayArgs.month,
                             currentTask.imuReplayArgs.day);
-        break;
-      case TASK_LOAD_LOGO:
-        load_push_logo();  // SD からロゴ BMP を logo_sprite に読み込む（pushSprite は Core0 が行う）
         break;
       case TASK_FLUSH_IMULOG:
         // 生 IMU ログの二重バッファ片側を SD へ書き出す（約 4KB / 0.45 秒分）。
@@ -1113,6 +1148,10 @@ void shortPressCallback() {
       loading_replaylist = true;
       enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
     }
+  } else if (screen_mode == MODE_WIRELESS) {
+    // 無線画面: 短押しはカーソル移動のみ。変更は長押し（設定画面と同じ操作感）。
+    wireless_cursor = (wireless_cursor + 1) % WIRELESS_MENU_COUNT;
+    redraw_screen = true;
   } else if (screen_mode == MODE_IMUDETAIL) {
     // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
@@ -1300,6 +1339,26 @@ void longPressCallback() {
   // IMU / ESKF 画面での長押し = 「実行」。
   // 設定画面が「短押し=移動 / 長押し=実行」なので、そちらに操作感を合わせる。
   // この画面には Exit 項目があるため、長押しで設定画面へ戻る動作は持たせない。
+  if (screen_mode == MODE_WIRELESS) {
+    switch (wireless_cursor) {
+      case 0:  // モードを OFF → SENDER → RECEIVER と回す。
+               // 3 択のトグルなので「送受同時 ON」を表現できない（docs/pons_link.md §1）。
+        link_set_mode((link_get_mode() + 1) % 3);
+        break;
+      case 1:  // 電波のチャネル。意味は無線方式しだいなので、ここでは番号を回すだけ。
+        link_set_radio_ch((link_get_radio_ch() + 1) % (LINK_RADIO_CH_MAX + 1));
+        break;
+      case 2:  // 電波のプリセット。同上。
+        link_set_radio_profile((link_get_radio_profile() + 1) % LINK_PROFILE_COUNT);
+        break;
+      default: // 戻る
+        screen_mode = MODE_SETTING;
+        break;
+    }
+    redraw_screen = true;
+    return;
+  }
+
   if (screen_mode == MODE_IMUDETAIL) {
     imu_execute();
     return;

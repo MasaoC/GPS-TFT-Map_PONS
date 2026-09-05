@@ -31,6 +31,7 @@
   // 最新計測値のゲッター（airdata_update() が true を返した後に更新）
   float get_airdata_altitude();          // 気圧高度 [m]（起動地点からの相対高度、トリム平均）
   float get_airdata_pressure();          // 気圧 [hPa]
+  float get_airdata_pressure_raw();      // 必ず自機の値（ミラー中も CSV 用）
   float get_airdata_temperature();       // 気温 [℃]
   float get_airdata_vspeed();            // 鉛直速度 [m/s]（トリム平均差分）
   float get_airdata_win_hz();            // 直前ウィンドウの更新レート [Hz]（診断用）

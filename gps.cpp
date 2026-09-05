@@ -13,6 +13,7 @@
 #include <Arduino.h>
 
 #include "gps.h"
+#include "link.h"   // ミラー表示（受信モード）
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
@@ -646,11 +647,17 @@ float    get_gps_hdop()       { return gsa_hdop; }
 float    get_gps_vdop()       { return gsa_vdop; }
 int      get_gsa_numsat()     { return gsa_numsat; }
 int      get_gsa_prn(int i)   { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0; }
-uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度推定値, mm）
+uint32_t get_gps_hacc_mm() {
+  if (link_mirror_active()) return (uint32_t)link_rx_telem()->hacc_dm * 100u;
+  return ubx_hacc_mm;                                      // hAcc（水平精度推定値, mm）
+}
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
-bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
+bool get_gps_gnssFixOK() {
+  if (link_mirror_active()) return (link_rx_telem()->fixflags & 0x01) != 0;
+  return ubx_gnssFixOK;                                    // gnssFixOK フラグ
+}
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
 
@@ -1432,9 +1439,12 @@ void try_enque_savecsv(){
       int day   = ubx_day;
       int hour  = ubx_hour;
       utcToJst(&year, &month, &day, &hour);
-      float csv_pressure   = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
-      float csv_kf_alt    = get_imu_altitude_msl();  // KF推定高度 [m]（MSL基準・GNSS長期収束済み）
-      float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
+      // ★ 無線のミラー中でも、自機 CSV には**自分の値**を書く。
+      //   位置・速度・方位は生のグローバルを使っているので元々自機のまま。
+      //   ここだけ accessor 経由なので、_raw 版を明示的に使う必要がある。
+      float csv_pressure   = get_airdata_ok() ? get_airdata_pressure_raw() : 0.0f;
+      float csv_kf_alt    = get_imu_altitude_msl_raw();  // KF推定高度 [m]（MSL基準）
+      float csv_kf_vspeed = get_imu_vspeed_raw();   // KF推定上昇率 [m/s]
       // 実測の電圧を書く（リプレイ中の表示値ではない）。リプレイ再生中は
       // そもそもこのパスを通らないが、意図を明示するため get_input_voltage() を使う。
       float csv_voltage   = get_input_voltage();
@@ -1456,6 +1466,7 @@ void try_enque_savecsv(){
 // デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
 // 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
 double get_gps_lat() {
+  if (link_mirror_active()) return link_rx_telem()->lat_1e7 / 1e7;
   if (is_demo_active()) {
     return demo_lat;
   }
@@ -1487,6 +1498,7 @@ double get_gps_lat() {
 }
 
 double get_gps_lon() {
+  if (link_mirror_active()) return link_rx_telem()->lon_1e7 / 1e7;
   if (is_demo_active()) {
     return demo_lon;
   }
@@ -1520,6 +1532,7 @@ double get_gps_lon() {
 
 
 double get_gps_mps() {
+  if (link_mirror_active()) return link_rx_telem()->gs_cms / 100.0;
   if (is_demo_active()) {
     return demo_mps;
   }
@@ -1539,6 +1552,7 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
+  if (link_mirror_active()) return (link_rx_telem()->fixflags & 0x01) != 0;
   if(is_demo_active()){
     return get_gps_numsat() != 0;
   }
@@ -1549,11 +1563,13 @@ bool get_gps_fix() {
 }
 
 double get_gps_altitude() {
+  if (link_mirror_active()) return link_rx_telem()->gnss_alt_dm / 10.0;
   return stored_gnss_altitude;
 }
 
 
 double get_gps_truetrack() {
+  if (link_mirror_active()) return link_rx_telem()->track_cdeg / 100.0;
   #ifdef DEBUG_GPS_SIM_SHINURA
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
@@ -1565,6 +1581,7 @@ double get_gps_truetrack() {
 
 
 int get_gps_numsat() {
+  if (link_mirror_active()) return link_rx_telem()->numsat;
   if(is_demo_active()){
     return (int)(20.0*sin(millis()/5000))+20;
   }else if(getReplayMode()){

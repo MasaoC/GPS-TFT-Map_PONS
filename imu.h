@@ -73,6 +73,10 @@ bool get_imu_alive();
 
 // ---- 推定値ゲッター ----
 float get_imu_vspeed();          // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
+// _raw 版は「必ず自機の値」を返す。無線のミラー中でも自機 CSV には
+// 自分の値を書く必要があるため（link.cpp のコメント参照）。
+float get_imu_vspeed_raw();
+float get_imu_altitude_msl_raw();
 float get_imu_altitude_msl();    // Kalman 推定高度 [m]（MSL 絶対値 = AGL + gnss_kf_offset）
                                  // gnss_kf_offset 未確定（GNSS fix 取得前）は AGL 値を返す
 bool  get_imu_gnss_offset_ready(); // gnss_kf_offset が初期化済みか（MSL 値が有効か）

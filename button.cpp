@@ -14,6 +14,7 @@
 #include "gps.h"
 #include "attitude.h"
 #include "imu.h"      // get_imu_ok(): BNO085 非搭載機の判定
+#include "link.h"     // PONS Link（機体⇄ボート無線）
 
 
 // 実体は GPS_TFT_map.ino で volatile 定義。宣言側も volatile を付ける
@@ -572,7 +573,36 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [15] 保存して終了 (EXIT)
+  // [15] PONS Link 無線設定 (WIRELESS)
+  //   ・Enter: 無線専用ページ（MODE_WIRELESS）へ
+  //   ・アイコン色: 大会の推奨設定はパイロット機＝送信モード。
+  //                 送信モードなら緑、それ以外（受信・無効）はオレンジ。
+  //     ※受信モードは「間違い」ではなくボート／ピット用の正しい設定なので、
+  //       赤ではなくオレンジにしてある（赤＝異常、と使い分ける）。
+  // ----------------------------------------------------------
+  { SETTING_WIRELESS,
+    [](bool selected) -> std::string {
+      const char* m = "OFF";
+      if (link_get_mode() == LINK_MODE_TX) m = "SENDER";
+      else if (link_get_mode() == LINK_MODE_RX) m = "RECEIVER";
+      char buff[32];
+      snprintf(buff, sizeof(buff), selected ? " Wireless: %s >" : "Wireless: %s >", m);
+      return std::string(buff);
+    },
+    []() {
+      screen_mode = MODE_WIRELESS;
+      wireless_cursor = 0;
+    },
+    nullptr,
+    nullptr,
+    [](){
+      // 大会の推奨設定＝パイロット機が送信モード。
+      return (link_get_mode() == LINK_MODE_TX) ? COLOR_GREEN : COLOR_ORANGE;
+    }
+  },
+
+  // ----------------------------------------------------------
+  // [16] 保存して終了 (EXIT)
   //   ・Enter: exit_setting() を呼び出し、設定を保存してマップ画面に戻る
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------

@@ -10,6 +10,7 @@
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"
+#include "link.h"
 #include "mysd.h"
 #include "gps.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
@@ -400,7 +401,14 @@ bool  get_airdata_ok()             { return ms5611_ok; }
 float get_airdata_altitude()       { return last_altitude; }
 // 最新の気圧 [hPa] を返す
 // リプレイ中で CSV に pressure 列があれば、その値をそのまま返す
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_airdata_pressure_raw() に残してある。
 float get_airdata_pressure() {
+  if (link_mirror_active()) return link_rx_telem()->press_dpa / 10.0f;
+  return get_airdata_pressure_raw();
+}
+
+float get_airdata_pressure_raw() {
   if (replay_has_value(RHAVE_PRESS)) return replay_get_pressure();
   return last_pressure;
 }

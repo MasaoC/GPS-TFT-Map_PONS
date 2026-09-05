@@ -14,6 +14,7 @@
 #include <Arduino.h>
 
 #include "navdata.h"
+#include "link.h"
 #include "gps.h"
 
 
@@ -44,6 +45,8 @@ void restore_auto10k_status(int st) {
   auto10k_status_flight = st;
   // 設定の読み込みは起動時（リプレイ前）にしか走らないが、念のため
   // リプレイ中は表示側の値を書き換えない。
+  // ※ 無線のミラーはここには効かない（この関数は起動時の設定読込でしか通らず、
+  //   そのときはまだ受信していない）。ガードを足しても死んだコードになるだけ。
   if (!getReplayMode()) auto10k_status = st;
 }
 
