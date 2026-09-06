@@ -27,11 +27,11 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "src/flashdata/font_data.h"
-#include "sound.h"
-#include "button.h"
+#include "src/sound.h"
+#include "src/button.h"
 #include "airdata.h"
 #include "imu.h"
-#include "vectormap.h"
+#include "src/vectormap.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
 // フォント定義: TFT_eSPI のカスタムフォント（PROGMEM 格納）

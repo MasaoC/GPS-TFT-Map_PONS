@@ -7,23 +7,38 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/06
+// ============================================================
+//
+// ■ src/ に置いてあるもの
+//   Arduino IDE はスケッチ直下のファイルを全部タブに出すので、
+//   ファイルが増えるとタブが埋まって目的のものを探しづらくなる。
+//   **仕様が固まっていて普段いじらないモジュール**は src/ へ移した。
+//   src/ 配下もコンパイルはされるが、IDE のタブには出ない。
+//     src/button.*     ボタン入力・メニュー
+//     src/sound.*      音声出力（WAV・トーン）
+//     src/vectormap.*  ベクタ地図の描画
+//     src/imulog.*     生 IMU ロガー（姿勢 ESKF のオフライン開発用）
+//     src/flashdata/   FLASH に置く大きな定数データ
+//
+//   ★ src/ の中からルート側のヘッダを参照するときは "../mysd.h" のように
+//     1 段戻ること。スケッチ直下は include パスに入っていない。
 // ============================================================
 
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
 #include "mysd.h"
-#include "button.h"
+#include "src/button.h"
 #include "gps.h"
-#include "sound.h"
+#include "src/sound.h"
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
 #include "link.h"   // PONS Link（機体⇄ボート無線）
-#include "imulog.h"
+#include "src/imulog.h"
 #include "attitude.h"
-#include "vectormap.h"
+#include "src/vectormap.h"
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)

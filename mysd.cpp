@@ -21,7 +21,7 @@
 #include "imu.h"
 //#define DISABLE_FS_H_WARNING
 #include "SdFat.h"
-#include "sound.h"
+#include "src/sound.h"
 #include "attitude.h"
 #include "link.h"
 

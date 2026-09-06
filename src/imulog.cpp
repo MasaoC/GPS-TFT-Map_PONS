@@ -7,9 +7,9 @@
 // Updated : 2026/08/17
 // ============================================================
 
-#include "settings.h"
+#include "../settings.h"
 #include "imulog.h"
-#include "mysd.h"
+#include "../mysd.h"
 #include "SdFat.h"
 
 extern SdFs SD;

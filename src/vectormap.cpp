@@ -12,8 +12,8 @@
 #include <Arduino.h>
 #include <math.h>
 
-#include "settings.h"
-#include "display_tft.h"
+#include "../settings.h"
+#include "../display_tft.h"
 #include "vectormap.h"
 
 // ===== 描画色（RGB565） =====

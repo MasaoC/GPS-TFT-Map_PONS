@@ -12,7 +12,7 @@
 #ifndef SOUND_H
   #define SOUND_H
   #include <Arduino.h>
-  #include "mysd.h"
+  #include "../mysd.h"
   void __not_in_flash_func(loop_sound)();
   void loop_tone();
 

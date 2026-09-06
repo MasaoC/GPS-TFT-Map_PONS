@@ -20,7 +20,7 @@
 #include "display_tft.h"
 #include "airdata.h"
 #include "imu.h"
-#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）

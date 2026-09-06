@@ -47,7 +47,7 @@
 #include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
 #include "mysd.h"     // enqueueTask / createLogSdfTask
 #include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
-#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // ============================================================

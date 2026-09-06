@@ -9,12 +9,12 @@
 // Updated : 2026/08/17
 // ============================================================
 // Handle button updates
-#include "Button.h"
-#include "mysd.h"
-#include "gps.h"
-#include "attitude.h"
-#include "imu.h"      // get_imu_ok(): BNO085 非搭載機の判定
-#include "link.h"     // PONS Link（機体⇄ボート無線）
+#include "button.h"
+#include "../mysd.h"
+#include "../gps.h"
+#include "../attitude.h"
+#include "../imu.h"      // get_imu_ok(): BNO085 非搭載機の判定
+#include "../link.h"     // PONS Link（機体⇄ボート無線）
 
 
 // 実体は GPS_TFT_map.ino で volatile 定義。宣言側も volatile を付ける

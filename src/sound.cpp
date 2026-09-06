@@ -9,12 +9,12 @@
 // Updated : 2026/03/23
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
-#include "settings.h"
+#include "../settings.h"
 #include "sound.h"
-#include "gps.h"
-#include "mysd.h"
-#include "airdata.h"
-#include "imu.h"
+#include "../gps.h"
+#include "../mysd.h"
+#include "../airdata.h"
+#include "../imu.h"
 #include "hardware/pwm.h"
 #include "hardware/timer.h"
 #include "pico/stdlib.h"
