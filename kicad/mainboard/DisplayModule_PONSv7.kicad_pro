@@ -507,7 +507,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "DisplayModule_PONSv6.kicad_pro",
+    "filename": "DisplayModule_PONSv7.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -790,8 +790,8 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "DisplayModule_PONSv6.kicad_sch",
-        "name": "DisplayModule_PONSv6",
+        "filename": "DisplayModule_PONSv7.kicad_sch",
+        "name": "DisplayModule_PONSv7",
         "uuid": "d4198ff8-2b68-4e90-8e61-04bd56061c94"
       }
     ],

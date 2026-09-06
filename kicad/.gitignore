@@ -1,4 +1,6 @@
-FPC/FPC-backups
-GNSSboard_SAM-M10Q/GNSSboard_SAM-M10Q-backups
-mainboard/mainboard-backups
+# KiCad が自動生成するもの。プロジェクト名に依存しないパターンで書く
+# （v6→v7 のようにプロジェクト名が変わると、名前を直書きしたパターンは外れる）
+*-backups/
 *.kicad_prl
+~*.lck
+fp-info-cache

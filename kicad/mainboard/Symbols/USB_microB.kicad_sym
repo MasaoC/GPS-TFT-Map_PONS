@@ -90,8 +90,8 @@
 		)
 		(symbol "USB_B_Micro_0_1"
 			(rectangle
-				(start -5.08 -7.62)
-				(end 5.08 7.62)
+				(start -7.62 7.62)
+				(end 5.08 -7.62)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -356,7 +356,7 @@
 			(pin passive line
 				(at -2.54 -10.16 90)
 				(length 2.54)
-				(name "Shield"
+				(name "Pad"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -364,6 +364,24 @@
 					)
 				)
 				(number "6"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -5.08 -10.16 90)
+				(length 2.54)
+				(name "Shield"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "SH"
 					(effects
 						(font
 							(size 1.27 1.27)

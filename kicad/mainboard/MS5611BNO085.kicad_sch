@@ -1034,7 +1034,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "RF_Module:E220-900T22S(JP)"
+		(symbol "E220-900T22S:E220-900T22S(JP)"
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
@@ -1528,7 +1528,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Sensor_Motion:BNO085"
+		(symbol "bno085:BNO085"
 			(pin_names
 				(offset 0.254)
 			)
@@ -5583,7 +5583,7 @@
 		)
 	)
 	(symbol
-		(lib_id "Sensor_Motion:BNO085")
+		(lib_id "bno085:BNO085")
 		(at 135.89 46.99 0)
 		(unit 1)
 		(body_style 1)
@@ -8561,7 +8561,7 @@
 		)
 	)
 	(symbol
-		(lib_id "RF_Module:E220-900T22S(JP)")
+		(lib_id "E220-900T22S:E220-900T22S(JP)")
 		(at 59.69 149.86 0)
 		(unit 1)
 		(body_style 1)

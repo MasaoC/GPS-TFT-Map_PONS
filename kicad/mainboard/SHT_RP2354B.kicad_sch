@@ -1386,7 +1386,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Connector:USB_B_Micro"
+		(symbol "USB_microB:USB_B_Micro"
 			(pin_names
 				(offset 1.016)
 			)
@@ -1776,7 +1776,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Connector_Generic_Shielded:Conn_01x03_Shielded"
+		(symbol "Conn_01x03_Shielded:Conn_01x03_Shielded"
 			(pin_names
 				(offset 1.016)
 				(hide yes)
@@ -4971,7 +4971,7 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Switch:CUS-12TB"
+		(symbol "CUS-12TB:CUS-12TB"
 			(pin_names
 				(offset 1.016)
 			)
@@ -11866,7 +11866,7 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector_Generic_Shielded:Conn_01x03_Shielded")
+		(lib_id "Conn_01x03_Shielded:Conn_01x03_Shielded")
 		(at 40.64 135.89 180)
 		(unit 1)
 		(body_style 1)
@@ -15278,7 +15278,7 @@
 	)
 	(symbol
 		(lib_name "CUS-12TB_1")
-		(lib_id "Switch:CUS-12TB")
+		(lib_id "CUS-12TB:CUS-12TB")
 		(at 270.51 29.21 0)
 		(unit 1)
 		(body_style 1)
@@ -20089,7 +20089,7 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:USB_B_Micro")
+		(lib_id "USB_microB:USB_B_Micro")
 		(at 166.37 137.16 0)
 		(unit 1)
 		(body_style 1)
@@ -20791,7 +20791,7 @@
 		)
 	)
 	(symbol
-		(lib_id "Switch:CUS-12TB")
+		(lib_id "CUS-12TB:CUS-12TB")
 		(at 270.51 57.15 0)
 		(unit 1)
 		(body_style 1)

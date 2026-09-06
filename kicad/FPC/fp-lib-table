@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "FPC_CON 4p 1mm")(type "KiCad")(uri "${KIPRJMOD}/FPC_CON 4p 1mm.pretty")(options "")(descr ""))
+)
