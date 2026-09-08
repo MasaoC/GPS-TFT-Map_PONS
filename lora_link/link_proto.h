@@ -109,6 +109,10 @@ typedef enum {
 #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
 #define RHAVE_ATT_WIND 0x2000   // 風速・風向（推定できていた区間のみ）
 
+// type の値。0 = テレメトリ。将来ほかの種類を足すための欄で、
+// 受信側は 0 以外を捨てる（link_telem_valid）。
+#define LINK_TYPE_TELEM     0
+
 // ============================================================
 //  テレメトリ本体
 //    UART と電波の両方で、この構造体がそのまま流れる。
@@ -173,6 +177,11 @@ typedef struct __attribute__((packed)) {
 
     uint16_t crc16;             // magic0 から status までの CRC16-CCITT
 } LinkTelem;
+
+// ★ 65 バイトは仕様書（docs/pons_link.md §4）と、そこから導いた
+//   送信時間・送信電流・電波法の検討がすべて前提にしている数値。
+//   項目を足して黙って伸びると、その検討が全部ずれる。ビルドで止める。
+static_assert(sizeof(LinkTelem) == 65, "LinkTelem が 65 バイトでなくなっている");
 
 // ============================================================
 //  status のビット ― 設計方針
@@ -240,6 +249,7 @@ static inline uint16_t link_telem_crc(const LinkTelem* t) {
 static inline bool link_telem_valid(const LinkTelem* t) {
     if (t->magic0 != 'P' || t->magic1 != 'L') return false;
     if (t->ver != LINK_PROTO_VER)             return false;
+    if (t->type != LINK_TYPE_TELEM)           return false;
     return t->crc16 == link_telem_crc(t);
 }
 

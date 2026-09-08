@@ -2052,27 +2052,25 @@ void draw_wireless(int cursor) {
       }
     }
   } else if (mode == LINK_MODE_TX) {
-    // 送信機が 2 台いるのは異常事態なので、他のどの表示より目立たせる。
-    if (link_dup_sender()) {
-      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-      backscreen.setCursor(2, y);
-      backscreen.print(" !! ANOTHER SENDER FOUND !!");
-      y += lh;
-      backscreen.setCursor(2, y);
-      backscreen.print(" Only one sender allowed.");
-    } else {
-      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      backscreen.setCursor(2, y);
-      backscreen.print(" Sending 1Hz (no uplink)");
-    }
+    // ★ ここに「送信機が 2 台いる」警告は出せない。検出は seq の逆行で行うので
+    //   受信できる機体でしか働かず、送信機は送信の合間 mode 3 で寝ている。
+    //   出せば「警告が出ないから 1 台だ」と誤読させるだけになる（link.h 参照）。
+    //   代わりに、送信機側で唯一確かめられる**実際に送出できた回数**を出す。
+    //   モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.print(" Sending 1Hz (no uplink)");
+    y += lh;
+    backscreen.setCursor(2, y);
+    backscreen.printf(" Sent    : %u", link_tx_count());
     y += lh;
   }
   y += 4;
 
-  // ---- [3] 戻る ----
-  backscreen.setTextColor(cursor == 3 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
+  // ---- [4] 戻る ----
+  backscreen.setTextColor(cursor == 4 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sReturn", cursor == 3 ? ">" : " ");
+  backscreen.printf("%sReturn", cursor == 4 ? ">" : " ");
 
   backscreen.unloadFont();
   push_backscreen();
@@ -2154,10 +2152,22 @@ static void draw_link_nosignal_box() {
   backscreen.unloadFont();
 }
 
-// 受信モードのオーバーレイ。push_backscreen() から必ず通るので、
-// どの画面にいても枠は出る（docs/pons_link.md §5）。アイコンとポップアップは地図画面のみ。
+// 無線のオーバーレイ。push_backscreen() から必ず通る。
+//   ・枠とポップアップは**受信モードだけ**。表示の意味が入れ替わるのは受信側なので。
+//   ・アイコンは**送信モードでも出す**（地図画面のみ）。
+//     ★ 機体側にこそ「今ちゃんと出ているか」を示すものが要る。
+//       上りが無い以上、送信機は届いたかどうかを知りようがないので、
+//       せめて「モジュールが生きていて送出できている」ことは見せる。
+//       ここを受信モード限定にしていると ICON_PLANE が一度も描かれない。
 static void draw_link_overlay() {
-  if (link_get_mode() != LINK_MODE_RX) return;
+  const uint8_t mode = link_get_mode();
+  if (mode == LINK_MODE_OFF) return;
+
+  if (mode == LINK_MODE_TX) {
+    if (screen_mode == MODE_MAP) draw_link_icons();
+    return;
+  }
+
   const uint16_t col = link_frame_color();
 
   // 3〜10 秒の間は点滅させて「切れかけ」を示す（docs/pons_link.md §5 の鮮度表）。

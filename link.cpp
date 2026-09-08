@@ -8,10 +8,11 @@
 // ============================================================
 //
 // ■ 設計の要点
-//   ・UART の送信は必ずノンブロッキング。無線モジュールがハングしても Core0 のループが
-//     止まらないこと（docs/pons_link.md §4）。availableForWrite() で空きを確認し、
-//     入らなければそのフレームは捨てる。テレメトリは最新値だけが意味を持つので、
-//     古いものを詰まらせてまで送る価値が無い。
+//   ・**送信の write() はあえてブロックさせる。** 隙間なく 1 回で流し込まないと
+//     E220 が途中でパケットを切ってしまうため（docs/pons_link.md §4）。
+//     115200bps・65 バイトで 3.1ms なので、1Hz なら Core0 への影響は無視できる。
+//     長く止まる可能性があるのは「モジュールがまだ前の送信を処理中」のときだけで、
+//     そこは e220_send() が AUX を見て**そのスロットを捨てる**ことで避けている。
 //   ・受信データの供給関数は gps.cpp のリプレイ用と同じ形にしてある。
 //     受信モードを既存のリプレイ経路へ相乗りさせるため。
 //
@@ -29,8 +30,10 @@
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
 //   AUX(GPIO30) は e220.h の E220_AUX_PIN。送信の刻みは RP2350 が持つ。
 
-#define MODULE_ALIVE_MS      5000         // LINK がこの時間来なければモジュール不応答とみなす
-#define NOSIGNAL_MS      10000         // 受信が途切れてから自機表示へ移るまで（docs/pons_link.md §5）
+// 受信が途切れてから自機表示へ移るまで（docs/pons_link.md §5）。
+// ★ RSSI10_WIN_MS と同じ値にしてあること。受信中なら 10 秒窓に必ず 1 発は入る、
+//   という前提で link_rssi_bars() が成り立っている。
+#define NOSIGNAL_MS      10000
 
 // ---- 設定（SD の設定ファイルから読まれる）----
 // ★ 電波の設定は「数値」でしかない。意味を決めるのは無線層（e220.cpp）で、
@@ -78,6 +81,8 @@ static bool     s_rssiSeen   = false;
 static uint16_t s_seqGaps    = 0;   // seq の飛び（電波側の取りこぼし）
 static uint16_t s_lastSeq    = 0;
 static bool     s_haveLastSeq = false;
+
+static void link_push_telemetry();   // 実体は下（送信側の組み立て）
 
 // ============================================================
 //  受信の取り込み
@@ -156,8 +161,9 @@ void link_setup() {
     // e220_alive() が false になり link_watch_module() が鳴らす。
     e220_setup(link_radio_ch, link_radio_profile);
 
-    // 受信機は常時 mode 0（docs/pons_link.md §3）。送信機は最初から寝かせておく。
-    if (link_mode_setting == LINK_MODE_TX) e220_sleep();
+    // 受信機は常時 mode 0（docs/pons_link.md §3）。
+    // 送信機と OFF は最初から寝かせておく（e220_setup は mode 0 で戻ってくる）。
+    if (link_mode_setting != LINK_MODE_RX) e220_sleep();
 
     // ★ 起動時に送信/受信の**どちらも**読み上げる（docs/pons_link.md §1）。
     //   受信側だけ読み上げる案だと「何も言わない＝正常」と受け取られ、
@@ -247,8 +253,8 @@ static void link_watch_sender_faults() {
 
 // 通信レポート（60 秒ごと）。現場でシリアルを見られない以上、
 // SD のシステムログが「あのとき電波はどうだったか」を振り返る唯一の記録になる。
-// ★ UART の CRC エラー（配線・ノイズ）と seq の飛び（電波）は分けて出す。
-//   混ぜると後から原因を切り分けられない。
+// 出すのは「モジュールが応答したか」「何発受かったか」「seq がいくつ飛んだか」
+// 「RSSI の幅」の 4 つ。あとから原因を切り分けられる粒度にしてある。
 static void link_periodic_report() {
     if (link_mode_setting == LINK_MODE_OFF) return;
     static uint32_t lastReport = 0;
@@ -323,15 +329,19 @@ void link_set_mode(uint8_t mode) {
 // ★ この間 Core0 が最大 0.6 秒ほど止まる（9600 での往復とタイムアウト）。
 //   設定画面はメニューからしか入れないので飛行中には起きないが、
 //   **飛行中に呼んではいけない**関数である点は意識しておくこと。
+// ★★ 書込みは **RAM のみ（0xC2）**。設定画面で CH を 0→12 と回すだけで
+//   13 回になるので、不揮発（0xC0）で書くとモジュールの書換え寿命を無駄に削る。
+//   設定の正本は SD の settings.txt 側なので、次回起動時に e220_setup() が
+//   同じ値を書き直す（そのときだけ不揮発）。
 void link_set_radio_ch(uint8_t ch) {
     if (ch > E220_CH_MAX || ch == link_radio_ch) return;
     link_radio_ch = ch;
-    e220_reconfigure(link_radio_ch, link_radio_profile);
+    e220_reconfigure(link_radio_ch, link_radio_profile, false);
 }
 void link_set_radio_profile(uint8_t p) {
     if (p >= LINK_PROFILE_COUNT || p == link_radio_profile) return;
     link_radio_profile = p;
-    e220_reconfigure(link_radio_ch, link_radio_profile);
+    e220_reconfigure(link_radio_ch, link_radio_profile, false);
 }
 uint8_t link_get_mode()          { return link_mode_setting; }
 uint8_t link_get_radio_ch()      { return link_radio_ch; }
@@ -341,12 +351,12 @@ uint8_t link_get_radio_profile() { return link_radio_profile; }
 //  送信側：テレメトリの組み立て
 //    刻みは link_tx_tick() が持つ（1Hz）。ここは呼ばれたら最新値で 1 発作る。
 // ============================================================
-void link_push_telemetry() {
+static void link_push_telemetry() {
     if (link_mode_setting != LINK_MODE_TX) return;
 
     LinkTelem t = {};
     t.magic0 = 'P'; t.magic1 = 'L';
-    t.ver = LINK_PROTO_VER; t.type = 0;
+    t.ver = LINK_PROTO_VER; t.type = LINK_TYPE_TELEM;
     // ★ seq は送信のたびに 1 つ進める。**埋め忘れると全パケットが seq=0 になり、
     //   受信側の取りこぼし計数と重複送信機の検出が両方壊れる。**
     t.seq   = s_seqOut++;

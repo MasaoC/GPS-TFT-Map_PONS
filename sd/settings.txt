@@ -2,3 +2,6 @@ volume:10
 destination:PLATHOME
 navigation_mode:AUTO10K
 scaleindex:4
+link_mode:0
+link_radio_ch:6
+link_radio_prof:1

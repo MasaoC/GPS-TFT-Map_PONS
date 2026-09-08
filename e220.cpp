@@ -27,10 +27,22 @@ static bool    s_asleep    = false;
 
 // 受信の組み立てバッファ。
 //   1 パケット = ペイロード + RSSI 1 バイト。取りこぼしや異物で位相がずれても
-//   magic を探し直せるよう、2 パケットぶんの余裕を持たせる。
-#define RXBUF_SIZE       (2 * (sizeof(LinkTelem) + 1) + 8)
+//   magic を探し直せるよう、3 パケットぶんの余裕を持たせる。
+//   ★ 環境ノイズ取得（e220_read_noise）も応答待ちの間このバッファを共有する。
+//     受信中に測ると「溜まっているテレメトリ + 待っている間に届くテレメトリ +
+//     応答 5 バイト」が同居しうるので、2 パケットぶんでは足りない。
+#define RXBUF_SIZE       (3 * (sizeof(LinkTelem) + 1) + 16)
 static uint8_t  s_rx[RXBUF_SIZE];
 static uint16_t s_rxLen = 0;
+
+// ---- 設定値の重複チェック ----
+// チャネル数と SF の段数は「無線に依存しない上位」(link_proto.h) と
+// 「E220 固有の下位」(e220.h) の両方に書いてある。片方だけ直すと
+// 設定画面が選べない値を出すので、ずれたらビルドで止める。
+static_assert(LINK_RADIO_CH_MAX == E220_CH_MAX,
+              "link_proto.h の CH 上限と e220.h の CH 上限がずれている");
+static_assert(LINK_PROFILE_COUNT == (E220_SF_MAX - E220_SF_MIN + 1),
+              "link_proto.h のプロファイル数と e220.h の SF 範囲がずれている");
 
 // ============================================================
 //  小物
@@ -42,8 +54,11 @@ uint8_t e220_profile_to_sf(uint8_t profile) {
     return sf;
 }
 
-// BW500kHz のときの air_data_rate（レジスタ 0x02 の下位 5bit）。
+// BW500kHz のときの air_data_rate（レジスタ 0x02 の下位 **5bit**）。
 //   BW500 は ((SF-5) << 2) | 0b10。SF8 なら 0b01110。
+//   ★ 一般の E220 データシートは bit4-3 をパリティ欄としているが、
+//     JP 版は 5bit すべてが air_data_rate。動作確認済みの
+//     esp32_e220900t22s_jp_lib も REG0 = (baud<<5) | air_data_rate と組んでいる。
 static uint8_t air_data_rate_bits(uint8_t sf) {
     if (sf < E220_SF_MIN) sf = E220_SF_MIN;
     if (sf > E220_SF_MAX) sf = E220_SF_MAX;
@@ -84,19 +99,36 @@ static void set_baud(uint32_t baud) {
     E220_SERIAL.begin(baud);
 }
 
-// 受信バッファを捨てる
+// 受信バッファを捨てる。
+// ★ 受信データも一緒に消えるので、**受信中に呼んではいけない**。
+//   呼んでよいのはモード切替の前後（mode 3 の間）だけ。
 static void flush_input() {
     while (E220_SERIAL.available()) E220_SERIAL.read();
     s_rxLen = 0;
+}
+
+// UART に来ているバイトを組み立てバッファへ移すだけ。捨てない。
+// 受信の取り込みと環境ノイズの応答待ちで共用する。
+static void rx_pump() {
+    while (E220_SERIAL.available() && s_rxLen < RXBUF_SIZE)
+        s_rx[s_rxLen++] = (uint8_t)E220_SERIAL.read();
+}
+
+// 組み立てバッファの先頭から n バイト捨てる
+static void rx_drop_front(uint16_t n) {
+    if (n >= s_rxLen) { s_rxLen = 0; return; }
+    s_rxLen = (uint16_t)(s_rxLen - n);
+    memmove(s_rx, s_rx + n, s_rxLen);
 }
 
 // ============================================================
 //  レジスタ操作（mode 3 でのみ有効）
 // ============================================================
 
-// C0 = 恒久書込み（不揮発）。C1 = 読出し。
+// C0 = 恒久書込み（不揮発・寿命あり）。C2 = 一時書込み（RAM のみ）。C1 = 読出し。
 //   応答はいずれも C1 <開始アドレス> <長さ> <値...>。
 //   ★ 受信データが混ざることがあるので、応答の先頭を決め打ちしない。
+//   ★ mode 3 でしか使えない。この関数を呼ぶ側がモードを保証すること。
 static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
                      const uint8_t* in, uint8_t* out) {
     uint8_t cmd[3 + 16];
@@ -128,7 +160,8 @@ static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
 }
 
 // 設定一式を書いて、読み返して照合する。
-static bool write_config(uint8_t ch, uint8_t profile) {
+//   persist = true なら 0xC0（不揮発。書換え寿命あり）、false なら 0xC2（RAM のみ）。
+static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
     const uint8_t sf = e220_profile_to_sf(profile);
 
     uint8_t v[6];
@@ -162,9 +195,9 @@ static bool write_config(uint8_t ch, uint8_t profile) {
     //   書き直す必要は無い。
     uint8_t rb[6] = {0};
     if (reg_xfer(0xC1, 0x00, 6, nullptr, rb) && memcmp(v, rb, sizeof(v)) == 0)
-        return true;                       // 既に正しい。フラッシュを触らない
+        return true;                       // 既に正しい。何も書かない
 
-    if (!reg_xfer(0xC0, 0x00, 6, v, nullptr)) return false;
+    if (!reg_xfer(persist ? 0xC0 : 0xC2, 0x00, 6, v, nullptr)) return false;
 
     // 書いたあとは必ず読み返して照合する。
     // 応答のエコーは「受け付けた」ことしか示さないので、実レジスタを読む。
@@ -196,18 +229,21 @@ void e220_setup(uint8_t ch, uint8_t profile) {
     // データシート 5.2：約 100ms の固定待ちで代用してよい。
     delay(120);
 
-    e220_reconfigure(ch, profile);
+    // 起動時の 1 回だけ不揮発に書く。設定が前回と同じなら書込み自体が起きない。
+    e220_reconfigure(ch, profile, true);
 }
 
-bool e220_reconfigure(uint8_t ch, uint8_t profile) {
+bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     if (ch > E220_CH_MAX) ch = E220_CH_MAX;
 
     set_mode(MODE_CONFIG);
     set_baud(LINK_UART_BAUD_CFG);      // mode 3 は 9600 固定
-    s_alive = write_config(ch, profile);
+    s_alive = write_config(ch, profile, persist);
     set_baud(LINK_UART_BAUD);          // 通常運用へ戻す
     set_mode(MODE_NORMAL);
     s_asleep = false;
+    // mode 3 でのやり取りの残りかすが受信の組み立てに混ざらないよう、
+    // ここで捨てる。まだ受信していないので消えて困るものは無い。
     flush_input();
     return s_alive;
 }
@@ -230,6 +266,15 @@ bool e220_send(const uint8_t* payload, uint8_t n) {
     //   空いたときに E220 がそこでパケットを切ってしまう。
     //   1 回の write() で渡すこと。write() はブロックするので隙間はできない。
     if (n > sizeof(LinkTelem)) return false;
+
+    // ★★ 送信前に AUX を見る（docs/pons_link.md §3）。
+    //   Low = 前の送信・キャリアセンスの待ち・休止 50ms がまだ終わっていない。
+    //   このまま write() すると **モジュールのバッファが空くまで Core0 が止まる**。
+    //   テレメトリは最新値だけが意味を持つので、待たずにこのスロットを捨てる。
+    //   ただし mode 3 から起こした直後は数 ms Low のことがあるので、そこは待つ。
+    wait_aux_idle(10);
+    if (digitalRead(E220_AUX_PIN) == LOW) return false;
+
     E220_SERIAL.write(payload, (size_t)n);
     return true;
 }
@@ -244,9 +289,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
     // magic + CRC の検査を LinkTelem として行うので、長さが違うと読み過ぎる。
     if (!out || frame_len != sizeof(LinkTelem)) return false;
 
-    while (E220_SERIAL.available() && s_rxLen < RXBUF_SIZE) {
-        s_rx[s_rxLen++] = (uint8_t)E220_SERIAL.read();
-    }
+    rx_pump();
 
     const uint16_t need = (uint16_t)frame_len + 1;   // ペイロード + RSSI
     for (uint16_t i = 0; i + need <= s_rxLen; i++) {
@@ -262,19 +305,12 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
         memcpy(out, s_rx + i, frame_len);
         if (rssi_dbm) *rssi_dbm = (int16_t)s_rx[i + frame_len] - 256;
 
-        // 使った分まで詰める
-        const uint16_t consumed = i + need;
-        s_rxLen = (uint16_t)(s_rxLen - consumed);
-        memmove(s_rx, s_rx + consumed, s_rxLen);
+        rx_drop_front((uint16_t)(i + need));   // 使った分まで詰める
         return true;
     }
 
     // 溜まりすぎたら古い方を捨てる（magic が見つからないまま埋まった場合）
-    if (s_rxLen > RXBUF_SIZE - 8) {
-        const uint16_t drop = s_rxLen / 2;
-        s_rxLen = (uint16_t)(s_rxLen - drop);
-        memmove(s_rx, s_rx + drop, s_rxLen);
-    }
+    if (s_rxLen > RXBUF_SIZE - 8) rx_drop_front((uint16_t)(s_rxLen / 2));
     return false;
 }
 
@@ -294,8 +330,9 @@ void e220_sleep() {
     //   flush() は uart_tx_wait_blocking() なので、送り切るまで待つ。
     E220_SERIAL.flush();
 
-    // ここから先は高速スリープ。モジュールは内部の送信バッファを
-    // 出し切ってから寝るので、AUX を待つ必要は無い（データシート 5.3）。
+    // ここから先は高速スリープ。**モード切替は AUX が High のときしか効かない**
+    // ので、まだ送信中（AUX = Low）なら切替は自動的に先送りされ、
+    // 送信を終えてから mode 3 に入る（データシート p.19）。待つ必要は無い。
     digitalWrite(E220_MODE_PIN, MODE_CONFIG);
     s_asleep = true;
 }
@@ -306,8 +343,6 @@ void e220_wake() {
     delay(2);          // 切替は 1ms（データシート 5.3）
     s_asleep = false;
 }
-
-bool e220_is_asleep() { return s_asleep; }
 
 // ============================================================
 //  環境ノイズ（データシート 6.8 / 8.7）
@@ -320,23 +355,33 @@ bool e220_read_noise(int16_t* noise_dbm, int16_t* last_rssi_dbm) {
     if (s_asleep) return false;
     const uint8_t cmd[6] = { 0xC0, 0xC1, 0xC2, 0xC3, 0x00, 0x02 };
 
-    flush_input();
+    // ★★ ここで受信バッファを捨ててはいけない。
+    //   この関数は **mode 0 のまま**、テレメトリと同じ UART を使って問い合わせる。
+    //   受信モードで無線設定画面を開いている間は 1Hz で呼ばれるので、
+    //   捨てるとテレメトリも 1Hz で消え、**電波を確かめようとした画面が
+    //   受信を殺す**という最悪の壊れ方をする。
+    //   応答も受信データも同じ組み立てバッファへ入れ、応答の 5 バイトだけを
+    //   抜き取る。残りは e220_recv() が今までどおり拾う。
+    rx_pump();
+    if (s_rxLen > RXBUF_SIZE - 96) rx_drop_front((uint16_t)(s_rxLen / 2));  // 応答の置き場を確保
+    const uint16_t from = s_rxLen;   // 応答は必ずこれ以降に来る
+
     E220_SERIAL.write(cmd, sizeof(cmd));
     E220_SERIAL.flush();
 
-    uint8_t buf[32]; uint8_t got = 0;
     const uint32_t t0 = millis();
-    while (millis() - t0 < 300) {
-        while (E220_SERIAL.available() && got < sizeof(buf)) buf[got++] = (uint8_t)E220_SERIAL.read();
-        if (got >= 5) break;
-        delay(2);
-    }
-    for (uint8_t i = 0; i + 5 <= got; i++) {
-        if (buf[i] == 0xC1 && buf[i + 1] == 0x00 && buf[i + 2] == 0x02) {
-            if (noise_dbm)     *noise_dbm     = (int16_t)buf[i + 3] - 256;
-            if (last_rssi_dbm) *last_rssi_dbm = (int16_t)buf[i + 4] - 256;
+    while (millis() - t0 < 200) {
+        rx_pump();
+        for (uint16_t i = from; (uint16_t)(i + 5) <= s_rxLen; i++) {
+            if (s_rx[i] != 0xC1 || s_rx[i + 1] != 0x00 || s_rx[i + 2] != 0x02) continue;
+            if (noise_dbm)     *noise_dbm     = (int16_t)s_rx[i + 3] - 256;
+            if (last_rssi_dbm) *last_rssi_dbm = (int16_t)s_rx[i + 4] - 256;
+            // 応答の 5 バイトだけを抜く。前後のテレメトリは壊さない。
+            memmove(s_rx + i, s_rx + i + 5, (size_t)(s_rxLen - (i + 5)));
+            s_rxLen = (uint16_t)(s_rxLen - 5);
             return true;
         }
+        delay(2);
     }
     return false;
 }

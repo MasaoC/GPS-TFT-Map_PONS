@@ -63,7 +63,14 @@ void e220_setup(uint8_t ch, uint8_t profile);
 
 // 設定画面からチャンネル/プロファイルが変わったときに呼ぶ。
 // mode 3 へ入って書き直し、mode 0 へ戻す。
-bool e220_reconfigure(uint8_t ch, uint8_t profile);
+//
+// ★ persist で書込みコマンドを選ぶ。
+//     true  … 0xC0（不揮発）。**書換え寿命がある**ので起動時の 1 回だけ。
+//     false … 0xC2（RAM のみ）。設定画面で値を回している間はこちら。
+//   設定の正本は SD の settings.txt なので、RAM に書くだけでも
+//   次回起動時に同じ値が復元される。CH を 0→12 と回すだけで 13 回
+//   フラッシュに書くのは、モジュールの寿命を無駄に削るだけになる。
+bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist);
 
 // 直近の設定照合が通っているか。UART が死んでいれば false。
 bool e220_alive();
@@ -83,7 +90,6 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm);
 // ---- 省電力 ----
 void e220_sleep();     // mode 3 へ。送信中なら送信完了後に入る
 void e220_wake();      // mode 0 へ。復帰は 1ms（データシート 5.3）
-bool e220_is_asleep();
 
 // ---- 診断 ----
 // 環境ノイズ [dBm]。距離を決めているのはこれ（docs/pons_link.md §8）。

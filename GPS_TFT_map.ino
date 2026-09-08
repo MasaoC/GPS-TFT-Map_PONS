@@ -1360,10 +1360,12 @@ void longPressCallback() {
                // 3 択のトグルなので「送受同時 ON」を表現できない（docs/pons_link.md §1）。
         link_set_mode((link_get_mode() + 1) % 3);
         break;
-      case 1:  // 電波のチャネル。意味は無線方式しだいなので、ここでは番号を回すだけ。
+      case 1:  // チャネル CH0-12（920.8-923.2MHz）を回す。
+               // ここまでが休止 50ms 固定の帯域なので上限を越えさせない。
         link_set_radio_ch((link_get_radio_ch() + 1) % (LINK_RADIO_CH_MAX + 1));
         break;
-      case 2:  // 電波のプリセット。同上。
+      case 2:  // 拡散率 SF7→SF8→…→SF11→SF7 と回す（帯域幅 500kHz は固定）。
+               // SF を上げるほど届くが、送信時間＝送信電流が倍々に増える。
         link_set_radio_profile((link_get_radio_profile() + 1) % LINK_PROFILE_COUNT);
         break;
       default: // 戻る
