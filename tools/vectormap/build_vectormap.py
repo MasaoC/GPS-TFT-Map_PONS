@@ -121,6 +121,57 @@ LODS = [
          desc="日本全国・粗"),
 ]
 
+# ===== 16MB 版の LOD 定義（--variant hires）=====
+# 軽量版との違いは 2 つだけ。**段数を増やす（4→5）** ことと **周辺マージンを広げる** こと。
+#
+#  ① 最大ズーム専用の LOD を足す。
+#     軽量版の LOD0 は tol_scale=52.33（zoom13 で 1px）だが、scalelist の最大は
+#     scale=200（画面幅 1.2km）で、そこでは同じ誤差が 3.8px になる。
+#     **段の中でここだけ精度が足りていない。** 専用の段を足して 1px に戻す。
+#     面積が狭いので、細かくしても増えるバイト数は限定的。
+#
+#  ② LOD1/LOD2 のマージンを広げる。軽量版は「飛行エリア枠 +0.15 度」まで
+#     切り詰めてある。容量に余裕ができたので、コースを外れても地図が続くようにする。
+#
+# ★ 実際のバイト数は生成時に LOD 別・クラス別で表示される。見積もりではなく
+#   それを見て詰めること（実機の MAPLIST 画面でも同じ内訳が見られる）。
+def _lods_hires():
+    return [
+        # 最大ズーム（scale 200 = 画面幅 1.2km）専用。ここだけ精度を上げる。
+        # unit_e7=50 は 0.55m 刻み。tile_e7 / unit_e7 = 12500 で int16 に収まる。
+        dict(lod=0, min_scale=100.0, unit_e7=50, tile_e7=625_000,
+             tol_scale=200.0, cull_scale=200.0,
+             bboxes=list(SITES.values()), sea_bg=True, land_hires=True,
+             classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
+             min_area_px=8.0, min_len_px=1.0,
+             desc="飛行エリア・最大ズーム専用"),
+        # 以下は軽量版と同じ段を 1 つずつ後ろへずらしたもの。
+        dict(lod=1, min_scale=26.0, unit_e7=100, tile_e7=1_250_000, tol_scale=52.32994872,
+             bboxes=[(a - 0.10, b - 0.12, c + 0.10, d + 0.12) for (a, b, c, d) in SITES.values()],
+             sea_bg=True, land_hires=True,
+             classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
+             min_area_px=8.0, min_len_px=1.0,
+             desc="飛行エリア・高精細"),
+        dict(lod=2, min_scale=6.5, unit_e7=100, tile_e7=2_500_000, tol_scale=13.08248718,
+             bboxes=[(a - 0.30, b - 0.36, c + 0.30, d + 0.36) for (a, b, c, d) in SITES.values()],
+             sea_bg=True, land_hires=True,
+             classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
+             min_area_px=8.0, min_len_px=1.0,
+             desc="飛行エリア周辺・中精細（マージン拡大）"),
+        # 軽量版では容量の都合で VM_TRUNK を落としていた段。ここでは戻す。
+        dict(lod=3, min_scale=1.6, unit_e7=500, tile_e7=5_000_000, tol_scale=3.2706218,
+             bboxes=[(30.00, 128.00, 42.00, 143.00)], sea_bg=True, land_hires=False,
+             classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
+             min_area_px=6.0, min_len_px=1.0,
+             desc="本州・四国・九州北部（幹線あり）"),
+        dict(lod=4, min_scale=0.0, unit_e7=2000, tile_e7=20_000_000,
+             tol_scale=0.81765545, cull_scale=0.2044138625,
+             bboxes=[(24.00, 122.00, 46.50, 146.50)], sea_bg=True, land_hires=False,
+             classes=[VM_LANDMASS, VM_WATER],
+             min_area_px=1.5, min_len_px=1.0,
+             desc="日本全国・粗"),
+    ]
+
 # Overpass のタグ条件（クラス → クエリ断片）
 OVERPASS_FILTERS = {
     VM_WATER:    ['way["natural"="water"]', 'relation["natural"="water"]'],
@@ -326,14 +377,10 @@ def fetch_all_from_pbf(pbf_path, classes, cache_path=None):
 
     クラスごとに開き直すと 2.3GB を何度も読むことになるため、1 回で全部集める。
     """
-    try:
-        import osmium
-        from shapely import wkb as shapely_wkb
-    except ImportError:
-        sys.exit("--pbf には pyosmium が必要です:  pip install osmium")
-
     # 走査は 2.5GB で 10 分以上かかるため、結果を WKB でキャッシュする。
-    # LOD の閾値だけ変えて作り直したいときに再走査しなくて済む。
+    # ★ キャッシュ読み出しは osmium の import より**前**に置く。
+    #   pbf 本体を消したあとでもキャッシュだけで作り直せるようにするため
+    #   （osmium は pbf を読むためのライブラリなので、無くても困らない）。
     if cache_path and Path(cache_path).exists():
         import pickle
         from shapely import wkb as shapely_wkb
@@ -342,6 +389,17 @@ def fetch_all_from_pbf(pbf_path, classes, cache_path=None):
         if set(raw.keys()) >= set(classes):
             return {c: [shapely_wkb.loads(b) for b in raw[c]] for c in classes}
         print("    キャッシュのクラス構成が違うため再走査します")
+
+    if not pbf_path or not Path(pbf_path).exists():
+        sys.exit(f"pbf が見つかりません: {pbf_path}\n"
+                 f"  走査キャッシュ（{cache_path}）にも必要なクラスがありません。"
+                 f"README の手順で再取得してください。")
+
+    try:
+        import osmium
+        from shapely import wkb as shapely_wkb
+    except ImportError:
+        sys.exit("pbf の走査には pyosmium が必要です:  pip install osmium")
 
     want_area = {c for c in classes if PBF_TAGS.get(c, ("",))[0] == "area"}
     want_way = {c for c in classes if PBF_TAGS.get(c, ("",))[0] == "way"}
@@ -403,7 +461,24 @@ def fetch_all_from_pbf(pbf_path, classes, cache_path=None):
     return out
 
 
-def fetch_landmass_shp(shp_path, bbox):
+def _land_cache_path(cache_dir, bbox, hires):
+    """海岸線キャッシュのパス。**shp のファイルパスは鍵に含めない。**
+    shp を消したあとでも同じ鍵で引けるようにするため（それがキャッシュの目的）。
+    高精細版と簡易版は形が違うので、そこだけ区別する。
+    """
+    lat0, lon0, lat1, lon1 = bbox
+    kind = "hi" if hires else "lo"
+    return Path(cache_dir) / f"land_{kind}_{lat0:.3f}_{lon0:.3f}_{lat1:.3f}_{lon1:.3f}.pickle"
+
+
+def _land_cache_hit(cache_dir, bboxes, hires):
+    """この LOD の bbox 全部に海岸線キャッシュがあるか。"""
+    if not cache_dir:
+        return False
+    return all(_land_cache_path(cache_dir, bb, hires).exists() for bb in bboxes)
+
+
+def fetch_landmass_shp(shp_path, bbox, cache_dir=None, hires=False):
     """osmdata.openstreetmap.de の land polygons（Shapefile）から陸地を取得する。
 
     OSM の natural=coastline は way が細切れで自力で閉じるのが非常に面倒なため、
@@ -411,12 +486,34 @@ def fetch_landmass_shp(shp_path, bbox):
 
     低ズーム用途なら simplified-land-polygons-complete-3857（23MB）で十分。
     こちらは EPSG:3857（Web メルカトル）なので WGS84 に再投影する。
+
+    ★ bbox 単位で結果をキャッシュする。
+      道路・水面（pbf）側には走査キャッシュがあるのに海岸線側には無かったため、
+      **shp を消すと海岸線だけ作り直せなくなる**という片手落ちの状態だった
+      （実際そうなった）。切り出し済みのジオメトリを持っておけば、
+      1.3GB の shp を消しても LOD の閾値だけ変えて作り直せる。
     """
+    lat0, lon0, lat1, lon1 = bbox
+
+    cache = _land_cache_path(cache_dir, bbox, hires) if cache_dir else None
+    if cache and cache.exists():
+        import pickle
+        from shapely import wkb as _wkb
+        print(f"    海岸線キャッシュを使用: {cache.name}")
+        return [_wkb.loads(b) for b in pickle.loads(cache.read_bytes())]
+
+    # zip:// で始まるパスは zip の中を直接読む（GDAL の /vsizip/ 相当）。
+    # land-polygons-split-4326 は展開すると 2.4GB になるので、
+    # ディスクが厳しいときは zip のまま指定できるようにしてある。
+    is_vsi = str(shp_path).startswith(("zip://", "/vsizip/"))
+    if not shp_path or (not is_vsi and not Path(shp_path).exists()):
+        sys.exit(f"海岸線 shp が見つかりません: {shp_path}\n"
+                 f"  キャッシュも無いため作り直せません。README の手順で再取得してください。")
+
     try:
         import fiona
     except ImportError:
         sys.exit("--land-shp には fiona が必要です:  pip install fiona")
-    lat0, lon0, lat1, lon1 = bbox
 
     with fiona.open(shp_path) as src:
         epsg = None
@@ -446,6 +543,12 @@ def fetch_landmass_shp(shp_path, bbox):
                 g = g.buffer(0)
             if g.is_valid and not g.is_empty:
                 geoms.append(g)
+
+    if cache:
+        import pickle
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(pickle.dumps([g.wkb for g in geoms]))
+        print(f"    海岸線をキャッシュ: {cache.name}（{len(geoms)} ジオメトリ）")
     return geoms
 
 
@@ -651,13 +754,15 @@ def build_lod(spec, land_shp, land_shp_hires, cache_dir, max_pts, stats, pbf_cac
         print(f"  [{CLASS_NAME[cls]}] 取得中")
         if cls == VM_LANDMASS:
             shp = land_shp_hires if spec.get("land_hires") else land_shp
-            if not shp:
+            # shp が無くても、以前に切り出したキャッシュがあればそれで進める。
+            if not shp and not _land_cache_hit(cache_dir, bboxes, spec.get("land_hires", False)):
                 which = "--land-shp-hires" if spec.get("land_hires") else "--land-shp"
-                print(f"    {which} 未指定のためスキップ（海岸線なし＝海と陸が区別できません）")
+                print(f"    {which} 未指定でキャッシュも無いためスキップ"
+                      f"（海岸線なし＝海と陸が区別できません）")
                 continue
             geoms = []
             for bb in bboxes:
-                geoms += fetch_landmass_shp(shp, bb)
+                geoms += fetch_landmass_shp(shp, bb, cache_dir, spec.get("land_hires", False))
         elif pbf_cache is not None:
             # pbf は全国分を 1 回で読んであるので、この LOD の範囲で切り出すだけ
             areas = [box(b[1], b[0], b[3], b[2]) for b in bboxes]
@@ -728,7 +833,7 @@ def build_lod(spec, land_shp, land_shp_hires, cache_dir, max_pts, stats, pbf_cac
     return tiles
 
 
-def emit_header(out_path, all_tiles, source_date, args, stats):
+def emit_header(out_path, all_tiles, source_date, args, stats, variant="light"):
     """vectormap_data.cpp を書き出す。"""
     blob = bytearray()
     entries = []
@@ -748,7 +853,7 @@ def emit_header(out_path, all_tiles, source_date, args, stats):
     lines = []
     w = lines.append
     w("// ============================================================")
-    w("// vectormap_data.cpp — 自動生成ファイル。手で編集しないこと。")
+    w(f"// vectormap_data{'_hires' if variant == 'hires' else ''}.cpp — 自動生成ファイル。手で編集しないこと。")
     w("// 生成: tools/vectormap/build_vectormap.py")
     w("//")
     w("// ------------------------------------------------------------")
@@ -762,7 +867,16 @@ def emit_header(out_path, all_tiles, source_date, args, stats):
     w(f"// 元データのスナップショット: {source_date}")
     w("// ------------------------------------------------------------")
     w("// ============================================================")
-    w('#include "vectormap.h"')
+    w('#include "../vectormap.h"')
+    w('#include "../../settings.h"')
+    w("")
+    # ★ 軽量版と 16MB 版は二者択一。Arduino は src/ 配下の .cpp を全部
+    #   コンパイルするので、両方が実体を持つと vm_tiles などが重複定義になる。
+    #   各ファイルが自分で自分を無効化することで、settings.h の 1 行で選べる。
+    if variant == "hires":
+        w("#ifdef VECTORMAP_HIRES")
+    else:
+        w("#ifndef VECTORMAP_HIRES")
     w("")
     w(f"const uint16_t vm_tile_count = {len(entries)};")
     w("")
@@ -800,6 +914,8 @@ def emit_header(out_path, all_tiles, source_date, args, stats):
         w("  " + ",".join(f"0x{b:02x}" for b in blob[i:i + 16]) + ",")
     w("};")
     w("")
+    w("#endif  // VECTORMAP_HIRES" if variant == "hires" else "#endif  // !VECTORMAP_HIRES")
+    w("")
 
     Path(out_path).write_text("\n".join(lines))
     return len(entries), len(blob)
@@ -807,7 +923,10 @@ def emit_header(out_path, all_tiles, source_date, args, stats):
 
 def main():
     ap = argparse.ArgumentParser(description="OSM から vectormap_data.cpp を生成する")
-    ap.add_argument("--out", default="../../vectormap_data.cpp",
+    ap.add_argument("--variant", choices=["light", "hires"], default="light",
+                    help="light  = 既定の軽量版（FLASH 2MB でも入る。書き込みが速い）\n"
+                         "hires = 16MB 版。settings.h の VECTORMAP_HIRES を有効にしたときだけ焼かれる")
+    ap.add_argument("--out", default="../../src/flashdata/vectormap_data.cpp",
                     help="出力先。配列の「定義」なので .cpp にすること（.h だと\n"
                          "どこからも include されずリンクエラーになる）")
     ap.add_argument("--lods", default="0,1,2,3", help="生成する LOD（カンマ区切り）")
@@ -828,6 +947,16 @@ def main():
                     help="元データの日付。再現性のため記録する（既定: 本日）")
     args = ap.parse_args()
 
+    # 16MB 版は段数が違う（4 → 5）。src/vectormap.h の VM_LOD_COUNT も
+    # VECTORMAP_HIRES で 5 になるので、両者が食い違わないようにすること。
+    global LODS
+    if args.variant == "hires":
+        LODS = _lods_hires()
+        if args.out == ap.get_default("out"):
+            args.out = "../../src/flashdata/vectormap_data_hires.cpp"
+        if args.lods == ap.get_default("lods"):
+            args.lods = "0,1,2,3,4"     # 段が 1 つ増える
+
     source_date = args.source_date or time.strftime("%Y-%m-%d")
     want = {int(x) for x in args.lods.split(",") if x.strip() != ""}
     cache_dir = Path(args.cache)
@@ -835,10 +964,16 @@ def main():
 
     # pbf を使う場合は、全 LOD で必要なクラスをまとめて 1 回だけ走査する
     pbf_cache = None
-    if args.pbf:
+    # ★ --pbf が無くても、走査キャッシュがあればそれを使う。
+    #   pbf 本体は 2.5GB あって消されやすいが、キャッシュ（137MB）は残っていることが多い。
+    #   ここで「--pbf があるときだけ」にしていると、キャッシュがあるのに
+    #   Overpass へ大量に問い合わせに行ってしまう（公開サーバへの負荷にもなる）。
+    have_scan_cache = args.pbf_scan_cache and Path(args.pbf_scan_cache).exists()
+    if args.pbf or have_scan_cache:
         need = sorted({c for spec in LODS if spec["lod"] in want
                        for c in spec["classes"] if c != VM_LANDMASS})
-        print(f"=== {args.pbf} を走査（クラス: {', '.join(CLASS_NAME[c] for c in need)}）===")
+        src_label = args.pbf if args.pbf else f"走査キャッシュ {args.pbf_scan_cache}"
+        print(f"=== {src_label}（クラス: {', '.join(CLASS_NAME[c] for c in need)}）===")
         t0 = time.time()
         pbf_cache = fetch_all_from_pbf(args.pbf, need, args.pbf_scan_cache)
         print(f"    所要 {time.time() - t0:.0f} 秒")
@@ -850,7 +985,7 @@ def main():
         all_tiles[spec["lod"]] = build_lod(spec, args.land_shp, args.land_shp_hires,
                                            cache_dir, args.max_pts, stats, pbf_cache)
 
-    n_tiles, n_bytes = emit_header(args.out, all_tiles, source_date, args, stats)
+    n_tiles, n_bytes = emit_header(args.out, all_tiles, source_date, args, stats, args.variant)
 
     print("\n================ 生成結果 ================")
     print(f"  出力      : {args.out}")

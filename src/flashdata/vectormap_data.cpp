@@ -15,6 +15,12 @@
 // ============================================================
 #include "../vectormap.h"
 
+// ★ 16MB 版（vectormap_data_hires.cpp）と二者択一。
+//   Arduino は src/ 配下の .cpp を全部コンパイルするので、両方が実体を持つと
+//   vm_tiles などが重複定義になる。settings.h の VECTORMAP_HIRES でどちらか一方だけを残す。
+#include "../../settings.h"
+#ifndef VECTORMAP_HIRES
+
 const uint16_t vm_tile_count = 537;
 
 const int32_t vm_lod_unit_e7[VM_LOD_COUNT] = { 100, 100, 500, 2000 };
@@ -83138,3 +83144,5 @@ const uint8_t vm_blob[] __attribute__((aligned(4))) = {
   0x9d,0x22,0x42,0x01,0x5e,0x24,0xb7,0x01,0x85,0x26,0xf1,0x03,0x10,0x27,0xc0,0x03,
   0x10,0x27,0x5c,0x0a,0x10,0x25,0xf7,0x09,0x54,0x24,0x5b,0x0a,0xa1,0x23,0x26,0x0a,
 };
+
+#endif  // !VECTORMAP_HIRES

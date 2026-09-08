@@ -129,6 +129,21 @@
 #define MODE_WIRELESS 9      // PONS Link（機体⇄ボート無線）の設定画面
 
 
+//======= 内蔵ベクタ地図 ======
+// 地図データは 2 種類あり、**コンパイル時にどちらか一方だけ**を焼く。
+// Arduino は src/ 配下の .cpp を全部コンパイルするので、両方のファイルは
+// この #define で自分を丸ごと無効化する（重複定義を避けるため）。
+//
+//   無効（既定）: src/flashdata/vectormap_data.cpp        約 1.3MB
+//                 FLASH 2MB の設定でビルドでき、書き込みが速い。無線デバッグ中はこちら。
+//   有効        : src/flashdata/vectormap_data_hires.cpp  数 MB
+//                 **ボード設定を「16MB (no FS)」にしないとリンクで溢れる。**
+//                 書き込み時間が素直に伸びる。
+//
+// ★ 有効にする前に tools/vectormap/README.md の手順でデータを生成すること。
+//   未生成のまま有効にすると #error で止まる（リンクエラーで悩まないように）。
+//#define VECTORMAP_HIRES
+
 //======= リプレイ再生設定 ======
 // ★ SD の使い分け
 //     ルート直下 … **設定ファイルだけ**（settings.txt / mapdata.csv /

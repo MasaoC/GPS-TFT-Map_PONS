@@ -16,6 +16,7 @@
 #define VECTORMAP_H
 
 #include <stdint.h>
+#include "../settings.h"   // VECTORMAP_HIRES（LOD 段数がこれで変わる）
 
 // ===== 地物クラス =====
 // 描画順もこの順（面を先に塗り、線を後から重ねる）。
@@ -36,7 +37,19 @@ enum vm_class : uint8_t {
 // 同じ地物をズーム別に間引いた 4 段階で持つ。実行時は scale から 1 段だけ選ぶ。
 // LOD ごとに「収録範囲」と「座標の分解能」を変えることで、全国対応を
 // フラッシュ容量内に収める（高ズームは狭く細かく、低ズームは広く粗く）。
-#define VM_LOD_COUNT 4
+// ★ 16MB 版は最大ズーム専用の LOD を 1 段足すので 5 になる。
+//   データ側（vectormap_data*.cpp）の配列長と必ず一致すること。
+#ifdef VECTORMAP_HIRES
+  // 16MB 版のデータは **git に入れていない**（16MB のテキストになるため .gitignore）。
+  // 生成せずに VECTORMAP_HIRES を有効にすると vm_tiles などが未定義になり、
+  // 「undefined reference」だけが出て原因が分からない。ここで先に止める。
+  #if !__has_include("flashdata/vectormap_data_hires.cpp")
+    #error "16MB 版の地図データが未生成です。tools/vectormap/README.md の手順で生成してください（python3 build_vectormap.py --variant hires ...）"
+  #endif
+  #define VM_LOD_COUNT 5
+#else
+  #define VM_LOD_COUNT 4
+#endif
 
 // ===== レコード形式（vm_blob 内） =====
 //   uint8  cls           地物クラス
