@@ -2200,7 +2200,7 @@
 	)
 	(text "突入電流&バッテリー電流制限&最小 V_BCKP 対策\n電源ONで、220/690*3.3V が BCKP にかかる"
 		(exclude_from_sim no)
-		(at 220.218 109.728 0)
+		(at 145.288 86.868 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2210,7 +2210,7 @@
 	)
 	(text "BT1が放電しきっていると、モジュールが起動しないバグがあったため、\nR2抵抗によって、BT1バッテリーが空っぽでも、V_BCKUPに電圧が生じる((3.3-1)*220/690)ぐらい\n放電は、V=IR=10*10^-6*470 で、電圧降下はほとんどない\nP=IV=V^2/R=(0.5*10^-3)^2/500=0.5*10^-9=0.5nW"
 		(exclude_from_sim no)
-		(at 189.23 142.494 0)
+		(at 114.3 119.634 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2220,74 +2220,74 @@
 		(uuid "f7a59895-0dea-42b4-b3c3-afec28ef7d6d")
 	)
 	(junction
-		(at 73.66 93.98)
+		(at 76.2 60.96)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "4535016d-7e9b-416d-afe3-f83865a2eabf")
 	)
 	(junction
-		(at 82.55 96.52)
+		(at 85.09 63.5)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "49895a67-05f2-4133-8270-72585213cf11")
 	)
 	(junction
-		(at 223.52 124.46)
+		(at 148.59 101.6)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "51b59243-a49c-4ef8-b9fd-3ba4d381bb63")
 	)
 	(junction
-		(at 219.71 124.46)
+		(at 144.78 101.6)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "6f48d1d7-d8b9-48aa-a8e7-d8ceb911731f")
 	)
 	(junction
-		(at 170.18 88.9)
+		(at 105.41 85.09)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "853cae18-654d-4793-83fb-bdc4ebe6a88d")
 	)
 	(junction
-		(at 243.84 115.57)
+		(at 168.91 92.71)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "ce343a84-cae6-45fb-9350-70e6329980e3")
 	)
 	(junction
-		(at 243.84 132.08)
+		(at 168.91 109.22)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "ee51584b-4e24-4bf4-ad3c-eeccce656912")
 	)
 	(no_connect
-		(at 119.38 109.22)
+		(at 54.61 105.41)
 		(uuid "09a26f69-ee11-4cab-9ee8-0efc0021822c")
 	)
 	(no_connect
-		(at 165.1 99.06)
+		(at 100.33 95.25)
 		(uuid "2e983bd7-bafa-4131-a8a4-29e7cf787d25")
 	)
 	(no_connect
-		(at 119.38 104.14)
+		(at 54.61 100.33)
 		(uuid "3dc26d4c-5b82-4b04-834e-1c78cb42f456")
 	)
 	(no_connect
-		(at 119.38 99.06)
+		(at 54.61 95.25)
 		(uuid "85c913b4-263d-472f-bdfc-d11fe8fd48af")
 	)
 	(no_connect
-		(at 165.1 106.68)
+		(at 100.33 102.87)
 		(uuid "a4f95302-c26e-4f8f-8a2c-7f8a1beb98c6")
 	)
 	(no_connect
-		(at 165.1 104.14)
+		(at 100.33 100.33)
 		(uuid "cc3a5c73-ac7e-4223-9b63-8d9343157127")
 	)
 	(wire
 		(pts
-			(xy 219.71 124.46) (xy 223.52 124.46)
+			(xy 144.78 101.6) (xy 148.59 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2297,7 +2297,7 @@
 	)
 	(wire
 		(pts
-			(xy 165.1 119.38) (xy 170.18 119.38)
+			(xy 100.33 115.57) (xy 105.41 115.57)
 		)
 		(stroke
 			(width 0)
@@ -2307,7 +2307,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 93.98) (xy 73.66 93.98)
+			(xy 74.93 60.96) (xy 76.2 60.96)
 		)
 		(stroke
 			(width 0)
@@ -2317,7 +2317,7 @@
 	)
 	(wire
 		(pts
-			(xy 243.84 95.25) (xy 243.84 106.68)
+			(xy 168.91 72.39) (xy 168.91 83.82)
 		)
 		(stroke
 			(width 0)
@@ -2327,7 +2327,7 @@
 	)
 	(wire
 		(pts
-			(xy 73.66 91.44) (xy 73.66 93.98)
+			(xy 76.2 58.42) (xy 76.2 60.96)
 		)
 		(stroke
 			(width 0)
@@ -2337,7 +2337,7 @@
 	)
 	(wire
 		(pts
-			(xy 82.55 93.98) (xy 82.55 96.52)
+			(xy 85.09 60.96) (xy 85.09 63.5)
 		)
 		(stroke
 			(width 0)
@@ -2347,7 +2347,7 @@
 	)
 	(wire
 		(pts
-			(xy 250.19 40.64) (xy 250.19 43.18)
+			(xy 125.73 67.31) (xy 125.73 69.85)
 		)
 		(stroke
 			(width 0)
@@ -2357,7 +2357,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 99.06) (xy 88.9 99.06)
+			(xy 74.93 66.04) (xy 91.44 66.04)
 		)
 		(stroke
 			(width 0)
@@ -2367,7 +2367,7 @@
 	)
 	(wire
 		(pts
-			(xy 207.01 124.46) (xy 219.71 124.46)
+			(xy 132.08 101.6) (xy 144.78 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2377,7 +2377,7 @@
 	)
 	(wire
 		(pts
-			(xy 165.1 88.9) (xy 170.18 88.9)
+			(xy 100.33 85.09) (xy 105.41 85.09)
 		)
 		(stroke
 			(width 0)
@@ -2387,7 +2387,7 @@
 	)
 	(wire
 		(pts
-			(xy 243.84 114.3) (xy 243.84 115.57)
+			(xy 168.91 91.44) (xy 168.91 92.71)
 		)
 		(stroke
 			(width 0)
@@ -2397,7 +2397,7 @@
 	)
 	(wire
 		(pts
-			(xy 243.84 71.12) (xy 243.84 87.63)
+			(xy 168.91 48.26) (xy 168.91 64.77)
 		)
 		(stroke
 			(width 0)
@@ -2407,7 +2407,7 @@
 	)
 	(wire
 		(pts
-			(xy 250.19 31.75) (xy 250.19 33.02)
+			(xy 125.73 58.42) (xy 125.73 59.69)
 		)
 		(stroke
 			(width 0)
@@ -2417,7 +2417,7 @@
 	)
 	(wire
 		(pts
-			(xy 219.71 132.08) (xy 243.84 132.08)
+			(xy 144.78 109.22) (xy 168.91 109.22)
 		)
 		(stroke
 			(width 0)
@@ -2427,7 +2427,7 @@
 	)
 	(wire
 		(pts
-			(xy 170.18 86.36) (xy 170.18 88.9)
+			(xy 105.41 82.55) (xy 105.41 85.09)
 		)
 		(stroke
 			(width 0)
@@ -2437,7 +2437,7 @@
 	)
 	(wire
 		(pts
-			(xy 223.52 124.46) (xy 231.14 124.46)
+			(xy 148.59 101.6) (xy 156.21 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2447,7 +2447,7 @@
 	)
 	(wire
 		(pts
-			(xy 165.1 91.44) (xy 170.18 91.44)
+			(xy 100.33 87.63) (xy 105.41 87.63)
 		)
 		(stroke
 			(width 0)
@@ -2457,7 +2457,7 @@
 	)
 	(wire
 		(pts
-			(xy 170.18 88.9) (xy 170.18 91.44)
+			(xy 105.41 85.09) (xy 105.41 87.63)
 		)
 		(stroke
 			(width 0)
@@ -2467,7 +2467,7 @@
 	)
 	(wire
 		(pts
-			(xy 73.66 93.98) (xy 74.93 93.98)
+			(xy 76.2 60.96) (xy 77.47 60.96)
 		)
 		(stroke
 			(width 0)
@@ -2477,7 +2477,7 @@
 	)
 	(wire
 		(pts
-			(xy 170.18 119.38) (xy 170.18 121.92)
+			(xy 105.41 115.57) (xy 105.41 118.11)
 		)
 		(stroke
 			(width 0)
@@ -2487,7 +2487,7 @@
 	)
 	(wire
 		(pts
-			(xy 231.14 115.57) (xy 231.14 124.46)
+			(xy 156.21 92.71) (xy 156.21 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2497,7 +2497,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 96.52) (xy 82.55 96.52)
+			(xy 74.93 63.5) (xy 85.09 63.5)
 		)
 		(stroke
 			(width 0)
@@ -2507,7 +2507,7 @@
 	)
 	(wire
 		(pts
-			(xy 82.55 96.52) (xy 101.6 96.52)
+			(xy 85.09 63.5) (xy 104.14 63.5)
 		)
 		(stroke
 			(width 0)
@@ -2517,7 +2517,7 @@
 	)
 	(wire
 		(pts
-			(xy 85.09 93.98) (xy 82.55 93.98)
+			(xy 87.63 60.96) (xy 85.09 60.96)
 		)
 		(stroke
 			(width 0)
@@ -2527,7 +2527,7 @@
 	)
 	(wire
 		(pts
-			(xy 243.84 132.08) (xy 246.38 132.08)
+			(xy 168.91 109.22) (xy 171.45 109.22)
 		)
 		(stroke
 			(width 0)
@@ -2537,7 +2537,7 @@
 	)
 	(wire
 		(pts
-			(xy 231.14 115.57) (xy 243.84 115.57)
+			(xy 156.21 92.71) (xy 168.91 92.71)
 		)
 		(stroke
 			(width 0)
@@ -2547,7 +2547,7 @@
 	)
 	(wire
 		(pts
-			(xy 243.84 115.57) (xy 243.84 116.84)
+			(xy 168.91 92.71) (xy 168.91 93.98)
 		)
 		(stroke
 			(width 0)
@@ -2557,7 +2557,7 @@
 	)
 	(wire
 		(pts
-			(xy 246.38 132.08) (xy 246.38 133.35)
+			(xy 171.45 109.22) (xy 171.45 110.49)
 		)
 		(stroke
 			(width 0)
@@ -2567,7 +2567,7 @@
 	)
 	(global_label "GNSS_RX"
 		(shape input)
-		(at 165.1 114.3 0)
+		(at 100.33 110.49 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2577,7 +2577,7 @@
 		)
 		(uuid "0a5413fd-eaac-4c69-bf77-0a7aa3d8b394")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 176.5518 114.3 0)
+			(at 111.7818 110.49 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2591,7 +2591,7 @@
 	)
 	(global_label "GNSS_TX"
 		(shape input)
-		(at 72.39 101.6 0)
+		(at 74.93 68.58 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2601,7 +2601,7 @@
 		)
 		(uuid "1473e3e5-f611-4b29-9ecd-0f3c42cf13e7")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 83.5394 101.6 0)
+			(at 86.0794 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2615,7 +2615,7 @@
 	)
 	(global_label "V_BCKUP"
 		(shape input)
-		(at 207.01 124.46 180)
+		(at 132.08 101.6 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2625,7 +2625,7 @@
 		)
 		(uuid "55916562-9b3c-4ac5-885c-731b0aae3b98")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 195.5581 124.46 0)
+			(at 120.6281 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2639,7 +2639,7 @@
 	)
 	(global_label "GNSS_TX"
 		(shape input)
-		(at 165.1 111.76 0)
+		(at 100.33 107.95 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2649,7 +2649,7 @@
 		)
 		(uuid "921d9027-900f-4f0f-9340-5a13c5191a74")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 176.2494 111.76 0)
+			(at 111.4794 107.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2663,7 +2663,7 @@
 	)
 	(global_label "GNSS_RX"
 		(shape input)
-		(at 72.39 104.14 0)
+		(at 74.93 71.12 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2673,7 +2673,7 @@
 		)
 		(uuid "995fd38a-2f70-42a4-96c3-88466937ecbc")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 83.8418 104.14 0)
+			(at 86.3818 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2687,7 +2687,7 @@
 	)
 	(global_label "V_BCKUP"
 		(shape input)
-		(at 165.1 93.98 0)
+		(at 100.33 90.17 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2697,7 +2697,7 @@
 		)
 		(uuid "e172b547-fd08-48a1-9b12-890c82ad796d")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 176.5519 93.98 0)
+			(at 111.7819 90.17 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2711,7 +2711,7 @@
 	)
 	(symbol
 		(lib_id "SAM-M10Q-00B:SAM-M10Q-00B")
-		(at 142.24 104.14 0)
+		(at 77.47 100.33 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2722,7 +2722,7 @@
 		(fields_autoplaced yes)
 		(uuid "079ed532-9f67-4259-85d5-f47f3f68f9fa")
 		(property "Reference" "U2"
-			(at 142.24 81.28 0)
+			(at 77.47 77.47 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2732,7 +2732,7 @@
 			)
 		)
 		(property "Value" "SAM-M10Q-00B"
-			(at 142.24 83.82 0)
+			(at 77.47 80.01 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2742,7 +2742,7 @@
 			)
 		)
 		(property "Footprint" "GPS_TFT:XCVR_SAM-M10Q-00B"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2754,7 +2754,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2765,7 +2765,7 @@
 			)
 		)
 		(property "Description" "- RF Receiver Galileo, GLONASS, GPS 1.575GHz, 1.602GHz -165dBm 400kbps On-Board, Patch Module"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2776,7 +2776,7 @@
 			)
 		)
 		(property "MF" "u-blox"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2788,7 +2788,7 @@
 			)
 		)
 		(property "MAXIMUM_PACKAGE_HEIGHT" "6.8mm"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2800,7 +2800,7 @@
 			)
 		)
 		(property "Package" "None"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2812,7 +2812,7 @@
 			)
 		)
 		(property "Price" "None"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2824,7 +2824,7 @@
 			)
 		)
 		(property "Check_prices" "https://www.snapeda.com/parts/SAM-M10Q-00B/u-blox/view-part/?ref=eda"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2836,7 +2836,7 @@
 			)
 		)
 		(property "STANDARD" "Manufacturer Recommendations"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2848,7 +2848,7 @@
 			)
 		)
 		(property "PARTREV" "R03"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2860,7 +2860,7 @@
 			)
 		)
 		(property "SnapEDA_Link" "https://www.snapeda.com/parts/SAM-M10Q-00B/u-blox/view-part/?ref=snap"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2872,7 +2872,7 @@
 			)
 		)
 		(property "MP" "SAM-M10Q-00B"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2884,7 +2884,7 @@
 			)
 		)
 		(property "Description_1" "- RF Receiver Galileo, GLONASS, GPS 1.575GHz, 1.602GHz -165dBm 400kbps On-Board, Patch Module"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2896,7 +2896,7 @@
 			)
 		)
 		(property "SNAPEDA_PN" "SAM-M10Q-00B"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2908,7 +2908,7 @@
 			)
 		)
 		(property "Availability" "In Stock"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2920,7 +2920,7 @@
 			)
 		)
 		(property "MANUFACTURER" "u-blox"
-			(at 142.24 104.14 0)
+			(at 77.47 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2992,7 +2992,7 @@
 			(uuid "d30a052f-d0ac-48e8-8889-df1a95efbbcd")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "U2")
 					(unit 1)
@@ -3002,7 +3002,7 @@
 	)
 	(symbol
 		(lib_id "2005280040:2005280040")
-		(at 72.39 104.14 180)
+		(at 74.93 71.12 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3013,7 +3013,7 @@
 		(fields_autoplaced yes)
 		(uuid "0c934163-0c74-4ea0-8dcb-5f9711b203c5")
 		(property "Reference" "J1"
-			(at 63.5 86.36 0)
+			(at 66.04 53.34 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3023,7 +3023,7 @@
 			)
 		)
 		(property "Value" "2005280040"
-			(at 63.5 88.9 0)
+			(at 66.04 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3033,7 +3033,7 @@
 			)
 		)
 		(property "Footprint" "Connector_FFC-FPC:Molex_200528-0040_1x04-1MP_P1.00mm_Horizontal"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3045,7 +3045,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3056,7 +3056,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3067,7 +3067,7 @@
 			)
 		)
 		(property "MF" "Molex"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3079,7 +3079,7 @@
 			)
 		)
 		(property "Description_1" "4 Position FFC, FPC Connector Contacts, Bottom 0.039 (1.00mm) Surface Mount, Right Angle"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3091,7 +3091,7 @@
 			)
 		)
 		(property "Package" "None"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3103,7 +3103,7 @@
 			)
 		)
 		(property "Price" "None"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3115,7 +3115,7 @@
 			)
 		)
 		(property "Check_prices" "https://www.snapeda.com/parts/2005280040/Molex/view-part/?ref=eda"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3127,7 +3127,7 @@
 			)
 		)
 		(property "Availability" "In Stock"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3139,7 +3139,7 @@
 			)
 		)
 		(property "SnapEDA_Link" "https://www.snapeda.com/parts/2005280040/Molex/view-part/?ref=snap"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3151,7 +3151,7 @@
 			)
 		)
 		(property "MP" "2005280040"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3163,7 +3163,7 @@
 			)
 		)
 		(property "MFR_NAME" "Molex Connector Corporation"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3175,7 +3175,7 @@
 			)
 		)
 		(property "MANUFACTURER_PART_NUMBER" "2005280040"
-			(at 72.39 104.14 0)
+			(at 74.93 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3202,7 +3202,7 @@
 			(uuid "9f08c1d8-394b-40ce-ae58-8c9068f97b71")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "J1")
 					(unit 1)
@@ -3212,7 +3212,7 @@
 	)
 	(symbol
 		(lib_id "Device:C")
-		(at 219.71 128.27 0)
+		(at 144.78 105.41 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3223,7 +3223,7 @@
 		(fields_autoplaced yes)
 		(uuid "16155a48-f63e-4821-836e-f35fd96e0134")
 		(property "Reference" "C3"
-			(at 223.52 126.9999 0)
+			(at 148.59 104.1399 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3234,7 +3234,7 @@
 			)
 		)
 		(property "Value" "0.1u"
-			(at 223.52 129.5399 0)
+			(at 148.59 106.6799 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3245,7 +3245,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
-			(at 220.6752 132.08 0)
+			(at 145.7452 109.22 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3256,7 +3256,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 219.71 128.27 0)
+			(at 144.78 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3267,7 +3267,7 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor"
-			(at 219.71 128.27 0)
+			(at 144.78 105.41 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3284,7 +3284,7 @@
 			(uuid "933cfe8e-2b86-4da7-af9c-6d8189dbd74d")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C3")
 					(unit 1)
@@ -3294,7 +3294,7 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 73.66 91.44 0)
+		(at 76.2 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3304,7 +3304,7 @@
 		(dnp no)
 		(uuid "27c5071b-366a-454b-8542-aca5f8d90879")
 		(property "Reference" "#FLG01"
-			(at 73.66 89.535 0)
+			(at 76.2 56.515 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3315,7 +3315,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 76.962 86.868 0)
+			(at 79.502 53.848 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3325,7 +3325,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 73.66 91.44 0)
+			(at 76.2 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3336,7 +3336,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 73.66 91.44 0)
+			(at 76.2 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3347,7 +3347,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 73.66 91.44 0)
+			(at 76.2 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3361,7 +3361,7 @@
 			(uuid "93dce255-8409-42f8-8cdd-5495d6b496f8")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#FLG01")
 					(unit 1)
@@ -3371,7 +3371,7 @@
 	)
 	(symbol
 		(lib_id "power:+3.3V")
-		(at 170.18 86.36 0)
+		(at 105.41 82.55 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3382,7 +3382,7 @@
 		(fields_autoplaced yes)
 		(uuid "5acd29e6-e8d5-407c-9127-33f2685da172")
 		(property "Reference" "#PWR08"
-			(at 170.18 90.17 0)
+			(at 105.41 86.36 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3393,7 +3393,7 @@
 			)
 		)
 		(property "Value" "+3.3V"
-			(at 170.18 81.28 0)
+			(at 105.41 77.47 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3403,7 +3403,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 170.18 86.36 0)
+			(at 105.41 82.55 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3414,7 +3414,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 170.18 86.36 0)
+			(at 105.41 82.55 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3425,7 +3425,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-			(at 170.18 86.36 0)
+			(at 105.41 82.55 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3439,7 +3439,7 @@
 			(uuid "87e5ab9b-6d50-46ef-897b-0338abb7e68e")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR08")
 					(unit 1)
@@ -3449,7 +3449,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 170.18 121.92 0)
+		(at 105.41 118.11 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3460,7 +3460,7 @@
 		(fields_autoplaced yes)
 		(uuid "6fa11aca-4d74-4c00-a9de-d1c6d14f0621")
 		(property "Reference" "#PWR04"
-			(at 170.18 128.27 0)
+			(at 105.41 124.46 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3471,7 +3471,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 170.18 127 0)
+			(at 105.41 123.19 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3481,7 +3481,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 170.18 121.92 0)
+			(at 105.41 118.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3492,7 +3492,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 170.18 121.92 0)
+			(at 105.41 118.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3503,7 +3503,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 170.18 121.92 0)
+			(at 105.41 118.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3517,7 +3517,7 @@
 			(uuid "5afe0837-af87-4880-893f-e80dd08a17c4")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR04")
 					(unit 1)
@@ -3527,7 +3527,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 88.9 99.06 90)
+		(at 91.44 66.04 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3537,7 +3537,7 @@
 		(dnp no)
 		(uuid "7a5e1bc7-8157-4fb1-a380-16d9a3f2a0b0")
 		(property "Reference" "#PWR011"
-			(at 95.25 99.06 0)
+			(at 97.79 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3548,7 +3548,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 91.694 97.79 90)
+			(at 94.234 64.77 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3559,7 +3559,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 88.9 99.06 0)
+			(at 91.44 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3570,7 +3570,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 88.9 99.06 0)
+			(at 91.44 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3581,7 +3581,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 88.9 99.06 0)
+			(at 91.44 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3595,7 +3595,7 @@
 			(uuid "4fec6bbc-1507-4eef-b1c5-577045a8b32f")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR011")
 					(unit 1)
@@ -3605,7 +3605,7 @@
 	)
 	(symbol
 		(lib_id "Diode:1N4001")
-		(at 243.84 110.49 90)
+		(at 168.91 87.63 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3616,7 +3616,7 @@
 		(fields_autoplaced yes)
 		(uuid "7e09b0aa-2a50-47c7-9251-92c39a00f14d")
 		(property "Reference" "D1"
-			(at 246.38 109.2199 90)
+			(at 171.45 86.3599 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3627,7 +3627,7 @@
 			)
 		)
 		(property "Value" "RB520S-30"
-			(at 246.38 111.7599 90)
+			(at 171.45 88.8999 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3638,7 +3638,7 @@
 			)
 		)
 		(property "Footprint" "Diode_SMD:D_SOD-523"
-			(at 243.84 110.49 0)
+			(at 168.91 87.63 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3649,7 +3649,7 @@
 			)
 		)
 		(property "Datasheet" "http://www.vishay.com/docs/88503/1n4001.pdf"
-			(at 243.84 110.49 0)
+			(at 168.91 87.63 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3660,7 +3660,7 @@
 			)
 		)
 		(property "Description" "50V 1A General Purpose Rectifier Diode, DO-41"
-			(at 243.84 110.49 0)
+			(at 168.91 87.63 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3671,7 +3671,7 @@
 			)
 		)
 		(property "Sim.Device" "D"
-			(at 243.84 110.49 0)
+			(at 168.91 87.63 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3682,7 +3682,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=K 2=A"
-			(at 243.84 110.49 0)
+			(at 168.91 87.63 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3699,7 +3699,7 @@
 			(uuid "9ed2d248-0762-4ea6-8ba7-371ef48081bb")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "D1")
 					(unit 1)
@@ -3709,7 +3709,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 74.93 93.98 90)
+		(at 77.47 60.96 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3719,7 +3719,7 @@
 		(dnp no)
 		(uuid "7fb911a9-c669-492c-a2dc-101b88890184")
 		(property "Reference" "#PWR010"
-			(at 81.28 93.98 0)
+			(at 83.82 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3730,7 +3730,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 77.724 92.71 90)
+			(at 80.264 59.69 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3741,7 +3741,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 74.93 93.98 0)
+			(at 77.47 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3752,7 +3752,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 74.93 93.98 0)
+			(at 77.47 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3763,7 +3763,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 74.93 93.98 0)
+			(at 77.47 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3777,7 +3777,7 @@
 			(uuid "3130e91a-b8a8-4e1c-9ccb-1127c68a3bcf")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR010")
 					(unit 1)
@@ -3787,7 +3787,7 @@
 	)
 	(symbol
 		(lib_id "power:+3.3V")
-		(at 101.6 96.52 0)
+		(at 104.14 63.5 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3798,7 +3798,7 @@
 		(fields_autoplaced yes)
 		(uuid "8a6205b2-140e-47a3-93de-74022b756a1d")
 		(property "Reference" "#PWR09"
-			(at 101.6 100.33 0)
+			(at 104.14 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3809,7 +3809,7 @@
 			)
 		)
 		(property "Value" "+3.3V"
-			(at 101.6 91.44 0)
+			(at 104.14 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3819,7 +3819,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 101.6 96.52 0)
+			(at 104.14 63.5 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3830,7 +3830,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 101.6 96.52 0)
+			(at 104.14 63.5 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3841,7 +3841,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-			(at 101.6 96.52 0)
+			(at 104.14 63.5 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3855,7 +3855,7 @@
 			(uuid "979d253f-d064-4d9c-bf75-71551506c7f7")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR09")
 					(unit 1)
@@ -3865,7 +3865,7 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 85.09 93.98 270)
+		(at 87.63 60.96 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3875,7 +3875,7 @@
 		(dnp no)
 		(uuid "971edbcc-cf7d-4d4b-81be-8402c2e8ba2a")
 		(property "Reference" "#FLG02"
-			(at 86.995 93.98 0)
+			(at 89.535 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3886,7 +3886,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 93.472 93.726 90)
+			(at 96.012 60.706 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3896,7 +3896,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 85.09 93.98 0)
+			(at 87.63 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3907,7 +3907,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 85.09 93.98 0)
+			(at 87.63 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3918,7 +3918,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 85.09 93.98 0)
+			(at 87.63 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3932,7 +3932,7 @@
 			(uuid "e17d479a-a827-4348-9ceb-9e9cdb6a2045")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#FLG02")
 					(unit 1)
@@ -3942,7 +3942,7 @@
 	)
 	(symbol
 		(lib_id "Device:C")
-		(at 250.19 36.83 0)
+		(at 125.73 63.5 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3952,7 +3952,7 @@
 		(dnp no)
 		(uuid "9caaa367-c4f8-46c8-a77a-03630f9339b4")
 		(property "Reference" "C2"
-			(at 254 35.5599 0)
+			(at 129.54 62.2299 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3963,7 +3963,7 @@
 			)
 		)
 		(property "Value" "0.1u"
-			(at 252.73 38.1 0)
+			(at 128.27 64.77 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3974,7 +3974,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
-			(at 251.1552 40.64 0)
+			(at 126.6952 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3985,7 +3985,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 250.19 36.83 0)
+			(at 125.73 63.5 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3996,7 +3996,7 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor"
-			(at 250.19 36.83 0)
+			(at 125.73 63.5 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4013,7 +4013,7 @@
 			(uuid "84f5c402-6d3d-4435-838b-73856d95ff6e")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C2")
 					(unit 1)
@@ -4023,7 +4023,7 @@
 	)
 	(symbol
 		(lib_id "power:+3.3V")
-		(at 243.84 71.12 0)
+		(at 168.91 48.26 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4034,7 +4034,7 @@
 		(fields_autoplaced yes)
 		(uuid "9fff973d-1b26-4dd1-90c7-799036a354d9")
 		(property "Reference" "#PWR05"
-			(at 243.84 74.93 0)
+			(at 168.91 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4045,7 +4045,7 @@
 			)
 		)
 		(property "Value" "+3.3V"
-			(at 243.84 66.04 0)
+			(at 168.91 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4055,7 +4055,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 243.84 71.12 0)
+			(at 168.91 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4066,7 +4066,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 243.84 71.12 0)
+			(at 168.91 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4077,7 +4077,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-			(at 243.84 71.12 0)
+			(at 168.91 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4091,7 +4091,7 @@
 			(uuid "b02f9fb1-9410-4c86-94ab-609c2a0c0e84")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR05")
 					(unit 1)
@@ -4101,7 +4101,7 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 223.52 124.46 0)
+		(at 148.59 101.6 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4111,7 +4111,7 @@
 		(dnp no)
 		(uuid "a6ab53cf-65cd-4664-9799-7510478a204c")
 		(property "Reference" "#FLG03"
-			(at 223.52 122.555 0)
+			(at 148.59 99.695 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4122,7 +4122,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 223.52 120.904 0)
+			(at 148.59 98.044 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4132,7 +4132,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 223.52 124.46 0)
+			(at 148.59 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4143,7 +4143,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 223.52 124.46 0)
+			(at 148.59 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4154,7 +4154,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 223.52 124.46 0)
+			(at 148.59 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4168,7 +4168,7 @@
 			(uuid "dae01ee8-9d58-4461-bfc9-837e2be83c10")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#FLG03")
 					(unit 1)
@@ -4178,7 +4178,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 243.84 120.65 180)
+		(at 168.91 97.79 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4189,7 +4189,7 @@
 		(fields_autoplaced yes)
 		(uuid "af14eb53-c4a5-487d-9731-48a842a835ae")
 		(property "Reference" "R2"
-			(at 246.38 119.3799 0)
+			(at 171.45 96.5199 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4200,7 +4200,7 @@
 			)
 		)
 		(property "Value" "470"
-			(at 246.38 121.9199 0)
+			(at 171.45 99.0599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4211,7 +4211,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0603_1608Metric_Pad0.98x0.95mm_HandSolder"
-			(at 245.618 120.65 90)
+			(at 170.688 97.79 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4222,7 +4222,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 243.84 120.65 0)
+			(at 168.91 97.79 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4233,7 +4233,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 243.84 120.65 0)
+			(at 168.91 97.79 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4250,7 +4250,7 @@
 			(uuid "520a52ad-e373-4e23-a49c-8aa2058a3c92")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R2")
 					(unit 1)
@@ -4260,7 +4260,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 250.19 43.18 0)
+		(at 125.73 69.85 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4270,7 +4270,7 @@
 		(dnp no)
 		(uuid "b898f9c1-097f-4ae4-8376-907241ee8ab8")
 		(property "Reference" "#PWR07"
-			(at 250.19 49.53 0)
+			(at 125.73 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4281,7 +4281,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 250.19 48.26 0)
+			(at 125.73 74.93 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4291,7 +4291,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 250.19 43.18 0)
+			(at 125.73 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4302,7 +4302,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 250.19 43.18 0)
+			(at 125.73 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4313,7 +4313,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 250.19 43.18 0)
+			(at 125.73 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4327,7 +4327,7 @@
 			(uuid "a1154d33-bfc9-492f-b6ee-32b153b0fc73")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR07")
 					(unit 1)
@@ -4337,7 +4337,7 @@
 	)
 	(symbol
 		(lib_id "power:+3.3V")
-		(at 250.19 31.75 0)
+		(at 125.73 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4348,7 +4348,7 @@
 		(fields_autoplaced yes)
 		(uuid "d57601c9-f2bd-4bfc-881f-6e5b0f0836a3")
 		(property "Reference" "#PWR06"
-			(at 250.19 35.56 0)
+			(at 125.73 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4359,7 +4359,7 @@
 			)
 		)
 		(property "Value" "+3.3V"
-			(at 250.19 26.67 0)
+			(at 125.73 53.34 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4369,7 +4369,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 250.19 31.75 0)
+			(at 125.73 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4380,7 +4380,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 250.19 31.75 0)
+			(at 125.73 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4391,7 +4391,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-			(at 250.19 31.75 0)
+			(at 125.73 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4405,7 +4405,7 @@
 			(uuid "02cb4a31-1cf0-4fc2-a848-e7056fa7dd3d")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR06")
 					(unit 1)
@@ -4415,7 +4415,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 246.38 133.35 0)
+		(at 171.45 110.49 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4425,7 +4425,7 @@
 		(dnp no)
 		(uuid "d889e910-a7be-4a99-9b91-7e5b5828f175")
 		(property "Reference" "#PWR013"
-			(at 246.38 139.7 0)
+			(at 171.45 116.84 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4436,7 +4436,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 246.38 138.43 0)
+			(at 171.45 115.57 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4446,7 +4446,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 246.38 133.35 0)
+			(at 171.45 110.49 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4457,7 +4457,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 246.38 133.35 0)
+			(at 171.45 110.49 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4468,7 +4468,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 246.38 133.35 0)
+			(at 171.45 110.49 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4482,7 +4482,7 @@
 			(uuid "862b5b21-f4f4-4cf9-80d0-57d0922af2dd")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR013")
 					(unit 1)
@@ -4492,7 +4492,7 @@
 	)
 	(symbol
 		(lib_id "Device:Battery_Cell")
-		(at 243.84 129.54 0)
+		(at 168.91 106.68 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4503,7 +4503,7 @@
 		(fields_autoplaced yes)
 		(uuid "dcb2a8a3-e4b2-42ff-b766-929a5ee4d65f")
 		(property "Reference" "BT1"
-			(at 247.65 126.4284 0)
+			(at 172.72 103.5684 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4514,7 +4514,7 @@
 			)
 		)
 		(property "Value" "MS621FE"
-			(at 247.65 128.9684 0)
+			(at 172.72 106.1084 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4525,7 +4525,7 @@
 			)
 		)
 		(property "Footprint" "Battery:BatteryHolder_Seiko_MS621F"
-			(at 243.84 128.016 90)
+			(at 168.91 105.156 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4536,7 +4536,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 243.84 128.016 90)
+			(at 168.91 105.156 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4547,7 +4547,7 @@
 			)
 		)
 		(property "Description" "Single-cell battery"
-			(at 243.84 129.54 0)
+			(at 168.91 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4558,7 +4558,7 @@
 			)
 		)
 		(property "Sim.Device" "V"
-			(at 243.84 129.54 0)
+			(at 168.91 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4569,7 +4569,7 @@
 			)
 		)
 		(property "Sim.Type" "DC"
-			(at 243.84 129.54 0)
+			(at 168.91 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4580,7 +4580,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=+ 2=-"
-			(at 243.84 129.54 0)
+			(at 168.91 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4597,7 +4597,7 @@
 			(uuid "17299b83-7fb5-41f3-922c-44972d09d929")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "BT1")
 					(unit 1)
@@ -4607,7 +4607,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 243.84 91.44 180)
+		(at 168.91 68.58 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4618,7 +4618,7 @@
 		(fields_autoplaced yes)
 		(uuid "f634f5c6-592f-4a05-aeb9-18c130f9454c")
 		(property "Reference" "R1"
-			(at 250.19 91.44 90)
+			(at 175.26 68.58 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4628,7 +4628,7 @@
 			)
 		)
 		(property "Value" "220"
-			(at 247.65 91.44 90)
+			(at 172.72 68.58 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4638,7 +4638,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0603_1608Metric_Pad0.98x0.95mm_HandSolder"
-			(at 245.618 91.44 90)
+			(at 170.688 68.58 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4649,7 +4649,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 243.84 91.44 0)
+			(at 168.91 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4660,7 +4660,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 243.84 91.44 0)
+			(at 168.91 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4677,7 +4677,7 @@
 			(uuid "b1481a36-2935-4134-a5e2-4fb963ca8779")
 		)
 		(instances
-			(project "SAM-M10Q PONSv6 GNSS module"
+			(project "SAM-M10Q PONSv7 GNSS module"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R1")
 					(unit 1)

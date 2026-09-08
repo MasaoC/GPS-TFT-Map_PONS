@@ -381,8 +381,8 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "Stiffener: Polyimide\nThickness: 0.3mm"
-		(at 125.4 72.1 0)
+	(gr_text "Total Thickness: 0.3mm (Polyimide Stiffener 0.25mm)"
+		(at 115.65 72.6 0)
 		(layer "Cmts.User")
 		(uuid "331226d2-09db-4398-a197-c9db47c5de42")
 		(effects

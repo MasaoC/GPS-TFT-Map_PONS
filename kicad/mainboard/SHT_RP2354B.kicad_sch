@@ -900,6 +900,311 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "CUS-12TB:CUS-12TB"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "U"
+				(at -2.54 10.16 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left bottom)
+				)
+			)
+			(property "Value" "CUS-12TB"
+				(at -2.54 -12.7 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left bottom)
+				)
+			)
+			(property "Footprint" "CUS-12TB:CUS-12B"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Slide Switch SPDT Surface Mount, Right Angle"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MF" "Nidec Copal"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Package" "None"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Price" "None"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "SnapEDA_Link" "https://www.snapeda.com/parts/CUS-12TB/Nidec/view-part/?ref=snap"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MP" "CUS-12TB"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Availability" "In Stock"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Check_prices" "https://www.snapeda.com/parts/CUS-12TB/Nidec/view-part/?ref=eda"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(symbol "CUS-12TB_0_0"
+				(rectangle
+					(start -2.54 -10.16)
+					(end 5.08 10.16)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.54 7.62) (xy 2.54 0)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin bidirectional line
+					(at -7.62 -7.62 0)
+					(length 5.08)
+					(name "1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin bidirectional line
+					(at -7.62 0 0)
+					(length 5.08)
+					(name "2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 7.62 0 180)
+					(length 2.54)
+					(name ""
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$4"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 7.62 -2.54 180)
+					(length 2.54)
+					(name ""
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$5"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 7.62 -5.08 180)
+					(length 2.54)
+					(name ""
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$6"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 7.62 -7.62 180)
+					(length 2.54)
+					(name ""
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$7"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+			)
+			(symbol "CUS-12TB_1_0"
+				(pin passive line
+					(at -7.62 7.62 0)
+					(length 5.08)
+					(name "3"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "P$3"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "CUS-12TB_1"
 			(pin_names
 				(offset 1.016)
@@ -1205,577 +1510,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Connector:Conn_01x02_Pin"
-			(pin_names
-				(offset 1.016)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "J"
-				(at 0 2.54 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Conn_01x02_Pin"
-				(at 0 -5.08 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Generic connector, single row, 01x02, script generated"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_locked" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "connector"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Connector*:*_1x??_*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "Conn_01x02_Pin_1_1"
-				(rectangle
-					(start 0.8636 0.127)
-					(end 0 -0.127)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(rectangle
-					(start 0.8636 -2.413)
-					(end 0 -2.667)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(polyline
-					(pts
-						(xy 1.27 0) (xy 0.8636 0)
-					)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy 1.27 -2.54) (xy 0.8636 -2.54)
-					)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(pin passive line
-					(at 5.08 0 180)
-					(length 3.81)
-					(name "Pin_1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 5.08 -2.54 180)
-					(length 3.81)
-					(name "Pin_2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
-		(symbol "USB_microB:USB_B_Micro"
-			(pin_names
-				(offset 1.016)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "J"
-				(at -5.08 11.43 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left)
-				)
-			)
-			(property "Value" "USB_B_Micro"
-				(at -5.08 8.89 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left)
-				)
-			)
-			(property "Footprint" ""
-				(at 3.81 -1.27 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 3.81 -1.27 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "USB Micro Type B connector"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "connector USB micro"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "USB*Micro*B*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "USB_B_Micro_0_1"
-				(rectangle
-					(start -7.62 7.62)
-					(end 5.08 -7.62)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(polyline
-					(pts
-						(xy -4.699 5.842) (xy -4.699 5.588) (xy -4.445 4.826) (xy -4.445 4.572) (xy -1.651 4.572) (xy -1.651 4.826)
-						(xy -1.397 5.588) (xy -1.397 5.842) (xy -4.699 5.842)
-					)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy -4.318 5.588) (xy -1.778 5.588) (xy -2.032 4.826) (xy -4.064 4.826) (xy -4.318 5.588)
-					)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(circle
-					(center -3.81 2.159)
-					(radius 0.635)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(polyline
-					(pts
-						(xy -3.175 2.159) (xy -2.54 2.159) (xy -1.27 3.429) (xy -0.635 3.429)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy -2.54 2.159) (xy -1.905 2.159) (xy -1.27 0.889) (xy 0 0.889)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy -1.905 2.159) (xy 0.635 2.159)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(circle
-					(center -0.635 3.429)
-					(radius 0.381)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(rectangle
-					(start -0.127 -7.62)
-					(end 0.127 -6.858)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start 0.254 1.27)
-					(end -0.508 0.508)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(polyline
-					(pts
-						(xy 0.635 2.794) (xy 0.635 1.524) (xy 1.905 2.159) (xy 0.635 2.794)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type outline)
-					)
-				)
-				(rectangle
-					(start 5.08 4.953)
-					(end 4.318 5.207)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start 5.08 -0.127)
-					(end 4.318 0.127)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start 5.08 -2.667)
-					(end 4.318 -2.413)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start 5.08 -5.207)
-					(end 4.318 -4.953)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "USB_B_Micro_1_1"
-				(pin power_out line
-					(at 7.62 5.08 180)
-					(length 2.54)
-					(name "VBUS"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at 7.62 -2.54 180)
-					(length 2.54)
-					(name "D-"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at 7.62 0 180)
-					(length 2.54)
-					(name "D+"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "3"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 7.62 -5.08 180)
-					(length 2.54)
-					(name "ID"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "4"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin power_out line
-					(at 0 -10.16 90)
-					(length 2.54)
-					(name "GND"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -2.54 -10.16 90)
-					(length 2.54)
-					(name "Pad"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "6"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -10.16 90)
-					(length 2.54)
-					(name "Shield"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "SH"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Conn_01x03_Shielded:Conn_01x03_Shielded"
 			(pin_names
 				(offset 1.016)
@@ -1983,6 +1717,187 @@
 						)
 					)
 					(number "MP"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "Connector:Conn_01x02_Pin"
+			(pin_names
+				(offset 1.016)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "J"
+				(at 0 2.54 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Conn_01x02_Pin"
+				(at 0 -5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Generic connector, single row, 01x02, script generated"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_locked" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "connector"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "Connector*:*_1x??_*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "Conn_01x02_Pin_1_1"
+				(rectangle
+					(start 0.8636 0.127)
+					(end 0 -0.127)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(rectangle
+					(start 0.8636 -2.413)
+					(end 0 -2.667)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.27 0) (xy 0.8636 0)
+					)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.27 -2.54) (xy 0.8636 -2.54)
+					)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin passive line
+					(at 5.08 0 180)
+					(length 3.81)
+					(name "Pin_1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 5.08 -2.54 180)
+					(length 3.81)
+					(name "Pin_2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -4971,311 +4886,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "CUS-12TB:CUS-12TB"
-			(pin_names
-				(offset 1.016)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "U"
-				(at -2.54 10.16 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left bottom)
-				)
-			)
-			(property "Value" "CUS-12TB"
-				(at -2.54 -12.7 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left bottom)
-				)
-			)
-			(property "Footprint" "CUS-12TB:CUS-12B"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Slide Switch SPDT Surface Mount, Right Angle"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "MF" "Nidec Copal"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "Package" "None"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "Price" "None"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "SnapEDA_Link" "https://www.snapeda.com/parts/CUS-12TB/Nidec/view-part/?ref=snap"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "MP" "CUS-12TB"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "Availability" "In Stock"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(property "Check_prices" "https://www.snapeda.com/parts/CUS-12TB/Nidec/view-part/?ref=eda"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-				)
-			)
-			(symbol "CUS-12TB_0_0"
-				(rectangle
-					(start -2.54 -10.16)
-					(end 5.08 10.16)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(polyline
-					(pts
-						(xy 2.54 7.62) (xy 2.54 0)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(pin bidirectional line
-					(at -7.62 -7.62 0)
-					(length 5.08)
-					(name "1"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$1"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at -7.62 0 0)
-					(length 5.08)
-					(name "2"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$2"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at 7.62 0 180)
-					(length 2.54)
-					(name ""
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$4"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at 7.62 -2.54 180)
-					(length 2.54)
-					(name ""
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$5"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at 7.62 -5.08 180)
-					(length 2.54)
-					(name ""
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$6"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at 7.62 -7.62 180)
-					(length 2.54)
-					(name ""
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$7"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-			)
-			(symbol "CUS-12TB_1_0"
-				(pin passive line
-					(at -7.62 7.62 0)
-					(length 5.08)
-					(name "3"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "P$3"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Switch:SW_Push"
 			(pin_numbers
 				(hide yes)
@@ -5430,6 +5040,396 @@
 						)
 					)
 					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "USB_microB:USB_B_Micro"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "J"
+				(at -5.08 11.43 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Value" "USB_B_Micro"
+				(at -5.08 8.89 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Footprint" ""
+				(at 3.81 -1.27 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 3.81 -1.27 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "USB Micro Type B connector"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "connector USB micro"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "USB*Micro*B*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "USB_B_Micro_0_1"
+				(rectangle
+					(start -7.62 7.62)
+					(end 5.08 -7.62)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(polyline
+					(pts
+						(xy -4.699 5.842) (xy -4.699 5.588) (xy -4.445 4.826) (xy -4.445 4.572) (xy -1.651 4.572) (xy -1.651 4.826)
+						(xy -1.397 5.588) (xy -1.397 5.842) (xy -4.699 5.842)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -4.318 5.588) (xy -1.778 5.588) (xy -2.032 4.826) (xy -4.064 4.826) (xy -4.318 5.588)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(circle
+					(center -3.81 2.159)
+					(radius 0.635)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(polyline
+					(pts
+						(xy -3.175 2.159) (xy -2.54 2.159) (xy -1.27 3.429) (xy -0.635 3.429)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -2.54 2.159) (xy -1.905 2.159) (xy -1.27 0.889) (xy 0 0.889)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -1.905 2.159) (xy 0.635 2.159)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(circle
+					(center -0.635 3.429)
+					(radius 0.381)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(rectangle
+					(start -0.127 -7.62)
+					(end 0.127 -6.858)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 0.254 1.27)
+					(end -0.508 0.508)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0.635 2.794) (xy 0.635 1.524) (xy 1.905 2.159) (xy 0.635 2.794)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(rectangle
+					(start 5.08 4.953)
+					(end 4.318 5.207)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 5.08 -0.127)
+					(end 4.318 0.127)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 5.08 -2.667)
+					(end 4.318 -2.413)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 5.08 -5.207)
+					(end 4.318 -4.953)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "USB_B_Micro_1_1"
+				(pin power_out line
+					(at 7.62 5.08 180)
+					(length 2.54)
+					(name "VBUS"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin bidirectional line
+					(at 7.62 -2.54 180)
+					(length 2.54)
+					(name "D-"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin bidirectional line
+					(at 7.62 0 180)
+					(length 2.54)
+					(name "D+"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 -5.08 180)
+					(length 2.54)
+					(name "ID"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_out line
+					(at 0 -10.16 90)
+					(length 2.54)
+					(name "GND"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "5"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -2.54 -10.16 90)
+					(length 2.54)
+					(name "Pad"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "6"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -10.16 90)
+					(length 2.54)
+					(name "Shield"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "SH"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -6830,7 +6830,7 @@
 		(at 210.82 52.07)
 		(diameter 0)
 		(color 0 0 0 0)
-		(uuid "c47d7653-51fd-43cb-8fe3-ade9374c87f4")
+		(uuid "c798c21d-2b1d-4a72-9fbd-2cd8331d4a72")
 	)
 	(junction
 		(at 113.03 38.1)
@@ -11046,7 +11046,7 @@
 			(uuid "f7d9746a-df9b-4f13-912b-ec0479a0ad3f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR057")
 					(unit 1)
@@ -11125,7 +11125,7 @@
 			(uuid "80a81cf4-58d3-441c-bb77-9caebea0dcac")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR045")
 					(unit 1)
@@ -11203,7 +11203,7 @@
 			(uuid "6201c864-f3f5-46a5-9d62-717cf3f43591")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR073")
 					(unit 1)
@@ -11316,7 +11316,7 @@
 			(uuid "08d1c0bd-dccd-4597-87be-412fa031a9c2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "SW3")
 					(unit 1)
@@ -11393,7 +11393,7 @@
 			(uuid "010c0ba8-e6f3-4066-8426-9bd916bb3b30")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR080")
 					(unit 1)
@@ -11472,7 +11472,7 @@
 			(uuid "4dda5c8c-b93e-4c35-925f-1a51757eb2f9")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR048")
 					(unit 1)
@@ -11550,7 +11550,7 @@
 			(uuid "186392f2-972b-4b4a-8591-6471f330d51f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR062")
 					(unit 1)
@@ -11627,7 +11627,7 @@
 			(uuid "c146cf8a-7656-4d46-ba72-f9b49ee2e78f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR072")
 					(unit 1)
@@ -11742,7 +11742,7 @@
 			(uuid "4d35a0f7-6197-45f4-9eb4-13ca948f3ff6")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R42")
 					(unit 1)
@@ -11857,7 +11857,7 @@
 			(uuid "e010a1ff-0638-47c7-8c8f-14e2388d9fe9")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "L1")
 					(unit 1)
@@ -11978,7 +11978,7 @@
 			(uuid "2574ba7f-f63a-4d9c-901a-d230b7cf0aa7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "J5")
 					(unit 1)
@@ -12092,7 +12092,7 @@
 			(uuid "109b2d9f-0936-4bed-9fa0-95395687bd0b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "PWR1")
 					(unit 1)
@@ -12206,7 +12206,7 @@
 			(uuid "bb7565a8-d247-416c-bc37-a633777b6b08")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R26")
 					(unit 1)
@@ -12320,7 +12320,7 @@
 			(uuid "675f73e3-e7fd-47e5-8f46-03c02e3802bd")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C26")
 					(unit 1)
@@ -12439,7 +12439,7 @@
 			(uuid "a339b25e-bda3-4b43-a474-040cf5cd54d0")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "Q1")
 					(unit 1)
@@ -12551,7 +12551,7 @@
 			(uuid "02bcb0ba-dd4a-43a7-b918-a21d899523bd")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R30")
 					(unit 1)
@@ -12628,7 +12628,7 @@
 			(uuid "9305e245-d432-48b9-9cb4-7a9cc7787864")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#FLG03")
 					(unit 1)
@@ -12705,7 +12705,7 @@
 			(uuid "00c9eaca-4795-409c-accb-6362206c9f9f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR058")
 					(unit 1)
@@ -12782,7 +12782,7 @@
 			(uuid "d05da37d-8a55-4236-b278-d4eb65819f53")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR061")
 					(unit 1)
@@ -12894,7 +12894,7 @@
 			(uuid "ba13fc7e-07d1-416f-9b00-dbdbecca45ed")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R36")
 					(unit 1)
@@ -13008,7 +13008,7 @@
 			(uuid "68ff34d2-147a-4f15-a537-8eb0e01d468a")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C17")
 					(unit 1)
@@ -13122,7 +13122,7 @@
 			(uuid "cd6eb70b-0cfa-4f7b-b3a7-ec6bd12d00f1")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C23")
 					(unit 1)
@@ -13199,7 +13199,7 @@
 			(uuid "04c43a03-0588-42c4-a73c-6c5da7b61580")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR075")
 					(unit 1)
@@ -13322,7 +13322,7 @@
 			(uuid "a2533504-de99-4844-86ac-c97956fcfcc9")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "D4")
 					(unit 1)
@@ -13437,7 +13437,7 @@
 			(uuid "18f18a1d-4b28-4a4b-a796-86763884aa89")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "L2")
 					(unit 1)
@@ -13514,7 +13514,7 @@
 			(uuid "52dec858-15b3-4f7f-9f2a-b2a5d188ea07")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR074")
 					(unit 1)
@@ -13628,7 +13628,7 @@
 			(uuid "a1ceb843-23f8-4193-9327-6fb19b10dd8d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C29")
 					(unit 1)
@@ -13740,7 +13740,7 @@
 			(uuid "6bffbf23-9c75-4f86-875d-d8bc38d8ef84")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R24")
 					(unit 1)
@@ -13750,7 +13750,7 @@
 	)
 	(symbol
 		(lib_id "Switch:SW_Push")
-		(at 210.82 57.15 270)
+		(at 210.82 57.15 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -13761,29 +13761,29 @@
 		(fields_autoplaced yes)
 		(uuid "54584ab0-7a8b-4c30-854e-d6ea396454f6")
 		(property "Reference" "SW1"
-			(at 214.63 55.8799 90)
+			(at 212.09 55.8799 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Value" "PTS645VK392LFS"
-			(at 214.63 58.4199 90)
+			(at 212.09 58.4199 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Footprint" "Button_Switch_THT:SW_Tactile_SPST_Angled_PTS645Vx39-2LFS"
-			(at 215.9 57.15 0)
+			(at 205.74 57.15 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13794,7 +13794,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 215.9 57.15 0)
+			(at 205.74 57.15 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13855,7 +13855,7 @@
 			(uuid "a95dda54-0f6e-4392-8cf3-017541573b90")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "SW1")
 					(unit 1)
@@ -13932,7 +13932,7 @@
 			(uuid "f88b0dda-6b08-459c-ab38-b02a784cd12e")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR068")
 					(unit 1)
@@ -14009,7 +14009,7 @@
 			(uuid "92d53e71-9854-4c0b-aafc-eeb42b391c7f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR071")
 					(unit 1)
@@ -14121,7 +14121,7 @@
 			(uuid "26ff9660-e9b6-4028-a984-400da66a581c")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R29")
 					(unit 1)
@@ -14235,7 +14235,7 @@
 			(uuid "cab5c95f-7097-466d-94de-b51c3bf85de7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C27")
 					(unit 1)
@@ -14347,7 +14347,7 @@
 			(uuid "9e766473-12c1-43ab-8ae1-ef4f45210683")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R31")
 					(unit 1)
@@ -14467,7 +14467,7 @@
 			(uuid "dd428a25-bde0-465d-a529-8a3908f8dec9")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "Y1")
 					(unit 1)
@@ -14544,7 +14544,7 @@
 			(uuid "856de11d-4105-41e0-93e5-319c9e42166d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#FLG02")
 					(unit 1)
@@ -14656,7 +14656,7 @@
 			(uuid "ffb225e9-90d3-45d1-be20-abc1b9f62a7e")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R32")
 					(unit 1)
@@ -14771,7 +14771,7 @@
 			(uuid "1de5d130-cab1-4160-b644-e37a249c332d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C15")
 					(unit 1)
@@ -14886,7 +14886,7 @@
 			(uuid "a08c4cc4-10f2-47f7-b6ec-ce278aad3fa5")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C20")
 					(unit 1)
@@ -14965,7 +14965,7 @@
 			(uuid "98148c53-bdc1-4b52-a39c-da60fe2ea817")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR079")
 					(unit 1)
@@ -15077,7 +15077,7 @@
 			(uuid "9d82225f-51cb-422b-a351-0b70d986ffe2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R33")
 					(unit 1)
@@ -15191,7 +15191,7 @@
 			(uuid "8a5d7f7b-5da4-4e6c-8d11-ea5001fac465")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C32")
 					(unit 1)
@@ -15268,7 +15268,7 @@
 			(uuid "30140981-cf8e-4434-b681-3cb8db0b36e1")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR081")
 					(unit 1)
@@ -15461,7 +15461,7 @@
 			(uuid "1253ff01-f28e-4714-8849-ca88c43f4b83")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "U6")
 					(unit 1)
@@ -15575,7 +15575,7 @@
 			(uuid "602577a3-29b8-44d6-8757-c7bead151c2b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C24")
 					(unit 1)
@@ -15715,7 +15715,7 @@
 			(uuid "7014c4a1-c633-4410-a4ea-90bc6582a6d6")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "U5")
 					(unit 1)
@@ -15829,7 +15829,7 @@
 			(uuid "61ecf77c-69e7-4dad-9947-6e5550f1ddc2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "SW2")
 					(unit 1)
@@ -15906,7 +15906,7 @@
 			(uuid "81329d6f-4378-408c-8cc1-25a6aca5f449")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR054")
 					(unit 1)
@@ -16020,7 +16020,7 @@
 			(uuid "880eb703-bef2-46e1-abf8-79167fd44e14")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C19")
 					(unit 1)
@@ -16097,7 +16097,7 @@
 			(uuid "91eb798b-910c-4c59-b118-55bd78cdb60f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR052")
 					(unit 1)
@@ -16174,7 +16174,7 @@
 			(uuid "fdeec27c-094b-47f3-9689-0708ed0f146f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR065")
 					(unit 1)
@@ -16288,7 +16288,7 @@
 			(uuid "82d2fe68-d47a-4056-8bf6-e643b0ed33cd")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C21")
 					(unit 1)
@@ -16413,7 +16413,7 @@
 			(uuid "3f0058eb-07ea-4aae-9523-dd2e0908f628")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "U4")
 					(unit 1)
@@ -16490,7 +16490,7 @@
 			(uuid "e0884fb8-3eeb-4d49-b5e7-7eec50b66ebd")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR049")
 					(unit 1)
@@ -16604,7 +16604,7 @@
 			(uuid "5173b635-7f0c-4ac4-8aaf-d1d8c3b21188")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C28")
 					(unit 1)
@@ -16716,7 +16716,7 @@
 			(uuid "bdd4adc0-3a3f-4153-97f1-abdc9c996e22")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R8")
 					(unit 1)
@@ -16793,7 +16793,7 @@
 			(uuid "290b3489-4834-4a4f-b74c-511ebeeac26c")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR059")
 					(unit 1)
@@ -16907,7 +16907,7 @@
 			(uuid "10889352-b2e9-4879-ab3e-ce8e5734ccfd")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C22")
 					(unit 1)
@@ -17021,7 +17021,7 @@
 			(uuid "9bd47008-6afc-4563-8aec-efffcc05c07d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C16")
 					(unit 1)
@@ -17136,7 +17136,7 @@
 			(uuid "7db25331-6840-4822-b2f8-da55ec77b556")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C18")
 					(unit 1)
@@ -17213,7 +17213,7 @@
 			(uuid "e2d96318-11ee-438f-a04f-a1ecfbf6ecf7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#FLG01")
 					(unit 1)
@@ -17325,7 +17325,7 @@
 			(uuid "ee3e0ae2-bd59-4fd8-9676-a6c0fcca7409")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R34")
 					(unit 1)
@@ -17676,7 +17676,7 @@
 			(uuid "076d97b9-2b95-41d8-a507-60522a09a41c")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "U3")
 					(unit 1)
@@ -17788,7 +17788,7 @@
 			(uuid "823d0e80-63af-457a-bbfc-fcf34a4c9db5")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R27")
 					(unit 1)
@@ -17865,7 +17865,7 @@
 			(uuid "199b560e-20ec-4347-8c63-adc74edcd053")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR060")
 					(unit 1)
@@ -17942,7 +17942,7 @@
 			(uuid "965a3da2-d519-4d6e-983d-11bb00f8b66b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR063")
 					(unit 1)
@@ -18019,7 +18019,7 @@
 			(uuid "616ac24c-57c2-4a5e-baf0-6803936eb3c1")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR021")
 					(unit 1)
@@ -18096,7 +18096,7 @@
 			(uuid "2e54ceb0-d198-42f7-8c01-fb9e9a160ee7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR078")
 					(unit 1)
@@ -18173,7 +18173,7 @@
 			(uuid "9acafe34-33e5-4ec3-b517-4efca7467d89")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR053")
 					(unit 1)
@@ -18250,7 +18250,7 @@
 			(uuid "0eb97636-fcf3-482c-bd01-b3172096f852")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR047")
 					(unit 1)
@@ -18364,7 +18364,7 @@
 			(uuid "a8273266-f515-4fb4-b7dc-00efbfe12098")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C33")
 					(unit 1)
@@ -18478,7 +18478,7 @@
 			(uuid "bcd952d6-76fd-4b6e-8b71-1dc5f30ef50f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C36")
 					(unit 1)
@@ -18590,7 +18590,7 @@
 			(uuid "f8ed1a9f-fd1f-461f-aeb4-8d5ccd1f1f76")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R35")
 					(unit 1)
@@ -18667,7 +18667,7 @@
 			(uuid "ebf5b6b1-a273-42ca-8403-5ad451886471")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR044")
 					(unit 1)
@@ -18782,7 +18782,7 @@
 			(uuid "e237487d-9074-4e1e-b474-641bd5335f83")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R39")
 					(unit 1)
@@ -18859,7 +18859,7 @@
 			(uuid "7f734916-da24-4676-9925-3f3c2ad09915")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR056")
 					(unit 1)
@@ -18973,7 +18973,7 @@
 			(uuid "6d2c343e-f110-414f-9485-7c147a606000")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C35")
 					(unit 1)
@@ -19087,7 +19087,7 @@
 			(uuid "01c2c139-38ec-4b6e-ad93-9ddc2f0840eb")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C34")
 					(unit 1)
@@ -19165,7 +19165,7 @@
 			(uuid "1bdd82b4-fdcb-447c-b342-9f05bb9d5ac6")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR046")
 					(unit 1)
@@ -19242,7 +19242,7 @@
 			(uuid "a1223403-2d5d-438b-84ce-c9af4b1ecf5b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR077")
 					(unit 1)
@@ -19319,7 +19319,7 @@
 			(uuid "8dd0fdbe-0b50-4ae6-9e87-996f67c7eb47")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#FLG04")
 					(unit 1)
@@ -19431,7 +19431,7 @@
 			(uuid "4afeb84d-30f6-4fae-80a2-1070bef916c3")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R25")
 					(unit 1)
@@ -19508,7 +19508,7 @@
 			(uuid "36ff9851-060a-4307-9c05-bc6958577cd2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR064")
 					(unit 1)
@@ -19620,7 +19620,7 @@
 			(uuid "b764cd2d-a6e0-4714-b18f-a25a77408282")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "R28")
 					(unit 1)
@@ -19697,7 +19697,7 @@
 			(uuid "baead09a-c408-48f4-8b59-276b8aa69c03")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR082")
 					(unit 1)
@@ -19811,7 +19811,7 @@
 			(uuid "1be47587-7f1b-45e6-b7f7-05e32908963a")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C25")
 					(unit 1)
@@ -19888,7 +19888,7 @@
 			(uuid "6af763c2-2b4b-42fa-b45d-6954e24bcf40")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR051")
 					(unit 1)
@@ -19966,7 +19966,7 @@
 			(uuid "0381b6d1-a772-43fc-ad4f-126795671fbf")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR022")
 					(unit 1)
@@ -20080,7 +20080,7 @@
 			(uuid "433389bd-cd09-4952-a0b7-39b1d1a82a21")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C37")
 					(unit 1)
@@ -20209,7 +20209,7 @@
 			(uuid "6b2608ef-214a-4e57-9b35-ffafd3274dba")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "J6")
 					(unit 1)
@@ -20287,7 +20287,7 @@
 			(uuid "eba76f70-c875-4f55-98e6-ca7c710e636d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR055")
 					(unit 1)
@@ -20401,7 +20401,7 @@
 			(uuid "ab8ead01-0c46-4316-b3e3-f5ddafc89e7d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C31")
 					(unit 1)
@@ -20515,7 +20515,7 @@
 			(uuid "c4e4e1d6-3d52-405a-af4d-48c9b1240803")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "C30")
 					(unit 1)
@@ -20628,7 +20628,7 @@
 			(uuid "9b79412a-74f6-4db2-84ae-0dd39ab562c3")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "D3")
 					(unit 1)
@@ -20705,7 +20705,7 @@
 			(uuid "4c54f127-7c5f-4196-aff1-2cf2b8ea29be")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR050")
 					(unit 1)
@@ -20782,7 +20782,7 @@
 			(uuid "91f24ae6-d900-45b0-b3b6-77ff16a88c89")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "#PWR076")
 					(unit 1)
@@ -20974,7 +20974,7 @@
 			(uuid "600f5e9f-5273-47b6-800f-5934ae50fd0f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/6fc81237-3f36-4001-84da-7327f8cb7e0c"
 					(reference "U7")
 					(unit 1)

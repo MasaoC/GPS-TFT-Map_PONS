@@ -5999,7 +5999,7 @@
 			(uuid "75404ce2-ebf4-417a-a68a-d2b21dec5734")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR09")
 					(unit 1)
@@ -6076,7 +6076,7 @@
 			(uuid "037212dc-dd9e-4f88-9fba-646844f37bc0")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR029")
 					(unit 1)
@@ -6153,7 +6153,7 @@
 			(uuid "9615ea41-5b62-4164-ac01-0ff2b0412de0")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR07")
 					(unit 1)
@@ -6267,7 +6267,7 @@
 			(uuid "67c21866-002f-463a-9425-c6b01e720b3f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C14")
 					(unit 1)
@@ -6512,7 +6512,7 @@
 			(uuid "34923b5b-8ca4-4eea-9501-86ff1f02dbd0")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "J3")
 					(unit 1)
@@ -6624,7 +6624,7 @@
 			(uuid "2836f078-ac41-4d34-bc57-4deb04563f08")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R15")
 					(unit 1)
@@ -6736,7 +6736,7 @@
 			(uuid "0c3c3c10-c41c-4887-8dd3-ca5a2a3b3e45")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R11")
 					(unit 1)
@@ -6813,7 +6813,7 @@
 			(uuid "026ac1e1-3c4a-49a9-8f60-1462e63d5698")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR014")
 					(unit 1)
@@ -6925,7 +6925,7 @@
 			(uuid "f21e4203-2dfd-49a3-8d20-d21b0b022faf")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R22")
 					(unit 1)
@@ -7002,7 +7002,7 @@
 			(uuid "57ec496f-59cb-4f04-a03a-3b099c42ff0b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR05")
 					(unit 1)
@@ -7114,7 +7114,7 @@
 			(uuid "766f23b6-4c68-4076-9d3d-86dfd2ad9274")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R7")
 					(unit 1)
@@ -7191,7 +7191,7 @@
 			(uuid "b06b76ce-cb18-4e7e-a8e5-2d23f0c4a2b7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR028")
 					(unit 1)
@@ -7268,7 +7268,7 @@
 			(uuid "4321a735-37d8-4f9e-82da-aeae349ce5d6")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR02")
 					(unit 1)
@@ -7344,7 +7344,7 @@
 			)
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "H1")
 					(unit 1)
@@ -7456,7 +7456,7 @@
 			(uuid "5135923d-0a9f-4201-aec6-ee74efef55b2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R5")
 					(unit 1)
@@ -7533,7 +7533,7 @@
 			(uuid "d17ccb67-ee67-4622-afac-b82abec8caa0")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR013")
 					(unit 1)
@@ -7645,7 +7645,7 @@
 			(uuid "a9ca58a7-a145-4541-9447-bb9611d08258")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C3")
 					(unit 1)
@@ -7722,7 +7722,7 @@
 			(uuid "79032ee0-188d-49ae-acbb-4e612dc099cf")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR037")
 					(unit 1)
@@ -7834,7 +7834,7 @@
 			(uuid "ab985a2a-d6eb-4658-a50f-24f757b2a064")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R20")
 					(unit 1)
@@ -7911,7 +7911,7 @@
 			(uuid "89dbf9db-fa19-4177-9e68-243e9f924776")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR027")
 					(unit 1)
@@ -8023,7 +8023,7 @@
 			(uuid "6322314a-2e15-4f1b-b379-c2bcce34c49e")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R13")
 					(unit 1)
@@ -8100,7 +8100,7 @@
 			(uuid "bda80bd4-a6c6-4bab-8c97-040c2f819349")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR038")
 					(unit 1)
@@ -8177,7 +8177,7 @@
 			(uuid "c9b16c56-9c4f-4603-bbc1-d0c5dac374a8")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR019")
 					(unit 1)
@@ -8291,7 +8291,7 @@
 			(uuid "0cad7bb4-6d1c-4aaa-926c-b6b4fa576818")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C10")
 					(unit 1)
@@ -8401,7 +8401,7 @@
 			(uuid "03b22860-6b3e-4095-bc40-b2c1ed6ffa6b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "U2")
 					(unit 1)
@@ -8478,7 +8478,7 @@
 			(uuid "ad84ee65-8127-40d5-b4bc-f507d6289db2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR08")
 					(unit 1)
@@ -8590,7 +8590,7 @@
 			(uuid "ba7ccd3e-68ac-4177-95b9-66d28b9ced06")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R14")
 					(unit 1)
@@ -8669,7 +8669,7 @@
 			(uuid "745fb398-e73a-4f83-b2f1-ec21d7310286")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR025")
 					(unit 1)
@@ -8747,7 +8747,7 @@
 			(uuid "a2d6ea4d-3094-40cd-9630-c938f73698ff")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR026")
 					(unit 1)
@@ -8859,7 +8859,7 @@
 			(uuid "67a6fb39-5c3d-4869-817b-a6bd5d967445")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R16")
 					(unit 1)
@@ -8936,7 +8936,7 @@
 			(uuid "ad2c7267-6862-4e6b-b6c7-d27cb017ae4f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR039")
 					(unit 1)
@@ -9012,7 +9012,7 @@
 			)
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "H4")
 					(unit 1)
@@ -9089,7 +9089,7 @@
 			(uuid "319a212c-4830-4e89-98c0-c85b28fce944")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR041")
 					(unit 1)
@@ -9192,7 +9192,7 @@
 			(uuid "827c52e5-da95-4de9-8bf6-629f0f6ac745")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "J1")
 					(unit 1)
@@ -9269,7 +9269,7 @@
 			(uuid "79abc465-7c35-49bb-82fa-eca8791fc3d8")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR03")
 					(unit 1)
@@ -9381,7 +9381,7 @@
 			(uuid "191083cc-4757-4fa0-8ce0-6d23e3125cc3")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R2")
 					(unit 1)
@@ -9457,7 +9457,7 @@
 			)
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "H3")
 					(unit 1)
@@ -9534,7 +9534,7 @@
 			(uuid "22cb181b-b3a1-4e68-b453-85ebee36d66d")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR016")
 					(unit 1)
@@ -9611,7 +9611,7 @@
 			(uuid "28d761cf-0ec9-462b-9268-dc5549183c06")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR011")
 					(unit 1)
@@ -9723,7 +9723,7 @@
 			(uuid "273432ac-23be-42f8-aa89-f12c636d0b1f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R3")
 					(unit 1)
@@ -9838,7 +9838,7 @@
 			(uuid "4e44d78a-f6c6-462a-83ee-9a878fee395b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R10")
 					(unit 1)
@@ -9950,7 +9950,7 @@
 			(uuid "d0c0f30a-02e0-4262-87db-ed1df7486400")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R23")
 					(unit 1)
@@ -10062,7 +10062,7 @@
 			(uuid "f9f6d81c-42c7-439c-b34b-ec5085414720")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R6")
 					(unit 1)
@@ -10174,7 +10174,7 @@
 			(uuid "8a42c8e9-eb8c-4c02-92de-2406e1f0d40e")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R4")
 					(unit 1)
@@ -10288,7 +10288,7 @@
 			(uuid "64cff7ee-b4b3-43b7-9bfb-c75468d8b7d3")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C6")
 					(unit 1)
@@ -10365,7 +10365,7 @@
 			(uuid "3a11ecce-2549-4f03-865f-b3185ffc04d4")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR018")
 					(unit 1)
@@ -10442,7 +10442,7 @@
 			(uuid "9a5aefdb-9c16-415a-b74a-def052ea24c2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR034")
 					(unit 1)
@@ -10556,7 +10556,7 @@
 			(uuid "d1e6aeba-26c8-48c0-b739-379eeb3a2b22")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C9")
 					(unit 1)
@@ -10670,7 +10670,7 @@
 			(uuid "f178bbf1-71c7-4ac0-903b-bc52ef03b4da")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C4")
 					(unit 1)
@@ -10747,7 +10747,7 @@
 			(uuid "4c6176c1-79f1-4ec8-9a00-d40fd9d1d9d2")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR030")
 					(unit 1)
@@ -10824,7 +10824,7 @@
 			(uuid "36d38293-8041-4ea0-9c06-6094aaed8fc3")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR035")
 					(unit 1)
@@ -10901,7 +10901,7 @@
 			(uuid "2ffeb362-ddc6-4299-a9ab-ae3e17ab53c8")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR032")
 					(unit 1)
@@ -10978,7 +10978,7 @@
 			(uuid "a5c3fbcf-9869-4617-a569-8446edfff9f7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR015")
 					(unit 1)
@@ -11090,7 +11090,7 @@
 			(uuid "63cac17e-2950-445a-a0de-7abd3f081d40")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R18")
 					(unit 1)
@@ -11167,7 +11167,7 @@
 			(uuid "27443f7d-77f8-4294-9404-7f9a624e115f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR031")
 					(unit 1)
@@ -11307,7 +11307,7 @@
 			(uuid "033af01e-11a3-4a33-a8a6-e54819c08a85")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "J4")
 					(unit 1)
@@ -11384,7 +11384,7 @@
 			(uuid "df52a865-0de9-48d1-b32a-905be8a3943f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR040")
 					(unit 1)
@@ -11498,7 +11498,7 @@
 			(uuid "91c0c778-4afc-47da-9b30-bd4ac5b24382")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C12")
 					(unit 1)
@@ -11621,7 +11621,7 @@
 			(uuid "e441af23-f8e0-454e-811d-f063d5a4f86e")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "D2")
 					(unit 1)
@@ -11699,7 +11699,7 @@
 			(uuid "efec226a-8c1e-4665-8183-e46b06dd9679")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR042")
 					(unit 1)
@@ -11776,7 +11776,7 @@
 			(uuid "0c50c683-e572-423a-a970-a3e1ad2cd0d0")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR023")
 					(unit 1)
@@ -11853,7 +11853,7 @@
 			(uuid "e1b69e7d-9080-4d5e-a584-71d17f78541c")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR024")
 					(unit 1)
@@ -11965,7 +11965,7 @@
 			(uuid "8741997d-0677-4402-94de-d753697e5773")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C2")
 					(unit 1)
@@ -12042,7 +12042,7 @@
 			(uuid "47964705-8855-4d5b-9492-a67be70b08bd")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR04")
 					(unit 1)
@@ -12118,7 +12118,7 @@
 			)
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "H2")
 					(unit 1)
@@ -12250,7 +12250,7 @@
 			(uuid "b53a0543-03f6-438f-914f-3924cbb46766")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "U1")
 					(unit 1)
@@ -12327,7 +12327,7 @@
 			(uuid "0f7b9379-7805-4429-9058-58969b545a8e")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR06")
 					(unit 1)
@@ -12439,7 +12439,7 @@
 			(uuid "655d0722-87c0-4ccc-8f1e-68c27b76277f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "FB1")
 					(unit 1)
@@ -12551,7 +12551,7 @@
 			(uuid "2c04e050-06df-4f64-8352-819883e4e84f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R12")
 					(unit 1)
@@ -12663,7 +12663,7 @@
 			(uuid "1e7aa1ba-e14d-4ddf-b117-84d9f9c1075c")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R19")
 					(unit 1)
@@ -12786,7 +12786,7 @@
 			(uuid "fdc61b6e-1028-4aa9-899c-1bcbe29185d7")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "D1")
 					(unit 1)
@@ -12898,7 +12898,7 @@
 			(uuid "f93b8639-c6d4-466a-a574-2a1107ca8217")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "FB2")
 					(unit 1)
@@ -12975,7 +12975,7 @@
 			(uuid "8f18acff-60a7-4a77-b27a-31f277805ad9")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR017")
 					(unit 1)
@@ -13052,7 +13052,7 @@
 			(uuid "d0d89dba-0976-413e-bca5-133a2ac336fe")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR020")
 					(unit 1)
@@ -13166,7 +13166,7 @@
 			(uuid "53e1b75a-8927-42f0-84bc-83c8f23effc5")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C13")
 					(unit 1)
@@ -13278,7 +13278,7 @@
 			(uuid "c7edeb63-498b-4228-9d88-52693e328d2c")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R1")
 					(unit 1)
@@ -13390,7 +13390,7 @@
 			(uuid "219d076b-1826-4b10-a604-f520ee1722e1")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R17")
 					(unit 1)
@@ -13493,7 +13493,7 @@
 			(uuid "96683705-dc05-4eb4-a6f4-ab2e200e5b50")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C1")
 					(unit 1)
@@ -13570,7 +13570,7 @@
 			(uuid "464907d6-07d9-4443-b8ab-417e13a5f59a")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR012")
 					(unit 1)
@@ -13647,7 +13647,7 @@
 			(uuid "326a47e3-578d-4849-bda6-e9805f4b7907")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR01")
 					(unit 1)
@@ -13761,7 +13761,7 @@
 			(uuid "b59ce75c-c1e7-4dc8-b245-b73a2188ac9b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C7")
 					(unit 1)
@@ -13838,7 +13838,7 @@
 			(uuid "a7e8b69b-416d-4152-98c5-40b4a5e09154")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR043")
 					(unit 1)
@@ -14215,7 +14215,7 @@
 			(uuid "52ae030d-45f1-47df-8220-966de7852631")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "J2")
 					(unit 1)
@@ -14292,7 +14292,7 @@
 			(uuid "51b0974a-47e0-4f8a-a17a-dd74447e1c17")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR036")
 					(unit 1)
@@ -14404,7 +14404,7 @@
 			(uuid "f595b04f-b8a7-48b6-9ecf-7a05c364ed3f")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R21")
 					(unit 1)
@@ -14481,7 +14481,7 @@
 			(uuid "f0b531a8-387c-42b2-ad23-896f2f655ed3")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR033")
 					(unit 1)
@@ -14595,7 +14595,7 @@
 			(uuid "2068ec7e-15f7-4d70-8e52-b193292be60b")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C5")
 					(unit 1)
@@ -14709,7 +14709,7 @@
 			(uuid "1f890e0e-22c8-4116-b6c4-02617ae4a652")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C11")
 					(unit 1)
@@ -14786,7 +14786,7 @@
 			(uuid "c4e50b9c-f103-4b66-b3ac-e16b434e4281")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "#PWR010")
 					(unit 1)
@@ -14900,7 +14900,7 @@
 			(uuid "b3a90014-8069-48ec-bd7e-ac62ccbab5db")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C8")
 					(unit 1)
@@ -15014,7 +15014,7 @@
 			(uuid "c4afc8c1-3321-4199-87ff-9268e6ef2048")
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R9")
 					(unit 1)
@@ -15061,7 +15061,7 @@
 			)
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(page "3")
 				)
@@ -15107,7 +15107,7 @@
 			)
 		)
 		(instances
-			(project "DisplayModule_PONSv6"
+			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(page "2")
 				)
