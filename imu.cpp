@@ -1216,7 +1216,7 @@ float get_imu_mag_accuracy_deg() {
 // ミラー中（受信モード）は受信した機体の値を返す。
 // CSV は自機の値を書く必要があるので、生の実装は get_imu_vspeed_raw() に残してある。
 float get_imu_vspeed() {
-  if (link_mirror_active()) return link_rx_telem()->kf_vs_cms / 100.0f;
+  if (link_mirror_active()) return link_get_kf_vspeed();
   return get_imu_vspeed_raw();
 }
 
@@ -1241,7 +1241,7 @@ float get_imu_vspeed_raw() {
 // ミラー中（受信モード）は受信した機体の値を返す。
 // CSV は自機の値を書く必要があるので、生の実装は get_imu_altitude_msl_raw() に残してある。
 float get_imu_altitude_msl() {
-  if (link_mirror_active()) return link_rx_telem()->kf_alt_dm / 10.0f;
+  if (link_mirror_active()) return link_get_kf_altitude();
   return get_imu_altitude_msl_raw();
 }
 

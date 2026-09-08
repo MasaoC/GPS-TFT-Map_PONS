@@ -1236,10 +1236,14 @@ void cycle_replay_speed() {
   else                        replay_speed = 1;
 }
 
-// CSV のヘッダ行を解釈して replay_col[] を構築する。
+// CSV のヘッダ行を列名で解釈し、col[] に「その列が何列目か」を入れる（無い列は -1）。
 // 列名は大文字小文字を無視して照合し、未知の列や空の列名（2026大会データに存在）は無視する。
-static void replay_parse_header(const char* header) {
-  for (int i = 0; i < REPLAY_COL_COUNT; i++) replay_col[i] = -1;
+// alias は旧バージョンの別名表。不要なら nullptr を渡す。
+// ★ 飛行 CSV（replay_col）と姿勢ログ（att_col）で同じ処理なので 1 つにまとめてある。
+static void parse_header_cols(const char* header,
+                              const char* const* names, const char* const* alias,
+                              int8_t* col, int count) {
+  for (int i = 0; i < count; i++) col[i] = -1;
 
   int index = 0;
   const char* p = header;
@@ -1251,17 +1255,22 @@ static void replay_parse_header(const char* header) {
     memcpy(token, p, len);
     token[len] = '\0';
 
-    for (int c = 0; c < REPLAY_COL_COUNT; c++) {
-      if (replay_col[c] == -1 &&
-          (replay_name_match(token, replay_col_names[c]) ||
-           (replay_col_alias[c] != nullptr && replay_name_match(token, replay_col_alias[c])))) {
-        replay_col[c] = index;
+    for (int c = 0; c < count; c++) {
+      if (col[c] == -1 &&
+          (replay_name_match(token, names[c]) ||
+           (alias != nullptr && alias[c] != nullptr && replay_name_match(token, alias[c])))) {
+        col[c] = (int8_t)index;
         break;
       }
     }
     index++;
     p = (end == nullptr) ? nullptr : end + 1;
   }
+}
+
+static void replay_parse_header(const char* header) {
+  parse_header_cols(header, replay_col_names, replay_col_alias,
+                    replay_col, REPLAY_COL_COUNT);
 }
 
 // リプレイ再生をファイル先頭から開始（またはループ再生のため再開）する。
@@ -1306,26 +1315,7 @@ static bool     replay_att_has_wind = false; // その行に風の推定値が�
 
 // ヘッダ行から att_col[] を作る。1 列も一致しなければ旧形式の固定順とみなす。
 static void replay_att_parse_header(const char* header) {
-  for (int i = 0; i < ATTCOL_COUNT; i++) att_col[i] = -1;
-
-  int index = 0;
-  const char* p = header;
-  while (p != nullptr && *p != '\0') {
-    const char* e = strchr(p, ',');
-    char token[16];
-    size_t len = (e == nullptr) ? strlen(p) : (size_t)(e - p);
-    if (len >= sizeof(token)) len = sizeof(token) - 1;
-    memcpy(token, p, len);
-    token[len] = '\0';
-    for (int c = 0; c < ATTCOL_COUNT; c++) {
-      if (att_col[c] == -1 && replay_name_match(token, att_col_names[c])) {
-        att_col[c] = index;
-        break;
-      }
-    }
-    index++;
-    p = (e == nullptr) ? nullptr : e + 1;
-  }
+  parse_header_cols(header, att_col_names, nullptr, att_col, ATTCOL_COUNT);
 
   // ヘッダが無いファイル（1 行目からデータ）への保険
   if (att_col[ATTCOL_TIME] < 0 || att_col[ATTCOL_ROLL] < 0 || att_col[ATTCOL_PITCH] < 0) {

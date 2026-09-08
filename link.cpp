@@ -53,8 +53,6 @@ static uint16_t s_seqOut    = 0;    // 送信テレメトリの連番。ロー�
 static uint32_t s_txCount   = 0;    // 送信回数
 static uint32_t s_txMs      = 0;    // 直近に送出できた時刻。地図の電波アイコンを脈動させる
 static uint16_t s_missTotal = 0;    // seq の飛びの累計＝電波側で落ちた数
-static int32_t  s_rssiSum   = 0;    // RSSI 平均用
-static uint32_t s_rssiN     = 0;
 // ---- 直近 10 秒の RSSI ----
 //   通算平均は「今アンテナを向け直したら良くなったか」が分からない。
 //   現地で向きや場所を試すときに効くのは直近の平均なので、別に持つ。
@@ -121,7 +119,6 @@ static void link_poll_radio() {
             if (s_rx.rssi < s_rssiMin) s_rssiMin = s_rx.rssi;
             if (s_rx.rssi > s_rssiMax) s_rssiMax = s_rx.rssi;
         }
-        s_rssiSum += s_rx.rssi; s_rssiN++;
         s_r10Val[s_r10Head] = s_rx.rssi;
         s_r10Ms [s_r10Head] = s_rxMs;
         s_r10Head = (uint8_t)((s_r10Head + 1) % RSSI10_SLOTS);
@@ -283,11 +280,11 @@ static void link_periodic_report() {
     } else if (s_rssiSeen) {
         enqueueTask(createLogSdfTask(
             "LINK RX: mod=%s ch=%u prof=%u rx=%lu miss=%u gaps=%u "
-            "rssi=%d..%d avg=%d%s",
+            "rssi=%d..%d%s",
             mod, link_radio_ch, link_radio_profile,
             (unsigned long)s_rxTotal, (unsigned)s_missTotal,
             (unsigned)s_seqGaps, s_rssiMin, s_rssiMax,
-            (int)link_rssi_avg(), s_dupSender ? " DUP_SENDER" : ""));
+            s_dupSender ? " DUP_SENDER" : ""));
     } else {
         enqueueTask(createLogSdfTask(
             "LINK RX: mod=%s ch=%u prof=%u no reception yet",
@@ -385,44 +382,42 @@ static void link_push_telemetry() {
 
     t.lat_1e7 = (int32_t)lround(get_gps_lat() * 1e7);
     t.lon_1e7 = (int32_t)lround(get_gps_lon() * 1e7);
-    t.gs_cms      = (uint16_t)constrain(lround(get_gps_mps() * 100.0), 0L, 65535L);
-    t.track_cdeg  = (uint16_t)constrain(lround(get_gps_truetrack() * 100.0), 0L, 36000L);
+    t.gs_cms      = link_pack_u16((float)get_gps_mps(),       100.0f, 65535);
+    t.track_cdeg  = link_pack_u16((float)get_gps_truetrack(), 100.0f, 36000);
     have |= RHAVE_GS | RHAVE_TTRACK;
 
-    t.gnss_alt_dm = (int16_t)constrain(lround(get_gps_altitude() * 10.0), -32768L, 32767L);
+    t.gnss_alt_dm = link_pack_i16((float)get_gps_altitude(), 10.0f);
     have |= RHAVE_GNSSALT;
 
-    t.kf_alt_dm = (int16_t)constrain(lround(get_imu_altitude_msl() * 10.0f), -32768L, 32767L);
-    t.kf_vs_cms = (int16_t)constrain(lround(get_imu_vspeed() * 100.0f), -32768L, 32767L);
+    t.kf_alt_dm = link_pack_i16(get_imu_altitude_msl(),  10.0f);
+    t.kf_vs_cms = link_pack_i16(get_imu_vspeed(),      100.0f);
     have |= RHAVE_KFALT | RHAVE_KFVS;
 
-    t.press_dpa = (uint16_t)constrain(lround(get_airdata_pressure() * 10.0f), 0L, 65535L);
+    t.press_dpa = link_pack_u16(get_airdata_pressure(), 10.0f, 65535);
     have |= RHAVE_PRESS;
 
     float roll, pitch, yaw;
     attitude_get_euler(roll, pitch, yaw);
     if (attitude_ready()) {
-        t.roll_cdeg  = (int16_t)constrain(lround(roll  * 100.0f), -32768L, 32767L);
-        t.pitch_cdeg = (int16_t)constrain(lround(pitch * 100.0f), -32768L, 32767L);
-        t.yaw_cdeg   = (int16_t)constrain(lround(yaw   * 100.0f), -32768L, 32767L);
+        t.roll_cdeg  = link_pack_i16(roll,  100.0f);
+        t.pitch_cdeg = link_pack_i16(pitch, 100.0f);
+        t.yaw_cdeg   = link_pack_i16(yaw,   100.0f);
         have |= RHAVE_ATT;
         float acc95 = attitude_get_yaw_acc95_deg();
-        t.yaw_acc95_deg = (uint8_t)constrain(lround(acc95), 0L, 255L);
+        t.yaw_acc95_deg = link_pack_u8(acc95, 1.0f);
         have |= RHAVE_ATT_YAW;
     }
-    t.roll_trim_cdeg = (int16_t)constrain(lround(attitude_get_roll_trim_deg() * 100.0f),
-                                          -32768L, 32767L);
+    t.roll_trim_cdeg = link_pack_i16(attitude_get_roll_trim_deg(), 100.0f);
     have |= RHAVE_ATT_TRIM;
 
     if (attitude_pitch_avg_valid()) {
-        t.pitch_avg_cdeg = (int16_t)constrain(lround(attitude_get_pitch_avg_deg() * 100.0f),
-                                              -32768L, 32767L);
+        t.pitch_avg_cdeg = link_pack_i16(attitude_get_pitch_avg_deg(), 100.0f);
         have |= RHAVE_ATT_AVG;
     }
     float wspd, wdir;
     if (attitude_get_wind(wspd, wdir)) {
-        t.wind_dmps     = (uint8_t)constrain(lround(wspd * 10.0f), 0L, 255L);
-        t.wind_dir_cdeg = (uint16_t)constrain(lround(wdir * 100.0f), 0L, 36000L);
+        t.wind_dmps     = link_pack_u8(wspd,   10.0f);
+        t.wind_dir_cdeg = link_pack_u16(wdir, 100.0f, 36000);
         have |= RHAVE_ATT_WIND;
     }
 
@@ -495,7 +490,6 @@ uint16_t link_rx_count()   { return (uint16_t)(s_rxTotal & 0xFFFF); }
 uint16_t link_miss_count() { return s_missTotal; }
 uint16_t link_tx_count()   { return (uint16_t)(s_txCount & 0xFFFF); }
 
-int8_t   link_rssi_avg()   { return s_rssiN ? (int8_t)(s_rssiSum / (int32_t)s_rssiN) : 0; }
 // 直近に送出できてからの経過 [ms]。一度も送っていなければ 0xFFFFFFFF。
 // ★ 「電波が出た」瞬間だけ地図のアイコンを膨らませるために使う。
 //   モジュールがビジーでスロットを捨てると更新されないので、
@@ -590,6 +584,17 @@ bool link_dest_mismatch() {
 bool link_has_value(uint16_t havebit) {
     return link_is_receiving() && (s_rx.t.have & havebit);
 }
+// ★ 詰め方を知っているのはここだけ。呼び出し側で割り算を書き直さないこと。
+//   s_rx は静的なので未受信でも 0 が返るだけで、参照そのものは安全。
+double   link_get_lat()           { return s_rx.t.lat_1e7 / 1e7; }
+double   link_get_lon()           { return s_rx.t.lon_1e7 / 1e7; }
+double   link_get_gs()            { return s_rx.t.gs_cms      / 100.0; }
+double   link_get_truetrack()     { return s_rx.t.track_cdeg  / 100.0; }
+double   link_get_gnss_altitude() { return s_rx.t.gnss_alt_dm /  10.0; }
+int      link_get_numsat()        { return s_rx.t.numsat; }
+uint32_t link_get_hacc_mm()       { return (uint32_t)s_rx.t.hacc_dm * 100u; }
+bool     link_get_fix_ok()        { return (s_rx.t.fixflags & 0x01) != 0; }
+
 float link_get_kf_altitude() { return s_rx.t.kf_alt_dm  * 0.1f; }
 float link_get_kf_vspeed()   { return s_rx.t.kf_vs_cms  * 0.01f; }
 float link_get_pressure()    { return s_rx.t.press_dpa  * 0.1f; }

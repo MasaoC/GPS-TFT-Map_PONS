@@ -648,14 +648,14 @@ float    get_gps_vdop()       { return gsa_vdop; }
 int      get_gsa_numsat()     { return gsa_numsat; }
 int      get_gsa_prn(int i)   { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0; }
 uint32_t get_gps_hacc_mm() {
-  if (link_mirror_active()) return (uint32_t)link_rx_telem()->hacc_dm * 100u;
+  if (link_mirror_active()) return link_get_hacc_mm();
   return ubx_hacc_mm;                                      // hAcc（水平精度推定値, mm）
 }
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
 bool get_gps_gnssFixOK() {
-  if (link_mirror_active()) return (link_rx_telem()->fixflags & 0x01) != 0;
+  if (link_mirror_active()) return link_get_fix_ok();
   return ubx_gnssFixOK;                                    // gnssFixOK フラグ
 }
 
@@ -1496,7 +1496,7 @@ bool gps_get_own_fix(double &lat, double &lon, double &gs, double &track) {
 // デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
 // 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
 double get_gps_lat() {
-  if (link_mirror_active()) return link_rx_telem()->lat_1e7 / 1e7;
+  if (link_mirror_active()) return link_get_lat();
   if (is_demo_active()) {
     return demo_lat;
   }
@@ -1528,7 +1528,7 @@ double get_gps_lat() {
 }
 
 double get_gps_lon() {
-  if (link_mirror_active()) return link_rx_telem()->lon_1e7 / 1e7;
+  if (link_mirror_active()) return link_get_lon();
   if (is_demo_active()) {
     return demo_lon;
   }
@@ -1562,7 +1562,7 @@ double get_gps_lon() {
 
 
 double get_gps_mps() {
-  if (link_mirror_active()) return link_rx_telem()->gs_cms / 100.0;
+  if (link_mirror_active()) return link_get_gs();
   if (is_demo_active()) {
     return demo_mps;
   }
@@ -1582,7 +1582,7 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
-  if (link_mirror_active()) return (link_rx_telem()->fixflags & 0x01) != 0;
+  if (link_mirror_active()) return link_get_fix_ok();
   if(is_demo_active()){
     return get_gps_numsat() != 0;
   }
@@ -1593,13 +1593,13 @@ bool get_gps_fix() {
 }
 
 double get_gps_altitude() {
-  if (link_mirror_active()) return link_rx_telem()->gnss_alt_dm / 10.0;
+  if (link_mirror_active()) return link_get_gnss_altitude();
   return stored_gnss_altitude;
 }
 
 
 double get_gps_truetrack() {
-  if (link_mirror_active()) return link_rx_telem()->track_cdeg / 100.0;
+  if (link_mirror_active()) return link_get_truetrack();
   #ifdef DEBUG_GPS_SIM_SHINURA
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
@@ -1611,7 +1611,7 @@ double get_gps_truetrack() {
 
 
 int get_gps_numsat() {
-  if (link_mirror_active()) return link_rx_telem()->numsat;
+  if (link_mirror_active()) return link_get_numsat();
   if(is_demo_active()){
     return (int)(20.0*sin(millis()/5000))+20;
   }else if(getReplayMode()){

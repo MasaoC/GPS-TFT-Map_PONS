@@ -58,8 +58,22 @@
   // 受信したテレメトリの生データ。表示側はこれを読む。
   const LinkTelem* link_rx_telem();
 
-  // リプレイ経路と同じ形の供給関数。have ビットが立っていなければ false。
+  // ---- 受信テレメトリの取り出し ----
+  // ★ **LinkTelem の詰め方（スケール）を知ってよいのは link.cpp だけ。**
+  //   呼び出し側で link_rx_telem()->kf_alt_dm / 10.0f のように書いてしまうと、
+  //   同じ換算が 2 か所に存在することになり、分解能を変えたとき片方だけ直して
+  //   「ミラー表示のときだけ桁がずれる」という静かな壊れ方をする。
+  //   受信側の値が要るときは必ずこの getter を通すこと。
+  //   どれも link_mirror_active() が真のときだけ呼ぶ前提（未受信なら 0 を返す）。
   bool  link_has_value(uint16_t havebit);
+  double   link_get_lat();
+  double   link_get_lon();
+  double   link_get_gs();                 // 対地速度 [m/s]
+  double   link_get_truetrack();          // 真方位 [deg]
+  double   link_get_gnss_altitude();      // GNSS 高度 [m]
+  int      link_get_numsat();
+  uint32_t link_get_hacc_mm();            // 水平精度 [mm]
+  bool     link_get_fix_ok();             // gnssFixOK
   float link_get_kf_altitude();
   float link_get_kf_vspeed();
   float link_get_pressure();
@@ -76,7 +90,6 @@
   uint16_t link_rx_count();
   uint16_t link_miss_count();     // seq の飛びの累計＝電波側で落ちた数
   uint16_t link_tx_count();
-  int8_t   link_rssi_avg();
   uint32_t link_since_tx_ms();    // 直近の送出からの経過[ms]。未送信は 0xFFFFFFFF
   // ★ 通算平均は持たない。序盤の至近距離のパケットに引きずられて、
   //   飛行中の実力とかけ離れた数字が出続けるため（60 秒ごとのログに

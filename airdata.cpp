@@ -404,7 +404,7 @@ float get_airdata_altitude()       { return last_altitude; }
 // ミラー中（受信モード）は受信した機体の値を返す。
 // CSV は自機の値を書く必要があるので、生の実装は get_airdata_pressure_raw() に残してある。
 float get_airdata_pressure() {
-  if (link_mirror_active()) return link_rx_telem()->press_dpa / 10.0f;
+  if (link_mirror_active()) return link_get_pressure();
   return get_airdata_pressure_raw();
 }
 

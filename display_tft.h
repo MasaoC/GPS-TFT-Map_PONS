@@ -78,6 +78,11 @@
   // 受信モードでボート自身の位置を地図に重ねる（ミラー中のみ）
   void draw_own_position_marker(double center_lat, double center_lon, float scale, float up);
 
+  // 電池電圧 → 残量[%] / 表示色。**式と配色はここ 1 か所だけ**に置く。
+  //   以前は残量%が 3 か所、色分けが 3 か所に手書きされていて、
+  //   受信モードの S/R 表示を足したときにさらに増えた。
+  int      battery_percent(float v);
+  uint16_t battery_color(float v);
 
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)

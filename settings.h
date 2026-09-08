@@ -81,6 +81,7 @@
 #define SD_DETECT 10  //v7 8->10に変更
 
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
+#define BAT_FULL_VOLTAGE 4.2 // 100% とみなす電圧。残量%と色分けの基準（display_tft.cpp の battery_*）
 #define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
 #define BAT_LOW_VOLTAGE 3.5
 #define BAT_ZERO_VOLTAGE 3.4

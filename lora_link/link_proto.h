@@ -203,6 +203,37 @@ static_assert(sizeof(LinkTelem) == 65, "LinkTelem が 65 バイトでなくな�
 #define LINK_ST_BAT_LOW     0x0008   // 送信機の電池が少ない
 
 // ============================================================
+//  数値の詰め方
+//    ★ 丸めとクリップを**ここ 1 か所**に置く。送信側に
+//      constrain(lround(x * 100.0f), -32768L, 32767L) を 14 回書いていたが、
+//      1 か所でも桁を間違えるとその項目だけ静かにずれる。
+//      解析ツール側で展開するときも、ここを見れば分解能が分かる。
+//    丸めは lround と同じ「0 から遠いほうへ」。Arduino のマクロには依存しない
+//    （このヘッダは無線層より上から素で include されるため）。
+// ============================================================
+static inline int16_t link_pack_i16(float v, float scale) {
+    const float x = v * scale;
+    if (x != x) return 0;          // NaN（推定が発散したとき）。極値を送るより 0 のほうが無害
+    if (x >  32767.0f) return  32767;
+    if (x < -32768.0f) return -32768;
+    return (int16_t)(x >= 0.0f ? x + 0.5f : x - 0.5f);
+}
+static inline uint16_t link_pack_u16(float v, float scale, uint16_t maxv) {
+    const float x = v * scale;
+    if (x != x) return 0;          // NaN
+    if (x <= 0.0f) return 0;
+    if (x >= (float)maxv) return maxv;
+    return (uint16_t)(x + 0.5f);
+}
+static inline uint8_t link_pack_u8(float v, float scale) {
+    const float x = v * scale;
+    if (x != x) return 0;          // NaN
+    if (x <= 0.0f) return 0;
+    if (x >= 255.0f) return 255;
+    return (uint8_t)(x + 0.5f);
+}
+
+// ============================================================
 //  電圧の詰め方
 //    2.50〜5.05V を 1 バイトに収める。0.01V 刻みで十分。
 // ============================================================

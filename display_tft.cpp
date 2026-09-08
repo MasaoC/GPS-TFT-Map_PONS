@@ -2062,9 +2062,8 @@ void draw_wireless(int cursor) {
     backscreen.printf(" Rx/Miss : %u / %u", link_rx_count(), link_miss_count());
     y += lh;
     backscreen.setCursor(2, y);
-    // 平均 RSSI。到達距離を決めているのは雑音との差なので、
-    // 現地で「あとどれだけ余裕があるか」を見るのに一番効く数字。
-    backscreen.printf(" RSSI avg: %d dBm", link_rssi_avg());
+    // 直近 1 発の生の値。上の 10 秒平均との差が、ばらつきの大きさになる。
+    backscreen.printf(" Last    : %d dBm", link_rssi());
     y += lh;
     backscreen.setCursor(2, y);
     // 環境雑音。限界 RSSI ≒ 雑音 + SF の SNR 閾値 なので、
@@ -2705,26 +2704,22 @@ void draw_footer(){
   //   送信側が先。機体の電池が先に切れるほうが困るので、目に入る順を優先した。
   //   未受信のときは S を "--" にする（古い値を出し続けない）。
   if (link_get_mode() == LINK_MODE_RX) {
-    float rv = get_input_voltage();          // 自機（受信機）は必ず実測値
-    int rp = constrain((int)((rv - BAT_ZERO_VOLTAGE) / (4.2f - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
+    const float rv = get_input_voltage();    // 自機（受信機）は必ず実測値
     // ★ AA_FONT_SMALL（約12px/文字）だと "S50 R40%" が 96px になり右端をはみ出す。
     //   組み込みフォント（6x8）に落として 48px に収める。色分けは変わらず効く。
     header_footer.unloadFont();
     header_footer.setTextSize(1);
     header_footer.setCursor(SCREEN_WIDTH - 52, 4);
     if (link_is_receiving()) {
-      float sv = link_get_voltage();
-      int sp = constrain((int)((sv - BAT_ZERO_VOLTAGE) / (4.2f - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
-      header_footer.setTextColor(sv <= BAT_LOW_VOLTAGE ? COLOR_RED
-                               : (sv < BAT_HALF_VOLTAGE ? COLOR_MAGENTA : COLOR_GREEN));
-      header_footer.printf("S%d ", sp);
+      const float sv = link_get_voltage();
+      header_footer.setTextColor(battery_color(sv));
+      header_footer.printf("S%d ", battery_percent(sv));
     } else {
       header_footer.setTextColor(COLOR_GRAY);
       header_footer.print("S-- ");
     }
-    header_footer.setTextColor(rv <= BAT_LOW_VOLTAGE ? COLOR_RED
-                             : (rv < BAT_HALF_VOLTAGE ? COLOR_MAGENTA : COLOR_GREEN));
-    header_footer.printf("R%d%%", rp);
+    header_footer.setTextColor(battery_color(rv));
+    header_footer.printf("R%d%%", battery_percent(rv));
     header_footer.loadFont(AA_FONT_SMALL);   // 後続の描画のために戻す
   }
   // リプレイ中は USB 接続でも電池表示にする。飛行時は USB が刺さっていないため、
@@ -2734,7 +2729,7 @@ void draw_footer(){
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_display_voltage();
-    int bat_pct = constrain((int)((input_voltage - BAT_ZERO_VOLTAGE) / (4.2f - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
+    int bat_pct = battery_percent(input_voltage);
     if (input_voltage <= BAT_LOW_VOLTAGE) {
       if((millis()/1000)%2 != 0){
         header_footer.setTextColor(COLOR_RED);
@@ -2759,11 +2754,10 @@ void draw_footer(){
         }
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)", bat_pct, input_voltage));
       }
-    } else if (input_voltage < BAT_HALF_VOLTAGE) {  
-      header_footer.setTextColor(COLOR_MAGENTA);
-      header_footer.printf("%d%%", bat_pct);
-    } else {  // 50%以上
-      header_footer.setTextColor(COLOR_GREEN);
+    } else {
+      // 警告域より上は点滅させないので、色は battery_color() にそのまま任せられる
+      //（マゼンタ=50%未満 / 緑=それ以上）。警告域だけは上の分岐で点滅させている。
+      header_footer.setTextColor(battery_color(input_voltage));
       header_footer.printf("%d%%", bat_pct);
     }
   }
@@ -4119,6 +4113,23 @@ void draw_maplist_mode(int maplist_page) {
 #define CPU_TEMP_WARN_C 50.0f  // これを超えるとオレンジ（要注意）
 #define CPU_TEMP_HOT_C  55.0f  // これを超えると赤（高温）
 
+// 電池電圧 → 残量 [%]。BAT_ZERO_VOLTAGE を 0%、BAT_FULL_VOLTAGE を 100% とする単純な線形。
+// 充電直後でも高輝度モードでは 4.2V を切るので 100% に届かないことがあるが、正常。
+int battery_percent(float v) {
+  return constrain((int)((v - BAT_ZERO_VOLTAGE) /
+                         (BAT_FULL_VOLTAGE - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
+}
+
+// 電池電圧 → 表示色。
+//   BAT_LOW_VOLTAGE 以下 : 赤（残量警告）
+//   BAT_HALF_VOLTAGE 未満: マゼンタ（50%未満）
+//   それ以上             : 緑
+uint16_t battery_color(float v) {
+  if (v <= BAT_LOW_VOLTAGE)  return COLOR_RED;
+  if (v <  BAT_HALF_VOLTAGE) return COLOR_MAGENTA;
+  return COLOR_GREEN;
+}
+
 // 設定画面フッターの電池アイコン色を返す。
 // NAV 画面ヘッダーのバッテリー残量表示（draw_header 内）と同じ配色に合わせている:
 //   USB 接続中           : 緑（"USB" 表示が緑）
@@ -4128,13 +4139,7 @@ void draw_maplist_mode(int maplist_page) {
 uint16_t battery_status_color() {
   if (digitalRead(USB_DETECT) && !replay_voltage_active())
     return COLOR_GREEN;
-  float input_voltage = get_display_voltage();
-  if (input_voltage <= BAT_LOW_VOLTAGE)
-    return COLOR_RED;
-  else if (input_voltage < BAT_HALF_VOLTAGE)
-    return COLOR_MAGENTA;
-  else
-    return COLOR_GREEN;
+  return battery_color(get_display_voltage());
 }
 
 // 設定画面フッターの CPU 温度アイコン色を返す。
