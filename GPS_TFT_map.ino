@@ -1324,15 +1324,23 @@ static void handleReplaySelect() {
       // 再生速度を x1 → x2 → x?? と切り替える。再生中でも時刻は飛ばない
       cycle_replay_speed();
       break;
-    case RITEM_2025:
-      startReplay(REPLAY_2025_FILE);
+    case RITEM_SOURCE:
+      // 再生元フォルダを切り替える。一覧の中身が丸ごと入れ替わるので、
+      // カーソルとページを先頭へ戻してから取り直す
+      //（戻さないと、前のフォルダの件数を前提にした位置を指したままになる）。
+      toggle_replay_from_received();
+      replay_cursor    = 3;          // SOURCE 行に留まる（続けて切り替えられる）
+      replay_list_page = 0;
+      loading_replaylist = true;
+      enqueueTask(createBrowseReplayTask(0));
       break;
-    case RITEM_2026:
-      startReplay(REPLAY_2026_FILE);
+    case RITEM_FILE: {
+      // label はファイル名のみ。受信ログは received/ の下にあるので前置する。
+      char path[REPLAY_FILENAME_LEN];
+      snprintf(path, sizeof(path), "%s%s", replay_source_prefix(), label);
+      startReplay(path);
       break;
-    case RITEM_FILE:
-      startReplay(label);  // label には SD ルート上のファイル名が入っている
-      break;
+    }
     case RITEM_RETURN:
       backToSettingFromReplay();
       break;

@@ -473,6 +473,12 @@ const LinkTelem* link_rx_telem() { return s_rxValid ? &s_rx.t : nullptr; }
 //       上書き方式だと古い機体データが残ってしまう
 //     ・received/ は受信データ専用のまま保てる
 bool link_mirror_active() {
+    // ★ リプレイ中はミラーしない。**再生のほうを勝たせる。**
+    //   受信ログ（received/）を再生するのは、たいてい受信モードのボート機。
+    //   ここでミラーを優先すると、再生を選んだのに生の受信データが出続けて
+    //   「再生できない」ように見える。生データは received/ に残り続けるので、
+    //   再生を優先しても失うものは無い。
+    if (getReplayMode()) return false;
     return link_mode_setting == LINK_MODE_RX && link_is_receiving();
 }
 

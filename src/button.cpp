@@ -432,11 +432,7 @@ Setting menu_settings[] = {
       char buff[40];  // temporary buffer
       // 再生中は対象ファイル名（パスを除いた部分）を表示する
       const char* label = "OFF";
-      if (getReplayMode()) {
-        label = get_replay_filename();
-        if (strcmp(label, REPLAY_2025_FILE) == 0)      label = REPLAY_2025_LABEL;
-        else if (strcmp(label, REPLAY_2026_FILE) == 0) label = REPLAY_2026_LABEL;
-      }
+      if (getReplayMode()) label = replay_filename_base();
       snprintf(buff, sizeof(buff), selected ? " REPLAY: %s >" : "REPLAY: %s >", label);
       return std::string(buff);  // return as std::string
     },

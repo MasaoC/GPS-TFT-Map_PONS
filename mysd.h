@@ -54,6 +54,11 @@
         RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_GNSSALT,
         RCOL_KFALT, RCOL_KFVS, RCOL_PRESS, RCOL_DATE, RCOL_TIME,
         RCOL_NUMSAT, RCOL_VOLT,
+        // ★ 姿勢・風。**飛行 CSV には存在しない**（別ファイル imu_replaydata/ にある）。
+        //   受信ログ received/ にだけ入っていて、列名は imu_replaydata/ と揃えてある。
+        //   無い列は -1 のままなので、飛行 CSV の再生は今までと 1 ミリも変わらない。
+        RCOL_ROLL, RCOL_PITCH, RCOL_YAW,
+        RCOL_PAVG, RCOL_RTRIM, RCOL_YAWACC, RCOL_WSPD, RCOL_WDIR,
         REPLAY_COL_COUNT
     } ReplayCol;
 
@@ -84,8 +89,7 @@
         RITEM_OFF,          // リプレイ解除（通常 GPS に戻す）
         RITEM_FLIGHTONLY,   // 静止区間をスキップするか（YES/NO トグル）
         RITEM_SPEED,        // 再生速度の倍率（x1 / x2 / x?? トグル）
-        RITEM_2025,         // 固定項目: 2025 大会データ
-        RITEM_2026,         // 固定項目: 2026 大会データ
+        RITEM_SOURCE,       // 再生元フォルダ（FLIGHT = 自機 / RECEIVED = 無線で受けた機体）
         RITEM_FILE,         // SD 上の飛行 CSV
         RITEM_RETURN        // 設定画面に戻る
     } ReplayItemType;
@@ -93,12 +97,6 @@
     void init_replay();
     void load_replay();
     bool browse_replay_files(int start_index);
-    // 一覧の先頭に並ぶ固定項目数（3〜REPLAY_FIXED_COUNT）。
-    // 大会データ（2025/2026）は SD 上に実在するときだけ数に入る。
-    int  replay_menu_fixed_count();
-    // 大会データが SD 上にあるか。browse_replay_files() が更新する。
-    extern volatile bool replay_have_2025;
-    extern volatile bool replay_have_2026;
     int  replay_menu_total_items();
     int  replay_menu_page_of(int index);
     int  replay_menu_page_count();
@@ -115,6 +113,14 @@
     void     set_replay_flight_only(bool on);
     int      get_replay_speed();     // 再生速度の倍率（1 / 2 / REPLAY_SPEED_FAST）
     void     cycle_replay_speed();   // 倍率を次の候補へ切り替える
+    // ★ 再生元フォルダ。一覧に出すのは常にどちらか一方だけ。
+    //   こうしておくとページ計算が「1 フォルダぶん」のままで済み、
+    //   今のインデックス計算に一切手を入れずに受信ログを扱える。
+    void     toggle_replay_from_received();
+    const char* replay_source_dir();          // "data" または "received"
+    const char* replay_source_prefix();       // "data/" または "received/"
+    const char* replay_filename_base();       // 再生中ファイルのフォルダを除いた部分
+    bool        replay_filename_is(const char* name);  // 一覧の name が再生中か（フルパスで比較）
     void     replay_set_paused(bool paused);  // 再生の一時停止（設定画面表示中など）
 
     bool browse_sd(int page);
@@ -314,6 +320,8 @@
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
   extern volatile uint8_t replay_head, replay_tail;
   extern volatile bool replay_eof;
+  // 選ばれたファイルが再生できない（開けない・ヘッダが無い）。Core0 が見て解除する。
+  extern volatile bool replay_file_bad;
   extern volatile uint32_t replay_init_seq;  // init_replay() のたびに加算（再生時計のリセット通知）
   extern char replay_filename[REPLAY_FILENAME_LEN];
 

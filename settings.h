@@ -129,21 +129,27 @@
 
 
 //======= リプレイ再生設定 ======
-// 固定エントリ（大会データ）の SD 上のパス。
-// SD ルートに置くとファイル一覧にも重複表示されるため replay/ サブフォルダに置く。
-#define REPLAY_2025_FILE "replay/2025taikai.csv"
-#define REPLAY_2026_FILE "replay/2026taikai.csv"
-#define REPLAY_2025_LABEL "2025 Taikai"
-#define REPLAY_2026_LABEL "2026 Taikai"
+// ★ SD の使い分け
+//     ルート直下 … **設定ファイルだけ**（settings.txt / mapdata.csv /
+//                    destinations.csv / override_pilon_coordinate.csv / logo.bmp）
+//     data/      … 自機の飛行 CSV。過去大会のデータもここへ置く
+//     received/  … 無線で受け取った機体のログ
+//   リプレイ一覧は data/ か received/ しか見ないので、**除外リストが要らない**。
+//   設定用の CSV をうっかり再生対象にしてしまう経路が構造的に無くなる。
+//   （以前はルートを走査していたため、ルートに CSV を足すたびに除外リストへ
+//     追記する必要があり、実際 override_pilon_coordinate.csv が漏れていた）
+//
+//   一覧の並びはファイル名順ではなく **ディレクトリの登録順**（＝SD へコピーした順）。
+//   上に出したいものは先にコピーすること（browse_replay_files 参照）。
+#define REPLAY_FLIGHT_DIR   "data"       // 自機の飛行 CSV と過去大会データ
+#define REPLAY_RECEIVED_DIR "received"   // 無線で受け取った機体のログ
 
 #define REPLAY_BUF_SIZE   16   // 先読みするCSV行数（Core1が供給 → Core0が消費するリングバッファ）
                                // ※ インデックス計算にビットマスクを使うので必ず 2 のべき乗にすること
                                // 高速再生(x20)では 2Hz データを毎秒40行消費するため余裕を持たせている
 #define REPLAY_LIST_ROWS  20   // リプレイ選択画面の1ページあたり表示行数（20行×12px = 240px）
-#define REPLAY_FIXED_COUNT 5   // 一覧の先頭に並ぶ固定項目数の最大値
-                               // （Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / 2025 / 2026）
-                               // 2025・2026 は SD 上に実ファイルがあるときだけ表示するため、
-                               // 実際の数は replay_menu_fixed_count()（3〜5）を使うこと。
+#define REPLAY_FIXED_COUNT 4   // 一覧の先頭に並ぶ固定項目数（常にこの数）
+                               // Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / SOURCE
 // 再生速度の選択肢。x1 → x2 → x_FAST の順に切り替わる（既定は x1）。
 // 高速側の倍率を変えたいときは REPLAY_SPEED_FAST だけ書き換えればよい。
 #define REPLAY_SPEED_FAST 20
@@ -153,7 +159,8 @@
 #define REPLAY_LEADIN_SLOTS 40 // 助走区間の先頭を探すために保持する行数（5秒 ÷ 最短サンプル間隔ぶん）
 #define REPLAY_SCAN_MAX 2000   // 静止区間の先読み走査で1回に読む最大行数（Core1 を長時間占有しないための上限）
 #define REPLAY_REQ_INTERVAL_MS 200  // Core1へのバッファ補充依頼の最短間隔 [ms]
-#define REPLAY_FILENAME_LEN 40      // リプレイ対象ファイル名（パス込み）の最大長
+#define REPLAY_FILENAME_LEN 48      // リプレイ対象ファイル名（パス込み）の最大長
+                                    // received/ 前置(9) + ファイル名(最大31) + NUL に足りる長さ
 
 
 #if !defined(TEMP)

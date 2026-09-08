@@ -1291,10 +1291,15 @@ void draw_replay_indicator(){
     backscreen.fillRect(5, 195, SCREEN_WIDTH-5*2, 20, COLOR_WHITE);
     backscreen.drawRect(5, 195, SCREEN_WIDTH-5*2, 20, COLOR_RED);
     backscreen.drawRect(6, 196, SCREEN_WIDTH-5*2-2, 18, COLOR_RED);
-    backscreen.setCursor(95,199);
     backscreen.setTextColor(COLOR_RED);
     backscreen.loadFont(AA_FONT_SMALL);
-    backscreen.print("REPLAY");
+    // ★ 受信ログ（received/）の再生は **自機ではなく機体の飛行**なので区別する。
+    //   ファイル名の頭を見るだけで判定できるので、状態変数を増やさない。
+    static const char kRxPrefix[] = REPLAY_RECEIVED_DIR "/";
+    const char* fn = get_replay_filename();
+    const bool rx = (strncmp(fn, kRxPrefix, sizeof(kRxPrefix) - 1) == 0);
+    backscreen.setCursor(rx ? 84 : 95, 199);
+    backscreen.print(rx ? "REPLAY RX" : "REPLAY");
   }
 }
 
@@ -3283,16 +3288,11 @@ void draw_replayselect(int page, int cursor) {
       if (index == cursor) {
         col = COLOR_MAGENTA;            // カーソル位置
       } else if (type == RITEM_OFF || type == RITEM_RETURN ||
-                 type == RITEM_FLIGHTONLY || type == RITEM_SPEED) {
+                 type == RITEM_FLIGHTONLY || type == RITEM_SPEED ||
+                 type == RITEM_SOURCE) {
         col = COLOR_BLUE;               // 操作項目はファイル名と区別する
-      } else if (getReplayMode() && strcmp(get_replay_filename(), label) == 0) {
+      } else if (getReplayMode() && replay_filename_is(label)) {
         col = COLOR_GREEN;              // 現在再生中のファイル
-      }
-      // 固定項目は現在再生中かどうかをパスで判定する
-      if (getReplayMode() && index != cursor) {
-        if ((type == RITEM_2025 && strcmp(get_replay_filename(), REPLAY_2025_FILE) == 0) ||
-            (type == RITEM_2026 && strcmp(get_replay_filename(), REPLAY_2026_FILE) == 0))
-          col = COLOR_GREEN;
       }
 
       backscreen.setTextColor(col, COLOR_WHITE);

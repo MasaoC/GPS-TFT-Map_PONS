@@ -1006,6 +1006,11 @@ volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];  // 先読みした CSV 行の�
 volatile uint8_t replay_head = 0;                 // Core1 が書き込む位置
 volatile uint8_t replay_tail = 0;                 // Core0 が読み出す位置
 volatile bool replay_eof = false;                 // ファイル末尾に到達した
+// ★ 選ばれたファイルが**そもそも再生できない**（開けない・ヘッダが無い）。
+//   これを持たないと、Core0 が「末尾に達した」と同じ扱いでループ再生しようとして
+//   init を延々と繰り返す。地図は固まったまま SD を叩き続ける。
+//   Core1 が立て、Core0 が見てリプレイを解除する（set_replaymode は Core0 の処理を伴う）。
+volatile bool replay_file_bad = false;
 // 再生時計のリセット通知。init_replay()（Core1）が加算し、Core0 が値の変化を見て
 // 自分の持つ仮想時刻を 0 に戻す。32bit の単純な増加なので排他は不要。
 volatile uint32_t replay_init_seq = 0;
@@ -1037,10 +1042,26 @@ static uint32_t replay_leadin_pos[REPLAY_LEADIN_SLOTS];
 static uint32_t replay_leadin_abs[REPLAY_LEADIN_SLOTS];
 
 // CSV ヘッダで探す列名。並びは ReplayCol の enum と一致させること。
+// ★ 姿勢・風の列名は **imu_replaydata/ と received/ の両方**で使う。
+//   片方だけ変えると、受信ログをリプレイしたときに姿勢だけ読めなくなる。
+//   文字列の実体をここに 1 つだけ置き、下の 2 つの表から参照する。
+#define CN_TIME     "time"
+#define CN_ROLL     "roll"
+#define CN_PITCH    "pitch"
+#define CN_YAW      "yaw"
+#define CN_PAVG     "pitch_avg"
+#define CN_RTRIM    "roll_trim"
+#define CN_YAWACC   "yaw_acc95"
+#define CN_WSPD     "wind_mps"
+#define CN_WDIR     "wind_dir"
+
 static const char* const replay_col_names[REPLAY_COL_COUNT] = {
   "latitude", "longitude", "gs", "truetrack", "gnss_altitude",
-  "kf_altitude", "kf_vspeed", "pressure", "date", "time",
-  "numsat", "voltage"
+  "kf_altitude", "kf_vspeed", "pressure", "date", CN_TIME,
+  "numsat", "voltage",
+  // 受信ログ received/ にだけある列。飛行 CSV には無いので -1 のままになる。
+  CN_ROLL, CN_PITCH, CN_YAW,
+  CN_PAVG, CN_RTRIM, CN_YAWACC, CN_WSPD, CN_WDIR
 };
 
 // 旧バージョンの CSV 用の別名。同じ並びで、無い列は nullptr。
@@ -1048,8 +1069,36 @@ static const char* const replay_col_names[REPLAY_COL_COUNT] = {
 static const char* const replay_col_alias[REPLAY_COL_COUNT] = {
   nullptr, nullptr, nullptr, nullptr, "altitude",
   nullptr, nullptr, nullptr, nullptr, nullptr,
-  nullptr, nullptr
+  nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
 };
+
+// ===== 再生元フォルダ =====
+// false = SD ルートの飛行 CSV（自機のログ）
+// true  = received/ の受信ログ（無線で受け取った機体のログ）
+// ★ 一覧には常にどちらか一方だけを出す。混ぜないので、ページ計算もファイル
+//   インデックスも「1 フォルダぶん」のままでよい（既存の計算に手を入れない）。
+static bool replay_from_received = false;
+
+void toggle_replay_from_received(){ replay_from_received = !replay_from_received; }
+const char* replay_source_dir()   { return replay_from_received ? REPLAY_RECEIVED_DIR : REPLAY_FLIGHT_DIR; }
+const char* replay_source_prefix(){ return replay_from_received ? REPLAY_RECEIVED_DIR "/" : REPLAY_FLIGHT_DIR "/"; }
+
+// 再生中ファイルのフォルダを除いた部分。設定画面の "REPLAY: xxx >" 用。
+const char* replay_filename_base() {
+  const char* slash = strrchr(replay_filename, '/');
+  return slash ? slash + 1 : replay_filename;
+}
+
+// 一覧の name（ファイル名のみ）が、いま再生中のファイルか。
+// ★ **フルパスで比べること。** ルートと received/ には同じ日時のファイルが
+//   同じ名前で並ぶ（どちらも YYYY-MM-DD_HHMM.csv）ので、ファイル名だけで
+//   比べると別フォルダの同名ファイルを「再生中」と誤って緑にしてしまう。
+bool replay_filename_is(const char* name) {
+  char path[REPLAY_FILENAME_LEN];
+  snprintf(path, sizeof(path), "%s%s", replay_source_prefix(), name);
+  return strcmp(replay_filename, path) == 0;
+}
 
 // 大文字小文字を無視した文字列比較（strcasecmp 相当）。前後の空白も無視する。
 static bool replay_name_match(const char* token, const char* name) {
@@ -1232,8 +1281,8 @@ enum { ATTCOL_TIME = 0, ATTCOL_ROLL, ATTCOL_PITCH, ATTCOL_YAW,
        ATTCOL_AVG, ATTCOL_TRIM, ATTCOL_YAWACC, ATTCOL_WSPD, ATTCOL_WDIR,
        ATTCOL_COUNT };
 static const char* const att_col_names[ATTCOL_COUNT] = {
-  "time", "roll", "pitch", "yaw", "pitch_avg", "roll_trim", "yaw_acc95",
-  "wind_mps", "wind_dir"
+  CN_TIME, CN_ROLL, CN_PITCH, CN_YAW, CN_PAVG, CN_RTRIM, CN_YAWACC,
+  CN_WSPD, CN_WDIR
 };
 
 static FsFile   replayAttFile;
@@ -1408,6 +1457,7 @@ void init_replay(){
   replay_head = 0;
   replay_tail = 0;
   replay_eof = false;
+  replay_file_bad = false;
   replay_t0_valid = false;
   replay_csv_t0_ms = 0;
   replay_prev_ms = 0;
@@ -1424,7 +1474,7 @@ void init_replay(){
 
   if (replay_filename[0] == '\0') {
     DEBUGW_PLN(20260731, "REPLAY: no file selected");
-    replay_eof = true;
+    replay_eof = true; replay_file_bad = true;
     return;
   }
   if (!good_sd()) {
@@ -1437,7 +1487,7 @@ void init_replay(){
     DEBUGW_P(20260731, "REPLAY: cannot open ");
     DEBUGW_PLN(20260731, replay_filename);
     log_sdf("ERR REPLAY open failed: %s", replay_filename);
-    replay_eof = true;
+    replay_eof = true; replay_file_bad = true;
     return;
   }
 
@@ -1445,7 +1495,8 @@ void init_replay(){
   char header[160];
   int n = replayFileStatic.fgets(header, sizeof(header));
   if (n <= 0) {
-    replay_eof = true;
+    log_sdf("ERR REPLAY empty file: %s", replay_filename);
+    replay_eof = true; replay_file_bad = true;
     return;
   }
   replay_parse_header(header);
@@ -1455,7 +1506,7 @@ void init_replay(){
     DEBUGW_PLN(20260731, "REPLAY: header missing lat/lon/time");
     log_sdf("ERR REPLAY bad header: %s", replay_filename);
     replayFileStatic.close();
-    replay_eof = true;
+    replay_eof = true; replay_file_bad = true;
     return;
   }
   log_sdf("REPLAY start: %s", replay_filename);
@@ -1663,6 +1714,44 @@ void load_replay() {
       row->year = 0; row->month = 0; row->day = 0;
     }
 
+    // --- 姿勢 ---
+    row->roll = 0.0f; row->pitch = 0.0f; row->yaw = 0.0f;
+    row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
+    row->wind_mps = 0.0f; row->wind_dir = 0.0f;
+
+    // ★ CSV 自身が姿勢を持っているならそれを使い、**外部の姿勢ログは見ない**。
+    //   received/ の再生でここを外部参照にすると、日付から引かれるのは
+    //   **ボート自身の imu_replaydata/** なので、機体の航跡にボートの
+    //   ロール・ピッチが黙って合成される。一番たちの悪い壊れ方になる。
+    if (replay_col[RCOL_ROLL] >= 0) {
+      float roll_v, pitch_v, yaw_v, acc_v, wspd_v, wdir_v;
+      // roll と pitch が両方読めた行だけを「姿勢あり」とする。
+      // 送信側の ESKF が未収束だった区間は空欄で入っているので、そこは姿勢なし。
+      if (replay_get_float(line, RCOL_ROLL,  &roll_v) &&
+          replay_get_float(line, RCOL_PITCH, &pitch_v)) {
+        row->roll  = roll_v;
+        row->pitch = pitch_v;
+        row->have |= RHAVE_ATT;
+      }
+      if (replay_get_float(line, RCOL_YAW,    &yaw_v) &&
+          replay_get_float(line, RCOL_YAWACC, &acc_v)) {
+        row->yaw       = yaw_v;
+        row->yaw_acc95 = acc_v;
+        row->have |= RHAVE_ATT_YAW;
+      }
+      if (replay_get_float(line, RCOL_PAVG,  &v)) { row->pitch_avg = v; row->have |= RHAVE_ATT_AVG; }
+      if (replay_get_float(line, RCOL_RTRIM, &v)) { row->roll_trim = v; row->have |= RHAVE_ATT_TRIM; }
+      if (replay_get_float(line, RCOL_WSPD, &wspd_v) &&
+          replay_get_float(line, RCOL_WDIR, &wdir_v)) {
+        row->wind_mps = wspd_v;
+        row->wind_dir = wdir_v;
+        row->have |= RHAVE_ATT_WIND;
+      }
+      // 内容を書き終えてから head を進める（下の外部参照パスと同じ理由）
+      replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
+      continue;
+    }
+
     // --- 姿勢（同じ日の姿勢ログがあれば）---
     if (!replay_att_tried) {
       int fy = yy, fmo = mo, fdd = dd;
@@ -1674,9 +1763,6 @@ void load_replay() {
       }
       replay_att_open(fy, fmo, fdd, tod_ms);
     }
-    row->roll = 0.0f; row->pitch = 0.0f; row->yaw = 0.0f;
-    row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
-    row->wind_mps = 0.0f; row->wind_dir = 0.0f;
     if (replay_att_seek(tod_ms)) {
       row->roll  = replay_att_roll;
       row->pitch = replay_att_pitch;
@@ -1713,9 +1799,6 @@ volatile int  replayfiles_total = 0;     // SD ルート上の対象CSVの総数
 
 extern volatile bool loading_replaylist;
 
-// リプレイ対象として一覧に出さないシステムCSV。
-static const char* const replay_excluded[] = { "mapdata.csv", "destinations.csv", "replay.csv" };
-
 // ファイル名が拡張子 .csv（大小無視）で終わるか。
 static bool has_csv_ext(const char* name) {
   size_t len = strlen(name);
@@ -1727,29 +1810,24 @@ static bool has_csv_ext(const char* name) {
           (ext[3] == 'v' || ext[3] == 'V'));
 }
 
-// リプレイ対象のCSVか判定する（隠しファイル・システムCSVを除外）。
+// リプレイ対象の CSV か判定する。
+// ★ 走査するのは data/ と received/ だけで、設定ファイルはルートにしか無い。
+//   そのため**除外リストが要らない**（以前はルートを走査していたので、
+//   ルートに CSV を足すたびに除外リストへ追記する必要があった）。
 static bool is_replay_candidate(const char* name) {
   if (name[0] == '.') return false;                 // macOS の ._ ファイル等
-  if (!has_csv_ext(name)) return false;
-  for (unsigned i = 0; i < sizeof(replay_excluded)/sizeof(replay_excluded[0]); i++) {
-    if (replay_name_match(name, replay_excluded[i])) return false;  // 大小無視で比較
-  }
-  return true;
+  return has_csv_ext(name);
 }
 
-// 固定項目（大会データ）の実在フラグ。
-// SD が無い・replay/ にファイルが置かれていない機体では選んでも再生できないので、
-// 一覧から丸ごと隠す（存在しない項目を選ばせて無反応になるのを防ぐ）。
-// Core1 の browse_replay_files() が SD を見て更新し、Core0 がメニュー表示で読む。
-// 既定は false（未確認）＝非表示。一覧を開くたびに再確認するので、
-// SD を挿し直した場合も次に開いたときに反映される。
-volatile bool replay_have_2025 = false;
-volatile bool replay_have_2026 = false;
-
-// SD ルートのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
+// 再生元フォルダのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
 // start_index: 対象CSVの通し番号（0始まり）のうち、どこから格納するか。
-// 戻り値: 1 件以上格納できたら true。
-// フォルダは対象外（固定の大会データは replay/ 配下だが一覧には出さず固定項目として扱う）。
+// 戻り値: 1 件以上格納できたら true。フォルダは対象外。
+//
+// ★ 並び順は **ディレクトリの登録順**（openNextFile が返す順）で、ファイル名順ではない。
+//   FAT はディレクトリエントリを先頭の空きスロットから埋めるので、実質は
+//   「SD へ書かれた順（削除跡があればそこを再利用）」になる。
+//   大会データを一覧の上に出したいなら、**カードへ最初にコピーする**こと。
+//   名前を変えても順番は変わらない。
 bool browse_replay_files(int start_index) {
   if (start_index < 0) start_index = 0;
 
@@ -1760,20 +1838,15 @@ bool browse_replay_files(int start_index) {
   replayfiles_count = 0;
   replayfiles_total = 0;
 
-  FsFile root = SD.open("/");
+  // 再生元フォルダ。received/ がまだ無い機体（一度も受信していない）は
+  // ここで開けないので、素直に「0 件」の空一覧になる。
+  FsFile root = SD.open(replay_source_dir());
   if (!root || !root.isDirectory()) {
-    DEBUGW_PLN(20260731, "REPLAY: failed to open root");
+    DEBUGW_PLN(20260731, "REPLAY: failed to open source dir");
     if (root) root.close();
-    // SD が読めない = 大会データも当然読めないので固定項目も隠す
-    replay_have_2025 = false;
-    replay_have_2026 = false;
     loading_replaylist = false;
     return false;
   }
-
-  // 大会データの実在確認（一覧に出すかどうかの判定）
-  replay_have_2025 = SD.exists(REPLAY_2025_FILE);
-  replay_have_2026 = SD.exists(REPLAY_2026_FILE);
 
   while (true) {
     FsFile entry = root.openNextFile();
@@ -1806,26 +1879,18 @@ bool browse_replay_files(int start_index) {
 
 // ===== リプレイ選択画面の項目モデル =====
 // 一覧の通し番号（index）は次の並びになっている:
-//   0                          : Replay OFF
-//   1                          : PLAY FLIGHT ONLY: YES/NO（トグル）
-//   2                          : PLAY SPEED: x1/x2/x??（トグル）
-//   3                          : 2025 Taikai   ← SD 上に実在するときだけ
-//   4                          : 2026 Taikai   ← SD 上に実在するときだけ
-//   F .. F+replayfiles_total-1 : SD ルート上の飛行 CSV
-//   F+replayfiles_total        : Return
-// 先頭の固定項目数 F は replay_menu_fixed_count()（3〜REPLAY_FIXED_COUNT）。
-// 大会データが無い機体では 2025/2026 の行そのものが消え、後続の番号が詰まる。
-// 描画側もボタン処理側もこのモデルを共有する。
-
-// 一覧の先頭に並ぶ固定項目の実数。
-// 常設の 3 項目（OFF / FLIGHT ONLY / SPEED）＋ SD にある大会データのぶん。
-int replay_menu_fixed_count() {
-  return 3 + (replay_have_2025 ? 1 : 0) + (replay_have_2026 ? 1 : 0);
-}
+//   0 : Replay OFF
+//   1 : PLAY FLIGHT ONLY: YES/NO（トグル）
+//   2 : PLAY SPEED: x1/x2/x??（トグル）
+//   3 : SOURCE: FLIGHT/RECEIVED（トグル）
+//   REPLAY_FIXED_COUNT .. +replayfiles_total-1 : 再生元フォルダ内の CSV
+//   REPLAY_FIXED_COUNT + replayfiles_total     : Return
+// ★ 固定項目は**常にこの 4 つだけ**。大会データもただの CSV として一覧に並ぶ。
+//   描画側もボタン処理側もこのモデルを共有する。
 
 // 一覧の総項目数（固定項目 + ファイル数 + Return）。
 int replay_menu_total_items() {
-  return replay_menu_fixed_count() + replayfiles_total + 1;
+  return REPLAY_FIXED_COUNT + replayfiles_total + 1;
 }
 
 // 通し番号が属するページ番号（0始まり）。
@@ -1843,7 +1908,7 @@ int replay_menu_page_count() {
 // そのページを描画するために browse_replay_files() に渡すべき「ファイルの開始通し番号」。
 // ページ 0 は先頭に固定項目が入る分だけファイルの開始位置が手前にずれる。
 int replay_menu_file_start_for_page(int page) {
-  int start = page * REPLAY_LIST_ROWS - replay_menu_fixed_count();
+  int start = page * REPLAY_LIST_ROWS - REPLAY_FIXED_COUNT;
   return (start < 0) ? 0 : start;
 }
 
@@ -1865,17 +1930,13 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
     snprintf(label, labelsize, "PLAY SPEED: x%d", replay_speed);
     return RITEM_SPEED;
   }
-  // 大会データは SD 上に実在するときだけ 1 行を占める（無ければ番号が詰まる）
-  int fixed = 3;
-  if (replay_have_2025) {
-    if (index == fixed) { strlcpy(label, REPLAY_2025_LABEL, labelsize); return RITEM_2025; }
-    fixed++;
-  }
-  if (replay_have_2026) {
-    if (index == fixed) { strlcpy(label, REPLAY_2026_LABEL, labelsize); return RITEM_2026; }
-    fixed++;
+  if (index == 3) {
+    snprintf(label, labelsize, "SOURCE: %s",
+             replay_from_received ? "RECEIVED (radio)" : "FLIGHT (own)");
+    return RITEM_SOURCE;
   }
 
+  const int fixed = REPLAY_FIXED_COUNT;
   if (index == fixed + replayfiles_total) {
     strlcpy(label, "Return", labelsize);
     return RITEM_RETURN;
@@ -2134,9 +2195,9 @@ void saveRxCSV(const Task& tk) {
   if (rxfileyear == 0) return;          // まだ時刻が取れていない
 
   if (!rxcsvFile.isOpen()) {
-    if (!SD.exists("received")) SD.mkdir("received");
+    if (!SD.exists(REPLAY_RECEIVED_DIR)) SD.mkdir(REPLAY_RECEIVED_DIR);
     char fn[48];
-    snprintf(fn, sizeof(fn), "received/%04d-%02d-%02d_%02d%02d.csv",
+    snprintf(fn, sizeof(fn), REPLAY_RECEIVED_DIR "/%04d-%02d-%02d_%02d%02d.csv",
              rxfileyear, rxfilemonth, rxfileday, rxfilehour, rxfileminute);
     rxcsvFile = SD.open(fn, FILE_WRITE);
   }
@@ -2207,11 +2268,14 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
     filesecond = second;
   }
 
-  char csv_filename[30];
-  snprintf(csv_filename, sizeof(csv_filename), "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  // ルート直下は設定ファイル専用にしてあるので、飛行 CSV は data/ へ書く。
+  char csv_filename[40];
+  snprintf(csv_filename, sizeof(csv_filename), REPLAY_FLIGHT_DIR "/%04d-%02d-%02d_%02d%02d.csv",
+           fileyear, filemonth, fileday, filehour, fileminute);
 
   // ファイルが未オープンの場合のみ open する（毎回 open/close しない）
   if (!csvFileStatic.isOpen()) {
+    if (!SD.exists(REPLAY_FLIGHT_DIR)) SD.mkdir(REPLAY_FLIGHT_DIR);
     csvFileStatic = SD.open(csv_filename, FILE_WRITE);
   }
 
