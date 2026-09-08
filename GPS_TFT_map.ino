@@ -1381,7 +1381,23 @@ void longPressCallback() {
                // SF を上げるほど届くが、送信時間＝送信電流が倍々に増える。
         link_set_radio_profile((link_get_radio_profile() + 1) % LINK_PROFILE_COUNT);
         break;
+      case 3:  // グループ ID。電波の設定ではないのでモジュールへの書き込みは不要
+               //（ペイロードの中身なので即座に反映される）。
+               // ★ 長押し 1 回で +1。**普段は SD の settings.txt で決めるもの**で、
+               //   ここは「現地で確認する」「0 に戻ってしまったのを戻す」ための手段。
+               //   そのため小さい値（1〜20 程度）を割り当てておくと復旧が速い。
+        link_set_group((uint8_t)((link_get_group() + 1) % (LINK_GROUP_MAX + 1)));
+        break;
       default: // 戻る
+        // ★ CH / SF / Group を触ったまま出るときは必ず知らせる。
+        //   この 3 つは **3 台すべてで一致していないと通信できない**のに、
+        //   変えたのが 1 台だけで連絡を忘れる、という事故が起こりうる。
+        //   症状は「無信号」なので、現場では距離や故障と区別が付かない。
+        //
+        //   ★★ **送信機・受信機のどちらでも鳴らすこと。** ここに mode の分岐を
+        //     入れてはいけない。受信機側を触って戻し忘れる事故も同じだけ起こるし、
+        //     受信機は 2 台あるぶん取り違えやすい。
+        link_warn_setting_changed();
         screen_mode = MODE_SETTING;
         break;
     }

@@ -2029,6 +2029,19 @@ void draw_wireless(int cursor) {
   backscreen.setCursor(2, y);
   backscreen.printf("%sSF      : %u  (BW %ukHz)", cursor == 2 ? ">" : " ",
                     e220_profile_to_sf(link_get_radio_profile()), E220_BW_KHZ);
+  y += lh;
+  // ★ グループ ID。**3 台とも同じ値**にすること。既定 0。
+  //   同じ会場に別チームの PONS がいても取り違えないための識別子で、
+  //   電波の設定ではなくペイロードの中身。モジュールへの書き込みは要らない。
+  backscreen.setTextColor(cursor == 3 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.printf("%sGroup   : %u", cursor == 3 ? ">" : " ", link_get_group());
+  y += lh;
+  // ★ 常設の注意書き。変更してから警告するより、変更する前に見えているほうが効く。
+  //   この 3 つが 1 台でもずれると症状は「無信号」で、現場では距離や故障と区別が付かない。
+  backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print(" ^ 3 units must match");
   y += lh + 4;
 
   // ---- 状態 ----
@@ -2053,6 +2066,13 @@ void draw_wireless(int cursor) {
       const uint8_t bars = link_rssi_bars();
       backscreen.setTextColor(bars >= 2 ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
       backscreen.printf(" Signal  : %d dBm (10s)  %u/3", link_rssi_avg10(), bars);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    } else if (link_other_group_seen()) {
+      // ★ 電波は届いていて、グループ ID だけが食い違っている。
+      //   これを「無信号」と同じ表示にしてはいけない。原因に辿り着けなくなる。
+      //   （SD が飛んで group が 0 に戻ったときに、まさにこれが出る）
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf(" Signal  : GROUP %u FOUND", link_other_group_id());
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     } else {
       backscreen.print(" Signal  : searching...");

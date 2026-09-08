@@ -588,6 +588,8 @@ Setting menu_settings[] = {
     []() {
       screen_mode = MODE_WIRELESS;
       wireless_cursor = 0;
+      // 出るときに「変えたまま伝え忘れ」を検出するため、入った時点の値を控える
+      link_remember_setting();
     },
     nullptr,
     nullptr,

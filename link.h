@@ -28,6 +28,14 @@
   void link_set_mode(uint8_t mode);          // LINK_MODE_OFF / TX / RX
   void link_set_radio_ch(uint8_t ch);        // 0..LINK_RADIO_CH_MAX
   void link_set_radio_profile(uint8_t p);    // 0..LINK_PROFILE_COUNT-1
+  // グループ ID。**3 台とも同じ値**にすること。既定 0。
+  // モジュールへの書き込みは不要（電波の設定ではなくペイロードの中身）。
+  void link_set_group(uint8_t g);
+  uint8_t link_get_group();
+  // 「設定を変えたまま伝え忘れ」対策。無線画面の入室時と退室時に呼ぶ。
+  // CH / SF / Group が変わっていたら音声と SD ログで知らせる。
+  void link_remember_setting();
+  void link_warn_setting_changed();
   uint8_t link_get_mode();
   uint8_t link_get_radio_ch();
   uint8_t link_get_radio_profile();
@@ -36,6 +44,7 @@
   extern uint8_t link_mode_setting;
   extern uint8_t link_radio_ch;
   extern uint8_t link_radio_profile;
+  extern uint8_t link_group;
 
   // ---- 送信側（機体）----
   // ★ テレメトリの組み立てと送出は link.cpp の内部で完結している。
@@ -106,6 +115,10 @@
   // 検出は seq の逆行で行う。1 台なら seq は必ず増えるので、
   // 減る・止まるのは 2 台いる証拠になる。
   bool     link_dup_sender();
+  // 別グループの送信機を直近に受けたか。**「無信号」とは別物**として出すこと。
+  // これが真なら、電波は届いていてグループ ID だけが食い違っている。
+  bool     link_other_group_seen();
+  uint8_t  link_other_group_id();
   // 送信機の健康状態（LINK_ST_* のビット）。受信側からは知りようがない項目だけ。
   uint16_t link_sender_status();
   // 目的地／ナビモードが送信側と食い違っているか。

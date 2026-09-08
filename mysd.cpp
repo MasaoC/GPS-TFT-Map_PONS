@@ -109,6 +109,14 @@ void setLinkRadioProf(const char* v) {
   if (p >= 0 && p < LINK_PROFILE_COUNT) link_radio_profile = (uint8_t)p;
 }
 
+// ★ グループ ID。**既定は 0 で、git に載る雛形も 0 のまま。**
+//   実際の値は各機の SD カードにだけ置く（link_proto.h の設計方針）。
+void getLinkGroup(char* b, size_t n)     { snprintf(b, n, "%u", link_group); }
+void setLinkGroup(const char* v) {
+  int g = atoi(v);
+  link_group = (g >= 0 && g <= LINK_GROUP_MAX) ? (uint8_t)g : LINK_GROUP_DEFAULT;
+}
+
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"vario_volume",    setVarioVolume,    getVarioVolume},
@@ -132,7 +140,8 @@ SDSetting settings[] = {
   {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus},
   {"link_mode",       setLinkMode,       getLinkMode},
   {"link_radio_ch",   setLinkRadioCh,    getLinkRadioCh},
-  {"link_radio_prof", setLinkRadioProf,  getLinkRadioProf}
+  {"link_radio_prof", setLinkRadioProf,  getLinkRadioProf},
+  {"link_group",      setLinkGroup,      getLinkGroup}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;

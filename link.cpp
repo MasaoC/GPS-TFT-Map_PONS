@@ -41,6 +41,9 @@
 uint8_t link_mode_setting    = LINK_MODE_OFF;   // 設定ファイルから読むので外部リンケージ
 uint8_t link_radio_ch        = 6;
 uint8_t link_radio_profile   = 1;   // 既定 = SF8
+// ★ グループ ID。**既定 0 のまま git に置く。** 実際の値は各機の SD にだけ入れる。
+//   同じ会場に別チームの PONS がいても取り違えないための識別子（link_proto.h 参照）。
+uint8_t link_group           = LINK_GROUP_DEFAULT;
 
 // ---- 受信状態 ----
 static LinkRxTelem   s_rx;                 // 直近に受信したテレメトリ
@@ -62,6 +65,12 @@ static uint16_t s_missTotal = 0;    // seq の飛びの累計＝電波側で落�
 static int8_t   s_r10Val[RSSI10_SLOTS];
 static uint32_t s_r10Ms [RSSI10_SLOTS];
 static uint8_t  s_r10Head = 0;
+// 別グループの送信機を受けたか。**無信号と区別して出す**ための記録。
+// SD が飛んで group が 0 に戻ったとき、黙って無反応になると原因に辿り着けない。
+static bool     s_otherGroup   = false;
+static uint8_t  s_otherGroupId = 0;
+static uint32_t s_otherGroupMs = 0;
+
 static bool     s_dupSender = false;
 static uint16_t s_seqBack   = 0;    // seq の逆行回数＝送信機が複数いる証拠
 static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
@@ -103,6 +112,15 @@ static void link_poll_radio() {
     LinkTelem t;
     int16_t   rssi = 0;
     while (e220_recv((uint8_t*)&t, (uint8_t)sizeof(t), &rssi)) {
+        // ★ グループが違う＝別チームの PONS。**表示にも記録にも使わない。**
+        //   ただし「受信できていない」とは別物なので、そのことは残す
+        //   （設定画面に出す。これが無いと SD の設定ミスに気づけない）。
+        if (t.group != link_group) {
+            s_otherGroup   = true;
+            s_otherGroupId = t.group;
+            s_otherGroupMs = millis();
+            continue;
+        }
         s_rx.t      = t;
         s_rx.rssi   = (int8_t)constrain((int)rssi, -128, 127);
         s_rx.age_ms = 0;             // 直接受け取るので遅延はほぼ無い
@@ -328,10 +346,20 @@ void link_set_mode(uint8_t mode) {
     if (mode > LINK_MODE_RX) mode = LINK_MODE_OFF;
     if (mode == link_mode_setting) return;
     link_mode_setting = mode;
+    // ★ 変わった役割をその場で読み上げる（起動時の読み上げと同じ流儀）。
+    //   機体を誤って受信モードにすると送信が止まり、ボート側の症状は
+    //   「無信号」になる。起動時にしか読み上げないと、飛行前の操作ミスに
+    //   気づく機会が無い。OFF は無音＝OFF の意味を保つため鳴らさない。
+    //   音量は起動時の読み上げと揃える（優先度 2・最低音量の強制なし）。
+    //   意図して消音している機体を、モードを回すたびに鳴らさないため。
+    if      (mode == LINK_MODE_TX) enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
+    else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
     s_rxValid = false;                 // モードが変わったら受信データは無効
-    // 送信機は寝かせ、受信機は起こす（受信機は常時 mode 0：docs/pons_link.md §3）
-    if (link_mode_setting == LINK_MODE_TX) e220_sleep();
-    else                                   e220_wake();
+    // 受信機だけ起こす（受信機は常時 mode 0：docs/pons_link.md §3）。
+    // ★ OFF も寝かせる。起こしたままだと 8.2mA を食い続けるうえ、
+    //   誰も読まない受信データで UART の FIFO を埋め続ける。
+    if (link_mode_setting == LINK_MODE_RX) e220_wake();
+    else                                   e220_sleep();
 }
 // 値の範囲は E220 の制約（CH0-12 / SF7-11）で決まる。
 // チャンネル/プロファイルの変更はモジュールへ書き直しが要る。
@@ -353,6 +381,43 @@ void link_set_radio_profile(uint8_t p) {
     link_radio_profile = p;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
 }
+// 別グループの送信機を直近 10 秒以内に受けたか。
+// 「無信号」と「設定違い」を画面で区別するために使う。
+bool    link_other_group_seen() {
+    return s_otherGroup && (millis() - s_otherGroupMs) < 10000;
+}
+uint8_t link_other_group_id()    { return s_otherGroupId; }
+
+void    link_set_group(uint8_t g) { link_group = g; }
+uint8_t link_get_group()          { return link_group; }
+// ============================================================
+//  「設定を変えたまま伝え忘れ」対策
+//    CH / SF / Group は **3 台すべてで一致していないと通信できない**のに、
+//    1 台だけ変えて連絡を忘れると症状は「無信号」になる。
+//    現場では距離不足や故障と区別が付かないので、変えた本人に知らせる。
+//
+//    ★ 送信機・受信機のどちらでも鳴らすこと。ここに mode の分岐を入れてはいけない。
+//      受信機側を触って戻し忘れる事故も同じだけ起こるし、受信機は 2 台あるぶん
+//      取り違えやすい。
+// ============================================================
+static uint8_t s_wlEntryCh = 0, s_wlEntryProf = 0, s_wlEntryGroup = 0;
+
+void link_remember_setting() {
+    s_wlEntryCh    = link_radio_ch;
+    s_wlEntryProf  = link_radio_profile;
+    s_wlEntryGroup = link_group;
+}
+
+void link_warn_setting_changed() {
+    if (link_radio_ch      == s_wlEntryCh &&
+        link_radio_profile == s_wlEntryProf &&
+        link_group         == s_wlEntryGroup) return;
+    // SD が無い機体でも必ず何か鳴る（link_alert の流儀）
+    link_alert("wav/link_setting_changed.wav", 880, 200, 3);
+    enqueueTask(createLogSdfTask("LINK setting changed: ch=%u prof=%u group=%u",
+                                 link_radio_ch, link_radio_profile, link_group));
+}
+
 uint8_t link_get_mode()          { return link_mode_setting; }
 uint8_t link_get_radio_ch()      { return link_radio_ch; }
 uint8_t link_get_radio_profile() { return link_radio_profile; }
@@ -367,10 +432,10 @@ static void link_push_telemetry() {
     LinkTelem t = {};
     t.magic0 = 'P'; t.magic1 = 'L';
     t.ver = LINK_PROTO_VER; t.type = LINK_TYPE_TELEM;
+    t.group = link_group;       // rsv[] は LinkTelem t = {} で 0 済み
     // ★ seq は送信のたびに 1 つ進める。**埋め忘れると全パケットが seq=0 になり、
     //   受信側の取りこぼし計数と重複送信機の検出が両方壊れる。**
     t.seq   = s_seqOut++;
-    t.tx_us = micros();
 
     uint16_t have = 0;
 

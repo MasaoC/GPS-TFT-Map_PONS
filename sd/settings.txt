@@ -5,3 +5,4 @@ scaleindex:4
 link_mode:0
 link_radio_ch:6
 link_radio_prof:1
+link_group:0

@@ -151,7 +151,7 @@ void draw_imudetail(int page);
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
 void draw_wireless(int cursor);
-#define WIRELESS_MENU_COUNT 4    // MODE / CH / PROFILE / RETURN
+#define WIRELESS_MENU_COUNT 5    // MODE / CH / SF / GROUP / RETURN
 extern int wireless_cursor;
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
