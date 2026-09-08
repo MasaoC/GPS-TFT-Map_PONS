@@ -69,6 +69,15 @@
   // 風矢印用。白地の地図に重ねるので、濃すぎず薄すぎない彩度の高い色を選ぶ。
   // TFT_PURPLE は暗すぎて判別できなかった。
   #define COLOR_WIND_PURPLE 0xA81F       // RGB(173,0,255) 明るい紫
+  // 受信モードでボート自身の位置を示す点。
+  // ★ COLOR_GREEN(TFT_DARKGREEN) は**飛行軌跡と同じ色**で、ミラー中の軌跡は
+  //   機体のものなので、同じ色にすると軌跡に埋もれて見つけられない。
+  //   同じ緑系のまま、明度で分ける。
+  #define COLOR_OWNPOS TFT_GREEN         // 明るい緑
+
+  // 受信モードでボート自身の位置を地図に重ねる（ミラー中のみ）
+  void draw_own_position_marker(double center_lat, double center_lon, float scale, float up);
+
 
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)

@@ -219,6 +219,13 @@
               int      rssi;      // 受信強度 [dBm]
               uint16_t seq;       // 送信側の連番。取りこぼしの解析に使う
               uint16_t age_ms;    // 受信から書き出しまでの経過
+              // ★ 姿勢・風。機体の SD が死んでもボート側に姿勢が残るようにする。
+              //   列名と「未収束は空欄」の流儀は imu_replaydata/ に合わせてあるので、
+              //   ESKF の解析ツールをそのまま流用できる。
+              float    roll, pitch, yaw;
+              float    pitch_avg, roll_trim, yaw_acc95;
+              float    wind_mps, wind_dir;
+              uint16_t have;      // RHAVE_ATT* のどれが入っているか
           } saveCsvArgs;
           struct {
               int freq;

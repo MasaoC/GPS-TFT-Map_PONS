@@ -554,6 +554,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 膨らんで見え、「1 秒に 1 回出ている」が目で分かる。
 #define LINK_TX_PULSE_MS      600
 
+// ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
+// 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。
+#define OWNPOS_DOT_R            1     // 半径 1px = 直径 3px
+#define OWNPOS_TRACK_LEN_PX     5     // 進行方向の線の長さ
+#define OWNPOS_TRACK_MIN_MPS  2.0f    // これ未満は方位を出さない（停船中の方位は当てにならない）
+
 // ---- マウントから外されたことの検出 ----
 // 機体に付いている限りロールもピッチもこの角度には達しない。超えたら
 // 「手に持って外した」とみなし、次に APPLY するまで較正が無効だと警告する。

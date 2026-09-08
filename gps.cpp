@@ -1462,6 +1462,20 @@ void try_enque_savecsv(){
 
 
 
+// ★ ミラーを通さない、**この機体自身の**測位を返す。
+//   受信モードの地図は機体の位置を中心に描くので、get_gps_lat() などは
+//   すべて機体の値に置き換わる。ボート自身を地図に出すにはここが要る。
+//   fix が無ければ false（このとき lat/lon には何も書かない）。
+bool gps_get_own_fix(double &lat, double &lon, double &gs, double &track) {
+    if (!ubx_pos_valid) return false;
+    if (stored_latitude == 0 && stored_longitude == 0) return false;
+    lat   = stored_latitude;
+    lon   = stored_longitude;
+    gs    = stored_gs;
+    track = stored_truetrack;
+    return true;
+}
+
 // 現在の緯度を返す。
 // デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
 // 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。

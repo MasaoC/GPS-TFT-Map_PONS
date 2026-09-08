@@ -89,6 +89,11 @@
   float get_gps_vdop();      // VDOP（Vertical DOP）
   int   get_gsa_numsat();    // 測位使用衛星数
   int   get_gsa_prn(int i);  // 測位使用衛星 PRN (i=0..11)
+  // ★ ミラーもデモも通さない、この機体自身の測位。
+  //   受信モードでは get_gps_*() が機体の値に置き換わるので、
+  //   ボート自身を地図に出すにはこちらを使う。fix が無ければ false。
+  bool gps_get_own_fix(double &lat, double &lon, double &gs, double &track);
+
   double get_gps_lat();
   double get_gps_lon();
   double get_gps_altitude();

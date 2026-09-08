@@ -21,6 +21,7 @@
 #include "display_tft.h"
 #include "attitude.h"
 #include "link.h"
+#include "e220.h"     // 無線設定画面で SF と周波数を出すため
 #include "src/flashdata/link_icons.h"
 #include "src/flashdata/logo_data.h"
 #include "gps.h"
@@ -1016,6 +1017,36 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
 }
 
 
+// ============================================================
+//  受信モード：ボート自身の位置
+// ============================================================
+// ミラー中の地図は**機体**を中心に描くので、ボート自身は地図上に存在しない。
+// 追走ボートにとっては「機体と自分がどれだけ離れているか」が一番知りたい情報なので、
+// 自分の位置だけを小さな点として重ねる（docs/pons_link.md §5）。
+//
+//   ・3px の点。機体マーカーより明らかに小さくして、主役を取らないようにする
+//   ・2m/s 以上で進んでいるときだけ進行方向へ短い線を伸ばす。
+//     停船中の GNSS トラックは方位がでたらめなので、出すとかえって誤解を招く
+//   ・色は明るい緑。飛行軌跡（濃い緑）と重なっても見分けられるようにする
+void draw_own_position_marker(double center_lat, double center_lon, float scale, float up) {
+  if (!link_mirror_active()) return;      // ミラーしていないなら自機＝画面中央なので不要
+
+  double lat, lon, gs, track;
+  if (!gps_get_own_fix(lat, lon, gs, track)) return;
+
+  cord_tft p = latLonToXY(lat, lon, center_lat, center_lon, scale, up);
+  if (p.isOutsideTft()) return;           // 画面外。端に寄せて描くと位置を誤読させる
+
+  if (gs >= OWNPOS_TRACK_MIN_MPS) {
+    // 画面の上方向は up[deg]。地図と同じ回転をかける。
+    const float rad = radians(track - up);
+    const int ex = p.x + (int)lround(sinf(rad) * OWNPOS_TRACK_LEN_PX);
+    const int ey = p.y - (int)lround(cosf(rad) * OWNPOS_TRACK_LEN_PX);
+    backscreen.drawLine(p.x, p.y, ex, ey, COLOR_OWNPOS);
+  }
+  backscreen.fillCircle(p.x, p.y, OWNPOS_DOT_R, COLOR_OWNPOS);
+}
+
 // SD カードの mapdata.csv から読み込んだ追加ポリゴン（extramaps[]）を描画する。
 // ポリゴンの最初の座標点が現在位置から 1°×1° 以内にある場合のみ描画する（遠方の不要描画を省略）。
 // ポリゴンの描画色はマップ名の先頭文字で決まる:
@@ -1979,15 +2010,20 @@ void draw_wireless(int cursor) {
   backscreen.printf("%sMode    : %s", cursor == 0 ? ">" : " ", modestr);
   y += lh;
 
-  // ---- [1] チャネル / [2] プリセット ----
-  // 数値の意味は無線層（e220.cpp）が決める。ここでは番号だけを出す。
+  // ---- [1] チャネル / [2] 拡散率 ----
+  // 番号だけだと現地で何を選んでいるのか分からないので、実際の周波数と SF を出す。
+  // CH0 = 920.8MHz、0.2MHz 刻み（CH12 = 923.2MHz。ここまでが休止 50ms 固定の帯域）。
+  const uint8_t ch = link_get_radio_ch();
   backscreen.setTextColor(cursor == 1 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sRF ch   : %u", cursor == 1 ? ">" : " ", link_get_radio_ch());
+  backscreen.printf("%sCh      : %u  (%.1f MHz)", cursor == 1 ? ">" : " ",
+                    ch, 920.8f + 0.2f * ch);
   y += lh;
+  // 帯域幅 500kHz は固定なので、変えられるのは SF だけ。
   backscreen.setTextColor(cursor == 2 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sRF prof : %u", cursor == 2 ? ">" : " ", link_get_radio_profile());
+  backscreen.printf("%sSF      : %u  (BW %ukHz)", cursor == 2 ? ">" : " ",
+                    e220_profile_to_sf(link_get_radio_profile()), E220_BW_KHZ);
   y += lh + 4;
 
   // ---- 状態 ----
@@ -2005,10 +2041,17 @@ void draw_wireless(int cursor) {
   if (mode == LINK_MODE_RX) {
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     backscreen.setCursor(2, y);
-    if (link_is_receiving())
-      backscreen.printf(" Signal  : %d dBm", link_rssi());
-    else
+    // ★ ここは **直近 10 秒の平均** を主役にする。1 発ぶんの RSSI は数 dB
+    //   ふらつくので、アンテナの向きや置き場所を現地で比べる用途には使えない。
+    //   地図に出るアンテナ本数もこの値から決めている（link_rssi_bars）。
+    if (link_is_receiving()) {
+      const uint8_t bars = link_rssi_bars();
+      backscreen.setTextColor(bars >= 2 ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf(" Signal  : %d dBm (10s)  %u/3", link_rssi_avg10(), bars);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    } else {
       backscreen.print(" Signal  : searching...");
+    }
     y += lh;
     backscreen.setCursor(2, y);
     backscreen.printf(" Rx/Miss : %u / %u", link_rx_count(), link_miss_count());

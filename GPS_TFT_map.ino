@@ -909,6 +909,11 @@ void loop() {
         draw_pilon_takeshima_marks(new_lat, new_long, scale, drawupward_direction);
       }
 
+      // ---- レイヤー 4.6: ボート自身の位置（受信モードのミラー中のみ）----
+      // 地図は機体を中心に描いているので、自分がどこにいるかは別に出さないと分からない。
+      // 目的地ラインより後に描かないと、マゼンタの太線に隠れて見えなくなる。
+      draw_own_position_marker(new_lat, new_long, scale, drawupward_direction);
+
       // ---- レイヤー 5: オーバーレイ（速度グラフ・スケールバーなど）----
       draw_degpersec(degpersecond);
       if (is_demo_active()) {

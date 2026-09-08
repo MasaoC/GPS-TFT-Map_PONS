@@ -563,6 +563,20 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
   task.saveCsvArgs.rssi   = rssi;
   task.saveCsvArgs.seq    = t->seq;
   task.saveCsvArgs.age_ms = age_ms;
+
+  // ★ 姿勢・風も残す。**機体の SD が死んだとき、ここが唯一の記録になる**
+  //   （status の LINK_ST_SD_ERROR はまさにその状態を知らせるためにある）。
+  //   ESKF の開発でも使うので、単位と列名は imu_replaydata/ に合わせる。
+  //   入っていない項目は書き出し側で空欄にするので、ここでは have をそのまま運ぶ。
+  task.saveCsvArgs.have      = t->have;
+  task.saveCsvArgs.roll      = t->roll_cdeg      * 0.01f;
+  task.saveCsvArgs.pitch     = t->pitch_cdeg     * 0.01f;
+  task.saveCsvArgs.yaw       = t->yaw_cdeg       * 0.01f;
+  task.saveCsvArgs.pitch_avg = t->pitch_avg_cdeg * 0.01f;
+  task.saveCsvArgs.roll_trim = t->roll_trim_cdeg * 0.01f;
+  task.saveCsvArgs.yaw_acc95 = (float)t->yaw_acc95_deg;
+  task.saveCsvArgs.wind_mps  = t->wind_dmps      * 0.1f;
+  task.saveCsvArgs.wind_dir  = t->wind_dir_cdeg  * 0.01f;
   return task;
 }
 
@@ -2099,7 +2113,9 @@ void log_sdf(const char* format, ...){
 //  受信ログ（received/）
 //    自機のフライト CSV とは別ファイル・別ハンドル。
 //    received/ は「無線で得た情報」だけを置く場所なので自機 GNSS は混ぜない。
-//    列は自機 CSV と同じ並びにし、末尾に rssi/seq/age/src を足す。
+//    列は自機 CSV と同じ並びにし、末尾に rssi/seq/age_ms と姿勢・風を足す。
+//    姿勢・風の列名は imu_replaydata/ と同じにしてあるので、
+//    **機体の SD が死んでもボート側のログで ESKF の解析ができる**。
 //    揃えてあるので既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
 // ============================================================
 static FsFile rxcsvFile;
@@ -2128,7 +2144,8 @@ void saveRxCSV(const Task& tk) {
 
   if (!rxHeaderWritten) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
-                      "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms");
+                      "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
+                      "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir");
     rxHeaderWritten = true;
   }
   rxcsvFile.print(a.latitude, 6);  rxcsvFile.print(",");
@@ -2148,7 +2165,26 @@ void saveRxCSV(const Task& tk) {
   rxcsvFile.print(t); rxcsvFile.print(",");
   rxcsvFile.print(a.rssi);   rxcsvFile.print(",");
   rxcsvFile.print(a.seq);    rxcsvFile.print(",");
-  rxcsvFile.println(a.age_ms);
+  rxcsvFile.print(a.age_ms); rxcsvFile.print(",");
+
+  // ★ 入っていない項目は **0 ではなく空欄**にする（imu_replaydata/ と同じ流儀）。
+  //   0.00 と書くと「水平だった」「無風だった」と読めてしまい、
+  //   あとから解析する人が区別できない。
+  char line[96];
+  char att[36], avg[10], trim[10], wind[20];
+  if (a.have & RHAVE_ATT)      snprintf(att,  sizeof(att),  "%.2f,%.2f,%.2f", a.roll, a.pitch, a.yaw);
+  else                         snprintf(att,  sizeof(att),  ",,");
+  if (a.have & RHAVE_ATT_AVG)  snprintf(avg,  sizeof(avg),  "%.2f", a.pitch_avg);
+  else                         avg[0] = '\0';
+  if (a.have & RHAVE_ATT_TRIM) snprintf(trim, sizeof(trim), "%.2f", a.roll_trim);
+  else                         trim[0] = '\0';
+  // ヨー精度はヨーと同じ have ビットに載っている
+  const bool has_yaw = (a.have & RHAVE_ATT_YAW) != 0;
+  if (a.have & RHAVE_ATT_WIND) snprintf(wind, sizeof(wind), "%.2f,%.1f", a.wind_mps, a.wind_dir);
+  else                         snprintf(wind, sizeof(wind), ",");
+  if (has_yaw) snprintf(line, sizeof(line), "%s,%s,%s,%.0f,%s", att, avg, trim, a.yaw_acc95, wind);
+  else         snprintf(line, sizeof(line), "%s,%s,%s,,%s",     att, avg, trim, wind);
+  rxcsvFile.println(line);
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
   rxcsvFile.flush();
