@@ -2119,11 +2119,36 @@ static void draw_link_icons() {
   //   y=1..32 あたりまで占めるので、その下に逃がす（重ねると数値が読めなくなる）。
   const int x = 3, y = 40;
 
-  // 無線アイコン（電波の有無を色で示す）。送信モードは常に「出している」ので緑扱い。
-  uint16_t rcol = COLOR_GRAY;
-  if (!rx)                    rcol = COLOR_GREEN;
-  else if (link_is_receiving()) rcol = (link_rssi() > -80) ? COLOR_GREEN : COLOR_ORANGE;
-  draw_mask(backscreen, x, y + 10, ICON_RSSI_W, ICON_RSSI_H, ICON_RSSI, rcol);
+  // 無線アイコン。**受信と送信で絵そのものを変える**（docs/pons_link.md §5）。
+  //   受信 … アンテナ 0〜3 本。本数と色の両方で強度を示す。
+  //   送信 … 飛行機から出ていく電波の弧。
+  //     ★ ここにアンテナ本数を出してはいけない。送信側には受信の手段が無く、
+  //       強度を測っていないのに測ったように見せることになる。
+  //       弧は「今送れた」ことだけを示し、送出のたびに 1 回膨らむ。
+  //   どちらも、切れているときは 0 の絵の上に赤い×を重ねる。
+  //   「弱い」と「切れている」を色だけで区別させないため。
+  uint8_t  level = 0;                      // 受信=本数 / 送信=弧の数
+  uint16_t rcol  = COLOR_GRAY;
+  bool     lost  = true;
+  const uint8_t* const* icons = rx ? ICON_RSSI_BARS : ICON_TX_WAVES;
+
+  if (!link_module_alive()) {
+    // モジュール自体が応答していない。強度も送出も語れない。
+  } else if (!rx) {
+    // 送出の直後だけ弧を伸ばす。脈動が止まる＝送れていない、が一目で分かる。
+    const uint32_t since = link_since_tx_ms();
+    level = (since == 0xFFFFFFFFu) ? 0 : (since < LINK_TX_PULSE_MS ? 3 : 1);
+    rcol  = COLOR_GREEN;
+    lost  = (level == 0);                  // 一度も送れていないなら×を出す
+  } else if (link_is_receiving()) {
+    level = link_rssi_bars();
+    rcol  = (level >= 2) ? COLOR_GREEN : COLOR_ORANGE;
+    lost  = false;
+  }
+  // 役割アイコン(32px)の縦中央に合わせる。
+  const int ry = y + (ICON_PLANE_H - ICON_RSSI_H) / 2;
+  draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, icons[level], rcol);
+  if (lost) draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, ICON_RSSI_X, COLOR_RED);
 
   // 役割アイコン。受信モードだけ点滅させて目を引く（docs/pons_link.md §5）。
   const bool blink_on = !rx || ((millis() / 500) % 2 == 0);

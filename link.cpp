@@ -51,9 +51,19 @@ static uint16_t s_seqOut    = 0;    // 送信テレメトリの連番。ロー�
 
 // ---- 集計（無線モジュールではなく RP2350 が数える）----
 static uint32_t s_txCount   = 0;    // 送信回数
+static uint32_t s_txMs      = 0;    // 直近に送出できた時刻。地図の電波アイコンを脈動させる
 static uint16_t s_missTotal = 0;    // seq の飛びの累計＝電波側で落ちた数
 static int32_t  s_rssiSum   = 0;    // RSSI 平均用
 static uint32_t s_rssiN     = 0;
+// ---- 直近 10 秒の RSSI ----
+//   通算平均は「今アンテナを向け直したら良くなったか」が分からない。
+//   現地で向きや場所を試すときに効くのは直近の平均なので、別に持つ。
+//   1Hz 受信なので 16 枠あれば 10 秒ぶんは必ず収まる。
+#define RSSI10_SLOTS   16
+#define RSSI10_WIN_MS  10000
+static int8_t   s_r10Val[RSSI10_SLOTS];
+static uint32_t s_r10Ms [RSSI10_SLOTS];
+static uint8_t  s_r10Head = 0;
 static bool     s_dupSender = false;
 static uint16_t s_seqBack   = 0;    // seq の逆行回数＝送信機が複数いる証拠
 static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
@@ -112,6 +122,9 @@ static void link_poll_radio() {
             if (s_rx.rssi > s_rssiMax) s_rssiMax = s_rx.rssi;
         }
         s_rssiSum += s_rx.rssi; s_rssiN++;
+        s_r10Val[s_r10Head] = s_rx.rssi;
+        s_r10Ms [s_r10Head] = s_rxMs;
+        s_r10Head = (uint8_t)((s_r10Head + 1) % RSSI10_SLOTS);
 
         // ---- seq の解析 ----
         //   送信機が 1 台なら seq は必ず増える。減る・止まるのは異常。
@@ -439,7 +452,7 @@ static void link_push_telemetry() {
     t.crc16 = link_telem_crc(&t);
     // ★ ヘッダとペイロードを 1 回の write() にまとめるのは e220_send() の責任。
     //   分割して書くと区切り時間を超えてパケットが分裂する（docs/pons_link.md §4）。
-    if (e220_send((const uint8_t*)&t, (uint8_t)sizeof(t))) s_txCount++;
+    if (e220_send((const uint8_t*)&t, (uint8_t)sizeof(t))) { s_txCount++; s_txMs = millis(); }
 }
 
 // ============================================================
@@ -477,6 +490,59 @@ uint16_t link_miss_count() { return s_missTotal; }
 uint16_t link_tx_count()   { return (uint16_t)(s_txCount & 0xFFFF); }
 
 int8_t   link_rssi_avg()   { return s_rssiN ? (int8_t)(s_rssiSum / (int32_t)s_rssiN) : 0; }
+// 直近に送出できてからの経過 [ms]。一度も送っていなければ 0xFFFFFFFF。
+// ★ 「電波が出た」瞬間だけ地図のアイコンを膨らませるために使う。
+//   モジュールがビジーでスロットを捨てると更新されないので、
+//   脈動が止まること自体が「送れていない」の合図になる。
+uint32_t link_since_tx_ms() { return s_txMs ? (millis() - s_txMs) : 0xFFFFFFFFu; }
+
+// 直近 10 秒の平均 RSSI [dBm]。1 パケットも入っていなければ 0。
+//   1 発ぶんの RSSI は数 dB ふらつくので、アンテナの向きや置き場所を
+//   その場で比べるには平均でないと判断できない。
+int8_t link_rssi_avg10() {
+    const uint32_t now = millis();
+    int32_t sum = 0; uint8_t n = 0;
+    for (uint8_t i = 0; i < RSSI10_SLOTS; i++) {
+        if (!s_r10Ms[i]) continue;                       // 未使用の枠
+        if (now - s_r10Ms[i] > RSSI10_WIN_MS) continue;  // 10 秒より前
+        sum += s_r10Val[i]; n++;
+    }
+    return n ? (int8_t)(sum / (int32_t)n) : 0;
+}
+
+// ============================================================
+//  電波の強さを 0〜3 本へ（表示用）
+// ============================================================
+// ★ 絶対値のしきい値は使わない。**限界からの余裕**で切る。
+//   到達距離を決めているのは「RSSI − 限界」であって RSSI そのものではないし、
+//   SF を上げれば限界も下がるので、固定値だと SF を変えた瞬間に意味を失う。
+//
+//   限界 RSSI ≒ 環境雑音 + SF の SNR 閾値。
+//     環境雑音は実測 −104dBm（琵琶湖畔・docs/pons_link.md §8）。
+//     SNR 閾値は SF7 で −7.5dB、SF が 1 上がるごとに 2.5dB 下がる。
+//   → SF7 で −111dBm、SF8 で −113dBm … SF11 で −121dBm。
+static int16_t link_rssi_floor_dbm() {
+    const uint8_t sf = e220_profile_to_sf(link_radio_profile);
+    return (int16_t)(-111 - (5 * (int16_t)(sf - E220_SF_MIN)) / 2);
+}
+
+// 余裕 [dB] → 本数。SF8（限界 −113dBm）だと
+//   3 本 > −83 / 2 本 > −93 / 1 本 > −103 / 0 本 それ以下。
+//   要求距離 200m は 2 本、実測でロストし始める 350m 付近が 0〜1 本になる。
+#define RSSI_MARGIN_3   30
+#define RSSI_MARGIN_2   20
+#define RSSI_MARGIN_1   10
+
+uint8_t link_rssi_bars() {
+    if (!link_is_receiving()) return 0;
+    const int8_t avg = link_rssi_avg10();
+    if (avg == 0) return 0;          // 窓に 1 発も無い（0dBm は実在しない値）
+    const int16_t margin = (int16_t)avg - link_rssi_floor_dbm();
+    if (margin >= RSSI_MARGIN_3) return 3;
+    if (margin >= RSSI_MARGIN_2) return 2;
+    if (margin >= RSSI_MARGIN_1) return 1;
+    return 0;
+}
 
 // 環境雑音 [dBm]。**到達距離を決めているのはこれ**（docs/pons_link.md §8）。
 //   限界 RSSI ≒ 環境雑音 + SF の SNR 閾値 なので、現地でこれを見れば

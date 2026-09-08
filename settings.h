@@ -549,6 +549,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define GROUND_ROLL_WARN_HOLD_MS   60000UL   // この時間continuous に超えたら発報
 #define GROUND_ROLL_WARN_INTERVAL_MS 120000UL // 発報間隔の下限（鳴り続けない）
 
+// ---- 送信モードの電波アイコンを膨らませておく時間 [ms]（display_tft.cpp）----
+// 地図の再描画は約 2Hz、送信は 1Hz なので、これくらいだと 1 回おきに
+// 膨らんで見え、「1 秒に 1 回出ている」が目で分かる。
+#define LINK_TX_PULSE_MS      600
+
 // ---- マウントから外されたことの検出 ----
 // 機体に付いている限りロールもピッチもこの角度には達しない。超えたら
 // 「手に持って外した」とみなし、次に APPLY するまで較正が無効だと警告する。
