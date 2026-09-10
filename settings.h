@@ -88,6 +88,10 @@
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
 #define USERLED_PIN 36 //ユーザーLED（エラー表示用。エラー時 HIGH） v7 34->36に変更
+// 音量の上限。設定画面のステップ送りと、SD の settings.txt から読むときの
+// クランプの両方がこれを見る（片方だけ直して食い違うのを防ぐ）。
+#define SOUND_VOLUME_MAX 100
+
 #define SIN_VOLUME 0.15f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
 #define VARIO_VOL_SCALE 3
 // 上昇ビープ（高音）の音量を、下降音（低音）に対して何%にするかの補正。
@@ -593,6 +597,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ロールの符号は「正 = 右バンク」。2026 年大会の実測で、右旋回(ヨーレート>0)のとき
 // ロールが正、左旋回で負になることを確認済み（相関 +0.82）。
 #define OFF_MOUNT_RIGHT_ROLL_DEG    40.0f
+// 機体ゼロ点オフセット（level_roll / level_pitch）の上限 [度]。
+// SD の settings.txt から復元するときのクランプに使う。APPLY は地上でしか通らず、
+// マウントに載っている限りこの角度には達しない（超えるならマウント外れ検出が先に働く）。
+// 上限を OFF_MOUNT_DEG に揃えてあるのは、「本当の異常は隠さず、
+// 壊れた設定ファイルだけを弾く」ため。
+#define LEVEL_OFFSET_LIMIT_DEG      OFF_MOUNT_DEG
 
 // バンク角の警告閾値 [度]。これを超えたら地図上のロール表示を赤にする。
 // HPA は旋回半径が大きく、実運用のバンクは数度程度。

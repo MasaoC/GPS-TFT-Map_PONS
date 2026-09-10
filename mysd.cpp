@@ -197,7 +197,12 @@ bool loadSettings() {
 
   while (file.available()) {
     char c = file.read();
-    if (c == '\n' || linePos >= MAX_LINE_LENGTH - 1) {
+    // ★ CR も行の終わりとして扱う。**settings.txt は人が PC で編集する**
+    //   （link_group など）ので、Windows のエディタが CRLF で保存すると値の末尾に
+    //   \r が残る。atoi() を通す設定は無事だが、strcmp で比べるものが全部外れて
+    //   ナビモード・目的地・vario_inhibit が黙って既定へ戻っていた。
+    //   CRLF なら \r で行を切り、続く \n は空行（コロン無し）として捨てられる。
+    if (c == '\n' || c == '\r' || linePos >= MAX_LINE_LENGTH - 1) {
       line[linePos] = '\0'; // Null-terminate the line
       linePos = 0;
 
@@ -261,9 +266,75 @@ bool loadSettings() {
 // getter: グローバル変数を文字列に変換して buffer に書き込む。
 // ============================================================
 
-// 音量: 文字列を int に変換して sound_volume に反映
+// ============================================================
+//  settings.txt の値を読む（検証つき）
+// ============================================================
+// ★ **atoi() / atof() を直接使ってはいけない。** どちらも数字でない文字列に 0 を返す。
+//   音量では 0 が「消音」、角度では 0 がまっとうな値なので、行が壊れているだけなのに
+//   黙って音が消える／ゼロ点が失われる。PONS は警報装置なので、これは一番避けたい。
+//
+// ★ **範囲外を丸めたときも必ずログに残す。** 丸めた結果がたまたま正常な値に見えると
+//   （volume:-5 → 0 = 消音）、設定ミスに現場で気づけない。
+//   「読めなかった」と「丸めた」を区別して log.txt へ書く。
+//
+// 戻り値: その値を採用してよいか（false = 既定値のまま残す）
+static bool read_setting_int(const char* id, const char* value, int lo, int hi, int* out) {
+  char* end = nullptr;
+  const long v = strtol(value, &end, 10);
+  if (end == value) {                               // 数字が 1 文字も無い
+    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    return false;
+  }
+  // 末尾の空白は許す。CR/LF は loadSettings() が行の区切りとして落としているが、
+  // ここだけ見ても正しく動くようにしておく（保険）。
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+  if (*end != '\0') {                               // 数字のあとにゴミが付いている
+    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    return false;
+  }
+  if (v < lo || v > hi) {
+    *out = (int)(v < lo ? lo : hi);
+    enqueueTask(createLogSdfTask("ERR %s(%s) range %d..%d -> %d", id, value, lo, hi, *out));
+    return true;                                    // 丸めた値は使う（捨てるより素直）
+  }
+  *out = (int)v;
+  return true;
+}
+
+// 同じく float 版。角度の設定はこちらを通す。
+// ★ strtod() は "nan" / "inf" を**正しくパースしてしまう**ので明示的に弾く。
+//   NaN はどの比較も false になるため、しきい値の警告に一つも引っかからないまま
+//   姿勢機能だけが死ぬ。範囲のクランプは attitude.cpp 側にもあるが（将来の
+//   呼び出し元への保険）、ログを出せるのはここだけなので範囲もここで見る。
+static bool read_setting_float(const char* id, const char* value, float lo, float hi, float* out) {
+  char* end = nullptr;
+  const double v = strtod(value, &end);
+  bool bad = (end == value);
+  if (!bad) {
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != '\0') bad = true;                   // 数字のあとにゴミ
+    else if (v != v)   bad = true;                  // NaN
+    else if (v > 1e30 || v < -1e30) bad = true;     // ±inf / 桁あふれ
+  }
+  if (bad) {
+    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    return false;
+  }
+  if (v < lo || v > hi) {
+    *out = (float)(v < lo ? lo : hi);
+    enqueueTask(createLogSdfTask("ERR %s(%s) range %.2f..%.2f -> %.2f",
+                                 id, value, (double)lo, (double)hi, (double)*out));
+    return true;
+  }
+  *out = (float)v;
+  return true;
+}
+
+// 音量: 0〜SOUND_VOLUME_MAX。読めない値は既定値のまま残す（上のコメント参照）。
 void setVolume(const char* value) {
-  sound_volume = atoi(value);
+  int v;
+  if (!read_setting_int("volume", value, 0, SOUND_VOLUME_MAX, &v)) return;
+  sound_volume = v;
   DEBUG_P(20250508,"Set volume to: ");
   DEBUG_PLN(20250508,sound_volume);
 }
@@ -272,9 +343,11 @@ void getVolume(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", sound_volume);
 }
 
-// バリオメーター音量: 文字列を int に変換して vario_volume に反映
+// バリオメーター音量: 0〜SOUND_VOLUME_MAX。こちらも読めない値は既定値のまま。
 void setVarioVolume(const char* value) {
-  vario_volume = atoi(value);
+  int v;
+  if (!read_setting_int("vario_volume", value, 0, SOUND_VOLUME_MAX, &v)) return;
+  vario_volume = v;
 }
 
 void getVarioVolume(char* buffer, size_t bufferSize) {
@@ -392,27 +465,43 @@ void getKfR(char* buffer, size_t bufferSize) {
 // マウント形状は固定なので、据え付け後に一度較正すれば以後は使い回せる。
 // 設定画面の "Set Level 0deg" で更新し、ここで SD に永続化する。
 void setLevelRoll(const char* value) {
+  float v;
+  if (!read_setting_float("level_roll", value,
+                          -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG, &v)) return;
   float r, p;
   attitude_get_level_offset(r, p);
-  attitude_set_level_offset(atof(value), p);
+  attitude_set_level_offset(v, p);
 }
 void getLevelRoll(char* buffer, size_t bufferSize) {
   float r, p; attitude_get_level_offset(r, p);
   snprintf(buffer, bufferSize, "%.3f", r);
 }
 void setLevelPitch(const char* value) {
+  float v;
+  if (!read_setting_float("level_pitch", value,
+                          -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG, &v)) return;
   float r, p;
   attitude_get_level_offset(r, p);
-  attitude_set_level_offset(r, atof(value));
+  attitude_set_level_offset(r, v);
 }
 
 // 較正時に申告するピッチ角（IMU/ESKF 画面の SET PITCH 行の値）。
 // 本番プラットホームは -3.5 度など決まった値を使うので、
 // 毎回選び直さずに済むよう保存する。
-void setPitchTarget(const char* value) { attitude_set_pitch_target(atof(value)); }
+void setPitchTarget(const char* value) {
+  float v;
+  if (!read_setting_float("pitch_target", value,
+                          PITCH_TARGET_MIN_DEG, PITCH_TARGET_MAX_DEG, &v)) return;
+  attitude_set_pitch_target(v);
+}
 
 // APPLY 時に申告するロール角（通常 0）
-void setRollTarget(const char* value) { attitude_set_roll_target(atof(value)); }
+void setRollTarget(const char* value) {
+  float v;
+  if (!read_setting_float("roll_target", value,
+                          ROLL_TARGET_MIN_DEG, ROLL_TARGET_MAX_DEG, &v)) return;
+  attitude_set_roll_target(v);
+}
 void getRollTarget(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.1f", attitude_get_roll_target());
 }
@@ -423,7 +512,12 @@ void setNeedsApply(const char* value) { attitude_set_needs_apply(atoi(value) != 
 // 自動ロールトリムの累積補正量。取り付けのズレは電源を切っても変わらないので保存する。
 // ただし needs_apply が立っている（マウントから外した）場合は
 // attitude_finish_settings_load() が読み込み後に捨てる。
-void setRollTrim(const char* value) { attitude_set_roll_trim_deg(atof(value)); }
+void setRollTrim(const char* value) {
+  float v;
+  if (!read_setting_float("roll_trim", value,
+                          -ROLL_TRIM_LIMIT_DEG, ROLL_TRIM_LIMIT_DEG, &v)) return;
+  attitude_set_roll_trim_deg(v);
+}
 // AUTO10K の折返しフェーズ。飛行中に再起動しても復路のナビ方位が 180 度逆に
 // ならないよう保存する（距離だけでは往路と復路を区別できないため）。
 // 保存されるのは実飛行の遷移だけで、リプレイ再生中の遷移は書き込まれない。
@@ -790,7 +884,7 @@ void process_mapcsv_line(String line) {
   }
 
   extramaps[mapdata_count].id = current_id++;
-  extramaps[mapdata_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
+  extramaps[mapdata_count].name = pons_strdup(name.c_str()); // Duplicate string to allocate memory
   extramaps[mapdata_count].size = size;
   extramaps[mapdata_count].cords = cords;
   mapdata_count++;
@@ -798,39 +892,50 @@ void process_mapcsv_line(String line) {
 
 
 // destinations.csv の 1 行を解析して extradestinations[] に追加する。
-// CSV 形式: "目的地名,lon,lat"（頂点は 1 点だけ）
-void process_destinationcsv_line(String line) {
-  int index = 0;
-  int commaIndex = line.indexOf(',');
-  String name = line.substring(index, commaIndex);
-  index = commaIndex + 1;
+// CSV 形式: "目的地名,緯度,経度"（1 行 1 地点）。ヘッダ行は無い。
+//
+// ★ **壊れた行は必ずここで捨てる。**
+//   以前は頂点数を size=1 に固定したまま、ガード条件だけ複数頂点用の
+//   (i < size - 1) が残っていた。size=1 では i < 0 なので**ガードが一度も成立せず**、
+//   コンマの無い行が「名前＝行全体・座標 (0,0)」の目的地として登録されていた。
+//   （Arduino の String::substring() は引数が unsigned なので、-1 を渡すと
+//     エラーではなく行全体が返る。だから誰も気づかないまま通っていた。）
+//   これを選ぶと誘導がギニア湾を指し、目的地が遠すぎる警告が鳴り続ける。
+//   判定基準は override_pilon_coordinate.csv と揃えてある。
+//
+// 戻り値: 登録したら true、行を捨てたら false（呼び出し側が件数を数えてログに残す）
+bool process_destinationcsv_line(String line) {
+  // --- 3 列そろっているか ---
+  const int c1 = line.indexOf(',');
+  if (c1 <= 0) return false;                    // コンマが無い / 名前が空
+  const int c2 = line.indexOf(',', c1 + 1);
+  if (c2 < 0) return false;                     // 経度が無い
 
-  int size = 1;
-  // Allocate memory for the coordinates
-  double (*cords)[2] = new double[size][2];
+  String name = line.substring(0, c1);
+  String slat = line.substring(c1 + 1, c2);
+  String slon = line.substring(c2 + 1);
+  name.trim(); slat.trim(); slon.trim();
+  if (name.length() == 0 || slat.length() == 0 || slon.length() == 0) return false;
 
-  for (int i = 0; i < size; i++) {
-    commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
-      delete[] cords;
-      return;
-    }
-    cords[i][0] = line.substring(index, commaIndex).toDouble();
-    index = commaIndex + 1;
-    commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
-      delete[] cords;
-      return;
-    }
-    cords[i][1] = line.substring(index, commaIndex).toDouble();
-    index = commaIndex + 1;
-  }
+  // --- 明らかな打ち間違いを弾く ---
+  const double lat = slat.toDouble();
+  const double lon = slon.toDouble();
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+  if (lat == 0.0 && lon == 0.0) return false;   // toDouble() は数値でない文字列でも 0 を返す
+
+  // 目的地は 1 点だけ持つ。cords[0][0]=緯度 / cords[0][1]=経度
+  //（地図ポリゴンの create_static_mapdata() とは順序が逆なので注意）
+  double (*cords)[2] = new double[1][2];
+  if (cords == nullptr) return false;           // nothrow 版 new の場合に備える
+  cords[0][0] = lat;
+  cords[0][1] = lon;
 
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
-  extradestinations[destinations_count].size = size;
+  extradestinations[destinations_count].name = pons_strdup(name.c_str());
+  extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = cords;
   destinations_count++;
+  return true;
 }
 
 // SD カードの mapdata.csv から地図ポリゴンを読み込み extramaps[] に格納する。
@@ -912,14 +1017,18 @@ void load_destinations(){
   if (!myFile) {
     return;
   }
+  int added = 0, rejected = 0;
   while (myFile.available() && destinations_count < MAX_DESTINATIONS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
-    if (line.length() > 0) {
-      process_destinationcsv_line(line);
-    }
+    if (line.length() == 0) continue;
+    if (line[0] == '#') continue;               // コメント行（上書きファイルと流儀を揃える）
+    if (process_destinationcsv_line(line)) added++;
+    else                                        rejected++;
   }
   myFile.close();
+  // 捨てた行は必ず残す。黙って無視すると「書いたはずの目的地が出ない」原因に辿り着けない。
+  log_sdf("DESTINATIONS: %d added, %d ignored", added, rejected);
 }
 
 // SD カードを初期化し、地図・目的地・設定を読み込む。
@@ -932,6 +1041,11 @@ void load_destinations(){
 static bool sd_use_spi = false;
 static int sdio_fail_count = 0;  // setup_sd() が SDIO 失敗した累計呼び出し回数
 static int sd_setup_count = 0;   // setup_sd() の累計呼び出し回数
+// 目的地・パイロン座標を SD から構築済みか。SD 復旧時の二重追加と
+// currentdestination のリセットを防ぐ（init_mapdata() の mapdatainitialized と同じ役割）。
+static bool destinations_loaded = false;
+// settings.txt を一度でも読める状態で試したか。下の setup_sd() を参照。
+static bool settings_loaded = false;
 
 bool get_sd_use_spi()    { return sd_use_spi; }
 int  get_sd_setup_count(){ return sd_setup_count; }
@@ -982,16 +1096,45 @@ void setup_sd(int trycount, bool load_settings){
   SdFile::dateTimeCallback(dateTime);
   log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
   init_mapdata();
-  // パイロン座標の上書きを先に適用してから目的地を作り直す。
-  // init_destinations() は setup1() で既定値のまま一度呼ばれているので、
-  // 上書きがあったときだけ新しい座標で登録し直す（内部で前回分を解放する）。
-  load_pilon_override();
-  if (pilon_override_loaded) init_destinations();
-  load_destinations();
-  if (load_settings) {
+
+  // ★ 目的地とパイロン座標の構築は「最初に SD を掴めた 1 回だけ」。
+  //   setup_sd() は try_sd_recovery() から**飛行中にも**呼ばれる。init_mapdata() には
+  //   二重ロード防止があるのに、こちらに無かったため次の 3 つが起きていた。
+  //     1. 上書きファイルが無い場合 … load_destinations() が SD の目的地を末尾へ
+  //        **もう一度追加**する。復旧のたびに増え続け、最後は MAX_DESTINATIONS で溢れる。
+  //     2. 上書きファイルがある場合 … init_destinations() が currentdestination を 0 に
+  //        戻す。復旧時は load_settings=false なので setDestination() で復元されず、
+  //        **パイロットが選んだ目的地が黙って PLATHOME に変わる**。
+  //     3. init_destinations() は Core1 で extradestinations[].cords を delete[] するが、
+  //        Core0 は同じ配列を描画ループから読んでいる（解放後アクセス）。
+  //   起動時に SD を掴めなかった場合は destinations_loaded が false のままなので、
+  //   後から復旧したときに 1 回だけ正しく読み込まれる。
+  if (!destinations_loaded) {
+    // パイロン座標の上書きを先に適用してから目的地を作り直す。
+    // init_destinations() は setup1() で既定値のまま一度呼ばれているので、
+    // 上書きがあったときだけ新しい座標で登録し直す（内部で前回分を解放する）。
+    load_pilon_override();
+    if (pilon_override_loaded) init_destinations();
+    load_destinations();
+    destinations_loaded = true;
+  }
+  // ★ **まだ一度も読めていないなら、load_settings=false でも必ず読む。**
+  //   setup_sd() は起動時（load_settings=true）と try_sd_recovery()（false）から呼ばれる。
+  //   false にしてあるのは「ユーザーが操作中の設定値を復旧で上書きしない」ためだが、
+  //   その理屈が成り立つのは **すでに読み終わっている場合だけ**。
+  //   起動時に SD を 1 回で掴めなかった（SDIO のリトライは 1 回）ときは、以前は
+  //   ここを素通りしていたので **settings.txt が一度も読まれないまま飛んでいた**。
+  //   volume / destination / navigation_mode に加えて link_mode と link_group まで
+  //   既定値（OFF / 0）に戻るため、機体が送信しないまま離陸することになる
+  //   （起動音声が鳴らない＝無線 OFF なので気づけはするが、気づけるだけ）。
+  //
+  //   ファイルが無い場合も「読める状態で試した」ので完了扱いにする。既定値で正しく、
+  //   復旧のたびに開き直す意味が無いため。
+  if (load_settings || !settings_loaded) {
     if (!loadSettings()) {
       DEBUGW_PLN(20250508, "Error loading settings.");
     }
+    settings_loaded = true;
   }
   sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }
@@ -1019,7 +1162,7 @@ volatile bool replay_eof = false;                 // ファイル末尾に到達
 //   これを持たないと、Core0 が「末尾に達した」と同じ扱いでループ再生しようとして
 //   init を延々と繰り返す。地図は固まったまま SD を叩き続ける。
 //   Core1 が立て、Core0 が見てリプレイを解除する（set_replaymode は Core0 の処理を伴う）。
-volatile bool replay_file_bad = false;
+volatile uint8_t replay_file_bad = REPLAY_BAD_NONE;
 // 再生時計のリセット通知。init_replay()（Core1）が加算し、Core0 が値の変化を見て
 // 自分の持つ仮想時刻を 0 に戻す。32bit の単純な増加なので排他は不要。
 volatile uint32_t replay_init_seq = 0;
@@ -1385,7 +1528,8 @@ static void replay_att_open(int y, int mo, int d, uint32_t tod_ms) {
     if (!replayAttFile) continue;
 
     // 1 行目 = ヘッダ。列名から列マップを作る（無ければ固定順にフォールバック）。
-    char header[96];
+    // 現状 67 文字だが、切り詰めると列が静かに欠ける（上の init_replay() 参照）ので余裕を取る。
+    char header[128];
     if (replayAttFile.fgets(header, sizeof(header)) <= 0) {
       replayAttFile.close();
       continue;
@@ -1456,7 +1600,7 @@ void init_replay(){
   replay_head = 0;
   replay_tail = 0;
   replay_eof = false;
-  replay_file_bad = false;
+  replay_file_bad = REPLAY_BAD_NONE;
   replay_t0_valid = false;
   replay_csv_t0_ms = 0;
   replay_prev_ms = 0;
@@ -1473,11 +1617,18 @@ void init_replay(){
 
   if (replay_filename[0] == '\0') {
     DEBUGW_PLN(20260731, "REPLAY: no file selected");
-    replay_eof = true; replay_file_bad = true;
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
   if (!good_sd()) {
-    replay_eof = true;
+    // ★ ここで必ず「もう続けられない」と伝えること。
+    //   以前は replay_eof だけを立てて戻っていた。Core0 は EOF を
+    //   「末尾に着いた＝先頭からループ再生する」と解釈して INIT_REPLAY を投げ直すので、
+    //   SD が復帰しない限り  init_replay() → !good_sd() → eof → init_replay() …
+    //   と回り続け、地図が固まったままタスクキューを埋め続けていた。
+    //   （replay_file_bad はまさにこの空回りを止めるために入れたフラグ）
+    DEBUGW_PLN(20260731, "REPLAY: SD not available");
+    replay_eof = true; replay_file_bad = REPLAY_BAD_NOSD;
     return;
   }
 
@@ -1486,16 +1637,25 @@ void init_replay(){
     DEBUGW_P(20260731, "REPLAY: cannot open ");
     DEBUGW_PLN(20260731, replay_filename);
     log_sdf("ERR REPLAY open failed: %s", replay_filename);
-    replay_eof = true; replay_file_bad = true;
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
 
   // 1行目 = ヘッダ。列名から列マップを作る。
-  char header[160];
+  // ★ **received/ のヘッダは 180 文字ある。** ここを切り詰めると、切れた列は
+  //   「名前が壊れたトークン」または「存在しない列」になり、静かに -1 のまま残る。
+  //   実際 160 では末尾が "...,roll_trim,yaw_ac" で切れ、yaw_acc95 / wind_mps /
+  //   wind_dir が拾えず、**受信ログを再生してもヨーと風だけ出ない**という
+  //   気づきにくい壊れ方をしていた（列名解釈なのでエラーにもならない）。
+  //   列を足すときはここも必ず見直すこと。
+  //     data/     : 101 文字
+  //     received/ : 180 文字（飛行 CSV + rssi,seq,age_ms + 姿勢 6 列 + 風 2 列）
+  char header[256];
   int n = replayFileStatic.fgets(header, sizeof(header));
   if (n <= 0) {
     log_sdf("ERR REPLAY empty file: %s", replay_filename);
-    replay_eof = true; replay_file_bad = true;
+    replayFileStatic.close();          // 他の失敗経路と揃える（開きっぱなしにしない）
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
   replay_parse_header(header);
@@ -1505,7 +1665,7 @@ void init_replay(){
     DEBUGW_PLN(20260731, "REPLAY: header missing lat/lon/time");
     log_sdf("ERR REPLAY bad header: %s", replay_filename);
     replayFileStatic.close();
-    replay_eof = true; replay_file_bad = true;
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
   log_sdf("REPLAY start: %s", replay_filename);

@@ -1225,7 +1225,7 @@ void set_replaymode(bool replaymode){
   // ★ 再生を始めるときに必ず落とす。Core1 の init_replay() も先頭で落とすが、
   //   あちらは非同期なので、Core0 が先に前回の true を読んで
   //   **正常なファイルの再生をいきなり解除してしまう**競合が起きる。
-  if (replaymode) replay_file_bad = false;
+  if (replaymode) replay_file_bad = REPLAY_BAD_NONE;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
   // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
   // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
@@ -1321,15 +1321,18 @@ void gps_loop(int id) {
   if (replaymode_gpsoff) {
     static unsigned long last_replay_request = 0;
 
-    // ★ 選ばれたファイルが再生できない（開けない・ヘッダが無い）。
-    //   ここで解除しないと、下の「末尾ならループ再生」が延々と init を繰り返し、
-    //   地図が固まったまま SD を叩き続ける。通常の GPS に戻して音で知らせる。
-    if (replay_file_bad) {
-      replay_file_bad = false;
+    // ★ リプレイを続けられない。ここで解除しないと、下の「末尾ならループ再生」が
+    //   延々と init を繰り返し、地図が固まったまま SD を叩き続ける。
+    //   通常の GPS に戻して音で知らせ、理由をログに残す（対処が違うため）。
+    if (replay_file_bad != REPLAY_BAD_NONE) {
+      const uint8_t reason = replay_file_bad;
+      replay_file_bad = REPLAY_BAD_NONE;
       set_replaymode(false);
       set_replay_filename("");
       enqueueTask(createPlayMultiToneTask(330, 200, 2, 3, 60));
-      enqueueTask(createLogSdTask("REPLAY canceled: file is not a flight log"));
+      enqueueTask(createLogSdTask(reason == REPLAY_BAD_NOSD
+                                  ? "REPLAY canceled: SD not available"
+                                  : "REPLAY canceled: file is not a flight log"));
       return;
     }
 

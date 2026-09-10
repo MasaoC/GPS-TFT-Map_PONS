@@ -272,7 +272,7 @@ Setting menu_settings[] = {
         sound_volume += 20;
       }
 
-      if(sound_volume >= 101)
+      if(sound_volume > SOUND_VOLUME_MAX)
         sound_volume = 0;
       else if(sound_volume <= 0)
         sound_volume = 0;
@@ -319,7 +319,7 @@ Setting menu_settings[] = {
       } else {
         vario_volume += 20;
       }
-      if (vario_volume >= 101) vario_volume = 0;
+      if (vario_volume > SOUND_VOLUME_MAX) vario_volume = 0;
       if (vario_volume <= 0) vario_volume = 0;
     },
     nullptr,

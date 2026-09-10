@@ -87,7 +87,7 @@ void init_destinations(){
   // 呼び直しに備えて前回分を解放する（上書き適用後に再登録するため）
   for (int i = 0; i < destinations_count; i++) {
     delete[] extradestinations[i].cords;
-    free((void*)extradestinations[i].name);   // strdup で確保している
+    delete[] extradestinations[i].name;       // pons_strdup() の new[] と対にする
     extradestinations[i].cords = nullptr;
     extradestinations[i].name  = nullptr;
   }
@@ -95,31 +95,31 @@ void init_destinations(){
   currentdestination = 0;
   // PLATHOME: 出発地（プラットフォーム）の緯度経度
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("PLATHOME");
+  extradestinations[destinations_count].name = pons_strdup("PLATHOME");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {pla_lat, pla_lon} };
   destinations_count++;
   // N_PILON: 北パイロン（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("N_PILON");
+  extradestinations[destinations_count].name = pons_strdup("N_PILON");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
   destinations_count++;
   // S_PILON: 南パイロン（10km コース折り返し地点）。公式ルールの呼称は「南」。
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("S_PILON");
+  extradestinations[destinations_count].name = pons_strdup("S_PILON");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
   destinations_count++;
   // TAKESHIMA: 竹島（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("TAKESHIMA");
+  extradestinations[destinations_count].name = pons_strdup("TAKESHIMA");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
   destinations_count++;
   /*
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("SHINURA");
+  extradestinations[destinations_count].name = pons_strdup("SHINURA");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
   destinations_count++;*/
@@ -286,10 +286,16 @@ bool check_within_latlon(double latdif,double londif,double lat1,double lat2,dou
 }
 
 
-// Arduino 環境には標準 C の strdup() がないため、独自実装。
-// 引数の文字列をヒープ（new）にコピーして返す。
-// 呼び出し側は使い終わったら delete[] で解放する責任がある。
-char* strdup(const char* str) {
+// 文字列をヒープにコピーして返す。**確保は new[]、解放は delete[]。**
+//
+// ★ 以前は名前が strdup() だった。これには 2 つの問題があった。
+//   1. libc の strdup() と同じ綴りなので、どの呼び出しがこちらに来るかが
+//      「ヘッダで宣言されているか」に依存して決まる（navdata.h には宣言が無かった）。
+//      libc 側（malloc）に繋がった文字列を delete[] すると本当に壊れる。
+//   2. 実際に init_destinations() が free() で解放していた。new[] と free() の
+//      組み合わせは未定義動作で、今は new[] が malloc に落ちるので動いているだけ。
+//   名前を分けて、確保と解放の対応を 1 対 1 にした。**必ず delete[] で解放すること。**
+char* pons_strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case
     // Calculate the length of the input string
     int len = 0;
@@ -311,7 +317,7 @@ char* strdup(const char* str) {
 mapdata create_static_mapdata(int id, const char* name, int size, const double cords[]) {
   mapdata new_mapdata;
   new_mapdata.id = id;
-  new_mapdata.name = strdup(name); // Duplicate string to allocate memory
+  new_mapdata.name = pons_strdup(name); // Duplicate string to allocate memory
   new_mapdata.size = size;
   new_mapdata.cords = new double[size][2];
   for (int i = 0; i < size; i++) {

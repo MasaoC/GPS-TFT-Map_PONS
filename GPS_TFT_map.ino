@@ -689,9 +689,17 @@ void loop() {
     static unsigned long last_volt_log_ms = 0;
     if (millis() - last_volt_log_ms >= 60000UL) {
       last_volt_log_ms = millis();
-      GpsTime t = get_gpstime();
-      int jst_h = (t._hour + 9) % 24;
-      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %02d:%02d JST", get_input_voltage(), analogReadTemp(), jst_h, t._min));
+      // ★ 時刻は **get_jst_now() の判定を通ったときだけ**書く。
+      //   以前は get_gpstime() の生の値を無条件に使っていたため、測位できていない間は
+      //   _hour/_min が 0 のままで「09:00 JST」と記録されていた。ログ上は
+      //   正しい時刻に見えるので、あとから見たときに嘘に気づけない。
+      //   （ループ先頭で毎回求めている jst_valid / log_h / log_m をそのまま使う。
+      //     こちらは millis() の経過ぶんも足してあり、日跨ぎも処理済み。）
+      char jst_str[8];
+      if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
+      else           strlcpy(jst_str, "--:--", sizeof(jst_str));
+      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %s JST",
+                                   get_input_voltage(), analogReadTemp(), jst_str));
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
       // 生レポートのレート要求を変えたら必ずこの行を確認すること:
@@ -1496,8 +1504,7 @@ void update_degpersecond(int true_track) {
 
 
 
-// 目的地が 100km 以上離れている場合に警告音を鳴らす。
-// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
+
 // AUTO10K の折返しフェーズを変更する。
 // リプレイ再生中は表示だけ変え、SD には保存しない。再生した過去フライトの
 // フェーズが実飛行の設定を上書きしてしまうため。
@@ -1512,6 +1519,8 @@ static void apply_auto10k_status(int st) {
   enqueueTask(createSaveSettingTask());
 }
 
+// 目的地が 100km 以上離れている場合に警告音を鳴らす。
+// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
   // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
   if (currentdestination == -1 || currentdestination >= destinations_count) {

@@ -320,8 +320,15 @@
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
   extern volatile uint8_t replay_head, replay_tail;
   extern volatile bool replay_eof;
-  // 選ばれたファイルが再生できない（開けない・ヘッダが無い）。Core0 が見て解除する。
-  extern volatile bool replay_file_bad;
+  // リプレイを続けられない。Core0 が見て解除し、理由に応じたログを残す。
+  // ★ bool ではなく理由を持たせてある。「ファイルが壊れている」と
+  //   「SD が読めない」は現場での対処が違うのに、ログが同じだと区別できない。
+  enum ReplayBadReason : uint8_t {
+      REPLAY_BAD_NONE = 0,   // 問題なし
+      REPLAY_BAD_FILE,       // 開けない / ヘッダが無い / 空 / 未選択
+      REPLAY_BAD_NOSD,       // SD が使えない（未初期化・書き込みエラー・カード抜け）
+  };
+  extern volatile uint8_t replay_file_bad;
   extern volatile uint32_t replay_init_seq;  // init_replay() のたびに加算（再生時計のリセット通知）
   extern char replay_filename[REPLAY_FILENAME_LEN];
 

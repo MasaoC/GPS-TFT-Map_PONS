@@ -780,13 +780,30 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
 bool  attitude_pitch_avg_valid()   { return pitch_avg_fill_s_ >= PITCH_AVG_SEC; }
+// ============================================================
+//  SD の settings.txt から復元する角度の検証
+// ============================================================
+// ★ **NaN と inf を必ず落とすこと。** setter に来る値は atof() の結果で、
+//   atof("nan") は NaN を、atof("1e999") は inf をそのまま返す。
+//   NaN が level_*_off_ や roll_trim_deg_ に入ると、表示・自動トリム・
+//   バンク角警告のすべてが NaN になるうえ、**NaN はどの比較も false になるので
+//   しきい値の警告に一つも引っかからない**。つまり黙って姿勢機能が死ぬ。
+//   単純な上下クランプ（`if (v > hi)`）だけでは NaN を素通しするので足りない。
+//
+// ※ NaN のときは 0 を返す。下で使う 3 つの範囲はいずれも 0 を含むので、
+//   0 は常に「範囲内かつ中立」な値になっている。
+static float clamp_setting_deg(float v, float lo, float hi) {
+    if (v != v) return 0.0f;         // NaN
+    if (v < lo)  return lo;          // -inf もここで潰れる
+    if (v > hi)  return hi;          // +inf もここで潰れる
+    return v;
+}
+
 float attitude_get_roll_trim_deg() { return roll_trim_deg_; }
 void  attitude_set_roll_trim_deg(float deg) {
     // 壊れた設定ファイルでとんでもない値が入っても、飛行中の姿勢表示を狂わせないよう
     // 通常動作と同じ上限でクランプする。
-    if (deg >  ROLL_TRIM_LIMIT_DEG) deg =  ROLL_TRIM_LIMIT_DEG;
-    if (deg < -ROLL_TRIM_LIMIT_DEG) deg = -ROLL_TRIM_LIMIT_DEG;
-    roll_trim_deg_ = deg;
+    roll_trim_deg_ = clamp_setting_deg(deg, -ROLL_TRIM_LIMIT_DEG, ROLL_TRIM_LIMIT_DEG);
 }
 // 設定ファイルは行の順序が保証されない（roll_trim が needs_apply より先に来ることがある）ため、
 // 読み込みが全部終わってからまとめて判定する。
@@ -922,13 +939,22 @@ void attitude_get_level_offset(float &roll_deg, float &pitch_deg) {
     pitch_deg = level_pitch_off_;
 }
 
+// ★ SD からの復元専用。UI からは attitude_calibrate_to() が直接書くので通らない。
+//   壊れた値をそのまま入れると、ロール・ピッチ・平均ピッチ・自動トリム・
+//   マウント外れ検出のすべてが同じだけずれる。roll_trim と同じ形でクランプする。
 void attitude_set_level_offset(float roll_deg, float pitch_deg) {
-    level_roll_off_ = roll_deg;
-    level_pitch_off_ = pitch_deg;
+    level_roll_off_  = clamp_setting_deg(roll_deg,  -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
+    level_pitch_off_ = clamp_setting_deg(pitch_deg, -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
 }
 
 float attitude_get_roll_target() { return roll_target_; }
-void  attitude_set_roll_target(float deg) { roll_target_ = deg; }
+// ★ SD からの復元専用。設定画面の巡回は attitude_cycle_roll_target() が
+//   直接 roll_target_ を進めるので、ここを通らない（巡回の挙動は変わらない）。
+//   範囲は画面で選べる値そのもの。外れた値が入ると APPLY のゼロ点と
+//   地上ロールチェックの基準が同時にずれる。
+void  attitude_set_roll_target(float deg) {
+    roll_target_ = clamp_setting_deg(deg, ROLL_TARGET_MIN_DEG, ROLL_TARGET_MAX_DEG);
+}
 void  attitude_cycle_roll_target() {
     roll_target_ += ROLL_TARGET_STEP_DEG;
     if (roll_target_ > ROLL_TARGET_MAX_DEG + 0.01f)
@@ -938,7 +964,10 @@ bool  attitude_needs_apply() { return needs_apply_; }
 void  attitude_set_needs_apply(bool on) { needs_apply_ = on; }
 
 float attitude_get_pitch_target() { return pitch_target_; }
-void  attitude_set_pitch_target(float deg) { pitch_target_ = deg; }
+// ★ SD からの復元専用（roll_target と同じ理由・同じ形）。
+void  attitude_set_pitch_target(float deg) {
+    pitch_target_ = clamp_setting_deg(deg, PITCH_TARGET_MIN_DEG, PITCH_TARGET_MAX_DEG);
+}
 
 void attitude_cycle_pitch_target() {
     pitch_target_ += PITCH_TARGET_STEP_DEG;
