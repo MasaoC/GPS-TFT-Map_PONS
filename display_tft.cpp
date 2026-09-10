@@ -3036,8 +3036,8 @@ bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
 
 // 琵琶湖 HPA 競技コースの緑の基準線を描画する:
 //   - PLA（スタート）から N パイロン・W パイロン・竹島 への緑の基準線
-//   - PLA を中心とした 10.975km 円（公式ルール 2025: 第 1 レグ往路距離）
-//   - PLA を中心とした 1.0km 円（公式ルール 2025: 折り返し後の距離）
+//   - PLA を中心とした 10.975km 円（公式ルール: 第 1 レグ往路距離）
+//   - PLA を中心とした 1.0km 円（公式ルール: 折り返し後の距離）
 // 描画順の都合でパイロンのアイコン（draw_pilon_takeshima_marks）とは分けてある。
 // 線はマゼンタの誘導ラインより先に描いて下のレイヤーに、アイコンは後に描いて上のレイヤーにする。
 #define PILON_LINE_WIDTH 3          // PLA→パイロン基準線の太さ [px]
@@ -3067,9 +3067,9 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   cord_tft cl_outer = latLonToXY(outer_lat, outer_lon, mapcenter_lat, mapcenter_lon, scale, upward);
   draw_clipped_wideline(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
 
-  // 公式ルール2025 10.975km for first leg outbound.
+  // 公式ルール 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
-  // 公式ルール2025 1.0km リターンフライト。
+  // 公式ルール 1.0km リターンフライト。
   backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35)),COLOR_GREEN);
 }
 

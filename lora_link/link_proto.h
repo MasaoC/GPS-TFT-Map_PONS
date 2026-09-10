@@ -297,8 +297,10 @@ static inline uint16_t link_telem_crc(const LinkTelem* t) {
 }
 
 // 受け取ったテレメトリが自分たちのものかを判定する。
-// magic / ver / CRC の 3 つを通らないものは捨てる。
-// これで足りるので、グループ ID のような識別子は持たせていない。
+// magic / ver / type / CRC を通らないものは捨てる。
+// ★ **グループ ID はここで見ない。** ここで弾くと「電波は来ているがグループが違う」
+//   状態を無信号と区別できなくなり、SD が飛んで group が 0 に戻った事故に
+//   気づけなくなる。突き合わせは link.cpp が別に行う（docs/pons_link.md §1）。
 static inline bool link_telem_valid(const LinkTelem* t) {
     if (t->magic0 != 'P' || t->magic1 != 'L') return false;
     if (t->ver != LINK_PROTO_VER)             return false;
