@@ -9183,7 +9183,7 @@
 		(dnp no)
 		(uuid "deb66b56-cf06-4dc6-90b9-59efc42e97d2")
 		(property "Reference" "JP1"
-			(at 114.046 56.388 0)
+			(at 103.378 55.118 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects

@@ -3780,7 +3780,7 @@
 		)
 		(uuid "12b36ec9-35dd-4e9b-8172-368be0e08ad8")
 	)
-	(text "[Memo JLCPCB BOM Exemption]\nJ1 Speaker socket (No parts required)\nJ5 Debug SH 3p(No use. Debug purpose)\nU12 E220 LoRa　(Due to 技適, 手実装)\nU6,U7 CUS-12TB Switch  (JLCPCBにないパーツのため手実装）\nH1,H2,H3,H4 Hole\nTP3 LoRa JP"
+	(text "[Memo JLCPCB BOM Exemption]\nJ1 Speaker socket (No parts required)\nJ5 Debug SH 3p(No use. Debug purpose)\nU12 E220 LoRa　(Due to 技適, 手実装)\nU6,U7 CUS-12TB Switch  (JLCPCBにないパーツのため手実装）\nH1,H2,H3,H4 Hole\nTP3 LoRa JP\nSW1 (JLCにないパーツのため）\nPWR1（コスト）\n\n\nNot an assemble parts\nJP1  I2C-SPI jumper BNO085\n\nR47,R7,R46,R38,R37,R50,R51  DNF"
 		(exclude_from_sim no)
 		(at 232.664 128.778 0)
 		(effects

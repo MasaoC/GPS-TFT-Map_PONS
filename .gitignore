@@ -8,3 +8,7 @@ DisplayModule_PONSv6
 # 生成しないまま settings.h の VECTORMAP_HIRES を有効にすると、src/vectormap.h が
 # __has_include で検出して #error で止める（リンクエラーで悩まないように）。
 src/flashdata/vectormap_data_hires.cpp
+
+# KiCad の fabrication-toolkit が生成する発注提出物（ガーバー・BOM・座標の zip）。
+# 発注のたびに作り直せるうえ、基板を直すたびに巨大な差分になるため git には入れない。
+production/
