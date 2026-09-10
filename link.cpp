@@ -266,17 +266,41 @@ static void link_sync_destination() {
                                  (int)di, (int)s_rx.t.nav_mode));
 }
 
-// 送信機側の異常（SD／IMU／較正未適用／電池低下）。飛ぶ前に気づきたい項目。
+// 送信機側の異常（SD／IMU／較正未適用）。飛ぶ前に気づきたい項目。
 // 音声にはしない ― 内訳は無線ページに出るので「何かある」と分かれば足りる。
 // 音声を増やすほど、本当に聞くべきものが埋もれる。
+// ★ 電池低下だけは別扱い（下の link_watch_sender_battery）。ここで一緒に見ると
+//   「立ち上がりで 1 回鳴るだけ」になるが、電池は減り続けるので繰り返す必要がある。
+#define LINK_ST_FAULTS_TONE  (LINK_ST_SD_ERROR | LINK_ST_IMU_ERROR | LINK_ST_NEEDS_APPLY)
 static void link_watch_sender_faults() {
     static uint16_t prev_st = 0;
-    const uint16_t st = link_sender_status();
+    const uint16_t st = link_sender_status() & LINK_ST_FAULTS_TONE;
     if ((st & ~prev_st) != 0) {
         link_alert(nullptr, 370, 250, 2);
         enqueueTask(createLogSdfTask("LINK WARN: sender fault bits 0x%04X", st));
     }
     prev_st = st;
+}
+
+// 送信機（機体）の電池低下を、受信側でも音声で知らせる。
+//
+// ★ 本番では飛行中に電池を替えられないが、**試験飛行では役に立つ**。
+//   ボートが先に気づいて降ろす判断ができる。画面では S の残量が赤くなるだけなので、
+//   ボートマンが右上を見ていなければ気づけなかった。
+//
+// ・繰り返す。電池は減り続けるので、立ち上がりで 1 回では足りない。
+//   間隔は自機の電池警告と同じ BAT_WARN_INTERVAL_MS にそろえてある。
+// ・受信が切れると link_sender_status() が 0 を返すので、
+//   古い状態のまま鳴り続けることはない（ロストは別の警告が担当する）。
+static void link_watch_sender_battery() {
+    static uint32_t last_warn_ms = 0;
+    if ((link_sender_status() & LINK_ST_BAT_LOW) == 0) return;
+    const uint32_t now = millis();
+    if (last_warn_ms != 0 && now - last_warn_ms < BAT_WARN_INTERVAL_MS) return;
+    last_warn_ms = now;
+    link_alert("wav/battery_low_sender.wav", 1568, 200, 4);
+    enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%.2fV)",
+                                 (double)link_get_voltage()));
 }
 
 // 通信レポート（60 秒ごと）。現場でシリアルを見られない以上、
@@ -335,6 +359,7 @@ void link_loop() {
     link_watch_module();
     link_sync_destination();
     link_watch_sender_faults();
+    link_watch_sender_battery();
     link_periodic_report();
     link_tx_tick();
 }

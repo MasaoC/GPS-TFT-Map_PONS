@@ -1165,7 +1165,9 @@ bool gps_new_location_arrived(){
     // 実 GPS と同じく 2Hz (500ms 間隔) で仮想位置を更新する。
     // 位置変位は 1Hz 時の半分 (0.00005 → 0.000025) にすることで、
     // 1 秒あたりの移動距離を同じに保つ。
-    if(millis() > last_demo_gpsupdate + 500){
+    // millis() は約 49.7 日で 0 に戻る。右辺で足すとその瞬間に閾値が壊れるので、
+    // 必ず「引き算して比べる」形にする（引き算なら符号なし演算で差が保たれる）。
+    if(millis() - last_demo_gpsupdate >= 500){
       const demo_site_def& site = DEMO_SITES[demo_site];
       int demo_spd = 10;
       demo_lat += 0.000025*demo_spd*cos(radians(get_gps_truetrack()));

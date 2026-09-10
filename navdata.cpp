@@ -172,8 +172,25 @@ double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2
 // 単純な角度の平均は 0°/360° をまたぐと真逆を向くので、
 // 2 方位の単位ベクトルの和の偏角として求める（常に狭い側の二等分線になる）。
 double pla_centerline_bearing_rad() {
+  // ★ **キャッシュのキーは座標そのものにする。**
+  //   以前は「初回だけ計算して static に持つ」だけだったので、
+  //   override_pilon_coordinate.csv による上書きがキャッシュ確定より後になると、
+  //   コメントに書いてある「座標が変わっても自動追従する」が成立しなかった。
+  //   実際に起こり得るのは次の 2 つ:
+  //     (a) SD の初期化が 5 秒を超え、Core0 が待たずに地図を描き始めた場合
+  //     (b) 起動時に SD を掴めず、try_sd_recovery() が後から上書きを適用した場合
+  //   「上書きしたのにセンターラインだけ古い方位を指す」は飛行中に気づけないので、
+  //   入力が変わったかを毎回見て、変わっていたときだけ計算し直す。
+  //   これなら誰がいつ座標を変えても追従し、無効化の呼び忘れも起こらない。
   static double cached = NAN;
-  if (isnan(cached)) {
+  static double k_pla_lat = NAN, k_pla_lon = NAN;
+  static double k_n_lat   = NAN, k_n_lon   = NAN;
+  static double k_s_lat   = NAN, k_s_lon   = NAN;
+
+  if (isnan(cached) ||
+      pla_lat != k_pla_lat || pla_lon != k_pla_lon ||
+      pilon_north_lat != k_n_lat || pilon_north_lon != k_n_lon ||
+      pilon_south_lat != k_s_lat || pilon_south_lon != k_s_lon) {
     // calculateTrueCourseRad の引数はラジアン。deg2rad(double) はこの下で定義されており
     // ここではまだ宣言されていない（float 版に落ちて精度が落ちる）ため、直接変換する。
     const double D2R = PI / 180.0;
@@ -182,6 +199,9 @@ double pla_centerline_bearing_rad() {
     double bw = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
                                        pilon_south_lat * D2R, pilon_south_lon * D2R);
     cached = atan2(sin(bn) + sin(bw), cos(bn) + cos(bw));
+    k_pla_lat = pla_lat; k_pla_lon = pla_lon;
+    k_n_lat   = pilon_north_lat; k_n_lon = pilon_north_lon;
+    k_s_lat   = pilon_south_lat; k_s_lon = pilon_south_lon;
   }
   return cached;
 }

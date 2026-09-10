@@ -281,6 +281,14 @@ void setup1(void) {
 
 
 
+// その年月の日数。うるう年を考慮する（下の get_jst_now() の日付繰り上げ用）。
+static int days_in_month_of(int mo, int y) {
+  static const uint8_t dim[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+  if (mo < 1 || mo > 12) return 31;   // GPS の月が壊れていても配列外を読まない
+  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0)) return 29;
+  return dim[mo];
+}
+
 // ============================================================
 // get_jst_now(): GPS の UTC 日時から現在の JST 日時を求める
 // ============================================================
@@ -302,21 +310,20 @@ static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &c
   s  = utc_s  % 60;
   mi = utc_m  % 60;
   int jst_total_h = utc_h + 9;
-  bool next_day   = (jst_total_h >= 24);
   h = jst_total_h % 24;
 
-  // JST 日付計算（日をまたぐ場合に翌日へ繰り上げ）
+  // JST 日付計算。★ 繰り上げは 1 日ぶんとは限らない。
+  //   utc_h は「GPS パケットの時刻 + millis() の経過」なので、GPS が長時間
+  //   止まったまま日時だけ有効に残ると 24 時間を超えて積み上がる。
+  //   以前は next_day（+1 日）しか見ていなかったため、そこから先は日付がずれていた。
+  //   実運用（電池 12 時間）では 1 日を超えないが、桁の扱いを条件付きにしておく
+  //   理由が無いので、繰り上がる日数ぶん回す。通常はループ 0〜1 回。
   y  = get_gpsdate().year();
   mo = get_gpsdate().month();
-  d  = get_gpsdate().day() + (next_day ? 1 : 0);
-  static const uint8_t days_in_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-  int max_day = days_in_month[mo];
-  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0))
-    max_day = 29;  // うるう年
-  if (d > max_day) {
-    d = 1;
-    mo++;
-    if (mo > 12) { mo = 1; y++; }
+  d  = get_gpsdate().day();
+  for (int add_days = jst_total_h / 24; add_days > 0; add_days--) {
+    d++;
+    if (d > days_in_month_of(mo, y)) { d = 1; if (++mo > 12) { mo = 1; y++; } }
   }
   return true;
 }
@@ -542,6 +549,48 @@ void loop() {
       }
     } else {
       bank_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
+    }
+  }
+
+  // ---- 電池電圧の低下警告 ----
+  // ★ **警報を描画関数の中に置かないこと。** 元は draw_footer() の中にあったため、
+  //   次の 2 つの穴があった。
+  //     1. draw_footer() は地図画面からしか呼ばれない → 設定画面・WIRELESS 画面・
+  //        IMU/ESKF 画面などを開いている間は電圧が下がっても鳴らない
+  //     2. 受信モードでは電池表示が別の分岐（S/R の 2 台ぶん表示）に入るため、
+  //        **一度も鳴らなかった**。追走ボートとプラットフォームは常に受信モードなので、
+  //        実質「ボートの電池切れは警告されない」状態だった
+  //   他の警報（バンク角・コース・地上チェック）と同じくここへ置き、画面モードにも
+  //   無線モードにも依存しないようにする。
+  //
+  //   毎秒 1 回だけ読むのは、ADC の連打を避けるためと、
+  //   get_input_voltage() のピーク追跡をどの画面でも回し続けるため
+  //   （地図画面以外では誰も呼ばないと追跡が止まり、戻ったときに古い値が出る）。
+  {
+    static uint32_t last_batt_check_ms = 0;
+    static uint32_t last_batt_warn_ms  = 0;
+    if (millis() - last_batt_check_ms >= 1000) {
+      last_batt_check_ms = millis();
+      const float bv = get_input_voltage();
+      // 充電中は鳴らさない。リプレイ中も鳴らさない（過去の電圧で今の警告を出しても
+      // 意味がなく、SD のテキストログにも当時の値が「今の警告」として混ざるため）。
+      if (!digitalRead(USB_DETECT) && !replay_voltage_active() &&
+          bv <= BAT_LOW_VOLTAGE &&
+          (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
+                                  : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
+        last_batt_warn_ms = millis();
+        if (good_sd()) {
+          // SD 認識済み: WAV を再生（最低 volume 60 保証）
+          enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
+        } else {
+          // SD 未認識: 高音ビープ 3 回で代替警告（最低 volume 60 保証）
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 400, 1, 1, 60));
+        }
+        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
+                                     battery_percent(bv), bv));
+      }
     }
   }
 

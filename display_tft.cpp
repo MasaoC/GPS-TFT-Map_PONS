@@ -1468,16 +1468,26 @@ void draw_eskf_attitude() {
     float acc95 = 0.0f;
     bool  has_wind, has_acc;
     has_acc = eskf_display_yaw_acc(acc95);
+    // ★ **ヨー信頼性のゲートは 3 経路すべてに掛けること。**
+    //   風は「対気速度の向き＝機首方位」を前提にしているので、ヨーが信用できない区間の
+    //   値は原理的に当てにならない。以前はこのゲートが自機の経路にしか無く、
+    //   **機体の画面が隠している風をボートの画面が出していた**（ミラー中）。
+    //   リプレイも同じで、「その時に画面へ出ていた値を再現する」という
+    //   imu_replaydata/ の建て付けと食い違っていた。
+    //   判定に使う yaw_acc95 は SD ログにもダウンリンクにも入っているので
+    //   （eskf_display_yaw_acc() が 3 系統とも面倒を見る）、どの経路でも
+    //   **当時と同じ条件を復元できる**。記録・送信そのものは止めない（後から解析したいため）。
     if (is_demo_active()) {
       // デモは表示確認用。実機の推定条件（直進 10 秒など）を待たずに矢印を出す。
       has_wind = attitude_get_wind_enabled() && demo_wind(wspd, wdir);
+    } else if (!eskf_yaw_high_confidence()) {
+      has_wind = false;                        // ヨーが信用できない ＝ 風も信用できない
     } else if (link_mirror_active()) {
       has_wind = link_get_wind(wspd, wdir);
     } else if (getReplayMode()) {
       has_wind = get_replay_wind(wspd, wdir);
     } else {
-      has_wind = eskf_yaw_high_confidence() && attitude_get_wind_enabled() &&
-                 attitude_get_wind(wspd, wdir);
+      has_wind = attitude_get_wind_enabled() && attitude_get_wind(wspd, wdir);
     }
 
     // σ はフォント(NotoSansBold15)に無いので "Y95" と書く。意味は 95% 値（=2σ）。
@@ -2381,7 +2391,6 @@ void draw_gs_track(){
 // ===== バッテリー監視変数 =====
 unsigned long last_maxadr_time = 0;           // max_adreading が最後に更新された時刻
 int max_adreading = 0;                        // AD 読み値のピーク保持値（ノイズ対策のためピーク追跡）
-unsigned long last_battery_warning_time = 0;  // 最後のバッテリー低下警告を再生した時刻
 
 // バッテリー入力電圧を読み取って返す（単位: V、上限 4.3V）。
 // ピーク追跡方式でノイズを除去する:
@@ -2758,22 +2767,11 @@ void draw_footer(){
         header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
       }
       header_footer.printf("%d%%", bat_pct);
-      //最後のバッテリー警告から60秒以上経過。
-      //リプレイ中は鳴らさない。過去のログの電圧で今の機体の警告を出しても意味がなく、
-      //SD のテキストログにも当時の値が「今の警告」として混ざってしまうため。
-      if(!replay_voltage_active() && millis() > last_battery_warning_time+60*1000){
-        last_battery_warning_time = millis();
-        if(good_sd()){
-          // SD認識済み: WAVファイルを再生（最低volume60保証）
-          enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
-        } else {
-          // SD未認識: 高音ビープ3回で代替警告（最低volume60保証）
-          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
-          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
-          enqueueTask(createPlayMultiToneTask(2637, 400, 1, 1, 60));
-        }
-        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)", bat_pct, input_voltage));
-      }
+      // ★ 警告音とログはここには置かない。**描画関数の中に警報を書くと、
+      //   その画面を出しているときしか鳴らない。** 実際この関数は地図画面からしか
+      //   呼ばれず、しかも受信モードでは上の分岐に入るため、
+      //   「設定画面を開いている間」と「受信モード（＝ボートとプラットフォームの常態）」で
+      //   一度も鳴らなかった。発報は loop() の最上位（他の警報と同じ場所）に移した。
     } else {
       // 警告域より上は点滅させないので、色は battery_color() にそのまま任せられる
       //（マゼンタ=50%未満 / 緑=それ以上）。警告域だけは上の分岐で点滅させている。
@@ -4226,7 +4224,10 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     header_footer.printf("Battery: Charging %.2fV", input_voltage);
   }else{
     double input_voltage = get_display_voltage();
-    int battery_minutes = max(0,(input_voltage-3.4)/(4.2-3.4)*60*4);
+    // 電圧の上下限は settings.h の 1 か所に置く（battery_percent() と同じ基準）。
+    int battery_minutes = max(0.0, (input_voltage - BAT_ZERO_VOLTAGE) /
+                                   (BAT_FULL_VOLTAGE - BAT_ZERO_VOLTAGE) *
+                                   BAT_FULL_RUNTIME_MIN);
     header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
   }
   // 電池残量の丸アイコン（メニュー項目と同じ x 位置・大きさで右寄せ）

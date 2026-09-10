@@ -27,7 +27,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.962**（Build 20260909）。
+* 最新のソフトウェアバージョンは **0.963**（Build 20260910）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
 
@@ -323,6 +323,9 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
   * 15° 未満のズレでは鳴らない。15° で 60 秒、90° 以上で 10 秒放置が条件。
     修正操作中は鳴らない。前回警報から 30 秒以内は再警報しない。GS が 2m/s 以下でも鳴らない。
 * **電圧低下警報**：3.5V 未満で音声案内（60 秒に 1 回）。この警告のみ強制的に最低音量 60 で鳴る。
+  * 画面モードにも無線モードにも依存せず鳴る。USB 充電中とリプレイ中は鳴らない。
+  * **受信モードでは、機体（送信機）の電池低下も別の音声で知らせる**（`battery_low_sender.wav`）。
+    本番では飛行中に交換できないが、試験飛行ではボートが先に気づいて降ろす判断ができる。
 * **目的地確認**：目的地まで 100km 以上あると 120 秒に 1 回、確認を促す音声。
 
 ## バンク角警告と姿勢まわりの警報
@@ -353,6 +356,8 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
 * 送信機が 2 台いることを検出したとき、低音 3 回＋音声（設定ミスは飛ぶ前に気づく必要があるため）。
 * CH / SF / Group を変更して設定画面を出たとき、設定一致の確認を促す音声。
 * 無線モジュールが応答しないとき、音声。SD カードが無くても代替トーンが鳴ります。
+* **機体の電池が低下したとき、受信側で音声**（60 秒に 1 回）。受信が切れれば止まります。
+* 機体の SD / IMU / 較正未適用の異常は、立ち上がりで低音 2 回のみ（内訳は WIRELESS 画面）。
 
 ---
 
@@ -664,7 +669,7 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
 | 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
-| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` |
+| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |
 

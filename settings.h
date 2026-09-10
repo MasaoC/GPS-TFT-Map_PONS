@@ -15,8 +15,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260909
-#define BUILDVERSION "0.962"
+#define BUILDDATE 20260910
+#define BUILDVERSION "0.963"
 #define VERSION_TEXT "Version 7"
 
 
@@ -84,7 +84,16 @@
 #define BAT_FULL_VOLTAGE 4.2 // 100% とみなす電圧。残量%と色分けの基準（display_tft.cpp の battery_*）
 #define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
 #define BAT_LOW_VOLTAGE 3.5
+// 電池低下警告を繰り返す間隔 [ms]。自機（GPS_TFT_map.ino）と、
+// 受信機が知らせる送信機の電池（link.cpp）の両方がこれを見る。
+// 電池は減り続けるので 1 回きりの通知では足りない。逆に短くすると、
+// 本当に聞くべき他の警報（コース・バンク角）が埋もれる。
+#define BAT_WARN_INTERVAL_MS 60000UL
 #define BAT_ZERO_VOLTAGE 3.4
+// 満充電からの目安稼働時間 [分]。設定画面フッターの「Battery Time」の計算に使う。
+// 実測は高輝度 約3時間 / 低輝度 約12時間と幅があるので、間を取った粗い目安。
+// 輝度はソフトから読めないため、モードによらず 1 つの値で出している。
+#define BAT_FULL_RUNTIME_MIN 240
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
 #define USERLED_PIN 36 //ユーザーLED（エラー表示用。エラー時 HIGH） v7 34->36に変更

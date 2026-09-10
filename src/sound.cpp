@@ -35,7 +35,7 @@ const int sampleRate = 16000;  // サンプルレート [Hz]。タイマー割�
 //   メインループが loadBuffer に次のデータを先読みしておく。
 //   activeBuffer が空になったら両者を入れ替える（バッファスワップ）。
 // ============================================================
-const int WAV_HEADER_SIZE = 45;  // WAV ファイルのヘッダサイズ（このバイト数をスキップする）
+const int WAV_HEADER_SIZE = 44;  // WAV ファイルのヘッダサイズ（このバイト数をスキップする）
 const int CHUNK_SIZE = 16 * 1024;  // 1 チャンク = 16KB ≒ 1.0秒分のデータ
 uint8_t audioBuffer[2][CHUNK_SIZE];  // ダブルバッファ本体
 volatile int activeBuffer = 0;       // 現在再生中のバッファ番号（割り込みから参照）
@@ -78,12 +78,20 @@ static bool current_wav_is_replay = false;  // 現在再生中の WAV が pendin
 
 // pending_wav[] に filename を追加する。
 // 空きスロットがあれば追加、両方埋まっている場合は最も低優先なスロットを上書き。
+// WAV 名が同じか。★ ポインタ比較ではなく中身で比べること。
+//   同じ名前でも別ファイルに書かれた文字列リテラルは別アドレスになり得るため、
+//   ポインタ比較だと重複検出が静かに外れる（今は同一ファイル内にしか出ないので
+//   たまたま成立しているだけ）。
+static inline bool wav_name_eq(const char* a, const char* b) {
+    return a != nullptr && b != nullptr && strcmp(a, b) == 0;
+}
+
 static void push_pending_wav(const char* filename, int priority) {
     // 現在再生中と同じファイルなら追加しない（連続再生不要）
-    if (current_wav_filename == filename) return;
+    if (wav_name_eq(current_wav_filename, filename)) return;
     // 同じファイルが既に pending にあれば無視（重複防止）
     for (int i = 0; i < 2; i++) {
-        if (pending_wav[i].filename == filename) return;
+        if (wav_name_eq(pending_wav[i].filename, filename)) return;
     }
     // 空きスロットを探す
     for (int i = 0; i < 2; i++) {
@@ -445,6 +453,21 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
 
     // ファイルサイズからヘッダを引いたバイト数が実際の音声データ量
     uint32_t fileSize = audioFile.size();
+    // ★ ヘッダぶんに満たないファイルを通さないこと。
+    //   uint32_t 同士の引き算なのでアンダーフローして約 43 億になる。
+    //   実害は「読み出しが 0 を返して無音のまま何も起きない」で済むが、
+    //   ログも残らないので **書き出しをミスった WAV に気づけない**。
+    //   Audacity の設定違いで壊れた WAV を掴むのは現実に起こるので、
+    //   ここで弾いて名前とサイズを残す。SD 自体は正常なので sdError は立てない。
+    if (fileSize <= WAV_HEADER_SIZE) {
+        DEBUGW_P(20260910, "WAV too small: ");
+        DEBUGW_PLN(20260910, filename);
+        enqueueTask(createLogSdfTask("ERR wav too small: %s (%u B)",
+                                     filename, (unsigned)fileSize));
+        enqueueTask(createPlayMultiToneTask(500, 200, 2));
+        audioFile.close();
+        return;
+    }
     totalAudioSize = fileSize - WAV_HEADER_SIZE;
 
     DEBUG_P(20250424,"File: ");
