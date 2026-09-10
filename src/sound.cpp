@@ -1,12 +1,12 @@
 // ============================================================
 // File    : sound.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 音声出力の実装。
 //           PWMによるSin波トーン生成、SDカードからのWAV再生、
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/11
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"

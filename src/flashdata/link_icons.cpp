@@ -2,6 +2,8 @@
 // File    : link_icons.cpp
 // Project : PONS v7 — PONS Link
 // Role    : 役割アイコン（1bit マスク）の実体。自動生成ファイル。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/09/08
 // ============================================================
 #include "link_icons.h"
 

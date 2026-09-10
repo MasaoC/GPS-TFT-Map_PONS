@@ -1,6 +1,6 @@
 // ============================================================
 // File    : imulog.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 生 IMU / GNSS 速度データの高レート バイナリロガー。
 //           姿勢 ESKF（GNSS 速度援用の姿勢推定）を PC 上でオフライン開発するための
 //           入力データを SD に記録する。機上では推定を行わない。
@@ -56,7 +56,7 @@
 //   imulog_write_buffer()  : Core1 がタスク経由で呼ぶ。実際の SD 書き込み。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/06
 // ============================================================
 
 #ifndef IMULOG_H

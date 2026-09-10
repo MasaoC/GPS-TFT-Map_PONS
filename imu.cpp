@@ -1,6 +1,6 @@
 // ============================================================
 // File    : imu.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : BNO085 (GY-BNO080) IMU ドライバー + 3 状態 Kalman フィルター実装。
 //
 // ■ アーキテクチャ
@@ -35,7 +35,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/09/11
 // ============================================================
 
 #include <Arduino.h>

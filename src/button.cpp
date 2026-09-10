@@ -1,12 +1,12 @@
 // ============================================================
 // File    : button.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : ボタン入力処理と設定メニューの実装。
 //           Button クラスによる短押し/長押し/ダブルクリック判定、
 //           設定画面の全メニュー項目（目的地・音量・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/10
 // ============================================================
 // Handle button updates
 #include "button.h"

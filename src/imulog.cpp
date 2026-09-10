@@ -1,10 +1,10 @@
 // ============================================================
 // File    : imulog.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 生 IMU / GNSS 速度データの高レート バイナリロガー（実装）。
 //           形式・目的・レコード定義は imulog.h のコメントを参照。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/06
 // ============================================================
 
 #include "../settings.h"

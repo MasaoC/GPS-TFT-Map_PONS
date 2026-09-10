@@ -1,6 +1,6 @@
 // ============================================================
 // File    : mysd.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : SDカード操作とCore1タスクキューのヘッダー。
 //           タスク種別(TaskType)・タスク構造体・キュー定義と、
 //           設定保存/読込・CSVフライトログ・起動ロゴ読込・
@@ -8,7 +8,7 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/10
 // ============================================================
 
 #ifndef MYSD_H

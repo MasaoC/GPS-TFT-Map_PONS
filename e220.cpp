@@ -3,6 +3,7 @@
 // Project : PONS v7 — PONS Link
 // Role    : E220-900T22S(JP) の下位ドライバ実装
 // Author  : MasaoC (@masao_mobile)
+// Updated : 2026/09/08
 // ============================================================
 
 #include "e220.h"

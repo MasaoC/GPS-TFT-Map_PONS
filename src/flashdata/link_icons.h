@@ -2,6 +2,8 @@
 // File    : link_icons.h
 // Project : PONS v7 — PONS Link
 // Role    : 無線の状態表示に使う 1bit マスクの**宣言**。実体は link_icons.cpp。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/09/08
 // ============================================================
 //
 // ■ なぜ BMP(RGB565) ではなく 1bit マスクなのか

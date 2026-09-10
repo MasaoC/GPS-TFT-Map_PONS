@@ -1,6 +1,6 @@
 // ============================================================
 // File    : navdata.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : ナビゲーション計算の実装。
 //           Mercator投影による緯度→Y座標変換、距離・真方位計算、
 //           フラッシュ内蔵ポリゴン地図の実体と一覧(flashmaps)、目的地リスト、
@@ -8,7 +8,7 @@
 //           内蔵ポリゴンは滑走路外周や島など、ベクタ地図では表せない
 //           飛行用の注記に限る（SDが無くても必ず描画される）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/11
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>

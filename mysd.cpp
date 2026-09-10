@@ -1,6 +1,6 @@
 // ============================================================
 // File    : mysd.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : SDカード操作の実装（全処理はCore1で実行）。
 //           SdFatライブラリによるファイル読み書き、
 //           設定ファイル保存/読込、CSVフライトログ追記、
@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/10
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)

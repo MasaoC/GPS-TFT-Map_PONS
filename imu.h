@@ -1,6 +1,6 @@
 // ============================================================
 // File    : imu.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : BNO085 IMU モジュール + Kalman フィルターフュージョンのヘッダー。
 //           MS5611 気圧高度と BNO085 加速度を融合した高精度バリオメーターを提供する。
 //
@@ -23,7 +23,7 @@
 //   airdata_update() が true を返したタイミングで imu_kalman_baro_update() を呼ぶ。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/06
 // ============================================================
 
 #ifndef IMU_H

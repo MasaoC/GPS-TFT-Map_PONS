@@ -1,11 +1,11 @@
 // ============================================================
 // File    : attitude.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GNSS 速度援用 姿勢 ESKF（機上リアルタイム版）の実装。
 //           数式・座標系・マウント補正の説明は attitude.h を参照。
 //           PC 側の tools/imulog/eskf.py と対になっている。片方を直したら両方直すこと。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/18
+// Updated : 2026/09/10
 // ============================================================
 
 #include <Arduino.h>

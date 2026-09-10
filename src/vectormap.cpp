@@ -1,11 +1,11 @@
 // ============================================================
 // File    : vectormap.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : フラッシュ内蔵ベクタ地図の描画。backscreen へ直接描くため、
 //           TRACKUP の回転は latLonToXY と同じ座標変換に吸収され、
 //           BMP 方式で欠けていた画面四隅まで隙間なく塗れる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/06
 //
 // 地図データのライセンス: Map data (c) OpenStreetMap contributors, ODbL 1.0
 // ============================================================

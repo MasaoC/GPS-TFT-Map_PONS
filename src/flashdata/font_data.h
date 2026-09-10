@@ -1,11 +1,11 @@
 // ============================================================
 // File    : font_data.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 速度・数値表示用フォントのバイナリデータ。
 //           Arial Black 56pt をPROGMEM（フラッシュメモリ）に配置。
 //           TFT_eSPIのloadFont()で読み込んで使用する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/06
 // ============================================================
 
 const uint8_t Arial_Black56[] PROGMEM = {

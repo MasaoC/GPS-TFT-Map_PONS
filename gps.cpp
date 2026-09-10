@@ -1,13 +1,13 @@
 // ============================================================
 // File    : gps.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GPS受信・解析の実装（u-blox UBX バイナリ受信）。
 //           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
 //           位置・速度・時刻の取得、リプレイ管理、
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/11
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>

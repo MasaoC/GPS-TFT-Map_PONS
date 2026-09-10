@@ -1,11 +1,11 @@
 // ============================================================
 // File    : airdata.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 大気データ取得モジュールのヘッダー。
 //           気圧センサー（MS5611）から高度・気圧・気温を取得する。
 //           airdata_update() をループから毎回呼ぶ非ブロッキング方式。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/06
 // ============================================================
 
 #ifndef AIRDATA_H

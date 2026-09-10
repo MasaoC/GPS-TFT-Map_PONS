@@ -5,6 +5,8 @@
 //           sd/logo.bmp（240x52 / 16bpp RGB565）から生成した。
 //           BMP はボトムアップだが、ここでは**上から順**に並べ替えてあるので
 //           pushImage にそのまま渡せる。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/09/06
 // ============================================================
 #include "logo_data.h"
 

@@ -1,6 +1,6 @@
 // ============================================================
 // File    : display_tft.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画の実装。
 //           ポリゴン地図（内蔵/SD）、コンパス、飛行コース矢印、
 //           ヘッダー/フッター、設定画面、
@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/11
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 

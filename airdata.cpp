@@ -1,12 +1,12 @@
 // ============================================================
 // File    : airdata.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 大気データ取得の実装。
 //           気圧センサー MS5611（I2C接続）から気圧・気温を読み取り、
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/09/11
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"

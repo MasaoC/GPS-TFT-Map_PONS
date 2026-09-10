@@ -1,12 +1,12 @@
 // ============================================================
 // File    : sound.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 音声出力モジュールのヘッダー。
 //           WAVファイル再生・PWM Sinトーン生成・
 //           旋回角速度(degpersecond)に連動した音程更新の
 //           関数プロトタイプ宣言。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/06
 // ============================================================
 
 #ifndef SOUND_H
