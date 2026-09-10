@@ -388,6 +388,23 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define IMU_RATE_ACCEL_HZ   50  // SH2_ACCELEROMETER（重力込みの生比力。ESKF と、VARIO_USE_RAW_ACCEL=1 のときバリオ KF が使う）
 #define IMU_RATE_MAG_HZ     10  // SH2_MAGNETIC_FIELD_CALIBRATED（ヨー絶対値は対象外なので低レートで十分）
 
+// SPI 構成で「BNO085 が生きているか」を H_INTN で確かめるときの待ち時間 [ms]。
+// ★ これは飾りではなく**ハングを避けるための必須のガード**。
+//   Adafruit_BNO08x::begin_SPI() → _init() → sh2_getProdIds() → opProcess() は、
+//   getProdIdOp が timeout_us を設定しておらず（sh2.c:747）、opProcess は
+//   timeout_us==0 を「無期限」として扱う（sh2.c:494）。BNO085 が応答しないと
+//   500ms の INT 待ち（Adafruit_BNO08x.cpp:549）を延々と繰り返し、**戻ってこない**。
+//   i2c1 構成には begin 前の ACK 確認があるが、SPI には同等のものが無い。
+//   BNO085 はブート後に advertisement を積んで H_INTN を LOW に保つので、
+//   これを生存確認に使う。ブート待機(400ms)の後なので、生きていれば即 LOW のはず。
+#define IMU_SPI_INT_WAIT_MS       300
+
+// BNO085 が途絶したときの復旧試行の間隔 [ms]。
+// 復旧は NRST パルス(10ms)＋ブート待機(400ms)＋バス初期化 という手順で、
+// imu.cpp のステートマシンが 1 ループ 1 段ずつ進める（Core0 は止めない）。
+// 短くしても直る見込みは増えないので、1 分で十分。
+#define IMU_RECOVERY_INTERVAL_MS  60000UL
+
 // 既存レポート（バリオ KF・姿勢表示用。変更するとバリオのチューニングに影響する）
 #define IMU_RATE_GRV_HZ     15  // SH2_GAME_ROTATION_VECTOR
 #define IMU_RATE_LACC_HZ    15  // SH2_LINEAR_ACCELERATION

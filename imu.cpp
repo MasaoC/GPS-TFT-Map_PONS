@@ -79,7 +79,7 @@
 // ============================================================
 // ライブラリ側のリセット機能は無効(-1)にする。
 // begin_*() 内部のリセット待ちは ~10ms しかなく BNO085 のブートに不足するため。
-// 手動リセットは imu_bus_reset() で行う（NRST を LOW→HIGH して 400ms 待つ）。
+// 手動リセットは imu_reset_start()/imu_reset_poll() で行う（NRST を LOW→HIGH して 400ms 待つ）。
 static Adafruit_BNO08x  bno08x(-1);
 static sh2_SensorValue_t sv;  // imu_sensor_handler() が sh2_decodeSensorEvent() で埋める作業バッファ
 
@@ -700,22 +700,85 @@ static void imu_bus_select_protocol() {
 #endif
 }
 
-// NRST パルスで BNO085 を確実にリセットする。
+// NRST パルスで BNO085 を確実にリセットする（**ステートマシン**）。
 // USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は前回実行時の
 // SHTP/SH2 状態を保持したままになる。この状態では begin_*() が失敗するため必ず通す。
 //   LOW 期間 : 10ms（最小パルス幅 100µs を大幅に超える）
 //   ブート待機: 400ms（データシート推奨値）
+//
+// ★ **ここを delay() で書いてはいけない。**
+//   以前は delay(10)+delay(400) を直に並べていたため、飛行中の復旧試行のたびに
+//   Core0 が 410ms 止まっていた。GPS は 38400bps・FIFO 1024B なので約 270ms で
+//   バッファが溢れ、NAV-PVT を丸ごと取りこぼす。地図・ボタン・バリオも同時に止まる。
+//   しかも BNO085 が死んでいる限り復旧は 1 分ごとに走り続けるので、症状が繰り返す。
+//   経過時間で進める形にして、待っている間 Core0 を返せるようにした。
+//
 // ※ プロトコル選択ピンはリセット時にラッチされるので、
 //   必ず imu_bus_select_protocol() を先に呼んでから使うこと。
-static void imu_bus_reset() {
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+  #define IMU_RST_LOW_MS   10    // NRST を LOW に保持する時間
+  #define IMU_RST_BOOT_MS  400   // 解除してからブート完了までの待ち
+#else
+  #define IMU_RST_LOW_MS   0     // NRST が繋がっていないので、ピンは触らず待つだけ
+  #define IMU_RST_BOOT_MS  200
+#endif
+
+typedef enum {
+    IMU_RST_IDLE = 0,   // 進行中のリセットは無い
+    IMU_RST_LOW,        // NRST を LOW にした。パルス幅を待っている
+    IMU_RST_BOOT,       // NRST を HIGH に戻した。ブート完了を待っている
+} ImuResetPhase;
+
+static ImuResetPhase imu_rst_phase = IMU_RST_IDLE;
+static unsigned long imu_rst_ms    = 0;
+
+// リセットを開始する（ブロックしない）。
+static void imu_reset_start() {
 #if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
     pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);
-    delay(10);
-    digitalWrite(IMU_RST_PIN, HIGH);
-    delay(400);
+    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
+#endif
+    imu_rst_phase = IMU_RST_LOW;
+    imu_rst_ms    = millis();
+}
+
+// リセットを進める。完了したら true を返し、IDLE へ戻る。ブロックしない。
+static bool imu_reset_poll() {
+    const unsigned long now = millis();
+    switch (imu_rst_phase) {
+        case IMU_RST_LOW:
+            if (now - imu_rst_ms < IMU_RST_LOW_MS) return false;
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+            digitalWrite(IMU_RST_PIN, HIGH);      // リセット解除
+#endif
+            imu_rst_phase = IMU_RST_BOOT;
+            imu_rst_ms    = now;
+            return false;
+        case IMU_RST_BOOT:
+            if (now - imu_rst_ms < IMU_RST_BOOT_MS) return false;
+            imu_rst_phase = IMU_RST_IDLE;
+            return true;
+        default:
+            return true;                          // 開始していない＝待つものが無い
+    }
+}
+
+// 起動時（imu_setup）専用。ここで止まるのは構わないので待ち切る。
+// タイミングの実体は上のステートマシン 1 つだけにして、
+// 「起動時と復旧時で片方だけ直し忘れる」を構造的に防ぐ。
+static void imu_reset_blocking() {
+    imu_reset_start();
+    while (!imu_reset_poll()) delay(1);
+}
+
+// SPI 構成での生存確認。H_INTN（負論理）がアサートされていれば BNO085 が居る。
+// ブート直後は advertisement が積まれていて LOW のままのはずなので、これで判別できる。
+// i2c1 構成では imu_bus_begin() の ACK 確認が同じ役目を果たすので常に true。
+static bool imu_int_asserted() {
+#ifdef IMU_BUS_SPI
+    return digitalRead(IMU_INT_PIN) == LOW;
 #else
-    delay(200);
+    return true;
 #endif
 }
 
@@ -723,6 +786,21 @@ static void imu_bus_reset() {
 // リトライは呼び出し側が行う。
 static bool imu_bus_begin() {
 #ifdef IMU_BUS_SPI
+    // ★ **ライブラリを呼ぶ前に必ず生存確認する。** ここを通さずに begin_SPI() を
+    //   呼ぶと、BNO085 が応答しない場合に sh2_getProdIds() が無期限ループに入り
+    //   （settings.h の IMU_SPI_INT_WAIT_MS のコメント参照）、起動時なら
+    //   **PONS がここで固まったまま起動しない**。飛行中の復旧なら Core0 が永久に止まる。
+    //   i2c1 構成の ACK 確認と対になるガード。
+    pinMode(IMU_INT_PIN, INPUT_PULLUP);
+    {
+        const unsigned long t0 = millis();
+        while (!imu_int_asserted()) {
+            if (millis() - t0 >= IMU_SPI_INT_WAIT_MS) {
+                DEBUGW_PLN(20260901, "[IMU] BNO085 no INT on SPI1");
+                return false;
+            }
+        }
+    }
     // arduino-pico では begin() の前にピンを割り当てる。
     // CS はライブラリ（Adafruit_SPIDevice）が digitalWrite で叩くので setCS() は呼ばない。
     static bool spi_pins_done = false;
@@ -781,7 +859,7 @@ void imu_setup() {
     imuWire.begin();
     imuWire.setClock(IMU_I2C_HZ);
 #endif
-    imu_bus_reset();
+    imu_reset_blocking();
     DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
 
     // Adafruit_BNO08x でセンサーを初期化する。
@@ -848,30 +926,90 @@ void imu_setup() {
 
 
 // ============================================================
-// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数）
+// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数・ステートマシン）
 // ============================================================
-// imu_update() から呼ばれる。内部で1分レート制限する。
-// NRST を LOW→HIGH してハードウェアリセット後、begin_*() で再初期化を試みる。
-// 成功すれば bno085_ok=true に戻し、失敗なら次の1分後に再試行する。
+// imu_update() から毎ループ呼ばれる。1 分に 1 回だけ復旧手順を開始し、
+// 以降は 1 ループにつき 1 段ずつ進める。**待ちのために Core0 を止めない。**
+//
+//   IDLE ──(1分経過)──▶ RESET ──(410ms 経過)──▶ WAITINT ──(H_INTN LOW)──▶ BEGIN ──▶ IDLE
+//                       NRST パルス            生存確認         バス初期化＋レポート再有効化
+//                                                  │
+//                                                  └─(300ms 応答なし)──▶ IDLE（失敗・次は 1 分後）
+//
+// ★ 以前はこの関数の中で delay(10)+delay(400) を通していたため、
+//   1 分ごとに Core0 が 410ms 止まり、GPS の受信 FIFO（1024B / 38400bps ＝ 約 270ms）が
+//   溢れて NAV-PVT を落としていた。地図もボタンもバリオも同時に止まっていた。
+//
+// ★★ WAITINT を挟むのは「BNO085 が本当に居るか」を**ライブラリを呼ぶ前に**確かめるため。
+//   居ないまま begin_SPI() を呼ぶと sh2_getProdIds() が無期限ループに入って
+//   **戻ってこない**（settings.h の IMU_SPI_INT_WAIT_MS のコメントに根拠）。
+//   復旧は BNO085 が死んでいるときにこそ走るので、ここを素通しにはできない。
+//   居ないと判定した場合、この経路の Core0 ブロックは 0ms。
+//
+// ※ 残るブロックは BEGIN の 1 ティックだけ。ここまで来た＝BNO085 が応答している
+//   状態なので、begin_*() は通常数 ms で返る。**ただし advertisement には応答したが
+//   直後に黙る、という壊れ方をすると今も無期限に止まる**（ライブラリ側に
+//   タイムアウトが無いため、こちらからは塞げない）。
+//
+// 成功すれば bno085_ok=true に戻し、失敗なら次の 1 分後に再試行する。
 // v7 では BNO085 専用バス（SPI1 / i2c1）なので、MS5611 側への影響は無い。
-// ※ NRST パルス＋ブート待機で Core0 が最大 410ms ブロックする。
-//   1分に1度のみ実行のため、画面の一時的な停止は許容する。
 // CORE0
+typedef enum {
+    IMU_RECOV_IDLE = 0,   // 待機中（次の試行までのインターバル）
+    IMU_RECOV_RESET,      // NRST パルス〜ブート待ち（imu_reset_poll() が進める）
+    IMU_RECOV_WAITINT,    // H_INTN で生存確認（SPI のみ。i2c1 は素通り）
+    IMU_RECOV_BEGIN,      // バス初期化とレポート再有効化
+} ImuRecovState;
+static ImuRecovState imu_recov_state = IMU_RECOV_IDLE;
+static unsigned long imu_recov_wait_ms = 0;   // WAITINT に入った時刻
+
 static void imu_try_recovery() {
     static unsigned long last_recovery_ms = 0;
-    unsigned long now_ms = millis();
-    // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
-    if (last_recovery_ms > 0 && now_ms - last_recovery_ms < 60000UL) return;
-    last_recovery_ms = now_ms;
+    const unsigned long now_ms = millis();
 
-    enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
-    DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+    switch (imu_recov_state) {
+    case IMU_RECOV_IDLE:
+        // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
+        if (last_recovery_ms > 0 && now_ms - last_recovery_ms < IMU_RECOVERY_INTERVAL_MS) return;
+        last_recovery_ms = now_ms;   // 間隔は「試行の開始から開始まで」で数える
 
-    // ---- プロトコル再選択 → ハードウェアリセット ----
-    // PS0 は SPI 運用中 WAKE として LOW に落としてあるので、リセット前に
-    // プロトコル選択のレベル（SPI なら HIGH）へ戻してからパルスを掛ける。
-    imu_bus_select_protocol();
-    imu_bus_reset();
+        enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+
+        // ---- プロトコル再選択 → ハードウェアリセット開始 ----
+        // PS0 は SPI 運用中 WAKE として LOW に落としてあるので、リセット前に
+        // プロトコル選択のレベル（SPI なら HIGH）へ戻してからパルスを掛ける。
+        imu_bus_select_protocol();
+        imu_reset_start();
+        imu_recov_state = IMU_RECOV_RESET;
+        return;                      // ★ 待たずに帰る。410ms は次のループ以降で数える
+
+    case IMU_RECOV_RESET:
+        if (!imu_reset_poll()) return;   // まだリセット中。1 ループも止めない
+#ifdef IMU_BUS_SPI
+        pinMode(IMU_INT_PIN, INPUT_PULLUP);
+#endif
+        imu_recov_wait_ms = now_ms;
+        imu_recov_state   = IMU_RECOV_WAITINT;
+        return;
+
+    case IMU_RECOV_WAITINT:
+        if (imu_int_asserted()) {        // 応答あり → 再初期化へ
+            imu_recov_state = IMU_RECOV_BEGIN;
+            return;
+        }
+        if (now_ms - imu_recov_wait_ms < IMU_SPI_INT_WAIT_MS) return;   // まだ待つ
+        // 居ない。**ライブラリを呼ばずに諦める**（呼ぶと戻ってこない）。
+        imu_recov_state = IMU_RECOV_IDLE;
+        enqueueTask(createLogSdTask("[IMU] BNO085 recovery FAILED (no INT)"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery FAILED (no INT)");
+        return;
+
+    case IMU_RECOV_BEGIN:
+    default:
+        imu_recov_state = IMU_RECOV_IDLE;
+        break;                           // 下の再初期化へ進む
+    }
 
     // ---- 再初期化 ----
     // レポート有効化と SH2 コールバック登録は imu_enable_reports() に集約している。
