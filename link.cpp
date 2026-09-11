@@ -101,6 +101,7 @@ static uint16_t s_lastSeq    = 0;
 static bool     s_haveLastSeq = false;
 
 static void link_push_telemetry();   // 実体は下（送信側の組み立て）
+static void link_preflight_start();  // 実体は下（送信前チェック）
 
 // ============================================================
 //  受信の取り込み
@@ -202,6 +203,9 @@ void link_setup() {
         enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
     else if (link_mode_setting == LINK_MODE_RX)
         enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
+
+    // 起動時から送信モードなら、送り始める前にチャンネルを確かめる。
+    link_preflight_start();
 }
 
 // ============================================================
@@ -234,8 +238,50 @@ static void link_watch_mirror_transition() {
     primed = true;
 }
 
-// 無線モジュールが応答しない＝設定を書いて読み返した照合が通らない。
+// モジュールが今も応答するかを定期的に確かめる。
+//
+// ★★ これが無いと「起動後に死んだ」を誰も検出できない。e220_alive() の元になる
+//   照合は e220_setup() / e220_reconfigure() でしか行われないので、**飛行中に
+//   コネクタが抜けても true のまま**になる。そのとき何が起きるか:
+//     ・e220_send() は UART へ書き込むだけで成功する。AUX は未実装対策の
+//       INPUT_PULLUP なので、断線すると High（アイドル）に見えて素通りする。
+//     ・送信回数（Sent）は増え続け、地図の電波アイコンも脈動し続ける。
+//       **画面上は完全に正常なまま、電波は一切出ていない。**
+//     ・上りが無いので、ボートが無信号になるまで機体側では気づけない。
+//   問い合わせて返事があるかを見るのが唯一の確実な方法なので、ここで叩く。
+//
+// ・環境ノイズ取得を生存確認に流用する。**値は使わない。返事があったかだけが目的**
+//   （成否の勘定は e220.cpp が持っている）。
+// ・送信機は寝ているので起こしてから聞き、すぐ寝かせる。生きていれば数 ms。
+// ・受信機も確かめる。「受信が無いだけ」なのか「自分のモジュールが死んだ」のかは、
+//   ボート側では区別が付かないため。ただし受信できている間は叩かない
+//   （1 発でも受かれば e220_recv() が生存を記録する。無駄に UART へ割り込まない）。
+static void link_probe_module() {
+    if (link_mode_setting == LINK_MODE_OFF) return;
+    // 点検中は自分で 0.5 秒ごとに測っているので、重ねて叩かない。
+    // （実体は下にあるので、宣言済みのアクセサ経由で見る）
+    if (link_preflight_state() == LINK_PF_RUNNING) return;
+    // 受信できている＝生きている。問い合わせる必要そのものが無い。
+    if (link_mode_setting == LINK_MODE_RX && link_is_receiving()) return;
+    const bool tx = (link_mode_setting == LINK_MODE_TX);
+    // 送信中に叩かない（settings.h の LINK_PROBE_AFTER_TX_MS 参照）。
+    // lastProbe を更新せずに戻るので、静かになった時点で改めて実行される。
+    if (tx && link_since_tx_ms() < LINK_PROBE_AFTER_TX_MS) return;
+
+    static uint32_t lastProbe = 0;
+    const uint32_t now = millis();
+    if (now - lastProbe < LINK_ALIVE_PROBE_MS) return;
+    lastProbe = now;
+
+    if (tx) e220_wake();               // 問い合わせは mode 0 でのみ有効
+    int16_t n = 0;
+    e220_read_noise(&n, nullptr);
+    if (tx) e220_sleep();              // 送信機は送信の合間は寝かせる
+}
+
+// 無線モジュールが応答しない＝設定の照合が通らない、または問い合わせに返事が無い。
 // 配線・電源・モジュール不良のいずれかなので、人が気づくしかない。
+// ★ 上の link_probe_module() のおかげで、**起動後に死んだ場合もここに落ちてくる**。
 static void link_watch_module() {
     if (link_mode_setting == LINK_MODE_OFF) return;
     static bool was_alive = false, alerted = false;
@@ -339,12 +385,208 @@ static void link_periodic_report() {
     s_seqGaps  = 0;
 }
 
+// ============================================================
+//  送信前チェック（プリフライト）
+// ============================================================
+// 送信モードに入った直後だけ mode 0 に留まり、LINK_PF_WINDOW_MS のあいだ
+// **聴くだけ**にする。確かめるのは 2 つ。
+//   1. 選んだチャンネルの雑音レベル（e220_read_noise の中央値）
+//   2. 同じチャンネルに他の送信機がいないか
+//
+// ★ 2 が本命。通常運転の送信機は送信の合間 mode 3 で寝ていて何も聴かないので、
+//   「同じ CH/SF/Group にもう 1 台 TX がいる」は受信機しか検出できなかった
+//   （seq の逆行で判定。link.h 参照）。ここは送信機がそれを自分で確かめられる
+//   唯一の機会になる。予備機の設定ミスで一番起こりやすく、一番まずい状態。
+//
+// ★★ 問題が見つかっても**送信は止めない。** 予備機を緊急で TX に切り替えて
+//   載せ替える場面で送信が始まらないほうが危険。E220 は ARIB のキャリアセンスが
+//   必須実装なので、混雑していればモジュール側が自動で送信を待つ。
+//
+// 雑音は**中央値と最大値を分けて**見る。
+//   中央値が高い          → ずっとうるさい（Wi-SUN 等）。チャンネルを変える
+//   最大値だけ突出している → 断続的に誰かが出ている。別 SF や他方式で
+//                            デコードできないので、この差でしか気づけない
+static LinkPreflightState s_pfState  = LINK_PF_IDLE;
+static uint8_t  s_pfFlags   = LINK_PFF_OK;
+static uint32_t s_pfStartMs = 0;
+static uint32_t s_pfLastSampleMs = 0;
+static uint32_t s_pfDoneMs  = 0;
+static uint8_t  s_pfOtherGrp = 0;
+// 見つけた他機の RSSI の最大値。**近いのか遠いのかで対処が変わる**ので残す。
+// −40dBm なら隣で出ている（すぐ直す）、−110dBm なら遠くの誰か（様子見でよい）。
+static int8_t   s_pfPonsRssi = -128;
+static int16_t  s_pfNoiseMed = 0;
+#define PF_MAX_SAMPLES  ((LINK_PF_WINDOW_MS / LINK_PF_SAMPLE_MS) + 2)
+static int16_t  s_pfNoise[PF_MAX_SAMPLES];
+static uint8_t  s_pfNoiseN = 0;
+// 雑音の取得が連続で失敗した回数。**途中で打ち切るために数える**（下の tick 参照）。
+static uint8_t  s_pfNoiseFail = 0;
+
+LinkPreflightState link_preflight_state() { return s_pfState; }
+uint8_t  link_preflight_flags()       { return (s_pfState == LINK_PF_DONE) ? s_pfFlags : 0; }
+uint8_t  link_preflight_other_group() { return s_pfOtherGrp; }
+int8_t   link_preflight_pons_rssi()   { return (s_pfPonsRssi > -128) ? s_pfPonsRssi : 0; }
+int16_t  link_preflight_noise_med()   { return s_pfNoiseMed; }
+uint32_t link_preflight_remain_ms() {
+    if (s_pfState != LINK_PF_RUNNING) return 0;
+    const uint32_t el = millis() - s_pfStartMs;
+    return (el >= LINK_PF_WINDOW_MS) ? 0 : (LINK_PF_WINDOW_MS - el);
+}
+// 警告を出してからの経過。地図のポップアップを引っ込める判断に使う。
+uint32_t link_preflight_since_done_ms() {
+    return (s_pfState == LINK_PF_DONE) ? (millis() - s_pfDoneMs) : 0xFFFFFFFFu;
+}
+
+// チェックを開始する。TX 以外では何もしない。
+// 呼ばれるのは「起動時に TX だった」「TX に切り替えた」「TX 中に CH/SF を変えた」の 3 つ。
+static void link_preflight_start() {
+    if (link_mode_setting != LINK_MODE_TX) { s_pfState = LINK_PF_IDLE; return; }
+
+    // ★ モジュールが応答しないなら**実行しない**。e220_read_noise() は応答待ちで
+    //   最大 200ms ブロックするので、無応答のまま 10 回呼ぶと Core0 が 2 秒止まる。
+    //   生きているときの応答は数 ms なので、ここで弾けば実害が消える。
+    //   無応答そのものは link_watch_module() が既に鳴らしている。
+    if (!e220_alive()) {
+        s_pfFlags = LINK_PFF_SKIPPED;
+        s_pfState = LINK_PF_DONE;
+        s_pfDoneMs = millis();
+        return;
+    }
+    e220_wake();                 // 監視の間は mode 0 に置く（聴くため）
+    s_pfState        = LINK_PF_RUNNING;
+    s_pfFlags        = LINK_PFF_OK;
+    s_pfStartMs      = millis();
+    s_pfLastSampleMs = 0;
+    s_pfNoiseN       = 0;
+    s_pfNoiseFail    = 0;
+    s_pfNoiseMed     = 0;
+    s_pfOtherGrp     = 0;
+    s_pfPonsRssi     = -128;
+}
+
+static void link_preflight_finish() {
+    // ---- 雑音の中央値と最大値 ----
+    int16_t med = 0, mx = -128;
+    if (s_pfNoiseN > 0) {
+        int16_t tmp[PF_MAX_SAMPLES];
+        for (uint8_t i = 0; i < s_pfNoiseN; i++) tmp[i] = s_pfNoise[i];
+        for (uint8_t i = 1; i < s_pfNoiseN; i++) {       // 挿入ソート（最大 12 個）
+            const int16_t k = tmp[i];
+            int8_t j = (int8_t)i - 1;
+            while (j >= 0 && tmp[j] > k) { tmp[j + 1] = tmp[j]; j--; }
+            tmp[j + 1] = k;
+        }
+        med = tmp[s_pfNoiseN / 2];
+        mx  = tmp[s_pfNoiseN - 1];
+        s_pfNoiseMed = med;
+        if (med > LINK_PF_NOISE_WARN_DBM)      s_pfFlags |= LINK_PFF_NOISY;
+        if ((mx - med) > LINK_PF_BURST_DB)     s_pfFlags |= LINK_PFF_BURST;
+    } else {
+        // ★ モジュールは応答しているのに雑音を 1 つも取れなかった。
+        //   「静かだった」ではなく「測れなかった」なので、合格にしてはいけない。
+        //   REG3 の RSSI バイトが無効、または固定送信モードになっている疑い
+        //   （docs/pons_link.md §6。無線設定画面の Noise が `---` になる症状と同じ）。
+        s_pfFlags |= LINK_PFF_SKIPPED;
+    }
+
+    e220_sleep();                // 通常運転（送信の合間はスリープ）へ戻す
+    s_pfState  = LINK_PF_DONE;
+    s_pfDoneMs = millis();
+
+    // ---- 知らせる ----
+    if (s_pfFlags == LINK_PFF_OK) {
+        // 合格。**点検が走って通ったこと**が分かるよう短い上昇 2 音を鳴らす
+        //（較正完了と同じ流儀）。無音にすると「点検が走ったのか」が分からない。
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1, 2));
+        enqueueTask(createPlayMultiToneTask(2093, 90, 1, 2));
+    } else if (s_pfFlags & (LINK_PFF_PONS_SAME | LINK_PFF_PONS_OTHER | LINK_PFF_BURST)) {
+        // 他の送信機がいる。対処は「設定を確認する／他チームと調整する」。
+        link_alert("wav/link_ch_busy.wav", 294, 350, 3);
+    } else if (s_pfFlags & LINK_PFF_NOISY) {
+        // 雑音が高いだけ。対処は「チャンネルを変える」。音を分けてあるのはこのため。
+        link_alert("wav/link_ch_noisy.wav", 440, 250, 3);
+    } else {
+        // 測れなかった（モジュール無応答、または RSSI バイトが無効）。
+        // ★ 無音にしてはいけない。合格の上昇 2 音が鳴らないだけだと
+        //   「点検が走ったが通らなかった」のか「そもそも走っていない」のか
+        //   区別できない。低い 2 音で「判定できなかった」と分かるようにする。
+        enqueueTask(createPlayMultiToneTask(392, 120, 2, 2));
+    }
+    enqueueTask(createLogSdfTask(
+        "LINK PREFLIGHT: ch=%u sf=%u noise med=%d max=%d n=%u pons=%d grp=%u -> 0x%02X",
+        link_radio_ch, e220_profile_to_sf(link_radio_profile),
+        (int)med, (int)((s_pfNoiseN > 0) ? mx : 0), (unsigned)s_pfNoiseN,
+        (int)((s_pfPonsRssi > -128) ? s_pfPonsRssi : 0), (unsigned)s_pfOtherGrp,
+        (unsigned)s_pfFlags));
+}
+
+static void link_preflight_tick() {
+    if (s_pfState != LINK_PF_RUNNING) return;
+    // モードを抜けた（RX / OFF にされた）ら中止する。
+    // ★ 中止でもモジュールの状態を放置しないこと。点検のために起こしてあるので、
+    //   OFF に落とされたのに mode 0 のままだと 8.2mA を食い続ける。
+    //   通常は link_set_mode() が先に IDLE にするのでここは通らないが、
+    //   通った場合に電力が残る作りにはしない。
+    if (link_mode_setting != LINK_MODE_TX) {
+        s_pfState = LINK_PF_IDLE;
+        if (link_mode_setting != LINK_MODE_RX) e220_sleep();   // 受信機は起きたままが正
+        return;
+    }
+
+    // ---- 他の送信機を数える ----
+    // ★ 受けたフレームを s_rx に入れないこと。入れると **送信機がミラー表示を
+    //   始めてしまう**。received/ にも書かない（ここは自機の飛行前点検であって
+    //   受信ログではない）。数えるだけにする。
+    LinkTelem t;
+    int16_t   rssi = 0;
+    while (e220_recv((uint8_t*)&t, (uint8_t)sizeof(t), &rssi)) {
+        const int8_t r = (int8_t)constrain((int)rssi, -128, 127);
+        if (r > s_pfPonsRssi) s_pfPonsRssi = r;
+        if (t.group == link_group) {
+            s_pfFlags |= LINK_PFF_PONS_SAME;    // 同じ CH/SF/Group に送信機が 2 台
+        } else {
+            s_pfFlags |= LINK_PFF_PONS_OTHER;
+            s_pfOtherGrp = t.group;
+        }
+    }
+
+    // ---- 雑音のサンプル ----
+    const uint32_t now = millis();
+    if (s_pfLastSampleMs == 0 || (now - s_pfLastSampleMs) >= LINK_PF_SAMPLE_MS) {
+        s_pfLastSampleMs = now;
+        int16_t n = 0;
+        if (e220_read_noise(&n, nullptr)) {
+            s_pfNoiseFail = 0;
+            if (s_pfNoiseN < PF_MAX_SAMPLES) s_pfNoise[s_pfNoiseN++] = n;
+        } else if (++s_pfNoiseFail >= LINK_PF_NOISE_FAIL_MAX) {
+            // ★★ 連続で返事が無いなら、窓の最後まで回さずにここで打ち切る。
+            //   1 回の問い合わせは応答待ちでブロックするので、10 回ぶん繰り返すと
+            //   Core0 が止まり、GPS の FIFO（1024B / 38400bps ≒ 267ms）が溢れて
+            //   NAV-PVT を取りこぼす。地図もボタンもバリオも同時に止まる。
+            //   ★ e220_alive() の事前チェックだけでは塞げない。あれは起動時の
+            //     照合結果なので、**起動後に抜けたコネクタでは true のまま**。
+            //     実際に叩いてみて初めて分かるので、叩く回数のほうを縛る。
+            //   ★ 打ち切ったときは **合格にしない**（SKIPPED を先に立てる）。
+            //     途中まで取れた値から NOISY / BURST を出すのは構わないが、
+            //     「静かだった」ではなく「最後まで測れなかった」ので、
+            //     OK の上昇 2 音を鳴らしてはいけない。
+            s_pfFlags |= LINK_PFF_SKIPPED;
+            link_preflight_finish();
+            return;
+        }
+    }
+
+    if ((now - s_pfStartMs) >= LINK_PF_WINDOW_MS) link_preflight_finish();
+}
+
 // 送信機の刻み（1Hz）。**時計を持つのは RP2350 側**。
 // E220 は自分から催促してこないので、こちらが叩きに行く。
 //   ・送信直前にテレメトリを組み立てるので、値は常に新しい
 //   ・送り終えたら即 mode 3 へ落とす（高速スリープ。AUX を待たなくてよい）
 static void link_tx_tick() {
     if (link_mode_setting != LINK_MODE_TX) return;
+    // ★ 点検中は送らない。自分の送信を測ってしまうと雑音の判定が意味を失う。
+    if (s_pfState == LINK_PF_RUNNING) return;
     static uint32_t lastTx = 0;
     if (millis() - lastTx < 1000) return;
     lastTx = millis();
@@ -357,11 +599,13 @@ static void link_tx_tick() {
 void link_loop() {
     link_poll_radio();
     link_watch_mirror_transition();
+    link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
     link_watch_sender_faults();
     link_watch_sender_battery();
     link_periodic_report();
+    link_preflight_tick();      // ★ tx_tick より先。点検中は送信を止める
     link_tx_tick();
 }
 
@@ -386,6 +630,10 @@ void link_set_mode(uint8_t mode) {
     //   誰も読まない受信データで UART の FIFO を埋め続ける。
     if (link_mode_setting == LINK_MODE_RX) e220_wake();
     else                                   e220_sleep();
+    // 送信モードに入ったら送り始める前にチャンネルを確かめる。
+    // 抜けたときは IDLE に戻す（結果を残すと古い判定が画面に出続ける）。
+    if (link_mode_setting == LINK_MODE_TX) link_preflight_start();
+    else                                   s_pfState = LINK_PF_IDLE;
 }
 // 値の範囲は E220 の制約（CH0-12 / SF7-11）で決まる。
 // チャンネル/プロファイルの変更はモジュールへ書き直しが要る。
@@ -397,15 +645,20 @@ void link_set_mode(uint8_t mode) {
 //   13 回になるので、不揮発（0xC0）で書くとモジュールの書換え寿命を無駄に削る。
 //   設定の正本は SD の settings.txt 側なので、次回起動時に e220_setup() が
 //   同じ値を書き直す（そのときだけ不揮発）。
+// ★ 電波の設定が変わったら送信前チェックをやり直す。前の CH で測った結果を
+//   残しておくと、変えた先が混んでいても「OK」のままになる。
+//   link_set_group() からは呼ばない（グループはペイロードの中身で、電波ではない）。
 void link_set_radio_ch(uint8_t ch) {
     if (ch > E220_CH_MAX || ch == link_radio_ch) return;
     link_radio_ch = ch;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
+    link_preflight_start();
 }
 void link_set_radio_profile(uint8_t p) {
     if (p >= LINK_PROFILE_COUNT || p == link_radio_profile) return;
     link_radio_profile = p;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
+    link_preflight_start();
 }
 // 別グループの送信機を直近 10 秒以内に受けたか。
 // 「無信号」と「設定違い」を画面で区別するために使う。

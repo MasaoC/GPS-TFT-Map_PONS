@@ -356,8 +356,17 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
 * 送信機が 2 台いることを検出したとき、低音 3 回＋音声（設定ミスは飛ぶ前に気づく必要があるため）。
 * CH / SF / Group を変更して設定画面を出たとき、設定一致の確認を促す音声。
 * 無線モジュールが応答しないとき、音声。SD カードが無くても代替トーンが鳴ります。
+  **飛行中にモジュールが死んだ場合も検出します**（10 秒ごとに応答を確かめ、
+  30 秒で無応答と判定）。上りが無いので、これが無いと「送れているつもり」のまま
+  飛び続けることになります。
 * **機体の電池が低下したとき、受信側で音声**（60 秒に 1 回）。受信が切れれば止まります。
 * 機体の SD / IMU / 較正未適用の異常は、立ち上がりで低音 2 回のみ（内訳は WIRELESS 画面）。
+* **送信モードに入った直後、5 秒間チャンネルを聴いてから送り始めます**（送信前チェック）。
+  合格なら上昇 2 音。問題があれば音声で知らせますが、**送信は止めません**
+  （予備機を緊急で載せ替える場面で送信が始まらないほうが危険なため）。
+  * `link_ch_busy.wav` … 同じチャンネルに他の送信機がいる（**送信機が 2 台**／他チームの PONS）
+  * `link_ch_noisy.wav` … 雑音が高い。チャンネルを変える
+  * 結果は WIRELESS 画面の `Preflt` 行と `log.txt` の `LINK PREFLIGHT:` に残ります
 
 ---
 
@@ -669,7 +678,7 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
 | 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
-| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる） |
+| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |
 

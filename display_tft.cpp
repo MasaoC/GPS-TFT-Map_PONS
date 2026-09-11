@@ -2129,17 +2129,56 @@ void draw_wireless(int cursor) {
       }
     }
   } else if (mode == LINK_MODE_TX) {
-    // ★ ここに「送信機が 2 台いる」警告は出せない。検出は seq の逆行で行うので
-    //   受信できる機体でしか働かず、送信機は送信の合間 mode 3 で寝ている。
-    //   出せば「警告が出ないから 1 台だ」と誤読させるだけになる（link.h 参照）。
-    //   代わりに、送信機側で唯一確かめられる**実際に送出できた回数**を出す。
-    //   モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
+    // 送信機側で唯一確かめられる**実際に送出できた回数**。
+    // モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     backscreen.setCursor(2, y);
     backscreen.print(" Sending 1Hz (no uplink)");
     y += lh;
     backscreen.setCursor(2, y);
     backscreen.printf(" Sent    : %u", link_tx_count());
+    y += lh;
+
+    // ---- 送信前チェックの結果 ----
+    // ★ 「送信機が 2 台いる」を送信機側で出せるのはここだけ。
+    //   通常運転では送信の合間 mode 3 で寝ていて聴けないので、検出は受信機の
+    //   seq 逆行に頼るしかなかった（link.h）。TX に入った直後の数秒だけ
+    //   mode 0 で聴くことで、飛ぶ前に自分で確かめられるようにしてある。
+    const LinkPreflightState pst = link_preflight_state();
+    const uint8_t pf = link_preflight_flags();
+    backscreen.setCursor(2, y);
+    if (pst == LINK_PF_RUNNING) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf(" Preflt  : checking... %lus",
+                        (unsigned long)((link_preflight_remain_ms() + 999) / 1000));
+    } else if (pst != LINK_PF_DONE) {
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print(" Preflt  : not run");
+    } else if (pf & LINK_PFF_PONS_SAME) {
+      // 同じ CH/SF/Group に送信機が 2 台。受信側の表示（DUP_SENDER）と用語を揃える。
+      // RSSI を添えるのは、隣で出ているのか遠くなのかで対処が変わるため。
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.printf(" Preflt  : DUP SENDER %ddBm", link_preflight_pons_rssi());
+    } else if (pf & LINK_PFF_PONS_OTHER) {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.printf(" Preflt  : PONS grp%u %ddBm",
+                        link_preflight_other_group(), link_preflight_pons_rssi());
+    } else if (pf & LINK_PFF_BURST) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print(" Preflt  : BUSY (bursts)");
+    } else if (pf & LINK_PFF_NOISY) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf(" Preflt  : NOISY %d dBm", link_preflight_noise_med());
+    } else if (pf & LINK_PFF_SKIPPED) {
+      // モジュール無応答か、雑音を 1 つも取れなかった（RSSI バイト無効の疑い）。
+      // どちらも「静かだった」ではないので、緑にしてはいけない。
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print(" Preflt  : NOT MEASURED");
+    } else {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.printf(" Preflt  : OK (%d dBm)", link_preflight_noise_med());
+    }
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     y += lh;
   }
   y += 4;
@@ -2211,6 +2250,13 @@ static void draw_link_icons() {
 
   if (!link_module_alive()) {
     // モジュール自体が応答していない。強度も送出も語れない。
+  } else if (!rx && link_preflight_state() == LINK_PF_RUNNING) {
+    // ★ 送信前チェックの最中。まだ 1 回も送っていないので、下の分岐に落とすと
+    //   「弧 0 本＋赤い×」＝送れていない、に見えてしまう。故障と区別できないので
+    //   専用の見た目にする。橙の弧 1 本＝「今は聴いている」。
+    level = 1;
+    rcol  = COLOR_ORANGE;
+    lost  = false;
   } else if (!rx) {
     // 送出の直後だけ弧を伸ばす。脈動が止まる＝送れていない、が一目で分かる。
     const uint32_t since = link_since_tx_ms();
@@ -2254,6 +2300,61 @@ static void draw_link_nosignal_box() {
   backscreen.unloadFont();
 }
 
+// 送信前チェックのポップアップ（送信モードのみ・地図画面のみ）。
+//   点検中 : 橙枠。「今は聴いている」＝送信していないことを明示する
+//   警告   : 赤枠。判定が出てから LINK_PF_WARN_SHOW_MS の間だけ出す
+// ★ 出しっぱなしにはしない。送信は続いているので、地図を覆い続ける理由が無い。
+//   見逃しても WIRELESS 画面と log.txt に残る。
+static void draw_link_preflight_box() {
+  const LinkPreflightState st = link_preflight_state();
+  const uint8_t f = link_preflight_flags();
+  const bool running = (st == LINK_PF_RUNNING);
+  if (!running) {
+    if (st != LINK_PF_DONE || f == LINK_PFF_OK) return;
+    if (link_preflight_since_done_ms() > LINK_PF_WARN_SHOW_MS) return;
+  }
+
+  const uint16_t col = running ? COLOR_ORANGE : COLOR_RED;
+  const int bx = 10, by = 96, bw = SCREEN_WIDTH - 20, bh = 44;
+  backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
+  backscreen.drawRect(bx,     by,     bw,     bh,     col);
+  backscreen.drawRect(bx + 1, by + 1, bw - 2, bh - 2, col);
+  backscreen.setTextColor(col, COLOR_WHITE);
+  backscreen.setTextSize(1);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(bx + 10, by + 8);
+
+  if (running) {
+    backscreen.print("CHECKING CHANNEL...");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.printf("%lus  (not sending yet)",
+                      (unsigned long)((link_preflight_remain_ms() + 999) / 1000));
+  } else if (f & LINK_PFF_PONS_SAME) {
+    // 一番まずい状態。同じ CH/SF/Group にもう 1 台 TX がいる＝送信機が 2 台。
+    backscreen.print("ANOTHER SENDER");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.print("ON THIS CHANNEL !!");
+  } else if (f & LINK_PFF_PONS_OTHER) {
+    backscreen.print("OTHER PONS FOUND");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.printf("group %u  - change CH", link_preflight_other_group());
+  } else if (f & LINK_PFF_BURST) {
+    backscreen.print("CHANNEL BUSY.");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.print("SOMETHING IS SENDING.");
+  } else if (f & LINK_PFF_NOISY) {
+    backscreen.print("CHANNEL NOISY.");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.printf("%d dBm  - change CH", link_preflight_noise_med());
+  } else {                                   // LINK_PFF_SKIPPED
+    // 「静かだった」ではなく「測れなかった」。合格と混同させない。
+    backscreen.print("CH CHECK FAILED.");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.print("COULD NOT MEASURE.");
+  }
+  backscreen.unloadFont();
+}
+
 // 無線のオーバーレイ。push_backscreen() から必ず通る。
 //   ・枠とポップアップは**受信モードだけ**。表示の意味が入れ替わるのは受信側なので。
 //   ・アイコンは**送信モードでも出す**（地図画面のみ）。
@@ -2266,7 +2367,12 @@ static void draw_link_overlay() {
   if (mode == LINK_MODE_OFF) return;
 
   if (mode == LINK_MODE_TX) {
-    if (screen_mode == MODE_MAP) draw_link_icons();
+    if (screen_mode == MODE_MAP) {
+      draw_link_icons();
+      // ★ 送信モードでもポップアップを出す唯一の場面。
+      //   枠（常設）とは別物で、こちらは飛ぶ前の数秒だけ。
+      draw_link_preflight_box();
+    }
     return;
   }
 

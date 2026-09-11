@@ -3,7 +3,7 @@
 // Project : PONS v7 — PONS Link
 // Role    : E220-900T22S(JP) の下位ドライバ実装
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/08
+// Updated : 2026/09/11
 // ============================================================
 
 #include "e220.h"
@@ -25,6 +25,33 @@
 // ---- 状態 ----
 static bool    s_alive     = false;    // 設定の読み返しが通ったか
 static bool    s_asleep    = false;
+
+// ---- 実行中の生存確認 ----
+// ★ s_alive だけでは「起動後に死んだ」を検出できない。書いているのは
+//   write_config() だけなので、更新されるのは e220_setup() と e220_reconfigure()
+//   を通ったときだけ。**飛行中にコネクタが抜けても true のまま**になる。
+//   そうなると e220_send() は書き込むだけで成功し続け（AUX は未実装対策の
+//   INPUT_PULLUP なので断線すると High＝アイドルに見える）、送信回数も
+//   地図の弧も増え続ける。上りが無いので誰も気づけない。
+//
+//   そこで「問い合わせて返事があったか」を別に数える。返事＝生きている証拠は
+//     ・環境ノイズ取得の応答（こちらから聞けるのはこれだけ。link.cpp が定期的に叩く）
+//     ・テレメトリを 1 つ受け取った（受信機はこれで足りる）
+//   の 2 つで、どちらかがあれば 0 に戻す。
+static uint8_t s_noResp = 0;           // 連続して返事が無かった回数
+#define E220_NORESP_LIMIT     3        // これ以上続いたら無応答とみなす
+
+// 環境ノイズ取得の応答待ち [ms]。生きていれば数 ms で返る。
+// ★★ 一度でも落ちたら短いほうに切り替える。**無応答のまま 200ms 待ちを
+//   繰り返すと Core0 が止まり、GPS の FIFO（1024B / 38400bps ≒ 267ms）が溢れて
+//   NAV-PVT を丸ごと取りこぼす。** 生きていれば数 ms で返るので、短くしても
+//   取りこぼさないし、返事があれば 0 に戻って長いほうへ復帰する。
+#define E220_NOISE_WAIT_MS      200
+#define E220_NOISE_WAIT_FAST_MS  30
+
+// 返事があった／無かったを 1 か所で数える。
+static inline void note_response()   { s_noResp = 0; }
+static inline void note_no_response(){ if (s_noResp < 255) s_noResp++; }
 
 // 受信の組み立てバッファ。
 //   1 パケット = ペイロード + RSSI 1 バイト。取りこぼしや異物で位相がずれても
@@ -240,6 +267,7 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     set_mode(MODE_CONFIG);
     set_baud(LINK_UART_BAUD_CFG);      // mode 3 は 9600 固定
     s_alive = write_config(ch, profile, persist);
+    if (s_alive) note_response();      // 読み返しが通った＝確実に生きている
     set_baud(LINK_UART_BAUD);          // 通常運用へ戻す
     set_mode(MODE_NORMAL);
     s_asleep = false;
@@ -249,7 +277,9 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     return s_alive;
 }
 
-bool e220_alive() { return s_alive; }
+// 起動時の照合が通り、かつ直近の問い合わせに返事があるか。
+// ★ 「設定が入っているか」と「今も応答するか」は別物なので両方を見る。
+bool e220_alive() { return s_alive && (s_noResp < E220_NORESP_LIMIT); }
 
 // ============================================================
 //  送信
@@ -305,6 +335,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
 
         memcpy(out, s_rx + i, frame_len);
         if (rssi_dbm) *rssi_dbm = (int16_t)s_rx[i + frame_len] - 256;
+        note_response();               // 1 発でも受かった＝モジュールは生きている
 
         rx_drop_front((uint16_t)(i + need));   // 使った分まで詰める
         return true;
@@ -370,8 +401,12 @@ bool e220_read_noise(int16_t* noise_dbm, int16_t* last_rssi_dbm) {
     E220_SERIAL.write(cmd, sizeof(cmd));
     E220_SERIAL.flush();
 
+    // 生きていれば数 ms で返る。一度落ちたあとは短い待ちに切り替えて、
+    // 無応答が続いても Core0 を止めない（上の E220_NOISE_WAIT_* 参照）。
+    const uint32_t wait_ms = (s_noResp == 0) ? E220_NOISE_WAIT_MS
+                                             : E220_NOISE_WAIT_FAST_MS;
     const uint32_t t0 = millis();
-    while (millis() - t0 < 200) {
+    while (millis() - t0 < wait_ms) {
         rx_pump();
         for (uint16_t i = from; (uint16_t)(i + 5) <= s_rxLen; i++) {
             if (s_rx[i] != 0xC1 || s_rx[i + 1] != 0x00 || s_rx[i + 2] != 0x02) continue;
@@ -380,9 +415,11 @@ bool e220_read_noise(int16_t* noise_dbm, int16_t* last_rssi_dbm) {
             // 応答の 5 バイトだけを抜く。前後のテレメトリは壊さない。
             memmove(s_rx + i, s_rx + i + 5, (size_t)(s_rxLen - (i + 5)));
             s_rxLen = (uint16_t)(s_rxLen - 5);
+            note_response();
             return true;
         }
         delay(2);
     }
+    note_no_response();
     return false;
 }
