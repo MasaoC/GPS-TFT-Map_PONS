@@ -1,6 +1,6 @@
 // ============================================================
 // File    : imu.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : BNO085 (GY-BNO080) IMU ドライバー + 3 状態 Kalman フィルター実装。
 //
 // ■ アーキテクチャ
@@ -35,33 +35,51 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/09/11
 // ============================================================
 
 #include <Arduino.h>
 #include <Adafruit_BNO08x.h>
 
 #include "imu.h"
+#include "link.h"
 #include "settings.h"
-#include "airdata.h"  // myWire (i2c0, GPIO32/33) を共用する
+#include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
 #include "mysd.h"     // enqueueTask / createLogSdfTask
 #include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
-#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // ============================================================
-// I2C バス（MS5611 と共用: i2c0, GPIO32=SDA, GPIO33=SCL）
+// 注意: BNO085 は MS5611 とはバスを共有していない
 // ============================================================
-// airdata.cpp で定義された myWire を extern で参照する。
-// バスの begin() / setClock() は airdata_setup() で完了済みのため
-// imu_setup() では呼ばない。
+// MS5611 は i2c0(GPIO32/33、airdata.cpp の myWire)。
+// BNO085 は SPI1(GPIO41-44) または i2c1(GPIO34/35) で、下の imuWire を使う。
+// v6 までは両方 i2c0 だったが、v7 基板で分離した。
+
+// ============================================================
+// BNO085 ホストバス（SPI / I2C）
+// ============================================================
+// settings.h の IMU_BUS_SPI で切り替える。ハード側の半田ジャンパ JP1（PS1）と
+// 必ず一致させること（SPI: JP1=+3V3 / I2C: JP1=GND）。
+//
+// v7 基板では BNO085 の H_SCL/H_SDA に SPI1 と I2C1 の両方が繋がっている
+// （R46/R47 の 0Ω で連結）。使わない側は begin() を呼ばないことで
+// 高インピーダンスのまま放置し、バス衝突を避ける。
+//   → SPI モードでは Wire1 を絶対に begin() しないこと
+//   → I2C モードでは SPI1 を絶対に begin() しないこと
+#ifdef IMU_BUS_SPI
+  #include <SPI.h>
+#else
+  static TwoWire imuWire(i2c1, IMU_I2C_SDA, IMU_I2C_SCL);
+#endif
 
 // ============================================================
 // BNO085 ドライバーオブジェクト
 // ============================================================
 // ライブラリ側のリセット機能は無効(-1)にする。
-// begin_I2C() 内部のリセット待ちは ~10ms しかなく BNO085 のブートに不足するため。
-// 手動リセットは imu_setup() の先頭で行う（NRST を LOW→HIGH して 400ms 待つ）。
+// begin_*() 内部のリセット待ちは ~10ms しかなく BNO085 のブートに不足するため。
+// 手動リセットは imu_reset_start()/imu_reset_poll() で行う（NRST を LOW→HIGH して 400ms 待つ）。
 static Adafruit_BNO08x  bno08x(-1);
 static sh2_SensorValue_t sv;  // imu_sensor_handler() が sh2_decodeSensorEvent() で埋める作業バッファ
 
@@ -302,7 +320,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
 // imu_enable_reports(): レポート有効化と SH2 コールバック登録
 // ============================================================
 // imu_setup() と imu_try_recovery() の両方から呼ぶ。
-// 復旧時にここを通さないと、begin_I2C() が Adafruit 既定のハンドラを
+// 復旧時にここを通さないと、begin_*() が Adafruit 既定のハンドラを
 // 再登録してしまい、レポート取りこぼしのバグが静かに復活する。
 //
 // レートは settings.h の IMU_RATE_*_HZ で一元管理する。
@@ -348,7 +366,7 @@ static bool imu_enable_reports() {
     }
 
     // ---- 自前の SH2 コールバックを登録（Adafruit 既定のものを上書きする）----
-    // begin_I2C() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
+    // begin_*() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
     // これにより 1 パケットに複数レポートが載っていても全件処理できる（取りこぼし解消）。
     sh2_setSensorCallback(imu_sensor_handler, NULL);
     return all_ok;
@@ -657,62 +675,213 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
 }
 
 
+
+// ============================================================
+// BNO085 ホストバスの共通処理（SPI / I2C 両対応）
+// ============================================================
+// imu_setup() と imu_try_recovery() の両方から使う。
+// リセット手順とバス初期化を 1 箇所に集約して、片方だけ直し忘れるのを防ぐ。
+
+// プロトコル選択ピン（PS0）を、これから使うバスに合わせて駆動する。
+// データシート Figure 1-5:  PS1=1,PS0=1 → SPI /  PS1=0,PS0=0 → I2C
+// PS1 は半田ジャンパ JP1 側で固定されているので、ソフトが触るのは PS0 だけ。
+// ※ SPI では「リセット前から、最初の H_INTN アサートまで」HIGH を保つ必要がある
+//   （データシート 1.2.4 の注記5）。ここで HIGH にしてからリセットを掛ける。
+static void imu_bus_select_protocol() {
+    pinMode(IMU_PS0_WAKE_PIN, OUTPUT);
+#ifdef IMU_BUS_SPI
+    digitalWrite(IMU_PS0_WAKE_PIN, HIGH);   // PS0=1 → SPI
+    // SA0/H_MOSI は SPI ではデータ線なので、ここでは触らない。
+#else
+    digitalWrite(IMU_PS0_WAKE_PIN, LOW);    // PS0=0 → I2C
+    // I2C ではこのピンが SA0（アドレス下位ビット）になる。HIGH で 0x4B。
+    pinMode(IMU_I2C_SA0_PIN, OUTPUT);
+    digitalWrite(IMU_I2C_SA0_PIN, (IMU_I2C_ADDR & 1) ? HIGH : LOW);
+#endif
+}
+
+// NRST パルスで BNO085 を確実にリセットする（**ステートマシン**）。
+// USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は前回実行時の
+// SHTP/SH2 状態を保持したままになる。この状態では begin_*() が失敗するため必ず通す。
+//   LOW 期間 : 10ms（最小パルス幅 100µs を大幅に超える）
+//   ブート待機: 400ms（データシート推奨値）
+//
+// ★ **ここを delay() で書いてはいけない。**
+//   以前は delay(10)+delay(400) を直に並べていたため、飛行中の復旧試行のたびに
+//   Core0 が 410ms 止まっていた。GPS は 38400bps・FIFO 1024B なので約 270ms で
+//   バッファが溢れ、NAV-PVT を丸ごと取りこぼす。地図・ボタン・バリオも同時に止まる。
+//   しかも BNO085 が死んでいる限り復旧は 1 分ごとに走り続けるので、症状が繰り返す。
+//   経過時間で進める形にして、待っている間 Core0 を返せるようにした。
+//
+// ※ プロトコル選択ピンはリセット時にラッチされるので、
+//   必ず imu_bus_select_protocol() を先に呼んでから使うこと。
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+  #define IMU_RST_LOW_MS   10    // NRST を LOW に保持する時間
+  #define IMU_RST_BOOT_MS  400   // 解除してからブート完了までの待ち
+#else
+  #define IMU_RST_LOW_MS   0     // NRST が繋がっていないので、ピンは触らず待つだけ
+  #define IMU_RST_BOOT_MS  200
+#endif
+
+typedef enum {
+    IMU_RST_IDLE = 0,   // 進行中のリセットは無い
+    IMU_RST_LOW,        // NRST を LOW にした。パルス幅を待っている
+    IMU_RST_BOOT,       // NRST を HIGH に戻した。ブート完了を待っている
+} ImuResetPhase;
+
+static ImuResetPhase imu_rst_phase = IMU_RST_IDLE;
+static unsigned long imu_rst_ms    = 0;
+
+// リセットを開始する（ブロックしない）。
+static void imu_reset_start() {
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+    pinMode(IMU_RST_PIN, OUTPUT);
+    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
+#endif
+    imu_rst_phase = IMU_RST_LOW;
+    imu_rst_ms    = millis();
+}
+
+// リセットを進める。完了したら true を返し、IDLE へ戻る。ブロックしない。
+static bool imu_reset_poll() {
+    const unsigned long now = millis();
+    switch (imu_rst_phase) {
+        case IMU_RST_LOW:
+            if (now - imu_rst_ms < IMU_RST_LOW_MS) return false;
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+            digitalWrite(IMU_RST_PIN, HIGH);      // リセット解除
+#endif
+            imu_rst_phase = IMU_RST_BOOT;
+            imu_rst_ms    = now;
+            return false;
+        case IMU_RST_BOOT:
+            if (now - imu_rst_ms < IMU_RST_BOOT_MS) return false;
+            imu_rst_phase = IMU_RST_IDLE;
+            return true;
+        default:
+            return true;                          // 開始していない＝待つものが無い
+    }
+}
+
+// 起動時（imu_setup）専用。ここで止まるのは構わないので待ち切る。
+// タイミングの実体は上のステートマシン 1 つだけにして、
+// 「起動時と復旧時で片方だけ直し忘れる」を構造的に防ぐ。
+static void imu_reset_blocking() {
+    imu_reset_start();
+    while (!imu_reset_poll()) delay(1);
+}
+
+// SPI 構成での生存確認。H_INTN（負論理）がアサートされていれば BNO085 が居る。
+// ブート直後は advertisement が積まれていて LOW のままのはずなので、これで判別できる。
+// i2c1 構成では imu_bus_begin() の ACK 確認が同じ役目を果たすので常に true。
+static bool imu_int_asserted() {
+#ifdef IMU_BUS_SPI
+    return digitalRead(IMU_INT_PIN) == LOW;
+#else
+    return true;
+#endif
+}
+
+// バスを初期化して Adafruit_BNO08x を開始する。成功で true。
+// リトライは呼び出し側が行う。
+static bool imu_bus_begin() {
+#ifdef IMU_BUS_SPI
+    // ★ **ライブラリを呼ぶ前に必ず生存確認する。** ここを通さずに begin_SPI() を
+    //   呼ぶと、BNO085 が応答しない場合に sh2_getProdIds() が無期限ループに入り
+    //   （settings.h の IMU_SPI_INT_WAIT_MS のコメント参照）、起動時なら
+    //   **PONS がここで固まったまま起動しない**。飛行中の復旧なら Core0 が永久に止まる。
+    //   i2c1 構成の ACK 確認と対になるガード。
+    pinMode(IMU_INT_PIN, INPUT_PULLUP);
+    {
+        const unsigned long t0 = millis();
+        while (!imu_int_asserted()) {
+            if (millis() - t0 >= IMU_SPI_INT_WAIT_MS) {
+                DEBUGW_PLN(20260901, "[IMU] BNO085 no INT on SPI1");
+                return false;
+            }
+        }
+    }
+    // arduino-pico では begin() の前にピンを割り当てる。
+    // CS はライブラリ（Adafruit_SPIDevice）が digitalWrite で叩くので setCS() は呼ばない。
+    static bool spi_pins_done = false;
+    if (!spi_pins_done) {
+        SPI1.setSCK(IMU_SPI_SCK);
+        SPI1.setTX(IMU_SPI_MOSI);
+        SPI1.setRX(IMU_SPI_MISO);
+        spi_pins_done = true;   // begin() 後は setSCK() 等が false を返すだけなので一度きり
+    }
+    // begin_SPI() が内部で SPI1.begin() と pinMode(INT, INPUT_PULLUP) を行う。
+    // 転送設定は 1MHz / SPI_MODE3 / MSB first（BNO085 の要求どおり）。
+    return bno08x.begin_SPI(IMU_SPI_CS, IMU_INT_PIN, &SPI1);
+#else
+    // 先にアドレス応答を確認しておく（失敗時のログを分かりやすくするため）。
+    imuWire.beginTransmission(IMU_I2C_ADDR);
+    if (imuWire.endTransmission() != 0) {
+        DEBUGW_PLN(20260901, "[IMU] BNO085 no ACK on i2c1");
+        return false;
+    }
+    return bno08x.begin_I2C(IMU_I2C_ADDR, &imuWire);
+#endif
+}
+
+// SPI モードで、初期化完了後に WAKE を有効な状態へ落ち着かせる。
+// BNO085 の PS0 はリセット後 WAKE（負論理）に役割が変わる。
+// Adafruit のライブラリは WAKE を駆動しないため、こちらで LOW に保持して
+// デバイスをスリープさせない。本機は 250Hz でポーリングし続けるので、
+// スリープさせる意味が無く、保持しておく方が取りこぼしが起きない。
+static void imu_bus_post_init() {
+#ifdef IMU_BUS_SPI
+    digitalWrite(IMU_PS0_WAKE_PIN, LOW);
+#endif
+}
+
+// バスの名前（ログ用）
+static const char* imu_bus_name() {
+#ifdef IMU_BUS_SPI
+    return "SPI1";
+#else
+    return "i2c1";
+#endif
+}
+
 // ============================================================
 // imu_setup(): BNO085 の初期化
 // ============================================================
 void imu_setup() {
     DEBUG_PLN(20260315, "[IMU] imu_setup() start");
+    DEBUGW_P(20260901, "[IMU] host bus = "); DEBUGW_PLN(20260901, imu_bus_name());
 
-    // ---- NRST によるハードウェアリセット ----
-    // USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は
-    // 前回実行時の SHTP/SH2 状態を保持したままになる。
-    // この状態では I2C が不整合のまま begin_I2C() が失敗するため、
-    // setup() 冒頭で NRST を手動でアサートして BNO085 自体を確実にリセットする。
-    //   LOW 期間: 10ms（最小パルス幅 100µs を大幅に超える）
-    //   ブート待機: 400ms（BNO085 データシート推奨値。電源投入後のブート時間と同等）
-    //
-    // ※ NRST は負論理: LOW でリセットアサート、HIGH で通常動作。
-    // ※ setup() で INPUT_PULLUP 設定済みだが、ここで OUTPUT に切り替えてパルスを出す。
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-    pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート
-    delay(10);                         // 10ms 保持（min 100µs）
-    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
-    delay(400);                        // BNO085 ブート完了を待つ（~400ms）
-    DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
+    // ---- プロトコル選択 → ハードウェアリセット ----
+    // PS1/PS0 はリセット時にラッチされるので、必ずこの順で行う。
+    // I2C バス（i2c1）は BNO085 専用。MS5611 の i2c0 とは別系統なので独立に初期化する。
+    imu_bus_select_protocol();
+#ifndef IMU_BUS_SPI
+    imuWire.begin();
+    imuWire.setClock(IMU_I2C_HZ);
 #endif
-
-    // I2C バスは airdata_wire_begin() で初期化済みのため begin()/setClock() は不要。
-    // myWire (i2c0, GPIO32/33, 100kHz) をそのまま使う。
-
-    // BNO085 への接続確認（アドレス応答チェック）
-    myWire.beginTransmission(IMU_I2C_ADDR);
-    if (myWire.endTransmission() != 0) {
-        DEBUGW_PLN(20260315, "[IMU] BNO085 not found on I2C bus. Check wiring/address.");
-        bno085_ok = false;
-        enqueueTask(createLogSdTask("BNO085 not found"));
-        return;
-    }
+    imu_reset_blocking();
+    DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
 
     // Adafruit_BNO08x でセンサーを初期化する。
-    // BNO085 は I2C アドレスに ACK を返せても SH2/SHTP 層の Ready まで時間がかかるため、
-    // begin_I2C() を最大 5 回リトライする（各リトライ前に 200ms 待機）。
+    // BNO085 はバスに応答できても SH2/SHTP 層の Ready まで時間がかかるため、
+    // 最大 5 回リトライする（各リトライ前に 200ms 待機）。
     bool imu_begun = false;
     for (int retry = 0; retry < 5; retry++) {
-        if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire)) {
+        if (imu_bus_begin()) {
             imu_begun = true;
             break;
         }
-        DEBUGW_P(20260315, "[IMU] begin_I2C retry ");
+        DEBUGW_P(20260315, "[IMU] begin retry ");
         DEBUGW_PLN(20260315, retry + 1);
         delay(200);
     }
     if (!imu_begun) {
-        DEBUGW_PLN(20260315, "[IMU] BNO085 begin_I2C() FAILED.");
-        enqueueTask(createLogSdTask("BNO085 begin_I2C FAILED"));
+        DEBUGW_PLN(20260315, "[IMU] BNO085 begin() FAILED.");
+        enqueueTask(createLogSdfTask("BNO085 begin FAILED (%s)", imu_bus_name()));
         bno085_ok = false;
         return;
     }
+    imu_bus_post_init();
 
     if (!imu_enable_reports()) {
         // 個々の失敗はログに残すが、致命ではないので続行する
@@ -757,45 +926,104 @@ void imu_setup() {
 
 
 // ============================================================
-// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数）
+// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数・ステートマシン）
 // ============================================================
-// imu_update() から呼ばれる。内部で1分レート制限する。
-// NRST を LOW→HIGH してハードウェアリセット後、begin_I2C() で再初期化を試みる。
-// 成功すれば bno085_ok=true に戻し、失敗なら次の1分後に再試行する。
-// MS5611 と I2C バスを共用しているため Wire のリセットは行わない
-//（NRST による BNO085 リセットで SDA が解放されることを期待する）。
-// ※ NRST パルス＋ブート待機で Core0 が最大 410ms ブロックする。
-//   1分に1度のみ実行のため、画面の一時的な停止は許容する。
+// imu_update() から毎ループ呼ばれる。1 分に 1 回だけ復旧手順を開始し、
+// 以降は 1 ループにつき 1 段ずつ進める。**待ちのために Core0 を止めない。**
+//
+//   IDLE ──(1分経過)──▶ RESET ──(410ms 経過)──▶ WAITINT ──(H_INTN LOW)──▶ BEGIN ──▶ IDLE
+//                       NRST パルス            生存確認         バス初期化＋レポート再有効化
+//                                                  │
+//                                                  └─(300ms 応答なし)──▶ IDLE（失敗・次は 1 分後）
+//
+// ★ 以前はこの関数の中で delay(10)+delay(400) を通していたため、
+//   1 分ごとに Core0 が 410ms 止まり、GPS の受信 FIFO（1024B / 38400bps ＝ 約 270ms）が
+//   溢れて NAV-PVT を落としていた。地図もボタンもバリオも同時に止まっていた。
+//
+// ★★ WAITINT を挟むのは「BNO085 が本当に居るか」を**ライブラリを呼ぶ前に**確かめるため。
+//   居ないまま begin_SPI() を呼ぶと sh2_getProdIds() が無期限ループに入って
+//   **戻ってこない**（settings.h の IMU_SPI_INT_WAIT_MS のコメントに根拠）。
+//   復旧は BNO085 が死んでいるときにこそ走るので、ここを素通しにはできない。
+//   居ないと判定した場合、この経路の Core0 ブロックは 0ms。
+//
+// ※ 残るブロックは BEGIN の 1 ティックだけ。ここまで来た＝BNO085 が応答している
+//   状態なので、begin_*() は通常数 ms で返る。**ただし advertisement には応答したが
+//   直後に黙る、という壊れ方をすると今も無期限に止まる**（ライブラリ側に
+//   タイムアウトが無いため、こちらからは塞げない）。
+//
+// 成功すれば bno085_ok=true に戻し、失敗なら次の 1 分後に再試行する。
+// v7 では BNO085 専用バス（SPI1 / i2c1）なので、MS5611 側への影響は無い。
 // CORE0
+typedef enum {
+    IMU_RECOV_IDLE = 0,   // 待機中（次の試行までのインターバル）
+    IMU_RECOV_RESET,      // NRST パルス〜ブート待ち（imu_reset_poll() が進める）
+    IMU_RECOV_WAITINT,    // H_INTN で生存確認（SPI のみ。i2c1 は素通り）
+    IMU_RECOV_BEGIN,      // バス初期化とレポート再有効化
+} ImuRecovState;
+static ImuRecovState imu_recov_state = IMU_RECOV_IDLE;
+static unsigned long imu_recov_wait_ms = 0;   // WAITINT に入った時刻
+
 static void imu_try_recovery() {
     static unsigned long last_recovery_ms = 0;
-    unsigned long now_ms = millis();
-    // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
-    if (last_recovery_ms > 0 && now_ms - last_recovery_ms < 60000UL) return;
-    last_recovery_ms = now_ms;
+    const unsigned long now_ms = millis();
 
-    enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
-    DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+    switch (imu_recov_state) {
+    case IMU_RECOV_IDLE:
+        // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
+        if (last_recovery_ms > 0 && now_ms - last_recovery_ms < IMU_RECOVERY_INTERVAL_MS) return;
+        last_recovery_ms = now_ms;   // 間隔は「試行の開始から開始まで」で数える
 
-    // ---- BNO085 ハードウェアリセット ----
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-    pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
-    delay(10);
-    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
-    delay(400);                        // BNO085 ブート完了待機（データシート推奨値）
-#else
-    delay(200);  // RST ピンなし: SH2 リセット完了を待つだけ
+        enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+
+        // ---- プロトコル再選択 → ハードウェアリセット開始 ----
+        // PS0 は SPI 運用中 WAKE として LOW に落としてあるので、リセット前に
+        // プロトコル選択のレベル（SPI なら HIGH）へ戻してからパルスを掛ける。
+        imu_bus_select_protocol();
+        imu_reset_start();
+        imu_recov_state = IMU_RECOV_RESET;
+        return;                      // ★ 待たずに帰る。410ms は次のループ以降で数える
+
+    case IMU_RECOV_RESET:
+        if (!imu_reset_poll()) return;   // まだリセット中。1 ループも止めない
+#ifdef IMU_BUS_SPI
+        pinMode(IMU_INT_PIN, INPUT_PULLUP);
 #endif
+        imu_recov_wait_ms = now_ms;
+        imu_recov_state   = IMU_RECOV_WAITINT;
+        return;
+
+    case IMU_RECOV_WAITINT:
+        if (imu_int_asserted()) {        // 応答あり → 再初期化へ
+            imu_recov_state = IMU_RECOV_BEGIN;
+            return;
+        }
+        if (now_ms - imu_recov_wait_ms < IMU_SPI_INT_WAIT_MS) return;   // まだ待つ
+        // 居ない。**ライブラリを呼ばずに諦める**（呼ぶと戻ってこない）。
+        imu_recov_state = IMU_RECOV_IDLE;
+        enqueueTask(createLogSdTask("[IMU] BNO085 recovery FAILED (no INT)"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery FAILED (no INT)");
+        return;
+
+    case IMU_RECOV_BEGIN:
+    default:
+        imu_recov_state = IMU_RECOV_IDLE;
+        break;                           // 下の再初期化へ進む
+    }
 
     // ---- 再初期化 ----
     // レポート有効化と SH2 コールバック登録は imu_enable_reports() に集約している。
     // ここで直接 enableReport() を並べてはいけない:
     //   ・settings.h のレート設定と二重管理になる
     //   ・生レポート（ESKF 用）が復旧後に復活しない
-    //   ・begin_I2C() が再登録した Adafruit 既定ハンドラを上書きし損ね、
+    //   ・begin_*() が再登録した Adafruit 既定ハンドラを上書きし損ね、
     //     レポート取りこぼしのバグが静かに戻る
-    if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire) && imu_enable_reports()) {
+    bool recovered = imu_bus_begin();
+    if (recovered) {
+        imu_bus_post_init();
+        recovered = imu_enable_reports();
+    }
+    if (recovered) {
         // 受信時刻をリセット（クォータニオン・加速度も無効化）。
         // millis() をセットすることで、1秒以内にデータが届かなければ再度 timeout → 再試行の
         // サイクルに入れる。0 にすると bno085_ok=true のまま再試行が永遠に発火しなくなる。
@@ -822,12 +1050,11 @@ static void imu_try_recovery() {
 // imu_update(): ポーリングでデータ読み出しと Kalman predict を実行
 // ============================================================
 // loop() から毎回呼ぶ（ノンブロッキング）。
-// 30ms 未満の呼び出しは即リターン（33Hz ポーリング → 最大 30ms 遅延）。
-// MS5611 と I2C バスを共用するため高頻度呼び出しを避ける（i2c0）。
-// ※ バスクロックは airdata.cpp:414 の setClock() が実際の設定値。
-//   現在 400000 が書かれているが、同ファイルの直上コメントは
-//   「100kHz にする／400kHz では error:5 でバスがロックする」と逆のことを述べており、
-//   両者は同一コミットで同時に入っている（要確認事項）。
+// ポーリング周期は IMU_POLL_INTERVAL_US（settings.h）で決まる。
+//   生レポート有効時: 4ms（250Hz）／無効時: 30ms（33Hz）。詳細は関数の中のコメント。
+// ★ v6 までは「MS5611 と i2c0 を共用するので高頻度に叩けない」という制約があったが、
+//   v7 で BNO085 を SPI1（予備で i2c1）へ移してバスを分離したため、その制約は無い。
+//   周期を決めているのは BNO085 のレポート配信能力のほうで、バスではない。
 void imu_update() {
     // ---- 通信途絶の自動検出 ----
     // bno085_ok=true でも1秒以上データが届かない場合は途絶と判定し false に落とす。
@@ -876,8 +1103,16 @@ void imu_update() {
     _poll_last_us = _now_us;
 
     // ---- データ取り出し ----
-    // sh2_service() は届いている SHTP パケットを全部処理し、
-    // レポート 1 件ごとに imu_sensor_handler() を呼ぶ。取りこぼしは発生しない。
+    // sh2_service() は HAL の read() を「1 回だけ」呼び、SHTP パケットを 1 個処理する
+    // （shtp.c の shtp_service() はループしない）。1 パケットに複数レポートが載っている
+    // 場合は、その全部が imu_sensor_handler() に配られる。
+    // つまり「1 ポーリング = 1 パケット」で、パケット内の取りこぼしは無いが、
+    // パケットが溜まっている場合は 1 回の呼び出しでは 1 個しか引き取れない。
+    // 溜まった分は BNO085 内部のキューに残り、次のポーリングで順に引き取る。
+    // ドレイン能力 = 1/IMU_POLL_INTERVAL_US（4ms なら 250 パケット/秒）。
+    // 要求レート（合計 145 レポート/秒。同時刻のものは 1 パケットにまとまる）に対する
+    // 余裕がこれで決まる。足りないと BNO085 側でレポートが捨てられる
+    // （settings.h の IMULOG_RAW_REPORTS_ENABLED に書いた 2026-08-17 の飢餓事件）。
     //
     // ※ Adafruit の bno08x.getSensorEvent() は使わない。
     //   あちらは sh2_service() の結果を単一スロット _sensor_value に上書きするため、
@@ -887,6 +1122,15 @@ void imu_update() {
     //   要求レートを上げるほどこの取りこぼしが増える。
     //   2026-08-17 に GRV/LACC/RV が 15/15/5Hz 設定に対し 4/5/1Hz まで飢餓になり、
     //   古い加速度を繰り返し積分してバリオが暴れた原因がこれだった。
+#ifdef IMU_BUS_SPI
+    // ★SPI では H_INTN がアサート（LOW）されている時だけ sh2_service() を呼ぶこと。
+    //   Adafruit の SPI HAL は読み出しの度に spihal_wait_for_int() で INT を待ち、
+    //   来なければ delay(1) を 500 回まわす（= Core0 が最大 500ms 止まる）。
+    //   BNO085 の SPI は「INT が来たら転送する」プロトコルなので、
+    //   ここで見てから入れば待たされない。I2C にはこの制約は無い。
+    if (digitalRead(IMU_INT_PIN) != LOW) return;
+#endif
+
     _report_count = 0;
     sh2_service();
     int read_count = _report_count;
@@ -1106,7 +1350,14 @@ float get_imu_mag_accuracy_deg() {
 // Kalman 推定上昇率を返す。
 // I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
 // 1 秒 = 30Hz × 33 サンプル分のタイムアウト。正常時は ~33ms ごとに更新される。
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_imu_vspeed_raw() に残してある。
 float get_imu_vspeed() {
+  if (link_mirror_active()) return link_get_kf_vspeed();
+  return get_imu_vspeed_raw();
+}
+
+float get_imu_vspeed_raw() {
     // リプレイ中で CSV に KF_Vspeed 列があれば、その値を返す（バリオ音も再生される）
     if (replay_has_value(RHAVE_KFVS)) return replay_get_kf_vspeed();
 
@@ -1124,7 +1375,14 @@ float get_imu_vspeed() {
 // KF MSL高度 = KF AGL + gnss_kf_offset（起動地MSL高度の推定値）。
 // gnss_kf_offset 未確定時（GNSS 3D fix 前）は AGL 値（＝起動時 0m）を返す。
 // リプレイ中で CSV に KF_Altitude 列があれば、その値をそのまま返す。
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_imu_altitude_msl_raw() に残してある。
 float get_imu_altitude_msl() {
+  if (link_mirror_active()) return link_get_kf_altitude();
+  return get_imu_altitude_msl_raw();
+}
+
+float get_imu_altitude_msl_raw() {
     if (replay_has_value(RHAVE_KFALT)) return replay_get_kf_altitude();
     return _imu_altitude + _gnss_kf_offset;
 }

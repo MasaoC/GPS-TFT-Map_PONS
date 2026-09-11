@@ -1,28 +1,44 @@
 // ============================================================
 // File    : GPS_TFT_map.ino
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : メインエントリポイント。
 //           Core0: 画面描画・GPS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/11
+// ============================================================
+//
+// ■ src/ に置いてあるもの
+//   Arduino IDE はスケッチ直下のファイルを全部タブに出すので、
+//   ファイルが増えるとタブが埋まって目的のものを探しづらくなる。
+//   **仕様が固まっていて普段いじらないモジュール**は src/ へ移した。
+//   src/ 配下もコンパイルはされるが、IDE のタブには出ない。
+//     src/button.*     ボタン入力・メニュー
+//     src/sound.*      音声出力（WAV・トーン）
+//     src/vectormap.*  ベクタ地図の描画
+//     src/imulog.*     生 IMU ロガー（姿勢 ESKF のオフライン開発用）
+//     src/flashdata/   FLASH に置く大きな定数データ
+//
+//   ★ src/ の中からルート側のヘッダを参照するときは "../mysd.h" のように
+//     1 段戻ること。スケッチ直下は include パスに入っていない。
 // ============================================================
 
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
 #include "mysd.h"
-#include "button.h"
+#include "src/button.h"
 #include "gps.h"
-#include "sound.h"
+#include "src/sound.h"
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
-#include "imulog.h"
+#include "link.h"   // PONS Link（機体⇄ボート無線）
+#include "src/imulog.h"
 #include "attitude.h"
-#include "vectormap.h"
+#include "src/vectormap.h"
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
@@ -65,6 +81,8 @@ int cursorLine = 0;
 // コースから外れているほど増加し、900 に達すると音声警告を発する。
 // dt 乗算で小数加算が発生するため float 型で保持する。
 float course_warning_index = 0;
+// バンク角警告でミラー値を受けるための一時変数（判定式の中で使う）
+static float bank_roll_tmp = 0.0f, bank_pitch_tmp = 0.0f;
 unsigned long last_course_warning_time = 0;      // 直近の警告発報時刻 [millis]
 unsigned long last_destination_toofar_time = 0;  // 直近の「目的地が遠すぎる」警告時刻 [millis]
 double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 度。正=右、負=左)
@@ -221,6 +239,10 @@ void setup(void) {
     enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
   }
 
+  // 無線（PONS Link）の UART を開き、現在の設定を無線モジュールへ送る。
+  // 設定ファイルの読み込みが終わった後でなければ意味が無いので、ここで呼ぶ。
+  // 無線モジュールが未接続でも UART を開くだけなので害は無い。
+  link_setup();
 }
 
 
@@ -259,6 +281,14 @@ void setup1(void) {
 
 
 
+// その年月の日数。うるう年を考慮する（下の get_jst_now() の日付繰り上げ用）。
+static int days_in_month_of(int mo, int y) {
+  static const uint8_t dim[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+  if (mo < 1 || mo > 12) return 31;   // GPS の月が壊れていても配列外を読まない
+  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0)) return 29;
+  return dim[mo];
+}
+
 // ============================================================
 // get_jst_now(): GPS の UTC 日時から現在の JST 日時を求める
 // ============================================================
@@ -280,21 +310,20 @@ static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &c
   s  = utc_s  % 60;
   mi = utc_m  % 60;
   int jst_total_h = utc_h + 9;
-  bool next_day   = (jst_total_h >= 24);
   h = jst_total_h % 24;
 
-  // JST 日付計算（日をまたぐ場合に翌日へ繰り上げ）
+  // JST 日付計算。★ 繰り上げは 1 日ぶんとは限らない。
+  //   utc_h は「GPS パケットの時刻 + millis() の経過」なので、GPS が長時間
+  //   止まったまま日時だけ有効に残ると 24 時間を超えて積み上がる。
+  //   以前は next_day（+1 日）しか見ていなかったため、そこから先は日付がずれていた。
+  //   実運用（電池 12 時間）では 1 日を超えないが、桁の扱いを条件付きにしておく
+  //   理由が無いので、繰り上がる日数ぶん回す。通常はループ 0〜1 回。
   y  = get_gpsdate().year();
   mo = get_gpsdate().month();
-  d  = get_gpsdate().day() + (next_day ? 1 : 0);
-  static const uint8_t days_in_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-  int max_day = days_in_month[mo];
-  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0))
-    max_day = 29;  // うるう年
-  if (d > max_day) {
-    d = 1;
-    mo++;
-    if (mo > 12) { mo = 1; y++; }
+  d  = get_gpsdate().day();
+  for (int add_days = jst_total_h / 24; add_days > 0; add_days--) {
+    d++;
+    if (d > days_in_month_of(mo, y)) { d = 1; if (++mo > 12) { mo = 1; y++; } }
   }
   return true;
 }
@@ -307,6 +336,9 @@ static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &c
 //   3. 画面モードに応じた描画（地図 / 設定 / GPS詳細 など）
 // gps_loop(id) の id はデバッグ用の呼び出し箇所識別子。
 void loop() {
+  // 無線モジュールとの UART。1Hz・数十バイトなので負荷は無視できる。
+  // 無線モジュールが繋がっていなくても、link_module_alive() が false になるだけで無害。
+  link_loop();
   //switch handling
   sw_push.read();
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
@@ -363,7 +395,9 @@ void loop() {
   // 保険として実測の GNSS フィックスも要求する。日時が再生由来のまま残っていると
   // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
   static uint32_t last_replaydata_ms = 0;
-  if (!getReplayMode() && jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
+  // ミラー中も記録しない（受信した機体の日時のファイルに、自機の姿勢を書いてしまう）
+  if (!getReplayMode() && !link_mirror_active() &&
+      jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
       attitude_get_rpy_enabled() &&
       (millis() - last_replaydata_ms) >= IMU_REPLAYDATA_INTERVAL_MS) {
 
@@ -449,7 +483,11 @@ void loop() {
   // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
   // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
   // 再生中のように動き続ける原因になる。
-  if (!getReplayMode() && get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
+  // ★ 無線のミラー中も同じ理由で通さない。ミラー中の get_gps_altitude() は
+  //   受信した「機体」の高度なので、これを自機のカルマンに入れると
+  //   気圧基準と _gnss_kf_offset が壊れ、リプレイと同様に受信をやめた後まで残る。
+  if (!getReplayMode() && !link_mirror_active() &&
+      get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
     imu_kalman_gnss_update(
       (float)get_gps_altitude(),
       get_gps_vacc_mm() / 1000.0f
@@ -471,7 +509,13 @@ void loop() {
   // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
   // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
   // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
-  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode()) {
+  // ★ ミラー中は「受信した機体のロール」で判定する。
+  //   受信側は警告をビットで受け取るのではなく**自分で再計算する**方針なので
+  //   （link_proto.h の status 設計を参照）、入力をミラー値に差し替えるだけでよい。
+  //   計算が 1 本のままなので、送信側と受信側で挙動がずれる余地が無い。
+  if (attitude_get_rpy_enabled() && !getReplayMode() &&
+      (link_mirror_active() ? link_get_attitude(bank_roll_tmp, bank_pitch_tmp)
+                            : attitude_ready())) {
     static uint32_t bank_over_since_ms = 0;
     static uint32_t bank_last_warn_ms  = 0;
     // 発報済みフラグ。解除条件（バンクが戻る＋時間経過）を満たすまで鳴らさない。
@@ -480,7 +524,10 @@ void loop() {
     //   鳴り出すのを防ぐため。一度でも 3 度未満に戻れば通常動作に入る。
     static bool     bank_warned        = true;
     float wr, wp, wy;
-    attitude_get_euler(wr, wp, wy);
+    // ミラー中は受信した機体のロール、それ以外は自機の姿勢。
+    // 入力をここで差し替えるだけで、以降の判定ロジックは 1 本のまま使える。
+    if (link_mirror_active()) { wr = bank_roll_tmp; wp = bank_pitch_tmp; wy = 0.0f; }
+    else                       attitude_get_euler(wr, wp, wy);
     uint32_t now_ms = millis();
     const float bank_abs = fabsf(wr);
 
@@ -505,13 +552,57 @@ void loop() {
     }
   }
 
+  // ---- 電池電圧の低下警告 ----
+  // ★ **警報を描画関数の中に置かないこと。** 元は draw_footer() の中にあったため、
+  //   次の 2 つの穴があった。
+  //     1. draw_footer() は地図画面からしか呼ばれない → 設定画面・WIRELESS 画面・
+  //        IMU/ESKF 画面などを開いている間は電圧が下がっても鳴らない
+  //     2. 受信モードでは電池表示が別の分岐（S/R の 2 台ぶん表示）に入るため、
+  //        **一度も鳴らなかった**。追走ボートとプラットフォームは常に受信モードなので、
+  //        実質「ボートの電池切れは警告されない」状態だった
+  //   他の警報（バンク角・コース・地上チェック）と同じくここへ置き、画面モードにも
+  //   無線モードにも依存しないようにする。
+  //
+  //   毎秒 1 回だけ読むのは、ADC の連打を避けるためと、
+  //   get_input_voltage() のピーク追跡をどの画面でも回し続けるため
+  //   （地図画面以外では誰も呼ばないと追跡が止まり、戻ったときに古い値が出る）。
+  {
+    static uint32_t last_batt_check_ms = 0;
+    static uint32_t last_batt_warn_ms  = 0;
+    if (millis() - last_batt_check_ms >= 1000) {
+      last_batt_check_ms = millis();
+      const float bv = get_input_voltage();
+      // 充電中は鳴らさない。リプレイ中も鳴らさない（過去の電圧で今の警告を出しても
+      // 意味がなく、SD のテキストログにも当時の値が「今の警告」として混ざるため）。
+      if (!digitalRead(USB_DETECT) && !replay_voltage_active() &&
+          bv <= BAT_LOW_VOLTAGE &&
+          (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
+                                  : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
+        last_batt_warn_ms = millis();
+        if (good_sd()) {
+          // SD 認識済み: WAV を再生（最低 volume 60 保証）
+          enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
+        } else {
+          // SD 未認識: 高音ビープ 3 回で代替警告（最低 volume 60 保証）
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 400, 1, 1, 60));
+        }
+        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
+                                     battery_percent(bv), bv));
+      }
+    }
+  }
+
   // ---- 直進中のロール自動トリムが入ったらログに残す ----
   // 事後検証できるよう、1 回の補正量と累積量を記録する。
   // ---- 地上待機中のバンクチェック ----
   // 自動ロールトリムは対地速度 3m/s 超でしか働かないので地上では動かない。
   // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
   // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
+  // ミラー中は get_gps_mps() が機体の対地速度になるため、判定が噛み合わない。
   if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
+      !link_mirror_active() &&
       get_gps_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
     static uint32_t gnd_over_since_ms = 0;
     static uint32_t gnd_last_warn_ms  = 0;
@@ -647,9 +738,17 @@ void loop() {
     static unsigned long last_volt_log_ms = 0;
     if (millis() - last_volt_log_ms >= 60000UL) {
       last_volt_log_ms = millis();
-      GpsTime t = get_gpstime();
-      int jst_h = (t._hour + 9) % 24;
-      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %02d:%02d JST", get_input_voltage(), analogReadTemp(), jst_h, t._min));
+      // ★ 時刻は **get_jst_now() の判定を通ったときだけ**書く。
+      //   以前は get_gpstime() の生の値を無条件に使っていたため、測位できていない間は
+      //   _hour/_min が 0 のままで「09:00 JST」と記録されていた。ログ上は
+      //   正しい時刻に見えるので、あとから見たときに嘘に気づけない。
+      //   （ループ先頭で毎回求めている jst_valid / log_h / log_m をそのまま使う。
+      //     こちらは millis() の経過ぶんも足してあり、日跨ぎも処理済み。）
+      char jst_str[8];
+      if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
+      else           strlcpy(jst_str, "--:--", sizeof(jst_str));
+      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %s JST",
+                                   get_input_voltage(), analogReadTemp(), jst_str));
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
       // 生レポートのレート要求を変えたら必ずこの行を確認すること:
@@ -705,6 +804,9 @@ void loop() {
   } else if (screen_mode == MODE_IMUDETAIL) {
     if (redraw_screen)
       draw_imudetail(detail_page);
+  } else if (screen_mode == MODE_WIRELESS) {
+    if (redraw_screen)
+      draw_wireless(wireless_cursor);
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -794,6 +896,11 @@ void loop() {
       double new_long = get_gps_lon();
       set_new_location_off();  // GPS の「新位置フラグ」をクリア
 
+      // ※ 無線へのテレメトリ送出はここでは行わない。
+      //   送信の刻み（1Hz）は link_tx_tick() が持っている（link_loop() 参照）。
+      //   ここは GPS 更新のたび（2Hz）に走るので、投げると倍のレートになり、
+      //   電波の占有時間と送信電流がそのまま倍になる。
+
       // 画面の上方向を設定: トラックアップ時は機首方向、ノースアップ時は 0（北）
       float drawupward_direction = new_truetrack;
       if (is_northupmode()) {
@@ -858,6 +965,11 @@ void loop() {
       if (draw_pilon) {
         draw_pilon_takeshima_marks(new_lat, new_long, scale, drawupward_direction);
       }
+
+      // ---- レイヤー 4.6: ボート自身の位置（受信モードのミラー中のみ）----
+      // 地図は機体を中心に描いているので、自分がどこにいるかは別に出さないと分からない。
+      // 目的地ラインより後に描かないと、マゼンタの太線に隠れて見えなくなる。
+      draw_own_position_marker(new_lat, new_long, scale, drawupward_direction);
 
       // ---- レイヤー 5: オーバーレイ（速度グラフ・スケールバーなど）----
       draw_degpersec(degpersecond);
@@ -1014,6 +1126,9 @@ void loop1() {
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
           currentTask.saveCsvArgs.centisecond);
         break;
+      case TASK_SAVE_RXCSV:
+        saveRxCSV(currentTask);
+        break;
       case TASK_LOG_IMUREPLAY:
         save_imu_replaydata(currentTask.imuReplayArgs.hour,
                             currentTask.imuReplayArgs.minute,
@@ -1033,9 +1148,6 @@ void loop1() {
                             currentTask.imuReplayArgs.year,
                             currentTask.imuReplayArgs.month,
                             currentTask.imuReplayArgs.day);
-        break;
-      case TASK_LOAD_LOGO:
-        load_push_logo();  // SD からロゴ BMP を logo_sprite に読み込む（pushSprite は Core0 が行う）
         break;
       case TASK_FLUSH_IMULOG:
         // 生 IMU ログの二重バッファ片側を SD へ書き出す（約 4KB / 0.45 秒分）。
@@ -1113,6 +1225,10 @@ void shortPressCallback() {
       loading_replaylist = true;
       enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
     }
+  } else if (screen_mode == MODE_WIRELESS) {
+    // 無線画面: 短押しはカーソル移動のみ。変更は長押し（設定画面と同じ操作感）。
+    wireless_cursor = (wireless_cursor + 1) % WIRELESS_MENU_COUNT;
+    redraw_screen = true;
   } else if (screen_mode == MODE_IMUDETAIL) {
     // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
@@ -1265,15 +1381,23 @@ static void handleReplaySelect() {
       // 再生速度を x1 → x2 → x?? と切り替える。再生中でも時刻は飛ばない
       cycle_replay_speed();
       break;
-    case RITEM_2025:
-      startReplay(REPLAY_2025_FILE);
+    case RITEM_SOURCE:
+      // 再生元フォルダを切り替える。一覧の中身が丸ごと入れ替わるので、
+      // カーソルとページを先頭へ戻してから取り直す
+      //（戻さないと、前のフォルダの件数を前提にした位置を指したままになる）。
+      toggle_replay_from_received();
+      replay_cursor    = 3;          // SOURCE 行に留まる（続けて切り替えられる）
+      replay_list_page = 0;
+      loading_replaylist = true;
+      enqueueTask(createBrowseReplayTask(0));
       break;
-    case RITEM_2026:
-      startReplay(REPLAY_2026_FILE);
+    case RITEM_FILE: {
+      // label はファイル名のみ。受信ログは received/ の下にあるので前置する。
+      char path[REPLAY_FILENAME_LEN];
+      snprintf(path, sizeof(path), "%s%s", replay_source_prefix(), label);
+      startReplay(path);
       break;
-    case RITEM_FILE:
-      startReplay(label);  // label には SD ルート上のファイル名が入っている
-      break;
+    }
     case RITEM_RETURN:
       backToSettingFromReplay();
       break;
@@ -1300,6 +1424,44 @@ void longPressCallback() {
   // IMU / ESKF 画面での長押し = 「実行」。
   // 設定画面が「短押し=移動 / 長押し=実行」なので、そちらに操作感を合わせる。
   // この画面には Exit 項目があるため、長押しで設定画面へ戻る動作は持たせない。
+  if (screen_mode == MODE_WIRELESS) {
+    switch (wireless_cursor) {
+      case 0:  // モードを OFF → SENDER → RECEIVER と回す。
+               // 3 択のトグルなので「送受同時 ON」を表現できない（docs/pons_link.md §1）。
+        link_set_mode((link_get_mode() + 1) % 3);
+        break;
+      case 1:  // チャネル CH0-12（920.8-923.2MHz）を回す。
+               // ここまでが休止 50ms 固定の帯域なので上限を越えさせない。
+        link_set_radio_ch((link_get_radio_ch() + 1) % (LINK_RADIO_CH_MAX + 1));
+        break;
+      case 2:  // 拡散率 SF7→SF8→…→SF11→SF7 と回す（帯域幅 500kHz は固定）。
+               // SF を上げるほど届くが、送信時間＝送信電流が倍々に増える。
+        link_set_radio_profile((link_get_radio_profile() + 1) % LINK_PROFILE_COUNT);
+        break;
+      case 3:  // グループ ID。電波の設定ではないのでモジュールへの書き込みは不要
+               //（ペイロードの中身なので即座に反映される）。
+               // ★ 長押し 1 回で +1。**普段は SD の settings.txt で決めるもの**で、
+               //   ここは「現地で確認する」「0 に戻ってしまったのを戻す」ための手段。
+               //   そのため小さい値（1〜20 程度）を割り当てておくと復旧が速い。
+        link_set_group((uint8_t)((link_get_group() + 1) % (LINK_GROUP_MAX + 1)));
+        break;
+      default: // 戻る
+        // ★ CH / SF / Group を触ったまま出るときは必ず知らせる。
+        //   この 3 つは **3 台すべてで一致していないと通信できない**のに、
+        //   変えたのが 1 台だけで連絡を忘れる、という事故が起こりうる。
+        //   症状は「無信号」なので、現場では距離や故障と区別が付かない。
+        //
+        //   ★★ **送信機・受信機のどちらでも鳴らすこと。** ここに mode の分岐を
+        //     入れてはいけない。受信機側を触って戻し忘れる事故も同じだけ起こるし、
+        //     受信機は 2 台あるぶん取り違えやすい。
+        link_warn_setting_changed();
+        screen_mode = MODE_SETTING;
+        break;
+    }
+    redraw_screen = true;
+    return;
+  }
+
   if (screen_mode == MODE_IMUDETAIL) {
     imu_execute();
     return;
@@ -1391,8 +1553,7 @@ void update_degpersecond(int true_track) {
 
 
 
-// 目的地が 100km 以上離れている場合に警告音を鳴らす。
-// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
+
 // AUTO10K の折返しフェーズを変更する。
 // リプレイ再生中は表示だけ変え、SD には保存しない。再生した過去フライトの
 // フェーズが実飛行の設定を上書きしてしまうため。
@@ -1407,6 +1568,8 @@ static void apply_auto10k_status(int st) {
   enqueueTask(createSaveSettingTask());
 }
 
+// 目的地が 100km 以上離れている場合に警告音を鳴らす。
+// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
   // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
   if (currentdestination == -1 || currentdestination >= destinations_count) {

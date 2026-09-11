@@ -1,6 +1,6 @@
 // ============================================================
 // File    : mysd.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : SDカード操作とCore1タスクキューのヘッダー。
 //           タスク種別(TaskType)・タスク構造体・キュー定義と、
 //           設定保存/読込・CSVフライトログ・起動ロゴ読込・
@@ -8,13 +8,14 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/10
 // ============================================================
 
 #ifndef MYSD_H
   #define MYSD_H
   #include "display_tft.h"
   #include <Arduino.h>
+  #include "lora_link/link_proto.h"
 
   typedef enum {
       TASK_NONE,
@@ -30,8 +31,8 @@
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
       TASK_LOG_IMUREPLAY,
-      TASK_LOAD_LOGO,     // 起動時ロゴ BMP を Core1 で SD 読み込みするタスク
-      TASK_FLUSH_IMULOG   // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
+      TASK_FLUSH_IMULOG,  // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
+      TASK_SAVE_RXCSV     // 無線で受信したテレメトリを received/ へ書き出す
   } TaskType;
 
 
@@ -53,27 +54,19 @@
         RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_GNSSALT,
         RCOL_KFALT, RCOL_KFVS, RCOL_PRESS, RCOL_DATE, RCOL_TIME,
         RCOL_NUMSAT, RCOL_VOLT,
+        // ★ 姿勢・風。**飛行 CSV には存在しない**（別ファイル imu_replaydata/ にある）。
+        //   受信ログ received/ にだけ入っていて、列名は imu_replaydata/ と揃えてある。
+        //   無い列は -1 のままなので、飛行 CSV の再生は今までと 1 ミリも変わらない。
+        RCOL_ROLL, RCOL_PITCH, RCOL_YAW,
+        RCOL_PAVG, RCOL_RTRIM, RCOL_YAWACC, RCOL_WSPD, RCOL_WDIR,
         REPLAY_COL_COUNT
     } ReplayCol;
 
     // ReplayRow.have のビット。その列が CSV に存在し値が読めた場合に立つ。
     // 立っていない項目は再生時に実センサ値へフォールバックする（v5データは高度等を持たない）。
-    #define RHAVE_GS     0x0001
-    #define RHAVE_TTRACK 0x0002
-    #define RHAVE_GNSSALT    0x0004
-    #define RHAVE_KFALT  0x0008
-    #define RHAVE_KFVS   0x0010
-    #define RHAVE_PRESS  0x0020
-    #define RHAVE_DATE   0x0040
-    #define RHAVE_NUMSAT 0x0080
-    #define RHAVE_VOLT   0x0100
-    // 姿勢ログ（imu_replaydata/ または euler/）から読めた項目。
-    // RHAVE_ATT 以外は ESKF の結果を持つ新形式にしか無い。
-    #define RHAVE_ATT      0x0200   // ロール・ピッチ
-    #define RHAVE_ATT_YAW  0x0400   // ヨー + ヨー精度95%値
-    #define RHAVE_ATT_AVG  0x0800   // 平均ピッチ
-    #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
-    #define RHAVE_ATT_WIND 0x2000   // 風速・風向（推定できていた区間のみ）
+    // ★ RHAVE_* の定義は lora_link/link_proto.h へ移した（上で include 済み）。
+    //   電波に載せるテレメトリでも同じビットを使うため、実体は共有ヘッダに 1 つだけ置く。
+    //   2 か所に書くと必ずずれて、無線とリプレイで意味が食い違う。
 
     // CSV 1行分のリプレイデータ。Core1 が生成し Core0 が消費する。
     typedef struct {
@@ -96,8 +89,7 @@
         RITEM_OFF,          // リプレイ解除（通常 GPS に戻す）
         RITEM_FLIGHTONLY,   // 静止区間をスキップするか（YES/NO トグル）
         RITEM_SPEED,        // 再生速度の倍率（x1 / x2 / x?? トグル）
-        RITEM_2025,         // 固定項目: 2025 大会データ
-        RITEM_2026,         // 固定項目: 2026 大会データ
+        RITEM_SOURCE,       // 再生元フォルダ（FLIGHT = 自機 / RECEIVED = 無線で受けた機体）
         RITEM_FILE,         // SD 上の飛行 CSV
         RITEM_RETURN        // 設定画面に戻る
     } ReplayItemType;
@@ -105,12 +97,6 @@
     void init_replay();
     void load_replay();
     bool browse_replay_files(int start_index);
-    // 一覧の先頭に並ぶ固定項目数（3〜REPLAY_FIXED_COUNT）。
-    // 大会データ（2025/2026）は SD 上に実在するときだけ数に入る。
-    int  replay_menu_fixed_count();
-    // 大会データが SD 上にあるか。browse_replay_files() が更新する。
-    extern volatile bool replay_have_2025;
-    extern volatile bool replay_have_2026;
     int  replay_menu_total_items();
     int  replay_menu_page_of(int index);
     int  replay_menu_page_count();
@@ -127,6 +113,14 @@
     void     set_replay_flight_only(bool on);
     int      get_replay_speed();     // 再生速度の倍率（1 / 2 / REPLAY_SPEED_FAST）
     void     cycle_replay_speed();   // 倍率を次の候補へ切り替える
+    // ★ 再生元フォルダ。一覧に出すのは常にどちらか一方だけ。
+    //   こうしておくとページ計算が「1 フォルダぶん」のままで済み、
+    //   今のインデックス計算に一切手を入れずに受信ログを扱える。
+    void     toggle_replay_from_received();
+    const char* replay_source_dir();          // "data" または "received"
+    const char* replay_source_prefix();       // "data/" または "received/"
+    const char* replay_filename_base();       // 再生中ファイルのフォルダを除いた部分
+    bool        replay_filename_is(const char* name);  // 一覧の name が再生中か（フルパスで比較）
     void     replay_set_paused(bool paused);  // 再生の一時停止（設定画面表示中など）
 
     bool browse_sd(int page);
@@ -227,6 +221,17 @@
               float voltage;      // バッテリー電圧 [V]（リプレイで当時の電池表示を再現するため）
               int numsat;         // 測位に使用した衛星数（同上）
               int year, month, day, hour, minute, second, centisecond;
+              // ---- 受信ログ（received/）用の追加列。TASK_SAVE_RXCSV でのみ使う ----
+              int      rssi;      // 受信強度 [dBm]
+              uint16_t seq;       // 送信側の連番。取りこぼしの解析に使う
+              uint16_t age_ms;    // 受信から書き出しまでの経過
+              // ★ 姿勢・風。機体の SD が死んでもボート側に姿勢が残るようにする。
+              //   列名と「未収束は空欄」の流儀は imu_replaydata/ に合わせてあるので、
+              //   ESKF の解析ツールをそのまま流用できる。
+              float    roll, pitch, yaw;
+              float    pitch_avg, roll_trim, yaw_acc95;
+              float    wind_mps, wind_dir;
+              uint16_t have;      // RHAVE_ATT* のどれが入っているか
           } saveCsvArgs;
           struct {
               int freq;
@@ -271,6 +276,12 @@
   Task createLogSdTask(const char* logText);
   Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
+
+  // 無線で受信したテレメトリを received/ へ書き出すタスク。
+  // 列は自機のフライト CSV と同じ並びにし、末尾に rssi/seq/age/src を足す。
+  // 揃えてあるので、既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
+  Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms);
+  void saveRxCSV(const Task& tk);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
   Task createBrowseSDTask(int page);
@@ -283,7 +294,6 @@
                               float roll_trim, float yaw_acc95,
                               float wind_mps, float wind_dir, bool wind_valid,
                               const char* filename, int year, int month, int day);
-  Task createLoadLogoTask();
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
 
@@ -298,7 +308,6 @@
   bool isTaskRunning(int taskType);
   bool isTaskInQueue(int taskType);
   void clearCurrentTask();  // Core1 がタスク完了時に呼ぶ（currentTask.type = TASK_NONE）
-  void load_push_logo();
 
 
 
@@ -306,13 +315,20 @@
   extern Task currentTask;
   extern mutex_t taskQueueMutex;
   extern volatile bool sd_setup_complete;
-  extern volatile bool logo_ready;
-  extern TFT_eSprite logo_sprite;
 
   // リプレイ再生用の共有状態（Core1 が生成 / Core0 が消費）
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
   extern volatile uint8_t replay_head, replay_tail;
   extern volatile bool replay_eof;
+  // リプレイを続けられない。Core0 が見て解除し、理由に応じたログを残す。
+  // ★ bool ではなく理由を持たせてある。「ファイルが壊れている」と
+  //   「SD が読めない」は現場での対処が違うのに、ログが同じだと区別できない。
+  enum ReplayBadReason : uint8_t {
+      REPLAY_BAD_NONE = 0,   // 問題なし
+      REPLAY_BAD_FILE,       // 開けない / ヘッダが無い / 空 / 未選択
+      REPLAY_BAD_NOSD,       // SD が使えない（未初期化・書き込みエラー・カード抜け）
+  };
+  extern volatile uint8_t replay_file_bad;
   extern volatile uint32_t replay_init_seq;  // init_replay() のたびに加算（再生時計のリセット通知）
   extern char replay_filename[REPLAY_FILENAME_LEN];
 

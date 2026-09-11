@@ -1,6 +1,6 @@
 // ============================================================
 // File    : navdata.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : ナビゲーション計算の実装。
 //           Mercator投影による緯度→Y座標変換、距離・真方位計算、
 //           フラッシュ内蔵ポリゴン地図の実体と一覧(flashmaps)、目的地リスト、
@@ -8,12 +8,13 @@
 //           内蔵ポリゴンは滑走路外周や島など、ベクタ地図では表せない
 //           飛行用の注記に限る（SDが無くても必ず描画される）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/11
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>
 
 #include "navdata.h"
+#include "link.h"
 #include "gps.h"
 
 
@@ -44,6 +45,8 @@ void restore_auto10k_status(int st) {
   auto10k_status_flight = st;
   // 設定の読み込みは起動時（リプレイ前）にしか走らないが、念のため
   // リプレイ中は表示側の値を書き換えない。
+  // ※ 無線のミラーはここには効かない（この関数は起動時の設定読込でしか通らず、
+  //   そのときはまだ受信していない）。ガードを足しても死んだコードになるだけ。
   if (!getReplayMode()) auto10k_status = st;
 }
 
@@ -84,7 +87,7 @@ void init_destinations(){
   // 呼び直しに備えて前回分を解放する（上書き適用後に再登録するため）
   for (int i = 0; i < destinations_count; i++) {
     delete[] extradestinations[i].cords;
-    free((void*)extradestinations[i].name);   // strdup で確保している
+    delete[] extradestinations[i].name;       // pons_strdup() の new[] と対にする
     extradestinations[i].cords = nullptr;
     extradestinations[i].name  = nullptr;
   }
@@ -92,31 +95,31 @@ void init_destinations(){
   currentdestination = 0;
   // PLATHOME: 出発地（プラットフォーム）の緯度経度
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("PLATHOME");
+  extradestinations[destinations_count].name = pons_strdup("PLATHOME");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {pla_lat, pla_lon} };
   destinations_count++;
   // N_PILON: 北パイロン（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("N_PILON");
+  extradestinations[destinations_count].name = pons_strdup("N_PILON");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
   destinations_count++;
   // S_PILON: 南パイロン（10km コース折り返し地点）。公式ルールの呼称は「南」。
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("S_PILON");
+  extradestinations[destinations_count].name = pons_strdup("S_PILON");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
   destinations_count++;
   // TAKESHIMA: 竹島（10km コース折り返し地点）
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("TAKESHIMA");
+  extradestinations[destinations_count].name = pons_strdup("TAKESHIMA");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
   destinations_count++;
   /*
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("SHINURA");
+  extradestinations[destinations_count].name = pons_strdup("SHINURA");
   extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
   destinations_count++;*/
@@ -169,8 +172,25 @@ double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2
 // 単純な角度の平均は 0°/360° をまたぐと真逆を向くので、
 // 2 方位の単位ベクトルの和の偏角として求める（常に狭い側の二等分線になる）。
 double pla_centerline_bearing_rad() {
+  // ★ **キャッシュのキーは座標そのものにする。**
+  //   以前は「初回だけ計算して static に持つ」だけだったので、
+  //   override_pilon_coordinate.csv による上書きがキャッシュ確定より後になると、
+  //   コメントに書いてある「座標が変わっても自動追従する」が成立しなかった。
+  //   実際に起こり得るのは次の 2 つ:
+  //     (a) SD の初期化が 5 秒を超え、Core0 が待たずに地図を描き始めた場合
+  //     (b) 起動時に SD を掴めず、try_sd_recovery() が後から上書きを適用した場合
+  //   「上書きしたのにセンターラインだけ古い方位を指す」は飛行中に気づけないので、
+  //   入力が変わったかを毎回見て、変わっていたときだけ計算し直す。
+  //   これなら誰がいつ座標を変えても追従し、無効化の呼び忘れも起こらない。
   static double cached = NAN;
-  if (isnan(cached)) {
+  static double k_pla_lat = NAN, k_pla_lon = NAN;
+  static double k_n_lat   = NAN, k_n_lon   = NAN;
+  static double k_s_lat   = NAN, k_s_lon   = NAN;
+
+  if (isnan(cached) ||
+      pla_lat != k_pla_lat || pla_lon != k_pla_lon ||
+      pilon_north_lat != k_n_lat || pilon_north_lon != k_n_lon ||
+      pilon_south_lat != k_s_lat || pilon_south_lon != k_s_lon) {
     // calculateTrueCourseRad の引数はラジアン。deg2rad(double) はこの下で定義されており
     // ここではまだ宣言されていない（float 版に落ちて精度が落ちる）ため、直接変換する。
     const double D2R = PI / 180.0;
@@ -179,6 +199,9 @@ double pla_centerline_bearing_rad() {
     double bw = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
                                        pilon_south_lat * D2R, pilon_south_lon * D2R);
     cached = atan2(sin(bn) + sin(bw), cos(bn) + cos(bw));
+    k_pla_lat = pla_lat; k_pla_lon = pla_lon;
+    k_n_lat   = pilon_north_lat; k_n_lon = pilon_north_lon;
+    k_s_lat   = pilon_south_lat; k_s_lon = pilon_south_lon;
   }
   return cached;
 }
@@ -283,10 +306,16 @@ bool check_within_latlon(double latdif,double londif,double lat1,double lat2,dou
 }
 
 
-// Arduino 環境には標準 C の strdup() がないため、独自実装。
-// 引数の文字列をヒープ（new）にコピーして返す。
-// 呼び出し側は使い終わったら delete[] で解放する責任がある。
-char* strdup(const char* str) {
+// 文字列をヒープにコピーして返す。**確保は new[]、解放は delete[]。**
+//
+// ★ 以前は名前が strdup() だった。これには 2 つの問題があった。
+//   1. libc の strdup() と同じ綴りなので、どの呼び出しがこちらに来るかが
+//      「ヘッダで宣言されているか」に依存して決まる（navdata.h には宣言が無かった）。
+//      libc 側（malloc）に繋がった文字列を delete[] すると本当に壊れる。
+//   2. 実際に init_destinations() が free() で解放していた。new[] と free() の
+//      組み合わせは未定義動作で、今は new[] が malloc に落ちるので動いているだけ。
+//   名前を分けて、確保と解放の対応を 1 対 1 にした。**必ず delete[] で解放すること。**
+char* pons_strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case
     // Calculate the length of the input string
     int len = 0;
@@ -308,7 +337,7 @@ char* strdup(const char* str) {
 mapdata create_static_mapdata(int id, const char* name, int size, const double cords[]) {
   mapdata new_mapdata;
   new_mapdata.id = id;
-  new_mapdata.name = strdup(name); // Duplicate string to allocate memory
+  new_mapdata.name = pons_strdup(name); // Duplicate string to allocate memory
   new_mapdata.size = size;
   new_mapdata.cords = new double[size][2];
   for (int i = 0; i < size; i++) {

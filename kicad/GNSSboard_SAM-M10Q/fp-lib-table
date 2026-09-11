@@ -1,0 +1,6 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "GPS_TFT")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr "この基板の独自フットプリント"))
+  (lib (name "SAM-M10Q-00B")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr "GPS_TFT の別名"))
+  (lib (name "2005280040")(type "KiCad")(uri "${KIPRJMOD}/../mainboard/Footprints")(options "")(descr "FFCコネクタは mainboard 側と共通のものを参照する"))
+)

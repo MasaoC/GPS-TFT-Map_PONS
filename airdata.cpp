@@ -1,15 +1,16 @@
 // ============================================================
 // File    : airdata.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 大気データ取得の実装。
 //           気圧センサー MS5611（I2C接続）から気圧・気温を読み取り、
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/09/11
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"
+#include "link.h"
 #include "mysd.h"
 #include "gps.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
@@ -66,6 +67,10 @@ static float last_altitude    = 0.0f;  // [m]（VSPEED_WINDOW_MS ウィンドウ
 static float alt_win_buf[ALT_WIN_BUF_SIZE]; // ウィンドウ内の高度サンプルバッファ
 static int   alt_win_count = 0;             // バッファ内の有効サンプル数
 static float alt_win_prev  = 0.0f;          // 直前ウィンドウのトリム平均高度 [m]（GND相対）
+// ★ 「まだ 1 窓目」の判定に alt_win_prev != 0.0f を使ってはいけない。
+//   0.0m は起動地点そのものを指す**正当な高度値**なので、番兵として不適切。
+//   専用のフラグで持つ。
+static bool  alt_win_prev_valid = false;
 static float last_vspeed   = 0.0f;          // 最新の垂直速度 [m/s]
 static unsigned long last_vspeed_update_ms = 0; // 最後に vspeed が正常更新された時刻 [ms]
                                                 // I2C エラー等で途絶えた場合のタイムアウト判定に使う
@@ -332,9 +337,12 @@ static bool ms5611_process_data() {
         for (int i = lo; i < hi; i++) sum += alt_win_buf[i];
         float avg_cur = (hi > lo) ? sum / (hi - lo) : alt_win_buf[alt_win_count / 2];
         // vspeed 計算（ウィンドウ幅に依らず m/s に正規化）
-        if (alt_win_prev != 0.0f) last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / VSPEED_WINDOW_MS);
+        // 1 窓目は差分を取れない（前の窓が無い）ので last_vspeed を更新しない。
+        if (alt_win_prev_valid)
+            last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / VSPEED_WINDOW_MS);
         last_altitude     = avg_cur;
         alt_win_prev      = avg_cur;
+        alt_win_prev_valid = true;
         last_win_hz       = alt_win_count * 1000.0f / VSPEED_WINDOW_MS; // 総サンプルから算出した Hz
         alt_win_count     = 0;
         win_start         = millis();
@@ -400,7 +408,14 @@ bool  get_airdata_ok()             { return ms5611_ok; }
 float get_airdata_altitude()       { return last_altitude; }
 // 最新の気圧 [hPa] を返す
 // リプレイ中で CSV に pressure 列があれば、その値をそのまま返す
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_airdata_pressure_raw() に残してある。
 float get_airdata_pressure() {
+  if (link_mirror_active()) return link_get_pressure();
+  return get_airdata_pressure_raw();
+}
+
+float get_airdata_pressure_raw() {
   if (replay_has_value(RHAVE_PRESS)) return replay_get_pressure();
   return last_pressure;
 }
@@ -430,9 +445,12 @@ float get_airdata_win_hz()      { return last_win_hz; }
 // どちらよりも先に呼ぶ必要がある。GPS_TFT_map.ino の setup() 冒頭から呼ぶこと。
 void airdata_wire_begin() {
     myWire.begin();
-    // BNO085 は起動時にクロックストレッチングを多用するため 100kHz に設定する。
-    // 400kHz では RP2350 側がタイムアウト（error: 5）して I2C バスがロックする。
-    // MS5611 は 100kHz でも動作に問題ない。
+    // i2c0 は **MS5611 専用**。400kHz で動かす。
+    // ★ v6 までは BNO085 と共用していて、BNO085 のクロックストレッチで
+    //   RP2350 側がタイムアウト（error: 5）しバスがロックするため 100kHz に落としていた。
+    //   v7 で BNO085 を SPI1（予備で i2c1）へ移してバスを分離したので、
+    //   その制約は無くなった。MS5611 は 400kHz で問題なく動く。
+    //   （コメントだけ 100kHz のまま残っていて、コードと正反対のことを述べていた）
     myWire.setClock(400000);
     delay(100);
 }

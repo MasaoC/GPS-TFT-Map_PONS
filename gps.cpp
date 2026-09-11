@@ -1,25 +1,26 @@
 // ============================================================
 // File    : gps.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GPS受信・解析の実装（u-blox UBX バイナリ受信）。
 //           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
 //           位置・速度・時刻の取得、リプレイ管理、
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/11
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
 
 #include "gps.h"
+#include "link.h"   // ミラー表示（受信モード）
 #include "mysd.h"
 #include "navdata.h"
 #include "settings.h"
 #include "display_tft.h"
 #include "airdata.h"
 #include "imu.h"
-#include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
@@ -646,11 +647,17 @@ float    get_gps_hdop()       { return gsa_hdop; }
 float    get_gps_vdop()       { return gsa_vdop; }
 int      get_gsa_numsat()     { return gsa_numsat; }
 int      get_gsa_prn(int i)   { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0; }
-uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度推定値, mm）
+uint32_t get_gps_hacc_mm() {
+  if (link_mirror_active()) return link_get_hacc_mm();
+  return ubx_hacc_mm;                                      // hAcc（水平精度推定値, mm）
+}
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
-bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
+bool get_gps_gnssFixOK() {
+  if (link_mirror_active()) return link_get_fix_ok();
+  return ubx_gnssFixOK;                                    // gnssFixOK フラグ
+}
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
 
@@ -1158,7 +1165,9 @@ bool gps_new_location_arrived(){
     // 実 GPS と同じく 2Hz (500ms 間隔) で仮想位置を更新する。
     // 位置変位は 1Hz 時の半分 (0.00005 → 0.000025) にすることで、
     // 1 秒あたりの移動距離を同じに保つ。
-    if(millis() > last_demo_gpsupdate + 500){
+    // millis() は約 49.7 日で 0 に戻る。右辺で足すとその瞬間に閾値が壊れるので、
+    // 必ず「引き算して比べる」形にする（引き算なら符号なし演算で差が保たれる）。
+    if(millis() - last_demo_gpsupdate >= 500){
       const demo_site_def& site = DEMO_SITES[demo_site];
       int demo_spd = 10;
       demo_lat += 0.000025*demo_spd*cos(radians(get_gps_truetrack()));
@@ -1215,6 +1224,10 @@ bool getReplayMode(){
 void set_replaymode(bool replaymode){
   const bool was_replay = replaymode_gpsoff;
   replaymode_gpsoff = replaymode;
+  // ★ 再生を始めるときに必ず落とす。Core1 の init_replay() も先頭で落とすが、
+  //   あちらは非同期なので、Core0 が先に前回の true を読んで
+  //   **正常なファイルの再生をいきなり解除してしまう**競合が起きる。
+  if (replaymode) replay_file_bad = REPLAY_BAD_NONE;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
   // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
   // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
@@ -1309,6 +1322,21 @@ void gps_loop(int id) {
   // ============================================================
   if (replaymode_gpsoff) {
     static unsigned long last_replay_request = 0;
+
+    // ★ リプレイを続けられない。ここで解除しないと、下の「末尾ならループ再生」が
+    //   延々と init を繰り返し、地図が固まったまま SD を叩き続ける。
+    //   通常の GPS に戻して音で知らせ、理由をログに残す（対処が違うため）。
+    if (replay_file_bad != REPLAY_BAD_NONE) {
+      const uint8_t reason = replay_file_bad;
+      replay_file_bad = REPLAY_BAD_NONE;
+      set_replaymode(false);
+      set_replay_filename("");
+      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3, 60));
+      enqueueTask(createLogSdTask(reason == REPLAY_BAD_NOSD
+                                  ? "REPLAY canceled: SD not available"
+                                  : "REPLAY canceled: file is not a flight log"));
+      return;
+    }
 
     // --- 再生時計の更新 ---
     uint32_t now = millis();
@@ -1432,9 +1460,12 @@ void try_enque_savecsv(){
       int day   = ubx_day;
       int hour  = ubx_hour;
       utcToJst(&year, &month, &day, &hour);
-      float csv_pressure   = get_airdata_ok() ? get_airdata_pressure() : 0.0f;
-      float csv_kf_alt    = get_imu_altitude_msl();  // KF推定高度 [m]（MSL基準・GNSS長期収束済み）
-      float csv_kf_vspeed = get_imu_vspeed();   // KF推定上昇率 [m/s]
+      // ★ 無線のミラー中でも、自機 CSV には**自分の値**を書く。
+      //   位置・速度・方位は生のグローバルを使っているので元々自機のまま。
+      //   ここだけ accessor 経由なので、_raw 版を明示的に使う必要がある。
+      float csv_pressure   = get_airdata_ok() ? get_airdata_pressure_raw() : 0.0f;
+      float csv_kf_alt    = get_imu_altitude_msl_raw();  // KF推定高度 [m]（MSL基準）
+      float csv_kf_vspeed = get_imu_vspeed_raw();   // KF推定上昇率 [m/s]
       // 実測の電圧を書く（リプレイ中の表示値ではない）。リプレイ再生中は
       // そもそもこのパスを通らないが、意図を明示するため get_input_voltage() を使う。
       float csv_voltage   = get_input_voltage();
@@ -1452,10 +1483,25 @@ void try_enque_savecsv(){
 
 
 
+// ★ ミラーを通さない、**この機体自身の**測位を返す。
+//   受信モードの地図は機体の位置を中心に描くので、get_gps_lat() などは
+//   すべて機体の値に置き換わる。ボート自身を地図に出すにはここが要る。
+//   fix が無ければ false（このとき lat/lon には何も書かない）。
+bool gps_get_own_fix(double &lat, double &lon, double &gs, double &track) {
+    if (!ubx_pos_valid) return false;
+    if (stored_latitude == 0 && stored_longitude == 0) return false;
+    lat   = stored_latitude;
+    lon   = stored_longitude;
+    gs    = stored_gs;
+    track = stored_truetrack;
+    return true;
+}
+
 // 現在の緯度を返す。
 // デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GPS 座標の代わりに
 // 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
 double get_gps_lat() {
+  if (link_mirror_active()) return link_get_lat();
   if (is_demo_active()) {
     return demo_lat;
   }
@@ -1487,6 +1533,7 @@ double get_gps_lat() {
 }
 
 double get_gps_lon() {
+  if (link_mirror_active()) return link_get_lon();
   if (is_demo_active()) {
     return demo_lon;
   }
@@ -1520,6 +1567,7 @@ double get_gps_lon() {
 
 
 double get_gps_mps() {
+  if (link_mirror_active()) return link_get_gs();
   if (is_demo_active()) {
     return demo_mps;
   }
@@ -1539,6 +1587,7 @@ bool get_gps_connection() {
   return gps_connection;
 }
 bool get_gps_fix() {
+  if (link_mirror_active()) return link_get_fix_ok();
   if(is_demo_active()){
     return get_gps_numsat() != 0;
   }
@@ -1549,11 +1598,13 @@ bool get_gps_fix() {
 }
 
 double get_gps_altitude() {
+  if (link_mirror_active()) return link_get_gnss_altitude();
   return stored_gnss_altitude;
 }
 
 
 double get_gps_truetrack() {
+  if (link_mirror_active()) return link_get_truetrack();
   #ifdef DEBUG_GPS_SIM_SHINURA
     return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
   #endif
@@ -1565,6 +1616,7 @@ double get_gps_truetrack() {
 
 
 int get_gps_numsat() {
+  if (link_mirror_active()) return link_get_numsat();
   if(is_demo_active()){
     return (int)(20.0*sin(millis()/5000))+20;
   }else if(getReplayMode()){

@@ -1,15 +1,14 @@
 // ============================================================
 // File    : mysd.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : SDカード操作の実装（全処理はCore1で実行）。
 //           SdFatライブラリによるファイル読み書き、
 //           設定ファイル保存/読込、CSVフライトログ追記、
 //           飛行CSVのリプレイ再生（列名索引パーサ・先読みリングバッファ）、
-//           起動ロゴ(logo.bmp)の読み込み、
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/10
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -22,8 +21,9 @@
 #include "imu.h"
 //#define DISABLE_FS_H_WARNING
 #include "SdFat.h"
-#include "sound.h"
+#include "src/sound.h"
 #include "attitude.h"
+#include "link.h"
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -33,7 +33,6 @@ SdFs SD;                     // SdFat ライブラリのファイルシステム
 volatile bool sdInitialized = false;  // SD カードの初期化が完了しているか（Core0/Core1 両方から参照）
 volatile bool sdError = false;        // SD アクセス中にエラーが発生したか（Core0/Core1 両方から参照）
 volatile bool sd_setup_complete = false;  // Core1 の setup_sd() が完了したことを示すフラグ（Core0 が待機に使用）
-volatile bool logo_ready = false;  // Core1 でロゴ BMP 読み込みが完了したら true（Core0 が pushSprite に使用）
 #define LOGFILE_NAME "log.txt"
 
 // ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
@@ -89,6 +88,35 @@ void dateTime(uint16_t* date, uint16_t* time);
 // loadSettings() / saveSettings() がこのテーブルを走査して一括処理する。
 // 新しい設定項目を追加するときはこの配列に 1 行追加するだけでよい。
 // ============================================================
+// ---- PONS Link（機体⇄ボート無線）----
+// 電波の ch / profile は「数値を保存するだけ」で、意味は無線層（e220.cpp）が決める。
+// LoRa では ch = E220 のチャネル(CH0-12)、profile = SF のプリセット(0=SF7 … 4=SF11)。
+void getLinkMode(char* b, size_t n)      { snprintf(b, n, "%u", link_mode_setting); }
+void setLinkMode(const char* v) {
+  int m = atoi(v);
+  // 壊れた設定ファイルで機体が勝手に受信モードになる事故を防ぐため、
+  // 範囲外は必ず OFF に倒す（docs/pons_link.md §1）。
+  link_mode_setting = (m >= 0 && m <= LINK_MODE_RX) ? (uint8_t)m : LINK_MODE_OFF;
+}
+void getLinkRadioCh(char* b, size_t n)   { snprintf(b, n, "%u", link_radio_ch); }
+void setLinkRadioCh(const char* v) {
+  int c = atoi(v);
+  if (c >= 0 && c <= LINK_RADIO_CH_MAX) link_radio_ch = (uint8_t)c;
+}
+void getLinkRadioProf(char* b, size_t n) { snprintf(b, n, "%u", link_radio_profile); }
+void setLinkRadioProf(const char* v) {
+  int p = atoi(v);
+  if (p >= 0 && p < LINK_PROFILE_COUNT) link_radio_profile = (uint8_t)p;
+}
+
+// ★ グループ ID。**既定は 0 で、git に載る雛形も 0 のまま。**
+//   実際の値は各機の SD カードにだけ置く（link_proto.h の設計方針）。
+void getLinkGroup(char* b, size_t n)     { snprintf(b, n, "%u", link_group); }
+void setLinkGroup(const char* v) {
+  int g = atoi(v);
+  link_group = (g >= 0 && g <= LINK_GROUP_MAX) ? (uint8_t)g : LINK_GROUP_DEFAULT;
+}
+
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"vario_volume",    setVarioVolume,    getVarioVolume},
@@ -109,7 +137,11 @@ SDSetting settings[] = {
   {"roll_target",     setRollTarget,     getRollTarget},
   {"needs_apply",     setNeedsApply,     getNeedsApply},
   {"roll_trim",       setRollTrim,       getRollTrim},
-  {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus}
+  {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus},
+  {"link_mode",       setLinkMode,       getLinkMode},
+  {"link_radio_ch",   setLinkRadioCh,    getLinkRadioCh},
+  {"link_radio_prof", setLinkRadioProf,  getLinkRadioProf},
+  {"link_group",      setLinkGroup,      getLinkGroup}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -165,7 +197,12 @@ bool loadSettings() {
 
   while (file.available()) {
     char c = file.read();
-    if (c == '\n' || linePos >= MAX_LINE_LENGTH - 1) {
+    // ★ CR も行の終わりとして扱う。**settings.txt は人が PC で編集する**
+    //   （link_group など）ので、Windows のエディタが CRLF で保存すると値の末尾に
+    //   \r が残る。atoi() を通す設定は無事だが、strcmp で比べるものが全部外れて
+    //   ナビモード・目的地・vario_inhibit が黙って既定へ戻っていた。
+    //   CRLF なら \r で行を切り、続く \n は空行（コロン無し）として捨てられる。
+    if (c == '\n' || c == '\r' || linePos >= MAX_LINE_LENGTH - 1) {
       line[linePos] = '\0'; // Null-terminate the line
       linePos = 0;
 
@@ -229,9 +266,75 @@ bool loadSettings() {
 // getter: グローバル変数を文字列に変換して buffer に書き込む。
 // ============================================================
 
-// 音量: 文字列を int に変換して sound_volume に反映
+// ============================================================
+//  settings.txt の値を読む（検証つき）
+// ============================================================
+// ★ **atoi() / atof() を直接使ってはいけない。** どちらも数字でない文字列に 0 を返す。
+//   音量では 0 が「消音」、角度では 0 がまっとうな値なので、行が壊れているだけなのに
+//   黙って音が消える／ゼロ点が失われる。PONS は警報装置なので、これは一番避けたい。
+//
+// ★ **範囲外を丸めたときも必ずログに残す。** 丸めた結果がたまたま正常な値に見えると
+//   （volume:-5 → 0 = 消音）、設定ミスに現場で気づけない。
+//   「読めなかった」と「丸めた」を区別して log.txt へ書く。
+//
+// 戻り値: その値を採用してよいか（false = 既定値のまま残す）
+static bool read_setting_int(const char* id, const char* value, int lo, int hi, int* out) {
+  char* end = nullptr;
+  const long v = strtol(value, &end, 10);
+  if (end == value) {                               // 数字が 1 文字も無い
+    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    return false;
+  }
+  // 末尾の空白は許す。CR/LF は loadSettings() が行の区切りとして落としているが、
+  // ここだけ見ても正しく動くようにしておく（保険）。
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+  if (*end != '\0') {                               // 数字のあとにゴミが付いている
+    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    return false;
+  }
+  if (v < lo || v > hi) {
+    *out = (int)(v < lo ? lo : hi);
+    enqueueTask(createLogSdfTask("ERR %s(%s) range %d..%d -> %d", id, value, lo, hi, *out));
+    return true;                                    // 丸めた値は使う（捨てるより素直）
+  }
+  *out = (int)v;
+  return true;
+}
+
+// 同じく float 版。角度の設定はこちらを通す。
+// ★ strtod() は "nan" / "inf" を**正しくパースしてしまう**ので明示的に弾く。
+//   NaN はどの比較も false になるため、しきい値の警告に一つも引っかからないまま
+//   姿勢機能だけが死ぬ。範囲のクランプは attitude.cpp 側にもあるが（将来の
+//   呼び出し元への保険）、ログを出せるのはここだけなので範囲もここで見る。
+static bool read_setting_float(const char* id, const char* value, float lo, float hi, float* out) {
+  char* end = nullptr;
+  const double v = strtod(value, &end);
+  bool bad = (end == value);
+  if (!bad) {
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != '\0') bad = true;                   // 数字のあとにゴミ
+    else if (v != v)   bad = true;                  // NaN
+    else if (v > 1e30 || v < -1e30) bad = true;     // ±inf / 桁あふれ
+  }
+  if (bad) {
+    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    return false;
+  }
+  if (v < lo || v > hi) {
+    *out = (float)(v < lo ? lo : hi);
+    enqueueTask(createLogSdfTask("ERR %s(%s) range %.2f..%.2f -> %.2f",
+                                 id, value, (double)lo, (double)hi, (double)*out));
+    return true;
+  }
+  *out = (float)v;
+  return true;
+}
+
+// 音量: 0〜SOUND_VOLUME_MAX。読めない値は既定値のまま残す（上のコメント参照）。
 void setVolume(const char* value) {
-  sound_volume = atoi(value);
+  int v;
+  if (!read_setting_int("volume", value, 0, SOUND_VOLUME_MAX, &v)) return;
+  sound_volume = v;
   DEBUG_P(20250508,"Set volume to: ");
   DEBUG_PLN(20250508,sound_volume);
 }
@@ -240,9 +343,11 @@ void getVolume(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", sound_volume);
 }
 
-// バリオメーター音量: 文字列を int に変換して vario_volume に反映
+// バリオメーター音量: 0〜SOUND_VOLUME_MAX。こちらも読めない値は既定値のまま。
 void setVarioVolume(const char* value) {
-  vario_volume = atoi(value);
+  int v;
+  if (!read_setting_int("vario_volume", value, 0, SOUND_VOLUME_MAX, &v)) return;
+  vario_volume = v;
 }
 
 void getVarioVolume(char* buffer, size_t bufferSize) {
@@ -360,27 +465,43 @@ void getKfR(char* buffer, size_t bufferSize) {
 // マウント形状は固定なので、据え付け後に一度較正すれば以後は使い回せる。
 // 設定画面の "Set Level 0deg" で更新し、ここで SD に永続化する。
 void setLevelRoll(const char* value) {
+  float v;
+  if (!read_setting_float("level_roll", value,
+                          -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG, &v)) return;
   float r, p;
   attitude_get_level_offset(r, p);
-  attitude_set_level_offset(atof(value), p);
+  attitude_set_level_offset(v, p);
 }
 void getLevelRoll(char* buffer, size_t bufferSize) {
   float r, p; attitude_get_level_offset(r, p);
   snprintf(buffer, bufferSize, "%.3f", r);
 }
 void setLevelPitch(const char* value) {
+  float v;
+  if (!read_setting_float("level_pitch", value,
+                          -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG, &v)) return;
   float r, p;
   attitude_get_level_offset(r, p);
-  attitude_set_level_offset(r, atof(value));
+  attitude_set_level_offset(r, v);
 }
 
 // 較正時に申告するピッチ角（IMU/ESKF 画面の SET PITCH 行の値）。
 // 本番プラットホームは -3.5 度など決まった値を使うので、
 // 毎回選び直さずに済むよう保存する。
-void setPitchTarget(const char* value) { attitude_set_pitch_target(atof(value)); }
+void setPitchTarget(const char* value) {
+  float v;
+  if (!read_setting_float("pitch_target", value,
+                          PITCH_TARGET_MIN_DEG, PITCH_TARGET_MAX_DEG, &v)) return;
+  attitude_set_pitch_target(v);
+}
 
 // APPLY 時に申告するロール角（通常 0）
-void setRollTarget(const char* value) { attitude_set_roll_target(atof(value)); }
+void setRollTarget(const char* value) {
+  float v;
+  if (!read_setting_float("roll_target", value,
+                          ROLL_TARGET_MIN_DEG, ROLL_TARGET_MAX_DEG, &v)) return;
+  attitude_set_roll_target(v);
+}
 void getRollTarget(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.1f", attitude_get_roll_target());
 }
@@ -391,7 +512,12 @@ void setNeedsApply(const char* value) { attitude_set_needs_apply(atoi(value) != 
 // 自動ロールトリムの累積補正量。取り付けのズレは電源を切っても変わらないので保存する。
 // ただし needs_apply が立っている（マウントから外した）場合は
 // attitude_finish_settings_load() が読み込み後に捨てる。
-void setRollTrim(const char* value) { attitude_set_roll_trim_deg(atof(value)); }
+void setRollTrim(const char* value) {
+  float v;
+  if (!read_setting_float("roll_trim", value,
+                          -ROLL_TRIM_LIMIT_DEG, ROLL_TRIM_LIMIT_DEG, &v)) return;
+  attitude_set_roll_trim_deg(v);
+}
 // AUTO10K の折返しフェーズ。飛行中に再起動しても復路のナビ方位が 180 度逆に
 // ならないよう保存する（距離だけでは往路と復路を区別できないため）。
 // 保存されるのは実飛行の遷移だけで、リプレイ再生中の遷移は書き込まれない。
@@ -516,6 +642,46 @@ Task createLogSdfTask(const char* format, ...) {
   return task;
 }
 
+
+// 無線で受信した 1 フレームを received/ へ書き出すタスクを生成する。
+// 自機のフライト CSV とは**別のファイル・別のハンドル**にしてある。
+// received/ は「無線で得た情報」だけを置く場所なので、自機の GNSS は混ぜない。
+Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
+  Task task;
+  task.type = TASK_SAVE_RXCSV;
+  task.saveCsvArgs.latitude      = t->lat_1e7 / 1e7;
+  task.saveCsvArgs.longitude     = t->lon_1e7 / 1e7;
+  task.saveCsvArgs.gs            = t->gs_cms / 100.0f;
+  task.saveCsvArgs.ttrack        = (int)(t->track_cdeg / 100);
+  task.saveCsvArgs.gnss_altitude = t->gnss_alt_dm / 10.0f;
+  task.saveCsvArgs.kf_altitude   = t->kf_alt_dm / 10.0f;
+  task.saveCsvArgs.kf_vspeed     = t->kf_vs_cms / 100.0f;
+  task.saveCsvArgs.pressure      = t->press_dpa / 10.0f;
+  task.saveCsvArgs.voltage       = link_unpack_volt(t->volt_cv);
+  task.saveCsvArgs.numsat        = t->numsat;
+  task.saveCsvArgs.year   = t->year;   task.saveCsvArgs.month  = t->month;
+  task.saveCsvArgs.day    = t->day;    task.saveCsvArgs.hour   = t->hour;
+  task.saveCsvArgs.minute = t->minute; task.saveCsvArgs.second = t->second;
+  task.saveCsvArgs.centisecond = t->centi;
+  task.saveCsvArgs.rssi   = rssi;
+  task.saveCsvArgs.seq    = t->seq;
+  task.saveCsvArgs.age_ms = age_ms;
+
+  // ★ 姿勢・風も残す。**機体の SD が死んだとき、ここが唯一の記録になる**
+  //   （status の LINK_ST_SD_ERROR はまさにその状態を知らせるためにある）。
+  //   ESKF の開発でも使うので、単位と列名は imu_replaydata/ に合わせる。
+  //   入っていない項目は書き出し側で空欄にするので、ここでは have をそのまま運ぶ。
+  task.saveCsvArgs.have      = t->have;
+  task.saveCsvArgs.roll      = t->roll_cdeg      * 0.01f;
+  task.saveCsvArgs.pitch     = t->pitch_cdeg     * 0.01f;
+  task.saveCsvArgs.yaw       = t->yaw_cdeg       * 0.01f;
+  task.saveCsvArgs.pitch_avg = t->pitch_avg_cdeg * 0.01f;
+  task.saveCsvArgs.roll_trim = t->roll_trim_cdeg * 0.01f;
+  task.saveCsvArgs.yaw_acc95 = (float)t->yaw_acc95_deg;
+  task.saveCsvArgs.wind_mps  = t->wind_dmps      * 0.1f;
+  task.saveCsvArgs.wind_dir  = t->wind_dir_cdeg  * 0.01f;
+  return task;
+}
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
 Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
@@ -718,7 +884,7 @@ void process_mapcsv_line(String line) {
   }
 
   extramaps[mapdata_count].id = current_id++;
-  extramaps[mapdata_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
+  extramaps[mapdata_count].name = pons_strdup(name.c_str()); // Duplicate string to allocate memory
   extramaps[mapdata_count].size = size;
   extramaps[mapdata_count].cords = cords;
   mapdata_count++;
@@ -726,39 +892,50 @@ void process_mapcsv_line(String line) {
 
 
 // destinations.csv の 1 行を解析して extradestinations[] に追加する。
-// CSV 形式: "目的地名,lon,lat"（頂点は 1 点だけ）
-void process_destinationcsv_line(String line) {
-  int index = 0;
-  int commaIndex = line.indexOf(',');
-  String name = line.substring(index, commaIndex);
-  index = commaIndex + 1;
+// CSV 形式: "目的地名,緯度,経度"（1 行 1 地点）。ヘッダ行は無い。
+//
+// ★ **壊れた行は必ずここで捨てる。**
+//   以前は頂点数を size=1 に固定したまま、ガード条件だけ複数頂点用の
+//   (i < size - 1) が残っていた。size=1 では i < 0 なので**ガードが一度も成立せず**、
+//   コンマの無い行が「名前＝行全体・座標 (0,0)」の目的地として登録されていた。
+//   （Arduino の String::substring() は引数が unsigned なので、-1 を渡すと
+//     エラーではなく行全体が返る。だから誰も気づかないまま通っていた。）
+//   これを選ぶと誘導がギニア湾を指し、目的地が遠すぎる警告が鳴り続ける。
+//   判定基準は override_pilon_coordinate.csv と揃えてある。
+//
+// 戻り値: 登録したら true、行を捨てたら false（呼び出し側が件数を数えてログに残す）
+bool process_destinationcsv_line(String line) {
+  // --- 3 列そろっているか ---
+  const int c1 = line.indexOf(',');
+  if (c1 <= 0) return false;                    // コンマが無い / 名前が空
+  const int c2 = line.indexOf(',', c1 + 1);
+  if (c2 < 0) return false;                     // 経度が無い
 
-  int size = 1;
-  // Allocate memory for the coordinates
-  double (*cords)[2] = new double[size][2];
+  String name = line.substring(0, c1);
+  String slat = line.substring(c1 + 1, c2);
+  String slon = line.substring(c2 + 1);
+  name.trim(); slat.trim(); slon.trim();
+  if (name.length() == 0 || slat.length() == 0 || slon.length() == 0) return false;
 
-  for (int i = 0; i < size; i++) {
-    commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
-      delete[] cords;
-      return;
-    }
-    cords[i][0] = line.substring(index, commaIndex).toDouble();
-    index = commaIndex + 1;
-    commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
-      delete[] cords;
-      return;
-    }
-    cords[i][1] = line.substring(index, commaIndex).toDouble();
-    index = commaIndex + 1;
-  }
+  // --- 明らかな打ち間違いを弾く ---
+  const double lat = slat.toDouble();
+  const double lon = slon.toDouble();
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+  if (lat == 0.0 && lon == 0.0) return false;   // toDouble() は数値でない文字列でも 0 を返す
+
+  // 目的地は 1 点だけ持つ。cords[0][0]=緯度 / cords[0][1]=経度
+  //（地図ポリゴンの create_static_mapdata() とは順序が逆なので注意）
+  double (*cords)[2] = new double[1][2];
+  if (cords == nullptr) return false;           // nothrow 版 new の場合に備える
+  cords[0][0] = lat;
+  cords[0][1] = lon;
 
   extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
-  extradestinations[destinations_count].size = size;
+  extradestinations[destinations_count].name = pons_strdup(name.c_str());
+  extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = cords;
   destinations_count++;
+  return true;
 }
 
 // SD カードの mapdata.csv から地図ポリゴンを読み込み extramaps[] に格納する。
@@ -840,14 +1017,18 @@ void load_destinations(){
   if (!myFile) {
     return;
   }
+  int added = 0, rejected = 0;
   while (myFile.available() && destinations_count < MAX_DESTINATIONS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
-    if (line.length() > 0) {
-      process_destinationcsv_line(line);
-    }
+    if (line.length() == 0) continue;
+    if (line[0] == '#') continue;               // コメント行（上書きファイルと流儀を揃える）
+    if (process_destinationcsv_line(line)) added++;
+    else                                        rejected++;
   }
   myFile.close();
+  // 捨てた行は必ず残す。黙って無視すると「書いたはずの目的地が出ない」原因に辿り着けない。
+  log_sdf("DESTINATIONS: %d added, %d ignored", added, rejected);
 }
 
 // SD カードを初期化し、地図・目的地・設定を読み込む。
@@ -860,6 +1041,11 @@ void load_destinations(){
 static bool sd_use_spi = false;
 static int sdio_fail_count = 0;  // setup_sd() が SDIO 失敗した累計呼び出し回数
 static int sd_setup_count = 0;   // setup_sd() の累計呼び出し回数
+// 目的地・パイロン座標を SD から構築済みか。SD 復旧時の二重追加と
+// currentdestination のリセットを防ぐ（init_mapdata() の mapdatainitialized と同じ役割）。
+static bool destinations_loaded = false;
+// settings.txt を一度でも読める状態で試したか。下の setup_sd() を参照。
+static bool settings_loaded = false;
 
 bool get_sd_use_spi()    { return sd_use_spi; }
 int  get_sd_setup_count(){ return sd_setup_count; }
@@ -910,16 +1096,45 @@ void setup_sd(int trycount, bool load_settings){
   SdFile::dateTimeCallback(dateTime);
   log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
   init_mapdata();
-  // パイロン座標の上書きを先に適用してから目的地を作り直す。
-  // init_destinations() は setup1() で既定値のまま一度呼ばれているので、
-  // 上書きがあったときだけ新しい座標で登録し直す（内部で前回分を解放する）。
-  load_pilon_override();
-  if (pilon_override_loaded) init_destinations();
-  load_destinations();
-  if (load_settings) {
+
+  // ★ 目的地とパイロン座標の構築は「最初に SD を掴めた 1 回だけ」。
+  //   setup_sd() は try_sd_recovery() から**飛行中にも**呼ばれる。init_mapdata() には
+  //   二重ロード防止があるのに、こちらに無かったため次の 3 つが起きていた。
+  //     1. 上書きファイルが無い場合 … load_destinations() が SD の目的地を末尾へ
+  //        **もう一度追加**する。復旧のたびに増え続け、最後は MAX_DESTINATIONS で溢れる。
+  //     2. 上書きファイルがある場合 … init_destinations() が currentdestination を 0 に
+  //        戻す。復旧時は load_settings=false なので setDestination() で復元されず、
+  //        **パイロットが選んだ目的地が黙って PLATHOME に変わる**。
+  //     3. init_destinations() は Core1 で extradestinations[].cords を delete[] するが、
+  //        Core0 は同じ配列を描画ループから読んでいる（解放後アクセス）。
+  //   起動時に SD を掴めなかった場合は destinations_loaded が false のままなので、
+  //   後から復旧したときに 1 回だけ正しく読み込まれる。
+  if (!destinations_loaded) {
+    // パイロン座標の上書きを先に適用してから目的地を作り直す。
+    // init_destinations() は setup1() で既定値のまま一度呼ばれているので、
+    // 上書きがあったときだけ新しい座標で登録し直す（内部で前回分を解放する）。
+    load_pilon_override();
+    if (pilon_override_loaded) init_destinations();
+    load_destinations();
+    destinations_loaded = true;
+  }
+  // ★ **まだ一度も読めていないなら、load_settings=false でも必ず読む。**
+  //   setup_sd() は起動時（load_settings=true）と try_sd_recovery()（false）から呼ばれる。
+  //   false にしてあるのは「ユーザーが操作中の設定値を復旧で上書きしない」ためだが、
+  //   その理屈が成り立つのは **すでに読み終わっている場合だけ**。
+  //   起動時に SD を 1 回で掴めなかった（SDIO のリトライは 1 回）ときは、以前は
+  //   ここを素通りしていたので **settings.txt が一度も読まれないまま飛んでいた**。
+  //   volume / destination / navigation_mode に加えて link_mode と link_group まで
+  //   既定値（OFF / 0）に戻るため、機体が送信しないまま離陸することになる
+  //   （起動音声が鳴らない＝無線 OFF なので気づけはするが、気づけるだけ）。
+  //
+  //   ファイルが無い場合も「読める状態で試した」ので完了扱いにする。既定値で正しく、
+  //   復旧のたびに開き直す意味が無いため。
+  if (load_settings || !settings_loaded) {
     if (!loadSettings()) {
       DEBUGW_PLN(20250508, "Error loading settings.");
     }
+    settings_loaded = true;
   }
   sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }
@@ -943,6 +1158,11 @@ volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];  // 先読みした CSV 行の�
 volatile uint8_t replay_head = 0;                 // Core1 が書き込む位置
 volatile uint8_t replay_tail = 0;                 // Core0 が読み出す位置
 volatile bool replay_eof = false;                 // ファイル末尾に到達した
+// ★ 選ばれたファイルが**そもそも再生できない**（開けない・ヘッダが無い）。
+//   これを持たないと、Core0 が「末尾に達した」と同じ扱いでループ再生しようとして
+//   init を延々と繰り返す。地図は固まったまま SD を叩き続ける。
+//   Core1 が立て、Core0 が見てリプレイを解除する（set_replaymode は Core0 の処理を伴う）。
+volatile uint8_t replay_file_bad = REPLAY_BAD_NONE;
 // 再生時計のリセット通知。init_replay()（Core1）が加算し、Core0 が値の変化を見て
 // 自分の持つ仮想時刻を 0 に戻す。32bit の単純な増加なので排他は不要。
 volatile uint32_t replay_init_seq = 0;
@@ -974,10 +1194,26 @@ static uint32_t replay_leadin_pos[REPLAY_LEADIN_SLOTS];
 static uint32_t replay_leadin_abs[REPLAY_LEADIN_SLOTS];
 
 // CSV ヘッダで探す列名。並びは ReplayCol の enum と一致させること。
+// ★ 姿勢・風の列名は **imu_replaydata/ と received/ の両方**で使う。
+//   片方だけ変えると、受信ログをリプレイしたときに姿勢だけ読めなくなる。
+//   文字列の実体をここに 1 つだけ置き、下の 2 つの表から参照する。
+#define CN_TIME     "time"
+#define CN_ROLL     "roll"
+#define CN_PITCH    "pitch"
+#define CN_YAW      "yaw"
+#define CN_PAVG     "pitch_avg"
+#define CN_RTRIM    "roll_trim"
+#define CN_YAWACC   "yaw_acc95"
+#define CN_WSPD     "wind_mps"
+#define CN_WDIR     "wind_dir"
+
 static const char* const replay_col_names[REPLAY_COL_COUNT] = {
   "latitude", "longitude", "gs", "truetrack", "gnss_altitude",
-  "kf_altitude", "kf_vspeed", "pressure", "date", "time",
-  "numsat", "voltage"
+  "kf_altitude", "kf_vspeed", "pressure", "date", CN_TIME,
+  "numsat", "voltage",
+  // 受信ログ received/ にだけある列。飛行 CSV には無いので -1 のままになる。
+  CN_ROLL, CN_PITCH, CN_YAW,
+  CN_PAVG, CN_RTRIM, CN_YAWACC, CN_WSPD, CN_WDIR
 };
 
 // 旧バージョンの CSV 用の別名。同じ並びで、無い列は nullptr。
@@ -985,8 +1221,36 @@ static const char* const replay_col_names[REPLAY_COL_COUNT] = {
 static const char* const replay_col_alias[REPLAY_COL_COUNT] = {
   nullptr, nullptr, nullptr, nullptr, "altitude",
   nullptr, nullptr, nullptr, nullptr, nullptr,
-  nullptr, nullptr
+  nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
 };
+
+// ===== 再生元フォルダ =====
+// false = SD ルートの飛行 CSV（自機のログ）
+// true  = received/ の受信ログ（無線で受け取った機体のログ）
+// ★ 一覧には常にどちらか一方だけを出す。混ぜないので、ページ計算もファイル
+//   インデックスも「1 フォルダぶん」のままでよい（既存の計算に手を入れない）。
+static bool replay_from_received = false;
+
+void toggle_replay_from_received(){ replay_from_received = !replay_from_received; }
+const char* replay_source_dir()   { return replay_from_received ? REPLAY_RECEIVED_DIR : REPLAY_FLIGHT_DIR; }
+const char* replay_source_prefix(){ return replay_from_received ? REPLAY_RECEIVED_DIR "/" : REPLAY_FLIGHT_DIR "/"; }
+
+// 再生中ファイルのフォルダを除いた部分。設定画面の "REPLAY: xxx >" 用。
+const char* replay_filename_base() {
+  const char* slash = strrchr(replay_filename, '/');
+  return slash ? slash + 1 : replay_filename;
+}
+
+// 一覧の name（ファイル名のみ）が、いま再生中のファイルか。
+// ★ **フルパスで比べること。** ルートと received/ には同じ日時のファイルが
+//   同じ名前で並ぶ（どちらも YYYY-MM-DD_HHMM.csv）ので、ファイル名だけで
+//   比べると別フォルダの同名ファイルを「再生中」と誤って緑にしてしまう。
+bool replay_filename_is(const char* name) {
+  char path[REPLAY_FILENAME_LEN];
+  snprintf(path, sizeof(path), "%s%s", replay_source_prefix(), name);
+  return strcmp(replay_filename, path) == 0;
+}
 
 // 大文字小文字を無視した文字列比較（strcasecmp 相当）。前後の空白も無視する。
 static bool replay_name_match(const char* token, const char* name) {
@@ -1124,10 +1388,14 @@ void cycle_replay_speed() {
   else                        replay_speed = 1;
 }
 
-// CSV のヘッダ行を解釈して replay_col[] を構築する。
+// CSV のヘッダ行を列名で解釈し、col[] に「その列が何列目か」を入れる（無い列は -1）。
 // 列名は大文字小文字を無視して照合し、未知の列や空の列名（2026大会データに存在）は無視する。
-static void replay_parse_header(const char* header) {
-  for (int i = 0; i < REPLAY_COL_COUNT; i++) replay_col[i] = -1;
+// alias は旧バージョンの別名表。不要なら nullptr を渡す。
+// ★ 飛行 CSV（replay_col）と姿勢ログ（att_col）で同じ処理なので 1 つにまとめてある。
+static void parse_header_cols(const char* header,
+                              const char* const* names, const char* const* alias,
+                              int8_t* col, int count) {
+  for (int i = 0; i < count; i++) col[i] = -1;
 
   int index = 0;
   const char* p = header;
@@ -1139,17 +1407,22 @@ static void replay_parse_header(const char* header) {
     memcpy(token, p, len);
     token[len] = '\0';
 
-    for (int c = 0; c < REPLAY_COL_COUNT; c++) {
-      if (replay_col[c] == -1 &&
-          (replay_name_match(token, replay_col_names[c]) ||
-           (replay_col_alias[c] != nullptr && replay_name_match(token, replay_col_alias[c])))) {
-        replay_col[c] = index;
+    for (int c = 0; c < count; c++) {
+      if (col[c] == -1 &&
+          (replay_name_match(token, names[c]) ||
+           (alias != nullptr && alias[c] != nullptr && replay_name_match(token, alias[c])))) {
+        col[c] = (int8_t)index;
         break;
       }
     }
     index++;
     p = (end == nullptr) ? nullptr : end + 1;
   }
+}
+
+static void replay_parse_header(const char* header) {
+  parse_header_cols(header, replay_col_names, replay_col_alias,
+                    replay_col, REPLAY_COL_COUNT);
 }
 
 // リプレイ再生をファイル先頭から開始（またはループ再生のため再開）する。
@@ -1169,8 +1442,8 @@ enum { ATTCOL_TIME = 0, ATTCOL_ROLL, ATTCOL_PITCH, ATTCOL_YAW,
        ATTCOL_AVG, ATTCOL_TRIM, ATTCOL_YAWACC, ATTCOL_WSPD, ATTCOL_WDIR,
        ATTCOL_COUNT };
 static const char* const att_col_names[ATTCOL_COUNT] = {
-  "time", "roll", "pitch", "yaw", "pitch_avg", "roll_trim", "yaw_acc95",
-  "wind_mps", "wind_dir"
+  CN_TIME, CN_ROLL, CN_PITCH, CN_YAW, CN_PAVG, CN_RTRIM, CN_YAWACC,
+  CN_WSPD, CN_WDIR
 };
 
 static FsFile   replayAttFile;
@@ -1194,26 +1467,7 @@ static bool     replay_att_has_wind = false; // その行に風の推定値が�
 
 // ヘッダ行から att_col[] を作る。1 列も一致しなければ旧形式の固定順とみなす。
 static void replay_att_parse_header(const char* header) {
-  for (int i = 0; i < ATTCOL_COUNT; i++) att_col[i] = -1;
-
-  int index = 0;
-  const char* p = header;
-  while (p != nullptr && *p != '\0') {
-    const char* e = strchr(p, ',');
-    char token[16];
-    size_t len = (e == nullptr) ? strlen(p) : (size_t)(e - p);
-    if (len >= sizeof(token)) len = sizeof(token) - 1;
-    memcpy(token, p, len);
-    token[len] = '\0';
-    for (int c = 0; c < ATTCOL_COUNT; c++) {
-      if (att_col[c] == -1 && replay_name_match(token, att_col_names[c])) {
-        att_col[c] = index;
-        break;
-      }
-    }
-    index++;
-    p = (e == nullptr) ? nullptr : e + 1;
-  }
+  parse_header_cols(header, att_col_names, nullptr, att_col, ATTCOL_COUNT);
 
   // ヘッダが無いファイル（1 行目からデータ）への保険
   if (att_col[ATTCOL_TIME] < 0 || att_col[ATTCOL_ROLL] < 0 || att_col[ATTCOL_PITCH] < 0) {
@@ -1274,7 +1528,8 @@ static void replay_att_open(int y, int mo, int d, uint32_t tod_ms) {
     if (!replayAttFile) continue;
 
     // 1 行目 = ヘッダ。列名から列マップを作る（無ければ固定順にフォールバック）。
-    char header[96];
+    // 現状 67 文字だが、切り詰めると列が静かに欠ける（上の init_replay() 参照）ので余裕を取る。
+    char header[128];
     if (replayAttFile.fgets(header, sizeof(header)) <= 0) {
       replayAttFile.close();
       continue;
@@ -1345,6 +1600,7 @@ void init_replay(){
   replay_head = 0;
   replay_tail = 0;
   replay_eof = false;
+  replay_file_bad = REPLAY_BAD_NONE;
   replay_t0_valid = false;
   replay_csv_t0_ms = 0;
   replay_prev_ms = 0;
@@ -1361,11 +1617,18 @@ void init_replay(){
 
   if (replay_filename[0] == '\0') {
     DEBUGW_PLN(20260731, "REPLAY: no file selected");
-    replay_eof = true;
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
   if (!good_sd()) {
-    replay_eof = true;
+    // ★ ここで必ず「もう続けられない」と伝えること。
+    //   以前は replay_eof だけを立てて戻っていた。Core0 は EOF を
+    //   「末尾に着いた＝先頭からループ再生する」と解釈して INIT_REPLAY を投げ直すので、
+    //   SD が復帰しない限り  init_replay() → !good_sd() → eof → init_replay() …
+    //   と回り続け、地図が固まったままタスクキューを埋め続けていた。
+    //   （replay_file_bad はまさにこの空回りを止めるために入れたフラグ）
+    DEBUGW_PLN(20260731, "REPLAY: SD not available");
+    replay_eof = true; replay_file_bad = REPLAY_BAD_NOSD;
     return;
   }
 
@@ -1374,15 +1637,25 @@ void init_replay(){
     DEBUGW_P(20260731, "REPLAY: cannot open ");
     DEBUGW_PLN(20260731, replay_filename);
     log_sdf("ERR REPLAY open failed: %s", replay_filename);
-    replay_eof = true;
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
 
   // 1行目 = ヘッダ。列名から列マップを作る。
-  char header[160];
+  // ★ **received/ のヘッダは 180 文字ある。** ここを切り詰めると、切れた列は
+  //   「名前が壊れたトークン」または「存在しない列」になり、静かに -1 のまま残る。
+  //   実際 160 では末尾が "...,roll_trim,yaw_ac" で切れ、yaw_acc95 / wind_mps /
+  //   wind_dir が拾えず、**受信ログを再生してもヨーと風だけ出ない**という
+  //   気づきにくい壊れ方をしていた（列名解釈なのでエラーにもならない）。
+  //   列を足すときはここも必ず見直すこと。
+  //     data/     : 101 文字
+  //     received/ : 180 文字（飛行 CSV + rssi,seq,age_ms + 姿勢 6 列 + 風 2 列）
+  char header[256];
   int n = replayFileStatic.fgets(header, sizeof(header));
   if (n <= 0) {
-    replay_eof = true;
+    log_sdf("ERR REPLAY empty file: %s", replay_filename);
+    replayFileStatic.close();          // 他の失敗経路と揃える（開きっぱなしにしない）
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
   replay_parse_header(header);
@@ -1392,7 +1665,7 @@ void init_replay(){
     DEBUGW_PLN(20260731, "REPLAY: header missing lat/lon/time");
     log_sdf("ERR REPLAY bad header: %s", replay_filename);
     replayFileStatic.close();
-    replay_eof = true;
+    replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
   log_sdf("REPLAY start: %s", replay_filename);
@@ -1600,6 +1873,44 @@ void load_replay() {
       row->year = 0; row->month = 0; row->day = 0;
     }
 
+    // --- 姿勢 ---
+    row->roll = 0.0f; row->pitch = 0.0f; row->yaw = 0.0f;
+    row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
+    row->wind_mps = 0.0f; row->wind_dir = 0.0f;
+
+    // ★ CSV 自身が姿勢を持っているならそれを使い、**外部の姿勢ログは見ない**。
+    //   received/ の再生でここを外部参照にすると、日付から引かれるのは
+    //   **ボート自身の imu_replaydata/** なので、機体の航跡にボートの
+    //   ロール・ピッチが黙って合成される。一番たちの悪い壊れ方になる。
+    if (replay_col[RCOL_ROLL] >= 0) {
+      float roll_v, pitch_v, yaw_v, acc_v, wspd_v, wdir_v;
+      // roll と pitch が両方読めた行だけを「姿勢あり」とする。
+      // 送信側の ESKF が未収束だった区間は空欄で入っているので、そこは姿勢なし。
+      if (replay_get_float(line, RCOL_ROLL,  &roll_v) &&
+          replay_get_float(line, RCOL_PITCH, &pitch_v)) {
+        row->roll  = roll_v;
+        row->pitch = pitch_v;
+        row->have |= RHAVE_ATT;
+      }
+      if (replay_get_float(line, RCOL_YAW,    &yaw_v) &&
+          replay_get_float(line, RCOL_YAWACC, &acc_v)) {
+        row->yaw       = yaw_v;
+        row->yaw_acc95 = acc_v;
+        row->have |= RHAVE_ATT_YAW;
+      }
+      if (replay_get_float(line, RCOL_PAVG,  &v)) { row->pitch_avg = v; row->have |= RHAVE_ATT_AVG; }
+      if (replay_get_float(line, RCOL_RTRIM, &v)) { row->roll_trim = v; row->have |= RHAVE_ATT_TRIM; }
+      if (replay_get_float(line, RCOL_WSPD, &wspd_v) &&
+          replay_get_float(line, RCOL_WDIR, &wdir_v)) {
+        row->wind_mps = wspd_v;
+        row->wind_dir = wdir_v;
+        row->have |= RHAVE_ATT_WIND;
+      }
+      // 内容を書き終えてから head を進める（下の外部参照パスと同じ理由）
+      replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
+      continue;
+    }
+
     // --- 姿勢（同じ日の姿勢ログがあれば）---
     if (!replay_att_tried) {
       int fy = yy, fmo = mo, fdd = dd;
@@ -1611,9 +1922,6 @@ void load_replay() {
       }
       replay_att_open(fy, fmo, fdd, tod_ms);
     }
-    row->roll = 0.0f; row->pitch = 0.0f; row->yaw = 0.0f;
-    row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
-    row->wind_mps = 0.0f; row->wind_dir = 0.0f;
     if (replay_att_seek(tod_ms)) {
       row->roll  = replay_att_roll;
       row->pitch = replay_att_pitch;
@@ -1650,9 +1958,6 @@ volatile int  replayfiles_total = 0;     // SD ルート上の対象CSVの総数
 
 extern volatile bool loading_replaylist;
 
-// リプレイ対象として一覧に出さないシステムCSV。
-static const char* const replay_excluded[] = { "mapdata.csv", "destinations.csv", "replay.csv" };
-
 // ファイル名が拡張子 .csv（大小無視）で終わるか。
 static bool has_csv_ext(const char* name) {
   size_t len = strlen(name);
@@ -1664,29 +1969,24 @@ static bool has_csv_ext(const char* name) {
           (ext[3] == 'v' || ext[3] == 'V'));
 }
 
-// リプレイ対象のCSVか判定する（隠しファイル・システムCSVを除外）。
+// リプレイ対象の CSV か判定する。
+// ★ 走査するのは data/ と received/ だけで、設定ファイルはルートにしか無い。
+//   そのため**除外リストが要らない**（以前はルートを走査していたので、
+//   ルートに CSV を足すたびに除外リストへ追記する必要があった）。
 static bool is_replay_candidate(const char* name) {
   if (name[0] == '.') return false;                 // macOS の ._ ファイル等
-  if (!has_csv_ext(name)) return false;
-  for (unsigned i = 0; i < sizeof(replay_excluded)/sizeof(replay_excluded[0]); i++) {
-    if (replay_name_match(name, replay_excluded[i])) return false;  // 大小無視で比較
-  }
-  return true;
+  return has_csv_ext(name);
 }
 
-// 固定項目（大会データ）の実在フラグ。
-// SD が無い・replay/ にファイルが置かれていない機体では選んでも再生できないので、
-// 一覧から丸ごと隠す（存在しない項目を選ばせて無反応になるのを防ぐ）。
-// Core1 の browse_replay_files() が SD を見て更新し、Core0 がメニュー表示で読む。
-// 既定は false（未確認）＝非表示。一覧を開くたびに再確認するので、
-// SD を挿し直した場合も次に開いたときに反映される。
-volatile bool replay_have_2025 = false;
-volatile bool replay_have_2026 = false;
-
-// SD ルートのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
+// 再生元フォルダのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
 // start_index: 対象CSVの通し番号（0始まり）のうち、どこから格納するか。
-// 戻り値: 1 件以上格納できたら true。
-// フォルダは対象外（固定の大会データは replay/ 配下だが一覧には出さず固定項目として扱う）。
+// 戻り値: 1 件以上格納できたら true。フォルダは対象外。
+//
+// ★ 並び順は **ディレクトリの登録順**（openNextFile が返す順）で、ファイル名順ではない。
+//   FAT はディレクトリエントリを先頭の空きスロットから埋めるので、実質は
+//   「SD へ書かれた順（削除跡があればそこを再利用）」になる。
+//   大会データを一覧の上に出したいなら、**カードへ最初にコピーする**こと。
+//   名前を変えても順番は変わらない。
 bool browse_replay_files(int start_index) {
   if (start_index < 0) start_index = 0;
 
@@ -1697,20 +1997,15 @@ bool browse_replay_files(int start_index) {
   replayfiles_count = 0;
   replayfiles_total = 0;
 
-  FsFile root = SD.open("/");
+  // 再生元フォルダ。received/ がまだ無い機体（一度も受信していない）は
+  // ここで開けないので、素直に「0 件」の空一覧になる。
+  FsFile root = SD.open(replay_source_dir());
   if (!root || !root.isDirectory()) {
-    DEBUGW_PLN(20260731, "REPLAY: failed to open root");
+    DEBUGW_PLN(20260731, "REPLAY: failed to open source dir");
     if (root) root.close();
-    // SD が読めない = 大会データも当然読めないので固定項目も隠す
-    replay_have_2025 = false;
-    replay_have_2026 = false;
     loading_replaylist = false;
     return false;
   }
-
-  // 大会データの実在確認（一覧に出すかどうかの判定）
-  replay_have_2025 = SD.exists(REPLAY_2025_FILE);
-  replay_have_2026 = SD.exists(REPLAY_2026_FILE);
 
   while (true) {
     FsFile entry = root.openNextFile();
@@ -1743,26 +2038,18 @@ bool browse_replay_files(int start_index) {
 
 // ===== リプレイ選択画面の項目モデル =====
 // 一覧の通し番号（index）は次の並びになっている:
-//   0                          : Replay OFF
-//   1                          : PLAY FLIGHT ONLY: YES/NO（トグル）
-//   2                          : PLAY SPEED: x1/x2/x??（トグル）
-//   3                          : 2025 Taikai   ← SD 上に実在するときだけ
-//   4                          : 2026 Taikai   ← SD 上に実在するときだけ
-//   F .. F+replayfiles_total-1 : SD ルート上の飛行 CSV
-//   F+replayfiles_total        : Return
-// 先頭の固定項目数 F は replay_menu_fixed_count()（3〜REPLAY_FIXED_COUNT）。
-// 大会データが無い機体では 2025/2026 の行そのものが消え、後続の番号が詰まる。
-// 描画側もボタン処理側もこのモデルを共有する。
-
-// 一覧の先頭に並ぶ固定項目の実数。
-// 常設の 3 項目（OFF / FLIGHT ONLY / SPEED）＋ SD にある大会データのぶん。
-int replay_menu_fixed_count() {
-  return 3 + (replay_have_2025 ? 1 : 0) + (replay_have_2026 ? 1 : 0);
-}
+//   0 : Replay OFF
+//   1 : PLAY FLIGHT ONLY: YES/NO（トグル）
+//   2 : PLAY SPEED: x1/x2/x??（トグル）
+//   3 : SOURCE: FLIGHT/RECEIVED（トグル）
+//   REPLAY_FIXED_COUNT .. +replayfiles_total-1 : 再生元フォルダ内の CSV
+//   REPLAY_FIXED_COUNT + replayfiles_total     : Return
+// ★ 固定項目は**常にこの 4 つだけ**。大会データもただの CSV として一覧に並ぶ。
+//   描画側もボタン処理側もこのモデルを共有する。
 
 // 一覧の総項目数（固定項目 + ファイル数 + Return）。
 int replay_menu_total_items() {
-  return replay_menu_fixed_count() + replayfiles_total + 1;
+  return REPLAY_FIXED_COUNT + replayfiles_total + 1;
 }
 
 // 通し番号が属するページ番号（0始まり）。
@@ -1780,7 +2067,7 @@ int replay_menu_page_count() {
 // そのページを描画するために browse_replay_files() に渡すべき「ファイルの開始通し番号」。
 // ページ 0 は先頭に固定項目が入る分だけファイルの開始位置が手前にずれる。
 int replay_menu_file_start_for_page(int page) {
-  int start = page * REPLAY_LIST_ROWS - replay_menu_fixed_count();
+  int start = page * REPLAY_LIST_ROWS - REPLAY_FIXED_COUNT;
   return (start < 0) ? 0 : start;
 }
 
@@ -1802,17 +2089,13 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
     snprintf(label, labelsize, "PLAY SPEED: x%d", replay_speed);
     return RITEM_SPEED;
   }
-  // 大会データは SD 上に実在するときだけ 1 行を占める（無ければ番号が詰まる）
-  int fixed = 3;
-  if (replay_have_2025) {
-    if (index == fixed) { strlcpy(label, REPLAY_2025_LABEL, labelsize); return RITEM_2025; }
-    fixed++;
-  }
-  if (replay_have_2026) {
-    if (index == fixed) { strlcpy(label, REPLAY_2026_LABEL, labelsize); return RITEM_2026; }
-    fixed++;
+  if (index == 3) {
+    snprintf(label, labelsize, "SOURCE: %s",
+             replay_from_received ? "RECEIVED (radio)" : "FLIGHT (own)");
+    return RITEM_SOURCE;
   }
 
+  const int fixed = REPLAY_FIXED_COUNT;
   if (index == fixed + replayfiles_total) {
     strlcpy(label, "Return", labelsize);
     return RITEM_RETURN;
@@ -2046,6 +2329,87 @@ void log_sdf(const char* format, ...){
 // open/close 時のSDIOハングリスクを最小化する。書き込み後は flush() で反映する。
 // （実体は init_replay() から flush するためファイル前方で定義してある）
 
+// ============================================================
+//  受信ログ（received/）
+//    自機のフライト CSV とは別ファイル・別ハンドル。
+//    received/ は「無線で得た情報」だけを置く場所なので自機 GNSS は混ぜない。
+//    列は自機 CSV と同じ並びにし、末尾に rssi/seq/age_ms と姿勢・風を足す。
+//    姿勢・風の列名は imu_replaydata/ と同じにしてあるので、
+//    **機体の SD が死んでもボート側のログで ESKF の解析ができる**。
+//    揃えてあるので既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
+// ============================================================
+static FsFile rxcsvFile;
+static bool   rxHeaderWritten = false;
+static int    rxfileyear = 0, rxfilemonth, rxfileday, rxfilehour, rxfileminute;
+
+void saveRxCSV(const Task& tk) {
+  const auto& a = tk.saveCsvArgs;
+  if (!good_sd()) return;
+
+  // ファイル名は最初に受信した時刻で固定する（自機 CSV と同じ流儀）。
+  if (rxfileyear == 0 && a.year != 0) {
+    rxfileyear = a.year; rxfilemonth = a.month; rxfileday = a.day;
+    rxfilehour = a.hour; rxfileminute = a.minute;
+  }
+  if (rxfileyear == 0) return;          // まだ時刻が取れていない
+
+  if (!rxcsvFile.isOpen()) {
+    if (!SD.exists(REPLAY_RECEIVED_DIR)) SD.mkdir(REPLAY_RECEIVED_DIR);
+    char fn[48];
+    snprintf(fn, sizeof(fn), REPLAY_RECEIVED_DIR "/%04d-%02d-%02d_%02d%02d.csv",
+             rxfileyear, rxfilemonth, rxfileday, rxfilehour, rxfileminute);
+    rxcsvFile = SD.open(fn, FILE_WRITE);
+  }
+  if (!rxcsvFile) return;
+
+  if (!rxHeaderWritten) {
+    rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
+                      "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
+                      "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir");
+    rxHeaderWritten = true;
+  }
+  rxcsvFile.print(a.latitude, 6);  rxcsvFile.print(",");
+  rxcsvFile.print(a.longitude, 6); rxcsvFile.print(",");
+  rxcsvFile.print(a.gs, 1);        rxcsvFile.print(",");
+  rxcsvFile.print(a.ttrack);       rxcsvFile.print(",");
+  rxcsvFile.print(a.gnss_altitude, 2); rxcsvFile.print(",");
+  rxcsvFile.print(a.kf_altitude, 2);   rxcsvFile.print(",");
+  rxcsvFile.print(a.kf_vspeed, 2);     rxcsvFile.print(",");
+  rxcsvFile.print(a.pressure, 2);      rxcsvFile.print(",");
+  rxcsvFile.print(a.voltage, 2);       rxcsvFile.print(",");
+  rxcsvFile.print(a.numsat);           rxcsvFile.print(",");
+  char d[11]; snprintf(d, sizeof(d), "%04d-%02d-%02d", a.year, a.month, a.day);
+  rxcsvFile.print(d); rxcsvFile.print(",");
+  char t[12]; snprintf(t, sizeof(t), "%02d:%02d:%02d.%02d",
+                       a.hour, a.minute, a.second, a.centisecond);
+  rxcsvFile.print(t); rxcsvFile.print(",");
+  rxcsvFile.print(a.rssi);   rxcsvFile.print(",");
+  rxcsvFile.print(a.seq);    rxcsvFile.print(",");
+  rxcsvFile.print(a.age_ms); rxcsvFile.print(",");
+
+  // ★ 入っていない項目は **0 ではなく空欄**にする（imu_replaydata/ と同じ流儀）。
+  //   0.00 と書くと「水平だった」「無風だった」と読めてしまい、
+  //   あとから解析する人が区別できない。
+  char line[96];
+  char att[36], avg[10], trim[10], wind[20];
+  if (a.have & RHAVE_ATT)      snprintf(att,  sizeof(att),  "%.2f,%.2f,%.2f", a.roll, a.pitch, a.yaw);
+  else                         snprintf(att,  sizeof(att),  ",,");
+  if (a.have & RHAVE_ATT_AVG)  snprintf(avg,  sizeof(avg),  "%.2f", a.pitch_avg);
+  else                         avg[0] = '\0';
+  if (a.have & RHAVE_ATT_TRIM) snprintf(trim, sizeof(trim), "%.2f", a.roll_trim);
+  else                         trim[0] = '\0';
+  // ヨー精度はヨーと同じ have ビットに載っている
+  const bool has_yaw = (a.have & RHAVE_ATT_YAW) != 0;
+  if (a.have & RHAVE_ATT_WIND) snprintf(wind, sizeof(wind), "%.2f,%.1f", a.wind_mps, a.wind_dir);
+  else                         snprintf(wind, sizeof(wind), ",");
+  if (has_yaw) snprintf(line, sizeof(line), "%s,%s,%s,%.0f,%s", att, avg, trim, a.yaw_acc95, wind);
+  else         snprintf(line, sizeof(line), "%s,%s,%s,,%s",     att, avg, trim, wind);
+  rxcsvFile.println(line);
+
+  // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
+  rxcsvFile.flush();
+}
+
 void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
@@ -2063,11 +2427,14 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
     filesecond = second;
   }
 
-  char csv_filename[30];
-  snprintf(csv_filename, sizeof(csv_filename), "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  // ルート直下は設定ファイル専用にしてあるので、飛行 CSV は data/ へ書く。
+  char csv_filename[40];
+  snprintf(csv_filename, sizeof(csv_filename), REPLAY_FLIGHT_DIR "/%04d-%02d-%02d_%02d%02d.csv",
+           fileyear, filemonth, fileday, filehour, fileminute);
 
   // ファイルが未オープンの場合のみ open する（毎回 open/close しない）
   if (!csvFileStatic.isOpen()) {
+    if (!SD.exists(REPLAY_FLIGHT_DIR)) SD.mkdir(REPLAY_FLIGHT_DIR);
     csvFileStatic = SD.open(csv_filename, FILE_WRITE);
   }
 
@@ -2266,117 +2633,9 @@ Task createLogImuReplayTask(int h, int m, int s, int cs,
 }
 
 // 起動時ロゴ BMP 読み込みタスクを生成する（引数なし、ファイル名はハードコード）
-Task createLoadLogoTask(){
-  Task task;
-  task.type = TASK_LOAD_LOGO;
-  return task;
-}
 
-// ===== BMP ファイルヘッダー構造体 =====
-// Windows Bitmap（BMP）のバイナリ構造に対応した構造体定義。
-// BITMAPFILEHEADER と BITMAPINFOHEADER を分けて定義し、SdFat の read() で直接読み込む。
-// このプロジェクトでは 640×640 ピクセル、16-bit RGB565 の BMP を前提としている。
-struct bmp_file_header_t {
-  uint16_t signature;       // 2 bytes: should be 'BM'
-  uint32_t file_size;       // 4 bytes: total file size
-  uint16_t reserved[2];     // 4 bytes: reserved, should be 0
-  uint32_t image_offset;    // 4 bytes: offset to image data
-};
-
-struct bmp_image_header_t {
-  uint32_t header_size;         // 4 bytes: header size (40 bytes for BITMAPINFOHEADER)
-  uint32_t image_width;         // 4 bytes: width of the image in pixels
-  uint32_t image_height;        // 4 bytes: height of the image in pixels
-  uint16_t color_planes;        // 2 bytes: number of color planes (should be 1)
-  uint16_t bits_per_pixel;      // 2 bytes: bits per pixel (1, 4, 8, 16, 24, 32)
-  uint32_t compression_method;  // 4 bytes: compression method (0 for no compression)
-  uint32_t image_size;          // 4 bytes: size of the image data
-  uint32_t horizontal_resolution;  // 4 bytes: horizontal resolution (pixels per meter)
-  uint32_t vertical_resolution;    // 4 bytes: vertical resolution (pixels per meter)
-  uint32_t colors_in_palette;      // 4 bytes: number of colors in the palette
-  uint32_t important_colors;       // 4 bytes: number of important colors
-};
-
-
-
-
-
-
-
-
-
-// 起動時のスプラッシュロゴ（logo.bmp）を展開するスプライト。
-// 以前は SD 上の地図 BMP タイルも同じスプライトに読み込んでいたが、
-// フラッシュ内蔵のベクタ地図へ移行したため、用途はロゴだけになった。
-TFT_eSprite logo_sprite = TFT_eSprite(&tft);
-
-
-
-
-// SD カードの logo.bmp を読み込んで TFT 画面の左上（0, 0）に直接描画する。
-// 主に起動時のスプラッシュロゴ表示に使用する。
-// 期待するフォーマット: 240×52 ピクセル、16-bit RGB565 BMP。
-// logo_sprite に一時展開してから pushSprite(0,0) で TFT に転送する。
-// シグネチャ不一致またはサイズ不一致の場合は描画をスキップする。
-void load_push_logo(){
-    // Open BMP file
-  FsFile bmpImage = SD.open("logo.bmp", FILE_READ);
-  if (!bmpImage) {
-    return;
-  }
-  const int sizey = 52; // ロゴ画像の高さ（ピクセル）
-  // Read the file header
-  bmp_file_header_t fileHeader;
-  bmpImage.read((uint8_t*)&fileHeader.signature, sizeof(fileHeader.signature));
-  bmpImage.read((uint8_t*)&fileHeader.file_size, sizeof(fileHeader.file_size));
-  bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
-  bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
-  // Check signature
-  if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
-    bmpImage.close();
-    return;
-  }
-  // Image header (240x52, 16-bit RGB565 BMP file)
-  bmp_image_header_t imageHeader;
-  bmpImage.read((uint8_t*)&imageHeader.header_size, sizeof(imageHeader.header_size));
-  bmpImage.read((uint8_t*)&imageHeader.image_width, sizeof(imageHeader.image_width));
-  bmpImage.read((uint8_t*)&imageHeader.image_height, sizeof(imageHeader.image_height));
-  bmpImage.read((uint8_t*)&imageHeader.color_planes, sizeof(imageHeader.color_planes));
-  bmpImage.read((uint8_t*)&imageHeader.bits_per_pixel, sizeof(imageHeader.bits_per_pixel));
-  bmpImage.read((uint8_t*)&imageHeader.compression_method, sizeof(imageHeader.compression_method));
-  bmpImage.read((uint8_t*)&imageHeader.image_size, sizeof(imageHeader.image_size));
-  bmpImage.read((uint8_t*)&imageHeader.horizontal_resolution, sizeof(imageHeader.horizontal_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.vertical_resolution, sizeof(imageHeader.vertical_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.colors_in_palette, sizeof(imageHeader.colors_in_palette));
-  bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
-  if (imageHeader.image_width != 240 || imageHeader.image_height != sizey || imageHeader.bits_per_pixel != 16) {
-    bmpImage.close();
-    return;
-  }
-  // Create the sprite
-  if(!logo_sprite.created()){
-    logo_sprite.setColorDepth(16);
-    // ロゴの高さぶんだけ確保する（240x52 = 25KB）。
-    // 地図 BMP を読んでいた頃は 240x240(115KB) が必要だったが、その用途は無くなった。
-    logo_sprite.createSprite(240, sizey);
-    // ★ RAM最大消費ポイント: backscreen(115KB)+header_footer(24KB)+vsi_sprite(2.4KB)+audioBuffer(32KB)+logo_sprite が同時確保された直後
-    DEBUG_P(20260311, "[RAMピーク] logo_sprite生成後 FreeHeap=");
-    DEBUG_PN(20260311, rp2040.getFreeHeap(), DEC);
-    DEBUG_P(20260311, " / Total=");
-    DEBUG_PNLN(20260311, rp2040.getTotalHeap(), DEC);
-  }
-  int tloadbmp_start = millis();
-
-  for (int y = 0; y < sizey; y++) {
-      for (int x = 0; x < 240; x++) {
-          bmpImage.seek(fileHeader.image_offset + 240*(sizey-y-1) * 2 + x * 2);
-          uint16_t color = bmpImage.read(); // Read low byte
-          color |= (bmpImage.read() << 8);  // Read high byte
-          logo_sprite.drawPixel(x, y, color);
-      }
-  }
-  bmpImage.close();
-
-  logo_ready = true;  // Core0 に読み込み完了を通知（pushSprite は Core0 が行う）
-}
+// ※ 起動ロゴは src/flashdata/logo_data.cpp（FLASH）へ移した。
+//   SD の logo.bmp を読む仕組みと BMP ヘッダー構造体はもう使わないので削除した。
+//   SD が読めない機体でもロゴが出るようになり、起動時の 1.9 秒待ちと
+//   logo_sprite の RAM 24KB も不要になっている。
 
