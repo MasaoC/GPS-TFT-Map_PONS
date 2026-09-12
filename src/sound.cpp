@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/12
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -610,7 +610,8 @@ void __not_in_flash_func(loop_sound)(){
         }
     }
 
-    // デバッグ用: 1 秒ごとに再生進捗（%）を出力
+    #ifndef RELEASE
+    // デバッグ用: 1 秒ごとに再生進捗（%）を出力。RELEASE では丸ごと除く。
     static unsigned long lastStatusTime = 0;
     if (wav_playing && (currentTime - lastStatusTime >= 1000)) {
         lastStatusTime = currentTime;
@@ -621,6 +622,7 @@ void __not_in_flash_func(loop_sound)(){
         DEBUG_P(20250424,chunksLoaded);
         DEBUG_PLN(20250424," chunks loaded)");
     }
+    #endif
 }
 
 

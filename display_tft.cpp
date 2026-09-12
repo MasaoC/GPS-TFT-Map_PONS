@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/12
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -279,7 +279,6 @@ void draw_compass(float truetrack, uint16_t col) {
   int centery = get_self_cy();  // TRACKUP=180, NORTHUP=120
   // 偏角は加えない（真方位表示）
   float radian = deg2rad(truetrack);
-  float radian45offset = deg2rad(truetrack + 45);
   backscreen.setTextColor(col, COLOR_WHITE);
   backscreen.setTextSize(2);
   backscreen.loadFont(AA_FONT_SMALL);
@@ -308,30 +307,7 @@ void draw_compass(float truetrack, uint16_t col) {
     backscreen.print("W");
   }
 
-  cord_tft nw = { int(centerx + sin(-radian45offset) * dist), int(centery - cos(radian45offset) * dist) };
-  cord_tft ne = { int(centerx + cos(radian45offset) * dist), int(centery - sin(radian45offset) * dist) };
-  cord_tft se = { int(centerx + sin(radian45offset) * dist), int(centery + cos(radian45offset) * dist) };
-  cord_tft sw = { int(centerx - cos(-radian45offset) * dist), int(centery - sin(-radian45offset) * dist) };
-
-  /*
-  backscreen.setTextSize(1);
-  if (!nw.isOutsideTft()) {
-    backscreen.setCursor(nw.x - 5, nw.y - 2);
-    backscreen.print("NW");
-  }
-  if (!ne.isOutsideTft()) {
-    backscreen.setCursor(ne.x - 5, ne.y - 2);
-    backscreen.print("NE");
-  }
-  if (!se.isOutsideTft()) {
-    backscreen.setCursor(se.x - 5, se.y - 2);
-    backscreen.print("SE");
-  }
-  if (!sw.isOutsideTft()) {
-    backscreen.setCursor(sw.x - 5, sw.y - 2);
-    backscreen.print("SW");
-  }
-  */
+  // 斜め方位（NW/NE/SE/SW）は画面が混むので描かない。
   backscreen.setTextWrap(true);
 }
 
@@ -925,7 +901,6 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
 
   double lat3, lon3;
-  cord_tft dest = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
   calculatePointC(dest_lat, dest_lon, center_lat, center_lon, distance, lat3, lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
@@ -1244,7 +1219,6 @@ void startup_demo_tft() {
       //center_lat += 0.01*i;// for zoomout_speedfactor=2
     }
 
-    bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
     {
       draw_startup_map(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow);
@@ -2886,7 +2860,6 @@ void draw_footer(){
     }
   }
   // ====GNSS====
-  int col = COLOR_GREEN;
   if (get_gps_numsat() < 5) {
     header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
     header_footer.fillRect(SCREEN_WIDTH-101,1, 44,15, COLOR_RED);
@@ -3247,7 +3220,6 @@ void draw_nomapdata() {
     }
   }
 
-  int col = COLOR_BLACK;
   // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
   int box_y  = is_trackupmode() ? (get_self_cy() + 12) : 145;  // TRACKUP=192, NORTHUP=145
   int text_y1 = is_trackupmode() ? (box_y + 5)  : 150;          // TRACKUP=197, NORTHUP=150
@@ -3607,7 +3579,6 @@ void draw_variodetail(int page) {
     backscreen.print("-- GNSS Vertical --");
     y += line_height;
 
-    float gnss_vsi = get_gps_veld_mps();
     float vacc_m   = get_gps_vacc_mm()   / 1000.0f;
     float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
     float gnss_alt = get_gps_altitude();
