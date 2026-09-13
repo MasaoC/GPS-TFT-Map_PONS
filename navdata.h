@@ -6,7 +6,7 @@
 //           内蔵ポリゴン地図・目的地・飛行コースモードの定義、
 //           各飛行地点（琵琶湖・白浜・笠岡・富士川・東京湾など）の座標。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/13
+// Updated : 2026/09/14
 // ============================================================
 #include "settings.h"
 
@@ -107,7 +107,7 @@
 
   double deg2rad(double degrees);
   double rad2deg(double rad);
-  extern int truec;
+  extern float truec;   // 小数を保つ（表示は draw_footer() で四捨五入する）
 
   // ---- 実行時のコース座標 ----
   // 既定値は上の #define。SD の override_pilon_coordinate.csv があれば起動時に上書きする。

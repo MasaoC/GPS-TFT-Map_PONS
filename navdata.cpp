@@ -8,7 +8,7 @@
 //           内蔵ポリゴンは滑走路外周や島など、ベクタ地図では表せない
 //           飛行用の注記に限る（SDが無くても必ず描画される）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/13
+// Updated : 2026/09/14
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>
@@ -22,9 +22,12 @@
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
 
-// truec: 現在地→目的地の真方位（表示用）。nav_update() で毎回更新される。
+// truec: 現在地→目的地の真方位 [deg]。nav_update() で毎回更新される。
 // 機体に磁気コンパスを載せない方針になったため、v0.94 で磁方位から真方位へ変更した。
-int truec = 0;
+// ★ float で持つ。以前は int で、しかも (int) キャストによる**切り捨て**だったので
+//   表示が常に最大 1 度小さい側に寄り、そのズレがそのまま steer_angle
+//   （＝赤い修正矢印としきい値判定）にも乗っていた。表示だけ四捨五入する。
+float truec = 0;
 // dest_dist: 現在地→目的地の距離 [km]。nav_update() で毎回更新される。
 float dest_dist = 0;
 
@@ -230,11 +233,13 @@ void nav_update(){
     dest_dist = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
 
     //Fly into truec
-    truec = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 360)) % 360;
+    // calculateTrueCourseRad は -180〜+180 を返すので、+360 してから 360 で折り返す。
+    truec = fmodf((float)rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()),
+                                                        deg2rad(destlat), deg2rad(destlon))) + 360.0f, 360.0f);
 
     // FLYAWAY または AUTO10K の AWAY フェーズでは 180° 反転（目的地から離れる方向を示す）
     if(destination_mode == DMODE_FLYAWAY || (destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_AWAY)){
-      truec = (truec+180)%360;
+      truec = fmodf(truec + 180.0f, 360.0f);
     }
   }
 }

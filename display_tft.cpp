@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/13
+// Updated : 2026/09/14
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -143,7 +143,17 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
   // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
   float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
   // Calculate y-coordinates in Mercator projection
-  double yA = latitudeToMercatorY(mapCenterLat);
+  // ★ 地図中心の Mercator Y は 1 フレームの間ずっと同じ値なのに、以前は呼ばれるたびに
+  //   log(tan()) を計算し直していた。航跡 500 点を描くだけで無駄が 500 回分になる。
+  //   入力が変わったときだけ計算する（pla_centerline_bearing_rad() と同じやり方）。
+  //   latLonToXY() は Core0 の描画からしか呼ばれないので static で問題ない。
+  static float  cached_center_lat = NAN;
+  static double cached_yA         = 0;
+  if (mapCenterLat != cached_center_lat) {
+    cached_center_lat = mapCenterLat;
+    cached_yA         = latitudeToMercatorY(mapCenterLat);
+  }
+  double yA = cached_yA;
   double yB = latitudeToMercatorY(lat);
   // Calculate the distance on the y-axis
   double yDist = (yB - yA)* 6378.22347118;// 1 radian latitude（Mercator Y軸）= 111.321 *180/3.1415 = 6378.22347118 km（地球半径に相当）
@@ -364,7 +374,7 @@ extern unsigned long trackwarning_until;
 // 1 秒おきに点滅（(millis()/1000)%2 == 0 のときだけ描画）し、
 // steer_angle の符号で "Turn RIGHT" / "Turn LEFT" を切り替える。
 // 呼び出しはメインの draw ループから angle_diff > 15° のときに行われる。
-void draw_course_warning(int steer_angle){
+void draw_course_warning(float steer_angle){
   if((millis()/1000)%2 == 0){
     // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
     int box_y = is_trackupmode() ? (get_self_cy() + 12) : 175;  // TRACKUP=192, NORTHUP=175
@@ -658,7 +668,7 @@ static bool header_shows_pitch();
 #define TRACKUP_TONE_SHRINK   26
 #define TRACKUP_STEER_SHRINK  24
 
-void draw_triangle(int ttrack,int steer_angle) {
+void draw_triangle(int ttrack,float steer_angle) {
   // Core0 スタック残量を計測。
   // draw_triangle() は drawWideLine を最も多く呼ぶ関数であり、
   // TFT_eSPI の drawWideLine が大量のスタックを消費するため、
@@ -863,7 +873,13 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
   double d = distance / R;  // Distance in radians
 
   if (lat1 == lat2 && lon1 == lon2) {
+    // 方位が定義できない。**出力を必ず埋めてから返すこと。**
+    // 以前は書かずに return していたので、呼び出し側が渡している未初期化の
+    // ローカル変数がそのまま画面座標に化けた（現状この経路には入らないが、
+    // 入った瞬間に誘導線が明後日へ飛ぶ形だった）。始点をそのまま返す。
     DEBUG_PLN(20250424,"Error: Points A and B are the same. Bearing is undefined.");
+    lat3 = rad2deg(lat1);
+    lon3 = rad2deg(lon1);
     return;
   }
   double bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
@@ -951,11 +967,6 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 }
 
 
-// ★グローバル変数として宣言（スタック節約のため）★
-// Core0 のスタックは 4KB しかなく、MAX_TRACK_CORDS>=300 のときにローカル宣言すると
-// スタックオーバーフローになるため、RAM（グローバル領域）に置いてある。
-cord_tft points[MAX_TRACK_CORDS];
-
 // LatLonManager（latlon_manager）に蓄積されたフライトトラックを backscreen に描画する。
 // 最新座標（getData(0)）から自機位置（画面中央）への緑線を引き、
 // その後 getData(i) → getData(i+1) を順に繋いでトラック履歴を表示する。
@@ -973,21 +984,27 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     draw_map_line(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
   }
 
+  // ★ 1 点につき 1 回だけ座標変換する。以前は getData(i) と getData(i+1) を
+  //   毎回それぞれ変換していたので、各点が 2 回ずつ変換されていた。
+  //   前回の変換結果を持ち回れば半分で済む。
+  if(c0.latitude == 0 && c0.longitude == 0){
+    DEBUGW_PLN(20250510,"ERR lat lon 0");
+    return;
+  }
+  cord_tft prev = p0;
   for (int i = 0; i < sizetrack-1; i++) {
-    Coordinate c0 = latlon_manager.getData(i);
     Coordinate c1 = latlon_manager.getData(i+1);
-    if((c0.latitude == 0 && c0.longitude == 0) || (c1.latitude == 0 && c1.longitude == 0)){
+    if(c1.latitude == 0 && c1.longitude == 0){
       DEBUGW_PLN(20250510,"ERR lat lon 0");
       break;
     }
-    
-    cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
-    cord_tft p1 = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
+
+    cord_tft cur = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
-    if (p0.x != p1.x || p0.y != p1.y) {
-      draw_map_line(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
+    if (prev.x != cur.x || prev.y != cur.y) {
+      draw_map_line(prev.x,prev.y,cur.x,cur.y,2,COLOR_GREEN);
     }
-    
+    prev = cur;
   }
 }
 
@@ -2767,7 +2784,7 @@ void draw_footer(){
     if(!nav_valid)
       header_footer.print("TC---");
     else
-      header_footer.printf("TC%3d", truec);
+      header_footer.printf("TC%3d", (int)lroundf(truec) % 360);
 
 
     header_footer.setCursor(60, 1);
@@ -3155,7 +3172,7 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   // 公式ルール 10.975km for first leg outbound.
   backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35.29)),COLOR_GREEN);
   // 公式ルール 1.0km リターンフライト。
-  backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35)),COLOR_GREEN);
+  backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35.29)),COLOR_GREEN);
 }
 
 // 琵琶湖 HPA 競技コースのアイコンを描画する:

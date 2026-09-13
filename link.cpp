@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/14
 // ============================================================
 //
 // ■ 設計の要点
@@ -933,7 +933,12 @@ bool link_has_value(uint16_t havebit) {
 double   link_get_lat()           { return s_rx.t.lat_1e7 / 1e7; }
 double   link_get_lon()           { return s_rx.t.lon_1e7 / 1e7; }
 double   link_get_gs()            { return s_rx.t.gs_cms      / 100.0; }
-double   link_get_truetrack()     { return s_rx.t.track_cdeg  / 100.0; }
+// 実 GPS(gps.cpp) / リプレイ / デモはどれも 0〜360 を強制している。ここだけ素通しだと
+// CRC を通った壊れフレームで 655 度までの値がナビ計算に入るため、同じ形で揃える。
+double   link_get_truetrack()     {
+  double t = s_rx.t.track_cdeg / 100.0;
+  return (t < 0.0 || t > 360.0) ? 0.0 : t;
+}
 double   link_get_gnss_altitude() { return s_rx.t.gnss_alt_dm /  10.0; }
 int      link_get_numsat()        { return s_rx.t.numsat; }
 uint32_t link_get_hacc_mm()       { return (uint32_t)s_rx.t.hacc_dm * 100u; }

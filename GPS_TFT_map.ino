@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/13
+// Updated : 2026/09/14
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -116,7 +116,7 @@ extern volatile bool loading_sddetail;
 extern bool sd_detail_loading_displayed;
 
 void reset_degpersecond();
-void update_degpersecond(int true_track);
+void update_degpersecond(float true_track);
 void check_destination_toofar();
 static void apply_auto10k_status(int st);
 void update_course_warning(float degpersecond);
@@ -1502,7 +1502,7 @@ void reset_degpersecond() {
 //   4. 配列を1つずらして古いサンプルを捨てる
 //   ※ 360度またぎ（例: 359→1度）を -180〜+180 に正規化して計算する
 //   ※ 時間正規化により GPS レート（1Hz / 2Hz）に依存しない
-void update_degpersecond(int true_track) {
+void update_degpersecond(float true_track) {
   uint32_t now = millis();
   truetrack_samples[sampleIndex] = true_track;
   truetrack_sample_times[sampleIndex] = now;
@@ -1612,7 +1612,13 @@ static void nav_alarm_tick(bool new_gps_info) {
 
   // GPS コース更新時（1Hz または 2Hz）にのみ実行する処理
   if (newcourse_arrived) {
-    int ttrack = get_gps_truetrack();
+    // ★ float で受けること。以前は int で、切り捨て誤差が窓の両端に残り
+    //   deg/s に最大 ±0.67（誤差1度 ÷ 窓1.5秒）の量子化ノイズが乗っていた。
+    //   着色 1.0 / 強調 3.0 / コース警報の「修正中」判定 0.5 deg/s という
+    //   しきい値に対して無視できない大きさだった。
+    //   truetrack_samples[] は元から float、GNSS 側も NAV-PVT の headMotion
+    //   （分解能 1e-5 度）なので、捨てていたのはここだけ。
+    float ttrack = get_gps_truetrack();
 
     // ★ **この順番を入れ替えないこと。**
     //   nav_update() → steer_angle → update_course_warning() の順でなければ、
@@ -1624,6 +1630,7 @@ static void nav_alarm_tick(bool new_gps_info) {
 
     // 針路誤差 (steer_angle) の計算:
     // truec はナビが指示する真方位コース、ttrack は GPS 実測の真方位。
+    // どちらも小数を保った値なので、結果もそのまま使える（表示だけ丸める）。
     // 結果を -180〜+180 に正規化する。
     // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
     //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
