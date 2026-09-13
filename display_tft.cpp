@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/12
+// Updated : 2026/09/13
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -697,7 +697,7 @@ void draw_triangle(int ttrack,int steer_angle) {
       else
         backscreen.drawArc(240/2, 240/2, (nlen-21), (nlen-23), (ttrack+180+(int)(arc_factor*steer_angle))%360,(ttrack+180)%360, COLOR_RED, COLOR_WHITE);
 
-      //約10度以上の方位違いがある場合に、指示三角形を描画する。
+      //約15度以上の方位違いがある場合に、指示三角形を描画する。
       if(abs(steer_angle) > 15){
         double steer_triangle_start_rad = tt_radians + (steer_angle<0?-0.1:0.1);
         double steer_triangle_end_rad = tt_radians + (steer_angle<0?-0.35:0.35);
@@ -2757,14 +2757,22 @@ void draw_footer(){
 
   // ====Navigation.==== Distance to plathome.
   if(currentdestination != -1 && currentdestination < destinations_count){
+    // 測位前は TC も距離も出さない。未測位のときの内部位置は (0,0) なので、
+    // truec は「ギニア湾から目的地を見た方位」になる。3 桁の数字として
+    // それらしく読めてしまうため、距離と同じく伏せ字にする。
+    bool nav_valid = get_gps_fix() || is_demo_active();
+
     header_footer.setCursor(1, 1);
     header_footer.setTextColor(COLOR_MAGENTA);
-    header_footer.printf("TC%3d", truec);
+    if(!nav_valid)
+      header_footer.print("TC---");
+    else
+      header_footer.printf("TC%3d", truec);
 
 
     header_footer.setCursor(60, 1);
     header_footer.setTextColor(COLOR_BLACK);
-    if(!get_gps_fix() && !is_demo_active())
+    if(!nav_valid)
       header_footer.print("---km");
     else
       header_footer.printf(dest_dist>1000?"%.0fkm":dest_dist>100?"%.1fkm":"%.2fkm", dest_dist);
@@ -3145,7 +3153,7 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   draw_clipped_wideline(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
 
   // 公式ルール 10.975km for first leg outbound.
-  backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
+  backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35.29)),COLOR_GREEN);
   // 公式ルール 1.0km リターンフライト。
   backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35)),COLOR_GREEN);
 }

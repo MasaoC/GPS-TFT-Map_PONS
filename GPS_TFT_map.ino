@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/13
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -120,6 +120,10 @@ void update_degpersecond(int true_track);
 void check_destination_toofar();
 static void apply_auto10k_status(int st);
 void update_course_warning(float degpersecond);
+static void nav_alarm_tick(bool new_gps_info);
+// 最後にボタンが操作された時刻。設定画面の放置タイムアウト（下の SETTING_IDLE_TIMEOUT_MS）用。
+// 3 つのコールバックの先頭で更新するので、押し方の種類によらず必ず記録される。
+static unsigned long last_user_input_ms = 0;
 void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
@@ -781,6 +785,40 @@ void loop() {
     }
   }
 
+  // ---- ナビゲーションと警報 ----
+  // ★ **画面モードによらず必ずここで走らせる。**
+  //   以前はこの下の MODE_MAP の分岐の中に置いていたため、設定画面や各詳細画面を
+  //   開いている間は Auto10km の折返し判定・コース逸脱警報・旋回角速度の更新が
+  //   すべて止まっていた。とくに INTO→AWAY（目的地から 1.5km 以内）は「そのとき
+  //   近くにいるか」で判定するので、地図画面を離れている間に通り過ぎると
+  //   二度と成立せず、復路のまま戻らなくなる。
+  //   電池警告を loop() の最上位へ移したのと同じ理由（CLAUDE.md 参照）。
+  bool new_gps_info = gps_new_location_arrived();
+  nav_alarm_tick(new_gps_info);
+
+  // ---- 設定画面の放置タイムアウト ----
+  // 設定画面を出したまま離陸してしまった場合の保険。上の nav_alarm_tick() が
+  // 画面によらず動くようになったので警報は鳴るが、地図が見えないままなのは変わらない。
+  // ボタン操作が一定時間無ければ、通常の「Save & Exit」と同じ経路で地図画面へ戻す。
+  // 別れの音声が鳴るので、戻ったことにパイロットが気づける。
+  if (screen_mode == MODE_SETTING &&
+      millis() - last_user_input_ms > SETTING_IDLE_TIMEOUT_MS) {
+    enqueueTask(createLogSdfTask("SETTING SCREEN TIMEOUT -> MAP (%lus idle)",
+                                 (unsigned long)(SETTING_IDLE_TIMEOUT_MS / 1000UL)));
+    // ★ 値変更モードのまま時間切れになった場合は、**必ず CallbackExit を通す。**
+    //   長押しで抜ける通常経路（longPressCallback の「値変更モードから抜ける（確定）」）と
+    //   同じ処理。ここには Auto10km と目的地の組み合わせチェック
+    //   （is10K_NotAllowed_Destination）や、無線の設定変更を知らせる警告が入っている。
+    //   飛ばすと、設定画面で禁止の組み合わせを作りかけたまま地図へ戻ることになる。
+    if (selectedLine != -1 && menu_settings[cursorLine].CallbackExit != nullptr)
+      menu_settings[cursorLine].CallbackExit();
+    selectedLine = -1;
+    exit_setting();      // 設定を保存し、音声を鳴らして MODE_MAP へ
+    // 画面クリアは不要。地図の再描画（ヘッダ＋backscreen＋フッタ）が 240x320 を
+    // 埋め尽くすため、通常の「Save & Exit」でもクリアしていない。
+    redraw_screen = true;
+  }
+
   if (screen_mode == MODE_SETTING) {
     if (redraw_screen) {
       draw_setting_mode(selectedLine, cursorLine);
@@ -819,67 +857,6 @@ void loop() {
       vsi_sprite.pushSprite(235, 40);  // backscreen は y=40 から開始
     }
   } else if (screen_mode == MODE_MAP) {
-    bool new_gps_info = gps_new_location_arrived();
-    if (new_gps_info) {
-      // Automatic destination change for AUTO 10KM mode.
-      // currentdestination の有効性も確認する。init_destinations() は Core1 の setup1() で走るため、
-      // それが終わる前に Core0 がここへ来ると -1（未選択）のまま配列外を読んでしまう。
-      if (destination_mode == DMODE_AUTO10K && currentdestination != -1 && currentdestination < destinations_count) {
-        double destlat = extradestinations[currentdestination].cords[0][0];
-        double destlon = extradestinations[currentdestination].cords[0][1];
-        double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
-        // フェーズが変わったときは、起動直後・リプレイ切替直後であっても必ず鳴らす。
-        // 保存した INTO を復元した状態でプラットホーム付近にいると、下の
-        // 「1.5km 以内なら AWAY」が即座に成立して起動直後に鳴ることがあるが、
-        // 黙って向きが変わるより、鳴らして確認を促す方が安全という判断。
-        if (auto10k_status == AUTO10K_AWAY) {
-
-          if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
-            apply_auto10k_status(AUTO10K_INTO);
-            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
-            enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
-          }
-        }
-        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
-          apply_auto10k_status(AUTO10K_AWAY);
-          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
-          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
-          enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
-        }
-      }
-      check_destination_toofar();
-    }
-
-    // GPS コース更新時（1Hz または 2Hz）にのみ実行する処理
-    if (newcourse_arrived) {
-      int ttrack = get_gps_truetrack();
-
-      update_degpersecond(ttrack);        // 旋回角速度 [deg/s] を更新
-      update_tone(degpersecond);          // 旋回音の音程を更新
-      update_course_warning(degpersecond); // コース逸脱警告の積算値を更新
-
-      // 針路誤差 (steer_angle) の計算:
-      // truec はナビが指示する真方位コース、ttrack は GPS 実測の真方位。
-      // 結果を -180〜+180 に正規化する。
-      // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
-      //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
-      //   真方位へ統一しても操縦指示の挙動は変わらない。
-      steer_angle = truec - ttrack;
-      if (steer_angle < -180) {
-        steer_angle += 360;
-      } else if (steer_angle > 180) {
-        steer_angle -= 360;
-      }
-
-      newcourse_arrived = false;
-    }
-
-
     if (new_gps_info) {
       redraw_screen = true;
     }
@@ -1191,6 +1168,7 @@ float scale_screen_km(int index) {
 //   MAPLIST/GPSDETAIL: 次のページへ
 // 操作音は Button クラスではなくここで鳴らす。何も起きない画面では鳴らさないため。
 void shortPressCallback() {
+  last_user_input_ms = millis();
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
 
@@ -1325,6 +1303,7 @@ static void imu_execute() {
 // 短押しは毎回発火するため、ここでは短押しと重複しない処理だけを行う。
 // 操作音は shortPressCallback() と同じ理由でここで鳴らす（効かない画面では鳴らさない）。
 void doublePressCallback() {
+  last_user_input_ms = millis();
   DEBUG_PLN(20240801, "double press");
 
   // MAP モード以外（設定画面や各詳細画面）では短押しがページ送り／カーソル移動を、
@@ -1412,6 +1391,7 @@ static void handleReplaySelect() {
 //   SETTING（未選択）→ 長押し → 現在行を「値変更モード」に入る
 //   SETTING（変更中）→ 長押し → 値変更モードを終了し確定する
 void longPressCallback() {
+  last_user_input_ms = millis();
   redraw_screen = true;
 
   // リプレイ選択画面での長押し = 「決定」。
@@ -1497,6 +1477,13 @@ void longPressCallback() {
 
 // 旋回角速度をリセットする。GPS 受信開始時や停止時などに呼ぶ。
 // サンプル配列を現在の真方位と現在時刻で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
+//
+// ※ **画面を切り替えたときには意図して呼んでいない。** update_degpersecond() は
+//   地図画面でしか回らないので、設定画面などに数秒いて戻ると 4 サンプルの窓が
+//   その空白期間をまたぎ、経過時間が過大になって deg/s が実際より小さく出る
+//   （3 サンプルぶん＝約 1.5 秒で正常に戻る）。
+//   小さく出る側＝「旋回していない」と見える側なので、コース警報が早く鳴ることは
+//   あっても鳴らなくなることはない。安全側に外れるため直していない。
 void reset_degpersecond() {
   float track = get_gps_truetrack();
   uint32_t now = millis();
@@ -1566,6 +1553,94 @@ static void apply_auto10k_status(int st) {
   // 飛行中に再起動しても復路のナビ方位が逆にならないよう、遷移のたびに保存する。
   // 遷移は 1 周あたり数回しか起きないので SD 書き込みの頻度は問題にならない。
   enqueueTask(createSaveSettingTask());
+}
+
+// ナビゲーションの判断と警報。**画面モードによらず loop() から毎回呼ぶこと。**
+// 描画は一切しない（描画は MODE_MAP の分岐が担当する）。
+//
+// 内訳:
+//   1. Auto10km の折返しフェーズ判定（GPS 位置が変わったときだけ）
+//   2. 目的地が遠すぎる警告（同上）
+//   3. 旋回角速度・旋回音・針路誤差・コース逸脱警報（GPS コース更新時だけ）
+static void nav_alarm_tick(bool new_gps_info) {
+  // 位置そのものをキーにして「本当に動いたときだけ」評価する。
+  // new_gps_info のフラグを落とすのは MODE_MAP の描画ブロック（set_new_location_off()）
+  // なので、地図画面以外ではフラグが立ちっぱなしになる。毎ループ Haversine を
+  // 回さないよう、pla_centerline_bearing_rad() と同じく入力の変化で判定する。
+  static double last_nav_lat = NAN, last_nav_lon = NAN;
+  if (new_gps_info) {
+    const double nav_lat = get_gps_lat();
+    const double nav_lon = get_gps_lon();
+    if (nav_lat != last_nav_lat || nav_lon != last_nav_lon) {
+      last_nav_lat = nav_lat;
+      last_nav_lon = nav_lon;
+
+      // Automatic destination change for AUTO 10KM mode.
+      // currentdestination の有効性も確認する。init_destinations() は Core1 の setup1() で走るため、
+      // それが終わる前に Core0 がここへ来ると -1（未選択）のまま配列外を読んでしまう。
+      if (destination_mode == DMODE_AUTO10K && currentdestination != -1 && currentdestination < destinations_count) {
+        double destlat = extradestinations[currentdestination].cords[0][0];
+        double destlon = extradestinations[currentdestination].cords[0][1];
+        double distance_frm_destination = calculateDistanceKm(nav_lat, nav_lon, destlat, destlon);
+        // フェーズが変わったときは、起動直後・リプレイ切替直後であっても必ず鳴らす。
+        // 保存した INTO を復元した状態でプラットホーム付近にいると、下の
+        // 「1.5km 以内なら AWAY」が即座に成立して起動直後に鳴ることがあるが、
+        // 黙って向きが変わるより、鳴らして確認を促す方が安全という判断。
+        if (auto10k_status == AUTO10K_AWAY) {
+
+          if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
+            apply_auto10k_status(AUTO10K_INTO);
+            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
+            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
+            enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
+          }
+        }
+        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
+          apply_auto10k_status(AUTO10K_AWAY);
+          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+          enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
+        }
+      }
+      check_destination_toofar();
+    }
+  }
+
+  // GPS コース更新時（1Hz または 2Hz）にのみ実行する処理
+  if (newcourse_arrived) {
+    int ttrack = get_gps_truetrack();
+
+    // ★ **この順番を入れ替えないこと。**
+    //   nav_update() → steer_angle → update_course_warning() の順でなければ、
+    //   警報は 1 周期古いズレ角で判定する。以前はまさにそうなっていて、
+    //   Auto10km でフェーズが反転した直後の約 1 秒、警報が反転前のコースを見ていた。
+    //   nav_update() は MODE_MAP の描画ブロックでも呼ぶが、これは Haversine と
+    //   atan2 が 1 回ずつなので、2 度呼んでも負荷は問題にならない。
+    nav_update();                       // truec（目的地への真方位）を最新 GPS 位置で更新
+
+    // 針路誤差 (steer_angle) の計算:
+    // truec はナビが指示する真方位コース、ttrack は GPS 実測の真方位。
+    // 結果を -180〜+180 に正規化する。
+    // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
+    //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
+    //   真方位へ統一しても操縦指示の挙動は変わらない。
+    steer_angle = truec - ttrack;
+    if (steer_angle < -180) {
+      steer_angle += 360;
+    } else if (steer_angle > 180) {
+      steer_angle -= 360;
+    }
+
+    update_degpersecond(ttrack);        // 旋回角速度 [deg/s] を更新
+    update_tone(degpersecond);          // 旋回音の音程を更新
+    update_course_warning(degpersecond); // コース逸脱警告の積算値を更新（steer_angle を読む）
+
+    newcourse_arrived = false;
+  }
 }
 
 // 目的地が 100km 以上離れている場合に警告音を鳴らす。

@@ -13,6 +13,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 |---|---|---|
 | **[PONS_HPA v7 説明書](https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/)**（Google Docs・画面写真つき） | パイロット / ボートマン | 使い方。画面の見方、設定手順、警告音の意味、大会当日の運用 |
 | **この README** | 開発者 / 自作する人 | 中身の話。設計判断とその理由、部品と発注、生成ツール、ログの形式、実測データ |
+| **[docs/pons_navigation.md](docs/pons_navigation.md)** | 開発者 | ナビゲーション・ロジックの要約。方位と距離の出し方、Auto 10km、コース警報 |
 | **[docs/pons_link.md](docs/pons_link.md)** | 開発者 | 無線（PONS Link）の仕様書。プロトコル・電波法・実測 |
 | **[docs/pons_link_bringup.md](docs/pons_link_bringup.md)** | 開発者 | 基板到着後の立ち上げ試験手順 |
 
@@ -44,7 +45,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.963**（Build 20260910）。
+* 最新のソフトウェアバージョンは **0.965**（Build 20260913）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
 
@@ -267,7 +268,7 @@ E220-900T22S(JP) は技適取得済みで、免許は不要です。ARIB STD-T10
   * 較正が必要なときは `ESKF CALIBRATION REQUIRED!` を赤字で、未収束のときは `ESKF Not ready` を表示。
 * **画面下部**：時刻（JST）と 最大 GS（過去 5 分・累計）と発生時刻。
   緯度・経度は v0.94 で削除した（飛行中に読む場面が無いため）。sAcc は左上へ移動。
-* **画面下部 2**：目的地コース (Magnetic Course) / 目的地までの距離（km、直線距離）/ 捕捉衛星数（10 以上で緑）/ 電池残量 (%)
+* **画面下部 2**：目的地コース (True Course) / 目的地までの距離（km、直線距離）/ 捕捉衛星数（10 以上で緑）/ 電池残量 (%)
 * **画面最下部**：目的地モード（FLY INTO / FLY AWAY / 10K INTO / 10K AWAY）/ 目的地名 / SD 認識表示（正常=緑、エラー=赤）
 * **状態表示**：`Acc: XXm`（水平位置精度 1σ、10m 以上のとき表示）、`Scanning GNSS/GPS Signal`（起動直後）、
   `Weak GNSS/GPS Signal`（衛星数 0）、`No GNSS connection !!`（GNSS 通信不可＝要再起動）

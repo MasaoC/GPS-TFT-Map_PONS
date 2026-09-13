@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/10
+// Updated : 2026/09/13
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -1105,8 +1105,10 @@ void setup_sd(int trycount, bool load_settings){
   //     2. 上書きファイルがある場合 … init_destinations() が currentdestination を 0 に
   //        戻す。復旧時は load_settings=false なので setDestination() で復元されず、
   //        **パイロットが選んだ目的地が黙って PLATHOME に変わる**。
-  //     3. init_destinations() は Core1 で extradestinations[].cords を delete[] するが、
-  //        Core0 は同じ配列を描画ループから読んでいる（解放後アクセス）。
+  //     3. init_destinations() を飛行中に走らせると、Core0 が描画ループから読んでいる
+  //        extradestinations[] を Core1 が作り直すことになる。
+  //        （この 3 番目は navdata.cpp 側でも対策済み。解放をやめて差し替えだけにしたので、
+  //          最悪でも 1 フレーム古い座標を読むだけで、解放済み領域は踏まない。）
   //   起動時に SD を掴めなかった場合は destinations_loaded が false のままなので、
   //   後から復旧したときに 1 回だけ正しく読み込まれる。
   if (!destinations_loaded) {

@@ -62,7 +62,8 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   **リプレイ中・ミラー中は SD への記録を止める**分岐が `loop()` の各所にある
   （再生した日付のファイルへ現在値を書いて実飛行ログを汚さないため）。
 - **警報を描画関数の中に書かない。** その画面を出しているときしか鳴らなくなる。
-  発報は `loop()` の最上位へ。
+  発報は `loop()` の最上位へ。ナビの判断（Auto10km の折返し・コース警報・旋回角速度）は
+  `nav_alarm_tick()` にまとまっている。**ここに描画を混ぜないこと。**
 - **設定値は settings.h に一箇所だけ。** 例えばバリオのデッドバンドは音（sound.cpp）と
   VSI のグレー線（display_tft.cpp）が同じ定数を見ている。片方だけ直すと
   「線は出ているのに鳴らない」になる。
@@ -94,6 +95,7 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
 
+- ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - SD カードの雛形: [sd/](sd/) — レイアウトとログの列の意味は README の「SD カードの構成」
 - PC 側ツールの一覧は README の「ツール」節

@@ -6,7 +6,7 @@
 //           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/13
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260911
-#define BUILDVERSION "0.964"
+#define BUILDDATE 20260913
+#define BUILDVERSION "0.965"
 #define VERSION_TEXT "Version 7"
 
 //----------GPS---------
@@ -177,6 +177,12 @@
 // これ以上速くしたい場合は間隔を詰めるのではなく、VSI バーと同じように
 // 値の部分だけ部分転送する方式にすること（全画面 115KB 転送が支配的になるため）。
 #define SCREEN_FRESH_INTERVAL_DETAIL 200
+
+// 設定画面を放置したとき、自動で地図画面へ戻るまでの時間 [ms]。
+// 設定画面を出したまま離陸してしまった場合の保険。ボタン操作のたびに計時し直す。
+// 3 分にしてあるのは、設定を眺めながら考え込む程度では抜けず、
+// かつ離陸前の点検から離陸までの間には確実に戻る長さだから。
+#define SETTING_IDLE_TIMEOUT_MS (3UL * 60UL * 1000UL)
 
 
 #define MAX_TRACK_CORDS 500
