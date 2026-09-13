@@ -884,7 +884,7 @@ void loop() {
         drawupward_direction = 0;
       }
 
-      nav_update();   // 磁気コース(MC)・目的地距離(dist)を最新 GPS 位置で再計算
+      nav_update();   // 真方位コース(TC)・目的地距離(dist)を最新 GPS 位置で再計算
       draw_header();  // ヘッダー（速度・衛星数など）を TFT に直接描画
 
 
