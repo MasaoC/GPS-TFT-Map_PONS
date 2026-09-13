@@ -1,6 +1,6 @@
 // ============================================================
 // File    : navdata.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : ナビゲーション計算の実装。
 //           Mercator投影による緯度→Y座標変換、距離・真方位計算、
 //           フラッシュ内蔵ポリゴン地図の実体と一覧(flashmaps)、目的地リスト、
@@ -8,12 +8,13 @@
 //           内蔵ポリゴンは滑走路外周や島など、ベクタ地図では表せない
 //           飛行用の注記に限る（SDが無くても必ず描画される）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/13
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>
 
 #include "navdata.h"
+#include "link.h"
 #include "gps.h"
 
 
@@ -44,6 +45,8 @@ void restore_auto10k_status(int st) {
   auto10k_status_flight = st;
   // 設定の読み込みは起動時（リプレイ前）にしか走らないが、念のため
   // リプレイ中は表示側の値を書き換えない。
+  // ※ 無線のミラーはここには効かない（この関数は起動時の設定読込でしか通らず、
+  //   そのときはまだ受信していない）。ガードを足しても死んだコードになるだけ。
   if (!getReplayMode()) auto10k_status = st;
 }
 
@@ -80,53 +83,64 @@ bool   pilon_override_loaded = false;
 // 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ S_PILON（南パイロン）→ TAKESHIMA（竹島）
 // SHINURA（新浦安）はコメントアウト中（現時点では使用しない）。
 // 座標は上の実行時変数を使う。SD で上書きした後に呼び直せば新しい座標で登録し直せる。
+// 呼び直しても前回分は解放しない（理由は本体の先頭コメント）。
 void init_destinations(){
-  // 呼び直しに備えて前回分を解放する（上書き適用後に再登録するため）
-  for (int i = 0; i < destinations_count; i++) {
-    delete[] extradestinations[i].cords;
-    free((void*)extradestinations[i].name);   // strdup で確保している
-    extradestinations[i].cords = nullptr;
-    extradestinations[i].name  = nullptr;
-  }
-  destinations_count = 0;
+  // ★ **前回分は解放しない。意図的にそうしている。**
+  //   この関数は Core1（setup1 と setup_sd）から呼ばれるが、extradestinations[] は
+  //   Core0 が描画とナビ計算から読み続けている。以前はここで delete[] したうえ
+  //   .cords = nullptr を書いていたので、その瞬間に Core0 が読むと
+  //   解放済み領域か nullptr を参照し得た。
+  //   踏むのは「起動時に SD を掴めず、飛行中に認識した」ときだけの経路だが、
+  //   当たれば目的地の座標が壊れる＝ナビが狂う。
+  //
+  //   捨てる量は 1 回の起動につき最大 1 世代・固定 4 件ぶん（cords 4×16B ＋ 名前）で
+  //   100 バイト程度。mysd.cpp の destinations_loaded が二度目以降の呼び出しを
+  //   止めているので、SD の接触不良を何度繰り返しても増えない。
+  //   SRAM 390KB の空きに対して無視できる量なので、解放しないほうが安全側。
+  //   ポインタを差し替えるだけなら、Core0 は新旧どちらを読んでも必ず有効な領域を指す。
+  //
+  //   ※ 書く順番も意味がある。
+  //     1. currentdestination を 0 に寄せる（0 番は必ず存在する）
+  //     2. 各要素を詰める
+  //     3. **最後に** destinations_count を公開する
+  //     こうすれば Core0 が見る (count, 配列) の組み合わせが常に成立する。
+  //     2 の最中に読まれると「新しい名前＋古い座標」が 1 フレームだけ混ざり得るが、
+  //     どちらも有効なメモリなので壊れない（起動あたり数マイクロ秒の窓）。
   currentdestination = 0;
+  int n = 0;
   // PLATHOME: 出発地（プラットフォーム）の緯度経度
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("PLATHOME");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {pla_lat, pla_lon} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("PLATHOME");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {pla_lat, pla_lon} };
+  n++;
   // N_PILON: 北パイロン（10km コース折り返し地点）
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("N_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("N_PILON");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
+  n++;
   // S_PILON: 南パイロン（10km コース折り返し地点）。公式ルールの呼称は「南」。
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("S_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("S_PILON");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
+  n++;
   // TAKESHIMA: 竹島（10km コース折り返し地点）
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("TAKESHIMA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("TAKESHIMA");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
+  n++;
   /*
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("SHINURA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
-  destinations_count++;*/
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("SHINURA");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
+  n++;*/
+  destinations_count = n;   // ★ 最後に公開する（上のコメント参照）
 }
 
-
-// 度 → ラジアン変換（float 版。三角関数を使う前に角度を変換するユーティリティ）
-float deg2rad(float degrees) {
-  return degrees * PI / 180.0;
-}
 
 // ラジアン → 度 変換（double 版）
 double rad2deg(double rad) {
@@ -169,16 +183,34 @@ double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2
 // 単純な角度の平均は 0°/360° をまたぐと真逆を向くので、
 // 2 方位の単位ベクトルの和の偏角として求める（常に狭い側の二等分線になる）。
 double pla_centerline_bearing_rad() {
+  // ★ **キャッシュのキーは座標そのものにする。**
+  //   以前は「初回だけ計算して static に持つ」だけだったので、
+  //   override_pilon_coordinate.csv による上書きがキャッシュ確定より後になると、
+  //   コメントに書いてある「座標が変わっても自動追従する」が成立しなかった。
+  //   実際に起こり得るのは次の 2 つ:
+  //     (a) SD の初期化が 5 秒を超え、Core0 が待たずに地図を描き始めた場合
+  //     (b) 起動時に SD を掴めず、try_sd_recovery() が後から上書きを適用した場合
+  //   「上書きしたのにセンターラインだけ古い方位を指す」は飛行中に気づけないので、
+  //   入力が変わったかを毎回見て、変わっていたときだけ計算し直す。
+  //   これなら誰がいつ座標を変えても追従し、無効化の呼び忘れも起こらない。
   static double cached = NAN;
-  if (isnan(cached)) {
-    // calculateTrueCourseRad の引数はラジアン。deg2rad(double) はこの下で定義されており
-    // ここではまだ宣言されていない（float 版に落ちて精度が落ちる）ため、直接変換する。
-    const double D2R = PI / 180.0;
-    double bn = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
-                                       pilon_north_lat * D2R, pilon_north_lon * D2R);
-    double bw = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
-                                       pilon_south_lat * D2R, pilon_south_lon * D2R);
+  static double k_pla_lat = NAN, k_pla_lon = NAN;
+  static double k_n_lat   = NAN, k_n_lon   = NAN;
+  static double k_s_lat   = NAN, k_s_lon   = NAN;
+
+  if (isnan(cached) ||
+      pla_lat != k_pla_lat || pla_lon != k_pla_lon ||
+      pilon_north_lat != k_n_lat || pilon_north_lon != k_n_lon ||
+      pilon_south_lat != k_s_lat || pilon_south_lon != k_s_lon) {
+    // calculateTrueCourseRad の引数はラジアン。
+    double bn = calculateTrueCourseRad(deg2rad(pla_lat), deg2rad(pla_lon),
+                                       deg2rad(pilon_north_lat), deg2rad(pilon_north_lon));
+    double bw = calculateTrueCourseRad(deg2rad(pla_lat), deg2rad(pla_lon),
+                                       deg2rad(pilon_south_lat), deg2rad(pilon_south_lon));
     cached = atan2(sin(bn) + sin(bw), cos(bn) + cos(bw));
+    k_pla_lat = pla_lat; k_pla_lon = pla_lon;
+    k_n_lat   = pilon_north_lat; k_n_lon = pilon_north_lon;
+    k_s_lat   = pilon_south_lat; k_s_lon = pilon_south_lon;
   }
   return cached;
 }
@@ -259,7 +291,10 @@ Coordinate LatLonManager::getData(int newest_index) {
 LatLonManager latlon_manager;
 
 
-// 度 → ラジアン変換（double 版。Mercator 投影など高精度計算で使用）
+// 度 → ラジアン変換。navdata.h で宣言している唯一の版。
+// **float 版は作らないこと。** 以前は float 版だけがヘッダにあったため、
+// 引数が double でも float に落ちて計算されていた（calculateDistanceKm の
+// 引数型 double が実質的に意味を持っていなかった）。
 double deg2rad(double degrees) {
   return degrees * PI / 180.0;
 }
@@ -283,10 +318,20 @@ bool check_within_latlon(double latdif,double londif,double lat1,double lat2,dou
 }
 
 
-// Arduino 環境には標準 C の strdup() がないため、独自実装。
-// 引数の文字列をヒープ（new）にコピーして返す。
-// 呼び出し側は使い終わったら delete[] で解放する責任がある。
-char* strdup(const char* str) {
+// 文字列をヒープにコピーして返す。**確保は new[]、解放は delete[]。**
+//
+// ★ 以前は名前が strdup() だった。これには 2 つの問題があった。
+//   1. libc の strdup() と同じ綴りなので、どの呼び出しがこちらに来るかが
+//      「ヘッダで宣言されているか」に依存して決まる（navdata.h には宣言が無かった）。
+//      libc 側（malloc）に繋がった文字列を delete[] すると本当に壊れる。
+//   2. 実際に init_destinations() が free() で解放していた。new[] と free() の
+//      組み合わせは未定義動作で、今は new[] が malloc に落ちるので動いているだけ。
+//   名前を分けて、確保と解放の対応を 1 対 1 にした。
+//
+//   ★ 現状、ここで確保した文字列は**どこでも解放していない**（目的地は起動あたり
+//     最大 2 回しか作らず、作り直しても古い分は捨てている。init_destinations() 参照）。
+//     もし将来どこかで解放するなら、**free() ではなく必ず delete[] を使うこと。**
+char* pons_strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case
     // Calculate the length of the input string
     int len = 0;
@@ -308,7 +353,7 @@ char* strdup(const char* str) {
 mapdata create_static_mapdata(int id, const char* name, int size, const double cords[]) {
   mapdata new_mapdata;
   new_mapdata.id = id;
-  new_mapdata.name = strdup(name); // Duplicate string to allocate memory
+  new_mapdata.name = pons_strdup(name); // Duplicate string to allocate memory
   new_mapdata.size = size;
   new_mapdata.cords = new double[size][2];
   for (int i = 0; i < size; i++) {

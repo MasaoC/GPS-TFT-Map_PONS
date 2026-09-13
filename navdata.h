@@ -1,12 +1,12 @@
 // ============================================================
 // File    : navdata.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : ナビゲーションデータの中核ヘッダー。
 //           座標変換（Mercator投影）・距離・真方位計算の宣言、
 //           内蔵ポリゴン地図・目的地・飛行コースモードの定義、
 //           各飛行地点（琵琶湖・白浜・笠岡・富士川・東京湾など）の座標。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/13
 // ============================================================
 #include "settings.h"
 
@@ -101,7 +101,11 @@
     double (*cords)[2]; // Pointer to an array of 2-element arrays
   };
 
-  float deg2rad(float degrees);
+  // 文字列を new[] でコピーする。**解放は必ず delete[]**（navdata.cpp のコメント参照）。
+  // libc の strdup() と混ざらないよう、名前を分けてここで宣言しておく。
+  char* pons_strdup(const char* str);
+
+  double deg2rad(double degrees);
   double rad2deg(double rad);
   extern int truec;
 

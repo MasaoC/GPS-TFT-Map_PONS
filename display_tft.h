@@ -1,13 +1,13 @@
 // ============================================================
 // File    : display_tft.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画モジュールのヘッダー。
 //           画面サイズ・カラー定数・座標構造体・enum定義と、
 //           マップ/コンパス/ヘッダー/フッター/設定画面/
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/08
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -47,7 +47,8 @@
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_DEMOBIWA,SETTING_REPLAY,
     SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
-    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL
+    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL,
+    SETTING_WIRELESS
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -68,6 +69,20 @@
   // 風矢印用。白地の地図に重ねるので、濃すぎず薄すぎない彩度の高い色を選ぶ。
   // TFT_PURPLE は暗すぎて判別できなかった。
   #define COLOR_WIND_PURPLE 0xA81F       // RGB(173,0,255) 明るい紫
+  // 受信モードでボート自身の位置を示す点。
+  // ★ COLOR_GREEN(TFT_DARKGREEN) は**飛行軌跡と同じ色**で、ミラー中の軌跡は
+  //   機体のものなので、同じ色にすると軌跡に埋もれて見つけられない。
+  //   同じ緑系のまま、明度で分ける。
+  #define COLOR_OWNPOS TFT_GREEN         // 明るい緑
+
+  // 受信モードでボート自身の位置を地図に重ねる（ミラー中のみ）
+  void draw_own_position_marker(double center_lat, double center_lon, float scale, float up);
+
+  // 電池電圧 → 残量[%] / 表示色。**式と配色はここ 1 か所だけ**に置く。
+  //   以前は残量%が 3 か所、色分けが 3 か所に手書きされていて、
+  //   受信モードの S/R 表示を足したときにさらに増えた。
+  int      battery_percent(float v);
+  uint16_t battery_color(float v);
 
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
@@ -132,6 +147,12 @@ void draw_maplist_mode(int maplist_page);
 #define IMU2_MENU_COUNT    3
 extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2のカーソル位置
 void draw_imudetail(int page);
+
+// PONS Link（機体⇄ボート無線）の設定画面。
+// 無線方式に依存しない表示にしてある。
+void draw_wireless(int cursor);
+#define WIRELESS_MENU_COUNT 5    // MODE / CH / SF / GROUP / RETURN
+extern int wireless_cursor;
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
 // 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。

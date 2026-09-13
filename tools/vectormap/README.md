@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| 出力 | `../../vectormap_data.cpp`（約 1.4 MB のバイト配列） |
+| 出力 | `../../src/flashdata/vectormap_data.cpp`（軽量版・約 1.3 MB）または `vectormap_data_hires.cpp`（16MB 版） |
 | 収録範囲 | 飛行エリア 7 箇所を高精細＋本州広域＋日本全国 |
 | 地物 | 海岸線・水面・高速道路・幹線道路・鉄道 |
 | ライセンス | ODbL（`../../LICENSE.ODbL` を参照） |
@@ -20,7 +20,7 @@
 pip install shapely osmium fiona pyproj requests
 ```
 
-入力データを 2 つ落とす（合計 3GB 強、一度落とせば使い回せる）。
+入力データを 2 つ落とす（合計 3GB 強）。
 
 ```sh
 # 1. OSM の日本抽出（道路・鉄道・水面）。日付を固定すること（latest だと結果が変わる）
@@ -33,16 +33,72 @@ unzip land-polygons-split-4326.zip
 unzip simplified-land-polygons-complete-3857.zip
 ```
 
-## 生成
+### ★ 一度作れば、巨大な入力データは消してよい
+
+入力の切り出し結果はすべてキャッシュされる。**キャッシュが残っていれば、
+LOD の閾値や収録範囲を変えて作り直すのに元データは要らない。**
+
+| キャッシュ | 中身 | 元データ |
+|---|---|---|
+| `pbf_scan.pickle`（137MB） | 水面・高速・幹線・鉄道の全国分 | `japan-*.osm.pbf`（2.5GB）|
+| `cache/land_*.pickle` | 海岸線を bbox で切り出したもの | land polygons shp（1.3GB / 23MB）|
+| `cache/c*_*.json` | Overpass の応答（`--pbf` を使うなら不要）| — |
+
+`--pbf` を省いても `pbf_scan.pickle` があればそちらを使う。
+海岸線も同様に、キャッシュがあれば `--land-shp*` の指定は要らない。
 
 ```sh
-python3 build_vectormap.py --lods 0,1,2,3 \
+# 元データを消したあとの作り直し（キャッシュだけで完結する）
+python3 build_vectormap.py --source-date 2026-08-16
+```
+
+**キャッシュに無い範囲を新しく足すとき**（`SITES` に飛行エリアを追加した、
+LOD の bbox を広げた、など）だけ、元データを取り直すこと。
+
+## 生成
+
+地図は **2 種類**あり、ファームウェア側は `settings.h` の `VECTORMAP_HIRES` で
+コンパイル時にどちらか一方だけを焼く。両方のデータファイルが自分で自分を
+`#ifdef` で無効化するので、Arduino が src/ 配下を全部コンパイルしても重複定義にならない。
+
+### 軽量版（既定・FLASH 2MB 設定で入る）
+
+書き込みが速いので、無線などのデバッグ中はこちら。
+
+```sh
+python3 build_vectormap.py \
   --pbf japan-260816.osm.pbf \
   --land-shp simplified-land-polygons-complete-3857/simplified_land_polygons.shp \
   --land-shp-hires land-polygons-split-4326/land_polygons.shp \
-  --source-date 2026-08-16 \
-  --out ../../vectormap_data.cpp
+  --source-date 2026-08-16
+# → ../../src/flashdata/vectormap_data.cpp （LOD 0,1,2,3）
 ```
+
+### 16MB 版
+
+**ボード設定を「16MB (no FS)」にしないとリンクで溢れる。** 書き込み時間も素直に伸びる。
+
+```sh
+python3 build_vectormap.py --variant hires \
+  --pbf japan-260816.osm.pbf \
+  --land-shp simplified-land-polygons-complete-3857/simplified_land_polygons.shp \
+  --land-shp-hires land-polygons-split-4326/land_polygons.shp \
+  --source-date 2026-08-16
+# → ../../src/flashdata/vectormap_data_hires.cpp （LOD 0,1,2,3,4）
+```
+
+生成したら `settings.h` の `//#define VECTORMAP_HIRES` のコメントを外す。
+未生成のまま有効にすると `#error` で止まる（リンクエラーで悩まないようにしてある）。
+
+軽量版との違いは 2 つだけ。
+
+1. **最大ズーム専用の LOD を 1 段足す**（4 → 5 段）。軽量版の LOD0 は zoom13 で
+   1px の誤差になるよう作ってあるが、`scalelist` の最大は scale=200（画面幅 1.2km）で、
+   そこでは同じ誤差が 3.8px になる。**段の中でここだけ精度が足りていない。**
+2. **LOD1/LOD2 の周辺マージンを広げる**、LOD3 に幹線道路を戻す。
+
+`src/vectormap.h` の `VM_LOD_COUNT` も `VECTORMAP_HIRES` で 4/5 が切り替わる。
+**データ側の配列長と必ず一致させること。**
 
 pbf の走査に 10〜15 分かかるが、結果は `pbf_scan.pickle` にキャッシュされるので、
 しきい値や収録範囲だけ変えて作り直すときは数分で終わる。

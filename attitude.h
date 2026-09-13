@@ -1,6 +1,6 @@
 // ============================================================
 // File    : attitude.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GNSS 速度援用の姿勢 ESKF（機上リアルタイム版）。
 //           tools/imulog/eskf.py と同じ数式・同じマウント補正を実装する。
 //           片方を直したらもう片方も必ず合わせること。
@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/18
+// Updated : 2026/08/28
 // ============================================================
 
 #ifndef ATTITUDE_H
