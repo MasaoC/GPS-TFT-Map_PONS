@@ -150,8 +150,11 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
   static float  cached_center_lat = NAN;
   static double cached_yA         = 0;
   if (mapCenterLat != cached_center_lat) {
-    cached_center_lat = mapCenterLat;
+    // 値を先に書き、**キーは最後に公開する**（init_destinations() と同じ流儀）。
+    // 逆順だと「キーは新しいのに値がまだ古い」状態が一瞬できる。
+    // いまは同時に読む主体がいないので実害は無いが、順序を揃えておく。
     cached_yA         = latitudeToMercatorY(mapCenterLat);
+    cached_center_lat = mapCenterLat;
   }
   double yA = cached_yA;
   double yB = latitudeToMercatorY(lat);
@@ -1525,7 +1528,11 @@ void draw_eskf_attitude() {
     // 手元でデバイスを傾けて OFF MOUNT 判定が出ても、その飛行時には
     // 起きていなかった警告になるため。フラグ自体は消さないので、
     // リプレイを抜けて通常の地図画面に戻れば再び表示される。
-    if (attitude_needs_apply() && !getReplayMode()) {
+    // ★ 点滅させる（3 秒のうち 1 秒だけ出す）。
+    //   対処できるのは地上だけなので、音は地上でしか鳴らさない（.ino 参照）。
+    //   そのぶん、万一この状態で飛んでしまったときに地図を隠し続けないよう、
+    //   表示のほうは消えている時間を長めに取る。
+    if (attitude_needs_apply() && !getReplayMode() && (millis() / 1000) % 3 == 0) {
       backscreen.setTextColor(COLOR_RED);
       backscreen.setCursor(ESKF_LABEL_X, yblock_top - ESKF_ROW_GAP - fh_s);
       backscreen.print("ESKF CALIBRATION REQUIRED!");
@@ -2680,6 +2687,15 @@ void draw_header() {
     const uint16_t pcol = attitude_implausible(pv) ? COLOR_GRAY : COLOR_BLACK;
     header_footer.setTextColor(pcol, TFT_WHITE);
     draw_header_pitch(mtvx, pv, pcol);
+    // ★ 較正のやり直しが必要な間は、この数字そのものが信用できない。
+    //   数字の上に赤いバーを被せて「読むな」と示す。
+    //   位置と太さは下の「GNSS 0 個で速度・方位が無効」の赤線と同じ流儀にしてある
+    //   （同じ意味＝この値は無効、を同じ見た目で表す）。
+    //   リプレイ中は出さない。地図上の赤字警告と条件を揃える。
+    if (attitude_needs_apply() && !getReplayMode()) {
+      for (int i = 0; i < 4; i++)
+        header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
+    }
   } else {
     // ---- 真方位 ----
     header_footer.setCursor(mtvx, 3);

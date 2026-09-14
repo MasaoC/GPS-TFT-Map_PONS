@@ -720,6 +720,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define PLATFORM_NEAR_RECHECK_MS   1000UL
 #define GROUND_ROLL_WARN_HOLD_MS   60000UL   // この時間continuous に超えたら発報
 #define GROUND_ROLL_WARN_INTERVAL_MS 120000UL // 発報間隔の下限（鳴り続けない）
+// 「較正のやり直しが必要」を音で促す間隔 [ms]。**地上にいるときだけ鳴らす**
+//（飛行中は較正できないので、対処できない警告で注意をそらすほうが危険）。
+#define ESKF_APPLY_WARN_INTERVAL_MS 120000UL
 
 // ---- マウントから外されたことの検出 ----
 // 機体に付いている限りロールもピッチもこの角度には達しない。超えたら

@@ -7,7 +7,7 @@
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/12
+// Updated : 2026/09/14
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
@@ -1370,7 +1370,9 @@ void gps_loop(int id) {
       replay_file_bad = REPLAY_BAD_NONE;
       set_replaymode(false);
       set_replay_filename("");
-      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3, 60));
+      // 最低保証音量は付けない。設定画面で操作した直後に鳴るので持ち主はその場にいる
+      // （60 は「離れていても電池切れに気づける」ための仕組みで、電池警告専用）。
+      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3));
       enqueueTask(createLogSdTask(reason == REPLAY_BAD_NOSD
                                   ? "REPLAY canceled: SD not available"
                                   : "REPLAY canceled: file is not a flight log"));

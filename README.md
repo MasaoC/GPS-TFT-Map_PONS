@@ -14,6 +14,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 | **[PONS_HPA v7 説明書](https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/)**（Google Docs・画面写真つき） | パイロット / ボートマン | 使い方。画面の見方、設定手順、警告音の意味、大会当日の運用 |
 | **この README** | 開発者 / 自作する人 | 中身の話。設計判断とその理由、部品と発注、生成ツール、ログの形式、実測データ |
 | **[docs/pons_navigation.md](docs/pons_navigation.md)** | 開発者 | ナビゲーション・ロジックの要約。方位と距離の出し方、Auto 10km、コース警報 |
+| **[docs/pons_sound.md](docs/pons_sound.md)** | 開発者 | 音の仕様。WAV / トーン / バリオの 3 系統、優先度、同時再生 |
 | **[docs/pons_link.md](docs/pons_link.md)** | 開発者 | 無線（PONS Link）の仕様書。プロトコル・電波法・実測 |
 | **[docs/pons_link_bringup.md](docs/pons_link_bringup.md)** | 開発者 | 基板到着後の立ち上げ試験手順 |
 
@@ -703,7 +704,7 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 | 分類 | ファイル名 |
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
-| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
+| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
 | 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |

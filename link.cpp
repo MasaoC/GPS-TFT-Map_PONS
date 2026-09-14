@@ -84,12 +84,19 @@ static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
 //                共通フォールバック（500Hz×2）が鳴るので無音にはならない。
 //      SD なし → その警告ごとに決めたトーン。音で種類を区別できる。
 //    優先度 3 = コース警告と同等。設定ミスや機器異常は飛ぶ前に気づく必要がある。
-//    最低音量 60 = 飛行中でも聞こえる大きさを保証する。
 // ============================================================
 //   wav に nullptr を渡すと常にトーンだけを鳴らす（音声にする必要が無い警告用）。
-static void link_alert(const char* wav, int freq, int dur, int count) {
-    if (wav && good_sd()) enqueueTask(createPlayWavTask(wav, 3, 60));
-    else                  enqueueTask(createPlayMultiToneTask(freq, dur, count, 3, 60));
+//
+//   min_vol（最低保証音量）は **既定 0 = 音量設定に従う**。
+//   ★ **60 を指定してよいのは電池切れの警告だけ。**
+//     この仕組みは「持ち主が機体から離れていても電池切れに気づけるように」という
+//     目的だけで入れたもので、他の警告にも付けると音量を絞った意味が無くなる
+//     （絞ったのに全部の警告が大音量で鳴る）。
+//     以前は link_alert() が全部 60 を付けていたので、無線の警告 8 種が
+//     まとめて音量設定を無視していた。
+static void link_alert(const char* wav, int freq, int dur, int count, int min_vol = 0) {
+    if (wav && good_sd()) enqueueTask(createPlayWavTask(wav, 3, min_vol));
+    else                  enqueueTask(createPlayMultiToneTask(freq, dur, count, 3, min_vol));
 }
 
 // ---- 通信の統計（60 秒ごとにシステムログへ残す）----
@@ -345,7 +352,9 @@ static void link_watch_sender_battery() {
     const uint32_t now = millis();
     if (last_warn_ms != 0 && now - last_warn_ms < BAT_WARN_INTERVAL_MS) return;
     last_warn_ms = now;
-    link_alert("wav/battery_low_sender.wav", 1568, 200, 4);
+    // ★ 最低音量 60 を付けてよい唯一の警告（上の link_alert() のコメント参照）。
+    //   本番では機体のバッテリーを交換できないが、試験飛行では役に立つ。
+    link_alert("wav/battery_low_sender.wav", 1568, 200, 4, 60);
     enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%.2fV)",
                                  (double)link_get_voltage()));
 }

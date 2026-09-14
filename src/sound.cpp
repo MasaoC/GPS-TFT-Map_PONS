@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/12
+// Updated : 2026/09/14
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -782,12 +782,15 @@ void update_tone(float degpersecond){
     last_update_tone = millis();
 
   // 前回の方位との差を計算し、-180〜+180 の範囲に収める
-  int relativedif = get_gps_truetrack()-last_tone_tt;
+  // ★ float で持つこと。以前は int で受けていたため 15.9 度が 15 に切り捨てられ、
+  //   下の「15 度超」が実際には 16 度超になっていた（音で鳴る警報なので影響が出る）。
+  //   last_tone_tt 側は full precision で latch してあるので、粗かったのは比較だけ。
+  float relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
     relativedif -= 360;
   if(relativedif < -180)
     relativedif += 360;
-  int angle_diff = abs(relativedif);
+  float angle_diff = abs(relativedif);
 
   //【警告1】方位変化が 15° 超 → コース逸脱警告
   if(angle_diff > 15){

@@ -666,6 +666,32 @@ void loop() {
     } else {
       gndp_over_since_ms = 0;
     }
+
+    // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
+    // 画面には赤字で出しているが、**地上では画面を見ていないことが多い**。
+    // 気づかないまま飛ぶと、姿勢表示・バンク角警告・自動ロールトリムが
+    // まとめて信用できない状態のまま飛ぶことになるので、音でも促す。
+    //
+    // ★ このブロックの条件（地上・静止・リプレイ/ミラー以外）をそのまま使う。
+    //   **飛行中は絶対に鳴らさない。**飛行中に較正はできないし、
+    //   対処のしようがない警告で注意をそらすほうが危険だから。
+    //   SD が無い機体でも気づけるよう、WAV が鳴らせないときは低いトーンで代替する。
+    //   最低保証音量は付けない。地上で静止しているとき＝人が機体のそばにいるときにしか
+    //   鳴らないので、音量を絞る判断を上書きする理由が無い（60 は電池切れ専用）。
+    {
+      static uint32_t eskf_apply_last_warn_ms = 0;
+      if (attitude_needs_apply()) {
+        if (eskf_apply_last_warn_ms == 0 ||
+            (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
+          eskf_apply_last_warn_ms = now_ms;
+          if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
+          else           enqueueTask(createPlayMultiToneTask(262, 250, 3, 3));
+          enqueueTask(createLogSdTask("ESKF CALIBRATION REQUIRED (on ground)"));
+        }
+      } else {
+        eskf_apply_last_warn_ms = 0;   // 較正し直したら次回は即座に知らせる
+      }
+    }
   }
 
   // APPLY の待ち時間は「指を離してから」数える。
@@ -1590,15 +1616,22 @@ static void nav_alarm_tick(bool new_gps_info) {
 
           if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
             apply_auto10k_status(AUTO10K_INTO);
-            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
+            // ★ 最後の引数 true = solo_play。**下の INTO→AWAY と必ず揃えること。**
+            //   solo_play にすると、4 音を鳴らし切ってから destination_change.wav が鳴る
+            //   （通常トーンだと音声と重なって鳴る。docs/pons_sound.md §4）。
+            //   往路→復路も復路→往路も同じ「目的地が切り替わった」通知なので、
+            //   聞こえ方が違うと本番で取り違える。折り返しは 10km 飛んだ直後の
+            //   一番集中している場面なので、トーンで注意を引いてから音声を流す。
+            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
             enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
           }
         }
         if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
           apply_auto10k_status(AUTO10K_AWAY);
+          // solo_play。上の AWAY→INTO と同じ鳴り方にしてある（理由は上のコメント）。
           enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
