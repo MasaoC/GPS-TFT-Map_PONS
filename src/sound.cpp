@@ -443,10 +443,31 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // WAV ファイルを開く
     audioFile = SD.open(filename, FILE_READ);
     if (!audioFile) {
-        sdError = true;
         DEBUG_P(20250424,"Error opening file: ");
         DEBUG_PLN(20250424,filename);
-        enqueueTask(createLogSdTask(filename));  // SD にエラーログを保存
+
+        // ★ 「ファイルが無いだけ」と「カードが応答しない」を区別する。
+        //   区別せずに sdError を立てていたころは、WAV が 1 つ足りないだけで
+        //   SD 表示が赤・USERLED 点滅・10 秒ごとの再初期化まで走っていた。
+        //
+        //   判定は SdFat のカード層エラーコード。FAT 層の「そのパスが無い」は
+        //   カード層のエラーにならないので、0 のままなら「カードは応答している」。
+        //   ※ このコードは begin() でしかクリアされない sticky な値だが、
+        //     sdError が立つと try_sd_recovery() が 10 秒ごとに setup_sd() →
+        //     begin() を呼ぶので実運用ではクリアされる。外れるとしても
+        //     「無いだけなのにカード異常と判定する」＝安全側に倒れる。
+        const uint8_t sd_ec = SD.sdErrorCode();
+
+        // ★ ログは **sdError を立てる前に、キューに積まず直接書く。**
+        //   startPlayWav() は Core1 からしか呼ばれないので log_sdf() を直接呼べる。
+        //   以前はここで sdError=true にしてからログタスクを積んでいたため、
+        //   Core1 がそのタスクを処理するころには good_sd() が false になっていて、
+        //   **どのファイルで失敗したのかが log.txt に残らなかった。**
+        if (sd_ec == 0) log_sdf("ERR wav missing: %s", filename);
+        else            log_sdf("ERR wav open: %s (SD err 0x%02X)", filename, sd_ec);
+
+        if (sd_ec != 0) sdError = true;   // 本当にカードがおかしいときだけ
+
         enqueueTask(createPlayMultiToneTask(500, 200, 2)); // エラー音を鳴らす
         return;
     }
