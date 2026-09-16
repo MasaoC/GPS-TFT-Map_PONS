@@ -520,9 +520,17 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
         current_wav_filename = filename;   // 現在再生中のファイル名を記録
         current_wav_is_replay = from_pending;  // pending 由来なら再退避しない（先頭断片の繰り返し防止）
         wav_override_volume = min_volume;  // 最低保証ボリューム（0=制限なし）をセット
+        // ★ 優先度は **下の早期 return より前に** 入れること。
+        //   音量 0 の WAV も wav_playing=true のまま「無音で再生中」になる
+        //   （バッファは回り、SD も読み、EOF で正常に終わる）。にもかかわらず
+        //   ここを return の後ろに置いていたため、その間 wav_playing_priority が
+        //   **前に鳴った WAV の値のまま**残り、次の WAV の割り込み判定が狂っていた。
+        //   実害: 音量 0 でも鳴るはずの battery_low.wav（優先度 1・最低音量 60）が
+        //   古い優先度（例えば fixed.wav の 4）に負けて pending へ回され、
+        //   鳴り出しが数秒遅れる。最低音量を入れた目的そのものを損なう。
+        wav_playing_priority = priority;
         if(sound_volume == 0 && min_volume == 0){ return; }  // volume=0 かつ override なし ならアンプ ON しない（ポップノイズ防止）
         setAmplifierState(true);   // アンプを ON にする
-        wav_playing_priority = priority;
         DEBUG_P(20250424,"Playback started");
     } else {
         DEBUG_P(20250424,"Failed to load initial audio data");
