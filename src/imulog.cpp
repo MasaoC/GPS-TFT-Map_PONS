@@ -4,7 +4,7 @@
 // Role    : 生 IMU / GNSS 速度データの高レート バイナリロガー（実装）。
 //           形式・目的・レコード定義は imulog.h のコメントを参照。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/09/17
 // ============================================================
 
 #include "../settings.h"
@@ -152,6 +152,7 @@ void imulog_release_pending(int bufidx) {
 // ファイル名が変わったときだけ開き直す。sync() は数バッファに 1 回。
 void imulog_write_buffer(int bufidx, const char* filename,
                          int year, int month, int day, int hour, int minute, int second) {
+    ASSERT_SD_CORE1("imulog_write_buffer");
     if (bufidx < 0 || bufidx > 1) return;
 
     uint16_t n = imulog_fill[bufidx];

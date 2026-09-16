@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/09/17
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -359,6 +359,7 @@ extern volatile bool sdError;  // 実体は mysd.cpp（volatile）。宣言側�
 //   4. 最初のチャンクを loadBuffer に読み込む
 //   5. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
 void startPlayWav(const char* filename, int priority, int min_volume) {
+    ASSERT_SD_CORE1("startPlayWav");
     // この呼び出しが pending からの再生かどうかを受け取り、フラグは即クリアする
     const bool from_pending = pending_replay_next;
     pending_replay_next = false;

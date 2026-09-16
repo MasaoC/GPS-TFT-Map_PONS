@@ -6,7 +6,7 @@
 //           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/13
+// Updated : 2026/09/17
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -280,6 +280,34 @@
   #define DEBUG_PLN(date,txt)
   #define DEBUG_PNLN(date,txt,num)   
   #define DEBUGW_PLN(date,txt)  
+#endif
+
+// ============================================================
+// SD アクセスがどのコアから来たかの見張り（デバッグビルドのみ）
+//
+// SD へのアクセスは Core1 に閉じる約束だが、**それを強制する仕組みは無い**。
+// mutex が守っているのはタスクキューだけで、SDIO バスは規律だけで守られている。
+// Core0 から触ると「たいてい動くが、たまにバスハングでフリーズする」という
+// 一番たちの悪い壊れ方をするため、開発中に気づけるようにしておく。
+//
+// 実際に SD を読み書きする関数の先頭に置く。Core0 から good_sd() を呼ぶのは
+// 意図的に安全（フラグを読むだけ）なので、そちらには置かないこと。
+// RELEASE では何も残らない。
+// ※ 呼び出し箇所ごとに 1 秒に 1 回までに絞る（2Hz の CSV 保存などで溢れさせない）。
+// ============================================================
+#ifndef RELEASE
+  #define ASSERT_SD_CORE1(label) do { \
+    if (get_core_num() != 1) { \
+      static unsigned long _sdc_; \
+      if (_sdc_ == 0 || millis() - _sdc_ >= 1000) { \
+        _sdc_ = millis(); \
+        Serial.print("!!! SD access from Core0: " label); \
+        Serial.println(" (see CLAUDE.md: Core0 から SD を直接触らない)"); \
+      } \
+    } \
+  } while(0)
+#else
+  #define ASSERT_SD_CORE1(label) do {} while(0)
 #endif
 
 // ============================================================
