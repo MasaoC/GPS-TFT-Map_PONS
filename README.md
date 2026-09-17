@@ -31,6 +31,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 - [大会本番での使い方（Auto 10km モード）](#大会本番での使い方auto-10km-モード)
 - [設計上の留意事項](#設計上の留意事項)
 - [ハードウェア](#ハードウェア)（発注受付 / 使用部品 / 自作の手順）
+- [ソフトウェアのビルド](#ソフトウェアのビルド)
 - [SD カードの構成](#sd-カードの構成)（ログ形式 / 目的地・パイロン座標の追加）
 - [ツール (tools/)](#ツール-tools)
 - [着水（水没）後の処理](#着水水没後の処理)
@@ -46,6 +47,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
 * 最新のソフトウェアバージョンは **0.963**（Build 20260910）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
+  **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
 
 ### v7 での主な変更点（v6 から）
@@ -479,7 +481,7 @@ GNSS 機能だけ残し、無線機能・KF 機能・バリオなど全て除去
    * `mainboard` の `U6`,`U7` CUS-12TB Switch は、定格電流の都合で JLCPCB にないパーツのため手実装。
    * `GNSSboard_SAM-M10Q` のパーツ（リチウム二次電池・GNSS モジュール・コンデンサ・抵抗）は全て手実装。
      その際、SAM-M10Q は最初に**リフロー**してください。
-4. `case_3Dmodel` にあるケースを 3D プリントします。
+4. `case_3Dmodel` にあるケースを 3D プリントします。**v7 用ケースは作成中で、現状は v6 用のデータしかありません。**
 5. mainboard にリチウム電池 (860mAh) を接続します。mainboard をプラネジでケースに固定し、
    mainboard と GNSSboard_SAM-M10Q を FPC で繋ぎます。GNSSboard を隙間に固定します。
    アンテナを右側面の適当な部分に固定します。
@@ -523,6 +525,27 @@ JLCPCB の PCBA では実装されないため、**別途購入して手実装�
 | ショットキーダイオード | `RB520S-30` | 1 |
 
 * どちらも **GNSSboard 用**です。
+
+## ソフトウェアのビルド
+
+基板が組み上がったら、Arduino IDE で `GPS_TFT_map.ino` を開いてビルド・書き込みします。
+ボードは **Generic RP2350** / Flash **16MB (no FS)** を選択してください。
+必要なライブラリは `TFT_eSPI` / `SdFat` / `Adafruit_BNO08x` です。
+
+* **`TFT_eSPI` は `User_Setup` を書き換えないと映りません。** サンプルは
+  [TFT_eSPI/CopySetupFile_TFT_eSPI.h](TFT_eSPI/CopySetupFile_TFT_eSPI.h) にあります。
+  パネル種別（ST7789 / ILI9341）の選択もここで行い、`settings.h` 側には分岐がありません。
+* `IMU_BUS_SPI`（BNO085 の接続方式、SPI / i2c の切替）を変更する場合は、**両方の設定でビルドが通ることを確認してください。**
+  普段使わない側は普段コンパイルされないため、壊れていても気づけません。
+
+### 書き込み前の確認（`settings.h` 冒頭）
+
+自分の機体に書き込む前に、`settings.h` 冒頭にある次の項目を確認してください。
+
+* `RELEASE` — 有効にする。無効のままだと `setup1()` が `while(!Serial)` で待ち続け、実機が起動しません。
+* `RELEASE_GPS` — GPS シミュレーション用の `DEBUG_GPS_SIM_*` がすべてコメントアウトされているか。
+* `BUILDDATE` / `BUILDVERSION` — 実際にビルドした日付・バージョンに更新する。
+* どちらか抜けていると `#warning NOT RELEASE!` が出ます。これが唯一の保険なので、警告が出ていないか確認してください。
 
 ---
 
