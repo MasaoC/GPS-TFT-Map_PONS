@@ -35,7 +35,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/17
 // ============================================================
 
 #include <Arduino.h>
@@ -356,7 +356,23 @@ static bool imu_enable_reports() {
 #endif
     };
     bool all_ok = true;
+    // ★ **総時間に上限を設ける。** enableReport() 1 回ごとに
+    //   sh2_setSensorConfig() → spihal_write() → spihal_wait_for_int() が走り、
+    //   デバイスが H_INTN を上げないと **1 回あたり最大 500ms** 待つ。
+    //   レポートは 6 件あるので、最悪 3 秒 Core0 が止まる。
+    //   リセットを 410ms の delay からステートマシンに変えたのは 270ms で
+    //   GPS FIFO が溢れるからで、ここが素通しでは意味が無かった。
+    //   正常時は 1 件あたり数 ms なので、この上限に当たることは無い。
+    //   途中で打ち切っても false を返すので、復旧は 1 分後に再試行される。
+    const unsigned long enable_t0 = millis();
     for (unsigned i = 0; i < sizeof(reports) / sizeof(reports[0]); i++) {
+        if (millis() - enable_t0 > IMU_ENABLE_BUDGET_MS) {
+            all_ok = false;
+            DEBUGW_PLN(20260917, "[IMU] enableReport budget exceeded, aborting");
+            enqueueTask(createLogSdfTask("BNO085 enableReport aborted at %s (slow bus)",
+                                         reports[i].name));
+            break;
+        }
         if (!bno08x.enableReport(reports[i].id, 1000000UL / reports[i].hz)) {
             all_ok = false;
             DEBUGW_P(20260315,   "[IMU] Failed to enable ");
@@ -713,8 +729,9 @@ static void imu_bus_select_protocol() {
 //   しかも BNO085 が死んでいる限り復旧は 1 分ごとに走り続けるので、症状が繰り返す。
 //   経過時間で進める形にして、待っている間 Core0 を返せるようにした。
 //
-// ※ プロトコル選択ピンはリセット時にラッチされるので、
-//   必ず imu_bus_select_protocol() を先に呼んでから使うこと。
+// ※ プロトコル選択ピンはリセット時にラッチされる。
+//   imu_reset_start() が先頭で imu_bus_select_protocol() を呼ぶので、
+//   呼び出し側で気にする必要は無い（忘れると I2C でラッチされて復帰不能になる）。
 #if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
   #define IMU_RST_LOW_MS   10    // NRST を LOW に保持する時間
   #define IMU_RST_BOOT_MS  400   // 解除してからブート完了までの待ち
@@ -734,6 +751,12 @@ static unsigned long imu_rst_ms    = 0;
 
 // リセットを開始する（ブロックしない）。
 static void imu_reset_start() {
+    // ★ **プロトコル選択はここで必ずやり直す。**
+    //   PS1/PS0 はリセット時にラッチされる。SPI 構成では初期化後に PS0 を WAKE として
+    //   LOW に落としている（imu_bus_begin() 参照）ので、そのままリセットを掛けると
+    //   **PS0=0 = I2C** がラッチされ、BNO085 が二度と SPI で喋らなくなる。
+    //   呼び出し側の順序に頼ると必ず忘れるので、リセット手順の中に取り込む。
+    imu_bus_select_protocol();
 #if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
     pinMode(IMU_RST_PIN, OUTPUT);
     digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
@@ -801,6 +824,14 @@ static bool imu_bus_begin() {
             }
         }
     }
+    // ★ ここで初めて H_INTN がアサートされた。PS0 の役目はこの瞬間に WAKE へ変わる
+    //   （データシート 1.2.4 注記5: PS0 はリセット前から最初の H_INTN アサートまで HIGH）。
+    //   **begin_SPI() が書き込みを始める前に** LOW へ落とすこと。
+    //   以前は begin_SPI() の後（imu_bus_post_init()）で落としていたため、
+    //   sh2_open()/getProdIds() の書き込みの間だけ WAKE が非アサートのままだった。
+    //   その状態でデバイスが H_INTN を上げないと spihal_write() が 500ms 待ちに落ちる。
+    digitalWrite(IMU_PS0_WAKE_PIN, LOW);
+
     // arduino-pico では begin() の前にピンを割り当てる。
     // CS はライブラリ（Adafruit_SPIDevice）が digitalWrite で叩くので setCS() は呼ばない。
     static bool spi_pins_done = false;
@@ -821,17 +852,6 @@ static bool imu_bus_begin() {
         return false;
     }
     return bno08x.begin_I2C(IMU_I2C_ADDR, &imuWire);
-#endif
-}
-
-// SPI モードで、初期化完了後に WAKE を有効な状態へ落ち着かせる。
-// BNO085 の PS0 はリセット後 WAKE（負論理）に役割が変わる。
-// Adafruit のライブラリは WAKE を駆動しないため、こちらで LOW に保持して
-// デバイスをスリープさせない。本機は 250Hz でポーリングし続けるので、
-// スリープさせる意味が無く、保持しておく方が取りこぼしが起きない。
-static void imu_bus_post_init() {
-#ifdef IMU_BUS_SPI
-    digitalWrite(IMU_PS0_WAKE_PIN, LOW);
 #endif
 }
 
@@ -863,17 +883,29 @@ void imu_setup() {
     DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
 
     // Adafruit_BNO08x でセンサーを初期化する。
-    // BNO085 はバスに応答できても SH2/SHTP 層の Ready まで時間がかかるため、
-    // 最大 5 回リトライする（各リトライ前に 200ms 待機）。
+    // ★ **リトライのたびに NRST を打ち直すこと。**
+    //   SPI では imu_bus_begin() の生存確認が「H_INTN がアサートされているか」で、
+    //   そのアサートの元は**ブート直後に積まれる advertisement** である。
+    //   sh2_open() はリセットを送らず既に積まれたものを待つだけ（bno08x(-1) なので
+    //   ライブラリも NRST を触らない）。つまり 1 回目の begin_SPI() が
+    //   advertisement を消費すると INT は HIGH に戻り、**単に待ち直すだけの
+    //   リトライは必ず失敗する**（以前は delay(200) だけだったので実質 1 回きりだった）。
+    //   リセットを挟めば advertisement が積み直されるので、2 回目以降も意味を持つ。
+    //   1 回のリセットが 410ms かかるぶん、回数は 5 → 3 に減らす
+    //   （不在時の起動待ちは 5×(300+200)=2.5 秒 → 3×300+2×410=1.7 秒で短くなる）。
     bool imu_begun = false;
-    for (int retry = 0; retry < 5; retry++) {
+    for (int retry = 0; retry < 3; retry++) {
+        if (retry > 0) {
+            DEBUGW_P(20260315, "[IMU] begin retry ");
+            DEBUGW_PLN(20260315, retry);
+            // NRST パルス。中で imu_bus_select_protocol() が走るので、
+            // 直前に WAKE として LOW にした PS0 が I2C としてラッチされることは無い。
+            imu_reset_blocking();   // advertisement を積み直させる
+        }
         if (imu_bus_begin()) {
             imu_begun = true;
             break;
         }
-        DEBUGW_P(20260315, "[IMU] begin retry ");
-        DEBUGW_PLN(20260315, retry + 1);
-        delay(200);
     }
     if (!imu_begun) {
         DEBUGW_PLN(20260315, "[IMU] BNO085 begin() FAILED.");
@@ -881,13 +913,22 @@ void imu_setup() {
         bno085_ok = false;
         return;
     }
-    imu_bus_post_init();
-
     if (!imu_enable_reports()) {
         // 個々の失敗はログに残すが、致命ではないので続行する
     }
 
     // ---- センサーが自己申告する レンジ / 分解能 を SD に記録する ----
+    // ★ **RELEASE では実行しない。ハングし得るため。**
+    //   sh2_getMetadata() は getFrsOp を使う。getFrsStart() は opCompleted() を
+    //   呼ばず応答を待つ op で、sh2.c の sh2_Op_t は 17 個すべて timeout_us を
+    //   設定していない（= 0 = 無期限）。FRS 応答が 1 回失われると opProcess() が
+    //   永久ループに入り（1 周ごとに 500ms の INT 待ち）、**setup() が終わらない
+    //   ＝ 画面が真っ暗のまま起動しない**。
+    //   INT の生存確認は begin_SPI() の手前までしか守らないので、ここは無防備だった。
+    //   配線が新しく信号品質が不安定なときに最も踏みやすい。
+    //   これは「分解能を設定で上げられるか」を確かめるための診断ログであって
+    //   飛行に必要な情報ではないので、実機ビルドからは外す。
+#ifndef RELEASE
     // 実ログから求めた実効分解能（加速度 0.039 m/s²、ジャイロ 約1.0 deg/s）が
     // センサー本体の上限なのか、設定で上げられるのかを確定させるため。
     //
@@ -917,6 +958,7 @@ void imu_setup() {
             }
         }
     }
+#endif  // !RELEASE
 
     bno085_ok = true;
     DEBUGW_PLN(20260315, "[IMU] BNO085 init OK!");
@@ -1020,7 +1062,7 @@ static void imu_try_recovery() {
     //     レポート取りこぼしのバグが静かに戻る
     bool recovered = imu_bus_begin();
     if (recovered) {
-        imu_bus_post_init();
+        // WAKE は imu_bus_begin() の中（最初の H_INTN アサート直後）で LOW にしてある。
         recovered = imu_enable_reports();
     }
     if (recovered) {

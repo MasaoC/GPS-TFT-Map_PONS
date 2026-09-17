@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260913
-#define BUILDVERSION "0.965"
+#define BUILDDATE 20260917
+#define BUILDVERSION "0.966"
 #define VERSION_TEXT "Version 7"
 
 //----------GPS---------
@@ -461,6 +461,25 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   BNO085 はブート後に advertisement を積んで H_INTN を LOW に保つので、
 //   これを生存確認に使う。ブート待機(400ms)の後なので、生きていれば即 LOW のはず。
 #define IMU_SPI_INT_WAIT_MS       300
+
+// ★ **timeout_us を設定していないのは getProdIdOp だけではない。**
+//   sh2.c の sh2_Op_t 初期化子は 17 個すべてが timeout_us を省略している
+//   （指定初期化子なので 0 = 無期限）。応答待ちをする op は全部ハングし得る。
+//   実害があるのは sh2_getMetadata()（getFrsOp。.rx を持ち、getFrsStart は
+//   opCompleted() を呼ばない）で、FRS 応答が 1 回失われると戻ってこない。
+//   INT の生存確認は begin_SPI() しか守らないので、その後に呼ぶものは別途守る。
+//   → 診断用のメタデータ読み出しは RELEASE では実行しない（imu.cpp 参照）。
+//
+//   sh2_setSensorConfig() は setSensorConfigStart() が中で opCompleted() を
+//   呼ぶのでハングはしない。ただし 1 回ごとに spihal_write() →
+//   spihal_wait_for_int() で最大 500ms 待つ。6 レポート分で 3 秒になるため、
+//   imu_enable_reports() に総時間の上限を設ける。
+//
+//   値の根拠: 正常時は WAKE を LOW に保持してあるので H_INTN はすぐ立ち、
+//   spihal_wait_for_int() の delay(1) 粒度でも 6 レポート合計で 10ms 程度。
+//   異常時は 1 回あたり 500ms。300ms は正常の 30 倍・異常 1 回分より小さいので、
+//   「健全なのに打ち切る」ことなく「1 回目で異常を検出して抜ける」ことができる。
+#define IMU_ENABLE_BUDGET_MS      300
 
 // BNO085 が途絶したときの復旧試行の間隔 [ms]。
 // 復旧は NRST パルス(10ms)＋ブート待機(400ms)＋バス初期化 という手順で、
