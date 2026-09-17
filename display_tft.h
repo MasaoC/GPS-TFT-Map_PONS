@@ -7,7 +7,7 @@
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/08
+// Updated : 2026/09/14
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -35,9 +35,11 @@
     int x;
     int y;
 
-    //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
+    // cord_tft は latLonToXY() が返す **backscreen（240x240）内の座標**なので、
+    // 判定も backscreen の大きさで行う。以前は SCREEN_HEIGHT(320) と比べていたため、
+    // y が 240〜320 の点を「画面内」と判定してから TFT_eSPI 側で捨てていた。
     bool isOutsideTft(){
-      return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
+      return x < 0 || x > BACKSCREEN_SIZE || y < 0 || y > BACKSCREEN_SIZE;
     }
   };
 
@@ -208,8 +210,8 @@ bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
                           const uint16_t* ring_start, uint8_t nrings, uint16_t color);
 void draw_nofix_cross();                              // GPS fix なし時のグレー × 描画
 void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixOK=false 時の不確かさ円描画
-void draw_triangle(int ttrack,int steer_angle);
-void draw_course_warning(int steer_angle);
+void draw_triangle(int ttrack,float steer_angle);   // steer_angle は小数のまま渡す（しきい値 15/55/100 度を正確に判定するため）
+void draw_course_warning(float steer_angle);   // 左右の判定だけに使う。int だと |ズレ|<1度 で左右が逆になる
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 

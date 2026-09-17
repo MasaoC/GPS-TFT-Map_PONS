@@ -8,7 +8,7 @@
 //           内蔵ポリゴンは滑走路外周や島など、ベクタ地図では表せない
 //           飛行用の注記に限る（SDが無くても必ず描画される）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/14
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>
@@ -22,9 +22,12 @@
 LatLonManager::LatLonManager() : currentIndex(0), count(0) {}
 
 
-// truec: 現在地→目的地の真方位（表示用）。nav_update() で毎回更新される。
+// truec: 現在地→目的地の真方位 [deg]。nav_update() で毎回更新される。
 // 機体に磁気コンパスを載せない方針になったため、v0.94 で磁方位から真方位へ変更した。
-int truec = 0;
+// ★ float で持つ。以前は int で、しかも (int) キャストによる**切り捨て**だったので
+//   表示が常に最大 1 度小さい側に寄り、そのズレがそのまま steer_angle
+//   （＝赤い修正矢印としきい値判定）にも乗っていた。表示だけ四捨五入する。
+float truec = 0;
 // dest_dist: 現在地→目的地の距離 [km]。nav_update() で毎回更新される。
 float dest_dist = 0;
 
@@ -83,53 +86,64 @@ bool   pilon_override_loaded = false;
 // 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ S_PILON（南パイロン）→ TAKESHIMA（竹島）
 // SHINURA（新浦安）はコメントアウト中（現時点では使用しない）。
 // 座標は上の実行時変数を使う。SD で上書きした後に呼び直せば新しい座標で登録し直せる。
+// 呼び直しても前回分は解放しない（理由は本体の先頭コメント）。
 void init_destinations(){
-  // 呼び直しに備えて前回分を解放する（上書き適用後に再登録するため）
-  for (int i = 0; i < destinations_count; i++) {
-    delete[] extradestinations[i].cords;
-    delete[] extradestinations[i].name;       // pons_strdup() の new[] と対にする
-    extradestinations[i].cords = nullptr;
-    extradestinations[i].name  = nullptr;
-  }
-  destinations_count = 0;
+  // ★ **前回分は解放しない。意図的にそうしている。**
+  //   この関数は Core1（setup1 と setup_sd）から呼ばれるが、extradestinations[] は
+  //   Core0 が描画とナビ計算から読み続けている。以前はここで delete[] したうえ
+  //   .cords = nullptr を書いていたので、その瞬間に Core0 が読むと
+  //   解放済み領域か nullptr を参照し得た。
+  //   踏むのは「起動時に SD を掴めず、飛行中に認識した」ときだけの経路だが、
+  //   当たれば目的地の座標が壊れる＝ナビが狂う。
+  //
+  //   捨てる量は 1 回の起動につき最大 1 世代・固定 4 件ぶん（cords 4×16B ＋ 名前）で
+  //   100 バイト程度。mysd.cpp の destinations_loaded が二度目以降の呼び出しを
+  //   止めているので、SD の接触不良を何度繰り返しても増えない。
+  //   SRAM 390KB の空きに対して無視できる量なので、解放しないほうが安全側。
+  //   ポインタを差し替えるだけなら、Core0 は新旧どちらを読んでも必ず有効な領域を指す。
+  //
+  //   ※ 書く順番も意味がある。
+  //     1. currentdestination を 0 に寄せる（0 番は必ず存在する）
+  //     2. 各要素を詰める
+  //     3. **最後に** destinations_count を公開する
+  //     こうすれば Core0 が見る (count, 配列) の組み合わせが常に成立する。
+  //     2 の最中に読まれると「新しい名前＋古い座標」が 1 フレームだけ混ざり得るが、
+  //     どちらも有効なメモリなので壊れない（起動あたり数マイクロ秒の窓）。
   currentdestination = 0;
+  int n = 0;
   // PLATHOME: 出発地（プラットフォーム）の緯度経度
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = pons_strdup("PLATHOME");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {pla_lat, pla_lon} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("PLATHOME");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {pla_lat, pla_lon} };
+  n++;
   // N_PILON: 北パイロン（10km コース折り返し地点）
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = pons_strdup("N_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("N_PILON");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {pilon_north_lat, pilon_north_lon} };
+  n++;
   // S_PILON: 南パイロン（10km コース折り返し地点）。公式ルールの呼称は「南」。
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = pons_strdup("S_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("S_PILON");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
+  n++;
   // TAKESHIMA: 竹島（10km コース折り返し地点）
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = pons_strdup("TAKESHIMA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
-  destinations_count++;
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("TAKESHIMA");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {takeshima_lat_v, takeshima_lon_v} };
+  n++;
   /*
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = pons_strdup("SHINURA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
-  destinations_count++;*/
+  extradestinations[n].id = current_id++;
+  extradestinations[n].name = pons_strdup("SHINURA");
+  extradestinations[n].size = 1;
+  extradestinations[n].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
+  n++;*/
+  destinations_count = n;   // ★ 最後に公開する（上のコメント参照）
 }
 
-
-// 度 → ラジアン変換（float 版。三角関数を使う前に角度を変換するユーティリティ）
-float deg2rad(float degrees) {
-  return degrees * PI / 180.0;
-}
 
 // ラジアン → 度 変換（double 版）
 double rad2deg(double rad) {
@@ -191,13 +205,11 @@ double pla_centerline_bearing_rad() {
       pla_lat != k_pla_lat || pla_lon != k_pla_lon ||
       pilon_north_lat != k_n_lat || pilon_north_lon != k_n_lon ||
       pilon_south_lat != k_s_lat || pilon_south_lon != k_s_lon) {
-    // calculateTrueCourseRad の引数はラジアン。deg2rad(double) はこの下で定義されており
-    // ここではまだ宣言されていない（float 版に落ちて精度が落ちる）ため、直接変換する。
-    const double D2R = PI / 180.0;
-    double bn = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
-                                       pilon_north_lat * D2R, pilon_north_lon * D2R);
-    double bw = calculateTrueCourseRad(pla_lat * D2R, pla_lon * D2R,
-                                       pilon_south_lat * D2R, pilon_south_lon * D2R);
+    // calculateTrueCourseRad の引数はラジアン。
+    double bn = calculateTrueCourseRad(deg2rad(pla_lat), deg2rad(pla_lon),
+                                       deg2rad(pilon_north_lat), deg2rad(pilon_north_lon));
+    double bw = calculateTrueCourseRad(deg2rad(pla_lat), deg2rad(pla_lon),
+                                       deg2rad(pilon_south_lat), deg2rad(pilon_south_lon));
     cached = atan2(sin(bn) + sin(bw), cos(bn) + cos(bw));
     k_pla_lat = pla_lat; k_pla_lon = pla_lon;
     k_n_lat   = pilon_north_lat; k_n_lon = pilon_north_lon;
@@ -221,11 +233,13 @@ void nav_update(){
     dest_dist = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
 
     //Fly into truec
-    truec = (int)((rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()), deg2rad(destlat), deg2rad(destlon))) + 360)) % 360;
+    // calculateTrueCourseRad は -180〜+180 を返すので、+360 してから 360 で折り返す。
+    truec = fmodf((float)rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()),
+                                                        deg2rad(destlat), deg2rad(destlon))) + 360.0f, 360.0f);
 
     // FLYAWAY または AUTO10K の AWAY フェーズでは 180° 反転（目的地から離れる方向を示す）
     if(destination_mode == DMODE_FLYAWAY || (destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_AWAY)){
-      truec = (truec+180)%360;
+      truec = fmodf(truec + 180.0f, 360.0f);
     }
   }
 }
@@ -282,7 +296,10 @@ Coordinate LatLonManager::getData(int newest_index) {
 LatLonManager latlon_manager;
 
 
-// 度 → ラジアン変換（double 版。Mercator 投影など高精度計算で使用）
+// 度 → ラジアン変換。navdata.h で宣言している唯一の版。
+// **float 版は作らないこと。** 以前は float 版だけがヘッダにあったため、
+// 引数が double でも float に落ちて計算されていた（calculateDistanceKm の
+// 引数型 double が実質的に意味を持っていなかった）。
 double deg2rad(double degrees) {
   return degrees * PI / 180.0;
 }
@@ -314,7 +331,11 @@ bool check_within_latlon(double latdif,double londif,double lat1,double lat2,dou
 //      libc 側（malloc）に繋がった文字列を delete[] すると本当に壊れる。
 //   2. 実際に init_destinations() が free() で解放していた。new[] と free() の
 //      組み合わせは未定義動作で、今は new[] が malloc に落ちるので動いているだけ。
-//   名前を分けて、確保と解放の対応を 1 対 1 にした。**必ず delete[] で解放すること。**
+//   名前を分けて、確保と解放の対応を 1 対 1 にした。
+//
+//   ★ 現状、ここで確保した文字列は**どこでも解放していない**（目的地は起動あたり
+//     最大 2 回しか作らず、作り直しても古い分は捨てている。init_destinations() 参照）。
+//     もし将来どこかで解放するなら、**free() ではなく必ず delete[] を使うこと。**
 char* pons_strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case
     // Calculate the length of the input string

@@ -20,7 +20,7 @@
 
   // ---- 初期化・周期処理 ----
   void link_setup();          // UART1 を開き、設定を無線モジュールへ送る
-  void link_loop();           // Core0 のループから毎回呼ぶ（軽い。1Hz・61Bのみ）
+  void link_loop();           // Core0 のループから毎回呼ぶ（軽い。1Hz・65Bのみ）
 
   // ---- 設定 ----
   // 設定画面から変更されたときに呼ぶ。無線モジュールへ即座に反映される。
@@ -125,5 +125,41 @@
   // 目的地／ナビモードが送信側と食い違っているか。
   // 食い違うとコース警告だけが静かにずれるので、明示的に出す。
   bool     link_dest_mismatch();
+
+  // ============================================================
+  //  送信前チェック（プリフライト）
+  // ============================================================
+  // 送信モードに入った直後だけ、LINK_PF_WINDOW_MS のあいだ mode 0 で**聴く**。
+  // 通常運転の送信機は送信の合間 mode 3 で寝ていて何も聴かないので、
+  // 「選んだチャンネルが使えるか」を確かめられるのはここだけになる。
+  //
+  // ★ 問題が見つかっても**送信は止めない。** 予備機を緊急で TX に切り替えて
+  //   載せ替える場面で送信が始まらないほうが危険なため。E220 は ARIB の
+  //   キャリアセンスが必須実装なので、混雑時はモジュール側が自動で送信を待つ。
+  //   ここは「気づかせる」だけの仕組みで、飛行を止める仕組みではない。
+  typedef enum {
+      LINK_PF_IDLE = 0,   // 対象外（OFF / RX）または未実行
+      LINK_PF_RUNNING,    // 聴取中。この間は送信しない
+      LINK_PF_DONE,       // 完了。結果は link_preflight_flags() を見る
+  } LinkPreflightState;
+
+  #define LINK_PFF_OK          0x00
+  #define LINK_PFF_NOISY       0x01   // 定常雑音が高い（中央値が閾値超え）
+  #define LINK_PFF_BURST       0x02   // 断続的な送信がある。別 SF / 他方式でデコードできない
+  #define LINK_PFF_PONS_SAME   0x04   // ★ 同じグループの PONS がいる ＝ 送信機が 2 台
+  #define LINK_PFF_PONS_OTHER  0x08   // 別グループの PONS が同じ CH/SF にいる
+  #define LINK_PFF_SKIPPED     0x10   // モジュール無応答で実行できなかった
+
+  LinkPreflightState link_preflight_state();
+  uint8_t  link_preflight_flags();       // LINK_PFF_* のビット。DONE 以外では 0
+  uint32_t link_preflight_remain_ms();   // 監視の残り時間。RUNNING 以外では 0
+  int16_t  link_preflight_noise_med();   // 監視中に測った雑音の中央値 [dBm]。0 = 未取得
+  uint8_t  link_preflight_other_group(); // LINK_PFF_PONS_OTHER のときのグループ ID
+  // 見つけた他機の RSSI [dBm]。0 = 見つからなかった。
+  // **近いのか遠いのかで対処が変わる**ので出す（隣で出ているのか、遠くの誰かか）。
+  int8_t   link_preflight_pons_rssi();
+  // 判定が出てからの経過 [ms]。地図の警告ポップアップを引っ込める判断に使う。
+  // DONE 以外では 0xFFFFFFFF（＝「出す時間はとうに過ぎている」）。
+  uint32_t link_preflight_since_done_ms();
 
 #endif // LINK_H

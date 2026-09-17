@@ -13,6 +13,8 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 |---|---|---|
 | **[PONS_HPA v7 説明書](https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/)**（Google Docs・画面写真つき） | パイロット / ボートマン | 使い方。画面の見方、設定手順、警告音の意味、大会当日の運用 |
 | **この README** | 開発者 / 自作する人 | 中身の話。設計判断とその理由、部品と発注、生成ツール、ログの形式、実測データ |
+| **[docs/pons_navigation.md](docs/pons_navigation.md)** | 開発者 | ナビゲーション・ロジックの要約。方位と距離の出し方、Auto 10km、コース警報 |
+| **[docs/pons_sound.md](docs/pons_sound.md)** | 開発者 | 音の仕様。WAV / トーン / バリオの 3 系統、優先度、同時再生 |
 | **[docs/pons_link.md](docs/pons_link.md)** | 開発者 | 無線（PONS Link）の仕様書。プロトコル・電波法・実測 |
 | **[docs/pons_link_bringup.md](docs/pons_link_bringup.md)** | 開発者 | 基板到着後の立ち上げ試験手順 |
 
@@ -45,7 +47,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.963**（Build 20260910）。
+* 最新のソフトウェアバージョンは **0.965**（Build 20260913）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -247,8 +249,8 @@ E220-900T22S(JP) は技適取得済みで、免許は不要です。ARIB STD-T10
   対地速度は 2.0m/s 未満でグレー表示。左上に `GS` と `sAcc`（速度精度、色分け）。
 * **画面中央**：地図（ファームウェア内蔵のベクタ地図 ＋ SD の `mapdata.csv`）と TT の針。
   右上の枠が `Pavg` のときは、画面中央上部に真方位を `TT 232` の形で表示する。
-  * 旋回角速度表示（3 秒平均 deg/sec）。2.0deg/s 超えで着色、左右端に表示。
-  * 旋回すべき修正方向の表示（赤矢印）。コースズレ 15° 以上で表示・点滅。
+  * 旋回角速度表示（1.5 秒平均 deg/sec）。1.0deg/s 超えで着色、左右端に表示。
+  * 旋回すべき修正方向の表示（赤矢印）。コースズレ 15° 以上で表示・点滅。55° 超でもう 1 本出る。
   * コース警報 Arc：向かうべき方位 (TC=True Course) への赤線円弧。10〜60 秒放置で音声警報。
   * 過去の航跡は緑色の線。最大 500 地点（約 25km 分）を表示。
   * 琵琶湖付近にいる場合、タケシマ・北パイロン・南パイロンに向けて自動で線が引かれる。
@@ -269,7 +271,7 @@ E220-900T22S(JP) は技適取得済みで、免許は不要です。ARIB STD-T10
   * 較正が必要なときは `ESKF CALIBRATION REQUIRED!` を赤字で、未収束のときは `ESKF Not ready` を表示。
 * **画面下部**：時刻（JST）と 最大 GS（過去 5 分・累計）と発生時刻。
   緯度・経度は v0.94 で削除した（飛行中に読む場面が無いため）。sAcc は左上へ移動。
-* **画面下部 2**：目的地コース (Magnetic Course) / 目的地までの距離（km、直線距離）/ 捕捉衛星数（10 以上で緑）/ 電池残量 (%)
+* **画面下部 2**：目的地コース (True Course) / 目的地までの距離（km、直線距離）/ 捕捉衛星数（10 以上で緑）/ 電池残量 (%)
 * **画面最下部**：目的地モード（FLY INTO / FLY AWAY / 10K INTO / 10K AWAY）/ 目的地名 / SD 認識表示（正常=緑、エラー=赤）
 * **状態表示**：`Acc: XXm`（水平位置精度 1σ、10m 以上のとき表示）、`Scanning GNSS/GPS Signal`（起動直後）、
   `Weak GNSS/GPS Signal`（衛星数 0）、`No GNSS connection !!`（GNSS 通信不可＝要再起動）
@@ -383,8 +385,17 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
 * 送信機が 2 台いることを検出したとき、低音 3 回＋音声（設定ミスは飛ぶ前に気づく必要があるため）。
 * CH / SF / Group を変更して設定画面を出たとき、設定一致の確認を促す音声。
 * 無線モジュールが応答しないとき、音声。SD カードが無くても代替トーンが鳴ります。
+  **飛行中にモジュールが死んだ場合も検出します**（10 秒ごとに応答を確かめ、
+  30 秒で無応答と判定）。上りが無いので、これが無いと「送れているつもり」のまま
+  飛び続けることになります。
 * **機体の電池が低下したとき、受信側で音声**（60 秒に 1 回）。受信が切れれば止まります。
 * 機体の SD / IMU / 較正未適用の異常は、立ち上がりで低音 2 回のみ（内訳は WIRELESS 画面）。
+* **送信モードに入った直後、5 秒間チャンネルを聴いてから送り始めます**（送信前チェック）。
+  合格なら上昇 2 音。問題があれば音声で知らせますが、**送信は止めません**
+  （予備機を緊急で載せ替える場面で送信が始まらないほうが危険なため）。
+  * `link_ch_busy.wav` … 同じチャンネルに他の送信機がいる（**送信機が 2 台**／他チームの PONS）
+  * `link_ch_noisy.wav` … 雑音が高い。チャンネルを変える
+  * 結果は WIRELESS 画面の `Preflt` 行と `log.txt` の `LINK PREFLIGHT:` に残ります
 
 ---
 
@@ -716,8 +727,8 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 | 分類 | ファイル名 |
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
-| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
-| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる） |
+| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
+| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |
 

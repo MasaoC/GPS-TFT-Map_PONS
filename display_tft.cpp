@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/14
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -143,7 +143,20 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
   // Calculate x distance (longitude) = Approx distance per degree longitude in km with Mercator projection.
   float xDist = (lon - mapCenterLon) * 111.321;  // 1 degree longitude = ~111.321 km
   // Calculate y-coordinates in Mercator projection
-  double yA = latitudeToMercatorY(mapCenterLat);
+  // ★ 地図中心の Mercator Y は 1 フレームの間ずっと同じ値なのに、以前は呼ばれるたびに
+  //   log(tan()) を計算し直していた。航跡 500 点を描くだけで無駄が 500 回分になる。
+  //   入力が変わったときだけ計算する（pla_centerline_bearing_rad() と同じやり方）。
+  //   latLonToXY() は Core0 の描画からしか呼ばれないので static で問題ない。
+  static float  cached_center_lat = NAN;
+  static double cached_yA         = 0;
+  if (mapCenterLat != cached_center_lat) {
+    // 値を先に書き、**キーは最後に公開する**（init_destinations() と同じ流儀）。
+    // 逆順だと「キーは新しいのに値がまだ古い」状態が一瞬できる。
+    // いまは同時に読む主体がいないので実害は無いが、順序を揃えておく。
+    cached_yA         = latitudeToMercatorY(mapCenterLat);
+    cached_center_lat = mapCenterLat;
+  }
+  double yA = cached_yA;
   double yB = latitudeToMercatorY(lat);
   // Calculate the distance on the y-axis
   double yDist = (yB - yA)* 6378.22347118;// 1 radian latitude（Mercator Y軸）= 111.321 *180/3.1415 = 6378.22347118 km（地球半径に相当）
@@ -279,7 +292,6 @@ void draw_compass(float truetrack, uint16_t col) {
   int centery = get_self_cy();  // TRACKUP=180, NORTHUP=120
   // 偏角は加えない（真方位表示）
   float radian = deg2rad(truetrack);
-  float radian45offset = deg2rad(truetrack + 45);
   backscreen.setTextColor(col, COLOR_WHITE);
   backscreen.setTextSize(2);
   backscreen.loadFont(AA_FONT_SMALL);
@@ -308,30 +320,7 @@ void draw_compass(float truetrack, uint16_t col) {
     backscreen.print("W");
   }
 
-  cord_tft nw = { int(centerx + sin(-radian45offset) * dist), int(centery - cos(radian45offset) * dist) };
-  cord_tft ne = { int(centerx + cos(radian45offset) * dist), int(centery - sin(radian45offset) * dist) };
-  cord_tft se = { int(centerx + sin(radian45offset) * dist), int(centery + cos(radian45offset) * dist) };
-  cord_tft sw = { int(centerx - cos(-radian45offset) * dist), int(centery - sin(-radian45offset) * dist) };
-
-  /*
-  backscreen.setTextSize(1);
-  if (!nw.isOutsideTft()) {
-    backscreen.setCursor(nw.x - 5, nw.y - 2);
-    backscreen.print("NW");
-  }
-  if (!ne.isOutsideTft()) {
-    backscreen.setCursor(ne.x - 5, ne.y - 2);
-    backscreen.print("NE");
-  }
-  if (!se.isOutsideTft()) {
-    backscreen.setCursor(se.x - 5, se.y - 2);
-    backscreen.print("SE");
-  }
-  if (!sw.isOutsideTft()) {
-    backscreen.setCursor(sw.x - 5, sw.y - 2);
-    backscreen.print("SW");
-  }
-  */
+  // 斜め方位（NW/NE/SE/SW）は画面が混むので描かない。
   backscreen.setTextWrap(true);
 }
 
@@ -388,7 +377,7 @@ extern unsigned long trackwarning_until;
 // 1 秒おきに点滅（(millis()/1000)%2 == 0 のときだけ描画）し、
 // steer_angle の符号で "Turn RIGHT" / "Turn LEFT" を切り替える。
 // 呼び出しはメインの draw ループから angle_diff > 15° のときに行われる。
-void draw_course_warning(int steer_angle){
+void draw_course_warning(float steer_angle){
   if((millis()/1000)%2 == 0){
     // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
     int box_y = is_trackupmode() ? (get_self_cy() + 12) : 175;  // TRACKUP=192, NORTHUP=175
@@ -682,7 +671,7 @@ static bool header_shows_pitch();
 #define TRACKUP_TONE_SHRINK   26
 #define TRACKUP_STEER_SHRINK  24
 
-void draw_triangle(int ttrack,int steer_angle) {
+void draw_triangle(int ttrack,float steer_angle) {
   // Core0 スタック残量を計測。
   // draw_triangle() は drawWideLine を最も多く呼ぶ関数であり、
   // TFT_eSPI の drawWideLine が大量のスタックを消費するため、
@@ -721,7 +710,7 @@ void draw_triangle(int ttrack,int steer_angle) {
       else
         backscreen.drawArc(240/2, 240/2, (nlen-21), (nlen-23), (ttrack+180+(int)(arc_factor*steer_angle))%360,(ttrack+180)%360, COLOR_RED, COLOR_WHITE);
 
-      //約10度以上の方位違いがある場合に、指示三角形を描画する。
+      //約15度以上の方位違いがある場合に、指示三角形を描画する。
       if(abs(steer_angle) > 15){
         double steer_triangle_start_rad = tt_radians + (steer_angle<0?-0.1:0.1);
         double steer_triangle_end_rad = tt_radians + (steer_angle<0?-0.35:0.35);
@@ -887,7 +876,13 @@ void calculatePointD(double lat1, double lon1, double lat2, double lon2, double 
   double d = distance / R;  // Distance in radians
 
   if (lat1 == lat2 && lon1 == lon2) {
+    // 方位が定義できない。**出力を必ず埋めてから返すこと。**
+    // 以前は書かずに return していたので、呼び出し側が渡している未初期化の
+    // ローカル変数がそのまま画面座標に化けた（現状この経路には入らないが、
+    // 入った瞬間に誘導線が明後日へ飛ぶ形だった）。始点をそのまま返す。
     DEBUG_PLN(20250424,"Error: Points A and B are the same. Bearing is undefined.");
+    lat3 = rad2deg(lat1);
+    lon3 = rad2deg(lon1);
     return;
   }
   double bearing = calculateTrueCourseRad(lat1, lon1, lat2, lon2);
@@ -925,7 +920,6 @@ void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double
   draw_flyinto(dest_lat,dest_lon,center_lat,center_lon,scale,up,1);
 
   double lat3, lon3;
-  cord_tft dest = latLonToXY(dest_lat, dest_lon, center_lat, center_lon, scale, up);
   double distance = 200 / scale;  //画面外に出ればよいので適当な距離を設定。
   calculatePointC(dest_lat, dest_lon, center_lat, center_lon, distance, lat3, lon3);
   cord_tft targetpoint = latLonToXY(lat3, lon3, center_lat, center_lon, scale, up);
@@ -976,11 +970,6 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 }
 
 
-// ★グローバル変数として宣言（スタック節約のため）★
-// Core0 のスタックは 4KB しかなく、MAX_TRACK_CORDS>=300 のときにローカル宣言すると
-// スタックオーバーフローになるため、RAM（グローバル領域）に置いてある。
-cord_tft points[MAX_TRACK_CORDS];
-
 // LatLonManager（latlon_manager）に蓄積されたフライトトラックを backscreen に描画する。
 // 最新座標（getData(0)）から自機位置（画面中央）への緑線を引き、
 // その後 getData(i) → getData(i+1) を順に繋いでトラック履歴を表示する。
@@ -998,21 +987,27 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     draw_map_line(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
   }
 
+  // ★ 1 点につき 1 回だけ座標変換する。以前は getData(i) と getData(i+1) を
+  //   毎回それぞれ変換していたので、各点が 2 回ずつ変換されていた。
+  //   前回の変換結果を持ち回れば半分で済む。
+  if(c0.latitude == 0 && c0.longitude == 0){
+    DEBUGW_PLN(20250510,"ERR lat lon 0");
+    return;
+  }
+  cord_tft prev = p0;
   for (int i = 0; i < sizetrack-1; i++) {
-    Coordinate c0 = latlon_manager.getData(i);
     Coordinate c1 = latlon_manager.getData(i+1);
-    if((c0.latitude == 0 && c0.longitude == 0) || (c1.latitude == 0 && c1.longitude == 0)){
+    if(c1.latitude == 0 && c1.longitude == 0){
       DEBUGW_PLN(20250510,"ERR lat lon 0");
       break;
     }
-    
-    cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
-    cord_tft p1 = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
+
+    cord_tft cur = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
-    if (p0.x != p1.x || p0.y != p1.y) {
-      draw_map_line(p0.x,p0.y,p1.x,p1.y,2,COLOR_GREEN);
+    if (prev.x != cur.x || prev.y != cur.y) {
+      draw_map_line(prev.x,prev.y,cur.x,cur.y,2,COLOR_GREEN);
     }
-    
+    prev = cur;
   }
 }
 
@@ -1244,7 +1239,6 @@ void startup_demo_tft() {
       //center_lat += 0.01*i;// for zoomout_speedfactor=2
     }
 
-    bool islast = i == countermax-1;
     backscreen.fillScreen(COLOR_WHITE);
     {
       draw_startup_map(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow);
@@ -1534,7 +1528,11 @@ void draw_eskf_attitude() {
     // 手元でデバイスを傾けて OFF MOUNT 判定が出ても、その飛行時には
     // 起きていなかった警告になるため。フラグ自体は消さないので、
     // リプレイを抜けて通常の地図画面に戻れば再び表示される。
-    if (attitude_needs_apply() && !getReplayMode()) {
+    // ★ 点滅させる（3 秒のうち 1 秒だけ出す）。
+    //   対処できるのは地上だけなので、音は地上でしか鳴らさない（.ino 参照）。
+    //   そのぶん、万一この状態で飛んでしまったときに地図を隠し続けないよう、
+    //   表示のほうは消えている時間を長めに取る。
+    if (attitude_needs_apply() && !getReplayMode() && (millis() / 1000) % 3 == 0) {
       backscreen.setTextColor(COLOR_RED);
       backscreen.setCursor(ESKF_LABEL_X, yblock_top - ESKF_ROW_GAP - fh_s);
       backscreen.print("ESKF CALIBRATION REQUIRED!");
@@ -2129,17 +2127,56 @@ void draw_wireless(int cursor) {
       }
     }
   } else if (mode == LINK_MODE_TX) {
-    // ★ ここに「送信機が 2 台いる」警告は出せない。検出は seq の逆行で行うので
-    //   受信できる機体でしか働かず、送信機は送信の合間 mode 3 で寝ている。
-    //   出せば「警告が出ないから 1 台だ」と誤読させるだけになる（link.h 参照）。
-    //   代わりに、送信機側で唯一確かめられる**実際に送出できた回数**を出す。
-    //   モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
+    // 送信機側で唯一確かめられる**実際に送出できた回数**。
+    // モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     backscreen.setCursor(2, y);
     backscreen.print(" Sending 1Hz (no uplink)");
     y += lh;
     backscreen.setCursor(2, y);
     backscreen.printf(" Sent    : %u", link_tx_count());
+    y += lh;
+
+    // ---- 送信前チェックの結果 ----
+    // ★ 「送信機が 2 台いる」を送信機側で出せるのはここだけ。
+    //   通常運転では送信の合間 mode 3 で寝ていて聴けないので、検出は受信機の
+    //   seq 逆行に頼るしかなかった（link.h）。TX に入った直後の数秒だけ
+    //   mode 0 で聴くことで、飛ぶ前に自分で確かめられるようにしてある。
+    const LinkPreflightState pst = link_preflight_state();
+    const uint8_t pf = link_preflight_flags();
+    backscreen.setCursor(2, y);
+    if (pst == LINK_PF_RUNNING) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf(" Preflt  : checking... %lus",
+                        (unsigned long)((link_preflight_remain_ms() + 999) / 1000));
+    } else if (pst != LINK_PF_DONE) {
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print(" Preflt  : not run");
+    } else if (pf & LINK_PFF_PONS_SAME) {
+      // 同じ CH/SF/Group に送信機が 2 台。受信側の表示（DUP_SENDER）と用語を揃える。
+      // RSSI を添えるのは、隣で出ているのか遠くなのかで対処が変わるため。
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.printf(" Preflt  : DUP SENDER %ddBm", link_preflight_pons_rssi());
+    } else if (pf & LINK_PFF_PONS_OTHER) {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.printf(" Preflt  : PONS grp%u %ddBm",
+                        link_preflight_other_group(), link_preflight_pons_rssi());
+    } else if (pf & LINK_PFF_BURST) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print(" Preflt  : BUSY (bursts)");
+    } else if (pf & LINK_PFF_NOISY) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.printf(" Preflt  : NOISY %d dBm", link_preflight_noise_med());
+    } else if (pf & LINK_PFF_SKIPPED) {
+      // モジュール無応答か、雑音を 1 つも取れなかった（RSSI バイト無効の疑い）。
+      // どちらも「静かだった」ではないので、緑にしてはいけない。
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print(" Preflt  : NOT MEASURED");
+    } else {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.printf(" Preflt  : OK (%d dBm)", link_preflight_noise_med());
+    }
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     y += lh;
   }
   y += 4;
@@ -2211,6 +2248,13 @@ static void draw_link_icons() {
 
   if (!link_module_alive()) {
     // モジュール自体が応答していない。強度も送出も語れない。
+  } else if (!rx && link_preflight_state() == LINK_PF_RUNNING) {
+    // ★ 送信前チェックの最中。まだ 1 回も送っていないので、下の分岐に落とすと
+    //   「弧 0 本＋赤い×」＝送れていない、に見えてしまう。故障と区別できないので
+    //   専用の見た目にする。橙の弧 1 本＝「今は聴いている」。
+    level = 1;
+    rcol  = COLOR_ORANGE;
+    lost  = false;
   } else if (!rx) {
     // 送出の直後だけ弧を伸ばす。脈動が止まる＝送れていない、が一目で分かる。
     const uint32_t since = link_since_tx_ms();
@@ -2254,6 +2298,61 @@ static void draw_link_nosignal_box() {
   backscreen.unloadFont();
 }
 
+// 送信前チェックのポップアップ（送信モードのみ・地図画面のみ）。
+//   点検中 : 橙枠。「今は聴いている」＝送信していないことを明示する
+//   警告   : 赤枠。判定が出てから LINK_PF_WARN_SHOW_MS の間だけ出す
+// ★ 出しっぱなしにはしない。送信は続いているので、地図を覆い続ける理由が無い。
+//   見逃しても WIRELESS 画面と log.txt に残る。
+static void draw_link_preflight_box() {
+  const LinkPreflightState st = link_preflight_state();
+  const uint8_t f = link_preflight_flags();
+  const bool running = (st == LINK_PF_RUNNING);
+  if (!running) {
+    if (st != LINK_PF_DONE || f == LINK_PFF_OK) return;
+    if (link_preflight_since_done_ms() > LINK_PF_WARN_SHOW_MS) return;
+  }
+
+  const uint16_t col = running ? COLOR_ORANGE : COLOR_RED;
+  const int bx = 10, by = 96, bw = SCREEN_WIDTH - 20, bh = 44;
+  backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
+  backscreen.drawRect(bx,     by,     bw,     bh,     col);
+  backscreen.drawRect(bx + 1, by + 1, bw - 2, bh - 2, col);
+  backscreen.setTextColor(col, COLOR_WHITE);
+  backscreen.setTextSize(1);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(bx + 10, by + 8);
+
+  if (running) {
+    backscreen.print("CHECKING CHANNEL...");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.printf("%lus  (not sending yet)",
+                      (unsigned long)((link_preflight_remain_ms() + 999) / 1000));
+  } else if (f & LINK_PFF_PONS_SAME) {
+    // 一番まずい状態。同じ CH/SF/Group にもう 1 台 TX がいる＝送信機が 2 台。
+    backscreen.print("ANOTHER SENDER");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.print("ON THIS CHANNEL !!");
+  } else if (f & LINK_PFF_PONS_OTHER) {
+    backscreen.print("OTHER PONS FOUND");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.printf("group %u  - change CH", link_preflight_other_group());
+  } else if (f & LINK_PFF_BURST) {
+    backscreen.print("CHANNEL BUSY.");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.print("SOMETHING IS SENDING.");
+  } else if (f & LINK_PFF_NOISY) {
+    backscreen.print("CHANNEL NOISY.");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.printf("%d dBm  - change CH", link_preflight_noise_med());
+  } else {                                   // LINK_PFF_SKIPPED
+    // 「静かだった」ではなく「測れなかった」。合格と混同させない。
+    backscreen.print("CH CHECK FAILED.");
+    backscreen.setCursor(bx + 10, by + 24);
+    backscreen.print("COULD NOT MEASURE.");
+  }
+  backscreen.unloadFont();
+}
+
 // 無線のオーバーレイ。push_backscreen() から必ず通る。
 //   ・枠とポップアップは**受信モードだけ**。表示の意味が入れ替わるのは受信側なので。
 //   ・アイコンは**送信モードでも出す**（地図画面のみ）。
@@ -2266,7 +2365,12 @@ static void draw_link_overlay() {
   if (mode == LINK_MODE_OFF) return;
 
   if (mode == LINK_MODE_TX) {
-    if (screen_mode == MODE_MAP) draw_link_icons();
+    if (screen_mode == MODE_MAP) {
+      draw_link_icons();
+      // ★ 送信モードでもポップアップを出す唯一の場面。
+      //   枠（常設）とは別物で、こちらは飛ぶ前の数秒だけ。
+      draw_link_preflight_box();
+    }
     return;
   }
 
@@ -2583,6 +2687,15 @@ void draw_header() {
     const uint16_t pcol = attitude_implausible(pv) ? COLOR_GRAY : COLOR_BLACK;
     header_footer.setTextColor(pcol, TFT_WHITE);
     draw_header_pitch(mtvx, pv, pcol);
+    // ★ 較正のやり直しが必要な間は、この数字そのものが信用できない。
+    //   数字の上に赤いバーを被せて「読むな」と示す。
+    //   位置と太さは下の「GNSS 0 個で速度・方位が無効」の赤線と同じ流儀にしてある
+    //   （同じ意味＝この値は無効、を同じ見た目で表す）。
+    //   リプレイ中は出さない。地図上の赤字警告と条件を揃える。
+    if (attitude_needs_apply() && !getReplayMode()) {
+      for (int i = 0; i < 4; i++)
+        header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
+    }
   } else {
     // ---- 真方位 ----
     header_footer.setCursor(mtvx, 3);
@@ -2677,14 +2790,22 @@ void draw_footer(){
 
   // ====Navigation.==== Distance to plathome.
   if(currentdestination != -1 && currentdestination < destinations_count){
+    // 測位前は TC も距離も出さない。未測位のときの内部位置は (0,0) なので、
+    // truec は「ギニア湾から目的地を見た方位」になる。3 桁の数字として
+    // それらしく読めてしまうため、距離と同じく伏せ字にする。
+    bool nav_valid = get_gps_fix() || is_demo_active();
+
     header_footer.setCursor(1, 1);
     header_footer.setTextColor(COLOR_MAGENTA);
-    header_footer.printf("TC%3d", truec);
+    if(!nav_valid)
+      header_footer.print("TC---");
+    else
+      header_footer.printf("TC%3d", (int)lroundf(truec) % 360);
 
 
     header_footer.setCursor(60, 1);
     header_footer.setTextColor(COLOR_BLACK);
-    if(!get_gps_fix() && !is_demo_active())
+    if(!nav_valid)
       header_footer.print("---km");
     else
       header_footer.printf(dest_dist>1000?"%.0fkm":dest_dist>100?"%.1fkm":"%.2fkm", dest_dist);
@@ -2780,7 +2901,6 @@ void draw_footer(){
     }
   }
   // ====GNSS====
-  int col = COLOR_GREEN;
   if (get_gps_numsat() < 5) {
     header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
     header_footer.fillRect(SCREEN_WIDTH-101,1, 44,15, COLOR_RED);
@@ -3066,9 +3186,9 @@ void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon, float
   draw_clipped_wideline(cl_inner.x, cl_inner.y, cl_outer.x, cl_outer.y, CENTERLINE_WIDTH, COLOR_ORANGE);
 
   // 公式ルール 10.975km for first leg outbound.
-  backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35)),COLOR_GREEN);
+  backscreen.drawCircle(pla.x, pla.y, scale*10.975f/cos(radians(35.29)),COLOR_GREEN);
   // 公式ルール 1.0km リターンフライト。
-  backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35)),COLOR_GREEN);
+  backscreen.drawCircle(pla.x, pla.y, scale*1.0f/cos(radians(35.29)),COLOR_GREEN);
 }
 
 // 琵琶湖 HPA 競技コースのアイコンを描画する:
@@ -3141,7 +3261,6 @@ void draw_nomapdata() {
     }
   }
 
-  int col = COLOR_BLACK;
   // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
   int box_y  = is_trackupmode() ? (get_self_cy() + 12) : 145;  // TRACKUP=192, NORTHUP=145
   int text_y1 = is_trackupmode() ? (box_y + 5)  : 150;          // TRACKUP=197, NORTHUP=150
@@ -3501,7 +3620,6 @@ void draw_variodetail(int page) {
     backscreen.print("-- GNSS Vertical --");
     y += line_height;
 
-    float gnss_vsi = get_gps_veld_mps();
     float vacc_m   = get_gps_vacc_mm()   / 1000.0f;
     float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
     float gnss_alt = get_gps_altitude();

@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/17
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -359,6 +359,7 @@ extern volatile bool sdError;  // 実体は mysd.cpp（volatile）。宣言側�
 //   4. 最初のチャンクを loadBuffer に読み込む
 //   5. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
 void startPlayWav(const char* filename, int priority, int min_volume) {
+    ASSERT_SD_CORE1("startPlayWav");
     // この呼び出しが pending からの再生かどうかを受け取り、フラグは即クリアする
     const bool from_pending = pending_replay_next;
     pending_replay_next = false;
@@ -443,10 +444,31 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // WAV ファイルを開く
     audioFile = SD.open(filename, FILE_READ);
     if (!audioFile) {
-        sdError = true;
         DEBUG_P(20250424,"Error opening file: ");
         DEBUG_PLN(20250424,filename);
-        enqueueTask(createLogSdTask(filename));  // SD にエラーログを保存
+
+        // ★ 「ファイルが無いだけ」と「カードが応答しない」を区別する。
+        //   区別せずに sdError を立てていたころは、WAV が 1 つ足りないだけで
+        //   SD 表示が赤・USERLED 点滅・10 秒ごとの再初期化まで走っていた。
+        //
+        //   判定は SdFat のカード層エラーコード。FAT 層の「そのパスが無い」は
+        //   カード層のエラーにならないので、0 のままなら「カードは応答している」。
+        //   ※ このコードは begin() でしかクリアされない sticky な値だが、
+        //     sdError が立つと try_sd_recovery() が 10 秒ごとに setup_sd() →
+        //     begin() を呼ぶので実運用ではクリアされる。外れるとしても
+        //     「無いだけなのにカード異常と判定する」＝安全側に倒れる。
+        const uint8_t sd_ec = SD.sdErrorCode();
+
+        // ★ ログは **sdError を立てる前に、キューに積まず直接書く。**
+        //   startPlayWav() は Core1 からしか呼ばれないので log_sdf() を直接呼べる。
+        //   以前はここで sdError=true にしてからログタスクを積んでいたため、
+        //   Core1 がそのタスクを処理するころには good_sd() が false になっていて、
+        //   **どのファイルで失敗したのかが log.txt に残らなかった。**
+        if (sd_ec == 0) log_sdf("ERR wav missing: %s", filename);
+        else            log_sdf("ERR wav open: %s (SD err 0x%02X)", filename, sd_ec);
+
+        if (sd_ec != 0) sdError = true;   // 本当にカードがおかしいときだけ
+
         enqueueTask(createPlayMultiToneTask(500, 200, 2)); // エラー音を鳴らす
         return;
     }
@@ -498,9 +520,17 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
         current_wav_filename = filename;   // 現在再生中のファイル名を記録
         current_wav_is_replay = from_pending;  // pending 由来なら再退避しない（先頭断片の繰り返し防止）
         wav_override_volume = min_volume;  // 最低保証ボリューム（0=制限なし）をセット
+        // ★ 優先度は **下の早期 return より前に** 入れること。
+        //   音量 0 の WAV も wav_playing=true のまま「無音で再生中」になる
+        //   （バッファは回り、SD も読み、EOF で正常に終わる）。にもかかわらず
+        //   ここを return の後ろに置いていたため、その間 wav_playing_priority が
+        //   **前に鳴った WAV の値のまま**残り、次の WAV の割り込み判定が狂っていた。
+        //   実害: 音量 0 でも鳴るはずの battery_low.wav（優先度 1・最低音量 60）が
+        //   古い優先度（例えば fixed.wav の 4）に負けて pending へ回され、
+        //   鳴り出しが数秒遅れる。最低音量を入れた目的そのものを損なう。
+        wav_playing_priority = priority;
         if(sound_volume == 0 && min_volume == 0){ return; }  // volume=0 かつ override なし ならアンプ ON しない（ポップノイズ防止）
         setAmplifierState(true);   // アンプを ON にする
-        wav_playing_priority = priority;
         DEBUG_P(20250424,"Playback started");
     } else {
         DEBUG_P(20250424,"Failed to load initial audio data");
@@ -610,7 +640,8 @@ void __not_in_flash_func(loop_sound)(){
         }
     }
 
-    // デバッグ用: 1 秒ごとに再生進捗（%）を出力
+    #ifndef RELEASE
+    // デバッグ用: 1 秒ごとに再生進捗（%）を出力。RELEASE では丸ごと除く。
     static unsigned long lastStatusTime = 0;
     if (wav_playing && (currentTime - lastStatusTime >= 1000)) {
         lastStatusTime = currentTime;
@@ -621,6 +652,7 @@ void __not_in_flash_func(loop_sound)(){
         DEBUG_P(20250424,chunksLoaded);
         DEBUG_PLN(20250424," chunks loaded)");
     }
+    #endif
 }
 
 
@@ -780,12 +812,15 @@ void update_tone(float degpersecond){
     last_update_tone = millis();
 
   // 前回の方位との差を計算し、-180〜+180 の範囲に収める
-  int relativedif = get_gps_truetrack()-last_tone_tt;
+  // ★ float で持つこと。以前は int で受けていたため 15.9 度が 15 に切り捨てられ、
+  //   下の「15 度超」が実際には 16 度超になっていた（音で鳴る警報なので影響が出る）。
+  //   last_tone_tt 側は full precision で latch してあるので、粗かったのは比較だけ。
+  float relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
     relativedif -= 360;
   if(relativedif < -180)
     relativedif += 360;
-  int angle_diff = abs(relativedif);
+  float angle_diff = abs(relativedif);
 
   //【警告1】方位変化が 15° 超 → コース逸脱警告
   if(angle_diff > 15){

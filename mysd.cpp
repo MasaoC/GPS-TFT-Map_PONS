@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/10
+// Updated : 2026/09/17
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -1051,6 +1051,7 @@ bool get_sd_use_spi()    { return sd_use_spi; }
 int  get_sd_setup_count(){ return sd_setup_count; }
 
 void setup_sd(int trycount, bool load_settings){
+  ASSERT_SD_CORE1("setup_sd");
   sd_setup_count++;
   sdInitialized = false;
 
@@ -1105,8 +1106,10 @@ void setup_sd(int trycount, bool load_settings){
   //     2. 上書きファイルがある場合 … init_destinations() が currentdestination を 0 に
   //        戻す。復旧時は load_settings=false なので setDestination() で復元されず、
   //        **パイロットが選んだ目的地が黙って PLATHOME に変わる**。
-  //     3. init_destinations() は Core1 で extradestinations[].cords を delete[] するが、
-  //        Core0 は同じ配列を描画ループから読んでいる（解放後アクセス）。
+  //     3. init_destinations() を飛行中に走らせると、Core0 が描画ループから読んでいる
+  //        extradestinations[] を Core1 が作り直すことになる。
+  //        （この 3 番目は navdata.cpp 側でも対策済み。解放をやめて差し替えだけにしたので、
+  //          最悪でも 1 フレーム古い座標を読むだけで、解放済み領域は踏まない。）
   //   起動時に SD を掴めなかった場合は destinations_loaded が false のままなので、
   //   後から復旧したときに 1 回だけ正しく読み込まれる。
   if (!destinations_loaded) {
@@ -1584,6 +1587,7 @@ static bool replay_att_seek(uint32_t tod_ms) {
 }
 
 void init_replay(){
+  ASSERT_SD_CORE1("init_replay");
   if (replayFileStatic.isOpen()) replayFileStatic.close();
 
   // 姿勢ログも先頭から読み直す（ループ再生・別ファイル選択の両方に対応）
@@ -1777,6 +1781,7 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
 // リングバッファの空きスロットを埋められるだけ埋める（Core1 で実行）。
 // パースに失敗した行は読み飛ばして次へ進む（旧実装のような無限ループにはならない）。
 void load_replay() {
+  ASSERT_SD_CORE1("load_replay");
   if (replay_eof) return;
   if (!replayFileStatic.isOpen()) return;
 
@@ -2280,6 +2285,7 @@ bool good_sd(){
 static FsFile logFileStatic;  // セッション中開きっぱなし。SDエラー時のみ close。
 
 void log_sd(const char* text){
+  ASSERT_SD_CORE1("log_sd");
   if (!good_sd()) {
     if (logFileStatic.isOpen()) logFileStatic.close();  // SDエラー時はファイルをリセット
     return;
@@ -2343,6 +2349,7 @@ static bool   rxHeaderWritten = false;
 static int    rxfileyear = 0, rxfilemonth, rxfileday, rxfilehour, rxfileminute;
 
 void saveRxCSV(const Task& tk) {
+  ASSERT_SD_CORE1("saveRxCSV");
   const auto& a = tk.saveCsvArgs;
   if (!good_sd()) return;
 
@@ -2411,6 +2418,7 @@ void saveRxCSV(const Task& tk) {
 }
 
 void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+  ASSERT_SD_CORE1("saveCSV");
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット

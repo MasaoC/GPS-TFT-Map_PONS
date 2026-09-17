@@ -7,7 +7,7 @@
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/14
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
@@ -714,6 +714,16 @@ static bool ubxWaitAck(uint32_t timeout_ms) {
   return false;  // タイムアウト
 }
 
+// gps_setup() の設定コマンドのうち、ACK が返らなかったものを表す内部ビット。
+// RELEASE ではシリアルのデバッグ出力が消えるため、結果は log.txt に残す。
+enum {
+  GPS_CFGNG_RATE = 0x01,  // CFG-RATE 2Hz
+  GPS_CFGNG_PVT  = 0x02,  // NAV-PVT 出力
+  GPS_CFGNG_SAT  = 0x04,  // NAV-SAT 出力
+  GPS_CFGNG_DOP  = 0x08,  // NAV-DOP 出力
+  GPS_CFGNG_NAV5 = 0x10,  // CFG-NAV5 Airborne<1g
+};
+
 // GPS モジュール（u-blox SAM-M10Q）とのシリアル接続を確立する。
 // NMEA が 10 秒届かない場合は gps_loop() から自動的に再呼出しされる。
 //
@@ -735,6 +745,11 @@ void gps_setup() {
 
   //初回SETUP
   if(setupcounter == 1){
+      // 設定コマンドの結果。最後にまとめて log.txt へ残す。
+      // 通らなかった設定は動作が静かに変わるだけで画面に出ないため、
+      // ログが唯一の手掛かりになる（特に Airborne<1g）。
+      uint8_t cfg_ng = 0;
+      bool prt_ack = false, prt_nak = false;
 
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] setup start");
@@ -773,19 +788,20 @@ void gps_setup() {
         while (millis() - t < 300 && ack_len < 32) {
           if (GPS_SERIAL.available()) ack_buf[ack_len++] = GPS_SERIAL.read();
         }
+        // 応答の判定は RELEASE でも行う（結果は最後のログ行に載せる）。
+        // 無応答はボーレート切替が先に効いた場合にも起こるので失敗とは断定できない。
+        for (int i = 0; i <= ack_len - 4; i++) {
+          if (ack_buf[i]==0xB5 && ack_buf[i+1]==0x62 && ack_buf[i+2]==0x05) {
+            if (ack_buf[i+3] == 0x01) prt_ack = true;
+            if (ack_buf[i+3] == 0x00) prt_nak = true;
+          }
+        }
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] CFG-PRT resp ("); Serial.print(ack_len); Serial.print(" bytes): ");
         for (int i = 0; i < ack_len; i++) { Serial.print(ack_buf[i], HEX); Serial.print(" "); }
         Serial.println();
-        bool got_ack = false, got_nak = false;
-        for (int i = 0; i <= ack_len - 4; i++) {
-          if (ack_buf[i]==0xB5 && ack_buf[i+1]==0x62 && ack_buf[i+2]==0x05) {
-            if (ack_buf[i+3] == 0x01) got_ack = true;
-            if (ack_buf[i+3] == 0x00) got_nak = true;
-          }
-        }
-        if      (got_ack) Serial.println("[UBX] CFG-PRT: ACK OK");
-        else if (got_nak) Serial.println("[UBX] CFG-PRT: NAK!");
+        if      (prt_ack) Serial.println("[UBX] CFG-PRT: ACK OK");
+        else if (prt_nak) Serial.println("[UBX] CFG-PRT: NAK!");
         else              Serial.println("[UBX] CFG-PRT: no response (may be OK if baud change happened)");
         #endif
       }
@@ -809,6 +825,7 @@ void gps_setup() {
       {
         // NAV-PVT など既存パケットを読み飛ばしながら ACK を待つ
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_RATE;
         #ifdef DEBUG_GBX_NMEA
         if      (got_ack) Serial.println("[UBX] CFG-RATE 2Hz: ACK OK");
         else              Serial.println("[UBX] CFG-RATE 2Hz: no ACK");
@@ -824,6 +841,7 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_PVT;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVPVT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
@@ -838,6 +856,7 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_SAT;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVSAT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
@@ -852,6 +871,7 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_DOP;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVDOP enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
@@ -867,9 +887,28 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_NAV5;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] CFG-NAV5 Airborne<1g: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
+      }
+
+      // 設定結果を log.txt に 1 行だけ残す。
+      // ACK が返らなかった場合、症状は「レートが半分」「方位の追従が鈍い」程度で
+      // 画面には何も出ないため、後から原因に辿り着く唯一の手掛かりになる。
+      {
+        const char* prt = prt_nak ? "NAK" : (prt_ack ? "ack" : "none");
+        if (cfg_ng == 0) {
+          enqueueTask(createLogSdfTask("GPS CFG OK 2Hz/PVT/SAT/DOP/Air1g (prt=%s)", prt));
+        } else {
+          enqueueTask(createLogSdfTask("GPS CFG NO ACK:%s%s%s%s%s (prt=%s)",
+            (cfg_ng & GPS_CFGNG_RATE) ? " RATE2HZ"    : "",
+            (cfg_ng & GPS_CFGNG_PVT)  ? " NAVPVT"     : "",
+            (cfg_ng & GPS_CFGNG_SAT)  ? " NAVSAT"     : "",
+            (cfg_ng & GPS_CFGNG_DOP)  ? " NAVDOP"     : "",
+            (cfg_ng & GPS_CFGNG_NAV5) ? " AIRBORNE1G" : "",
+            prt));
+        }
       }
 
       #ifdef DEBUG_GBX_NMEA
@@ -1331,7 +1370,9 @@ void gps_loop(int id) {
       replay_file_bad = REPLAY_BAD_NONE;
       set_replaymode(false);
       set_replay_filename("");
-      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3, 60));
+      // 最低保証音量は付けない。設定画面で操作した直後に鳴るので持ち主はその場にいる
+      // （60 は「離れていても電池切れに気づける」ための仕組みで、電池警告専用）。
+      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3));
       enqueueTask(createLogSdTask(reason == REPLAY_BAD_NOSD
                                   ? "REPLAY canceled: SD not available"
                                   : "REPLAY canceled: file is not a flight log"));
@@ -1450,11 +1491,13 @@ void try_enque_savecsv(){
 
     //リプレイは保存しない。
     if(!getReplayMode()){
+      #ifndef RELEASE
+      // 保存間隔の実測（デバッグ専用）。RELEASE では DEBUG_* が消えるので丸ごと除く。
       DEBUG_P(20250923,"SAVED!");
       static int lastsavedtime = 0;
       DEBUG_PLN(20250923,millis()-lastsavedtime);
-
       lastsavedtime = millis();
+      #endif
       int year  = ubx_year;
       int month = ubx_month;
       int day   = ubx_day;
