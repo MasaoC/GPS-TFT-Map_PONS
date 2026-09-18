@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/17
+// Updated : 2026/09/18
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -17,6 +17,7 @@
 
 #include "mysd.h"
 #include "navdata.h"
+#include "gps.h"      // gps_get_own_fix()（received/ に自機位置と距離を書くため）
 #include "settings.h"
 #include "imu.h"
 //#define DISABLE_FS_H_WARNING
@@ -645,7 +646,12 @@ Task createLogSdfTask(const char* format, ...) {
 
 // 無線で受信した 1 フレームを received/ へ書き出すタスクを生成する。
 // 自機のフライト CSV とは**別のファイル・別のハンドル**にしてある。
-// received/ は「無線で得た情報」だけを置く場所なので、自機の GNSS は混ぜない。
+//
+// ★ 「received/ には無線で得た情報だけ」という原則の**唯一の例外**として、
+//   受信した瞬間のボート自身の位置（own_lat/own_lon）と機体までの距離（dist_m）を
+//   同じ行に入れる。RSSI と距離が 1 行に揃っていないと「距離 vs RSSI」が引けず、
+//   別ファイルに分けると seq で突き合わせる手間が増えるため。
+//   リプレイは列名で解釈するので、列が増えても既存の再生は壊れない。
 Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
   Task task;
   task.type = TASK_SAVE_RXCSV;
@@ -663,6 +669,25 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
   task.saveCsvArgs.day    = t->day;    task.saveCsvArgs.hour   = t->hour;
   task.saveCsvArgs.minute = t->minute; task.saveCsvArgs.second = t->second;
   task.saveCsvArgs.centisecond = t->centi;
+  // ボート自身の位置と機体までの距離。測位できていなければ空欄で書く。
+  {
+    double olat, olon, ogs, otrk;
+    task.saveCsvArgs.own_valid = gps_get_own_fix(olat, olon, ogs, otrk);
+    if (task.saveCsvArgs.own_valid) {
+      task.saveCsvArgs.own_lat = (float)olat;
+      task.saveCsvArgs.own_lon = (float)olon;
+      // 機体側の位置が無効（未測位）なら距離も意味が無いので出さない。
+      if (t->fixflags & 0x01) {
+        task.saveCsvArgs.dist_m = (float)(calculateDistanceKm(
+            olat, olon, t->lat_1e7 / 1e7, t->lon_1e7 / 1e7) * 1000.0);
+      } else {
+        task.saveCsvArgs.dist_m = NAN;
+      }
+    } else {
+      task.saveCsvArgs.own_lat = task.saveCsvArgs.own_lon = NAN;
+      task.saveCsvArgs.dist_m  = NAN;
+    }
+  }
   task.saveCsvArgs.rssi   = rssi;
   task.saveCsvArgs.seq    = t->seq;
   task.saveCsvArgs.age_ms = age_ms;
@@ -684,6 +709,8 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
 }
 
 // 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
+// ※ own_* / dist_m は received/ 専用。ここでは使わないが、未初期化のまま
+//   残さないよう明示的に潰しておく（同じ共用体を使い回すため）。
 Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
   Task task;
   task.type = TASK_SAVE_CSV;
@@ -2372,7 +2399,8 @@ void saveRxCSV(const Task& tk) {
   if (!rxHeaderWritten) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
                       "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
-                      "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir");
+                      "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
+                      "own_lat,own_lon,dist_m");
     rxHeaderWritten = true;
   }
   rxcsvFile.print(a.latitude, 6);  rxcsvFile.print(",");
@@ -2411,7 +2439,18 @@ void saveRxCSV(const Task& tk) {
   else                         snprintf(wind, sizeof(wind), ",");
   if (has_yaw) snprintf(line, sizeof(line), "%s,%s,%s,%.0f,%s", att, avg, trim, a.yaw_acc95, wind);
   else         snprintf(line, sizeof(line), "%s,%s,%s,,%s",     att, avg, trim, wind);
-  rxcsvFile.println(line);
+  rxcsvFile.print(line); rxcsvFile.print(",");
+
+  // ボート自身の位置と機体までの距離。無いものは 0 ではなく空欄で書く
+  //（0.00 と書くと「原点にいた」「同じ場所だった」と読めてしまう）。
+  char own[40];
+  if (a.own_valid && !isnan(a.dist_m))
+    snprintf(own, sizeof(own), "%.6f,%.6f,%.1f", a.own_lat, a.own_lon, a.dist_m);
+  else if (a.own_valid)
+    snprintf(own, sizeof(own), "%.6f,%.6f,",     a.own_lat, a.own_lon);
+  else
+    snprintf(own, sizeof(own), ",,");
+  rxcsvFile.println(own);
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
   rxcsvFile.flush();

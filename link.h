@@ -5,7 +5,7 @@
 //           UART1 で無線モジュール(E220-900T22S)と話し、送信テレメトリの組み立てと
 //           受信テレメトリの供給を行う。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/08
+// Updated : 2026/09/18
 // ============================================================
 //
 // 受信データの供給関数は、意図的に gps.h のリプレイ用関数
@@ -104,7 +104,10 @@
   // ★ 通算平均は持たない。序盤の至近距離のパケットに引きずられて、
   //   飛行中の実力とかけ離れた数字が出続けるため（60 秒ごとのログに
   //   その窓の min..max が残るので、推移はそちらで追える）。
-  int8_t   link_rssi_avg10();     // 直近 10 秒の平均。0 = 窓に 1 発も無い
+  int8_t   link_rssi_avg10();
+  // 受信中の電波が限界からどれだけ上にいるか [dB]。本数と同じ根拠から出している。
+  // 受信できていなければ 0。表示の桁が崩れないよう ±99 に丸めてある。
+  int8_t   link_rssi_margin_db();     // 直近 10 秒の平均。0 = 窓に 1 発も無い
   // 表示用の 0〜3 本。**限界からの余裕**で切っているので SF を変えても意味が保たれる
   // （絶対値のしきい値だと SF ごとに手で直すことになる）。実装は link.cpp。
   uint8_t  link_rssi_bars();
@@ -149,6 +152,10 @@
   #define LINK_PFF_PONS_SAME   0x04   // ★ 同じグループの PONS がいる ＝ 送信機が 2 台
   #define LINK_PFF_PONS_OTHER  0x08   // 別グループの PONS が同じ CH/SF にいる
   #define LINK_PFF_SKIPPED     0x10   // モジュール無応答で実行できなかった
+
+  // WIRELESS 画面から送信前チェックを手動で走らせ直す。
+  // TX モードでないときは何もせず false を返す。
+  bool link_preflight_restart();
 
   LinkPreflightState link_preflight_state();
   uint8_t  link_preflight_flags();       // LINK_PFF_* のビット。DONE 以外では 0

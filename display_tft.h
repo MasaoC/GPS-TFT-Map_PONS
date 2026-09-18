@@ -7,7 +7,7 @@
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/09/18
 // ============================================================
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
@@ -153,7 +153,7 @@ void draw_imudetail(int page);
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
 void draw_wireless(int cursor);
-#define WIRELESS_MENU_COUNT 5    // MODE / CH / SF / GROUP / RETURN
+#define WIRELESS_MENU_COUNT 6    // MODE / CH / SF / GROUP / PREFLIGHT / RETURN
 extern int wireless_cursor;
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。

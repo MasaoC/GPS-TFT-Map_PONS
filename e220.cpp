@@ -3,7 +3,7 @@
 // Project : PONS v7 — PONS Link
 // Role    : E220-900T22S(JP) の下位ドライバ実装
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/18
 // ============================================================
 
 #include "e220.h"
@@ -316,6 +316,21 @@ bool e220_send(const uint8_t* payload, uint8_t n) {
 //    位相がずれても立て直せるよう、magic('P','L') を探して CRC で確定する。
 // ============================================================
 
+// magic は合ったが ver/type/CRC の検証に落ちたフレームの累計。
+// 「届いたが化けた」を「そもそも来ない」と区別するための診断カウンタ。
+static uint32_t s_badFrames = 0;
+uint32_t e220_bad_frames() { return s_badFrames; }
+
+// 65B ペイロードを 1 回送るのにかかる時間 [ms]（BW500kHz）。
+// ★ SF8 の 98ms だけがメーカー公開の「E220-900T22X(JP) LoRa データ送信時間計算表」の実値。
+//   他は「SF が 1 段上がるごとに約 1.8 倍」から外挿した概算なので、
+//   **同じ表から取り直すこと**（docs/pons_link.md §3 の注意書きを参照）。
+// 1Hz 運用なので、電波占有率 [%] は airtime_ms / 10 でそのまま出せる。
+uint16_t e220_airtime_ms(uint8_t profile) {
+    static const uint16_t tbl[E220_SF_MAX - E220_SF_MIN + 1] = { 55, 98, 180, 340, 600 };
+    return (profile < (E220_SF_MAX - E220_SF_MIN + 1)) ? tbl[profile] : 0;
+}
+
 bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
     // magic + CRC の検査を LinkTelem として行うので、長さが違うと読み過ぎる。
     if (!out || frame_len != sizeof(LinkTelem)) return false;
@@ -331,7 +346,19 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
         //   必ず整列した領域へコピーしてから検査する。
         LinkTelem cand;
         memcpy(&cand, s_rx + i, sizeof(cand));
-        if (!link_telem_valid(&cand)) continue;
+        if (!link_telem_valid(&cand)) {
+            // ★ magic は合ったのに検証に落ちた＝**電波は届いたが化けている**。
+            //   「そもそも来ていない」と区別できると、現場の対処がまるで変わる:
+            //     壊れフレームが多い → 信号は届いている。SNR 不足。
+            //                          アンテナの向き・位置・SF を上げる
+            //     何も来ない         → 圏外・CH 違い・送信機が送っていない
+            //   マージナルなリンクは全損より先に必ずここに現れるので、
+            //   アンテナ調整の一番の指標になる。
+            //   （雑音の中にたまたま "PL" が並んだ場合もここに入るが、
+            //     それも「その CH に何か出ている」ことの手掛かりになる）
+            s_badFrames++;
+            continue;
+        }
 
         memcpy(out, s_rx + i, frame_len);
         if (rssi_dbm) *rssi_dbm = (int16_t)s_rx[i + frame_len] - 256;

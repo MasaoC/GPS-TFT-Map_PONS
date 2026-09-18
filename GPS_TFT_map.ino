@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/09/18
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -1450,6 +1450,14 @@ void longPressCallback() {
                //   ここは「現地で確認する」「0 に戻ってしまったのを戻す」ための手段。
                //   そのため小さい値（1〜20 程度）を割り当てておくと復旧が速い。
         link_set_group((uint8_t)((link_get_group() + 1) % (LINK_GROUP_MAX + 1)));
+        break;
+      case 4:  // 送信前チェックを手で走らせ直す。
+               // ★ ブリングアップでは「アンテナを動かして測り直す」を何度もやる。
+               //   従来は CH を変えて戻す遠回りしか手段が無かった。
+               //   TX 以外では走らないので、断られたら低い音で知らせる
+               //  （設定画面の「いま実行できない操作」と同じ 440Hz）。
+        if (!link_preflight_restart())
+          enqueueTask(createPlayMultiToneTask(440, 200, 1));
         break;
       default: // 戻る
         // ★ CH / SF / Group を触ったまま出るときは必ず知らせる。

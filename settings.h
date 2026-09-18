@@ -6,7 +6,7 @@
 //           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/17
+// Updated : 2026/09/18
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260917
-#define BUILDVERSION "0.966"
+#define BUILDDATE 20260918
+#define BUILDVERSION "0.967"
 #define VERSION_TEXT "Version 7"
 
 //----------GPS---------
@@ -191,6 +191,16 @@
 //   ms5611_write_cmd() が失敗のたびにログタスクを積み、0.5 秒ほどで
 //   タスクキュー(40)が溢れる。溢れると**以降のタスクが全部捨てられる**ので、
 //   バンク角警告もコース警報も電池警告も鳴らなくなる（mysd.cpp の enqueueTask 参照）。
+// ---- 送信機の重複検出（受信機側）----
+// seq の逆行から「同じ CH/SF/Group に送信機が 2 台いる」と判定したあとの扱い。
+// ★ 以前は一度立つと電源を切るまで落ちない永久ラッチだった。同じ種類の状態である
+//   「別グループを見た」が 10 秒で自然消滅するのに対して非対称で、
+//   2 台目を止めて設定を直しても**再起動しないと確認できなかった**。
+#define LINK_DUPSENDER_HOLD_MS  30000UL  // 最後の検出からこの時間は「検出中」とみなす
+// 音声で知らせる間隔の下限。1 回きりにすると聞き逃したら二度と鳴らないが、
+// 毎秒鳴らすのも実害（他の警報を押しのける）。重大なので 1 分ごとに念を押す。
+#define LINK_DUPSENDER_ALERT_MS 60000UL
+
 #define MS5611_FAIL_LIMIT            5      // 連続失敗がこの回数を超えたら ms5611_ok=false
 #define MS5611_ERRLOG_INTERVAL_MS 5000UL    // I2C エラーログの最短間隔（毎ループ積まない）
 

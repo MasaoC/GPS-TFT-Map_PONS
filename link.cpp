@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/09/18
 // ============================================================
 //
 // ■ 設計の要点
@@ -72,7 +72,9 @@ static bool     s_otherGroup   = false;
 static uint8_t  s_otherGroupId = 0;
 static uint32_t s_otherGroupMs = 0;
 
-static bool     s_dupSender = false;
+// 送信機の重複検出。★ bool の永久ラッチにしない（settings.h の LINK_DUPSENDER_* 参照）。
+static uint32_t s_dupSenderMs      = 0;  // 最後に検出した時刻（0 = 一度も検出していない）
+static uint32_t s_dupSenderAlertMs = 0;  // 最後に音声で知らせた時刻
 static uint16_t s_seqBack   = 0;    // seq の逆行回数＝送信機が複数いる証拠
 static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
 #define SEQBACK_WINDOW_MS  10000    // この間隔が空いたら数え直す（再起動と区別）
@@ -109,6 +111,7 @@ static bool     s_haveLastSeq = false;
 
 static void link_push_telemetry();   // 実体は下（送信側の組み立て）
 static void link_preflight_start();  // 実体は下（送信前チェック）
+static void link_apply_power_state();// 実体は下（モードに応じた mode 0 / mode 3）
 
 // ============================================================
 //  受信の取り込み
@@ -176,12 +179,19 @@ static void link_poll_radio() {
         //   送信元 ID を載せて比較する案は却下した。既定値が 3 台とも同じに
         //   なるため、「設定を触っていない 2 台がどちらも TX」という
         //   一番ありそうな誤設定で黙って失敗するため。
-        if (!s_dupSender && s_seqBack >= 3) {
-            s_dupSender = true;
-            link_alert("wav/link_dup_sender.wav", 294, 400, 3);
-            enqueueTask(createLogSdfTask(
-                "LINK ERROR: another sender detected (seq went backwards %u times)",
-                (unsigned)s_seqBack));
+        if (s_seqBack >= 3) {
+            const uint32_t now = millis();
+            s_dupSenderMs = now;        // 「いま検出中」を更新（表示の保持に使う）
+            // ★ 音声は間隔を空けて繰り返す。1 回きりだと聞き逃したら二度と鳴らず、
+            //   毎フレーム鳴らすと他の警報を押しのける。
+            if (s_dupSenderAlertMs == 0 ||
+                now - s_dupSenderAlertMs >= LINK_DUPSENDER_ALERT_MS) {
+                s_dupSenderAlertMs = now;
+                link_alert("wav/link_dup_sender.wav", 294, 400, 3);
+                enqueueTask(createLogSdfTask(
+                    "LINK ERROR: another sender detected (seq went backwards %u times)",
+                    (unsigned)s_seqBack));
+            }
         }
         // ★ 制約：この検出は**受信機でしか働かない**。送信機は送信の合間
         //   mode 3 で寝ていて受信できないため。2 台とも TX に誤設定した場合、
@@ -198,9 +208,8 @@ void link_setup() {
     // e220_alive() が false になり link_watch_module() が鳴らす。
     e220_setup(link_radio_ch, link_radio_profile);
 
-    // 受信機は常時 mode 0（docs/pons_link.md §3）。
-    // 送信機と OFF は最初から寝かせておく（e220_setup は mode 0 で戻ってくる）。
-    if (link_mode_setting != LINK_MODE_RX) e220_sleep();
+    // e220_setup() は mode 0 で戻ってくるので、モードに応じて寝かせ直す。
+    link_apply_power_state();
 
     // ★ 起動時に送信/受信の**どちらも**読み上げる（docs/pons_link.md §1）。
     //   受信側だけ読み上げる案だと「何も言わない＝正常」と受け取られ、
@@ -374,22 +383,26 @@ static void link_periodic_report() {
         enqueueTask(createLogSdfTask(
             "LINK TX: mod=%s ch=%u prof=%u sent=%u%s",
             mod, link_radio_ch, link_radio_profile,
-            (unsigned)s_txCount, s_dupSender ? " DUP_SENDER" : ""));
+            (unsigned)s_txCount, link_dup_sender() ? " DUP_SENDER" : ""));
     } else if (s_rssiSeen) {
         enqueueTask(createLogSdfTask(
-            "LINK RX: mod=%s ch=%u prof=%u rx=%lu miss=%u gaps=%u "
+            "LINK RX: mod=%s ch=%u prof=%u rx=%lu miss=%u gaps=%u bad=%lu "
             "rssi=%d..%d%s",
             mod, link_radio_ch, link_radio_profile,
             (unsigned long)s_rxTotal, (unsigned)s_missTotal,
-            (unsigned)s_seqGaps, s_rssiMin, s_rssiMax,
-            s_dupSender ? " DUP_SENDER" : ""));
+            (unsigned)s_seqGaps, (unsigned long)e220_bad_frames(),
+            s_rssiMin, s_rssiMax,
+            link_dup_sender() ? " DUP_SENDER" : ""));
     } else {
         enqueueTask(createLogSdfTask(
-            "LINK RX: mod=%s ch=%u prof=%u no reception yet",
-            mod, link_radio_ch, link_radio_profile));
+            "LINK RX: mod=%s ch=%u prof=%u bad=%lu no reception yet",
+            mod, link_radio_ch, link_radio_profile,
+            (unsigned long)e220_bad_frames()));
     }
     // RSSI の幅は「この 60 秒でどうだったか」を見たいので毎回入れ直す。
-    // 受信数・取りこぼし・CRC エラーは累計のまま（推移が読めるほうが役に立つ）。
+    // 受信数・取りこぼし・壊れフレーム（bad）は累計のまま（推移が読めるほうが役に立つ）。
+    // ※ 以前このコメントは「CRC エラー」を数えている前提で書かれていたが、
+    //   実際にはどこにも計数が無かった。e220_bad_frames() を足して実態に合わせた。
     s_rssiSeen = false;
     s_seqGaps  = 0;
 }
@@ -431,6 +444,16 @@ static uint8_t  s_pfNoiseN = 0;
 // 雑音の取得が連続で失敗した回数。**途中で打ち切るために数える**（下の tick 参照）。
 static uint8_t  s_pfNoiseFail = 0;
 
+// WIRELESS 画面から手で走らせ直す。
+// ★ ブリングアップでは「アンテナを動かして測り直す」を何度もやる。
+//   従来は CH を変えて戻す、という遠回りしか手段が無かった。
+//   TX 以外では走らないので、呼べたかどうかを返して呼び出し側に知らせる。
+bool link_preflight_restart() {
+    if (link_get_mode() != LINK_MODE_TX) return false;
+    link_preflight_start();
+    return true;
+}
+
 LinkPreflightState link_preflight_state() { return s_pfState; }
 uint8_t  link_preflight_flags()       { return (s_pfState == LINK_PF_DONE) ? s_pfFlags : 0; }
 uint8_t  link_preflight_other_group() { return s_pfOtherGrp; }
@@ -447,7 +470,8 @@ uint32_t link_preflight_since_done_ms() {
 }
 
 // チェックを開始する。TX 以外では何もしない。
-// 呼ばれるのは「起動時に TX だった」「TX に切り替えた」「TX 中に CH/SF を変えた」の 3 つ。
+// 呼ばれるのは「起動時に TX だった」「TX に切り替えた」「TX 中に CH/SF を変えた」
+// 「WIRELESS 画面から手で再実行した（link_preflight_restart）」の 4 つ。
 static void link_preflight_start() {
     if (link_mode_setting != LINK_MODE_TX) { s_pfState = LINK_PF_IDLE; return; }
 
@@ -621,6 +645,23 @@ void link_loop() {
 // ============================================================
 //  設定
 // ============================================================
+// モードに応じた省電力状態をモジュールへ反映する。
+//   受信機 : 常時 mode 0（起きたまま。docs/pons_link.md §3）
+//   送信機 : 送信の合間は mode 3（送信直前に link_tx_tick() が起こす）
+//   OFF    : mode 3。起こしたままだと 8.2mA を食い続けるうえ、
+//            誰も読まない受信データで UART の FIFO を埋め続ける
+//
+// ★ **e220_reconfigure() は必ず mode 0（起床）で返る。**
+//   CH / SF を書き換えたあとは必ずここを通すこと。通さないと
+//   「OFF のまま CH を変えたら無線が起きっぱなしになる」という
+//   気づきにくい電池消費（本体 72mA に対し 11%・電池で約 1 時間ぶん）が残る。
+//   WIRELESS 画面での自然な操作順は「CH を決める → Group を決める →
+//   最後に Mode を切り替える」なので、OFF のまま CH を触るのは普通の流れ。
+static void link_apply_power_state() {
+    if (link_mode_setting == LINK_MODE_RX) e220_wake();
+    else                                   e220_sleep();
+}
+
 void link_set_mode(uint8_t mode) {
     if (mode > LINK_MODE_RX) mode = LINK_MODE_OFF;
     if (mode == link_mode_setting) return;
@@ -634,11 +675,7 @@ void link_set_mode(uint8_t mode) {
     if      (mode == LINK_MODE_TX) enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
     else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
     s_rxValid = false;                 // モードが変わったら受信データは無効
-    // 受信機だけ起こす（受信機は常時 mode 0：docs/pons_link.md §3）。
-    // ★ OFF も寝かせる。起こしたままだと 8.2mA を食い続けるうえ、
-    //   誰も読まない受信データで UART の FIFO を埋め続ける。
-    if (link_mode_setting == LINK_MODE_RX) e220_wake();
-    else                                   e220_sleep();
+    link_apply_power_state();
     // 送信モードに入ったら送り始める前にチャンネルを確かめる。
     // 抜けたときは IDLE に戻す（結果を残すと古い判定が画面に出続ける）。
     if (link_mode_setting == LINK_MODE_TX) link_preflight_start();
@@ -657,16 +694,21 @@ void link_set_mode(uint8_t mode) {
 // ★ 電波の設定が変わったら送信前チェックをやり直す。前の CH で測った結果を
 //   残しておくと、変えた先が混んでいても「OK」のままになる。
 //   link_set_group() からは呼ばない（グループはペイロードの中身で、電波ではない）。
+// ★ reconfigure のあとは必ず link_apply_power_state() を通す（理由は同関数のコメント）。
+//   TX のときは直後の link_preflight_start() が改めて起こすので、
+//   「寝かせる → 起こす」の往復になるが、どちらもピン 1 本の書き換えで済む。
 void link_set_radio_ch(uint8_t ch) {
     if (ch > E220_CH_MAX || ch == link_radio_ch) return;
     link_radio_ch = ch;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
+    link_apply_power_state();
     link_preflight_start();
 }
 void link_set_radio_profile(uint8_t p) {
     if (p >= LINK_PROFILE_COUNT || p == link_radio_profile) return;
     link_radio_profile = p;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
+    link_apply_power_state();
     link_preflight_start();
 }
 // 別グループの送信機を直近 10 秒以内に受けたか。
@@ -879,6 +921,21 @@ static int16_t link_rssi_floor_dbm() {
     return (int16_t)(-111 - (5 * (int16_t)(sf - E220_SF_MIN)) / 2);
 }
 
+// 受信できている電波が限界からどれだけ上にいるか [dB]。
+// ★ 本数（下の link_rssi_bars）は**この値から**決める。2 箇所で別々に
+//   引き算すると、本数と数字が食い違って現地でどちらを信じるか分からなくなる。
+// 本数は 3 段階しかないので、アンテナを少し動かしたときの変化が読めない。
+// 置き場所を A/B で比べるには dB の数字が要るので、設定画面にはこちらを出す。
+// 受信できていないときは 0（比べる相手が無い）。
+// 幅が暴れないよう ±99 に丸める（設定画面の桁が崩れるのを防ぐ）。
+int8_t link_rssi_margin_db() {
+    if (!link_is_receiving()) return 0;
+    const int8_t avg = link_rssi_avg10();
+    if (avg == 0) return 0;          // 窓に 1 発も無い（0dBm は実在しない値）
+    const int16_t m = (int16_t)avg - link_rssi_floor_dbm();
+    return (int8_t)constrain((int)m, -99, 99);
+}
+
 // 余裕 [dB] → 本数。SF8（限界 −113dBm）だと
 //   3 本 > −83 / 2 本 > −93 / 1 本 > −103 / 0 本 それ以下。
 //   要求距離 200m は 2 本、実測でロストし始める 350m 付近が 0〜1 本になる。
@@ -887,10 +944,10 @@ static int16_t link_rssi_floor_dbm() {
 #define RSSI_MARGIN_1   10
 
 uint8_t link_rssi_bars() {
-    if (!link_is_receiving()) return 0;
-    const int8_t avg = link_rssi_avg10();
-    if (avg == 0) return 0;          // 窓に 1 発も無い（0dBm は実在しない値）
-    const int16_t margin = (int16_t)avg - link_rssi_floor_dbm();
+    // ★ 引き算は link_rssi_margin_db() の 1 箇所だけ。ここで再計算しないこと
+    //   （受信していない・窓が空 のガードもあちらに入っている）。
+    const int16_t margin = link_rssi_margin_db();
+    if (margin == 0) return 0;
     if (margin >= RSSI_MARGIN_3) return 3;
     if (margin >= RSSI_MARGIN_2) return 2;
     if (margin >= RSSI_MARGIN_1) return 1;
@@ -917,7 +974,11 @@ int16_t link_noise_dbm() {
 }
 
 // 重複送信機は受信機側で検出する（link_poll_radio）。
-bool     link_dup_sender() { return s_dupSender; }
+// 送信機が 2 台いる状態か。最後に検出してから LINK_DUPSENDER_HOLD_MS の間だけ true。
+// ★ 時間で消えることが大事。2 台目を止めたら**再起動せずに直ったことを確認できる**。
+bool     link_dup_sender() {
+    return s_dupSenderMs != 0 && (millis() - s_dupSenderMs) < LINK_DUPSENDER_HOLD_MS;
+}
 
 uint16_t link_sender_status() { return link_is_receiving() ? s_rx.t.status : 0; }
 

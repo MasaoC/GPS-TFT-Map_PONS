@@ -5,7 +5,7 @@
 //           UART の叩き方・モード制御・レジスタ設定だけを持ち、
 //           テレメトリの意味は一切知らない（それは link.cpp の仕事）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/11
+// Updated : 2026/09/18
 // ============================================================
 //
 // ■ 配線（docs/pons_link.md §2）
@@ -52,7 +52,11 @@
 // 送信時間（＝送信電流）が倍々に増える。既定は SF8。
 #define E220_SF_MIN       7
 #define E220_SF_MAX      11
-#define E220_BW_KHZ     500      // CH0-12 を使う前提で固定（docs/pons_link.md §2）
+// 帯域幅は CH0-12 を使う前提で固定（docs/pons_link.md §2）。変更手段は無い。
+// ※ 以前は WIRELESS 画面の SF 行に出していたが、変えられない値を毎回出しても
+//   情報にならないので、そこは送信時間と電波占有率（e220_airtime_ms）へ譲った。
+//   この定数は仕様の記録として残してある。
+#define E220_BW_KHZ     500
 #define E220_CH_MAX      12      // 923.2MHz。ここまでが休止 50ms 固定の帯域
 
 uint8_t e220_profile_to_sf(uint8_t profile);   // 0→SF7 … 4→SF11
@@ -94,6 +98,15 @@ bool e220_send(const uint8_t* payload, uint8_t n);
 // 受信バイトを取り込み、完全な 1 パケットが揃ったら true。
 // 毎ループ呼ぶこと。frame_len バイトのペイロードと RSSI 1 バイトを想定する。
 bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm);
+
+// magic('P','L') は合ったが ver/type/CRC の検証に落ちたフレームの累計。
+// 「電波は届いたが化けている」と「そもそも来ていない」を区別する診断用。
+uint32_t e220_bad_frames();
+
+// 65B ペイロード 1 回ぶんの送信時間 [ms]（BW500kHz）。1Hz 運用なら /10 が占有率 [%]。
+// SF を上げると感度が 2.5dB 上がる代わりにここが約 1.8 倍になるので、
+// 設定画面で SF を選ぶその場に出して代償を見せるために使う。
+uint16_t e220_airtime_ms(uint8_t profile);
 
 // ---- 省電力 ----
 void e220_sleep();     // mode 3 へ。送信中なら送信完了後に入る

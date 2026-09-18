@@ -8,7 +8,7 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/10
+// Updated : 2026/09/18
 // ============================================================
 
 #ifndef MYSD_H
@@ -232,6 +232,13 @@
               float    pitch_avg, roll_trim, yaw_acc95;
               float    wind_mps, wind_dir;
               uint16_t have;      // RHAVE_ATT* のどれが入っているか
+              // ★ 受信した瞬間の**ボート自身**の位置と、機体までの距離。
+              //   これがあると飛行後に「距離 vs RSSI」がそのまま引ける。
+              //   要求 200m の裏取り、SF を上げるべきかの判断、アンテナ位置の
+              //   比較が 1 つの CSV で完結する。own_valid=false なら空欄で書く。
+              bool     own_valid;
+              float    own_lat, own_lon;
+              float    dist_m;    // 機体までの距離 [m]
           } saveCsvArgs;
           struct {
               int freq;

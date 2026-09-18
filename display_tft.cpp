@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/09/18
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -2032,11 +2032,22 @@ void draw_wireless(int cursor) {
   backscreen.printf("%sCh      : %u  (%.1f MHz)", cursor == 1 ? ">" : " ",
                     ch, 920.8f + 0.2f * ch);
   y += lh;
-  // 帯域幅 500kHz は固定なので、変えられるのは SF だけ。
-  backscreen.setTextColor(cursor == 2 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
-  backscreen.setCursor(2, y);
-  backscreen.printf("%sSF      : %u  (BW %ukHz)", cursor == 2 ? ">" : " ",
-                    e220_profile_to_sf(link_get_radio_profile()), E220_BW_KHZ);
+  // ★ 帯域幅（500kHz 固定）ではなく **送信時間と電波占有率** を出す。
+  //   BW は変えられないので毎回出しても情報にならない。一方 SF は現地で
+  //   「届かないから上げよう」と回す項目で、1 段上げると感度が 2.5dB 上がる代わりに
+  //   **送信時間＝送信電流が約 1.8 倍**になる（SF8 98ms/9.8% → SF10 340ms/34%）。
+  //   その代償を**回すその場で**見せる。すぐ下の Group 行の注意書きと同じ考え方で、
+  //   「変更してから警告するより、変更する前に見えているほうが効く」。
+  //   1Hz 運用なので占有率 [%] は送信時間 [ms] / 10 で出せる（docs/pons_link.md §3）。
+  //   ※ 文字数は従来の "(BW 500kHz)" と同じ 26 文字に収まる（最長 SF11）。
+  {
+    const uint8_t  prof = link_get_radio_profile();
+    const uint16_t at   = e220_airtime_ms(prof);
+    backscreen.setTextColor(cursor == 2 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.printf("%sSF      : %u  (%ums %u%%)", cursor == 2 ? ">" : " ",
+                      e220_profile_to_sf(prof), at, (unsigned)(at / 10));
+  }
   y += lh;
   // ★ グループ ID。**3 台とも同じ値**にすること。既定 0。
   //   同じ会場に別チームの PONS がいても取り違えないための識別子で、
@@ -2050,6 +2061,20 @@ void draw_wireless(int cursor) {
   backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.print(" ^ 3 units must match");
+  y += lh;
+
+  // ---- [4] 送信前チェックの手動再実行 ----
+  // ★ 送信モードのときだけ意味がある。RX / OFF ではグレーにして、
+  //   選んでも鳴らして断る（GPS_TFT_map.ino の case 4）。
+  //   アンテナの向きや置き場所を変えながら雑音と他機を測り直すための入口。
+  {
+    const bool can_pf = (mode == LINK_MODE_TX);
+    backscreen.setTextColor(cursor == 4 ? COLOR_BLUE
+                                        : (can_pf ? COLOR_BLACK : COLOR_GRAY), COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.printf("%sPreflight: %s", cursor == 4 ? ">" : " ",
+                      can_pf ? "re-run" : "(TX only)");
+  }
   y += lh + 4;
 
   // ---- 状態 ----
@@ -2087,7 +2112,22 @@ void draw_wireless(int cursor) {
     }
     y += lh;
     backscreen.setCursor(2, y);
-    backscreen.printf(" Rx/Miss : %u / %u", link_rx_count(), link_miss_count());
+    // ★ bad = magic は合ったのに検証に落ちた数＝**届いたが化けた**フレーム。
+    //   Miss（seq の欠番）は「化けた」と「来なかった」を合算した数なので、
+    //   この 2 つを並べて初めて原因が切り分けられる。
+    //   bad が増える → 信号は届いている。アンテナの向き・位置・SF を見直す
+    //   bad が増えず Miss だけ増える → 圏外・CH 違い・送信機が送っていない
+    //   ログ（60 秒ごと）より速いので、アンテナを動かしながら見るのはこちら。
+    //   ★ bad は uint32 なので素で出すと最大 10 桁になり、この行だけ
+    //     40 文字まで伸びて右端が切れる。診断用の目安なので 4 桁で打ち止めにする。
+    {
+      const uint32_t bad = e220_bad_frames();
+      if (bad <= 9999) backscreen.printf(" Rx/Miss : %u / %u  bad %lu",
+                                         link_rx_count(), link_miss_count(),
+                                         (unsigned long)bad);
+      else             backscreen.printf(" Rx/Miss : %u / %u  bad 9999+",
+                                         link_rx_count(), link_miss_count());
+    }
     y += lh;
     backscreen.setCursor(2, y);
     // 直近 1 発の生の値。上の 10 秒平均との差が、ばらつきの大きさになる。
@@ -2097,10 +2137,23 @@ void draw_wireless(int cursor) {
     // 環境雑音。限界 RSSI ≒ 雑音 + SF の SNR 閾値 なので、
     // これと上の RSSI の差が「あとどれだけ余裕があるか」になる。
     // 熱雑音は BW500kHz で約 -111dBm。-104dBm 程度なら静かな部類。
+    // ★ 余裕（margin）をここに併記する。この行のコメントが言っている
+    //   「これと上の RSSI の差が、あとどれだけ余裕があるか」を、
+    //   引き算せずに読めるようにするため。
+    //   本数（0〜3）は 3 段階しかないので、アンテナを少し動かしたときの
+    //   変化が読めない。置き場所を A/B で比べるには dB の数字が要る。
+    //   根拠は本数とまったく同じ（link_rssi_margin_db）。食い違わせない。
     {
       const int16_t nz = link_noise_dbm();
-      if (nz) backscreen.printf(" Noise   : %d dBm", nz);
-      else    backscreen.print(" Noise   : ---");
+      // ★ 「受信中か」で分けること。margin != 0 で分けてはいけない。
+      //   ちょうど限界ぴったり（0dB）も起こり得る値で、そのとき
+      //   「受信していない」と同じ表示になってしまう。
+      const bool    has_mg = link_is_receiving();
+      const int8_t  mg = link_rssi_margin_db();
+      if (nz && has_mg)     backscreen.printf(" Noise   : %d dBm  mgn %+ddB", nz, mg);
+      else if (nz)          backscreen.printf(" Noise   : %d dBm", nz);
+      else if (has_mg)      backscreen.printf(" Noise   : ---  mgn %+ddB", mg);
+      else                  backscreen.print(" Noise   : ---");
     }
     y += lh;
 
@@ -2181,10 +2234,13 @@ void draw_wireless(int cursor) {
   }
   y += 4;
 
-  // ---- [4] 戻る ----
-  backscreen.setTextColor(cursor == 4 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
+  // ---- [5] 戻る ----
+  // ★ 項目を足したら**ここの番号も直すこと。**WIRELESS_MENU_COUNT・
+  //   longPressCallback の case・この描画の 3 つが揃っていないと、
+  //   カーソルが 2 箇所で反転したり、選べない項目ができたりする。
+  backscreen.setTextColor(cursor == 5 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sReturn", cursor == 4 ? ">" : " ");
+  backscreen.printf("%sReturn", cursor == 5 ? ">" : " ");
 
   backscreen.unloadFont();
   push_backscreen();
@@ -2298,6 +2354,34 @@ static void draw_link_nosignal_box() {
   backscreen.unloadFont();
 }
 
+// 送信機が 2 台いるときのポップアップ（受信モードのみ・地図画面のみ）。
+//
+// ★ **これが無いと、飛行中に検出できる唯一の場所に表示が無い状態だった。**
+//   送信機は送信の合間 mode 3 で寝ていて受信できないので、「同じ CH/SF/Group に
+//   TX が 2 台いる」を飛行中に検出できるのは受信機だけ。にもかかわらず
+//   link_dup_sender() はどこからも呼ばれておらず、音が 1 回鳴るのと
+//   60 秒ログに残るだけだった（TX 側のプリフライトには表示があるのに、
+//   飛行中に効く RX 側に無い、という逆転が起きていた）。
+//
+// この状態ではミラー表示が 2 機ぶんのテレメトリを交互に映すので、
+// **画面の値そのものが信用できない**。地図を覆ってでも知らせる価値がある。
+// 出しっぱなしにはならない。link_dup_sender() は最後の検出から
+// LINK_DUPSENDER_HOLD_MS で false に戻るので、2 台目を止めれば自然に消える。
+static void draw_link_dupsender_box() {
+  const int bx = 10, by = 96, bw = SCREEN_WIDTH - 20, bh = 44;
+  backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
+  backscreen.drawRect(bx,     by,     bw,     bh,     COLOR_RED);
+  backscreen.drawRect(bx + 1, by + 1, bw - 2, bh - 2, COLOR_RED);
+  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  backscreen.setTextSize(1);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(bx + 10, by + 8);
+  backscreen.print("DUP SENDER !!");
+  backscreen.setCursor(bx + 10, by + 24);
+  backscreen.print("2 TX ON SAME CH/GROUP");
+  backscreen.unloadFont();
+}
+
 // 送信前チェックのポップアップ（送信モードのみ・地図画面のみ）。
 //   点検中 : 橙枠。「今は聴いている」＝送信していないことを明示する
 //   警告   : 赤枠。判定が出てから LINK_PF_WARN_SHOW_MS の間だけ出す
@@ -2388,6 +2472,9 @@ static void draw_link_overlay() {
   if (screen_mode == MODE_MAP) {
     draw_link_icons();
     if (link_display_state() == LINK_DISP_NOSIGNAL) draw_link_nosignal_box();
+    // ★ 送信機が 2 台。ミラーの値そのものが信用できないので、
+    //   目的地の不一致より先に出す（同じ場所を使うため排他）。
+    else if (link_dup_sender()) draw_link_dupsender_box();
     // ★ 目的地／ナビモードが送信側と違う。
     //   受信側の警告は自分で再計算する方式なので、目的地が違うと
     //   **コース警告だけが静かにずれる**（計算は正しいのに結果が違う）。
