@@ -44,6 +44,15 @@ static FsFile imuFileStatic;
 static char   imuOpenedFilename[24] = "";
 static int    imuFlushCount = 0;
 
+// ---- 起動識別（Core1 のみが触る）----
+// boot_id は起動ごとにランダムに振り直すだけの RAM 変数。フラッシュには保存しない。
+// 必要なのは「隣り合う起動を区別できること」だけで、通算起動回数には意味が無い。
+// 24bit に丸めるのは、レコードの float v[0] に誤差なく載せるため
+// （float32 は 2^24 までの整数を正確に表す）。
+static uint32_t imuBootId    = 0;
+static uint16_t imuOpenCount = 0;   // この起動で何番目に開いたファイルか
+static char     imuNofixName[24] = "";   // 解決済みの nofixNNN.bin（起動ごとに 1 回決める）
+
 
 
 // リプレイ中の一時停止。Core0 から呼ぶ。
@@ -146,6 +155,104 @@ void imulog_release_pending(int bufidx) {
 
 
 // ============================================================
+// nofixNNN.bin の名前解決（Core1 専用）
+// ============================================================
+// "nofix012.bin" のような名前から 12 を取り出す。合わなければ 0。
+// 旧形式の "nofix.bin"（数字なし）も 0 を返すので、最大値の計算に影響しない。
+// tolower を使わず自前で比較しているのは、SdFat が返す名前が短縮名（大文字）の
+// 場合があるため。strcasecmp は newlib の <strings.h> 側にあり、
+// Arduino 環境で確実に引けるとは限らないので依存しない。
+static bool imulog_ieq(const char* a, const char* b) {
+    for (; *a && *b; a++, b++) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return false;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static int imulog_nofix_index(const char* nm) {
+    static const char kPrefix[] = "nofix";
+    for (int i = 0; i < 5; i++) {
+        char c = (nm[i] >= 'A' && nm[i] <= 'Z') ? (char)(nm[i] + 32) : nm[i];
+        if (c != kPrefix[i]) return 0;
+    }
+    const char* p = nm + 5;
+    int n = 0, digits = 0;
+    while (*p >= '0' && *p <= '9' && digits < 4) { n = n * 10 + (*p - '0'); p++; digits++; }
+    if (digits == 0 || digits > 3) return 0;
+    if (!imulog_ieq(p, ".bin")) return 0;
+    return n;
+}
+
+// 既存の最大番号 +1 を採る。ディレクトリ走査は **1 回だけ**。
+// SD.exists() を番号ごとに呼ぶ実装にしてはいけない。あれは毎回ディレクトリを
+// 先頭から読み直すので、ファイルが増えるほど Core1 が長く止まり、
+// その間に Core0 側のバッファが溢れて「取りこぼし」を自分で作り込む。
+static const char* imulog_resolve_nofix() {
+    if (imuNofixName[0]) return imuNofixName;   // この起動では解決済み
+
+    // imuraw/ がまだ無い場合は dir.open() が失敗して maxn=0 のまま抜ける。
+    // その状況では既存ファイルも無いので nofix001.bin で正しい
+    // （ディレクトリ作成は呼び出し側の open 直前でやる）。
+    int maxn = 0;
+    FsFile dir;
+    if (dir.open(IMULOG_DIR, O_RDONLY)) {
+        dir.rewind();
+        FsFile f;
+        char nm[32];
+        while (f.openNext(&dir, O_RDONLY)) {
+            if (!f.isDir() && f.getName(nm, sizeof(nm))) {
+                int n = imulog_nofix_index(nm);
+                if (n > maxn) maxn = n;
+            }
+            f.close();
+        }
+        dir.close();
+    }
+    if (maxn >= 999) maxn = 998;   // 4 桁になって名前が化けるのを防ぐ（上書きはしない）
+
+    snprintf(imuNofixName, sizeof(imuNofixName), IMULOG_DIR "/nofix%03d.bin", maxn + 1);
+    return imuNofixName;
+}
+
+
+// ============================================================
+// BOOT レコードの書き出し（Core1 専用）
+// ============================================================
+// ファイルを開くたびに先頭へ 1 件置く。同じ起動で nofix → 日付と切り替わったら
+// 両方に同じ boot_id が入り、PC 側で 2 ファイルを突き合わせられる。
+static void imulog_write_boot_marker() {
+    if (imuBootId == 0) {
+        // 起動ごとに 1 回。RP2350 ではハードウェア TRNG を引く
+        // （ROSC 経路の hard_assert はこのボードではリンクされない）。
+        // 0 は「未初期化」と区別したいので避けるが、**無限ループにはしない**。
+        // 乱数源が壊れて 0 を返し続けた場合に Core1 が止まると、
+        // SD と音声ごと巻き添えになる。数回で諦めて時刻で埋める。
+        for (int i = 0; i < 4 && imuBootId == 0; i++) {
+            imuBootId = rp2040.hwrand32() & 0xFFFFFF;
+        }
+        if (imuBootId == 0) {
+            imuBootId = (time_us_32() & 0xFFFFFF) | 1;   // 最後の砦。0 だけは避ける
+        }
+    }
+
+    ImuLogRec b;
+    memset(&b, 0, sizeof(b));
+    b.t_us = time_us_32();
+    b.s_us = (uint32_t)BUILDDATE;    // float では表せないので uint32 の枠に入れる
+    b.id   = IMULOG_ID_BOOT;
+    b.acc  = IMULOG_ACC_NONE;
+    b.seq  = IMULOG_SEQ_NONE;        // 連番に参加しない
+    b.v[0] = (float)imuBootId;
+    b.v[1] = (float)imuOpenCount;
+    // imulog_written には数えない（written + dropped = 消費した seq を保つため）
+    imuFileStatic.write(&b, sizeof(b));
+    imuOpenCount++;
+}
+
+
+// ============================================================
 // imulog_write_buffer(): バッファを SD へ書き出す（Core1 専用）
 // ============================================================
 // save_imu_replaydata() と同じ方針: ファイルは開きっぱなしにし、
@@ -158,7 +265,14 @@ void imulog_write_buffer(int bufidx, const char* filename,
     uint16_t n = imulog_fill[bufidx];
 
     if (good_sd() && n > 0) {
-        // ファイル名が変わった場合（日付変更等）は sync してから閉じて開き直す
+        // Core0 からの合言葉を、この起動ぶんの nofixNNN.bin へ差し替える。
+        // 比較にも open にも同じ文字列を使うので、以降の処理は素通りでよい。
+        // 解決は起動ごとに 1 回だけなので、ここはほぼ strcmp 1 回で抜ける。
+        if (strcmp(filename, IMULOG_NOFIX_REQUEST) == 0) {
+            filename = imulog_resolve_nofix();
+        }
+
+        // ファイル名が変わった場合（測位できた・日付変更等）は sync してから閉じて開き直す
         if (imuFileStatic.isOpen() && strcmp(imuOpenedFilename, filename) != 0) {
             imuFileStatic.sync();
             imuFileStatic.close();
@@ -167,14 +281,19 @@ void imulog_write_buffer(int bufidx, const char* filename,
         }
 
         if (!imuFileStatic.isOpen()) {
-            if (!SD.exists("imuraw")) {
-                SD.mkdir("imuraw");
+            // ★ SD.exists() をこのブロックの外へ出さないこと。
+            //   外へ出すと毎バッファ（約 2.2 回/秒）ディレクトリ検索が走る。
+            //   ここなら開き直すときだけで済む。
+            if (!SD.exists(IMULOG_DIR)) {
+                SD.mkdir(IMULOG_DIR);
             }
             if (imuFileStatic.open(filename, O_RDWR | O_CREAT | O_APPEND)) {
                 strncpy(imuOpenedFilename, filename, sizeof(imuOpenedFilename) - 1);
                 imuOpenedFilename[sizeof(imuOpenedFilename) - 1] = '\0';
                 imuFileStatic.timestamp(T_CREATE | T_ACCESS | T_WRITE,
                                         year, month, day, hour, minute, second);
+                // 開いた直後に BOOT レコード。データより前に置く必要があるのでここ。
+                imulog_write_boot_marker();
             }
         }
 

@@ -29,7 +29,14 @@
 //
 // ※ t_us は 32bit で約 71.6 分でラップする。PC 側でアンラップすること。
 //   またログは O_APPEND なので、同じ日に複数回起動すると 1 ファイルに複数セッションが
-//   連結され、境界で t_us が 0 付近へ戻る。セッションごとに分けてから扱うこと。
+//   連結される。**セッションの境目は「BOOT レコード（下記）の boot_id が変わった点」と
+//   「t_us が後戻りした点」の和で判定すること。**
+//   t_us の後戻りだけでは足りない。測位前のレコードは nofix ファイルへ行くので、
+//   測位できた瞬間に日付ファイルへ戻ると t_us も seq も「前へ飛ぶ」。後戻りしないため
+//   検出できず、起動 2 回が 1 セッションに結合される（2026-08-18 のログで実際に踏み、
+//   継ぎ目の 50681 件を「取りこぼし」と誤読した）。
+//   逆に BOOT レコードだけでも足りない。ファームを更新した日は 1 ファイルに
+//   旧形式（マーカー無し）と新形式が連結され、旧側の再起動はマーカーに現れない。
 //
 // ※【重要】s_us（sv.timestamp）は時刻として使えない。
 //   sh2 が「ホスト時刻 - 遅延」を計算する際にアンダーフローしており、
@@ -37,10 +44,24 @@
 //   時刻が要る場合は t_us から復元すること。BNO085 はレポートを一定周期で
 //   スケジュールするので、区間内で等間隔に割り付ければ正確な時刻が得られる
 //   （tools/imulog/decode_imulog.py の reconstruct_time() がこれを行う）。
-// ※ seq は「捨てたレコードでも消費する」。したがって seq が飛んでいる箇所は
-//   SD 書き出しが間に合わずに取りこぼした地点を意味する（imulog_get_dropped() と対応）。
+// ※ seq は「捨てたレコードでも消費する」。ただし **seq の飛び = 取りこぼし とは限らない**。
+//   ファイルが切り替わると（nofix → 日付）、切り替わり前のレコードは別ファイルへ
+//   行っているので、こちら側の seq は飛ぶ。両方のファイルを BOOT レコードの
+//   boot_id で突き合わせて初めて、本当に捨てられた件数が分かる。
+//   実カウントが要るなら機上の imulog_get_dropped()（log.txt の dropped=）を見ること。
+//
+// ---- BOOT レコード（ファイルを開くたびに先頭へ 1 件）----
+// 目的は「どこからが別の電源投入か」を推測ではなく断定できるようにすること。
+// boot_id は **起動ごとにランダムに振り直す RAM 上の値**で、フラッシュには保存しない。
+// 必要なのは「隣り合う起動を区別できること」だけで、通算回数には意味が無いため。
+// 同じ起動で nofix → 日付ファイルと切り替わった場合、**両方の先頭に同じ boot_id** が
+// 入るので、2 つのファイルが同じ飛行のものだと機械的に分かる。
+//   ・seq は連番に参加しない（0xFFFF 固定）。PC 側は **id で除外**すること
+//     （seq は 16bit で一周するので、0xFFFF を持つ通常レコードも存在しうる）。
+//   ・imulog_written には数えない（written + dropped = 消費した seq を保つため）。
 //
 //   id                     v[0]   v[1]   v[2]   v[3]   s_us
+//   IMULOG_ID_BOOT   0x00  bootid nopen  -      -      BUILDDATE     ← 起動識別
 //   IMULOG_ID_GYRO   0x01  gx     gy     gz     -      センサー時刻   [rad/s]
 //   IMULOG_ID_ACCEL  0x02  ax     ay     az     -      センサー時刻   [m/s²] 重力込み
 //   IMULOG_ID_MAG    0x03  mx     my     mz     -      センサー時刻   [µT]
@@ -49,6 +70,18 @@
 //   IMULOG_ID_LINACC 0x06  lax    lay    laz    -      センサー時刻   既存バリオ KF 用（比較用）
 //   IMULOG_ID_GNSSVEL 0x10 velN   velE   velD   sAcc   iTOW [ms]     [m/s] NED、sAcc も m/s
 //   IMULOG_ID_BARO   0x20  press  alt    temp   -      0             [hPa][m][℃]
+//
+//   bootid : 起動ごとのランダム値（24bit）。float32 は 2^24 までの整数を誤差なく
+//            表せるので、丸めずに往復する。
+//   nopen  : その起動で何番目に開いたファイルか（0 から）。断片の順序が分かる。
+//   BUILDDATE は uint32 の s_us に入れる（20260919 は float32 では表せないため）。
+//
+// ---- ファイル名 ----
+// 測位できていれば imuraw/YYYYMMDD.bin、測位前は imuraw/nofixNNN.bin。
+// nofix 側に通し番号を振るのは、固定名 1 つだと複数日・複数起動が 1 ファイルに
+// 混ざって解析時に切り分けられなくなるため。番号は SD 側の情報なので
+// フラッシュには持たない（カードを替えたら中身とズレるため）。Core1 が
+// imuraw/ を 1 回走査して最大番号 +1 を採る。
 //
 // ---- コア分担 ----
 //   imulog_push()          : Core0 から呼ぶ。リングではなく二重バッファに詰めるだけ。
@@ -65,6 +98,7 @@
 #include <Arduino.h>
 
 // ---- レコード種別 ----
+#define IMULOG_ID_BOOT     0x00
 #define IMULOG_ID_GYRO     0x01
 #define IMULOG_ID_ACCEL    0x02
 #define IMULOG_ID_MAG      0x03
@@ -75,6 +109,13 @@
 #define IMULOG_ID_BARO     0x20
 
 #define IMULOG_ACC_NONE    0xFF   // accuracy 情報を持たないレコード
+#define IMULOG_SEQ_NONE    0xFFFF // 連番に参加しないレコード（BOOT）。判定は id で行うこと
+
+// ---- 置き場所とファイル名 ----
+// IMULOG_NOFIX_REQUEST は Core0 が「測位できていない」ことを伝えるための合言葉。
+// Core0 から SD は触れないので、実際の nofixNNN.bin への解決は Core1 側で行う。
+#define IMULOG_DIR            "imuraw"
+#define IMULOG_NOFIX_REQUEST  IMULOG_DIR "/nofix.bin"
 
 // 1 レコード 28 バイト。146 レコード = 4088 バイトを 1 バッファとする
 // （SD の 4KB 境界に収まる最大数。約 0.45 秒分）。

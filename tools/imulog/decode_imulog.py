@@ -29,8 +29,11 @@ assert REC_SIZE == 28, REC_SIZE
 
 WRAP = 1 << 32                 # t_us / s_us は 32bit で約 71.6 分ごとにラップする
 
+ID_BOOT = 0x00                 # 起動マーカー。ファイルを開くたびに先頭へ 1 件入る
+
 # id -> (名前, 意味のある v の列名)
 KINDS = {
+    ID_BOOT: ("boot", ["boot_id", "nopen"]),         # 起動識別（s_us は BUILDDATE）
     0x01: ("gyro",    ["gx", "gy", "gz"]),           # [rad/s]
     0x02: ("accel",   ["ax", "ay", "az"]),           # [m/s^2] 重力込みの生比力
     0x03: ("mag",     ["mx", "my", "mz"]),           # [uT]
@@ -52,25 +55,64 @@ def unwrap_u32(x):
     return x + np.concatenate([[0], np.cumsum(jumps)]) * WRAP
 
 
-def detect_sessions(t_us):
+def detect_sessions(t_us, ids=None, v0=None):
     """再起動の境目を検出してセッション番号を返す。
 
     ログファイルは O_APPEND で開くため、同じ日に複数回起動すると 1 つの .bin に
-    複数セッションが連結される。再起動すると time_us_32() が 0 付近へ戻るので
-    t_us が後戻りする。これを跨いで処理すると時刻が単調でなくなり、
+    複数セッションが連結される。これを跨いで処理すると時刻が単調でなくなり、
     ESKF の GNSS 観測が適用されなくなる（2026-08-18 に実際に踏んだ）。
 
-    32bit ラップとの区別: ラップなら直前の値が u32 の上限付近にあるはず。
-    そうでない後戻りは再起動とみなす。
+    境界は次の 2 つの **和** を取る。どちらか一方では足りない。
+
+      (a) BOOT レコード（id=0x00）の boot_id が変わった点
+      (b) t_us が後戻りした点（32bit ラップを除く）
+
+    (b) だけでは不足する理由: 測位前のレコードは nofixNNN.bin へ行くので、
+      測位できた瞬間に日付ファイルへ戻ると t_us も seq も「前へ飛ぶ」。
+      後戻りしないので検出できず、起動 2 回が 1 セッションに結合される。
+      2026-08-18 のログではこれで 50681 件の継ぎ目を「取りこぼし」と誤読した。
+
+    (a) だけでは不足する理由: ファームを更新した日は 1 つの .bin に旧形式
+      （マーカー無し）と新形式が連結される。旧側の再起動はマーカーでは見えない。
+
+    新形式の再起動では (a) と (b) が同じ位置を指すので二重には区切られない
+    （マーカーは新しい起動の 1 件目なので、その手前で t_us が後戻りする）。
     """
     t = np.asarray(t_us, dtype=np.int64)
     if t.size < 2:
         return np.zeros(t.size, dtype=int)
+
+    # ---- (b) t_us の後戻り ----
     d = np.diff(t)
     backward = d < 0
     is_wrap = backward & (t[:-1] > int(0.9 * WRAP))
-    reboot = backward & ~is_wrap
-    return np.concatenate([[0], np.cumsum(reboot)]).astype(int)
+    start = np.concatenate([[False], backward & ~is_wrap])
+
+    # ---- (a) BOOT マーカーの boot_id 変化 ----
+    if ids is not None and v0 is not None:
+        boot = np.asarray(ids) == ID_BOOT
+        cur = None
+        for i in np.flatnonzero(boot):
+            bid = int(round(float(v0[i])))
+            # boot_id=0 は本物のマーカーではない。ファームは 0 を必ず避けて
+            # 振るので（imulog.cpp の imulog_write_boot_marker）、0 が出たら
+            # ゼロ埋めされた領域を読んでいる。電源断で書きかけになった箇所や、
+            # 未書き込みセクタがそう見える。区切ると偽のセッションができるため無視する。
+            if bid == 0:
+                continue
+            # 同じ起動で nofix → 日付 と開き直すと、1 ファイル内に同じ
+            # boot_id のマーカーが 2 つ並ぶことがある。境界はあくまで
+            # 「boot_id が変わった点」なので、同じ値では区切らない。
+            if cur is None or bid != cur:
+                # 最初のマーカーでも、その手前にレコードがあれば区切る。
+                # 旧形式のデータに新形式を追記した場合、手前は別の起動なので
+                # 必ず分ける必要がある（t_us が前へ飛んでいると (b) では見えない）。
+                if cur is not None or i > 0:
+                    start[i] = True
+                cur = bid
+
+    sess = np.cumsum(start)
+    return (sess - sess.min()).astype(int)
 
 
 def reconstruct_time(t, max_gap=0.5):
@@ -116,9 +158,24 @@ def load(path):
     if df.empty:
         return df
 
+    # ゼロ埋めレコードを落とす。
+    # 電源断で書きかけになった箇所や未書き込みセクタは 28 バイトの 0 として読める。
+    # 本物のレコードは id が 0x01〜0x20 か、BOOT なら boot_id（v0）が必ず非 0
+    # （ファームが 0 を避けて振る）。したがって id=0 かつ v0=0 は必ず壊れたデータ。
+    # 落とさないと t_us=0 が後戻りとみなされ、偽のセッション境界ができる。
+    junk = (df["id"] == ID_BOOT) & (df["v0"] == 0.0)
+    if junk.any():
+        print(f"warn: ゼロ埋めレコード {int(junk.sum())} 件を捨てた"
+              f"（書きかけ・未書き込み領域）", file=sys.stderr)
+        df = df[~junk].reset_index(drop=True)
+        if df.empty:
+            return df
+
     # セッション（起動）ごとに分けてからアンラップする。
     # 全体を通してアンラップすると再起動の後戻りが残り、時刻が単調でなくなる。
-    df["session"] = detect_sessions(df["t_us"].to_numpy())
+    df["session"] = detect_sessions(df["t_us"].to_numpy(),
+                                    df["id"].to_numpy(),
+                                    df["v0"].to_numpy())
     t = np.zeros(len(df), dtype=np.int64)
     tv = df["t_us"].to_numpy()
     for _, idx in df.groupby("session").indices.items():
@@ -136,7 +193,14 @@ def split(df):
             continue
         sub = sub.reset_index(drop=True)
 
-        if rid == 0x10:
+        # cols は v[0..3] への割り当てなので触らない。追加列は extra へ
+        extra = []
+        if rid == ID_BOOT:
+            # BOOT はセンサー時刻を持たない。s_us の枠は BUILDDATE に使っている
+            # （20260919 は float32 では表せないので uint32 側へ逃がしてある）。
+            sub["ts"] = np.nan
+            extra = ["builddate"]
+        elif rid == 0x10:
             sub["ts"] = sub["s_us"] * 1e-3        # GNSS は iTOW [ms]
         elif rid == 0x20:
             sub["ts"] = np.nan                    # baro はセンサー時刻を持たない
@@ -151,7 +215,12 @@ def split(df):
 
         for i, c in enumerate(cols):
             sub[c] = sub[f"v{i}"]
-        keep = ["t", "ts", "session", "seq", "acc"] + cols
+        # v の割り当てが終わってから追加列を作る（先に作ると v2 などで踏み潰される）
+        if rid == ID_BOOT:
+            sub["boot_id"] = sub["boot_id"].round().astype(np.int64)
+            sub["nopen"] = sub["nopen"].round().astype(np.int64)
+            sub["builddate"] = sub["s_us"].astype(np.int64)
+        keep = ["t", "ts", "session", "seq", "acc"] + cols + extra
         out[name] = sub[keep]
     return out
 
@@ -245,20 +314,43 @@ def report(df, parts):
       「取りこぼし」に見えたりする（実際に両方やらかした）。
     """
     n_sess = df["session"].nunique()
+    has_marker = bool((df["id"] == ID_BOOT).any())
     dur_total = 0.0
-    print(f"レコード数 : {len(df)}   セッション数 : {n_sess}")
+    print(f"レコード数 : {len(df)}   セッション数 : {n_sess}"
+          f"   （分割: {'BOOT マーカー + t_us 後戻り' if has_marker else 't_us 後戻りのみ（旧形式）'}）")
     print()
-    print(f"{'sess':>5}{'件数':>10}{'長さ[s]':>11}{'取りこぼし':>12}")
+    print(f"{'sess':>5}{'boot_id':>9}{'件数':>10}{'長さ[s]':>11}{'seq欠落':>10}{'時刻検算':>10}")
     lost_total = 0
+    warn = []
     for sess, g in df.groupby("session"):
         dur = g["t"].iloc[-1] - g["t"].iloc[0]
         dur_total += dur
-        seq = g["seq"].to_numpy(dtype=np.int64)
+
+        # seq の欠落。BOOT は連番に参加しないので必ず除外する
+        # （BOOT の seq は 0xFFFF 固定なので、混ぜると欠落が捏造される）。
+        real = g[g["id"] != ID_BOOT]
+        seq = real["seq"].to_numpy(dtype=np.int64)
         step = np.diff(seq)
         step = np.where(step < 0, step + 65536, step)   # uint16 のラップを戻す
         lost = int(np.sum(step[step > 1] - 1))
         lost_total += lost
-        print(f"{sess:>5}{len(g):>10}{dur:>11.1f}{lost:>12}")
+
+        b = g[g["id"] == ID_BOOT]
+        bid = f"{int(round(float(b['v0'].iloc[0]))):06X}" if len(b) else "-"
+
+        # 時刻の検算: t_us の経過と GNSS(iTOW) の経過が一致するか。
+        # ずれていたら、そのセッションは起動 2 回が結合されている疑いが濃い。
+        gn = g[g["id"] == 0x10]
+        chk = "-"
+        if len(gn) >= 2:
+            d_us = gn["t"].iloc[-1] - gn["t"].iloc[0]
+            d_gps = (gn["s_us"].iloc[-1] - gn["s_us"].iloc[0]) / 1000.0
+            if abs(d_gps - d_us) > 5.0:
+                chk = "NG"
+                warn.append((sess, d_us, d_gps))
+            else:
+                chk = "OK"
+        print(f"{sess:>5}{bid:>9}{len(g):>10}{dur:>11.1f}{lost:>10}{chk:>10}")
 
     print()
     print(f"{'種別':<10}{'件数':>9}{'実測Hz':>10}")
@@ -269,10 +361,22 @@ def report(df, parts):
     print()
     if lost_total:
         pct = 100.0 * lost_total / (len(df) + lost_total)
-        print(f"取りこぼし合計 : {lost_total} 件 ({pct:.2f}%) "
-              f"— SD 書き出しが間に合わなかった箇所がある")
+        print(f"seq の欠落合計 : {lost_total} 件 ({pct:.2f}%)")
+        print("  ※ これは推測値。欠落 = 取りこぼしとは限らない。")
+        print("     ファイルが nofixNNN.bin から日付ファイルへ切り替わった箇所でも seq は飛ぶ。")
+        print("     同じ boot_id を持つ別ファイルが無いか確かめること。")
+        print("     実際に捨てられた件数は機上の log.txt（60 秒ごとの dropped=）が正。")
     else:
-        print("取りこぼし合計 : なし")
+        print("seq の欠落 : なし")
+
+    for sess, d_us, d_gps in warn:
+        print()
+        print(f"警告: セッション {sess} は t_us の経過 {d_us:.1f} 秒に対し "
+              f"GNSS の経過が {d_gps:.1f} 秒（差 {d_gps - d_us:+.1f} 秒）。")
+        print("  マイコンの µs カウンタが遅れることはないので、これは連続した 1 回の")
+        print("  記録ではない。起動 2 回が 1 セッションに結合されている可能性が高い。")
+        if not has_marker:
+            print("  このファイルは BOOT マーカーを持たない旧形式なので、分割は推測に頼っている。")
 
 
 def main():

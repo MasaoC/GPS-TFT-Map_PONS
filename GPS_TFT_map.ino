@@ -447,16 +447,20 @@ void loop() {
       char imu_fname[24];
       bool queued;
       if (jst_valid) {
-        snprintf(imu_fname, sizeof(imu_fname), "imuraw/%04d%02d%02d.bin",
+        snprintf(imu_fname, sizeof(imu_fname), IMULOG_DIR "/%04d%02d%02d.bin",
                  jst_year, jst_month, jst_day);
         queued = enqueueTask(createFlushImuLogTask(imulog_buf, imu_fname,
                                                   jst_year, jst_month, jst_day,
                                                   log_h, log_m, log_s));
       } else {
-        // GNSS 未測位（屋内テスト等）。日付が決まらないので固定名へ書く。
-        // レコードはホスト時刻 t_us を持つので、これでも解析はできる。
+        // GNSS 未測位（屋内テスト等）。日付が決まらないので合言葉を渡す。
+        // Core0 から SD は触れないので、実ファイル名（imuraw/nofixNNN.bin）の決定は
+        // Core1 側の imulog_write_buffer() がやる。番号を振るのは、固定名 1 つだと
+        // 複数日・複数起動が 1 ファイルに混ざって切り分けられなくなるため。
+        // レコードはホスト時刻 t_us と BOOT レコードを持つので、これでも解析はできる。
         // ファイルのタイムスタンプは SdFat の下限（1980 年以降）を満たす固定値にする。
-        snprintf(imu_fname, sizeof(imu_fname), "imuraw/nofix.bin");
+        // 書式文字列としてではなく %s で渡す（パスに % が混ざっても壊れないように）
+        snprintf(imu_fname, sizeof(imu_fname), "%s", IMULOG_NOFIX_REQUEST);
         queued = enqueueTask(createFlushImuLogTask(imulog_buf, imu_fname,
                                                   2020, 1, 1, 0, 0, 0));
       }
