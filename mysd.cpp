@@ -17,7 +17,7 @@
 
 #include "mysd.h"
 #include "navdata.h"
-#include "gps.h"      // gps_get_own_fix()（received/ に自機位置と距離を書くため）
+#include "gnss.h"      // gnss_get_own_fix()（received/ に自機位置と距離を書くため）
 #include "settings.h"
 #include "imu.h"
 //#define DISABLE_FS_H_WARNING
@@ -47,7 +47,7 @@ unsigned long lasttrytime_sd = 0; // SD エラー時の最後の再試行時刻�
 bool headerWritten = false;       // CSV ファイルにヘッダ行を書いたか（1フライト1回だけ書く）
 
 // CSV ファイル名の生成に使う起動時の日時（初回書き込み時に確定する）
-int fileyear = 0;//意図的に0で初期化して、最初のGPS時刻取得時に確定させる。変えるな。
+int fileyear = 0;//意図的に0で初期化して、最初のGNSS時刻取得時に確定させる。変えるな。
 int filemonth;
 int fileday;
 int filehour;
@@ -58,7 +58,7 @@ int filesecond;
 // ============================================================
 // Core0↔Core1 間タスクキュー（ミューテックス保護）
 //
-// Core0（表示・GPS・ボタン）から Core1（SD・音声）へ
+// Core0（表示・GNSS・ボタン）から Core1（SD・音声）へ
 // 非同期で処理を依頼するためのリングバッファ。
 //   - enqueueTask(): Core0 がタスクを積む
 //   - dequeueTask(): Core1 がタスクを取り出して実行
@@ -672,7 +672,7 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
   // ボート自身の位置と機体までの距離。測位できていなければ空欄で書く。
   {
     double olat, olon, ogs, otrk;
-    task.saveCsvArgs.own_valid = gps_get_own_fix(olat, olon, ogs, otrk);
+    task.saveCsvArgs.own_valid = gnss_get_own_fix(olat, olon, ogs, otrk);
     if (task.saveCsvArgs.own_valid) {
       task.saveCsvArgs.own_lat = (float)olat;
       task.saveCsvArgs.own_lon = (float)olon;
@@ -708,7 +708,7 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
   return task;
 }
 
-// 1 フレーム分の GPS データを CSV ログに書き込むタスクを生成する
+// 1 フレーム分の GNSS データを CSV ログに書き込むタスクを生成する
 // ※ own_* / dist_m は received/ 専用。ここでは使わないが、未初期化のまま
 //   残さないよう明示的に潰しておく（同じ共用体を使い回すため）。
 Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
@@ -1178,7 +1178,7 @@ void setup_sd(int trycount, bool load_settings){
 //
 // 役割分担:
 //   Core1 (このファイル) … ファイルを開きっぱなしにして行を読み、パースしてリングに積むだけ
-//   Core0 (gps.cpp)      … リングから「再生時刻に達した行」を取り出して stored_* に反映する
+//   Core0 (gnss.cpp)      … リングから「再生時刻に達した行」を取り出して stored_* に反映する
 // 単一 producer / 単一 consumer のリングなので mutex は不要。
 // （スロットへ書き込んでから head を進める順序を必ず守ること）
 // ============================================================
@@ -2112,7 +2112,7 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
 
   if (index < 0 || index >= replay_menu_total_items()) return RITEM_NONE;
 
-  if (index == 0) { strlcpy(label, "Replay OFF (Normal GPS)", labelsize); return RITEM_OFF; }
+  if (index == 0) { strlcpy(label, "Replay OFF (Normal GNSS)", labelsize); return RITEM_OFF; }
   if (index == 1) {
     snprintf(label, labelsize, "PLAY FLIGHT ONLY: %s", replay_flight_only ? "YES" : "NO");
     return RITEM_FLIGHTONLY;
@@ -2243,7 +2243,7 @@ bool browse_sd(int page) {
 // SdFat ライブラリのファイルタイムスタンプコールバック関数。
 // setup_sd() 内で SdFile::dateTimeCallback(dateTime) として登録しておくと、
 // ファイル作成・更新時にこの関数が呼ばれて FAT タイムスタンプが書き込まれる。
-// fileyear 等は saveCSV() 内で GPS 時刻が最初に取得された瞬間に初期化される。
+// fileyear 等は saveCSV() 内で GNSS 時刻が最初に取得された瞬間に初期化される。
 void dateTime(uint16_t* date, uint16_t* time) {
  // return date using FAT_DATE macro to format fields
  *date = FAT_DATE(fileyear, filemonth, fileday);
@@ -2349,11 +2349,11 @@ void log_sdf(const char* format, ...){
   return log_sd(buffer);
 }
 
-// GPS の飛行データを CSV ファイルに 1 行追記するフライトログ関数。
+// GNSS の飛行データを CSV ファイルに 1 行追記するフライトログ関数。
 // 列: latitude, longitude, gs(m/s), TrueTrack(°), GNSS_Altitude(m), KF_Altitude(m), KF_Vspeed(m/s), pressure, date, time
 // GNSS_Altitude は GNSS(NAV-PVT hMSL)が返す MSL 高度。KF_Altitude（気圧+GNSS融合のKF推定値）とは別物。
 //
-// ファイル名は最初に GPS 時刻が取得された瞬間に確定し、
+// ファイル名は最初に GNSS 時刻が取得された瞬間に確定し、
 // 以降は同じファイルに追記し続ける（例: 2025-05-08_1230.csv）。
 // ヘッダ行は headerWritten フラグで 1 回だけ書く。
 // SD エラー時は 10 秒ごとに setup_sd(1) でリトライを試みる。
@@ -2597,7 +2597,7 @@ void save_imu_replaydata(int h, int m, int s, int cs,
     strncpy(replayDataOpenedFilename, filename, sizeof(replayDataOpenedFilename) - 1);
     replayDataOpenedFilename[sizeof(replayDataOpenedFilename) - 1] = '\0';
 
-    // GPS 日時でファイルタイムスタンプを設定（作成・アクセス・更新の全3種）
+    // GNSS 日時でファイルタイムスタンプを設定（作成・アクセス・更新の全3種）
     replayDataFileStatic.timestamp(T_CREATE | T_ACCESS | T_WRITE, year, month, day, h, m, s);
 
     // 新規ファイルのみヘッダー書き込み

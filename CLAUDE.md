@@ -32,7 +32,7 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
 - `RELEASE` — 有効に。無効だと `setup1()` が `while(!Serial)` で待ち、実機が起動しない。
-- `RELEASE_GPS` — GPS シミュレーション（`DEBUG_GPS_SIM_*`）が全部コメントアウト済みか。
+- `RELEASE_GNSS` — GNSS シミュレーション（`DEBUG_GNSS_SIM_*`）が全部コメントアウト済みか。
 - `BUILDDATE` / `BUILDVERSION` — 更新する。README のバージョン記載も合わせる。
 - どちらかが抜けていると `#warning NOT RELEASE!` が出る。これが唯一の保険。
 

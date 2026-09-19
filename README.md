@@ -47,7 +47,7 @@ GPS/GNSS navigation for human-powered aircraft, specialized for the Japan Intern
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.967**（Build 20260918）。
+* 最新のソフトウェアバージョンは **0.968**（Build 20260919）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -273,9 +273,9 @@ E220-900T22S(JP) は技適取得済みで、免許は不要です。ARIB STD-T10
   緯度・経度は v0.94 で削除した（飛行中に読む場面が無いため）。sAcc は左上へ移動。
 * **画面下部 2**：目的地コース (True Course) / 目的地までの距離（km、直線距離）/ 捕捉衛星数（10 以上で緑）/ 電池残量 (%)
 * **画面最下部**：目的地モード（FLY INTO / FLY AWAY / 10K INTO / 10K AWAY）/ 目的地名 / SD 認識表示（正常=緑、エラー=赤）
-* **状態表示**：`Acc: XXm`（水平位置精度 1σ、10m 以上のとき表示）、`Scanning GNSS/GPS Signal`（起動直後）、
-  `Weak GNSS/GPS Signal`（衛星数 0）、`NO GNSS connection !!`（GNSS 通信不可＝要再起動）
-* **ロガー**：緯度/経度/対地速度/時刻を SD へ保存（GPS 位置捕捉時、1 秒に 2 回）。気圧データも記録。
+* **状態表示**：`Acc: XXm`（水平位置精度 1σ、10m 以上のとき表示）、`Scanning GNSS Signal`（起動直後）、
+  `Weak GNSS Signal`（衛星数 0）、`NO GNSS connection !!`（GNSS 通信不可＝要再起動）
+* **ロガー**：緯度/経度/対地速度/時刻を SD へ保存（GNSS 位置捕捉時、1 秒に 2 回）。気圧データも記録。
 * **バリオメーター**：昇降計。設定画面でボリューム 0 にすると無音・非表示。
   デッドバンドは ±0.25m/s（BNO085+MS5611 の KF 融合時。BNO085 が応答しない場合は MS5611 単独へ
   フォールバックし ±0.6m/s）。v7 は BNO085 標準搭載なので全機で使えます。
@@ -306,7 +306,7 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
   過去大会のログなど上に出しておきたいものは、カードへ**最初にコピー**してください。
 * 設定用の CSV はルート直下にあり、リプレイ一覧は `data/` と `received/` しか見ないので、
   設定ファイルを誤って再生対象にする経路がそもそもありません。
-* **再生を続けられなくなったら、音を鳴らして取り消し、通常の GPS に戻ります。**
+* **再生を続けられなくなったら、音を鳴らして取り消し、通常の GNSS に戻ります。**
   黙ってファイルを開き直し続けると、地図が固まったまま SD を叩き続けることになるためです。
   理由は `log.txt` に残ります。
   * `REPLAY canceled: file is not a flight log` … 開けない / ヘッダが無い / 空
@@ -554,7 +554,7 @@ JLCPCB の PCBA では実装されないため、**別途購入して手実装�
 自分の機体に書き込む前に、`settings.h` 冒頭にある次の項目を確認してください。
 
 * `RELEASE` — 有効にする。無効のままだと `setup1()` が `while(!Serial)` で待ち続け、実機が起動しません。
-* `RELEASE_GPS` — GPS シミュレーション用の `DEBUG_GPS_SIM_*` がすべてコメントアウトされているか。
+* `RELEASE_GNSS` — GNSS シミュレーション用の `DEBUG_GNSS_SIM_*` がすべてコメントアウトされているか。
 * `BUILDDATE` / `BUILDVERSION` — 実際にビルドした日付・バージョンに更新する。
 * どちらか抜けていると `#warning NOT RELEASE!` が出ます。これが唯一の保険なので、警告が出ていないか確認してください。
 
@@ -613,12 +613,12 @@ microSD カードスロットはバネ式です。取り出す時は指で押し
   2:BNO085 init OK
   2:MS5611 init OK
   2:VARIO: BNO085+MS5611 Kalman fusion enabled
-  4:GPS TIME: 2026-03-26 06:16:52 UTC
+  4:GNSS TIME: 2026-03-26 06:16:52 UTC
   6:SETUP DONE Battery: 4.15V
   6:Initial airdata: Temp=33.18 C, Press=1009.49 hPa, Alt=31.4 m
   60:volt=4.15V cpu=41.2C --:-- JST      ← 測位前は時刻を書かない
   120:volt=4.14V cpu=42.0C 15:18 JST
-  148:GPS FIXED fix=3 sats=0 hAcc=60.2m
+  148:GNSS FIXED fix=3 sats=0 hAcc=60.2m
   1303:ACC hAcc=1.4m vAcc=1.9m sAcc=0.19m/s fix=3 sats=21
   ```
   * 時刻は **GNSS の日時が確定してから**しか書きません。確定前は `--:--` になります
@@ -746,6 +746,9 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 * `tools/kml_to_mapcsv.py`：Google Earth の KML から独自地図用 `mapdata.csv` を生成
 * `tools/createmovie_csv2mp4.py`：ログ CSV からフライト動画を生成
 * `tools/flight_preprocess.py` / `tools/flightanalysis/`：ログの前処理と飛行解析（スペクトル、横・方向安定性など）のプロット
+  * `plot_vertical_accel.py`：鉛直加速度（G）と荷重倍数の推定。G は直接記録していないので
+    `KF_Vspeed` の差分から出す（気圧の 2 階微分はノイズが信号を上回るため使えない）。
+    平均化窓ごとの最大値・地上で実測したノイズ床・生の気圧列での裏取りまで出す
 * `tools/vectormap/build_vectormap.py`：OpenStreetMap から内蔵ベクタ地図 `vectormap_data.cpp` を生成
 * `tools/png2bmp.py`：PNG 画像を起動ロゴ用 bmp へ変換
 * `tools/gen_link_icons.py`：PONS Link の電波アイコン（アンテナ本数・送信の弧）を生成

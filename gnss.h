@@ -1,27 +1,27 @@
 // ============================================================
-// File    : gps.h
+// File    : gnss.h
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-// Role    : GPS受信・解析モジュールのヘッダー。
+// Role    : GNSS受信・解析モジュールのヘッダー。
 //           衛星データ構造体(SatelliteData)、受信バッファ定義、
 //           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
 //           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
 //           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/08
+// Updated : 2026/09/19
 // ============================================================
 
-#ifndef GPS_H
-  #define GPS_H
-  // GpsDate / GpsTime: get_gpsdate() / get_gpstime() の戻り値型
-  // 実 GPS は UBX NAV-PVT から更新、リプレイモードは SD の飛行 CSV から更新する。
-  struct GpsDate {
+#ifndef GNSS_H
+  #define GNSS_H
+  // GnssDate / GnssTime: get_gnss_date() / get_gnss_time() の戻り値型
+  // 実 GNSS は UBX NAV-PVT から更新、リプレイモードは SD の飛行 CSV から更新する。
+  struct GnssDate {
     uint16_t _year  = 0; uint8_t _month = 0; uint8_t _day = 0; bool _valid = false;
     bool     isValid() const { return _valid;  }
     uint16_t year()    const { return _year;   }
     uint8_t  month()   const { return _month;  }
     uint8_t  day()     const { return _day;    }
   };
-  struct GpsTime {
+  struct GnssTime {
     uint8_t _hour=0; uint8_t _min=0; uint8_t _sec=0; uint8_t _cs=0; bool _valid=false;
     bool    isValid()     const { return _valid; }
     uint8_t hour()        const { return _hour;  }
@@ -66,47 +66,47 @@
   float replay_get_pressure();
   float replay_get_voltage();
 
-  char* get_gps_nmea(int i);
-  unsigned long get_gps_nmea_time(int i);
-  void gps_setup();
-  void gps_loop(int id);
+  char* get_gnss_nmea(int i);
+  unsigned long get_gnss_nmea_time(int i);
+  void gnss_setup();
+  void gnss_loop(int id);
   void try_enque_savecsv();
   
-  bool gps_new_location_arrived();
+  bool gnss_new_location_arrived();
   void set_new_location_off();
 
-  void gps_getposition_mode();
-  void gps_constellation_mode();
-  bool get_gps_fix();
-  bool get_gps_connection();
-  int get_gps_numsat();
-  double get_gps_mps();
-  double get_gps_truetrack();
-  uint32_t get_gps_baudrate();  // GPS シリアルの現在ボーレート
-  int   get_gps_fixtype();   // GSA フィックスタイプ (1=No Fix, 2=2D, 3=3D)
-  float get_gps_pdop();      // PDOP（Position DOP）
-  float get_gps_hdop();      // HDOP（Horizontal DOP）
-  float get_gps_vdop();      // VDOP（Vertical DOP）
+  void gnss_getposition_mode();
+  void gnss_constellation_mode();
+  bool get_gnss_fix();
+  bool get_gnss_connection();
+  int get_gnss_numsat();
+  double get_gnss_mps();
+  double get_gnss_truetrack();
+  uint32_t get_gnss_baudrate();  // GNSS シリアルの現在ボーレート
+  int   get_gnss_fixtype();   // GSA フィックスタイプ (1=No Fix, 2=2D, 3=3D)
+  float get_gnss_pdop();      // PDOP（Position DOP）
+  float get_gnss_hdop();      // HDOP（Horizontal DOP）
+  float get_gnss_vdop();      // VDOP（Vertical DOP）
   int   get_gsa_numsat();    // 測位使用衛星数
   int   get_gsa_prn(int i);  // 測位使用衛星 PRN (i=0..11)
   // ★ ミラーもデモも通さない、この機体自身の測位。
-  //   受信モードでは get_gps_*() が機体の値に置き換わるので、
+  //   受信モードでは get_gnss_*() が機体の値に置き換わるので、
   //   ボート自身を地図に出すにはこちらを使う。fix が無ければ false。
-  bool gps_get_own_fix(double &lat, double &lon, double &gs, double &track);
+  bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track);
 
-  double get_gps_lat();
-  double get_gps_lon();
-  double get_gps_altitude();
+  double get_gnss_lat();
+  double get_gnss_lon();
+  double get_gnss_altitude();
 
-  uint32_t get_gps_hacc_mm();     // 水平精度推定値（NAV-PVT hAcc、mm 単位）
-  uint32_t get_gps_vacc_mm();     // 垂直精度推定値（NAV-PVT vAcc、mm 単位）
-  uint32_t get_gps_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
-  float    get_gps_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
+  uint32_t get_gnss_hacc_mm();     // 水平精度推定値（NAV-PVT hAcc、mm 単位）
+  uint32_t get_gnss_vacc_mm();     // 垂直精度推定値（NAV-PVT vAcc、mm 単位）
+  uint32_t get_gnss_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
+  float    get_gnss_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
-  bool     get_gps_gnssFixOK();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
+  bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 
-  GpsDate get_gpsdate();
-  GpsTime get_gpstime();
+  GnssDate get_gnss_date();
+  GnssTime get_gnss_time();
 
   // 最大 G/S 取得関数
   float get_maxgs();            // 全時間最大 G/S [m/s]
@@ -117,7 +117,7 @@
   int   get_maxgs_5min_min();   // 5分保持最大 G/S の記録時刻（JST 分）
 
   // ---- デモ飛行 ----
-  // 実 GPS を使わず仮想的に飛ばすモード。地点を選べるようにしてあるので、
+  // 実 GNSS を使わず仮想的に飛ばすモード。地点を選べるようにしてあるので、
   // 各フライト地点の地図表示を実機で確認するのにも使える。
   enum demo_site_t : uint8_t {
     DEMO_OFF = 0,
@@ -146,6 +146,6 @@
   bool get_replay_wind(float &speed_mps, float &dir_to_deg);
   void set_replaymode(bool replaymode);
 
-  uint32_t get_gps_fix_millis();  // 最後にGPS時刻を受信したときのmillis()（時刻推定用）
+  uint32_t get_gnss_fix_millis();  // 最後にGNSS時刻を受信したときのmillis()（時刻推定用）
 
 #endif

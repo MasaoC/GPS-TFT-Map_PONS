@@ -14,12 +14,12 @@
 //     115200bps・65 バイトで 3.1ms なので、1Hz なら Core0 への影響は無視できる。
 //     長く止まる可能性があるのは「モジュールがまだ前の送信を処理中」のときだけで、
 //     そこは e220_send() が AUX を見て**そのスロットを捨てる**ことで避けている。
-//   ・受信データの供給関数は gps.cpp のリプレイ用と同じ形にしてある。
+//   ・受信データの供給関数は gnss.cpp のリプレイ用と同じ形にしてある。
 //     受信モードを既存のリプレイ経路へ相乗りさせるため。
 //
 #include "link.h"
 #include "settings.h"
-#include "gps.h"
+#include "gnss.h"
 #include "imu.h"
 #include "attitude.h"
 #include "airdata.h"
@@ -594,7 +594,7 @@ static void link_preflight_tick() {
         } else if (++s_pfNoiseFail >= LINK_PF_NOISE_FAIL_MAX) {
             // ★★ 連続で返事が無いなら、窓の最後まで回さずにここで打ち切る。
             //   1 回の問い合わせは応答待ちでブロックするので、10 回ぶん繰り返すと
-            //   Core0 が止まり、GPS の FIFO（1024B / 38400bps ≒ 267ms）が溢れて
+            //   Core0 が止まり、GNSS の FIFO（1024B / 38400bps ≒ 267ms）が溢れて
             //   NAV-PVT を取りこぼす。地図もボタンもバリオも同時に止まる。
             //   ★ e220_alive() の事前チェックだけでは塞げない。あれは起動時の
             //     照合結果なので、**起動後に抜けたコネクタでは true のまま**。
@@ -769,19 +769,19 @@ static void link_push_telemetry() {
 
     uint16_t have = 0;
 
-    GpsDate d = get_gpsdate();
-    GpsTime tm = get_gpstime();
+    GnssDate d = get_gnss_date();
+    GnssTime tm = get_gnss_time();
     if (d.isValid()) { t.year = d.year(); t.month = d.month(); t.day = d.day(); have |= RHAVE_DATE; }
     if (tm.isValid()) { t.hour = tm.hour(); t.minute = tm.minute();
                         t.second = tm.second(); t.centi = tm.centisecond(); }
 
-    t.lat_1e7 = (int32_t)lround(get_gps_lat() * 1e7);
-    t.lon_1e7 = (int32_t)lround(get_gps_lon() * 1e7);
-    t.gs_cms      = link_pack_u16((float)get_gps_mps(),       100.0f, 65535);
-    t.track_cdeg  = link_pack_u16((float)get_gps_truetrack(), 100.0f, 36000);
+    t.lat_1e7 = (int32_t)lround(get_gnss_lat() * 1e7);
+    t.lon_1e7 = (int32_t)lround(get_gnss_lon() * 1e7);
+    t.gs_cms      = link_pack_u16((float)get_gnss_mps(),       100.0f, 65535);
+    t.track_cdeg  = link_pack_u16((float)get_gnss_truetrack(), 100.0f, 36000);
     have |= RHAVE_GS | RHAVE_TTRACK;
 
-    t.gnss_alt_dm = link_pack_i16((float)get_gps_altitude(), 10.0f);
+    t.gnss_alt_dm = link_pack_i16((float)get_gnss_altitude(), 10.0f);
     have |= RHAVE_GNSSALT;
 
     t.kf_alt_dm = link_pack_i16(get_imu_altitude_msl(),  10.0f);
@@ -819,10 +819,10 @@ static void link_push_telemetry() {
     t.volt_cv = link_pack_volt(get_input_voltage());
     have |= RHAVE_VOLT;
 
-    t.numsat  = (uint8_t)constrain(get_gps_numsat(), 0, 255);
+    t.numsat  = (uint8_t)constrain(get_gnss_numsat(), 0, 255);
     have |= RHAVE_NUMSAT;
-    t.hacc_dm = (uint16_t)constrain(get_gps_hacc_mm() / 100, 0UL, 65535UL);  // mm → 0.1m
-    t.fixflags = get_gps_gnssFixOK() ? 0x01 : 0x00;
+    t.hacc_dm = (uint16_t)constrain(get_gnss_hacc_mm() / 100, 0UL, 65535UL);  // mm → 0.1m
+    t.fixflags = get_gnss_fixok() ? 0x01 : 0x00;
 
     // ナビ設定。受信側はこれを自分の設定と突き合わせるためだけに使う。
     t.dest_index = (int8_t)currentdestination;
@@ -854,7 +854,7 @@ int8_t   link_rssi()        { return s_rxValid ? s_rx.rssi : 0; }
 const LinkTelem* link_rx_telem() { return s_rxValid ? &s_rx.t : nullptr; }
 
 // ★ ミラー中か。各センサ accessor はこれを見て、自機の値の代わりに
-//   受信した機体の値を返す（gps.cpp の is_demo_active() と同じ流儀）。
+//   受信した機体の値を返す（gnss.cpp の is_demo_active() と同じ流儀）。
 //
 //   accessor で差し込む方式にした理由:
 //     ・グローバル（stored_lat 等）を汚さないので、**自機のフライト CSV は
@@ -1003,7 +1003,7 @@ bool link_has_value(uint16_t havebit) {
 double   link_get_lat()           { return s_rx.t.lat_1e7 / 1e7; }
 double   link_get_lon()           { return s_rx.t.lon_1e7 / 1e7; }
 double   link_get_gs()            { return s_rx.t.gs_cms      / 100.0; }
-// 実 GPS(gps.cpp) / リプレイ / デモはどれも 0〜360 を強制している。ここだけ素通しだと
+// 実 GNSS(gnss.cpp) / リプレイ / デモはどれも 0〜360 を強制している。ここだけ素通しだと
 // CRC を通った壊れフレームで 655 度までの値がナビ計算に入るため、同じ形で揃える。
 double   link_get_truetrack()     {
   double t = s_rx.t.track_cdeg / 100.0;

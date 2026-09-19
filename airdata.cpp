@@ -12,7 +12,7 @@
 #include "airdata.h"
 #include "link.h"
 #include "mysd.h"
-#include "gps.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
+#include "gnss.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
 #define MS5611_ADDR 0x77
 
@@ -346,7 +346,7 @@ bool ms5611_init() {
     // ★ この関数は airdata_setup()（起動時）に加えて airdata_try_recovery()
     //   （飛行中・30 秒に 1 回）からも呼ばれる。したがって下の delay(10) は
     //   飛行中にも入り得るが、PROM 8 ワード ×2 + 10ms でも 20ms 未満に収まる。
-    //   GPS の FIFO が溢れるのは 270ms なので十分内側。
+    //   GNSS の FIFO が溢れるのは 270ms なので十分内側。
     //   復旧は「アドレス応答があった」ときしか呼ばれないので、不在の機体で
     //   この待ちを毎回踏むこともない。
     // 失敗しても呼び出し側が ms5611_ok = false にして気圧なしで動作を続ける。

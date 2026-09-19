@@ -11,7 +11,7 @@
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
 #include "sound.h"
-#include "../gps.h"
+#include "../gnss.h"
 #include "../mysd.h"
 #include "../airdata.h"
 #include "../imu.h"
@@ -656,8 +656,8 @@ void __not_in_flash_func(loop_sound)(){
 }
 
 
-// 最後に音が鳴った時のtrue track、つまり "track" 音声再生用のために、前回の GPS 真方位を記録しておく変数。
-float last_tone_tt = 0;  // 前回の update_tone() 呼び出し時の GPS 真方位 [deg]
+// 最後に音が鳴った時のtrue track、つまり "track" 音声再生用のために、前回の GNSS 真方位を記録しておく変数。
+float last_tone_tt = 0;  // 前回の update_tone() 呼び出し時の GNSS 真方位 [deg]
 
 // ============================================================
 // 音符周波数テーブル（C3 ～ C8）
@@ -791,9 +791,9 @@ unsigned long trackwarning_until;  // コース警告音を鳴らし続ける期
 //
 // 処理ロジック（2 段階）:
 //   【警告1: コース逸脱警告】
-//     前回呼び出し時の GPS 真方位 (last_tone_tt) と現在の真方位の差 (angle_diff) が
+//     前回呼び出し時の GNSS 真方位 (last_tone_tt) と現在の真方位の差 (angle_diff) が
 //     15° を超えたとき → コース逸脱と判断して警告音 + "track.wav" を再生する。
-//     速度が 2.0m/s 以上のときのみ発動（静止中の GPS ブレを無視するため）。
+//     速度が 2.0m/s 以上のときのみ発動（静止中の GNSS ブレを無視するため）。
 //
 //   【警告2: 旋回角速度トーン】
 //     上記に当てはまらない場合で、degpersecond が 2.0 以上かつ速度 2.0m/s 以上のとき、
@@ -815,7 +815,7 @@ void update_tone(float degpersecond){
   // ★ float で持つこと。以前は int で受けていたため 15.9 度が 15 に切り捨てられ、
   //   下の「15 度超」が実際には 16 度超になっていた（音で鳴る警報なので影響が出る）。
   //   last_tone_tt 側は full precision で latch してあるので、粗かったのは比較だけ。
-  float relativedif = get_gps_truetrack()-last_tone_tt;
+  float relativedif = get_gnss_truetrack()-last_tone_tt;
   if(relativedif > 180)
     relativedif -= 360;
   if(relativedif < -180)
@@ -824,8 +824,8 @@ void update_tone(float degpersecond){
 
   //【警告1】方位変化が 15° 超 → コース逸脱警告
   if(angle_diff > 15){
-    last_tone_tt = get_gps_truetrack();
-    if(get_gps_mps() > 2.0){
+    last_tone_tt = get_gnss_truetrack();
+    if(get_gnss_mps() > 2.0){
         trackwarning_until = millis()+8000;
         // 変化量に応じて警告音の回数を変える（30°超なら 5 回、15°超なら 3 回）
         enqueueTask(createPlayMultiToneTask(3136,120,angle_diff>30?5:3)); // G7（スピーカー上限付近）
@@ -837,7 +837,7 @@ void update_tone(float degpersecond){
   //【警告2】旋回角速度トーン: 2.0 deg/s 以上 かつ 2.0 m/s 以上のとき発動
   // angle_diff > 15 のときは警告1 が優先されるためここには来ない
   // バリオ音（700〜1300Hz）と混同しないよう、固定高音 2093Hz（C7）のピピ2回に統一
-  else if(abs(degpersecond) > 2.0 && get_gps_mps() > 2.0){
+  else if(abs(degpersecond) > 2.0 && get_gnss_mps() > 2.0){
     enqueueTask(createPlayMultiToneTask(2093, 80, 2));
   }
 }

@@ -48,7 +48,7 @@
   // その仕組み（TextManager）ごと v0.947 で廃止したのでメニュー分だけ残っている。
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_DEMOBIWA,SETTING_REPLAY,
-    SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
+    SETTING_UPWARD,SETTING_GNSSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
     SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL,
     SETTING_WIRELESS
   };
@@ -122,7 +122,7 @@ void draw_nomapdata();
 
 //mode draws
 void draw_setting_mode(int selectedLine, int cursorLine);
-void draw_gpsdetail(int page);
+void draw_gnssdetail(int page);
 void draw_sddetail(int page);
 void draw_replayselect(int page, int cursor);
 extern volatile bool loading_replaylist;   // Core1 でリプレイ用ファイル一覧を取得中
@@ -172,7 +172,7 @@ bool eskf_display_enabled();
 bool eskf_yaw_reliable();
 // APPLY（機体ゼロ点の較正）を実行してよい状態か。
 // 飛行中に実行すると傾いた姿勢を基準として焼き付けてしまうため、地上に限る。
-// デモ・リプレイ中は GPS が再生データなので、IMU 由来の静止判定で代替する。
+// デモ・リプレイ中は GNSS が再生データなので、IMU 由来の静止判定で代替する。
 bool eskf_calib_allowed();
 #ifdef DEBUG_ESKF
 // DEBUG_ESKF 有効時のみ、比較用の詳細（BNO085 の姿勢・ヨー・収束状態）を上部に足す。
@@ -208,7 +208,7 @@ void draw_map(float mapUpDirection, double center_lat, double center_lon,float m
 // 辺数が上限を超える場合は何も描かず false を返す。
 bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
                           const uint16_t* ring_start, uint8_t nrings, uint16_t color);
-void draw_nofix_cross();                              // GPS fix なし時のグレー × 描画
+void draw_nofix_cross();                              // GNSS fix なし時のグレー × 描画
 void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixOK=false 時の不確かさ円描画
 void draw_triangle(int ttrack,float steer_angle);   // steer_angle は小数のまま渡す（しきい値 15/55/100 度を正確に判定するため）
 void draw_course_warning(float steer_angle);   // 左右の判定だけに使う。int だと |ズレ|<1度 で左右が逆になる

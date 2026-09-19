@@ -86,7 +86,7 @@
     // リプレイ選択画面の項目種別
     typedef enum {
         RITEM_NONE = 0,     // 空行（そのページに項目が無い）
-        RITEM_OFF,          // リプレイ解除（通常 GPS に戻す）
+        RITEM_OFF,          // リプレイ解除（通常 GNSS に戻す）
         RITEM_FLIGHTONLY,   // 静止区間をスキップするか（YES/NO トグル）
         RITEM_SPEED,        // 再生速度の倍率（x1 / x2 / x?? トグル）
         RITEM_SOURCE,       // 再生元フォルダ（FLIGHT = 自機 / RECEIVED = 無線で受けた機体）
@@ -102,7 +102,7 @@
     int  replay_menu_page_count();
     int  replay_menu_file_start_for_page(int page);
     ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsize, int* filesize);
-    // 以下は Core0（gps.cpp）から呼ぶリングバッファ操作
+    // 以下は Core0（gnss.cpp）から呼ぶリングバッファ操作
     bool     replay_available();
     uint32_t replay_peek_t_ms();
     bool     replay_pop(ReplayRow* out);

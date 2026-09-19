@@ -4,7 +4,7 @@
 // Role    : TFTディスプレイ描画の実装。
 //           ポリゴン地図（内蔵/SD）、コンパス、飛行コース矢印、
 //           ヘッダー/フッター、設定画面、
-//           GPSDetail/SDDetail/マップリスト/リプレイ選択画面など全UI描画。
+//           GNSSDetail/SDDetail/マップリスト/リプレイ選択画面など全UI描画。
 //           地図背景そのものは vectormap.cpp が描く。
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
@@ -24,7 +24,7 @@
 #include "e220.h"     // 無線設定画面で SF と周波数を出すため
 #include "src/flashdata/link_icons.h"
 #include "src/flashdata/logo_data.h"
-#include "gps.h"
+#include "gnss.h"
 #include "mysd.h"
 #include "navdata.h"
 #include "src/flashdata/font_data.h"
@@ -242,7 +242,7 @@ void setup_tft() {
 // 画面に収まるサイズ（140px 以内）のときのみ描画し、true を返す。
 // 緯度補正（cos(lat)）を加えることで Mercator 歪みに対応したスケールを表示する。
 bool try_draw_km_distance(float scale, float km) {
-  double latnow = get_gps_lat();
+  double latnow = get_gnss_lat();
   if(latnow <-80 || latnow > 80){
     latnow = 35;
   }
@@ -414,7 +414,7 @@ inline int get_needle_len() { return is_trackupmode() ? NEEDLE_LEN_TRACKUP : NEE
 // TRACKUP モード（固定マーカー）:
 //   - 進行方向は常に上なので、中心の垂直線 + 翼横棒の固定アイコンのみ描画する。
 
-// GPS fix なし時に飛行機マークの代わりにグレーの × を中央に描画する。
+// GNSS fix なし時に飛行機マークの代わりにグレーの × を中央に描画する。
 // × のサイズは飛行機アイコンと同程度（腕の長さ 12px）。
 void draw_nofix_cross() {
   const int cx   = BACKSCREEN_SIZE / 2;  // = 120（X は常に中央）
@@ -500,8 +500,8 @@ static bool demo_wind(float &speed_mps, float &dir_to_deg) {
 static bool demo_heading(float &yaw_deg) {
   float ws, wd;
   if (!demo_wind(ws, wd)) return false;
-  const float trk = (float)get_gps_truetrack();
-  float vg = (float)get_gps_mps();
+  const float trk = (float)get_gnss_truetrack();
+  float vg = (float)get_gnss_mps();
   if (vg < 1.0f) vg = 1.0f;
   const float te = vg * sinf(deg2rad(trk)) - ws * sinf(deg2rad(wd));
   const float tn = vg * cosf(deg2rad(trk)) - ws * cosf(deg2rad(wd));
@@ -560,10 +560,10 @@ bool eskf_calib_allowed() {
   if (!attitude_ready()) return false;
   // 通常は対地速度で「地上にいる」ことを確認する。
   if (!getReplayMode() && !is_demo_active())
-    return get_gps_mps() <= LEVEL_CALIB_MAX_MPS;
-  // デモ・リプレイ中は get_gps_mps() が再生データの速度を返すため、実機が机の上で
+    return get_gnss_mps() <= LEVEL_CALIB_MAX_MPS;
+  // デモ・リプレイ中は get_gnss_mps() が再生データの速度を返すため、実機が机の上で
   // 止まっていても「飛行中」と判定されて APPLY できなくなる。
-  // GPS が偽物なので、代わりに IMU 由来の静止判定を使う。これは再生データでは
+  // GNSS が偽物なので、代わりに IMU 由来の静止判定を使う。これは再生データでは
   // 偽装できない実機の物理状態なので、飛行中に誤って較正する危険も無い。
   return attitude_is_static();
 }
@@ -1027,7 +1027,7 @@ void draw_own_position_marker(double center_lat, double center_lon, float scale,
   if (!link_mirror_active()) return;      // ミラーしていないなら自機＝画面中央なので不要
 
   double lat, lon, gs, track;
-  if (!gps_get_own_fix(lat, lon, gs, track)) return;
+  if (!gnss_get_own_fix(lat, lon, gs, track)) return;
 
   cord_tft p = latLonToXY(lat, lon, center_lat, center_lon, scale, up);
   if (p.isOutsideTft()) return;           // 画面外。端に寄せて描くと位置を誤読させる
@@ -1070,8 +1070,8 @@ void draw_FlashMaps(double center_lat, double center_lon, float scale, float up)
     const mapdata* mp = flashmaps[i];
     if (mp->size <= 1) continue;
     // 現在地から離れた地図は描かない（extramaps と同じ 1 度四方の判定）
-    if (!check_within_latlon(1, 1, mp->cords[0][1], get_gps_lat(),
-                             mp->cords[0][0], get_gps_lon())) continue;
+    if (!check_within_latlon(1, 1, mp->cords[0][1], get_gnss_lat(),
+                             mp->cords[0][0], get_gnss_lon())) continue;
     draw_map(up, center_lat, center_lon, scale, mp, mapdata_color(mp->name));
   }
 }
@@ -1083,7 +1083,7 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
     }
     double lon1 = extramaps[i].cords[0][0];
     double lat1 = extramaps[i].cords[0][1];
-    if (check_within_latlon(1, 1, lat1, get_gps_lat(), lon1, get_gps_lon())) {
+    if (check_within_latlon(1, 1, lat1, get_gnss_lat(), lon1, get_gnss_lon())) {
       int col = mapdata_color(extramaps[i].name);
       draw_map(up, center_lat, center_lon, scale, &extramaps[i], col);
         }
@@ -1149,7 +1149,7 @@ void startup_demo_tft() {
   {
     unsigned long t = millis();
     while (!sd_setup_complete && millis() - t < 5000) {
-      gps_loop(7);  // 待機中も GPS FIFO を読み捨てて overflow 防止
+      gnss_loop(7);  // 待機中も GNSS FIFO を読み捨てて overflow 防止
       delay(10);
     }
   }
@@ -1206,7 +1206,7 @@ void startup_demo_tft() {
     const int wait_timeout_ms = 1900;
     unsigned long wait_start = millis();
     while (millis() - wait_start < wait_timeout_ms) {
-      gps_loop(7);  // 待機中も GPS FIFO を読み捨てて overflow 防止
+      gnss_loop(7);  // 待機中も GNSS FIFO を読み捨てて overflow 防止
       delay(10);
     }
   }
@@ -1257,7 +1257,7 @@ void startup_demo_tft() {
     const unsigned long hold_ms = 3500;
     unsigned long t0 = millis();
     while (millis() - t0 < hold_ms) {
-      gps_loop(7);  // 待機中も GPS FIFO を読み捨てて overflow 防止
+      gnss_loop(7);  // 待機中も GNSS FIFO を読み捨てて overflow 防止
       delay(10);
     }
   }
@@ -1514,7 +1514,7 @@ void draw_eskf_attitude() {
 
       // 矢印は地図と同じ向き合わせ（TRACKUP は画面上＝トラック、NORTHUP は北）
       const float wscreen = is_trackupmode()
-                            ? (wdir - (float)get_gps_truetrack()) : wdir;
+                            ? (wdir - (float)get_gnss_truetrack()) : wdir;
       draw_wind_arrow(ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2,
                       ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2,
                       wscreen, wind_arrow_color(wspd));
@@ -2509,7 +2509,7 @@ void push_backscreen(){
 // 1 か所に集約する（以前ヘッダーは切り捨て、地図内は四捨五入で 1 度ずれていた）。
 // 四捨五入した上で 0〜359 に丸め込む（359.7 度 → 360 ではなく 000）。
 static int truetrack_display_deg() {
-  return ((int)lroundf(get_gps_truetrack()) % 360 + 360) % 360;
+  return ((int)lroundf(get_gnss_truetrack()) % 360 + 360) % 360;
 }
 
 void draw_gs_track(){
@@ -2560,7 +2560,7 @@ void draw_gs_track(){
     // 内蔵フォントの値になってしまい、中央合わせが効かない）。
     const int gsw = backscreen.textWidth("GS");
     const int gsh = backscreen.fontHeight();
-    const float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    const float sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
     backscreen.unloadFont();
     backscreen.setTextSize(1);
     // 背景は塗らない（1引数の setTextColor）。地図の上に白い箱が出ないようにする。
@@ -2624,7 +2624,7 @@ float get_display_voltage() {
 // 旋回角速度（deg/s）を backscreen の左端または右端に表示する。
 // - 0.5 deg/s 未満は非表示。
 // - 正（右旋回）: 右端に表示。負（左旋回）: 左端に表示。
-// - GPS 速度 2.0 m/s 以上のとき色分け: 1 deg/s 超=緑（適切な右旋回）、-1 deg/s 未満=青（左旋回）。
+// - GNSS 速度 2.0 m/s 以上のとき色分け: 1 deg/s 超=緑（適切な右旋回）、-1 deg/s 未満=青（左旋回）。
 // - 3 deg/s 超: 背景を塗りつぶして強調（背景色 = 旋回方向色）。
 // - 4 deg/s 超: さらに赤枠で警告強調。
 void draw_degpersec(double degpersecond){
@@ -2632,7 +2632,7 @@ void draw_degpersec(double degpersecond){
     return;
   backscreen.loadFont(AA_FONT_SMALL);  // Must load the font first
   int col = COLOR_GRAY;
-  if(get_gps_mps() > 2.0){
+  if(get_gnss_mps() > 2.0){
     if (degpersecond > 1.0)
       col = COLOR_GREEN;
     if (degpersecond < -1.0)
@@ -2726,9 +2726,9 @@ static void draw_header_pitch(int x, float deg, uint16_t col) {
 }
 
 // 画面上部 50px のヘッダーを描画して TFT の (0, 0) に転送する。
-// 左: 対地速度 m/s（GPS 速度 < 2m/s のときは灰色）。
+// 左: 対地速度 m/s（GNSS 速度 < 2m/s のときは灰色）。
 // 右半分: 真方位 3 桁。コース警告中は赤/白反転で点滅する。
-// GNSS 衛星数 = 0 のときは赤い横線で「GPS 無効」を示す。
+// GNSS 衛星数 = 0 のときは赤い横線で「GNSS 無効」を示す。
 // 区切り縦線（mtvx）でスピードエリアと方位エリアを分けている。
 //Height 50px
 void draw_header() {
@@ -2736,13 +2736,13 @@ void draw_header() {
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextWrap(false);
   header_footer.loadFont(NM_FONT_LARGE);  // Must load the font first
-  int sel_col = get_gps_mps()<2?COLOR_GRAY:COLOR_BLACK;
+  int sel_col = get_gnss_mps()<2?COLOR_GRAY:COLOR_BLACK;
   header_footer.setTextColor(sel_col, TFT_WHITE);
 
 
   header_footer.setCursor(-1, 3);
   // 100m/s以上（3桁）は小数点を省略して整数表示（右側のMT表示との重なり防止）
-  float _mps = get_gps_mps();
+  float _mps = get_gnss_mps();
   header_footer.printf(_mps >= 100.0f ? "%4.0f" : "%4.1f", _mps);
 
 
@@ -2803,7 +2803,7 @@ void draw_header() {
 
   header_footer.drawFastHLine(0,49,240,COLOR_BLACK);
 
-  if(get_gps_numsat() == 0){
+  if(get_gnss_numsat() == 0){
     // この赤線は「GNSS が無いので値が無効」を示すもの。対地速度と真方位は無効になるが、
     // 平均ピッチは GNSS が無くても（ESKF が生きていれば）意味を持つので線を引かない。
     const int len = header_shows_pitch() ? (mtvx - 5 - 2) : (SCREEN_WIDTH - 10);
@@ -2840,7 +2840,7 @@ extern float course_warning_index;
 // 緯度・経度は v0.94 で削除した（飛行中に読む場面が無く、姿勢表示の場所を圧迫していたため）。
 void draw_map_footer(){
   //JST Time
-  GpsTime time = get_gpstime();
+  GnssTime time = get_gnss_time();
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
@@ -2880,7 +2880,7 @@ void draw_footer(){
     // 測位前は TC も距離も出さない。未測位のときの内部位置は (0,0) なので、
     // truec は「ギニア湾から目的地を見た方位」になる。3 桁の数字として
     // それらしく読めてしまうため、距離と同じく伏せ字にする。
-    bool nav_valid = get_gps_fix() || is_demo_active();
+    bool nav_valid = get_gnss_fix() || is_demo_active();
 
     header_footer.setCursor(1, 1);
     header_footer.setTextColor(COLOR_MAGENTA);
@@ -2988,16 +2988,16 @@ void draw_footer(){
     }
   }
   // ====GNSS====
-  if (get_gps_numsat() < 5) {
+  if (get_gnss_numsat() < 5) {
     header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
     header_footer.fillRect(SCREEN_WIDTH-101,1, 44,15, COLOR_RED);
-  } else if (get_gps_numsat() < 10) {
+  } else if (get_gnss_numsat() < 10) {
     header_footer.setTextColor(COLOR_DARKORANGE);
   }else{
     header_footer.setTextColor(COLOR_GREEN);
   }
   header_footer.setCursor(SCREEN_WIDTH-100,1);
-  header_footer.printf("%dsats", get_gps_numsat());
+  header_footer.printf("%dsats", get_gnss_numsat());
 
   
 
@@ -3313,14 +3313,14 @@ void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, floa
 
 // 衛星の方位角・仰角をスカイプロット（円形の衛星配置図）上の X 座標に変換する。
 // 仰角 0°（水平）→ 外周、90°（天頂）→ 中心。方位角が X/Y の方向を決める。
-int calculateGPS_X(float azimuth, float elevation) {
+int skyplot_x(float azimuth, float elevation) {
   const int shift_left = 10;
   const int radius = SCREEN_WIDTH / 2 - shift_left;
   return (SCREEN_WIDTH / 2) + (int)(cos(radians(azimuth)) * (radius) * (1 - elevation / 90.0)) - shift_left;
 }
 
-// 衛星の方位角・仰角をスカイプロット上の Y 座標に変換する（calculateGPS_X の Y 版）。
-int calculateGPS_Y(float azimuth, float elevation) {
+// 衛星の方位角・仰角をスカイプロット上の Y 座標に変換する（skyplot_x の Y 版）。
+int skyplot_y(float azimuth, float elevation) {
   const int height = SCREEN_WIDTH;
   const int radius = SCREEN_WIDTH / 2 - 20;
   const int shift_down = 0;
@@ -3328,15 +3328,15 @@ int calculateGPS_Y(float azimuth, float elevation) {
 }
 
 
-// GPS 状態に応じたステータスメッセージを backscreen に表示する（地図データなし時のみ呼ばれる）。
+// GNSS 状態に応じたステータスメッセージを backscreen に表示する（地図データなし時のみ呼ばれる）。
 // 優先順位:
-//   1. GPS モジュール未接続 → "NO GNSS connection !!" 表示して終了。
-//   2. GPS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
+//   1. GNSS モジュール未接続 → "NO GNSS connection !!" 表示して終了。
+//   2. GNSS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
 //   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示。
 void draw_nomapdata() {
 
-  if (get_gps_connection()) {
-    //"GPS Module connected."
+  if (get_gnss_connection()) {
+    //"GNSS Module connected."
   } else {
     if (!getReplayMode() && !is_demo_active()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
       backscreen.setCursor(3,50);
@@ -3353,14 +3353,14 @@ void draw_nomapdata() {
   int text_y1 = is_trackupmode() ? (box_y + 5)  : 150;          // TRACKUP=197, NORTHUP=150
   int text_y2 = is_trackupmode() ? (box_y + 20) : 165;          // TRACKUP=212, NORTHUP=165
 
-  if (!get_gps_fix()) {
+  if (!get_gnss_fix()) {
     backscreen.fillRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
     backscreen.drawRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
     backscreen.drawRect(6, box_y+1, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
-    backscreen.setCursor(23, text_y1);
+    backscreen.setCursor(42, text_y1);
     backscreen.setTextColor(COLOR_ORANGE);
     backscreen.loadFont(AA_FONT_SMALL);
-    backscreen.print("Scanning GNSS/GPS Signal");
+    backscreen.print("Scanning GNSS Signal");
     char text[28];
     int dotCount = (millis() / 900) % 10;
     // Safely create the string with snprintf
@@ -3368,13 +3368,13 @@ void draw_nomapdata() {
     backscreen.setCursor(45, text_y2);
     backscreen.print(text);
   }
-  else if (get_gps_numsat() == 0 && !is_demo_active()) {
+  else if (get_gnss_numsat() == 0 && !is_demo_active()) {
     backscreen.fillRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
     backscreen.drawRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
     backscreen.drawRect(6, box_y+1, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
-    backscreen.setCursor(30, text_y1);
+    backscreen.setCursor(56, text_y1);
     backscreen.setTextColor(COLOR_RED);
-    backscreen.print("Weak GNSS/GPS Signal");
+    backscreen.print("Weak GNSS Signal");
     char text[28];
     int dotCount = (millis() / 900) % 10;
     // Safely create the string with snprintf
@@ -3485,7 +3485,7 @@ void draw_replayselect(int page, int cursor) {
     header_footer.printf("REPLAY  %d/%d", page + 1, pagecount);
   else
     header_footer.printf("REPLAY  loading...");
-  // 状態ドット。設定メニューの REPLAY 行と同じ意味（緑＝通常 GPS、赤＝再生中）。
+  // 状態ドット。設定メニューの REPLAY 行と同じ意味（緑＝通常 GNSS、赤＝再生中）。
   header_footer.fillCircle(228, 18, 6, getReplayMode() ? COLOR_RED : COLOR_GREEN);
   header_footer.pushSprite(0, -10);
 
@@ -3553,7 +3553,7 @@ void draw_replayselect(int page, int cursor) {
     header_footer.printf("PAUSED x%d: %s", get_replay_speed(), get_replay_filename());
   } else {
     header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    header_footer.print("NOW: normal GPS");
+    header_footer.print("NOW: normal GNSS");
   }
   header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }
@@ -3565,10 +3565,10 @@ void draw_replayselect(int page, int cursor) {
 // Vario 詳細画面を描画する（screen_mode == MODE_VARIODETAIL 時）。
 // page % 2 == 0: センサー接続状況・VSI 全比較・MS5611 気圧データ・GNSS 垂直速度。
 // page % 2 == 1: BNO085 IMU データ（線形加速度・Euler 角）・Kalman 設定・GNSS VSI 融合。
-// ヘッダーは GPS DETAIL 同様に 10px 上にずらして pushSprite(0,-10) で転送。
+// ヘッダーは GNSS DETAIL 同様に 10px 上にずらして pushSprite(0,-10) で転送。
 // VSI バーは GPS_TFT_map.ino のループ内で airdata_updated タイミングに更新される。
 void draw_variodetail(int page) {
-  // ---- ヘッダー: GPS DETAIL と同様に 10px 上ずらし ----
+  // ---- ヘッダー: GNSS DETAIL と同様に 10px 上ずらし ----
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setTextSize(2);
@@ -3577,7 +3577,7 @@ void draw_variodetail(int page) {
     "VARIO 1:STATUS+VSI",
     "VARIO 2:IMU+KALMAN"
   };
-  header_footer.setCursor(1, 11);  // +10px（GPS DETAIL と同じオフセット）
+  header_footer.setCursor(1, 11);  // +10px（GNSS DETAIL と同じオフセット）
   header_footer.print(page_titles[page % 2]);
   header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に合わせる
 
@@ -3609,13 +3609,13 @@ void draw_variodetail(int page) {
     y += line_height;
 
     // GNSS fix 状態
-    bool _gnss3d = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
-    bool _gnssAny = get_gps_gnssFixOK();
+    bool _gnss3d = get_gnss_fixok() && get_gnss_fixtype() >= 3;
+    bool _gnssAny = get_gnss_fixok();
     backscreen.setCursor(2, y);
     backscreen.setTextColor(_gnss3d ? COLOR_GREEN : _gnssAny ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
     backscreen.printf("GNSS:%s fix=%d %dsats",
       _gnss3d ? "3D-OK" : _gnssAny ? "2D" : "NOFIX",
-      get_gps_fixtype(), get_gps_numsat());
+      get_gnss_fixtype(), get_gnss_numsat());
     y += line_height; 
 
     // 動作モード（GNSS VSI 融合状況を含む）
@@ -3644,8 +3644,8 @@ void draw_variodetail(int page) {
       y += line_height;
 
       // GNSS VSI — sAcc ゲート状態を色で示す
-      float _gnss_vsi = get_gps_veld_mps();
-      float _sacc_now = get_gps_sacc_mmps() / 1000.0f;
+      float _gnss_vsi = get_gnss_veld_mps();
+      float _sacc_now = get_gnss_sacc_mmps() / 1000.0f;
       bool  _gate_ok  = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
       backscreen.setCursor(2, y);
       backscreen.setTextColor(_gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
@@ -3680,7 +3680,7 @@ void draw_variodetail(int page) {
       // GNSS MSL 高度と KF MSL 高度（gnss_kf_offset 確定後は GNSS に収束）
       bool _msl_ready = get_imu_gnss_offset_ready();
       float _kf_msl   = get_imu_altitude_msl();
-      float _gnss_msl = get_gps_altitude();
+      float _gnss_msl = get_gnss_altitude();
       backscreen.setCursor(2, y);
       backscreen.setTextColor(_msl_ready ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
       backscreen.printf("GNSS:%.1fm  KF:%.1fm%s", _gnss_msl, _kf_msl, _msl_ready ? "" : "(-)");
@@ -3707,9 +3707,9 @@ void draw_variodetail(int page) {
     backscreen.print("-- GNSS Vertical --");
     y += line_height;
 
-    float vacc_m   = get_gps_vacc_mm()   / 1000.0f;
-    float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
-    float gnss_alt = get_gps_altitude();
+    float vacc_m   = get_gnss_vacc_mm()   / 1000.0f;
+    float sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
+    float gnss_alt = get_gnss_altitude();
     float r_vel    = sacc_mps * sacc_mps * GNSS_VSI_R_SCALE;
     if (r_vel < 0.001f) r_vel = 0.001f;  // 下限クランプ（imu.cpp と同じ）
     bool  _sacc_ok = sacc_mps < GNSS_VSI_SACC_MAX_MPS;
@@ -3737,7 +3737,7 @@ void draw_variodetail(int page) {
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.printf("fix=%d gnssOK=%s sats=%d",
-      get_gps_fixtype(), get_gps_gnssFixOK() ? "Y" : "N", get_gps_numsat());
+      get_gnss_fixtype(), get_gnss_fixok() ? "Y" : "N", get_gnss_numsat());
 
   } else {
     // ---- Page 2: BNO085 IMU データ + Kalman 設定 + GNSS VSI 融合 ----
@@ -3851,7 +3851,7 @@ void draw_variodetail(int page) {
     backscreen.printf("sAcc gate:<%.1fm/s  R_scale:%.1f", GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_R_SCALE);
     y += line_height;
 
-    float _sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    float _sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
     float _r_vel    = _sacc_mps * _sacc_mps * GNSS_VSI_R_SCALE;
     if (_r_vel < 0.001f) _r_vel = 0.001f;  // 下限クランプ（imu.cpp と同じ）
 
@@ -3863,7 +3863,7 @@ void draw_variodetail(int page) {
     backscreen.printf("sAcc:%.3fm/s  R_vel:%.4fm2", _sacc_mps, _r_vel);
     y += line_height;
 
-    bool _gnss3d2 = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
+    bool _gnss3d2 = get_gnss_fixok() && get_gnss_fixtype() >= 3;
     bool _sacc_ok2 = (_sacc_mps < GNSS_VSI_SACC_MAX_MPS);
     bool _gate2    = _gnss3d2 && _sacc_ok2;
     backscreen.setCursor(2, y);
@@ -3878,7 +3878,7 @@ void draw_variodetail(int page) {
     y += line_height;
 
     backscreen.setCursor(2, y);
-    bool _gnss3d_kf = get_gps_gnssFixOK() && get_gps_fixtype() >= 3;
+    bool _gnss3d_kf = get_gnss_fixok() && get_gnss_fixtype() >= 3;
     if (get_imu_ok() && get_airdata_ok() && _gnss3d_kf) {
       backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
       backscreen.print("KF: Active (Baro+IMU+GNSS)");
@@ -3912,7 +3912,7 @@ void draw_variodetail(int page) {
 
 //==================MODE DRAWS===============
 
-// GPS 詳細画面を描画する（screen_mode == MODE_GPSDETAIL 時）。
+// GNSS 詳細画面を描画する（screen_mode == MODE_GNSSDETAIL 時）。
 // page % 3 == 0: スカイプロット画面（全衛星の方位・仰角を円形に描画）。
 //   - 衛星種別（GPS=シアン, GLONASS=緑, GALILEO=青, QZSS=赤, BeiDou=オレンジ）で色分け。
 //   - SNR=0 の衛星は小さい丸（追跡中だが信号弱い）。
@@ -3920,7 +3920,7 @@ void draw_variodetail(int page) {
 // page % 3 == 1: 最新 MAX_LAST_NMEA 件の UBX フレームラベルを表示。
 //   1 秒以内に受信したものは黒、古いものは灰色で表示（鮮度の視覚化）。
 // page % 3 == 2: GSA 情報画面（フィックス種別・DOP・緯度経度・使用衛星 PRN リスト）。
-void draw_gpsdetail(int page) {
+void draw_gnssdetail(int page) {
 
   header_footer.fillScreen(COLOR_WHITE);
 
@@ -3929,7 +3929,7 @@ void draw_gpsdetail(int page) {
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
     header_footer.setTextSize(2);
     header_footer.setCursor(1, 1);
-    header_footer.println("GPS DETAIL 2: UBX frames");
+    header_footer.println("GNSS DETAIL 2: UBX frames");
     header_footer.pushSprite(0,0);
 
     tft.unloadFont();
@@ -3939,12 +3939,12 @@ void draw_gpsdetail(int page) {
     for (int i = 0; i < MAX_LAST_NMEA; i++) {
       posy += 18;
       tft.setCursor(1, posy);
-      if(get_gps_nmea_time(i) < millis()-1000){
+      if(get_gnss_nmea_time(i) < millis()-1000){
         tft.setTextColor(COLOR_GRAY);
       }else{
         tft.setTextColor(COLOR_BLACK);
       }
-      tft.println(get_gps_nmea(i));
+      tft.println(get_gnss_nmea(i));
     }
     tft.loadFont(AA_FONT_SMALL);  // Must load the font first
   }
@@ -3954,7 +3954,7 @@ void draw_gpsdetail(int page) {
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
     header_footer.setTextSize(2);
     header_footer.setCursor(1, 11);  // +10
-    header_footer.println("GPS DETAIL 1:CONSTELLATION");
+    header_footer.println("GNSS DETAIL 1:CONSTELLATION");
     header_footer.setTextColor(COLOR_CYAN,   COLOR_WHITE); header_footer.setCursor(0, 28); header_footer.print("GPS ");  // +10
     header_footer.setTextColor(COLOR_GREEN,  COLOR_WHITE); header_footer.print("GLO ");
     header_footer.setTextColor(COLOR_BLUE,   COLOR_WHITE); header_footer.print("GAL ");
@@ -3966,13 +3966,13 @@ void draw_gpsdetail(int page) {
     header_footer.fillSprite(COLOR_WHITE);
     header_footer.setCursor(23, 5);
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    GpsDate date = get_gpsdate();
-    GpsTime time = get_gpstime();
+    GnssDate date = get_gnss_date();
+    GnssTime time = get_gnss_time();
     if (date.isValid() && time.isValid()) {
       header_footer.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
     }
     header_footer.setCursor(23, 17);
-    header_footer.printf("%d sats, Fix=%s",get_gps_numsat(),get_gps_fix()?"yes":"no");
+    header_footer.printf("%d sats, Fix=%s",get_gnss_numsat(),get_gnss_fix()?"yes":"no");
     header_footer.pushSprite(0,SCREEN_HEIGHT-40);
 
     backscreen.fillSprite(COLOR_BLACK);                         // 暗い背景
@@ -3996,8 +3996,8 @@ void draw_gpsdetail(int page) {
       float azimuth = satellites[i].azimuth;
       float elevation = satellites[i].elevation;
 
-      int x = calculateGPS_X(azimuth, elevation);
-      int y = calculateGPS_Y(azimuth, elevation);
+      int x = skyplot_x(azimuth, elevation);
+      int y = skyplot_y(azimuth, elevation);
 
       uint16_t color;
       if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)        color = COLOR_RED;
@@ -4036,7 +4036,7 @@ void draw_gpsdetail(int page) {
     header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
     header_footer.setTextSize(2);
     header_footer.setCursor(1, 1);
-    header_footer.println("GPS DETAIL 3: GSA INFO");
+    header_footer.println("GNSS DETAIL 3: GSA INFO");
     header_footer.pushSprite(0, 0);
 
     tft.unloadFont();
@@ -4044,7 +4044,7 @@ void draw_gpsdetail(int page) {
     int y = 22;
 
     // ---- Fix Status ----
-    int fixtype = get_gps_fixtype();
+    int fixtype = get_gnss_fixtype();
     const char* fixstr;
     uint16_t fixcolor;
     if      (fixtype == 3) { fixstr = "3D Fix"; fixcolor = COLOR_GREEN; }
@@ -4061,7 +4061,7 @@ void draw_gpsdetail(int page) {
     tft.setTextSize(1);
     tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
     tft.setCursor(1, y);
-    tft.printf("Sats used: %d / total: %d", get_gsa_numsat(), get_gps_numsat());
+    tft.printf("Sats used: %d / total: %d", get_gsa_numsat(), get_gnss_numsat());
     y += 14;
 
     // ---- DOP ----
@@ -4072,9 +4072,9 @@ void draw_gpsdetail(int page) {
       if (d < 5.0f) return COLOR_ORANGE;
       return COLOR_RED;
     };
-    float pdop = get_gps_pdop();
-    float hdop = get_gps_hdop();
-    float vdop = get_gps_vdop();
+    float pdop = get_gnss_pdop();
+    float hdop = get_gnss_hdop();
+    float vdop = get_gnss_vdop();
 
     tft.setCursor(1, y);
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
@@ -4097,15 +4097,15 @@ void draw_gpsdetail(int page) {
     // ---- 緯度・経度 ----
     tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
     tft.setCursor(1, y);
-    tft.printf("Lat: %.6f", get_gps_lat());
+    tft.printf("Lat: %.6f", get_gnss_lat());
     y += 12;
     tft.setCursor(1, y);
-    tft.printf("Lon: %.6f", get_gps_lon());
+    tft.printf("Lon: %.6f", get_gnss_lon());
     y += 18;
 
     // ---- UTC 時刻・日付 ----
-    GpsDate date = get_gpsdate();
-    GpsTime time = get_gpstime();
+    GnssDate date = get_gnss_date();
+    GnssTime time = get_gnss_time();
     tft.setCursor(1, y);
     if (date.isValid() && time.isValid()) {
       tft.printf("UTC %04d-%02d-%02d  %02d:%02d:%02d",
@@ -4117,10 +4117,10 @@ void draw_gpsdetail(int page) {
     }
     y += 18;
 
-    // ---- GPS ボーレート ----
+    // ---- GNSS ボーレート ----
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
     tft.setCursor(1, y);
-    tft.printf("Baud: %lu bps", get_gps_baudrate());
+    tft.printf("Baud: %lu bps", get_gnss_baudrate());
     y += 14;
 
     // ---- 測位使用衛星 PRN リスト ----
@@ -4151,14 +4151,14 @@ void draw_gpsdetail(int page) {
     tft.setCursor(1, y);
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
     tft.print("gnssFixOK:");
-    bool fixOK = get_gps_gnssFixOK();
+    bool fixOK = get_gnss_fixok();
     tft.setTextColor(fixOK ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
     tft.print(fixOK ? "YES" : "NO");
     y += 12;
 
     // hAcc / vAcc を横並び表示
-    float hacc_m = get_gps_hacc_mm() / 1000.0f;
-    float vacc_m = get_gps_vacc_mm() / 1000.0f;
+    float hacc_m = get_gnss_hacc_mm() / 1000.0f;
+    float vacc_m = get_gnss_vacc_mm() / 1000.0f;
     uint16_t haccColor = (hacc_m < 5.0f)  ? COLOR_GREEN : (hacc_m < 25.0f) ? COLOR_ORANGE : COLOR_RED;
     uint16_t vaccColor = (vacc_m < 10.0f) ? COLOR_GREEN : (vacc_m < 50.0f) ? COLOR_ORANGE : COLOR_RED;
 
@@ -4174,7 +4174,7 @@ void draw_gpsdetail(int page) {
     y += 12;
 
     // sAcc（速度精度）
-    float sacc_mps = get_gps_sacc_mmps() / 1000.0f;
+    float sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
     uint16_t saccColor = (sacc_mps < 1.0f) ? COLOR_GREEN : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
     tft.setCursor(1, y);
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);

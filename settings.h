@@ -3,7 +3,7 @@
 // File    : settings.h
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : プロジェクト全体の設定・定数・マクロ定義。
-//           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
+//           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/09/18
@@ -15,34 +15,34 @@
 //  リリース前に確認するスイッチ
 // ============================================================
 // ★ RELEASE が無いと setup1() が while(!Serial) で USB 接続を待ち、実機が起動しない。
-//   RELEASE_GPS 以外（DEBUG_GPS_SIM_*）を選んだままだと GPS が疑似値になる。
+//   RELEASE_GNSS 以外（DEBUG_GNSS_SIM_*）を選んだままだと GNSS が疑似値になる。
 //   どちらかが抜けているとコンパイル時に #warning NOT RELEASE! が出る。これが唯一の保険。
 // リリース時
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260918
-#define BUILDVERSION "0.967"
+#define BUILDDATE 20260919
+#define BUILDVERSION "0.968"
 #define VERSION_TEXT "Version 7"
 
-//----------GPS---------
-// GPS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
+//----------GNSS---------
+// GNSS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
 // v5 以前の Quectel LC86G / Mediatek 対応コードは v0.947 で削除した。
 //#define DEBUG_GBX_NMEA
 
-//GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  #define RELEASE_GPS
-  //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
-  //#define DEBUG_GPS_SIM_BIWAKO         //琵琶湖固定座標
-  //#define DEBUG_GPS_SIM_SAPPORO         //札幌固定座標
-  //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
-  //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
-  //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
-  //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
+//GNSSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GNSSを選択】
+  #define RELEASE_GNSS
+  //#define DEBUG_GNSS_SIM_SHINURA         //新浦安固定座標
+  //#define DEBUG_GNSS_SIM_BIWAKO         //琵琶湖固定座標
+  //#define DEBUG_GNSS_SIM_SAPPORO         //札幌固定座標
+  //#define DEBUG_GNSS_SIM_SHISHI         //しし固定座標
+  //#define DEBUG_GNSS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
+  //#define DEBUG_GNSS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
+  //#define DEBUG_GNSS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
 
 #if !defined(TEMP)
   #define TEMP
-  #if !defined(RELEASE) || !defined(RELEASE_GPS)
+  #if !defined(RELEASE) || !defined(RELEASE_GNSS)
     #warning NOT RELEASE!
   #endif
 #endif
@@ -54,9 +54,9 @@
 // Hardware Ver6
 #define SW_PUSH 37  // v7 35->37に変更
 #define BATTERY_PIN 40 //A0
-#define GPS_SERIAL Serial1
-#define GPS_TX 0
-#define GPS_RX 1
+#define GNSS_SERIAL Serial1
+#define GNSS_TX 0
+#define GNSS_RX 1
 #define USB_DETECT 31
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
@@ -167,12 +167,12 @@
 #define SCREEN_FRESH_INTERVAL 1050
 
 // センサー値を眺めるための画面（VARIO 詳細）の強制リフレッシュ間隔 [ms]。
-// 地図画面は GPS 更新(2Hz)でも再描画されるので 1050ms で足りるが、
+// 地図画面は GNSS 更新(2Hz)でも再描画されるので 1050ms で足りるが、
 // VARIO 詳細には他の再描画トリガーが無く、この間隔がそのまま表示更新レートになる
 // （従来は 1050ms = 約 0.95Hz しか出ていなかった）。
 //
 // 200ms = 5Hz。この画面ではベクタ地図を描かないため 1 回の再描画は地図画面(平均64ms)より
-// ずっと軽く、Core0 に十分な余裕がある。GPS シリアルも IRQ で 1024B までバッファされるため
+// ずっと軽く、Core0 に十分な余裕がある。GNSS シリアルも IRQ で 1024B までバッファされるため
 // （38400bps で約 266ms 分）取りこぼさない。
 // これ以上速くしたい場合は間隔を詰めるのではなく、VSI バーと同じように
 // 値の部分だけ部分転送する方式にすること（全画面 115KB 転送が支配的になるため）。
@@ -222,7 +222,7 @@
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
 // hAcc 不確かさ円 設定
-// GPS fix があっても hAcc（NAV-PVT 水平精度推定）が大きい場合、飛行機マークの代わりに青い不確かさ円を表示する。
+// GNSS fix があっても hAcc（NAV-PVT 水平精度推定）が大きい場合、飛行機マークの代わりに青い不確かさ円を表示する。
 // gnssFixOK=false の場合は常に不確かさ円を表示する。
 #define HACC_THRESHOLD_M       10.0f // この値（m）以上で不確かさ円モードに切替え（旧 HDOP=2×5m 相当）
 #define HDOP_MIN_CIRCLE_RADIUS 4     // 輪郭円を描画する最小半径 [px]（未満はテキスト表示に切替え）
@@ -232,7 +232,7 @@
 //screen_mode
 #define MODE_SETTING 1
 #define MODE_MAP 2
-#define MODE_GPSDETAIL 3
+#define MODE_GNSSDETAIL 3
 #define MODE_MAPLIST 4
 #define MODE_SDDETAIL 5
 #define MODE_VARIODETAIL 6
@@ -653,13 +653,13 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ============================================================
 // 高度表示設定
 // ============================================================
-// 当デバイスの GPS は UBX NAV-PVT の hMSL（EGM96 ジオイド基準）を使用する。
+// 当デバイスの GNSS は UBX NAV-PVT の hMSL（EGM96 ジオイド基準）を使用する。
 // hMSL は日本の標高（T.P.=東京湾平均海面 基準）とほぼ一致する（差は ±数十cm 程度）。
 //
-// ※注意: GPS の「楕円体高（WGS84）」とは異なる。
+// ※注意: GNSS の「楕円体高（WGS84）」とは異なる。
 //   楕円体高 = hMSL + ジオイド高 N（日本では N ≈ +36〜38m）
 //   例: 関西で 0m 標高 → hMSL ≈ 0m、楕円体高 ≈ +37m
-//   当 GPS は既に hMSL を出力済みなので、-37m 補正は不要。
+//   当 GNSS は既に hMSL を出力済みなので、-37m 補正は不要。
 //
 // ELEVATION_GEOID_OFFSET_M: B.S.L. 高度 = KF_MSL - この値 [m]
 //   表示ラベルは "B.S.L."（琵琶湖基準水位面、Biwa Standard Level）。
@@ -1004,7 +1004,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define LINK_PF_WARN_SHOW_MS   10000   // 地図に警告ポップアップを出しておく時間
 // 雑音の取得が**連続でこの回数**失敗したら、そこで点検を打ち切って NOT MEASURED にする。
 // ★ 最後まで回してはいけない。1 回の問い合わせは応答が無いと待たされるので、
-//   10 回ぶん繰り返すと Core0 が止まり、GPS の FIFO（≒267ms 相当）が溢れる。
+//   10 回ぶん繰り返すと Core0 が止まり、GNSS の FIFO（≒267ms 相当）が溢れる。
 //   「静かだった」ではなく「測れなかった」ので、途中で止めても失うものは無い。
 #define LINK_PF_NOISE_FAIL_MAX     2
 

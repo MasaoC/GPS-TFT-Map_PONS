@@ -11,7 +11,7 @@
 // Handle button updates
 #include "button.h"
 #include "../mysd.h"
-#include "../gps.h"
+#include "../gnss.h"
 #include "../attitude.h"
 #include "../imu.h"      // get_imu_ok(): BNO085 非搭載機の判定
 #include "../link.h"     // PONS Link（機体⇄ボート無線）
@@ -454,18 +454,18 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [10] GPS 詳細画面へ (GPSDETAIL)
-  //   ・Enter: GPS 星座モードを有効化し、GPS 詳細画面（衛星配置・SNR グラフ）へ遷移
+  // [10] GNSS 詳細画面へ (GNSSDETAIL)
+  //   ・Enter: GNSS 星座モードを有効化し、GNSS 詳細画面（衛星配置・SNR グラフ）へ遷移
   //   ・Toggle/Exit/アイコン色: なし
   // ----------------------------------------------------------
-  { SETTING_GPSDETAIL,
+  { SETTING_GNSSDETAIL,
     [](bool selected) -> std::string {
-      return "Show GPS detail >";
+      return "Show GNSS detail >";
     },
     []() {
-      DEBUG_P(20240801, "GPS CONST MODE");
-      gps_constellation_mode();       // GPS 詳細モード（衛星情報収集）を開始
-      screen_mode = MODE_GPSDETAIL;   // GPS 詳細画面に切り替え
+      DEBUG_P(20240801, "GNSS CONST MODE");
+      gnss_constellation_mode();       // GNSS 詳細モード（衛星情報収集）を開始
+      screen_mode = MODE_GNSSDETAIL;   // GNSS 詳細画面に切り替え
     },
     nullptr,
     nullptr,

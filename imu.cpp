@@ -46,7 +46,7 @@
 #include "settings.h"
 #include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
 #include "mysd.h"     // enqueueTask / createLogSdfTask
-#include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
+#include "gnss.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
 #include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
@@ -361,7 +361,7 @@ static bool imu_enable_reports() {
     //   デバイスが H_INTN を上げないと **1 回あたり最大 500ms** 待つ。
     //   レポートは 6 件あるので、最悪 3 秒 Core0 が止まる。
     //   リセットを 410ms の delay からステートマシンに変えたのは 270ms で
-    //   GPS FIFO が溢れるからで、ここが素通しでは意味が無かった。
+    //   GNSS FIFO が溢れるからで、ここが素通しでは意味が無かった。
     //   正常時は 1 件あたり数 ms なので、この上限に当たることは無い。
     //   途中で打ち切っても false を返すので、復旧は 1 分後に再試行される。
     const unsigned long enable_t0 = millis();
@@ -633,7 +633,7 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
 //
 // BNO085 の有無によらず動作する（kf_initialized のみチェック）。
 //
-//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gps_veld_mps()
+//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
 //   vacc_m    : 垂直位置精度 [m]  — 本関数では使用しない（呼び出し元の互換性維持のため残す）
 //   sacc_mps  : 速度精度 [m/s]   — ゲート判定と観測ノイズ R の算出に使用
 // ============================================================
@@ -724,7 +724,7 @@ static void imu_bus_select_protocol() {
 //
 // ★ **ここを delay() で書いてはいけない。**
 //   以前は delay(10)+delay(400) を直に並べていたため、飛行中の復旧試行のたびに
-//   Core0 が 410ms 止まっていた。GPS は 38400bps・FIFO 1024B なので約 270ms で
+//   Core0 が 410ms 止まっていた。GNSS は 38400bps・FIFO 1024B なので約 270ms で
 //   バッファが溢れ、NAV-PVT を丸ごと取りこぼす。地図・ボタン・バリオも同時に止まる。
 //   しかも BNO085 が死んでいる限り復旧は 1 分ごとに走り続けるので、症状が繰り返す。
 //   経過時間で進める形にして、待っている間 Core0 を返せるようにした。
@@ -979,7 +979,7 @@ void imu_setup() {
 //                                                  └─(300ms 応答なし)──▶ IDLE（失敗・次は 1 分後）
 //
 // ★ 以前はこの関数の中で delay(10)+delay(400) を通していたため、
-//   1 分ごとに Core0 が 410ms 止まり、GPS の受信 FIFO（1024B / 38400bps ＝ 約 270ms）が
+//   1 分ごとに Core0 が 410ms 止まり、GNSS の受信 FIFO（1024B / 38400bps ＝ 約 270ms）が
 //   溢れて NAV-PVT を落としていた。地図もボタンもバリオも同時に止まっていた。
 //
 // ★★ WAITINT を挟むのは「BNO085 が本当に居るか」を**ライブラリを呼ぶ前に**確かめるため。

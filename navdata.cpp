@@ -15,7 +15,7 @@
 
 #include "navdata.h"
 #include "link.h"
-#include "gps.h"
+#include "gnss.h"
 
 
 // LatLonManager コンストラクタ：リングバッファのインデックスとカウントを 0 で初期化
@@ -221,7 +221,7 @@ double pla_centerline_bearing_rad() {
 
 // ナビゲーション情報を更新する（毎ループ呼ばれる）。
 // 処理内容:
-//   1. 現在の GPS 位置 → 選択中目的地 の距離（dest_dist）を Haversine 式で計算
+//   1. 現在の GNSS 位置 → 選択中目的地 の距離（dest_dist）を Haversine 式で計算
 //   2. 目的地への真方位 truec を算出（偏角補正はしない）
 //   3. FLYAWAY モード、または AUTO10K の AWAY フェーズ（折り返し前）では
 //      方位を 180° 反転させ「目的地から離れる方向」を示す
@@ -230,11 +230,11 @@ void nav_update(){
   if(currentdestination != -1 && currentdestination < destinations_count){
     double destlat = extradestinations[currentdestination].cords[0][0];
     double destlon = extradestinations[currentdestination].cords[0][1];
-    dest_dist = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
+    dest_dist = calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), destlat, destlon);
 
     //Fly into truec
     // calculateTrueCourseRad は -180〜+180 を返すので、+360 してから 360 で折り返す。
-    truec = fmodf((float)rad2deg(calculateTrueCourseRad(deg2rad(get_gps_lat()), deg2rad(get_gps_lon()),
+    truec = fmodf((float)rad2deg(calculateTrueCourseRad(deg2rad(get_gnss_lat()), deg2rad(get_gnss_lon()),
                                                         deg2rad(destlat), deg2rad(destlon))) + 360.0f, 360.0f);
 
     // FLYAWAY または AUTO10K の AWAY フェーズでは 180° 反転（目的地から離れる方向を示す）

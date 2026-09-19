@@ -155,7 +155,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  group;             // グループ ID。一致しない機体は表示に使わない
     uint8_t  rsv[3];            // 予備。必ず 0 を入れること（将来の拡張用）
 
-    // --- 時刻（GPS）---
+    // --- 時刻（GNSS）---
     uint16_t year;
     uint8_t  month, day, hour, minute, second, centi;
 
