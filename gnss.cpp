@@ -1,0 +1,1673 @@
+// ============================================================
+// File    : gnss.cpp
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
+// Role    : GNSS受信・解析の実装（u-blox UBX バイナリ受信）。
+//           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
+//           位置・速度・時刻の取得、リプレイ管理、
+//           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
+//           フライトログCSVへの定期保存トリガー。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/09/19
+// ============================================================
+// 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
+#include <Arduino.h>
+
+#include "gnss.h"
+#include "link.h"   // ミラー表示（受信モード）
+#include "mysd.h"
+#include "navdata.h"
+#include "settings.h"
+#include "display_tft.h"
+#include "airdata.h"
+#include "imu.h"
+#include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
+#include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
+
+// GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
+extern volatile bool userled_forced_on;
+
+// GNSS時刻を最後に受信したときのmillis()（Euler角ログの時刻推定用）
+static uint32_t gnss_fix_millis = 0;
+uint32_t get_gnss_fix_millis() { return gnss_fix_millis; }
+
+// v6 は u-blox SAM-M10Q 専用。Mediatek(PMTK) / Quectel(PAIR) 用のコマンド定義は
+// v5 以前のモジュール向けだったため削除した（必要になったら git 履歴から戻す）。
+
+
+// --- u-blox UBX バイナリ NAV メッセージ設定 ---
+// チェックサムは Fletcher-8（class〜payloadの全バイトに対して計算）
+//
+// UBX-CFG-PRT: UART1 を 38400bps・UBX プロトコルのみ（NMEA 無効）に設定
+//   inProtoMask=0x0001(UBX only), outProtoMask=0x0001(UBX only)
+#define UBLOX_CFG_PRT_38400_UBXONLY {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x7B,0x54}
+// UBX-CFG-MSG: NAV-PVT(01 07) rate=1（毎測位で送信 → 2Hz）
+#define UBLOX_ENABLE_NAVPVT  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x07,0x01,0x13,0x51}
+// UBX-CFG-MSG: NAV-SAT(01 35) rate=2(1Hz) / rate=20(0.1Hz=10秒に1回)
+#define UBLOX_NAVSAT_RATE_2  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x35,0x02,0x42,0xAE}
+#define UBLOX_NAVSAT_RATE_20 {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x35,0x14,0x54,0xC0}
+// UBX-CFG-MSG: NAV-DOP(01 04) rate=2（1Hz）
+#define UBLOX_ENABLE_NAVDOP  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x04,0x02,0x11,0x4C}
+// UBX-CFG-NAV5: ダイナミックモデルを Airborne <1g（dynModel=6）に設定
+//   mask=0x0001（dynModel のみ変更）、payload 36 bytes
+#define UBLOX_CFG_NAV5_AIRBORNE1G \
+  {0xB5,0x62,0x06,0x24,0x24,0x00, \
+   0x01,0x00,0x06,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
+   0x55,0xB4}
+
+// --- GNSS 最新値の保持変数 ---
+// UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
+double stored_longitude, stored_latitude, stored_truetrack, stored_gnss_altitude, stored_fixtype, stored_gs;
+int stored_numsats;
+
+// --- 最大 G/S 保持変数 ---
+// maxgs        : 起動後の全時間最大 G/S [m/s]
+// maxgs_5min   : 直近 5 分間の最大 G/S [m/s]（5分間更新がなければ現在値にリセット）
+// *_hour / *_min : 最大値を記録した時刻（JST 時・分）
+static float  maxgs            = 0.0f;
+static int    maxgs_hour       = 0;
+static int    maxgs_min        = 0;
+static float  maxgs_5min       = 0.0f;
+static int    maxgs_5min_hour  = 0;
+static int    maxgs_5min_min   = 0;
+static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
+bool gnss_connection = false;  // GNSS モジュールから1文字でも受信したら true
+// デモ飛行の現在地点（DEMO_OFF でデモ停止）。GNSS を使わず仮想位置を生成する。
+demo_site_t demo_site = DEMO_OFF;
+double demo_lat = PLA_LAT;        // 仮想機体の現在位置
+double demo_lon = PLA_LON;
+double demo_mps = 0;              // 仮想対地速度 [m/s]
+double demo_truetrack = 280;      // 仮想真方位 [deg]
+
+// --- 衛星情報・受信フレームログ ---
+SatelliteData satellites[MAX_SATELLITES];  // 最大 MAX_SATELLITES 衛星分のデータを保持（PRN 0 = 空き）
+char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];   // 直近の受信フレーム概要のリングバッファ（GNSS詳細画面用）
+unsigned long last_nmea_time[MAX_LAST_NMEA];     // 各フレームの受信時刻（受信途絶の監視にも使う）
+unsigned long last_gnss_setup_time = 0;   // 最後に gnss_setup() を呼んだ時刻（再接続ガード用）
+int stored_nmea_index = 0;               // リングバッファの書き込み位置
+bool new_location_arrived = false;       // 新しい位置情報が届いたことを Core0 に知らせるフラグ
+bool newcourse_arrived = false;          // 新しいコース情報が届いたフラグ（毎秒更新）
+
+// --- 測位品質（DOP・フィックスタイプ・使用衛星 PRN） ---
+// UBX NAV-PVT / NAV-DOP / NAV-SAT の受信時に更新する。
+#define GSA_MAX_PRN 12
+static int    gsa_fixtype = 1;                // 1=No Fix, 2=2D, 3=3D
+static float  gsa_pdop    = 0.0f;             // Position DOP
+static float  gsa_hdop    = 0.0f;             // Horizontal DOP
+static float  gsa_vdop    = 0.0f;             // Vertical DOP
+static int    gsa_prns[GSA_MAX_PRN] = {};     // 測位に使用中の衛星 PRN（0=未使用）
+static int    gsa_numsat  = 0;                // 測位使用衛星数
+
+// UBX ハンドラーから参照するため前方宣言
+void removeStaleSatellites();
+
+// ============================================================
+// UBX バイナリ受信パーサー（実 GNSS 受信用）
+// リプレイモードはこの経路を通らず、SD の飛行 CSV から直接値を設定する。
+// ============================================================
+#define UBX_PAYLOAD_BUF_SIZE 768  // NAV-SAT 最大ペイロード (55 SVs×12+8=668) を余裕で収容
+
+// UBX パーサー ステートマシン状態
+enum UbxParseState {
+  UBX_SYNC1=0, UBX_SYNC2, UBX_CLASS_ST, UBX_ID_ST,
+  UBX_LEN1_ST, UBX_LEN2_ST, UBX_PAYLOAD_ST, UBX_CKA_ST, UBX_CKB_ST
+};
+static UbxParseState ubx_state   = UBX_SYNC1;
+static uint8_t  ubx_cls          = 0;   // 受信中フレームのクラス
+static uint8_t  ubx_msgid        = 0;   // 受信中フレームの ID
+static uint16_t ubx_paylen       = 0;   // ペイロード長（バイト）
+static uint16_t ubx_payidx       = 0;   // ペイロード書き込み位置
+static uint8_t  ubx_cka_acc      = 0;   // チェックサム計算用 CK_A 累積
+static uint8_t  ubx_ckb_acc      = 0;   // チェックサム計算用 CK_B 累積
+static uint8_t  ubx_rx_cka       = 0;   // 受信 CK_A 一時保存
+static uint8_t  ubx_buf[UBX_PAYLOAD_BUF_SIZE];  // ペイロード受信バッファ
+
+// UBX NAV-PVT から得た GNSS データ（get_gnss_date/get_gnss_time・ログ保存などで参照）
+static bool     ubx_time_valid   = false;  // UTC 時刻フィールドが有効か
+static bool     ubx_date_valid   = false;  // UTC 日付フィールドが有効か
+static uint16_t ubx_year         = 0;
+static uint8_t  ubx_month        = 0;
+static uint8_t  ubx_day          = 0;
+static uint8_t  ubx_hour         = 0;
+static uint8_t  ubx_min          = 0;
+static uint8_t  ubx_sec          = 0;
+static uint8_t  ubx_cs           = 0;    // センチ秒（nano フィールドから変換）
+static bool     ubx_pos_valid    = false; // 有効な 2D/3D フィックスがあるか
+static bool     ubx_pvt_valid    = false; // NAV-PVT を1回以上受信したか
+static bool     ubx_pvt_updated  = false; // 新しい NAV-PVT が届いたことを gnss_loop() に通知
+static bool     ubx_sat_updated  = false; // 新しい NAV-SAT が届いた
+static uint32_t ubx_hacc_mm      = 0;     // 水平精度推定値（NAV-PVT bytes 40-43、mm 単位）
+static uint32_t ubx_vacc_mm      = 0;     // 垂直精度推定値（NAV-PVT bytes 44-47、mm 単位）
+static uint32_t ubx_sacc_mmps    = 0;     // 速度精度推定値（NAV-PVT bytes 68-71、mm/s 単位）
+static float    ubx_veld_mps     = 0.0f;  // 垂直速度（NAV-PVT velD bytes 56-59、上昇正、m/s）
+// NED 水平速度。姿勢 ESKF の速度観測に使う（旋回中の遠心加速度を分離して真の重力方向を得るため）。
+// 符号は UBX の定義どおり N/E 正のまま保持する（velD だけは従来仕様に合わせて上昇正へ反転済み）。
+static float    ubx_veln_mps     = 0.0f;  // 北向き速度（NAV-PVT velN bytes 48-51、m/s）
+static float    ubx_vele_mps     = 0.0f;  // 東向き速度（NAV-PVT velE bytes 52-55、m/s）
+static uint32_t ubx_itow_ms      = 0;     // GPS 週内時刻（NAV-PVT iTOW bytes 0-3、ms）
+static bool     ubx_gnssFixOK    = false; // NAV-PVT flags bit0: gnssFixOK（GNSS フィックスが有効かつ品質 OK）
+
+// UBX-NAV-PVT (class=0x01, id=0x07, payload=92 bytes) ハンドラー
+// 位置・速度・時刻・衛星数・フィックスタイプをすべて解析して内部変数を更新する。
+static void handle_navpvt(const uint8_t *p, uint16_t len) {
+  if (len < 84) return;
+
+  // UTC 日時フィールド（valid bits: bit0=validDate, bit1=validTime）
+  uint8_t valid  = p[11];
+  ubx_date_valid = (valid & 0x01) != 0;
+  ubx_time_valid = (valid & 0x02) != 0;
+  if (ubx_date_valid) {
+    ubx_year  = (uint16_t)(p[4] | (p[5] << 8));
+    ubx_month = p[6];
+    ubx_day   = p[7];
+    // u-blox は起動直後に validDate=1 でも year=2000/month=0/day=0 を返すことがある。
+    // 2020 年以前・月日ゼロは未取得と同じく無効とみなす。
+    // 月・日は上限も確認する。月は GPS_TFT_map.ino の days_in_month[] の添字に使われるため、
+    // 13 以上が通ると配列外読み出しになる（utcToJst() は既に両側チェックしている）。
+    if (ubx_year < 2020 || ubx_month == 0 || ubx_month > 12 || ubx_day == 0 || ubx_day > 31) {
+      ubx_date_valid = false;
+    }
+  }
+  if (ubx_time_valid) {
+    ubx_hour  = p[8];
+    ubx_min   = p[9];
+    ubx_sec   = p[10];
+  }
+  // nano (int32, ナノ秒) → センチ秒に変換
+  int32_t nano = (int32_t)(p[16] | (p[17]<<8) | (p[18]<<16) | (p[19]<<24));
+  ubx_cs = (nano >= 0) ? (uint8_t)(nano / 10000000) : 0;
+  // ubx_cs が確定した直後のファームウェア時刻を記録する。
+  // ubx_pvt_updated ブロックで記録するより遅延が少なく、パケット間の揺れを抑えられる。
+  gnss_fix_millis = millis();
+
+  // フィックスタイプ・フラグ（u-blox fixType: 0=NoFix,1=DR,2=2D,3=3D,4=GNSS+DR）
+  uint8_t fixType   = p[20];
+  bool    gnssFixOK = (p[21] & 0x01) != 0;
+  uint8_t numSV     = p[23];
+
+  // 位置（1e-7 度単位の int32）
+  int32_t lon  = (int32_t)(p[24]|(p[25]<<8)|(p[26]<<16)|(p[27]<<24));
+  int32_t lat  = (int32_t)(p[28]|(p[29]<<8)|(p[30]<<16)|(p[31]<<24));
+  int32_t hMSL = (int32_t)(p[36]|(p[37]<<8)|(p[38]<<16)|(p[39]<<24));  // mm above MSL
+
+  // 水平・垂直精度推定値（bytes 40-43: hAcc mm、bytes 44-47: vAcc mm）
+  ubx_hacc_mm   = (uint32_t)(p[40]|(p[41]<<8)|(p[42]<<16)|((uint32_t)p[43]<<24));
+  ubx_vacc_mm   = (uint32_t)(p[44]|(p[45]<<8)|(p[46]<<16)|((uint32_t)p[47]<<24));
+  ubx_gnssFixOK = gnssFixOK;
+
+  // 速度（mm/s）・方向（1e-5 度）
+  // velN (bytes 48-51) / velE (bytes 52-55): NED 水平速度。北・東が正。
+  // velD (bytes 56-59): NED Down 方向（正=下降）→ 上昇正に反転して保存
+  int32_t velN    = (int32_t)(p[48]|(p[49]<<8)|(p[50]<<16)|(p[51]<<24));
+  int32_t velE    = (int32_t)(p[52]|(p[53]<<8)|(p[54]<<16)|(p[55]<<24));
+  int32_t velD    = (int32_t)(p[56]|(p[57]<<8)|(p[58]<<16)|(p[59]<<24));
+  int32_t gSpeed  = (int32_t)(p[60]|(p[61]<<8)|(p[62]<<16)|(p[63]<<24));
+  int32_t headMot = (int32_t)(p[64]|(p[65]<<8)|(p[66]<<16)|(p[67]<<24));
+  ubx_veln_mps  = velN * 1e-3f;   // mm/s → m/s（北正）
+  ubx_vele_mps  = velE * 1e-3f;   // mm/s → m/s（東正）
+  ubx_veld_mps  = -velD * 1e-3f;  // mm/s 下降正 → m/s 上昇正
+  // 速度精度推定値（bytes 68-71: sAcc mm/s）
+  ubx_sacc_mmps = (uint32_t)(p[68]|(p[69]<<8)|(p[70]<<16)|((uint32_t)p[71]<<24));
+  // GPS 週内時刻（bytes 0-3: iTOW ms）。生 IMU ログとの時刻対応付けに使う。
+  ubx_itow_ms   = (uint32_t)(p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24));
+
+  // 姿勢 ESKF のオフライン開発用に、GNSS 速度を生 IMU ログへ同じ時間軸で記録する。
+  // velD はここでは UBX 原義（下降正）に戻して記録し、PC 側で NED をそのまま扱えるようにする。
+  imulog_push(IMULOG_ID_GNSSVEL, ubx_itow_ms, IMULOG_ACC_NONE,
+              ubx_veln_mps, ubx_vele_mps, velD * 1e-3f, ubx_sacc_mmps * 1e-3f);
+
+  // 姿勢 ESKF の速度観測。3D フィックス時のみ渡す（品質の最終判断は sAcc で ESKF 側が行う）。
+  // リプレイ中は CSV 由来の値なので渡さない。
+  if (gnssFixOK && fixType >= 3 && !getReplayMode()) {
+    attitude_on_gnss_velocity(ubx_veln_mps, ubx_vele_mps, velD * 1e-3f,
+                              ubx_sacc_mmps * 1e-3f);
+  }
+
+  // pDOP（0.01 スケール）
+  uint16_t pDOP = (uint16_t)(p[76] | (p[77]<<8));
+  gsa_pdop  = pDOP * 0.01f;
+
+  // GSA 互換フィックスタイプ（1=NoFix, 2=2D, 3=3D）
+  {
+    static int prev_fixtype = 1;  // 前回のfixtype（遷移検出用）
+    int new_fixtype;
+    if      (fixType == 2)  new_fixtype = 2;
+    else if (fixType >= 3)  new_fixtype = 3;
+    else                    new_fixtype = 1;
+    // no-fix → fix への遷移タイミングをSDに記録
+    if (prev_fixtype <= 1 && new_fixtype >= 2) {
+      enqueueTask(createLogSdfTask("GNSS FIXED fix=%d sats=%d hAcc=%.1fm",
+        new_fixtype, stored_numsats, ubx_hacc_mm / 1000.0f));
+    }
+    prev_fixtype  = new_fixtype;
+    gsa_fixtype   = new_fixtype;
+  }
+
+  ubx_pos_valid = (fixType >= 2) && gnssFixOK;
+  ubx_pvt_valid = true;
+
+  if (ubx_pos_valid) {
+    double new_lat = lat  * 1e-7;
+    double new_lon = lon  * 1e-7;
+    stored_latitude  = new_lat;
+    stored_longitude = new_lon;
+    stored_gnss_altitude  = hMSL * 1e-3;  // mm → m
+  }
+
+  stored_gs         = gSpeed * 1e-3f;  // mm/s → m/s
+  double trk        = headMot * 1e-5;  // 1e-5 deg → deg
+  if (trk <   0)  trk += 360.0;
+  if (trk >= 360) trk -= 360.0;
+  stored_truetrack  = trk;
+  stored_numsats    = numSV;
+  stored_fixtype    = ubx_pos_valid ? 2 : 0;
+  gsa_numsat        = numSV;
+
+  ubx_pvt_updated   = true;
+}
+
+// UBX-NAV-SAT (class=0x01, id=0x35) ハンドラー
+// 各衛星の gnssId, svId, cno, elev, azim を satellites[] 配列に格納する。
+// svUsed フラグが立っている衛星の PRN を gsa_prns[] に記録する。
+static void handle_navsat(const uint8_t *p, uint16_t len) {
+  if (len < 8) return;
+  uint8_t numSvs = p[5];
+  if ((uint16_t)(8 + numSvs * 12) > len) numSvs = (len - 8) / 12;
+
+  // gsa_prns をリセットして使用中衛星 PRN を再構築
+  int prn_idx = 0;
+  for (int i = 0; i < GSA_MAX_PRN; i++) gsa_prns[i] = 0;
+
+  for (int s = 0; s < numSvs; s++) {
+    const uint8_t *sv = p + 8 + s * 12;
+    uint8_t gnssId = sv[0];
+    uint8_t svId   = sv[1];
+    uint8_t cno    = sv[2];
+    int8_t  elev   = (int8_t)sv[3];
+    int16_t azim   = (int16_t)(sv[4] | (sv[5] << 8));
+    uint32_t flags = (uint32_t)(sv[8]|(sv[9]<<8)|(sv[10]<<16)|(sv[11]<<24));
+    bool svUsed    = (flags & 0x08) != 0;  // bit3=svUsed
+
+    if (svId == 0) continue;
+
+    // gnssId → satelliteType 変換
+    int satType;
+    switch (gnssId) {
+      case 0: satType = SATELLITE_TYPE_GPS;     break;
+      case 2: satType = SATELLITE_TYPE_GALILEO; break;
+      case 3: satType = SATELLITE_TYPE_BEIDOU;  break;
+      case 5: satType = SATELLITE_TYPE_QZSS;    break;
+      case 6: satType = SATELLITE_TYPE_GLONASS; break;
+      default: satType = SATELLITE_TYPE_UNKNOWN; break;
+    }
+
+    bool stored = false;
+    for (int j = 0; j < MAX_SATELLITES; j++) {
+      if ((satellites[j].PRN == svId && satellites[j].satelliteType == satType) || satellites[j].PRN == 0) {
+        satellites[j].PRN          = svId;
+        satellites[j].elevation    = (elev >= -90 && elev <= 90) ? elev : satellites[j].elevation;
+        satellites[j].azimuth      = (azim >= 0 && azim < 360)   ? azim : satellites[j].azimuth;
+        satellites[j].SNR          = (cno <= 99) ? cno : satellites[j].SNR;
+        satellites[j].satelliteType = satType;
+        satellites[j].lastReceived = millis();
+        stored = true;
+        break;
+      }
+    }
+    if (!stored) {
+      // 衛星ごとにログを積むと、1 メッセージで 20 スロットのタスクキューを溢れさせて
+      // 他のタスクを落としてしまう（キュー満杯は USERLED 点灯として現れる）。10 秒に 1 回に制限する。
+      static unsigned long last_satfull_log = 0;
+      if (millis() - last_satfull_log > 10000) {
+        last_satfull_log = millis();
+        enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
+      }
+    }
+    // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
+    if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;
+  }
+  ubx_sat_updated = true;
+}
+
+// UBX-NAV-DOP (class=0x01, id=0x04, payload=18 bytes) ハンドラー
+// PDOP / HDOP / VDOP を更新し、10 秒に 1 回 SD ログに保存する。
+static void handle_navdop(const uint8_t *p, uint16_t len) {
+  if (len < 18) return;
+  gsa_pdop = (uint16_t)(p[6]  | (p[7]  << 8)) * 0.01f;
+  gsa_hdop = (uint16_t)(p[12] | (p[13] << 8)) * 0.01f;
+  gsa_vdop = (uint16_t)(p[10] | (p[11] << 8)) * 0.01f;
+  // 10 秒に 1 回 Acc 情報を SD ログに保存（衛星0件=明らかに屋内の場合はスキップ）
+  static unsigned long last_dop_log = 0;
+  if (millis() - last_dop_log >= 10000) {
+    last_dop_log = millis();
+    if (stored_numsats > 0) {
+      enqueueTask(createLogSdfTask("ACC hAcc=%.1fm vAcc=%.1fm sAcc=%.2fm/s fix=%d sats=%d",
+        ubx_hacc_mm / 1000.0f, ubx_vacc_mm / 1000.0f, ubx_sacc_mmps / 1000.0f,
+        gsa_fixtype, stored_numsats));
+    }
+  }
+}
+
+// UBX バイナリフレームを 1 バイトずつ処理するステートマシン。
+// B5 62 ヘッダーを検出し、クラス・ID・ペイロードを組み立ててチェックサムを確認する。
+// チェックサム OK でハンドラーを呼び出し、last_nmea[] にラベルを記録する。
+static void process_ubx(uint8_t b) {
+  switch (ubx_state) {
+    case UBX_SYNC1:
+      if (b == 0xB5) ubx_state = UBX_SYNC2;
+      break;
+    case UBX_SYNC2:
+      ubx_state = (b == 0x62) ? UBX_CLASS_ST : UBX_SYNC1;
+      break;
+    case UBX_CLASS_ST:
+      ubx_cls = b;
+      ubx_cka_acc = b; ubx_ckb_acc = b;  // Fletcher-8 初期化
+      ubx_state = UBX_ID_ST;
+      break;
+    case UBX_ID_ST:
+      ubx_msgid = b;
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      ubx_state = UBX_LEN1_ST;
+      break;
+    case UBX_LEN1_ST:
+      ubx_paylen = b;
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      ubx_state = UBX_LEN2_ST;
+      break;
+    case UBX_LEN2_ST:
+      ubx_paylen |= ((uint16_t)b << 8);
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      ubx_payidx = 0;
+      ubx_state  = (ubx_paylen == 0) ? UBX_CKA_ST : UBX_PAYLOAD_ST;
+      break;
+    case UBX_PAYLOAD_ST:
+      if (ubx_payidx < UBX_PAYLOAD_BUF_SIZE) ubx_buf[ubx_payidx] = b;
+      ubx_payidx++;
+      ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
+      if (ubx_payidx >= ubx_paylen) ubx_state = UBX_CKA_ST;
+      break;
+    case UBX_CKA_ST:
+      ubx_rx_cka = b;  // 受信 CK_A を一時保存
+      ubx_state  = UBX_CKB_ST;
+      break;
+    case UBX_CKB_ST: {
+      ubx_state = UBX_SYNC1;
+      if (ubx_rx_cka != ubx_cka_acc || b != ubx_ckb_acc) {
+        #ifdef DEBUG_GBX_NMEA
+        // チェックサム NG: クラス・ID と期待値を出力
+        static unsigned long last_ckerr_log = 0;
+        if (millis() - last_ckerr_log > 2000) {
+          last_ckerr_log = millis();
+          Serial.print("[UBX] CK NG cls="); Serial.print(ubx_cls, HEX);
+          Serial.print(" id="); Serial.print(ubx_msgid, HEX);
+          Serial.print(" len="); Serial.print(ubx_paylen);
+          Serial.print(" exp="); Serial.print(ubx_cka_acc, HEX); Serial.print("/"); Serial.print(ubx_ckb_acc, HEX);
+          Serial.print(" got="); Serial.print(ubx_rx_cka, HEX); Serial.print("/"); Serial.println(b, HEX);
+        }
+        #endif
+        break;
+      }
+      // チェックサム OK: タイムスタンプ更新 + ハンドラー呼び出し
+      gnss_connection = true;
+      uint16_t used_len = (ubx_paylen < UBX_PAYLOAD_BUF_SIZE) ? ubx_paylen : UBX_PAYLOAD_BUF_SIZE;
+      if (ubx_cls == 0x01) {
+        if (ubx_msgid == 0x07) {
+          // NAV-PVT: 位置・速度・時刻を解析
+          handle_navpvt(ubx_buf, used_len);
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-NAV-PVT fix=%d sv=%d lat=%.5f", gsa_fixtype, stored_numsats, stored_latitude);
+          #ifdef DEBUG_GBX_NMEA
+          // デバッグ: 5秒に1回 NAV-PVT の主要値を出力
+          {
+            static unsigned long last_pvt_dbg = 0;
+            if (millis() - last_pvt_dbg > 5000) {
+              last_pvt_dbg = millis();
+              Serial.print("[UBX] NAV-PVT fix="); Serial.print(gsa_fixtype);
+              Serial.print(" sv="); Serial.print(stored_numsats);
+              Serial.print(" lat="); Serial.print(stored_latitude, 6);
+              Serial.print(" lon="); Serial.print(stored_longitude, 6);
+              Serial.print(" alt="); Serial.print(stored_gnss_altitude, 1);
+              Serial.print(" gs="); Serial.print(stored_gs, 2);
+              Serial.print("m/s hdg="); Serial.print(stored_truetrack, 1);
+              Serial.print(" time="); Serial.print(ubx_hour); Serial.print(":"); Serial.print(ubx_min); Serial.print(":"); Serial.print(ubx_sec);
+              Serial.print(" valid="); Serial.print(ubx_date_valid?"D":"d"); Serial.println(ubx_time_valid?"T":"t");
+              Serial.print(" hAcc="); Serial.print(ubx_hacc_mm); Serial.print("mm gnssOK="); Serial.println(ubx_gnssFixOK?"Y":"N");
+            }
+          }
+          #endif
+        } else if (ubx_msgid == 0x35) {
+          // NAV-SAT: 衛星情報を解析
+          removeStaleSatellites();
+          handle_navsat(ubx_buf, used_len);
+          #ifdef DEBUG_GBX_NMEA
+          {
+            static unsigned long last_sat_dbg = 0;
+            if (millis() - last_sat_dbg > 10000) {
+              last_sat_dbg = millis();
+              Serial.print("[UBX] NAV-SAT numSvs="); Serial.println(ubx_buf[5]);
+            }
+          }
+          #endif
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR, "UBX-NAV-SAT svs=%d", ubx_buf[5]);
+        } else if (ubx_msgid == 0x04) {
+          // NAV-DOP: 精度低下率を解析
+          handle_navdop(ubx_buf, used_len);
+          #ifdef DEBUG_GBX_NMEA
+          {
+            static unsigned long last_dop_dbg = 0;
+            if (millis() - last_dop_dbg > 10000) {
+              last_dop_dbg = millis();
+              Serial.print("[UBX] NAV-DOP P="); Serial.print(gsa_pdop, 2);
+              Serial.print(" H="); Serial.print(gsa_hdop, 2);
+              Serial.print(" V="); Serial.println(gsa_vdop, 2);
+            }
+          }
+          #endif
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-NAV-DOP P=%.1f H=%.1f V=%.1f", gsa_pdop, gsa_hdop, gsa_vdop);
+        } else {
+          #ifdef DEBUG_GBX_NMEA
+          Serial.print("[UBX] unknown NAV cls=01 id="); Serial.print(ubx_msgid, HEX);
+          Serial.print(" len="); Serial.println(ubx_paylen);
+          #endif
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-%02X-%02X len=%d", ubx_cls, ubx_msgid, ubx_paylen);
+        }
+      } else if (ubx_cls == 0x05) {
+        // ACK-ACK (01) / ACK-NAK (00)
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] "); Serial.print((ubx_msgid==0x01)?"ACK-ACK":"ACK-NAK");
+        Serial.print(" for cls="); Serial.print((used_len>=1?ubx_buf[0]:0), HEX);
+        Serial.print(" id="); Serial.println((used_len>=2?ubx_buf[1]:0), HEX);
+        #endif
+        snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+          "%s %02X%02X", (ubx_msgid==0x01)?"UBX-ACK-ACK":"UBX-ACK-NAK",
+          (used_len>=1?ubx_buf[0]:0), (used_len>=2?ubx_buf[1]:0));
+      } else {
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] frame cls="); Serial.print(ubx_cls, HEX);
+        Serial.print(" id="); Serial.print(ubx_msgid, HEX);
+        Serial.print(" len="); Serial.println(ubx_paylen);
+        #endif
+        snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+          "UBX-%02X-%02X len=%d", ubx_cls, ubx_msgid, ubx_paylen);
+      }
+      last_nmea_time[stored_nmea_index] = millis();
+      stored_nmea_index = (stored_nmea_index + 1) % MAX_LAST_NMEA;
+      break;
+    }
+    default:
+      ubx_state = UBX_SYNC1;
+      break;
+  }
+}
+
+// --- リプレイモード ---
+// replaymode_gnssoff = true の時、実 GNSS の代わりに SD の飛行 CSV を再生する。
+bool replaymode_gnssoff = false;
+
+// 最後に再生した CSV 行。imu.cpp / airdata.cpp のセンサ値オーバーライドから参照される。
+static ReplayRow replay_last_row;
+static bool replay_last_valid = false;
+
+// --- 再生時計（Core0 専用）---
+// 実時間ではなく「仮想の再生経過時間」を積算する方式にしている。
+// 毎回の経過分に倍率を掛けて足すため、再生速度の変更も一時停止も、
+// 時刻の飛びを起こさずに途中で行える。
+static uint32_t replay_virtual_ms = 0;   // 再生開始からの仮想経過時間 [ms]
+static uint32_t replay_last_tick  = 0;   // 前回積算したときの millis()
+static uint32_t replay_seen_seq   = 0;   // 確認済みの replay_init_seq
+static bool     replay_paused     = false;
+
+// 再生の一時停止／再開。設定画面など地図以外を表示している間は停止させる。
+// 一時停止中は仮想時刻を進めないだけなので、再開すると続きから再生される。
+void replay_set_paused(bool paused) {
+  replay_paused = paused;
+}
+
+// リプレイ中で、かつ CSV にその項目の列が存在する場合のみ true。
+// （v5 のデータは高度・上昇率・気圧の列を持たないので false になり実センサ値へフォールバックする）
+bool replay_has_value(uint16_t havebit) {
+  return replaymode_gnssoff && replay_last_valid && (replay_last_row.have & havebit);
+}
+float replay_get_kf_altitude() { return replay_last_row.kf_altitude; }
+// 一時停止中は上昇率 0 を返す。停止中は新しい行が適用されないため、
+// そのままだと最後に読んだ行の上昇率が保持され続け、バリオが鳴りっぱなしになる
+// （特に下降側は連続音のため止まらない）。位置・高度・気圧は停止位置のまま保持する。
+float replay_get_kf_vspeed()   { return replay_paused ? 0.0f : replay_last_row.kf_vspeed; }
+float replay_get_pressure()    { return replay_last_row.pressure; }
+float replay_get_voltage()     { return replay_last_row.voltage; }
+
+
+// GNSS の時刻は UTC（協定世界時）で送られてくる。
+// この関数で日本標準時（JST = UTC+9）に変換する。
+// 日付またぎ・月またぎ・うるう年も正しく処理する。
+void utcToJst(int *year, int *month, int *day, int *hour) {
+  if(*month <= 0 || *month > 12){
+    DEBUGW_P(20250424,"month invalid:");
+    DEBUGW_PLN(20250424,*month);
+    enqueueTask(createLogSdfTask("month invalid:%d",*month));
+    return;
+  }
+  // Add 9 hours to convert UTC to JST
+  *hour += 9;
+  // Handle overflow of hours (24-hour format)
+  if (*hour >= 24) {
+      *hour -= 24;
+      (*day)++;
+  }
+  // Handle overflow of days in each month
+  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  // Check for leap year
+  bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
+  if (isLeapYear) {
+      daysInMonth[1] = 29;
+  }
+  if (*day > daysInMonth[*month - 1]) {
+      *day = 1;
+      (*month)++;
+  }
+  // Handle overflow of months
+  if (*month > 12) {
+      *month = 1;
+      (*year)++;
+  }
+}
+
+// utcToJst() の逆変換（JST = UTC+9 → UTC）。
+// PONS の飛行 CSV は JST で記録されているため、リプレイ時に ubx_* へ入れる前に UTC へ戻す。
+// 日付またぎ・月またぎ・うるう年も正しく処理する。
+void jstToUtc(int *year, int *month, int *day, int *hour) {
+  if(*month <= 0 || *month > 12){
+    DEBUGW_P(20260731,"month invalid:");
+    DEBUGW_PLN(20260731,*month);
+    return;
+  }
+  // Subtract 9 hours to convert JST to UTC
+  *hour -= 9;
+  if (*hour < 0) {
+      *hour += 24;
+      (*day)--;
+  }
+  // Handle underflow of days
+  if (*day < 1) {
+      (*month)--;
+      if (*month < 1) {
+          *month = 12;
+          (*year)--;
+      }
+      int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      bool isLeapYear = ((*year % 4 == 0 && *year % 100 != 0) || (*year % 400 == 0));
+      if (isLeapYear) {
+          daysInMonth[1] = 29;
+      }
+      *day = daysInMonth[*month - 1];
+  }
+}
+
+// i 番目に古い NMEA 文字列を返す（i=0 が最新）。
+// last_nmea はリングバッファなので、stored_nmea_index を基準に逆算してインデックスを求める。
+char* get_gnss_nmea(int i){
+  int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
+  if(index < 0){
+    index += MAX_LAST_NMEA;
+  }
+  return last_nmea[index];
+}
+
+// i 番目に古い NMEA の受信時刻を返す（i=0 が最新）。
+unsigned long get_gnss_nmea_time(int i){
+  int index = (stored_nmea_index-1-i)%MAX_LAST_NMEA;
+  if(index < 0){
+    index += MAX_LAST_NMEA;
+  }
+  return last_nmea_time[index];
+}
+
+
+// 30 秒以上 GSV を受信していない衛星を配列から削除する。
+// 衛星が地平線以下に沈んだり、受信が途絶えた場合に古い情報が残らないようにするため。
+void removeStaleSatellites() {
+  unsigned long currentMillis = millis();
+  for (int i = 0; i < MAX_SATELLITES; i++) {
+    if (satellites[i].PRN != 0 && (currentMillis - satellites[i].lastReceived > 30000)) {
+      satellites[i].PRN = 0;  // PRN を 0 にリセットして「空き」とみなす
+    }
+  }
+}
+
+
+// ゲッター
+int      get_gnss_fixtype()    { return gsa_fixtype; }
+float    get_gnss_pdop()       { return gsa_pdop; }
+float    get_gnss_hdop()       { return gsa_hdop; }
+float    get_gnss_vdop()       { return gsa_vdop; }
+int      get_gsa_numsat()     { return gsa_numsat; }
+int      get_gsa_prn(int i)   { return (i >= 0 && i < GSA_MAX_PRN) ? gsa_prns[i] : 0; }
+uint32_t get_gnss_hacc_mm() {
+  if (link_mirror_active()) return link_get_hacc_mm();
+  return ubx_hacc_mm;                                      // hAcc（水平精度推定値, mm）
+}
+uint32_t get_gnss_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
+uint32_t get_gnss_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
+float    get_gnss_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
+bool get_gnss_fixok() {
+  if (link_mirror_active()) return link_get_fix_ok();
+  return ubx_gnssFixOK;                                    // gnssFixOK フラグ
+}
+
+// GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
+
+
+
+// GNSS モジュールを「位置取得優先モード」に切り替える。
+// GSV（衛星情報）出力を停止することで NMEA の量を減らし、位置・速度の更新レートを上げる。
+// 設定画面の GNSS 詳細からメインマップへ戻る際に呼ばれる。
+void gnss_getposition_mode() {
+  // ナビ画面では NAV-SAT を 0.1Hz（10秒に1回）に落としてトラフィックを抑制
+  { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
+    for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+}
+
+// GNSS モジュールを「星座表示モード」に切り替える。
+// GSV を有効化して衛星の仰角・方位・SNR を表示できるようにする。
+// GNSS 詳細画面に入る際に呼ばれる。
+void gnss_constellation_mode() {
+  // 星座画面では NAV-SAT を 1Hz に上げて衛星情報をリアルタイム更新
+  { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
+    for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+}
+
+int setupcounter = 1;  // gnss_setup() の呼び出し回数（1=初回、2以降=リトライ）
+uint32_t gnss_current_baudrate = 0;  // GNSS シリアルの現在ボーレート（gnss_setup() で更新）
+uint32_t get_gnss_baudrate() { return gnss_current_baudrate; }
+
+// UBX フレームを1パケットずつ読み、ACK-ACK なら true を返す。
+// NAV-PVT など非 ACK パケットはヘッダ・ペイロード・チェックサムを
+// 丸ごと読み飛ばすため、固定バッファに収まらない問題が起きない。
+static bool ubxWaitAck(uint32_t timeout_ms) {
+  unsigned long t0 = millis();
+  uint8_t  state = 0, cls = 0, id = 0;
+  uint16_t paylen = 0, payidx = 0;
+  while (millis() - t0 < timeout_ms) {
+    if (!GNSS_SERIAL.available()) continue;
+    uint8_t b = GNSS_SERIAL.read();
+    switch (state) {
+      case 0: state = (b == 0xB5) ? 1 : 0; break;
+      case 1: state = (b == 0x62) ? 2 : (b == 0xB5 ? 1 : 0); break;
+      case 2: cls = b;   state = 3; break;
+      case 3: id  = b;   state = 4; break;
+      case 4: paylen = b; state = 5; break;
+      case 5: paylen |= ((uint16_t)b << 8); payidx = 0;
+              state = (paylen > 0) ? 6 : 7; break;
+      case 6: if (++payidx >= paylen) state = 7; break;  // ペイロード読み飛ばし
+      case 7: state = 8; break;                           // ck_a
+      case 8: state = 0;                                  // ck_b → フレーム完了
+              if (cls == 0x05 && id == 0x01) return true;   // ACK-ACK
+              if (cls == 0x05 && id == 0x00) return false;  // ACK-NAK
+              break;
+    }
+  }
+  return false;  // タイムアウト
+}
+
+// gnss_setup() の設定コマンドのうち、ACK が返らなかったものを表す内部ビット。
+// RELEASE ではシリアルのデバッグ出力が消えるため、結果は log.txt に残す。
+enum {
+  GNSS_CFGNG_RATE = 0x01,  // CFG-RATE 2Hz
+  GNSS_CFGNG_PVT  = 0x02,  // NAV-PVT 出力
+  GNSS_CFGNG_SAT  = 0x04,  // NAV-SAT 出力
+  GNSS_CFGNG_DOP  = 0x08,  // NAV-DOP 出力
+  GNSS_CFGNG_NAV5 = 0x10,  // CFG-NAV5 Airborne<1g
+};
+
+// GNSS モジュール（u-blox SAM-M10Q）とのシリアル接続を確立する。
+// NMEA が 10 秒届かない場合は gnss_loop() から自動的に再呼出しされる。
+//
+//   1回目 : 工場デフォルトの 9600bps で開き、UBX-CFG-PRT で 38400bps・UBX 出力のみに
+//           切り替えたうえで NAV-PVT / NAV-SAT / NAV-DOP / CFG-NAV5 を設定する。
+//   2回目以降（リトライ）: ボーレートだけを交互に試す。設定コマンドは送らない。
+//           偶数回 = 9600（工場出荷デフォルトのまま起動した場合）
+//           奇数回 = 38400（CFG-PRT 設定済みのモジュールを掴み直す場合）
+void gnss_setup() {
+  last_gnss_setup_time = millis();
+  DEBUG_P(20260307,"GNSS SETUP:setupcounter=");
+  DEBUG_PLN(20260307,setupcounter);
+
+  if(setupcounter != 1){
+    GNSS_SERIAL.end();
+  }
+  GNSS_SERIAL.setTX(GNSS_TX);
+  GNSS_SERIAL.setRX(GNSS_RX);
+
+  //初回SETUP
+  if(setupcounter == 1){
+      // 設定コマンドの結果。最後にまとめて log.txt へ残す。
+      // 通らなかった設定は動作が静かに変わるだけで画面に出ないため、
+      // ログが唯一の手掛かりになる（特に Airborne<1g）。
+      uint8_t cfg_ng = 0;
+      bool prt_ack = false, prt_nak = false;
+
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] setup start");
+      #endif
+      GNSS_SERIAL.setFIFOSize(1024);  // バッファオーバーフロー防止（デフォルト 32 バイトでは不足）
+      GNSS_SERIAL.begin(gnss_current_baudrate = 9600);  // u-blox 工場デフォルトは 9600bps
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] opened 9600");
+      #endif
+
+      // ① UBX-CFG-PRT: UART1 を 38400bps・UBX 出力のみに変更（NMEA 無効化）
+      {
+        const unsigned char cmd[] = UBLOX_CFG_PRT_38400_UBXONLY;
+        delay(50);  // なぜか必要（Do not delete without care.)
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] sending CFG-PRT (bytes=");
+        Serial.print(sizeof(cmd)); Serial.println("):");
+        #endif
+        for (unsigned i = 0; i < sizeof(cmd); i++) {
+          GNSS_SERIAL.write(cmd[i]);
+          #ifdef DEBUG_GBX_NMEA
+          Serial.print(cmd[i], HEX); Serial.print(" ");
+          #endif
+        }
+        #ifdef DEBUG_GBX_NMEA
+        Serial.println();
+        #endif
+      }
+      // CFG-PRT の ACK は旧ボーレート（9600）で返ってくる
+      delay(100);
+      {
+        // ACK を読み捨ててバッファをクリアする（機能的に必要）
+        uint8_t ack_buf[32] = {};
+        int ack_len = 0;
+        unsigned long t = millis();
+        while (millis() - t < 300 && ack_len < 32) {
+          if (GNSS_SERIAL.available()) ack_buf[ack_len++] = GNSS_SERIAL.read();
+        }
+        // 応答の判定は RELEASE でも行う（結果は最後のログ行に載せる）。
+        // 無応答はボーレート切替が先に効いた場合にも起こるので失敗とは断定できない。
+        for (int i = 0; i <= ack_len - 4; i++) {
+          if (ack_buf[i]==0xB5 && ack_buf[i+1]==0x62 && ack_buf[i+2]==0x05) {
+            if (ack_buf[i+3] == 0x01) prt_ack = true;
+            if (ack_buf[i+3] == 0x00) prt_nak = true;
+          }
+        }
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] CFG-PRT resp ("); Serial.print(ack_len); Serial.print(" bytes): ");
+        for (int i = 0; i < ack_len; i++) { Serial.print(ack_buf[i], HEX); Serial.print(" "); }
+        Serial.println();
+        if      (prt_ack) Serial.println("[UBX] CFG-PRT: ACK OK");
+        else if (prt_nak) Serial.println("[UBX] CFG-PRT: NAK!");
+        else              Serial.println("[UBX] CFG-PRT: no response (may be OK if baud change happened)");
+        #endif
+      }
+      GNSS_SERIAL.end();
+      delay(50);   // なぜか必要（Do not delete without care.)
+      GNSS_SERIAL.begin(gnss_current_baudrate = 38400);
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] reopened 38400");
+      #endif
+
+      // ② UBX-CFG-RATE: 測位レートを 2Hz（500ms）に設定
+      // Payload: measRate=0x01F4(500ms), navRate=0x0001, timeRef=0x0001(GPS)
+      {
+        const unsigned char UBLOX_RATE_2HZ[] = {0xB5,0x62,0x06,0x08,0x06,0x00,0xF4,0x01,0x01,0x00,0x01,0x00,0x0B,0x77};
+        delay(50);
+        #ifdef DEBUG_GBX_NMEA
+        Serial.println("[UBX] sending CFG-RATE 2Hz");
+        #endif
+        for (unsigned i = 0; i < sizeof(UBLOX_RATE_2HZ); i++) GNSS_SERIAL.write(UBLOX_RATE_2HZ[i]);
+      }
+      {
+        // NAV-PVT など既存パケットを読み飛ばしながら ACK を待つ
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_RATE;
+        #ifdef DEBUG_GBX_NMEA
+        if      (got_ack) Serial.println("[UBX] CFG-RATE 2Hz: ACK OK");
+        else              Serial.println("[UBX] CFG-RATE 2Hz: no ACK");
+        #endif
+      }
+
+      // ③ NAV-PVT を毎測位（2Hz）で出力
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending ENABLE NAVPVT");
+      #endif
+      { const unsigned char cmd[] = UBLOX_ENABLE_NAVPVT;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_PVT;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAVPVT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      // ④ NAV-SAT を 0.1Hz（10秒に1回）で出力（ナビ画面用。星座画面では 1Hz に切替）
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending NAVSAT rate=20");
+      #endif
+      { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_SAT;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAVSAT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      // ⑤ NAV-DOP を 1Hz で出力
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending ENABLE NAVDOP");
+      #endif
+      { const unsigned char cmd[] = UBLOX_ENABLE_NAVDOP;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_DOP;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAVDOP enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+      // ⑥ CFG-NAV5: ダイナミックモデルを Airborne <1g に設定
+      // パラグライダー/HPA は加速度が小さく <1g に収まる。
+      // 地上制約（altitude snap）を除去し、高度追従精度を改善する。
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] sending CFG-NAV5 Airborne<1g");
+      #endif
+      { const unsigned char cmd[] = UBLOX_CFG_NAV5_AIRBORNE1G;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+      {
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_NAV5;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] CFG-NAV5 Airborne<1g: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      // 設定結果を log.txt に 1 行だけ残す。
+      // ACK が返らなかった場合、症状は「レートが半分」「方位の追従が鈍い」程度で
+      // 画面には何も出ないため、後から原因に辿り着く唯一の手掛かりになる。
+      {
+        const char* prt = prt_nak ? "NAK" : (prt_ack ? "ack" : "none");
+        if (cfg_ng == 0) {
+          enqueueTask(createLogSdfTask("GNSS CFG OK 2Hz/PVT/SAT/DOP/Air1g (prt=%s)", prt));
+        } else {
+          enqueueTask(createLogSdfTask("GNSS CFG NO ACK:%s%s%s%s%s (prt=%s)",
+            (cfg_ng & GNSS_CFGNG_RATE) ? " RATE2HZ"    : "",
+            (cfg_ng & GNSS_CFGNG_PVT)  ? " NAVPVT"     : "",
+            (cfg_ng & GNSS_CFGNG_SAT)  ? " NAVSAT"     : "",
+            (cfg_ng & GNSS_CFGNG_DOP)  ? " NAVDOP"     : "",
+            (cfg_ng & GNSS_CFGNG_NAV5) ? " AIRBORNE1G" : "",
+            prt));
+        }
+      }
+
+      #ifdef DEBUG_GBX_NMEA
+      Serial.println("[UBX] setup done");
+      #endif
+
+  }else{
+    // u-blox リトライ: 設定コマンドは送らず baud 切替のみ試みる。
+    // 偶数回=9600（工場出荷デフォルト）、奇数回=38400（CFG-PRT 設定済み想定）で交互に試す。
+    if(setupcounter % 2 == 0){
+      DEBUG_PLN(20251025,"UBX retry: 9600bps (factory default)");
+      GNSS_SERIAL.setFIFOSize(1024);
+      GNSS_SERIAL.begin(gnss_current_baudrate = 9600);
+    }else{
+      DEBUG_PLN(20251025,"UBX retry: 38400bps (UBX mode)");
+      GNSS_SERIAL.setFIFOSize(1024);
+      GNSS_SERIAL.begin(gnss_current_baudrate = 38400);
+    }
+  }
+
+  for(int i = 0; i < MAX_LAST_NMEA;i++){
+    last_nmea[i][0] = 0;
+    last_nmea_time[i] = millis();
+  }
+
+  setupcounter++;
+}
+
+// 最大 G/S の全情報をリセットする（デモ/リプレイモード切替時に呼ぶ）
+static void reset_maxgs() {
+  maxgs                  = 0.0f;
+  maxgs_hour             = 0;
+  maxgs_min              = 0;
+  maxgs_5min             = 0.0f;
+  maxgs_5min_hour        = 0;
+  maxgs_5min_min         = 0;
+  maxgs_5min_last_update = 0;
+}
+
+// 最大 G/S を更新する（NMEAパス・DEMOパス共通）。
+// GNSS 時刻が有効な場合は JST 時刻を記録し、無効な場合は 0:00 として速度値だけ更新する。
+static void update_maxgs(float gs) {
+  int jst_h = 0, jst_m = 0;
+  // UBX モード・リプレイモード共に ubx_hour/ubx_min を参照（両モードとも更新済み）
+  if (ubx_time_valid) {
+    jst_h = (ubx_hour + 9) % 24;
+    jst_m = ubx_min;
+  }
+  // 全時間最大 G/S
+  if (gs > maxgs) {
+    maxgs      = gs;
+    maxgs_hour = jst_h;
+    maxgs_min  = jst_m;
+  }
+  // 5 分保持最大 G/S
+  if (gs > maxgs_5min) {
+    maxgs_5min             = gs;
+    maxgs_5min_hour        = jst_h;
+    maxgs_5min_min         = jst_m;
+    maxgs_5min_last_update = millis();
+  } else if (millis() - maxgs_5min_last_update > 5UL * 60 * 1000) {
+    // 5 分間更新がなければ現在の G/S にリセット
+    maxgs_5min             = gs;
+    maxgs_5min_hour        = jst_h;
+    maxgs_5min_min         = jst_m;
+    maxgs_5min_last_update = millis();
+  }
+}
+
+extern unsigned long last_gnss_time;  // 実体は下方で定義（apply_replay_row から先に参照するため）
+
+// リプレイ: CSV 1行分の内容を GNSS の内部状態に反映する。
+// 通常モードで handle_navpvt() が UBX-NAV-PVT から行っていることと同じ内容を CSV から行う。
+// CSV に列が無い項目（v5 データの高度など）は更新せず、直前の値／実センサ値のままにする。
+// 姿勢ログ由来の値。実センサーではないので attitude_* とは別に保持する。
+static float    replay_roll_deg  = 0.0f;
+static float    replay_pitch_deg = 0.0f;
+static float    replay_yaw_deg   = 0.0f;
+static float    replay_pitch_avg = 0.0f;
+static float    replay_roll_trim = 0.0f;
+static float    replay_yaw_acc95 = 0.0f;
+static float    replay_wind_mps  = 0.0f;
+static float    replay_wind_dir  = 0.0f;
+static uint16_t replay_att_have  = 0;   // RHAVE_ATT* のビット
+
+// リプレイ中のロール・ピッチ。姿勢ログが無い日は false（表示しない）。
+bool get_replay_attitude(float &roll, float &pitch) {
+  if (!(replay_att_have & RHAVE_ATT)) return false;
+  roll  = replay_roll_deg;
+  pitch = replay_pitch_deg;
+  return true;
+}
+
+// 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true。
+// 旧 euler/ は BNO085 由来で、当時これらは画面に出ていなかったので再現もしない。
+bool get_replay_pitch_avg(float &avg) {
+  if (!(replay_att_have & RHAVE_ATT_AVG)) return false;
+  avg = replay_pitch_avg;
+  return true;
+}
+bool get_replay_roll_trim(float &trim) {
+  if (!(replay_att_have & RHAVE_ATT_TRIM)) return false;
+  trim = replay_roll_trim;
+  return true;
+}
+bool get_replay_wind(float &speed_mps, float &dir_to_deg) {
+  if (!(replay_att_have & RHAVE_ATT_WIND)) return false;
+  speed_mps  = replay_wind_mps;
+  dir_to_deg = replay_wind_dir;
+  return true;
+}
+bool get_replay_yaw(float &yaw, float &acc95) {
+  if (!(replay_att_have & RHAVE_ATT_YAW)) return false;
+  yaw   = replay_yaw_deg;
+  acc95 = replay_yaw_acc95;
+  return true;
+}
+
+static void apply_replay_row(const ReplayRow* row) {
+  last_gnss_time = millis();
+
+  // --- 姿勢（姿勢ログがある日のみ）---
+  if (row->have & RHAVE_ATT) {
+    replay_roll_deg  = row->roll;
+    replay_pitch_deg = row->pitch;
+    replay_yaw_deg   = row->yaw;
+    replay_pitch_avg = row->pitch_avg;
+    replay_roll_trim = row->roll_trim;
+    replay_yaw_acc95 = row->yaw_acc95;
+    replay_wind_mps  = row->wind_mps;
+    replay_wind_dir  = row->wind_dir;
+    replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG |
+                                    RHAVE_ATT_TRIM | RHAVE_ATT_WIND);
+  }
+
+  // --- 位置 ---
+  if (stored_latitude != row->lat || stored_longitude != row->lon)
+    if (!is_demo_active()) new_location_arrived = true;
+  stored_latitude  = row->lat;
+  stored_longitude = row->lon;
+  ubx_pos_valid    = true;
+  stored_fixtype   = 2;
+
+  // --- 対地速度・真方位・高度 ---
+  if (row->have & RHAVE_GNSSALT)
+    stored_gnss_altitude = row->gnss_altitude;
+  if (row->have & RHAVE_GS) {
+    stored_gs = row->gs;
+    update_maxgs(stored_gs);
+  }
+  if (row->have & RHAVE_TTRACK) {
+    if (!is_demo_active()) newcourse_arrived = true;
+    stored_truetrack = row->ttrack;
+    if (stored_truetrack < 0 || stored_truetrack > 360)
+      stored_truetrack = 0;
+  }
+  if (row->have & RHAVE_NUMSAT)
+    stored_numsats = row->numsat;
+
+  // --- 日時 ---
+  // CSV は JST で記録されているが ubx_* は UTC 前提で扱われるので UTC に戻す。
+  int y = row->year, mo = row->month, d = row->day, h = row->hour;
+  if (row->have & RHAVE_DATE) {
+    jstToUtc(&y, &mo, &d, &h);
+    ubx_year  = y;
+    ubx_month = mo;
+    ubx_day   = d;
+    ubx_date_valid = true;
+  } else {
+    h = (h + 24 - 9) % 24;  // 日付列が無い場合は時刻だけ 9 時間戻す
+  }
+  ubx_hour = h;
+  ubx_min  = row->minute;
+  ubx_sec  = row->second;
+  ubx_cs   = row->centisecond;
+  ubx_time_valid = true;
+  gnss_fix_millis = millis();
+
+  // imu / airdata のセンサ値オーバーライド用に最後の行を保持する
+  replay_last_row   = *row;
+  replay_last_valid = true;
+
+  // リプレイ中は CSV 保存されないが、航跡の記録（add_latlon_track）はここで行われる
+  try_enque_savecsv();
+
+  // 初回のみ再生開始時刻を SD ログに残す
+  static bool first_time_logged_replay = false;
+  if (!first_time_logged_replay && (row->have & RHAVE_DATE)) {
+    first_time_logged_replay = true;
+    enqueueTask(createLogSdfTask("GNSS TIME(REPLAY): %04d-%02d-%02d %02d:%02d:%02d JST",
+      row->year, row->month, row->day, row->hour, row->minute, row->second));
+  }
+}
+
+// ---- デモ飛行の地点定義 ----
+// lat/lon はその地点のおおよその中心。basetrack は基準となる進行方位で、
+// 海岸線や川筋に沿って飛んでいるように見える向きを選んである。
+struct demo_site_def {
+  const char* name;
+  double lat;
+  double lon;
+  int basetrack;
+};
+static const demo_site_def DEMO_SITES[DEMO_SITE_COUNT] = {
+  { "OFF",       0,             0,             0   },
+  { "BIWAKO",    PLA_LAT,       PLA_LON,       280 },
+  { "SHIRAHAMA", SHIRAHAMA_LAT, SHIRAHAMA_LON, 200 },
+  { "KASAOKA",   KASAOKA_LAT,   KASAOKA_LON,   250 },
+  { "FUJIGAWA",  FUJIGAWA_LAT,  FUJIGAWA_LON,  190 },
+  { "TOKYO",     SHINURA_LAT,   SHINURA_LON,   220 },
+  { "OSAKA",     OSAKA_LAT,     OSAKA_LON,     240 },
+};
+
+demo_site_t get_demo_site() {
+  return demo_site;
+}
+
+const char* get_demo_site_name(demo_site_t site) {
+  if (site >= DEMO_SITE_COUNT) return "?";
+  return DEMO_SITES[site].name;
+}
+
+bool is_demo_active() {
+  return demo_site != DEMO_OFF;
+}
+
+// 地点を切り替える。仮想機体をその地点の中心に置き直し、軌跡も消す
+// （前の地点の軌跡が地球の反対側に残っていると描画が破綻するため）。
+void set_demo_site(demo_site_t site) {
+  if (site >= DEMO_SITE_COUNT) site = DEMO_OFF;
+  demo_site = site;
+  if (site != DEMO_OFF) {
+    demo_lat = DEMO_SITES[site].lat;
+    demo_lon = DEMO_SITES[site].lon;
+    demo_truetrack = DEMO_SITES[site].basetrack;
+  }
+  latlon_manager.reset();
+  reset_maxgs();  // モード切替時に最大 G/S をリセット
+}
+
+void next_demo_site() {
+  set_demo_site((demo_site_t)((demo_site + 1) % DEMO_SITE_COUNT));
+}
+
+void set_demo_off() {
+  set_demo_site(DEMO_OFF);
+}
+
+unsigned long last_latlon_manager = 0;
+unsigned long last_gnss_save_time = 0;
+unsigned long last_gnss_time = 0;// last position update time.
+
+
+// ubx_* 変数（UBX NAV-PVT 解析結果 or リプレイモードでミラーされた値）から GnssDate を返す
+GnssDate get_gnss_date(){
+  GnssDate d;
+  d._year  = ubx_year;
+  d._month = ubx_month;
+  d._day   = ubx_day;
+  d._valid = ubx_date_valid;
+  return d;
+}
+// ubx_* 変数から GnssTime を返す
+GnssTime get_gnss_time(){
+  GnssTime t;
+  t._hour  = ubx_hour;
+  t._min   = ubx_min;
+  t._sec   = ubx_sec;
+  t._cs    = ubx_cs;
+  t._valid = ubx_time_valid;
+  return t;
+}
+
+unsigned long last_demo_gnss_update = 0;
+
+// 飛行軌跡（トラックログ）に現在位置を追加する。
+// 追加間隔を速度に応じて調整することで、約 50m おきに記録する。
+//   低速（停止近く）→ 最大 15 秒間隔（静止中に大量の点が積まれるのを防ぐ）
+//   高速（約 20m/s）→ 最小 1 秒間隔
+void add_latlon_track(float lat,float lon){
+  int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
+  if(is_demo_active()){
+    tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
+  }
+  if(millis() - last_latlon_manager > tracklog_interval){
+    latlon_manager.addCoord({ lat, lon});
+    last_latlon_manager = millis();
+  }
+}
+
+bool gnss_new_location_arrived(){
+  if(is_demo_active()){
+    // 実 GNSS と同じく 2Hz (500ms 間隔) で仮想位置を更新する。
+    // 位置変位は 1Hz 時の半分 (0.00005 → 0.000025) にすることで、
+    // 1 秒あたりの移動距離を同じに保つ。
+    // millis() は約 49.7 日で 0 に戻る。右辺で足すとその瞬間に閾値が壊れるので、
+    // 必ず「引き算して比べる」形にする（引き算なら符号なし演算で差が保たれる）。
+    if(millis() - last_demo_gnss_update >= 500){
+      const demo_site_def& site = DEMO_SITES[demo_site];
+      int demo_spd = 10;
+      demo_lat += 0.000025*demo_spd*cos(radians(get_gnss_truetrack()));
+      // 選択中の地点から離れすぎたら中心に戻す（地図の収録範囲から出ないように）
+      if(calculateDistanceKm(demo_lat,demo_lon,site.lat,site.lon) > 15){
+        demo_lat = site.lat;
+        demo_lon = site.lon;
+        latlon_manager.reset();
+      }
+      demo_lon += 0.000025*demo_spd*sin(radians(get_gnss_truetrack()));
+      last_demo_gnss_update = millis();
+      new_location_arrived = true;
+      demo_mps = 7 + sin(millis() / 1500.0);
+      update_maxgs(demo_mps);  // DEMOモードでも最大 G/S を更新
+      
+      
+      int basetrack = site.basetrack;
+      if(demo_site == DEMO_BIWAKO && destination_mode == DMODE_AUTO10K && auto10k_status == AUTO10K_INTO)
+        basetrack = 100;  // 琵琶湖の折り返し後は東向き
+
+      
+      int target_angle = basetrack+(20 + 10*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+
+      int demo_steer_angle = target_angle - demo_truetrack;
+      if(demo_steer_angle < -180){
+        demo_steer_angle += 360;
+      }else if(demo_steer_angle > 180){
+        demo_steer_angle -= 360;
+      }
+      // 2Hz 化により呼び出し頻度が 2 倍になったため、1 呼び出しあたりの旋回ゲインを半分 (0.2 → 0.1) にして旋回速度を同等に保つ。
+      demo_truetrack += demo_steer_angle*0.1*(max(0,sin(millis() / 5000.0)));//basetrack + (10 + 5*sin(millis() / 2100.0)) * sin(millis() / 3000.0)+50*sin(millis() / 10000.0);
+      if(demo_truetrack > 360)
+        demo_truetrack -= 360;
+      else if(demo_truetrack < 0)
+        demo_truetrack += 360;
+
+      newcourse_arrived = true;
+      add_latlon_track(demo_lat, demo_lon);
+    }
+  }
+  return new_location_arrived;
+}
+
+void set_new_location_off(){
+  new_location_arrived = false;
+}
+
+
+
+bool getReplayMode(){
+  return replaymode_gnssoff;
+}
+
+void set_replaymode(bool replaymode){
+  const bool was_replay = replaymode_gnssoff;
+  replaymode_gnssoff = replaymode;
+  // ★ 再生を始めるときに必ず落とす。Core1 の init_replay() も先頭で落とすが、
+  //   あちらは非同期なので、Core0 が先に前回の true を読んで
+  //   **正常なファイルの再生をいきなり解除してしまう**競合が起きる。
+  if (replaymode) replay_file_bad = REPLAY_BAD_NONE;
+  reset_maxgs();  // モード切替時に最大 G/S をリセット
+  // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
+  // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
+  if (was_replay && !replaymode) auto10k_leave_replay();
+  // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
+  // 一瞬だけ表示してしまわないようにクリアする
+  replay_last_valid = false;
+  replay_att_have   = 0;      // 前のファイルの姿勢を残さない
+
+  // ★重要: 再生で書き込まれた「過去の日時」を捨てる。
+  // apply_replay_row() は CSV の日時を ubx_* にそのまま入れるため、リプレイを
+  // 抜けた直後は日付が再生した飛行の日のままになる。屋内など GNSS フィックスが
+  // 無い場所ではこれが更新されないので、get_jst_now() が過去の日付を返し続け、
+  // 各種ログ（imu_replaydata / imuraw / 飛行CSV）が「その日のファイル」へ
+  // 机の上の値を追記してしまう。実際に imu_replaydata/20260726.txt が
+  // 実機で生成され、2026 大会のリプレイ再現を壊した。
+  // 本物の NAV-PVT が届くまで日時は無効とする。
+  ubx_date_valid = false;
+  ubx_time_valid = false;
+  ubx_pvt_valid  = false;
+  ubx_gnssFixOK  = false;   // 書き込み側の保険（get_gnss_fixok()）も一緒に落とす
+}
+// GNSS モジュールからの Serial データを受信・解析するメインループ処理。
+// 描画の途中でも複数回呼ばれることで、GNSS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
+//
+// 異常検知:
+//   - 30 秒間 UBX フレームが届かない → gnss_setup() で再接続を試みる
+//   - リプレイモードで非 ASCII 文字が 10 回連続 → gnss_setup()
+//   - FIFO バッファが 256 を超えている → 警告ログを出す
+void gnss_loop(int id) {
+
+  // 30 秒以上 UBX フレームが途絶えた場合は GNSS を再初期化する。
+  // リプレイ中は実 GNSS のデータを読み捨てており last_nmea_time が更新されないため、
+  // このウォッチドッグが 30 秒ごとに誤発火してしまう。gnss_setup() は合計数百 ms の
+  // delay() を含み Core0 を止めるので、リプレイ中は無効にする。
+  // （リプレイ終了後は last_nmea_time が古いままなので、必要なら一度だけ再初期化が走る）
+  if(!replaymode_gnssoff &&
+     GNSS_SERIAL.available() == 0 && millis() - get_gnss_nmea_time(0) > 30000 && millis() - last_gnss_setup_time > 30000){
+    DEBUGW_PLN(20250923,"Lost UBX frame for 30 seconds. resetup.");
+    gnss_setup();
+  }
+  if(GNSS_SERIAL.available() > 256){
+    DEBUGW_P(20250923,"ID=");
+    DEBUGW_P(20250923,id);
+    DEBUGW_P(20250923," Caution, remaining FIFO buffer. avail=");
+    DEBUGW_PLN(20250923,GNSS_SERIAL.available());
+  }
+
+  #ifdef DEBUG_GBX_NMEA
+  // 起動後最初の 64 バイトを Hex ダンプ（モジュールが何を出力しているか確認用）
+  static int ubx_raw_dump_remain = 64;
+  if (ubx_raw_dump_remain > 0 && GNSS_SERIAL.available() > 0) {
+    Serial.print("[UBX] raw(first64): ");
+  }
+  #endif
+
+  while (GNSS_SERIAL.available() > 0) {
+    uint8_t c = GNSS_SERIAL.read();
+    if(GNSS_SERIAL.overflow()){
+      DEBUGW_P(20250923,"!!WARNING!! GNSS FIFO Overflow avail=");
+      DEBUGW_PLN(20250923,GNSS_SERIAL.available());
+      enqueueTask(createLogSdTask("!!ERROR!! GNSS FIFO overflow"));
+      userled_forced_on = true;
+    }
+    if (!replaymode_gnssoff) {
+      // UBX バイナリモード: 全バイト値が有効なので ASCII チェック不要
+      #ifdef DEBUG_GBX_NMEA
+      // 起動後最初の 64 バイトを Hex ダンプ（NMEA混在 or UBX? の確認）
+      if (ubx_raw_dump_remain > 0) {
+        Serial.print(c, HEX); Serial.print(" ");
+        ubx_raw_dump_remain--;
+        if (ubx_raw_dump_remain == 0) Serial.println("\n[UBX] raw dump done");
+      }
+      #endif
+      gnss_connection = true;
+      process_ubx(c);  // UBX バイナリパーサーに渡す
+    } else {
+      // リプレイモードでは実 GNSS シリアルデータを単純に読み捨てる。
+      // （旧実装は c>=128 で gnss_setup() を呼んでいたが、UBX バイナリでは
+      //   128 以上のバイトが常に流れるため GNSS 再初期化を繰り返してしまっていた）
+      (void)c;
+      gnss_connection = true;
+    }
+  }
+
+  // ============================================================
+  // リプレイモード: SD の飛行 CSV を再生する
+  //
+  // Core1 (load_replay) が CSV を1行ずつパースして replay_rows[] に積み、
+  // ここでは「再生経過時間に達した行」を取り出して stored_* / ubx_* に反映する。
+  // ペーシングを Core0 側で行うため、SD の応答待ちに再生速度が引きずられない。
+  // ============================================================
+  if (replaymode_gnssoff) {
+    static unsigned long last_replay_request = 0;
+
+    // ★ リプレイを続けられない。ここで解除しないと、下の「末尾ならループ再生」が
+    //   延々と init を繰り返し、地図が固まったまま SD を叩き続ける。
+    //   通常の GNSS に戻して音で知らせ、理由をログに残す（対処が違うため）。
+    if (replay_file_bad != REPLAY_BAD_NONE) {
+      const uint8_t reason = replay_file_bad;
+      replay_file_bad = REPLAY_BAD_NONE;
+      set_replaymode(false);
+      set_replay_filename("");
+      // 最低保証音量は付けない。設定画面で操作した直後に鳴るので持ち主はその場にいる
+      // （60 は「離れていても電池切れに気づける」ための仕組みで、電池警告専用）。
+      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3));
+      enqueueTask(createLogSdTask(reason == REPLAY_BAD_NOSD
+                                  ? "REPLAY canceled: SD not available"
+                                  : "REPLAY canceled: file is not a flight log"));
+      return;
+    }
+
+    // --- 再生時計の更新 ---
+    uint32_t now = millis();
+    if (replay_seen_seq != replay_init_seq) {
+      // Core1 が init_replay() を実行した → 先頭から再生し直す
+      replay_seen_seq   = replay_init_seq;
+      replay_virtual_ms = 0;
+      replay_last_tick  = now;
+    }
+    if (replay_paused) {
+      replay_last_tick = now;   // 停止中は経過を積まない（再開時に飛ばないように基準だけ進める）
+    } else {
+      replay_virtual_ms += (now - replay_last_tick) * (uint32_t)get_replay_speed();
+      replay_last_tick   = now;
+    }
+    uint32_t elapsed = replay_virtual_ms;
+    ReplayRow row;
+    // 再生時刻に達した行をまとめて反映する（描画等で遅れた場合の取りこぼしを防ぐ）
+    while (replay_available() && replay_peek_t_ms() <= elapsed) {
+      if (!replay_pop(&row)) break;
+      apply_replay_row(&row);
+    }
+
+    if (replay_eof && !replay_available()) {
+      // ファイル末尾に到達 → 先頭に戻ってループ再生する
+      // （キュー内・実行中の両方を確認しないと、Core1 が処理中の間に二重投入してしまう）
+      if (!isTaskInQueue(TASK_INIT_REPLAY) && !isTaskRunning(TASK_INIT_REPLAY))
+        enqueueTask(createInitReplayTask());
+    } else if (replay_buffer_has_space() &&
+               // 高速再生ほど消費が速いので補充間隔も倍率で詰める
+               millis() - last_replay_request > (REPLAY_REQ_INTERVAL_MS / (uint32_t)get_replay_speed()) &&
+               !isTaskInQueue(TASK_LOAD_REPLAY) && !isTaskRunning(TASK_LOAD_REPLAY)) {
+      last_replay_request = millis();
+      enqueueTask(createLoadReplayTask());  // Core1 にバッファの補充を依頼
+    }
+    return;
+  }
+
+  // ============================================================
+  // 通常モード (UBX): handle_navpvt() がセットした ubx_pvt_updated フラグを処理する
+  // ============================================================
+  if (ubx_pvt_updated) {
+    ubx_pvt_updated = false;
+    last_gnss_time = millis();
+    if (!is_demo_active()) {
+      if (ubx_pos_valid) new_location_arrived = true;
+      newcourse_arrived = true;
+    }
+    update_maxgs(stored_gs);
+
+    if (stored_truetrack < 0 || stored_truetrack > 360) {
+      DEBUGW_P(20250923,"ERROR:MT");
+      DEBUGW_PLN(20250923,stored_truetrack);
+      enqueueTask(createLogSdfTask("ERR truetrack=%.1f (forced 0)", stored_truetrack));
+      stored_truetrack = 0;
+    }
+
+    try_enque_savecsv();
+    // gnss_fix_millis は handle_navpvt() 内で ubx_cs 確定直後に記録済みのためここでは不要。
+
+    // 初回 GNSS 時刻取得時の SD ログ（1回だけ）
+    if (ubx_time_valid && ubx_date_valid) {
+      static bool first_time_logged = false;
+      if (!first_time_logged) {
+        first_time_logged = true;
+        enqueueTask(createLogSdfTask("GNSS TIME: %04d-%02d-%02d %02d:%02d:%02d UTC",
+          ubx_year, ubx_month, ubx_day, ubx_hour, ubx_min, ubx_sec));
+      }
+    }
+  }
+
+  if (ubx_sat_updated) {
+    ubx_sat_updated = false;
+    // DOP ログは handle_navdop() 内で実施済みのため、ここでは satelite staleness のみ管理
+  }
+}
+
+
+extern int max_adreading;  // display_tft.cpp で計測したバッテリー ADC 最大値
+
+// GNSS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
+// 1秒に1回だけ保存するようにクールダウンを設けている（NMEA の都合で同一秒に複数回 update が来るため）。
+// リプレイモードとデモモードでは保存しない。
+// GNSS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
+// 400ms に1回だけ保存するようにクールダウンを設けている。
+// UBX モード・リプレイモード共に ubx_* 変数を参照する（リプレイモードでは gnss_loop() でミラー済み）。
+// リプレイモードとデモモードでは保存しない。
+void try_enque_savecsv(){
+  bool all_valid = true;
+  if (ubx_pos_valid) {
+    stored_fixtype = (stored_numsats > 0) ? 2 : 1;
+  } else {
+    DEBUG_PLN(20250923,"Location: Not Available");
+    all_valid = false;
+    stored_fixtype = 0;
+  }
+  if (!ubx_date_valid) {
+    DEBUG_PLN(20250923,"Date: Not Available");
+    all_valid = false;
+  }
+  if (!ubx_time_valid) {
+    DEBUG_PLN(20250923,"Time: Not Available");
+    all_valid = false;
+  }
+
+  // 位置・日時が全て揃っていて、前回保存から 400ms 以上経過した時のみ保存（2Hz GNSS に合わせて調整）
+  if(all_valid && millis() - last_gnss_save_time > 400){
+    if(!is_demo_active()){ //デモは別の場所で登録済み。
+      add_latlon_track(get_gnss_lat(),get_gnss_lon());
+    }
+
+    //リプレイは保存しない。
+    if(!getReplayMode()){
+      #ifndef RELEASE
+      // 保存間隔の実測（デバッグ専用）。RELEASE では DEBUG_* が消えるので丸ごと除く。
+      DEBUG_P(20250923,"SAVED!");
+      static int lastsavedtime = 0;
+      DEBUG_PLN(20250923,millis()-lastsavedtime);
+      lastsavedtime = millis();
+      #endif
+      int year  = ubx_year;
+      int month = ubx_month;
+      int day   = ubx_day;
+      int hour  = ubx_hour;
+      utcToJst(&year, &month, &day, &hour);
+      // ★ 無線のミラー中でも、自機 CSV には**自分の値**を書く。
+      //   位置・速度・方位は生のグローバルを使っているので元々自機のまま。
+      //   ここだけ accessor 経由なので、_raw 版を明示的に使う必要がある。
+      float csv_pressure   = get_airdata_ok() ? get_airdata_pressure_raw() : 0.0f;
+      float csv_kf_alt    = get_imu_altitude_msl_raw();  // KF推定高度 [m]（MSL基準）
+      float csv_kf_vspeed = get_imu_vspeed_raw();   // KF推定上昇率 [m/s]
+      // 実測の電圧を書く（リプレイ中の表示値ではない）。リプレイ再生中は
+      // そもそもこのパスを通らないが、意図を明示するため get_input_voltage() を使う。
+      float csv_voltage   = get_input_voltage();
+      enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
+        stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure, csv_voltage, stored_numsats,
+        year, month, day, hour, ubx_min, ubx_sec, ubx_cs));
+
+      last_gnss_save_time = millis();
+    }
+  }
+}
+
+
+
+
+
+
+// ★ ミラーを通さない、**この機体自身の**測位を返す。
+//   受信モードの地図は機体の位置を中心に描くので、get_gnss_lat() などは
+//   すべて機体の値に置き換わる。ボート自身を地図に出すにはここが要る。
+//   fix が無ければ false（このとき lat/lon には何も書かない）。
+bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track) {
+    if (!ubx_pos_valid) return false;
+    if (stored_latitude == 0 && stored_longitude == 0) return false;
+    lat   = stored_latitude;
+    lon   = stored_longitude;
+    gs    = stored_gs;
+    track = stored_truetrack;
+    return true;
+}
+
+// 現在の緯度を返す。
+// デモモードや各デバッグシミュレーション設定が有効な場合は、実際の GNSS 座標の代わりに
+// 設定した固定座標やオフセット座標を返す（settings.h の #define で切り替える）。
+double get_gnss_lat() {
+  if (link_mirror_active()) return link_get_lat();
+  if (is_demo_active()) {
+    return demo_lat;
+  }
+#ifdef DEBUG_GNSS_SIM_BIWAKO
+  return PLA_LAT;
+#endif
+#ifdef DEBUG_GNSS_SIM_SHINURA
+  int timeelapsed = ((int)(millis()/1000)) % 20000;
+  return SHINURA_LAT + timeelapsed / 1600.0;
+#endif
+#ifdef DEBUG_GNSS_SIM_SAPPORO
+  return SAPPORO_LAT;
+#endif
+#ifdef DEBUG_GNSS_SIM_SHISHI
+  return SHISHI_LAT;
+#endif
+#ifdef DEBUG_GNSS_SIM_SHINURA2BIWA
+  return PLA_LAT + stored_latitude - SHINURA_LAT+0.02;
+#endif
+#ifdef DEBUG_GNSS_SIM_OSAKA2BIWA
+  return PLA_LAT + stored_latitude - OSAKA_LAT;
+#endif
+
+#ifdef DEBUG_GNSS_SIM_SHINURA2OSAKA
+  return OSAKA_LAT + stored_latitude - SHINURA_LAT;
+#endif
+
+  return stored_latitude;
+}
+
+double get_gnss_lon() {
+  if (link_mirror_active()) return link_get_lon();
+  if (is_demo_active()) {
+    return demo_lon;
+  }
+
+#ifdef DEBUG_GNSS_SIM_BIWAKO
+  return PLA_LON;
+#endif
+#ifdef DEBUG_GNSS_SIM_SHINURA
+  int timeelapsed = ((int)(millis()/1000)) % 20000;
+  return SHINURA_LON + timeelapsed / 16000.0;
+#endif
+#ifdef DEBUG_GNSS_SIM_SAPPORO
+    return SAPPORO_LON;
+#endif
+#ifdef DEBUG_GNSS_SIM_SHISHI
+    return SHISHI_LON;
+#endif
+#ifdef DEBUG_GNSS_SIM_SHINURA2BIWA
+  return PLA_LON + stored_longitude - SHINURA_LON-0.03;
+#endif
+#ifdef DEBUG_GNSS_SIM_OSAKA2BIWA
+  return PLA_LON + stored_longitude - OSAKA_LON;
+#endif
+
+#ifdef DEBUG_GNSS_SIM_SHINURA2OSAKA
+  return OSAKA_LON + stored_longitude - SHINURA_LON;
+#endif
+
+  return stored_longitude;
+}
+
+
+double get_gnss_mps() {
+  if (link_mirror_active()) return link_get_gs();
+  if (is_demo_active()) {
+    return demo_mps;
+  }
+  return stored_gs;
+}
+
+// 最大 G/S getter 関数群
+float get_maxgs()           { return maxgs; }
+int   get_maxgs_hour()      { return maxgs_hour; }
+int   get_maxgs_min()       { return maxgs_min; }
+float get_maxgs_5min()      { return maxgs_5min; }
+int   get_maxgs_5min_hour() { return maxgs_5min_hour; }
+int   get_maxgs_5min_min()  { return maxgs_5min_min; }
+
+
+bool get_gnss_connection() {
+  return gnss_connection;
+}
+bool get_gnss_fix() {
+  if (link_mirror_active()) return link_get_fix_ok();
+  if(is_demo_active()){
+    return get_gnss_numsat() != 0;
+  }
+  if(stored_fixtype >= 1){
+    return true;
+  }
+  return false;
+}
+
+double get_gnss_altitude() {
+  if (link_mirror_active()) return link_get_gnss_altitude();
+  return stored_gnss_altitude;
+}
+
+
+double get_gnss_truetrack() {
+  if (link_mirror_active()) return link_get_truetrack();
+  #ifdef DEBUG_GNSS_SIM_SHINURA
+    return 40 + (38.5 + sin(millis() / 2100.0)) * sin(millis() / 3000.0);
+  #endif
+  if (is_demo_active()) {
+    return demo_truetrack;
+  }
+  return stored_truetrack;     // Heading in degrees;
+}
+
+
+int get_gnss_numsat() {
+  if (link_mirror_active()) return link_get_numsat();
+  if(is_demo_active()){
+    return (int)(20.0*sin(millis()/5000))+20;
+  }else if(getReplayMode()){
+    // CSV に numsat 列があればその値を使う。無い場合は「衛星情報なし」を示す 99 を返す。
+    if(replay_has_value(RHAVE_NUMSAT))
+      return stored_numsats;
+    return 99;
+  }
+  return stored_numsats;
+}
+

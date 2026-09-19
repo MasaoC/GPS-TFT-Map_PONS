@@ -1,0 +1,151 @@
+// ============================================================
+// File    : gnss.h
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
+// Role    : GNSS受信・解析モジュールのヘッダー。
+//           衛星データ構造体(SatelliteData)、受信バッファ定義、
+//           位置・速度・高度・時刻取得関数のプロトタイプ宣言。
+//           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
+//           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/09/19
+// ============================================================
+
+#ifndef GNSS_H
+  #define GNSS_H
+  // GnssDate / GnssTime: get_gnss_date() / get_gnss_time() の戻り値型
+  // 実 GNSS は UBX NAV-PVT から更新、リプレイモードは SD の飛行 CSV から更新する。
+  struct GnssDate {
+    uint16_t _year  = 0; uint8_t _month = 0; uint8_t _day = 0; bool _valid = false;
+    bool     isValid() const { return _valid;  }
+    uint16_t year()    const { return _year;   }
+    uint8_t  month()   const { return _month;  }
+    uint8_t  day()     const { return _day;    }
+  };
+  struct GnssTime {
+    uint8_t _hour=0; uint8_t _min=0; uint8_t _sec=0; uint8_t _cs=0; bool _valid=false;
+    bool    isValid()     const { return _valid; }
+    uint8_t hour()        const { return _hour;  }
+    uint8_t minute()      const { return _min;   }
+    uint8_t second()      const { return _sec;   }
+    uint8_t centisecond() const { return _cs;    }
+  };
+  // Define satellite types
+  #define SATELLITE_TYPE_GPS 1
+  #define SATELLITE_TYPE_GLONASS 2
+  #define SATELLITE_TYPE_GALILEO 3
+  #define SATELLITE_TYPE_BEIDOU 4
+  #define SATELLITE_TYPE_QZSS 5
+  #define SATELLITE_TYPE_UNKNOWN 0
+
+  #define MAX_LAST_NMEA 16
+  #define NMEA_MAX_CHAR 100
+  #define MAX_SATELLITES 64  // 実測で48超えが発生したため64に拡大（SAM-M10Qは5星座で最大55衛星程度が可視）
+
+  struct SatelliteData {
+    int PRN = 0;
+    int elevation = 0;
+    int azimuth = 0;
+    int SNR = 0;
+    int satelliteType = SATELLITE_TYPE_UNKNOWN;
+    unsigned long lastReceived = 0;
+  };
+  extern SatelliteData satellites[MAX_SATELLITES];
+  extern char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];
+  extern int stored_nmea_index;
+  extern bool newcourse_arrived;
+
+  void utcToJst(int *year, int *month, int *day, int *hour);
+  void jstToUtc(int *year, int *month, int *day, int *hour);
+
+  // リプレイ再生中のセンサ値オーバーライド（imu.cpp / airdata.cpp から参照）。
+  // havebit には mysd.h の RHAVE_* を渡す。CSV にその列が無ければ false を返し、
+  // 呼び出し側は実センサの値をそのまま使う。
+  bool  replay_has_value(uint16_t havebit);
+  float replay_get_kf_altitude();
+  float replay_get_kf_vspeed();
+  float replay_get_pressure();
+  float replay_get_voltage();
+
+  char* get_gnss_nmea(int i);
+  unsigned long get_gnss_nmea_time(int i);
+  void gnss_setup();
+  void gnss_loop(int id);
+  void try_enque_savecsv();
+  
+  bool gnss_new_location_arrived();
+  void set_new_location_off();
+
+  void gnss_getposition_mode();
+  void gnss_constellation_mode();
+  bool get_gnss_fix();
+  bool get_gnss_connection();
+  int get_gnss_numsat();
+  double get_gnss_mps();
+  double get_gnss_truetrack();
+  uint32_t get_gnss_baudrate();  // GNSS シリアルの現在ボーレート
+  int   get_gnss_fixtype();   // GSA フィックスタイプ (1=No Fix, 2=2D, 3=3D)
+  float get_gnss_pdop();      // PDOP（Position DOP）
+  float get_gnss_hdop();      // HDOP（Horizontal DOP）
+  float get_gnss_vdop();      // VDOP（Vertical DOP）
+  int   get_gsa_numsat();    // 測位使用衛星数
+  int   get_gsa_prn(int i);  // 測位使用衛星 PRN (i=0..11)
+  // ★ ミラーもデモも通さない、この機体自身の測位。
+  //   受信モードでは get_gnss_*() が機体の値に置き換わるので、
+  //   ボート自身を地図に出すにはこちらを使う。fix が無ければ false。
+  bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track);
+
+  double get_gnss_lat();
+  double get_gnss_lon();
+  double get_gnss_altitude();
+
+  uint32_t get_gnss_hacc_mm();     // 水平精度推定値（NAV-PVT hAcc、mm 単位）
+  uint32_t get_gnss_vacc_mm();     // 垂直精度推定値（NAV-PVT vAcc、mm 単位）
+  uint32_t get_gnss_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
+  float    get_gnss_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
+  // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
+  bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
+
+  GnssDate get_gnss_date();
+  GnssTime get_gnss_time();
+
+  // 最大 G/S 取得関数
+  float get_maxgs();            // 全時間最大 G/S [m/s]
+  int   get_maxgs_hour();       // 全時間最大 G/S の記録時刻（JST 時）
+  int   get_maxgs_min();        // 全時間最大 G/S の記録時刻（JST 分）
+  float get_maxgs_5min();       // 5分保持最大 G/S [m/s]
+  int   get_maxgs_5min_hour();  // 5分保持最大 G/S の記録時刻（JST 時）
+  int   get_maxgs_5min_min();   // 5分保持最大 G/S の記録時刻（JST 分）
+
+  // ---- デモ飛行 ----
+  // 実 GNSS を使わず仮想的に飛ばすモード。地点を選べるようにしてあるので、
+  // 各フライト地点の地図表示を実機で確認するのにも使える。
+  enum demo_site_t : uint8_t {
+    DEMO_OFF = 0,
+    DEMO_BIWAKO,
+    DEMO_SHIRAHAMA,
+    DEMO_KASAOKA,
+    DEMO_FUJIGAWA,
+    DEMO_TOKYO,
+    DEMO_OSAKA,
+    DEMO_SITE_COUNT
+  };
+  demo_site_t get_demo_site();
+  void set_demo_site(demo_site_t site);
+  void next_demo_site();           // 設定画面で 1 段階進める（末尾で OFF に戻る）
+  const char* get_demo_site_name(demo_site_t site);
+  bool is_demo_active();           // いずれかの地点でデモ飛行中か
+  void set_demo_off();
+  bool getReplayMode();
+  // リプレイ中の姿勢 [度]（imu_replaydata/ または旧 euler/ の記録由来）。
+  // 実機の ESKF ではないので、表示側は getReplayMode() で参照先を切り替えること。
+  bool get_replay_attitude(float &roll, float &pitch);
+  // 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true を返す。
+  bool get_replay_pitch_avg(float &avg);
+  bool get_replay_roll_trim(float &trim);
+  bool get_replay_yaw(float &yaw, float &acc95);
+  bool get_replay_wind(float &speed_mps, float &dir_to_deg);
+  void set_replaymode(bool replaymode);
+
+  uint32_t get_gnss_fix_millis();  // 最後にGNSS時刻を受信したときのmillis()（時刻推定用）
+
+#endif

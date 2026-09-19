@@ -1,6 +1,6 @@
 // ============================================================
 // File    : imu.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : BNO085 IMU モジュール + Kalman フィルターフュージョンのヘッダー。
 //           MS5611 気圧高度と BNO085 加速度を融合した高精度バリオメーターを提供する。
 //
@@ -23,7 +23,7 @@
 //   airdata_update() が true を返したタイミングで imu_kalman_baro_update() を呼ぶ。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/06
 // ============================================================
 
 #ifndef IMU_H
@@ -50,17 +50,17 @@ void imu_kalman_baro_update(float z_baro_m);
 // gnssFixOK && fixtype==3D のとき、メインループから約1秒ごとに呼ぶ。
 // GNSS高度（MSL）で気圧の基準高度をゆっくり修正し、絶対高度ドリフトを抑制する。
 // Vertical speed（z_dot）は変更しない。
-//   z_gnss_msl : GNSS高度 [m MSL]（get_gps_altitude() の値）
-//   vacc_m     : 垂直精度推定値 [m]（get_gps_vacc_mm() / 1000.0f）
+//   z_gnss_msl : GNSS高度 [m MSL]（get_gnss_altitude() の値）
+//   vacc_m     : 垂直精度推定値 [m]（get_gnss_vacc_mm() / 1000.0f）
 void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m);
 
 // ---- GNSS垂直速度による Kalman 速度観測更新 ----
 // gnssFixOK && fixtype==3D のとき、GNSS高度補正と同じタイミングで呼ぶ。
 // sAcc を観測ノイズ（R_vel = sAcc²）、vAcc をゲーティングに使い、KF の z_dot を補正する。
 // BNO085 の有無によらず動作する。
-//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gps_veld_mps()
-//   vacc_m    : 垂直位置精度 [m]（get_gps_vacc_mm() / 1000.0f）
-//   sacc_mps  : 速度精度 [m/s]（get_gps_sacc_mmps() / 1000.0f）
+//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
+//   vacc_m    : 垂直位置精度 [m]（get_gnss_vacc_mm() / 1000.0f）
+//   sacc_mps  : 速度精度 [m/s]（get_gnss_sacc_mmps() / 1000.0f）
 void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps);
 
 // ---- センサー状態 ----
@@ -73,6 +73,10 @@ bool get_imu_alive();
 
 // ---- 推定値ゲッター ----
 float get_imu_vspeed();          // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
+// _raw 版は「必ず自機の値」を返す。無線のミラー中でも自機 CSV には
+// 自分の値を書く必要があるため（link.cpp のコメント参照）。
+float get_imu_vspeed_raw();
+float get_imu_altitude_msl_raw();
 float get_imu_altitude_msl();    // Kalman 推定高度 [m]（MSL 絶対値 = AGL + gnss_kf_offset）
                                  // gnss_kf_offset 未確定（GNSS fix 取得前）は AGL 値を返す
 bool  get_imu_gnss_offset_ready(); // gnss_kf_offset が初期化済みか（MSL 値が有効か）

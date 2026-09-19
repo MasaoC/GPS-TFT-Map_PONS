@@ -1,28 +1,44 @@
 // ============================================================
 // File    : GPS_TFT_map.ino
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : メインエントリポイント。
-//           Core0: 画面描画・GPS処理・ボタン入力・コース警告
+//           Core0: 画面描画・GNSS処理・ボタン入力・コース警告
 //           Core1: SDカード操作・音声再生（タスクキュー経由）
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/18
+// ============================================================
+//
+// ■ src/ に置いてあるもの
+//   Arduino IDE はスケッチ直下のファイルを全部タブに出すので、
+//   ファイルが増えるとタブが埋まって目的のものを探しづらくなる。
+//   **仕様が固まっていて普段いじらないモジュール**は src/ へ移した。
+//   src/ 配下もコンパイルはされるが、IDE のタブには出ない。
+//     src/button.*     ボタン入力・メニュー
+//     src/sound.*      音声出力（WAV・トーン）
+//     src/vectormap.*  ベクタ地図の描画
+//     src/imulog.*     生 IMU ロガー（姿勢 ESKF のオフライン開発用）
+//     src/flashdata/   FLASH に置く大きな定数データ
+//
+//   ★ src/ の中からルート側のヘッダを参照するときは "../mysd.h" のように
+//     1 段戻ること。スケッチ直下は include パスに入っていない。
 // ============================================================
 
 #include "navdata.h"
 #include "display_tft.h"
 #include "settings.h"
 #include "mysd.h"
-#include "button.h"
-#include "gps.h"
-#include "sound.h"
+#include "src/button.h"
+#include "gnss.h"
+#include "src/sound.h"
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
-#include "imulog.h"
+#include "link.h"   // PONS Link（機体⇄ボート無線）
+#include "src/imulog.h"
 #include "attitude.h"
-#include "vectormap.h"
+#include "src/vectormap.h"
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
@@ -33,9 +49,9 @@ unsigned long screen_update_time = 0;  // 最後に画面更新した時間 mill
 bool redraw_screen = false;            // true にすると次のループで画面を再描画する
 
 // --- 旋回角速度 (deg/s) 計算用 ---
-// GPS の真方位 (truetrack) を NUM_SAMPLES 個のスライディングウィンドウで保持し、
+// GNSS の真方位 (truetrack) を NUM_SAMPLES 個のスライディングウィンドウで保持し、
 // 連続サンプル間の変化量の合計を「最古サンプルと最新サンプルの経過時間」で割ることで
-// GPS レート（1Hz / 2Hz）に依存しない真の deg/s を算出する。
+// GNSS レート（1Hz / 2Hz）に依存しない真の deg/s を算出する。
 const int NUM_SAMPLES = 4;             // スライディングウィンドウのサンプル数
 float truetrack_samples[NUM_SAMPLES];  // 過去の真方位サンプル配列
 uint32_t truetrack_sample_times[NUM_SAMPLES];  // 各サンプルの millis() タイムスタンプ
@@ -44,7 +60,7 @@ float degpersecond = 0;                // 算出された旋回角速度 [deg/s]
 
 // --- 画面モード・スケール管理 ---
 int screen_mode = MODE_MAP;  // 現在の画面モード（MODE_MAP / MODE_SETTING など）
-int detail_page = 0;         // サブ画面（GPSDetail / SDDetail）のページ番号
+int detail_page = 0;         // サブ画面（GNSSDetail / SDDetail）のページ番号
 int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（項目の通し番号）
 int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
 // IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_* と対応。
@@ -65,6 +81,8 @@ int cursorLine = 0;
 // コースから外れているほど増加し、900 に達すると音声警告を発する。
 // dt 乗算で小数加算が発生するため float 型で保持する。
 float course_warning_index = 0;
+// バンク角警告でミラー値を受けるための一時変数（判定式の中で使う）
+static float bank_roll_tmp = 0.0f, bank_pitch_tmp = 0.0f;
 unsigned long last_course_warning_time = 0;      // 直近の警告発報時刻 [millis]
 unsigned long last_destination_toofar_time = 0;  // 直近の「目的地が遠すぎる」警告時刻 [millis]
 double steer_angle = 0.0;  // 現在針路と目的地方位の差 (-180〜+180 度。正=右、負=左)
@@ -98,10 +116,14 @@ extern volatile bool loading_sddetail;
 extern bool sd_detail_loading_displayed;
 
 void reset_degpersecond();
-void update_degpersecond(int true_track);
+void update_degpersecond(float true_track);
 void check_destination_toofar();
 static void apply_auto10k_status(int st);
 void update_course_warning(float degpersecond);
+static void nav_alarm_tick(bool new_gnss_info);
+// 最後にボタンが操作された時刻。設定画面の放置タイムアウト（下の SETTING_IDLE_TIMEOUT_MS）用。
+// 3 つのコールバックの先頭で更新するので、押し方の種類によらず必ず記録される。
+static unsigned long last_user_input_ms = 0;
 void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
@@ -122,7 +144,7 @@ Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallba
 void loop_userled() {
   if (userled_forced_on) return;  // 致命エラー時は永続点灯のまま
 
-  bool should_flash = (get_gps_numsat() == 0) || !good_sd();
+  bool should_flash = (get_gnss_numsat() == 0) || !good_sd();
 
   if (!should_flash) {
     digitalWrite(USERLED_PIN, LOW);
@@ -144,7 +166,7 @@ void loop_userled() {
 // Core0 の初期化処理。
 // 初期化順の注意:
 //   1. TFT を先に初期化しないとボタンピン設定が正常に動作しない（TFT_eSPI の制約）。
-//   2. GPS は TFT 初期化後に setup する（バッファオーバーフロー防止のため）。
+//   2. GNSS は TFT 初期化後に setup する（バッファオーバーフロー防止のため）。
 void setup(void) {
   Serial.begin(38400);
   #ifndef RELEASE
@@ -178,7 +200,7 @@ void setup(void) {
   airdata_wire_begin();
   // BNO085 を先に初期化する（リセット後のブート時間を確保するため）
   imu_setup();
-  attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gps.cpp から流し込む）
+  attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gnss.cpp から流し込む）
   // MS5611 初期化（BNO085 の後に呼ぶ）
   airdata_setup();
 
@@ -193,7 +215,7 @@ void setup(void) {
     enqueueTask(createLogSdTask("VARIO: BNO085+MS5611 Kalman fusion enabled"));
   }
 
-  gps_setup();
+  gnss_setup();
   
   startup_demo_tft();
 
@@ -221,6 +243,10 @@ void setup(void) {
     enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
   }
 
+  // 無線（PONS Link）の UART を開き、現在の設定を無線モジュールへ送る。
+  // 設定ファイルの読み込みが終わった後でなければ意味が無いので、ここで呼ぶ。
+  // 無線モジュールが未接続でも UART を開くだけなので害は無い。
+  link_setup();
 }
 
 
@@ -259,42 +285,49 @@ void setup1(void) {
 
 
 
+// その年月の日数。うるう年を考慮する（下の get_jst_now() の日付繰り上げ用）。
+static int days_in_month_of(int mo, int y) {
+  static const uint8_t dim[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
+  if (mo < 1 || mo > 12) return 31;   // GNSS の月が壊れていても配列外を読まない
+  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0)) return 29;
+  return dim[mo];
+}
+
 // ============================================================
-// get_jst_now(): GPS の UTC 日時から現在の JST 日時を求める
+// get_jst_now(): GNSS の UTC 日時から現在の JST 日時を求める
 // ============================================================
-// GPS パケット受信時刻からの millis() 経過分を足して現在時刻を推定し、
+// GNSS パケット受信時刻からの millis() 経過分を足して現在時刻を推定し、
 // UTC+9 の JST に変換する。日をまたぐ場合は日付を繰り上げる（うるう年考慮）。
 // Euler 角ログと生 IMU ログの両方が同じ日付のファイル名を使うため関数化している。
 //
-// 戻り値: GPS 日時が有効なら true。false のとき出力引数の内容は不定。
+// 戻り値: GNSS 日時が有効なら true。false のとき出力引数の内容は不定。
 static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &cs) {
-  if (!get_gpsdate().isValid() || !get_gpstime().isValid()) return false;
+  if (!get_gnss_date().isValid() || !get_gnss_time().isValid()) return false;
 
   // millis() オフセットで UTC 時刻を推定し JST（UTC+9）に変換
-  uint32_t elapsed_ms = millis() - get_gps_fix_millis();
-  int utc_cs = get_gpstime().centisecond() + (int)(elapsed_ms / 10);
-  int utc_s  = get_gpstime().second()      + utc_cs / 100;
-  int utc_m  = get_gpstime().minute()      + utc_s  / 60;
-  int utc_h  = get_gpstime().hour()        + utc_m  / 60;
+  uint32_t elapsed_ms = millis() - get_gnss_fix_millis();
+  int utc_cs = get_gnss_time().centisecond() + (int)(elapsed_ms / 10);
+  int utc_s  = get_gnss_time().second()      + utc_cs / 100;
+  int utc_m  = get_gnss_time().minute()      + utc_s  / 60;
+  int utc_h  = get_gnss_time().hour()        + utc_m  / 60;
   cs = utc_cs % 100;
   s  = utc_s  % 60;
   mi = utc_m  % 60;
   int jst_total_h = utc_h + 9;
-  bool next_day   = (jst_total_h >= 24);
   h = jst_total_h % 24;
 
-  // JST 日付計算（日をまたぐ場合に翌日へ繰り上げ）
-  y  = get_gpsdate().year();
-  mo = get_gpsdate().month();
-  d  = get_gpsdate().day() + (next_day ? 1 : 0);
-  static const uint8_t days_in_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-  int max_day = days_in_month[mo];
-  if (mo == 2 && (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0))
-    max_day = 29;  // うるう年
-  if (d > max_day) {
-    d = 1;
-    mo++;
-    if (mo > 12) { mo = 1; y++; }
+  // JST 日付計算。★ 繰り上げは 1 日ぶんとは限らない。
+  //   utc_h は「GNSS パケットの時刻 + millis() の経過」なので、GNSS が長時間
+  //   止まったまま日時だけ有効に残ると 24 時間を超えて積み上がる。
+  //   以前は next_day（+1 日）しか見ていなかったため、そこから先は日付がずれていた。
+  //   実運用（電池 12 時間）では 1 日を超えないが、桁の扱いを条件付きにしておく
+  //   理由が無いので、繰り上がる日数ぶん回す。通常はループ 0〜1 回。
+  y  = get_gnss_date().year();
+  mo = get_gnss_date().month();
+  d  = get_gnss_date().day();
+  for (int add_days = jst_total_h / 24; add_days > 0; add_days--) {
+    d++;
+    if (d > days_in_month_of(mo, y)) { d = 1; if (++mo > 12) { mo = 1; y++; } }
   }
   return true;
 }
@@ -303,10 +336,13 @@ static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &c
 //===============MAIN LOOP CORE0=================
 // Core0 のメインループ。以下の処理を毎ループ実行する:
 //   1. ボタン状態の読み取り
-//   2. GPS データの受信・解析（gps_loop は描画中にも分散して呼ぶ）
-//   3. 画面モードに応じた描画（地図 / 設定 / GPS詳細 など）
-// gps_loop(id) の id はデバッグ用の呼び出し箇所識別子。
+//   2. GNSS データの受信・解析（gnss_loop は描画中にも分散して呼ぶ）
+//   3. 画面モードに応じた描画（地図 / 設定 / GNSS詳細 など）
+// gnss_loop(id) の id はデバッグ用の呼び出し箇所識別子。
 void loop() {
+  // 無線モジュールとの UART。1Hz・数十バイトなので負荷は無視できる。
+  // 無線モジュールが繋がっていなくても、link_module_alive() が false になるだけで無害。
+  link_loop();
   //switch handling
   sw_push.read();
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
@@ -315,21 +351,21 @@ void loop() {
   // 生 IMU ログを止めるのはリプレイ中だけ
   //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
   //
-  // ※ GPS 日時の有効性では止めないこと。
+  // ※ GNSS 日時の有効性では止めないこと。
   //   以前は日時未確定でも止めていたが、それだと屋内など測位できない場所で
   //   IMU の生ログが一切取れず（wrote=0）、ベンチでの検証ができなかった。
   //   日時が無いときは下でファイル名を imuraw/nofix.bin にフォールバックする。
   //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
   imulog_set_paused(getReplayMode());
-  gps_loop(0);  // ループ先頭で GPS データを受信
+  gnss_loop(0);  // ループ先頭で GNSS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
 
-  // GPS Fix 取得時に音声で通知（false→true の立ち上がりエッジを検出）
+  // GNSS Fix 取得時に音声で通知（false→true の立ち上がりエッジを検出）
   // SDカードが使えれば "wav/fixed.wav" を再生、使えなければチャイム音（ド・ミ・ソの上昇 3音）で代替する。
   {
-    static bool prev_gps_fix = false;
-    bool cur_fix = get_gps_fix();
-    if (!prev_gps_fix && cur_fix) {
+    static bool prev_gnss_fix = false;
+    bool cur_fix = get_gnss_fix();
+    if (!prev_gnss_fix && cur_fix) {
       if (good_sd()) {
         enqueueTask(createPlayWavTask("wav/fixed.wav", 4));  // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
       } else {
@@ -337,9 +373,9 @@ void loop() {
         enqueueTask(createPlayMultiToneTask(659, 150, 1, 1));  // ミ
         enqueueTask(createPlayMultiToneTask(784, 300, 1, 1));  // ソ
       }
-      enqueueTask(createLogSdTask("GPS FIX acquired"));
+      enqueueTask(createLogSdTask("GNSS FIX acquired"));
     }
-    prev_gps_fix = cur_fix;
+    prev_gnss_fix = cur_fix;
   }
 
   // 大気データ更新（非ブロッキングのステートマシン。毎ループ呼ぶことで約50Hzで計測）
@@ -348,7 +384,7 @@ void loop() {
   // IMU 更新（H_INT フラグ確認 → データ読み出し → Kalman predict。毎ループ呼んでよい）
   imu_update();
 
-  // ROTATION_VECTOR 更新時（5Hz）かつ GPS 日時有効時 → Euler角を JST 時刻で SD ログ
+  // ROTATION_VECTOR 更新時（5Hz）かつ GNSS 日時有効時 → Euler角を JST 時刻で SD ログ
   // リプレイ中は記録しない。リプレイ中の日時は CSV 由来のため、そのまま記録すると
   // 「再生した飛行の日付」のファイルに現在の（静止した）IMU 値を追記してしまい、
   // 実際の飛行記録を汚してしまう。下の prev_jst_cs による単調増加チェックも
@@ -363,11 +399,13 @@ void loop() {
   // 保険として実測の GNSS フィックスも要求する。日時が再生由来のまま残っていると
   // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
   static uint32_t last_replaydata_ms = 0;
-  if (!getReplayMode() && jst_valid && get_gps_gnssFixOK() && attitude_ready() &&
+  // ミラー中も記録しない（受信した機体の日時のファイルに、自機の姿勢を書いてしまう）
+  if (!getReplayMode() && !link_mirror_active() &&
+      jst_valid && get_gnss_fixok() && attitude_ready() &&
       attitude_get_rpy_enabled() &&
       (millis() - last_replaydata_ms) >= IMU_REPLAYDATA_INTERVAL_MS) {
 
-    // モノトニック保証: GPS パケット間の処理遅延の揺れでタイムスタンプが
+    // モノトニック保証: GNSS パケット間の処理遅延の揺れでタイムスタンプが
     // 逆転することがあるため、前回より小さい場合はこの読み取りをスキップする。
     static int32_t prev_jst_cs = -1;
     int32_t this_jst_cs = (int32_t)log_h * 360000L + log_m * 6000 + log_s * 100 + log_cs;
@@ -415,7 +453,7 @@ void loop() {
                                                   jst_year, jst_month, jst_day,
                                                   log_h, log_m, log_s));
       } else {
-        // GPS 未測位（屋内テスト等）。日付が決まらないので固定名へ書く。
+        // GNSS 未測位（屋内テスト等）。日付が決まらないので固定名へ書く。
         // レコードはホスト時刻 t_us を持つので、これでも解析はできる。
         // ファイルのタイムスタンプは SdFat の下限（1980 年以降）を満たす固定値にする。
         snprintf(imu_fname, sizeof(imu_fname), "imuraw/nofix.bin");
@@ -449,17 +487,21 @@ void loop() {
   // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
   // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
   // 再生中のように動き続ける原因になる。
-  if (!getReplayMode() && get_gps_gnssFixOK() && get_gps_fixtype() >= 3) {
+  // ★ 無線のミラー中も同じ理由で通さない。ミラー中の get_gnss_altitude() は
+  //   受信した「機体」の高度なので、これを自機のカルマンに入れると
+  //   気圧基準と _gnss_kf_offset が壊れ、リプレイと同様に受信をやめた後まで残る。
+  if (!getReplayMode() && !link_mirror_active() &&
+      get_gnss_fixok() && get_gnss_fixtype() >= 3) {
     imu_kalman_gnss_update(
-      (float)get_gps_altitude(),
-      get_gps_vacc_mm() / 1000.0f
+      (float)get_gnss_altitude(),
+      get_gnss_vacc_mm() / 1000.0f
     );
     // GNSS 垂直速度を KF 速度観測として追加（vAcc ゲート、sAcc で R 計算）
     // BNO085 の有無によらず動作し、加減速中や BNO085 なし時のバリオ精度を補完する。
     imu_kalman_gnss_vel_update(
-      get_gps_veld_mps(),
-      get_gps_vacc_mm()   / 1000.0f,
-      get_gps_sacc_mmps() / 1000.0f
+      get_gnss_veld_mps(),
+      get_gnss_vacc_mm()   / 1000.0f,
+      get_gnss_sacc_mmps() / 1000.0f
     );
   }
 
@@ -471,7 +513,13 @@ void loop() {
   // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
   // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
   // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
-  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode()) {
+  // ★ ミラー中は「受信した機体のロール」で判定する。
+  //   受信側は警告をビットで受け取るのではなく**自分で再計算する**方針なので
+  //   （link_proto.h の status 設計を参照）、入力をミラー値に差し替えるだけでよい。
+  //   計算が 1 本のままなので、送信側と受信側で挙動がずれる余地が無い。
+  if (attitude_get_rpy_enabled() && !getReplayMode() &&
+      (link_mirror_active() ? link_get_attitude(bank_roll_tmp, bank_pitch_tmp)
+                            : attitude_ready())) {
     static uint32_t bank_over_since_ms = 0;
     static uint32_t bank_last_warn_ms  = 0;
     // 発報済みフラグ。解除条件（バンクが戻る＋時間経過）を満たすまで鳴らさない。
@@ -480,7 +528,10 @@ void loop() {
     //   鳴り出すのを防ぐため。一度でも 3 度未満に戻れば通常動作に入る。
     static bool     bank_warned        = true;
     float wr, wp, wy;
-    attitude_get_euler(wr, wp, wy);
+    // ミラー中は受信した機体のロール、それ以外は自機の姿勢。
+    // 入力をここで差し替えるだけで、以降の判定ロジックは 1 本のまま使える。
+    if (link_mirror_active()) { wr = bank_roll_tmp; wp = bank_pitch_tmp; wy = 0.0f; }
+    else                       attitude_get_euler(wr, wp, wy);
     uint32_t now_ms = millis();
     const float bank_abs = fabsf(wr);
 
@@ -505,14 +556,58 @@ void loop() {
     }
   }
 
+  // ---- 電池電圧の低下警告 ----
+  // ★ **警報を描画関数の中に置かないこと。** 元は draw_footer() の中にあったため、
+  //   次の 2 つの穴があった。
+  //     1. draw_footer() は地図画面からしか呼ばれない → 設定画面・WIRELESS 画面・
+  //        IMU/ESKF 画面などを開いている間は電圧が下がっても鳴らない
+  //     2. 受信モードでは電池表示が別の分岐（S/R の 2 台ぶん表示）に入るため、
+  //        **一度も鳴らなかった**。追走ボートとプラットフォームは常に受信モードなので、
+  //        実質「ボートの電池切れは警告されない」状態だった
+  //   他の警報（バンク角・コース・地上チェック）と同じくここへ置き、画面モードにも
+  //   無線モードにも依存しないようにする。
+  //
+  //   毎秒 1 回だけ読むのは、ADC の連打を避けるためと、
+  //   get_input_voltage() のピーク追跡をどの画面でも回し続けるため
+  //   （地図画面以外では誰も呼ばないと追跡が止まり、戻ったときに古い値が出る）。
+  {
+    static uint32_t last_batt_check_ms = 0;
+    static uint32_t last_batt_warn_ms  = 0;
+    if (millis() - last_batt_check_ms >= 1000) {
+      last_batt_check_ms = millis();
+      const float bv = get_input_voltage();
+      // 充電中は鳴らさない。リプレイ中も鳴らさない（過去の電圧で今の警告を出しても
+      // 意味がなく、SD のテキストログにも当時の値が「今の警告」として混ざるため）。
+      if (!digitalRead(USB_DETECT) && !replay_voltage_active() &&
+          bv <= BAT_LOW_VOLTAGE &&
+          (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
+                                  : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
+        last_batt_warn_ms = millis();
+        if (good_sd()) {
+          // SD 認識済み: WAV を再生（最低 volume 60 保証）
+          enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
+        } else {
+          // SD 未認識: 高音ビープ 3 回で代替警告（最低 volume 60 保証）
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
+          enqueueTask(createPlayMultiToneTask(2637, 400, 1, 1, 60));
+        }
+        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
+                                     battery_percent(bv), bv));
+      }
+    }
+  }
+
   // ---- 直進中のロール自動トリムが入ったらログに残す ----
   // 事後検証できるよう、1 回の補正量と累積量を記録する。
   // ---- 地上待機中のバンクチェック ----
   // 自動ロールトリムは対地速度 3m/s 超でしか働かないので地上では動かない。
   // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
   // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
+  // ミラー中は get_gnss_mps() が機体の対地速度になるため、判定が噛み合わない。
   if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
-      get_gps_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
+      !link_mirror_active() &&
+      get_gnss_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
     static uint32_t gnd_over_since_ms = 0;
     static uint32_t gnd_last_warn_ms  = 0;
     static uint32_t gndp_over_since_ms = 0;
@@ -550,8 +645,8 @@ void loop() {
     static bool     gndp_near_pla = false;
     if (gndp_geo_ms == 0 || (now_ms - gndp_geo_ms) >= PLATFORM_NEAR_RECHECK_MS) {
       gndp_geo_ms   = now_ms;
-      gndp_near_pla = get_gps_fix() &&
-          calculateDistanceKm(get_gps_lat(), get_gps_lon(), pla_lat, pla_lon) <= PLATFORM_NEAR_KM;
+      gndp_near_pla = get_gnss_fix() &&
+          calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), pla_lat, pla_lon) <= PLATFORM_NEAR_KM;
     }
     const bool near_platform = gndp_near_pla;
     bool pitch_bad = near_platform
@@ -570,6 +665,32 @@ void loop() {
       }
     } else {
       gndp_over_since_ms = 0;
+    }
+
+    // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
+    // 画面には赤字で出しているが、**地上では画面を見ていないことが多い**。
+    // 気づかないまま飛ぶと、姿勢表示・バンク角警告・自動ロールトリムが
+    // まとめて信用できない状態のまま飛ぶことになるので、音でも促す。
+    //
+    // ★ このブロックの条件（地上・静止・リプレイ/ミラー以外）をそのまま使う。
+    //   **飛行中は絶対に鳴らさない。**飛行中に較正はできないし、
+    //   対処のしようがない警告で注意をそらすほうが危険だから。
+    //   SD が無い機体でも気づけるよう、WAV が鳴らせないときは低いトーンで代替する。
+    //   最低保証音量は付けない。地上で静止しているとき＝人が機体のそばにいるときにしか
+    //   鳴らないので、音量を絞る判断を上書きする理由が無い（60 は電池切れ専用）。
+    {
+      static uint32_t eskf_apply_last_warn_ms = 0;
+      if (attitude_needs_apply()) {
+        if (eskf_apply_last_warn_ms == 0 ||
+            (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
+          eskf_apply_last_warn_ms = now_ms;
+          if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
+          else           enqueueTask(createPlayMultiToneTask(262, 250, 3, 3));
+          enqueueTask(createLogSdTask("ESKF CALIBRATION REQUIRED (on ground)"));
+        }
+      } else {
+        eskf_apply_last_warn_ms = 0;   // 較正し直したら次回は即座に知らせる
+      }
     }
   }
 
@@ -620,13 +741,13 @@ void loop() {
 
 
 #ifndef RELEASE
-  // デバッグ時: PC シリアルから GPS モジュールへコマンドを転送可能
+  // デバッグ時: PC シリアルから GNSS モジュールへコマンドを転送可能
   if (Serial.available()) {
-    GPS_SERIAL.write(Serial.read());
+    GNSS_SERIAL.write(Serial.read());
   }
 #endif
 
-  // GPS 更新や BMP ロードがなくても、一定間隔で強制再描画する
+  // GNSS 更新や BMP ロードがなくても、一定間隔で強制再描画する
   // （時刻表示など時間経過で変わる表示の更新保証）
   //
   // VARIO 詳細はセンサー値を読むための画面で、他に再描画トリガーが無いため、
@@ -647,9 +768,17 @@ void loop() {
     static unsigned long last_volt_log_ms = 0;
     if (millis() - last_volt_log_ms >= 60000UL) {
       last_volt_log_ms = millis();
-      GpsTime t = get_gpstime();
-      int jst_h = (t._hour + 9) % 24;
-      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %02d:%02d JST", get_input_voltage(), analogReadTemp(), jst_h, t._min));
+      // ★ 時刻は **get_jst_now() の判定を通ったときだけ**書く。
+      //   以前は get_gnss_time() の生の値を無条件に使っていたため、測位できていない間は
+      //   _hour/_min が 0 のままで「09:00 JST」と記録されていた。ログ上は
+      //   正しい時刻に見えるので、あとから見たときに嘘に気づけない。
+      //   （ループ先頭で毎回求めている jst_valid / log_h / log_m をそのまま使う。
+      //     こちらは millis() の経過ぶんも足してあり、日跨ぎも処理済み。）
+      char jst_str[8];
+      if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
+      else           strlcpy(jst_str, "--:--", sizeof(jst_str));
+      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %s JST",
+                                   get_input_voltage(), analogReadTemp(), jst_str));
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
       // 生レポートのレート要求を変えたら必ずこの行を確認すること:
@@ -682,13 +811,47 @@ void loop() {
     }
   }
 
+  // ---- ナビゲーションと警報 ----
+  // ★ **画面モードによらず必ずここで走らせる。**
+  //   以前はこの下の MODE_MAP の分岐の中に置いていたため、設定画面や各詳細画面を
+  //   開いている間は Auto10km の折返し判定・コース逸脱警報・旋回角速度の更新が
+  //   すべて止まっていた。とくに INTO→AWAY（目的地から 1.5km 以内）は「そのとき
+  //   近くにいるか」で判定するので、地図画面を離れている間に通り過ぎると
+  //   二度と成立せず、復路のまま戻らなくなる。
+  //   電池警告を loop() の最上位へ移したのと同じ理由（CLAUDE.md 参照）。
+  bool new_gnss_info = gnss_new_location_arrived();
+  nav_alarm_tick(new_gnss_info);
+
+  // ---- 設定画面の放置タイムアウト ----
+  // 設定画面を出したまま離陸してしまった場合の保険。上の nav_alarm_tick() が
+  // 画面によらず動くようになったので警報は鳴るが、地図が見えないままなのは変わらない。
+  // ボタン操作が一定時間無ければ、通常の「Save & Exit」と同じ経路で地図画面へ戻す。
+  // 別れの音声が鳴るので、戻ったことにパイロットが気づける。
+  if (screen_mode == MODE_SETTING &&
+      millis() - last_user_input_ms > SETTING_IDLE_TIMEOUT_MS) {
+    enqueueTask(createLogSdfTask("SETTING SCREEN TIMEOUT -> MAP (%lus idle)",
+                                 (unsigned long)(SETTING_IDLE_TIMEOUT_MS / 1000UL)));
+    // ★ 値変更モードのまま時間切れになった場合は、**必ず CallbackExit を通す。**
+    //   長押しで抜ける通常経路（longPressCallback の「値変更モードから抜ける（確定）」）と
+    //   同じ処理。ここには Auto10km と目的地の組み合わせチェック
+    //   （is10K_NotAllowed_Destination）や、無線の設定変更を知らせる警告が入っている。
+    //   飛ばすと、設定画面で禁止の組み合わせを作りかけたまま地図へ戻ることになる。
+    if (selectedLine != -1 && menu_settings[cursorLine].CallbackExit != nullptr)
+      menu_settings[cursorLine].CallbackExit();
+    selectedLine = -1;
+    exit_setting();      // 設定を保存し、音声を鳴らして MODE_MAP へ
+    // 画面クリアは不要。地図の再描画（ヘッダ＋backscreen＋フッタ）が 240x320 を
+    // 埋め尽くすため、通常の「Save & Exit」でもクリアしていない。
+    redraw_screen = true;
+  }
+
   if (screen_mode == MODE_SETTING) {
     if (redraw_screen) {
       draw_setting_mode(selectedLine, cursorLine);
     }
-  } else if (screen_mode == MODE_GPSDETAIL) {
+  } else if (screen_mode == MODE_GNSSDETAIL) {
     if (redraw_screen)
-      draw_gpsdetail(detail_page);
+      draw_gnssdetail(detail_page);
   } else if (screen_mode == MODE_SDDETAIL) {
     if (sd_detail_loading_displayed && !loading_sddetail)
       redraw_screen = true;
@@ -705,6 +868,9 @@ void loop() {
   } else if (screen_mode == MODE_IMUDETAIL) {
     if (redraw_screen)
       draw_imudetail(detail_page);
+  } else if (screen_mode == MODE_WIRELESS) {
+    if (redraw_screen)
+      draw_wireless(wireless_cursor);
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -717,82 +883,26 @@ void loop() {
       vsi_sprite.pushSprite(235, 40);  // backscreen は y=40 から開始
     }
   } else if (screen_mode == MODE_MAP) {
-    bool new_gps_info = gps_new_location_arrived();
-    if (new_gps_info) {
-      // Automatic destination change for AUTO 10KM mode.
-      // currentdestination の有効性も確認する。init_destinations() は Core1 の setup1() で走るため、
-      // それが終わる前に Core0 がここへ来ると -1（未選択）のまま配列外を読んでしまう。
-      if (destination_mode == DMODE_AUTO10K && currentdestination != -1 && currentdestination < destinations_count) {
-        double destlat = extradestinations[currentdestination].cords[0][0];
-        double destlon = extradestinations[currentdestination].cords[0][1];
-        double distance_frm_destination = calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon);
-        // フェーズが変わったときは、起動直後・リプレイ切替直後であっても必ず鳴らす。
-        // 保存した INTO を復元した状態でプラットホーム付近にいると、下の
-        // 「1.5km 以内なら AWAY」が即座に成立して起動直後に鳴ることがあるが、
-        // 黙って向きが変わるより、鳴らして確認を促す方が安全という判断。
-        if (auto10k_status == AUTO10K_AWAY) {
-
-          if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
-            apply_auto10k_status(AUTO10K_INTO);
-            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3));
-            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3));
-            enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
-          }
-        }
-        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
-          apply_auto10k_status(AUTO10K_AWAY);
-          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
-          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
-          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
-          enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
-        }
-      }
-      check_destination_toofar();
-    }
-
-    // GPS コース更新時（1Hz または 2Hz）にのみ実行する処理
-    if (newcourse_arrived) {
-      int ttrack = get_gps_truetrack();
-
-      update_degpersecond(ttrack);        // 旋回角速度 [deg/s] を更新
-      update_tone(degpersecond);          // 旋回音の音程を更新
-      update_course_warning(degpersecond); // コース逸脱警告の積算値を更新
-
-      // 針路誤差 (steer_angle) の計算:
-      // truec はナビが指示する真方位コース、ttrack は GPS 実測の真方位。
-      // 結果を -180〜+180 に正規化する。
-      // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
-      //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
-      //   真方位へ統一しても操縦指示の挙動は変わらない。
-      steer_angle = truec - ttrack;
-      if (steer_angle < -180) {
-        steer_angle += 360;
-      } else if (steer_angle > 180) {
-        steer_angle -= 360;
-      }
-
-      newcourse_arrived = false;
-    }
-
-
-    if (new_gps_info) {
+    if (new_gnss_info) {
       redraw_screen = true;
     }
 
-    // GPS 更新のたびに redraw_screen が立つため、
+    // GNSS 更新のたびに redraw_screen が立つため、
     // 通常は毎秒 2 回程度この描画ブロックが実行される。
     if (redraw_screen) {
       TIMING_START(redraw);
       #ifndef RELEASE
       c0_is_redrawing = true;
       #endif
-      float new_truetrack = get_gps_truetrack();
-      double new_lat = get_gps_lat();
-      double new_long = get_gps_lon();
-      set_new_location_off();  // GPS の「新位置フラグ」をクリア
+      float new_truetrack = get_gnss_truetrack();
+      double new_lat = get_gnss_lat();
+      double new_long = get_gnss_lon();
+      set_new_location_off();  // GNSS の「新位置フラグ」をクリア
+
+      // ※ 無線へのテレメトリ送出はここでは行わない。
+      //   送信の刻み（1Hz）は link_tx_tick() が持っている（link_loop() 参照）。
+      //   ここは GNSS 更新のたび（2Hz）に走るので、投げると倍のレートになり、
+      //   電波の占有時間と送信電流がそのまま倍になる。
 
       // 画面の上方向を設定: トラックアップ時は機首方向、ノースアップ時は 0（北）
       float drawupward_direction = new_truetrack;
@@ -800,7 +910,7 @@ void loop() {
         drawupward_direction = 0;
       }
 
-      nav_update();   // 磁気コース(MC)・目的地距離(dist)を最新 GPS 位置で再計算
+      nav_update();   // 真方位コース(TC)・目的地距離(dist)を最新 GNSS 位置で再計算
       draw_header();  // ヘッダー（速度・衛星数など）を TFT に直接描画
 
 
@@ -822,7 +932,7 @@ void loop() {
         draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
       }
 
-      gps_loop(4);  // 描画の合間に GPS データを受信（取りこぼし防止）
+      gnss_loop(4);  // 描画の合間に GNSS データを受信（取りこぼし防止）
 
       // ---- レイヤー 3: 飛行軌跡 ----
       draw_track(new_lat, new_long, scale, drawupward_direction);
@@ -836,7 +946,7 @@ void loop() {
 
       // ---- レイヤー 4: 目的地ライン ----
       // fix 取得前は自機位置が不明なため、誘導線は描画しない
-      if (get_gps_fix() && currentdestination != -1 && currentdestination < destinations_count) {
+      if (get_gnss_fix() && currentdestination != -1 && currentdestination < destinations_count) {
         double destlat = extradestinations[currentdestination].cords[0][0];
         double destlon = extradestinations[currentdestination].cords[0][1];
         if (destination_mode == DMODE_FLYINTO)
@@ -851,13 +961,18 @@ void loop() {
             draw_flyinto2(destlat, destlon, new_lat, new_long, scale, drawupward_direction, 5);
         }
       }
-      gps_loop(5);  // 描画の合間に GPS データを受信
+      gnss_loop(5);  // 描画の合間に GNSS データを受信
 
       // ---- レイヤー 4.5: パイロン・PLA アイコン ----
       // マゼンタラインより後に描画してアイコンが隠れないようにする。
       if (draw_pilon) {
         draw_pilon_takeshima_marks(new_lat, new_long, scale, drawupward_direction);
       }
+
+      // ---- レイヤー 4.6: ボート自身の位置（受信モードのミラー中のみ）----
+      // 地図は機体を中心に描いているので、自分がどこにいるかは別に出さないと分からない。
+      // 目的地ラインより後に描かないと、マゼンタの太線に隠れて見えなくなる。
+      draw_own_position_marker(new_lat, new_long, scale, drawupward_direction);
 
       // ---- レイヤー 5: オーバーレイ（速度グラフ・スケールバーなど）----
       draw_degpersec(degpersecond);
@@ -869,15 +984,15 @@ void loop() {
       }
       draw_km_distances(scale);  // 画面左下のスケールバー
 
-      // GPS fix 状態と hAcc/gnssFixOK に応じて自機位置マーカーを切り替える
+      // GNSS fix 状態と hAcc/gnssFixOK に応じて自機位置マーカーを切り替える
       // リプレイ・デモモードは実際の精度と無関係なので、常に通常の飛行機マーカーを表示する
-      bool   cur_fix_ok = get_gps_gnssFixOK();
-      float  cur_hacc_m = get_gps_hacc_mm() / 1000.0f;  // mm → m
-      if (!get_gps_fix() && !is_demo_active() && !getReplayMode()) {
+      bool   cur_fix_ok = get_gnss_fixok();
+      float  cur_hacc_m = get_gnss_hacc_mm() / 1000.0f;  // mm → m
+      if (!get_gnss_fix() && !is_demo_active() && !getReplayMode()) {
         draw_nofix_cross();                              // fix なし（通常モードのみ）: グレーの ×
       } else if (!is_demo_active() && !getReplayMode() &&
                  (!cur_fix_ok || cur_hacc_m >= HACC_THRESHOLD_M)) {
-        draw_hacc_circle(scale, get_gps_hacc_mm());     // gnssFixOK=false または hAcc 不良: 青い不確かさ円
+        draw_hacc_circle(scale, get_gnss_hacc_mm());     // gnssFixOK=false または hAcc 不良: 青い不確かさ円
       } else {
         draw_triangle(new_truetrack, steer_angle);       // 精度良好、またはリプレイ/デモ: 飛行機マーカー
       }
@@ -907,7 +1022,7 @@ void loop() {
       draw_gs_track();  // ヘッダーに速度・コースなどのテキストを描画
       draw_map_footer();
       draw_nomapdata();
-      gps_loop(6);        // 描画の合間に GPS データを受信
+      gnss_loop(6);        // 描画の合間に GNSS データを受信
       push_backscreen();  // バックスクリーンを TFT に一括転送（VSI合成済み）
       draw_footer();      // フッターは TFT に直接描画（バックスクリーン外）
       #ifndef RELEASE
@@ -1014,6 +1129,9 @@ void loop1() {
           currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
           currentTask.saveCsvArgs.centisecond);
         break;
+      case TASK_SAVE_RXCSV:
+        saveRxCSV(currentTask);
+        break;
       case TASK_LOG_IMUREPLAY:
         save_imu_replaydata(currentTask.imuReplayArgs.hour,
                             currentTask.imuReplayArgs.minute,
@@ -1033,9 +1151,6 @@ void loop1() {
                             currentTask.imuReplayArgs.year,
                             currentTask.imuReplayArgs.month,
                             currentTask.imuReplayArgs.day);
-        break;
-      case TASK_LOAD_LOGO:
-        load_push_logo();  // SD からロゴ BMP を logo_sprite に読み込む（pushSprite は Core0 が行う）
         break;
       case TASK_FLUSH_IMULOG:
         // 生 IMU ログの二重バッファ片側を SD へ書き出す（約 4KB / 0.45 秒分）。
@@ -1076,9 +1191,10 @@ float scale_screen_km(int index) {
 //   MAP モード:      何もしない（誤操作防止のためスケール変更はダブルクリックに変更）
 //   SETTING モード:  カーソル移動 or 値のトグル変更
 //   SDDETAIL:       次のページを SD から読み込む
-//   MAPLIST/GPSDETAIL: 次のページへ
+//   MAPLIST/GNSSDETAIL: 次のページへ
 // 操作音は Button クラスではなくここで鳴らす。何も起きない画面では鳴らさないため。
 void shortPressCallback() {
+  last_user_input_ms = millis();
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
 
@@ -1113,6 +1229,10 @@ void shortPressCallback() {
       loading_replaylist = true;
       enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
     }
+  } else if (screen_mode == MODE_WIRELESS) {
+    // 無線画面: 短押しはカーソル移動のみ。変更は長押し（設定画面と同じ操作感）。
+    wireless_cursor = (wireless_cursor + 1) % WIRELESS_MENU_COUNT;
+    redraw_screen = true;
   } else if (screen_mode == MODE_IMUDETAIL) {
     // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
@@ -1120,7 +1240,7 @@ void shortPressCallback() {
     if (detail_page % 2 == 0) imu_cursor  = (imu_cursor  + 1) % IMU_MENU_COUNT;
     else                      imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
     redraw_screen = true;
-  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GPSDETAIL || screen_mode == MODE_VARIODETAIL) {
+  } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GNSSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
   }
 }
@@ -1209,6 +1329,7 @@ static void imu_execute() {
 // 短押しは毎回発火するため、ここでは短押しと重複しない処理だけを行う。
 // 操作音は shortPressCallback() と同じ理由でここで鳴らす（効かない画面では鳴らさない）。
 void doublePressCallback() {
+  last_user_input_ms = millis();
   DEBUG_PLN(20240801, "double press");
 
   // MAP モード以外（設定画面や各詳細画面）では短押しがページ送り／カーソル移動を、
@@ -1250,7 +1371,7 @@ static void handleReplaySelect() {
 
   switch (type) {
     case RITEM_OFF:
-      // リプレイを解除して通常の GPS に戻す
+      // リプレイを解除して通常の GNSS に戻す
       set_replaymode(false);
       set_replay_filename("");
       latlon_manager.reset();
@@ -1265,15 +1386,23 @@ static void handleReplaySelect() {
       // 再生速度を x1 → x2 → x?? と切り替える。再生中でも時刻は飛ばない
       cycle_replay_speed();
       break;
-    case RITEM_2025:
-      startReplay(REPLAY_2025_FILE);
+    case RITEM_SOURCE:
+      // 再生元フォルダを切り替える。一覧の中身が丸ごと入れ替わるので、
+      // カーソルとページを先頭へ戻してから取り直す
+      //（戻さないと、前のフォルダの件数を前提にした位置を指したままになる）。
+      toggle_replay_from_received();
+      replay_cursor    = 3;          // SOURCE 行に留まる（続けて切り替えられる）
+      replay_list_page = 0;
+      loading_replaylist = true;
+      enqueueTask(createBrowseReplayTask(0));
       break;
-    case RITEM_2026:
-      startReplay(REPLAY_2026_FILE);
+    case RITEM_FILE: {
+      // label はファイル名のみ。受信ログは received/ の下にあるので前置する。
+      char path[REPLAY_FILENAME_LEN];
+      snprintf(path, sizeof(path), "%s%s", replay_source_prefix(), label);
+      startReplay(path);
       break;
-    case RITEM_FILE:
-      startReplay(label);  // label には SD ルート上のファイル名が入っている
-      break;
+    }
     case RITEM_RETURN:
       backToSettingFromReplay();
       break;
@@ -1288,6 +1417,7 @@ static void handleReplaySelect() {
 //   SETTING（未選択）→ 長押し → 現在行を「値変更モード」に入る
 //   SETTING（変更中）→ 長押し → 値変更モードを終了し確定する
 void longPressCallback() {
+  last_user_input_ms = millis();
   redraw_screen = true;
 
   // リプレイ選択画面での長押し = 「決定」。
@@ -1300,6 +1430,52 @@ void longPressCallback() {
   // IMU / ESKF 画面での長押し = 「実行」。
   // 設定画面が「短押し=移動 / 長押し=実行」なので、そちらに操作感を合わせる。
   // この画面には Exit 項目があるため、長押しで設定画面へ戻る動作は持たせない。
+  if (screen_mode == MODE_WIRELESS) {
+    switch (wireless_cursor) {
+      case 0:  // モードを OFF → SENDER → RECEIVER と回す。
+               // 3 択のトグルなので「送受同時 ON」を表現できない（docs/pons_link.md §1）。
+        link_set_mode((link_get_mode() + 1) % 3);
+        break;
+      case 1:  // チャネル CH0-12（920.8-923.2MHz）を回す。
+               // ここまでが休止 50ms 固定の帯域なので上限を越えさせない。
+        link_set_radio_ch((link_get_radio_ch() + 1) % (LINK_RADIO_CH_MAX + 1));
+        break;
+      case 2:  // 拡散率 SF7→SF8→…→SF11→SF7 と回す（帯域幅 500kHz は固定）。
+               // SF を上げるほど届くが、送信時間＝送信電流が倍々に増える。
+        link_set_radio_profile((link_get_radio_profile() + 1) % LINK_PROFILE_COUNT);
+        break;
+      case 3:  // グループ ID。電波の設定ではないのでモジュールへの書き込みは不要
+               //（ペイロードの中身なので即座に反映される）。
+               // ★ 長押し 1 回で +1。**普段は SD の settings.txt で決めるもの**で、
+               //   ここは「現地で確認する」「0 に戻ってしまったのを戻す」ための手段。
+               //   そのため小さい値（1〜20 程度）を割り当てておくと復旧が速い。
+        link_set_group((uint8_t)((link_get_group() + 1) % (LINK_GROUP_MAX + 1)));
+        break;
+      case 4:  // 送信前チェックを手で走らせ直す。
+               // ★ ブリングアップでは「アンテナを動かして測り直す」を何度もやる。
+               //   従来は CH を変えて戻す遠回りしか手段が無かった。
+               //   TX 以外では走らないので、断られたら低い音で知らせる
+               //  （設定画面の「いま実行できない操作」と同じ 440Hz）。
+        if (!link_preflight_restart())
+          enqueueTask(createPlayMultiToneTask(440, 200, 1));
+        break;
+      default: // 戻る
+        // ★ CH / SF / Group を触ったまま出るときは必ず知らせる。
+        //   この 3 つは **3 台すべてで一致していないと通信できない**のに、
+        //   変えたのが 1 台だけで連絡を忘れる、という事故が起こりうる。
+        //   症状は「無信号」なので、現場では距離や故障と区別が付かない。
+        //
+        //   ★★ **送信機・受信機のどちらでも鳴らすこと。** ここに mode の分岐を
+        //     入れてはいけない。受信機側を触って戻し忘れる事故も同じだけ起こるし、
+        //     受信機は 2 台あるぶん取り違えやすい。
+        link_warn_setting_changed();
+        screen_mode = MODE_SETTING;
+        break;
+    }
+    redraw_screen = true;
+    return;
+  }
+
   if (screen_mode == MODE_IMUDETAIL) {
     imu_execute();
     return;
@@ -1307,8 +1483,8 @@ void longPressCallback() {
 
   if (screen_mode != MODE_SETTING) {
     // 設定画面以外から長押し → 設定画面へ遷移
-    if (screen_mode == MODE_GPSDETAIL)
-      gps_getposition_mode();  // GPS 詳細画面での位置取得モード解除
+    if (screen_mode == MODE_GNSSDETAIL)
+      gnss_getposition_mode();  // GNSS 詳細画面での位置取得モード解除
     screen_mode = MODE_SETTING;
     cursorLine = 0;
     selectedLine = -1;
@@ -1333,10 +1509,17 @@ void longPressCallback() {
   }
 }
 
-// 旋回角速度をリセットする。GPS 受信開始時や停止時などに呼ぶ。
+// 旋回角速度をリセットする。GNSS 受信開始時や停止時などに呼ぶ。
 // サンプル配列を現在の真方位と現在時刻で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
+//
+// ※ **画面を切り替えたときには意図して呼んでいない。** update_degpersecond() は
+//   地図画面でしか回らないので、設定画面などに数秒いて戻ると 4 サンプルの窓が
+//   その空白期間をまたぎ、経過時間が過大になって deg/s が実際より小さく出る
+//   （3 サンプルぶん＝約 1.5 秒で正常に戻る）。
+//   小さく出る側＝「旋回していない」と見える側なので、コース警報が早く鳴ることは
+//   あっても鳴らなくなることはない。安全側に外れるため直していない。
 void reset_degpersecond() {
-  float track = get_gps_truetrack();
+  float track = get_gnss_truetrack();
   uint32_t now = millis();
   for (int i = 0; i < NUM_SAMPLES; i++) {
     truetrack_samples[i] = track;
@@ -1345,15 +1528,15 @@ void reset_degpersecond() {
   degpersecond = 0;
 }
 
-// 旋回角速度を更新する。GPS コース更新時（newcourse_arrived）に呼ぶ。
+// 旋回角速度を更新する。GNSS コース更新時（newcourse_arrived）に呼ぶ。
 // アルゴリズム: スライディングウィンドウの方位変化合計を経過時間で正規化
 //   1. 新しい真方位と現在時刻を配列に追加
 //   2. 配列が満杯になったら連続サンプル間の差分を合計
 //   3. 合計を「最古サンプルと最新サンプルの時間差（秒）」で割って真の deg/s を算出
 //   4. 配列を1つずらして古いサンプルを捨てる
 //   ※ 360度またぎ（例: 359→1度）を -180〜+180 に正規化して計算する
-//   ※ 時間正規化により GPS レート（1Hz / 2Hz）に依存しない
-void update_degpersecond(int true_track) {
+//   ※ 時間正規化により GNSS レート（1Hz / 2Hz）に依存しない
+void update_degpersecond(float true_track) {
   uint32_t now = millis();
   truetrack_samples[sampleIndex] = true_track;
   truetrack_sample_times[sampleIndex] = now;
@@ -1391,8 +1574,7 @@ void update_degpersecond(int true_track) {
 
 
 
-// 目的地が 100km 以上離れている場合に警告音を鳴らす。
-// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
+
 // AUTO10K の折返しフェーズを変更する。
 // リプレイ再生中は表示だけ変え、SD には保存しない。再生した過去フライトの
 // フェーズが実飛行の設定を上書きしてしまうため。
@@ -1407,6 +1589,110 @@ static void apply_auto10k_status(int st) {
   enqueueTask(createSaveSettingTask());
 }
 
+// ナビゲーションの判断と警報。**画面モードによらず loop() から毎回呼ぶこと。**
+// 描画は一切しない（描画は MODE_MAP の分岐が担当する）。
+//
+// 内訳:
+//   1. Auto10km の折返しフェーズ判定（GNSS 位置が変わったときだけ）
+//   2. 目的地が遠すぎる警告（同上）
+//   3. 旋回角速度・旋回音・針路誤差・コース逸脱警報（GNSS コース更新時だけ）
+static void nav_alarm_tick(bool new_gnss_info) {
+  // 位置そのものをキーにして「本当に動いたときだけ」評価する。
+  // new_gnss_info のフラグを落とすのは MODE_MAP の描画ブロック（set_new_location_off()）
+  // なので、地図画面以外ではフラグが立ちっぱなしになる。毎ループ Haversine を
+  // 回さないよう、pla_centerline_bearing_rad() と同じく入力の変化で判定する。
+  static double last_nav_lat = NAN, last_nav_lon = NAN;
+  if (new_gnss_info) {
+    const double nav_lat = get_gnss_lat();
+    const double nav_lon = get_gnss_lon();
+    if (nav_lat != last_nav_lat || nav_lon != last_nav_lon) {
+      last_nav_lat = nav_lat;
+      last_nav_lon = nav_lon;
+
+      // Automatic destination change for AUTO 10KM mode.
+      // currentdestination の有効性も確認する。init_destinations() は Core1 の setup1() で走るため、
+      // それが終わる前に Core0 がここへ来ると -1（未選択）のまま配列外を読んでしまう。
+      if (destination_mode == DMODE_AUTO10K && currentdestination != -1 && currentdestination < destinations_count) {
+        double destlat = extradestinations[currentdestination].cords[0][0];
+        double destlon = extradestinations[currentdestination].cords[0][1];
+        double distance_frm_destination = calculateDistanceKm(nav_lat, nav_lon, destlat, destlon);
+        // フェーズが変わったときは、起動直後・リプレイ切替直後であっても必ず鳴らす。
+        // 保存した INTO を復元した状態でプラットホーム付近にいると、下の
+        // 「1.5km 以内なら AWAY」が即座に成立して起動直後に鳴ることがあるが、
+        // 黙って向きが変わるより、鳴らして確認を促す方が安全という判断。
+        if (auto10k_status == AUTO10K_AWAY) {
+
+          if (distance_frm_destination > 10.475) {  // 公式ルール 10.975km が折り返し地点だが、実際には潮流などの影響が影響があるため、500mの誤差を引いておく。
+            apply_auto10k_status(AUTO10K_INTO);
+            // ★ 最後の引数 true = solo_play。**下の INTO→AWAY と必ず揃えること。**
+            //   solo_play にすると、4 音を鳴らし切ってから destination_change.wav が鳴る
+            //   （通常トーンだと音声と重なって鳴る。docs/pons_sound.md §4）。
+            //   往路→復路も復路→往路も同じ「目的地が切り替わった」通知なので、
+            //   聞こえ方が違うと本番で取り違える。折り返しは 10km 飛んだ直後の
+            //   一番集中している場面なので、トーンで注意を引いてから音声を流す。
+            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+            enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+            enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
+          }
+        }
+        if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
+          apply_auto10k_status(AUTO10K_AWAY);
+          // solo_play。上の AWAY→INTO と同じ鳴り方にしてある（理由は上のコメント）。
+          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
+          enqueueTask(createPlayWavTask("wav/destination_change.wav", 3));
+        }
+      }
+      check_destination_toofar();
+    }
+  }
+
+  // GNSS コース更新時（1Hz または 2Hz）にのみ実行する処理
+  if (newcourse_arrived) {
+    // ★ float で受けること。以前は int で、切り捨て誤差が窓の両端に残り
+    //   deg/s に最大 ±0.67（誤差1度 ÷ 窓1.5秒）の量子化ノイズが乗っていた。
+    //   着色 1.0 / 強調 3.0 / コース警報の「修正中」判定 0.5 deg/s という
+    //   しきい値に対して無視できない大きさだった。
+    //   truetrack_samples[] は元から float、GNSS 側も NAV-PVT の headMotion
+    //   （分解能 1e-5 度）なので、捨てていたのはここだけ。
+    float ttrack = get_gnss_truetrack();
+
+    // ★ **この順番を入れ替えないこと。**
+    //   nav_update() → steer_angle → update_course_warning() の順でなければ、
+    //   警報は 1 周期古いズレ角で判定する。以前はまさにそうなっていて、
+    //   Auto10km でフェーズが反転した直後の約 1 秒、警報が反転前のコースを見ていた。
+    //   nav_update() は MODE_MAP の描画ブロックでも呼ぶが、これは Haversine と
+    //   atan2 が 1 回ずつなので、2 度呼んでも負荷は問題にならない。
+    nav_update();                       // truec（目的地への真方位）を最新 GNSS 位置で更新
+
+    // 針路誤差 (steer_angle) の計算:
+    // truec はナビが指示する真方位コース、ttrack は GNSS 実測の真方位。
+    // どちらも小数を保った値なので、結果もそのまま使える（表示だけ丸める）。
+    // 結果を -180〜+180 に正規化する。
+    // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
+    //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
+    //   真方位へ統一しても操縦指示の挙動は変わらない。
+    steer_angle = truec - ttrack;
+    if (steer_angle < -180) {
+      steer_angle += 360;
+    } else if (steer_angle > 180) {
+      steer_angle -= 360;
+    }
+
+    update_degpersecond(ttrack);        // 旋回角速度 [deg/s] を更新
+    update_tone(degpersecond);          // 旋回音の音程を更新
+    update_course_warning(degpersecond); // コース逸脱警告の積算値を更新（steer_angle を読む）
+
+    newcourse_arrived = false;
+  }
+}
+
+// 目的地が 100km 以上離れている場合に警告音を鳴らす。
+// 120秒に1回に制限して、繰り返し鳴らしすぎないようにしている。
 void check_destination_toofar() {
   // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
   if (currentdestination == -1 || currentdestination >= destinations_count) {
@@ -1414,7 +1700,7 @@ void check_destination_toofar() {
   }
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
-  if (calculateDistanceKm(get_gps_lat(), get_gps_lon(), destlat, destlon) > 100.0) {
+  if (calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), destlat, destlon) > 100.0) {
     if (millis() - last_destination_toofar_time > 1000 * 120) {  // 120秒クールダウン
       last_destination_toofar_time = millis();
       enqueueTask(createPlayWavTask("wav/destination_toofar.wav", 1));
@@ -1422,17 +1708,17 @@ void check_destination_toofar() {
   }
 }
 
-// コース逸脱の警告を管理する（GPS コース更新時に呼ぶ、GPS レート非依存）。
+// コース逸脱の警告を管理する（GNSS コース更新時に呼ぶ、GNSS レート非依存）。
 // 積算型アルゴリズム（単位: 度・秒）:
-//   - 前回呼び出しからの経過時間 dt[秒] を計測し、積算量に乗算することで GPS レート
+//   - 前回呼び出しからの経過時間 dt[秒] を計測し、積算量に乗算することで GNSS レート
 //     （1Hz / 2Hz）に依存しない実時間ベースの累積を行う
 //   - コースのズレ角 (steer_angle) × dt を course_warning_index に加算
 //   - 正しい方向に修正中は 15 × |degpersecond| × dt を減算
 //   - index が 900 に達したら音声警告を発報し、30秒のクールダウンに入る
-//   - 低速・GPS ロスト時は発動しない（誤警告防止）
+//   - 低速・GNSS ロスト時は発動しない（誤警告防止）
 //   - 設定画面等からの復帰時に dt が過大になった場合はスキップ（誤発報防止）
 void update_course_warning(float degpersecond) {
-  // GPS レート非依存のため、前回呼び出しからの経過時間 dt[秒] を計算する
+  // GNSS レート非依存のため、前回呼び出しからの経過時間 dt[秒] を計算する
   static uint32_t last_course_warning_update_ms = 0;
   uint32_t now = millis();
   float dt = 0;
@@ -1446,8 +1732,8 @@ void update_course_warning(float degpersecond) {
     return;
   }
 
-  //移動していない時,GPSロスト時は発動しない。
-  if (get_gps_mps() < 2 || get_gps_numsat() == 0) {
+  //移動していない時,GNSSロスト時は発動しない。
+  if (get_gnss_mps() < 2 || get_gnss_numsat() == 0) {
     course_warning_index = 0;
   }
   //正しい方向に変化している時はindexを減らす。
