@@ -107,6 +107,7 @@
 
   GnssDate get_gnss_date();
   GnssTime get_gnss_time();
+  uint32_t get_gnss_jst_yyyymmdd();   // JST の今日の日付 YYYYMMDD。0 = 時刻がまだ無い
 
   // 最大 G/S 取得関数
   float get_maxgs();            // 全時間最大 G/S [m/s]

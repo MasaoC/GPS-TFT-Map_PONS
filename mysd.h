@@ -15,6 +15,7 @@
   #define MYSD_H
   #include "display_tft.h"
   #include <Arduino.h>
+  #include <limits.h>   // INT_MAX（removeDuplicateTask の既定引数）
   #include "lora_link/link_proto.h"
 
   typedef enum {
@@ -180,6 +181,9 @@
     // マウントから外されたまま APPLY されていない状態
     void setNeedsApply(const char* value);
     void getNeedsApply(char* buffer, size_t bufferSize);
+    // 最後に APPLY した日（JST の YYYYMMDD、0 = 不明）
+    void setCalibDate(const char* value);
+    void getCalibDate(char* buffer, size_t bufferSize);
     // 自動ロールトリムの累積補正量（度）
     void setRollTrim(const char* value);
     void getRollTrim(char* buffer, size_t bufferSize);
@@ -307,7 +311,15 @@
   // Functions to handle the queue (declarations)
   // 戻り値: キューに入れられたら true、満杯で捨てたら false。
   // 捨てられたタスクは実行されない。後始末が要る呼び出し側は戻り値を見ること。
+  // 設定ファイル（settings.txt）を読み終えたか。Core1 が立て、Core0 が読む。
+  // 通常は startup_demo_tft() の sd_setup_complete 待ちで true になってから
+  // link_setup() が走る。あの待ちが 5 秒で切れたときだけ false のまま来るので、
+  // link_setup() がログに残して後から分かるようにしてある。
+  extern volatile bool settings_loaded;
   bool enqueueTask(Task task);
+  // type が同じで、かつ優先度が max_priority 以下のタスクをキューから消す。
+  // 多重トーン以外は優先度を見ない（置き場所が種別ごとに違うため）。
+  void removeDuplicateTask(TaskType type, int max_priority = INT_MAX);
   bool enqueueTaskWithAbortCheck(Task task);
   bool dequeueTask(Task *task);
 

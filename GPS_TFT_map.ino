@@ -696,6 +696,40 @@ void loop() {
         eskf_apply_last_warn_ms = 0;   // 較正し直したら次回は即座に知らせる
       }
     }
+
+    // ---- 較正した日から日付をまたいでいる ----
+    // OFF MOUNT 判定（attitude.cpp）は ESKF が回っている間しか働かないので、
+    // **電源を切ったまま外して付け直した**ケースだけは検出できない。
+    // 地上ロール/ピッチチェックが拾えるのは 3 度を超えるズレまでで、
+    // それ未満のズレは再 APPLY 以外に直す手段が無い。そこを埋めるのがこれ。
+    //
+    // ★ これは推測であって断定ではない。本当にマウントに付けっぱなしのまま
+    //   日をまたぐこともある。だから needs_apply は立てない。
+    //   立てると、ヘッダのピッチ数字に「読むな」の赤い取り消し線が入り、
+    //   PONS Link でボート側にも fault として飛ぶ（link.cpp の
+    //   LINK_ST_FAULTS_TONE）。根拠のない推測でそこまでやらない。
+    //   画面は設定画面（IMU/ESKF 1/2）の注意書きだけ、音はここで一度だけ。
+    //
+    // ★ 繰り返さないこと。2 分おきに鳴らすと、プラットホームの上で鳴ったときに
+    //   「止めるために APPLY する」人が出る。台の上で APPLY すると、正しかった
+    //   較正が台の姿勢で上書きされてしまう（APPLY は静止していれば通る）。
+    //   一度伝えたら、あとは人の判断に任せる。
+    {
+      static bool calib_day_warned = false;
+      const uint32_t today_jst = get_gnss_jst_yyyymmdd();
+      if (!calib_day_warned && !attitude_needs_apply() &&
+          attitude_calib_date_stale(today_jst)) {
+        calib_day_warned = true;
+        // WAV が無い機体・SD が無い機体でも気づけるよう、先に 2 音鳴らしてから
+        // WAV を積む（APPLY 成功音と同じ作り）。eskf_calib_required.wav は
+        // 流用しない。「較正が必要」と断定する文言になってしまうため。
+        enqueueTask(createPlayMultiToneTask(1319, 90, 2));
+        if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_oldday.wav", 3));
+        enqueueTask(createLogSdfTask("ESKF CALIB from another day (calib %lu, today %lu)",
+                                     (unsigned long)attitude_get_calib_date(),
+                                     (unsigned long)today_jst));
+      }
+    }
   }
 
   // APPLY の待ち時間は「指を離してから」数える。
@@ -720,6 +754,11 @@ void loop() {
 
   // 予約していた APPLY が実行された
   if (attitude_take_calib_done()) {
+    // 較正した日を刻む。測位していなければ 0（不明）が入り、日付判定は働かない。
+    // ★ createSaveSettingTask() より先に呼ぶ。保存は Core1 が後から実行するので
+    //   どちらの順でも実害は無いが、「保存する値を全部そろえてから保存を頼む」
+    //   という読み方ができるようにしておく。
+    attitude_set_calib_date(get_gnss_jst_yyyymmdd());
     enqueueTask(createSaveSettingTask());                  // 次回起動でも効くよう保存
     // 成功トーン（上がり 2 音）。SD に eskf_apply_done.wav が無くても、
     // 較正が実行されたことが分かるようにする。WAV の直前に鳴らす。
@@ -728,7 +767,24 @@ void loop() {
     // 較正できたことを音声で知らせる。優先度 3 = 案内音声と同等。
     // 較正の成否は取り違えると危険なので埋もれさせない。
     enqueueTask(createPlayWavTask("wav/eskf_apply_done.wav", 3));
-    enqueueTask(createLogSdfTask("ESKF APPLY done"));
+    // 適用したオフセットと、そのときの GNSS 日時を残す。
+    // log.txt の行頭は「起動からの秒数」でしかないため、これが無いと
+    // 「いつ較正したか」は同じファイル中の GNSS TIME 行と突き合わせないと
+    // 分からない（測位できなかった起動ではその行自体が出ない）。
+    // 日時は UTC。GNSS TIME 行と揃えてある。未測位なら ---- を出す。
+    {
+      float lvr, lvp;
+      attitude_get_level_offset(lvr, lvp);
+      GnssDate d = get_gnss_date();
+      GnssTime t = get_gnss_time();
+      if (d.isValid() && t.isValid())
+        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at %04d-%02d-%02d %02d:%02d:%02d UTC",
+                                     lvr, lvp, d.year(), d.month(), d.day(),
+                                     t.hour(), t.minute(), t.second()));
+      else
+        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at ---- (no GNSS time)",
+                                     lvr, lvp));
+    }
   }
 
   {
@@ -1634,7 +1690,14 @@ static void nav_alarm_tick(bool new_gnss_info) {
             //   往路→復路も復路→往路も同じ「目的地が切り替わった」通知なので、
             //   聞こえ方が違うと本番で取り違える。折り返しは 10km 飛んだ直後の
             //   一番集中している場面なので、トーンで注意を引いてから音声を流す。
-            enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+            //
+            // ★★ **ここを enqueueTaskWithAbortCheck にしないこと。**
+            //   あれはキューの多重トーンを消してから積む。消す側に回ると、
+            //   このチャイムの 2 秒の間にコース逸脱警報が発報したときに
+            //   **向こうの 4 音だけが消えて course_right.wav だけが残る**
+            //   （逆向きも同じ）。どちらの警報も消してよいものではないので、
+            //   消さずに後ろへ並べる。Core0 は単スレッドなので 5 つは必ず連続して入る。
+            enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
             enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
             enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
             enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
@@ -1643,8 +1706,9 @@ static void nav_alarm_tick(bool new_gnss_info) {
         }
         if (auto10k_status == AUTO10K_INTO && distance_frm_destination < 1.5) {  //折り返し地点用。再度の折り返しは 1km だが、500mの誤差を足しておく。
           apply_auto10k_status(AUTO10K_AWAY);
-          // solo_play。上の AWAY→INTO と同じ鳴り方にしてある（理由は上のコメント）。
-          enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
+          // solo_play。上の AWAY→INTO と同じ鳴り方にしてある（理由は上のコメント。
+          // 打ち消さずに積むところも同じ）。
+          enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(2793, 500, 1, 3, 0, true));
           enqueueTask(createPlayMultiToneTask(3136, 500, 1, 3, 0, true));
@@ -1764,7 +1828,9 @@ void update_course_warning(float degpersecond) {
   if (course_warning_index >= 900 && millis() - last_course_warning_time > 30000) {
     last_course_warning_time = millis();
     course_warning_index = 0;
-    enqueueTaskWithAbortCheck(createPlayMultiToneTask(2793, 500, 1, 2, 0, true));
+    // ★ ここも打ち消さない（Auto10km 側のコメント参照）。30 秒のクールダウンが
+    //   あるので、積み上がって鳴り続けることは無い。
+    enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2, 0, true));
     enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2, 0, true));
     enqueueTask(createPlayMultiToneTask(2793, 500, 1, 2, 0, true));
     enqueueTask(createPlayMultiToneTask(3136, 500, 1, 2, 0, true));

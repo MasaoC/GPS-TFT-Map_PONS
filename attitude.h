@@ -149,6 +149,15 @@ bool attitude_take_calib_done();
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg);
 void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定からの復元用
 
+// ---- 較正した日（JST の YYYYMMDD、0 = 不明）----
+// 電源が切れている間にマウントから外されると OFF_MOUNT 判定が働かない
+// （ESKF が回っていないため）。その穴を埋めるための、日付だけの弱い手がかり。
+// 「日付をまたいだ＝一度持ち帰った可能性がある」として設定画面に注意を出すのに使う。
+// 断定はしない。付けっぱなしで日をまたぐこともあるため。
+uint32_t attitude_get_calib_date();
+void     attitude_set_calib_date(uint32_t yyyymmdd);   // APPLY 直後と SD 復元から呼ぶ
+bool     attitude_calib_date_stale(uint32_t today_jst);
+
 // ---- 較正時に申告するピッチ角（画面の SET PITCH 行の値）----
 // 次に較正するときの目標値。SD に保存して次回起動でも同じ値から始められるようにする。
 float attitude_get_pitch_target();

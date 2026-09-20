@@ -1182,6 +1182,21 @@ GnssTime get_gnss_time(){
   return t;
 }
 
+// GNSS の UTC 日時から、JST の日付を YYYYMMDD の整数で返す。0 = 時刻がまだ無い。
+// 「前回の較正から日付をまたいだか」の判定に使う。
+//
+// ★ UTC の日付では使えない。夜明けの飛行（05:00 JST）は 前日 20:00 UTC なので、
+//   前日夕方に較正したときと UTC 日付が一致してしまい、
+//   「前日に組み立てて較正 → 翌朝飛ぶ」という一番ありそうな経路を取りこぼす。
+uint32_t get_gnss_jst_yyyymmdd() {
+  GnssDate d = get_gnss_date();
+  GnssTime t = get_gnss_time();
+  if (!d.isValid() || !t.isValid()) return 0;
+  int y = d.year(), mo = d.month(), da = d.day(), h = t.hour();
+  utcToJst(&y, &mo, &da, &h);
+  return (uint32_t)y * 10000UL + (uint32_t)mo * 100UL + (uint32_t)da;
+}
+
 unsigned long last_demo_gnss_update = 0;
 
 // 飛行軌跡（トラックログ）に現在位置を追加する。

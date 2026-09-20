@@ -220,6 +220,19 @@ void link_setup() {
     else if (link_mode_setting == LINK_MODE_RX)
         enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
 
+    // ★ **何を書き込んだかを log.txt に残す。**
+    //   ここで使う link_mode_setting / ch / profile は Core1 の loadSettings() が
+    //   入れる値で、startup_demo_tft() の sd_setup_complete 待ちを挟んでいるので
+    //   通常は読み込み済みになっている。ただし**あの待ちは 5 秒で打ち切る**ので、
+    //   SD が極端に遅いと既定値（OFF / CH 既定）のまま無線を設定してしまう。
+    //   症状は「送信しているつもりで違うチャンネルにいる」で画面には何も出ない。
+    //   settings=0 が残っていればそれが起きたと断定できる。
+    //   e220_alive() も一緒に残す。false なら以下の値は書けていない。
+    enqueueTask(createLogSdfTask("LINK SETUP link=%u ch=%u sf=%u grp=%u alive=%d settings=%d",
+                                 link_mode_setting, link_radio_ch,
+                                 link_radio_profile, link_group,
+                                 (int)e220_alive(), (int)settings_loaded));
+
     // 起動時から送信モードなら、送り始める前にチャンネルを確かめる。
     link_preflight_start();
 }

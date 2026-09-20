@@ -137,6 +137,7 @@ SDSetting settings[] = {
   {"wind_estimate",   setWindEstimate,   getWindEstimate},
   {"roll_target",     setRollTarget,     getRollTarget},
   {"needs_apply",     setNeedsApply,     getNeedsApply},
+  {"calib_date",      setCalibDate,      getCalibDate},
   {"roll_trim",       setRollTrim,       getRollTrim},
   {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus},
   {"link_mode",       setLinkMode,       getLinkMode},
@@ -536,6 +537,18 @@ void getNeedsApply(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", attitude_needs_apply() ? 1 : 0);
 }
 
+// 最後に APPLY した日（JST の YYYYMMDD、0 = 不明）。
+// これを保存する目的は「電源を切っている間にマウントから外された」を拾うこと。
+// OFF_MOUNT 判定は ESKF が回っている間しか働かないので、電源 OFF 中の取り外しは
+// needs_apply には現れない。日付だけは残しておけば、次の起動で日をまたいだと分かる。
+// 値の妥当性検査は attitude_set_calib_date() 側で行う（壊れた設定ファイル対策）。
+void setCalibDate(const char* value) {
+  attitude_set_calib_date((uint32_t)strtoul(value, nullptr, 10));
+}
+void getCalibDate(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%lu", (unsigned long)attitude_get_calib_date());
+}
+
 // Roll/Pitch/Yaw 機能のマスタースイッチ（IMU/ESKF 画面で切替）
 void setRpyFunctions(const char* value) { attitude_set_rpy_enabled(atoi(value) != 0); }
 void getRpyFunctions(char* buffer, size_t bufferSize) {
@@ -791,7 +804,13 @@ Task createInitReplayTask(){
 
 // キュー内の指定タイプのタスクを全て除去する（重複防止用）。
 // in-place 削除: read ポインタで走査し、対象でない要素だけ write 位置に詰める。
-void removeDuplicateTask(TaskType type) {
+// ★ max_priority は **これ以下の優先度のものだけ消す** という上限。
+//   種別だけで消すと、音量確認音（優先度 1）がコース逸脱警報や Auto10km の
+//   折返しチャイム（優先度 2/3）まで巻き添えで消してしまう。
+//   0.965 で警報が画面によらず鳴るようになったので、設定画面で音量をいじっている
+//   最中に警報が来る組み合わせが現実に起こる。
+//   既定の INT_MAX は従来どおり「種別が同じなら全部消す」。
+void removeDuplicateTask(TaskType type, int max_priority) {
     mutex_enter_blocking(&taskQueueMutex);
 
     if (taskQueue.head == taskQueue.tail) {
@@ -803,7 +822,13 @@ void removeDuplicateTask(TaskType type) {
     int write = taskQueue.head;
 
     while (read != taskQueue.tail) {
-        if (taskQueue.tasks[read].type != type) {
+        // 消す条件を組み立てる。★ 優先度は共用体の中にあるので、**種別が一致した
+        //   ときだけ読むこと。**先に読むと別種別のタスクの別のメンバを読むことになる。
+        bool remove = (taskQueue.tasks[read].type == type);
+        if (remove && type == TASK_PLAY_MULTITONE) {
+            remove = (taskQueue.tasks[read].playMultiToneArgs.priority <= max_priority);
+        }
+        if (!remove) {
             if (write != read) {
                 taskQueue.tasks[write] = taskQueue.tasks[read];
             }
@@ -820,7 +845,10 @@ void removeDuplicateTask(TaskType type) {
 // 以前は地図画像ロードの中断処理も担っていたが、
 // ベクタ地図への移行で地図画像ロードが無くなったため、重複排除だけが残っている。
 bool enqueueTaskWithAbortCheck(Task newTask) {
-  removeDuplicateTask(newTask.type);
+  // 自分と同じか、自分より低い優先度のものだけ消す（上のコメント参照）。
+  const int prio = (newTask.type == TASK_PLAY_MULTITONE)
+                 ? newTask.playMultiToneArgs.priority : INT_MAX;
+  removeDuplicateTask(newTask.type, prio);
   return enqueueTask(newTask);
 }
 
@@ -1072,7 +1100,12 @@ static int sd_setup_count = 0;   // setup_sd() の累計呼び出し回数
 // currentdestination のリセットを防ぐ（init_mapdata() の mapdatainitialized と同じ役割）。
 static bool destinations_loaded = false;
 // settings.txt を一度でも読める状態で試したか。下の setup_sd() を参照。
-static bool settings_loaded = false;
+// ★ Core1 が立て、Core0（link_setup）が読む。**volatile 必須。**
+//   Core0 は startup_demo_tft() で sd_setup_complete を待つので、通常はここが
+//   true になってから link_setup() が走る。ただしあの待ちには 5 秒の上限があり、
+//   超えると Core0 は先へ進む。そのときだけ「設定が入る前に無線を設定した」状態に
+//   なるので、link_setup() がこの値をログに残して後から分かるようにしてある。
+volatile bool settings_loaded = false;
 
 bool get_sd_use_spi()    { return sd_use_spi; }
 int  get_sd_setup_count(){ return sd_setup_count; }
@@ -1161,10 +1194,19 @@ void setup_sd(int trycount, bool load_settings){
   //   ファイルが無い場合も「読める状態で試した」ので完了扱いにする。既定値で正しく、
   //   復旧のたびに開き直す意味が無いため。
   if (load_settings || !settings_loaded) {
-    if (!loadSettings()) {
+    const bool ok = loadSettings();
+    if (!ok) {
       DEBUGW_PLN(20250508, "Error loading settings.");
     }
     settings_loaded = true;
+    // ★ 読み込めた値を log.txt に残す。
+    //   settings.txt は機体ごとに違う唯一の設定で、無線の 3 台一致
+    //   （link / ch / sf / grp）はここが正しくないと成立しない。
+    //   「設定したつもりで入っていなかった」を後から突き止められるようにする。
+    //   読めなかったときは既定値で走っているので、その旨も一緒に残す。
+    log_sdf("SETTINGS LOADED%s link=%u ch=%u sf=%u grp=%u",
+            ok ? "" : " (FAILED, defaults)",
+            link_mode_setting, link_radio_ch, link_radio_profile, link_group);
   }
   sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }

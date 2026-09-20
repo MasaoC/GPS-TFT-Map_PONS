@@ -64,6 +64,15 @@ static uint32_t      calib_req_us_  = 0;
 static float         calib_pitch_   = 0.0f;
 static float         calib_roll_    = 0.0f;
 static volatile bool calib_done_    = false;
+// 較正した日（JST の YYYYMMDD）。0 = 不明。
+// ★ ここは attitude.cpp では埋められない。このモジュールは GNSS を知らない
+//   （速度も外から押し込む作りになっている）ので、実際の日付は
+//   attitude_take_calib_done() を受けた .ino 側が入れる。
+//   SD の設定に保存して起動をまたいで保持する。
+// ★ volatile。書くのは Core1（loadSettings）と Core0（APPLY 直後）、
+//   読むのは Core0（.ino の発報と画面）。needs_apply_ と同じ理由で、
+//   ループの中で値をレジスタに抱え込まれると測位後の変化を取りこぼす。
+static volatile uint32_t calib_date_ = 0;
 
 // ---- Roll/Pitch/Yaw 機能のマスタースイッチ ----
 // ESKF から得た姿勢を「使う」機能を一括で ON/OFF する。既定 ON。
@@ -907,6 +916,10 @@ void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg) {
     level_roll_off_  = r - target_roll_deg;      // ロールも申告値になるようにする
     level_pitch_off_ = p - target_pitch_deg;     // ピッチは申告値になるようにする
     needs_apply_ = false;                        // 較正したので警告を解除
+    // 日付は一旦「不明」にする。正しい値は呼び出し側（.ino）が直後に入れる。
+    // ここで古い日付を残すと、測位できていない場所で APPLY し直したときに
+    // 「前の日の較正のままだ」と誤って警告することになる。不明 = 警告しない。
+    calib_date_ = 0;
 
     // 自動トリムの累積量は捨てる。ここでロールのゼロ点を取り直したので、
     // 残したままだと表示が -roll_trim_deg_ になり「APPLY したのに 0 にならない」
@@ -945,6 +958,31 @@ void attitude_get_level_offset(float &roll_deg, float &pitch_deg) {
 void attitude_set_level_offset(float roll_deg, float pitch_deg) {
     level_roll_off_  = clamp_setting_deg(roll_deg,  -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
     level_pitch_off_ = clamp_setting_deg(pitch_deg, -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
+}
+
+// ---- 較正した日 ----
+uint32_t attitude_get_calib_date() { return calib_date_; }
+// 呼び出し元は APPLY 直後の .ino と、SD 設定からの復元。
+// 壊れた値を入れると「日付をまたいだ」判定が毎回成立して鳴り続けるので、
+// もっともらしい範囲から外れたものは 0（不明＝警告しない）に倒す。
+void attitude_set_calib_date(uint32_t yyyymmdd) {
+    const uint32_t y = yyyymmdd / 10000;
+    const uint32_t m = yyyymmdd / 100 % 100;
+    const uint32_t d = yyyymmdd % 100;
+    if (y < 2020 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31) { calib_date_ = 0; return; }
+    calib_date_ = yyyymmdd;
+}
+// 較正した日と today_jst が違うか。
+// today_jst は get_gnss_jst_yyyymmdd() の戻り値をそのまま渡す（0 = 測位前）。
+// どちらかが不明なら false。屋内では経過を判定できないので、
+// 「分からないときは鳴らさない」に倒す（机上テストのたびに鳴るのを防ぐ）。
+bool attitude_calib_date_stale(uint32_t today_jst) {
+    // volatile を 1 回だけ読む。APPLY は 0 を入れてから正しい日付を入れるので、
+    // 2 回読むとその隙間に当たったときだけ「不明でないのに一致しない」と
+    // 誤判定しうる（確率は低いが、読み方を固定しておけば考えなくて済む）。
+    const uint32_t cd = calib_date_;
+    if (cd == 0 || today_jst == 0) return false;
+    return cd != today_jst;
 }
 
 float attitude_get_roll_target() { return roll_target_; }

@@ -76,7 +76,7 @@ SD に残るログを `tools/` の解析にかけると、機体特性の分析�
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.969**（Build 20260919）。
+* 最新のソフトウェアバージョンは **0.970**（Build 20260920）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -399,6 +399,15 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
 * **マウントから外すと検出します。** ロールかピッチが 30 度（右バンクのみ 40 度）を超えると
   「手に持って外した」とみなし、次に APPLY するまで地図と設定画面に赤で警告を出します。
   この状態は SD に保存され、電源を切って充電しても保持されます。
+* **ただしこの検出は ESKF が回っている間しか働きません。** 電源を切ったまま外して付け直すと、
+  傾きを観測できないので検出できません。そこで **最後に APPLY した日（JST）** を SD に残し、
+  **日付をまたいでいたら** IMU / ESKF 画面の注意書きを `! CALIB IS FROM MM/DD` に変え、
+  地上で一度だけ `eskf_calib_oldday.wav` を鳴らします。日付は 2 ページ目の
+  `level offset` 行の右にも常に出ます（`--/--` は不明）。
+  断定はしません（付けっぱなしで日をまたぐこともあるため）。地図表示・ヘッダの取り消し線・
+  PONS Link の fault には**乗せません**。音を繰り返さないのは、プラットホームの上で鳴ったときに
+  「止めるために APPLY」されると、正しかった較正が台の姿勢で上書きされてしまうためです。
+  測位できていない場所で APPLY した場合は日付が「不明」になり、この判定は働きません。
 * 同じ理由で **Roll trim during flight**（直進中のロール自動トリム、2 ページ目）があります。
   直進が 60 秒続くごとに評価し、**2 回続けて同じ向きに 0.5 度以上**のズレが出たときだけ
   0.5 度ずつゼロへ寄せます（累積上限 5 度）。2 回の一致を要求するのは、60 秒窓の平均ロールが
@@ -656,9 +665,13 @@ microSD カードスロットはバネ式です。取り出す時は指で押し
   120:volt=4.14V cpu=42.0C 15:18 JST
   148:GNSS FIXED fix=3 sats=0 hAcc=60.2m
   1303:ACC hAcc=1.4m vAcc=1.9m sAcc=0.19m/s fix=3 sats=21
+  1480:ESKF APPLY done R+0.83 P-1.24 at 2026-03-26 06:41:03 UTC
   ```
   * 時刻は **GNSS の日時が確定してから**しか書きません。確定前は `--:--` になります
     （以前は 0 時として扱っていたため、測位していなくても `09:00 JST` と記録されていました）。
+  * 行頭は**起動からの秒数**であって時刻ではありません。絶対時刻が要る行は
+    それ自体に日時を持たせています（`GNSS TIME:` と `ESKF APPLY done`）。
+    較正のオフセットは 60 秒ごとの `eskf ... lvl R+0.8 P-1.2` 行でも追えます。
 
 ### ログを Google Earth で可視化する方法
 
@@ -768,7 +781,7 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 | 分類 | ファイル名 |
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
-| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
+| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `eskf_calib_oldday.wav`（較正した日から日付をまたいだ。地上で起動ごとに 1 回）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
 | 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |

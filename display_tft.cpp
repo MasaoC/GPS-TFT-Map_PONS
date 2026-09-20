@@ -1800,6 +1800,22 @@ static void draw_imu_page1() {
     backscreen.print("!! REMOVED FROM MOUNT"); y += lh;
     backscreen.setCursor(2, y);
     backscreen.print("   APPLY required"); y += lh + 6;
+  } else if (attitude_get_rpy_enabled() && !getReplayMode() &&
+             attitude_calib_date_stale(get_gnss_jst_yyyymmdd())) {
+    // 較正した日と今日（JST）が違う。電源が切れている間に外して付け直していても
+    // OFF MOUNT 判定は働かないので、日付だけを手がかりに注意を促す。
+    // ★ 赤にしない。付けっぱなしで日をまたいだだけのことも十分あり、
+    //   その場合は較正は正しい。断定しない色（オレンジ）で出す。
+    //   発報（音）は .ino 側で地上のとき一度だけ。ここは表示のみ。
+    // ★ リプレイ中は出さない。リプレイ中の ubx_* は再生している CSV の日付に
+    //   なるので、そのまま比べると必ず「日付が違う」になってしまう
+    //   （音のほうは、外側の地上判定に !getReplayMode() が入っているので届かない）。
+    const uint32_t cd = attitude_get_calib_date();
+    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    backscreen.printf("! CALIB IS FROM %02u/%02u",
+                      (unsigned)(cd / 100 % 100), (unsigned)(cd % 100)); y += lh;
+    backscreen.setCursor(2, y);
+    backscreen.print("  APPLY again if remounted"); y += lh + 6;
   } else {
     backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
     backscreen.print("Note: Make sure actual aircraft"); y += lh;
@@ -1952,7 +1968,14 @@ static void draw_imu_page2() {
   attitude_get_level_offset(lr, lp);
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("level offset R%+.1f P%+.1f", lr, lp); y += lh + 4;
+  // 較正した日（JST の MM/DD）も併記する。警告が出ていないときでも
+  // 「いつ APPLY したのか」を人が確認できるようにしておく。--/-- は不明
+  // （測位していない場所で APPLY した、または一度も APPLY していない）。
+  const uint32_t cd = attitude_get_calib_date();
+  if (cd) backscreen.printf("level offset R%+.1f P%+.1f %02u/%02u", lr, lp,
+                            (unsigned)(cd / 100 % 100), (unsigned)(cd % 100));
+  else    backscreen.printf("level offset R%+.1f P%+.1f --/--", lr, lp);
+  y += lh + 4;
 
   // ---- 調整メニュー ----
   // 日常の運用では触らない項目。実飛行での検証がまだなので、片方だけ切って
