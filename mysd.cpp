@@ -138,6 +138,10 @@ SDSetting settings[] = {
   {"roll_target",     setRollTarget,     getRollTarget},
   {"needs_apply",     setNeedsApply,     getNeedsApply},
   {"calib_date",      setCalibDate,      getCalibDate},
+  {"airspeed_v0",     setAirspeedV0,     getAirspeedV0},
+  {"airspeed_k",      setAirspeedK,      getAirspeedK},
+  {"airspeed_min",    setAirspeedMin,    getAirspeedMin},
+  {"airspeed_max",    setAirspeedMax,    getAirspeedMax},
   {"roll_trim",       setRollTrim,       getRollTrim},
   {"auto10k_status",  setAuto10kStatus,  getAuto10kStatus},
   {"link_mode",       setLinkMode,       getLinkMode},
@@ -547,6 +551,48 @@ void setCalibDate(const char* value) {
 }
 void getCalibDate(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%lu", (unsigned long)attitude_get_calib_date());
+}
+
+// ---- 対気速度の推定モデル V(θ) = V0 * sqrt(K / (K + θ)) ----
+// 機体・重量・重心で変わるので、機体ごとに SD で設定できるようにしてある。
+// 既定は settings.h の AIRSPEED_*。範囲外は read_setting_float() が端でクランプし、
+// 理由を log.txt に残す（黙って既定へ戻すと、書いたつもりで効いていない状態になる）。
+// 読み込み後の実効値は setup_sd() が AIRSPEED MODEL 行としてログに残す。
+//
+// ★ 範囲は「人力飛行機として明らかにあり得ない値を弾く」ためのもので、
+//   細かい調整を妨げない広さにしてある。
+//   airspeed_k は 0 に近づけると分母が消えて発散するので下限を離してある。
+void setAirspeedV0(const char* value) {
+  float v;
+  if (read_setting_float("airspeed_v0", value, 3.0f, 20.0f, &v))
+    attitude_set_airspeed_v0(v);
+}
+void getAirspeedV0(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.2f", attitude_get_airspeed_v0());
+}
+void setAirspeedK(const char* value) {
+  float v;
+  if (read_setting_float("airspeed_k", value, 3.0f, 60.0f, &v))
+    attitude_set_airspeed_k(v);
+}
+void getAirspeedK(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.2f", attitude_get_airspeed_k());
+}
+void setAirspeedMin(const char* value) {
+  float v;
+  if (read_setting_float("airspeed_min", value, 1.0f, 20.0f, &v))
+    attitude_set_airspeed_min(v);
+}
+void getAirspeedMin(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.2f", attitude_get_airspeed_min());
+}
+void setAirspeedMax(const char* value) {
+  float v;
+  if (read_setting_float("airspeed_max", value, 1.0f, 25.0f, &v))
+    attitude_set_airspeed_max(v);
+}
+void getAirspeedMax(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.2f", attitude_get_airspeed_max());
 }
 
 // Roll/Pitch/Yaw 機能のマスタースイッチ（IMU/ESKF 画面で切替）
@@ -1207,6 +1253,11 @@ void setup_sd(int trycount, bool load_settings){
     log_sdf("SETTINGS LOADED%s link=%u ch=%u sf=%u grp=%u",
             ok ? "" : " (FAILED, defaults)",
             link_mode_setting, link_radio_ch, link_radio_profile, link_group);
+    // 対気速度モデルの実効値。風の推定はこの 4 つで決まり、機体ごとに違う。
+    // 「SD に書いたつもりで効いていなかった」を後から突き止められるようにする。
+    log_sdf("AIRSPEED MODEL v0=%.2f k=%.2f range %.2f..%.2f",
+            attitude_get_airspeed_v0(),  attitude_get_airspeed_k(),
+            attitude_get_airspeed_min(), attitude_get_airspeed_max());
   }
   sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }

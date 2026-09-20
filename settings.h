@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260920
-#define BUILDVERSION "0.970"
+#define BUILDDATE 20260921
+#define BUILDVERSION "0.971"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -944,18 +944,30 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define ESKF_DRIFT_LINE_SKIP_PX   7   // 点線どうしの間隔 [px]
 #define ESKF_DRIFT_LINE_GAP_PX    4   // 機首から点線を描き始めるまでの隙間 [px]
 
-// ---- 対気速度の推定（ピッチからの区分線形）----
-// 「ピッチ0度で7.0m/s で飛ぶ」という設計前提を使い、ピッチから対気速度を引く。
-// ピッチが上がる（機首上げ）ほど遅く、下がるほど速い。3点を通る区分線形で、
-// 範囲外は端点でクランプする（この機体で起こり得ない対気速度を出さないため）。
-// ※ 機体・重量・重心で変わる値なので、機体が変わったらここを直すこと。
+// ---- 対気速度の推定（ピッチからの曲線）----
+// 「ピッチ 0 度で 7.0m/s で飛ぶ」という設計前提を使い、ピッチから対気速度を引く。
+// ピッチが上がる（機首上げ）ほど遅く、下がるほど速い。
+//
+//     V(θ) = V0 * sqrt( K / (K + θ) )      θ: ピッチ [度]
+//
+// ★ 区分線形をやめてこの形にした理由。**これは近似曲線ではなく式そのもの**。
+//   定常飛行では 揚力 = 重量 なので
+//       ½ρV²S・CL = W    →    V ∝ 1/sqrt(CL)
+//   CL が迎角に対して直線なら CL(θ) ∝ (θ + K) と書ける。K は
+//   **揚力がゼロになるピッチまでの角度**で、K=10 は「ピッチ -10 度で揚力ゼロ」の意味。
+//   これを上へ代入しただけ。線形補間と違い、当てはめた範囲の外でも形が崩れない。
+//   従来の 3 点（-4度/9.0、0度/7.0、+5度/5.8）を K=10 の曲線は最大 0.17m/s で通る
+//   （各点を厳密に通す K は 10.1 と 11.0 で、両端から求めた値もほぼ一致する）。
+//
+// ※ 機体・重量・重心で変わる値なので、機体が変わったら直すこと。
+//   **ここは既定値で、実際の値は SD の settings.txt から上書きできる**
+//   （`airspeed_v0` / `airspeed_k` / `airspeed_min` / `airspeed_max`。README 参照）。
+//   読み込んだ値は起動時に log.txt の AIRSPEED MODEL 行に残る。
 //   使うピッチは瞬時値ではなく平均（瞬時値は std 1.23 度の振動があるため）。
-#define AIRSPEED_PITCH_HI_DEG    5.0f   // 機首上げ側のピッチ [度]
-#define AIRSPEED_AT_PITCH_HI     5.8f   //   そのときの対気速度 [m/s]（＝推定の下限）
-#define AIRSPEED_PITCH_MID_DEG   0.0f   // 設計上の巡航ピッチ [度]
-#define AIRSPEED_AT_PITCH_MID    7.0f   //   そのときの対気速度 [m/s]
-#define AIRSPEED_PITCH_LO_DEG   (-4.0f) // 機首下げ側のピッチ [度]
-#define AIRSPEED_AT_PITCH_LO     9.0f   //   そのときの対気速度 [m/s]（＝推定の上限）
+#define AIRSPEED_V0_MPS        7.0f   // V0: 巡航ピッチ 0 度での対気速度 [m/s]
+#define AIRSPEED_CURVE_K_DEG  10.0f   // K : 揚力がゼロになるピッチまでの角度 [度]
+#define AIRSPEED_MIN_MPS       5.8f   // 推定の下限 [m/s]（この機体で起こり得ない値を出さない）
+#define AIRSPEED_MAX_MPS       9.0f   // 推定の上限 [m/s]
 
 // ---- 風の推定 ----
 // 風ベクトル = 対地速度ベクトル - 対気速度ベクトル。

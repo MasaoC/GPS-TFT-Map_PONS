@@ -6,3 +6,7 @@ link_mode:0
 link_radio_ch:6
 link_radio_prof:1
 link_group:0
+airspeed_v0:7.00
+airspeed_k:10.00
+airspeed_min:5.80
+airspeed_max:9.00

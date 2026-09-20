@@ -105,22 +105,37 @@ static int      trim_run_count_ = 0;      // 連続した窓の数（0 = 連続�
 static float    trim_roll_sum_ = 0.0f;    // 直進中のロール積算
 static float    trim_time_s_   = 0.0f;    // 直進が続いた時間 [s]
 static float    yaw_rate_lp_   = 0.0f;    // ワールド系ヨーレートの平滑値 [deg/s]
-// ピッチ [度] から対気速度 [m/s] を引く区分線形。定数は settings.h（機体依存）。
-// ピッチが上がるほど遅く、下がるほど速い。範囲外は端点でクランプし、
+// ---- 対気速度モデルの係数 ----
+// 既定は settings.h。実際の値は SD の settings.txt から上書きできる（機体依存のため）。
+// ★ volatile。書くのは Core1（loadSettings）、読むのは Core0（下の airspeed_from_pitch）。
+//   非 volatile だと、飛行中ずっと回るこのループで値をレジスタに抱え込まれうる。
+static volatile float airspeed_v0_  = AIRSPEED_V0_MPS;
+static volatile float airspeed_k_   = AIRSPEED_CURVE_K_DEG;
+static volatile float airspeed_min_ = AIRSPEED_MIN_MPS;
+static volatile float airspeed_max_ = AIRSPEED_MAX_MPS;
+
+// ピッチ [度] から対気速度 [m/s] を引く。式の導出は settings.h のコメント。
+//     V(θ) = V0 * sqrt( K / (K + θ) )
+// ピッチが上がるほど遅く、下がるほど速い。上下限でクランプし、
 // この機体で起こり得ない対気速度を出さないようにする。
 static float airspeed_from_pitch(float pitch_deg) {
-    float v;
-    if (pitch_deg >= AIRSPEED_PITCH_MID_DEG) {
-        const float t = (pitch_deg - AIRSPEED_PITCH_MID_DEG) /
-                        (AIRSPEED_PITCH_HI_DEG - AIRSPEED_PITCH_MID_DEG);
-        v = AIRSPEED_AT_PITCH_MID + t * (AIRSPEED_AT_PITCH_HI - AIRSPEED_AT_PITCH_MID);
-    } else {
-        const float t = (pitch_deg - AIRSPEED_PITCH_MID_DEG) /
-                        (AIRSPEED_PITCH_LO_DEG - AIRSPEED_PITCH_MID_DEG);
-        v = AIRSPEED_AT_PITCH_MID + t * (AIRSPEED_AT_PITCH_LO - AIRSPEED_AT_PITCH_MID);
-    }
-    if (v < AIRSPEED_AT_PITCH_HI) v = AIRSPEED_AT_PITCH_HI;
-    if (v > AIRSPEED_AT_PITCH_LO) v = AIRSPEED_AT_PITCH_LO;
+    // 入力が NaN／無限大なら設計点を返す。比較が全部 false になるので
+    // 下のクランプでは捕まえられず、そのまま風の LPF を殺す（下記参照）。
+    // ここを抜けた値は必ず有限なので、以降は d の符号だけ見ればよい。
+    if (!(pitch_deg > -1000.0f && pitch_deg < 1000.0f)) return airspeed_v0_;
+    const float k = airspeed_k_;
+    const float d = k + pitch_deg;
+    // ★ K + θ がゼロに近づくと発散し、負になると sqrtf() は NaN を返す。
+    //   **NaN との比較はすべて false なので、下のクランプを素通りする。**
+    //   そのまま風の推定（wind_e_/wind_n_）へ入ると LPF ごと NaN に汚染され、
+    //   電源を切るまで風が出なくなる。ここで打ち切る。
+    //   物理的には「揚力がゼロになるピッチまで機首を下げた」状況で、
+    //   そこまで下げれば対気速度は上限側に張り付く。
+    if (d <= 0.01f) return airspeed_max_;
+    float v = airspeed_v0_ * sqrtf(k / d);
+    // 上下限が逆に設定されていても NaN にはならない（max 側が残るだけ）。
+    if (v < airspeed_min_) v = airspeed_min_;
+    if (v > airspeed_max_) v = airspeed_max_;
     return v;
 }
 
@@ -959,6 +974,18 @@ void attitude_set_level_offset(float roll_deg, float pitch_deg) {
     level_roll_off_  = clamp_setting_deg(roll_deg,  -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
     level_pitch_off_ = clamp_setting_deg(pitch_deg, -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
 }
+
+// ---- 対気速度モデルの係数（既定は settings.h、SD の settings.txt から上書き可）----
+// 値の検査は read_setting_float()（mysd.cpp）側で行い、範囲外はクランプして
+// log.txt に残す。ここでは「壊れた値で 0 除算・NaN を作らない」最低限だけ守る。
+float attitude_get_airspeed_v0()  { return airspeed_v0_; }
+void  attitude_set_airspeed_v0(float mps)  { if (mps > 0.0f) airspeed_v0_  = mps; }
+float attitude_get_airspeed_k()   { return airspeed_k_; }
+void  attitude_set_airspeed_k(float deg)   { if (deg > 0.0f) airspeed_k_   = deg; }
+float attitude_get_airspeed_min() { return airspeed_min_; }
+void  attitude_set_airspeed_min(float mps) { if (mps > 0.0f) airspeed_min_ = mps; }
+float attitude_get_airspeed_max() { return airspeed_max_; }
+void  attitude_set_airspeed_max(float mps) { if (mps > 0.0f) airspeed_max_ = mps; }
 
 // ---- 較正した日 ----
 uint32_t attitude_get_calib_date() { return calib_date_; }

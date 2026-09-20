@@ -154,6 +154,18 @@ void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定�
 // （ESKF が回っていないため）。その穴を埋めるための、日付だけの弱い手がかり。
 // 「日付をまたいだ＝一度持ち帰った可能性がある」として設定画面に注意を出すのに使う。
 // 断定はしない。付けっぱなしで日をまたぐこともあるため。
+// ---- 対気速度モデル V(θ) = V0 * sqrt(K / (K + θ)) の係数 ----
+// 既定値は settings.h、実際の値は SD の settings.txt から上書きできる。
+// 機体・重量・重心で変わるので、機体ごとに SD 側で設定する運用を想定している。
+float attitude_get_airspeed_v0();
+void  attitude_set_airspeed_v0(float mps);   // V0 [m/s]
+float attitude_get_airspeed_k();
+void  attitude_set_airspeed_k(float deg);    // K [度]
+float attitude_get_airspeed_min();
+void  attitude_set_airspeed_min(float mps);  // 推定の下限 [m/s]
+float attitude_get_airspeed_max();
+void  attitude_set_airspeed_max(float mps);  // 推定の上限 [m/s]
+
 uint32_t attitude_get_calib_date();
 void     attitude_set_calib_date(uint32_t yyyymmdd);   // APPLY 直後と SD 復元から呼ぶ
 bool     attitude_calib_date_stale(uint32_t today_jst);
