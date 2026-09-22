@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260922
-#define BUILDVERSION "0.972"
+#define BUILDVERSION "0.973"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -960,6 +960,18 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ヨーの誤差が偏流角そのものと同程度あると意味を成さないため。
 // 実測（車載・機動あり）のヨー精度は 95% 値で 2.5 度程度だった。
 #define ESKF_YAW_DRIFT_95_DEG  10.0f
+
+// ヨー誤差の分散の上限 [度]（1σ）。
+// 等速直進・測位なしではヨーは不可観測なので、P_[2][2] は観測が入るまで
+// 単調に育ち続ける。実機で 13 分放置したら 1σ が 750 度まで伸びた。
+// **1σ = 180 度は「まったく分からない」と同義**で、それ以上育っても情報は
+// 増えない。ログと表示が読めなくなるうえ、カルマンゲインの計算に極端な値が
+// 入るだけなので、ここで頭打ちにする。観測が入れば普通に縮む。
+#define ESKF_YAW_SIGMA_MAX_DEG 180.0f
+// GNSS 速度観測の許容鮮度 [µs]。これを超えたら自動ロールトリムと風推定を止める。
+// GNSS は 2Hz なので 3 秒 = 6 回分の欠測。短い遮蔽では止まらず、
+// 「そもそも測位していない」状態だけを確実に弾く長さ。
+#define ESKF_GNSS_VEL_TIMEOUT_US 3000000UL
 #define ESKF_DRIFT_LINE_LEN_PX   40   // 機首の先に伸ばす点線の全長 [px]
 #define ESKF_DRIFT_LINE_DASH_PX   5   // 点線 1 本の長さ [px]
 #define ESKF_DRIFT_LINE_SKIP_PX   7   // 点線どうしの間隔 [px]

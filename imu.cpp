@@ -39,7 +39,11 @@
 // ============================================================
 
 #include <Arduino.h>
-#include <Adafruit_BNO08x.h>
+// ★ **山括弧でなく相対パス。**ライブラリは src/bno08x/ に取り込んである
+//   （理由と改変点は src/bno08x/PONS_VENDORING.md）。
+//   <Adafruit_BNO08x.h> と書くと Arduino が **インストール済みの方**を拾い、
+//   ローカル改変が効かないまま静かにビルドが通ってしまう。
+#include "src/bno08x/Adafruit_BNO08x.h"
 
 #include "imu.h"
 #include "link.h"

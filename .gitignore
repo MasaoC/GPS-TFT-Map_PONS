@@ -12,3 +12,6 @@ src/flashdata/vectormap_data_hires.cpp
 # KiCad の fabrication-toolkit が生成する発注提出物（ガーバー・BOM・座標の zip）。
 # 発注のたびに作り直せるうえ、基板を直すたびに巨大な差分になるため git には入れない。
 production/
+
+# KiCad の自動保存物（保存のたびに現れて status を汚す）
+_autosave-*

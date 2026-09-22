@@ -41,6 +41,9 @@ static float T2_[N_ERR][N_ERR];
 static bool  initialized_ = false;
 // 最後にジャイロを受け取った時刻。IMU 途絶の検出に使う。
 static uint32_t last_gyro_us_ = 0;
+// GNSS 速度観測が最後に入った時刻。**自動ロールトリムの安全装置**に使う。
+static uint32_t last_gnss_vel_us_ = 0;
+static bool     gnss_vel_seen_    = false;
 static bool     gyro_seen_    = false;
 static float accel_last_[3] = {0.0f, 0.0f, GRAVITY};
 static bool  accel_valid_ = false;
@@ -276,6 +279,8 @@ void attitude_setup() {
     gnss_updates_ = 0;
     gyro_seen_ = false;
     last_gyro_us_ = 0;
+    last_gnss_vel_us_ = 0;
+    gnss_vel_seen_ = false;
     pitch_avg_ = 0.0f;
     pitch_avg_fill_s_ = 0.0f;
     // roll_trim_deg_ はここでは触らない。level_roll_off_ と同じく SD から復元する値で、
@@ -300,6 +305,19 @@ void attitude_setup() {
 static bool imu_fresh() {
     if (!gyro_seen_) return false;
     return (uint32_t)(time_us_32() - last_gyro_us_) < ESKF_IMU_TIMEOUT_US;
+}
+
+// GNSS の速度観測が生きているか。
+// ★ **v_ は観測が無いと加速度バイアスを積分して際限なく育つ。**
+//   「観測の無い区間も慣性で埋まっている」のは短い欠測を跨ぐための性質であって、
+//   GNSS が最初から無い状態（屋内・アンテナ未接続）では**ただのドリフト**になる。
+//   実機で踏んだ: 机の上で数分放置したら |v_| が 3m/s を超え、
+//   ROLL_TRIM_MIN_SPEED を満たしてしまい、静止した機体に自動ロールトリムが
+//   -0.5 度ずつ入り続けた（7 分で -1.5 度）。飛ぶ前から曲がった機体になる。
+//   自動トリムと風推定は「飛行中」の機能なので、観測の鮮度を条件に加える。
+static bool gnss_vel_fresh() {
+    if (!gnss_vel_seen_) return false;
+    return (uint32_t)(time_us_32() - last_gnss_vel_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
 }
 
 // 静止中に貯めた GRV の平均で姿勢を初期化する。
@@ -551,7 +569,10 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 
         const float sp = sqrtf(v_[0]*v_[0] + v_[1]*v_[1]);
         // 直進しているか。ロール自動トリムと風推定で共用する。
-        const bool straight_flight = (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
+        // ★ sp は GNSS の対地速度ではなく **ESKF が積分した速度** なので、
+        //   観測が無いと育つ（gnss_vel_fresh() のコメント参照）。鮮度を必ず併せて見る。
+        const bool straight_flight = gnss_vel_fresh() &&
+                                     (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
                                      (sp > ROLL_TRIM_MIN_SPEED);
 
         // ---- 風の推定 ----
@@ -651,6 +672,16 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         P_[3 + i][3 + i] += qa;
         P_[6 + i][6 + i] += qbg;
         P_[9 + i][9 + i] += qba;
+    }
+
+    // ★ ヨーの分散だけ頭打ちにする（理由は settings.h の ESKF_YAW_SIGMA_MAX_DEG）。
+    //   ロール・ピッチは重力で常に観測されるので育たない。ヨーだけが
+    //   観測の入らない状態で伸び続けるので、ここで止める。
+    //   **縮む側は触らない。**観測が入れば通常どおり小さくなる。
+    {
+        const float ymax = ESKF_YAW_SIGMA_MAX_DEG * (float)M_PI / 180.0f;
+        const float yvar_max = ymax * ymax;
+        if (P_[2][2] > yvar_max) P_[2][2] = yvar_max;
     }
 }
 
@@ -760,6 +791,8 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
     clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
     clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
     gnss_updates_++;
+    last_gnss_vel_us_ = time_us_32();
+    gnss_vel_seen_    = true;
 }
 
 

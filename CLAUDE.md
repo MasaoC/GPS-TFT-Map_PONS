@@ -12,7 +12,11 @@ RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
 ## ビルド
 
 Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / Flash **16MB (no FS)**。
-必要ライブラリは `TFT_eSPI` / `SdFat` / `Adafruit_BNO08x`。
+必要ライブラリは `TFT_eSPI` / `SdFat` / `Adafruit_BusIO`。
+**`Adafruit_BNO08x` はインストール不要** — [src/bno08x/](src/bno08x/) に取り込んである。
+`#include <Adafruit_BNO08x.h>` と山括弧で書くとインストール済みの方を拾い、
+ローカル改変が効かないまま静かに通る。理由と改変点は
+[src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md)。
 
 コンパイル確認だけなら CLI が使える（IDE 同梱の arduino-cli。動作確認済み）:
 
@@ -106,11 +110,13 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
+| [src/bno08x/](src/bno08x/) | 取り込んだ BNO085 ライブラリ。**改変したら PONS_VENDORING.md に追記** |
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - SD カードの雛形: [sd/](sd/) — レイアウトとログの列の意味は README の「SD カードの構成」
 - PC 側ツールの一覧は README の「ツール」節
 - git 管理外の生成物: `production/` と `src/flashdata/vectormap_data_hires.cpp`
-- ライセンスは 2 本立て。コードは MIT、`vectormap_data.cpp` は ODbL 1.0（OpenStreetMap 由来）。
-  地図データに手を入れるときは帰属表示を残す。
+- ライセンスは 4 本立て。コードは MIT、`vectormap_data.cpp` は ODbL 1.0（OpenStreetMap 由来）、
+  `src/bno08x/` は BSD 3-Clause（Adafruit）と Apache 2.0（Hillcrest の SH-2）。
+  地図データとライブラリに手を入れるときは帰属表示を残す。

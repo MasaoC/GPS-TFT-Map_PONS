@@ -25,3 +25,8 @@
 #define IMU_MOUNT_QX   0.0f
 #define IMU_MOUNT_QY  (-0.70710678f)
 #define IMU_MOUNT_QZ   0.0f
+#define ESKF_YAW_SIGMA_MAX_DEG 180.0f
+// GNSS 速度観測の許容鮮度 [µs]。これを超えたら自動ロールトリムと風推定を止める。
+// GNSS は 2Hz なので 3 秒 = 6 回分の欠測。短い遮蔽では止まらず、
+// 「そもそも測位していない」状態だけを確実に弾く長さ。
+#define ESKF_GNSS_VEL_TIMEOUT_US 3000000UL

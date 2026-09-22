@@ -76,7 +76,7 @@ SD に残るログを `tools/` の解析にかけると、機体特性の分析�
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.972**（Build 20260922）。
+* 最新のソフトウェアバージョンは **0.973**（Build 20260922）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -857,12 +857,20 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 
 ## ライセンス
 
-本リポジトリは 2 種類のライセンスで構成されています。
+本リポジトリは 4 種類のライセンスで構成されています。
 
 | 対象 | ライセンス |
 |------|-----------|
 | ソースコード（`*.ino` / `*.cpp` / `*.h` / `tools/*.py`） | MIT License（[LICENSE](LICENSE)） |
 | 地図データ（`vectormap_data.cpp`） | ODbL 1.0（[LICENSE.ODbL](LICENSE.ODbL)） |
+| `src/bno08x/Adafruit_BNO08x.{h,cpp}` | BSD 3-Clause（[src/bno08x/license.txt](src/bno08x/license.txt)） |
+| `src/bno08x/sh2*` `shtp*` | Apache License 2.0（[src/bno08x/NOTICE.txt](src/bno08x/NOTICE.txt)） |
+
+`src/bno08x/` は BNO085 のライブラリをリポジトリに取り込んだものです（Adafruit BNO08x v1.2.7 +
+Hillcrest の SH-2 ドライバ）。**ライブラリ側に手を入れないと直せない不具合があり、その修正を
+git で共有するため**に取り込みました。改変点は
+[src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) にすべて記録してあります。
+再配布時は各ライセンスの帰属表示を保持してください。
 
 地図データは OpenStreetMap 由来です。
 
