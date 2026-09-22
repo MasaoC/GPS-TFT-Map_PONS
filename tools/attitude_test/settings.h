@@ -18,3 +18,10 @@
 #define ESKF_INIT_USE_RV        1
 #define ESKF_RV_ACC_MAX_DEG     25.0f
 #define ESKF_MAG_DECLINATION_DEG  (-8.0f)
+
+// BNO085 のマウント回転（実機 settings.h と同じ値にすること）。
+// センサー Y 軸まわり -90 度。測定の根拠は実機側 settings.h のコメント参照。
+#define IMU_MOUNT_QW   0.70710678f
+#define IMU_MOUNT_QX   0.0f
+#define IMU_MOUNT_QY  (-0.70710678f)
+#define IMU_MOUNT_QZ   0.0f

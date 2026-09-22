@@ -2266,7 +2266,14 @@ void draw_wireless(int cursor) {
   backscreen.printf("%sReturn", cursor == 5 ? ">" : " ");
 
   backscreen.unloadFont();
-  push_backscreen();
+  // ★ **push_backscreen() を呼んではいけない。**あれは地図画面専用で、
+  //   (1) y=50 に置く（詳細画面は y=40）ので上に 10px の隙間が残り、
+  //       前の画面の切れ端がそこに居座る
+  //   (2) VSI バーと draw_link_overlay() を重ねる。受信モードでは
+  //       設定の上に受信枠の矩形まで描かれる
+  //   詳細画面は自前で置く。フッタは誰も上書きしないので、ここで消す。
+  backscreen.pushSprite(0, 40);
+  tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
 }
 
 void draw_imudetail(int page) {

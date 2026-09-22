@@ -1530,6 +1530,10 @@ void longPressCallback() {
         //     受信機は 2 台あるぶん取り違えやすい。
         link_warn_setting_changed();
         screen_mode = MODE_SETTING;
+        // WIRELESS に入った時に CallbackEnter 経由で selectedLine が立ったまま
+        // （値変更モード）になっている。WIRELESS 項目には CallbackToggle が無い
+        // (nullptr) ため、戻さずに戻ると次の短押しで nullptr 呼び出し→フリーズする。
+        selectedLine = -1;
         break;
     }
     redraw_screen = true;

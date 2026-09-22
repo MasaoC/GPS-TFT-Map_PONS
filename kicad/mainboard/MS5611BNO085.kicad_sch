@@ -2893,12 +2893,6 @@
 		(uuid "7a542471-80a0-4fb1-a0f2-564698499a32")
 	)
 	(junction
-		(at 213.36 63.5)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "8f90a55d-4e24-4b4a-83a1-72a7c0fa4153")
-	)
-	(junction
 		(at 74.93 154.94)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -2917,16 +2911,16 @@
 		(uuid "998ad296-936a-489b-8154-da9d7fdb2760")
 	)
 	(junction
+		(at 231.14 72.39)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "9bc907fd-881a-4f66-a196-66782b97aa61")
+	)
+	(junction
 		(at 30.48 140.97)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "a729227d-5fc5-4f77-95bc-4974217869ed")
-	)
-	(junction
-		(at 217.17 69.85)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "a72dd47d-b41c-479e-b72d-b2aeb4895334")
 	)
 	(junction
 		(at 247.65 49.53)
@@ -3154,6 +3148,16 @@
 	)
 	(wire
 		(pts
+			(xy 207.01 69.85) (xy 213.36 69.85)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2595a129-1a20-4323-bd4e-6dfacef2f67c")
+	)
+	(wire
+		(pts
 			(xy 261.62 49.53) (xy 261.62 53.34)
 		)
 		(stroke
@@ -3161,16 +3165,6 @@
 			(type default)
 		)
 		(uuid "262061d0-ab1f-4268-b6ad-94d5ae2e288c")
-	)
-	(wire
-		(pts
-			(xy 207.01 69.85) (xy 217.17 69.85)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "26f6f3ab-f91d-4e65-a802-e8c38519e560")
 	)
 	(wire
 		(pts
@@ -3544,26 +3538,6 @@
 	)
 	(wire
 		(pts
-			(xy 217.17 69.85) (xy 223.52 69.85)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "799d6475-d9b4-49e5-a70f-5ce401490f8b")
-	)
-	(wire
-		(pts
-			(xy 213.36 63.5) (xy 223.52 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7d5c8bf2-37ac-4f8b-aefd-75eac1b3698e")
-	)
-	(wire
-		(pts
 			(xy 33.02 52.07) (xy 33.02 49.53)
 		)
 		(stroke
@@ -3644,16 +3618,6 @@
 	)
 	(wire
 		(pts
-			(xy 222.25 67.31) (xy 217.17 67.31)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "8e1025f1-cb05-4f3f-ba32-879d1885e877")
-	)
-	(wire
-		(pts
 			(xy 119.38 69.85) (xy 119.38 83.82)
 		)
 		(stroke
@@ -3684,6 +3648,16 @@
 	)
 	(wire
 		(pts
+			(xy 231.14 63.5) (xy 231.14 64.77)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "940afdb7-0717-46a2-a59f-bc9372f71f55")
+	)
+	(wire
+		(pts
 			(xy 276.86 30.48) (xy 276.86 33.02)
 		)
 		(stroke
@@ -3691,6 +3665,16 @@
 			(type default)
 		)
 		(uuid "9517e95d-771a-4cf0-9040-8cc63d8106ba")
+	)
+	(wire
+		(pts
+			(xy 207.01 72.39) (xy 231.14 72.39)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "95a03d7d-8415-489d-917a-a37829b32bca")
 	)
 	(wire
 		(pts
@@ -3771,16 +3755,6 @@
 			(type default)
 		)
 		(uuid "9d582369-9291-4816-8df2-56a58e308c5c")
-	)
-	(wire
-		(pts
-			(xy 217.17 67.31) (xy 217.17 69.85)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9f17205a-bf56-4810-95c1-9172fa7346b7")
 	)
 	(wire
 		(pts
@@ -3964,16 +3938,6 @@
 	)
 	(wire
 		(pts
-			(xy 213.36 63.5) (xy 213.36 67.31)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "c32c9fa1-c548-45eb-b0da-9e02c4adb9c4")
-	)
-	(wire
-		(pts
 			(xy 54.61 93.98) (xy 67.31 93.98)
 		)
 		(stroke
@@ -4124,7 +4088,7 @@
 	)
 	(wire
 		(pts
-			(xy 213.36 58.42) (xy 213.36 63.5)
+			(xy 213.36 58.42) (xy 213.36 67.31)
 		)
 		(stroke
 			(width 0)
@@ -4181,6 +4145,16 @@
 			(type default)
 		)
 		(uuid "f3ed8d92-8c4b-4e2b-a28b-e90208fa1011")
+	)
+	(wire
+		(pts
+			(xy 231.14 72.39) (xy 237.49 72.39)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f86238a8-d4ce-4893-9511-6da2485d5a19")
 	)
 	(wire
 		(pts
@@ -4670,7 +4644,7 @@
 	)
 	(global_label "SPI1_SCK"
 		(shape input)
-		(at 222.25 67.31 0)
+		(at 213.36 69.85 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4680,7 +4654,7 @@
 		)
 		(uuid "27f385b5-1647-48ab-b922-be0c1eae8285")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 234.2461 67.31 0)
+			(at 225.3561 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4766,7 +4740,7 @@
 	)
 	(global_label "SPI1_CS"
 		(shape input)
-		(at 214.63 72.39 0)
+		(at 237.49 72.39 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4776,31 +4750,7 @@
 		)
 		(uuid "3fd4c840-4175-4054-97cf-d5294853b1f6")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 225.3561 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-	)
-	(global_label "I2C1_SDA"
-		(shape input)
-		(at 231.14 63.5 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "69df16df-db22-4c30-a11a-345ee8440f4a")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 242.9547 63.5 0)
+			(at 248.2161 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5076,30 +5026,6 @@
 			)
 		)
 	)
-	(global_label "I2C1_SCL"
-		(shape input)
-		(at 231.14 69.85 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "deeccf25-9e5d-485f-988a-7eebb59ace18")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 242.8942 69.85 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-	)
 	(global_label "I2C0_SCL"
 		(shape input)
 		(at 54.61 93.98 180)
@@ -5274,118 +5200,6 @@
 			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/527d22fc-a573-40d0-bb38-acd299d553bf"
 					(reference "#PWR087")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 227.33 63.5 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp yes)
-		(uuid "19f0773e-68c4-4cb7-8e0b-7861fd6b4d93")
-		(property "Reference" "R46"
-			(at 227.076 61.214 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "0"
-			(at 227.33 63.754 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric_Pad0.98x0.95mm_HandSolder"
-			(at 227.33 65.278 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 227.33 63.5 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" ""
-			(at 227.33 63.5 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Sim.Device" ""
-			(at 227.33 63.5 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Sim.Type" ""
-			(at 227.33 63.5 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C21189"
-			(at 227.33 63.5 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "aa72f58d-5bbd-40df-add2-f69e2909cf9e")
-		)
-		(pin "2"
-			(uuid "51c97ce8-e3a7-4a70-9685-c2ac9ac7c634")
-		)
-		(instances
-			(project "DisplayModule_PONSv7"
-				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/527d22fc-a573-40d0-bb38-acd299d553bf"
-					(reference "R46")
 					(unit 1)
 				)
 			)
@@ -7556,6 +7370,83 @@
 		)
 	)
 	(symbol
+		(lib_id "power:+3.3V")
+		(at 231.14 63.5 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "91b71e4b-a8c8-4949-b4b3-8269d204c9f8")
+		(property "Reference" "#PWR0100"
+			(at 231.14 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "+3V3"
+			(at 234.442 62.23 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 231.14 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 231.14 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
+			(at 231.14 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "80e6a60a-1727-4c89-97eb-1a0f0bf83c91")
+		)
+		(instances
+			(project "DisplayModule_PONSv7"
+				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/527d22fc-a573-40d0-bb38-acd299d553bf"
+					(reference "#PWR0100")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 105.41 83.82 0)
 		(unit 1)
@@ -8088,37 +7979,40 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 227.33 69.85 90)
+		(at 231.14 68.58 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp yes)
-		(uuid "b1b3819b-d9b8-43e8-bd9e-eb71a336aab8")
-		(property "Reference" "R47"
-			(at 227.584 72.136 90)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "af9307ac-9779-4c16-a73f-08de5b361abd")
+		(property "Reference" "R45"
+			(at 233.68 67.3099 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(justify left)
 			)
 		)
-		(property "Value" "0"
-			(at 227.33 70.104 90)
+		(property "Value" "10k"
+			(at 233.68 69.8499 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric_Pad0.98x0.95mm_HandSolder"
-			(at 227.33 71.628 90)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 229.362 68.58 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8129,7 +8023,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 227.33 69.85 0)
+			(at 231.14 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8139,8 +8033,8 @@
 				)
 			)
 		)
-		(property "Description" ""
-			(at 227.33 69.85 0)
+		(property "Description" "Resistor"
+			(at 231.14 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8150,8 +8044,8 @@
 				)
 			)
 		)
-		(property "Sim.Device" ""
-			(at 227.33 69.85 90)
+		(property "LCSC" "C25744"
+			(at 231.14 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8160,39 +8054,17 @@
 					(size 1.27 1.27)
 				)
 			)
-		)
-		(property "Sim.Type" ""
-			(at 227.33 69.85 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C21189"
-			(at 227.33 69.85 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "730f9026-1ee2-480d-999b-101b4a106d2e")
 		)
 		(pin "2"
-			(uuid "360831ca-a46f-47ab-bcbe-af9fd4398dba")
+			(uuid "d338f9b1-eff0-44cf-b4d0-020e7d546bd5")
+		)
+		(pin "1"
+			(uuid "9ce9c2d0-a29a-4c59-ad66-f52bb95937d9")
 		)
 		(instances
 			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/527d22fc-a573-40d0-bb38-acd299d553bf"
-					(reference "R47")
+					(reference "R45")
 					(unit 1)
 				)
 			)
@@ -8605,7 +8477,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://dragon-torch.tech/wp-content/uploads/2023/05/data_sheet_Rev1.4.pdf"
+		(property "Datasheet" "https://dragon-torch.tech/wp-content/uploads/2024/11/DS241011JA_E220-900T22Sv1_Rev2.1.2.pdf"
 			(at 67.31 161.29 0)
 			(hide yes)
 			(show_name no)
@@ -9054,118 +8926,6 @@
 			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/527d22fc-a573-40d0-bb38-acd299d553bf"
 					(reference "Y2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 210.82 72.39 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "dcebb961-20af-4e78-9150-8f7627689fb9")
-		(property "Reference" "R53"
-			(at 208.026 71.374 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "0"
-			(at 210.82 72.644 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric_Pad0.98x0.95mm_HandSolder"
-			(at 210.82 74.168 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 210.82 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" ""
-			(at 210.82 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Sim.Device" ""
-			(at 210.82 72.39 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Sim.Type" ""
-			(at 210.82 72.39 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C21189"
-			(at 210.82 72.39 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "4d26ab0a-c629-4b96-a3ba-0444198c26df")
-		)
-		(pin "2"
-			(uuid "adc8e80a-9e91-42dd-b007-9eb0f6ff6055")
-		)
-		(instances
-			(project "DisplayModule_PONSv7"
-				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94/527d22fc-a573-40d0-bb38-acd299d553bf"
-					(reference "R53")
 					(unit 1)
 				)
 			)

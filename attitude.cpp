@@ -773,20 +773,18 @@ bool attitude_ready() { return initialized_ && imu_fresh(); }
 
 // センサー座標系のオイラー角 → 機体軸 [度]。
 // imu.cpp の get_imu_euler() および tools/imulog/decode_imulog.py の
-// mount_correct() と同じ変換であること。
+// mount_correct() と同じ変換であること（実体は attitude.h の imu_body_euler_rad）。
 static void euler_from_state(float &roll, float &pitch, float &yaw) {
-    const float w = q_[0], x = q_[1], y = q_[2], z = q_[3];
-    float sensor_roll = atan2f(2.0f*(w*x + y*z), 1.0f - 2.0f*(x*x + y*y));
-    float sinp = 2.0f*(w*y - z*x);
-    if (sinp >  1.0f) sinp =  1.0f;
-    if (sinp < -1.0f) sinp = -1.0f;
-    float sensor_pitch = asinf(sinp);
-    float sensor_yaw = atan2f(2.0f*(w*z + x*y), 1.0f - 2.0f*(y*y + z*z));
-
+    // ★ マウント回転はクォータニオンの段階で掛ける（imu_body_euler_rad）。
+    //   **Euler を組み替える旧方式には戻さないこと。**v7 の配置では機体が水平の
+    //   ときセンサーがジンバルロックに入り、角の入れ替えでは原理的に直らない
+    //   （settings.h の IMU_MOUNT_Q* のコメント参照）。
+    float r, p, y;
+    imu_body_euler_rad(q_[0], q_[1], q_[2], q_[3], r, p, y);
     const float rad2deg = 180.0f / (float)M_PI;
-    roll  = sensor_pitch * rad2deg;
-    pitch = (sensor_roll - (float)M_PI * 0.5f) * rad2deg;
-    yaw   = -sensor_yaw * rad2deg;
+    roll  = r * rad2deg;
+    pitch = p * rad2deg;
+    yaw   = -y * rad2deg;          // 数学の符号 → 方位（時計回り正）
     if (yaw < 0.0f)    yaw += 360.0f;
     if (yaw >= 360.0f) yaw -= 360.0f;
 }

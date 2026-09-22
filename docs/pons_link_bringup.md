@@ -30,11 +30,30 @@ BNO085 の SPI 化・MS5611 の i2c0 分離・GNSS 設定の ACK 確認・SD の
 | # | 確認 | 合格 |
 |---|---|---|
 | A-1-1 | **JP1 が既定（1-2 = +3V3）** か。＝ PS1=1（SPI） | `settings.h` の `IMU_BUS_SPI` 有効と**一致**していること |
-| A-1-2 | `log.txt` に `BNO085 init OK` | `BNO085 begin FAILED (SPI1)` なら配線・JP1・電源を疑う |
+| A-1-2 | `log.txt` に `BNO085 init OK` | 失敗時は `BNO085 begin FAILED (SPI1) stage=…` が出る。**`stage` で切り分ける**（下記） |
 | A-1-3 | `VARIO: BNO085+MS5611 Kalman fusion enabled` | 片方だけなら該当センサーが見えていない |
 | A-1-4 | 60 秒ごとの `rate GRV=15.0 LACC=15.0 RV=5.0 MS5611=…` | 設定値より低ければ配信飢餓。バリオが暴れる原因になる |
 | A-1-5 | `BNO085 enableReport aborted at … (slow bus)` が**出ない**こと | 出たら SPI の信号品質を疑う（配線長・GND） |
 | A-1-6 | IMU 詳細画面でロール・ピッチが手の動きに追従するか | 符号と軸の向きも一緒に確認する |
+
+**`begin FAILED` が出たときの読み方**
+
+`stage=1(no-INT)` … H_INTN が一度もアサートされなかった。**SPI のデータ線はまだ無関係。**
+BNO085 がそもそもブートしていないか、SPI モードで起動していない。疑う順は
+**JP1(PS1) の位置 → 3V3 → NRST(GPIO46) → 半田**。
+PS1=0 のまま PS0=1 だと **UART モード**で起動し、H_INTN は永久に来ない。
+
+`stage=2(no-SHTP)` … INT は来たので**チップは生きていて SPI モードにいる**。
+`sh2_open()` / `getProdIds()` が通らないので、**MISO/MOSI/SCK/CS の配線か接触**を疑う。
+GPIO41=CS / 42=SCK / 43=MOSI / 44=MISO。MISO と MOSI の入れ違いが定番。
+
+同じ行に `INT= RST= PS0=` の実測値も出る。正常なら RST=1、PS0 は 0（WAKE 保持）。
+
+> **既知：基板に H_CSN(GPIO41) のプルアップが無い。**そのためソフトが
+> NRST を打つ前に CS を HIGH で駆動している（`imu_bus_select_protocol()`）。
+> これを外すと、リセット〜ブートの 400ms の間 CS が浮いて **BNO085 が起動しない**
+> （v7 の初回通電で実際に踏んだ症状が `stage=1(no-INT)`）。
+> **次の基板改訂で 10k プルアップを入れること。**
 
 **わざと外して確かめる（ここが今回いちばん危ない変更）**
 

@@ -35,6 +35,33 @@
 #define ATTITUDE_H
 
 #include <Arduino.h>
+#include <math.h>
+#include "settings.h"
+
+// センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
+// ★ imu.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
+//   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
+// yaw はここでは数学どおりの符号で返す。0..360 の方位に直すのは呼び出し側。
+static inline void imu_body_euler_rad(float w, float x, float y, float z,
+                                      float &roll, float &pitch, float &yaw) {
+    // q_body = q_sensor ⊗ q_mount
+    const float mw = IMU_MOUNT_QW, mx = IMU_MOUNT_QX, my = IMU_MOUNT_QY, mz = IMU_MOUNT_QZ;
+    const float bw = w*mw - x*mx - y*my - z*mz;
+    const float bx = w*mx + x*mw + y*mz - z*my;
+    const float by = w*my - x*mz + y*mw + z*mx;
+    const float bz = w*mz + x*my - y*mx + z*mw;
+    roll = atan2f(2.0f*(bw*bx + by*bz), 1.0f - 2.0f*(bx*bx + by*by));
+    float sinp = 2.0f*(bw*by - bz*bx);
+    if (sinp >  1.0f) sinp =  1.0f;
+    if (sinp < -1.0f) sinp = -1.0f;
+    // ★ **符号を反転する。**ZYX 抽出がそのまま返すのは「機首下げが正」で、
+    //   この機体の約束（機首上げが正。プラットホームの申告値 -3.5 度など）と逆。
+    //   2026-09-22 に実機で確認（機首上げ 20 度で -20 が出ていた）。
+    //   ここを直すとピッチ警告・巡航トリム・対気速度モデルがまとめて正になる。
+    pitch = -asinf(sinp);
+    yaw  = atan2f(2.0f*(bw*bz + bx*by), 1.0f - 2.0f*(by*by + bz*bz));
+}
+
 
 // ---- 初期化 ----
 void attitude_setup();

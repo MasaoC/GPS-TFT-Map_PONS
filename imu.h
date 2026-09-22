@@ -30,7 +30,7 @@
 #define IMU_H
 
 #include <Arduino.h>
-
+#include "attitude.h"   // imu_body_euler_rad()（マウント回転）
 // ---- 初期化 ----
 // BNO085 の I2C バス・割り込み・センサーレポートを初期化する。
 // airdata_setup() の後に呼ぶこと（ログ用タスクキューが必要なため）。

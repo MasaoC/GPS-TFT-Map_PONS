@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260921
-#define BUILDVERSION "0.971"
+#define BUILDDATE 20260922
+#define BUILDVERSION "0.972"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -819,6 +819,27 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 上限を OFF_MOUNT_DEG に揃えてあるのは、「本当の異常は隠さず、
 // 壊れた設定ファイルだけを弾く」ため。
 #define LEVEL_OFFSET_LIMIT_DEG      OFF_MOUNT_DEG
+
+// ---- BNO085 のマウント回転（センサー座標 → 機体軸）----
+// q_body = q_sensor ⊗ q_mount。実体はセンサー Y 軸まわり -90 度。
+//
+// ★ **Euler を組み替える方式に戻してはいけない。**
+//   v7 の配置（IC が基板裏面・1番ピンが天）では、機体が水平のときセンサーが
+//   ちょうど **ジンバルロック（sensor_pitch = ±90°）** に入る。そこでは
+//   sensor_roll と sensor_yaw が独立した量ではなくなるので、3 つの角を
+//   入れ替えても絶対に正しくならない（実機で roll 0 なのに pitch が +90/-270 を
+//   示し、roll 欄にヨーが出る、という壊れ方をした）。
+//   クォータニオンの段階で回してから 1 回だけ Euler を出すこと。
+//
+// 2026-09-21 に実機で測定（静止させて生加速度＝重力ベクトルを読む）:
+//   水平          a=(-9.8,   0,   0) → 機体の「下」= センサー +X
+//   機首を真下90  a=(  0,   0,-9.8) → 機体の「前」= センサー +Z
+//   右翼を真下90  a=(  0,+9.8,   0) → 機体の「右」= センサー -Y
+// マウントを変えたら、この 3 点を測り直してここだけ差し替える。
+#define IMU_MOUNT_QW   0.70710678f
+#define IMU_MOUNT_QX   0.0f
+#define IMU_MOUNT_QY  (-0.70710678f)
+#define IMU_MOUNT_QZ   0.0f
 
 // バンク角の警告閾値 [度]。これを超えたら地図上のロール表示を赤にする。
 // HPA は旋回半径が大きく、実運用のバンクは数度程度。

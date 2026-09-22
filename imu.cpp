@@ -707,6 +707,14 @@ static void imu_bus_select_protocol() {
     pinMode(IMU_PS0_WAKE_PIN, OUTPUT);
 #ifdef IMU_BUS_SPI
     digitalWrite(IMU_PS0_WAKE_PIN, HIGH);   // PS0=1 → SPI
+    // ★ **CS を先に HIGH で固定しておく。**
+    //   CS を駆動するのは Adafruit_SPIDevice::begin()、つまり begin_SPI() の中なので、
+    //   何もしないと **NRST パルスとブート待ちの 400ms の間ずっと CS が未駆動**になる。
+    //   基板にプルアップが無ければ不定で、BNO085 から見ると「選択されているかも
+    //   しれない」状態でブートすることになる。ここで上げておけば変数が 1 つ減る。
+    //   begin_SPI() が同じことをやり直すので二重でも害は無い。
+    pinMode(IMU_SPI_CS, OUTPUT);
+    digitalWrite(IMU_SPI_CS, HIGH);
     // SA0/H_MOSI は SPI ではデータ線なので、ここでは触らない。
 #else
     digitalWrite(IMU_PS0_WAKE_PIN, LOW);    // PS0=0 → I2C
@@ -805,6 +813,15 @@ static bool imu_int_asserted() {
 #endif
 }
 
+// imu_bus_begin() がどこで失敗したかを残す（実機立ち上げの切り分け用）。
+//   1 = H_INTN が一度もアサートされなかった
+//       → BNO085 がブートしていない / SPI モードで起動していない。
+//         JP1(PS1)・3V3・NRST・半田を疑う。SPI のデータ線は**まだ無関係**。
+//   2 = H_INTN は来たが SHTP で喋れなかった（sh2_open / getProdIds が失敗）
+//       → チップは生きて SPI モードにいる。MISO/MOSI/SCK/CS の配線か接触を疑う。
+// この 2 つは対処がまったく違うので、log.txt だけで分かるようにしておく。
+static uint8_t imu_begin_fail_stage = 0;
+
 // バスを初期化して Adafruit_BNO08x を開始する。成功で true。
 // リトライは呼び出し側が行う。
 static bool imu_bus_begin() {
@@ -820,6 +837,7 @@ static bool imu_bus_begin() {
         while (!imu_int_asserted()) {
             if (millis() - t0 >= IMU_SPI_INT_WAIT_MS) {
                 DEBUGW_PLN(20260901, "[IMU] BNO085 no INT on SPI1");
+                imu_begin_fail_stage = 1;   // INT が来ない＝まだ喋る以前の問題
                 return false;
             }
         }
@@ -843,7 +861,9 @@ static bool imu_bus_begin() {
     }
     // begin_SPI() が内部で SPI1.begin() と pinMode(INT, INPUT_PULLUP) を行う。
     // 転送設定は 1MHz / SPI_MODE3 / MSB first（BNO085 の要求どおり）。
-    return bno08x.begin_SPI(IMU_SPI_CS, IMU_INT_PIN, &SPI1);
+    if (bno08x.begin_SPI(IMU_SPI_CS, IMU_INT_PIN, &SPI1)) return true;
+    imu_begin_fail_stage = 2;   // INT は来ていたのに SHTP が成立しなかった
+    return false;
 #else
     // 先にアドレス応答を確認しておく（失敗時のログを分かりやすくするため）。
     imuWire.beginTransmission(IMU_I2C_ADDR);
@@ -909,7 +929,21 @@ void imu_setup() {
     }
     if (!imu_begun) {
         DEBUGW_PLN(20260315, "[IMU] BNO085 begin() FAILED.");
+        // ★ **どこで失敗したかとピンの実測値まで残す。**
+        //   ここが実機立ち上げで最初に見る 1 行になる。"FAILED (SPI1)" だけだと
+        //   「チップが居ない」のか「配線が違う」のかが分からず、当てずっぽうで
+        //   基板を触ることになる。INT/RST/PS0 の生の読み値も一緒に出す。
+#ifdef IMU_BUS_SPI
+        enqueueTask(createLogSdfTask(
+            "BNO085 begin FAILED (%s) stage=%u(%s) INT=%d RST=%d PS0=%d",
+            imu_bus_name(), imu_begin_fail_stage,
+            imu_begin_fail_stage == 1 ? "no-INT" : "no-SHTP",
+            (int)digitalRead(IMU_INT_PIN),
+            (int)digitalRead(IMU_RST_PIN),
+            (int)digitalRead(IMU_PS0_WAKE_PIN)));
+#else
         enqueueTask(createLogSdfTask("BNO085 begin FAILED (%s)", imu_bus_name()));
+#endif
         bno085_ok = false;
         return;
     }
@@ -1337,48 +1371,29 @@ void get_imu_linaccel(float &ax, float &ay, float &az) {
 //           ROTATION_VECTOR 未受信時は GAME_RV で代替（ドリフトあり）。
 // ジンバルロック（pitch ±90°付近）は copysignf でクランプして安全に処理。
 void get_imu_euler(float &roll, float &pitch, float &yaw) {
-    // ---- マウント補正: 軸の入れ替えとオフセット補正 ----
-    // BNO085 は IC 直立・コンポーネント面後ろ向きにマウントされているため、
-    // センサーの各軸と機体の軸が入れ替わっている。
+    // ---- マウント補正 ----
+    // ★ クォータニオンの段階で回してから 1 回だけ Euler を出す。
+    //   v7 の配置（IC が基板裏面・1番ピンが天）では、機体が水平のときセンサーが
+    //   ジンバルロックに入るため、**角を入れ替える旧方式では直らない**
+    //   （測定の根拠と経緯は settings.h の IMU_MOUNT_Q* のコメント）。
     //
-    // センサー座標系（ZYX オイラーの基底）と機体軸の対応:
-    //   センサー X 軸（IC 長辺 = 左右）= 機体ピッチ軸
-    //     → sensor_roll（センサー X まわり）= 実ピッチ + 90°
-    //   センサー Y 軸（IC 短辺 = 上下）  = 機体ロール軸
-    //     → sensor_pitch（センサー Y まわり）= 実ロール
-    //   センサー Z 軸（IC 面法線 = 後ろ） = 機体ヨー軸（符号は同一）
-    //     → sensor_yaw（センサー Z まわり）= 実ヨー
-    //
-    // ゆえに表示値への変換:
-    //   display_roll  = sensor_pitch
-    //   display_pitch = sensor_roll - 90°
-    //   display_yaw   = sensor_yaw
+    // ロール／ピッチは GAME_RV（地磁気に依らない）、ヨーは ROTATION_VECTOR
+    // （地磁気補正あり）から取る。出所が違うので**それぞれに回転を掛ける**。
+    const float rad2deg = 180.0f / (float)M_PI;
 
-    // センサー生値（GAME_RV ベース）
-    float sensor_roll = atan2f(2.0f * (_qw * _qx + _qy * _qz),
-                               1.0f - 2.0f * (_qx * _qx + _qy * _qy));
+    float r, p, ydummy;
+    imu_body_euler_rad(_qw, _qx, _qy, _qz, r, p, ydummy);
+    roll  = r * rad2deg;
+    pitch = p * rad2deg;
 
-    float sinp = 2.0f * (_qw * _qy - _qz * _qx);
-    float sensor_pitch = (fabsf(sinp) >= 1.0f)
-                         ? copysignf(M_PI * 0.5f, sinp)   // ジンバルロック
-                         : asinf(sinp);
-
-    // Yaw: ROTATION_VECTOR（地磁気補正あり）。未受信時は GAME_RV で代替
     const float rw = _rv_valid ? _rv_qw : _qw;
     const float rx = _rv_valid ? _rv_qx : _qx;
     const float ry = _rv_valid ? _rv_qy : _qy;
     const float rz = _rv_valid ? _rv_qz : _qz;
-    float sensor_yaw = atan2f(2.0f * (rw * rz + rx * ry),
-                              1.0f - 2.0f * (ry * ry + rz * rz));
-
-    // 軸の入れ替えとオフセット補正をしてラジアン → 度
-    const float rad2deg = 180.0f / M_PI;
-    roll  = sensor_pitch * rad2deg;
-    pitch = (sensor_roll - M_PI * 0.5f) * rad2deg;
-
-    // ヨー: センサー Z 軸が後ろ向きのため符号が逆 → 反転して 0〜360° に正規化
-    yaw = -sensor_yaw * rad2deg;
-    if (yaw < 0.0f)   yaw += 360.0f;
+    float rdummy, pdummy, y;
+    imu_body_euler_rad(rw, rx, ry, rz, rdummy, pdummy, y);
+    yaw = -y * rad2deg;            // 数学の符号 → 方位（時計回り正）
+    if (yaw < 0.0f)    yaw += 360.0f;
     if (yaw >= 360.0f) yaw -= 360.0f;
 }
 

@@ -240,50 +240,54 @@ def euler_from_quat(qw, qx, qy, qz):
     return sensor_roll, sensor_pitch, sensor_yaw
 
 
-def mount_correct(sensor_roll, sensor_pitch, sensor_yaw):
-    """センサー座標系のオイラー角 → 機体軸の roll/pitch/yaw [deg]。
+MOUNT_Q = (0.70710678, 0.0, -0.70710678, 0.0)   # w,x,y,z（センサー Y 軸まわり -90 度）
 
-    BNO085 は IC 直立・コンポーネント面後ろ向きに取り付けられており、
-    センサー軸と機体軸が入れ替わっている（imu.cpp の get_imu_euler() と同一）:
-        roll  = sensor_pitch
-        pitch = sensor_roll - 90deg
-        yaw   = -sensor_yaw を 0..360 に正規化
-    ※ ESKF の出力にもこの変換を通すこと。定義がここ 1 箇所になるよう関数化してある。
+
+def mount_correct_quat(qw, qx, qy, qz):
+    """センサー座標のクォータニオン → 機体軸の roll/pitch/yaw [deg]。
+
+    ★ 機上の attitude.h `imu_body_euler_rad()` と**同じ変換であること。**
+      片方だけ直すと、実機の表示と PC の解析が静かに食い違う。
+
+    2026-09-21 に v7 実機で測定した配置（IC が基板裏面・1番ピンが天）:
+        機体の「下」= センサー +X / 「前」= センサー +Z / 「右」= センサー -Y
+    この配置では**機体が水平のときセンサーがジンバルロック**に入るため、
+    以前のように Euler を組み替える方式では原理的に正しくならない。
+    クォータニオンの段階で回してから 1 回だけ Euler を出すこと。
     """
-    roll = np.degrees(sensor_pitch)
-    pitch = np.degrees(sensor_roll - np.pi / 2.0)
-    yaw = np.degrees(-sensor_yaw) % 360.0
-    return roll, pitch, yaw
+    qw, qx, qy, qz = (np.asarray(v, dtype=float) for v in (qw, qx, qy, qz))
+    mw, mx, my, mz = MOUNT_Q
+    bw = qw*mw - qx*mx - qy*my - qz*mz          # q_body = q_sensor ⊗ q_mount
+    bx = qw*mx + qx*mw + qy*mz - qz*my
+    by = qw*my - qx*mz + qy*mw + qz*mx
+    bz = qw*mz + qx*my - qy*mx + qz*mw
+    roll = np.arctan2(2.0*(bw*bx + by*bz), 1.0 - 2.0*(bx*bx + by*by))
+    # 符号反転は機上 attitude.h の imu_body_euler_rad() と同じ理由（機首上げが正）
+    pitch = -np.arcsin(np.clip(2.0*(bw*by - bz*bx), -1.0, 1.0))
+    yaw = np.arctan2(2.0*(bw*bz + bx*by), 1.0 - 2.0*(by*by + bz*bz))
+    return np.degrees(roll), np.degrees(pitch), np.degrees(-yaw) % 360.0
+
 
 
 def build_euler(parts):
     """機体軸の roll/pitch/yaw [deg] を作る（機上の表示値と一致させる）。
 
     ---- マウント補正 ----
-    BNO085 は IC 直立・コンポーネント面後ろ向きに取り付けられており、
-    センサー軸と機体軸が入れ替わっている（imu.cpp の get_imu_euler() 参照）:
-        roll  = sensor_pitch
-        pitch = sensor_roll - 90deg
-        yaw   = -sensor_yaw を 0..360 に正規化
-    roll/pitch は GAME_ROTATION_VECTOR（磁気なし）、
-    yaw は ROTATION_VECTOR（地磁気補正）から取る。RV が無ければ GRV で代替する。
-
-    ※ ESKF を書くときもこの変換を通すこと。
-      生クォータニオンのままでは機体軸の姿勢にならない。
+    変換の実体は mount_correct_quat()。**ここに式を書き写さないこと**
+    （写した式が古くなって実機と食い違う事故を 2026-09-22 に踏んだ）。
+    生クォータニオンのままでは機体軸の姿勢にならない。
     """
     grv = parts.get("gamerv")
     if grv is None or grv.empty:
         return None
 
-    s_roll, s_pitch, _ = euler_from_quat(grv.qw, grv.qx, grv.qy, grv.qz)
-    roll, pitch, _ = mount_correct(s_roll, s_pitch, 0.0)
+    roll, pitch, _ = mount_correct_quat(grv.qw, grv.qx, grv.qy, grv.qz)
     out = pd.DataFrame({"session": grv["session"].to_numpy(),
                         "t": grv["t"].to_numpy(), "roll": roll, "pitch": pitch})
 
     rv = parts.get("rv")
     if rv is not None and not rv.empty:
-        _, _, r_yaw = euler_from_quat(rv.qw, rv.qx, rv.qy, rv.qz)
-        _, _, yaw_deg = mount_correct(0.0, 0.0, r_yaw)
+        _, _, yaw_deg = mount_correct_quat(rv.qw, rv.qx, rv.qy, rv.qz)
         yaw_src = pd.DataFrame({"session": rv["session"].to_numpy(),
                                 "t": rv["t"].to_numpy(), "yaw": yaw_deg})
         # RV は 5Hz と低レートなので GRV の各時刻へ直近値を割り当てる。
@@ -300,8 +304,7 @@ def build_euler(parts):
             merged.append(o)
         out = pd.concat(merged, ignore_index=True)
     else:
-        _, _, g_yaw = euler_from_quat(grv.qw, grv.qx, grv.qy, grv.qz)
-        out["yaw"] = mount_correct(0.0, 0.0, g_yaw)[2]
+        out["yaw"] = mount_correct_quat(grv.qw, grv.qx, grv.qy, grv.qz)[2]
     return out
 
 
