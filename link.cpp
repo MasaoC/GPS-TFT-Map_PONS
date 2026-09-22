@@ -302,9 +302,14 @@ static void link_probe_module() {
     if (now - lastProbe < LINK_ALIVE_PROBE_MS) return;
     lastProbe = now;
 
-    if (tx) e220_wake();               // 問い合わせは mode 0 でのみ有効
-    int16_t n = 0;
-    e220_read_noise(&n, nullptr);
+    // ★ 生存確認は **レジスタ読み**で行う（e220_ping）。
+    //   以前は雑音の問い合わせを流用していたが、あれは mode 0 ではコマンドとして
+    //   解釈されず電波が出るだけで、**必ず失敗する**。その失敗が無応答として
+    //   数えられ、健全なモジュールを「死んでいる」と誤判定していた。
+    //   ping は mode 3 へ約 20ms 潜る。上の early return で
+    //   「受信できているとき」と「送信直後」は既に除いてあるので実害は無い。
+    if (tx) e220_wake();               // 寝ていると潜る意味が変わるので起こしておく
+    e220_ping();
     if (tx) e220_sleep();              // 送信機は送信の合間は寝かせる
 }
 
@@ -456,6 +461,7 @@ static int16_t  s_pfNoise[PF_MAX_SAMPLES];
 static uint8_t  s_pfNoiseN = 0;
 // 雑音の取得が連続で失敗した回数。**途中で打ち切るために数える**（下の tick 参照）。
 static uint8_t  s_pfNoiseFail = 0;
+static bool     s_pfNoiseGiveUp = false;  // 雑音の測定だけ諦めた（聴取は続ける）
 
 // WIRELESS 画面から手で走らせ直す。
 // ★ ブリングアップでは「アンテナを動かして測り直す」を何度もやる。
@@ -502,9 +508,15 @@ static void link_preflight_start() {
     s_pfState        = LINK_PF_RUNNING;
     s_pfFlags        = LINK_PFF_OK;
     s_pfStartMs      = millis();
-    s_pfLastSampleMs = 0;
+    // ★ **起床直後に即サンプルしない。** 0 にすると最初のループで即座に叩くが、
+    //   e220_wake() で mode 3 から戻った直後はモジュールが落ち着いておらず、
+    //   実機ではここが必ず失敗していた（AUX が High でも数百 ms 効かない）。
+    //   今の時刻を入れておけば 1 回目は LINK_PF_SAMPLE_MS 後になる。
+    //   窓 5000ms / 間隔 500ms なので、それでもサンプルは 10 個取れる。
+    s_pfLastSampleMs = millis();
     s_pfNoiseN       = 0;
     s_pfNoiseFail    = 0;
+    s_pfNoiseGiveUp  = false;
     s_pfNoiseMed     = 0;
     s_pfOtherGrp     = 0;
     s_pfPonsRssi     = -128;
@@ -598,7 +610,7 @@ static void link_preflight_tick() {
 
     // ---- 雑音のサンプル ----
     const uint32_t now = millis();
-    if (s_pfLastSampleMs == 0 || (now - s_pfLastSampleMs) >= LINK_PF_SAMPLE_MS) {
+    if (!s_pfNoiseGiveUp && (now - s_pfLastSampleMs) >= LINK_PF_SAMPLE_MS) {
         s_pfLastSampleMs = now;
         int16_t n = 0;
         if (e220_read_noise(&n, nullptr)) {
@@ -616,9 +628,12 @@ static void link_preflight_tick() {
             //     途中まで取れた値から NOISY / BURST を出すのは構わないが、
             //     「静かだった」ではなく「最後まで測れなかった」ので、
             //     OK の上昇 2 音を鳴らしてはいけない。
-            s_pfFlags |= LINK_PFF_SKIPPED;
-            link_preflight_finish();
-            return;
+            //   ★ ただし **点検そのものは打ち切らない。** 雑音が測れないことと、
+            //     同じチャンネルに他の送信機がいるかどうかは別の話で、
+            //     後者のほうが重い（受信機側の seq 逆行検出では見えなかったもの）。
+            //     叩くのをやめるだけにして、窓の最後まで聴き続ける。
+            s_pfFlags      |= LINK_PFF_SKIPPED;
+            s_pfNoiseGiveUp = true;
         }
     }
 

@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260922
-#define BUILDVERSION "0.973"
+#define BUILDVERSION "0.974"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -1051,7 +1051,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ★ 最後まで回してはいけない。1 回の問い合わせは応答が無いと待たされるので、
 //   10 回ぶん繰り返すと Core0 が止まり、GNSS の FIFO（≒267ms 相当）が溢れる。
 //   「静かだった」ではなく「測れなかった」ので、途中で止めても失うものは無い。
-#define LINK_PF_NOISE_FAIL_MAX     2
+// 雑音の問い合わせが連続で失敗したら、そこで**叩くのをやめる**回数。
+// ★ 2 では足りなかった。起床直後の取りこぼしが 1〜2 回あるため、2 だと
+//   本番のサンプルを 1 つも取らずに諦めてしまう（実機で踏んだ）。
+//   Core0 を止めすぎない上限でもあるが、2 回目以降の待ちは 30ms へ落ちるので
+//   4 回でも合計 200+30*3 = 290ms に収まる。
+#define LINK_PF_NOISE_FAIL_MAX     4
 
 // ---- 無線モジュールの生存確認 [ms]（link.cpp）----
 // ★ 送信機は送信の合間 mode 3 で寝ているので、**送信そのものからは生死が分からない**。
