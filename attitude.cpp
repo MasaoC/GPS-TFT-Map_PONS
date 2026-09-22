@@ -1,11 +1,11 @@
 // ============================================================
 // File    : attitude.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GNSS 速度援用 姿勢 ESKF（機上リアルタイム版）の実装。
 //           数式・座標系・マウント補正の説明は attitude.h を参照。
 //           PC 側の tools/imulog/eskf.py と対になっている。片方を直したら両方直すこと。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/18
+// Updated : 2026/09/10
 // ============================================================
 
 #include <Arduino.h>
@@ -41,6 +41,9 @@ static float T2_[N_ERR][N_ERR];
 static bool  initialized_ = false;
 // 最後にジャイロを受け取った時刻。IMU 途絶の検出に使う。
 static uint32_t last_gyro_us_ = 0;
+// GNSS 速度観測が最後に入った時刻。**自動ロールトリムの安全装置**に使う。
+static uint32_t last_gnss_vel_us_ = 0;
+static bool     gnss_vel_seen_    = false;
 static bool     gyro_seen_    = false;
 static float accel_last_[3] = {0.0f, 0.0f, GRAVITY};
 static bool  accel_valid_ = false;
@@ -64,6 +67,15 @@ static uint32_t      calib_req_us_  = 0;
 static float         calib_pitch_   = 0.0f;
 static float         calib_roll_    = 0.0f;
 static volatile bool calib_done_    = false;
+// 較正した日（JST の YYYYMMDD）。0 = 不明。
+// ★ ここは attitude.cpp では埋められない。このモジュールは GNSS を知らない
+//   （速度も外から押し込む作りになっている）ので、実際の日付は
+//   attitude_take_calib_done() を受けた .ino 側が入れる。
+//   SD の設定に保存して起動をまたいで保持する。
+// ★ volatile。書くのは Core1（loadSettings）と Core0（APPLY 直後）、
+//   読むのは Core0（.ino の発報と画面）。needs_apply_ と同じ理由で、
+//   ループの中で値をレジスタに抱え込まれると測位後の変化を取りこぼす。
+static volatile uint32_t calib_date_ = 0;
 
 // ---- Roll/Pitch/Yaw 機能のマスタースイッチ ----
 // ESKF から得た姿勢を「使う」機能を一括で ON/OFF する。既定 ON。
@@ -96,22 +108,37 @@ static int      trim_run_count_ = 0;      // 連続した窓の数（0 = 連続�
 static float    trim_roll_sum_ = 0.0f;    // 直進中のロール積算
 static float    trim_time_s_   = 0.0f;    // 直進が続いた時間 [s]
 static float    yaw_rate_lp_   = 0.0f;    // ワールド系ヨーレートの平滑値 [deg/s]
-// ピッチ [度] から対気速度 [m/s] を引く区分線形。定数は settings.h（機体依存）。
-// ピッチが上がるほど遅く、下がるほど速い。範囲外は端点でクランプし、
+// ---- 対気速度モデルの係数 ----
+// 既定は settings.h。実際の値は SD の settings.txt から上書きできる（機体依存のため）。
+// ★ volatile。書くのは Core1（loadSettings）、読むのは Core0（下の airspeed_from_pitch）。
+//   非 volatile だと、飛行中ずっと回るこのループで値をレジスタに抱え込まれうる。
+static volatile float airspeed_v0_  = AIRSPEED_V0_MPS;
+static volatile float airspeed_k_   = AIRSPEED_CURVE_K_DEG;
+static volatile float airspeed_min_ = AIRSPEED_MIN_MPS;
+static volatile float airspeed_max_ = AIRSPEED_MAX_MPS;
+
+// ピッチ [度] から対気速度 [m/s] を引く。式の導出は settings.h のコメント。
+//     V(θ) = V0 * sqrt( K / (K + θ) )
+// ピッチが上がるほど遅く、下がるほど速い。上下限でクランプし、
 // この機体で起こり得ない対気速度を出さないようにする。
 static float airspeed_from_pitch(float pitch_deg) {
-    float v;
-    if (pitch_deg >= AIRSPEED_PITCH_MID_DEG) {
-        const float t = (pitch_deg - AIRSPEED_PITCH_MID_DEG) /
-                        (AIRSPEED_PITCH_HI_DEG - AIRSPEED_PITCH_MID_DEG);
-        v = AIRSPEED_AT_PITCH_MID + t * (AIRSPEED_AT_PITCH_HI - AIRSPEED_AT_PITCH_MID);
-    } else {
-        const float t = (pitch_deg - AIRSPEED_PITCH_MID_DEG) /
-                        (AIRSPEED_PITCH_LO_DEG - AIRSPEED_PITCH_MID_DEG);
-        v = AIRSPEED_AT_PITCH_MID + t * (AIRSPEED_AT_PITCH_LO - AIRSPEED_AT_PITCH_MID);
-    }
-    if (v < AIRSPEED_AT_PITCH_HI) v = AIRSPEED_AT_PITCH_HI;
-    if (v > AIRSPEED_AT_PITCH_LO) v = AIRSPEED_AT_PITCH_LO;
+    // 入力が NaN／無限大なら設計点を返す。比較が全部 false になるので
+    // 下のクランプでは捕まえられず、そのまま風の LPF を殺す（下記参照）。
+    // ここを抜けた値は必ず有限なので、以降は d の符号だけ見ればよい。
+    if (!(pitch_deg > -1000.0f && pitch_deg < 1000.0f)) return airspeed_v0_;
+    const float k = airspeed_k_;
+    const float d = k + pitch_deg;
+    // ★ K + θ がゼロに近づくと発散し、負になると sqrtf() は NaN を返す。
+    //   **NaN との比較はすべて false なので、下のクランプを素通りする。**
+    //   そのまま風の推定（wind_e_/wind_n_）へ入ると LPF ごと NaN に汚染され、
+    //   電源を切るまで風が出なくなる。ここで打ち切る。
+    //   物理的には「揚力がゼロになるピッチまで機首を下げた」状況で、
+    //   そこまで下げれば対気速度は上限側に張り付く。
+    if (d <= 0.01f) return airspeed_max_;
+    float v = airspeed_v0_ * sqrtf(k / d);
+    // 上下限が逆に設定されていても NaN にはならない（max 側が残るだけ）。
+    if (v < airspeed_min_) v = airspeed_min_;
+    if (v > airspeed_max_) v = airspeed_max_;
     return v;
 }
 
@@ -252,6 +279,8 @@ void attitude_setup() {
     gnss_updates_ = 0;
     gyro_seen_ = false;
     last_gyro_us_ = 0;
+    last_gnss_vel_us_ = 0;
+    gnss_vel_seen_ = false;
     pitch_avg_ = 0.0f;
     pitch_avg_fill_s_ = 0.0f;
     // roll_trim_deg_ はここでは触らない。level_roll_off_ と同じく SD から復元する値で、
@@ -276,6 +305,19 @@ void attitude_setup() {
 static bool imu_fresh() {
     if (!gyro_seen_) return false;
     return (uint32_t)(time_us_32() - last_gyro_us_) < ESKF_IMU_TIMEOUT_US;
+}
+
+// GNSS の速度観測が生きているか。
+// ★ **v_ は観測が無いと加速度バイアスを積分して際限なく育つ。**
+//   「観測の無い区間も慣性で埋まっている」のは短い欠測を跨ぐための性質であって、
+//   GNSS が最初から無い状態（屋内・アンテナ未接続）では**ただのドリフト**になる。
+//   実機で踏んだ: 机の上で数分放置したら |v_| が 3m/s を超え、
+//   ROLL_TRIM_MIN_SPEED を満たしてしまい、静止した機体に自動ロールトリムが
+//   -0.5 度ずつ入り続けた（7 分で -1.5 度）。飛ぶ前から曲がった機体になる。
+//   自動トリムと風推定は「飛行中」の機能なので、観測の鮮度を条件に加える。
+static bool gnss_vel_fresh() {
+    if (!gnss_vel_seen_) return false;
+    return (uint32_t)(time_us_32() - last_gnss_vel_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
 }
 
 // 静止中に貯めた GRV の平均で姿勢を初期化する。
@@ -527,7 +569,10 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 
         const float sp = sqrtf(v_[0]*v_[0] + v_[1]*v_[1]);
         // 直進しているか。ロール自動トリムと風推定で共用する。
-        const bool straight_flight = (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
+        // ★ sp は GNSS の対地速度ではなく **ESKF が積分した速度** なので、
+        //   観測が無いと育つ（gnss_vel_fresh() のコメント参照）。鮮度を必ず併せて見る。
+        const bool straight_flight = gnss_vel_fresh() &&
+                                     (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
                                      (sp > ROLL_TRIM_MIN_SPEED);
 
         // ---- 風の推定 ----
@@ -627,6 +672,16 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         P_[3 + i][3 + i] += qa;
         P_[6 + i][6 + i] += qbg;
         P_[9 + i][9 + i] += qba;
+    }
+
+    // ★ ヨーの分散だけ頭打ちにする（理由は settings.h の ESKF_YAW_SIGMA_MAX_DEG）。
+    //   ロール・ピッチは重力で常に観測されるので育たない。ヨーだけが
+    //   観測の入らない状態で伸び続けるので、ここで止める。
+    //   **縮む側は触らない。**観測が入れば通常どおり小さくなる。
+    {
+        const float ymax = ESKF_YAW_SIGMA_MAX_DEG * (float)M_PI / 180.0f;
+        const float yvar_max = ymax * ymax;
+        if (P_[2][2] > yvar_max) P_[2][2] = yvar_max;
     }
 }
 
@@ -736,6 +791,8 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
     clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
     clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
     gnss_updates_++;
+    last_gnss_vel_us_ = time_us_32();
+    gnss_vel_seen_    = true;
 }
 
 
@@ -749,20 +806,18 @@ bool attitude_ready() { return initialized_ && imu_fresh(); }
 
 // センサー座標系のオイラー角 → 機体軸 [度]。
 // imu.cpp の get_imu_euler() および tools/imulog/decode_imulog.py の
-// mount_correct() と同じ変換であること。
+// mount_correct() と同じ変換であること（実体は attitude.h の imu_body_euler_rad）。
 static void euler_from_state(float &roll, float &pitch, float &yaw) {
-    const float w = q_[0], x = q_[1], y = q_[2], z = q_[3];
-    float sensor_roll = atan2f(2.0f*(w*x + y*z), 1.0f - 2.0f*(x*x + y*y));
-    float sinp = 2.0f*(w*y - z*x);
-    if (sinp >  1.0f) sinp =  1.0f;
-    if (sinp < -1.0f) sinp = -1.0f;
-    float sensor_pitch = asinf(sinp);
-    float sensor_yaw = atan2f(2.0f*(w*z + x*y), 1.0f - 2.0f*(y*y + z*z));
-
+    // ★ マウント回転はクォータニオンの段階で掛ける（imu_body_euler_rad）。
+    //   **Euler を組み替える旧方式には戻さないこと。**v7 の配置では機体が水平の
+    //   ときセンサーがジンバルロックに入り、角の入れ替えでは原理的に直らない
+    //   （settings.h の IMU_MOUNT_Q* のコメント参照）。
+    float r, p, y;
+    imu_body_euler_rad(q_[0], q_[1], q_[2], q_[3], r, p, y);
     const float rad2deg = 180.0f / (float)M_PI;
-    roll  = sensor_pitch * rad2deg;
-    pitch = (sensor_roll - (float)M_PI * 0.5f) * rad2deg;
-    yaw   = -sensor_yaw * rad2deg;
+    roll  = r * rad2deg;
+    pitch = p * rad2deg;
+    yaw   = -y * rad2deg;          // 数学の符号 → 方位（時計回り正）
     if (yaw < 0.0f)    yaw += 360.0f;
     if (yaw >= 360.0f) yaw -= 360.0f;
 }
@@ -780,13 +835,30 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
 bool  attitude_pitch_avg_valid()   { return pitch_avg_fill_s_ >= PITCH_AVG_SEC; }
+// ============================================================
+//  SD の settings.txt から復元する角度の検証
+// ============================================================
+// ★ **NaN と inf を必ず落とすこと。** setter に来る値は atof() の結果で、
+//   atof("nan") は NaN を、atof("1e999") は inf をそのまま返す。
+//   NaN が level_*_off_ や roll_trim_deg_ に入ると、表示・自動トリム・
+//   バンク角警告のすべてが NaN になるうえ、**NaN はどの比較も false になるので
+//   しきい値の警告に一つも引っかからない**。つまり黙って姿勢機能が死ぬ。
+//   単純な上下クランプ（`if (v > hi)`）だけでは NaN を素通しするので足りない。
+//
+// ※ NaN のときは 0 を返す。下で使う 3 つの範囲はいずれも 0 を含むので、
+//   0 は常に「範囲内かつ中立」な値になっている。
+static float clamp_setting_deg(float v, float lo, float hi) {
+    if (v != v) return 0.0f;         // NaN
+    if (v < lo)  return lo;          // -inf もここで潰れる
+    if (v > hi)  return hi;          // +inf もここで潰れる
+    return v;
+}
+
 float attitude_get_roll_trim_deg() { return roll_trim_deg_; }
 void  attitude_set_roll_trim_deg(float deg) {
     // 壊れた設定ファイルでとんでもない値が入っても、飛行中の姿勢表示を狂わせないよう
     // 通常動作と同じ上限でクランプする。
-    if (deg >  ROLL_TRIM_LIMIT_DEG) deg =  ROLL_TRIM_LIMIT_DEG;
-    if (deg < -ROLL_TRIM_LIMIT_DEG) deg = -ROLL_TRIM_LIMIT_DEG;
-    roll_trim_deg_ = deg;
+    roll_trim_deg_ = clamp_setting_deg(deg, -ROLL_TRIM_LIMIT_DEG, ROLL_TRIM_LIMIT_DEG);
 }
 // 設定ファイルは行の順序が保証されない（roll_trim が needs_apply より先に来ることがある）ため、
 // 読み込みが全部終わってからまとめて判定する。
@@ -890,6 +962,10 @@ void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg) {
     level_roll_off_  = r - target_roll_deg;      // ロールも申告値になるようにする
     level_pitch_off_ = p - target_pitch_deg;     // ピッチは申告値になるようにする
     needs_apply_ = false;                        // 較正したので警告を解除
+    // 日付は一旦「不明」にする。正しい値は呼び出し側（.ino）が直後に入れる。
+    // ここで古い日付を残すと、測位できていない場所で APPLY し直したときに
+    // 「前の日の較正のままだ」と誤って警告することになる。不明 = 警告しない。
+    calib_date_ = 0;
 
     // 自動トリムの累積量は捨てる。ここでロールのゼロ点を取り直したので、
     // 残したままだと表示が -roll_trim_deg_ になり「APPLY したのに 0 にならない」
@@ -922,13 +998,59 @@ void attitude_get_level_offset(float &roll_deg, float &pitch_deg) {
     pitch_deg = level_pitch_off_;
 }
 
+// ★ SD からの復元専用。UI からは attitude_calibrate_to() が直接書くので通らない。
+//   壊れた値をそのまま入れると、ロール・ピッチ・平均ピッチ・自動トリム・
+//   マウント外れ検出のすべてが同じだけずれる。roll_trim と同じ形でクランプする。
 void attitude_set_level_offset(float roll_deg, float pitch_deg) {
-    level_roll_off_ = roll_deg;
-    level_pitch_off_ = pitch_deg;
+    level_roll_off_  = clamp_setting_deg(roll_deg,  -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
+    level_pitch_off_ = clamp_setting_deg(pitch_deg, -LEVEL_OFFSET_LIMIT_DEG, LEVEL_OFFSET_LIMIT_DEG);
+}
+
+// ---- 対気速度モデルの係数（既定は settings.h、SD の settings.txt から上書き可）----
+// 値の検査は read_setting_float()（mysd.cpp）側で行い、範囲外はクランプして
+// log.txt に残す。ここでは「壊れた値で 0 除算・NaN を作らない」最低限だけ守る。
+float attitude_get_airspeed_v0()  { return airspeed_v0_; }
+void  attitude_set_airspeed_v0(float mps)  { if (mps > 0.0f) airspeed_v0_  = mps; }
+float attitude_get_airspeed_k()   { return airspeed_k_; }
+void  attitude_set_airspeed_k(float deg)   { if (deg > 0.0f) airspeed_k_   = deg; }
+float attitude_get_airspeed_min() { return airspeed_min_; }
+void  attitude_set_airspeed_min(float mps) { if (mps > 0.0f) airspeed_min_ = mps; }
+float attitude_get_airspeed_max() { return airspeed_max_; }
+void  attitude_set_airspeed_max(float mps) { if (mps > 0.0f) airspeed_max_ = mps; }
+
+// ---- 較正した日 ----
+uint32_t attitude_get_calib_date() { return calib_date_; }
+// 呼び出し元は APPLY 直後の .ino と、SD 設定からの復元。
+// 壊れた値を入れると「日付をまたいだ」判定が毎回成立して鳴り続けるので、
+// もっともらしい範囲から外れたものは 0（不明＝警告しない）に倒す。
+void attitude_set_calib_date(uint32_t yyyymmdd) {
+    const uint32_t y = yyyymmdd / 10000;
+    const uint32_t m = yyyymmdd / 100 % 100;
+    const uint32_t d = yyyymmdd % 100;
+    if (y < 2020 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31) { calib_date_ = 0; return; }
+    calib_date_ = yyyymmdd;
+}
+// 較正した日と today_jst が違うか。
+// today_jst は get_gnss_jst_yyyymmdd() の戻り値をそのまま渡す（0 = 測位前）。
+// どちらかが不明なら false。屋内では経過を判定できないので、
+// 「分からないときは鳴らさない」に倒す（机上テストのたびに鳴るのを防ぐ）。
+bool attitude_calib_date_stale(uint32_t today_jst) {
+    // volatile を 1 回だけ読む。APPLY は 0 を入れてから正しい日付を入れるので、
+    // 2 回読むとその隙間に当たったときだけ「不明でないのに一致しない」と
+    // 誤判定しうる（確率は低いが、読み方を固定しておけば考えなくて済む）。
+    const uint32_t cd = calib_date_;
+    if (cd == 0 || today_jst == 0) return false;
+    return cd != today_jst;
 }
 
 float attitude_get_roll_target() { return roll_target_; }
-void  attitude_set_roll_target(float deg) { roll_target_ = deg; }
+// ★ SD からの復元専用。設定画面の巡回は attitude_cycle_roll_target() が
+//   直接 roll_target_ を進めるので、ここを通らない（巡回の挙動は変わらない）。
+//   範囲は画面で選べる値そのもの。外れた値が入ると APPLY のゼロ点と
+//   地上ロールチェックの基準が同時にずれる。
+void  attitude_set_roll_target(float deg) {
+    roll_target_ = clamp_setting_deg(deg, ROLL_TARGET_MIN_DEG, ROLL_TARGET_MAX_DEG);
+}
 void  attitude_cycle_roll_target() {
     roll_target_ += ROLL_TARGET_STEP_DEG;
     if (roll_target_ > ROLL_TARGET_MAX_DEG + 0.01f)
@@ -938,7 +1060,10 @@ bool  attitude_needs_apply() { return needs_apply_; }
 void  attitude_set_needs_apply(bool on) { needs_apply_ = on; }
 
 float attitude_get_pitch_target() { return pitch_target_; }
-void  attitude_set_pitch_target(float deg) { pitch_target_ = deg; }
+// ★ SD からの復元専用（roll_target と同じ理由・同じ形）。
+void  attitude_set_pitch_target(float deg) {
+    pitch_target_ = clamp_setting_deg(deg, PITCH_TARGET_MIN_DEG, PITCH_TARGET_MAX_DEG);
+}
 
 void attitude_cycle_pitch_target() {
     pitch_target_ += PITCH_TARGET_STEP_DEG;

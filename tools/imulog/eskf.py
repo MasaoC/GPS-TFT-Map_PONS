@@ -241,7 +241,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         機上では表示にしか使っていないので、飛行後の検証はここから読む。
     """
     import pandas as pd
-    from decode_imulog import euler_from_quat, mount_correct
+    from decode_imulog import euler_from_quat, mount_correct_quat
 
     gyro, accel = parts.get("gyro"), parts.get("accel")
     if gyro is None or accel is None or gyro.empty or accel.empty:
@@ -321,7 +321,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             ysig[i] = np.degrees(np.sqrt(max(f.P[2, 2], 0.0)))
 
         s_roll, s_pitch, s_yaw = euler_from_quat(qs[:, 0], qs[:, 1], qs[:, 2], qs[:, 3])
-        roll, pitch, yaw = mount_correct(s_roll, s_pitch, s_yaw)
+        roll, pitch, yaw = mount_correct_quat(qs[:, 0], qs[:, 1], qs[:, 2], qs[:, 3])
         out.append(pd.DataFrame({
             "session": sess,
             "t": imu["t"].to_numpy(), "ts": ts,

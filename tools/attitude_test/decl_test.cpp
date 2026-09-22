@@ -8,10 +8,15 @@
 
 static const float DECL = -8.0f;
 
-// euler_from_state() のヨー部分と同じ式（マウント補正込み）
+// そのクォータニオンが表す機体の方位 [deg]。
+// ★ 式を写し取らず、**本番と同じ attitude.h の imu_body_euler_rad() を使う。**
+//   以前はここに変換を書き写していたので、マウントを変えたときに
+//   「テストだけ旧変換のまま」になって偽の FAIL を出した（2026-09-21）。
+//   このテストが見たいのは偏角の符号であって、マウントの式ではない。
 static float mount_yaw_deg(float w, float x, float y, float z) {
-    float sy = atan2f(2.0f*(w*z + x*y), 1.0f - 2.0f*(y*y + z*z));
-    float d = -sy * 180.0f / (float)M_PI;
+    float r, p, y_rad;
+    imu_body_euler_rad(w, x, y, z, r, p, y_rad);
+    float d = -y_rad * 180.0f / (float)M_PI;
     if (d < 0) d += 360.0f;
     if (d >= 360.0f) d -= 360.0f;
     return d;

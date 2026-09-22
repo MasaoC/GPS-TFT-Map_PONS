@@ -1,6 +1,6 @@
 // ============================================================
 // File    : attitude.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GNSS 速度援用の姿勢 ESKF（機上リアルタイム版）。
 //           tools/imulog/eskf.py と同じ数式・同じマウント補正を実装する。
 //           片方を直したらもう片方も必ず合わせること。
@@ -28,13 +28,40 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/18
+// Updated : 2026/08/28
 // ============================================================
 
 #ifndef ATTITUDE_H
 #define ATTITUDE_H
 
 #include <Arduino.h>
+#include <math.h>
+#include "settings.h"
+
+// センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
+// ★ imu.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
+//   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
+// yaw はここでは数学どおりの符号で返す。0..360 の方位に直すのは呼び出し側。
+static inline void imu_body_euler_rad(float w, float x, float y, float z,
+                                      float &roll, float &pitch, float &yaw) {
+    // q_body = q_sensor ⊗ q_mount
+    const float mw = IMU_MOUNT_QW, mx = IMU_MOUNT_QX, my = IMU_MOUNT_QY, mz = IMU_MOUNT_QZ;
+    const float bw = w*mw - x*mx - y*my - z*mz;
+    const float bx = w*mx + x*mw + y*mz - z*my;
+    const float by = w*my - x*mz + y*mw + z*mx;
+    const float bz = w*mz + x*my - y*mx + z*mw;
+    roll = atan2f(2.0f*(bw*bx + by*bz), 1.0f - 2.0f*(bx*bx + by*by));
+    float sinp = 2.0f*(bw*by - bz*bx);
+    if (sinp >  1.0f) sinp =  1.0f;
+    if (sinp < -1.0f) sinp = -1.0f;
+    // ★ **符号を反転する。**ZYX 抽出がそのまま返すのは「機首下げが正」で、
+    //   この機体の約束（機首上げが正。プラットホームの申告値 -3.5 度など）と逆。
+    //   2026-09-22 に実機で確認（機首上げ 20 度で -20 が出ていた）。
+    //   ここを直すとピッチ警告・巡航トリム・対気速度モデルがまとめて正になる。
+    pitch = -asinf(sinp);
+    yaw  = atan2f(2.0f*(bw*bz + bx*by), 1.0f - 2.0f*(by*by + bz*bz));
+}
+
 
 // ---- 初期化 ----
 void attitude_setup();
@@ -49,7 +76,7 @@ void attitude_on_grv(float qw, float qx, float qy, float qz);
 // accuracy_rad は BNO085 が報告するヘディング精度推定 [rad]（負なら未キャリブ）。
 void attitude_on_rv(float qw, float qx, float qy, float qz, float accuracy_rad);
 
-// ---- GNSS 速度観測（gps.cpp の NAV-PVT 解析から呼ぶ）----
+// ---- GNSS 速度観測（gnss.cpp の NAV-PVT 解析から呼ぶ）----
 // 引数は UBX 原義の NED（velD は下降正）。内部で ENU へ変換する。
 void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc);
 
@@ -148,6 +175,27 @@ void attitude_hold_calibrate();
 bool attitude_take_calib_done();
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg);
 void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定からの復元用
+
+// ---- 較正した日（JST の YYYYMMDD、0 = 不明）----
+// 電源が切れている間にマウントから外されると OFF_MOUNT 判定が働かない
+// （ESKF が回っていないため）。その穴を埋めるための、日付だけの弱い手がかり。
+// 「日付をまたいだ＝一度持ち帰った可能性がある」として設定画面に注意を出すのに使う。
+// 断定はしない。付けっぱなしで日をまたぐこともあるため。
+// ---- 対気速度モデル V(θ) = V0 * sqrt(K / (K + θ)) の係数 ----
+// 既定値は settings.h、実際の値は SD の settings.txt から上書きできる。
+// 機体・重量・重心で変わるので、機体ごとに SD 側で設定する運用を想定している。
+float attitude_get_airspeed_v0();
+void  attitude_set_airspeed_v0(float mps);   // V0 [m/s]
+float attitude_get_airspeed_k();
+void  attitude_set_airspeed_k(float deg);    // K [度]
+float attitude_get_airspeed_min();
+void  attitude_set_airspeed_min(float mps);  // 推定の下限 [m/s]
+float attitude_get_airspeed_max();
+void  attitude_set_airspeed_max(float mps);  // 推定の上限 [m/s]
+
+uint32_t attitude_get_calib_date();
+void     attitude_set_calib_date(uint32_t yyyymmdd);   // APPLY 直後と SD 復元から呼ぶ
+bool     attitude_calib_date_stale(uint32_t today_jst);
 
 // ---- 較正時に申告するピッチ角（画面の SET PITCH 行の値）----
 // 次に較正するときの目標値。SD に保存して次回起動でも同じ値から始められるようにする。

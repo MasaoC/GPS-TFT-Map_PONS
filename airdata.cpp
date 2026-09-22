@@ -1,17 +1,18 @@
 // ============================================================
 // File    : airdata.cpp
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : 大気データ取得の実装。
 //           気圧センサー MS5611（I2C接続）から気圧・気温を読み取り、
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/09/17
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"
+#include "link.h"
 #include "mysd.h"
-#include "gps.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
+#include "gnss.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
 #define MS5611_ADDR 0x77
 
@@ -59,13 +60,26 @@ static float last_altitude    = 0.0f;  // [m]（VSPEED_WINDOW_MS ウィンドウ
 #define VSPEED_WINDOW_MS 250
 
 // 垂直速度 (vspeed) 計算用: ウィンドウ トリム平均によるオーバーサンプリング
-// 24ms周期（D1+D2）のサンプルを VSPEED_WINDOW_MS 分バッファに蓄積し、挿入ソート後に上下10%を棄却した
-// トリム平均（20%トリム）で代表値を求める。
+// 24ms周期（D1+D2）のサンプルを VSPEED_WINDOW_MS 分バッファに蓄積し、挿入ソート後に
+// 上下 2 サンプルずつ棄却したトリム平均で代表値を求める。
 // プロペラ（135rpm 2枚ペラ）が ~4.5Hz で干渉して生じる周期的外れ値を除去するのが目的。
-#define ALT_WIN_BUF_SIZE 32             // 24ms周期×500ms ≈ 20 サンプル、余裕込みで 32
+//
+// ※ 棄却率は固定 2 サンプルなので、窓のサンプル数で変わる。
+//   VSPEED_WINDOW_MS=250 では 250/24 ≒ 10 サンプルなので上下 20%。
+//   窓幅を変えたらこの数字も変わることに注意（以前は 500ms 前提のコメントが残っていた）。
+#define ALT_WIN_BUF_SIZE 32             // 24ms周期×250ms ≒ 10 サンプル、余裕込みで 32
 static float alt_win_buf[ALT_WIN_BUF_SIZE]; // ウィンドウ内の高度サンプルバッファ
 static int   alt_win_count = 0;             // バッファ内の有効サンプル数
 static float alt_win_prev  = 0.0f;          // 直前ウィンドウのトリム平均高度 [m]（GND相対）
+// 直前ウィンドウを閉じた時刻 [ms]。vspeed は「窓が隣り合っている」前提で
+// (差分 ÷ 窓幅) としていたが、I2C が途絶えて窓が飛ぶとその前提が崩れ、
+// 何秒も前の高度との差を 1 窓分の時間で割って**巨大な偽の昇降率**が出る。
+// 実経過時間で割り、飛びすぎていたら更新しない。
+static unsigned long alt_win_prev_ms = 0;
+// ★ 「まだ 1 窓目」の判定に alt_win_prev != 0.0f を使ってはいけない。
+//   0.0m は起動地点そのものを指す**正当な高度値**なので、番兵として不適切。
+//   専用のフラグで持つ。
+static bool  alt_win_prev_valid = false;
 static float last_vspeed   = 0.0f;          // 最新の垂直速度 [m/s]
 static unsigned long last_vspeed_update_ms = 0; // 最後に vspeed が正常更新された時刻 [ms]
                                                 // I2C エラー等で途絶えた場合のタイムアウト判定に使う
@@ -80,13 +94,22 @@ static bool    ground_set      = false; // グランドレベル確定済みフ�
 // MS5611 の接続・初期化が正常に完了しているかどうか
 // airdata_setup() で設定され、airdata_update() / get_airdata_ok() で参照される
 static bool ms5611_ok = false;
+// 連続失敗回数。MS5611_FAIL_LIMIT を超えたら ms5611_ok を落として通信をやめる。
+// 成功するたびに 0 に戻すので、たまの 1 回のエラーでは落ちない。
+static int  ms5611_fail_count = 0;
+// 最後に復旧を試みた時刻 [ms]（0 = まだ一度も試していない）
+static unsigned long ms5611_recovery_ms = 0;
 
 // ----------------------------
 // I2C スキャン (デバッグ用)
 // 0x01 ～ 0x7E のアドレスを総当たりで確認し、応答があったデバイスを Serial に出力する。
 // MS5611 が認識されているか確認するときに airdata_setup() 内から手動で呼ぶ。
 // ----------------------------
+// ★ **RELEASE では中身ごと消す。** 出力は全部 DEBUG_* なので RELEASE では
+//   何も表示されないのに、126 アドレスへ I2C トランザクションを投げて結果を捨てていた。
+//   起動時間の無駄であり、-Wempty-body 警告（if (!found) DEBUG_PLN(...)）の出所でもあった。
 void i2c_scan() {
+#ifndef RELEASE
     DEBUG_PLN(20260310, "=== I2C Scan ===");
     bool found = false;
     for (uint8_t addr = 0x01; addr < 0x7F; addr++) {
@@ -100,6 +123,7 @@ void i2c_scan() {
     }
     if (!found) DEBUG_PLN(20260310, "No devices found!");
     DEBUG_PLN(20260310, "================");
+#endif  // !RELEASE
 }
 
 // ----------------------------
@@ -115,7 +139,17 @@ bool ms5611_write_cmd(uint8_t cmd) {
     if (err != 0) {
         DEBUGW_P(20260310, "I2C write error: ");
         DEBUGW_PLN(20260310, err);
-        enqueueTask(createLogSdfTask("MS5611 I2C write error: %d", err));
+        // ★ **毎ループ積まないこと。** この関数は airdata_update() の IDLE から
+        //   毎ループ呼ばれる。センサーが無応答になるとログタスクが毎ループ積まれ、
+        //   0.5 秒ほどでタスクキュー(40)が溢れて**以降の全タスクが捨てられる**
+        //   ＝ 警報音が鳴らなくなる。気圧センサー 1 個の不調で音響警報が
+        //   全停止するのは割に合わないので、ここで間引く。
+        static unsigned long last_errlog_ms = 0;
+        const unsigned long now_ms = millis();
+        if (last_errlog_ms == 0 || now_ms - last_errlog_ms >= MS5611_ERRLOG_INTERVAL_MS) {
+            last_errlog_ms = now_ms;
+            enqueueTask(createLogSdfTask("MS5611 I2C write error: %d", err));
+        }
         return false;
     }
     return true;
@@ -242,11 +276,35 @@ static bool ms5611_reset() {
     return true;
 }
 
+// PROM 8 ワードの CRC4 を計算する（データシート AN520 のアルゴリズムそのまま）。
+// prom[7] の下位 4bit が工場で書かれた期待値。
+// 計算はシフトと XOR だけで数マイクロ秒。**係数 1 ビットの化けを黙って通さない**ための検査で、
+// 全ゼロ／全 FF のような派手な壊れ方しか見ていなかった従来の検査を補う。
+// 係数が 1 ビットずれると、そのフライト中ずっと気圧高度が静かにずれ続ける。
+static uint8_t ms5611_crc4(uint16_t prom[8]) {
+    uint16_t n_rem = 0;
+    const uint16_t crc_read = prom[7];
+    prom[7] = (0xFF00 & prom[7]);          // CRC の 4bit を 0 にしてから計算する
+    for (int cnt = 0; cnt < 16; cnt++) {
+        if (cnt & 1) n_rem ^= (uint16_t)(prom[cnt >> 1] & 0x00FF);
+        else         n_rem ^= (uint16_t)(prom[cnt >> 1] >> 8);
+        for (int n_bit = 8; n_bit > 0; n_bit--) {
+            n_rem = (n_rem & 0x8000) ? (uint16_t)((n_rem << 1) ^ 0x3000)
+                                     : (uint16_t)(n_rem << 1);
+        }
+    }
+    prom[7] = crc_read;                    // 呼び出し側のために元へ戻す
+    return (uint8_t)((n_rem >> 12) & 0x000F);
+}
+
 // 補正係数 C[0..6] を PROM から読み込む。
-// 読めない、または明らかに異常な値だった場合は false。
+// 読めない、CRC が合わない、または明らかに異常な値だった場合は false。
+// ★ 検査を全部通るまで C[] へは書かない。途中で失敗したときに
+//   **半分だけ新しい係数**が残ると、気圧高度が静かに狂ったまま飛ぶことになる。
 static bool ms5611_load_prom() {
-    for (uint8_t i = 0; i <= 6; i++) {
-        if (!ms5611_read_prom(i, C[i])) {
+    uint16_t prom[8];
+    for (uint8_t i = 0; i <= 7; i++) {     // CRC のためワード 7 まで読む
+        if (!ms5611_read_prom(i, prom[i])) {
             DEBUGW_P(20260310, "PROM read failed at C[");
             DEBUGW_P(20260310, i);
             DEBUGW_PLN(20260310, "]");
@@ -255,16 +313,27 @@ static bool ms5611_load_prom() {
     }
     // C[1]〜C[6] が全部 0x0000 か全部 0xFFFF なら、I2C は応答しているのに
     // 中身が読めていない（バスが不安定・デバイスが未起動）。
-    // このまま計算に使うと気圧高度がでたらめな値になるので、失敗扱いにする。
     bool all_zero = true, all_ff = true;
     for (uint8_t i = 1; i <= 6; i++) {
-        if (C[i] != 0x0000) all_zero = false;
-        if (C[i] != 0xFFFF) all_ff   = false;
+        if (prom[i] != 0x0000) all_zero = false;
+        if (prom[i] != 0xFFFF) all_ff   = false;
     }
     if (all_zero || all_ff) {
         DEBUGW_PLN(20260310, "MS5611 PROM looks invalid");
+        enqueueTask(createLogSdTask("MS5611 PROM invalid (all 0x0000 or 0xFFFF)"));
         return false;
     }
+    // CRC4 照合
+    const uint8_t crc_calc = ms5611_crc4(prom);
+    const uint8_t crc_want = (uint8_t)(prom[7] & 0x000F);
+    if (crc_calc != crc_want) {
+        DEBUGW_P(20260310, "MS5611 PROM CRC mismatch: ");
+        DEBUGW_PLN(20260310, crc_calc);
+        enqueueTask(createLogSdfTask("MS5611 PROM CRC NG (calc %u want %u)",
+                                     (unsigned)crc_calc, (unsigned)crc_want));
+        return false;
+    }
+    for (uint8_t i = 0; i <= 6; i++) C[i] = prom[i];
     return true;
 }
 
@@ -274,8 +343,12 @@ bool ms5611_init() {
     if (ms5611_load_prom()) return true;
 
     // 読めなかった場合だけ、リセットして 1 回だけやり直す。
-    // 起動時に I2C が不安定だった場合の救済で、ここは airdata_setup() からしか
-    // 呼ばれない（＝起動時のみ）ため、飛行中に余計な待ちが入ることはない。
+    // ★ この関数は airdata_setup()（起動時）に加えて airdata_try_recovery()
+    //   （飛行中・30 秒に 1 回）からも呼ばれる。したがって下の delay(10) は
+    //   飛行中にも入り得るが、PROM 8 ワード ×2 + 10ms でも 20ms 未満に収まる。
+    //   GNSS の FIFO が溢れるのは 270ms なので十分内側。
+    //   復旧は「アドレス応答があった」ときしか呼ばれないので、不在の機体で
+    //   この待ちを毎回踏むこともない。
     // 失敗しても呼び出し側が ms5611_ok = false にして気圧なしで動作を続ける。
     DEBUGW_PLN(20260310, "MS5611 PROM read failed. retry with reset.");
     enqueueTask(createLogSdTask("MS5611 PROM read failed, retry with reset"));
@@ -331,15 +404,30 @@ static bool ms5611_process_data() {
         float sum = 0.0f;
         for (int i = lo; i < hi; i++) sum += alt_win_buf[i];
         float avg_cur = (hi > lo) ? sum / (hi - lo) : alt_win_buf[alt_win_count / 2];
-        // vspeed 計算（ウィンドウ幅に依らず m/s に正規化）
-        if (alt_win_prev != 0.0f) last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / VSPEED_WINDOW_MS);
+        // vspeed 計算。
+        // ★ **窓幅ではなく実経過時間で割ること。**
+        //   以前は (差分 ÷ VSPEED_WINDOW_MS) 固定だったが、これは「窓が隣り合っている」
+        //   前提でしか正しくない。I2C が数秒途絶えると窓が飛び、何秒も前の高度との差を
+        //   1 窓分の時間で割って**巨大な偽の昇降率**が出る（復旧直後に必ず踏む）。
+        //   飛びすぎていたときは更新せず、次の窓から取り直す。
+        // 1 窓目も差分を取れない（前の窓が無い）ので更新しない。
+        const unsigned long win_now_ms = millis();
+        const unsigned long win_dt_ms  = win_now_ms - alt_win_prev_ms;
+        if (alt_win_prev_valid && win_dt_ms > 0 &&
+            win_dt_ms <= (unsigned long)VSPEED_WINDOW_MS * 3UL) {
+            last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / (float)win_dt_ms);
+            // ★ 実際に計算できたときだけ時刻を記録する。窓が飛んだ回に記録すると
+            //   get_airdata_vspeed() の 2 秒ステイル判定が古い値を「新鮮」と誤認する。
+            last_vspeed_update_ms = win_now_ms;
+        }
         last_altitude     = avg_cur;
         alt_win_prev      = avg_cur;
+        alt_win_prev_ms   = win_now_ms;
+        alt_win_prev_valid = true;
         last_win_hz       = alt_win_count * 1000.0f / VSPEED_WINDOW_MS; // 総サンプルから算出した Hz
         alt_win_count     = 0;
-        win_start         = millis();
-        last_vspeed_update_ms = millis();  // 正常更新時刻を記録
-        return true;   // last_vspeed 更新完了
+        win_start         = win_now_ms;
+        return true;   // ウィンドウ完了（VSI 再描画のトリガー）
     } else {
         last_altitude = raw_alt;    // ウィンドウ未完了時は瞬時値
         return false;  // ウィンドウ未完了、last_vspeed 未更新
@@ -355,14 +443,64 @@ static bool ms5611_process_data() {
 //
 // 戻り値: 1 サイクル（気圧＋温度）が完了したとき true（約 24ms ごと）。
 //         完了時に last_temperature / last_pressure / last_altitude が更新される。
+// 1 回の I2C 失敗を数える。連続で MS5611_FAIL_LIMIT を超えたら通信をやめる。
+// やめた後は airdata_try_recovery() が定期的に拾いに行く。
+static void ms5611_note_failure() {
+    ms5611_state = MS5611_IDLE;             // 途中状態を残さない
+    if (++ms5611_fail_count < MS5611_FAIL_LIMIT) return;
+
+    ms5611_ok = false;
+    ms5611_fail_count = 0;
+    ms5611_recovery_ms = millis();          // 直後に再試行しない
+    enqueueTask(createLogSdTask("MS5611 lost (I2C). airdata disabled, will retry"));
+    DEBUGW_PLN(20260917, "[MS5611] lost, disabled");
+}
+
+// 見失った MS5611 を拾い直す。MS5611_RECOVERY_INTERVAL_MS ごとに 1 回だけ試す。
+// ★ まず**アドレス応答の確認 1 トランザクションだけ**を投げる。
+//   不在なら数十 µs で諦めるので、Core0 を止めない。PROM 8 ワードまで読みに行くのは
+//   応答があったときだけ。
+static void airdata_try_recovery() {
+    const unsigned long now_ms = millis();
+    if (ms5611_recovery_ms != 0 &&
+        now_ms - ms5611_recovery_ms < MS5611_RECOVERY_INTERVAL_MS) return;
+    ms5611_recovery_ms = now_ms;
+
+    myWire.beginTransmission(MS5611_ADDR);
+    if (myWire.endTransmission() != 0) return;   // まだ居ない。ログも出さない（毎回出ると溢れる）
+
+    if (!ms5611_init()) {
+        enqueueTask(createLogSdTask("MS5611 responded but PROM reload failed"));
+        return;
+    }
+
+    // ★ 窓の履歴を捨てる。前の窓は何十秒も前のものなので、そのまま差分を取ると
+    //   偽の昇降率になる（ms5611_process_data() の実経過時間チェックでも弾かれるが、
+    //   ここで明示的に捨てておくほうが意図が読める）。
+    //   ground_set は**触らない**。起動地点の基準高度は復旧後も同じでなければならない。
+    alt_win_count      = 0;
+    alt_win_prev_valid = false;
+    win_start          = now_ms;
+    ms5611_state       = MS5611_IDLE;
+    ms5611_fail_count  = 0;
+    ms5611_ok          = true;
+    enqueueTask(createLogSdTask("MS5611 recovered"));
+    DEBUGW_PLN(20260917, "[MS5611] recovered");
+}
+
 bool airdata_update() {
-    if (!ms5611_ok) return false;  // 未接続・初期化失敗時は何もしない
+    if (!ms5611_ok) {           // 未接続・初期化失敗・通信途絶。定期的に拾いに行く
+        airdata_try_recovery();
+        return false;
+    }
     switch (ms5611_state) {
         case MS5611_IDLE:
             // D1（気圧）変換を開始し、次のステートへ
             if (ms5611_start_convert(CMD_CONVERT_D1)) {
                 convert_start = millis();
                 ms5611_state  = MS5611_WAIT_D1;
+            } else {
+                ms5611_note_failure();
             }
             return false;
 
@@ -371,12 +509,14 @@ bool airdata_update() {
             if (millis() - convert_start < OSR_DELAY_MS) return false;
             // D1 を読み取り、続けて D2（温度）変換を開始
             if (!ms5611_read_adc_result(D1_raw)) {
-                ms5611_state = MS5611_IDLE;  // エラー時はリセット
+                ms5611_note_failure();
                 return false;
             }
             if (ms5611_start_convert(CMD_CONVERT_D2)) {
                 convert_start = millis();
                 ms5611_state  = MS5611_WAIT_D2;
+            } else {
+                ms5611_note_failure();
             }
             return false;
 
@@ -384,10 +524,11 @@ bool airdata_update() {
             // 変換時間が経過するまで待機
             if (millis() - convert_start < OSR_DELAY_MS) return false;
             if (!ms5611_read_adc_result(last_D2_raw)) {
-                ms5611_state = MS5611_IDLE;  // エラー時はリセット
+                ms5611_note_failure();
                 return false;
             }
             ms5611_state = MS5611_IDLE;
+            ms5611_fail_count = 0;          // 1 サイクル通ったので失敗の連続は切れた
             return ms5611_process_data();
         }
     }
@@ -400,7 +541,14 @@ bool  get_airdata_ok()             { return ms5611_ok; }
 float get_airdata_altitude()       { return last_altitude; }
 // 最新の気圧 [hPa] を返す
 // リプレイ中で CSV に pressure 列があれば、その値をそのまま返す
+// ミラー中（受信モード）は受信した機体の値を返す。
+// CSV は自機の値を書く必要があるので、生の実装は get_airdata_pressure_raw() に残してある。
 float get_airdata_pressure() {
+  if (link_mirror_active()) return link_get_pressure();
+  return get_airdata_pressure_raw();
+}
+
+float get_airdata_pressure_raw() {
   if (replay_has_value(RHAVE_PRESS)) return replay_get_pressure();
   return last_pressure;
 }
@@ -430,9 +578,12 @@ float get_airdata_win_hz()      { return last_win_hz; }
 // どちらよりも先に呼ぶ必要がある。GPS_TFT_map.ino の setup() 冒頭から呼ぶこと。
 void airdata_wire_begin() {
     myWire.begin();
-    // BNO085 は起動時にクロックストレッチングを多用するため 100kHz に設定する。
-    // 400kHz では RP2350 側がタイムアウト（error: 5）して I2C バスがロックする。
-    // MS5611 は 100kHz でも動作に問題ない。
+    // i2c0 は **MS5611 専用**。400kHz で動かす。
+    // ★ v6 までは BNO085 と共用していて、BNO085 のクロックストレッチで
+    //   RP2350 側がタイムアウト（error: 5）しバスがロックするため 100kHz に落としていた。
+    //   v7 で BNO085 を SPI1（予備で i2c1）へ移してバスを分離したので、
+    //   その制約は無くなった。MS5611 は 400kHz で問題なく動く。
+    //   （コメントだけ 100kHz のまま残っていて、コードと正反対のことを述べていた）
     myWire.setClock(400000);
     delay(100);
 }

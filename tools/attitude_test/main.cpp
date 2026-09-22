@@ -8,6 +8,21 @@
 // 初期化は静止判定を通す必要があるので、まず静止データを流す。
 static const double G = 9.80665;
 
+// ---- 機体座標(前/左/上) → センサー座標 ----
+// ★ **合成データはセンサー座標で渡すこと。**attitude.cpp はセンサー座標を受け取り、
+//   出力の段でマウント回転（attitude.h の imu_body_euler_rad）を掛ける。
+//   以前はここで機体座標のまま流し込み、出力側の `pitch+90` で辻褄を合わせていたため、
+//   マウントを変えるたびにテストが偽の FAIL を出した（2026-09-22）。
+//   v_body = R_bs * v_sensor なので、逆向きは R_bs^T。
+//   R_bs = [[0,0,1],[0,1,0],[-1,0,0]]（実機の測定値から決定。settings.h 参照）
+static void body_to_sensor(const double b[3], float s_out[3]) {
+    s_out[0] = (float)(-b[2]);
+    s_out[1] = (float)( b[1]);
+    s_out[2] = (float)( b[0]);
+}
+// 機体が水平のときのセンサー姿勢 = conj(q_mount)
+static const float GRV_LEVEL[4] = {0.70710678f, 0.0f, 0.70710678f, 0.0f};
+
 static void Rz(double a, double R[3][3]) {
     double c=cos(a), s=sin(a);
     double M[3][3]={{c,-s,0},{s,c,0},{0,0,1}};
@@ -34,11 +49,12 @@ int main() {
     // 静止中は比力が +Z（機体上向き）に g だけ出る
     {
         double R[3][3]; Rz(0,R);   // 単位行列相当
-        float g0[3]={0,0,0}, a0[3]={0,0,(float)G};
-        // GRV は水平姿勢のクォータニオン（単位）
+        const double ab[3]={0,0,G};              // 機体座標の比力（上向き g）
+        float g0[3]={0,0,0}, a0[3];
+        body_to_sensor(ab, a0);                  // → センサー座標
         for (int i=0;i<200;i++) {
             attitude_on_accel(a0);
-            attitude_on_grv(1,0,0,0);
+            attitude_on_grv(GRV_LEVEL[0],GRV_LEVEL[1],GRV_LEVEL[2],GRV_LEVEL[3]);
             test_set_us((uint32_t)(i*dt*1e6)); attitude_on_gyro(g0, g_test_us);
         }
     }
@@ -57,11 +73,13 @@ int main() {
         double aw[3]={-V*psid*fw[1], V*psid*fw[0], 0};
         // f_body = R^T (a_world - g_world),  g_world = (0,0,-G)
         double d[3]={aw[0], aw[1], aw[2]+G};
-        float f[3];
-        for(int r=0;r<3;r++) f[r]=(float)(R[0][r]*d[0]+R[1][r]*d[1]+R[2][r]*d[2]);
+        double fb[3], wb[3];
+        for(int r=0;r<3;r++) fb[r]=R[0][r]*d[0]+R[1][r]*d[1]+R[2][r]*d[2];
         // omega_body = R^T * (0,0,psid)
-        float w[3];
-        for(int r=0;r<3;r++) w[r]=(float)(R[2][r]*psid);
+        for(int r=0;r<3;r++) wb[r]=R[2][r]*psid;
+        float f[3], w[3];
+        body_to_sensor(fb, f);
+        body_to_sensor(wb, w);
 
         attitude_on_accel(f);
         test_set_us((uint32_t)((10.0+t)*1e6)); attitude_on_gyro(w, g_test_us);
@@ -73,18 +91,18 @@ int main() {
     // ---- 3) 結果 ----
     // ロール（機体軸）が真のバンク角に一致するか
     float roll,pitch,yaw; attitude_get_euler_raw(roll,pitch,yaw);
-    // マウント補正の定義は roll=sensor_pitch, pitch=sensor_roll-90 なので、
-    // シミュレーションの機体バンク（= sensor_roll）は pitch+90 で取り出す。
-    float sensor_roll = pitch + 90.0f;
+    // ★ センサー座標で流し込むようにしたので、**出力ロールがそのまま機体バンク**。
+    //   式を写し取って引き算する必要はもう無い（写すとまた古くなる）。
+    float body_roll = roll;   // 出力ロール＝機体バンク
     float bg[3]; attitude_get_gyro_bias(bg);
     printf("真のバンク角 : %.2f deg\n", phi*180/M_PI);
-    printf("ESKF (sensor_roll) : %.2f deg  (誤差 %+.2f)\n",
-           sensor_roll, sensor_roll-(float)(phi*180/M_PI));
+    printf("ESKF 出力ロール     : %.2f deg  (誤差 %+.2f)\n",
+           body_roll, body_roll-(float)(phi*180/M_PI));
     printf("  参考 出力roll=%.2f 出力pitch=%.2f yaw=%.2f\n", roll, pitch, yaw);
     printf("推定ジャイロバイアス: %.3f %.3f %.3f deg/s\n",
            bg[0]*180/M_PI, bg[1]*180/M_PI, bg[2]*180/M_PI);
     printf("GNSS 観測回数: %u\n", (unsigned)attitude_get_gnss_updates());
-    bool ok = fabsf(sensor_roll - (float)(phi*180/M_PI)) < 1.5f;
+    bool ok = fabsf(body_roll - (float)(phi*180/M_PI)) < 1.5f;
     printf("\n結果: %s\n", ok ? "PASS — C++ 版も真のバンクを復元した" : "FAIL");
     return ok?0:1;
 }
