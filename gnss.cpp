@@ -754,7 +754,7 @@ void gnss_setup() {
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] setup start");
       #endif
-      GNSS_SERIAL.setFIFOSize(1024);  // バッファオーバーフロー防止（デフォルト 32 バイトでは不足）
+      GNSS_SERIAL.setFIFOSize(GNSS_SERIAL_FIFO_SIZE);  // 既定 32 では全く足りない（settings.h 参照）
       GNSS_SERIAL.begin(gnss_current_baudrate = 9600);  // u-blox 工場デフォルトは 9600bps
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] opened 9600");
@@ -920,11 +920,11 @@ void gnss_setup() {
     // 偶数回=9600（工場出荷デフォルト）、奇数回=38400（CFG-PRT 設定済み想定）で交互に試す。
     if(setupcounter % 2 == 0){
       DEBUG_PLN(20251025,"UBX retry: 9600bps (factory default)");
-      GNSS_SERIAL.setFIFOSize(1024);
+      GNSS_SERIAL.setFIFOSize(GNSS_SERIAL_FIFO_SIZE);
       GNSS_SERIAL.begin(gnss_current_baudrate = 9600);
     }else{
       DEBUG_PLN(20251025,"UBX retry: 38400bps (UBX mode)");
-      GNSS_SERIAL.setFIFOSize(1024);
+      GNSS_SERIAL.setFIFOSize(GNSS_SERIAL_FIFO_SIZE);
       GNSS_SERIAL.begin(gnss_current_baudrate = 38400);
     }
   }

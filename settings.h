@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260922
-#define BUILDVERSION "0.974"
+#define BUILDDATE 20260923
+#define BUILDVERSION "0.975"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -55,6 +55,16 @@
 #define SW_PUSH 37  // v7 35->37に変更
 #define BATTERY_PIN 40 //A0
 #define GNSS_SERIAL Serial1
+
+// GNSS の UART 受信リングバッファ [バイト]。既定 32 では全く足りない。
+// ★ 大きさの意味は「**Core0 が止まっても取りこぼさない時間**」。
+//   実流量は UBX のみで約 550 B/s（NAV-PVT 100B×2Hz ＋ NAV-SAT 約320B×1Hz
+//   ＋ NAV-DOP 26B×1Hz）。回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
+//     1024B → 約 1.9 秒   4096B → 約 7.4 秒
+//   以前のコメントは 1024B ÷ 3840B/s = 267ms と書いていたが、それは
+//   **回線が飽和している前提の最悪値**で、実態の 7 倍きつい見積りだった。
+//   RAM は 4096B でも全体の 1% 未満。ここを削る理由が無い。
+#define GNSS_SERIAL_FIFO_SIZE  4096
 #define GNSS_TX 0
 #define GNSS_RX 1
 #define USB_DETECT 31
@@ -77,6 +87,8 @@
 //
 //   SPI にする場合: IMU_BUS_SPI を定義 + JP1 は既定（1-2 = +3V3）のまま
 //   I2C にする場合: IMU_BUS_SPI をコメントアウト + JP1 を 2-3（GND）へ付け替え
+//                   ＋ R46/R47（0Ω）を実装して H_SCL/H_SDA を i2c1 へ繋ぐ
+//   ★ I2C は PS1=0（GND）。**HIGH ではない。**取り違えるとラッチされて起動しない。
 //
 // ※ SD の settings.txt では切り替えられない。設定の読み込みは Core1 の setup_sd() で、
 //   imu_setup()（Core0）より後に走るため間に合わないため。ビルド時に決める。
@@ -474,6 +486,14 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #else
   #define IMU_POLL_INTERVAL_US   30000
 #endif
+
+// 1 回のポーリングで引き取る SHTP パケットの上限。
+// ★ sh2_service() は 1 回で 1 パケットしか処理しない（shtp_service() はループしない）
+//   ので、1 回だけだと「4ms に 1 パケット」しか掃けない。Core0 が数十 ms 止まった
+//   あとは溜まった分に追いつけず、**読むのが遅れるとジャイロが化ける**
+//   （2026-09-23 に実機で確定。imu_service_if_due() のコメント参照）。
+//   上限を付けるのは、ここで長居して別の飢餓を作らないため。
+#define IMU_DRAIN_MAX_PACKETS   8
 
 // 加速度サンプルの許容鮮度 [µs]（安全網）。
 // LINEAR_ACCELERATION が 15Hz = 67ms 周期なので、150ms は正常時には決して発火しない。
@@ -1038,8 +1058,17 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   ・同じチャンネルに他の送信機がいないか（とくに同じ CH/SF/Group の PONS）
 // ★ 後者は送信機側から見える唯一の機会。通常運転では送信機は送信の合間 mode 3 で
 //   寝ているので、「送信機が 2 台いる」は受信機しか検出できない（link.h 参照）。
-#define LINK_PF_WINDOW_MS       5000   // 監視時間。他機は 1Hz 送信なので 5 発ぶんの機会
-#define LINK_PF_SAMPLE_MS        500   // 雑音サンプル間隔（= 10 サンプル）
+// 監視時間。他機は 1Hz 送信なので **3 発ぶんの受信機会**になる。
+// ★ 5000 から下げた。同じ CH に送信機が 2 台いる状況は、どちらも同じ格納庫内の
+//   至近距離なので RSSI が非常に強く、1 発でもほぼ確実に受かる。3 回あれば足りる。
+//   長くしても得られるのは「遠くの他チームの弱い電波」で、それは警告する対象でもない。
+#define LINK_PF_WINDOW_MS       3000
+// 雑音サンプル間隔。窓 3000ms に対して 9 サンプル取れる（下の FIRST 参照）。
+#define LINK_PF_SAMPLE_MS        300
+// ★ **1 回目だけは遅らせる。** e220_wake() で mode 3 から戻った直後はモジュールが
+//   落ち着いておらず、実機では早すぎる問い合わせが必ず失敗していた
+//   （AUX が High でも数百 ms 効かない）。2 回目以降は LINK_PF_SAMPLE_MS 間隔。
+#define LINK_PF_FIRST_SAMPLE_MS  500
 // 雑音の**中央値**がこれを超えたら「定常的にうるさい」とみなす。
 // 実測の環境雑音は BW500kHz で約 -104dBm（docs/pons_link.md §8）なので 4dB の余裕。
 #define LINK_PF_NOISE_WARN_DBM  (-100)
@@ -1049,7 +1078,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define LINK_PF_WARN_SHOW_MS   10000   // 地図に警告ポップアップを出しておく時間
 // 雑音の取得が**連続でこの回数**失敗したら、そこで点検を打ち切って NOT MEASURED にする。
 // ★ 最後まで回してはいけない。1 回の問い合わせは応答が無いと待たされるので、
-//   10 回ぶん繰り返すと Core0 が止まり、GNSS の FIFO（≒267ms 相当）が溢れる。
+//   10 回ぶん繰り返すと Core0 が長時間止まり、GNSS の受信を取りこぼす。
 //   「静かだった」ではなく「測れなかった」ので、途中で止めても失うものは無い。
 // 雑音の問い合わせが連続で失敗したら、そこで**叩くのをやめる**回数。
 // ★ 2 では足りなかった。起床直後の取りこぼしが 1〜2 回あるため、2 だと
@@ -1064,7 +1093,31 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   問い合わせて返事があるかを見るのが唯一の確実な方法なので、この間隔で叩く。
 //   生きていれば数 ms で返るので負荷は無視できる。受信機も同じ間隔で確かめる
 //   （受信が無いだけなのか、自分のモジュールが死んだのかを区別するため）。
+// ---- 送信のノンブロッキング化（link_tx_tick の状態機械）----
+// 起床の待ちを諦める時間。mode 3 → mode 0 のセルフチェック（5.4 / 図 36）が
+// これを超えても終わらないなら、そのスロットは捨てて寝かせ直す。
+// 捨てても次の秒でやり直すので、失うのは 1 サンプルだけ。
+#define LINK_TX_WAKE_GIVEUP_MS    100UL
+// 書き込んでから mode 3 へ落とすまでの猶予。
+// ★ **0 にしてはいけない。** UART の送信が終わる前に M0/M1 を HIGH にすると、
+//   残りのバイトが mode 3 のモジュールに届いて**コマンドとして解釈される**。
+//   68 バイト @115200 8N1 = 約 5.9ms なので、余裕を見て 10ms。
+//   実際の保証は e220_sleep() の中の flush()。ここはそれを**待ち無しで通す**ための猶予。
+#define LINK_TX_DRAIN_MS           10UL
+
 #define LINK_ALIVE_PROBE_MS    10000UL
+
+// 設定が通っていない（e220_alive() が false）状態から復帰を試みる間隔。
+// ★ なぜ要るか: s_alive は e220_reconfigure() の中でしか立たない。
+//   link_set_mode() は reconfigure を呼ばないので、**一度落ちるとモードを
+//   変えても戻らない**（2026-09-23、設定画面で CH を変えた瞬間に無応答になり、
+//   以降どう操作しても復帰しなかった）。
+// ★ 復帰は e220_reconfigure() なので **Core0 が最大 0.6 秒止まる**。
+//   GNSS の受信バッファは GNSS_SERIAL_FIFO_SIZE で約 7 秒ぶんあるので
+//   0.6 秒では溢れないが、他の処理も止まる。だから間隔を長く取り、
+//   **ping が通った（＝モジュールは生きている）ときだけ**試みる。
+//   無線が死んだまま飛ぶより、1 分に 1 回 0.6 秒を払うほうが良いと判断した。
+#define LINK_REVIVE_INTERVAL_MS  60000UL
 // ★ 送信直後は問い合わせない。送信中は mode 0 への切替が保留される（AUX が Low の間は
 //   切替が効かない）ので、問い合わせが素通りして「無応答」に見える。
 //   最長は SF11・65 バイトで約 600ms（docs/pons_link.md §3 の表）。その外側に置く。

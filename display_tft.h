@@ -191,6 +191,7 @@ void draw_FlashMaps(double center_lat,double center_lon,float scale,float up);  
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
+void draw_boot_title();   // 起動直後のタイトル（白画面を埋めるため setup() からも呼ぶ）
 void startup_demo_tft();
 void draw_demo_biwako();
 void draw_replay_indicator();

@@ -20,6 +20,7 @@
 
   // ---- 初期化・周期処理 ----
   void link_setup();          // UART1 を開き、設定を無線モジュールへ送る
+  void link_announce_mode();  // 無線モードを読み上げる。**setup() の末尾で呼ぶ**
   void link_loop();           // Core0 のループから毎回呼ぶ（軽い。1Hz・65Bのみ）
 
   // ---- 設定 ----

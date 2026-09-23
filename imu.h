@@ -41,6 +41,13 @@ void imu_setup();
 // loop() から毎回呼ぶ（ノンブロッキング）。
 void imu_update();
 
+// BNO085 のレポートだけを引き取る（軽量・副作用なし）。
+// ★ **長いブロッキング処理の中から呼ぶこと。** 描画・無線・SD などで Core0 が
+//   数十 ms 止まると、そのあと読んだジャイロが化ける（2026-09-23 に実機で確定）。
+//   Kalman predict も復旧処理もしないので、どこから呼んでも安全。
+//   ポーリング時刻は imu_update() と共有しているので、二重に叩く心配も無い。
+void imu_service_if_due();
+
 // ---- 気圧高度による Kalman 観測更新 ----
 // MS5611 の高度が更新されたときに外部から呼ぶ。
 // airdata_update() が true を返したタイミングで get_airdata_altitude() を渡す。
@@ -93,6 +100,26 @@ float get_imu_rv_hz();    // ROTATION_VECTOR
 // 加速度サンプルの鮮度不足で Kalman predict をスキップした累計回数。
 // 正常時は 0 のまま。増えていれば BNO085 のレポート配信が滞っている。
 uint32_t get_imu_lacc_stale_skips();
+
+// クォータニオンの健全性カウンタ（V/S が暴れる件の切り分け）。
+//   bad  … ノルムが 1 から外れ、採用しなかった数 ＝ **パケットが化けている**
+//   jump … ノルムは正常だが 1 サンプルで 25 度以上回った数 ＝ BNO 内部の融合の問題
+// bad が増えるなら転送層（SPI）の問題で、ジャイロ・加速度も同じく化けている。
+// BNO085 が申告するセンサー精度（0=信頼できない 1=低 2=中 3=高）と動的校正の設定。
+// ★ 融合出力（GRV/RV）と加速度の確からしさはここに強く依存する。
+//   実測: 加速度 2 のとき静止時 |a| が -4.6%、3 に上がると約 -1%。
+uint8_t  get_imu_acc_accuracy();
+uint8_t  get_imu_gyr_accuracy();
+uint8_t  get_imu_mag_accuracy();
+uint8_t  get_imu_cal_cfg();      // 0xFF = 未取得
+
+// imu_update() が呼ばれなかった最長時間 [µs]。**読むとリセットされる。**
+// Core0 が他所で止まると BNO085 のレポートが溜まり、1 パケットが 384 バイト上限へ近づく。
+uint32_t get_imu_poll_gap_max_us();
+
+uint32_t get_imu_grv_bad();
+uint32_t get_imu_grv_jump();
+uint32_t get_imu_rv_bad();
 // 生ログ用レポートの受信レート [Hz]（設定値どおり出ていれば配信飢餓は起きていない）
 float get_imu_gyro_hz();   // GYROSCOPE_CALIBRATED
 float get_imu_accel_hz();  // ACCELEROMETER

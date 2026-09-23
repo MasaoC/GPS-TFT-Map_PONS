@@ -195,6 +195,47 @@ static float    _rv_hz    = 0.0f;
 static volatile float _gyro_hz  = 0.0f;
 static volatile float _accel_hz = 0.0f;
 static volatile float _mag_hz   = 0.0f;
+// ★ クォータニオンの健全性カウンタ（V/S が暴れる件の切り分け・2026-09-22）
+//   GRV の R/P が -23 → +40 のように飛ぶ症状。バリオは Euler ではなく
+//   **クォータニオンを直接**使って重力を抜くので、これが飛ぶと V/S が暴れる。
+//   0.944（I2C）では起きず、SPI に移してから出ている。切り分けの要点:
+//     bad  … ノルムが 1 から外れた = **パケットが化けている**（転送層の問題。
+//            同じ化け方がジャイロ・加速度にも起きているはずで、GRV を
+//            廃止しても症状が移るだけ）
+//     jump … ノルムは正常なのに姿勢が飛んだ = BNO 内部の融合の問題
+//            （加速度外乱で GRV の重力基準が一時的に崩れた等）
+//   bad は**採用しない**（_qw.. を更新しない）。jump は数えるだけ。
+// ★ BNO085 が申告するセンサー精度（0=信頼できない 1=低 2=中 3=高）。
+//   SH-2 の sv.status の下位 2bit。**融合（GRV/RV）の品質はここに強く依存する。**
+//   実機（v7 個体）では加速度が 2 で止まり、ジャイロは全件 0 だった。
+//   加速度が 2 のとき静止時 |a| が 9.355（-4.6%）、6 面を動かして 3 に上がると
+//   約 9.80 へ改善した。**つまりこの値が低い間の加速度は信用できない。**
+static uint8_t _acc_accuracy = 0;
+static uint8_t _gyr_accuracy = 0;
+static uint8_t _mag_accuracy = 0;
+static uint8_t _cal_cfg      = 0xFF;   // sh2_getCalConfig の結果。0xFF = 未取得
+
+// ★ imu_update() が呼ばれない最長時間 [µs]。Core0 が他所で止まると
+//   BNO085 のレポートが溜まり、1 パケットが大きくなる（384 バイト上限）。
+//   描画・無線・SD のどれが効いているかを、スパイクの頻度と並べて見る。
+static uint32_t _poll_gap_max_us = 0;
+extern volatile uint32_t pons_pkt_toobig, pons_pkt_max, pons_hdr_change;
+
+static uint32_t _grv_bad  = 0;   // ノルム異常で捨てた GRV
+static uint32_t _grv_jump = 0;   // ノルムは正常だが 1 サンプルで大きく飛んだ
+static uint32_t _rv_bad   = 0;
+#define QUAT_NORM_TOL   0.02f    // |q|^2 がこれ以上 1 から外れたら化けとみなす
+// 連続サンプル間の |dot| がこれを下回ったら「大きく飛んだ」とみなす。
+// **|dot| = cos(θ/2)**（θ は 2 姿勢のなす回転角）なので、0.906 は θ≈50 度。
+// 捨てずに数えるだけなので、多少粗くてよい。
+#define QUAT_JUMP_COS   0.906f
+
+// クォータニオンが単位ノルムか。化けたパケットはまずここで落ちる。
+static inline bool quat_sane(float w, float x, float y, float z) {
+    const float n2 = w*w + x*x + y*y + z*z;
+    return (n2 > 1.0f - QUAT_NORM_TOL) && (n2 < 1.0f + QUAT_NORM_TOL);
+}
+
 static uint32_t _hz_last_ms = 0;
 
 // sh2_service() 1 回で処理したレポート数（imu_sensor_handler が加算する）
@@ -224,17 +265,33 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
     _report_count++;
 
     switch (sv.sensorId) {
-        case SH2_GAME_ROTATION_VECTOR:
-            // クォータニオン (qw=real, qx=i, qy=j, qz=k) を保存
-            _qw = sv.un.gameRotationVector.real;
-            _qx = sv.un.gameRotationVector.i;
-            _qy = sv.un.gameRotationVector.j;
-            _qz = sv.un.gameRotationVector.k;
+        case SH2_GAME_ROTATION_VECTOR: {
+            // クォータニオン (qw=real, qx=i, qy=j, qz=k)
+            const float nw = sv.un.gameRotationVector.real;
+            const float nx = sv.un.gameRotationVector.i;
+            const float ny = sv.un.gameRotationVector.j;
+            const float nz = sv.un.gameRotationVector.k;
+
+            // ★ 化けたパケットを採用しない。バリオはこのクォータニオンで
+            //   重力を抜くので、1 サンプルの異常がそのまま V/S の尖りになる。
+            if (!quat_sane(nw, nx, ny, nz)) { _grv_bad++; break; }
+
+            // ノルムは正常でも姿勢が大きく飛ぶことがある。**捨てずに数えるだけ**に
+            //   する（速い手振りでも起こりうるので、捨てると本物を落とす）。
+            //   |dot| は 2 つの姿勢のなす角の cos(θ/2)。1 から離れるほど大きく回った。
+            if (_quat_valid) {
+                float d = _qw*nw + _qx*nx + _qy*ny + _qz*nz;
+                if (d < 0.0f) d = -d;            // q と -q は同じ姿勢
+                if (d < QUAT_JUMP_COS) _grv_jump++;
+            }
+
+            _qw = nw; _qx = nx; _qy = ny; _qz = nz;
             _quat_valid = true;
             _grv_cnt++;
             imulog_push(IMULOG_ID_GAMERV, (uint32_t)sv.timestamp, sv.status, _qw, _qx, _qy, _qz);
             attitude_on_grv(_qw, _qx, _qy, _qz);   // 静止中の平均で ESKF を初期化する
             break;
+        }
 
         case SH2_LINEAR_ACCELERATION:
             // ボディフレームの重力除去済み加速度を保存 [m/s²]
@@ -252,6 +309,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
         // ---- 以下は姿勢 ESKF のオフライン開発用。機上の推定には使わない ----
         case SH2_GYROSCOPE_CALIBRATED: {
             _gyro_cnt++;
+            _gyr_accuracy = (uint8_t)(sv.status & 0x03);
             imulog_push(IMULOG_ID_GYRO, (uint32_t)sv.timestamp, sv.status,
                         sv.un.gyroscope.x, sv.un.gyroscope.y, sv.un.gyroscope.z);
             // ESKF の伝播はジャイロ到着で回す（加速度は直近値を使う）。
@@ -266,6 +324,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
         case SH2_ACCELEROMETER: {
             // 重力込みの生比力 [m/s²]。ESKF はこれを伝播に使う。
             _accel_cnt++;
+            _acc_accuracy = (uint8_t)(sv.status & 0x03);
             imulog_push(IMULOG_ID_ACCEL, (uint32_t)sv.timestamp, sv.status,
                         sv.un.accelerometer.x, sv.un.accelerometer.y, sv.un.accelerometer.z);
             const float a[3] = { sv.un.accelerometer.x, sv.un.accelerometer.y,
@@ -295,6 +354,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
 
         case SH2_MAGNETIC_FIELD_CALIBRATED:
             _mag_cnt++;
+            _mag_accuracy = (uint8_t)(sv.status & 0x03);
             imulog_push(IMULOG_ID_MAG, (uint32_t)sv.timestamp, sv.status,
                         sv.un.magneticField.x, sv.un.magneticField.y, sv.un.magneticField.z);
             break;
@@ -302,6 +362,11 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
         case SH2_ROTATION_VECTOR:
             // 地磁気補正付きクォータニオン（ヨー：磁北基準）
             // accuracy: ヘディング精度推定値 [rad]（0 に近いほど磁気キャリブ良好）
+            if (!quat_sane(sv.un.rotationVector.real, sv.un.rotationVector.i,
+                           sv.un.rotationVector.j, sv.un.rotationVector.k)) {
+                _rv_bad++;
+                break;                          // 化けた RV も採用しない
+            }
             _rv_qw = sv.un.rotationVector.real;
             _rv_qx = sv.un.rotationVector.i;
             _rv_qy = sv.un.rotationVector.j;
@@ -364,7 +429,7 @@ static bool imu_enable_reports() {
     //   sh2_setSensorConfig() → spihal_write() → spihal_wait_for_int() が走り、
     //   デバイスが H_INTN を上げないと **1 回あたり最大 500ms** 待つ。
     //   レポートは 6 件あるので、最悪 3 秒 Core0 が止まる。
-    //   リセットを 410ms の delay からステートマシンに変えたのは 270ms で
+    //   リセットを 410ms の delay からステートマシンに変えたのは、その間
     //   GNSS FIFO が溢れるからで、ここが素通しでは意味が無かった。
     //   正常時は 1 件あたり数 ms なので、この上限に当たることは無い。
     //   途中で打ち切っても false を返すので、復旧は 1 分後に再試行される。
@@ -389,6 +454,42 @@ static bool imu_enable_reports() {
     // begin_*() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
     // これにより 1 パケットに複数レポートが載っていても全件処理できる（取りこぼし解消）。
     sh2_setSensorCallback(imu_sensor_handler, NULL);
+
+    // ---- 動的校正の設定を **読むだけ** ----
+    // ★ このスケッチは全履歴で一度も sh2_setCalConfig() / sh2_saveDcdNow() を
+    //   呼んでいない（I2C 時代の 0.944 も同じ）。つまり BNO085 が溜めた校正
+    //   （DCD）はフラッシュに保存されず、電源を入れるたびにやり直しになる。
+    //   まず「既定で何が有効なのか」を知る。推測で書き込まない。
+    //   SH2_CAL_ACCEL=0x01 / GYRO=0x02 / MAG=0x04 / PLANAR=0x08。
+    {
+        uint8_t cfg = 0;
+        const int rc = sh2_getCalConfig(&cfg);
+        if (rc == SH2_OK) {
+            _cal_cfg = cfg;
+            enqueueTask(createLogSdfTask(
+                "BNO085 calcfg=0x%02X (accel=%d gyro=%d mag=%d planar=%d)",
+                cfg, (cfg & 0x01) ? 1 : 0, (cfg & 0x02) ? 1 : 0,
+                (cfg & 0x04) ? 1 : 0, (cfg & 0x08) ? 1 : 0));
+        } else {
+            enqueueTask(createLogSdfTask("BNO085 calcfg read FAILED rc=%d", rc));
+        }
+
+        // ---- ★ ジャイロの動的校正を有効にする ----
+        //   実機（v7）の既定は 0x05 ＝ accel と mag だけで、**gyro(0x02) が無効**。
+        //   そのため申告精度が全レポートで 0 のまま（実測: 3 本のログすべてで 0）。
+        //   GRV は**加速度とジャイロの融合**なので、ジャイロのゼロ点(ZRO)が
+        //   工場出荷値のまま温度ドリフトすると、融合が周期的に重力で引き戻される。
+        //   実機で「静止しているのに GRV が 96 度飛ぶ」現象の機構として筋が通る。
+        //   ※ これで飛びが直るかは未確認。次のログで grvjump を見て判断する。
+        const uint8_t want = (uint8_t)(SH2_CAL_ACCEL | SH2_CAL_GYRO | SH2_CAL_MAG);
+        if (_cal_cfg != 0xFF && _cal_cfg != want) {
+            const int rc2 = sh2_setCalConfig(want);
+            uint8_t back = 0;
+            if (rc2 == SH2_OK && sh2_getCalConfig(&back) == SH2_OK) _cal_cfg = back;
+            enqueueTask(createLogSdfTask("BNO085 calcfg set 0x%02X -> 0x%02X (rc=%d)",
+                                         want, _cal_cfg, rc2));
+        }
+    }
     return all_ok;
 }
 
@@ -725,6 +826,15 @@ static void imu_bus_select_protocol() {
     // I2C ではこのピンが SA0（アドレス下位ビット）になる。HIGH で 0x4B。
     pinMode(IMU_I2C_SA0_PIN, OUTPUT);
     digitalWrite(IMU_I2C_SA0_PIN, (IMU_I2C_ADDR & 1) ? HIGH : LOW);
+    // ★ **H_CSN は I2C では使わないが、浮かせずに HIGH で駆動しておく。**
+    //   データシートの I2C 接続図では未接続（don't care）だが、Adafruit の
+    //   モジュールはプルアップしている。**本基板にはプルアップが無い**ので、
+    //   何もしないと高インピーダンスのまま放置される。
+    //   BNO085 のすぐ隣で浮いたピンを作る理由が無く、MCU で駆動すれば
+    //   プルアップより低インピーダンスになる。
+    //   （SPI では CS そのもの。そちらは上の分岐で同じく HIGH に固定している）
+    pinMode(IMU_SPI_CS, OUTPUT);
+    digitalWrite(IMU_SPI_CS, HIGH);
 #endif
 }
 
@@ -736,8 +846,8 @@ static void imu_bus_select_protocol() {
 //
 // ★ **ここを delay() で書いてはいけない。**
 //   以前は delay(10)+delay(400) を直に並べていたため、飛行中の復旧試行のたびに
-//   Core0 が 410ms 止まっていた。GNSS は 38400bps・FIFO 1024B なので約 270ms で
-//   バッファが溢れ、NAV-PVT を丸ごと取りこぼす。地図・ボタン・バリオも同時に止まる。
+//   Core0 が 410ms 止まっていた。地図・ボタン・バリオが同時に止まり、
+//   GNSS の受信も巻き添えになる（受信バッファの余裕は GNSS_SERIAL_FIFO_SIZE 参照）。
 //   しかも BNO085 が死んでいる限り復旧は 1 分ごとに走り続けるので、症状が繰り返す。
 //   経過時間で進める形にして、待っている間 Core0 を返せるようにした。
 //
@@ -828,7 +938,24 @@ static uint8_t imu_begin_fail_stage = 0;
 
 // バスを初期化して Adafruit_BNO08x を開始する。成功で true。
 // リトライは呼び出し側が行う。
+// sh2_open() が成功したままか。**sh2_close() を呼ぶ判断にだけ使う。**
+static bool sh2_opened = false;
+
 static bool imu_bus_begin() {
+    // ★★ **再オープンの前に必ず sh2_close() を呼ぶ。呼ばないと 2 回目は必ず失敗する。**
+    //   src/bno08x/shtp.c の SHTP インスタンスプールは MAX_INSTANCES=1 で、
+    //   空きの判定は instances[n].pHal == 0。これを 0 に戻すのは shtp_close() だけ。
+    //   ところが Adafruit_BNO08x::_init() は sh2_open() を呼ぶだけで close しない。
+    //   その結果、2 回目の begin_SPI() は getInstance() が 0 を返し、
+    //   shtp_open() → sh2_open() が SH2_ERR になって _init() が false を返す。
+    //   **これが「BNO085 recovery FAILED」の正体**（実機 2026-09-23）。
+    //   INT は来ていた＝チップは生きていたのに、再初期化だけが構造的に失敗していた。
+    //   つまり **復旧は一度も成功したことがなかった。**
+    //   spihal_close() / i2chal_close() は実質何もしないので、相手が無応答でも安全。
+    if (sh2_opened) {
+        sh2_close();
+        sh2_opened = false;
+    }
 #ifdef IMU_BUS_SPI
     // ★ **ライブラリを呼ぶ前に必ず生存確認する。** ここを通さずに begin_SPI() を
     //   呼ぶと、BNO085 が応答しない場合に sh2_getProdIds() が無期限ループに入り
@@ -865,7 +992,11 @@ static bool imu_bus_begin() {
     }
     // begin_SPI() が内部で SPI1.begin() と pinMode(INT, INPUT_PULLUP) を行う。
     // 転送設定は 1MHz / SPI_MODE3 / MSB first（BNO085 の要求どおり）。
-    if (bno08x.begin_SPI(IMU_SPI_CS, IMU_INT_PIN, &SPI1)) return true;
+    const bool spi_ok = bno08x.begin_SPI(IMU_SPI_CS, IMU_INT_PIN, &SPI1);
+    // ★ 失敗でも **sh2_open() まで通っていたらインスタンスは取られている**ので、
+    //   次回 close する対象として記録しておく（pons_init_fail_step の 3 = getProdIds 失敗）。
+    sh2_opened = spi_ok || (pons_init_fail_step >= 3);
+    if (spi_ok) return true;
     imu_begin_fail_stage = 2;   // INT は来ていたのに SHTP が成立しなかった
     return false;
 #else
@@ -875,7 +1006,9 @@ static bool imu_bus_begin() {
         DEBUGW_PLN(20260901, "[IMU] BNO085 no ACK on i2c1");
         return false;
     }
-    return bno08x.begin_I2C(IMU_I2C_ADDR, &imuWire);
+    const bool i2c_ok = bno08x.begin_I2C(IMU_I2C_ADDR, &imuWire);
+    sh2_opened = i2c_ok || (pons_init_fail_step >= 3);   // SPI 側と同じ理由
+    return i2c_ok;
 #endif
 }
 
@@ -1017,7 +1150,7 @@ void imu_setup() {
 //                                                  └─(300ms 応答なし)──▶ IDLE（失敗・次は 1 分後）
 //
 // ★ 以前はこの関数の中で delay(10)+delay(400) を通していたため、
-//   1 分ごとに Core0 が 410ms 止まり、GNSS の受信 FIFO（1024B / 38400bps ＝ 約 270ms）が
+//   1 分ごとに Core0 が 410ms 止まり、GNSS の受信や描画が巻き添えになって
 //   溢れて NAV-PVT を落としていた。地図もボタンもバリオも同時に止まっていた。
 //
 // ★★ WAITINT を挟むのは「BNO085 が本当に居るか」を**ライブラリを呼ぶ前に**確かめるため。
@@ -1053,7 +1186,8 @@ static void imu_try_recovery() {
         if (last_recovery_ms > 0 && now_ms - last_recovery_ms < IMU_RECOVERY_INTERVAL_MS) return;
         last_recovery_ms = now_ms;   // 間隔は「試行の開始から開始まで」で数える
 
-        enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
+        enqueueTask(createLogSdfTask("[IMU] BNO085 comm lost, attempting recovery (INT=%d)",
+                                     (int)digitalRead(IMU_INT_PIN)));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
 
         // ---- プロトコル再選択 → ハードウェアリセット開始 ----
@@ -1116,12 +1250,70 @@ static void imu_try_recovery() {
         _acc_cnt  = 0;
 #endif
         bno085_ok = true;
-        enqueueTask(createLogSdTask("[IMU] BNO085 recovery OK"));
+        enqueueTask(createLogSdfTask("[IMU] BNO085 recovery OK (INT wait %lums)",
+                                     (unsigned long)(millis() - imu_recov_wait_ms)));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery OK");
     } else {
         // 失敗: bno085_ok は false のまま。次の1分後に再試行する。
-        enqueueTask(createLogSdTask("[IMU] BNO085 recovery FAILED"));
+        // ★ どの段で落ちたかを残す。stage1=INT が来ない（配線・電源・リセット）、
+        //   stage2=INT は来ているのに SHTP が成立しない（sh2_open / getProdIds 失敗）。
+        //   これが無いと「FAILED」だけで原因が絞れない。
+        enqueueTask(createLogSdfTask(
+            "[IMU] BNO085 recovery FAILED (stage=%u %s init_step=%u sh2=%ld)",
+            imu_begin_fail_stage,
+            imu_begin_fail_stage == 1 ? "no-INT" : "no-SHTP",
+            pons_init_fail_step, (long)pons_init_fail_status));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery FAILED");
+    }
+}
+
+
+// ============================================================
+// imu_service_if_due(): BNO085 のレポートだけを引き取る（軽量・再入可）
+// ============================================================
+// ★ **長いブロッキング処理の中から呼ぶためのもの。**
+//   実機で確定した不具合（2026-09-23）: Core0 が数十 ms 止まると BNO085 の
+//   レポートが溜まり、そのあと読んだジャイロが化ける。
+//   署名は gx=+v, gy=-v, gz=-v（3 軸が 1 つの値の符号違いのコピー）で、
+//   加速度計は同時刻に何も感じていない。BNO085 内部の融合がそれを積分するので
+//   GRV と LACC も同時に飛び、バリオの V/S が暴れる。
+//   検証: loop() で 500ms ごとに 60ms 止めるだけで 14.8 件/分。
+//         同じ 60ms の間 imu_update() を回すと **ゼロ**になった。
+//   つまり原因は「Core0 が他所に取られること」ではなく「**読まないこと**」。
+// ★ Kalman predict も復旧処理もしない。**レポートを引き取るだけ**なので、
+//   描画や通信の途中から呼んでも副作用が無い。
+// ★ ポーリング時刻は imu_update() と共有する（二重に叩かない）。
+static uint32_t _poll_last_us = 0;
+
+void imu_service_if_due() {
+    if (!bno085_ok) return;
+    const uint32_t now_us = time_us_32();
+    if ((uint32_t)(now_us - _poll_last_us) < IMU_POLL_INTERVAL_US) return;
+    // ★ **実際に引き取れた間隔**の最長を記録する。imu_update() の呼び出し間隔では
+    //   意味が無い（長いブロッキング処理の中からもここを呼ぶようにしたため）。
+    //   60 秒ログの gapmax=。ここが数十 ms に伸びたら、どこかで飢えている。
+    if (_poll_last_us) {
+        const uint32_t gap = now_us - _poll_last_us;
+        if (gap > _poll_gap_max_us) _poll_gap_max_us = gap;
+    }
+    _poll_last_us = now_us;
+
+#ifdef IMU_BUS_SPI
+    if (digitalRead(IMU_INT_PIN) != LOW) return;
+#endif
+    // ★ 溜まっている分をまとめて引き取る。sh2_service() は 1 回で 1 パケットしか
+    //   処理しないので（shtp_service() はループしない）、1 回だけだと
+    //   「4ms に 1 パケット」しか掃けず、ブロックのあとで追いつけない。
+    //   上限を付けるのは、ここで長居して別の飢餓を作らないため。
+    for (int n = 0; n < IMU_DRAIN_MAX_PACKETS; n++) {
+        _report_count = 0;
+        sh2_service();
+        if (_report_count > 0) _last_sensor_event_ms = millis();
+#ifdef IMU_BUS_SPI
+        if (digitalRead(IMU_INT_PIN) != LOW) break;   // 溜まりが無くなった
+#else
+        if (_report_count == 0) break;
+#endif
     }
 }
 
@@ -1135,7 +1327,47 @@ static void imu_try_recovery() {
 // ★ v6 までは「MS5611 と i2c0 を共用するので高頻度に叩けない」という制約があったが、
 //   v7 で BNO085 を SPI1（予備で i2c1）へ移してバスを分離したため、その制約は無い。
 //   周期を決めているのは BNO085 のレポート配信能力のほうで、バスではない。
+// 校正（DCD）をフラッシュへ保存する。**1 起動につき最大 1 回。**
+// ★ なぜ要るか: このスケッチは全履歴で一度も保存しておらず（I2C 時代も同じ）、
+//   BNO085 が収束させた校正が電源を切るたびに消えていた。実測で、精度 2 の
+//   起動では静止時 |a| が -4.6% ずれ、6 面を動かして 3 に上がると約 -1% に改善した。
+//   保存しておけば**次回は最初から良い状態で立ち上がる**。
+// ★ フラッシュ書込みなので回数を抑える。保存済みの DCD が良ければ精度は起動直後に
+//   3 へ達するので、**20 秒より後に初めて 3 になったときだけ**保存する。
+//   これで「既に良い個体では書かない」が自動的に成立する。
+static void imu_try_save_dcd() {
+    static bool saved = false;
+    if (saved || !bno085_ok) return;
+    if (millis() < 20000UL) return;                 // 起動直後の到達は「保存済み」とみなす
+    if (_acc_accuracy < 3) return;                  // 加速度が収束していない
+    saved = true;                                   // 失敗しても再試行しない（書込み回数を抑える）
+    const int rc = sh2_saveDcdNow();
+    enqueueTask(createLogSdfTask("BNO085 saveDcd rc=%d (acc=%u gyr=%u mag=%u)",
+                                 rc, _acc_accuracy, _gyr_accuracy, _mag_accuracy));
+}
+
 void imu_update() {
+    imu_try_save_dcd();   // 校正が収束したら 1 回だけ保存（中で回数を絞っている）
+
+    // ★★ **「データが来ない」と「こちらが見ていなかった」を区別する。**
+    //   下の途絶判定は 1 秒しか猶予が無い。ところが起動時は setup() が長く、
+    //   loop() に入るまで imu_update() が一度も呼ばれない。その状態で最初の 1 回を
+    //   迎えると、**生きている BNO085 を「途絶」と誤判定してリセットしに行き、
+    //   復旧に失敗してそのまま死ぬ**（実機 2026-09-23。起動画面の OSM 帰属表示
+    //   3.5 秒ホールドのあと、loop() の 1 回目で必ず発火していた）。
+    //   以前これが起きなかったのは link_setup() が起動画面の後ろにあり、
+    //   その中の imu_service_if_due() が偶然この穴を塞いでいたから。
+    //   **偶然に頼らない。** 呼び出し間隔が空いていたら、その回の判定は見送る。
+    //   見送っても検出が 1 周期遅れるだけで、本当の断線は次の回で捕まる。
+    {
+        static unsigned long _last_update_call_ms = 0;
+        const unsigned long now_ms = millis();
+        const bool resumed = (_last_update_call_ms == 0) ||
+                             (now_ms - _last_update_call_ms > 500UL);
+        _last_update_call_ms = now_ms;
+        if (resumed && _last_sensor_event_ms > 0) _last_sensor_event_ms = now_ms;
+    }
+
     // ---- 通信途絶の自動検出 ----
     // bno085_ok=true でも1秒以上データが届かない場合は途絶と判定し false に落とす。
     // これにより get_imu_alive() が false を返し、update_vario() が MS5611 にフォールバックする。
@@ -1177,10 +1409,8 @@ void imu_update() {
     //                     関数末尾の IMU_KF_PREDICT_INTERVAL_US ゲートで 30ms に保つ
     //                     （Q の注入量が変わってしまうため）。
     //   無効時          : 30ms ≒ 33Hz。変更前と同一で、ポーリング毎に predict が走る。
-    static uint32_t _poll_last_us = 0;
     uint32_t _now_us = time_us_32();
     if (_now_us - _poll_last_us < IMU_POLL_INTERVAL_US) return;
-    _poll_last_us = _now_us;
 
     // ---- データ取り出し ----
     // sh2_service() は HAL の read() を「1 回だけ」呼び、SHTP パケットを 1 個処理する
@@ -1211,12 +1441,9 @@ void imu_update() {
     if (digitalRead(IMU_INT_PIN) != LOW) return;
 #endif
 
-    _report_count = 0;
-    sh2_service();
-    int read_count = _report_count;
-
-    // データを 1 件以上受信できた場合のみ最終受信時刻を更新する
-    if (read_count > 0) _last_sensor_event_ms = millis();
+    // ★ 引き取りは imu_service_if_due() に集約してある（ポーリング時刻も共有）。
+    //   ここでは引き取ったうえで、この下の predict とレート計測へ進む。
+    imu_service_if_due();
 
     // ---- 1 秒ごとに各イベントの受信レートを計算 ----
     {
@@ -1473,6 +1700,15 @@ void imu_set_kf_params(float q_vel, float q_bias, float R) {
     kf_q_bias = q_bias;
     kf_R      = R;
 }
+uint8_t  get_imu_acc_accuracy() { return _acc_accuracy; }
+uint8_t  get_imu_gyr_accuracy() { return _gyr_accuracy; }
+uint8_t  get_imu_mag_accuracy() { return _mag_accuracy; }
+uint8_t  get_imu_cal_cfg()      { return _cal_cfg; }
+uint32_t get_imu_poll_gap_max_us() { const uint32_t v = _poll_gap_max_us; _poll_gap_max_us = 0; return v; }
+uint32_t get_imu_grv_bad()  { return _grv_bad; }
+uint32_t get_imu_grv_jump() { return _grv_jump; }
+uint32_t get_imu_rv_bad()   { return _rv_bad; }
+
 
 // Kalman パラメーターのゲッター（SD設定保存用）
 float get_imu_kf_q_vel()  { return kf_q_vel; }

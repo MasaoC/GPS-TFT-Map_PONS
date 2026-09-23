@@ -1135,13 +1135,90 @@ float mapf(float x, float in_min, float in_max, float out_min, float out_max){
 // 2. 琵琶湖マップをズームイン（遠→近）しながら PLA 位置に移動するアニメーション（約 40 フレーム）。
 // 3. 続いてズームアウト（近→遠）しながら日本地図へ引くアニメーション。
 // mapf() で中心座標とスケールを線形補間してスムーズなアニメーションを実現している。
-void startup_demo_tft() {
+// 起動直後のタイトル。**setup_tft() の直後と startup_demo_tft() の頭の両方から呼ぶ。**
+// ★ ここを setup() の早い段階で出さないと、起動画面が始まるまで**画面が真っ白**になる。
+//   その間に何をしているかというと imu_setup()（BNO085 のリセット〜ブートで約 0.4 秒）と
+//   gnss_setup() で、後者が支配的。GNSS が繋がっていないと CFG の ACK 待ちが
+//   5 コマンドぶん空振りして **約 3.7 秒**かかる（log.txt の "GNSS CFG NO ACK"）。
+//   GNSS が繋がっていれば ACK が即返るので、ここは 1 秒以下に縮む。
+void draw_boot_title() {
   tft.fillScreen(COLOR_WHITE);
   tft.setTextColor(COLOR_RED, COLOR_WHITE);
   tft.setCursor(1, 0);
   tft.println(" Pilot Oriented");
   tft.setCursor(5, 14);
   tft.println("   Navigation System  for HPA");
+  // 下段は draw_boot_diag() が上書きする。それまでの間の「生きている」表示。
+  tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  tft.setCursor(10, SCREEN_HEIGHT - 28);
+  tft.print("INITIALIZING SENSORS ...");   // 画面幅に収まる長さで
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
+// 起動画面フッターの自己診断表示。**画面下端 28px（y=292〜319）だけが使える。**
+// この少し下で backscreen(240x240) を y=52 に push するので、それより上へ書いても
+// 毎フレーム塗り潰される。
+// ★ AA フォント(NotoSansBold15)は 1 行 15px なので、この帯には **2 行しか入らない**。
+//   4 項目を 1 画面に詰めるには内蔵フォント(6x8)へ落とすしかないが、実機で
+//   小さすぎて読めなかった。**アニメーションが長い（約 8 秒）ことを利用して
+//   前半・後半の 2 ページに分ける。**
+//   phase 0 = ストレージとセンサー / phase 1 = 無線。
+static void draw_boot_diag(uint8_t phase) {
+  const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
+  const int16_t y2 = SCREEN_HEIGHT - 16;   // 304
+  tft.fillRect(0, y1, SCREEN_WIDTH, 28, COLOR_WHITE);   // 前のページを消す
+
+  if (phase == 0) {
+    tft.setCursor(20, y1);
+    if (good_sd()) {
+      tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      tft.print("SD OK! MAP COUNT: ");
+      tft.print(mapdata_count);
+    } else {
+      tft.setTextColor(COLOR_RED, COLOR_WHITE);
+      tft.print("[ERROR: CHECK SD CARD !]");
+    }
+    tft.setCursor(10, y2);
+    tft.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    tft.print(get_airdata_ok() ? "MS5611:OK" : "MS5611:NG");
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.print("  ");
+    tft.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    tft.print(get_imu_ok() ? "BNO085:OK" : "BNO085:NG");
+    return;
+  }
+
+  // ---- 無線（E220）----
+  // ★ **「設定で OFF」と「応答しない」を色で区別する。** OFF は故障ではないので
+  //   赤にしない。一緒にすると「無線を切ったまま飛ぶ」のと「無線が壊れている」が
+  //   見分けられなくなる。
+  // ★ CH / SF / GROUP も出す。設定を間違えて別チャンネル・別グループに送っていても
+  //   飛行中の画面には何も出ないので、**飛ぶ前に目で確かめられる場所がここしかない**
+  //   （docs/pons_link.md §1）。
+  const uint8_t m = link_get_mode();
+  tft.setCursor(10, y1);
+  if (m == LINK_MODE_OFF) {
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("E220:--  LINK OFF");
+  } else if (link_module_alive()) {
+    tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    tft.printf("E220:OK  %s CH%u SF%u",
+               (m == LINK_MODE_TX) ? "TX" : "RX",
+               link_get_radio_ch(), e220_profile_to_sf(link_get_radio_profile()));
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.setCursor(10, y2);
+    tft.printf("LINK GROUP: %u", link_get_group());
+  } else {
+    tft.setTextColor(COLOR_RED, COLOR_WHITE);
+    tft.print("E220:NG  NO RESPONSE");
+    tft.setCursor(10, y2);
+    tft.print("[CHECK RADIO MODULE !]");
+  }
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
+void startup_demo_tft() {
+  draw_boot_title();
 
   
   // Core1 の setup_sd() が完了するまで待機（最大5秒）。
@@ -1149,7 +1226,9 @@ void startup_demo_tft() {
   {
     unsigned long t = millis();
     while (!sd_setup_complete && millis() - t < 5000) {
-      gnss_loop(7);  // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      imu_service_if_due();  // ★ BNO085 も引き取る。**これが無いと起動直後に殺す**
+                             //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
       delay(10);
     }
   }
@@ -1162,22 +1241,7 @@ void startup_demo_tft() {
     enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
   }
 
-  tft.setCursor(20, SCREEN_HEIGHT - 28);//320-292=28
-  if(good_sd()){
-    tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    tft.print("SD OK! MAP COUNT: ");
-    tft.print(mapdata_count);
-  }else{
-    tft.setTextColor(COLOR_RED, COLOR_WHITE);
-    tft.print("[ERROR: CHECK SD CARD !]");
-  }
-  // MS5611 / BNO085 接続状態（SD表示の1行下）
-  tft.setCursor(10, SCREEN_HEIGHT - 16);
-  tft.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-  tft.print(get_airdata_ok() ? "MS5611:OK" : "MS5611:NG");
-  tft.print("  ");
-  tft.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-  tft.print(get_imu_ok() ? "BNO085:OK" : "BNO085:NG");
+  draw_boot_diag(0);      // 前半ページ: SD / MS5611 / BNO085
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
 
@@ -1201,12 +1265,19 @@ void startup_demo_tft() {
   //   logo_sprite（240x52 = 24KB の RAM）も要らなくなった。
   //   起動演出の尺は保ちたいので、待ち時間はそのまま消費する。
   {
+    // pushImage()（pushPixels 経由）は既定で色バイトを入れ替えて送る。
+    // LOGO_DATA は素の RGB565 値（旧 SD 版の drawPixel と同じ並び）なので、
+    // 既定のままだと二重に入れ替わってカラフルなモザイクになる。ここだけ true にして戻す。
+    tft.setSwapBytes(true);
     tft.pushImage(0, 0, LOGO_W, LOGO_H, LOGO_DATA);
+    tft.setSwapBytes(false);
     backscreen.pushSprite(0, 52);  // ロゴ下の琵琶湖地図を復元
     const int wait_timeout_ms = 1900;
     unsigned long wait_start = millis();
     while (millis() - wait_start < wait_timeout_ms) {
-      gnss_loop(7);  // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      imu_service_if_due();  // ★ BNO085 も引き取る。**これが無いと起動直後に殺す**
+                             //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
       delay(10);
     }
   }
@@ -1225,6 +1296,10 @@ void startup_demo_tft() {
   }
   delay(10);
 
+  // ★ ここでフッターを後半ページへ切り替える。アニメーションの折り返し地点なので、
+  //   前半（ロゴ 1.9 秒 + ズームイン）と後半（ズームアウト + 帰属表示 3.5 秒）が
+  //   だいたい同じ長さになり、どちらも読む時間がある。
+  draw_boot_diag(1);      // 後半ページ: E220（無線）
 
   float zoomout_speedfactor = 1.0f;
   countermax = 40/zoomout_speedfactor;
@@ -1257,7 +1332,9 @@ void startup_demo_tft() {
     const unsigned long hold_ms = 3500;
     unsigned long t0 = millis();
     while (millis() - t0 < hold_ms) {
-      gnss_loop(7);  // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      imu_service_if_due();  // ★ BNO085 も引き取る。**これが無いと起動直後に殺す**
+                             //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
       delay(10);
     }
   }

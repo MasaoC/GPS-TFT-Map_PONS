@@ -110,7 +110,16 @@ uint16_t e220_airtime_ms(uint8_t profile);
 
 // ---- 省電力 ----
 void e220_sleep();     // mode 3 へ。送信中なら送信完了後に入る
-void e220_wake();      // mode 0 へ。復帰は 1ms（データシート 5.3）
+void e220_wake();      // mode 0 へ。復帰を**待つ**（最大 50ms Core0 が止まる）
+
+// ---- ノンブロッキング起床（1Hz の定期送信用）----
+// e220_wake() は AUX の立ち上がりを待つので、毎秒それをやると Core0 が
+// その分止まる。送信は「起こす → 起きたら送る → 送り切ったら寝かす」の
+// 3 手に分ければ待たずに済む。使い方は link.cpp の link_tx_tick() を見ること。
+//   e220_wake_begin()  … mode 0 にするだけ。**待たない**
+//   e220_wake_ready()  … 起きたら true（AUX が High になった）。**待たない**
+void e220_wake_begin();
+bool e220_wake_ready();
 
 // ---- 診断 ----
 // 環境ノイズ [dBm]。距離を決めているのはこれ（docs/pons_link.md §8）。

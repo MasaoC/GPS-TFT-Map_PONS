@@ -14,6 +14,7 @@
 
 #include "../settings.h"
 #include "../display_tft.h"
+#include "../imu.h"          // imu_service_if_due（描画中に BNO085 を飢えさせない）
 #include "vectormap.h"
 
 // ===== 描画色（RGB565） =====
@@ -249,6 +250,13 @@ void draw_vectormap(double center_lat, double center_lon, float scale, float up)
       if (t->org_lat_e7 > lat_max_e7 || t->org_lat_e7 + tsize < lat_min_e7) continue;
       if (t->org_lon_e7 > lon_max_e7 || t->org_lon_e7 + tsize < lon_min_e7) continue;
       if (ci == 0) vm_last_tiles++;
+
+      // ★ タイル 1 枚ごとに BNO085 のレポートを引き取る。
+      //   地図の再描画は実測で 60ms 以上 Core0 を占有し、その間レポートが溜まると
+      //   **次に読んだジャイロが化ける**（2026-09-23 に実機で確定。imu.h 参照）。
+      //   デモモードの 2Hz 再描画に同期してバリオが暴れていたのがこれ。
+      //   引き取るだけで描画は止めない（imu_service_if_due は周期内なら即戻る）。
+      imu_service_if_due();
 
       const uint8_t* p = vm_blob + t->blob_off;
       const uint8_t* end = p + t->blob_len;

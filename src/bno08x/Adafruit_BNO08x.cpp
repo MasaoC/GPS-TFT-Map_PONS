@@ -169,6 +169,7 @@ bool Adafruit_BNO08x::begin_SPI(uint8_t cs_pin, uint8_t int_pin,
                                    SPI_MODE3,             // data mode
                                    theSPI);
   if (!spi_dev->begin()) {
+    pons_init_fail_step = 1;   // PONS 改変(4)
     return false;
   }
 
@@ -185,14 +186,25 @@ bool Adafruit_BNO08x::begin_SPI(uint8_t cs_pin, uint8_t int_pin,
  *   @param sensor_id Optional unique ID for the sensor set
  *   @returns True if chip identified and initialized
  */
+// ---- PONS 改変(4): _init() のどこで落ちたかを外から読めるようにする ----
+// 元のコードは sh2_open() でも sh2_getProdIds() でも false を返すだけで、
+// 実機ログの「recovery FAILED」から原因を絞れなかった。詳細は PONS_VENDORING.md。
+uint8_t pons_init_fail_step   = 0;   // 0=成功 1=spi/i2c begin 2=sh2_open 3=sh2_getProdIds
+int32_t pons_init_fail_status = 0;   // SH2 のステータスコード（sh2_err.h）
+
 bool Adafruit_BNO08x::_init(int32_t sensor_id) {
   int status;
+
+  pons_init_fail_step   = 0;
+  pons_init_fail_status = 0;
 
   hardwareReset();
 
   // Open SH2 interface (also registers non-sensor event handler.)
   status = sh2_open(&_HAL, hal_callback, NULL);
   if (status != SH2_OK) {
+    pons_init_fail_step   = 2;
+    pons_init_fail_status = status;
     return false;
   }
 
@@ -200,6 +212,8 @@ bool Adafruit_BNO08x::_init(int32_t sensor_id) {
   memset(&prodIds, 0, sizeof(prodIds));
   status = sh2_getProdIds(&prodIds);
   if (status != SH2_OK) {
+    pons_init_fail_step   = 3;
+    pons_init_fail_status = status;
     return false;
   }
 
@@ -579,6 +593,20 @@ static void spihal_close(sh2_Hal_t *self) {
   // Serial.println("SPI HAL close");
 }
 
+// ===== PONS ローカル改変 (2) — 読み出しの計測 =====================
+// BNO085 のジャイロに物理的にありえない孤立サンプルが出る問題を追うため。
+// 署名は gx=+v, gy=-v, gz=-v（3 軸が 1 つの値の符号違いのコピー）で、
+// 加速度計は同時刻に何も感じていない。デジタル側の疑いが濃い。
+//   pons_pkt_toobig … packet_size > len でパケットを**読み出さずに捨てた**回数。
+//                     ここへ来るとパケットはデバイス側に残り、次も同じ判定になる。
+//   pons_pkt_max    … 観測した最大パケット長。384 に近づくなら backlog が原因。
+//   pons_hdr_change … ヘッダ読みと本体読みの間に長さが変わった回数。
+//                     ① と ③ は別トランザクションなので、その隙に更新されうる。
+volatile uint32_t pons_pkt_toobig  = 0;
+volatile uint32_t pons_pkt_max     = 0;
+volatile uint32_t pons_hdr_change  = 0;
+// ===== ローカル改変ここまで =======================================
+
 static int spihal_read(sh2_Hal_t *self, uint8_t *pBuffer, unsigned len,
                        uint32_t *t_us) {
   // Serial.println("SPI HAL read");
@@ -606,7 +634,10 @@ static int spihal_read(sh2_Hal_t *self, uint8_t *pBuffer, unsigned len,
   Serial.println(len);
   */
 
+  if (packet_size > (uint16_t)pons_pkt_max) pons_pkt_max = packet_size;
+
   if (packet_size > len) {
+    pons_pkt_toobig++;          // ★ 読み出さずに捨てている。パケットは残る
     return 0;
   }
 
@@ -616,6 +647,13 @@ static int spihal_read(sh2_Hal_t *self, uint8_t *pBuffer, unsigned len,
 
   if (!spi_dev->read(pBuffer, packet_size, 0x00)) {
     return 0;
+  }
+
+  // ★ ヘッダ読みと本体読みは別トランザクション。その間にデバイスの
+  //   出力が差し替わると、長さと中身が食い違う。読み直したヘッダと比べる。
+  {
+    uint16_t again = ((uint16_t)pBuffer[0] | (uint16_t)pBuffer[1] << 8) & ~0x8000;
+    if (again != packet_size) pons_hdr_change++;
   }
 
   return packet_size;

@@ -189,12 +189,31 @@ void setup(void) {
   //setup switch
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
   setup_tft();
+  // ★ **ここでタイトルを出しておく。**これが無いと起動画面が始まるまで画面が真っ白になる。
+  //   白のままの区間は imu_setup()（BNO085 のリセット〜ブートで約 0.4 秒）と
+  //   gnss_setup() で、**GNSS 未接続だと後者が約 3.7 秒**かかる
+  //   （CFG の ACK 待ちが 5 コマンドぶん空振りする。log.txt の "GNSS CFG NO ACK"）。
+  //   GNSS を繋げば ACK が即返るので 1 秒以下に縮む。**固まっているわけではない。**
+  draw_boot_title();
   // BNO085 の NRST を早期に HIGH に固定する（内蔵プルアップ）。
   // RP2350 GPIO は電源投入直後フローティングになるため、imu_setup() が呼ばれるまでの間に
   // NRST が偶然 LOW になって BNO085 がリセット状態に入るのを防ぐ。
 #if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
   pinMode(IMU_RST_PIN, INPUT_PULLUP);
 #endif
+
+  // ★★ **setup() の間は生 IMU ログを止める。**
+  //   バッファの排出 imulog_take_pending() は **loop() からしか呼ばれない**ので、
+  //   setup() 中に貯めるとバッファ 2 枚（IMULOG_RECS_PER_BUF × 2）で満杯になり、
+  //   **それ以降は全部捨てられる**。捨てても seq は進むため、PC 側には
+  //   「取りこぼし」として残り、decode_imulog.py のセッション分割を誤らせる。
+  //   実機 2026-09-23: 起動画面の待ちで BNO085 を引き取るようにしたところ
+  //   drop が 67 → 676 に増えた（起動中に 1 回だけ。以降は増えない）。
+  //   起動画面の間の生データは机上の値で使い道が無いので、記録しない。
+  //   ★ 解除は明示的に書かない。loop() 冒頭の
+  //     imulog_set_paused(getReplayMode()) が毎周回セットし直すので、
+  //     loop() の 1 回目で自動的に解ける（リプレイ中なら正しく止まったまま）。
+  imulog_set_paused(true);
 
   // I2C バス初期化（MS5611・BNO085 共用。両 setup より先に呼ぶ）
   airdata_wire_begin();
@@ -216,7 +235,27 @@ void setup(void) {
   }
 
   gnss_setup();
-  
+
+  // ★ SD から読んだ設定が揃うのを待つ。**この下の 2 つが両方それを使う。**
+  //     link_setup()       … CH / SF / 送受信モード
+  //     startup_demo_tft() … 地図データ件数 / upward_mode
+  //   Core1 が SD を初期化している間に Core0 が SD を触ると SDIO バスが競合して
+  //   固まるので、待ちは必須。5 秒で打ち切るのは SD 不良の機体でも起動させるため
+  //   （打ち切った場合は log.txt の LINK SETUP の settings=0 で後から判別できる）。
+  {
+    unsigned long t = millis();
+    while (!sd_setup_complete && millis() - t < 5000) {
+      gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
+      imu_service_if_due();  // ★ BNO085 も引き取る（CLAUDE.md「飢えさせない」）
+      delay(10);
+    }
+  }
+
+  // ★ **起動画面より先に無線を開く。** 起動画面の下段に E220 の結果を出すため
+  //   （ここより後だと、結果が出る頃には loop() が画面を描き替えてしまう）。
+  //   読み上げと送信前チェックはここではやらない。setup() 末尾を見ること。
+  link_setup();
+
   startup_demo_tft();
 
   // スケールリストの初期化（Google Map のズームレベルに対応する pixel/km 値）
@@ -243,10 +282,15 @@ void setup(void) {
     enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
   }
 
-  // 無線（PONS Link）の UART を開き、現在の設定を無線モジュールへ送る。
-  // 設定ファイルの読み込みが終わった後でなければ意味が無いので、ここで呼ぶ。
-  // 無線モジュールが未接続でも UART を開くだけなので害は無い。
-  link_setup();
+  // 無線モードの読み上げ。起動音(opening.wav)の後に鳴らしたいので、
+  // link_setup() を前へ移したあともここに残してある。
+  link_announce_mode();
+
+  // ★ 送信前チェックの監視窓は**ここで張り直す。必ず loop() の直前で。**
+  //   窓(5 秒)は millis() 基準なので、link_setup() の中で開始したままだと
+  //   startup_demo_tft() のアニメーション(約 8 秒)の間に窓が過ぎてしまい、
+  //   雑音を 1 サンプルも取れずに NOT MEASURED で終わる。
+  link_preflight_restart();
 }
 
 
@@ -853,6 +897,29 @@ void loop() {
       enqueueTask(createLogSdfTask("rate GRV=%.1f LACC=%.1f RV=%.1f MS5611=%.1f Hz",
                                    get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz(),
                                    get_airdata_win_hz()));
+      // ★ クォータニオンの健全性。V/S が暴れる件の切り分け用（imu.h 参照）。
+      //   grvbad が増える → SPI でパケットが化けている（転送層の問題）
+      //   grvjump だけ増える → BNO 内部の融合が飛んでいる
+      // ★ BNO085 の申告精度。加速度が 3 未満の間は静止時 |a| が数 % ずれる
+      //   （実測 -4.6%）ので、バリオの鉛直加速度も同じだけずれる。
+      enqueueTask(createLogSdfTask("cal cfg=0x%02X acc=%u gyr=%u mag=%u",
+                                   get_imu_cal_cfg(), get_imu_acc_accuracy(),
+                                   get_imu_gyr_accuracy(), get_imu_mag_accuracy()));
+      // ★ SPI 読み出しの健全性と、Core0 が止まった最長時間。
+      //   pktmax が 384 に近づく / toobig が増える → backlog で壊れている
+      //   hdrchg が増える → ヘッダ読みと本体読みの間に中身が差し替わっている
+      {
+        extern volatile uint32_t pons_pkt_toobig, pons_pkt_max, pons_hdr_change;
+        enqueueTask(createLogSdfTask("spi pktmax=%lu toobig=%lu hdrchg=%lu gapmax=%lums",
+                                     (unsigned long)pons_pkt_max,
+                                     (unsigned long)pons_pkt_toobig,
+                                     (unsigned long)pons_hdr_change,
+                                     (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
+      }
+      enqueueTask(createLogSdfTask("quat grvbad=%lu grvjump=%lu rvbad=%lu",
+                                   (unsigned long)get_imu_grv_bad(),
+                                   (unsigned long)get_imu_grv_jump(),
+                                   (unsigned long)get_imu_rv_bad()));
       enqueueTask(createLogSdfTask("raw GYR=%.1f ACC=%.1f MAG=%.1f Hz stale=%lu drop=%lu wrote=%lu",
                                    get_imu_gyro_hz(), get_imu_accel_hz(), get_imu_mag_hz(),
                                    (unsigned long)get_imu_lacc_stale_skips(),

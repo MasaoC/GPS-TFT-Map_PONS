@@ -32,8 +32,19 @@
 // Although some implementations adversize a max in transfer of 32K,
 // in practice, the largest transfer performed is the advertisements
 // which is 272 bytes at time of writing.
-#define SH2_HAL_MAX_TRANSFER_IN  (384)
-#define SH2_HAL_MAX_PAYLOAD_IN   (384)
+// ===== PONS ローカル改変 (3) — 受信バッファの拡張 =====================
+// 既定は 384。実測で pktmax=276（上限の 72%）まで来ており、余裕が 39% しか無い。
+// ★ ここを超えると spihal_read() / i2chal_read() は
+//     if (packet_size > len) return 0;
+//   で **パケットを読み出さずに戻る**。パケットはデバイス側に残るので、
+//   次の読み出しでも同じ判定になり、抜けられなくなる恐れがある。
+//   （どちらの HAL も排出しない。Adafruit の既定のまま）
+// Core0 が長く止まるとレポートが溜まってパケットが大きくなるため、
+// 飢餓対策（imu_service_if_due）と併せて余裕を 2.8 倍に広げる。
+// RAM は shtp.c の inPayload[] と inTransfer[] が各 +384 バイト増えるだけ。
+#define SH2_HAL_MAX_TRANSFER_IN  (768)
+#define SH2_HAL_MAX_PAYLOAD_IN   (768)
+// ===== ローカル改変ここまで ===========================================
 
 // This needs to be a power of 2, greater than max of the above.
 #define SH2_HAL_DMA_SIZE (512)

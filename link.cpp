@@ -211,15 +211,6 @@ void link_setup() {
     // e220_setup() は mode 0 で戻ってくるので、モードに応じて寝かせ直す。
     link_apply_power_state();
 
-    // ★ 起動時に送信/受信の**どちらも**読み上げる（docs/pons_link.md §1）。
-    //   受信側だけ読み上げる案だと「何も言わない＝正常」と受け取られ、
-    //   無線が OFF になっていることに気づけない。両方読み上げれば
-    //   **無音が「無線 OFF」を意味する**ようになり、3 状態が音だけで判別できる。
-    if (link_mode_setting == LINK_MODE_TX)
-        enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
-    else if (link_mode_setting == LINK_MODE_RX)
-        enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
-
     // ★ **何を書き込んだかを log.txt に残す。**
     //   ここで使う link_mode_setting / ch / profile は Core1 の loadSettings() が
     //   入れる値で、startup_demo_tft() の sd_setup_complete 待ちを挟んでいるので
@@ -233,8 +224,24 @@ void link_setup() {
                                  link_radio_profile, link_group,
                                  (int)e220_alive(), (int)settings_loaded));
 
-    // 起動時から送信モードなら、送り始める前にチャンネルを確かめる。
-    link_preflight_start();
+    // ★ 読み上げと送信前チェックはここでは行わない。setup() の末尾で
+    //   link_announce_mode() / link_preflight_restart() を呼ぶこと。理由は両関数の頭。
+}
+
+// 起動時に無線モードを読み上げる。**setup() の末尾で呼ぶ。**
+// ★ 起動時に送信/受信の**どちらも**読み上げる（docs/pons_link.md §1）。
+//   受信側だけ読み上げる案だと「何も言わない＝正常」と受け取られ、
+//   無線が OFF になっていることに気づけない。両方読み上げれば
+//   **無音が「無線 OFF」を意味する**ようになり、3 状態が音だけで判別できる。
+// ★ link_setup() から切り離してある理由:
+//   link_setup() は起動画面に E220 の結果を出すためスプラッシュより前へ移した。
+//   読み上げもそこへ付いていくと、**起動音(opening.wav)より先に喋ってしまう**。
+//   元どおり setup() の末尾で呼ぶことで、鳴る順番は移動前と同じになる。
+void link_announce_mode() {
+    if (link_mode_setting == LINK_MODE_TX)
+        enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
+    else if (link_mode_setting == LINK_MODE_RX)
+        enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
 }
 
 // ============================================================
@@ -287,7 +294,7 @@ static void link_watch_mirror_transition() {
 //   （1 発でも受かれば e220_recv() が生存を記録する。無駄に UART へ割り込まない）。
 static void link_probe_module() {
     if (link_mode_setting == LINK_MODE_OFF) return;
-    // 点検中は自分で 0.5 秒ごとに測っているので、重ねて叩かない。
+    // 点検中は自分で LINK_PF_SAMPLE_MS ごとに測っているので、重ねて叩かない。
     // （実体は下にあるので、宣言済みのアクセサ経由で見る）
     if (link_preflight_state() == LINK_PF_RUNNING) return;
     // 受信できている＝生きている。問い合わせる必要そのものが無い。
@@ -309,7 +316,25 @@ static void link_probe_module() {
     //   ping は mode 3 へ約 20ms 潜る。上の early return で
     //   「受信できているとき」と「送信直後」は既に除いてあるので実害は無い。
     if (tx) e220_wake();               // 寝ていると潜る意味が変わるので起こしておく
-    e220_ping();
+    const bool responds = e220_ping();
+
+    // ★ **設定が通っていないだけで、モジュールは生きている**場合の復帰。
+    //   s_alive は e220_reconfigure() の中でしか立たないため、書込みが一度
+    //   失敗すると e220_alive() が false のまま固定され、モードを変えても
+    //   戻らない（settings.h の LINK_REVIVE_INTERVAL_MS のコメント参照）。
+    //   ping が通るなら通信自体は生きているので、設定を書き直して復帰させる。
+    //   ★ reconfigure は Core0 を最大 0.6 秒止めるので、間隔を空けて試みる。
+    if (responds && !e220_alive()) {
+        static uint32_t lastRevive = 0;
+        if (lastRevive == 0 || (now - lastRevive) >= LINK_REVIVE_INTERVAL_MS) {
+            lastRevive = now;
+            enqueueTask(createLogSdTask("LINK: module responds but unconfigured, re-configuring"));
+            e220_reconfigure(link_radio_ch, link_radio_profile, false);
+            link_apply_power_state();
+            enqueueTask(createLogSdfTask("LINK: revive -> alive=%d", (int)e220_alive()));
+        }
+    }
+
     if (tx) e220_sleep();              // 送信機は送信の合間は寝かせる
 }
 
@@ -511,8 +536,8 @@ static void link_preflight_start() {
     // ★ **起床直後に即サンプルしない。** 0 にすると最初のループで即座に叩くが、
     //   e220_wake() で mode 3 から戻った直後はモジュールが落ち着いておらず、
     //   実機ではここが必ず失敗していた（AUX が High でも数百 ms 効かない）。
-    //   今の時刻を入れておけば 1 回目は LINK_PF_SAMPLE_MS 後になる。
-    //   窓 5000ms / 間隔 500ms なので、それでもサンプルは 10 個取れる。
+    //   今の時刻を入れておけば 1 回目は LINK_PF_FIRST_SAMPLE_MS 後になる。
+    //   窓 3000ms / 1 回目 500ms / 以降 300ms なので、サンプルは 9 個取れる。
     s_pfLastSampleMs = millis();
     s_pfNoiseN       = 0;
     s_pfNoiseFail    = 0;
@@ -610,7 +635,10 @@ static void link_preflight_tick() {
 
     // ---- 雑音のサンプル ----
     const uint32_t now = millis();
-    if (!s_pfNoiseGiveUp && (now - s_pfLastSampleMs) >= LINK_PF_SAMPLE_MS) {
+    // ★ 1 回目だけ待ちを長くする（理由は settings.h の LINK_PF_FIRST_SAMPLE_MS）。
+    const uint32_t sample_due = (s_pfNoiseN == 0 && s_pfNoiseFail == 0)
+                                  ? LINK_PF_FIRST_SAMPLE_MS : LINK_PF_SAMPLE_MS;
+    if (!s_pfNoiseGiveUp && (now - s_pfLastSampleMs) >= sample_due) {
         s_pfLastSampleMs = now;
         int16_t n = 0;
         if (e220_read_noise(&n, nullptr)) {
@@ -619,7 +647,7 @@ static void link_preflight_tick() {
         } else if (++s_pfNoiseFail >= LINK_PF_NOISE_FAIL_MAX) {
             // ★★ 連続で返事が無いなら、窓の最後まで回さずにここで打ち切る。
             //   1 回の問い合わせは応答待ちでブロックするので、10 回ぶん繰り返すと
-            //   Core0 が止まり、GNSS の FIFO（1024B / 38400bps ≒ 267ms）が溢れて
+            //   Core0 が長時間止まり、GNSS の受信や描画が巻き添えになって
             //   NAV-PVT を取りこぼす。地図もボタンもバリオも同時に止まる。
             //   ★ e220_alive() の事前チェックだけでは塞げない。あれは起動時の
             //     照合結果なので、**起動後に抜けたコネクタでは true のまま**。
@@ -644,17 +672,67 @@ static void link_preflight_tick() {
 // E220 は自分から催促してこないので、こちらが叩きに行く。
 //   ・送信直前にテレメトリを組み立てるので、値は常に新しい
 //   ・送り終えたら即 mode 3 へ落とす（高速スリープ。AUX を待たなくてよい）
-static void link_tx_tick() {
-    if (link_mode_setting != LINK_MODE_TX) return;
-    // ★ 点検中は送らない。自分の送信を測ってしまうと雑音の判定が意味を失う。
-    if (s_pfState == LINK_PF_RUNNING) return;
-    static uint32_t lastTx = 0;
-    if (millis() - lastTx < 1000) return;
-    lastTx = millis();
+// 1Hz の定期送信。**Core0 を止めない。**
+//
+// ★ 以前は 1 回の呼び出しで「起こす → 送る → 寝かす」を全部やっていた。
+//   そのうち e220_wake() の wait_aux_idle(50) と e220_sleep() の flush() が
+//   **毎秒 Core0 を止めていた**（最悪で合わせて 60ms 前後）。待っている間は
+//   描画も GNSS もセンサー更新も進まない。
+//   3 手に分けて、次の周回で様子を見るようにすれば、どこでも待たずに済む。
+//
+//   LTX_IDLE     1 秒経ったら e220_wake_begin()（mode 0 にするだけ）→ WAKING
+//   LTX_WAKING   AUX が High になったら送る → DRAINING
+//                （上がらないまま LINK_TX_WAKE_GIVEUP_MS 経ったらスロットを捨てる）
+//   LTX_DRAINING UART が送り切る時間を置いてから mode 3 へ → IDLE
+//
+// ★ 代償: モジュールが mode 0 に居る時間が 2 周回ぶん伸びる（約 130ms）。
+//   受信待機 8.2mA なので平均+1mA 程度。TFT と RP2350 の消費に対しては誤差。
+// ★ **送信完了そのものは待たない**（データシート 5.3。mode 3 への切替は
+//   送信中なら自動的に先送りされる）。これは以前から変わらない。
+typedef enum { LTX_IDLE = 0, LTX_WAKING, LTX_DRAINING } LinkTxState;
+static LinkTxState s_txState   = LTX_IDLE;
+static uint32_t    s_txStateMs = 0;
 
-    e220_wake();
-    link_push_telemetry();      // 中で e220_send() する
-    e220_sleep();               // 送信完了を待たずに寝かせてよい（データシート 5.3）
+static void link_tx_tick() {
+    if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; return; }
+    // ★ 点検中は送らない。自分の送信を測ってしまうと雑音の判定が意味を失う。
+    //   ★ 状態も畳む。点検は e220_wake() で mode 0 に置くので、
+    //     途中状態のまま入ると寝かせ忘れる。
+    if (s_pfState == LINK_PF_RUNNING) { s_txState = LTX_IDLE; return; }
+
+    const uint32_t now = millis();
+
+    switch (s_txState) {
+    case LTX_WAKING:
+        if (e220_wake_ready()) {
+            link_push_telemetry();      // 中で e220_send() する
+            s_txState   = LTX_DRAINING;
+            s_txStateMs = now;
+        } else if (now - s_txStateMs >= LINK_TX_WAKE_GIVEUP_MS) {
+            // 起きてこない。このスロットは捨てて寝かせ直す。
+            // 無応答そのものは link_watch_module() が見ているので、ここでは鳴らさない。
+            e220_sleep();
+            s_txState = LTX_IDLE;
+        }
+        return;
+
+    case LTX_DRAINING:
+        if (now - s_txStateMs < LINK_TX_DRAIN_MS) return;
+        e220_sleep();                   // 中の flush() はもう即座に返る
+        s_txState = LTX_IDLE;
+        return;
+
+    case LTX_IDLE:
+    default:
+        break;
+    }
+
+    static uint32_t lastTx = 0;
+    if (now - lastTx < 1000) return;
+    lastTx = now;
+    e220_wake_begin();                  // mode 0 にするだけ。**AUX は待たない**
+    s_txState   = LTX_WAKING;
+    s_txStateMs = now;
 }
 
 void link_loop() {

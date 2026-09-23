@@ -8,7 +8,8 @@
 
 #include "e220.h"
 #include <string.h>
-#include "mysd.h"   // 切り分けログ（enqueueTask / createLogSdfTask）
+#include "mysd.h"   // enqueueTask / createLogSdfTask
+#include "imu.h"    // imu_service_if_due（待っている間に BNO085 を飢えさせない）
 #include "lora_link/link_proto.h"
 
 #define E220_SERIAL       Serial2      // RP2350 UART1 = GPIO8(TX)/GPIO9(RX)
@@ -26,6 +27,10 @@
 // ---- 状態 ----
 static bool    s_alive     = false;    // 設定の読み返しが通ったか
 static bool    s_asleep    = false;
+// ノンブロッキング起床の途中状態（e220_wake_begin / e220_wake_ready）。
+// ★ e220_sleep() が先に定義されていて、そこからも触るのでここに置く。
+static bool     s_waking   = false;
+static uint32_t s_wakeMs   = 0;
 
 // ---- 実行中の生存確認 ----
 // ★ s_alive だけでは「起動後に死んだ」を検出できない。書いているのは
@@ -42,11 +47,13 @@ static bool    s_asleep    = false;
 static uint8_t s_ch      = 0;          // 現在のチャンネル（通常送信の宛先に使う）
 static bool    s_strict  = false;      // Strict Mode が有効か（環境ノイズの読み方が変わる）
 static uint8_t s_noResp = 0;           // 連続して返事が無かった回数
+static bool s_lastXferHeard = false;   // 直前の reg_xfer でモジュールが何か答えたか
+                                       //（失敗でも「化けた返事」なら生きている）
 #define E220_NORESP_LIMIT     3        // これ以上続いたら無応答とみなす
 
 // 環境ノイズ取得の応答待ち [ms]。生きていれば数 ms で返る。
 // ★★ 一度でも落ちたら短いほうに切り替える。**無応答のまま 200ms 待ちを
-//   繰り返すと Core0 が止まり、GNSS の FIFO（1024B / 38400bps ≒ 267ms）が溢れて
+//   繰り返すと Core0 が長時間止まり、GNSS の受信や描画が巻き添えになって
 //   NAV-PVT を丸ごと取りこぼす。** 生きていれば数 ms で返るので、短くしても
 //   取りこぼさないし、返事があれば 0 に戻って長いほうへ復帰する。
 #define E220_NOISE_WAIT_MS      200
@@ -58,9 +65,13 @@ static uint8_t s_noResp = 0;           // 連続して返事が無かった回�
 // e220_alive() が落ちて送信前チェックごと飛び、警報まで鳴る。10 秒に 1 回の
 // 30ms は安いので、保険として置いている。**根拠のある値ではない。**
 #define E220_CFG_SETTLE_MS       30
+// mode 3 でコマンドを連続して投げるときの間隔。**0 にすると 2 発目以降が化ける。**
+// 実機 2026-09-23 のログでは、失敗するのは必ず 2 発目以降（読み→書き、書き→読み返し）で、
+// enter_config_mode() 直後の 1 発目は通っていた。詳細は reg_xfer() の先頭。
+#define E220_CMD_GAP_MS          10
 
 // 返事があった／無かったを 1 か所で数える。
-// ---- 無応答の切り分け用ログ（一時的。原因が判明したら消す）----
+// ---- 無応答の診断ログ。**消さないこと**（v7 立ち上げで 2 つのバグを捕まえた）----
 // モジュールが「黙っている」のか「化けた返事をしている」のかで対処が正反対なので、
 // 失敗のたびに **受信バイト数・先頭の中身・AUX の状態** を残す。
 //   got=0        → そもそも返事が無い。配線・電源・M0/M1・ボーレートを疑う
@@ -120,6 +131,9 @@ static uint8_t air_data_rate_bits(uint8_t sf) {
 static void wait_aux_idle(uint16_t timeout_ms) {
     const uint32_t t0 = millis();
     while (digitalRead(E220_AUX_PIN) == LOW) {
+        // ★ 待っている間も BNO085 を引き取る。ここは最大 200ms 回るので、
+        //   放っておくとレポートが溜まってジャイロが化ける（imu.h 参照）。
+        imu_service_if_due();
         if (millis() - t0 > timeout_ms) {
             // ★ AUX が上がらないまま打ち切った。内部プルアップを入れてあるので
             //   **モジュール不在なら High に見えるはず**。Low のままということは
@@ -155,12 +169,16 @@ static void set_mode(int level) {
 //   「C1 addr len」の並びを検索して拾う**（先頭決め打ちにしない）。
 //   ゴミが乗っても誤判定しないので、この制約は実害にならない。
 static void set_baud(uint32_t baud) {
+    imu_service_if_due();         // ★ 切替の前後で引き取る（下のコメント参照）
     E220_SERIAL.flush();          // 送りかけを出し切ってから
     E220_SERIAL.end();
     E220_SERIAL.setTX(E220_TX_PIN);
     E220_SERIAL.setRX(E220_RX_PIN);
     E220_SERIAL.setFIFOSize(256);
     E220_SERIAL.begin(baud);
+    // ★ end()/begin() は数 ms 止まる。mode 3 への往復で 2 回通るので、
+    //   ここで引き取っておかないと BNO085 のレポートが溜まる（imu.h 参照）。
+    imu_service_if_due();
 }
 
 // 受信バッファを捨てる。
@@ -169,6 +187,15 @@ static void set_baud(uint32_t baud) {
 static void flush_input() {
     while (E220_SERIAL.available()) E220_SERIAL.read();
     s_rxLen = 0;
+}
+
+// 設定まわりの待ち。**素の delay() を使わないこと。**
+// Core0 が数十 ms 止まると BNO085 のレポートが溜まり、次に読んだジャイロが化ける
+// （CLAUDE.md「BNO085 の読み出しを飢えさせない」）。設定操作は 1 回で
+// 100ms 以上待つので、素の delay() だとバリオが暴れる。
+static void cfg_wait_ms(uint32_t ms) {
+    const uint32_t t0 = millis();
+    while (millis() - t0 < ms) imu_service_if_due();
 }
 
 // UART に来ているバイトを組み立てバッファへ移すだけ。捨てない。
@@ -201,7 +228,19 @@ static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
     uint8_t n = 3;
     if (in) { memcpy(cmd + 3, in, len); n = (uint8_t)(3 + len); }
 
-    flush_input();
+    // ★★ **コマンドとコマンドの間を空ける。空けないと 2 発目以降が化ける。**
+    //   実機 2026-09-23: CH 変更のたびに「読み→書き→読み返し」を隙間なく投げていて、
+    //   **1 発目は必ず通り、2 発目以降だけが失敗**していた。
+    //   返ってきたのは `00 F8 FF FF FF` / `C0 FF FF FF` / `E0 FF FF FF` などで、
+    //   先頭のゴミは 0xF8=3bit・0xF0=4bit・0xE0=5bit・0xC0=6bit と
+    //   **「線が N ビットぶん Low に落ちてから High に戻った」形**しかない。
+    //   これはデータではなく UART のブレーク。つまりモジュール側がまだ
+    //   前のコマンドの後始末をしていて、線が安定していない。
+    //   そこへ書くとモジュールはこちらの命令も壊れて受け取り、
+    //   `FF FF FF`（書式エラー応答 6.15）を返す。**書式は合っているのに、である。**
+    wait_aux_idle(50);
+    cfg_wait_ms(E220_CMD_GAP_MS);
+    flush_input();                     // ★ 間合いを取った「あと」に捨てる
     E220_SERIAL.write(cmd, n);
     E220_SERIAL.flush();
 
@@ -212,6 +251,7 @@ static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
     bool    errResp = false;
     const uint32_t t0 = millis();
     while (millis() - t0 < 300) {
+        imu_service_if_due();     // ★ 最大 300ms 回る。その間も BNO085 を引き取る
         while (E220_SERIAL.available() && got < sizeof(buf)) buf[got++] = (uint8_t)E220_SERIAL.read();
 
         // ★★ **バイト数で打ち切ってはいけない。**
@@ -237,6 +277,14 @@ static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
         if (got >= sizeof(buf)) break;     // これ以上は溜められない
         delay(2);
     }
+
+    // ★★ **エラー応答が返ってきたなら、モジュールは生きている。**
+    //   `FF FF FF` はモジュールがこちらの命令を解釈して突き返した証拠で、
+    //   「無言」とは意味が正反対。ここを一緒くたに数えていたため、
+    //   一過性の化けが 3 回続くだけで e220_alive() が false に落ち、
+    //   画面に「Module NO RESPONSE」が出ていた（実機 2026-09-23、t=110）。
+    s_lastXferHeard = (found || errResp);
+    if (s_lastXferHeard) note_response();
 
     if (found) {
         if (out) memcpy(out, buf + at + 3, len);
@@ -269,9 +317,22 @@ static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
 //     「無効なら立てる」。既に立っていれば書かないので、書換えは 1 台につき生涯 1 回。
 static bool ensure_strict_mode(bool persist) {
     uint8_t ext = 0;
+    // ★★ **読めなかったときに false を返してはいけない。**
+    //   0x09 は不揮発で、モジュールの状態はこちらが読めたかどうかで変わらない。
+    //   「読めなかった」は **無効** ではなく **不明**。
+    //   ここで false を返していたため、一過性の化け 1 回で s_strict が落ち、
+    //   stat_reg_read() の門番（!s_strict で即 return）に引っかかって
+    //   **環境ノイズが 1 サンプルも取れず、Pre-flt が丸ごと NOT MEASURED** になっていた。
+    //   実機 2026-09-23: `strict: 0x09 read FAILED` が出た直後の Pre-flt だけが
+    //   n=0 → 0x10 になり、読めた回（t=57,67）の Pre-flt は n=9〜10 で正常。
+    //   直後に読み直している `E220 regs: ext=0x40 strict=1` が、
+    //   **モジュール側はずっと Strict のままだった**ことを示している。
     if (!reg_xfer(0xC1, 0x09, 1, nullptr, &ext)) {
-        E220_DBG("E220 strict: 0x09 read FAILED");
-        return false;                       // 読めないのに書きに行かない
+        cfg_wait_ms(E220_CMD_GAP_MS * 2);   // 間合いを取ってもう一度だけ
+        if (!reg_xfer(0xC1, 0x09, 1, nullptr, &ext)) {
+            E220_DBG("E220 strict: 0x09 read FAILED (keep %d)", (int)s_strict);
+            return s_strict;                // 前回の値を保つ。書きには行かない
+        }
     }
     if (ext & 0x40) return true;            // 既に有効。**書かない**
 
@@ -308,20 +369,6 @@ static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
     s_ch = ch;                                     // 送信時の宛先チャンネルに使う
     // 05H REG3: RSSIバイト付加<<7 | 送信方法<<6 | WORサイクル(011=2000ms)
     //
-    // ★★ 送信方法は **必ず 0（トランスペアレント）** にすること。
-    //   1（固定送信）にすると、モジュールは UART に来た先頭 3 バイトを
-    //   「宛先ADDH / 宛先ADDL / チャンネル」として解釈する。すると
-    //   環境ノイズ取得コマンド `C0 C1 C2 C3 00 02` が
-    //   **「宛先 0xC0C1・ch 0xC2 への送信データ」** と誤解され、
-    //   コマンドが効かないどころか電波として出てしまう。
-    //   症状は「設定は完璧に入っているのに RSSI だけ永久に無応答、
-    //   かつ AUX が Low に張り付く」。
-    //
-    //   我々の通信は「同じチャンネルの全機が受け取るブロードキャスト」なので、
-    //   宛先指定は元々不要。トランスペアレントなら
-    //     ・先頭 3 バイトのヘッダが要らない（占有時間も短くなる）
-    //     ・環境ノイズ取得が使える
-    //   と、こちらのほうが素直に合う。工場出荷時の既定もトランスペアレント。
     // ★ bit6 = 1 は **通常(Fixed-block)送信モード**。透過モードではない。
     //   透過モードだと、状態レジスタの読み出しコマンドが
     //   「サブパケットの区切り位置に来たときに限って」しかコマンドと解釈されず、
@@ -345,9 +392,24 @@ static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
         return true;                       // 既に正しい。何も書かない
 
     E220_DBG("E220 cfg: readback differs or unread, writing (persist=%d)", (int)persist);
+    // ★ 0xC2（RAM のみ）は **データシート v2.0 に記載が無い**。
+    //   10.1 の表 22/23 に載っているのは 0xC1（読み）と 0xC0（不揮発書き）だけで、
+    //   0xC2 は EBYTE の ver.1 系の慣習。6.5 は Strict Mode では
+    //   「ver.1 互換コマンド操作はできなくなります」としており、**効かない恐れがある**。
+    //   効かないと write_config() が false を返し、s_alive が落ちて
+    //   「Module NO RESPONSE」になる（2026-09-23、設定画面で CH を変えた瞬間に発生）。
+    //   そこで **通らなければ 0xC0 へ退避する**。不揮発の書換えを 1 回使うが、
+    //   無線が死んだまま飛ぶよりはるかに良い。どちらを使ったかはログに残す。
     if (!reg_xfer(persist ? 0xC0 : 0xC2, 0x00, 6, v, nullptr)) {
-        E220_DBG("E220 cfg: WRITE failed");
-        return false;
+        if (persist) {
+            E220_DBG("E220 cfg: WRITE failed (0xC0)");
+            return false;
+        }
+        E220_DBG("E220 cfg: 0xC2 (RAM) rejected, retrying with 0xC0 (non-volatile)");
+        if (!reg_xfer(0xC0, 0x00, 6, v, nullptr)) {
+            E220_DBG("E220 cfg: WRITE failed (0xC0 fallback)");
+            return false;
+        }
     }
 
     // 書いたあとは必ず読み返して照合する。
@@ -367,6 +429,29 @@ static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
 // ============================================================
 //  ライフサイクル
 // ============================================================
+
+// mode 3（Config）へ潜って、コマンドを受け付けられる状態にする。
+// **mode 3 に入る用事は必ずこれを通すこと。**3 行をばらばらに書くと下の待ちを落とす。
+//
+// ★★ **最後の待ちを落とすと「モジュール無応答」になる。**
+//   実機 2026-09-23: 設定画面で CH を変えた瞬間から Module NO RESPONSE になり、
+//   Mode を戻しても復帰しなかった。原因は e220_reconfigure() がこの待ちを
+//   持っていなかったこと。レジスタ読み (0xC1 0x00 len=6) が `FF FF FF`（エラー応答）や
+//   `00 F0 FF FF FF 00` のような化けを返し、write_config() が false を返して
+//   s_alive が落ちていた。
+//   決め手は **まったく同じ mode 3 のレジスタ読みでも e220_ping() は通っていた**こと
+//   （復帰経路の "module responds but unconfigured" が出ていた＝ping は成功）。
+//   ping との差はこの待ちの有無だけだった。
+//   起動時だけ動いていたのは e220_setup() が手前に delay(120) を置いているため。
+//
+// 待ちが要る理由は 2 つ。どちらも set_mode() の AUX 待ちでは埋まらない:
+//   - AUX が High に戻っても、モジュール内部がコマンドを受け付けるのはもう少し後
+//   - set_baud() の end()/begin() が線を一度落とすので、直後の 1 バイト目が化ける
+static void enter_config_mode() {
+    set_mode(MODE_CONFIG);
+    set_baud(LINK_UART_BAUD_CFG);      // mode 3 は 9600 固定（5.2 表 6）
+    cfg_wait_ms(E220_CFG_SETTLE_MS);
+}
 
 void e220_setup(uint8_t ch, uint8_t profile) {
     // AUX は E220 の push-pull 出力なので本来プルアップは不要。
@@ -394,23 +479,33 @@ void e220_setup(uint8_t ch, uint8_t profile) {
 bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     if (ch > E220_CH_MAX) ch = E220_CH_MAX;
 
-    set_mode(MODE_CONFIG);
-    set_baud(LINK_UART_BAUD_CFG);      // mode 3 は 9600 固定
+    enter_config_mode();
     s_alive = write_config(ch, profile, persist);
+    // ★ 1 回だけやり直す。**「一度失敗したら二度と戻らない」を防ぐための保険。**
+    //   ここが false のままだと s_alive が落ちて画面が「Module NO RESPONSE」になり、
+    //   次に誰かが設定を変えるまで誰も再試行しない。
+    //   mode 3 へ入り直すところからやるのは、化けの原因が
+    //   enter_config_mode() の待ちの側にあるため（上のコメント参照）。
+    if (!s_alive) {
+        E220_DBG("E220 cfg: retrying once (ch=%u prof=%u)", ch, profile);
+        set_mode(MODE_NORMAL);         // 一度 mode 0 へ抜けて入り直す
+        enter_config_mode();
+        s_alive = write_config(ch, profile, persist);
+    }
     if (s_alive) s_strict = ensure_strict_mode(persist);
     E220_DBG("E220 reconfigure ch=%u prof=%u persist=%d -> alive=%d AUX=%d",
              ch, profile, (int)persist, (int)s_alive, (int)digitalRead(E220_AUX_PIN));
     if (s_alive) note_response();      // 読み返しが通った＝確実に生きている
 
-    // ---- 切り分け用: 0x08(VERSION) と 0x09(EXT REG) を読む（一時的）----
-    // ★ write_config は 0x00〜0x05 しか触らない。**0x09 は一度も書いていない**が、
-    //   ここは不揮発なので、過去に書かれた値がそのまま残っている可能性がある。
-    //   0x09 bit6 = Strict Mode 切替フラグ。1 だとデータシート 6.5 のとおり
-    //   **ver.1 互換コマンドが使えなくなる** → 6.8 の環境ノイズ取得
-    //   (C0 C1 C2 C3 00 02) が無視される。表 24 の
-    //   0xFF 0xFF 0xC1 0xA3 0x01 形式でないと読めない。
-    //   送信もレジスタ操作も普通に動くので、症状は「雑音だけ取れない」になる。
-    //   実機でそれが起きているため、まず値を確かめる。
+    // ---- 常設の診断: 0x08(VERSION) と 0x09(EXT REG) を読んで 1 行残す ----
+    // **消さないこと。**無線がおかしいときに最初に見る行。
+    // ★ 0x09 bit6 = Strict Mode 切替フラグで、**不揮発かつ個体差がある**。
+    //   1 だとデータシート 6.5 のとおり ver.1 互換コマンドが使えなくなり、
+    //   6.8 の環境ノイズ取得 (C0 C1 C2 C3 00 02) は黙って無視される
+    //   （表 24 の 0xFF 0xFF 0xC1 0xA3 0x01 形式でないと読めない）。
+    //   送信もレジスタ操作も普通に動くので、症状は「雑音だけ取れない」に見える。
+    //   今は ensure_strict_mode() が毎起動で必ず 1 に揃えるので、
+    //   ここは **揃ったことの確認**として読んでいる。
     if (s_alive) {
         uint8_t ver = 0, ext = 0;
         const bool okv = reg_xfer(0xC1, 0x08, 1, nullptr, &ver);
@@ -543,6 +638,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
 // ============================================================
 
 void e220_sleep() {
+    s_waking = false;      // 起床の途中で寝かされたら、その途中状態は捨てる
     if (s_asleep) return;
 
     // ★★ ここで flush() が要る。
@@ -561,7 +657,31 @@ void e220_sleep() {
     s_asleep = true;
 }
 
+// ---- ノンブロッキング起床 ----
+// ★ 分ける理由: e220_wake() の wait_aux_idle(50) は **毎秒** Core0 を止める。
+//   テレメトリは 1Hz なので、待たずに次の周回で見に行けば止める必要が無い。
+// ★ s_asleep は **AUX が High になるまで落とさない**。落としてしまうと
+//   e220_send() が「起きている」と判断して、セルフチェック中に書き込み、
+//   **黙って捨てられる**（データシート 5.4 / 図 36。CLAUDE.md にも書いてある）。
+void e220_wake_begin() {
+    if (!s_asleep || s_waking) return;
+    digitalWrite(E220_MODE_PIN, MODE_NORMAL);
+    s_wakeMs = millis();
+    s_waking = true;
+}
+
+bool e220_wake_ready() {
+    if (!s_asleep) return true;            // 既に起きている
+    if (!s_waking) return false;           // e220_wake_begin() を呼んでいない
+    if (millis() - s_wakeMs < 2) return false;          // 切替は 1ms（5.3）。余裕を見て 2ms
+    if (digitalRead(E220_AUX_PIN) == LOW) return false; // セルフチェック中（5.4 / 図 36）
+    s_asleep = false;
+    s_waking = false;
+    return true;
+}
+
 void e220_wake() {
+    s_waking = false;      // ブロッキング版が呼ばれたら非同期の途中状態は捨てる
     if (!s_asleep) return;
     digitalWrite(E220_MODE_PIN, MODE_NORMAL);
     delay(2);          // 切替は 1ms（データシート 5.3）
@@ -579,20 +699,21 @@ void e220_wake() {
 // ★ レジスタの汎用読み出し(0xC1)は mode 3 でしか使えない。データシート 6.5:
 //   「通常送受信モード(mode 0) / WOR 送信モード(mode 1)において、データ送信、
 //     データ受信、コマンド送受信が可能ですが、**レジスタ読み取り操作などはできません**」
-//   （Strict Mode を有効にすれば mode 0 でも読めるが、本機は ver.1 互換のまま）。
+//   本機は Strict Mode を有効にしてあるので **状態レジスタ(0xA0〜0xA4)だけは**
+//   mode 0 のまま読めるが（表 24・stat_reg_read）、設定レジスタ(0x00〜)は
+//   この 0xC1 経路＝mode 3 でしか読めない。だから ping は潜る必要がある。
 // ★ 環境ノイズの取得とは**別の経路**。あちらは mode 0 専用（6.8）。混ぜると壊れる。
 // 潜っている間（数十 ms）は受信できないので、呼び出し側が「受信できていないとき」に
 // 限って呼ぶこと（link_probe_module 参照）。
 bool e220_ping() {
     const bool was_asleep = s_asleep;
-    set_mode(MODE_CONFIG);
-    set_baud(LINK_UART_BAUD_CFG);      // mode 3 は 9600 固定
-    delay(E220_CFG_SETTLE_MS);
+    enter_config_mode();
     uint8_t rb = 0;
     const bool ok = reg_xfer(0xC1, 0x00, 1, nullptr, &rb);
     set_baud(LINK_UART_BAUD);
     if (!was_asleep) set_mode(MODE_NORMAL);
-    if (ok) note_response(); else note_no_response();
+    // ★ 化けた返事でも「生きている」。s_lastXferHeard は reg_xfer が立てる。
+    if (!ok && !s_lastXferHeard) note_no_response();
     return ok;
 }
 // mode 0 / mode 1 のまま状態レジスタ(0xA0〜0xA4)を読む。Strict Mode 必須（10.1 表 24）。
@@ -635,6 +756,7 @@ static bool stat_reg_read(uint8_t reg, uint8_t len, uint8_t* out) {
     const uint16_t need = (uint16_t)(5 + len);
     const uint32_t t0 = millis();
     while (millis() - t0 < wait_ms) {
+        imu_service_if_due();     // ★ 最大 200ms 回る。その間も BNO085 を引き取る
         rx_pump();
         for (uint16_t i = from; (uint16_t)(i + need) <= s_rxLen; i++) {
             if (s_rx[i]     != 0xFF || s_rx[i + 1] != 0xFF ||
@@ -659,14 +781,6 @@ static bool stat_reg_read(uint8_t reg, uint8_t len, uint8_t* out) {
              g > 2 ? s_rx[from + 2] : 0, g > 3 ? s_rx[from + 3] : 0,
              g > 4 ? s_rx[from + 4] : 0, g > 5 ? s_rx[from + 5] : 0,
              (int)digitalRead(E220_AUX_PIN));
-    // ★ **帳簿(s_asleep)ではなくピンの実レベルを見る。** e220_wake() は
-    //   s_asleep が false だと何もせずに返るので、両者がずれていると
-    //   「mode 3 のモジュールへ 115200 で話しかける」状態になりうる。
-    //   MODE=1(HIGH) は mode 3。そのときは書式ではなくモードが原因。
-    E220_DBG("E220 stat %02X: MODE=%d(%s) asleep=%d",
-             reg, (int)digitalRead(E220_MODE_PIN),
-             digitalRead(E220_MODE_PIN) == MODE_CONFIG ? "cfg/mode3" : "normal/mode0",
-             (int)s_asleep);
     return false;
 }
 

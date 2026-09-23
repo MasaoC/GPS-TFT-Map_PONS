@@ -37,6 +37,12 @@
  *    @brief  Class that stores state and functions for interacting with
  *            the BNO08x 9-DOF Orientation IMU Fusion Breakout
  */
+// ---- PONS 改変(4) ---- _init() の失敗箇所。詳細は PONS_VENDORING.md。
+//   step: 0=成功 1=spi/i2c begin 2=sh2_open 3=sh2_getProdIds
+//   status: SH2 のステータスコード（sh2_err.h）
+extern uint8_t pons_init_fail_step;
+extern int32_t pons_init_fail_status;
+
 class Adafruit_BNO08x {
 public:
   Adafruit_BNO08x(int8_t reset_pin = -1);
