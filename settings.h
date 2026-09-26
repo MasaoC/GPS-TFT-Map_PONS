@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260923
-#define BUILDVERSION "0.975"
+#define BUILDDATE 20260927
+#define BUILDVERSION "0.976"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -73,47 +73,63 @@
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
 #define SD_DETECT 10  //v7 8->10に変更
-// ---- BNO085 のホストバス選択（SPI / I2C）----
+// ---- BNO085 のホストバス — **i2c1 固定** ----
 // imu_update() は Core0 から呼ぶ。
-// v7 基板は BNO085 のホスト側を SPI と I2C の両方に配線してある。
-// 同じ 2 本の線に SPI1 と I2C1 の両方が繋がっており（R46/R47 の 0Ω で連結）、
-// 使わない側の周辺機能を初期化しないことで高インピーダンスに保つ。
 //
-// ★ソフトとハード（半田ジャンパ JP1）の両方を合わせること。
-//   BNO085 は PS1/PS0 の組み合わせでプロトコルを決める（データシート Figure 1-5）:
-//       PS1=1, PS0=1 → SPI
-//       PS1=0, PS0=0 → I2C
-//   PS1 は JP1（既定は 1-2 ブリッジ＝+3V3）、PS0 は GPIO47 でソフトが駆動する。
+// ★ 0.976 で SPI 対応を削除した。触ると必ずジャイロが化ける問題
+//   （触診で約 0.8 件/分、gx=+v gy=-v gz=-v の署名）が SPI でしか起きず、
+//   I2C では一度も再現しなかったため I2C 運用に確定した。
+//   SPI に戻す必要が生じたら 0.975 の settings.h / imu.cpp を見ること。
 //
-//   SPI にする場合: IMU_BUS_SPI を定義 + JP1 は既定（1-2 = +3V3）のまま
-//   I2C にする場合: IMU_BUS_SPI をコメントアウト + JP1 を 2-3（GND）へ付け替え
-//                   ＋ R46/R47（0Ω）を実装して H_SCL/H_SDA を i2c1 へ繋ぐ
-//   ★ I2C は PS1=0（GND）。**HIGH ではない。**取り違えるとラッチされて起動しない。
+// ★ ハード側の前提（これが揃っていないと起動しない）:
+//     JP1（PS1）= 2-3 ブリッジ ＝ **GND**
+//       BNO085 は PS1/PS0 でプロトコルを決める（データシート Figure 1-5）。
+//       PS1=0, PS0=0 → I2C。**I2C は PS1=0。HIGH ではない。**
+//       PS0 は GPIO47 でソフトが LOW に駆動する。
+//     R46 / R47（0Ω）実装 ＝ H_SCL/H_SDA を i2c1 へ繋ぐ
+//     GPIO34/35 に外部プルアップ 4.7kΩ（実装済み）
 //
-// ※ SD の settings.txt では切り替えられない。設定の読み込みは Core1 の setup_sd() で、
-//   imu_setup()（Core0）より後に走るため間に合わないため。ビルド時に決める。
-#define IMU_BUS_SPI        // ← コメントアウトすると I2C（バックアップ経路）になる
+// ※ SD の settings.txt では切り替えられない（設定の読み込みは Core1 の
+//   setup_sd() で、imu_setup()（Core0）より後に走るため間に合わない）。
 
 #define IMU_RST_PIN   46   // BNO085 NRST（負論理）
-// H_INTN（負論理）。SPI では必須:
-//   ・Adafruit のライブラリが begin_SPI() に渡して転送前の待ち合わせに使う
-//   ・imu_update() は INT がアサートされている時だけ sh2_service() を呼ぶ
-//     （そうしないと SPI HAL の待ちで Core0 が最大 500ms 止まる）
-// I2C では未使用（ポーリングのみ）。
+// H_INTN（負論理）。**i2c1 運用では読んでいない**（完全ポーリング）。
+// 入力プルアップだけ入れて、ブート前に浮かせないようにしている（imu.cpp）。
 #define IMU_INT_PIN   45
 #define IMU_PS0_WAKE_PIN 47 // BNO085 PS0/WAKE。リセット時はプロトコル選択、以降は WAKE
 
-// ---- SPI（既定）----
-// RP2350 の SPI1 固定割り当て。BNO085 は SPI Mode 3 / MSB first（ライブラリ側で設定）。
-#define IMU_SPI_CS    41   // H_CSN
-#define IMU_SPI_SCK   42   // H_SCL/SCK
-#define IMU_SPI_MOSI  43   // SA0/H_MOSI
-#define IMU_SPI_MISO  44   // H_SDA/H_MISO
-
-// ---- I2C（バックアップ）----
-// i2c1。MS5611 の i2c0(GPIO32/33) とは別バス。
+// ---- i2c1（MS5611 の i2c0(GPIO32/33) とは別バス）----
 #define IMU_I2C_SDA   34
 #define IMU_I2C_SCL   35
+
+// ★★ **旧 SPI1 の SCK/MISO は I2C バスそのものなので、放置してはいけない。**
+//   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、下の 2 本は
+//   GPIO34/35 とショートしている（実測確認）。
+//   RP2350 のパッドを入力・プル無しで放置すると Low 側へ張り付くことがあり、
+//   外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝ Low に見える。
+//   実機 2026-09-27: `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
+//   → imu_bus_park_unused_pins() が **INPUT_PULLUP で明示的に停める**。
+//   **出力にすると I2C バスを殺す。**
+#define IMU_UNUSED_SCK_PIN   42   // 旧 SPI1_SCK。H_SCL(=GPIO35) とショート
+#define IMU_UNUSED_MISO_PIN  44   // 旧 SPI1_MISO。H_SDA(=GPIO34) とショート
+// ★ GPIO41（旧 SPI1_CS）は **E220 の M0/M1 専用**（e220.h）。
+//   R53 を外してあるので **BNO085 の H_CSN とは繋がっていない**。
+//   imu.cpp から駆動すると無線が mode 3 へ落ちるだけなので、触らないこと。
+// ★ BNO085 の H_CSN は基板上で未接続（R53 外し）。I2C では don't care なので
+//   それでよい（データシートの I2C 接続図でも未接続）。駆動する手段は無い。
+// ★ GPIO43（旧 SPI1_MOSI）は I2C では SA0（アドレス下位ビット）。下の IMU_I2C_SA0_PIN。
+// ★ この値は**アドレス探査のビット幅も決める**（下げると安全側になる）。
+//   arduino-pico のアドレス探査（0 バイト書き込み = Adafruit_I2CDevice::detected）は
+//   **I2C ペリフェラルを使わず、ピンを SIO に切り替えてビットバンギングする**
+//   （Wire.cpp の _probe）。そのビット幅は **(1000000 / この値) / 2** で決まり、
+//   400kHz では **1µs**、100kHz なら 5µs。
+//   実機 2026-09-27 に 400kHz で `init_step=1`（アドレス応答なし）が 5 回中 4〜5 回
+//   起きたが、**真因は探査を二重に走らせていたこと**で、そちらを直して解決した
+//   （imu_bus_begin() のコメント参照）。クロックは 400kHz のままでよい。
+//   ★ 外部プルアップ 4.7kΩ は GPIO34/35 に実装済み。立ち上がり時間は問題ない。
+//   ★ **もし `init_step=1` が再発したら、まずここを 100000 に下げて切り分ける。**
+//     レポートは 145 件/秒なので 100kHz でもバス占有率は約 30% に収まり、
+//     レートは足りる（400kHz が必須ではない）。
 #define IMU_I2C_HZ    400000
 // SA0 が下位 1bit を決める（0x4A / 0x4B）。SA0 は SPI の MOSI と同じ GPIO43 なので、
 // I2C モードでは HIGH に固定して 0x4B にする。
@@ -504,33 +520,19 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define IMU_LACC_MAX_AGE_US  150000
 
 // ---- 無応答の検出と復旧（imu.cpp）----
-// ★ これは飾りではなく**ハングを避けるための必須のガード**。
-//   Adafruit_BNO08x::begin_SPI() → _init() → sh2_getProdIds() → opProcess() は、
-//   getProdIdOp が timeout_us を設定しておらず（sh2.c:747）、opProcess は
-//   timeout_us==0 を「無期限」として扱う（sh2.c:494）。BNO085 が応答しないと
-//   500ms の INT 待ち（Adafruit_BNO08x.cpp:549）を延々と繰り返し、**戻ってこない**。
-//   i2c1 構成には begin 前の ACK 確認があるが、SPI には同等のものが無い。
-//   BNO085 はブート後に advertisement を積んで H_INTN を LOW に保つので、
-//   これを生存確認に使う。ブート待機(400ms)の後なので、生きていれば即 LOW のはず。
-#define IMU_SPI_INT_WAIT_MS       300
-
-// ★ **timeout_us を設定していないのは getProdIdOp だけではない。**
+// ★ **timeout_us を設定していない SH-2 の op がある。**
 //   sh2.c の sh2_Op_t 初期化子は 17 個すべてが timeout_us を省略している
 //   （指定初期化子なので 0 = 無期限）。応答待ちをする op は全部ハングし得る。
 //   実害があるのは sh2_getMetadata()（getFrsOp。.rx を持ち、getFrsStart は
 //   opCompleted() を呼ばない）で、FRS 応答が 1 回失われると戻ってこない。
-//   INT の生存確認は begin_SPI() しか守らないので、その後に呼ぶものは別途守る。
 //   → 診断用のメタデータ読み出しは RELEASE では実行しない（imu.cpp 参照）。
+//   i2c1 運用では begin_I2C() の中の detected() が「居ないチップに対して
+//   _init() へ進まない」保護を果たす。**自前で二重に探査しないこと**（imu_bus_begin）。
 //
 //   sh2_setSensorConfig() は setSensorConfigStart() が中で opCompleted() を
-//   呼ぶのでハングはしない。ただし 1 回ごとに spihal_write() →
-//   spihal_wait_for_int() で最大 500ms 待つ。6 レポート分で 3 秒になるため、
+//   呼ぶのでハングはしないが、1 回ごとに応答を待つ。レポートは 6 件あるので
 //   imu_enable_reports() に総時間の上限を設ける。
-//
-//   値の根拠: 正常時は WAKE を LOW に保持してあるので H_INTN はすぐ立ち、
-//   spihal_wait_for_int() の delay(1) 粒度でも 6 レポート合計で 10ms 程度。
-//   異常時は 1 回あたり 500ms。300ms は正常の 30 倍・異常 1 回分より小さいので、
-//   「健全なのに打ち切る」ことなく「1 回目で異常を検出して抜ける」ことができる。
+//   正常時は 6 件合計で 10ms 程度なので、300ms なら「健全なのに打ち切る」ことは無い。
 #define IMU_ENABLE_BUDGET_MS      300
 
 // BNO085 が途絶したときの復旧試行の間隔 [ms]。
@@ -569,6 +571,24 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 
 // 重力加速度 [m/s²]。生比力から鉛直成分を取り出すときに引く値。
 // 標準重力。日本の実測値との差 (~0.01 m/s²) は KF のバイアス状態 x[2] が吸収する。
+//
+// ★★ **「LinAccel は 3 軸ほぼ 0 なのに VertAccel だけ -1.5」は故障ではない。**
+//   引いている重力が違うだけ。Vario 詳細画面の 2 つはこう出来ている:
+//     LinAccel[body] = BNO085 の LINEAR_ACCELERATION
+//                      → BNO085 が**自分の適応的な重力推定**を引いた値
+//     VertAccel      = 生比力を世界座標へ回して **この固定値**を引いた値
+//   加速度計にスケール/バイアス誤差があると、前者は**誤差ごと引いて打ち消す**ので
+//   静止時にきれいに 0 になり、後者は誤差がそのまま残る。
+//   実測（nofix008、静止 184 窓の平均。2026-09-27）:
+//       |a| = 8.2243        ← 本来 9.807。加速度計が低く出ている
+//       |LinAccel| = 0.0585 ← ほぼ 0
+//       BNO085 が引いた重力の大きさ = 8.2219
+//       8.2219 - 9.80665 = -1.5848 = VertAccel の実測値
+//   **つまり LinAccel≒0 は「加速度計が正常」の証拠にならない。** 構造上、
+//   静止時のスケール/バイアス誤差を打ち消してしまうので見えない。
+//   **VertAccel のほうが診断に使える**（この -1.58 で校正ずれに気づけた）。
+//   直し方は加速度計の 6 姿勢校正（cal acc= が 3 になるまで）。
+//   詳細は docs/imu_i2c_bringup.md の「加速度計の校正」。
 #define GRAVITY_MPS2  9.80665f
 
 // バリオ KF の predict 周期 [µs]（生レポート有効時のみ使う）。

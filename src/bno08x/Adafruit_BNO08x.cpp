@@ -112,6 +112,7 @@ bool Adafruit_BNO08x::begin_I2C(uint8_t i2c_address, TwoWire *wire,
 
   if (!i2c_dev->begin()) {
     Serial.println(F("I2C address not found"));
+    pons_init_fail_step = 1;   // PONS 改変(4)。_init() へ入る前に落ちた
     return false;
   }
 
@@ -560,30 +561,16 @@ static int spihal_open(sh2_Hal_t *self) {
   return 0;
 }
 
+// ★ PONS では SPI を使わない（0.976 で i2c1 固定にした）。このパスは死んでいる。
+//   0.973〜0.975 は待ちの粒度を改変していたが（delay(1) → スピン+200µs）、
+//   SPI をやめたので**上流のままに戻した**。経緯は PONS_VENDORING.md (1)。
 static bool spihal_wait_for_int(void) {
-  // ===== PONS ローカル改変 (1) — 待ちの粒度 =====================
-  // 元の実装は delay(1) 刻みだった。spihal_read() が 1 パケットにつき
-  // **2 回**通り、spihal_write() でも 1 回通るので、145 パケット/秒では
-  // 最大 290ms/秒 Core0 が止まる。I2C 経路（i2chal_read）は INT を待たず
-  // delay も無いため、この負荷は SPI に移ってから初めて現れた。
-  //   実害: GRV が 15Hz → 11Hz へ痩せ、バリオが重力方向を取り違えて暴れる。
-  //         Core0 が遅くなるので MS5611 のレートも道連れで落ちる。
-  //   転送そのものは 1MHz × 約 30 バイト = 0.25ms で、待ちが 8 倍重い。
-  //   **SPI クロックを上げても効かない。待ち方の問題。**
-  // 立ち上がりは数十 µs なので、最初の 3ms はスピンで拾い、その先だけ粗く待つ。
-  // 総予算 500ms は元のまま（無限待ちにはしない）。
-  const uint32_t t0_us = micros();
-  while ((uint32_t)(micros() - t0_us) < 3000) {
+  for (int i = 0; i < 500; i++) {
     if (!digitalRead(_int_pin))
       return true;
+    // Serial.print(".");
+    delay(1);
   }
-  const uint32_t t0_ms = millis();
-  while ((uint32_t)(millis() - t0_ms) < 500) {
-    if (!digitalRead(_int_pin))
-      return true;
-    delayMicroseconds(200);
-  }
-  // ===== ローカル改変ここまで ===================================
   hal_hardwareReset();
 
   return false;
@@ -592,20 +579,6 @@ static bool spihal_wait_for_int(void) {
 static void spihal_close(sh2_Hal_t *self) {
   // Serial.println("SPI HAL close");
 }
-
-// ===== PONS ローカル改変 (2) — 読み出しの計測 =====================
-// BNO085 のジャイロに物理的にありえない孤立サンプルが出る問題を追うため。
-// 署名は gx=+v, gy=-v, gz=-v（3 軸が 1 つの値の符号違いのコピー）で、
-// 加速度計は同時刻に何も感じていない。デジタル側の疑いが濃い。
-//   pons_pkt_toobig … packet_size > len でパケットを**読み出さずに捨てた**回数。
-//                     ここへ来るとパケットはデバイス側に残り、次も同じ判定になる。
-//   pons_pkt_max    … 観測した最大パケット長。384 に近づくなら backlog が原因。
-//   pons_hdr_change … ヘッダ読みと本体読みの間に長さが変わった回数。
-//                     ① と ③ は別トランザクションなので、その隙に更新されうる。
-volatile uint32_t pons_pkt_toobig  = 0;
-volatile uint32_t pons_pkt_max     = 0;
-volatile uint32_t pons_hdr_change  = 0;
-// ===== ローカル改変ここまで =======================================
 
 static int spihal_read(sh2_Hal_t *self, uint8_t *pBuffer, unsigned len,
                        uint32_t *t_us) {
@@ -634,10 +607,8 @@ static int spihal_read(sh2_Hal_t *self, uint8_t *pBuffer, unsigned len,
   Serial.println(len);
   */
 
-  if (packet_size > (uint16_t)pons_pkt_max) pons_pkt_max = packet_size;
-
   if (packet_size > len) {
-    pons_pkt_toobig++;          // ★ 読み出さずに捨てている。パケットは残る
+    // packet wouldn't fit in our buffer
     return 0;
   }
 
@@ -647,13 +618,6 @@ static int spihal_read(sh2_Hal_t *self, uint8_t *pBuffer, unsigned len,
 
   if (!spi_dev->read(pBuffer, packet_size, 0x00)) {
     return 0;
-  }
-
-  // ★ ヘッダ読みと本体読みは別トランザクション。その間にデバイスの
-  //   出力が差し替わると、長さと中身が食い違う。読み直したヘッダと比べる。
-  {
-    uint16_t again = ((uint16_t)pBuffer[0] | (uint16_t)pBuffer[1] << 8) & ~0x8000;
-    if (again != packet_size) pons_hdr_change++;
   }
 
   return packet_size;

@@ -1823,7 +1823,7 @@ static void draw_imu_page1() {
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);
-  header_footer.print("IMU / ESKF  1/2");
+  header_footer.print("IMU / ESKF  1/3");
   draw_imu_status_dot();
   header_footer.pushSprite(0, -10);
 
@@ -1941,9 +1941,9 @@ static void draw_imu_page1() {
         draw_imu_row_dot(y, imu_row_col(imu_ok_rpy()));
         break;
       case IMU_MENU_NEXTPAGE:
-        backscreen.print("Next page (Detail) >");
-        // ページ2 で見る項目の状態をここに集約して見せる。
-        // 緑にならない原因がページ2 にあるとき、ページ1 だけ見ても分かるようにする。
+        backscreen.print("Next page (BNO085) >");
+        // 2/3・3/3 で見る項目の状態をここに集約して見せる。
+        // 緑にならない原因が先のページにあるとき、1/3 だけ見ても分かるようにする。
         draw_imu_row_dot(y, imu_row_col(imu_ok_trim() && imu_ok_ready()));
         break;
       case IMU_MENU_EXIT:     backscreen.print("Exit >>");              break;
@@ -1965,12 +1965,22 @@ static void draw_imu_page1() {
 
 
 // ページ2: センサー生値と ESKF 内部状態（診断用）
+// 校正の申告精度（0-3）の色。3=収束 / 2=まだ / それ以下は当てにならない。
+static uint16_t cal_acc_col(uint8_t v) {
+  return (v >= 3) ? COLOR_GREEN : (v == 2) ? COLOR_ORANGE : COLOR_RED;
+}
+
+// ============================================================
+//  IMU / ESKF 2/3 — BNO085 の生値と校正だけ
+// ============================================================
+// ★ ここに ESKF の項目を戻さないこと。校正作業をしながら見る画面なので、
+//   「BNO085 が今どう見えているか」だけに絞ってある（ESKF は 3/3）。
 static void draw_imu_page2() {
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);
-  header_footer.print("IMU / ESKF  2/2");
+  header_footer.print("IMU / ESKF  2/3");
   draw_imu_status_dot();
   header_footer.pushSprite(0, -10);
 
@@ -1984,8 +1994,8 @@ static void draw_imu_page2() {
   float g[3], a[3];
   get_imu_raw_gyro(g);
   get_imu_raw_accel(a);
-  float gn = sqrtf(g[0]*g[0]+g[1]*g[1]+g[2]*g[2]) * R2D;
-  float an = sqrtf(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);
+  const float gn = sqrtf(g[0]*g[0]+g[1]*g[1]+g[2]*g[2]) * R2D;
+  const float an = sqrtf(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);
 
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y); backscreen.print("-- Gyro raw [deg/s] --"); y += lh;
@@ -2002,18 +2012,117 @@ static void draw_imu_page2() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", a[0], a[1], a[2]); y += lh;
+  // ★★ **|a| が校正の合否そのもの。** 静止していれば姿勢に関係なく必ず 9.807。
+  //   申告精度(acc)が 3 でもここがずれていることがあるので、**数字を信じるのはこちら**。
+  //   2026-09-27 に実機で |a|=8.22（X 軸に +1.31 m/s^2 のバイアス）を踏んだ。
+  //   姿勢を変えながらこの値が動かないことを確かめるのが確実な判定。
+  const float aerr = an - 9.80665f;
   backscreen.setCursor(2, y);
-  backscreen.printf("|a| %.3f  (g=9.807)", an); y += lh + 2;
+  backscreen.setTextColor(fabsf(aerr) < 0.10f ? COLOR_GREEN
+                        : fabsf(aerr) < 0.30f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
+  backscreen.printf("|a| %.3f  err%+.2f  (g=9.807)", an, aerr); y += lh + 2;
 
-  bool st = attitude_is_static();
+  const bool st = attitude_is_static();
   backscreen.setTextColor(st ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("STATIC: %s  %.1fs", st ? "YES" : "no ", attitude_get_static_secs());
   y += lh + 2;
 
+  // ---- 校正（DCD）----
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y); backscreen.print("-- Calibration --"); y += lh;
+
+  // BNO085 の申告精度。**加速度は 6 姿勢（各軸の上下）で静止させると上がる。**
+  //   くるくる回すのは地磁気向け。加速度は「止めて姿勢を変える」が要る。
+  const uint8_t ca = get_imu_acc_accuracy(), cg = get_imu_gyr_accuracy(), cm = get_imu_mag_accuracy();
+  backscreen.setCursor(2, y);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);  backscreen.print("Cal ");
+  backscreen.setTextColor(cal_acc_col(ca), COLOR_WHITE); backscreen.printf("A:%u ", ca);
+  backscreen.setTextColor(cal_acc_col(cg), COLOR_WHITE); backscreen.printf("G:%u ", cg);
+  backscreen.setTextColor(cal_acc_col(cm), COLOR_WHITE); backscreen.printf("M:%u", cm);
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.printf("  cfg:%02X", get_imu_cal_cfg());
+  y += lh;
+
+  // ★★ **「一度も保存していない」を赤で明示する。** この画面を作った目的そのもの。
+  //   記録は本体フラッシュ（EEPROM 領域）にあり、SD を入れ替えても嘘にならない。
+  //   日付が --/-- なのは GNSS 時刻が無い場所（屋内）で保存したとき。RTC は無い。
+  const uint32_t sd_ = imu_cal_saved_date();
+  backscreen.setCursor(2, y);
+  if (!imu_cal_saved_ever()) {
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    backscreen.print("DCD: NEVER SAVED");
+  } else if (sd_) {
+    backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    backscreen.printf("DCD: SAVED %04u/%02u/%02u", (unsigned)(sd_ / 10000),
+                      (unsigned)(sd_ / 100 % 100), (unsigned)(sd_ % 100));
+  } else {
+    backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    backscreen.print("DCD: SAVED (date unknown)");
+  }
+  y += lh;
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  // autosave は「まだ手動保存していない機体だけ ON」。保険なので ON が初期状態。
+  backscreen.printf("autosave:%s  saves:%u",
+                    imu_cal_autosave_on() ? "ON " : "OFF", imu_cal_save_count());
+  y += lh + 4;
+
+  // ---- メニュー ----
+  const int mh2 = 15;
+  for (int i = 0; i < IMU2_MENU_COUNT; i++) {
+    const bool sel = (imu2_cursor == i);
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
+    backscreen.print(sel ? ">" : " ");
+    backscreen.setCursor(14, y);
+    switch (i) {
+      case IMU2_MENU_SAVECAL: {
+        // ★ 条件は acc==3 かつ gyr==3（地磁気は入れない。屋内では 3 に届かない）。
+        const bool rdy = imu_cal_ready();
+        if (!sel) backscreen.setTextColor(rdy ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
+        if (rdy) backscreen.print("SAVE CAL  [READY]");
+        else     backscreen.print("SAVE CAL  (need A=3 G=3)");
+        break;
+      }
+      case IMU2_MENU_NEXTPAGE:
+        backscreen.print("Next page (ESKF) >");
+        break;
+      case IMU2_MENU_BACK:
+        backscreen.print("< Back to page 1");
+        break;
+    }
+    y += mh2;
+  }
+
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+}
+
+
+// ============================================================
+//  IMU / ESKF 3/3 — ESKF の状態と調整
+// ============================================================
+static void draw_imu_page3() {
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("IMU / ESKF  3/3");
+  draw_imu_status_dot();
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+
+  int y = 2;
+  const int lh = 12;
+  const float R2D = 180.0f / (float)M_PI;
+
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y); backscreen.print("-- ESKF --"); y += lh;
-  bool ready = attitude_ready();
+  const bool ready = attitude_ready();
   backscreen.setTextColor(ready ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("%s   GNSS upd:%lu", ready ? "READY" : "INIT...",
@@ -2033,7 +2142,7 @@ static void draw_imu_page2() {
 
   // ヨーの信頼度。水平加速度がある間しか可観測にならず、等速直進では育つ。
   // 95%(2σ) で表記する。1σ のままだと「これ以下なら安心」と誤読されやすい。
-  float yacc = attitude_get_yaw_acc95_deg();
+  const float yacc = attitude_get_yaw_acc95_deg();
   backscreen.setTextColor(yacc < 10.0f ? COLOR_GREEN
                         : yacc < 40.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
   backscreen.setCursor(2, y);
@@ -2048,6 +2157,7 @@ static void draw_imu_page2() {
   // 較正した日（JST の MM/DD）も併記する。警告が出ていないときでも
   // 「いつ APPLY したのか」を人が確認できるようにしておく。--/-- は不明
   // （測位していない場所で APPLY した、または一度も APPLY していない）。
+  // ★ これは SD の設定に入っている値で、上のページの DCD とは別物。
   const uint32_t cd = attitude_get_calib_date();
   if (cd) backscreen.printf("level offset R%+.1f P%+.1f %02u/%02u", lr, lp,
                             (unsigned)(cd / 100 % 100), (unsigned)(cd % 100));
@@ -2057,25 +2167,24 @@ static void draw_imu_page2() {
   // ---- 調整メニュー ----
   // 日常の運用では触らない項目。実飛行での検証がまだなので、片方だけ切って
   // 切り分けられるよう残してある（ページ1のマスタースイッチとは別物）。
-  y += 2;
   const int mh2 = 15;
-  for (int i = 0; i < IMU2_MENU_COUNT; i++) {
-    const bool sel = (imu2_cursor == i);
+  for (int i = 0; i < IMU3_MENU_COUNT; i++) {
+    const bool sel = (imu3_cursor == i);
     backscreen.setCursor(2, y);
     backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
     backscreen.print(sel ? ">" : " ");
     backscreen.setCursor(14, y);
     switch (i) {
-      case IMU2_MENU_AUTOROLL:
+      case IMU3_MENU_AUTOROLL:
         backscreen.printf("Roll trim during flight: %s",
                           attitude_get_roll_trim_enabled() ? "ON " : "OFF");
         backscreen.fillCircle(232, y + 6, 4, imu_row_col(imu_ok_trim()));
         break;
-      case IMU2_MENU_WIND:
+      case IMU3_MENU_WIND:
         backscreen.printf("Wind estimate: %s",
                           attitude_get_wind_enabled() ? "ON " : "OFF");
         break;
-      case IMU2_MENU_BACK:
+      case IMU3_MENU_BACK:
         backscreen.print("< Back to page 1");
         break;
     }
@@ -2354,8 +2463,11 @@ void draw_wireless(int cursor) {
 }
 
 void draw_imudetail(int page) {
-  if (page % 2 == 0) draw_imu_page1();
-  else               draw_imu_page2();
+  switch (page % 3) {
+    case 0:  draw_imu_page1(); break;   // 較正（SETPITCH/APPLY）とマスタースイッチ
+    case 1:  draw_imu_page2(); break;   // BNO085 の生値と校正(DCD)
+    default: draw_imu_page3(); break;   // ESKF の状態と調整
+  }
 }
 
 

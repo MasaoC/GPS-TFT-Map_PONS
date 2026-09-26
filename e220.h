@@ -15,7 +15,7 @@
 //     RP2350 GPIO35 or 41      → E220 M0+M1（結線して 1 本で駆動）
 //
 //   M0/M1 に使う GPIO は BNO085 のバス構成と排他共用なので、
-//   settings.h の IMU_BUS_SPI に追従させてある（下の E220_MODE_PIN）。
+//   BNO085 は i2c1 固定なので、M0/M1 は GPIO41 固定（下の E220_MODE_PIN）。
 //   基板の 0Ω（R50/R52）も同じ組み合わせで実装すること。
 //
 // ■ モードは 2 つしか使わない
@@ -40,12 +40,14 @@
 #define E220_TX_PIN       8      // RP2350 → E220 RXD
 #define E220_RX_PIN       9      // RP2350 ← E220 TXD
 
-// M0+M1。BNO085 が SPI なら I2C1_SCL(35) が余り、I2C なら SPI1_CS(41) が余る。
-#ifdef IMU_BUS_SPI
-  #define E220_MODE_PIN  35
-#else
-  #define E220_MODE_PIN  41
-#endif
+// M0+M1。旧 SPI1_CS(41) を使う。
+// ★ **R53 を外してあるので、この net は BNO085 の H_CSN とは繋がっていない。**
+//   GPIO41 がショートしているのは E220 の M0/M1 だけで、**この無線専用のピン**。
+// ★★ それでも imu.cpp から触ってはいけない。0.975 まで
+//   imu_bus_select_protocol() が「H_CSN を浮かせない」という**誤った理由**で
+//   HIGH に駆動していた（実際には H_CSN に届かず、E220 を mode 3
+//   ＝Config/DeepSleep へ叩き落とすだけだった）。0.976 で削除した。
+#define E220_MODE_PIN  41
 
 // ---- ラジオ設定 ----
 // radio_profile → 拡散率。SF を上げるほど 2.5dB ずつ強くなるが、

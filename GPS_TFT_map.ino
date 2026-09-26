@@ -65,7 +65,8 @@ int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（
 int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
 // IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_* と対応。
 int imu_cursor = 0;
-int imu2_cursor = 0;   // IMU/ESKF ページ2 のカーソル位置
+int imu2_cursor = 0;   // IMU/ESKF ページ2/3 のカーソル位置（BNO085 と校正）
+int imu3_cursor = 0;   // IMU/ESKF ページ3/3 のカーソル位置（ESKF の調整）
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;                // 現在のマップスケール [pixels/km]
@@ -908,14 +909,11 @@ void loop() {
       // ★ SPI 読み出しの健全性と、Core0 が止まった最長時間。
       //   pktmax が 384 に近づく / toobig が増える → backlog で壊れている
       //   hdrchg が増える → ヘッダ読みと本体読みの間に中身が差し替わっている
-      {
-        extern volatile uint32_t pons_pkt_toobig, pons_pkt_max, pons_hdr_change;
-        enqueueTask(createLogSdfTask("spi pktmax=%lu toobig=%lu hdrchg=%lu gapmax=%lums",
-                                     (unsigned long)pons_pkt_max,
-                                     (unsigned long)pons_pkt_toobig,
-                                     (unsigned long)pons_hdr_change,
-                                     (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
-      }
+      // ★ SPI 用のパケット統計（pktmax/toobig/hdrchg）は 0.976 で削除した。
+      //   あれは spihal_read() の中でしか更新されず、i2c1 運用では常に 0 で、
+      //   「0 だから健全」と誤読される表示だった。gapmax だけ残す。
+      enqueueTask(createLogSdfTask("imu gapmax=%lums",
+                                   (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
       enqueueTask(createLogSdfTask("quat grvbad=%lu grvjump=%lu rvbad=%lu",
                                    (unsigned long)get_imu_grv_bad(),
                                    (unsigned long)get_imu_grv_jump(),
@@ -1364,8 +1362,9 @@ void shortPressCallback() {
     // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
     // 誤操作で意図しない値が焼き付かないよう 2 段階にしてある。
-    if (detail_page % 2 == 0) imu_cursor  = (imu_cursor  + 1) % IMU_MENU_COUNT;
-    else                      imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
+    if      (detail_page % 3 == 0) imu_cursor  = (imu_cursor  + 1) % IMU_MENU_COUNT;
+    else if (detail_page % 3 == 1) imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
+    else                           imu3_cursor = (imu3_cursor + 1) % IMU3_MENU_COUNT;
     redraw_screen = true;
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GNSSDETAIL || screen_mode == MODE_VARIODETAIL) {
     detail_page++;
@@ -1378,21 +1377,58 @@ void shortPressCallback() {
 static void imu_execute() {
   redraw_screen = true;
 
-  if (detail_page % 2 != 0) {     // ページ2 の調整メニュー
+  if (detail_page % 3 == 1) {     // ページ2/3: BNO085 と校正
     switch (imu2_cursor) {
-      case IMU2_MENU_AUTOROLL:
-        attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
-        enqueueTask(createSaveSettingTask());
-        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      case IMU2_MENU_SAVECAL: {
+        // ★ 条件を満たさないなら**何もしない**。途中の悪い校正を不揮発へ焼くと
+        //   電源を切っても戻らないので、ここは低い音で断る。
+        if (!imu_cal_ready()) {
+          enqueueTask(createPlayMultiToneTask(440, 200, 1));
+          break;
+        }
+        // ★ RTC が無いので日付は GNSS 由来。屋内なら取れないので 0（日付不明）で保存する。
+        //   日付が無くても「保存した」ことは残る。それが画面の NEVER を消す条件。
+        int y_, mo_, d_, h_, mi_, s_, cs_;
+        const uint32_t today = get_jst_now(y_, mo_, d_, h_, mi_, s_, cs_)
+                                 ? (uint32_t)(y_ * 10000 + mo_ * 100 + d_) : 0;
+        if (imu_save_calibration(today)) {
+          // 較正完了と同じ流儀の上昇 2 音
+          enqueueTask(createPlayMultiToneTask(1568, 60, 1, 2));
+          enqueueTask(createPlayMultiToneTask(2093, 90, 1, 2));
+        } else {
+          enqueueTask(createPlayMultiToneTask(440, 300, 2));
+        }
         break;
-      case IMU2_MENU_WIND:
-        attitude_set_wind_enabled(!attitude_get_wind_enabled());
-        enqueueTask(createSaveSettingTask());
-        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      }
+      case IMU2_MENU_NEXTPAGE:
+        detail_page = 2;
+        imu3_cursor = 0;
+        enqueueTask(createPlayMultiToneTask(1568, 80, 1));
         break;
       case IMU2_MENU_BACK:
         detail_page = 0;
         imu2_cursor = 0;
+        enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+        break;
+    }
+    return;
+  }
+
+  if (detail_page % 3 == 2) {     // ページ3/3: ESKF の調整メニュー
+    switch (imu3_cursor) {
+      case IMU3_MENU_AUTOROLL:
+        attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
+        enqueueTask(createSaveSettingTask());
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+        break;
+      case IMU3_MENU_WIND:
+        attitude_set_wind_enabled(!attitude_get_wind_enabled());
+        enqueueTask(createSaveSettingTask());
+        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+        break;
+      case IMU3_MENU_BACK:
+        detail_page = 0;
+        imu3_cursor = 0;
         enqueueTask(createPlayMultiToneTask(1568, 80, 1));
         break;
     }

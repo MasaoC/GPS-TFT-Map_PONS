@@ -48,6 +48,18 @@ void imu_update();
 //   ポーリング時刻は imu_update() と共有しているので、二重に叩く心配も無い。
 void imu_service_if_due();
 
+// ---- BNO085 の校正（DCD）----
+// 保存記録は**本体フラッシュ（EEPROM 領域）**に置く。SD ではない。理由は imu.cpp。
+// 目的は「一度も校正していない機体」を画面で明示すること。
+bool     imu_cal_ready();              // acc==3 かつ gyr==3。SAVE を許す条件
+bool     imu_cal_saved_ever();         // 過去に一度でも手動保存したか
+uint32_t imu_cal_saved_date();         // 最後に保存した日 YYYYMMDD。0 = 日付不明
+uint16_t imu_cal_save_count();         // 手動保存の回数
+bool     imu_cal_autosave_on();        // 今回の起動でチップの自動保存を許したか
+// 手動保存。yyyymmdd は 0 可（GNSS 時刻が無いとき）。**長押しからのみ呼ぶこと**
+// （中で EEPROM.commit() が Core1 を止め、割り込みを切って数十 ms ブロックする）。
+bool     imu_save_calibration(uint32_t yyyymmdd);
+
 // ---- 気圧高度による Kalman 観測更新 ----
 // MS5611 の高度が更新されたときに外部から呼ぶ。
 // airdata_update() が true を返したタイミングで get_airdata_altitude() を渡す。

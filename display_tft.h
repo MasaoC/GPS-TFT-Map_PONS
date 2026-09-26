@@ -143,11 +143,19 @@ void draw_maplist_mode(int maplist_page);
 #define IMU_MENU_COUNT    6
 
 // ページ2: 調整用。日常の運用では触らない項目を置く。
-#define IMU2_MENU_AUTOROLL 0
-#define IMU2_MENU_WIND     1
+// IMU/ESKF 2/3 — BNO085 の生値と校正だけ。ESKF の項目は 3/3 へ移した。
+#define IMU2_MENU_SAVECAL  0   // 校正(DCD)を BNO085 のフラッシュへ保存（長押し）
+#define IMU2_MENU_NEXTPAGE 1
 #define IMU2_MENU_BACK     2
 #define IMU2_MENU_COUNT    3
-extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2のカーソル位置
+
+// IMU/ESKF 3/3 — ESKF の状態と調整
+#define IMU3_MENU_AUTOROLL 0
+#define IMU3_MENU_WIND     1
+#define IMU3_MENU_BACK     2
+#define IMU3_MENU_COUNT    3
+extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/3のカーソル位置
+extern int imu3_cursor;   // GPS_TFT_map.ino で定義。ページ3/3のカーソル位置
 void draw_imudetail(int page);
 
 // PONS Link（機体⇄ボート無線）の設定画面。

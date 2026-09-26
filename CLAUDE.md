@@ -28,8 +28,9 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 - **TFT_eSPI は User_Setup を書き換えないと映らない。** サンプルは
   [TFT_eSPI/CopySetupFile_TFT_eSPI.h](TFT_eSPI/CopySetupFile_TFT_eSPI.h)。
   パネル種別（ST7789 / ILI9341）の選択もここで、`settings.h` 側には分岐が無い。
-- `IMU_BUS_SPI` を触ったら **SPI / I2C 両方でビルドを通す**。`#else` 側は普段
-  コンパイルされないので壊れても気づけない。
+- **BNO085 は i2c1 固定。** 0.976 で SPI 対応を削除した（触るとジャイロが化ける
+  問題が SPI でしか起きなかったため）。戻す必要が出たら 0.975 の
+  `imu.cpp` / `settings.h` を見ること。`IMU_BUS_SPI` はもう無い。
 - `VECTORMAP_HIRES` は先に `tools/vectormap/build_vectormap.py --variant hires` で
   データ生成が要る（未生成なら `#error` で止まる）。
 
@@ -99,10 +100,23 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   回避は `imu_bus_begin()` の冒頭。`sh2_opened` のフラグごと消さないこと。
   詳細は [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) (5)。
   2026-09-23 に実機で検証済み（`[IMU] BNO085 recovery OK (INT wait 12ms)`）。
-- **BNO085 の CS(GPIO41) は、NRST を打つ前に HIGH で駆動しておくこと。**
-  基板に H_CSN のプルアップが無いため、駆動しないとリセット〜ブートの 400ms の間
-  CS が浮き、**BNO085 が起動しない**（v7 実機の初回通電で実際に踏んだ）。
-  実体は `imu_bus_select_protocol()` の中。リセット手順から呼ばれるので消さないこと。
+- **GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
+  R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、`GPIO35`/`GPIO34` と
+  ショートしている。RP2350 のパッドを入力・プル無しで放置すると Low 側へ
+  張り付くことがあり、外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝
+  **Low に見えてバスを殺す**。実機 2026-09-27 に
+  `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
+  実体は `imu_bus_park_unused_pins()`。**出力にはしないこと。**
+- **GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
+  `R53` を外してあるので **BNO085 の H_CSN とは繋がっていない**（H_CSN は
+  基板上で未接続。I2C では don't care）。0.975 まで「H_CSN を浮かせない」という
+  誤った理由で HIGH 駆動しており、**H_CSN に届かないまま E220 を mode 3 へ
+  叩き落としていた**（IMU 復旧からも呼ばれるので飛行中に無線が黙る）。
+- **I2C が固まったら NRST だけでは戻らない。** NRST は BNO085 を初期化するが
+  **RP2350 の I2C ブロックは初期化されない**。転送が途中で切れると RP2350 が
+  SCL を、スレーブが SDA を握ったまま止まり、**3 回のリトライが全部同じ理由で
+  失敗する**。`imu_i2c_bus_recover()`（ペリフェラルを外して SCL を 9 回叩き
+  STOP を作る）をリトライの **NRST より先に**通すこと。
 - **E220 はモード切替の「あと」も AUX の立ち上がりを待つ。**
   `set_mode()` が切替前だけ待って後を待たないと、遷移中のセルフチェック
   （データシート 5.4 / 図 36。その間 AUX は Low）に書き込みがぶつかり、
@@ -165,6 +179,8 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
+- BNO085 を I2C へ切り替えるとき: [docs/imu_i2c_bringup.md](docs/imu_i2c_bringup.md)
+  （0.944 との挙動差・ライブラリ改変の影響・JP1 と R46/R47 の手順）
 - SD カードの雛形: [sd/](sd/) — レイアウトとログの列の意味は README の「SD カードの構成」
 - PC 側ツールの一覧は README の「ツール」節
 - git 管理外の生成物: `production/` と `src/flashdata/vectormap_data_hires.cpp`
