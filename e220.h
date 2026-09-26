@@ -138,4 +138,8 @@ bool e220_ping();
 
 bool e220_read_noise(int16_t* noise_dbm, int16_t* last_rssi_dbm);
 
+// UART に届いた総バイト数（累計）。受信の切り分け用。
+// 1 フレーム = sizeof(LinkTelem) + RSSI 1 バイト。1Hz なら毎分 66×60 ≒ 3960 増える。
+uint32_t e220_rx_bytes();
+
 #endif // E220_H

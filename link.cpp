@@ -55,6 +55,9 @@ static uint16_t s_seqOut    = 0;    // 送信テレメトリの連番。ロー�
 
 // ---- 集計（無線モジュールではなく RP2350 が数える）----
 static uint32_t s_txCount   = 0;    // 送信回数
+static uint32_t s_txNoRf = 0;   // 書いたのに送信が始まらなかった回数（60 秒ログの noRf=）
+static uint32_t s_txAirMaxMs = 0;    // 実測の送信時間の最大 [ms]（60 秒ログの airmax=）
+static uint32_t s_txAirTimeout = 0;  // 送信完了を待ちきれなかった回数（to=）
 static uint32_t s_txMs      = 0;    // 直近に送出できた時刻。地図の電波アイコンを脈動させる
 static uint16_t s_missTotal = 0;    // seq の飛びの累計＝電波側で落ちた数
 // ---- 直近 10 秒の RSSI ----
@@ -424,23 +427,25 @@ static void link_periodic_report() {
     const char* mod = link_module_alive() ? "OK" : "NORESP";
     if (link_mode_setting == LINK_MODE_TX) {
         enqueueTask(createLogSdfTask(
-            "LINK TX: mod=%s ch=%u prof=%u sent=%u%s",
+            "LINK TX: mod=%s ch=%u prof=%u sent=%u noRf=%lu airmax=%lums to=%lu%s",
             mod, link_radio_ch, link_radio_profile,
-            (unsigned)s_txCount, link_dup_sender() ? " DUP_SENDER" : ""));
+            (unsigned)s_txCount, (unsigned long)s_txNoRf,
+            (unsigned long)s_txAirMaxMs, (unsigned long)s_txAirTimeout,
+            link_dup_sender() ? " DUP_SENDER" : ""));
     } else if (s_rssiSeen) {
         enqueueTask(createLogSdfTask(
             "LINK RX: mod=%s ch=%u prof=%u rx=%lu miss=%u gaps=%u bad=%lu "
-            "rssi=%d..%d%s",
+            "bytes=%lu rssi=%d..%d%s",
             mod, link_radio_ch, link_radio_profile,
             (unsigned long)s_rxTotal, (unsigned)s_missTotal,
             (unsigned)s_seqGaps, (unsigned long)e220_bad_frames(),
-            s_rssiMin, s_rssiMax,
+            (unsigned long)e220_rx_bytes(), s_rssiMin, s_rssiMax,
             link_dup_sender() ? " DUP_SENDER" : ""));
     } else {
         enqueueTask(createLogSdfTask(
-            "LINK RX: mod=%s ch=%u prof=%u bad=%lu no reception yet",
+            "LINK RX: mod=%s ch=%u prof=%u bad=%lu bytes=%lu no reception yet",
             mod, link_radio_ch, link_radio_profile,
-            (unsigned long)e220_bad_frames()));
+            (unsigned long)e220_bad_frames(), (unsigned long)e220_rx_bytes()));
     }
     // RSSI の幅は「この 60 秒でどうだったか」を見たいので毎回入れ直す。
     // 受信数・取りこぼし・壊れフレーム（bad）は累計のまま（推移が読めるほうが役に立つ）。
@@ -681,17 +686,24 @@ static void link_preflight_tick() {
 //   3 手に分けて、次の周回で様子を見るようにすれば、どこでも待たずに済む。
 //
 //   LTX_IDLE     1 秒経ったら e220_wake_begin()（mode 0 にするだけ）→ WAKING
-//   LTX_WAKING   AUX が High になったら送る → DRAINING
+//   LTX_WAKING   起床完了（AUX の Low を見てから High）で送る → TXSTART
 //                （上がらないまま LINK_TX_WAKE_GIVEUP_MS 経ったらスロットを捨てる）
-//   LTX_DRAINING UART が送り切る時間を置いてから mode 3 へ → IDLE
+//   LTX_TXSTART  AUX が Low へ落ちる＝モジュールが動き出した → TXDONE
+//                （落ちないまま LINK_TX_TXSTART_MS 経ったら noRf。捨てられている）
+//   LTX_TXDONE   AUX が High へ戻る＝**送信完了**。そこで mode 3 へ → IDLE
 //
-// ★ 代償: モジュールが mode 0 に居る時間が 2 周回ぶん伸びる（約 130ms）。
-//   受信待機 8.2mA なので平均+1mA 程度。TFT と RP2350 の消費に対しては誤差。
-// ★ **送信完了そのものは待たない**（データシート 5.3。mode 3 への切替は
-//   送信中なら自動的に先送りされる）。これは以前から変わらない。
-typedef enum { LTX_IDLE = 0, LTX_WAKING, LTX_DRAINING } LinkTxState;
-static LinkTxState s_txState   = LTX_IDLE;
-static uint32_t    s_txStateMs = 0;
+// ★★ **送信完了まで待つ（0.977 で変更）。** 以前は「送信中なら mode 3 への切替は
+//   ハードが先送りする（データシート 5.3）」を根拠に、AUX が落ちた時点で
+//   すぐ寝かせていた。ところが実機 2026-09-27 に、送信側 noRf=0（AUX は落ちている）
+//   なのに**受信側が 93% 落とす**状態を観測した（bad=0・RSSI -46〜-64dBm、
+//   つまり届けば確実に受かる距離）。**送信を始める前**に落としたときの動作は
+//   保証が無いので、完了を見るまで待つことにした。
+//   副産物として**実測の送信時間**が取れる（60 秒ログの airmax=）。
+// ★ 代償: モジュールが mode 0 に居る時間が送信時間ぶん伸びる（SF9 で約 200ms）。
+//   受信待機 8.2mA なので平均 +1.6mA 程度。TFT と RP2350 の消費に対しては誤差。
+typedef enum { LTX_IDLE = 0, LTX_WAKING, LTX_TXSTART, LTX_TXDONE } LinkTxState;
+static LinkTxState s_txState     = LTX_IDLE;
+static uint32_t    s_txStateMs   = 0;
 
 static void link_tx_tick() {
     if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; return; }
@@ -706,7 +718,7 @@ static void link_tx_tick() {
     case LTX_WAKING:
         if (e220_wake_ready()) {
             link_push_telemetry();      // 中で e220_send() する
-            s_txState   = LTX_DRAINING;
+            s_txState   = LTX_TXSTART;
             s_txStateMs = now;
         } else if (now - s_txStateMs >= LINK_TX_WAKE_GIVEUP_MS) {
             // 起きてこない。このスロットは捨てて寝かせ直す。
@@ -716,10 +728,49 @@ static void link_tx_tick() {
         }
         return;
 
-    case LTX_DRAINING:
-        if (now - s_txStateMs < LINK_TX_DRAIN_MS) return;
-        e220_sleep();                   // 中の flush() はもう即座に返る
-        s_txState = LTX_IDLE;
+    case LTX_TXSTART:
+        // ★ AUX が Low に落ちる＝モジュールが動き出した。**まだ寝かせない。**
+        if (digitalRead(E220_AUX_PIN) == LOW) {
+            s_txState   = LTX_TXDONE;
+            s_txStateMs = now;
+            return;
+        }
+        if (now - s_txStateMs >= LINK_TX_TXSTART_MS) {
+            // ★ 書いたのに AUX が一度も落ちない＝**モジュールに捨てられている。**
+            //   ここを数えていなかったので、Sent だけ見て「送信できている」と
+            //   誤解していた（実機 2026-09-27）。
+            s_txNoRf++;
+            enqueueTask(createLogSdfTask("LINK TX: no RF (AUX stayed HIGH %lums) noRf=%lu",
+                                         (unsigned long)(now - s_txStateMs),
+                                         (unsigned long)s_txNoRf));
+            e220_sleep();
+            s_txState = LTX_IDLE;
+        }
+        return;
+
+    case LTX_TXDONE:
+        // ★★ **AUX が High へ戻る＝送信完了。そこまで待ってから mode 3 へ落とす。**
+        //   理由は上の typedef のコメント。
+        if (digitalRead(E220_AUX_PIN) != LOW) {
+            const uint32_t el = now - s_txStateMs;
+            if (el > s_txAirMaxMs) s_txAirMaxMs = el;   // 実測の送信時間（最大）
+            { static uint8_t left = 3;                  // 最初の 3 回だけ残す
+              if (left) { left--;
+                  enqueueTask(createLogSdfTask("LINK TX: air %lums (prof=%u)",
+                                               (unsigned long)el, link_radio_profile)); } }
+            e220_sleep();
+            s_txState = LTX_IDLE;
+            return;
+        }
+        if (now - s_txStateMs >= LINK_TX_DONE_MS) {
+            // 上限。ここに来たら送信時間の想定が違う（または AUX が張り付いている）。
+            s_txAirTimeout++;
+            enqueueTask(createLogSdfTask("LINK TX: air TIMEOUT (%lums) n=%lu",
+                                         (unsigned long)(now - s_txStateMs),
+                                         (unsigned long)s_txAirTimeout));
+            e220_sleep();
+            s_txState = LTX_IDLE;
+        }
         return;
 
     case LTX_IDLE:

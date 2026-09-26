@@ -29,8 +29,9 @@ static bool    s_alive     = false;    // 設定の読み返しが通ったか
 static bool    s_asleep    = false;
 // ノンブロッキング起床の途中状態（e220_wake_begin / e220_wake_ready）。
 // ★ e220_sleep() が先に定義されていて、そこからも触るのでここに置く。
-static bool     s_waking   = false;
-static uint32_t s_wakeMs   = 0;
+static bool     s_waking     = false;
+static uint32_t s_wakeMs     = 0;
+static bool     s_wakeSawLow = false;  // 起床中に AUX の Low を一度でも観測したか
 
 // ---- 実行中の生存確認 ----
 // ★ s_alive だけでは「起動後に死んだ」を検出できない。書いているのは
@@ -69,6 +70,15 @@ static bool s_lastXferHeard = false;   // 直前の reg_xfer でモジュール�
 // 実機 2026-09-23 のログでは、失敗するのは必ず 2 発目以降（読み→書き、書き→読み返し）で、
 // enter_config_mode() 直後の 1 発目は通っていた。詳細は reg_xfer() の先頭。
 #define E220_CMD_GAP_MS          10
+// ★★ **mode 3 → mode 0 の遷移が「本当に終わった」と言える最短時間。**
+//   AUX を 1 回サンプルするだけでは足りない。切替直後はモジュールが
+//   セルフチェックを**始める前**で、AUX は mode 3 のアイドル High のまま。
+//   そこを見て「起床完了」と誤判定すると、セルフチェック中に書き込んで
+//   **黙って捨てられる**（データシート 5.4 / 図 36。CLAUDE.md にも書いてある）。
+//   実機 2026-09-27 で踏んだ: 送信機の Sent は毎秒増えるのに**電波が出ず**、
+//   受信機は 300 秒で 2 発しか受けなかった（bad=0・RSSI -34dBm、つまり届けば確実に
+//   受かる距離）。成否は次のループ周回までの位相次第で、画面によって変わった。
+#define E220_WAKE_SETTLE_MS      20
 
 // 返事があった／無かったを 1 か所で数える。
 // ---- 無応答の診断ログ。**消さないこと**（v7 立ち上げで 2 つのバグを捕まえた）----
@@ -200,9 +210,19 @@ static void cfg_wait_ms(uint32_t ms) {
 
 // UART に来ているバイトを組み立てバッファへ移すだけ。捨てない。
 // 受信の取り込みと環境ノイズの応答待ちで共用する。
+// ★ **UART に届いた総バイト数**を数える。60 秒ログの `LINK RX: ... bytes=`。
+//   これが「モジュールが渡していない」と「こちらが解析に失敗している」を分ける。
+//   1 フレーム 66 バイト × 60 発/分 なら 3960 前後になるはず。
+//     bytes が 3960 付近で rx が少ない → **解析側の問題**
+//     bytes がほとんど増えない        → **モジュールが受信していない**
+static uint32_t s_rxBytes = 0;
+uint32_t e220_rx_bytes() { return s_rxBytes; }
+
 static void rx_pump() {
-    while (E220_SERIAL.available() && s_rxLen < RXBUF_SIZE)
+    while (E220_SERIAL.available() && s_rxLen < RXBUF_SIZE) {
         s_rx[s_rxLen++] = (uint8_t)E220_SERIAL.read();
+        s_rxBytes++;
+    }
 }
 
 // 組み立てバッファの先頭から n バイト捨てる
@@ -639,6 +659,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
 
 void e220_sleep() {
     s_waking = false;      // 起床の途中で寝かされたら、その途中状態は捨てる
+    s_wakeSawLow = false;
     if (s_asleep) return;
 
     // ★★ ここで flush() が要る。
@@ -673,15 +694,34 @@ void e220_wake_begin() {
 bool e220_wake_ready() {
     if (!s_asleep) return true;            // 既に起きている
     if (!s_waking) return false;           // e220_wake_begin() を呼んでいない
-    if (millis() - s_wakeMs < 2) return false;          // 切替は 1ms（5.3）。余裕を見て 2ms
-    if (digitalRead(E220_AUX_PIN) == LOW) return false; // セルフチェック中（5.4 / 図 36）
-    s_asleep = false;
-    s_waking = false;
+
+    const uint32_t el = millis() - s_wakeMs;
+    if (digitalRead(E220_AUX_PIN) == LOW) {
+        s_wakeSawLow = true;               // セルフチェック中（5.4 / 図 36）。まだ書けない
+        return false;
+    }
+    // ★★ **AUX が High でも、まだセルフチェックが始まっていないだけかもしれない。**
+    //   Low を一度も見ていないなら、遷移の全体を覆う時間が経つまで待つ。
+    //   ここを「AUX の 1 回サンプル」で済ませると、書き込みが黙って捨てられる
+    //   （上の E220_WAKE_SETTLE_MS のコメントに実機の症状）。
+    if (!s_wakeSawLow && el < E220_WAKE_SETTLE_MS) return false;
+    if (el < 2) return false;              // 切替そのものは 1ms（5.3）。余裕を見て 2ms
+
+    // ★ 最初の 3 回だけ残す。E220_DBG の 1 起動 40 行の予算を毎秒食い潰さないため。
+    //   sawLow=0 で el が E220_WAKE_SETTLE_MS 付近なら、**時間待ちで救われている**
+    //   （= AUX の 1 回サンプルだけでは書き込みが捨てられていた）ことの証拠になる。
+    { static uint8_t left = 3;
+      if (left) { left--;
+          E220_DBG("E220 wake ready in %lums (sawLow=%d)", (unsigned long)el, (int)s_wakeSawLow); } }
+    s_asleep     = false;
+    s_waking     = false;
+    s_wakeSawLow = false;
     return true;
 }
 
 void e220_wake() {
     s_waking = false;      // ブロッキング版が呼ばれたら非同期の途中状態は捨てる
+    s_wakeSawLow = false;
     if (!s_asleep) return;
     digitalWrite(E220_MODE_PIN, MODE_NORMAL);
     delay(2);          // 切替は 1ms（データシート 5.3）

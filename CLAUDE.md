@@ -125,6 +125,18 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   v7 立ち上げで最も長く嵌まった。同じ理由で **起床直後に最初の問い合わせを
   叩かないこと**（プリフライトは 1 回目を意図的に後ろへずらしてある）。
   詳細は [docs/pons_link.md](docs/pons_link.md) §6。
+- **AUX は「いま High か」を 1 回見るだけでは足りない。立ち下がりを見るか、
+  遷移全体を覆う時間を待つこと。** mode 3 → mode 0 の切替直後はモジュールが
+  セルフチェックを**始める前**で、AUX は mode 3 のアイドル High のまま。そこを
+  サンプルして「起床完了」と判定すると、セルフチェック中に書いて**黙って捨てられる**。
+  `e220_send()` は AUX が High なので成功を返し、**`Sent` は増えるのに電波が出ない**。
+  0.976 の `e220_wake_ready()` がこれを踏んだ（実機 2026-09-27: 受信機が 300 秒で
+  2 発のみ・`bad=0`・RSSI −34dBm）。実体は `s_wakeSawLow` と `E220_WAKE_SETTLE_MS`。
+- **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
+  `link_tx_tick()` の `LTX_DRAINING` が AUX の Low を待ってから mode 3 へ落とす。
+  落ちないまま `LINK_TX_TXSTART_MS` 経ったら**モジュールに捨てられた**ので
+  `noRf` を数える（60 秒ログ `LINK TX: ... noRf=`）。
+  **`Sent` は「UART へ書けた回数」でしかない。** 電波が出た証明にはならない。
 - **mode 3 へ潜るときは `enter_config_mode()` を必ず通す。**
   `set_mode` + `set_baud` を自分で並べると、最後の `delay(E220_CFG_SETTLE_MS)` を
   落とす。AUX が High に戻ってもモジュールはまだコマンドを受け付けず、
