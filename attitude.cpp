@@ -65,6 +65,8 @@ static float roll_target_  = 0.0f;   // APPLY 時に申告するロール角（�
 // マウントから外されたことを検出したあと、APPLY されていない状態か。
 // SD の設定に保存して起動をまたいで保持する（充電のために電源を切る運用のため）。
 static volatile bool needs_apply_ = false;
+// いまこの瞬間マウントから外れた姿勢か（ラッチしない）。警告抑制に使う。
+static volatile bool off_mount_now_ = false;
 // APPLY の予約。スイッチを押す力でマウント上のデバイスが傾くため、押した瞬間ではなく
 // 指を離して落ち着いてから実行する。時刻はジャイロの t_us を使う（millis に依存しない）。
 static volatile bool calib_pending_ = false;
@@ -559,8 +561,14 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         // 右バンク（r > 0）だけしきい値を緩める。プラットホームへ上げるときの
         // 大きな右バンクを「外した」と誤判定しないため。左バンクとピッチは従来どおり。
         const float roll_limit = (r > 0.0f) ? OFF_MOUNT_RIGHT_ROLL_DEG : OFF_MOUNT_DEG;
-        if (rpy_enabled_ && (fabsf(r) > roll_limit || fabsf(p) > OFF_MOUNT_DEG))
-            needs_apply_ = true;
+        // ★ **「いま外れている」と「外されたことがある」を分けて持つ。**
+        //   needs_apply_ は APPLY するまで下がらないラッチで、較正のやり直しを促すもの。
+        //   一方 off_mount_now_ は**今この瞬間の姿勢**で、充電中の警告抑制に使う
+        //   （GPS_TFT_map.ino の warn_muted_off_mount）。しきい値をここ 1 か所に保つため
+        //   判定はこの中で行い、外へは真偽値だけ出す。
+        off_mount_now_ = rpy_enabled_ &&
+                         (fabsf(r) > roll_limit || fabsf(p) > OFF_MOUNT_DEG);
+        if (off_mount_now_) needs_apply_ = true;
 
         // 30 秒の一次遅れで平均ピッチを作る
         const float a = dt / (PITCH_AVG_SEC + dt);
@@ -1062,6 +1070,8 @@ void  attitude_cycle_roll_target() {
         roll_target_ = ROLL_TARGET_MIN_DEG;
 }
 bool  attitude_needs_apply() { return needs_apply_; }
+// いまこの瞬間マウントから外れた姿勢か。**ラッチしない**（needs_apply とは別物）。
+bool attitude_is_off_mount() { return off_mount_now_; }
 void  attitude_set_needs_apply(bool on) { needs_apply_ = on; }
 
 float attitude_get_pitch_target() { return pitch_target_; }

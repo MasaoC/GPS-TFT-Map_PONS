@@ -9,6 +9,11 @@
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/09/18
 // ============================================================
+// ★ この先頭ガードが無いと、mysd.h 経由と直接 include の二重読み込みで
+//   関数プロトタイプの再宣言までは黙って通っていたが、enum の再定義は
+//   コンパイルエラーになる（BootCheckState 追加時に発覚）。
+#ifndef DISPLAY_TFT_H
+#define DISPLAY_TFT_H
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
 #include "settings.h"
@@ -163,6 +168,9 @@ void draw_maplist_mode(int maplist_page);
 #define IMU3_MENU_COUNT    3
 extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/3のカーソル位置
 extern int imu3_cursor;   // GPS_TFT_map.ino で定義。ページ3/3のカーソル位置
+// 警告音を抑制しているか（充電中 かつ マウント外れ姿勢）。実体は GPS_TFT_map.ino。
+// ★ 判断は .ino に置く（CLAUDE.md: display_tft.cpp に判断や発報は置かない）。
+bool warn_muted_off_mount();
 void draw_imudetail(int page);
 
 // PONS Link（機体⇄ボート無線）の設定画面。
@@ -207,6 +215,12 @@ void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
 void draw_boot_title();   // 起動直後のタイトル（白画面を埋めるため setup() からも呼ぶ）
+// 起動時センサーチェックの進捗表示（draw_boot_progress() 用）。まだ確認できていない項目は PENDING。
+enum BootCheckState : uint8_t { BOOT_CHECK_PENDING, BOOT_CHECK_OK, BOOT_CHECK_NG };
+// setup() の間、センサーの初期化が終わった順に OK/NG を出す。
+// draw_boot_diag(0) が最終結果（SD含む）を出すまでの「INITIALIZING SENSORS ...」が
+// 何も変わらず 1 秒近く固まって見える体感時間を減らすための中間表示。
+void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss);
 void startup_demo_tft();
 void draw_demo_biwako();
 void draw_replay_indicator();
@@ -230,5 +244,7 @@ void draw_triangle(int ttrack,float steer_angle);   // steer_angle は小数の�
 void draw_course_warning(float steer_angle);   // 左右の判定だけに使う。int だと |ズレ|<1度 で左右が逆になる
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+
+#endif  // DISPLAY_TFT_H
 
 

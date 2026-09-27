@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260927
-#define BUILDVERSION "0.978"
+#define BUILDVERSION "0.979"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -65,6 +65,23 @@
 //   **回線が飽和している前提の最悪値**で、実態の 7 倍きつい見積りだった。
 //   RAM は 4096B でも全体の 1% 未満。ここを削る理由が無い。
 #define GNSS_SERIAL_FIFO_SIZE  4096
+
+// GNSS モジュールからのバイトがこの時間届かなければ「断線」とみなす [ms]。
+// ★ **飛行中に断線したことを検出するためのもの。** 以前は
+//   「1 バイトでも受信したら true、以降ずっと true」のラッチだったので、
+//   途中でコネクタが抜けても画面は正常なまま航法を続けていた。
+// 値の根拠: 設定が通っていれば NAV-PVT が 2Hz（500ms 間隔）、通っていなくても
+//   既定の NMEA が 1Hz で流れ続ける。一方こちらの読み出しが遅れても FIFO
+//   （GNSS_SERIAL_FIFO_SIZE = 4096B ≒ 7 秒ぶん）に溜まるので、描画で数百 ms
+//   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
+//   5 秒なら「本当に来ていない」ときだけ立つ。
+#define GNSS_CONN_TIMEOUT_MS   5000UL
+// 断線している間、警報トーンを繰り返す間隔 [ms]。
+// ★ 1 回きりにしない。**聞き逃したら二度と鳴らない**のは航法が止まる故障には合わない。
+// ★ 最低保証音量（min_volume）は付けない。あれは電池警告専用で
+//   「離れていても気づける」ための仕組み（gnss.cpp の REPLAY canceled のコメント参照）。
+//   断線は飛行中に起きるので、パイロットは装置を身につけている。
+#define GNSS_LOST_ALERT_MS    30000UL
 #define GNSS_TX 0
 #define GNSS_RX 1
 #define USB_DETECT 31

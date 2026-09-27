@@ -79,6 +79,7 @@
   void gnss_constellation_mode();
   bool get_gnss_fix();
   bool get_gnss_connection();
+  bool get_gnss_cfg_ok();  // 起動時 UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
   int get_gnss_numsat();
   double get_gnss_mps();
   double get_gnss_truetrack();

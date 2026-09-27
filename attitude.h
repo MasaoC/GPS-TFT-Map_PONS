@@ -207,6 +207,10 @@ void  attitude_set_roll_target(float deg);
 void  attitude_cycle_roll_target();
 
 // ---- マウントから外された状態 ----
+// いまこの瞬間マウントから外れた姿勢か。**ラッチしない**（attitude_needs_apply とは別物）。
+// 充電中の警告抑制に使う（GPS_TFT_map.ino の warn_muted_off_mount）。
+bool attitude_is_off_mount();
+
 // ロールかピッチが OFF_MOUNT_DEG を超えると「手に持って外した」とみなして true になり、
 // APPLY するまで戻らない。SD に保存して起動をまたいで保持する。
 bool  attitude_needs_apply();

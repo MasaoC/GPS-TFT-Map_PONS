@@ -221,8 +221,15 @@ void setup(void) {
   // BNO085 を先に初期化する（リセット後のブート時間を確保するため）
   imu_setup();
   attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gnss.cpp から流し込む）
+  // ★ ここで一度描く。BNO085 の結果は分かった時点ですぐ出す
+  //   （draw_boot_diag(0) まで待つと「INITIALIZING SENSORS ...」のまま約1秒固まって見える）。
+  BootCheckState imu_check = get_imu_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG;
+  draw_boot_progress(imu_check, BOOT_CHECK_PENDING, BOOT_CHECK_PENDING);
+
   // MS5611 初期化（BNO085 の後に呼ぶ）
   airdata_setup();
+  BootCheckState airdata_check = get_airdata_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG;
+  draw_boot_progress(imu_check, airdata_check, BOOT_CHECK_PENDING);
 
   // 両センサーの初期化完了後にセンサー組み合わせをログ出力する
   if (!get_imu_ok() && !get_airdata_ok()) {
@@ -236,6 +243,7 @@ void setup(void) {
   }
 
   gnss_setup();
+  draw_boot_progress(imu_check, airdata_check, get_gnss_cfg_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG);
 
   // ★ SD から読んだ設定が揃うのを待つ。**この下の 2 つが両方それを使う。**
   //     link_setup()       … CH / SF / 送受信モード
@@ -379,6 +387,38 @@ static bool get_jst_now(int &y, int &mo, int &d, int &h, int &mi, int &s, int &c
 
 
 //===============MAIN LOOP CORE0=================
+// 警告音を抑制するか。**充電中 かつ マウントから外れた姿勢**のときだけ true。
+//
+// ★ なぜこの 2 条件か:
+//   ・机に置いて充電すると、ロール +78 度・ピッチ -80 度のような姿勢になり、
+//     バンク警告・地上ロール/ピッチ警告・較正の催促が延々と鳴る。
+//     人力飛行機が地上でその姿勢になることはないので、**姿勢だけでも
+//     「機体に載っていない」と判定できる**（settings.h の OFF_MOUNT_DEG）。
+//   ・**USB を AND 条件にしてあるのは、机の上で意図的に回して音を確認したいため。**
+//     充電せずに置けば従来どおり鳴るので、試験の手段が残る。
+//   ・機体に載せたまま充電しても、水平ならマウント外れ判定に入らないので
+//     **飛行前点検としての警告は保たれる**。
+// ★ **抑制するのは音だけ。** 表示もログも残す。ログには (MUTED) を付けて、
+//   「条件は成立していたが鳴らさなかった」ことが後から分かるようにする。
+//   画面には draw_warn_mute_banner() が「なぜ静かなのか」を出す。
+// ★ **解除操作を持たせない。** 機体に載せて水平に戻した瞬間に自動で復活し、
+//   それはまさにリマインダーが必要なタイミングでもある。
+//   覚えて解除しなければならないミュートは、当日に忘れると全ての警報が無音になる。
+bool warn_muted_off_mount() {
+  if (getReplayMode() || replay_voltage_active()) return false;   // 電池表示と同じ流儀
+  // ★★ **ミラー中は抑制しない。** ミラー中の BANK WARN は「**機体の**ロール」で
+  //   判定しているのに、attitude_is_off_mount() が見ているのは
+  //   **ボート自身の姿勢**。これを条件にすると、ボートを机で充電しているだけで
+  //   機体の本物のバンク警告を黙らせてしまう。
+  if (link_mirror_active()) return false;
+  // ★ off_mount の判定は attitude_on_gyro() の中でしか更新されないので、
+  //   BNO085 が死ぬと**前回の値のまま固まる**。その状態で「抑制中」と名乗ると
+  //   画面が嘘になる（実際には下の 4 箇所も attitude_ready() で止まっている）。
+  //   抑制対象はいずれも attitude_ready() を条件に持つので、ここで揃えても漏れない。
+  if (!attitude_ready()) return false;
+  return digitalRead(USB_DETECT) && attitude_is_off_mount();
+}
+
 // Core0 のメインループ。以下の処理を毎ループ実行する:
 //   1. ボタン状態の読み取り
 //   2. GNSS データの受信・解析（gnss_loop は描画中にも分散して呼ぶ）
@@ -404,6 +444,45 @@ void loop() {
   imulog_set_paused(getReplayMode());
   gnss_loop(0);  // ループ先頭で GNSS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
+
+  // GNSS モジュールの断線／復帰を log.txt に残す。
+  // ★ 表示は draw_gnss_disconnect_warning()（地図の上にマゼンタの枠）だが、
+  //   **画面を見ていなければ気づけない**。飛行 CSV には「位置が止まった」ことしか
+  //   残らないので、原因が断線だったのかフィックス喪失だったのかを後から
+  //   切り分けられるようにする。判定は get_gnss_connection()（gnss.cpp）。
+  // ★ 起動直後（まだ 1 バイトも来ていない）では鳴らさない。一度でも繋がってから
+  //   切れたときだけ残す。最初の接続そのものは基準を置くだけで記録しない。
+  {
+    static bool     ever_conn = false, prev_conn = false;
+    static uint32_t lost_alert_ms = 0;
+    const bool conn = get_gnss_connection();
+    if (!ever_conn) {
+      if (conn) { ever_conn = true; prev_conn = true; }
+    } else if (prev_conn != conn) {
+      prev_conn = conn;
+      if (conn) {
+        enqueueTask(createLogSdTask("GNSS connection restored"));
+        // ★ 復帰は断線の**逆向き**（392 → 784）。同じ 2 音の上昇と下降で対にする。
+        //   880 → 1318 は使わない。あれは**無線の電波復帰**で既に使っており、
+        //   同じ音が 2 つの意味を持つと現場で取り違える（docs/pons_sound.md §10）。
+        enqueueTask(createPlayMultiToneTask(392, 120, 1, 2));
+        enqueueTask(createPlayMultiToneTask(784, 160, 1, 2));
+        lost_alert_ms = 0;
+      } else {
+        enqueueTask(createLogSdTask("!!ERROR!! GNSS connection LOST"));
+        lost_alert_ms = 0;   // 0 にしておくと下の繰り返しが即座に 1 回目を鳴らす
+      }
+    }
+    // ★ 切れている間は GNSS_LOST_ALERT_MS ごとに繰り返す。
+    //   **下降 2 音（784 → 392、1 オクターブ下降）**。他の警報はすべて上昇か
+    //   同音の連打なので、下降は「何かが失われた」専用の形になる。
+    if (ever_conn && !conn &&
+        (lost_alert_ms == 0 || millis() - lost_alert_ms >= GNSS_LOST_ALERT_MS)) {
+      lost_alert_ms = millis();
+      enqueueTask(createPlayMultiToneTask(784, 200, 1, 3));
+      enqueueTask(createPlayMultiToneTask(392, 300, 1, 3));
+    }
+  }
 
   // GNSS Fix 取得時に音声で通知（false→true の立ち上がりエッジを検出）
   // SDカードが使えれば "wav/fixed.wav" を再生、使えなければチャイム音（ド・ミ・ソの上昇 3音）で代替する。
@@ -597,8 +676,10 @@ void loop() {
       if (!bank_warned && (now_ms - bank_over_since_ms) >= BANK_WARN_HOLD_MS) {
         bank_last_warn_ms = now_ms;
         bank_warned = true;
-        enqueueTask(createPlayWavTask("wav/bank_warning.wav", 3));
-        enqueueTask(createLogSdfTask("BANK WARN roll=%+.1f deg", wr));
+        const bool muted = warn_muted_off_mount();
+        if (!muted) enqueueTask(createPlayWavTask("wav/bank_warning.wav", 3));
+        enqueueTask(createLogSdfTask("BANK WARN roll=%+.1f deg%s", wr,
+                                     muted ? " (MUTED: charging + off mount)" : ""));
       }
     } else {
       bank_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
@@ -672,8 +753,10 @@ void loop() {
           (gnd_last_warn_ms == 0 ||
            (now_ms - gnd_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
         gnd_last_warn_ms = now_ms;
-        enqueueTask(createPlayWavTask("wav/roll_check.wav", 3));
-        enqueueTask(createLogSdfTask("GROUND ROLL %+.1f deg (check mount / APPLY)", gr));
+        const bool muted = warn_muted_off_mount();
+        if (!muted) enqueueTask(createPlayWavTask("wav/roll_check.wav", 3));
+        enqueueTask(createLogSdfTask("GROUND ROLL %+.1f deg (check mount / APPLY)%s", gr,
+                                     muted ? " (MUTED: charging + off mount)" : ""));
       }
     } else {
       gnd_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
@@ -708,9 +791,11 @@ void loop() {
           (gndp_last_warn_ms == 0 ||
            (now_ms - gndp_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
         gndp_last_warn_ms = now_ms;
-        enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
-        enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f, nearPLA %d)",
-                                     gp, attitude_get_pitch_target(), (int)near_platform));
+        const bool muted = warn_muted_off_mount();
+        if (!muted) enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
+        enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f, nearPLA %d)%s",
+                                     gp, attitude_get_pitch_target(), (int)near_platform,
+                                     muted ? " (MUTED: charging + off mount)" : ""));
       }
     } else {
       gndp_over_since_ms = 0;
@@ -733,9 +818,13 @@ void loop() {
         if (eskf_apply_last_warn_ms == 0 ||
             (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
           eskf_apply_last_warn_ms = now_ms;
-          if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
-          else           enqueueTask(createPlayMultiToneTask(262, 250, 3, 3));
-          enqueueTask(createLogSdTask("ESKF CALIBRATION REQUIRED (on ground)"));
+          const bool muted = warn_muted_off_mount();
+          if (!muted) {
+            if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
+            else           enqueueTask(createPlayMultiToneTask(262, 250, 3, 3));
+          }
+          enqueueTask(createLogSdfTask("ESKF CALIBRATION REQUIRED (on ground)%s",
+                                       muted ? " (MUTED: charging + off mount)" : ""));
         }
       } else {
         eskf_apply_last_warn_ms = 0;   // 較正し直したら次回は即座に知らせる

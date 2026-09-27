@@ -1155,6 +1155,34 @@ void draw_boot_title() {
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// draw_boot_progress() の1項目分を描く。PENDING はグレーで "..." のまま。
+static void print_boot_check(const char* label, BootCheckState st) {
+  tft.setTextColor(st == BOOT_CHECK_PENDING ? COLOR_GRAY :
+                    (st == BOOT_CHECK_OK ? COLOR_GREEN : COLOR_RED), COLOR_WHITE);
+  tft.print(label);
+  tft.print(st == BOOT_CHECK_PENDING ? "..." : (st == BOOT_CHECK_OK ? "OK" : "NG"));
+}
+
+// setup() の間、センサーの初期化が終わった順に呼ぶ（draw_boot_title() の下段を上書きする）。
+// ★ GNSS の行は draw_boot_diag(0) が SD の情報で上書きするので、ここだけの一時的な表示でよい。
+//   MS5611/BNO085 の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
+//   最終表示に切り替わっても見た目が変わらない（チラつきが無い）。
+void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss) {
+  const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
+  const int16_t y2 = SCREEN_HEIGHT - 16;   // 304
+  tft.fillRect(0, y1, SCREEN_WIDTH, 28, COLOR_WHITE);
+
+  tft.setCursor(20, y1);
+  print_boot_check("GNSS:", gnss);
+
+  tft.setCursor(10, y2);
+  print_boot_check("MS5611:", airdata);
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  tft.print("  ");
+  print_boot_check("BNO085:", imu);
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 // 起動画面フッターの自己診断表示。**画面下端 28px（y=292〜319）だけが使える。**
 // この少し下で backscreen(240x240) を y=52 に push するので、それより上へ書いても
 // 毎フレーム塗り潰される。
@@ -2756,6 +2784,31 @@ static void draw_gnss_disconnect_warning() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// 警告音を抑制していることを地図に出す。
+// ★ **「なぜ静かなのか」を画面で示すためのもの。** 抑制は「充電中 かつ マウント外れ」
+//   のときだけで（GPS_TFT_map.ino の warn_muted_off_mount）、機体に載せて水平に
+//   戻せば自動で解除される。解除操作を覚えておく必要は無い。
+// ★ GNSS 断線の警告（y=44..99）と縦に並べる。両方出ても重ならない位置にしてある。
+// ★ 点滅させる（3 秒のうち 2 秒だけ出す）。情報表示なので地図を隠し続けない。
+static void draw_warn_mute_banner() {
+  if (!warn_muted_off_mount()) return;
+  if ((millis() / 1000) % 3 == 2) return;
+  const int bx = 5, by = 104, bw = SCREEN_WIDTH - 10, bh = 40;
+  backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
+  backscreen.drawRect(bx,     by,     bw,     bh,     COLOR_RED);
+  backscreen.drawRect(bx + 1, by + 1, bw - 2, bh - 2, COLOR_RED);
+  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  // フォントを明示する。ここはフレームの最後（push_backscreen）で走るので、
+  // 直前の描画が unloadFont() 済みだと内蔵フォントで描かれてしまう。
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(12, by + 5);
+  backscreen.print("IN MUTE DUE TO");
+  backscreen.setCursor(12, by + 21);
+  backscreen.print("CHARGING + OFF MOUNT");
+  // ★ 地図用フォントと色に戻して抜ける（このファイルの約束）。
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -2764,6 +2817,7 @@ void push_backscreen(){
   }
   draw_link_overlay();
   draw_gnss_disconnect_warning();  // 最上位レイヤー。上の draw_link_overlay() より後に描く
+  draw_warn_mute_banner();         // 同じく最上位。GNSS 警告の下に並ぶ
   backscreen.pushSprite(0, 50);
   TIMING_END(ts_push_backscreen, push_bs);
 }

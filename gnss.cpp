@@ -74,7 +74,14 @@ static float  maxgs_5min       = 0.0f;
 static int    maxgs_5min_hour  = 0;
 static int    maxgs_5min_min   = 0;
 static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
-bool gnss_connection = false;  // GNSS モジュールから1文字でも受信したら true
+bool gnss_connection = false;  // GNSS モジュールから1文字でも受信したことがあるか
+// ★ 最後にバイトが届いた時刻。**飛行中の断線を検出するために要る。**
+//   gnss_connection だけだと一度 true になったら戻らないので、コネクタが抜けても
+//   画面は正常なまま航法を続けてしまっていた（get_gnss_connection 参照）。
+static uint32_t gnss_last_byte_ms = 0;
+// gnss_setup() 初回呼び出しでの UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）。
+// リトライ呼び出し(setupcounter!=1)は設定を送り直さないので、初回の結果のまま変わらない。
+static bool gnss_cfg_ok = false;
 // デモ飛行の現在地点（DEMO_OFF でデモ停止）。GNSS を使わず仮想位置を生成する。
 demo_site_t demo_site = DEMO_OFF;
 double demo_lat = PLA_LAT;        // 仮想機体の現在位置
@@ -897,6 +904,7 @@ void gnss_setup() {
       // ACK が返らなかった場合、症状は「レートが半分」「方位の追従が鈍い」程度で
       // 画面には何も出ないため、後から原因に辿り着く唯一の手掛かりになる。
       {
+        gnss_cfg_ok = (cfg_ng == 0);
         const char* prt = prt_nak ? "NAK" : (prt_ack ? "ack" : "none");
         if (cfg_ng == 0) {
           enqueueTask(createLogSdfTask("GNSS CFG OK 2Hz/PVT/SAT/DOP/Air1g (prt=%s)", prt));
@@ -1357,6 +1365,7 @@ void gnss_loop(int id) {
       }
       #endif
       gnss_connection = true;
+      gnss_last_byte_ms = millis();
       process_ubx(c);  // UBX バイナリパーサーに渡す
     } else {
       // リプレイモードでは実 GNSS シリアルデータを単純に読み捨てる。
@@ -1364,6 +1373,7 @@ void gnss_loop(int id) {
       //   128 以上のバイトが常に流れるため GNSS 再初期化を繰り返してしまっていた）
       (void)c;
       gnss_connection = true;
+      gnss_last_byte_ms = millis();
     }
   }
 
@@ -1641,8 +1651,19 @@ int   get_maxgs_5min_hour() { return maxgs_5min_hour; }
 int   get_maxgs_5min_min()  { return maxgs_5min_min; }
 
 
+// GNSS モジュールと「いま」通信できているか。
+// ★★ **一度でも受信したか、ではない。** GNSS_CONN_TIMEOUT_MS のあいだバイトが
+//   届かなければ false を返す。飛行中にコネクタが抜けたり配線が切れたりしても
+//   画面が正常なまま航法を続けるのを防ぐため（表示は
+//   draw_gnss_disconnect_warning()、ログは GPS_TFT_map.ino の遷移検出）。
+// ★ 起動直後（まだ 1 バイトも来ていない）も false。従来と同じ。
 bool get_gnss_connection() {
-  return gnss_connection;
+  if (!gnss_connection) return false;
+  return (uint32_t)(millis() - gnss_last_byte_ms) < GNSS_CONN_TIMEOUT_MS;
+}
+// gnss_setup() 初回呼び出しの UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
+bool get_gnss_cfg_ok() {
+  return gnss_cfg_ok;
 }
 bool get_gnss_fix() {
   if (link_mirror_active()) return link_get_fix_ok();
