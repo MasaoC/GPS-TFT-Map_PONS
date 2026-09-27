@@ -1000,12 +1000,12 @@ void loop() {
     if (redraw_screen) {
       draw_variodetail(detail_page);
       draw_vsi();                      // 全画面再描画直後に即座に VSI を上書き（白フリッカー防止）
-      vsi_sprite.pushSprite(235, 40);
+      vsi_sprite.pushSprite(VSI_X, 40);
     }
     // airdata 更新タイミングで VSI バーを直接転写（メイン画面と同じ頻度）
     if (airdata_updated) {
       draw_vsi();
-      vsi_sprite.pushSprite(235, 40);  // backscreen は y=40 から開始
+      vsi_sprite.pushSprite(VSI_X, 40);  // backscreen は y=40 から開始
     }
   } else if (screen_mode == MODE_MAP) {
     if (new_gnss_info) {
@@ -1160,7 +1160,7 @@ void loop() {
     // バリオ音量が 0 の場合は非表示
     if (!redraw_screen && vario_volume > 0 && !vario_inhibit && airdata_updated) {
       draw_vsi();
-      vsi_sprite.pushSprite(235, 50);  // TFT座標: X=235, Y=50（backscreenオフセット）
+      vsi_sprite.pushSprite(VSI_X, 50);  // TFT座標: X=VSI_X, Y=50（backscreenオフセット）
     }
   } else {
     DEBUGW_PLN(20250510, "ERR screen mode");

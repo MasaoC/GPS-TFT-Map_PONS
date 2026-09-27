@@ -707,6 +707,22 @@ static uint32_t    s_txStateMs   = 0;
 
 static void link_tx_tick() {
     if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; return; }
+
+    // ★★ **リプレイ中は送信しない。**
+    //   apply_replay_row()（gnss.cpp）は stored_latitude / stored_fixtype など
+    //   **実センサーの格納変数そのものを上書きする**ので、そのまま送ると
+    //   **過去の飛行を「いまの飛行」としてボートへ流す**ことになる。
+    //   fixflags も立つため、受信側からは正常な現在位置と見分けがつかない。
+    //   これは docs/pons_link.md が一貫して避けている壊れ方（画面上は正常なまま
+    //   間違った値が出る）そのもの。地上での確認作業で電波を出す理由も無い。
+    //   ★ ボート側は 10 秒後に NO SIGNAL になるが、それが「送っていない」という
+    //     正しい表示。リプレイをやめれば次のスロットから復帰する。
+    //   ★ 途中状態なら**寝かせてから**畳む。mode 0 に置いたままにすると
+    //     8.2mA を食い続ける。
+    if (getReplayMode()) {
+        if (s_txState != LTX_IDLE) { e220_sleep(); s_txState = LTX_IDLE; }
+        return;
+    }
     // ★ 点検中は送らない。自分の送信を測ってしまうと雑音の判定が意味を失う。
     //   ★ 状態も畳む。点検は e220_wake() で mode 0 に置くので、
     //     途中状態のまま入ると寝かせ忘れる。

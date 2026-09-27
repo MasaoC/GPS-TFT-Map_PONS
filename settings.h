@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20260927
-#define BUILDVERSION "0.977"
+#define BUILDVERSION "0.978"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------

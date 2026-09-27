@@ -224,7 +224,7 @@ void setup_tft() {
   // VSIスプライト: 5px幅 × 240px高さ、16bit色深度（RAM消費 2,400 Byte）
   if(!vsi_sprite.created()){
     vsi_sprite.setColorDepth(16);
-    vsi_sprite.createSprite(5, BACKSCREEN_SIZE);
+    vsi_sprite.createSprite(VSI_W, BACKSCREEN_SIZE);
   }
 }
 
@@ -1384,18 +1384,18 @@ void draw_vsi() {
     // BNO085 非接続時は MS5611 単独の上昇率にフォールバックする。
     float vspeed = get_imu_ok() ? get_imu_vspeed() : get_airdata_vspeed();
     vsi_sprite.fillScreen(TFT_BLACK);
-    vsi_sprite.drawFastHLine(0, 120, 5, TFT_WHITE);  // 0 m/s 基準線
+    vsi_sprite.drawFastHLine(0, 120, VSI_W, TFT_WHITE);  // 0 m/s 基準線
     if (!get_airdata_ok()) return;
     const float MAX_VSPEED = 1.5f;
     const int   BAR_MAX_PX = 120;
     if (vspeed > 0) {
         // 上昇: 中心から上方向に緑バー（1.5 m/s で振り切り）
         int bar = (int)(min(vspeed, MAX_VSPEED) / MAX_VSPEED * BAR_MAX_PX);
-        vsi_sprite.fillRect(0, 120 - bar, 5, bar, TFT_GREEN);
+        vsi_sprite.fillRect(0, 120 - bar, VSI_W, bar, TFT_GREEN);
     } else if (vspeed < 0) {
         // 下降: 中心から下方向にシアンバー（1.5 m/s で振り切り）
         int bar = (int)(min(-vspeed, MAX_VSPEED) / MAX_VSPEED * BAR_MAX_PX);
-        vsi_sprite.fillRect(0, 121, 5, bar, TFT_CYAN);
+        vsi_sprite.fillRect(0, 121, VSI_W, bar, TFT_CYAN);
     }
     // 閾値ラインをバーの上に重ねて描画（バーがなくても常に表示）
     // グレー線: バリオ音デッドバンド閾値。sound.cpp と同じ定数から px を計算するので、
@@ -1404,17 +1404,17 @@ void draw_vsi() {
     const float db_mps = (get_imu_ok() && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
                                                             : VARIO_DEADBAND_BARO_MPS;
     const int db_px = (int)(db_mps / MAX_VSPEED * BAR_MAX_PX + 0.5f);
-    vsi_sprite.drawFastHLine(0, 120 - db_px, 5, TFT_DARKGREY);
-    vsi_sprite.drawFastHLine(0, 120 + db_px, 5, TFT_DARKGREY);
+    vsi_sprite.drawFastHLine(0, 120 - db_px, VSI_W, TFT_DARKGREY);
+    vsi_sprite.drawFastHLine(0, 120 + db_px, VSI_W, TFT_DARKGREY);
     // 白線: ±0.5 m/s = ±40px, ±1.0 m/s = ±80px  (v/1.5*120)
-    vsi_sprite.drawFastHLine(0, 120 - 40, 5, TFT_WHITE);     // +0.5 m/s
-    vsi_sprite.drawFastHLine(0, 120 + 40, 5, TFT_WHITE);     // -0.5 m/s
-    vsi_sprite.drawFastHLine(0, 120 - 80, 5, TFT_WHITE);     // +1.0 m/s
-    vsi_sprite.drawFastHLine(0, 120 + 80, 5, TFT_WHITE);     // -1.0 m/s
+    vsi_sprite.drawFastHLine(0, 120 - 40, VSI_W, TFT_WHITE);     // +0.5 m/s
+    vsi_sprite.drawFastHLine(0, 120 + 40, VSI_W, TFT_WHITE);     // -0.5 m/s
+    vsi_sprite.drawFastHLine(0, 120 - 80, VSI_W, TFT_WHITE);     // +1.0 m/s
+    vsi_sprite.drawFastHLine(0, 120 + 80, VSI_W, TFT_WHITE);     // -1.0 m/s
 }
 
 // backscreen スプライトを TFT の (0, 50) に転送する（ヘッダー 50px の下から表示）。
-// 転送前に VSI を backscreen の右端 X=235 に合成する。
+// 転送前に VSI を backscreen の右端 X=VSI_X に合成する。
 // ============================================================
 // draw_eskf_attitude(): 地図上に姿勢を 3 行で重ねる
 // ============================================================
@@ -2523,6 +2523,13 @@ static void draw_link_icons() {
 
   if (!link_module_alive()) {
     // モジュール自体が応答していない。強度も送出も語れない。
+  } else if (!rx && getReplayMode()) {
+    // ★ リプレイ中は意図して送信を止めている（link_tx_tick 参照）。
+    //   下の分岐に落とすと「弧 0 本＋赤い×」＝故障、に見えてしまう。
+    //   灰色の弧 1 本＋×なしで「止めている」を示す。
+    level = 1;
+    rcol  = COLOR_GRAY;
+    lost  = false;
   } else if (!rx && link_preflight_state() == LINK_PF_RUNNING) {
     // ★ 送信前チェックの最中。まだ 1 回も送っていないので、下の分岐に落とすと
     //   「弧 0 本＋赤い×」＝送れていない、に見えてしまう。故障と区別できないので
@@ -2685,8 +2692,14 @@ static void draw_link_overlay() {
   if (link_is_receiving() && age > 3000) show = ((millis() / 400) % 2 == 0);
 
   if (show) {
-    backscreen.drawRect(0, 0, SCREEN_WIDTH, BACKSCREEN_SIZE, col);
-    backscreen.drawRect(1, 1, SCREEN_WIDTH - 2, BACKSCREEN_SIZE - 2, col);
+    // ★★ **右辺は描かない。** x = VSI_X 以降は VSI が占める領域で、VSI は
+    //   backscreen の push より**後**に TFT へ直接 push される
+    //   （GPS_TFT_map.ino。airdata 更新ごと ≒ 40Hz）。そのため右辺だけが
+    //   「出てすぐ消える」点滅になっていた（実機 2026-09-27）。
+    //   上辺・下辺も VSI_X で止める（VSI は全高を占めるため）。
+    backscreen.fillRect(0, 0,                    VSI_X, 2, col);              // 上辺
+    backscreen.fillRect(0, BACKSCREEN_SIZE - 2,  VSI_X, 2, col);              // 下辺
+    backscreen.fillRect(0, 0,                    2, BACKSCREEN_SIZE, col);    // 左辺
   }
   if (screen_mode == MODE_MAP) {
     draw_link_icons();
@@ -2710,13 +2723,47 @@ static void draw_link_overlay() {
   }
 }
 
+// GNSS モジュール自体の接続断（要再起動）を知らせる警告。
+// push_backscreen() の最後、draw_link_overlay() より後に呼ぶことで必ず最上位レイヤーにする。
+// 以前は draw_nomapdata() の中でこれより先に描いており、LINK アイコンやコンパスの
+// N/E/S/W など後から重なる要素に隠れていた。不透明の背景を敷いて完全に上書きする。
+static void draw_gnss_disconnect_warning() {
+  if (get_gnss_connection() || getReplayMode() || is_demo_active()) return;
+  const int bx = 5, by = 44, bw = SCREEN_WIDTH - 10, bh = 56;
+  backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
+  backscreen.drawRect(bx,     by,     bw,     bh,     COLOR_MAGENTA);
+  backscreen.drawRect(bx + 1, by + 1, bw - 2, bh - 2, COLOR_MAGENTA);
+  backscreen.setTextColor(COLOR_MAGENTA, COLOR_WHITE);
+  backscreen.setTextSize(1);
+  // フォントを明示的に指定する。指定しないと直前の描画が unloadFont() 済みの
+  // デフォルトフォントを引き継ぎ、一瞬だけ小さいフォントで描かれることがある。
+  backscreen.loadFont(AA_FONT_SMALL);
+  // println の改行はカーソル x を 0 に戻してしまうため、各行で setCursor し直して
+  // 枠の左辺（x=5,6 の 2px 分）と重ならないよう左マージンを揺れさせない。
+  backscreen.setCursor(12, 50);
+  backscreen.print("NO GNSS connection !!");
+  backscreen.setCursor(12, 66);
+  backscreen.print("Try power off then on.");
+  backscreen.setCursor(12, 82);
+  backscreen.print("Please contact developer.");
+  backscreen.unloadFont();
+  // ★ **地図用フォントに戻して抜ける。** ここはフレームの最後（push_backscreen）で
+  //   走るので、戻さないと**次のフレームの draw_gs_track() が内蔵フォントのまま**
+  //   "GS" や "Pavg" を描き始める（小さい字になる）。
+  //   このファイルの約束（display_tft.cpp の「呼び出し側は地図用フォントを
+  //   期待している」）に合わせる。
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
     draw_vsi();
-    vsi_sprite.pushToSprite(&backscreen, 235, 0);  // Sprite→Sprite 合成
+    vsi_sprite.pushToSprite(&backscreen, VSI_X, 0);  // Sprite→Sprite 合成
   }
   draw_link_overlay();
+  draw_gnss_disconnect_warning();  // 最上位レイヤー。上の draw_link_overlay() より後に描く
   backscreen.pushSprite(0, 50);
   TIMING_END(ts_push_backscreen, push_bs);
 }
@@ -3030,21 +3077,18 @@ void draw_header() {
       header_footer.drawFastHLine(5, 22+i, len, COLOR_RED);
   }
 
-  // ★ 受信モードの明示（docs/pons_link.md §5 / 7.2）。ヘッダーは文字、地図はアイコンで二重化する。
+  // ★ 受信モードの明示（docs/pons_link.md §5 / 7.2）。
   //   ミラー中は画面が機体の表示そのものになるので、
-  //   「今どちらの機械を触っているのか」がここでしか分からなくなる。
+  //   「今どちらの機械を触っているのか」が分からなくなる。
+  //   **枠の色**で示す: ティール = MIRROR / 赤 = NO SIGNAL（link_frame_color）。
+  //   地図側のアイコンと二重化してあるので、これで足りる。
+  // ★ 0.978 で左上の "RX" バッジを削除した。塗り矩形 (3,3,44,11) が
+  //   m/s の桁（setCursor(-1,3) から NM_FONT_LARGE で描く）の真上に乗り、
+  //   **対地速度が読めなくなっていた**。受信モードかどうかは枠の色で分かる。
   if (link_get_mode() == LINK_MODE_RX) {
     const uint16_t col = link_frame_color();
     header_footer.drawRect(0, 0, SCREEN_WIDTH, HEADERFOOTER_HEIGHT, col);
     header_footer.drawRect(1, 1, SCREEN_WIDTH - 2, HEADERFOOTER_HEIGHT - 2, col);
-    // RX バッジ ＋ 送信元 ID（送信元 MAC の下位 1 バイト）。
-    header_footer.unloadFont();
-    header_footer.setTextSize(1);
-    header_footer.setTextColor(COLOR_WHITE, col);
-    header_footer.fillRect(3, 3, 44, 11, col);
-    header_footer.setCursor(5, 4);
-    if (link_is_receiving()) header_footer.print("RX");
-    else                     header_footer.print("RX ---");
   }
 
   header_footer.pushSprite(0,0);
@@ -3549,7 +3593,8 @@ int skyplot_y(float azimuth, float elevation) {
 
 // GNSS 状態に応じたステータスメッセージを backscreen に表示する（地図データなし時のみ呼ばれる）。
 // 優先順位:
-//   1. GNSS モジュール未接続 → "NO GNSS connection !!" 表示して終了。
+//   1. GNSS モジュール未接続 → 以降のフィックス表示はせず終了。
+//      警告自体は draw_gnss_disconnect_warning()（push_backscreen() 内）が最上位レイヤーで描く。
 //   2. GNSS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
 //   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示。
 void draw_nomapdata() {
@@ -3558,11 +3603,6 @@ void draw_nomapdata() {
     //"GNSS Module connected."
   } else {
     if (!getReplayMode() && !is_demo_active()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
-      backscreen.setCursor(3,50);
-      backscreen.setTextColor(COLOR_MAGENTA);
-      backscreen.println("NO GNSS connection !!");
-      backscreen.println(" Try power off then on.");
-      backscreen.println(" Please contact developer.");
       return;
     }
   }

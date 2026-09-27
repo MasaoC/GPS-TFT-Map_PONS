@@ -21,6 +21,13 @@
 #define HEADERFOOTER_HEIGHT 50
 #define SCREEN_HEIGHT 320
 #define BACKSCREEN_SIZE 240
+// VSI（Vertical Speed Indicator）を合成する backscreen 内の位置と幅。
+// ★ **VSI は backscreen の push とは別に、TFT へ直接 push される**
+//   （GPS_TFT_map.ino。airdata の更新ごとに上書きして白フリッカーを防ぐため）。
+//   つまり x = VSI_X .. VSI_X+VSI_W-1 は **backscreen に描いても後から消される**。
+//   受信モードの枠が右辺だけ点滅していたのはこれが原因（draw_link_overlay 参照）。
+#define VSI_X 235
+#define VSI_W 5
 
 // ※ v6 基板にはバックライト制御線が無いため、輝度調整機能
 //    （BRIGHTNESS_SETTING_AVAIL / TFT_BL / PNP_BL / NPN_BL / BL_PWM_FRQ）は
@@ -88,7 +95,7 @@
 
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
-  extern TFT_eSprite vsi_sprite;  // VSIインジケーター (5×240px, 16bit)
+  extern TFT_eSprite vsi_sprite;  // VSIインジケーター (VSI_W×240px, 16bit)
 
 #endif
 
