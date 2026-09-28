@@ -830,9 +830,7 @@ static void euler_from_state(float &roll, float &pitch, float &yaw) {
     const float rad2deg = 180.0f / (float)M_PI;
     roll  = r * rad2deg;
     pitch = p * rad2deg;
-    yaw   = -y * rad2deg;          // 数学の符号 → 方位（時計回り正）
-    if (yaw < 0.0f)    yaw += 360.0f;
-    if (yaw >= 360.0f) yaw -= 360.0f;
+    yaw   = imu_yaw_to_heading_deg(y);   // 東基準の数学ヨー → 真方位（北=0・時計回り正）
 }
 
 void attitude_get_euler_raw(float &roll, float &pitch, float &yaw) {

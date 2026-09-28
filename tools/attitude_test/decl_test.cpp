@@ -16,10 +16,7 @@ static const float DECL = -8.0f;
 static float mount_yaw_deg(float w, float x, float y, float z) {
     float r, p, y_rad;
     imu_body_euler_rad(w, x, y, z, r, p, y_rad);
-    float d = -y_rad * 180.0f / (float)M_PI;
-    if (d < 0) d += 360.0f;
-    if (d >= 360.0f) d -= 360.0f;
-    return d;
+    return imu_yaw_to_heading_deg(y_rad);
 }
 
 int main() {

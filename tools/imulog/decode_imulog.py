@@ -265,7 +265,9 @@ def mount_correct_quat(qw, qx, qy, qz):
     # 符号反転は機上 attitude.h の imu_body_euler_rad() と同じ理由（機首上げが正）
     pitch = -np.arcsin(np.clip(2.0*(bw*by - bz*bx), -1.0, 1.0))
     yaw = np.arctan2(2.0*(bw*bz + bx*by), 1.0 - 2.0*(by*by + bz*bz))
-    return np.degrees(roll), np.degrees(pitch), np.degrees(-yaw) % 360.0
+    # ワールドが ENU（X=East）なので ZYX 抽出のヨーは東基準。方位（北=0）へは
+    # 符号反転だけでなく 90 度足す（機上 attitude.h の imu_yaw_to_heading_deg と同じ）。
+    return np.degrees(roll), np.degrees(pitch), (90.0 - np.degrees(yaw)) % 360.0
 
 
 

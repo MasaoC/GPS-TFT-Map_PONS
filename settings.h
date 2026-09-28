@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260927
-#define BUILDVERSION "0.979"
+#define BUILDDATE 20260928
+#define BUILDVERSION "0.980"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -177,6 +177,16 @@
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
 #define USERLED_PIN 36 //ユーザーLED（エラー表示用。エラー時 HIGH） v7 34->36に変更
+
+// ユーザーLED の点滅パターン [ms]。実体は GPS_TFT_map.ino の loop_userled()。
+// 1 周期 USERLED_BLINK_PERIOD_MS の中で USERLED_BLINK_PULSE_MS だけ点灯する。
+// SD 異常のときだけ USERLED_BLINK_GAP_MS 後にもう 1 発打って「2 回連続点滅」にし、
+// 衛星 0（1 回点滅）と目で区別できるようにしている。
+// GAP + PULSE は PERIOD より十分短いこと。超えると次の周期の開始が優先され、
+// **2 発目が一度も出ないまま 1 回点滅に見える**（＝衛星 0 と区別が付かなくなる）。
+#define USERLED_BLINK_PERIOD_MS 1000
+#define USERLED_BLINK_PULSE_MS    20
+#define USERLED_BLINK_GAP_MS     200
 
 // 音量の上限。設定画面のステップ送りと、SD の settings.txt から読むときの
 // クランプの両方がこれを見る（片方だけ直して食い違うのを防ぐ）。
@@ -893,6 +903,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   機首を真下90  a=(  0,   0,-9.8) → 機体の「前」= センサー +Z
 //   右翼を真下90  a=(  0,+9.8,   0) → 機体の「右」= センサー -Y
 // マウントを変えたら、この 3 点を測り直してここだけ差し替える。
+//
+// ★ **方位が 90 度ずれても、ここを回して直そうとしないこと。**
+//   ヨーの基準（ENU は東が 0、方位は北が 0）は attitude.h の
+//   imu_yaw_to_heading_deg() の担当。ここを機体の鉛直軸まわりに 90 度回すと
+//   方位は合うが **ロールとピッチが入れ替わる**（バンク 15 度がピッチ -15 度になる）。
 #define IMU_MOUNT_QW   0.70710678f
 #define IMU_MOUNT_QX   0.0f
 #define IMU_MOUNT_QY  (-0.70710678f)

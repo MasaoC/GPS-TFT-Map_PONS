@@ -244,10 +244,14 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     if      (fixType == 2)  new_fixtype = 2;
     else if (fixType >= 3)  new_fixtype = 3;
     else                    new_fixtype = 1;
-    // no-fix → fix への遷移タイミングをSDに記録
+    // no-fix → fix への遷移タイミングをSDに記録。
+    // ★ 衛星数は stored_numsats ではなく **このパケットの numSV** を出すこと。
+    //   stored_numsats への代入はこのブロックより後ろにあるので、ここで読むと
+    //   **1 エポック前（= まだ no-fix だったとき）の値**が出る。fix 獲得の瞬間は
+    //   ほぼ必ず 0 になり、ログが "fix=3 sats=0" という矛盾した見た目になっていた。
     if (prev_fixtype <= 1 && new_fixtype >= 2) {
       enqueueTask(createLogSdfTask("GNSS FIXED fix=%d sats=%d hAcc=%.1fm",
-        new_fixtype, stored_numsats, ubx_hacc_mm / 1000.0f));
+        new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f));
     }
     prev_fixtype  = new_fixtype;
     gsa_fixtype   = new_fixtype;

@@ -140,27 +140,73 @@ Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallba
 // USERLED フラッシュ制御（Core0 のループから毎回呼ぶ）。
 // 条件ごとの LED 動作:
 //   永続点灯 (userled_forced_on): タスクキュー溢れなどの致命エラー → 消灯しない
-//   フラッシュ: 0衛星 or SDエラー → 1秒に1回、20ms だけ点灯
-//   正常時: LED 消灯
+//   2 回点滅: SD エラー   → 1 秒に 2 回、各 20ms
+//   1 回点滅: 衛星 0      → 1 秒に 1 回、20ms
+//   正常時:   消灯
+// **両方成立したら SD を優先する。** 衛星 0 は屋内なら普通に起きるうえ、直れば
+// 何も失われない。SD エラーは「飛行が一切記録されていない」ことを意味し、
+// 後から取り返せないので、そちらを見せる。
+// （画面ヘッダーには sats バッジと SD バッジの両方が出ている。LED はそれを
+//   見ていないとき用の手段なので、画面に出る／出ないは優先順位の理由にならない。）
+//
+// ★ 時間待ちをしない。delay() を入れると Core0 が止まり、BNO085 のレポートが溜まって
+//   ジャイロが化ける（CLAUDE.md「BNO085 の読み出しを飢えさせない」）。
+// ★ **「いま位相が点灯区間か」で判定してはいけない。** Core0 の 1 周は地図描画中に
+//   数十 ms になる（60 秒ログの gapmax= が実測値。40ms 前後）。20ms の点灯区間を
+//   サンプリングで当てに行くと**ほとんど素通りして光らない**。
+//   そのため「周期が来たら点ける → 20ms 経ったら消す」の**立ち上がりラッチ方式**にしてある。
+//   こうすると 1 周が 20ms を超えても、点灯が長引くだけで発数は必ず出る。
 void loop_userled() {
-  if (userled_forced_on) return;  // 致命エラー時は永続点灯のまま
-
-  bool should_flash = (get_gnss_numsat() == 0) || !good_sd();
-
-  if (!should_flash) {
-    digitalWrite(USERLED_PIN, LOW);
+  // 致命エラー時は永続点灯のまま。**ここで毎回 HIGH を打ち直すこと。**
+  // 立てるのは Core1 の enqueueTask()（mysd.cpp）で、フラグを立ててから
+  // digitalWrite(HIGH) する。Core0 がその直前にフラグを false と読んでいると、
+  // 下の消灯がこの HIGH を**後から上書きして LED が消えたまま戻らない**
+  // （以降は毎回この return で抜けるので二度と点かない）。打ち直せば次の周回で治る。
+  if (userled_forced_on) {
+    digitalWrite(USERLED_PIN, HIGH);
     return;
   }
 
-  // 1秒周期で 20ms だけ点灯
-  static unsigned long last_flash_time = 0;
-  unsigned long now = millis();
-  if (now - last_flash_time >= 1000) {
-    last_flash_time = now;
-    digitalWrite(USERLED_PIN, HIGH);
-  } else if (now - last_flash_time >= 20) {
+  // 時刻はすべて符号なしの引き算で比べる（millis() の折り返しでも正しい）。
+  static unsigned long cycle_start = 0;  // いまの点滅周期の開始時刻
+  static unsigned long pulse_start = 0;  // いま出している 1 発の開始時刻
+  static uint8_t       pulses_left = 0;  // この周期であと何発打つか
+  static bool          led_on      = false;
+
+  const bool sd_ng  = !good_sd();               // Core0 から呼ぶと状態を読むだけ（復旧は Core1 側）
+  const bool no_sat = (get_gnss_numsat() == 0);
+
+  if (!sd_ng && !no_sat) {
     digitalWrite(USERLED_PIN, LOW);
+    led_on = false;  // 消したことを状態にも反映する（次にエラーへ落ちたとき点け直せるように）
+    // 打ち残しも捨てる。残したまま同じ周期内でエラーへ戻ると、GAP を過ぎている分
+    // **2 発目だけが即座に出て**、衛星 0（1 回点滅）が SD 異常（2 回点滅）に見える。
+    pulses_left = 0;
+    return;
   }
+
+  const unsigned long now = millis();
+
+  if (now - cycle_start >= USERLED_BLINK_PERIOD_MS) {
+    // 新しい周期の先頭。ここで発数を決める（周期の途中で SD が壊れても、
+    // パターンが変わるのは次の周期から。1 秒以内なので実用上の遅れは無い）。
+    cycle_start = now;
+    pulses_left = sd_ng ? 2 : 1;
+    pulse_start = now;
+    pulses_left--;
+    led_on = true;
+  } else if (led_on) {
+    // 点灯中: 規定時間が過ぎたら消す。1 周が 20ms より長いと点灯もその分伸びるが、
+    // 「光った」ことは必ず見える。
+    if (now - pulse_start >= USERLED_BLINK_PULSE_MS) led_on = false;
+  } else if (pulses_left > 0 && now - cycle_start >= USERLED_BLINK_GAP_MS) {
+    // 2 発目（SD エラーのときだけ残っている）。
+    pulse_start = now;
+    pulses_left--;
+    led_on = true;
+  }
+
+  digitalWrite(USERLED_PIN, led_on ? HIGH : LOW);
 }
 
 //===============SET UP CORE0=================
@@ -208,8 +254,6 @@ void setup(void) {
   //   setup() 中に貯めるとバッファ 2 枚（IMULOG_RECS_PER_BUF × 2）で満杯になり、
   //   **それ以降は全部捨てられる**。捨てても seq は進むため、PC 側には
   //   「取りこぼし」として残り、decode_imulog.py のセッション分割を誤らせる。
-  //   実機 2026-09-23: 起動画面の待ちで BNO085 を引き取るようにしたところ
-  //   drop が 67 → 676 に増えた（起動中に 1 回だけ。以降は増えない）。
   //   起動画面の間の生データは机上の値で使い道が無いので、記録しない。
   //   ★ 解除は明示的に書かない。loop() 冒頭の
   //     imulog_set_paused(getReplayMode()) が毎周回セットし直すので、

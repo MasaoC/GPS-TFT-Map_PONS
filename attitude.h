@@ -41,7 +41,8 @@
 // センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
 // ★ imu.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
 //   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
-// yaw はここでは数学どおりの符号で返す。0..360 の方位に直すのは呼び出し側。
+// yaw はここでは数学どおりの符号（東基準・反時計回り正）で返す。
+// 方位に直すのは呼び出し側だが、**必ず imu_yaw_to_heading_deg() を通すこと。**
 static inline void imu_body_euler_rad(float w, float x, float y, float z,
                                       float &roll, float &pitch, float &yaw) {
     // q_body = q_sensor ⊗ q_mount
@@ -60,6 +61,22 @@ static inline void imu_body_euler_rad(float w, float x, float y, float z,
     //   ここを直すとピッチ警告・巡航トリム・対気速度モデルがまとめて正になる。
     pitch = -asinf(sinp);
     yaw  = atan2f(2.0f*(bw*bz + bx*by), 1.0f - 2.0f*(by*by + bz*bz));
+}
+
+// imu_body_euler_rad() のヨー [rad] → 真方位 [度]（北=0・時計回り正）。
+// ★ **90 度を足すのを忘れないこと。** ワールドは ENU（X=East, Y=North）なので
+//   ZYX 抽出のヨーは**東が 0**。方位は北が 0 なので、符号反転だけだと
+//   **常に 90 度左を向く**。v6 のマウント補正がこの 90 度を偶然含んでいたため、
+//   v7 でマウントを実測し直した 0.979 まで表に出なかった（2026-09-28 に判明）。
+//   **ここを IMU_MOUNT_Q* の回転で直そうとしないこと** — マウントを機体の鉛直軸
+//   まわりに 90 度回すとヨーは合うが、**ロールとピッチが入れ替わる**
+//   （バンク 15 度がピッチ -15 度として出る）。
+//   影響は表示だけでなく風推定（attitude.cpp の wind_e_/wind_n_）にも及ぶ。
+static inline float imu_yaw_to_heading_deg(float yaw_rad) {
+    // 引数が壊れていても回り続けないよう、ループではなく fmodf で畳む。
+    float d = fmodf(90.0f - yaw_rad * 180.0f / (float)M_PI, 360.0f);
+    if (d < 0.0f) d += 360.0f;
+    return d;
 }
 
 
