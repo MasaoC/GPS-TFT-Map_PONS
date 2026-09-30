@@ -18,6 +18,12 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 ローカル改変が効かないまま静かに通る。理由と改変点は
 [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md)。
 
+**Flash Size の 16MB は 0.982 から必須。** 音声を FLASH に焼いて約 1.9MB 増えたので、
+**2MB 指定ではリンクが通らない**（`region FLASH overflowed by 1700076 bytes`。
+領域は Flash Size − 8KB なので 2MB では 2,088,960B しかなく、所要は約 3.79MB）。
+入るのは 4MB 以上。0.981 までは 1.7MB だったので 2MB でも通っていた。
+**IDE のボード設定はスケッチに保存されない**ので、別の PC や IDE の入れ直し後に必ず踏む。
+
 コンパイル確認だけなら CLI が使える（IDE 同梱の arduino-cli。動作確認済み）:
 
 ```sh
@@ -33,6 +39,11 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
   `imu.cpp` / `settings.h` を見ること。`IMU_BUS_SPI` はもう無い。
 - `VECTORMAP_HIRES` は先に `tools/vectormap/build_vectormap.py --variant hires` で
   データ生成が要る（未生成なら `#error` で止まる）。
+- **音声は本体 FLASH に焼いてある。** 原本は [wav/](wav/)（SD ではない。0.982 で移した）。
+  差し替えたら `python3 tools/gen_wav_flash.py` で
+  [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) を作り直すこと。
+  **忘れると古い音のまま黙って焼ける。** 生成物は git に入れてあるので、
+  音を触らないなら実行は不要。
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
@@ -40,6 +51,8 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 - `RELEASE_GNSS` — GNSS シミュレーション（`DEBUG_GNSS_SIM_*`）が全部コメントアウト済みか。
 - `BUILDDATE` / `BUILDVERSION` — 更新する。README のバージョン記載も合わせる。
 - どちらかが抜けていると `#warning NOT RELEASE!` が出る。これが唯一の保険。
+- `python3 tools/gen_wav_flash.py --check` — `wav/` と焼き込み済みの音声が
+  CRC32 で一致するか。音声を差し替えて生成を忘れていると非 0 で落ちる。
 
 ### git の扱い（**指示があるまで触らない**）
 
@@ -68,7 +81,30 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
 
 - **Core0 から SD を直接触らない。** SD と音声は Core1 専用で、[mysd.h](mysd.h) の
   タスクキューだけが両者を繋ぐ。追加は「`TaskType` → `create*Task()` → `loop1()` の
-  switch」の 3 点セット。
+  switch」の 3 点セット。**音声は SD を触らなくなった（0.982）が Core1 専用のまま**
+  （バッファとタイマー割り込みの状態を動かすため）。見張りは `ASSERT_CORE1`、
+  SD 用の `ASSERT_SD_CORE1` とは別。流用するとログに「SD access from Core0」と
+  嘘が出て読む人を SD の方へ誤誘導する。
+- **音の出る条件に `good_sd()` を付けない。** 音声は本体 FLASH（`WAV_BLOB`）にあり、
+  SD の有無と無関係に鳴る。0.982 まで 7 箇所に「SD が無ければビープで代替」の
+  分岐があり、**SD が壊れた機体では警報がぜんぶビープになって種類が区別できなかった**。
+  [src/sound.cpp](src/sound.cpp) は SdFat を include しない。戻さないこと。
+  ただし [display_tft.cpp](display_tft.cpp) の起動時 500Hz×10 は別物で、
+  **SD 故障を音で知らせる唯一の手段**。起動音と重なって鳴る。消さないこと。
+- **音声を差し替えたら `tools/gen_wav_flash.py` を回す。** 原本は [wav/](wav/) だが、
+  実機が読むのは [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) に焼いた方。
+  回さないと**古い音のまま黙って焼ける**。リリース前は `--check`（CRC32 照合）。
+  逆に、ソースに無い音声名を書いたときは生成が**ビルド前に止める**
+  （実機では `ERR wav not in flash` が出るまで気づけないため）。
+- **音声の同一性は `WAV_ENTRIES[]` の添字で見る。名前のポインタで比べない。**
+  同じ `"wav/track.wav"` でも別の .cpp に書かれたリテラルは別アドレスになり得る。
+  0.981 まで `strcmp` とポインタ比較が混在していて、**いつ静かに外れてもおかしくない**
+  状態だった（同一ファイル内にしか出て来ないのでたまたま成立していた）。
+- **pending キューは `min_volume` も運ぶ。** 落とすと `battery_low.wav`
+  （優先度 1・最低音量 60）が pending から復帰したときに 60 を失い、
+  音量設定 0 の機体で**電池切れの警告が完全に無音になる**
+  （優先度 1 は最低なので、他の WAV とぶつかれば必ず pending を通る）。
+  0.982 で代替ビープを消したので、この経路が唯一の警告になった。
 - **表示の供給元は 3 系統ある。** 実センサー / リプレイ（`getReplayMode()`）/
   無線ミラー（`link_mirror_active()`）。表示項目を足すときは 3 つとも考える。
   **リプレイ中・ミラー中は SD への記録を止める**分岐が `loop()` の各所にある
@@ -187,6 +223,8 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
+| [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
+| [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) | 焼き込んだ音声の実体。`tools/gen_wav_flash.py` の生成物。手で編集しない |
 | [src/bno08x/](src/bno08x/) | 取り込んだ BNO085 ライブラリ。**改変したら PONS_VENDORING.md に追記** |
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)

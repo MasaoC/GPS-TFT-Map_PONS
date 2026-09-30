@@ -529,18 +529,13 @@ void loop() {
   }
 
   // GNSS Fix 取得時に音声で通知（false→true の立ち上がりエッジを検出）
-  // SDカードが使えれば "wav/fixed.wav" を再生、使えなければチャイム音（ド・ミ・ソの上昇 3音）で代替する。
+  // "wav/fixed.wav" は本体 FLASH にあるので SD の有無に関係なく鳴る
+  // （0.982 まではここに SD が無いときのチャイム音（ド・ミ・ソ）の代替があった）。
   {
     static bool prev_gnss_fix = false;
     bool cur_fix = get_gnss_fix();
     if (!prev_gnss_fix && cur_fix) {
-      if (good_sd()) {
-        enqueueTask(createPlayWavTask("wav/fixed.wav", 4));  // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
-      } else {
-        enqueueTask(createPlayMultiToneTask(523, 150, 1, 1));  // ド
-        enqueueTask(createPlayMultiToneTask(659, 150, 1, 1));  // ミ
-        enqueueTask(createPlayMultiToneTask(784, 300, 1, 1));  // ソ
-      }
+      enqueueTask(createPlayWavTask("wav/fixed.wav", 4));  // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
       enqueueTask(createLogSdTask("GNSS FIX acquired"));
     }
     prev_gnss_fix = cur_fix;
@@ -757,15 +752,10 @@ void loop() {
           (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
                                   : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
         last_batt_warn_ms = millis();
-        if (good_sd()) {
-          // SD 認識済み: WAV を再生（最低 volume 60 保証）
-          enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
-        } else {
-          // SD 未認識: 高音ビープ 3 回で代替警告（最低 volume 60 保証）
-          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
-          enqueueTask(createPlayMultiToneTask(2637, 150, 1, 1, 60));
-          enqueueTask(createPlayMultiToneTask(2637, 400, 1, 1, 60));
-        }
+        // WAV を再生（最低 volume 60 保証）。音声は本体 FLASH にあるので
+        // SD の有無に関係なく鳴る。0.982 までここに「SD 未認識なら高音ビープ
+        // 3 回」の代替があったが、SD が無くても喋るようになったので消した。
+        enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
                                      battery_percent(bv), bv));
       }
@@ -853,9 +843,10 @@ void loop() {
     // ★ このブロックの条件（地上・静止・リプレイ/ミラー以外）をそのまま使う。
     //   **飛行中は絶対に鳴らさない。**飛行中に較正はできないし、
     //   対処のしようがない警告で注意をそらすほうが危険だから。
-    //   SD が無い機体でも気づけるよう、WAV が鳴らせないときは低いトーンで代替する。
     //   最低保証音量は付けない。地上で静止しているとき＝人が機体のそばにいるときにしか
     //   鳴らないので、音量を絞る判断を上書きする理由が無い（60 は電池切れ専用）。
+    //   （0.982 まではここに「SD が無いときは低いトーンで代替」の分岐があった。
+    //     音声を FLASH に焼いたので SD の有無に関係なく必ず喋る。）
     {
       static uint32_t eskf_apply_last_warn_ms = 0;
       if (attitude_needs_apply()) {
@@ -863,10 +854,7 @@ void loop() {
             (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
           eskf_apply_last_warn_ms = now_ms;
           const bool muted = warn_muted_off_mount();
-          if (!muted) {
-            if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
-            else           enqueueTask(createPlayMultiToneTask(262, 250, 3, 3));
-          }
+          if (!muted) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
           enqueueTask(createLogSdfTask("ESKF CALIBRATION REQUIRED (on ground)%s",
                                        muted ? " (MUTED: charging + off mount)" : ""));
         }
@@ -898,11 +886,12 @@ void loop() {
       if (!calib_day_warned && !attitude_needs_apply() &&
           attitude_calib_date_stale(today_jst)) {
         calib_day_warned = true;
-        // WAV が無い機体・SD が無い機体でも気づけるよう、先に 2 音鳴らしてから
-        // WAV を積む（APPLY 成功音と同じ作り）。eskf_calib_required.wav は
-        // 流用しない。「較正が必要」と断定する文言になってしまうため。
+        // 先に 2 音鳴らしてから WAV を積む（APPLY 成功音と同じ作り）。
+        // 2 音は「これから何か言う」という注意の引き方なので、WAV が必ず鳴る
+        // ようになった今も残す。eskf_calib_required.wav は流用しない。
+        // 「較正が必要」と断定する文言になってしまうため。
         enqueueTask(createPlayMultiToneTask(1319, 90, 2));
-        if (good_sd()) enqueueTask(createPlayWavTask("wav/eskf_calib_oldday.wav", 3));
+        enqueueTask(createPlayWavTask("wav/eskf_calib_oldday.wav", 3));
         enqueueTask(createLogSdfTask("ESKF CALIB from another day (calib %lu, today %lu)",
                                      (unsigned long)attitude_get_calib_date(),
                                      (unsigned long)today_jst));

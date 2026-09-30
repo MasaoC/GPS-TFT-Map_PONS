@@ -84,13 +84,15 @@ static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
 
 // ============================================================
 //  警告の鳴らし方
-//    SD が無い機体でも必ず何か鳴るようにする。
-//      SD あり → 音声（WAV）。ファイルが開けなければ sound.cpp 側の
-//                共通フォールバック（500Hz×2）が鳴るので無音にはならない。
-//      SD なし → その警告ごとに決めたトーン。音で種類を区別できる。
+//    音声（WAV）は本体 FLASH にあるので、**SD の有無に関係なく必ず喋る**
+//    （0.982 で SD から FLASH へ移した。それまでは SD が無い機体では
+//     警告ごとに決めたトーンで代替していた）。
 //    優先度 3 = コース警告と同等。設定ミスや機器異常は飛ぶ前に気づく必要がある。
 // ============================================================
-//   wav に nullptr を渡すと常にトーンだけを鳴らす（音声にする必要が無い警告用）。
+//   wav に nullptr を渡すとトーンだけを鳴らす（音声にする必要が無い警告用）。
+//   ★ freq/dur/count はその nullptr の呼び出しのために残してある。
+//     WAV を持つ呼び出しでは使われないが、**引数ごと消さないこと。**
+//     トーン専用の警告（nullptr 渡し）が現に存在する。
 //
 //   min_vol（最低保証音量）は **既定 0 = 音量設定に従う**。
 //   ★ **60 を指定してよいのは電池切れの警告だけ。**
@@ -100,8 +102,8 @@ static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
 //     以前は link_alert() が全部 60 を付けていたので、無線の警告 8 種が
 //     まとめて音量設定を無視していた。
 static void link_alert(const char* wav, int freq, int dur, int count, int min_vol = 0) {
-    if (wav && good_sd()) enqueueTask(createPlayWavTask(wav, 3, min_vol));
-    else                  enqueueTask(createPlayMultiToneTask(freq, dur, count, 3, min_vol));
+    if (wav) enqueueTask(createPlayWavTask(wav, 3, min_vol));
+    else     enqueueTask(createPlayMultiToneTask(freq, dur, count, 3, min_vol));
 }
 
 // ---- 通信の統計（60 秒ごとにシステムログへ残す）----

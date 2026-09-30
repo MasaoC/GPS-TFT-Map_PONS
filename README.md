@@ -76,7 +76,7 @@ SD に残るログを `tools/` の解析にかけると、機体特性の分析�
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.981**（Build 20261001）。
+* 最新のソフトウェアバージョンは **0.982**（Build 20261001）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -638,7 +638,7 @@ JLCPCB の PCBA では実装されないため、**別途購入して手実装�
 
 | 場所 | 中身 |
 |---|---|
-| ルート直下 | **設定ファイルだけ**（`settings.txt` / `mapdata.csv` / `destinations.csv` / `override_pilon_coordinate.csv` / `logo.bmp` / `wav/`） |
+| ルート直下 | **設定ファイルだけ**（`settings.txt` / `mapdata.csv` / `destinations.csv` / `override_pilon_coordinate.csv` / `logo.bmp`） |
 | `data/` | 自機の飛行 CSV。**過去大会のデータもここに置きます** |
 | `received/` | 無線で受け取った機体のログ（受信モードのときだけ） |
 | `imu_replaydata/` | 姿勢（ESKF）の記録 |
@@ -808,11 +808,23 @@ SD カードが無くても表示されます（`src/flashdata/vectormap_data.cp
 
 ### WAV 音声ファイルの変更
 
-16kHz、Unsigned 8bit PCM、メタ情報なしの WAV ファイルが再生できます。
-書き出しには Audacity を推奨します。また設定から品質・ディザリングを「無し」にしてください。
-これをしないとノイズが入ります。ファイル長さは関係ありません。
+**音声は本体 FLASH に焼き込んであります（0.982 以降）。SD カードには置きません。**
+SD が無い・壊れている機体でも警報の音声が鳴るようにするためです。合計 31 本・
+約 1.9MB・125 秒ぶんで、16MB FLASH のうち約 12% を使っています。
 
-SD カードの `wav/` に置く、使用ファイル名は次のとおりです。
+差し替えの手順:
+
+1. リポジトリ直下の `wav/` にあるファイルを置き換える（16kHz / Unsigned 8bit PCM /
+   メタ情報なし）。書き出しには Audacity を推奨します。設定から品質・ディザリングを
+   「無し」にしてください。これをしないとノイズが入ります。ファイル長さは関係ありません。
+2. `python3 tools/clean_wav8.py wav/*.wav` で無音トリムとラウドネスを揃える（任意）
+3. **`python3 tools/gen_wav_flash.py` を実行**して `src/flashdata/wav_data.cpp` を作り直す
+4. ファームウェアを書き込む
+
+3 を忘れると音は変わりません。リリース前に `python3 tools/gen_wav_flash.py --check` を
+走らせると、`wav/` と焼き込み済みデータが CRC32 で一致しているか確認できます。
+
+焼き込んでいるファイル名は次のとおりです。
 
 | 分類 | ファイル名 |
 |---|---|
@@ -837,6 +849,11 @@ SD カードの `wav/` に置く、使用ファイル名は次のとおりです
 * `tools/vectormap/build_vectormap.py`：OpenStreetMap から内蔵ベクタ地図 `vectormap_data.cpp` を生成
 * `tools/png2bmp.py`：PNG 画像を起動ロゴ用 bmp へ変換
 * `tools/gen_link_icons.py`：PONS Link の電波アイコン（アンテナ本数・送信の弧）を生成
+* `tools/gen_wav_flash.py`：`wav/*.wav` を本体 FLASH 用の `src/flashdata/wav_data.cpp` へ変換
+  * `--check` で `wav/` と焼き込み済みデータを CRC32 照合（リリース前チェック用）
+  * ソース中の `"wav/*.wav"` を全部突き合わせ、`wav/` に無い名前があればビルド前に止める
+* `tools/clean_wav8.py`：`wav/` の音声の無音トリム・ヒス除去・ラウドネス統一
+  （**実行後は `gen_wav_flash.py` を回すこと**。焼き直さないと音は変わらない）
 * `tools/imulog/`：生 IMU ログ (`imuraw/*.bin`) の解析一式
   * `decode_imulog.py`：バイナリのデコード、セッション分割、時刻の復元
   * `eskf.py`：PC 上で動く ESKF（機上の `attitude.cpp` と同じ数式・同じマウント補正）

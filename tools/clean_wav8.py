@@ -1,18 +1,25 @@
 # ============================================================
 # File    : clean_wav8.py
 # Project : PONS v6 (Pilot Oriented Navigation System for HPA)
-# Role    : sd/wav/ の 8bit unsigned PCM 音声ファイルの一括クリーンアップ。
+# Role    : wav/ の 8bit unsigned PCM 音声ファイルの一括クリーンアップ。
 #           無音区間のディザ雑音（「スーッ」というヒス）除去、
 #           先頭・末尾の無音トリム、DC オフセット除去、
 #           ラウドネス統一（ファイル間の音量差解消）を行う。
+#
+#           出力先は wav/（リポジトリ直下）。0.982 で音声を SD から本体 FLASH へ
+#           移したので、ここは「焼き込む原本」であって配布する SD には入れない。
 #
 #           元の 16bit マスターが無い状態での後処理なので、
 #           「発話中」の量子化ノイズは除去できない（信号と混ざっているため）。
 #           消せるのは無音区間のヒスとレベルのバラつきのみ。
 #
-# 使い方  : python3 tools/clean_wav8.py sd/wav/*.wav          # 上書き
-#           python3 tools/clean_wav8.py -o out/ sd/wav/*.wav  # 別ディレクトリへ
-#           python3 tools/clean_wav8.py -n sd/wav/*.wav       # 解析のみ（書き込まない）
+# 使い方  : python3 tools/clean_wav8.py wav/*.wav          # 上書き
+#           python3 tools/clean_wav8.py -o out/ wav/*.wav  # 別ディレクトリへ
+#           python3 tools/clean_wav8.py -n wav/*.wav       # 解析のみ（書き込まない）
+#
+#           ★ 上書きしたあとは必ず python3 tools/gen_wav_flash.py を回すこと。
+#             音声は本体 FLASH に焼いてあるので、wav/ を直しただけでは
+#             ファームウェアの音は変わらない（0.982 以降）。
 # Author  : MasaoC (@masao_mobile)
 # ============================================================
 import wave

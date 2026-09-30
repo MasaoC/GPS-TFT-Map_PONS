@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20261001
-#define BUILDVERSION "0.981"
+#define BUILDVERSION "0.982"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -395,6 +395,31 @@
   } while(0)
 #else
   #define ASSERT_SD_CORE1(label) do {} while(0)
+#endif
+
+// ============================================================
+// SD 以外の「Core1 専用」の見張り（デバッグビルドのみ）
+//
+// SD を触らないが Core1 に閉じていなければならない処理のため。
+// 0.982 で音声を FLASH へ移して startPlayWav() が SD を触らなくなったが、
+// **Core1 専用であることは変わらない**（再生バッファとタイマー割り込みの状態を
+// 動かすので、Core0 から呼ぶと loop_sound() と衝突して音が壊れる）。
+// ASSERT_SD_CORE1 を流用すると「SD access from Core0」と嘘のメッセージが出て、
+// 実機ログを読む人を SD の方へ誤誘導するので分けてある。
+// ============================================================
+#ifndef RELEASE
+  #define ASSERT_CORE1(label) do { \
+    if (get_core_num() != 1) { \
+      static unsigned long _c1_; \
+      if (_c1_ == 0 || millis() - _c1_ >= 1000) { \
+        _c1_ = millis(); \
+        Serial.print("!!! Core1-only function called from Core0: " label); \
+        Serial.println(" (see CLAUDE.md: SD と音声は Core1 専用)"); \
+      } \
+    } \
+  } while(0)
+#else
+  #define ASSERT_CORE1(label) do {} while(0)
 #endif
 
 // ============================================================

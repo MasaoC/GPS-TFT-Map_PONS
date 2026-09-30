@@ -1262,10 +1262,18 @@ void startup_demo_tft() {
   }
 
 
-  if (good_sd()) {
-    // ロゴは FLASH に持つようになったので、SD からの読み込み依頼は不要。
-    enqueueTask(createPlayWavTask("wav/opening.wav")); 
-  } else {
+  // 起動音。ロゴも音声も FLASH に持っているので、SD からの読み込み依頼は不要。
+  enqueueTask(createPlayWavTask("wav/opening.wav"));
+
+  // ★ **SD 異常の警告ビープは起動音とは別に鳴らす。消さないこと。**
+  //   0.982 まではこれが「SD が無いときの起動音の代替」だったので、
+  //   音声を FLASH へ移したときに if の else ごと消すと **SD の故障に音で
+  //   気づく手段が 1 つも無くなる**（画面の赤字だけになり、起動画面を
+  //   見ていなければ気づけない。飛行ログが 1 本も残らないまま飛ぶことになる）。
+  //   通常トーン（solo_play=false）なので起動音の**あとではなく重なって**鳴る。
+  //   それでよい。500Hz の連続ビープはオープニングの音色と紛れないし、
+  //   solo_play にすると起動音そのものを潰してしまう。
+  if (!good_sd()) {
     enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
   }
 

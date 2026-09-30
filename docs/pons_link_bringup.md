@@ -98,11 +98,13 @@ GPIO41=CS / 42=SCK / 43=MOSI / 44=MISO。MISO と MOSI の入れ違いが定番�
 
 - 飛行 CSV が **`data/YYYY-MM-DD_HHMM.csv`** にできるか（ルート直下ではない）
 - リプレイ選択画面の `SOURCE` を切り替えて、`data/` と `received/` の両方が見えるか
-- **WAV を 1 つリネームして起動する。** 500Hz×2 のエラー音が鳴り、
-  `ERR wav missing: wav/….wav` がログに出て、**フッタの SD 表示が赤にならない**こと
-  （赤くなるのは `ERR wav open: … (SD err 0xNN)` のとき＝本当にカードが怪しいとき）
-- **デバッグビルドで `!!! SD access from Core0` がシリアルに出ない**こと
-  （出たら Core1 専用の約束が破れている。SDIO バスハングの原因になる）
+- ~~WAV を 1 つリネームして起動する~~ … 0.982 で音声を本体 FLASH へ移したので
+  この確認は無効（SD に `wav/` は無い）。代わりに **SD を抜いて起動し、
+  `opening.wav` が鳴ること**と **500Hz×10 の SD エラービープが重なって鳴ること**を見る。
+- **デバッグビルドで `!!! SD access from Core0` と
+  `!!! Core1-only function called from Core0` がシリアルに出ない**こと
+  （出たら Core1 専用の約束が破れている。前者は SDIO バスハング、
+  後者は再生バッファの破壊につながる）
 
 ### A-5 画面が収まっているか（★ 実機でしか分からない。項目が増えている）
 
@@ -304,7 +306,7 @@ GPIO41=CS / 42=SCK / 43=MOSI / 44=MISO。MISO と MOSI の入れ違いが定番�
     GNSS を取りこぼす。
   - 戻すと 10 秒以内に `OK` へ復帰し、RX 側の `Rx` がまた増え始めるか。
 - **設定を変えて WIRELESS 画面を出たとき、音声が鳴る**ことを確認する
-  （`wav/link_setting_changed.wav`。未作成なら 500Hz×2）。
+  （`wav/link_setting_changed.wav`。0.982 以降は FLASH にあるので SD の有無に関係なく鳴る）。
   **送信機・受信機の両方で鳴ること。** 受信機で鳴らないなら実装がモード依存になっている。
 - 3 台目を **TX** にして電源を入れ、RX 側の地図に
   `DUP SENDER !!` / `2 TX ON SAME CH/GROUP` の赤いポップアップと
