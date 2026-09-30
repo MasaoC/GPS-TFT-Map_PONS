@@ -1483,21 +1483,54 @@ static uint16_t wind_arrow_color(float mps) {
 }
 
 
-// 風ベクトルの矢印を (cx,cy) を中心に描く。長さは固定で、強さは色で表す。
+// 風ベクトルの矢印を (cx,cy) を中心に描き、その回転中心に風向を数字で重ねる。
+// 長さは固定で、強さは色で表す。
 // screen_deg: 画面の上を 0 とした時計回りの角度。前方は (+sin, -cos)。
-// 矢印は「風が吹いていく向き」を指す（気象通報の風向とは逆なので注意）。
-static void draw_wind_arrow(int cx, int cy, float screen_deg, uint16_t col) {
+// dir_to_deg: 風の真方位（attitude_get_wind() の「吹いていく向き」をそのまま渡す）。
+// 矢印は「風が吹いていく向き」を指す。**中心の数字はその逆**で、気象通報と同じ
+// 「吹いてくる向き」（南西の風なら 230）。矢印と数字が 180 度逆を向くのは意図通り。
+static void draw_wind_arrow(int cx, int cy, float screen_deg, uint16_t col, float dir_to_deg) {
   const float a = deg2rad(screen_deg);
   const float ca = cosf(a), sa = sinf(a);
   const int h = WIND_ARROW_LEN_PX / 2;
   const int tipx  = cx + (int)lroundf(sa * h),  tipy  = cy - (int)lroundf(ca * h);
   const int tailx = cx - (int)lroundf(sa * h),  taily = cy + (int)lroundf(ca * h);
-  backscreen.drawWideLine(tailx, taily, tipx, tipy, WIND_ARROW_WIDTH_PX, col);
-  // 矢じり。先端から WIND_ARROW_HEAD_PX 手前を底辺の中心にする。
+
+  // 中心に置く数字。フォントと色は draw_eskf_yaw() の機首方位に合わせる
+  // （並べて読むものなので、大きさや色が違うと別の意味の値に見える）。
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%03d", ((int)lroundf(dir_to_deg + 180.0f) % 360 + 360) % 360);
+  backscreen.loadFont(AA_FONT_SMALL);
+  const int tw = backscreen.textWidth(buf), th = backscreen.fontHeight();
+
+  // 矢じりの底辺の中心。先端から WIND_ARROW_HEAD_PX 手前。
   const int hw = WIND_ARROW_HEAD_PX;
   const int bx = cx + (int)lroundf(sa * (h - hw)), by = cy - (int)lroundf(ca * (h - hw));
-  const int px = (int)lroundf(ca * hw * 0.55f),    py = (int)lroundf(sa * hw * 0.55f);
+
+  // 軸は数字の手前で切る。切る長さは「幅 tw・高さ th の文字箱が矢印の向きへ
+  // どれだけ張り出すか」= (tw/2)|sin| + (th/2)|cos|。こうしておくと横向きの
+  // 矢印でも軸が数字を突き抜けない。
+  const int gap = (int)lroundf(fabsf(sa) * tw * 0.5f + fabsf(ca) * th * 0.5f) + 2;
+  const int gx = (int)lroundf(sa * gap), gy = (int)lroundf(ca * gap);
+  if (gap < h)      backscreen.drawWideLine(tailx, taily, cx - gx, cy + gy, WIND_ARROW_WIDTH_PX, col);
+  // ★ 先端側は tip ではなく**矢じりの底辺 (bx,by) まで**。
+  //   drawWideLine は端が半径 WIND_ARROW_WIDTH_PX/2 の丸（TFT_eSPI.cpp: "rounded ends"）で、
+  //   tip まで引くとその丸が頂点から 2px はみ出し、**先端が三角形でなく瘤になる**
+  //   （矢じりを後から描いても、はみ出した分は三角形の外なので消えない）。
+  //   数字が底辺より外まで来る角度（横向き）では、そもそも描く軸が無い。
+  //   残りが軸の太さに満たないときも描かない。**丸い端だけが底辺の外へ出て、
+  //   矢じりが欠けたように見える**（真下向きに近い角度で目立つ）。
+  if (h - hw - gap >= WIND_ARROW_WIDTH_PX)
+    backscreen.drawWideLine(cx + gx, cy - gy, bx, by, WIND_ARROW_WIDTH_PX, col);
+
+  // 矢じり。底辺の半幅は矢じり長の 0.55 倍。
+  const int px = (int)lroundf(ca * hw * 0.55f), py = (int)lroundf(sa * hw * 0.55f);
   backscreen.fillTriangle(tipx, tipy, bx + px, by + py, bx - px, by - py, col);
+
+  // 数字は軸・矢じりより後に描く（万一重なっても数字が読める側に残す）。
+  backscreen.setTextColor(COLOR_BLACK);
+  backscreen.setCursor(cx - tw / 2, cy - th / 2);
+  backscreen.print(buf);
 }
 
 #define ESKF_LABEL_X        2
@@ -1620,9 +1653,10 @@ void draw_eskf_attitude() {
       // 矢印は地図と同じ向き合わせ（TRACKUP は画面上＝トラック、NORTHUP は北）
       const float wscreen = is_trackupmode()
                             ? (wdir - (float)get_gnss_truetrack()) : wdir;
+      // 中心の数字は真方位なので、地図の向き（wscreen）とは別に wdir をそのまま渡す。
       draw_wind_arrow(ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2,
                       ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2,
-                      wscreen, wind_arrow_color(wspd));
+                      wscreen, wind_arrow_color(wspd), wdir);
       yblock_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
     }
 

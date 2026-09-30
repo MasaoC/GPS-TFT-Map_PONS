@@ -103,6 +103,11 @@
   uint32_t get_gnss_vacc_mm();     // 垂直精度推定値（NAV-PVT vAcc、mm 単位）
   uint32_t get_gnss_sacc_mmps();   // 速度精度推定値（NAV-PVT sAcc、mm/s 単位）
   float    get_gnss_veld_mps();    // GNSS 垂直速度（NAV-PVT velD、上昇正、m/s）
+  // 測位エポック（NAV-PVT iTOW、GPS 週内時刻 ms）。
+  // ★ 「その測位をもう使ったか」の判定に使う。millis() ではなく**測位の時刻**で
+  //   判定しないと、loop() が速いときに同じ観測を何度も融合してしまう
+  //   （imu.cpp の imu_kalman_gnss_vel_update のコメント参照）。
+  uint32_t get_gnss_itow_ms();
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
   bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 

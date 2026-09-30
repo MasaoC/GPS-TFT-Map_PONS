@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260928
-#define BUILDVERSION "0.980"
+#define BUILDDATE 20261001
+#define BUILDVERSION "0.981"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -712,9 +712,17 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 参考: sAcc² × R_SCALE のカルマンゲイン K[1] ≈ P/(P+R) への影響（P≈0.2 の場合）
 //   sAcc=0.1 → R=0.16  K≈0.56（有効に補正）
 //   sAcc=0.2 → R=0.64  K≈0.24（緩やかに補正）
-//   sAcc=0.3 → [GNSS_VSI_SACC_MAX_MPS でスキップ]
+//   sAcc=0.5 → R=4.0   K≈0.05（ほぼ効かない。R が自動で切ってくれる）
 //
-#define GNSS_VSI_SACC_MAX_MPS  0.3f  // 速度精度ハードゲート [m/s]（以上はスキップ）
+// ★ ハードゲートは「桁違いのゴミ」だけを切る値にすること。**0.3 は低すぎた。**
+//   実機 2026-09-30 の sAcc は静止・低速で 0.15〜0.38 に散らばり、0.3 を
+//   **91 分間に 393 回（毎分 4 回）またいでいた**。またぐたびに GNSS 速度観測が
+//   入る／入らないを切り替わるので、V/S の供給元が突然差し替わる。
+//   R_vel = sAcc² × R_SCALE の曲線が既に重みを落としているので、
+//   この付近をハードゲートで切る意味は無い（sAcc=0.3 で K≈0.12）。
+//   1.0 に上げると通る割合は 89.5% → 95.0%、またぐ回数は 393 → 39 回に減り、
+//   **本物の受信不良（トンネル: sAcc 2〜27m/s）だけを切る**ようになる。
+#define GNSS_VSI_SACC_MAX_MPS  1.0f  // 速度精度ハードゲート [m/s]（以上はスキップ。旧 0.3 → 崖を外した）
 #define GNSS_VSI_R_SCALE      16.0f  // R_vel 倍率（sAcc 小さい時のみ有効に機能させる）
 
 // ============================================================
@@ -1085,9 +1093,16 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 30 秒まで延ばしても 0.09 m/s しか改善しないので、表示が出るまでの待ち時間を優先する。
 #define WIND_LPF_SEC            10.0f
 #define WIND_MIN_SPEED_MPS       2.0f   // これ以上の対地速度でのみ推定する（地上で回さない）
-#define WIND_ARROW_LEN_PX          44   // 矢印の全長 [px]（強さは色で表すので長さは固定）
-#define WIND_ARROW_HEAD_PX         14   // 矢じりの長さ [px]
-#define WIND_ARROW_WIDTH_PX         3   // 軸の太さ [px]
+// 矢印の寸法。0.980 までの 44/14/3 px は地図の上で小さく、飛行中に向きが読めなかった。
+// 全長は固定（強さは色で表す）。
+// ★ 全長だけ 1.5 倍で、矢じり・軸は 1.3 倍。**全長を 57px（1.3 倍）に縮めないこと。**
+//   中心に風向の 3 桁（NotoSansBold15 で 27px 幅）が入るので、矢じりの底辺が
+//   中心から 27/2 + 余白 だけ離れていないと、横向き・斜めのときに数字と重なる。
+//   矢じりの底辺は中心から (LEN/2 - HEAD) = 15px にあり、ここがぎりぎり。
+//   軸は数字を避けて中央で切れる（draw_wind_arrow() 参照）。
+#define WIND_ARROW_LEN_PX          66   // 矢印の全長 [px]（強さは色で表すので長さは固定）
+#define WIND_ARROW_HEAD_PX         18   // 矢じりの長さ [px]
+#define WIND_ARROW_WIDTH_PX         4   // 軸の太さ [px]
 // 矢印の色分けのしきい値 [m/s]。地図が白背景なので、いずれも暗い色を使う
 // （黄色やオレンジは白地でほぼ見えなかった）。
 // ---- デモモードの疑似値（表示確認用。実機の推定には一切影響しない）----

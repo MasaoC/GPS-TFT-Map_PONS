@@ -665,6 +665,9 @@ uint32_t get_gnss_hacc_mm() {
 uint32_t get_gnss_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gnss_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gnss_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
+// 測位エポック（iTOW, ms）。ミラーは通さない — これは**自機の受信機**が
+// いつ測位したかであり、同じ観測の二重利用を防ぐためだけに使う。
+uint32_t get_gnss_itow_ms()    { return ubx_itow_ms; }   // NAV-PVT iTOW（GPS 週内時刻, ms）
 bool get_gnss_fixok() {
   if (link_mirror_active()) return link_get_fix_ok();
   return ubx_gnssFixOK;                                    // gnssFixOK フラグ
