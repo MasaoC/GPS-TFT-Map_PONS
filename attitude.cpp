@@ -193,6 +193,22 @@ static uint8_t  yaw_arm_    = 0;          // しきい値超過が連続した�
 static float    bias_sum_[3] = {0, 0, 0};
 static uint32_t bias_n_      = 0;
 
+// ---- 水平化前に使う「重力方向」の暫定値（センサー軸）----
+// ★★ **バリオは起動直後から鉛直加速度を要求する。ESKF の水平化（静止 2 秒）を
+//   待たせてはいけない。** 0.983 で attitude_get_up_sensor() を「水平化済みのみ
+//   true」にしたところ、**手持ちで静止区間が取れないとバリオが完全に止まった**
+//   （2026-10-01 に実機で発覚。インドア 38 秒・|ω| 中央 5.1deg/s で静止 2 秒が無かった）。
+//   症状は「高度は追従するのに V/S だけ 0 で固まる」。機序はバリオ側:
+//   バリオ KF の初期 P は対角なので、**predict を一度も通らないと P[1][0] が 0 の
+//   ままで、気圧観測のゲイン K[1] = P[1][0]/S が 0 になり速度状態が構造的に動かない。**
+//   だから「気圧のみに劣化」ではなく「完全停止」だった。
+//   対策は 2 段構え。こちらは (1) で、加速度の低域だけで重力方向を常に持っておく。
+//   (2) は imu.cpp 側で「上方向が無くても predict は止めない」。
+// ★ 旋回中は比力が鉛直からずれるので、これは ESKF の代わりにはならない。
+//   あくまで水平化までの繋ぎ（＝ 0.982 までの GRV と同程度の品質）。
+static float up_lp_[3] = {0.0f, 0.0f, 1.0f};
+static bool  up_lp_valid_ = false;
+
 
 // ============================================================
 // クォータニオン / ベクトル ユーティリティ
@@ -320,6 +336,11 @@ void attitude_setup() {
     yaw_arm_ = 0;
     bias_n_ = 0;
     for (int i = 0; i < 3; i++) bias_sum_[i] = 0.0f;
+    // 重力方向の暫定値も捨てる。実機では setup() が 1 回しか呼ばれないので
+    // 影響は無いが、残すと「加速度が 1 度も来ていないのに上方向を返す」状態になる
+    // （tools/attitude_test が実際に捕まえた）。
+    up_lp_valid_ = false;
+    up_lp_[0] = up_lp_[1] = 0.0f; up_lp_[2] = 1.0f;
     dt_count_ = 0;
     dt_idx_ = 0;
     dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
@@ -432,6 +453,20 @@ void attitude_on_accel(const float a[3]) {
     accel_last_[0] = a[0]; accel_last_[1] = a[1]; accel_last_[2] = a[2];
     accel_valid_ = true;
 
+    // ---- 重力方向の暫定値を**常に**更新する（水平化を待たない）----
+    // 理由は up_lp_ の宣言のコメント（バリオが止まる件）。
+    // |a| が g から大きく外れている間（持ち上げ・衝撃）は更新しない。
+    {
+        const float an = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+        if (an > 1.0f && fabsf(an - GRAVITY) < ESKF_UP_LP_ACC_TOL) {
+            // 初回は一発で入れる（起動直後からバリオを動かすため）
+            const float k = up_lp_valid_ ? ESKF_UP_LP_GAIN : 1.0f;
+            for (int i = 0; i < 3; i++) up_lp_[i] += (a[i] / an - up_lp_[i]) * k;
+            const float n = sqrtf(up_lp_[0]*up_lp_[0] + up_lp_[1]*up_lp_[1] + up_lp_[2]*up_lp_[2]);
+            if (n > 1e-6f) { for (int i = 0; i < 3; i++) up_lp_[i] /= n; up_lp_valid_ = true; }
+        }
+    }
+
     // 静止中は平均を溜める。これが初期姿勢の重力方向になる（旧 GRV の平均の代わり）。
     if (!static_now_ || initialized_) return;
     for (int i = 0; i < 3; i++) acc_sum_[i] += a[i];
@@ -444,13 +479,24 @@ bool    attitude_yaw_ready()      { return yaw_set_; }
 // センサー座標系で見た「上」方向 = 回転行列の第 3 行。
 // ★ imu.cpp の compute_earth_z_accel() が GRV から作っていたものと**同じ量**。
 //   バリオはこれと比力の内積で鉛直加速度を取る。
+// ★ **水平化前でも使える値を返すこと。** 呼び出し側（バリオ）は起動直後から
+//   鉛直加速度を要求する。false を返して predict を止めさせると V/S が 0 に
+//   固まる（up_lp_ の宣言のコメント参照。2026-10-01 に実機で発覚）。
+//   戻り値 false は「加速度がまだ 1 度も来ていない」だけを意味する。
 bool attitude_get_up_sensor(float u[3]) {
-    if (!initialized_) { u[0] = u[1] = 0.0f; u[2] = 1.0f; return false; }
-    const float w = q_[0], x = q_[1], y = q_[2], z = q_[3];
-    u[0] = 2.0f * (x*z - w*y);
-    u[1] = 2.0f * (y*z + w*x);
-    u[2] = 1.0f - 2.0f * (x*x + y*y);
-    return true;
+    if (initialized_) {
+        const float w = q_[0], x = q_[1], y = q_[2], z = q_[3];
+        u[0] = 2.0f * (x*z - w*y);
+        u[1] = 2.0f * (y*z + w*x);
+        u[2] = 1.0f - 2.0f * (x*x + y*y);
+        return true;
+    }
+    if (up_lp_valid_) {          // 水平化までの繋ぎ（加速度の低域）
+        for (int i = 0; i < 3; i++) u[i] = up_lp_[i];
+        return true;
+    }
+    u[0] = u[1] = 0.0f; u[2] = 1.0f;
+    return false;
 }
 
 

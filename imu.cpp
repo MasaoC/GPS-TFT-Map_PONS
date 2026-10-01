@@ -409,6 +409,21 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
                 float horiz_sq = body_sq - az_world * az_world;
                 _acc_vsum += az_world - GRAVITY_MPS2;
                 _acc_hsum += (horiz_sq > 0.0f) ? sqrtf(horiz_sq) : 0.0f;
+            } else {
+                // ★★ **上方向が無くても predict を止めてはいけない。**
+                //   バリオ KF の初期 P は対角なので、**predict を一度も通らないと
+                //   P[1][0] が 0 のままで、気圧観測のゲイン K[1] = P[1][0]/S が 0 に
+                //   なり、速度状態（＝ V/S）が構造的に 1 度も動かない。**
+                //   高度 kf_x[0] だけは K[0] で追従するので、症状は
+                //   「センサーは生きているのに V/S だけ 0 で固まる」になる。
+                //   2026-10-01 に実機で発覚（0.983 で attitude_get_up_sensor() が
+                //   水平化前に false を返す作りにしたのが原因）。
+                //   ここは加速度ゼロ＝恒速モデルとして回す。BNO085 なし時の
+                //   kf_predict(0.0f, dt) と同じ縮退で、気圧ベースのバリオになる。
+                _acc_vsum += 0.0f;
+                _acc_hsum += 0.0f;
+            }
+            {
                 if (_acc_cnt < 60000) _acc_cnt++;   // 念のための飽和ガード
                 _acc_last_us = time_us_32();
                 _accel_valid = true;
