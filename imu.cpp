@@ -35,7 +35,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/17
+// Updated : 2026/10/01
 // ============================================================
 
 #include <Arduino.h>
@@ -136,9 +136,9 @@ static uint16_t _acc_cnt  = 0;      // 合計したサンプル数
 static uint32_t _acc_last_us = 0;   // 最後に ACCELEROMETER を受信した時刻 [µs]（鮮度チェック用）
 static bool     _accel_valid = false;
 
-// 定義は下（Kalman セクション）にあるが、imu_sensor_handler() から先に使うため前方宣言する。
-static float compute_earth_z_accel(float ax, float ay, float az,
-                                   float qw, float qx, float qy, float qz);
+// ★ 0.983 で imu_sensor_handler() が compute_earth_z_accel() を呼ばなくなった
+//   （上方向を ESKF から取るようになった）ので前方宣言は要らない。
+//   関数自体は VARIO_USE_RAW_ACCEL=0 の経路（LINEAR_ACCELERATION）が使う。
 #endif
 
 // ============================================================
@@ -342,7 +342,9 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
             _quat_valid = true;
             _grv_cnt++;
             imulog_push(IMULOG_ID_GAMERV, (uint32_t)sv.timestamp, sv.status, _qw, _qx, _qy, _qz);
-            attitude_on_grv(_qw, _qx, _qy, _qz);   // 静止中の平均で ESKF を初期化する
+            // ★ 0.983 で attitude_on_grv() の呼び出しをやめた。ESKF は静止中の
+            //   平均加速度から水平化する（GRV と実測 0.05 度以内で一致）。
+            //   GRV 自体は「BNO085 との比較表示」と quat 健全性カウンタに残している。
             break;
         }
 
@@ -386,11 +388,21 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
             attitude_on_accel(a);
 #if VARIO_USE_RAW_ACCEL
             // ---- バリオ KF 用: 地球座標系の鉛直/水平加速度をここで作って足し込む ----
-            // 重力込みの比力を GRV で回し、鉛直成分から重力を引く。
+            // 重力込みの比力を「上方向」へ射影し、重力を引く。
             // BNO085 の LINEAR_ACCELERATION と違い、引く重力が固定値なので
             // 「動作に相関した誤差」が入らない（settings.h の VARIO_USE_RAW_ACCEL 参照）。
-            if (_quat_valid) {
-                float az_world = compute_earth_z_accel(a[0], a[1], a[2], _qw, _qx, _qy, _qz);
+            //
+            // ★ **0.983 で上方向の出どころを GRV から ESKF の姿勢へ移した。**
+            //   式は変えていない。attitude_get_up_sensor() が返すのは回転行列の
+            //   第 3 行で、GRV から compute_earth_z_accel() が作っていた係数と同じもの。
+            //   GRV に依存しなくなったので SCH16T でも同じ経路が使える。
+            //   実ログでの影響（20260930 の 52 分 + 20260818 の 3 セッション）:
+            //     V/S の差 sd 0.012〜0.060 m/s、高度差 |max| 0.33m。
+            //     最大差が出るのは GNSS が途絶している瞬間（ESKF には重力の錨が無い）。
+            //   → docs/imu_sch16t_plan.md
+            float u_up[3];
+            if (attitude_get_up_sensor(u_up)) {
+                float az_world = u_up[0]*a[0] + u_up[1]*a[1] + u_up[2]*a[2];
                 // 水平成分: 二乗ノルムは回転で不変なので |a|² − a_world_z²。
                 // ここでの a_world_z は重力を引く前の値である点に注意。
                 float body_sq  = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
@@ -429,7 +441,10 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
             _rv_cnt++;
             imulog_push(IMULOG_ID_RV, (uint32_t)sv.timestamp, sv.status, _rv_qw, _rv_qx, _rv_qy, _rv_qz);
             // 地磁気補正付きの方位を ESKF の初期ヨーに使う（収束を待たずに絶対方位を持つため）
-            attitude_on_rv(_rv_qw, _rv_qx, _rv_qy, _rv_qz, _rv_accuracy);
+            // ★ 0.983 で attitude_on_rv() の呼び出しをやめた。初期ヨーは GNSS 航跡から
+            //   入れる。地磁気ヨーは実測で GNSS 航跡から 57.8 度ずれていた
+            //   （settings.h の ESKF_YAW_INIT_MIN_SPEED_MPS のコメント）。
+            //   RV は方位の比較表示（get_imu_euler のヨー）にだけ残している。
             break;
 
         default:
@@ -1595,7 +1610,10 @@ void imu_update() {
     // クォータニオンと加速度の両方が揃っており、かつ Kalman が初期化済みのときのみ実行。
     // （初期化は最初の気圧高度到着時に imu_kalman_baro_update() が行う）
 #if VARIO_USE_RAW_ACCEL
-    if (!_quat_valid || !_accel_valid || !kf_initialized) {
+    // ★ _quat_valid（GRV）は条件から外した。上方向は ESKF から取るので、
+    //   「足し込めたか」を表す _accel_valid だけで足りる（足し込みは
+    //   attitude_get_up_sensor() が成功したときにしか起きない）。
+    if (!_accel_valid || !kf_initialized) {
         // KF 初期化前（最初の気圧高度が来る前）は predict しない。
         // ここで捨てておかないと、初期化されるまで蓄積が伸び続けてしまう。
         _acc_vsum = _acc_hsum = 0.0f;

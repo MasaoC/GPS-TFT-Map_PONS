@@ -1051,9 +1051,10 @@ void loop() {
       {
         float lvr, lvp;
         attitude_get_level_offset(lvr, lvp);
-        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f mag=%d lvl R%+.1f P%+.1f",
+        // yawsrc: 0 = 未設定（絶対方位が無い） / 1 = GNSS 航跡から入れた
+        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f yawsrc=%d lvl R%+.1f P%+.1f",
                                      (int)attitude_ready(), attitude_get_yaw_sigma_deg(),
-                                     (int)attitude_yaw_from_mag(), lvr, lvp));
+                                     (int)attitude_get_yaw_source(), lvr, lvp));
       }
     }
   }

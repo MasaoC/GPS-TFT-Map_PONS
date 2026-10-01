@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/28
+// Updated : 2026/10/01
 // ============================================================
 
 #ifndef ATTITUDE_H
@@ -87,11 +87,11 @@ void attitude_setup();
 // ジャイロ到着で predict を回す（加速度は直近値を使う）。単位は rad/s と m/s²。
 void attitude_on_gyro(const float g[3], uint32_t t_us);
 void attitude_on_accel(const float a[3]);
-// BNO085 の GAME_ROTATION_VECTOR。静止中の平均を初期姿勢に使う（磁気なし）。
-void attitude_on_grv(float qw, float qx, float qy, float qz);
-// BNO085 の ROTATION_VECTOR（地磁気補正あり）。初期ヨーの絶対基準に使う。
-// accuracy_rad は BNO085 が報告するヘディング精度推定 [rad]（負なら未キャリブ）。
-void attitude_on_rv(float qw, float qx, float qy, float qz, float accuracy_rad);
+// ★ 0.983 で attitude_on_grv() / attitude_on_rv() を削除した。
+//   初期ロール・ピッチは静止中の平均加速度から作り（GRV と実測 0.05 度以内で一致）、
+//   初期ヨーは GNSS 航跡から入れる。**生ジャイロと生加速度だけで初期化できる**ので
+//   BNO085 でも SCH16T でも同じ経路が使える。経緯は settings.h の
+//   ESKF_YAW_INIT_MIN_SPEED_MPS のコメント。
 
 // ---- GNSS 速度観測（gnss.cpp の NAV-PVT 解析から呼ぶ）----
 // 引数は UBX 原義の NED（velD は下降正）。内部で ENU へ変換する。
@@ -159,9 +159,19 @@ void  attitude_set_wind_enabled(bool on);
 // 補正が入った瞬間に一度だけ true を返す（ログ記録用）。
 // applied にその回の補正量、total に累積量が入る。
 bool  attitude_take_roll_trim_event(float &applied, float &total);
-// 初期ヨーに地磁気（ROTATION_VECTOR）を使えたか。false なら磁気なしで初期化した
-// ＝ 起動直後の絶対方位は無意味で、機動して収束するまで待つ必要がある。
-bool  attitude_yaw_from_mag();
+// ヨーの情報源。水平化しただけの状態ではまだヨーが無いことを表示・ログへ伝える。
+//   ATT_YAW_SRC_NONE  … 未設定。絶対方位は無意味（表示側は eskf_yaw_reliable() で灰色にする）
+//   ATT_YAW_SRC_GNSS  … GNSS 航跡から入れた
+enum { ATT_YAW_SRC_NONE = 0, ATT_YAW_SRC_GNSS = 1 };
+uint8_t attitude_get_yaw_source();
+// ヨーが設定済みか。false のあいだは GNSS 速度観測を入れていない
+// （ヨー誤差がロール・ピッチへ転嫁されるため。attitude.cpp のコメント参照）。
+bool  attitude_yaw_ready();
+// センサー座標系で見た「上」方向（= 回転行列の第 3 行）。
+// ★ バリオが比力から重力を抜くのに使う。imu.cpp の compute_earth_z_accel() が
+//   GRV で計算していたものと**同じ量**で、q の出どころだけが違う。
+//   戻り値 false = まだ水平化できていないので使ってはいけない。
+bool  attitude_get_up_sensor(float u[3]);
 bool  attitude_is_static();                  // 静止判定の現在値
 float attitude_get_static_secs();            // 静止が継続している秒数
 uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回数

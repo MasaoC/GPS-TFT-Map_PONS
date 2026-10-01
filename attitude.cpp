@@ -5,7 +5,7 @@
 //           数式・座標系・マウント補正の説明は attitude.h を参照。
 //           PC 側の tools/imulog/eskf.py と対になっている。片方を直したら両方直すこと。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/10
+// Updated : 2026/10/01
 // ============================================================
 
 #include <Arduino.h>
@@ -175,18 +175,23 @@ static float    dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
 // ============================================================
 static bool     static_now_ = false;
 static uint32_t static_since_us_ = 0;
-static float    grv_sum_[4] = {0, 0, 0, 0};   // 静止中の GRV 累積（初期姿勢の平均用）
-static uint32_t grv_count_ = 0;
-static bool     grv_have_ = false;
-static float    grv_last_[4] = {1, 0, 0, 0};
+// 静止中の加速度累積（初期姿勢＝重力方向の平均用）。
+// ★ GRV の代わり。実測で GRV とロール・ピッチが 0.05 度以内で一致する
+//   （20260930 / 20260818 の計 5 セッション。→ docs/imu_sch16t_plan.md）。
+static float    acc_sum_[3] = {0, 0, 0};
+static uint32_t acc_count_  = 0;
 
-// ROTATION_VECTOR（地磁気補正あり）。初期ヨーの絶対基準に使う。
-static float    rv_sum_[4]  = {0, 0, 0, 0};
-static uint32_t rv_count_   = 0;
-static bool     rv_have_    = false;
-static float    rv_last_[4] = {1, 0, 0, 0};
-static float    rv_acc_rad_ = -1.0f;      // BNO085 のヘディング精度推定（負 = 未キャリブ）
-static bool     yaw_from_mag_ = false;    // 初期ヨーに地磁気を使えたか
+// ---- ヨーの状態 ----
+// ★ **ロール・ピッチ（leveled_ = initialized_）とヨー（yaw_set_）を分けている。**
+//   重力からはロール・ピッチしか決まらないので、水平化した時点でヨーは未知。
+//   バンク警報とバリオはロール・ピッチだけで動くので、ヨーを待たずに立てる。
+static bool     yaw_set_    = false;
+static uint8_t  yaw_src_    = ATT_YAW_SRC_NONE;
+static uint8_t  yaw_arm_    = 0;          // しきい値超過が連続した測位数
+
+// ---- 静止中のジャイロバイアス学習 ----
+static float    bias_sum_[3] = {0, 0, 0};
+static uint32_t bias_n_      = 0;
 
 
 // ============================================================
@@ -230,21 +235,57 @@ static void quat_to_R(const float q[4], float R[3][3]) {
 }
 
 
-// 磁北基準の姿勢を真北基準へ回す。
-//
-// 出力ヨーは euler_from_state() で yaw_out = -sensor_yaw と定義してある。
-// 真方位 = 磁方位 + 偏角 にしたいので
-//     -sensor_yaw_true = -sensor_yaw_mag + decl
-//     sensor_yaw_true  = sensor_yaw_mag - decl
-// ワールド Z 軸まわりに δ 回すと sensor_yaw は +δ 動くので δ = -decl。
-// （符号を間違えやすいので tools/attitude_test で数値検証している）
-static void apply_declination(float q[4]) {
-    const float d = -ESKF_MAG_DECLINATION_DEG * (float)M_PI / 180.0f;
-    const float qz[4] = { cosf(d * 0.5f), 0.0f, 0.0f, sinf(d * 0.5f) };
+// ワールド Z 軸まわりに δ [rad] だけ回す。**ロール・ピッチは動かない。**
+// Rz(δ)·Rz(ψ)Ry(θ)Rx(φ) = Rz(δ+ψ)Ry(θ)Rx(φ) なので ZYX 抽出のヨーだけに δ が乗る。
+// 誤差状態 dtheta と同じくワールド系の回転なので**左から**掛ける。
+static void rotate_world_z(float q[4], float d_rad) {
+    const float qz[4] = { cosf(d_rad * 0.5f), 0.0f, 0.0f, sinf(d_rad * 0.5f) };
     float out[4];
-    quat_mul(qz, q, out);      // ワールド系の回転なので左から掛ける
+    quat_mul(qz, q, out);
     for (int i = 0; i < 4; i++) q[i] = out[i];
     quat_normalize(q);
+}
+
+
+// ============================================================
+// 重力方向への水平化
+// ============================================================
+// 測った比力 a（静止中なら重力方向）へ姿勢を寄せる。
+//   gain = 1.0 … 一発で合わせる（初期化用）
+//   gain < 1.0 … 相補フィルタとしてゆっくり寄せる（静止中の維持用）
+//
+// ★ **回転軸は必ず水平になるのでヨーは動かない。**
+//   姿勢が正しければ「a をワールドへ回したもの」は +Z になる。ずれていれば
+//   その gw を +Z へ運ぶ回転が補正量で、軸 = gw × ẑ = (gw_y, -gw_x, 0)。
+//   Z 成分が構造的に 0 なので、ヨーには一切触らない。
+//
+// 戻り値 false = 加速度が小さすぎて方向が決まらない（何もしていない）。
+static bool level_toward_gravity(const float a[3], float gain) {
+    const float n = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+    if (n < 1e-3f) return false;
+
+    float R[3][3];
+    quat_to_R(q_, R);
+    float gw[3];
+    for (int i = 0; i < 3; i++)
+        gw[i] = (R[i][0]*a[0] + R[i][1]*a[1] + R[i][2]*a[2]) / n;
+
+    // gw を +Z へ運ぶ回転（ワールド系）
+    float axis[2] = { gw[1], -gw[0] };
+    float s = sqrtf(axis[0]*axis[0] + axis[1]*axis[1]);   // = sin(角度)
+    if (s < 1e-7f) {
+        if (gw[2] > 0.0f) return true;     // すでに水平。何もしなくてよい
+        // 真逆さ。軸が決まらないので任意の水平軸で 180 度回す
+        axis[0] = 1.0f; axis[1] = 0.0f; s = 1.0f;
+    }
+    const float ang = atan2f(s, gw[2]) * gain;
+    const float rot[3] = { axis[0] / s * ang, axis[1] / s * ang, 0.0f };
+    float dq[4], qn[4];
+    quat_from_rotvec(rot, dq);
+    quat_mul(dq, q_, qn);                 // ワールド系なので左から
+    for (int i = 0; i < 4; i++) q_[i] = qn[i];
+    quat_normalize(q_);
+    return true;
 }
 
 
@@ -253,7 +294,7 @@ static void apply_declination(float q[4]) {
 // ============================================================
 // att_sigma_deg はロール・ピッチ、yaw_sigma_deg はヨーの初期標準偏差。
 // 誤差状態はワールド系（global error）なので、添字 2 が鉛直軸まわり＝ヨーになる。
-// ヨーを別扱いにする理由は settings.h の ESKF_INIT_YAW_SIGMA_DEG のコメント参照。
+// ヨーを別扱いにする理由は settings.h の ESKF_YAW_UNKNOWN_SIGMA_DEG のコメント参照。
 static void reset_covariance(float att_sigma_deg, float yaw_sigma_deg) {
     memset(P_, 0, sizeof(P_));
     float a = att_sigma_deg * (float)M_PI / 180.0f;
@@ -269,17 +310,16 @@ void attitude_setup() {
     q_[0] = 1; q_[1] = q_[2] = q_[3] = 0;
     v_[0] = v_[1] = v_[2] = 0;
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
-    reset_covariance(10.0f, ESKF_INIT_YAW_SIGMA_DEG);
+    reset_covariance(10.0f, ESKF_YAW_UNKNOWN_SIGMA_DEG);
     initialized_ = false;
     accel_valid_ = false;
-    grv_have_ = false;
-    grv_count_ = 0;
-    for (int i = 0; i < 4; i++) grv_sum_[i] = 0;
-    rv_have_ = false;
-    rv_count_ = 0;
-    rv_acc_rad_ = -1.0f;
-    yaw_from_mag_ = false;
-    for (int i = 0; i < 4; i++) rv_sum_[i] = 0;
+    acc_count_ = 0;
+    for (int i = 0; i < 3; i++) acc_sum_[i] = 0.0f;
+    yaw_set_ = false;
+    yaw_src_ = ATT_YAW_SRC_NONE;
+    yaw_arm_ = 0;
+    bias_n_ = 0;
+    for (int i = 0; i < 3; i++) bias_sum_[i] = 0.0f;
     dt_count_ = 0;
     dt_idx_ = 0;
     dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
@@ -327,65 +367,61 @@ static bool gnss_vel_fresh() {
     return (uint32_t)(time_us_32() - last_gnss_vel_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
 }
 
-// 静止中に貯めた GRV の平均で姿勢を初期化する。
-// 静止していれば GRV は重力基準なのでロール・ピッチは正しい。
-// （ヨーは磁気なしで漂うが、初期化時点のヨーは後の GNSS 観測で拘束されるので気にしない）
-static bool init_from_static_grv() {
-    float q[4];
-    yaw_from_mag_ = false;
-
-#if ESKF_INIT_USE_RV
-    // 地磁気補正付きの ROTATION_VECTOR が十分な精度で得られていればそちらを使う。
-    // ロール・ピッチは GRV と同じ（どちらも重力基準）で、ヨーだけ磁北基準になる。
-    // これで起動直後から妥当な方位を持てる（ESKF 単独では収束まで絶対方位が無い）。
-    if (rv_count_ >= 4 && rv_acc_rad_ >= 0.0f &&
-        rv_acc_rad_ * 180.0f / (float)M_PI <= ESKF_RV_ACC_MAX_DEG) {
-        for (int i = 0; i < 4; i++) q[i] = rv_sum_[i] / (float)rv_count_;
-        quat_normalize(q);
-        apply_declination(q);          // 磁北基準 → 真北基準（GNSS 速度と同じ系に揃える）
-        yaw_from_mag_ = true;
-    } else
-#endif
-    {
-        if (grv_count_ < 4) return false;
-        for (int i = 0; i < 4; i++) q[i] = grv_sum_[i] / (float)grv_count_;
-        quat_normalize(q);
-    }
-    for (int i = 0; i < 4; i++) q_[i] = q[i];
+// 重力方向から姿勢を初期化する。**ロール・ピッチだけが決まり、ヨーは未知。**
+// ヨーは後で GNSS 航跡から入れる（init_yaw_from_track）。
+//   a             : 重力方向とみなす比力（静止平均、または走行中なら直近値）
+//   att_sigma_deg : ロール・ピッチの初期σ
+static bool init_level(const float a[3], float att_sigma_deg) {
+    q_[0] = 1.0f; q_[1] = q_[2] = q_[3] = 0.0f;
+    if (!level_toward_gravity(a, 1.0f)) return false;
     v_[0] = v_[1] = v_[2] = 0.0f;
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
-    reset_covariance(ESKF_INIT_ATT_SIGMA_DEG, ESKF_INIT_YAW_SIGMA_DEG);
-    initialized_ = true;
+    reset_covariance(att_sigma_deg, ESKF_YAW_UNKNOWN_SIGMA_DEG);
+    initialized_ = true;      // = 水平化済み。ロール・ピッチとバリオはここから有効
+    yaw_set_     = false;
+    yaw_src_     = ATT_YAW_SRC_NONE;
+    yaw_arm_     = 0;
+    bias_sum_[0] = bias_sum_[1] = bias_sum_[2] = 0.0f;
+    bias_n_ = 0;
     return true;
 }
 
-// 静止区間が取れないまま走り出した場合のフォールバック。
-// 直近の GRV を初期姿勢にするが、静止平均ほど信用できないので
-// 姿勢の初期不確かさを大きめに取り、GNSS 観測で速く引き戻せるようにする。
-// （2026-08-18 の session 2 は屋内起動→走行中に記録開始で静止区間が無く、
-//   初期姿勢誤差がジャイロバイアスに吸われて 5.9deg/s に固着した）
-static bool init_from_last_grv() {
-    yaw_from_mag_ = false;
-#if ESKF_INIT_USE_RV
-    if (rv_have_ && rv_acc_rad_ >= 0.0f &&
-        rv_acc_rad_ * 180.0f / (float)M_PI <= ESKF_RV_ACC_MAX_DEG) {
-        for (int i = 0; i < 4; i++) q_[i] = rv_last_[i];
-        quat_normalize(q_);
-        apply_declination(q_);
-        yaw_from_mag_ = true;
-    } else
-#endif
-    {
-        if (!grv_have_) return false;
-        for (int i = 0; i < 4; i++) q_[i] = grv_last_[i];
-        quat_normalize(q_);
+// GNSS 航跡でヨーだけを差し替える。ロール・ピッチは動かない。
+//   出力方位は heading = 90 - yaw_math[deg] なので d(heading)/d(yaw_math) = -1。
+//   ワールド Z を α 回すと yaw_math が +α 動くので α = -(want - now)。
+//   （符号を間違えやすいので tools/attitude_test で数値検証している）
+static void init_yaw_from_track(float track_deg, float yaw_sigma_deg) {
+    float r, p, y;
+    euler_from_state(r, p, y);                  // いまの出力方位
+    float d = track_deg - y;
+    while (d >  180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    rotate_world_z(q_, -d * (float)M_PI / 180.0f);
+
+    // ヨーを外部情報で置き換えたので、ヨーの分散を入れ直し、
+    // **他の状態との相関は意味を失うので落とす。**
+    const float s = yaw_sigma_deg * (float)M_PI / 180.0f;
+    for (int i = 0; i < N_ERR; i++) { P_[2][i] = 0.0f; P_[i][2] = 0.0f; }
+    P_[2][2] = s * s;
+
+    yaw_set_ = true;
+    yaw_src_ = ATT_YAW_SRC_GNSS;
+}
+
+// 静止中にジャイロのゼロ点を測って bg_ に入れる。
+// 引数は**生の**ジャイロ（bg_ を引く前）。目的と注意は settings.h の
+// ESKF_BIAS_LEARN_SAMPLES のコメント参照。
+static void learn_gyro_bias(const float g[3]) {
+    for (int i = 0; i < 3; i++) bias_sum_[i] += g[i];
+    if (++bias_n_ < ESKF_BIAS_LEARN_SAMPLES) return;
+    for (int i = 0; i < 3; i++) {
+        float b = bias_sum_[i] / (float)bias_n_;
+        if (b >  ESKF_BIAS_LEARN_MAX_RADS) b =  ESKF_BIAS_LEARN_MAX_RADS;
+        if (b < -ESKF_BIAS_LEARN_MAX_RADS) b = -ESKF_BIAS_LEARN_MAX_RADS;
+        bg_[i] = b;
+        bias_sum_[i] = 0.0f;
     }
-    for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
-    reset_covariance(ESKF_INIT_ATT_SIGMA_MOVING_DEG,
-                     ESKF_INIT_ATT_SIGMA_MOVING_DEG > ESKF_INIT_YAW_SIGMA_DEG
-                       ? ESKF_INIT_ATT_SIGMA_MOVING_DEG : ESKF_INIT_YAW_SIGMA_DEG);
-    initialized_ = true;
-    return true;
+    bias_n_ = 0;
 }
 
 
@@ -395,46 +431,28 @@ static bool init_from_last_grv() {
 void attitude_on_accel(const float a[3]) {
     accel_last_[0] = a[0]; accel_last_[1] = a[1]; accel_last_[2] = a[2];
     accel_valid_ = true;
-}
 
-void attitude_on_grv(float qw, float qx, float qy, float qz) {
-    grv_last_[0] = qw; grv_last_[1] = qx; grv_last_[2] = qy; grv_last_[3] = qz;
-    quat_normalize(grv_last_);
-    grv_have_ = true;
-
+    // 静止中は平均を溜める。これが初期姿勢の重力方向になる（旧 GRV の平均の代わり）。
     if (!static_now_ || initialized_) return;
-    // 静止中のみ平均に加える。符号の揺れで打ち消し合わないよう先頭に揃える。
-    if (grv_count_ == 0) {
-        for (int i = 0; i < 4; i++) grv_sum_[i] = grv_last_[i];
-    } else {
-        float dot = 0;
-        for (int i = 0; i < 4; i++) dot += grv_sum_[i] * grv_last_[i];
-        float s = (dot < 0.0f) ? -1.0f : 1.0f;
-        for (int i = 0; i < 4; i++) grv_sum_[i] += s * grv_last_[i];
-    }
-    grv_count_++;
+    for (int i = 0; i < 3; i++) acc_sum_[i] += a[i];
+    acc_count_++;
 }
 
-void attitude_on_rv(float qw, float qx, float qy, float qz, float accuracy_rad) {
-    rv_last_[0] = qw; rv_last_[1] = qx; rv_last_[2] = qy; rv_last_[3] = qz;
-    quat_normalize(rv_last_);
-    rv_acc_rad_ = accuracy_rad;
-    rv_have_ = true;
+uint8_t attitude_get_yaw_source() { return yaw_src_; }
+bool    attitude_yaw_ready()      { return yaw_set_; }
 
-    if (!static_now_ || initialized_) return;
-    // 静止中のみ平均に加える。符号の揺れで打ち消し合わないよう先頭に揃える。
-    if (rv_count_ == 0) {
-        for (int i = 0; i < 4; i++) rv_sum_[i] = rv_last_[i];
-    } else {
-        float dot = 0;
-        for (int i = 0; i < 4; i++) dot += rv_sum_[i] * rv_last_[i];
-        float s = (dot < 0.0f) ? -1.0f : 1.0f;
-        for (int i = 0; i < 4; i++) rv_sum_[i] += s * rv_last_[i];
-    }
-    rv_count_++;
+// センサー座標系で見た「上」方向 = 回転行列の第 3 行。
+// ★ imu.cpp の compute_earth_z_accel() が GRV から作っていたものと**同じ量**。
+//   バリオはこれと比力の内積で鉛直加速度を取る。
+bool attitude_get_up_sensor(float u[3]) {
+    if (!initialized_) { u[0] = u[1] = 0.0f; u[2] = 1.0f; return false; }
+    const float w = q_[0], x = q_[1], y = q_[2], z = q_[3];
+    u[0] = 2.0f * (x*z - w*y);
+    u[1] = 2.0f * (y*z + w*x);
+    u[2] = 1.0f - 2.0f * (x*x + y*y);
+    return true;
 }
 
-bool attitude_yaw_from_mag() { return yaw_from_mag_; }
 
 
 // 静止判定を更新する。ジャイロが小さく、かつ加速度の大きさが重力に近いこと。
@@ -450,9 +468,13 @@ static void update_static(const float g[3], uint32_t t_us) {
                && (fabsf(an - GRAVITY) < ESKF_STATIC_ACCEL_TOL);
     if (now && !static_now_) {
         static_since_us_ = t_us;
-        grv_count_ = 0;
-        rv_count_ = 0;
-        for (int i = 0; i < 4; i++) { grv_sum_[i] = 0; rv_sum_[i] = 0; }
+        acc_count_ = 0;
+        for (int i = 0; i < 3; i++) acc_sum_[i] = 0.0f;
+    }
+    if (!now) {
+        // 動き出したらバイアスの溜めかけを捨てる（中途半端な平均を入れない）
+        bias_n_ = 0;
+        for (int i = 0; i < 3; i++) bias_sum_[i] = 0.0f;
     }
     static_now_ = now;
 }
@@ -483,15 +505,33 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         calib_done_ = true;      // 呼び出し側が保存と音声再生を行う
     }
 
-    // ---- 初期化 ----
+    // ---- 初期化（水平化）----
     if (!initialized_) {
-        if (static_now_ && (t_us - static_since_us_) >= ESKF_STATIC_INIT_US) {
-            init_from_static_grv();
+        if (static_now_ && (t_us - static_since_us_) >= ESKF_STATIC_INIT_US &&
+            acc_count_ >= 4) {
+            const float a_avg[3] = { acc_sum_[0] / (float)acc_count_,
+                                     acc_sum_[1] / (float)acc_count_,
+                                     acc_sum_[2] / (float)acc_count_ };
+            init_level(a_avg, ESKF_INIT_ATT_SIGMA_DEG);
         }
         if (!initialized_) return;   // まだ初期化できていないので伝播しない
     }
 
     if (!accel_valid_) return;
+
+    // ---- 待機中の維持（ヨー未設定のあいだ）----
+    // ★ **ヨーが未設定のあいだ GNSS 速度観測を入れないので、観測が 1 つも無い。**
+    //   放っておくとロール・ピッチはジャイロオフセットの積分で漂う
+    //   （SCH16T なら 0.1deg/s typ で 10 分 60 度）。静止しているあいだは
+    //   重力へ寄せ続け、同時にジャイロのゼロ点を測る。理由と数値は settings.h の
+    //   ESKF_RELEVEL_GAIN / ESKF_BIAS_LEARN_SAMPLES のコメント。
+    if (!yaw_set_ && static_now_) {
+        level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
+        learn_gyro_bias(g);          // ★ bg_ を引く前の生の値を渡すこと
+        // 観測が無いので共分散を伝播させても情報は増えない。
+        // 水平化し続けている事実と釣り合うよう初期値へ置き直す。
+        reset_covariance(ESKF_INIT_ATT_SIGMA_DEG, ESKF_YAW_UNKNOWN_SIGMA_DEG);
+    }
 
     const float dt = dt_est_;
     float w[3], f[3];
@@ -726,10 +766,37 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
     const float z[3] = { velE, velN, -velD };
 
     if (!initialized_) {
-        // 静止区間が無いまま動き出した場合の保険。姿勢を大きめの不確かさで置いてから走り出す。
-        if (!init_from_last_grv()) return;
+        // 静止区間が無いまま動き出した場合の保険。直近の比力で水平化する。
+        // 静止平均ほど信用できない（旋回・加減速の分が混じる）ので σ を大きく取り、
+        // GNSS 観測で速く引き戻せるようにする。
+        // （2026-08-18 の session 2 は屋内起動→走行中に記録開始で静止区間が無く、
+        //   初期姿勢誤差がジャイロバイアスに吸われて 5.9deg/s に固着した）
+        if (!accel_valid_) return;
+        if (!init_level(accel_last_, ESKF_INIT_ATT_SIGMA_MOVING_DEG)) return;
         v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
         return;
+    }
+
+    // ---- ヨーが未設定なら、先に GNSS 航跡から入れる ----
+    // ★ **ヨーが未知のまま速度観測を入れてはいけない。**
+    //   観測は H = [0 I 0 0] の速度のみで、姿勢へは d(dv)/dt = -[Rf]x dtheta
+    //   の結合を通してしか効かない。ヨーが例えば 90 度ずれていると、加速時の
+    //   速度残差は予測と直交する方向に出るので、フィルタは**ロール・ピッチを
+    //   回して合わせに行く**（試算で数度）。ヨーを入れるまでは観測を通さない。
+    //
+    //   しきい値は飛行速度より十分低く取ってあるので、注入の瞬間に機体は必ず
+    //   接地している。接地中は横滑りできないので航跡＝機首方位が厳密に成立する。
+    //   詳細は settings.h の ESKF_YAW_INIT_MIN_SPEED_MPS のコメント。
+    if (!yaw_set_) {
+        const float sp = sqrtf(z[0]*z[0] + z[1]*z[1]);
+        if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) { yaw_arm_ = 0; return; }
+        if (++yaw_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;  // 単発の化けで焼き付けない
+        // ENU なので航跡（真方位・北 0・時計回り）は atan2(East, North)
+        float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
+        if (trk < 0.0f) trk += 360.0f;
+        init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
+        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+        return;                     // この回は観測として使わない（速度は直接入れた）
     }
 
     // 観測ノイズ。sAcc をそのまま使うが、極端に小さいと過信するので下限を置く。

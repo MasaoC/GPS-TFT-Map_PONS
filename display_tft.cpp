@@ -1830,7 +1830,9 @@ void draw_eskf_debug() {
   // ヨーの収束状態: M=地磁気で初期化済み / -=収束待ち、数値は 95%(2σ) の精度 [度]
   backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
   backscreen.setCursor(x + 142, y + 32);
-  backscreen.printf("%c%3.0f", attitude_yaw_from_mag() ? 'M' : '-', yacc);
+  // ヨーの情報源。'G' = GNSS 航跡から入れた / '-' = まだ入っていない（絶対方位は無意味）
+  backscreen.printf("%c%3.0f",
+                    (attitude_get_yaw_source() == ATT_YAW_SRC_GNSS) ? 'G' : '-', yacc);
 
   backscreen.setTextSize(1);
   // 内蔵フォントのまま抜けると以降の描画が崩れるので必ず戻す（draw_eskf_attitude と同様）
@@ -2216,8 +2218,8 @@ static void draw_imu_page3() {
   backscreen.setTextColor(yacc < 10.0f ? COLOR_GREEN
                         : yacc < 40.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("yaw acc +-%.0f deg(95%%) init:%s",
-                    yacc, attitude_yaw_from_mag() ? "MAG" : "none");
+  backscreen.printf("yaw acc +-%.0f deg(95%%) src:%s",
+                    yacc, (attitude_get_yaw_source() == ATT_YAW_SRC_GNSS) ? "GNSS" : "none");
   y += lh + 2;
 
   float lr, lp;

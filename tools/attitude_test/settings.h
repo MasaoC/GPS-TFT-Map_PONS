@@ -1,4 +1,14 @@
 #pragma once
+// ============================================================
+// ★★ **このファイルは実際には使われていない。** 編集しても効果が無い。
+//   attitude.cpp の `#include "settings.h"` は引用符形式なので、コンパイラは
+//   まず **attitude.cpp 自身のディレクトリ（リポジトリ直下）** を見る。
+//   Makefile の `-I.` はその後なので、常に **直下の settings.h** が使われる。
+//   （2026-10-01 に `#error` を仕込んで確認。発火しなかった）
+//   つまりテストは実機と同じ定数で走っている ＝ それ自体は望ましい状態。
+//   このファイルは消してもビルドは通るが、履歴のため残してある。
+//   **定数を変えたいときは直下の settings.h を直すこと。**
+// ============================================================
 #define IMULOG_RAW_REPORTS_ENABLED 1
 #define IMU_RATE_GYRO_HZ 50
 #define ESKF_SIGMA_G    2e-3f
@@ -15,9 +25,6 @@
 #define ESKF_INIT_ATT_SIGMA_DEG         3.0f
 #define ESKF_INIT_ATT_SIGMA_MOVING_DEG  30.0f
 
-#define ESKF_INIT_USE_RV        1
-#define ESKF_RV_ACC_MAX_DEG     25.0f
-#define ESKF_MAG_DECLINATION_DEG  (-8.0f)
 
 // BNO085 のマウント回転（実機 settings.h と同じ値にすること）。
 // センサー Y 軸まわり -90 度。測定の根拠は実機側 settings.h のコメント参照。

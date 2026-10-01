@@ -20,8 +20,6 @@ static void body_to_sensor(const double b[3], float s_out[3]) {
     s_out[1] = (float)( b[1]);
     s_out[2] = (float)( b[0]);
 }
-// 機体が水平のときのセンサー姿勢 = conj(q_mount)
-static const float GRV_LEVEL[4] = {0.70710678f, 0.0f, 0.70710678f, 0.0f};
 
 static void Rz(double a, double R[3][3]) {
     double c=cos(a), s=sin(a);
@@ -52,13 +50,14 @@ int main() {
         const double ab[3]={0,0,G};              // 機体座標の比力（上向き g）
         float g0[3]={0,0,0}, a0[3];
         body_to_sensor(ab, a0);                  // → センサー座標
+        // ★ 0.983 以降は GRV を渡さない。静止中の平均加速度から水平化される。
         for (int i=0;i<200;i++) {
             attitude_on_accel(a0);
-            attitude_on_grv(GRV_LEVEL[0],GRV_LEVEL[1],GRV_LEVEL[2],GRV_LEVEL[3]);
             test_set_us((uint32_t)(i*dt*1e6)); attitude_on_gyro(g0, g_test_us);
         }
     }
-    printf("初期化後 ready=%d\n", (int)attitude_ready());
+    printf("初期化後 ready=%d  yaw_ready=%d (水平化だけなので 1 と 0 が正しい)\n",
+           (int)attitude_ready(), (int)attitude_yaw_ready());
 
     // ---- 2) 協調旋回を流す ----
     int n = (int)(60*fs);
