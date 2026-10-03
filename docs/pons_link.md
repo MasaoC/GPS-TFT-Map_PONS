@@ -523,6 +523,38 @@ E220 は「一定時間データが来ない」ことをパケットの区切り
 > （位置・速度・方位は生のグローバル、気圧と高度は `_raw` の accessor）。
 > つまり **画面に一度も出ていなかったボート自身の画面**も、あとから再生できる。
 
+### ★ ミラー中に「自機の状態」を混ぜない
+
+画面の数値が機体のものに入れ替わっても、**警告やその値の品質表示は自機のまま残りやすい**。
+0.983 の実機テストで 6 か所見つかった（受信中のボートで、機体は健全なのに
+`ESKF CALIBRATION REQUIRED!` が出て 平均ピッチに取り消し線が入っていた）。
+
+判断の基準は **「その警告は、いま画面に出している数字の話か」**。
+
+| 出しているもの | ミラー中に見るべきもの |
+|---|---|
+| 較正のやり直し（赤字 / Pavg の取り消し線） | **送信機の** `LINK_ST_NEEDS_APPLY`（`link_sender_status()`） |
+| `ESKF Not ready` | 出さない（自機の収束状況は無関係。しかも `return` するので**ミラーした姿勢が丸ごと消える**） |
+| VSI のバー・**バリオ音** | 送信機の V/S。自機の MS5611 / BNO085 の有無で分岐しない |
+| `sAcc` / `vAcc` / `fixtype` / 気圧 V/S・気圧高度 | **`--`**。LinkTelem が運ぶのは `hAcc` / `numsat` / `fixOK` / 気圧そのものだけ |
+| APPLY を許すか（`eskf_calib_allowed()`） | 自機の静止判定。`get_gnss_mps()` は**機体の速度**なので使えない |
+| 自機のハードウェア診断（センサー OK/NG・イベントレート・バイアス・DOP・PRN） | 自機のまま。ただし**見出しに `(RX unit)` を付けて区別する** |
+
+実体は `display_tft.cpp` の `eskf_display_needs_apply()` / `gnss_acc_unknown()` と、
+`imu.cpp` の `vario_source_ok()` / `vario_vspeed_mps()` / `vario_deadband_mps()`。
+**`attitude_needs_apply()` / `get_gnss_sacc_mmps()` / `get_imu_ok()` を描画側から
+直に呼ばないこと。**
+
+バリオは**音と VSI の線が同じ関数を通る**ようにしてある。0.983 までは
+`src/sound.cpp` が `get_imu_alive()`、`display_tft.cpp` が `get_imu_ok()` と
+**別々に分岐していた**（定数は共有していたので気づきにくい）。ミラー中に
+自機の気圧 V/S へフォールバックすると、**ボートの波の上下動でバリオが鳴る**。
+
+`sAcc` / `vAcc` を accessor 側（`gnss.cpp`）で 0 に差し替える手は**使わない**。
+受信機自身の GNSS 詳細画面で自機の測位品質を見たい場面があり、そこまで潰れる。
+同じ理由で、自機の値が要る診断ページでは `*_raw()`（`get_imu_vspeed_raw()` /
+`get_airdata_pressure_raw()`）を使う。
+
 ### ミラー中に止めること
 
 **受信した機体の値を自機の推定へ入れてはいけない。**

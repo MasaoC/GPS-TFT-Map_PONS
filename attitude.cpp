@@ -55,6 +55,16 @@ static bool  accel_valid_ = false;
 
 // ---- 診断 ----
 static volatile uint32_t gnss_updates_ = 0;
+// 重力観測（Phase 2）の回数と、ゲート用の「前後加速度の持続成分」[m/s²]。
+// ★ 前後加速度は GNSS からしか作れない。断中はゲートからこの条件を省く
+//   （ピッチ側の誤差を許容して、錨が無いより良しとする）。
+static volatile uint32_t level_updates_ = 0;
+static float    longacc_lp_   = 0.0f;
+static float    last_gsp_     = -1.0f;   // 負 = まだ測位が来ていない
+static uint32_t last_gsp_us_  = 0;
+static uint32_t level_last_us_ = 0;
+// ワールド系ヨーレートの瞬時値 [deg/s]。持続成分は yaw_rate_lp_（下）。
+static float    yaw_rate_inst_ = 0.0f;
 
 // ---- 機体ゼロ点（マウント基準）のオフセット [度] ----
 static float level_roll_off_ = 0.0f;
@@ -152,6 +162,10 @@ static float airspeed_from_pitch(float pitch_deg) {
 // 前方宣言。attitude_on_gyro() が 平均ピッチとロール自動トリムの
 // 判定に使うが、定義はファイル後方（出力セクション）にあるため。
 static void euler_from_state(float &roll, float &pitch, float &yaw);
+#if ESKF_LEVEL_ENABLED
+// 重力観測（Phase 2）。定義は下。attitude_on_gyro() から先に使う。
+static void level_update(const float a[3], float sigma_mps2);
+#endif
 
 static volatile bool  trim_event_ = false;      // ログ用: 補正が入った
 static volatile float trim_event_applied_ = 0.0f;
@@ -341,6 +355,12 @@ void attitude_setup() {
     // （tools/attitude_test が実際に捕まえた）。
     up_lp_valid_ = false;
     up_lp_[0] = up_lp_[1] = 0.0f; up_lp_[2] = 1.0f;
+    level_updates_ = 0;
+    longacc_lp_ = 0.0f;
+    last_gsp_ = -1.0f;
+    last_gsp_us_ = 0;
+    level_last_us_ = 0;
+    yaw_rate_inst_ = 0.0f;
     dt_count_ = 0;
     dt_idx_ = 0;
     dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
@@ -571,6 +591,13 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     //   （SCH16T なら 0.1deg/s typ で 10 分 60 度）。静止しているあいだは
     //   重力へ寄せ続け、同時にジャイロのゼロ点を測る。理由と数値は settings.h の
     //   ESKF_RELEVEL_GAIN / ESKF_BIAS_LEARN_SAMPLES のコメント。
+    // ★ Phase 2 の重力観測（level_update）とここは**併存させている。**役割が違う:
+    //   ・ここ（相補フィルタ・50Hz・時定数 1 秒）… 待機中の維持。下の
+    //     reset_covariance が毎サンプル P を初期値へ戻すので、level_update が
+    //     溜めた情報はどうせ捨てられる。実効の引き戻しはこちらが担う
+    //   ・level_update（正式な観測・2Hz）… 飛行中と GNSS 断中の錨
+    //   どちらも重力へ寄せる方向なので競合しない。1 つに統合するのは、
+    //   待機中の挙動（tools/attitude_test の D1/D2）を再検証してからにする。
     if (!yaw_set_ && static_now_) {
         level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
         learn_gyro_bias(g);          // ★ bg_ を引く前の生の値を渡すこと
@@ -633,6 +660,41 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             for (int k = 0; k < N_ERR; k++) s += T1_[i][k] * Phi_[j][k];
             P_[i][j] = s;
         }
+    // ---- ワールド系のヨーレート（旋回しているか）----
+    // ボディ角速度を回して Z 成分を取る。自動ロールトリム・風推定・重力観測のゲートで共用。
+    // ★★ **重力観測のゲートより前で更新すること。** 後ろに置くとゲートが
+    //   1 サンプル前（20ms 前）の値で判定し、**旋回の入り口で観測が漏れる**
+    //   （5 度の協調旋回 30 秒で 1 回漏れるのを tools/attitude_test の F2 が捕まえた）。
+    {
+        const float wz = R[2][0]*w[0] + R[2][1]*w[1] + R[2][2]*w[2];
+        const float wz_dps = wz * 180.0f / (float)M_PI;
+        yaw_rate_inst_ = wz_dps;
+        yaw_rate_lp_ += (wz_dps - yaw_rate_lp_) * (dt / (2.0f + dt));
+    }
+
+    // ---- 重力観測（Phase 2）----
+    // ★ 根拠と数値は settings.h の ESKF_LEVEL_* のコメント。要点だけ:
+    //   主ゲートは**旋回レート**（ジャイロだけから作れるので GNSS 断中も働く）。
+    //   `|f| ≒ g` は人力機のバンク角を判別できないので粗い健全性チェックのみ。
+    //   前後加速度は GNSS からしか作れないので、断中はその条件を省く。
+#if ESKF_LEVEL_ENABLED
+    if ((uint32_t)(t_us - level_last_us_) >= ESKF_LEVEL_INTERVAL_US) {
+        const float amag = sqrtf(accel_last_[0]*accel_last_[0]
+                               + accel_last_[1]*accel_last_[1]
+                               + accel_last_[2]*accel_last_[2]);
+        bool pass = (fabsf(yaw_rate_lp_)   <= ESKF_LEVEL_MAX_YAWRATE_DPS)
+                 && (fabsf(yaw_rate_inst_) <= ESKF_LEVEL_MAX_YAWRATE_INST)
+                 && (fabsf(amag - GRAVITY) <= ESKF_LEVEL_ACCMAG_TOL_MPS2);
+        // 前後加速度は測位があるときだけ見る（無いときは条件ごと省く）
+        if (pass && last_gsp_ >= 0.0f && gnss_vel_fresh())
+            pass = fabsf(longacc_lp_) <= ESKF_LEVEL_MAX_LONGACC_MPS2;
+        if (pass) {
+            level_update(accel_last_, ESKF_LEVEL_SIGMA_MPS2);
+            level_last_us_ = t_us;
+        }
+    }
+#endif
+
     // ---- 平均ピッチと直進中のロール自動トリムを更新 ----
     // ここは公称状態が更新された後に呼ぶ（共分散の計算とは独立）。
     {
@@ -660,11 +722,6 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         const float a = dt / (PITCH_AVG_SEC + dt);
         pitch_avg_ += (p - pitch_avg_) * a;
         if (pitch_avg_fill_s_ < PITCH_AVG_SEC * 2.0f) pitch_avg_fill_s_ += dt;
-
-        // ワールド系のヨーレート（旋回しているか）。ボディ角速度を回して Z 成分を取る。
-        const float wz = R[2][0]*w[0] + R[2][1]*w[1] + R[2][2]*w[2];
-        const float wz_dps = wz * 180.0f / (float)M_PI;
-        yaw_rate_lp_ += (wz_dps - yaw_rate_lp_) * (dt / (2.0f + dt));
 
         const float sp = sqrtf(v_[0]*v_[0] + v_[1]*v_[1]);
         // 直進しているか。ロール自動トリムと風推定で共用する。
@@ -793,6 +850,119 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 // 上限が無いと初期姿勢誤差の行き場としてバイアス状態が使われ、
 // 誤った値に固着して姿勢補正が効かなくなる
 // （2026-08-18 の実測で bg が 5.9deg/s に張り付き、ESKF が BNO085 と同じ挙動になった）。
+// 定義は下にあるが level_update() から先に使うため前方宣言する。
+static void clamp_bias(float b[3], float lim);
+
+#if ESKF_LEVEL_ENABLED
+// ============================================================
+// 重力観測（levelling update）— Phase 2
+// ============================================================
+// 準定常のとき、比力をワールドへ回した f_w は (0,0,g) になるはず。
+// その水平 2 成分を観測量（期待値 0）にして dtheta の水平成分を直す。
+//
+//   誤差回転はワールド系（R_true = (I + [dtheta]x) R_nom）なので
+//       f_w_true = f_w + dtheta x f_w = f_w - [f_w]x dtheta
+//   f_w ~ (0,0,g) のとき
+//       d f_w_x = +g * dtheta_y,   d f_w_y = -g * dtheta_x
+//   よって H は 2x12 で H[0][1] = +g, H[1][0] = -g だけが非零。
+//   **Z 成分（ヨー）には構造的に効かない。**
+//
+// ★ **dba は H に入れない。** 水平の加速度バイアスと傾き誤差は原理的に縮退して
+//   いるので、入れると長い GNSS 断で ba が汚れる。入れない代償は「水平 ba を
+//   全部傾きのせいにする」ぶんの偏りで、SCH16T のオフセット ±0.01 m/s² typ なら
+//   0.06 度、max ±0.06 でも 0.35 度。無視できる。そのぶんは σ に含める。
+//
+// ★ ゲートは呼び出し側（attitude_on_gyro）で判定する。根拠と数値は settings.h の
+//   ESKF_LEVEL_* のコメント。**`|f| ≒ g` では人力機のバンク角を判別できない**ので、
+//   主ゲートは旋回レート。
+//
+// H が疎なので行列積は展開して書く（12x12 の掛け算を 2 回避ける）。
+static void level_update(const float a[3], float sigma_mps2) {
+    const float g = GRAVITY;
+
+    // f_w = R (a - ba)。R は q_ から。
+    float R[3][3];
+    quat_to_R(q_, R);
+    const float f[3] = { a[0] - ba_[0], a[1] - ba_[1], a[2] - ba_[2] };
+    float fw[3];
+    for (int i = 0; i < 3; i++)
+        fw[i] = R[i][0]*f[0] + R[i][1]*f[1] + R[i][2]*f[2];
+
+    // ★ H は f_w ≒ (0,0,+g) のまわりで線形化してある。**f_w が下向きなら符号が
+    //   逆になり、補正が誤差を広げる方向に働く。** 姿勢推定が 90 度以上
+    //   おかしくなっている状況なので、そのときは観測を入れない（安全側）。
+    //   人力飛行機は背面にならないので、通常運用でここに来ることは無い。
+    if (fw[2] < 0.5f * g) return;
+
+    const float r = sigma_mps2 * sigma_mps2;
+
+    // S = H P H^T + R  （H[0] は P の 1 行、H[1] は P の 0 行を拾う）
+    const float g2 = g * g;
+    const float S00 =  g2 * P_[1][1] + r;
+    const float S01 = -g2 * P_[1][0];
+    const float S10 = -g2 * P_[0][1];
+    const float S11 =  g2 * P_[0][0] + r;
+    const float det = S00 * S11 - S01 * S10;
+    if (fabsf(det) < 1e-12f) return;
+    const float inv = 1.0f / det;
+    const float Si00 =  S11 * inv, Si01 = -S01 * inv;
+    const float Si10 = -S10 * inv, Si11 =  S00 * inv;
+
+    // P H^T は 12x2 で、m 行目 = [ +g*P[m][1], -g*P[m][0] ]
+    // K = P H^T S^-1
+    static float K[N_ERR][2];
+    for (int m = 0; m < N_ERR; m++) {
+        const float p0 =  g * P_[m][1];
+        const float p1 = -g * P_[m][0];
+        K[m][0] = p0 * Si00 + p1 * Si10;
+        K[m][1] = p0 * Si01 + p1 * Si11;
+    }
+
+    // y = 0 - f_w の水平成分
+    const float y0 = -fw[0], y1 = -fw[1];
+
+    // ---- P = (I-KH) P (I-KH)^T + K R K^T （Joseph 形。速度観測と同じ流儀）----
+    // KH は列 0 と 1 だけ非零: KH[m][0] = -g*K[m][1], KH[m][1] = +g*K[m][0]
+    for (int m = 0; m < N_ERR; m++)
+        for (int n = 0; n < N_ERR; n++) {
+            float kh = 0.0f;
+            if      (n == 0) kh = -g * K[m][1];
+            else if (n == 1) kh =  g * K[m][0];
+            T1_[m][n] = ((m == n) ? 1.0f : 0.0f) - kh;
+        }
+    for (int m = 0; m < N_ERR; m++)
+        for (int n = 0; n < N_ERR; n++) {
+            float sum = 0;
+            for (int k = 0; k < N_ERR; k++) sum += T1_[m][k] * P_[k][n];
+            T2_[m][n] = sum;
+        }
+    for (int m = 0; m < N_ERR; m++)
+        for (int n = 0; n < N_ERR; n++) {
+            float sum = 0;
+            for (int k = 0; k < N_ERR; k++) sum += T2_[m][k] * T1_[n][k];
+            P_[m][n] = sum + r * (K[m][0]*K[n][0] + K[m][1]*K[n][1]);
+        }
+
+    // ---- 誤差の注入（速度観測と同じ）----
+    float dx[N_ERR];
+    for (int m = 0; m < N_ERR; m++) dx[m] = K[m][0]*y0 + K[m][1]*y1;
+    float dq[4], qn[4];
+    quat_from_rotvec(dx, dq);          // dtheta はワールド系なので左から掛ける
+    quat_mul(dq, q_, qn);
+    for (int k = 0; k < 4; k++) q_[k] = qn[k];
+    quat_normalize(q_);
+    for (int k = 0; k < 3; k++) {
+        v_[k]  += dx[3 + k];
+        bg_[k] += dx[6 + k];
+        ba_[k] += dx[9 + k];
+    }
+    clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
+    clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
+    level_updates_++;
+}
+#endif  // ESKF_LEVEL_ENABLED
+
+
 static void clamp_bias(float b[3], float lim) {
     float n = sqrtf(b[0]*b[0] + b[1]*b[1] + b[2]*b[2]);
     if (n > lim && n > 1e-9f) {
@@ -802,6 +972,24 @@ static void clamp_bias(float b[3], float lim) {
 }
 
 void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
+    // ---- 前後加速度の持続成分（重力観測のゲート用）----
+    // ★ ここは観測を取り込むかどうかに関係なく常に更新する。ゲートの材料なので、
+    //   ヨー未設定でも計算しておく。GNSS が無い間は last_gsp_ が古くなるので、
+    //   ゲート側で gnss_vel_fresh() と併せて見る。
+    {
+        const float gsp = sqrtf(velN*velN + velE*velE);
+        const uint32_t now_us = time_us_32();
+        if (last_gsp_ >= 0.0f) {
+            const float dtg = (float)(now_us - last_gsp_us_) * 1e-6f;
+            if (dtg > 0.05f && dtg < 5.0f) {
+                const float acc_long = (gsp - last_gsp_) / dtg;
+                longacc_lp_ += (acc_long - longacc_lp_) * (dtg / (2.0f + dtg));
+            }
+        }
+        last_gsp_    = gsp;
+        last_gsp_us_ = now_us;
+    }
+
     // IMU が途絶しているときは観測を取り込まない。
     // 伝播（ジャイロ・加速度）が止まった状態で速度観測だけ入れると、
     // フィルタは速度の食い違いを姿勢誤差のせいにして姿勢を回し続ける。
@@ -1068,6 +1256,7 @@ float attitude_get_yaw_acc95_deg() {
 }
 bool attitude_is_static()                { return static_now_; }
 uint32_t attitude_get_gnss_updates()     { return gnss_updates_; }
+uint32_t attitude_get_level_updates()    { return level_updates_; }
 
 float attitude_get_static_secs() {
     if (!static_now_) return 0.0f;

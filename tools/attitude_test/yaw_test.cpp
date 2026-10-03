@@ -7,6 +7,8 @@
 //   D) 待機中の維持 — ジャイロにオフセットがあっても 10 分間ロールが保たれるか、
 //      静止中に機体を傾け直したら追従するか（再水平化が効いているか）
 //   E) **水平化できない状況でもバリオ用の上方向が出るか**（実機回帰の再発防止）
+//   F) 重力観測（Phase 2）— 直進では入り、**5 度の協調旋回では入らない**こと、
+//      GNSS 無しでもロール・ピッチの錨になること
 //
 // 旧 decl_test.cpp（地磁気偏角の符号）はここに置き換わった。
 // 初期ヨーに地磁気を使わなくなったので、あのテストは対象そのものが無くなった。
@@ -163,8 +165,12 @@ int main() {
         attitude_get_gyro_bias(bg);
         const float lim = ESKF_BIAS_LEARN_MAX_RADS * 180.0f / (float)M_PI;
         printf("\nD3) 1.2deg/s を学習させる（クランプ %.2f deg/s）\n", lim);
-        printf("   学習値 Y = %.3f deg/s（クランプで頭打ちが正しい）\n", bg[1] * 180 / M_PI);
-        ok &= fabsf(bg[1] * 180 / (float)M_PI) <= lim + 1e-3f;
+        printf("   学習値 Y = %.3f deg/s（クランプ %.2f で頭打ち。1.2 にならないこと）\n",
+               bg[1] * 180 / M_PI, lim);
+        // ★ 厳密に lim 以下にはならない。重力観測（Phase 2）が相関経由で bg_ を
+        //   微調整するため（実測で +0.003 deg/s 程度）。見たいのは
+        //   「学習器がクランプしている」ことなので、生値 1.2 から大きく離れていればよい。
+        ok &= fabsf(bg[1] * 180 / (float)M_PI) <= lim * 1.2f;
     }
 
 
@@ -202,7 +208,67 @@ int main() {
         ok &= have;                   // ★ それでも上方向は返ること
         ok &= ang2 < 2.0f;            // 低域なので比力とほぼ平行
     }
-    printf("\n結果: %s\n", ok ? "PASS — 水平化・航跡ヨー・待機中の維持・上方向の常時提供がすべて正しい"
+
+    // ================= F) 重力観測（Phase 2）=================
+    // ★ **ゲートのゲート。** 無条件に入れると BNO085 の GRV と同じ間違いをする
+    //   （協調旋回では比力の横成分が厳密に 0 なのでバンクを過小評価する）。
+    //   F1: 直進・静止では観測が入ること
+    //   F2: **5 度の協調旋回では入らないこと**（人力機の実運用バンク角）
+    //   F3: GNSS が無くてもロール・ピッチの錨になること
+    {
+        // ---- F1) 静止・直進では観測が入る ----
+        attitude_setup();
+        t = 0;
+        feed(200, dt, t, a20, gz);                  // 水平化
+        const uint32_t n0 = attitude_get_level_updates();
+        feed((int)(10 * fs), dt, t, a20, gz);       // 10 秒
+        const uint32_t n1 = attitude_get_level_updates();
+        printf("\nF1) 静止・直進では重力観測が入る\n");
+        printf("   10 秒で %u 回（2Hz なので 20 回前後が正しい）\n", (unsigned)(n1 - n0));
+        ok &= (n1 - n0) >= 15 && (n1 - n0) <= 25;
+
+        // ---- F2) 5 度バンク相当の旋回レートでは入らない ----
+        // ★ ここで見たいのは**ゲートが旋回レートで閉じること**だけなので、
+        //   比力は水平のまま、ワールド系ヨーレートだけ協調旋回の値を与える。
+        //   バンク復元まで含めた厳密な協調旋回は main.cpp が担当（20 度で検証）。
+        // 旋回レート = g*tan(phi)/V。V=8, phi=5 → 6.14 deg/s（しきい値 1.0/3.0）
+        const double V = 8.0, phi5 = 5.0 * M_PI / 180.0;
+        const double psid = -G * tan(phi5) / V;     // [rad/s]
+        const uint32_t n2 = attitude_get_level_updates();
+        // 機体が水平のまま鉛直軸まわりに psid で回る（＝ワールド系ヨーレート psid）
+        const double wb[3] = { 0.0, 0.0, psid };
+        float wv[3]; body_to_sensor(wb, wv);
+        float a_lv[3]; static_accel_for_bank(0.0, a_lv);
+        feed((int)(30 * fs), dt, t, a_lv, wv);
+        const uint32_t n3 = attitude_get_level_updates();
+        printf("\nF2) 5 度バンク相当の旋回レート（%.2f deg/s）では入らない\n",
+               fabs(psid) * 180 / M_PI);
+        printf("   30 秒で %u 回（**0 が正しい**。入るとバンクを過小評価する）\n",
+               (unsigned)(n3 - n2));
+        ok &= (n3 - n2) == 0;
+
+        // ---- F3) GNSS 無しでもロール・ピッチの錨になる ----
+        // 静止判定を通さないため |a| を g から 0.4 ずらす（重力観測のゲートは 0.5 まで許す）。
+        // これで「再水平化（静止時のみ）」は働かず、重力観測だけが錨になる。
+        attitude_setup();
+        t = 0;
+        float a_off[3];
+        static_accel_for_bank(phi, a_off);                 // バンク 20 度の向き
+        const float sc = (float)((G + 0.4) / G);
+        for (int i = 0; i < 3; i++) a_off[i] *= sc;        // |a| = g + 0.4 → 静止判定を外す
+        const float gb3[3] = { (float)(0.5 * M_PI / 180.0), 0.0f, 0.0f };  // 0.5deg/s
+        feed(200, dt, t, a20, gz);                         // まず静止で水平化
+        attitude_get_euler_raw(r, p, y);
+        const float r0 = r;
+        feed((int)(120 * fs), dt, t, a_off, gb3);          // 2 分（GNSS は一切入れない）
+        attitude_get_euler_raw(r, p, y);
+        printf("\nF3) GNSS 無し・静止判定も外した状態で 2 分\n");
+        printf("   ロール %.2f → %.2f deg（錨が無ければ 0.5*120 = 60 度漂う）\n", r0, r);
+        printf("   重力観測 %u 回\n", (unsigned)attitude_get_level_updates());
+        ok &= fabsf(r - r0) < 2.0f;
+        ok &= attitude_get_level_updates() > 100;
+    }
+    printf("\n結果: %s\n", ok ? "PASS — 水平化・航跡ヨー・待機中の維持・上方向の常時提供・重力観測がすべて正しい"
                              : "FAIL");
     return ok ? 0 : 1;
 }

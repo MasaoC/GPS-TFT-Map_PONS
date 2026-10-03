@@ -1047,14 +1047,13 @@ void update_vario() {
     if (millis() - last_call < 100) return;
     last_call = millis();
 
-    // BNO085 が正常稼働中（接続済み かつ 直近1秒以内にデータ受信）かどうかを確認する。
-    // 通信途絶時は imu_update() が bno085_ok=false に落とすため get_imu_alive() も false になる。
-    // false の場合は MS5611（気圧センサー）の vspeed にフォールバックする。
-    bool imu_alive = get_imu_alive();
-    float vspeed = imu_alive ? get_imu_vspeed() : get_airdata_vspeed();
-    // デッドバンド閾値: KF 融合中（BNO085 生存中+MS5611 接続）は精度が高いため狭くする。
-    float dead_band = (imu_alive && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
-                                                     : VARIO_DEADBAND_BARO_MPS;
+    // ★ 供給元の判断は imu.cpp の vario_* に集約してある（VSI の線と同じものを見る）。
+    //   BNO085 が途絶していれば MS5611 単独へ落ち、ミラー中は送信機の V/S を鳴らす
+    //   （受信モードの主旨は送信機の表示の再現。自機のセンサーの有無は無関係で、
+    //     自機の気圧 V/S を鳴らすと**ボートの波の上下動**でバリオが鳴る）。
+    //   ここに `get_imu_alive()` / `get_airdata_ok()` を書き戻さないこと。
+    float vspeed    = vario_vspeed_mps();
+    float dead_band = vario_deadband_mps();
     bool should_vario = (vspeed > dead_band || vspeed < -dead_band) && (vario_volume > 0);
 
     static bool prev_vario = false;

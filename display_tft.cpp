@@ -552,6 +552,34 @@ bool eskf_display_enabled() {
   return attitude_ready();
 }
 
+// 「いま画面に出している姿勢」が較正のやり直しを必要としているか。
+// ★ **表示の供給元 3 系統すべてを面倒見ること。** 判断の対象は
+//   *この装置の ESKF* ではなく *画面に出ている数字の出どころ* である。
+//   以前は `attitude_needs_apply()`（自機）を直接見ていたため、
+//   **ミラー中のボート側が、機体は健全なのに「較正しろ」と出していた**
+//   （逆に機体が未較正でもボートが健全なら警告が消え、**出したい警告が出ない**）。
+//   送信機の needs_apply は LINK_ST_NEEDS_APPLY で運んである
+//   （link_proto.h の status 設計「受信側から知りようがない送信機自身の健康状態」）。
+//   リプレイ中は false。記録済みの姿勢に、いまの較正状態は関係ない
+//   （手元で傾けて OFF MOUNT になっても、その飛行時には起きていない警告になる）。
+//   音のほうは `loop()` の地上判定が `!link_mirror_active()` で既に塞いである。
+static bool eskf_display_needs_apply() {
+  if (link_mirror_active()) return (link_sender_status() & LINK_ST_NEEDS_APPLY) != 0;
+  if (getReplayMode())      return false;
+  return attitude_needs_apply();
+}
+
+// 測位品質（sAcc / vAcc）を「不明」として出すべきか。
+// ★ **PONS Link が運ぶ測位品質は hAcc / numsat / fixOK だけ**（link_proto.h の
+//   LinkTelem。65 バイト固定なので安易に足せない）。sAcc と vAcc は載っていない。
+//   それなのに get_gnss_sacc_mmps() / get_gnss_vacc_mm() はミラーで差し替わらない
+//   ので、**ミラー中は受信機自身の値がそのまま出る**。隣に並ぶ GS・高度・hAcc は
+//   機体の値なので、**機体の測位品質だと読まれる**（ボートは止まっているから
+//   いつも緑で、機体の測位が荒れていても気づけない）。出さずに「--」にする。
+//   accessor 側で 0 を返させてはいけない。受信機の GNSS 詳細画面で自機の
+//   測位品質を見たい場面があり、そこまで潰れてしまう。
+static bool gnss_acc_unknown() { return link_mirror_active(); }
+
 // ESKF のヨー（真方位）を表示・アイコン回転に使ってよいかを判定する。
 // ヨーは水平加速度がある間しか可観測にならず、等速直進が続くと際限なく漂うため、
 // 推定精度がしきい値以下のときだけ「機首方向」として信用する。
@@ -559,10 +587,13 @@ bool eskf_display_enabled() {
 bool eskf_calib_allowed() {
   if (!attitude_ready()) return false;
   // 通常は対地速度で「地上にいる」ことを確認する。
-  if (!getReplayMode() && !is_demo_active())
+  if (!getReplayMode() && !is_demo_active() && !link_mirror_active())
     return get_gnss_mps() <= LEVEL_CALIB_MAX_MPS;
-  // デモ・リプレイ中は get_gnss_mps() が再生データの速度を返すため、実機が机の上で
-  // 止まっていても「飛行中」と判定されて APPLY できなくなる。
+  // デモ・リプレイ・ミラー中は get_gnss_mps() が**この装置以外の速度**を返すため、
+  // 実機が机の上で止まっていても「飛行中」と判定されて APPLY できなくなる。
+  // ★ ミラーはさらに逆も起きる。機体がプラットホームで止まっていれば、
+  //   **走っているボートの上で APPLY が通ってしまう**（較正が船の姿勢で上書きされる）。
+  //   ここは自機の較正操作を許すかどうかの判断なので、機体の速度を見てはいけない。
   // GNSS が偽物なので、代わりに IMU 由来の静止判定を使う。これは再生データでは
   // 偽装できない実機の物理状態なので、飛行中に誤って較正する危険も無い。
   return attitude_is_static();
@@ -1416,12 +1447,13 @@ void draw_replay_indicator(){
 // 不感域なし。最大バー長 120px（±1.5 m/s で振り切り）。
 // バーの上にグレー線（バリオ閾値 KF:±0.3 / MS5611単独:±0.6 m/s）と白線（±0.5 m/s, ±1.0 m/s）を重ねて描画。
 void draw_vsi() {
-    // BNO085 が使えるときは Kalman 融合済みの上昇率を使う。
-    // BNO085 非接続時は MS5611 単独の上昇率にフォールバックする。
-    float vspeed = get_imu_ok() ? get_imu_vspeed() : get_airdata_vspeed();
+    // ★ 供給元の判断は imu.cpp の vario_* に集約してある（音と同じものを見る）。
+    //   ここに `get_imu_ok()` / `get_airdata_ok()` を書き戻さないこと。
+    //   ミラー中は送信機の V/S をそのまま出す（自機のセンサーの有無は無関係）。
+    float vspeed = vario_vspeed_mps();
     vsi_sprite.fillScreen(TFT_BLACK);
     vsi_sprite.drawFastHLine(0, 120, VSI_W, TFT_WHITE);  // 0 m/s 基準線
-    if (!get_airdata_ok()) return;
+    if (!vario_source_ok()) return;
     const float MAX_VSPEED = 1.5f;
     const int   BAR_MAX_PX = 120;
     if (vspeed > 0) {
@@ -1434,11 +1466,11 @@ void draw_vsi() {
         vsi_sprite.fillRect(0, 121, VSI_W, bar, TFT_CYAN);
     }
     // 閾値ラインをバーの上に重ねて描画（バーがなくても常に表示）
-    // グレー線: バリオ音デッドバンド閾値。sound.cpp と同じ定数から px を計算するので、
-    // 値を変えても線と音がずれない（以前は px を直書きしていて二重管理だった）。
+    // グレー線: バリオ音デッドバンド閾値。**選び方ごと** vario_deadband_mps() に
+    // 預けてあるので、音（sound.cpp）と線が構造的にずれない
+    // （0.983 まで定数は共有していたが「どちらを選ぶか」の判定式が別々だった）。
     //   KF融合中(BNO085+MS5611): ±0.25 m/s = ±20px / MS5611単独: ±0.60 m/s = ±48px
-    const float db_mps = (get_imu_ok() && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
-                                                            : VARIO_DEADBAND_BARO_MPS;
+    const float db_mps = vario_deadband_mps();
     const int db_px = (int)(db_mps / MAX_VSPEED * BAR_MAX_PX + 0.5f);
     vsi_sprite.drawFastHLine(0, 120 - db_px, VSI_W, TFT_DARKGREY);
     vsi_sprite.drawFastHLine(0, 120 + db_px, VSI_W, TFT_DARKGREY);
@@ -1555,7 +1587,11 @@ void draw_eskf_attitude() {
   // 「まだ準備中」なのか区別できないので、理由だけ 1 行出す。
   // 屋外で GNSS 速度が入れば 0.5 秒ほどで READY になるので、通常は一瞬しか見えない。
   // BNO085 非搭載機は姿勢機能自体が無いので対象外（出しっぱなしになってしまう）。
-  if (!getReplayMode() && get_imu_ok() && !attitude_ready()) {
+  // ★ **ミラー中は出さない。** ここで言う「準備中」は *この装置の ESKF* の話で、
+  //   画面に出しているのは機体の姿勢なので関係が無い。しかも return しているため、
+  //   **受信機自身の ESKF が READY になるまでミラーした姿勢ブロックが丸ごと
+  //   出なくなる**（P / R / Y95 / 風 / Rtrim の全部）。
+  if (!getReplayMode() && !link_mirror_active() && get_imu_ok() && !attitude_ready()) {
     backscreen.setTextWrap(false);
     backscreen.loadFont(AA_FONT_SMALL);
     const int fh = backscreen.fontHeight();
@@ -1671,15 +1707,14 @@ void draw_eskf_attitude() {
     // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
     // この状態では表示している姿勢そのものが信用できないので、設定画面まで
     // 行かないと分からないのでは遅い。地図上でも赤字で出す。
-    // ただしリプレイ中は出さない。リプレイ中の姿勢は記録済みの値であり、
-    // 手元でデバイスを傾けて OFF MOUNT 判定が出ても、その飛行時には
-    // 起きていなかった警告になるため。フラグ自体は消さないので、
-    // リプレイを抜けて通常の地図画面に戻れば再び表示される。
+    // ★ 判定は eskf_display_needs_apply()（供給元 3 系統を見る）。リプレイ中は
+    //   出さず、ミラー中は**送信機の**状態を出す。ここに attitude_needs_apply() を
+    //   直接書かないこと。出している姿勢と警告の対象が食い違う。
     // ★ 点滅させる（3 秒のうち 1 秒だけ出す）。
     //   対処できるのは地上だけなので、音は地上でしか鳴らさない（.ino 参照）。
     //   そのぶん、万一この状態で飛んでしまったときに地図を隠し続けないよう、
     //   表示のほうは消えている時間を長めに取る。
-    if (attitude_needs_apply() && !getReplayMode() && (millis() / 1000) % 3 == 0) {
+    if (eskf_display_needs_apply() && (millis() / 1000) % 3 == 0) {
       backscreen.setTextColor(COLOR_RED);
       backscreen.setCursor(ESKF_LABEL_X, yblock_top - ESKF_ROW_GAP - fh_s);
       backscreen.print("ESKF CALIBRATION REQUIRED!");
@@ -2915,6 +2950,17 @@ void draw_gs_track(){
     backscreen.loadFont(AA_FONT_SMALL);
     backscreen.setCursor(x0, 1 + (nh - lh) / 2);         // ラベルは数値の高さの中央
     backscreen.print("TT");
+    // ★ GNSS が無いときは真方位も無効なので赤線で「読むな」と示す。
+    //   ヘッダーが真方位を出しているときは draw_header() 側の赤線が
+    //   （幅 SCREEN_WIDTH-10 で）対地速度ごと消してくれるが、ヘッダーが
+    //   ピッチを出している間は真方位がここにしか無く、そちらの赤線は
+    //   対地速度の側までしか伸びていない。**0.983 までこの TT だけ
+    //   線が引かれず、GNSS が死んでいても方位が生きて見えていた。**
+    //   太さ 4px はヘッダーの赤線と揃える（同じ意味＝この値は無効）。
+    if (get_gnss_numsat() == 0) {
+      for (int i = 0; i < 4; i++)
+        backscreen.drawFastHLine(x0, 1 + nh / 2 - 2 + i, lw + 4 + nw, COLOR_RED);
+    }
   }
 
   // sAcc（速度精度）は GS のすぐ右。下に置くと旋回角速度(deg/s)の表示と重なるため。
@@ -2928,11 +2974,15 @@ void draw_gs_track(){
     backscreen.unloadFont();
     backscreen.setTextSize(1);
     // 背景は塗らない（1引数の setTextColor）。地図の上に白い箱が出ないようにする。
-    backscreen.setTextColor((sacc_mps < 1.0f) ? COLOR_GREEN
+    // ★ ミラー中は「--」。隣の GS は機体の値なので、ここに受信機自身の sAcc を
+    //   並べると機体の測位品質に見える（gnss_acc_unknown() のコメント参照）。
+    backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
+                          : (sacc_mps < 1.0f) ? COLOR_GREEN
                           : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED);
     // GS(AA_FONT_SMALL) の行の高さの中央に合わせる
     backscreen.setCursor(1 + gsw + 4, 1 + (gsh - 8) / 2);
-    backscreen.printf("sAcc%.2f", sacc_mps);
+    if (gnss_acc_unknown()) backscreen.print("sAcc --");
+    else                    backscreen.printf("sAcc%.2f", sacc_mps);
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
     backscreen.loadFont(AA_FONT_SMALL);   // 呼び出し側は地図用フォントを期待している
   }
@@ -3142,8 +3192,10 @@ void draw_header() {
     //   数字の上に赤いバーを被せて「読むな」と示す。
     //   位置と太さは下の「GNSS 0 個で速度・方位が無効」の赤線と同じ流儀にしてある
     //   （同じ意味＝この値は無効、を同じ見た目で表す）。
-    //   リプレイ中は出さない。地図上の赤字警告と条件を揃える。
-    if (attitude_needs_apply() && !getReplayMode()) {
+    //   条件は地図上の赤字警告と同じ eskf_display_needs_apply() に揃えてある
+    //   （リプレイ中は出さない / ミラー中は送信機の状態。この数字自身が
+    //     ミラー中は送信機の平均ピッチなので、取り消し線も送信機の状態で引く）。
+    if (eskf_display_needs_apply()) {
       for (int i = 0; i < 4; i++)
         header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
     }
@@ -3170,6 +3222,8 @@ void draw_header() {
   if(get_gnss_numsat() == 0){
     // この赤線は「GNSS が無いので値が無効」を示すもの。対地速度と真方位は無効になるが、
     // 平均ピッチは GNSS が無くても（ESKF が生きていれば）意味を持つので線を引かない。
+    // ★ ピッチを出しているときは真方位が地図の中央上部へ移る。そちらの赤線は
+    //   draw_gs_track() 側にある。条件（numsat==0）を変えるなら両方直すこと。
     const int len = header_shows_pitch() ? (mtvx - 5 - 2) : (SCREEN_WIDTH - 10);
     for(int i = 0; i < 4; i++)
       header_footer.drawFastHLine(5, 22+i, len, COLOR_RED);
@@ -3951,9 +4005,12 @@ void draw_variodetail(int page) {
     // ---- Page 1: センサー接続状況 + VSI 全比較 + MS5611 + GNSS 垂直 ----
 
     // センサー接続状況
+    // ★ ここだけは**この装置**のハードウェアの話（ミラー中も自機）。
+    //   下の GNSS / KF / 気圧はミラーされるので、混同しないよう見出しで区別する。
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.print("-- Sensor Status --");
+    backscreen.print(link_mirror_active() ? "-- Sensor Status (RX unit) --"
+                                          : "-- Sensor Status --");
     y += line_height;
 
     // MS5611 と BNO085 を 1 行にまとめる
@@ -3966,19 +4023,35 @@ void draw_variodetail(int page) {
     y += line_height;
 
     // GNSS fix 状態
-    bool _gnss3d = get_gnss_fixok() && get_gnss_fixtype() >= 3;
+    // ★ **fixtype はリンクに載っていない**（運んでいるのは fixOK / numsat / hAcc）。
+    //   ミラー中に自機の fixtype で 3D 判定すると、**機体が NOFIX でもボートが
+    //   3D なら「3D-OK」と出る**。分からないものは `--` にする。
+    const bool _mirror = link_mirror_active();
     bool _gnssAny = get_gnss_fixok();
+    bool _gnss3d  = _gnssAny && !_mirror && get_gnss_fixtype() >= 3;
     backscreen.setCursor(2, y);
-    backscreen.setTextColor(_gnss3d ? COLOR_GREEN : _gnssAny ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
-    backscreen.printf("GNSS:%s fix=%d %dsats",
-      _gnss3d ? "3D-OK" : _gnssAny ? "2D" : "NOFIX",
-      get_gnss_fixtype(), get_gnss_numsat());
+    backscreen.setTextColor(_gnssAny ? (_gnss3d || _mirror ? COLOR_GREEN : COLOR_ORANGE)
+                                     : COLOR_RED, COLOR_WHITE);
+    if (_mirror)
+      backscreen.printf("GNSS:%s fix=-- %dsats",
+        _gnssAny ? "FIX" : "NOFIX", get_gnss_numsat());
+    else
+      backscreen.printf("GNSS:%s fix=%d %dsats",
+        _gnss3d ? "3D-OK" : _gnssAny ? "2D" : "NOFIX",
+        get_gnss_fixtype(), get_gnss_numsat());
     y += line_height; 
 
     // 動作モード（GNSS VSI 融合状況を含む）
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    if      (get_imu_ok() && get_airdata_ok() && _gnss3d) backscreen.print("KF: Baro+IMU+GNSS");
+    if (_mirror) {
+      // ★ 送信機がどのセンサーを融合しているかは電波から完全には分からない。
+      //   分かるのは BNO085 の生死だけ（LINK_ST_IMU_ERROR）。MS5611 の状態を
+      //   運ぶビットは無い（あっても 65 バイトの枠を増やす価値は無い）。
+      backscreen.printf("KF: sender (IMU %s)",
+        (link_sender_status() & LINK_ST_IMU_ERROR) ? "NG" : "OK");
+    }
+    else if (get_imu_ok() && get_airdata_ok() && _gnss3d) backscreen.print("KF: Baro+IMU+GNSS");
     else if (get_imu_ok() && get_airdata_ok())              backscreen.print("KF: Baro+IMU");
     else if (get_airdata_ok() && _gnss3d)                   backscreen.print("KF: Baro+GNSS");
     else if (get_airdata_ok())                              backscreen.print("KF: Baro only");
@@ -3997,16 +4070,25 @@ void draw_variodetail(int page) {
 
       backscreen.setCursor(2, y);
       backscreen.setTextColor((baro_vsi > 0.1f) ? COLOR_GREEN : (baro_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("Baro:%+.2fm/s  Alt:%.1fm", baro_vsi, get_airdata_altitude());
+      // ★ 気圧 V/S と気圧高度は**リンクに載っていない**（運んでいるのは気圧そのもの）。
+      //   下の KF 行はミラーされるので、並べると機体の値に見える。(RX) を付ける。
+      backscreen.printf(_mirror ? "Baro(RX):%+.2fm/s Alt:%.1fm"
+                                : "Baro:%+.2fm/s  Alt:%.1fm",
+                        baro_vsi, get_airdata_altitude());
       y += line_height;
 
       // GNSS VSI — sAcc ゲート状態を色で示す
+      // ★ この行は**丸ごと自機の値**（veld も sAcc もリンクに載っていない）。
+      //   上下の Baro / KF はミラーされるので、ミラー中に数字を出すと
+      //   機体の GNSS 昇降率に見える。gnss_acc_unknown() のコメント参照。
       float _gnss_vsi = get_gnss_veld_mps();
       float _sacc_now = get_gnss_sacc_mmps() / 1000.0f;
       bool  _gate_ok  = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
       backscreen.setCursor(2, y);
-      backscreen.setTextColor(_gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
-      backscreen.printf("GNSS:%+.2fm/s %s", _gnss_vsi, _gate_ok ? "[KF]" : "[--]");
+      backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
+                            : _gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
+      if (gnss_acc_unknown()) backscreen.print("GNSS:  --     (not on link)");
+      else backscreen.printf("GNSS:%+.2fm/s %s", _gnss_vsi, _gate_ok ? "[KF]" : "[--]");
       y += line_height;
 
       // KF VSI（BNO085 なし時も Baro+GNSS KF から出力）
@@ -4025,7 +4107,12 @@ void draw_variodetail(int page) {
       // 現在の気圧・気温 ＋ 起動時の基準気圧
       backscreen.setCursor(2, y);
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("Pres:%.1fhPa Temp:%.1fC", get_airdata_pressure(), get_airdata_temperature());
+      // ★ get_airdata_pressure() はミラーされるが気温はされない。**同じ行で
+      //   出どころが混ざっていた**ので、ここは _raw（必ず自機）で揃える。
+      //   機体の気圧は下の GNSS/KF 高度から読める。
+      backscreen.printf(_mirror ? "Pres(RX):%.1fhPa Temp:%.1fC"
+                                : "Pres:%.1fhPa Temp:%.1fC",
+                        get_airdata_pressure_raw(), get_airdata_temperature());
       y += line_height;
 
       // 起動時の気圧（これを 0m 基準に使用）と起動地のISA絶対高度
@@ -4072,18 +4159,29 @@ void draw_variodetail(int page) {
     bool  _sacc_ok = sacc_mps < GNSS_VSI_SACC_MAX_MPS;
 
     backscreen.setCursor(2, y);
-    backscreen.setTextColor(_sacc_ok ? (sacc_mps > GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_ORANGE : COLOR_BLACK)
-                                     : COLOR_RED, COLOR_WHITE);
-    backscreen.printf("sAcc:%.3fm/s(<%.1f)%s  vAcc:%.2fm",
-      sacc_mps, GNSS_VSI_SACC_MAX_MPS, _sacc_ok ? "OK" : "NG", vacc_m);
+    if (gnss_acc_unknown()) {
+      // ★ Alt はミラーされているのに sAcc/vAcc は送られてこない。並べると
+      //   受信機自身の値が機体の値として読まれる（gnss_acc_unknown() 参照）。
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("sAcc/vAcc: -- (not on link)");
+      y += line_height;
+      backscreen.setCursor(2, y);
+      backscreen.printf("R_vel: --      Alt:%.1fm(MSL)", gnss_alt);
+    } else {
+      backscreen.setTextColor(_sacc_ok ? (sacc_mps > GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_ORANGE : COLOR_BLACK)
+                                       : COLOR_RED, COLOR_WHITE);
+      backscreen.printf("sAcc:%.3fm/s(<%.1f)%s  vAcc:%.2fm",
+        sacc_mps, GNSS_VSI_SACC_MAX_MPS, _sacc_ok ? "OK" : "NG", vacc_m);
+      y += line_height;
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.printf("R_vel:%.4fm2  Alt:%.1fm(MSL)", r_vel, gnss_alt);
+    }
     y += line_height;
 
-    backscreen.setCursor(2, y);
-    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.printf("R_vel:%.4fm2  Alt:%.1fm(MSL)", r_vel, gnss_alt);
-    y += line_height;
-
-    if (get_airdata_ok()) {
+    // ★ ミラー中は出さない。gnss_alt は機体、get_airdata_altitude() は自機なので
+    //   **引き算そのものに意味が無い**（ボートと機体の高度差でもない）。
+    if (get_airdata_ok() && !_mirror) {
       float dalt = gnss_alt - get_airdata_altitude();
       backscreen.setCursor(2, y);
       backscreen.setTextColor(fabsf(dalt) < 20.0f ? COLOR_BLACK : COLOR_ORANGE, COLOR_WHITE);
@@ -4093,11 +4191,25 @@ void draw_variodetail(int page) {
 
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.printf("fix=%d gnssOK=%s sats=%d",
-      get_gnss_fixtype(), get_gnss_fixok() ? "Y" : "N", get_gnss_numsat());
+    if (_mirror)   // fixtype はリンクに載っていない（上の GNSS fix 行と同じ理由）
+      backscreen.printf("fix=-- gnssOK=%s sats=%d",
+        get_gnss_fixok() ? "Y" : "N", get_gnss_numsat());
+    else
+      backscreen.printf("fix=%d gnssOK=%s sats=%d",
+        get_gnss_fixtype(), get_gnss_fixok() ? "Y" : "N", get_gnss_numsat());
 
   } else {
     // ---- Page 2: BNO085 IMU データ + Kalman 設定 + GNSS VSI 融合 ----
+
+    // ★ このページは**丸ごとこの装置の IMU と KF の内部**。ミラー中も自機の値を
+    //   出す（KF MSL/VSI も _raw を使う）。地図画面が機体を出している流れで
+    //   読むので、1 行断っておかないと機体の数字として読まれる。
+    if (link_mirror_active()) {
+      backscreen.setCursor(2, y);
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print("(MIRROR) below = RX unit");
+      y += line_height;
+    }
 
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
@@ -4120,7 +4232,11 @@ void draw_variodetail(int page) {
 
       backscreen.setCursor(2, y);
       backscreen.setTextColor(get_imu_gnss_offset_ready() ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
-      backscreen.printf("KF MSL:%.1fm  VSI:%+.2fm/s", get_imu_altitude_msl(), get_imu_vspeed());
+      // ★ _raw（必ず自機）を使う。この節の他の行（GRV/LACC/RV・VertAccel・
+      //   LinAccel）は自機しか出しようがないので、ここだけミラー値にすると
+      //   **同じ枠の中で出どころが混ざる**。
+      backscreen.printf("KF MSL:%.1fm  VSI:%+.2fm/s",
+                        get_imu_altitude_msl_raw(), get_imu_vspeed_raw());
       y += nextcolumn_height;
 
       // 線形加速度（ボディフレーム）
@@ -4214,17 +4330,25 @@ void draw_variodetail(int page) {
 
     backscreen.setCursor(2, y);
     // sAcc が閾値に近づくとオレンジ、超えると赤で警告
-    backscreen.setTextColor(_sacc_mps < GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_BLACK
+    backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
+                          : _sacc_mps < GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_BLACK
                           : _sacc_mps < GNSS_VSI_SACC_MAX_MPS        ? COLOR_ORANGE
                           : COLOR_RED, COLOR_WHITE);
-    backscreen.printf("sAcc:%.3fm/s  R_vel:%.4fm2", _sacc_mps, _r_vel);
+    if (gnss_acc_unknown()) backscreen.print("sAcc: --      R_vel: --");
+    else backscreen.printf("sAcc:%.3fm/s  R_vel:%.4fm2", _sacc_mps, _r_vel);
     y += line_height;
 
     bool _gnss3d2 = get_gnss_fixok() && get_gnss_fixtype() >= 3;
     bool _sacc_ok2 = (_sacc_mps < GNSS_VSI_SACC_MAX_MPS);
     bool _gate2    = _gnss3d2 && _sacc_ok2;
     backscreen.setCursor(2, y);
-    if (_gate2) {
+    if (gnss_acc_unknown()) {
+      // ★ ミラー中は `loop()` が自機の KF へ GNSS を入れない（受信した機体の
+      //   高度を入れると気圧基準と _gnss_kf_offset が壊れる。pons_link.md §5）。
+      //   だから PASS/FAIL ではなく「入れていない」が正しい。
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("Gate: -- (no GNSS into KF)");
+    } else if (_gate2) {
       backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
       backscreen.printf("Gate:PASS sAcc=%.3f", _sacc_mps);
     } else {
@@ -4235,7 +4359,9 @@ void draw_variodetail(int page) {
     y += line_height;
 
     backscreen.setCursor(2, y);
-    bool _gnss3d_kf = get_gnss_fixok() && get_gnss_fixtype() >= 3;
+    // ★ ミラー中は自機 KF に GNSS が入っていないので false。上の Gate と揃える。
+    bool _gnss3d_kf = !link_mirror_active() &&
+                      get_gnss_fixok() && get_gnss_fixtype() >= 3;
     if (get_imu_ok() && get_airdata_ok() && _gnss3d_kf) {
       backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
       backscreen.print("KF: Active (Baro+IMU+GNSS)");
@@ -4400,11 +4526,27 @@ void draw_gnssdetail(int page) {
     tft.setTextSize(1);
     int y = 22;
 
+    // ★ ミラー中は出どころが混ざるページなので、1 行で断っておく。
+    //   機体: 緯度経度・hAcc・fixOK・衛星数 ／ 自機: DOP・PRN・UTC・vAcc・sAcc。
+    const bool _mirror = link_mirror_active();
+    if (_mirror) {
+      tft.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      tft.setCursor(1, y);
+      tft.print("MIRROR: pos/hAcc=sender, rest=RX unit");
+      y += 12;
+    }
+
     // ---- Fix Status ----
+    // ★ **fixtype はリンクに載っていない。** ミラー中に自機の fixtype を
+    //   この大きさで出すと、**ボートの測位状態を機体のものとして読む**。
+    //   運んでいる fixOK だけで決める（2D/3D の区別は付かない）。
     int fixtype = get_gnss_fixtype();
     const char* fixstr;
     uint16_t fixcolor;
-    if      (fixtype == 3) { fixstr = "3D Fix"; fixcolor = COLOR_GREEN; }
+    if (_mirror)           { const bool _ok = get_gnss_fixok();
+                             fixstr = _ok ? "Fix" : "No Fix";
+                             fixcolor = _ok ? COLOR_GREEN : COLOR_RED; }
+    else if (fixtype == 3) { fixstr = "3D Fix"; fixcolor = COLOR_GREEN; }
     else if (fixtype == 2) { fixstr = "2D Fix"; fixcolor = COLOR_ORANGE; }
     else                   { fixstr = "No Fix"; fixcolor = COLOR_RED; }
 
@@ -4526,8 +4668,11 @@ void draw_gnssdetail(int page) {
     tft.printf("%.1fm  ", hacc_m);
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
     tft.print("vAcc:");
-    tft.setTextColor(vaccColor, COLOR_WHITE);
-    tft.printf("%.1fm", vacc_m);
+    // ★ hAcc はリンクで運んでいるが vAcc は運んでいない。ミラー中にここへ
+    //   受信機自身の vAcc を出すと、隣の hAcc と同じ機体の値に見える
+    //   （gnss_acc_unknown() のコメント参照）。
+    if (gnss_acc_unknown()) { tft.setTextColor(COLOR_GRAY, COLOR_WHITE); tft.print("--"); }
+    else { tft.setTextColor(vaccColor, COLOR_WHITE); tft.printf("%.1fm", vacc_m); }
     y += 12;
 
     // sAcc（速度精度）
@@ -4536,8 +4681,11 @@ void draw_gnssdetail(int page) {
     tft.setCursor(1, y);
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
     tft.print("sAcc:");
-    tft.setTextColor(saccColor, COLOR_WHITE);
-    tft.printf("%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
+    if (gnss_acc_unknown()) { tft.print("-- (not on link)"); }
+    else {
+      tft.setTextColor(saccColor, COLOR_WHITE);
+      tft.printf("%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
+    }
   }
 }
 

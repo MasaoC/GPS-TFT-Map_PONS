@@ -90,6 +90,15 @@ bool get_imu_ok();
 // update_vario() の MS5611 フォールバック判定に使用する。
 bool get_imu_alive();
 
+// ---- バリオの供給元（音と VSI の線で共有する）----
+// ★ **音（src/sound.cpp の update_vario）と VSI のグレー線（display_tft.cpp の
+//   draw_vsi）は必ずこの 3 つを通すこと。** 0.983 まで両者が別々に
+//   `get_imu_alive()` / `get_imu_ok()` で分岐していて、いつ食い違っても
+//   おかしくなかった（CLAUDE.md の「線は出ているのに鳴らない」）。
+bool  vario_source_ok();         // V/S を出せる状態か（false なら VSI のバーを描かない）
+float vario_vspeed_mps();        // 表示・音に使う V/S [m/s]（供給元はここが決める）
+float vario_deadband_mps();      // デッドバンド [m/s]（KF 融合中は狭い）
+
 // ---- 推定値ゲッター ----
 float get_imu_vspeed();          // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
 // _raw 版は「必ず自機の値」を返す。無線のミラー中でも自機 CSV には

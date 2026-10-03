@@ -259,6 +259,43 @@ class AttitudeESKF:
         self.P = I_KH @ self.P @ I_KH.T + K @ Rm @ K.T   # Joseph 形（対称性を保つ）
         self._inject(dx)
 
+    def update_level(self, accel, sigma_mps2):
+        """重力観測（levelling update）。**機上 attitude.cpp の level_update() と同じ。**
+
+        準定常のとき、比力をワールドへ回した f_w は (0,0,g) になるはず。
+        水平 2 成分を観測量にして、その残差から dtheta の水平成分を直す。
+
+        誤差回転はワールド系（R_true = (I + [dtheta]x) R_nom）なので
+            f_w_true = (I + [dtheta]x) f_w = f_w + dtheta x f_w = f_w - [f_w]x dtheta
+        f_w ~ (0,0,g) のとき
+            d f_w_x = +g * dtheta_y,   d f_w_y = -g * dtheta_x
+        よって H は 2x12 で H[0][1] = +g, H[1][0] = -g だけが非零。
+
+        ★ **dba は H に入れない。** 水平の加速度バイアスと傾き誤差は原理的に縮退して
+          いるので、入れると長い GNSS 断で ba が汚れる。入れない代償は
+          「水平 ba を全部傾きのせいにする」ぶんの偏りで、SCH16T のオフセット
+          ±0.01 m/s2 typ なら 0.06 度、max 0.06 m/s2 でも 0.35 度。無視できる。
+          そのぶんは sigma に含める。
+        ★ ゲート（旋回レート等）は呼び出し側で判定する。ここは観測の計算だけ。
+        """
+        g = 9.80665
+        fw = quat_to_R(self.q) @ (np.asarray(accel, float) - self.ba)
+        # ★ H は f_w ≒ (0,0,+g) のまわりで線形化してある。下向きなら符号が逆に
+        #   なり補正が誤差を広げるので入れない（機上 level_update と同じガード）。
+        if fw[2] < 0.5 * g:
+            return
+        H = np.zeros((2, 12))
+        H[0, 1] = +g
+        H[1, 0] = -g
+        Rm = np.eye(2) * (float(sigma_mps2) ** 2)
+        y = -fw[:2]                      # 観測は (0,0)。残差 = 0 - f_w の水平成分
+        S = H @ self.P @ H.T + Rm
+        K = self.P @ H.T @ np.linalg.inv(S)
+        dx = K @ y
+        I_KH = np.eye(12) - K @ H
+        self.P = I_KH @ self.P @ I_KH.T + K @ Rm @ K.T   # Joseph 形
+        self._inject(dx)
+
     def _inject(self, dx):
         dtheta = dx[0:3]
         # global error なので左から掛ける
@@ -289,12 +326,19 @@ def _map_host_to_sensor_time(imu_df):
 
 
 def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
-               gnss_cutoff=None, init_from_grv=False):
+               gnss_cutoff=None, init_from_grv=False, use_level=True,
+               level_sigma=0.5, level_yawrate_dps=1.0,
+               level_yawrate_inst_dps=3.0,
+               level_accmag_tol=0.5, level_longacc=0.2):
     """decode_imulog.split() の結果に ESKF を適用して姿勢時系列を返す。
 
     セッション（起動）ごとに独立して処理し、フィルタも都度初期化する。
     ログは O_APPEND なので 1 ファイルに複数回の起動分が入り、境界で時刻が 0 に戻る。
     跨いで回すと GNSS 観測が適用されなくなり姿勢が発散する（2026-08-18 に実際に発生）。
+
+    use_level: 重力観測（Phase 2 の levelling update）を入れるか。
+      ★ **既定 True は機上の ESKF_LEVEL_ENABLED=1 に合わせてある。**
+        機上の挙動を再現したいときは触らない。効果を見たいときだけ False にする。
 
     use_gnss: False にすると速度観測を一切入れない（純粋なジャイロ/加速度の積分）。
       GNSS 援用の効果を見るための比較用。観測が無いと姿勢を引き戻すものが何も無いので、
@@ -316,6 +360,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
       t, ts              : 時刻 [s]
       s_roll/s_pitch/s_yaw : センサー座標系のオイラー角 [deg]（フィルタの素の出力）
       roll/pitch/yaw     : マウント補正後の機体軸オイラー角 [deg]
+      qw/qx/qy/qz        : フィルタの姿勢クォータニオン（センサー→ENU）
+        回転行列の第 3 行がセンサー軸で見た「上」で、バリオの重力除去はこれを使う。
       yaw_sigma          : ヨーの推定標準偏差 [deg]（共分散 P の該当対角成分）
         ヨーは水平加速度がある間しか可観測にならないため、等速直進が続くと育つ。
         機上では表示にしか使っていないので、飛行後の検証はここから読む。
@@ -427,6 +473,14 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         bias_sum = np.zeros(3)
         bias_n = 0
         yaw_arm = 0
+        # ---- 重力観測（Phase 2）のためのゲート用の量 ----
+        # ★ ゲートはジャイロだけから作れるものを主にする。GNSS 断中に働かないと
+        #   意味が無いため（重力観測はまさにその場面のためにある）。
+        yaw_rate_lp = 0.0        # ワールド系ヨーレートの持続成分 [deg/s]（2 秒 LPF）
+        longacc_lp = 0.0         # 前後加速度の持続成分 [m/s^2]（GNSS 由来・2 秒 LPF）
+        last_gsp = None
+        last_gsp_t = None
+        level_last_t = -1e9
         for k, i in enumerate(range(i_start, len(ts))):
             dt = ts[i] - ts[i - 1] if i else 0.0
             # ---- 待機中の維持（機上 attitude_on_gyro の該当ブロックと同じ）----
@@ -443,7 +497,38 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 bias_sum[:] = 0.0
                 bias_n = 0
             f.predict(w[i], acc[i], dt)
+            # ---- ワールド系ヨーレートの持続成分（機上 yaw_rate_lp_ と同じ式）----
+            wz_dps = 0.0
+            if dt > 0.0:
+                R_ = quat_to_R(f.q)
+                wz = float(R_[2] @ (np.asarray(w[i], float) - f.bg))
+                wz_dps = np.degrees(wz)
+                yaw_rate_lp += (wz_dps - yaw_rate_lp) * (dt / (2.0 + dt))
+            # ---- 重力観測（ゲートを通ったときだけ）----
+            # ★ ヨーレートの更新は**この直前**で済ませてある。後ろに置くと
+            #   1 サンプル前の値で判定して旋回の入り口で漏れる（機上で踏んだ）。
+            if use_level and (ts[i] - level_last_t) >= 0.5:      # 2Hz
+                amag = float(np.linalg.norm(acc[i]))
+                # ★ 瞬時値も見る。LPF だけだと 2 秒の遅れのぶん、旋回の入り口で
+                #   観測が漏れてバンクを過小評価する（合成旋回で確認）。
+                ok = (abs(yaw_rate_lp) <= level_yawrate_dps and
+                      abs(wz_dps) <= level_yawrate_inst_dps and
+                      abs(amag - 9.80665) <= level_accmag_tol)
+                # ★ 機上と同じ: 測位が古い（断中）ならこの条件を省く。
+                #   前後加速度は GNSS からしか作れないので、断中に古い値で
+                #   判定するとゲートが誤って開く／閉じる。
+                if ok and last_gsp is not None and (ts[i] - last_gsp_t) < 3.0:
+                    ok = abs(longacc_lp) <= level_longacc
+                if ok:
+                    f.update_level(acc[i], level_sigma)
+                    level_last_t = ts[i]
             while gi < len(g_ts) and g_ts[gi] <= ts[i]:
+                # 前後加速度の持続成分（対地速度の変化率）
+                gsp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
+                if last_gsp is not None and g_ts[gi] > last_gsp_t:
+                    dtg = g_ts[gi] - last_gsp_t
+                    longacc_lp += ((gsp - last_gsp) / dtg - longacc_lp) * (dtg / (2.0 + dtg))
+                last_gsp, last_gsp_t = gsp, g_ts[gi]
                 if not yaw_set:
                     sp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
                     if sp < 3.0:                                 # ESKF_YAW_INIT_MIN_SPEED_MPS
@@ -475,6 +560,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             "s_yaw": np.degrees(s_yaw),
             "roll": roll, "pitch": pitch, "yaw": yaw,
             "yaw_sigma": ysig,
+            # 生のクォータニオン（センサー→ENU）。重力除去の検証で
+            # 「上方向」を取り出すのに使う（compare_grv.py）。
+            "qw": qs[:, 0], "qx": qs[:, 1], "qy": qs[:, 2], "qz": qs[:, 3],
         }))
 
     if not out:

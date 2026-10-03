@@ -1052,9 +1052,14 @@ void loop() {
         float lvr, lvp;
         attitude_get_level_offset(lvr, lvp);
         // yawsrc: 0 = 未設定（絶対方位が無い） / 1 = GNSS 航跡から入れた
-        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f yawsrc=%d lvl R%+.1f P%+.1f",
+        // gobs: 重力観測（levelling update）の累計回数。
+        // ★ **ここが増えていなければゲートが閉じている。** GNSS 断中に
+        //   ロール・ピッチの錨になるのがこの観測なので、0 のままなら
+        //   settings.h の ESKF_LEVEL_* を見直す（旋回レートのしきい値が主）。
+        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f yawsrc=%d gobs=%lu lvl R%+.1f P%+.1f",
                                      (int)attitude_ready(), attitude_get_yaw_sigma_deg(),
-                                     (int)attitude_get_yaw_source(), lvr, lvp));
+                                     (int)attitude_get_yaw_source(),
+                                     (unsigned long)attitude_get_level_updates(), lvr, lvp));
       }
     }
   }

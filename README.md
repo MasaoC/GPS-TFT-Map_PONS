@@ -76,7 +76,7 @@ SD に残るログを `tools/` の解析にかけると、機体特性の分析�
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ実戦投入していません。** 基板製作中で、実結線試験もこれからです。
-* 最新のソフトウェアバージョンは **0.982**（Build 20261001）。
+* 最新のソフトウェアバージョンは **0.984**（Build 20261003）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -883,6 +883,11 @@ SD が無い・壊れている機体でも警報の音声が鳴るようにす�
 * `tools/imulog/`：生 IMU ログ (`imuraw/*.bin`) の解析一式
   * `decode_imulog.py`：バイナリのデコード、セッション分割、時刻の復元
   * `eskf.py`：PC 上で動く ESKF（機上の `attitude.cpp` と同じ数式・同じマウント補正）
+  * `compare_grv.py`：0.983 の変更（GRV/RV 依存の除去・重力観測）を実ログで検証する。
+    走行後にこれを回すと、初期水平化と GRV の差／地磁気ヨーと GNSS 航跡の差／
+    バリオ V/S の差／GNSS 断時の姿勢ドリフト／重力観測のゲート開口率が出る。
+    **GRV と RV は推定に使わなくなった後も生ログに記録し続けているので比較できる。
+    BNO085 を降ろすと比較対象が無くなるため、それまでに測っておく。**
   * `merge_flight.py`：生 IMU と飛行 CSV の結合、`plot_response.py` / `pitchtest_plot.py`：応答の可視化
   * `road_geometry.py`：走行データから路面の傾斜を逆算、`yaw_kml.py`：ヨーを KML で地図に重ねる
 * `tools/attitude_test/`：`attitude.cpp` を PC 上で検証するテスト（`make` でビルドと実行）

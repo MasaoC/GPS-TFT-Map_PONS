@@ -1787,6 +1787,41 @@ float get_imu_vspeed() {
   return get_imu_vspeed_raw();
 }
 
+// ============================================================
+//  バリオの供給元を 1 か所で決める
+// ============================================================
+// ★ **ミラー中は「送信機の画面を再現する」のが受信モードの主旨**なので、
+//   自機のセンサーの有無で分岐してはいけない。V/S は電波がそのまま運んでいる。
+//   0.983 まで draw_vsi() が自機の `get_airdata_ok()` で早期 return しており、
+//   **受信機の MS5611 が死んでいるとミラー中もバーが出なかった**。
+//   さらに自機の BNO085 が死んでいると、**ボート自身の気圧 V/S（＝波の上下動）を
+//   機体の V/S として表示・発音していた**。
+// ★ デッドバンドの広い・狭いは送信機の選び方に合わせる。送信機の BNO085 の
+//   生死は LINK_ST_IMU_ERROR で分かる（link.cpp が `!get_imu_ok()` で立てる）。
+//   送信機の MS5611 が死んでいる場合は電波から判別できないが、そのとき送信機の
+//   KF は初期化されず V/S は 0 のままなので、バーも音も出ない（結果は一致する）。
+
+// V/S を出せる状態か。気圧が無いと KF が初期化されないので V/S は出ない。
+bool vario_source_ok() {
+  if (link_mirror_active()) return link_has_value(RHAVE_KFVS);
+  return get_airdata_ok();
+}
+
+// 表示・音に使う V/S。BNO085 が途絶していれば MS5611 単独の上昇率へ落とす。
+float vario_vspeed_mps() {
+  if (link_mirror_active()) return get_imu_vspeed();   // = link_get_kf_vspeed()
+  return get_imu_alive() ? get_imu_vspeed() : get_airdata_vspeed();
+}
+
+// デッドバンド。KF 融合中（BNO085 生存 + MS5611 接続）は精度が高いので狭くする。
+float vario_deadband_mps() {
+  if (link_mirror_active())
+    return (link_sender_status() & LINK_ST_IMU_ERROR) ? VARIO_DEADBAND_BARO_MPS
+                                                      : VARIO_DEADBAND_KF_MPS;
+  return (get_imu_alive() && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
+                                               : VARIO_DEADBAND_BARO_MPS;
+}
+
 float get_imu_vspeed_raw() {
     // リプレイ中で CSV に KF_Vspeed 列があれば、その値を返す（バリオ音も再生される）
     if (replay_has_value(RHAVE_KFVS)) return replay_get_kf_vspeed();

@@ -175,6 +175,9 @@ bool  attitude_get_up_sensor(float u[3]);
 bool  attitude_is_static();                  // 静止判定の現在値
 float attitude_get_static_secs();            // 静止が継続している秒数
 uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回数
+// 重力観測（levelling update）を取り込んだ回数。ゲートが開いているかの確認に使う。
+// ★ GNSS 断中にロール・ピッチの錨になるのがこの観測。0 のままならゲートが閉じている。
+uint32_t attitude_get_level_updates();
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう
