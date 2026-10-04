@@ -32,7 +32,11 @@ float truec = 0;
 float dest_dist = 0;
 
 // destination_mode: ナビモード（FLYINTO / FLYAWAY / AUTO10K）。設定画面から変更可。
-int destination_mode = DMODE_FLYAWAY;
+// ★ ここは **SD を読めなかったときの既定値**。SD があれば loadSettings() の
+//   navigation_mode が上書きする。
+//   AUTO10K は既定の目的地 PLATHOME（currentdestination=0）と組み合わせられる
+//   （禁止は N_PILON / S_PILON / TAKESHIMA。is10K_NotAllowed_Destination()）。
+int destination_mode = DMODE_AUTO10K;
 // auto10k_status: AUTO10K モード時のフェーズ（AWAY=折り返し前 / INTO=折り返し後）。
 // リプレイ再生中は再生データに従って動くので、実飛行の値とは別に持つ。
 int auto10k_status = AUTO10K_AWAY;
