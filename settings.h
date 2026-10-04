@@ -500,12 +500,82 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #endif
 
 // ============================================================
+//  IMU チップの選択（0.984 で導入。SCH16T-K01 への差し替え準備）
+// ============================================================
+// BNO085 は中で融合までやるチップ、SCH16T-K01（Murata）はジャイロと加速度しか
+// 出さないチップ。0.983〜0.984 で機上の推定（姿勢 ESKF・バリオ KF）から
+// BNO085 の融合出力を全部外したので、**どちらでも推定は成立する**。
+// 境界と「何が有るか」の申告は [imu_sensor.h](imu_sensor.h) にある。
+//
+// ★ **切替は起動時のみ有効にすること。** 実行中に変えると imu_setup() の
+//   やり直しになり、バス初期化・ESKF リセット・バリオ KF の再初期化が絡む。
+//   `link_mode` と同じ「SD に保存して次回起動から」の扱いにする。
+// ★ **SCH16T 側は `EOI` を書いた時点でレジスタが全部ロックされる**
+//   （データシート Table 80。リセットするまで解除できない）。だから
+//   フィルターやレンジを設定画面から実行中に変えることも原理的にできない。
+//   詳細は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §5。
+#define IMU_SENSOR_BNO085   0
+#define IMU_SENSOR_SCH16T   1
+#define IMU_SENSOR_DEFAULT  IMU_SENSOR_BNO085
+
+// ---- SCH16T-K01-10 の定数（データシート Doc.No.11624 Rev.6 で全件照合済み）----
+// ★ **まだドライバが無い。** ここに置いてあるのは単独テスト
+//   （tools/sch16t_test/）で確定した値で、imu_sch16t.cpp を足すときそのまま使う。
+//   先に置く理由は、基板設計（kicad/IMU_murata/）とピン割り当てを
+//   ここ 1 か所で突き合わせたいため。
+//
+// SPI: mode 0（CPOL=0/CPHA=0）、48bit アウトオブフレーム。
+//   ★ **SCK には下限もある（0.095MHz）。** 遅すぎてもフレームが成立しない。
+//   ★ **応答は 1 フレーム遅れて返る。** 先頭に捨てフレームが必要。
+#define SCH16T_SPI_HZ        5000000UL  // 0.095〜10.5MHz の範囲の中央あたり
+#define SCH16T_CRC8_POLY     0x2F       // 初期値 0xFF・XOR out なし・bit47〜8 が対象
+#define SCH16T_CRC8_INIT     0xFF
+// 感度（20bit 既定設定）。★ レンジ設定 '000' は**書いてはいけない**（禁止値）。
+#define SCH16T_LSB_PER_DPS   1600.0f    // ジャイロ [LSB/(deg/s)]
+#define SCH16T_LSB_PER_MPS2  3200.0f    // 加速度 ACC1/ACC2 [LSB/(m/s²)]
+#define SCH16T_LSB_PER_MPS2_ACC3 1600.0f // 広レンジ補助加速度 ACC3
+#define SCH16T_LSB_PER_DEGC  100.0f     // 温度 [LSB/°C]
+// 初期化の待ち [ms]。★ **どれも縮めてはいけない。** データシート §5.1.2 の手順
+//   （リセット → NVM 読み出し → 設定 → EN_SENSOR → 安定待ち → ステータス 1 周
+//    → EOI → ステータス 2 周 → 検証）に対応している。
+#define SCH16T_WAIT_NVM_MS   32
+#define SCH16T_WAIT_START_MS 215
+#define SCH16T_WAIT_EOI_MS   3
+// 品種判定は COMP_ID。★ **ASIC_ID はシリコンのリビジョンなので品種判定に使えない。**
+#define SCH16T_COMP_ID       0x0023     // SCH16T-K01
+//
+// ★★ **読み出しレートはフィルターと紐づく。まだ決めていない。**
+//   LPF ごとに「最小推奨読み出しレート」があり、下回ると阻止域のノイズが
+//   折り返して帯域内に入る（§5.5 Table 16）:
+//       LPF2 13Hz → 150Hz / LPF1 30Hz → 200Hz / LPF0 68Hz（既定）→ 500Hz
+//   **BNO085 と同じ感覚で 50Hz で読むと折り返す。** HPA の運動帯域は 5Hz 以下
+//   なので LPF2 + 150Hz が妥当に見えるが、単独テストで両方のノイズを実測して
+//   決めること。決めたらここに定数を足す。
+//
+// ---- ピン（**基板が決まってから入れる**）----
+// ★ kicad/IMU_murata/ が設計中。確定するまで未定義のままにして、
+//   SCH16T を選んだときだけビルドで止める。**GPIO41 は使ってはいけない**
+//   （E220 の M0/M1 専用。CLAUDE.md 参照）。
+#define SCH16T_PIN_UNSET     255
+#define SCH16T_PIN_SCK       SCH16T_PIN_UNSET
+#define SCH16T_PIN_MOSI      SCH16T_PIN_UNSET
+#define SCH16T_PIN_MISO      SCH16T_PIN_UNSET
+#define SCH16T_PIN_CS        SCH16T_PIN_UNSET
+#define SCH16T_PIN_DRY       SCH16T_PIN_UNSET   // データ準備完了（デシメーション出力用）
+#define SCH16T_PIN_EXTRESN   SCH16T_PIN_UNSET   // 外部リセット（負論理）
+
+#if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
+  #error "SCH16T のドライバ（imu_sch16t.cpp）とピン割り当てがまだ無い。docs/imu_sch16t_plan.md §4 の手順で進めること"
+#endif
+
+// ============================================================
 //  IMU（BNO085）
 // ============================================================
 // ---- 生 IMU ロガー（姿勢 ESKF のオフライン開発用）----
 // 目的: BNO085 内蔵フュージョンは比力を鉛直とみなすため、旋回中はロールを過小評価し、
 //       加減速中はピッチがずれる。これを GNSS 速度で補正する ESKF を PC 上で開発するため、
-//       生のジャイロ・加速度・地磁気と GNSS 速度を SD にバイナリ記録する。
+//       生のジャイロ・加速度と GNSS 速度を SD にバイナリ記録する
+//       （地磁気は 0.984 で記録をやめた。推定にも表示にも使っていない）。
 //       機上では推定を行わない（詳細は imulog.h）。
 //
 // バス負荷: i2c0 は MS5611 と共用だが、下記レートでも占有率は約 20%（400kHz）。
@@ -513,9 +583,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // SD 負荷 : 約 260 レコード/秒 × 28B ≒ 7.3kB/s（30 分飛行で約 13MB）。
 #define IMULOG_DEFAULT_ENABLED  true  // ビルド時固定（実行時・SD からの切替手段は無い）
 
-// ---- 生レポート（GYRO/ACCEL/MAG）の有効化 ----
+// ---- 生レポート（GYRO/ACCEL）の有効化 ----
 //   0 : GRV/LACC/RV の 15/15/5Hz のみ、ポーリング 30ms（ESKF 導入前と同じ）
-//   1 : GYRO/ACCEL/MAG を追加し、ポーリングを 4ms へ
+//   1 : GYRO/ACCEL を追加し、ポーリングを 4ms へ
+// ★ 0.984 で MAG（地磁気）の購読をやめた。方位は真方位（GNSS 航跡）だけを使い、
+//   地磁気は推定にも表示にも使っていない（実測で GNSS 航跡から 91〜171 度ずれる）。
+//   生ログの 0x03 レコードもこれで出なくなる。過去ログの解析側は読める。
 //
 // ★ **要求レートの合計を BNO085 の配信能力の内側に保つこと。**
 //   BNO085 はポーリング 1 回につきおおむね 1 レポートしか返さないので、
@@ -525,7 +598,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   2026-08-17 に GYRO/ACCEL 100Hz・MAG 25Hz（合計 260/秒）で実際に起きた:
 //       rate GRV=4.0 LACC=5.0 RV=1.0 MS5611=40.0 Hz  drop=0
 //     （MS5611 は正常。飢餓していたのは BNO085 側だけ）
-//   対策は 3 つ: 合計 145/秒 に下げる（下記 50/50/10。HPA の運動帯域は 5Hz 以下）、
+//   対策は 3 つ: 合計を下げる（下記 50/50。HPA の運動帯域は 5Hz 以下）、
 //   ポーリングを 250Hz にして天井を上げる、古い加速度では predict しない（MAX_AGE）。
 //
 // ★ 変更したら 60 秒ログの rate 行を必ず見る。GRV=15.0 LACC=15.0 RV=5.0 なら正常。
@@ -534,10 +607,10 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 
 // BNO085 レポート周期 [Hz]（IMULOG_RAW_REPORTS_ENABLED が 1 のときのみ有効）
 //   合計要求レートを配信能力の内側に保つこと。上げすぎると既存レポートが飢餓になり
-//   バリオが壊れる（上記参照）。既存 35 + 生 110 = 145 レポート/秒。
+//   バリオが壊れる（上記参照）。既存 35 + 生 100 = 135 レポート/秒
+//   （0.984 で MAG 10Hz を外したので 145 → 135）。
 #define IMU_RATE_GYRO_HZ    50  // SH2_GYROSCOPE_CALIBRATED
 #define IMU_RATE_ACCEL_HZ   50  // SH2_ACCELEROMETER（重力込みの生比力。ESKF と、VARIO_USE_RAW_ACCEL=1 のときバリオ KF が使う）
-#define IMU_RATE_MAG_HZ     10  // SH2_MAGNETIC_FIELD_CALIBRATED（ヨー絶対値は対象外なので低レートで十分）
 // 既存レポート（バリオ KF・姿勢表示用。変更するとバリオのチューニングに影響する）
 #define IMU_RATE_GRV_HZ     15  // SH2_GAME_ROTATION_VECTOR
 #define IMU_RATE_LACC_HZ    15  // SH2_LINEAR_ACCELERATION

@@ -64,7 +64,11 @@
 //   IMULOG_ID_BOOT   0x00  bootid nopen  -      -      BUILDDATE     ← 起動識別
 //   IMULOG_ID_GYRO   0x01  gx     gy     gz     -      センサー時刻   [rad/s]
 //   IMULOG_ID_ACCEL  0x02  ax     ay     az     -      センサー時刻   [m/s²] 重力込み
-//   IMULOG_ID_MAG    0x03  mx     my     mz     -      センサー時刻   [µT]
+//   IMULOG_ID_MAG    0x03  ---- **欠番（0.984 で記録をやめた）** ----
+//            mx/my/mz [µT]。地磁気は推定にも表示にも使わなくなったため購読を外した。
+//            ★ **この番号を別の用途に再利用してはいけない。** 退避済みの過去ログ
+//              （〜2026-10-03）は id でレコードを解釈するので、別の意味を割り当てると
+//              **古いログが静かに誤デコードされる**。解析側（tools/imulog）は読める。
 //   IMULOG_ID_GAMERV 0x04  qw     qx     qy     qz     センサー時刻   BNO085 の推定（比較用）
 //   IMULOG_ID_RV     0x05  qw     qx     qy     qz     センサー時刻   地磁気補正（比較用）
 //   IMULOG_ID_LINACC 0x06  lax    lay    laz    -      センサー時刻   既存バリオ KF 用（比較用）
@@ -101,7 +105,7 @@
 #define IMULOG_ID_BOOT     0x00
 #define IMULOG_ID_GYRO     0x01
 #define IMULOG_ID_ACCEL    0x02
-#define IMULOG_ID_MAG      0x03
+#define IMULOG_ID_MAG      0x03   // 欠番（0.984〜書き出さない。番号は再利用しない）
 #define IMULOG_ID_GAMERV   0x04
 #define IMULOG_ID_RV       0x05
 #define IMULOG_ID_LINACC   0x06

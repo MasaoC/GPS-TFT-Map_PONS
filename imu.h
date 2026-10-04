@@ -131,7 +131,6 @@ uint32_t get_imu_lacc_stale_skips();
 //   実測: 加速度 2 のとき静止時 |a| が -4.6%、3 に上がると約 -1%。
 uint8_t  get_imu_acc_accuracy();
 uint8_t  get_imu_gyr_accuracy();
-uint8_t  get_imu_mag_accuracy();
 uint8_t  get_imu_cal_cfg();      // 0xFF = 未取得
 
 // imu_update() が呼ばれなかった最長時間 [µs]。**読むとリセットされる。**
@@ -144,7 +143,6 @@ uint32_t get_imu_rv_bad();
 // 生ログ用レポートの受信レート [Hz]（設定値どおり出ていれば配信飢餓は起きていない）
 float get_imu_gyro_hz();   // GYROSCOPE_CALIBRATED
 float get_imu_accel_hz();  // ACCELEROMETER
-float get_imu_mag_hz();    // MAGNETIC_FIELD_CALIBRATED
 
 // 生ジャイロ・生加速度の直近値（設定画面の IMU/ESKF ページで実測値を見るため）
 void get_imu_raw_gyro(float g[3]);   // [rad/s]

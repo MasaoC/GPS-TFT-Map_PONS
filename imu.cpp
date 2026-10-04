@@ -46,6 +46,7 @@
 #include "src/bno08x/Adafruit_BNO08x.h"
 
 #include "imu.h"
+#include "imu_sensor.h"   // チップ境界（能力ビットと feed の口）
 #include "link.h"
 #include "settings.h"
 #include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
@@ -191,13 +192,11 @@ static uint32_t _lacc_cnt = 0;  // LINEAR_ACCELERATION カウンター
 static uint32_t _rv_cnt   = 0;  // ROTATION_VECTOR カウンター
 static uint32_t _gyro_cnt = 0;  // GYROSCOPE_CALIBRATED カウンター（生ログ用）
 static uint32_t _accel_cnt = 0; // ACCELEROMETER カウンター（生ログ用）
-static uint32_t _mag_cnt  = 0;  // MAGNETIC_FIELD_CALIBRATED カウンター（生ログ用）
 static float    _grv_hz   = 0.0f;
 static float    _lacc_hz  = 0.0f;
 static float    _rv_hz    = 0.0f;
 static volatile float _gyro_hz  = 0.0f;
 static volatile float _accel_hz = 0.0f;
-static volatile float _mag_hz   = 0.0f;
 // ★ クォータニオンの健全性カウンタ（V/S が暴れる件の切り分け・2026-09-22）
 //   GRV の R/P が -23 → +40 のように飛ぶ症状。バリオは Euler ではなく
 //   **クォータニオンを直接**使って重力を抜くので、これが飛ぶと V/S が暴れる。
@@ -215,7 +214,6 @@ static volatile float _mag_hz   = 0.0f;
 //   約 9.80 へ改善した。**つまりこの値が低い間の加速度は信用できない。**
 static uint8_t _acc_accuracy = 0;
 static uint8_t _gyr_accuracy = 0;
-static uint8_t _mag_accuracy = 0;
 static uint8_t _cal_cfg      = 0xFF;   // sh2_getCalConfig の結果。0xFF = 未取得
 
 // ============================================================
@@ -301,6 +299,85 @@ static volatile float _raw_accel[3] = {0, 0, 0};   // [m/s²]
 
 
 // ============================================================
+//  このチップに何が有るか（imu_sensor.h の能力ビット）
+// ============================================================
+// ★ **融合出力に触る画面・ログは必ずここを見ること。**
+//   SCH16T に差し替えると QUAT / MAGYAW / LINACC / CAL が全部落ちる。
+//   「有って当然」と書いた箇所は、そのとき**古い値を出し続ける**か
+//   0 を本物として表示する（どちらも静かな誤表示）。
+//   MAG は 0.984 で購読をやめたので BNO085 でも立てない。
+uint32_t imu_caps() {
+    return IMU_CAP_QUAT      // GRV（比較表示と quat 健全性カウンタ）
+         | IMU_CAP_MAGYAW    // RV（比較表示のヨーとヘディング精度）
+         | IMU_CAP_LINACC    // LACC（VARIO 2 の LinAccel 表示）
+         | IMU_CAP_CAL;      // DCD と申告精度
+}
+
+const char* imu_sensor_name() { return "BNO085"; }
+
+// ============================================================
+//  ドライバ → 推定 への口（imu_sensor.h の契約）
+// ============================================================
+// ★ **チップ固有のコードが推定へ触るのはこの 2 つだけ。** SCH16T の
+//   ドライバを足すときも、ここを正しいレートで呼べば表示・音・記録が動く。
+//   生ログの push はチップ側に残してある（理由は imu_sensor.h）。
+
+void imu_feed_gyro(const float g[3], uint32_t t_us) {
+    _raw_gyro[0] = g[0]; _raw_gyro[1] = g[1]; _raw_gyro[2] = g[2];
+    // ESKF の伝播はジャイロ到着で回す（加速度は直近値を使う）。
+    // ※ チップのタイムスタンプは使わない。BNO085 の sv.timestamp は sh2 の
+    //   アンダーフローで壊れている。バーストで届く分は attitude.cpp が窓平均で吸収する。
+    attitude_on_gyro(g, t_us);
+}
+
+void imu_feed_accel(const float a[3]) {
+    _raw_accel[0] = a[0]; _raw_accel[1] = a[1]; _raw_accel[2] = a[2];
+    attitude_on_accel(a);
+#if VARIO_USE_RAW_ACCEL
+    // ---- バリオ KF 用: 地球座標系の鉛直/水平加速度をここで作って足し込む ----
+    // 重力込みの比力を「上方向」へ射影し、重力を引く。
+    // BNO085 の LINEAR_ACCELERATION と違い、引く重力が固定値なので
+    // 「動作に相関した誤差」が入らない（settings.h の VARIO_USE_RAW_ACCEL 参照）。
+    //
+    // ★ **0.983 で上方向の出どころを GRV から ESKF の姿勢へ移した。**
+    //   式は変えていない。attitude_get_up_sensor() が返すのは回転行列の
+    //   第 3 行で、GRV から compute_earth_z_accel() が作っていた係数と同じもの。
+    //   GRV に依存しなくなったので SCH16T でも同じ経路が使える。
+    //   実ログでの影響（20260930 の 52 分 + 20260818 の 3 セッション）:
+    //     V/S の差 sd 0.012〜0.060 m/s、高度差 |max| 0.33m。
+    //     最大差が出るのは GNSS が途絶している瞬間（ESKF には重力の錨が無い）。
+    //   2026-10-03 の走行 2 時間でも sd 0.019 m/s、|max| 0.57 m/s。
+    //   → docs/imu_sch16t_plan.md
+    float u_up[3];
+    if (attitude_get_up_sensor(u_up)) {
+        float az_world = u_up[0]*a[0] + u_up[1]*a[1] + u_up[2]*a[2];
+        // 水平成分: 二乗ノルムは回転で不変なので |a|² − a_world_z²。
+        // ここでの a_world_z は重力を引く前の値である点に注意。
+        float body_sq  = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
+        float horiz_sq = body_sq - az_world * az_world;
+        _acc_vsum += az_world - GRAVITY_MPS2;
+        _acc_hsum += (horiz_sq > 0.0f) ? sqrtf(horiz_sq) : 0.0f;
+    } else {
+        // ★★ **上方向が無くても predict を止めてはいけない。**
+        //   バリオ KF の初期 P は対角なので、**predict を一度も通らないと
+        //   P[1][0] が 0 のままで、気圧観測のゲイン K[1] = P[1][0]/S が 0 に
+        //   なり、速度状態（＝ V/S）が構造的に 1 度も動かない。**
+        //   高度 kf_x[0] だけは K[0] で追従するので、症状は
+        //   「センサーは生きているのに V/S だけ 0 で固まる」になる。
+        //   2026-10-01 に実機で発覚（0.983 で attitude_get_up_sensor() が
+        //   水平化前に false を返す作りにしたのが原因）。
+        //   ここは加速度ゼロ＝恒速モデルとして回す。BNO085 なし時の
+        //   kf_predict(0.0f, dt) と同じ縮退で、気圧ベースのバリオになる。
+        _acc_vsum += 0.0f;
+        _acc_hsum += 0.0f;
+    }
+    if (_acc_cnt < 60000) _acc_cnt++;   // 念のための飽和ガード
+    _acc_last_us = time_us_32();
+    _accel_valid = true;
+#endif
+}
+
+// ============================================================
 // imu_sensor_handler(): SH2 レポート受信コールバック
 // ============================================================
 // sh2_service() から、届いたレポート 1 件ごとに呼ばれる。
@@ -312,6 +389,10 @@ static volatile float _raw_accel[3] = {0, 0, 0};   // [m/s²]
 //   getSensorEvent() はそのうち最後の 1 件だけを返す。
 //   BNO085 は同時刻にスケジュールされた複数レポートを 1 SHTP パケットにまとめるため、
 //   その場合レポートが黙って捨てられる。ここで 1 件ずつ確実に処理する。
+//
+// ★ **ここは BNO085 固有（チップ依存）。** 推定へ渡すのは imu_feed_*() 経由だけで、
+//   このファイルを imu_bno08x.cpp へ割るときはこの関数ごと動かす（imu_sensor.h）。
+// ============================================================
 static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
     (void)cookie;
     if (sh2_decodeSensorEvent(&sv, event) != SH2_OK) return;
@@ -371,8 +452,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
             // ※ sv.timestamp は sh2 のアンダーフローで壊れているので使わず、
             //   受信時刻を渡す。バーストで届く分は attitude.cpp 側が窓平均で吸収する。
             const float g[3] = { sv.un.gyroscope.x, sv.un.gyroscope.y, sv.un.gyroscope.z };
-            _raw_gyro[0] = g[0]; _raw_gyro[1] = g[1]; _raw_gyro[2] = g[2];
-            attitude_on_gyro(g, time_us_32());
+            imu_feed_gyro(g, time_us_32());
             break;
         }
 
@@ -384,60 +464,9 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
                         sv.un.accelerometer.x, sv.un.accelerometer.y, sv.un.accelerometer.z);
             const float a[3] = { sv.un.accelerometer.x, sv.un.accelerometer.y,
                                  sv.un.accelerometer.z };
-            _raw_accel[0] = a[0]; _raw_accel[1] = a[1]; _raw_accel[2] = a[2];
-            attitude_on_accel(a);
-#if VARIO_USE_RAW_ACCEL
-            // ---- バリオ KF 用: 地球座標系の鉛直/水平加速度をここで作って足し込む ----
-            // 重力込みの比力を「上方向」へ射影し、重力を引く。
-            // BNO085 の LINEAR_ACCELERATION と違い、引く重力が固定値なので
-            // 「動作に相関した誤差」が入らない（settings.h の VARIO_USE_RAW_ACCEL 参照）。
-            //
-            // ★ **0.983 で上方向の出どころを GRV から ESKF の姿勢へ移した。**
-            //   式は変えていない。attitude_get_up_sensor() が返すのは回転行列の
-            //   第 3 行で、GRV から compute_earth_z_accel() が作っていた係数と同じもの。
-            //   GRV に依存しなくなったので SCH16T でも同じ経路が使える。
-            //   実ログでの影響（20260930 の 52 分 + 20260818 の 3 セッション）:
-            //     V/S の差 sd 0.012〜0.060 m/s、高度差 |max| 0.33m。
-            //     最大差が出るのは GNSS が途絶している瞬間（ESKF には重力の錨が無い）。
-            //   → docs/imu_sch16t_plan.md
-            float u_up[3];
-            if (attitude_get_up_sensor(u_up)) {
-                float az_world = u_up[0]*a[0] + u_up[1]*a[1] + u_up[2]*a[2];
-                // 水平成分: 二乗ノルムは回転で不変なので |a|² − a_world_z²。
-                // ここでの a_world_z は重力を引く前の値である点に注意。
-                float body_sq  = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
-                float horiz_sq = body_sq - az_world * az_world;
-                _acc_vsum += az_world - GRAVITY_MPS2;
-                _acc_hsum += (horiz_sq > 0.0f) ? sqrtf(horiz_sq) : 0.0f;
-            } else {
-                // ★★ **上方向が無くても predict を止めてはいけない。**
-                //   バリオ KF の初期 P は対角なので、**predict を一度も通らないと
-                //   P[1][0] が 0 のままで、気圧観測のゲイン K[1] = P[1][0]/S が 0 に
-                //   なり、速度状態（＝ V/S）が構造的に 1 度も動かない。**
-                //   高度 kf_x[0] だけは K[0] で追従するので、症状は
-                //   「センサーは生きているのに V/S だけ 0 で固まる」になる。
-                //   2026-10-01 に実機で発覚（0.983 で attitude_get_up_sensor() が
-                //   水平化前に false を返す作りにしたのが原因）。
-                //   ここは加速度ゼロ＝恒速モデルとして回す。BNO085 なし時の
-                //   kf_predict(0.0f, dt) と同じ縮退で、気圧ベースのバリオになる。
-                _acc_vsum += 0.0f;
-                _acc_hsum += 0.0f;
-            }
-            {
-                if (_acc_cnt < 60000) _acc_cnt++;   // 念のための飽和ガード
-                _acc_last_us = time_us_32();
-                _accel_valid = true;
-            }
-#endif
+            imu_feed_accel(a);
             break;
         }
-
-        case SH2_MAGNETIC_FIELD_CALIBRATED:
-            _mag_cnt++;
-            _mag_accuracy = (uint8_t)(sv.status & 0x03);
-            imulog_push(IMULOG_ID_MAG, (uint32_t)sv.timestamp, sv.status,
-                        sv.un.magneticField.x, sv.un.magneticField.y, sv.un.magneticField.z);
-            break;
 
         case SH2_ROTATION_VECTOR:
             // 地磁気補正付きクォータニオン（ヨー：磁北基準）
@@ -504,13 +533,13 @@ static bool imu_enable_reports() {
         // ACCEL は VARIO_USE_RAW_ACCEL=1 のときバリオ KF も使う。
         { SH2_GYROSCOPE_CALIBRATED,      IMU_RATE_GYRO_HZ,  "GYRO"  },
         { SH2_ACCELEROMETER,             IMU_RATE_ACCEL_HZ, "ACCEL" },
-        { SH2_MAGNETIC_FIELD_CALIBRATED, IMU_RATE_MAG_HZ,   "MAG"   },
 #endif
     };
     bool all_ok = true;
     // ★ **総時間に上限を設ける。** enableReport() 1 回ごとに
     //   sh2_setSensorConfig() が走り、デバイスが応答しないと SH-2 側の待ちで
-    //   **1 回あたり数百 ms** かかる。レポートは 6 件あるので最悪で数秒
+    //   **1 回あたり数百 ms** かかる。レポートは 5 件あるので最悪で数秒
+    //   （0.984 で MAG を外して 6 → 5 件）。
     //   Core0 が止まる。
     //   リセットを 410ms の delay からステートマシンに変えたのは、その間
     //   GNSS FIFO が溢れるからで、ここが素通しでは意味が無かった。
@@ -562,6 +591,9 @@ static bool imu_enable_reports() {
         //   工場出荷値のまま温度ドリフトすると、融合が周期的に重力で引き戻される。
         //   実機で「静止しているのに GRV が 96 度飛ぶ」現象の機構として筋が通る。
         //   ※ これで飛びが直るかは未確認。次のログで grvjump を見て判断する。
+        // ★ SH2_CAL_MAG は 0.984 以降も残す。**地磁気レポートの購読はやめたが、
+        //   チップ内の RV（比較表示用）は内部で地磁気を使う**ので、校正を切ると
+        //   その比較値が劣化する。購読（レポート）と校正（チップ内部）は別物。
         const uint8_t want = (uint8_t)(SH2_CAL_ACCEL | SH2_CAL_GYRO | SH2_CAL_MAG);
         if (_cal_cfg != 0xFF && _cal_cfg != want) {
             const int rc2 = sh2_setCalConfig(want);
@@ -1473,8 +1505,8 @@ bool imu_save_calibration(uint32_t yyyymmdd) {
     }
     const int rc = sh2_saveDcdNow();
     if (rc != SH2_OK) {
-        enqueueTask(createLogSdfTask("BNO085 saveDcd FAILED rc=%d (acc=%u gyr=%u mag=%u)",
-                                     rc, _acc_accuracy, _gyr_accuracy, _mag_accuracy));
+        enqueueTask(createLogSdfTask("BNO085 saveDcd FAILED rc=%d (acc=%u gyr=%u)",
+                                     rc, _acc_accuracy, _gyr_accuracy));
         return false;
     }
     _cal_rec.saved = 1;
@@ -1491,9 +1523,9 @@ bool imu_save_calibration(uint32_t yyyymmdd) {
         _cal_autosave_on = false;
     }
     enqueueTask(createLogSdfTask(
-        "BNO085 saveDcd OK date=%lu cnt=%u ee=%d (acc=%u gyr=%u mag=%u)",
+        "BNO085 saveDcd OK date=%lu cnt=%u ee=%d (acc=%u gyr=%u)",
         (unsigned long)yyyymmdd, _cal_rec.count, (int)ee,
-        _acc_accuracy, _gyr_accuracy, _mag_accuracy));
+        _acc_accuracy, _gyr_accuracy));
     return true;
 }
 
@@ -1597,9 +1629,8 @@ void imu_update() {
             _rv_hz    = _rv_cnt    / dt_s;
             _gyro_hz  = _gyro_cnt  / dt_s;
             _accel_hz = _accel_cnt / dt_s;
-            _mag_hz   = _mag_cnt   / dt_s;
             _grv_cnt = _lacc_cnt = _rv_cnt = 0;
-            _gyro_cnt = _accel_cnt = _mag_cnt = 0;
+            _gyro_cnt = _accel_cnt = 0;
             _hz_last_ms = now_ms;
 
 #ifndef RELEASE
@@ -1868,7 +1899,6 @@ float get_imu_gyro_hz()  { return _gyro_hz; }
 void get_imu_raw_gyro(float g[3])  { for (int i=0;i<3;i++) g[i] = _raw_gyro[i]; }
 void get_imu_raw_accel(float a[3]) { for (int i=0;i<3;i++) a[i] = _raw_accel[i]; }
 float get_imu_accel_hz() { return _accel_hz; }
-float get_imu_mag_hz()   { return _mag_hz; }
 
 // 新着ROTATION_VECTORフラグ: trueを返し同時にクリア（Euler角ログのトリガー用）
 // Kalman パラメーターの動的変更（設定画面からのチューニング用）
@@ -1879,7 +1909,6 @@ void imu_set_kf_params(float q_vel, float q_bias, float R) {
 }
 uint8_t  get_imu_acc_accuracy() { return _acc_accuracy; }
 uint8_t  get_imu_gyr_accuracy() { return _gyr_accuracy; }
-uint8_t  get_imu_mag_accuracy() { return _mag_accuracy; }
 uint8_t  get_imu_cal_cfg()      { return _cal_cfg; }
 uint32_t get_imu_poll_gap_max_us() { const uint32_t v = _poll_gap_max_us; _poll_gap_max_us = 0; return v; }
 uint32_t get_imu_grv_bad()  { return _grv_bad; }

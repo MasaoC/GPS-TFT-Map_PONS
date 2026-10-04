@@ -294,7 +294,7 @@
 
   Task createSaveSettingTask();
   Task createLogSdTask(const char* logText);
-  Task createLogSdfTask(const char* format, ...);
+  Task createLogSdfTask(const char* format, ...) __attribute__((format(printf, 1, 2)));
   Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
 
   // 無線で受信したテレメトリを received/ へ書き出すタスク。

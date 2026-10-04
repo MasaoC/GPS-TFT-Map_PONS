@@ -35,6 +35,7 @@
 #include "hardware/adc.h"
 #include "airdata.h"
 #include "imu.h"
+#include "imu_sensor.h"   // imu_caps()（融合出力が有るかの判定）
 #include "link.h"   // PONS Link（機体⇄ボート無線）
 #include "src/imulog.h"
 #include "attitude.h"
@@ -1017,17 +1018,27 @@ void loop() {
       //   drop が増えていれば → SD 書き出しが追いつかず生ログを取りこぼしている。
       // ※ 2 行に分けること。log_sd() は logtext[128] に "<起動秒>:" を前置するため、
       //   1 行にまとめると稼働時間が延びるほど末尾が切り詰められる（実際 wrote= が消えた）。
-      enqueueTask(createLogSdfTask("rate GRV=%.1f LACC=%.1f RV=%.1f MS5611=%.1f Hz",
-                                   get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz(),
-                                   get_airdata_win_hz()));
+      // ★ 融合出力（GRV/LACC/RV）は BNO085 にしか無い。SCH16T では
+      //   imu_caps() が落ちるので、0.0Hz を並べて「飢餓している」と誤読させない。
+      if (imu_caps() & IMU_CAP_QUAT)
+        enqueueTask(createLogSdfTask("rate GRV=%.1f LACC=%.1f RV=%.1f MS5611=%.1f Hz",
+                                     get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz(),
+                                     get_airdata_win_hz()));
+      else
+        enqueueTask(createLogSdfTask("rate MS5611=%.1f Hz (%s: no fusion)",
+                                     get_airdata_win_hz(), imu_sensor_name()));
       // ★ クォータニオンの健全性。V/S が暴れる件の切り分け用（imu.h 参照）。
       //   grvbad が増える → SPI でパケットが化けている（転送層の問題）
       //   grvjump だけ増える → BNO 内部の融合が飛んでいる
       // ★ BNO085 の申告精度。加速度が 3 未満の間は静止時 |a| が数 % ずれる
       //   （実測 -4.6%）ので、バリオの鉛直加速度も同じだけずれる。
-      enqueueTask(createLogSdfTask("cal cfg=0x%02X acc=%u gyr=%u mag=%u",
-                                   get_imu_cal_cfg(), get_imu_acc_accuracy(),
-                                   get_imu_gyr_accuracy(), get_imu_mag_accuracy()));
+      // ★ mag= は 0.984 で消した。地磁気レポートの購読をやめたので
+      //   申告精度が更新されず、0 のまま出て誤読を招く（真方位しか使わないため
+      //   購読そのものが不要になった）。cfg の bit2 は RV のために残してある。
+      if (imu_caps() & IMU_CAP_CAL)
+        enqueueTask(createLogSdfTask("cal cfg=0x%02X acc=%u gyr=%u",
+                                     get_imu_cal_cfg(), get_imu_acc_accuracy(),
+                                     get_imu_gyr_accuracy()));
       // ★ SPI 読み出しの健全性と、Core0 が止まった最長時間。
       //   pktmax が 384 に近づく / toobig が増える → backlog で壊れている
       //   hdrchg が増える → ヘッダ読みと本体読みの間に中身が差し替わっている
@@ -1036,12 +1047,13 @@ void loop() {
       //   「0 だから健全」と誤読される表示だった。gapmax だけ残す。
       enqueueTask(createLogSdfTask("imu gapmax=%lums",
                                    (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
-      enqueueTask(createLogSdfTask("quat grvbad=%lu grvjump=%lu rvbad=%lu",
-                                   (unsigned long)get_imu_grv_bad(),
-                                   (unsigned long)get_imu_grv_jump(),
-                                   (unsigned long)get_imu_rv_bad()));
-      enqueueTask(createLogSdfTask("raw GYR=%.1f ACC=%.1f MAG=%.1f Hz stale=%lu drop=%lu wrote=%lu",
-                                   get_imu_gyro_hz(), get_imu_accel_hz(), get_imu_mag_hz(),
+      if (imu_caps() & IMU_CAP_QUAT)
+        enqueueTask(createLogSdfTask("quat grvbad=%lu grvjump=%lu rvbad=%lu",
+                                     (unsigned long)get_imu_grv_bad(),
+                                     (unsigned long)get_imu_grv_jump(),
+                                     (unsigned long)get_imu_rv_bad()));
+      enqueueTask(createLogSdfTask("raw GYR=%.1f ACC=%.1f Hz stale=%lu drop=%lu wrote=%lu",
+                                   get_imu_gyro_hz(), get_imu_accel_hz(),
                                    (unsigned long)get_imu_lacc_stale_skips(),
                                    (unsigned long)imulog_get_dropped(),
                                    (unsigned long)imulog_get_written()));
@@ -1510,7 +1522,9 @@ static void imu_execute() {
       case IMU2_MENU_SAVECAL: {
         // ★ 条件を満たさないなら**何もしない**。途中の悪い校正を不揮発へ焼くと
         //   電源を切っても戻らないので、ここは低い音で断る。
-        if (!imu_cal_ready()) {
+        // ★ 動的校正を持たないチップ（SCH16T は工場校正）でも同じく断る。
+        //   保存するものが無い（imu_caps / imu_sensor.h）。
+        if (!(imu_caps() & IMU_CAP_CAL) || !imu_cal_ready()) {
           enqueueTask(createPlayMultiToneTask(440, 200, 1));
           break;
         }

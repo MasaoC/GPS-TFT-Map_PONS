@@ -32,6 +32,7 @@
 #include "src/button.h"
 #include "airdata.h"
 #include "imu.h"
+#include "imu_sensor.h"   // imu_caps()（融合出力が有るかの判定）
 #include "src/vectormap.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
@@ -60,7 +61,9 @@ TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240
 #define MODE_TRACKUP 0
 #define MODE_NORTHUP 1
 #define MODE_SIZE 2
-int upward_mode = MODE_NORTHUP;
+// ★ ここは **SD を読めなかったときの既定値**。SD があれば loadSettings() の
+//   upward_mode が上書きする（設定画面で変えた値は exit_setting() で SD に戻る）。
+int upward_mode = MODE_TRACKUP;
 
 
 
@@ -1853,14 +1856,22 @@ void draw_eskf_debug() {
                         : yacc < 40.0f ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
   backscreen.setCursor(x + 186, y + 12); backscreen.printf("%4.0f", ey);
 
-  // BNO085（比較用）
+  // チップ内融合（比較用）。★ **これが無いチップもある**（SCH16T）。
+  //   無いときに 0 を並べると「水平で北向き」という本物らしい値になるので、
+  //   行ごと "---" にする。ヨーの収束状態（右の G/数値）は ESKF の話なので常に出す。
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_ORANGE, COLOR_BLACK);
-  backscreen.setCursor(x + 2, y + 32); backscreen.print("BNO");
+  backscreen.setCursor(x + 2, y + 32); backscreen.print(imu_sensor_name());
   backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
-  backscreen.setCursor(x + 36,  y + 32); backscreen.printf("%+6.1f", br);
-  backscreen.setCursor(x + 108, y + 32); backscreen.printf("%+6.1f", bp);
-  backscreen.setCursor(x + 186, y + 32); backscreen.printf("%4.0f", by);
+  if (imu_caps() & IMU_CAP_QUAT) {
+    backscreen.setCursor(x + 36,  y + 32); backscreen.printf("%+6.1f", br);
+    backscreen.setCursor(x + 108, y + 32); backscreen.printf("%+6.1f", bp);
+    backscreen.setCursor(x + 186, y + 32); backscreen.printf("%4.0f", by);
+  } else {
+    backscreen.setCursor(x + 36,  y + 32); backscreen.print("   ---");
+    backscreen.setCursor(x + 108, y + 32); backscreen.print("   ---");
+    backscreen.setCursor(x + 186, y + 32); backscreen.print(" ---");
+  }
 
   // ヨーの収束状態: M=地磁気で初期化済み / -=収束待ち、数値は 95%(2σ) の精度 [度]
   backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
@@ -1943,22 +1954,45 @@ static void draw_imu_page1() {
   bool ready = attitude_ready();
 
   // ---- 姿勢の比較 ----
+  // ★ **列は固定 x から描く。** AA_FONT_SMALL はプロポーショナルなので、
+  //   空白で詰めても桁は揃わない（"ESKF" と "BNO085" で幅が違う）。
+  //   チップ名が可変長になった 0.984 で、空白詰めでは成立しなくなった。
+  const int cx_r = 56, cx_p = 112, cx_y = 168;   // ロール / ピッチ / ヨーの左端
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.setCursor(2, y); backscreen.print("      ROLL   PITCH    YAW"); y += lh;
+  backscreen.setCursor(cx_r, y);  backscreen.print("ROLL");
+  backscreen.setCursor(cx_p, y);  backscreen.print("PITCH");
+  backscreen.setCursor(cx_y, y);  backscreen.print("YAW");
+  y += lh;
   float er, ep, ey, br, bp, by;
   attitude_get_euler(er, ep, ey);
   get_imu_euler(br, bp, by);
   backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
-  backscreen.setCursor(2, y);
+  backscreen.setCursor(2, y); backscreen.print("ESKF");
   // 未初期化・IMU 途絶時は数値を出さない（単位クォータニオンのままだと
   // pitch=-90 というもっともらしい値が出て有効値と誤読される）
-  if (ready) backscreen.printf("ESKF %+6.1f %+6.1f %6.1f", er, ep, ey);
-  else       backscreen.print("ESKF   ---    ---    ---");
+  if (ready) {
+    backscreen.setCursor(cx_r, y); backscreen.printf("%+6.1f", er);
+    backscreen.setCursor(cx_p, y); backscreen.printf("%+6.1f", ep);
+    backscreen.setCursor(cx_y, y); backscreen.printf("%6.1f", ey);
+  } else {
+    backscreen.setCursor(cx_r, y); backscreen.print("  ---");
+    backscreen.setCursor(cx_p, y); backscreen.print("  ---");
+    backscreen.setCursor(cx_y, y); backscreen.print("  ---");
+  }
   draw_imu_row_dot(y - 2, imu_row_col(imu_ok_ready()));
   y += lh;
   backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-  backscreen.setCursor(2, y);
-  backscreen.printf("BNO  %+6.1f %+6.1f %6.1f", br, bp, by);
+  backscreen.setCursor(2, y); backscreen.print(imu_sensor_name());
+  if (imu_caps() & IMU_CAP_QUAT) {
+    backscreen.setCursor(cx_r, y); backscreen.printf("%+6.1f", br);
+    backscreen.setCursor(cx_p, y); backscreen.printf("%+6.1f", bp);
+    backscreen.setCursor(cx_y, y); backscreen.printf("%6.1f", by);
+  } else {
+    // 融合出力を持たないチップ（SCH16T）。0 を出すと「水平で北向き」に見える。
+    backscreen.setCursor(cx_r, y); backscreen.print("  ---");
+    backscreen.setCursor(cx_p, y); backscreen.print("  ---");
+    backscreen.setCursor(cx_y, y); backscreen.print("  ---");
+  }
   y += lh;
   // 巡航のトリム状態は瞬時ピッチではなく 平均で見る（瞬時値は std 1.23 度の振動があるため）。
   // 直進中のロール自動トリムの累積量も併記して、どれだけ補正が入ったか分かるようにする。
@@ -2137,43 +2171,57 @@ static void draw_imu_page2() {
 
   // ---- 校正（DCD）----
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.setCursor(2, y); backscreen.print("-- Calibration --"); y += lh;
-
-  // BNO085 の申告精度。**加速度は 6 姿勢（各軸の上下）で静止させると上がる。**
-  //   くるくる回すのは地磁気向け。加速度は「止めて姿勢を変える」が要る。
-  const uint8_t ca = get_imu_acc_accuracy(), cg = get_imu_gyr_accuracy(), cm = get_imu_mag_accuracy();
+  // ★ 動的校正（DCD）と申告精度は BNO085 固有。SCH16T は工場校正で、
+  //   実行中に精度を申告する仕組みが無い。**節だけ差し替えて、下のメニューと
+  //   pushSprite には必ず到達すること**（early return にするとページが真っ白になり、
+  //   Next page / Back も押せなくなる）。
+  const bool has_cal = (imu_caps() & IMU_CAP_CAL) != 0;
   backscreen.setCursor(2, y);
-  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);  backscreen.print("Cal ");
-  backscreen.setTextColor(cal_acc_col(ca), COLOR_WHITE); backscreen.printf("A:%u ", ca);
-  backscreen.setTextColor(cal_acc_col(cg), COLOR_WHITE); backscreen.printf("G:%u ", cg);
-  backscreen.setTextColor(cal_acc_col(cm), COLOR_WHITE); backscreen.printf("M:%u", cm);
-  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.printf("  cfg:%02X", get_imu_cal_cfg());
+  backscreen.print(has_cal ? "-- Calibration --" : "-- Calibration (n/a) --");
   y += lh;
+  if (has_cal) {
+    // BNO085 の申告精度。**加速度は 6 姿勢（各軸の上下）で静止させると上がる。**
+    //   くるくる回すのは地磁気向けだが、**M: は 0.984 で消した**（地磁気レポートの
+    //   購読をやめたので更新されない。真方位しか使わないので購読そのものが不要）。
+    const uint8_t ca = get_imu_acc_accuracy(), cg = get_imu_gyr_accuracy();
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);  backscreen.print("Cal ");
+    backscreen.setTextColor(cal_acc_col(ca), COLOR_WHITE); backscreen.printf("A:%u ", ca);
+    backscreen.setTextColor(cal_acc_col(cg), COLOR_WHITE); backscreen.printf("G:%u", cg);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.printf("  cfg:%02X", get_imu_cal_cfg());
+    y += lh;
 
-  // ★★ **「一度も保存していない」を赤で明示する。** この画面を作った目的そのもの。
-  //   記録は本体フラッシュ（EEPROM 領域）にあり、SD を入れ替えても嘘にならない。
-  //   日付が --/-- なのは GNSS 時刻が無い場所（屋内）で保存したとき。RTC は無い。
-  const uint32_t sd_ = imu_cal_saved_date();
-  backscreen.setCursor(2, y);
-  if (!imu_cal_saved_ever()) {
-    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-    backscreen.print("DCD: NEVER SAVED");
-  } else if (sd_) {
-    backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    backscreen.printf("DCD: SAVED %04u/%02u/%02u", (unsigned)(sd_ / 10000),
-                      (unsigned)(sd_ / 100 % 100), (unsigned)(sd_ % 100));
+    // ★★ **「一度も保存していない」を赤で明示する。** この画面を作った目的そのもの。
+    //   記録は本体フラッシュ（EEPROM 領域）にあり、SD を入れ替えても嘘にならない。
+    //   日付が --/-- なのは GNSS 時刻が無い場所（屋内）で保存したとき。RTC は無い。
+    const uint32_t sd_ = imu_cal_saved_date();
+    backscreen.setCursor(2, y);
+    if (!imu_cal_saved_ever()) {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.print("DCD: NEVER SAVED");
+    } else if (sd_) {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.printf("DCD: SAVED %04u/%02u/%02u", (unsigned)(sd_ / 10000),
+                        (unsigned)(sd_ / 100 % 100), (unsigned)(sd_ % 100));
+    } else {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.print("DCD: SAVED (date unknown)");
+    }
+    y += lh;
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    // autosave は「まだ手動保存していない機体だけ ON」。保険なので ON が初期状態。
+    backscreen.printf("autosave:%s  saves:%u",
+                      imu_cal_autosave_on() ? "ON " : "OFF", imu_cal_save_count());
+    y += lh + 4;
   } else {
-    backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    backscreen.print("DCD: SAVED (date unknown)");
+    // 工場校正のチップ（SCH16T）。保存するものが無いことを 1 行で言う。
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.printf("%s: factory cal, nothing to save", imu_sensor_name());
+    y += lh + 4;
   }
-  y += lh;
-  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.setCursor(2, y);
-  // autosave は「まだ手動保存していない機体だけ ON」。保険なので ON が初期状態。
-  backscreen.printf("autosave:%s  saves:%u",
-                    imu_cal_autosave_on() ? "ON " : "OFF", imu_cal_save_count());
-  y += lh + 4;
 
   // ---- メニュー ----
   const int mh2 = 15;
@@ -2186,10 +2234,13 @@ static void draw_imu_page2() {
     switch (i) {
       case IMU2_MENU_SAVECAL: {
         // ★ 条件は acc==3 かつ gyr==3（地磁気は入れない。屋内では 3 に届かない）。
-        const bool rdy = imu_cal_ready();
+        // ★ 保存するものが無いチップ（SCH16T）でも**行は消さない。**
+        //   消すと IMU2_MENU_* の添字とカーソル位置がずれる。灰色で無効を示す。
+        const bool rdy = has_cal && imu_cal_ready();
         if (!sel) backscreen.setTextColor(rdy ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
-        if (rdy) backscreen.print("SAVE CAL  [READY]");
-        else     backscreen.print("SAVE CAL  (need A=3 G=3)");
+        if (!has_cal) backscreen.print("SAVE CAL  (n/a)");
+        else if (rdy) backscreen.print("SAVE CAL  [READY]");
+        else          backscreen.print("SAVE CAL  (need A=3 G=3)");
         break;
       }
       case IMU2_MENU_NEXTPAGE:
@@ -4203,25 +4254,26 @@ void draw_variodetail(int page) {
 
     // ★ このページは**丸ごとこの装置の IMU と KF の内部**。ミラー中も自機の値を
     //   出す（KF MSL/VSI も _raw を使う）。地図画面が機体を出している流れで
-    //   読むので、1 行断っておかないと機体の数字として読まれる。
-    if (link_mirror_active()) {
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-      backscreen.print("(MIRROR) below = RX unit");
-      y += line_height;
-    }
-
+    //   読むので、節見出しに (RX) を付けて区別する。
+    // ★ **行を足して断るのはやめた。** このページは下端 224/240px まで使っており、
+    //   1 行（12px）足すと最終行の "KF: Active" が切れる。見出しなら 0 行で済む。
+    const bool _mirror2 = link_mirror_active();
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.print("-- BNO085 IMU --");
+    backscreen.print(_mirror2 ? "-- BNO085 IMU (RX) --" : "-- BNO085 IMU --");
     y += line_height;
 
     if (get_imu_ok()) {
       // イベント受信レート
       backscreen.setCursor(2, y);
       backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.printf("GRV:%.1fHz LACC:%.1fHz RV:%.1fHz",
-                        get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz());
+      // ★ 融合出力のレートは BNO085 にしか無い（imu_caps）。SCH16T では
+      //   0.0Hz が並んで「飢餓している」と誤読されるので、行ごと差し替える。
+      if (imu_caps() & IMU_CAP_QUAT)
+        backscreen.printf("GRV:%.1fHz LACC:%.1fHz RV:%.1fHz",
+                          get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz());
+      else
+        backscreen.printf("%s: no fusion output", imu_sensor_name());
       y += line_height;
 
       float az = get_imu_az();
@@ -4239,39 +4291,49 @@ void draw_variodetail(int page) {
                         get_imu_altitude_msl_raw(), get_imu_vspeed_raw());
       y += nextcolumn_height;
 
-      // 線形加速度（ボディフレーム）
-      float lax, lay, laz;
-      get_imu_linaccel(lax, lay, laz);
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("-- LinAccel[body] --");
-      y += line_height;
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("X:%+.3f Y:%+.3f Z:%+.3fm/s2", lax, lay, laz);
-      y += line_height;
+      // 線形加速度（ボディフレーム）— チップ内で重力を引いた値。SCH16T には無い。
+      if (imu_caps() & IMU_CAP_LINACC) {
+        float lax, lay, laz;
+        get_imu_linaccel(lax, lay, laz);
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+        backscreen.print("-- LinAccel[body] --");
+        y += line_height;
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+        backscreen.printf("X:%+.3f Y:%+.3f Z:%+.3fm/s2", lax, lay, laz);
+        y += line_height;
+      }
 
       // Euler 角（Roll/Pitch: GAME RV、Yaw: RV+Mag）
-      float roll, pitch, yaw;
-      get_imu_euler(roll, pitch, yaw);
-      float mag_acc = get_imu_mag_accuracy_deg();
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("-- Euler Angles --");
-      y += line_height;
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("R:%+.1f P:%+.1f (GAME RV)", roll, pitch);
-      y += line_height;
-      backscreen.setCursor(2, y);
-      if (mag_acc >= 0.0f) {
-        backscreen.setTextColor(mag_acc < 5.0f ? COLOR_GREEN : mag_acc < 15.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
-        backscreen.printf("Yaw:%+.1f(mag) acc:+/-%.1fdeg", yaw, mag_acc);
-      } else {
+      // ★ **これはチップ内の融合の出力**で、機上の推定には使っていない
+      //   （0.983 で ESKF から切り離した）。ここは ESKF と突き合わせるための
+      //   比較表示。SCH16T には融合が無いので節ごと出さない。
+      if (imu_caps() & IMU_CAP_QUAT) {
+        float roll, pitch, yaw;
+        get_imu_euler(roll, pitch, yaw);
+        backscreen.setCursor(2, y);
         backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-        backscreen.printf("Yaw:%+.1f(game,no mag)", yaw);
+        backscreen.print("-- Euler Angles --");
+        y += line_height;
+        backscreen.setCursor(2, y);
+        backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+        backscreen.printf("R:%+.1f P:%+.1f (GAME RV)", roll, pitch);
+        y += line_height;
+        if (imu_caps() & IMU_CAP_MAGYAW) {
+          const float mag_acc = get_imu_mag_accuracy_deg();
+          backscreen.setCursor(2, y);
+          if (mag_acc >= 0.0f) {
+            backscreen.setTextColor(mag_acc < 5.0f ? COLOR_GREEN : mag_acc < 15.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
+            backscreen.printf("Yaw:%+.1f(mag) acc:+/-%.1fdeg", yaw, mag_acc);
+          } else {
+            backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+            backscreen.printf("Yaw:%+.1f(game,no mag)", yaw);
+          }
+          y += line_height;
+        }
+        y += nextcolumn_height - line_height;
       }
-      y += nextcolumn_height;
 
     } else {
       backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
@@ -4316,7 +4378,7 @@ void draw_variodetail(int page) {
     // GNSS VSI KF セクション
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.print("-- GNSS VSI Fusion --");
+    backscreen.print(_mirror2 ? "-- GNSS VSI Fusion (RX) --" : "-- GNSS VSI Fusion --");
     y += line_height;
 
     backscreen.setCursor(2, y);

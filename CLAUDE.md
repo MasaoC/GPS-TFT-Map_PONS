@@ -211,6 +211,18 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   偶然その穴を塞いでいた）。`imu_update()` の冒頭に
   **「呼び出し間隔が空いていたらその回の判定を見送る」ガード**を入れてあるが、
   ガードに頼らず待ちループ側でも呼ぶこと。
+- **生ログ（`src/imulog.h`）の レコード ID を再利用しない。** 退避済みの過去ログは
+  id だけでレコードを解釈するので、止めた ID に別の意味を割り当てると
+  **古いログが静かに誤デコードされる**（値はもっともらしく出る）。
+  0.984 で止めた `IMULOG_ID_MAG 0x03` は欠番としてコメントを残してある。
+  `tools/imulog/decode_imulog.py` の `KINDS` も同じ理由で定義を残す。
+- **融合出力（GRV / RV / LACC / 動的校正）に触る前に `imu_caps()` を見る。**
+  [imu_sensor.h](imu_sensor.h) の能力ビット。SCH16T に差し替えると全部落ちるので、
+  「有って当然」と書いた箇所は**0 を本物として表示する**（姿勢比較の行なら
+  0 は「水平で北向き」というもっともらしい値になる）。
+  画面の分岐で `return` してはいけない箇所がある点にも注意
+  （IMU/ESKF 2/3 ページは下にメニューと `pushSprite` があり、早期 return すると
+  ページが真っ白になって操作もできなくなる）。
 - 方位はすべて真方位。磁方位は廃止済み。
 - デバッグ出力 `DEBUG_P(date, txt)` の**第 1 引数はその print を書いた日付**。
   `BUILDDATE` から一定以上古いものは出なくなる（`RELEASE` 時は全部消える）。
@@ -229,6 +241,7 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
 | [display_tft.cpp](display_tft.cpp) | TFT 描画**だけ**。判断や発報は置かない |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | BNO085 と、MS5611 融合のバリオ用 Kalman filter |
+| [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
