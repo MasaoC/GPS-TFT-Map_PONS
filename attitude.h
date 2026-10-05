@@ -1,6 +1,6 @@
 // ============================================================
 // File    : attitude.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GNSS 速度援用の姿勢 ESKF（機上リアルタイム版）。
 //           tools/imulog/eskf.py と同じ数式・同じマウント補正を実装する。
 //           片方を直したらもう片方も必ず合わせること。
@@ -28,13 +28,57 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/18
+// Updated : 2026/10/01
 // ============================================================
 
 #ifndef ATTITUDE_H
 #define ATTITUDE_H
 
 #include <Arduino.h>
+#include <math.h>
+#include "settings.h"
+
+// センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
+// ★ imu.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
+//   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
+// yaw はここでは数学どおりの符号（東基準・反時計回り正）で返す。
+// 方位に直すのは呼び出し側だが、**必ず imu_yaw_to_heading_deg() を通すこと。**
+static inline void imu_body_euler_rad(float w, float x, float y, float z,
+                                      float &roll, float &pitch, float &yaw) {
+    // q_body = q_sensor ⊗ q_mount
+    const float mw = IMU_MOUNT_QW, mx = IMU_MOUNT_QX, my = IMU_MOUNT_QY, mz = IMU_MOUNT_QZ;
+    const float bw = w*mw - x*mx - y*my - z*mz;
+    const float bx = w*mx + x*mw + y*mz - z*my;
+    const float by = w*my - x*mz + y*mw + z*mx;
+    const float bz = w*mz + x*my - y*mx + z*mw;
+    roll = atan2f(2.0f*(bw*bx + by*bz), 1.0f - 2.0f*(bx*bx + by*by));
+    float sinp = 2.0f*(bw*by - bz*bx);
+    if (sinp >  1.0f) sinp =  1.0f;
+    if (sinp < -1.0f) sinp = -1.0f;
+    // ★ **符号を反転する。**ZYX 抽出がそのまま返すのは「機首下げが正」で、
+    //   この機体の約束（機首上げが正。プラットホームの申告値 -3.5 度など）と逆。
+    //   2026-09-22 に実機で確認（機首上げ 20 度で -20 が出ていた）。
+    //   ここを直すとピッチ警告・巡航トリム・対気速度モデルがまとめて正になる。
+    pitch = -asinf(sinp);
+    yaw  = atan2f(2.0f*(bw*bz + bx*by), 1.0f - 2.0f*(by*by + bz*bz));
+}
+
+// imu_body_euler_rad() のヨー [rad] → 真方位 [度]（北=0・時計回り正）。
+// ★ **90 度を足すのを忘れないこと。** ワールドは ENU（X=East, Y=North）なので
+//   ZYX 抽出のヨーは**東が 0**。方位は北が 0 なので、符号反転だけだと
+//   **常に 90 度左を向く**。v6 のマウント補正がこの 90 度を偶然含んでいたため、
+//   v7 でマウントを実測し直した 0.979 まで表に出なかった（2026-09-28 に判明）。
+//   **ここを IMU_MOUNT_Q* の回転で直そうとしないこと** — マウントを機体の鉛直軸
+//   まわりに 90 度回すとヨーは合うが、**ロールとピッチが入れ替わる**
+//   （バンク 15 度がピッチ -15 度として出る）。
+//   影響は表示だけでなく風推定（attitude.cpp の wind_e_/wind_n_）にも及ぶ。
+static inline float imu_yaw_to_heading_deg(float yaw_rad) {
+    // 引数が壊れていても回り続けないよう、ループではなく fmodf で畳む。
+    float d = fmodf(90.0f - yaw_rad * 180.0f / (float)M_PI, 360.0f);
+    if (d < 0.0f) d += 360.0f;
+    return d;
+}
+
 
 // ---- 初期化 ----
 void attitude_setup();
@@ -43,13 +87,13 @@ void attitude_setup();
 // ジャイロ到着で predict を回す（加速度は直近値を使う）。単位は rad/s と m/s²。
 void attitude_on_gyro(const float g[3], uint32_t t_us);
 void attitude_on_accel(const float a[3]);
-// BNO085 の GAME_ROTATION_VECTOR。静止中の平均を初期姿勢に使う（磁気なし）。
-void attitude_on_grv(float qw, float qx, float qy, float qz);
-// BNO085 の ROTATION_VECTOR（地磁気補正あり）。初期ヨーの絶対基準に使う。
-// accuracy_rad は BNO085 が報告するヘディング精度推定 [rad]（負なら未キャリブ）。
-void attitude_on_rv(float qw, float qx, float qy, float qz, float accuracy_rad);
+// ★ 0.983 で attitude_on_grv() / attitude_on_rv() を削除した。
+//   初期ロール・ピッチは静止中の平均加速度から作り（GRV と実測 0.05 度以内で一致）、
+//   初期ヨーは GNSS 航跡から入れる。**生ジャイロと生加速度だけで初期化できる**ので
+//   BNO085 でも SCH16T でも同じ経路が使える。経緯は settings.h の
+//   ESKF_YAW_INIT_MIN_SPEED_MPS のコメント。
 
-// ---- GNSS 速度観測（gps.cpp の NAV-PVT 解析から呼ぶ）----
+// ---- GNSS 速度観測（gnss.cpp の NAV-PVT 解析から呼ぶ）----
 // 引数は UBX 原義の NED（velD は下降正）。内部で ENU へ変換する。
 void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc);
 
@@ -115,12 +159,25 @@ void  attitude_set_wind_enabled(bool on);
 // 補正が入った瞬間に一度だけ true を返す（ログ記録用）。
 // applied にその回の補正量、total に累積量が入る。
 bool  attitude_take_roll_trim_event(float &applied, float &total);
-// 初期ヨーに地磁気（ROTATION_VECTOR）を使えたか。false なら磁気なしで初期化した
-// ＝ 起動直後の絶対方位は無意味で、機動して収束するまで待つ必要がある。
-bool  attitude_yaw_from_mag();
+// ヨーの情報源。水平化しただけの状態ではまだヨーが無いことを表示・ログへ伝える。
+//   ATT_YAW_SRC_NONE  … 未設定。絶対方位は無意味（表示側は eskf_yaw_reliable() で灰色にする）
+//   ATT_YAW_SRC_GNSS  … GNSS 航跡から入れた
+enum { ATT_YAW_SRC_NONE = 0, ATT_YAW_SRC_GNSS = 1 };
+uint8_t attitude_get_yaw_source();
+// ヨーが設定済みか。false のあいだは GNSS 速度観測を入れていない
+// （ヨー誤差がロール・ピッチへ転嫁されるため。attitude.cpp のコメント参照）。
+bool  attitude_yaw_ready();
+// センサー座標系で見た「上」方向（= 回転行列の第 3 行）。
+// ★ バリオが比力から重力を抜くのに使う。imu.cpp の compute_earth_z_accel() が
+//   GRV で計算していたものと**同じ量**で、q の出どころだけが違う。
+//   戻り値 false = まだ水平化できていないので使ってはいけない。
+bool  attitude_get_up_sensor(float u[3]);
 bool  attitude_is_static();                  // 静止判定の現在値
 float attitude_get_static_secs();            // 静止が継続している秒数
 uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回数
+// 重力観測（levelling update）を取り込んだ回数。ゲートが開いているかの確認に使う。
+// ★ GNSS 断中にロール・ピッチの錨になるのがこの観測。0 のままならゲートが閉じている。
+uint32_t attitude_get_level_updates();
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう
@@ -149,6 +206,27 @@ bool attitude_take_calib_done();
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg);
 void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定からの復元用
 
+// ---- 較正した日（JST の YYYYMMDD、0 = 不明）----
+// 電源が切れている間にマウントから外されると OFF_MOUNT 判定が働かない
+// （ESKF が回っていないため）。その穴を埋めるための、日付だけの弱い手がかり。
+// 「日付をまたいだ＝一度持ち帰った可能性がある」として設定画面に注意を出すのに使う。
+// 断定はしない。付けっぱなしで日をまたぐこともあるため。
+// ---- 対気速度モデル V(θ) = V0 * sqrt(K / (K + θ)) の係数 ----
+// 既定値は settings.h、実際の値は SD の settings.txt から上書きできる。
+// 機体・重量・重心で変わるので、機体ごとに SD 側で設定する運用を想定している。
+float attitude_get_airspeed_v0();
+void  attitude_set_airspeed_v0(float mps);   // V0 [m/s]
+float attitude_get_airspeed_k();
+void  attitude_set_airspeed_k(float deg);    // K [度]
+float attitude_get_airspeed_min();
+void  attitude_set_airspeed_min(float mps);  // 推定の下限 [m/s]
+float attitude_get_airspeed_max();
+void  attitude_set_airspeed_max(float mps);  // 推定の上限 [m/s]
+
+uint32_t attitude_get_calib_date();
+void     attitude_set_calib_date(uint32_t yyyymmdd);   // APPLY 直後と SD 復元から呼ぶ
+bool     attitude_calib_date_stale(uint32_t today_jst);
+
 // ---- 較正時に申告するピッチ角（画面の SET PITCH 行の値）----
 // 次に較正するときの目標値。SD に保存して次回起動でも同じ値から始められるようにする。
 float attitude_get_pitch_target();
@@ -159,6 +237,10 @@ void  attitude_set_roll_target(float deg);
 void  attitude_cycle_roll_target();
 
 // ---- マウントから外された状態 ----
+// いまこの瞬間マウントから外れた姿勢か。**ラッチしない**（attitude_needs_apply とは別物）。
+// 充電中の警告抑制に使う（GPS_TFT_map.ino の warn_muted_off_mount）。
+bool attitude_is_off_mount();
+
 // ロールかピッチが OFF_MOUNT_DEG を超えると「手に持って外した」とみなして true になり、
 // APPLY するまで戻らない。SD に保存して起動をまたいで保持する。
 bool  attitude_needs_apply();

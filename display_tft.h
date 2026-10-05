@@ -1,14 +1,19 @@
 // ============================================================
 // File    : display_tft.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : TFTディスプレイ描画モジュールのヘッダー。
 //           画面サイズ・カラー定数・座標構造体・enum定義と、
 //           マップ/コンパス/ヘッダー/フッター/設定画面/
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/18
 // ============================================================
+// ★ この先頭ガードが無いと、mysd.h 経由と直接 include の二重読み込みで
+//   関数プロトタイプの再宣言までは黙って通っていたが、enum の再定義は
+//   コンパイルエラーになる（BootCheckState 追加時に発覚）。
+#ifndef DISPLAY_TFT_H
+#define DISPLAY_TFT_H
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
 #include "settings.h"
@@ -21,6 +26,13 @@
 #define HEADERFOOTER_HEIGHT 50
 #define SCREEN_HEIGHT 320
 #define BACKSCREEN_SIZE 240
+// VSI（Vertical Speed Indicator）を合成する backscreen 内の位置と幅。
+// ★ **VSI は backscreen の push とは別に、TFT へ直接 push される**
+//   （GPS_TFT_map.ino。airdata の更新ごとに上書きして白フリッカーを防ぐため）。
+//   つまり x = VSI_X .. VSI_X+VSI_W-1 は **backscreen に描いても後から消される**。
+//   受信モードの枠が右辺だけ点滅していたのはこれが原因（draw_link_overlay 参照）。
+#define VSI_X 235
+#define VSI_W 5
 
 // ※ v6 基板にはバックライト制御線が無いため、輝度調整機能
 //    （BRIGHTNESS_SETTING_AVAIL / TFT_BL / PNP_BL / NPN_BL / BL_PWM_FRQ）は
@@ -35,9 +47,11 @@
     int x;
     int y;
 
-    //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
+    // cord_tft は latLonToXY() が返す **backscreen（240x240）内の座標**なので、
+    // 判定も backscreen の大きさで行う。以前は SCREEN_HEIGHT(320) と比べていたため、
+    // y が 240〜320 の点を「画面内」と判定してから TFT_eSPI 側で捨てていた。
     bool isOutsideTft(){
-      return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
+      return x < 0 || x > BACKSCREEN_SIZE || y < 0 || y > BACKSCREEN_SIZE;
     }
   };
 
@@ -46,8 +60,9 @@
   // その仕組み（TextManager）ごと v0.947 で廃止したのでメニュー分だけ残っている。
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_DEMOBIWA,SETTING_REPLAY,
-    SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
-    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL
+    SETTING_UPWARD,SETTING_GNSSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
+    SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL,
+    SETTING_WIRELESS
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -68,10 +83,24 @@
   // 風矢印用。白地の地図に重ねるので、濃すぎず薄すぎない彩度の高い色を選ぶ。
   // TFT_PURPLE は暗すぎて判別できなかった。
   #define COLOR_WIND_PURPLE 0xA81F       // RGB(173,0,255) 明るい紫
+  // 受信モードでボート自身の位置を示す点。
+  // ★ COLOR_GREEN(TFT_DARKGREEN) は**飛行軌跡と同じ色**で、ミラー中の軌跡は
+  //   機体のものなので、同じ色にすると軌跡に埋もれて見つけられない。
+  //   同じ緑系のまま、明度で分ける。
+  #define COLOR_OWNPOS TFT_GREEN         // 明るい緑
+
+  // 受信モードでボート自身の位置を地図に重ねる（ミラー中のみ）
+  void draw_own_position_marker(double center_lat, double center_lon, float scale, float up);
+
+  // 電池電圧 → 残量[%] / 表示色。**式と配色はここ 1 か所だけ**に置く。
+  //   以前は残量%が 3 か所、色分けが 3 か所に手書きされていて、
+  //   受信モードの S/R 表示を足したときにさらに増えた。
+  int      battery_percent(float v);
+  uint16_t battery_color(float v);
 
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
-  extern TFT_eSprite vsi_sprite;  // VSIインジケーター (5×240px, 16bit)
+  extern TFT_eSprite vsi_sprite;  // VSIインジケーター (VSI_W×240px, 16bit)
 
 #endif
 
@@ -105,7 +134,7 @@ void draw_nomapdata();
 
 //mode draws
 void draw_setting_mode(int selectedLine, int cursorLine);
-void draw_gpsdetail(int page);
+void draw_gnssdetail(int page);
 void draw_sddetail(int page);
 void draw_replayselect(int page, int cursor);
 extern volatile bool loading_replaylist;   // Core1 でリプレイ用ファイル一覧を取得中
@@ -126,12 +155,29 @@ void draw_maplist_mode(int maplist_page);
 #define IMU_MENU_COUNT    6
 
 // ページ2: 調整用。日常の運用では触らない項目を置く。
-#define IMU2_MENU_AUTOROLL 0
-#define IMU2_MENU_WIND     1
+// IMU/ESKF 2/3 — BNO085 の生値と校正だけ。ESKF の項目は 3/3 へ移した。
+#define IMU2_MENU_SAVECAL  0   // 校正(DCD)を BNO085 のフラッシュへ保存（長押し）
+#define IMU2_MENU_NEXTPAGE 1
 #define IMU2_MENU_BACK     2
 #define IMU2_MENU_COUNT    3
-extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2のカーソル位置
+
+// IMU/ESKF 3/3 — ESKF の状態と調整
+#define IMU3_MENU_AUTOROLL 0
+#define IMU3_MENU_WIND     1
+#define IMU3_MENU_BACK     2
+#define IMU3_MENU_COUNT    3
+extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/3のカーソル位置
+extern int imu3_cursor;   // GPS_TFT_map.ino で定義。ページ3/3のカーソル位置
+// 警告音を抑制しているか（充電中 かつ マウント外れ姿勢）。実体は GPS_TFT_map.ino。
+// ★ 判断は .ino に置く（CLAUDE.md: display_tft.cpp に判断や発報は置かない）。
+bool warn_muted_off_mount();
 void draw_imudetail(int page);
+
+// PONS Link（機体⇄ボート無線）の設定画面。
+// 無線方式に依存しない表示にしてある。
+void draw_wireless(int cursor);
+#define WIRELESS_MENU_COUNT 6    // MODE / CH / SF / GROUP / PREFLIGHT / RETURN
+extern int wireless_cursor;
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
 // 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。
@@ -149,7 +195,7 @@ bool eskf_display_enabled();
 bool eskf_yaw_reliable();
 // APPLY（機体ゼロ点の較正）を実行してよい状態か。
 // 飛行中に実行すると傾いた姿勢を基準として焼き付けてしまうため、地上に限る。
-// デモ・リプレイ中は GPS が再生データなので、IMU 由来の静止判定で代替する。
+// デモ・リプレイ中は GNSS が再生データなので、IMU 由来の静止判定で代替する。
 bool eskf_calib_allowed();
 #ifdef DEBUG_ESKF
 // DEBUG_ESKF 有効時のみ、比較用の詳細（BNO085 の姿勢・ヨー・収束状態）を上部に足す。
@@ -168,6 +214,13 @@ void draw_FlashMaps(double center_lat,double center_lon,float scale,float up);  
 void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
+void draw_boot_title();   // 起動直後のタイトル（白画面を埋めるため setup() からも呼ぶ）
+// 起動時センサーチェックの進捗表示（draw_boot_progress() 用）。まだ確認できていない項目は PENDING。
+enum BootCheckState : uint8_t { BOOT_CHECK_PENDING, BOOT_CHECK_OK, BOOT_CHECK_NG };
+// setup() の間、センサーの初期化が終わった順に OK/NG を出す。
+// draw_boot_diag(0) が最終結果（SD含む）を出すまでの「INITIALIZING SENSORS ...」が
+// 何も変わらず 1 秒近く固まって見える体感時間を減らすための中間表示。
+void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss);
 void startup_demo_tft();
 void draw_demo_biwako();
 void draw_replay_indicator();
@@ -185,11 +238,13 @@ void draw_map(float mapUpDirection, double center_lat, double center_lon,float m
 // 辺数が上限を超える場合は何も描かず false を返す。
 bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
                           const uint16_t* ring_start, uint8_t nrings, uint16_t color);
-void draw_nofix_cross();                              // GPS fix なし時のグレー × 描画
+void draw_nofix_cross();                              // GNSS fix なし時のグレー × 描画
 void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixOK=false 時の不確かさ円描画
-void draw_triangle(int ttrack,int steer_angle);
-void draw_course_warning(int steer_angle);
+void draw_triangle(int ttrack,float steer_angle);   // steer_angle は小数のまま渡す（しきい値 15/55/100 度を正確に判定するため）
+void draw_course_warning(float steer_angle);   // 左右の判定だけに使う。int だと |ズレ|<1度 で左右が逆になる
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+
+#endif  // DISPLAY_TFT_H
 
 

@@ -1,6 +1,6 @@
 // ============================================================
 // File    : imu.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : BNO085 IMU モジュール + Kalman フィルターフュージョンのヘッダー。
 //           MS5611 気圧高度と BNO085 加速度を融合した高精度バリオメーターを提供する。
 //
@@ -23,14 +23,14 @@
 //   airdata_update() が true を返したタイミングで imu_kalman_baro_update() を呼ぶ。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/09/06
 // ============================================================
 
 #ifndef IMU_H
 #define IMU_H
 
 #include <Arduino.h>
-
+#include "attitude.h"   // imu_body_euler_rad()（マウント回転）
 // ---- 初期化 ----
 // BNO085 の I2C バス・割り込み・センサーレポートを初期化する。
 // airdata_setup() の後に呼ぶこと（ログ用タスクキューが必要なため）。
@@ -41,6 +41,25 @@ void imu_setup();
 // loop() から毎回呼ぶ（ノンブロッキング）。
 void imu_update();
 
+// BNO085 のレポートだけを引き取る（軽量・副作用なし）。
+// ★ **長いブロッキング処理の中から呼ぶこと。** 描画・無線・SD などで Core0 が
+//   数十 ms 止まると、そのあと読んだジャイロが化ける（2026-09-23 に実機で確定）。
+//   Kalman predict も復旧処理もしないので、どこから呼んでも安全。
+//   ポーリング時刻は imu_update() と共有しているので、二重に叩く心配も無い。
+void imu_service_if_due();
+
+// ---- BNO085 の校正（DCD）----
+// 保存記録は**本体フラッシュ（EEPROM 領域）**に置く。SD ではない。理由は imu.cpp。
+// 目的は「一度も校正していない機体」を画面で明示すること。
+bool     imu_cal_ready();              // acc==3 かつ gyr==3。SAVE を許す条件
+bool     imu_cal_saved_ever();         // 過去に一度でも手動保存したか
+uint32_t imu_cal_saved_date();         // 最後に保存した日 YYYYMMDD。0 = 日付不明
+uint16_t imu_cal_save_count();         // 手動保存の回数
+bool     imu_cal_autosave_on();        // 今回の起動でチップの自動保存を許したか
+// 手動保存。yyyymmdd は 0 可（GNSS 時刻が無いとき）。**長押しからのみ呼ぶこと**
+// （中で EEPROM.commit() が Core1 を止め、割り込みを切って数十 ms ブロックする）。
+bool     imu_save_calibration(uint32_t yyyymmdd);
+
 // ---- 気圧高度による Kalman 観測更新 ----
 // MS5611 の高度が更新されたときに外部から呼ぶ。
 // airdata_update() が true を返したタイミングで get_airdata_altitude() を渡す。
@@ -50,17 +69,17 @@ void imu_kalman_baro_update(float z_baro_m);
 // gnssFixOK && fixtype==3D のとき、メインループから約1秒ごとに呼ぶ。
 // GNSS高度（MSL）で気圧の基準高度をゆっくり修正し、絶対高度ドリフトを抑制する。
 // Vertical speed（z_dot）は変更しない。
-//   z_gnss_msl : GNSS高度 [m MSL]（get_gps_altitude() の値）
-//   vacc_m     : 垂直精度推定値 [m]（get_gps_vacc_mm() / 1000.0f）
+//   z_gnss_msl : GNSS高度 [m MSL]（get_gnss_altitude() の値）
+//   vacc_m     : 垂直精度推定値 [m]（get_gnss_vacc_mm() / 1000.0f）
 void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m);
 
 // ---- GNSS垂直速度による Kalman 速度観測更新 ----
 // gnssFixOK && fixtype==3D のとき、GNSS高度補正と同じタイミングで呼ぶ。
 // sAcc を観測ノイズ（R_vel = sAcc²）、vAcc をゲーティングに使い、KF の z_dot を補正する。
 // BNO085 の有無によらず動作する。
-//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gps_veld_mps()
-//   vacc_m    : 垂直位置精度 [m]（get_gps_vacc_mm() / 1000.0f）
-//   sacc_mps  : 速度精度 [m/s]（get_gps_sacc_mmps() / 1000.0f）
+//   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
+//   vacc_m    : 垂直位置精度 [m]（get_gnss_vacc_mm() / 1000.0f）
+//   sacc_mps  : 速度精度 [m/s]（get_gnss_sacc_mmps() / 1000.0f）
 void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps);
 
 // ---- センサー状態 ----
@@ -71,8 +90,21 @@ bool get_imu_ok();
 // update_vario() の MS5611 フォールバック判定に使用する。
 bool get_imu_alive();
 
+// ---- バリオの供給元（音と VSI の線で共有する）----
+// ★ **音（src/sound.cpp の update_vario）と VSI のグレー線（display_tft.cpp の
+//   draw_vsi）は必ずこの 3 つを通すこと。** 0.983 まで両者が別々に
+//   `get_imu_alive()` / `get_imu_ok()` で分岐していて、いつ食い違っても
+//   おかしくなかった（CLAUDE.md の「線は出ているのに鳴らない」）。
+bool  vario_source_ok();         // V/S を出せる状態か（false なら VSI のバーを描かない）
+float vario_vspeed_mps();        // 表示・音に使う V/S [m/s]（供給元はここが決める）
+float vario_deadband_mps();      // デッドバンド [m/s]（KF 融合中は狭い）
+
 // ---- 推定値ゲッター ----
 float get_imu_vspeed();          // Kalman 推定上昇率 [m/s]（正: 上昇、負: 下降）
+// _raw 版は「必ず自機の値」を返す。無線のミラー中でも自機 CSV には
+// 自分の値を書く必要があるため（link.cpp のコメント参照）。
+float get_imu_vspeed_raw();
+float get_imu_altitude_msl_raw();
 float get_imu_altitude_msl();    // Kalman 推定高度 [m]（MSL 絶対値 = AGL + gnss_kf_offset）
                                  // gnss_kf_offset 未確定（GNSS fix 取得前）は AGL 値を返す
 bool  get_imu_gnss_offset_ready(); // gnss_kf_offset が初期化済みか（MSL 値が有効か）
@@ -89,10 +121,28 @@ float get_imu_rv_hz();    // ROTATION_VECTOR
 // 加速度サンプルの鮮度不足で Kalman predict をスキップした累計回数。
 // 正常時は 0 のまま。増えていれば BNO085 のレポート配信が滞っている。
 uint32_t get_imu_lacc_stale_skips();
+
+// クォータニオンの健全性カウンタ（V/S が暴れる件の切り分け）。
+//   bad  … ノルムが 1 から外れ、採用しなかった数 ＝ **パケットが化けている**
+//   jump … ノルムは正常だが 1 サンプルで 25 度以上回った数 ＝ BNO 内部の融合の問題
+// bad が増えるなら転送層（SPI）の問題で、ジャイロ・加速度も同じく化けている。
+// BNO085 が申告するセンサー精度（0=信頼できない 1=低 2=中 3=高）と動的校正の設定。
+// ★ 融合出力（GRV/RV）と加速度の確からしさはここに強く依存する。
+//   実測: 加速度 2 のとき静止時 |a| が -4.6%、3 に上がると約 -1%。
+uint8_t  get_imu_acc_accuracy();
+uint8_t  get_imu_gyr_accuracy();
+uint8_t  get_imu_cal_cfg();      // 0xFF = 未取得
+
+// imu_update() が呼ばれなかった最長時間 [µs]。**読むとリセットされる。**
+// Core0 が他所で止まると BNO085 のレポートが溜まり、1 パケットが 384 バイト上限へ近づく。
+uint32_t get_imu_poll_gap_max_us();
+
+uint32_t get_imu_grv_bad();
+uint32_t get_imu_grv_jump();
+uint32_t get_imu_rv_bad();
 // 生ログ用レポートの受信レート [Hz]（設定値どおり出ていれば配信飢餓は起きていない）
 float get_imu_gyro_hz();   // GYROSCOPE_CALIBRATED
 float get_imu_accel_hz();  // ACCELEROMETER
-float get_imu_mag_hz();    // MAGNETIC_FIELD_CALIBRATED
 
 // 生ジャイロ・生加速度の直近値（設定画面の IMU/ESKF ページで実測値を見るため）
 void get_imu_raw_gyro(float g[3]);   // [rad/s]

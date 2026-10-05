@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "2005280040")(type "KiCad")(uri "${KIPRJMOD}/Symbols/2005280040.kicad_sym")(options "")(descr ""))
+  (lib (name "SAM-M10Q-00B")(type "KiCad")(uri "${KIPRJMOD}/Symbols/SAM-M10Q-00B.kicad_sym")(options "")(descr ""))
+)

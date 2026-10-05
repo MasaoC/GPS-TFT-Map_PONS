@@ -1,92 +1,211 @@
 // ============================================================
 #pragma once
 // File    : settings.h
-// Project : PONS v6 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : プロジェクト全体の設定・定数・マクロ定義。
-//           デバッグフラグ、GPS/TFT種別選択、ハードウェアピン番号、
+//           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/09/18
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
 
+// ============================================================
+//  リリース前に確認するスイッチ
+// ============================================================
+// ★ RELEASE が無いと setup1() が while(!Serial) で USB 接続を待ち、実機が起動しない。
+//   RELEASE_GNSS 以外（DEBUG_GNSS_SIM_*）を選んだままだと GNSS が疑似値になる。
+//   どちらかが抜けているとコンパイル時に #warning NOT RELEASE! が出る。これが唯一の保険。
 // リリース時
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20260901
-#define BUILDVERSION "0.949"
-#define VERSION_TEXT "Version 6"
+#define BUILDDATE 20261006
+#define BUILDVERSION "0.985"
+#define VERSION_TEXT "Version 7"
 
-
-
-
-//----------GPS---------
-// GPS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
+//----------GNSS---------
+// GNSS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
 // v5 以前の Quectel LC86G / Mediatek 対応コードは v0.947 で削除した。
 //#define DEBUG_GBX_NMEA
 
-//GPSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GPSを選択】
-  #define RELEASE_GPS
-  //#define DEBUG_GPS_SIM_SHINURA         //新浦安固定座標
-  //#define DEBUG_GPS_SIM_BIWAKO         //琵琶湖固定座標
-  //#define DEBUG_GPS_SIM_SAPPORO         //札幌固定座標
-  //#define DEBUG_GPS_SIM_SHISHI         //しし固定座標
-  //#define DEBUG_GPS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
-  //#define DEBUG_GPS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
-  //#define DEBUG_GPS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
+//GNSSのデバッグ用途。ひとつだけ選択。【リリース版は、RELEASE_GNSSを選択】
+  #define RELEASE_GNSS
+  //#define DEBUG_GNSS_SIM_SHINURA         //新浦安固定座標
+  //#define DEBUG_GNSS_SIM_BIWAKO         //琵琶湖固定座標
+  //#define DEBUG_GNSS_SIM_SAPPORO         //札幌固定座標
+  //#define DEBUG_GNSS_SIM_SHISHI         //しし固定座標
+  //#define DEBUG_GNSS_SIM_SHINURA2BIWA    //新浦安座標から琵琶湖座標に置換
+  //#define DEBUG_GNSS_SIM_OSAKA2BIWA      //阪大座標から琵琶湖座標に置換
+  //#define DEBUG_GNSS_SIM_SHINURA2OSAKA   //新浦安座標から阪大座標に置換
 
+#if !defined(TEMP)
+  #define TEMP
+  #if !defined(RELEASE) || !defined(RELEASE_GNSS)
+    #warning NOT RELEASE!
+  #endif
+#endif
 
-//---------TFT----------
-// パネル種別（ST7789 / ILI9341）の選択は TFT_eSPI の User_Setup で行う。
-// このファイルには選択用マクロは無い（コード側に分岐が無く、置いても効かないため）。
-// 設定サンプルは CopySetupFile_TFT_eSPI.h を参照。
-
-#define VERTICAL_FLIP
-
-//強制画面リフレッシュ時間
-#define SCREEN_FRESH_INTERVAL 1050
-
-// センサー値を眺めるための画面（VARIO 詳細）の強制リフレッシュ間隔 [ms]。
-// 地図画面は GPS 更新(2Hz)でも再描画されるので 1050ms で足りるが、
-// VARIO 詳細には他の再描画トリガーが無く、この間隔がそのまま表示更新レートになる
-// （従来は 1050ms = 約 0.95Hz しか出ていなかった）。
-//
-// 200ms = 5Hz。この画面ではベクタ地図を描かないため 1 回の再描画は地図画面(平均64ms)より
-// ずっと軽く、Core0 に十分な余裕がある。GPS シリアルも IRQ で 1024B までバッファされるため
-// （38400bps で約 266ms 分）取りこぼさない。
-// これ以上速くしたい場合は間隔を詰めるのではなく、VSI バーと同じように
-// 値の部分だけ部分転送する方式にすること（全画面 115KB 転送が支配的になるため）。
-#define SCREEN_FRESH_INTERVAL_DETAIL 200
-
-
-#define MAX_TRACK_CORDS 500
-
-
-
-// =====Hardware Settings =====
+// ============================================================
+//  ハードウェア — ピン割り当て
+// ============================================================
 
 // Hardware Ver6
-#define SW_PUSH 35  //30(v6 proto)
+#define SW_PUSH 37  // v7 35->37に変更
 #define BATTERY_PIN 40 //A0
-#define GPS_SERIAL Serial1
-#define GPS_TX 0
-#define GPS_RX 1
+#define GNSS_SERIAL Serial1
+
+// GNSS の UART 受信リングバッファ [バイト]。既定 32 では全く足りない。
+// ★ 大きさの意味は「**Core0 が止まっても取りこぼさない時間**」。
+//   実流量は UBX のみで約 550 B/s（NAV-PVT 100B×2Hz ＋ NAV-SAT 約320B×1Hz
+//   ＋ NAV-DOP 26B×1Hz）。回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
+//     1024B → 約 1.9 秒   4096B → 約 7.4 秒
+//   以前のコメントは 1024B ÷ 3840B/s = 267ms と書いていたが、それは
+//   **回線が飽和している前提の最悪値**で、実態の 7 倍きつい見積りだった。
+//   RAM は 4096B でも全体の 1% 未満。ここを削る理由が無い。
+#define GNSS_SERIAL_FIFO_SIZE  4096
+
+// GNSS モジュールからのバイトがこの時間届かなければ「断線」とみなす [ms]。
+// ★ **飛行中に断線したことを検出するためのもの。** 以前は
+//   「1 バイトでも受信したら true、以降ずっと true」のラッチだったので、
+//   途中でコネクタが抜けても画面は正常なまま航法を続けていた。
+// 値の根拠: 設定が通っていれば NAV-PVT が 2Hz（500ms 間隔）、通っていなくても
+//   既定の NMEA が 1Hz で流れ続ける。一方こちらの読み出しが遅れても FIFO
+//   （GNSS_SERIAL_FIFO_SIZE = 4096B ≒ 7 秒ぶん）に溜まるので、描画で数百 ms
+//   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
+//   5 秒なら「本当に来ていない」ときだけ立つ。
+#define GNSS_CONN_TIMEOUT_MS   5000UL
+// 断線している間、警報トーンを繰り返す間隔 [ms]。
+// ★ 1 回きりにしない。**聞き逃したら二度と鳴らない**のは航法が止まる故障には合わない。
+// ★ 最低保証音量（min_volume）は付けない。あれは電池警告専用で
+//   「離れていても気づける」ための仕組み（gnss.cpp の REPLAY canceled のコメント参照）。
+//   断線は飛行中に起きるので、パイロットは装置を身につけている。
+#define GNSS_LOST_ALERT_MS    30000UL
+#define GNSS_TX 0
+#define GNSS_RX 1
 #define USB_DETECT 31
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
-#define SD_DETECT 8
+#define SD_DETECT 10  //v7 8->10に変更
+// ---- BNO085 のホストバス — **i2c1 固定** ----
+// imu_update() は Core0 から呼ぶ。
+//
+// ★ 0.976 で SPI 対応を削除した。触ると必ずジャイロが化ける問題
+//   （触診で約 0.8 件/分、gx=+v gy=-v gz=-v の署名）が SPI でしか起きず、
+//   I2C では一度も再現しなかったため I2C 運用に確定した。
+//   SPI に戻す必要が生じたら 0.975 の settings.h / imu.cpp を見ること。
+//
+// ★ ハード側の前提（これが揃っていないと起動しない）:
+//     JP1（PS1）= 2-3 ブリッジ ＝ **GND**
+//       BNO085 は PS1/PS0 でプロトコルを決める（データシート Figure 1-5）。
+//       PS1=0, PS0=0 → I2C。**I2C は PS1=0。HIGH ではない。**
+//       PS0 は GPIO47 でソフトが LOW に駆動する。
+//     R46 / R47（0Ω）実装 ＝ H_SCL/H_SDA を i2c1 へ繋ぐ
+//     GPIO34/35 に外部プルアップ 4.7kΩ（実装済み）
+//
+// ※ SD の settings.txt では切り替えられない（設定の読み込みは Core1 の
+//   setup_sd() で、imu_setup()（Core0）より後に走るため間に合わない）。
 
+#define IMU_RST_PIN   46   // BNO085 NRST（負論理）
+// H_INTN（負論理）。**i2c1 運用では読んでいない**（完全ポーリング）。
+// 入力プルアップだけ入れて、ブート前に浮かせないようにしている（imu.cpp）。
+#define IMU_INT_PIN   45
+#define IMU_PS0_WAKE_PIN 47 // BNO085 PS0/WAKE。リセット時はプロトコル選択、以降は WAKE
+
+// ---- i2c1（MS5611 の i2c0(GPIO32/33) とは別バス）----
+#define IMU_I2C_SDA   34
+#define IMU_I2C_SCL   35
+
+// ★★ **旧 SPI1 の SCK/MISO は I2C バスそのものなので、放置してはいけない。**
+//   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、下の 2 本は
+//   GPIO34/35 とショートしている（実測確認）。
+//   RP2350 のパッドを入力・プル無しで放置すると Low 側へ張り付くことがあり、
+//   外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝ Low に見える。
+//   実機 2026-09-27: `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
+//   → imu_bus_park_unused_pins() が **INPUT_PULLUP で明示的に停める**。
+//   **出力にすると I2C バスを殺す。**
+#define IMU_UNUSED_SCK_PIN   42   // 旧 SPI1_SCK。H_SCL(=GPIO35) とショート
+#define IMU_UNUSED_MISO_PIN  44   // 旧 SPI1_MISO。H_SDA(=GPIO34) とショート
+// ★ GPIO41（旧 SPI1_CS）は **E220 の M0/M1 専用**（e220.h）。
+//   R53 を外してあるので **BNO085 の H_CSN とは繋がっていない**。
+//   imu.cpp から駆動すると無線が mode 3 へ落ちるだけなので、触らないこと。
+// ★ BNO085 の H_CSN は基板上で未接続（R53 外し）。I2C では don't care なので
+//   それでよい（データシートの I2C 接続図でも未接続）。駆動する手段は無い。
+// ★ GPIO43（旧 SPI1_MOSI）は I2C では SA0（アドレス下位ビット）。下の IMU_I2C_SA0_PIN。
+// ★ この値は**アドレス探査のビット幅も決める**（下げると安全側になる）。
+//   arduino-pico のアドレス探査（0 バイト書き込み = Adafruit_I2CDevice::detected）は
+//   **I2C ペリフェラルを使わず、ピンを SIO に切り替えてビットバンギングする**
+//   （Wire.cpp の _probe）。そのビット幅は **(1000000 / この値) / 2** で決まり、
+//   400kHz では **1µs**、100kHz なら 5µs。
+//   実機 2026-09-27 に 400kHz で `init_step=1`（アドレス応答なし）が 5 回中 4〜5 回
+//   起きたが、**真因は探査を二重に走らせていたこと**で、そちらを直して解決した
+//   （imu_bus_begin() のコメント参照）。クロックは 400kHz のままでよい。
+//   ★ 外部プルアップ 4.7kΩ は GPIO34/35 に実装済み。立ち上がり時間は問題ない。
+//   ★ **もし `init_step=1` が再発したら、まずここを 100000 に下げて切り分ける。**
+//     レポートは 145 件/秒なので 100kHz でもバス占有率は約 30% に収まり、
+//     レートは足りる（400kHz が必須ではない）。
+#define IMU_I2C_HZ    400000
+// SA0 が下位 1bit を決める（0x4A / 0x4B）。SA0 は SPI の MOSI と同じ GPIO43 なので、
+// I2C モードでは HIGH に固定して 0x4B にする。
+#define IMU_I2C_ADDR  0x4B
+#define IMU_I2C_SA0_PIN  43
+
+// ============================================================
+//  電源・バッテリー
+// ============================================================
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
+#define BAT_FULL_VOLTAGE 4.2 // 100% とみなす電圧。残量%と色分けの基準（display_tft.cpp の battery_*）
 #define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
 #define BAT_LOW_VOLTAGE 3.5
+// 電池低下警告を繰り返す間隔 [ms]。自機（GPS_TFT_map.ino）と、
+// 受信機が知らせる送信機の電池（link.cpp）の両方がこれを見る。
+// 電池は減り続けるので 1 回きりの通知では足りない。逆に短くすると、
+// 本当に聞くべき他の警報（コース・バンク角）が埋もれる。
+#define BAT_WARN_INTERVAL_MS 60000UL
 #define BAT_ZERO_VOLTAGE 3.4
+// 満充電からの目安稼働時間 [分]。設定画面フッターの「Battery Time」の計算に使う。
+// 実測は高輝度 約3時間 / 低輝度 約12時間と幅があるので、間を取った粗い目安。
+// 輝度はソフトから読めないため、モードによらず 1 つの値で出している。
+#define BAT_FULL_RUNTIME_MIN 240
+
+// ============================================================
+//  音（スピーカー・音量・バリオ音）
+// ============================================================
 #define PIN_PWMTONE 38
 #define PIN_AMP_SD 39 //アンプシャットダウン(HIGHでON)
-#define USERLED_PIN 34 //ユーザーLED（エラー表示用。エラー時 HIGH）
+#define USERLED_PIN 36 //ユーザーLED（エラー表示用。エラー時 HIGH） v7 34->36に変更
+
+// ユーザーLED の点滅パターン [ms]。実体は GPS_TFT_map.ino の loop_userled()。
+// 1 周期 USERLED_BLINK_PERIOD_MS の中で USERLED_BLINK_PULSE_MS だけ点灯する。
+// SD 異常のときだけ USERLED_BLINK_GAP_MS 後にもう 1 発打って「2 回連続点滅」にし、
+// 衛星 0（1 回点滅）と目で区別できるようにしている。
+// GAP + PULSE は PERIOD より十分短いこと。超えると次の周期の開始が優先され、
+// **2 発目が一度も出ないまま 1 回点滅に見える**（＝衛星 0 と区別が付かなくなる）。
+#define USERLED_BLINK_PERIOD_MS 1000
+#define USERLED_BLINK_PULSE_MS    20
+#define USERLED_BLINK_GAP_MS     200
+
+// 音量の上限。設定画面のステップ送りと、SD の settings.txt から読むときの
+// クランプの両方がこれを見る（片方だけ直して食い違うのを防ぐ）。
+#define SOUND_VOLUME_MAX 100
+
+// 音声の「排他グループ」。同じグループの音声は **ひとつの状態を言い替えたもの**で、
+// 新しい方が鳴り始めた時点で古い方はもう事実ではない。src/sound.cpp の pending
+// （割り込まれた音声を後で鳴らし直す救済キュー）はここを見て、同じグループの
+// 古い音声を**救済せずに捨てる**。
+// ★ 捨てないと機体が嘘を喋る。設定画面のモードは OFF→SENDER→RECEIVER の回転式で、
+//   RECEIVER へ行くには SENDER を必ず通る。0.984 までは通過した sender_mode.wav が
+//   receiver_mode.wav に割り込まれて pending に入り、**受信モードにした直後の機体が
+//   「送信モード」と読み上げていた**。モード読み上げは「操作ミスに気づく手段」
+//   （link_set_mode() のコメント）なので、言い替え前の値が残ると目的が反転する。
+// ★ 「鳴らさない」グループではない。割り込まれた側を救済しないだけで、
+//   自分が割り込まれる側になる判定（優先度）は今までと同じ。
+#define WAV_EXCL_NONE      0   // 排他なし（既定）。割り込まれたら従来どおり救済する
+#define WAV_EXCL_LINKMODE  1   // 無線モードの読み上げ（sender_mode.wav / receiver_mode.wav）
+
 #define SIN_VOLUME 0.15f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
 #define VARIO_VOL_SCALE 3
 // 上昇ビープ（高音）の音量を、下降音（低音）に対して何%にするかの補正。
@@ -103,46 +222,134 @@
 #define VARIO_DEADBAND_KF_MPS    0.25f
 #define VARIO_DEADBAND_BARO_MPS  0.60f
 
-// =====追加設定項目====
+// ============================================================
+//  画面（TFT・更新間隔・画面モード）
+// ============================================================
+//---------TFT----------
+// パネル種別（ST7789 / ILI9341）の選択は TFT_eSPI の User_Setup で行う。
+// このファイルには選択用マクロは無い（コード側に分岐が無く、置いても効かないため）。
+// 設定サンプルは CopySetupFile_TFT_eSPI.h を参照。
+
+#define VERTICAL_FLIP
+
+//強制画面リフレッシュ時間
+#define SCREEN_FRESH_INTERVAL 1050
+
+// センサー値を眺めるための画面（VARIO 詳細）の強制リフレッシュ間隔 [ms]。
+// 地図画面は GNSS 更新(2Hz)でも再描画されるので 1050ms で足りるが、
+// VARIO 詳細には他の再描画トリガーが無く、この間隔がそのまま表示更新レートになる
+// （従来は 1050ms = 約 0.95Hz しか出ていなかった）。
+//
+// 200ms = 5Hz。この画面ではベクタ地図を描かないため 1 回の再描画は地図画面(平均64ms)より
+// ずっと軽く、Core0 に十分な余裕がある。GNSS シリアルも IRQ で 1024B までバッファされるため
+// （38400bps で約 266ms 分）取りこぼさない。
+// これ以上速くしたい場合は間隔を詰めるのではなく、VSI バーと同じように
+// 値の部分だけ部分転送する方式にすること（全画面 115KB 転送が支配的になるため）。
+#define SCREEN_FRESH_INTERVAL_DETAIL 200
+
+// 設定画面を放置したとき、自動で地図画面へ戻るまでの時間 [ms]。
+// 設定画面を出したまま離陸してしまった場合の保険。ボタン操作のたびに計時し直す。
+// 3 分にしてあるのは、設定を眺めながら考え込む程度では抜けず、
+// かつ離陸前の点検から離陸までの間には確実に戻る長さだから。
+#define SETTING_IDLE_TIMEOUT_MS (3UL * 60UL * 1000UL)
+
+
+// ---- MS5611（i2c0）の失敗検出と復旧 ----
+// ★ これは「気圧センサーが 1 個死んだだけで音響警報が全停止する」のを防ぐためのもの。
+//   airdata_update() は毎ループ呼ばれるので、無応答のまま放置すると
+//   ms5611_write_cmd() が失敗のたびにログタスクを積み、0.5 秒ほどで
+//   タスクキュー(40)が溢れる。溢れると**以降のタスクが全部捨てられる**ので、
+//   バンク角警告もコース警報も電池警告も鳴らなくなる（mysd.cpp の enqueueTask 参照）。
+// ---- 送信機の重複検出（受信機側）----
+// seq の逆行から「同じ CH/SF/Group に送信機が 2 台いる」と判定したあとの扱い。
+// ★ 以前は一度立つと電源を切るまで落ちない永久ラッチだった。同じ種類の状態である
+//   「別グループを見た」が 10 秒で自然消滅するのに対して非対称で、
+//   2 台目を止めて設定を直しても**再起動しないと確認できなかった**。
+#define LINK_DUPSENDER_HOLD_MS  30000UL  // 最後の検出からこの時間は「検出中」とみなす
+// 音声で知らせる間隔の下限。1 回きりにすると聞き逃したら二度と鳴らないが、
+// 毎秒鳴らすのも実害（他の警報を押しのける）。重大なので 1 分ごとに念を押す。
+#define LINK_DUPSENDER_ALERT_MS 60000UL
+
+#define MS5611_FAIL_LIMIT            5      // 連続失敗がこの回数を超えたら ms5611_ok=false
+#define MS5611_ERRLOG_INTERVAL_MS 5000UL    // I2C エラーログの最短間隔（毎ループ積まない）
+
+// 復旧の再試行間隔 [ms]。
+// ★ 値を決めるときに考えたこと:
+//   ・1 回の試行は「アドレス応答の確認 1 トランザクション」から始める。
+//     応答が無ければそこで諦めるので、不在時のコストは数十 µs で済む
+//     （PROM 8 ワードまで読みに行くのは応答があったときだけ）。
+//   ・BNO085 の復旧が 60 秒間隔なのは 1 回が NRST 410ms かかるため。
+//     こちらは 1ms 未満なので、同じ間隔にする理由は無い。
+//   ・待っている相手は「一瞬のバス擾乱（即復帰）」「結露（数分）」
+//     「ハンダ不良（永久に戻らない）」のどれか。30 秒なら一瞬の擾乱を
+//     取りこぼさず、永久故障でも 2 分に 4 回の空振りで済む。
+//   ・短くしすぎるとバスが固着したときに Wire のタイムアウトを頻繁に踏む。
+#define MS5611_RECOVERY_INTERVAL_MS 30000UL
+
+#define MAX_TRACK_CORDS 500
+
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
 // hAcc 不確かさ円 設定
-// GPS fix があっても hAcc（NAV-PVT 水平精度推定）が大きい場合、飛行機マークの代わりに青い不確かさ円を表示する。
+// GNSS fix があっても hAcc（NAV-PVT 水平精度推定）が大きい場合、飛行機マークの代わりに青い不確かさ円を表示する。
 // gnssFixOK=false の場合は常に不確かさ円を表示する。
 #define HACC_THRESHOLD_M       10.0f // この値（m）以上で不確かさ円モードに切替え（旧 HDOP=2×5m 相当）
 #define HDOP_MIN_CIRCLE_RADIUS 4     // 輪郭円を描画する最小半径 [px]（未満はテキスト表示に切替え）
 #define HDOP_CENTER_DOT_RADIUS 3     // 中心位置を示す塗りつぶし小円の半径 [px]
 
-
-
 //======= Shared Global variables ======
 //screen_mode
 #define MODE_SETTING 1
 #define MODE_MAP 2
-#define MODE_GPSDETAIL 3
+#define MODE_GNSSDETAIL 3
 #define MODE_MAPLIST 4
 #define MODE_SDDETAIL 5
 #define MODE_VARIODETAIL 6
 #define MODE_REPLAYSELECT 7  // リプレイ再生ファイルの選択画面
 #define MODE_IMUDETAIL 8     // IMU / 姿勢 ESKF の詳細画面
+#define MODE_WIRELESS 9      // PONS Link（機体⇄ボート無線）の設定画面
 
-
-//======= リプレイ再生設定 ======
-// 固定エントリ（大会データ）の SD 上のパス。
-// SD ルートに置くとファイル一覧にも重複表示されるため replay/ サブフォルダに置く。
-#define REPLAY_2025_FILE "replay/2025taikai.csv"
-#define REPLAY_2026_FILE "replay/2026taikai.csv"
-#define REPLAY_2025_LABEL "2025 Taikai"
-#define REPLAY_2026_LABEL "2026 Taikai"
+// ============================================================
+//  内蔵ベクタ地図
+// ============================================================
+// 地図データは 2 種類あり、**コンパイル時にどちらか一方だけ**を焼く。
+// Arduino は src/ 配下の .cpp を全部コンパイルするので、両方のファイルは
+// この #define で自分を丸ごと無効化する（重複定義を避けるため）。
+//
+//   無効（既定）: src/flashdata/vectormap_data.cpp        約 1.3MB
+//                 FLASH 2MB の設定でビルドでき、書き込みが速い。無線デバッグ中はこちら。
+//   有効        : src/flashdata/vectormap_data_hires.cpp  数 MB
+//                 **ボード設定を「16MB (no FS)」にしないとリンクで溢れる。**
+//                 書き込み時間が素直に伸びる。
+//
+// ★ 有効にする前に tools/vectormap/README.md の手順でデータを生成すること。
+//   未生成のまま有効にすると #error で止まる（リンクエラーで悩まないように）。
+//#define VECTORMAP_HIRES
+  
+// ============================================================
+//  SD カードとリプレイ再生
+// ============================================================
+// ★ SD の使い分け
+//     ルート直下 … **設定ファイルだけ**（settings.txt / mapdata.csv /
+//                    destinations.csv / override_pilon_coordinate.csv / logo.bmp）
+//     data/      … 自機の飛行 CSV。過去大会のデータもここへ置く
+//     received/  … 無線で受け取った機体のログ
+//   リプレイ一覧は data/ か received/ しか見ないので、**除外リストが要らない**。
+//   設定用の CSV をうっかり再生対象にしてしまう経路が構造的に無くなる。
+//   （以前はルートを走査していたため、ルートに CSV を足すたびに除外リストへ
+//     追記する必要があり、実際 override_pilon_coordinate.csv が漏れていた）
+//
+//   一覧の並びはファイル名順ではなく **ディレクトリの登録順**（＝SD へコピーした順）。
+//   上に出したいものは先にコピーすること（browse_replay_files 参照）。
+#define REPLAY_FLIGHT_DIR   "data"       // 自機の飛行 CSV と過去大会データ
+#define REPLAY_RECEIVED_DIR "received"   // 無線で受け取った機体のログ
 
 #define REPLAY_BUF_SIZE   16   // 先読みするCSV行数（Core1が供給 → Core0が消費するリングバッファ）
                                // ※ インデックス計算にビットマスクを使うので必ず 2 のべき乗にすること
                                // 高速再生(x20)では 2Hz データを毎秒40行消費するため余裕を持たせている
 #define REPLAY_LIST_ROWS  20   // リプレイ選択画面の1ページあたり表示行数（20行×12px = 240px）
-#define REPLAY_FIXED_COUNT 5   // 一覧の先頭に並ぶ固定項目数の最大値
-                               // （Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / 2025 / 2026）
-                               // 2025・2026 は SD 上に実ファイルがあるときだけ表示するため、
-                               // 実際の数は replay_menu_fixed_count()（3〜5）を使うこと。
+#define REPLAY_FIXED_COUNT 4   // 一覧の先頭に並ぶ固定項目数（常にこの数）
+                               // Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / SOURCE
 // 再生速度の選択肢。x1 → x2 → x_FAST の順に切り替わる（既定は x1）。
 // 高速側の倍率を変えたいときは REPLAY_SPEED_FAST だけ書き換えればよい。
 #define REPLAY_SPEED_FAST 20
@@ -152,17 +359,12 @@
 #define REPLAY_LEADIN_SLOTS 40 // 助走区間の先頭を探すために保持する行数（5秒 ÷ 最短サンプル間隔ぶん）
 #define REPLAY_SCAN_MAX 2000   // 静止区間の先読み走査で1回に読む最大行数（Core1 を長時間占有しないための上限）
 #define REPLAY_REQ_INTERVAL_MS 200  // Core1へのバッファ補充依頼の最短間隔 [ms]
-#define REPLAY_FILENAME_LEN 40      // リプレイ対象ファイル名（パス込み）の最大長
+#define REPLAY_FILENAME_LEN 48      // リプレイ対象ファイル名（パス込み）の最大長
+                                    // received/ 前置(9) + ファイル名(最大31) + NUL に足りる長さ
 
-
-#if !defined(TEMP)
-  #define TEMP
-  #if !defined(RELEASE) || !defined(RELEASE_GPS)
-    #warning NOT RELEASE!
-  #endif
-#endif
-
-
+// ============================================================
+//  デバッグ出力・計測マクロ
+// ============================================================
 //デバッグ用 print マクロ
 #define PRINTREVERSEDATE_NUM 10
 #ifndef RELEASE
@@ -179,6 +381,59 @@
   #define DEBUG_PLN(date,txt)
   #define DEBUG_PNLN(date,txt,num)   
   #define DEBUGW_PLN(date,txt)  
+#endif
+
+// ============================================================
+// SD アクセスがどのコアから来たかの見張り（デバッグビルドのみ）
+//
+// SD へのアクセスは Core1 に閉じる約束だが、**それを強制する仕組みは無い**。
+// mutex が守っているのはタスクキューだけで、SDIO バスは規律だけで守られている。
+// Core0 から触ると「たいてい動くが、たまにバスハングでフリーズする」という
+// 一番たちの悪い壊れ方をするため、開発中に気づけるようにしておく。
+//
+// 実際に SD を読み書きする関数の先頭に置く。Core0 から good_sd() を呼ぶのは
+// 意図的に安全（フラグを読むだけ）なので、そちらには置かないこと。
+// RELEASE では何も残らない。
+// ※ 呼び出し箇所ごとに 1 秒に 1 回までに絞る（2Hz の CSV 保存などで溢れさせない）。
+// ============================================================
+#ifndef RELEASE
+  #define ASSERT_SD_CORE1(label) do { \
+    if (get_core_num() != 1) { \
+      static unsigned long _sdc_; \
+      if (_sdc_ == 0 || millis() - _sdc_ >= 1000) { \
+        _sdc_ = millis(); \
+        Serial.print("!!! SD access from Core0: " label); \
+        Serial.println(" (see CLAUDE.md: Core0 から SD を直接触らない)"); \
+      } \
+    } \
+  } while(0)
+#else
+  #define ASSERT_SD_CORE1(label) do {} while(0)
+#endif
+
+// ============================================================
+// SD 以外の「Core1 専用」の見張り（デバッグビルドのみ）
+//
+// SD を触らないが Core1 に閉じていなければならない処理のため。
+// 0.982 で音声を FLASH へ移して startPlayWav() が SD を触らなくなったが、
+// **Core1 専用であることは変わらない**（再生バッファとタイマー割り込みの状態を
+// 動かすので、Core0 から呼ぶと loop_sound() と衝突して音が壊れる）。
+// ASSERT_SD_CORE1 を流用すると「SD access from Core0」と嘘のメッセージが出て、
+// 実機ログを読む人を SD の方へ誤誘導するので分けてある。
+// ============================================================
+#ifndef RELEASE
+  #define ASSERT_CORE1(label) do { \
+    if (get_core_num() != 1) { \
+      static unsigned long _c1_; \
+      if (_c1_ == 0 || millis() - _c1_ >= 1000) { \
+        _c1_ = millis(); \
+        Serial.print("!!! Core1-only function called from Core0: " label); \
+        Serial.println(" (see CLAUDE.md: SD と音声は Core1 専用)"); \
+      } \
+    } \
+  } while(0)
+#else
+  #define ASSERT_CORE1(label) do {} while(0)
 #endif
 
 // ============================================================
@@ -259,21 +514,82 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #endif
 
 // ============================================================
-// BNO085 IMU (GY-BNO080) ハードウェア設定
+//  IMU チップの選択（0.984 で導入。SCH16T-K01 への差し替え準備）
 // ============================================================
-// MS5611 と I2C バスを共用する（i2c0, GPIO32=SDA, GPIO33=SCL, 100kHz）。
-// Core0 で imu_update() を実行する。
-// H_INT は配線しておらず、割り込みドリブンのコードも存在しない（ポーリング専用）。
-// 割り込み化するには基板の改造とコード追加の両方が要る。
-#define IMU_RST_PIN   46   // BNO085 NRST ピン（GPIO46）
-#define IMU_I2C_ADDR  0x4B // GY-BNO080 の I2C アドレス（PS1=HIGH → 0x4B）
+// BNO085 は中で融合までやるチップ、SCH16T-K01（Murata）はジャイロと加速度しか
+// 出さないチップ。0.983〜0.984 で機上の推定（姿勢 ESKF・バリオ KF）から
+// BNO085 の融合出力を全部外したので、**どちらでも推定は成立する**。
+// 境界と「何が有るか」の申告は [imu_sensor.h](imu_sensor.h) にある。
+//
+// ★ **切替は起動時のみ有効にすること。** 実行中に変えると imu_setup() の
+//   やり直しになり、バス初期化・ESKF リセット・バリオ KF の再初期化が絡む。
+//   `link_mode` と同じ「SD に保存して次回起動から」の扱いにする。
+// ★ **SCH16T 側は `EOI` を書いた時点でレジスタが全部ロックされる**
+//   （データシート Table 80。リセットするまで解除できない）。だから
+//   フィルターやレンジを設定画面から実行中に変えることも原理的にできない。
+//   詳細は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §5。
+#define IMU_SENSOR_BNO085   0
+#define IMU_SENSOR_SCH16T   1
+#define IMU_SENSOR_DEFAULT  IMU_SENSOR_BNO085
+
+// ---- SCH16T-K01-10 の定数（データシート Doc.No.11624 Rev.6 で全件照合済み）----
+// ★ **まだドライバが無い。** ここに置いてあるのは単独テスト
+//   （tools/sch16t_test/）で確定した値で、imu_sch16t.cpp を足すときそのまま使う。
+//   先に置く理由は、基板設計（kicad/IMU_murata/）とピン割り当てを
+//   ここ 1 か所で突き合わせたいため。
+//
+// SPI: mode 0（CPOL=0/CPHA=0）、48bit アウトオブフレーム。
+//   ★ **SCK には下限もある（0.095MHz）。** 遅すぎてもフレームが成立しない。
+//   ★ **応答は 1 フレーム遅れて返る。** 先頭に捨てフレームが必要。
+#define SCH16T_SPI_HZ        5000000UL  // 0.095〜10.5MHz の範囲の中央あたり
+#define SCH16T_CRC8_POLY     0x2F       // 初期値 0xFF・XOR out なし・bit47〜8 が対象
+#define SCH16T_CRC8_INIT     0xFF
+// 感度（20bit 既定設定）。★ レンジ設定 '000' は**書いてはいけない**（禁止値）。
+#define SCH16T_LSB_PER_DPS   1600.0f    // ジャイロ [LSB/(deg/s)]
+#define SCH16T_LSB_PER_MPS2  3200.0f    // 加速度 ACC1/ACC2 [LSB/(m/s²)]
+#define SCH16T_LSB_PER_MPS2_ACC3 1600.0f // 広レンジ補助加速度 ACC3
+#define SCH16T_LSB_PER_DEGC  100.0f     // 温度 [LSB/°C]
+// 初期化の待ち [ms]。★ **どれも縮めてはいけない。** データシート §5.1.2 の手順
+//   （リセット → NVM 読み出し → 設定 → EN_SENSOR → 安定待ち → ステータス 1 周
+//    → EOI → ステータス 2 周 → 検証）に対応している。
+#define SCH16T_WAIT_NVM_MS   32
+#define SCH16T_WAIT_START_MS 215
+#define SCH16T_WAIT_EOI_MS   3
+// 品種判定は COMP_ID。★ **ASIC_ID はシリコンのリビジョンなので品種判定に使えない。**
+#define SCH16T_COMP_ID       0x0023     // SCH16T-K01
+//
+// ★★ **読み出しレートはフィルターと紐づく。まだ決めていない。**
+//   LPF ごとに「最小推奨読み出しレート」があり、下回ると阻止域のノイズが
+//   折り返して帯域内に入る（§5.5 Table 16）:
+//       LPF2 13Hz → 150Hz / LPF1 30Hz → 200Hz / LPF0 68Hz（既定）→ 500Hz
+//   **BNO085 と同じ感覚で 50Hz で読むと折り返す。** HPA の運動帯域は 5Hz 以下
+//   なので LPF2 + 150Hz が妥当に見えるが、単独テストで両方のノイズを実測して
+//   決めること。決めたらここに定数を足す。
+//
+// ---- ピン（**基板が決まってから入れる**）----
+// ★ kicad/IMU_murata/ が設計中。確定するまで未定義のままにして、
+//   SCH16T を選んだときだけビルドで止める。**GPIO41 は使ってはいけない**
+//   （E220 の M0/M1 専用。CLAUDE.md 参照）。
+#define SCH16T_PIN_UNSET     255
+#define SCH16T_PIN_SCK       SCH16T_PIN_UNSET
+#define SCH16T_PIN_MOSI      SCH16T_PIN_UNSET
+#define SCH16T_PIN_MISO      SCH16T_PIN_UNSET
+#define SCH16T_PIN_CS        SCH16T_PIN_UNSET
+#define SCH16T_PIN_DRY       SCH16T_PIN_UNSET   // データ準備完了（デシメーション出力用）
+#define SCH16T_PIN_EXTRESN   SCH16T_PIN_UNSET   // 外部リセット（負論理）
+
+#if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
+  #error "SCH16T のドライバ（imu_sch16t.cpp）とピン割り当てがまだ無い。docs/imu_sch16t_plan.md §4 の手順で進めること"
+#endif
 
 // ============================================================
-// 生 IMU ロガー（姿勢 ESKF のオフライン開発用）
+//  IMU（BNO085）
 // ============================================================
+// ---- 生 IMU ロガー（姿勢 ESKF のオフライン開発用）----
 // 目的: BNO085 内蔵フュージョンは比力を鉛直とみなすため、旋回中はロールを過小評価し、
 //       加減速中はピッチがずれる。これを GNSS 速度で補正する ESKF を PC 上で開発するため、
-//       生のジャイロ・加速度・地磁気と GNSS 速度を SD にバイナリ記録する。
+//       生のジャイロ・加速度と GNSS 速度を SD にバイナリ記録する
+//       （地磁気は 0.984 で記録をやめた。推定にも表示にも使っていない）。
 //       機上では推定を行わない（詳細は imulog.h）。
 //
 // バス負荷: i2c0 は MS5611 と共用だが、下記レートでも占有率は約 20%（400kHz）。
@@ -281,46 +597,34 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // SD 負荷 : 約 260 レコード/秒 × 28B ≒ 7.3kB/s（30 分飛行で約 13MB）。
 #define IMULOG_DEFAULT_ENABLED  true  // ビルド時固定（実行時・SD からの切替手段は無い）
 
-// ============================================================
-// ★ 生レポートの有効化スイッチ ★
-// ============================================================
-// 0: 変更前とまったく同じ挙動（レポートは GRV/LACC/RV の 15/15/5Hz のみ、
-//    ポーリング 30ms、KF predict ゲート無し）。ロガー自体は動くが
-//    記録されるのは既存レポートと GNSS・気圧だけになる。
-// 1: GYRO/ACCEL/MAG を追加し、ポーリングを速くする。
+// ---- 生レポート（GYRO/ACCEL）の有効化 ----
+//   0 : GRV/LACC/RV の 15/15/5Hz のみ、ポーリング 30ms（ESKF 導入前と同じ）
+//   1 : GYRO/ACCEL を追加し、ポーリングを 4ms へ
+// ★ 0.984 で MAG（地磁気）の購読をやめた。方位は真方位（GNSS 航跡）だけを使い、
+//   地磁気は推定にも表示にも使っていない（実測で GNSS 航跡から 91〜171 度ずれる）。
+//   生ログの 0x03 レコードもこれで出なくなる。過去ログの解析側は読める。
 //
-// 【2026-08-17 の回帰と、実機ログで特定した原因】
-// GYRO/ACCEL を 100Hz、MAG 25Hz で要求（BNO085 への要求合計 260 レポート/秒）した
-// ところ、上下に動かした際にバリオが過大な値を出し 3 秒ほど尾を引く回帰が出た。
-// 60 秒ログの実測値:
-//     rate GRV=4.0 LACC=5.0 RV=1.0 MS5611=40.0 Hz  drop=0
-//   → MS5611 は 40Hz で正常。気圧観測レートの低下ではなかった。
-//   → GRV/LACC/RV が設定値 15/15/5 に対し 4/5/1 まで飢餓状態になっていた。
+// ★ **要求レートの合計を BNO085 の配信能力の内側に保つこと。**
+//   BNO085 はポーリング 1 回につきおおむね 1 レポートしか返さないので、
+//   要求が過大だと高レートのレポートが内部キューを占有し、低レートの
+//   GRV/LACC/RV が押し出される。そうなると kf_predict() は 33Hz で回るのに
+//   加速度は 5Hz でしか更新されず、同じサンプルを 6〜7 回積分してバリオが暴れる。
+//   2026-08-17 に GYRO/ACCEL 100Hz・MAG 25Hz（合計 260/秒）で実際に起きた:
+//       rate GRV=4.0 LACC=5.0 RV=1.0 MS5611=40.0 Hz  drop=0
+//     （MS5611 は正常。飢餓していたのは BNO085 側だけ）
+//   対策は 3 つ: 合計を下げる（下記 50/50。HPA の運動帯域は 5Hz 以下）、
+//   ポーリングを 250Hz にして天井を上げる、古い加速度では predict しない（MAX_AGE）。
 //
-// 機序: BNO085 の配信能力（ポーリング 1 回につきおおむね 1 レポート）に対して
-//   要求レートが過大だったため、高レートのレポートが内部キューを占有し、
-//   低レートの GRV/LACC/RV が押し出された。
-//   結果 kf_predict() は 33Hz で回るのに _lax.. は 5Hz でしか更新されず、
-//   同じ加速度サンプルを 6〜7 回繰り返し積分していた（＝スパイクが数倍に増幅され、
-//   気圧観測が引き戻すまで数秒尾を引く）。
-//
-// 対策1: 要求レートを配信能力の内側に収める（下記 50/50/10 = 合計 145 レポート/秒）。
-//        HPA の運動帯域は 5Hz 以下なので ESKF には 50Hz で十分。
-// 対策2: ポーリングを 4ms（250Hz）に上げて配信能力の天井そのものを上げる。
-// 対策3: imu.cpp に「古い加速度サンプルでは predict しない」安全網（下記 MAX_AGE）。
-//
-// ★ 変更後は必ず 60 秒ログの rate 行を確認すること。
-//   GRV=15.0 LACC=15.0 RV=5.0 が出ていれば飢餓は解消している。
+// ★ 変更したら 60 秒ログの rate 行を必ず見る。GRV=15.0 LACC=15.0 RV=5.0 なら正常。
 // （#if で判定するため true/false ではなく 1/0 で書く）
 #define IMULOG_RAW_REPORTS_ENABLED  1
 
 // BNO085 レポート周期 [Hz]（IMULOG_RAW_REPORTS_ENABLED が 1 のときのみ有効）
 //   合計要求レートを配信能力の内側に保つこと。上げすぎると既存レポートが飢餓になり
-//   バリオが壊れる（上記参照）。既存 35 + 生 110 = 145 レポート/秒。
+//   バリオが壊れる（上記参照）。既存 35 + 生 100 = 135 レポート/秒
+//   （0.984 で MAG 10Hz を外したので 145 → 135）。
 #define IMU_RATE_GYRO_HZ    50  // SH2_GYROSCOPE_CALIBRATED
 #define IMU_RATE_ACCEL_HZ   50  // SH2_ACCELEROMETER（重力込みの生比力。ESKF と、VARIO_USE_RAW_ACCEL=1 のときバリオ KF が使う）
-#define IMU_RATE_MAG_HZ     10  // SH2_MAGNETIC_FIELD_CALIBRATED（ヨー絶対値は対象外なので低レートで十分）
-
 // 既存レポート（バリオ KF・姿勢表示用。変更するとバリオのチューニングに影響する）
 #define IMU_RATE_GRV_HZ     15  // SH2_GAME_ROTATION_VECTOR
 #define IMU_RATE_LACC_HZ    15  // SH2_LINEAR_ACCELERATION
@@ -338,6 +642,14 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
   #define IMU_POLL_INTERVAL_US   30000
 #endif
 
+// 1 回のポーリングで引き取る SHTP パケットの上限。
+// ★ sh2_service() は 1 回で 1 パケットしか処理しない（shtp_service() はループしない）
+//   ので、1 回だけだと「4ms に 1 パケット」しか掃けない。Core0 が数十 ms 止まった
+//   あとは溜まった分に追いつけず、**読むのが遅れるとジャイロが化ける**
+//   （2026-09-23 に実機で確定。imu_service_if_due() のコメント参照）。
+//   上限を付けるのは、ここで長居して別の飢餓を作らないため。
+#define IMU_DRAIN_MAX_PACKETS   8
+
 // 加速度サンプルの許容鮮度 [µs]（安全網）。
 // LINEAR_ACCELERATION が 15Hz = 67ms 周期なので、150ms は正常時には決して発火しない。
 // 発火するのは今回のような「配信飢餓」が起きたときだけで、そのとき predict を止める。
@@ -346,9 +658,32 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // （古い加速度を繰り返し積分して暴れるより遥かに安全）。
 #define IMU_LACC_MAX_AGE_US  150000
 
+// ---- 無応答の検出と復旧（imu.cpp）----
+// ★ **timeout_us を設定していない SH-2 の op がある。**
+//   sh2.c の sh2_Op_t 初期化子は 17 個すべてが timeout_us を省略している
+//   （指定初期化子なので 0 = 無期限）。応答待ちをする op は全部ハングし得る。
+//   実害があるのは sh2_getMetadata()（getFrsOp。.rx を持ち、getFrsStart は
+//   opCompleted() を呼ばない）で、FRS 応答が 1 回失われると戻ってこない。
+//   → 診断用のメタデータ読み出しは RELEASE では実行しない（imu.cpp 参照）。
+//   i2c1 運用では begin_I2C() の中の detected() が「居ないチップに対して
+//   _init() へ進まない」保護を果たす。**自前で二重に探査しないこと**（imu_bus_begin）。
+//
+//   sh2_setSensorConfig() は setSensorConfigStart() が中で opCompleted() を
+//   呼ぶのでハングはしないが、1 回ごとに応答を待つ。レポートは 6 件あるので
+//   imu_enable_reports() に総時間の上限を設ける。
+//   正常時は 6 件合計で 10ms 程度なので、300ms なら「健全なのに打ち切る」ことは無い。
+#define IMU_ENABLE_BUDGET_MS      300
+
+// BNO085 が途絶したときの復旧試行の間隔 [ms]。
+// 復旧は NRST パルス(10ms)＋ブート待機(400ms)＋バス初期化 という手順で、
+// imu.cpp のステートマシンが 1 ループ 1 段ずつ進める（Core0 は止めない）。
+// 短くしても直る見込みは増えないので、1 分で十分。
+#define IMU_RECOVERY_INTERVAL_MS  60000UL
+
 // ============================================================
-// バリオ KF に入れる鉛直加速度の作り方
+//  バリオメーター（高度・昇降速度の推定）
 // ============================================================
+// ---- KF に入れる鉛直加速度の作り方 ----
 // 1 : SH2_ACCELEROMETER（重力込みの生比力）を GAME_ROTATION_VECTOR で地球座標系に
 //     回してから重力加速度 GRAVITY_MPS2 を引く。← 推奨
 // 0 : SH2_LINEAR_ACCELERATION（BNO085 が重力を引いた値）をそのまま使う。従来の挙動。
@@ -375,11 +710,154 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 
 // 重力加速度 [m/s²]。生比力から鉛直成分を取り出すときに引く値。
 // 標準重力。日本の実測値との差 (~0.01 m/s²) は KF のバイアス状態 x[2] が吸収する。
+//
+// ★★ **「LinAccel は 3 軸ほぼ 0 なのに VertAccel だけ -1.5」は故障ではない。**
+//   引いている重力が違うだけ。Vario 詳細画面の 2 つはこう出来ている:
+//     LinAccel[body] = BNO085 の LINEAR_ACCELERATION
+//                      → BNO085 が**自分の適応的な重力推定**を引いた値
+//     VertAccel      = 生比力を世界座標へ回して **この固定値**を引いた値
+//   加速度計にスケール/バイアス誤差があると、前者は**誤差ごと引いて打ち消す**ので
+//   静止時にきれいに 0 になり、後者は誤差がそのまま残る。
+//   実測（nofix008、静止 184 窓の平均。2026-09-27）:
+//       |a| = 8.2243        ← 本来 9.807。加速度計が低く出ている
+//       |LinAccel| = 0.0585 ← ほぼ 0
+//       BNO085 が引いた重力の大きさ = 8.2219
+//       8.2219 - 9.80665 = -1.5848 = VertAccel の実測値
+//   **つまり LinAccel≒0 は「加速度計が正常」の証拠にならない。** 構造上、
+//   静止時のスケール/バイアス誤差を打ち消してしまうので見えない。
+//   **VertAccel のほうが診断に使える**（この -1.58 で校正ずれに気づけた）。
+//   直し方は加速度計の 6 姿勢校正（cal acc= が 3 になるまで）。
+//   詳細は docs/imu_i2c_bringup.md の「加速度計の校正」。
 #define GRAVITY_MPS2  9.80665f
 
+// バリオ KF の predict 周期 [µs]（生レポート有効時のみ使う）。
+// kf_predict() は Q を dt でスケールせず「1 ステップあたり」で加算する
+// （imu.cpp の kf_P[1][1] += q_vel_eff）。したがって predict 周期を変えると
+// 単位時間あたりのプロセスノイズ注入量が変わり、チューニング済みのバリオが壊れる。
+// ポーリングを 5ms に上げてもここで従来の 30ms を維持する。
+//
+// ※ ポーリングが 30ms のときはこのゲートを使ってはいけない。
+//   ポーリング周期とゲート周期が同じだと、わずかなジッタでゲートを 1 回外し、
+//   predict が 60ms 間隔になって dt が倍になる回が混ざるため。
+#define IMU_KF_PREDICT_INTERVAL_US  30000
+
+// ---- Kalman フィルターのチューニング ----
+// VSI = x[1] は 2 経路で動く。
+//   predict（約 33Hz・IMU 加速度）: x[1] += (a_k - x[2])*dt,  P[1][1] += KF_Q_VEL
+//   update （約 3.7Hz・気圧高度）: K[1] = P[1][0]/(P[0][0]+KF_R),  x[1] += K[1]*残差
+//
+// ★ update は 40Hz ではなく **約 3.7Hz**。MS5611 は ~40Hz でサンプルするが、
+//   airdata_update() が true を返すのは VSPEED_WINDOW_MS(250ms) のトリム平均が
+//   完了したときだけ。チューニングはこの比（33 : 3.7）を前提にすること。
+//
+// 静止時に VSI が揺れる＝ K[1] が大きすぎる。KF_R を大きくするか KF_Q_VEL を
+// 小さくすれば減るが、どちらも上昇・下降への追従が 0.5〜2 秒ぶん鈍る。
+//
+// KF_Q_BIAS を 1/10 にしてある理由: x[2] は「加速度計のゆっくりしたオフセット」を
+//   吸収する状態なのに、0.005（毎秒 0.165 (m/s²)² 相当）だと数秒スケールで動けてしまい、
+//   機動そのものを吸収していた（実ログで機動に同期して ±0.2 m/s² 振れることを確認）。
+//   ※ 「止めた瞬間に反対側へ振れる」主因はこちらではなく加速度ソースのほうだった
+//     （VARIO_USE_RAW_ACCEL 参照）。そちらを直せば 0.005 に戻してもほぼ同等
+//     （逆符号 6.4% vs 6.5%）。物理的に妥当な方を採る、という意味での 1/10。
+
+#define KF_Q_VEL    0.02f   // 速度プロセスノイズ  (旧 0.05 → 1/2.5。VSIふらつきをさらに抑制)
+#define KF_Q_BIAS   0.0005f // バイアスプロセスノイズ (旧 0.005 → 1/10。上記コメント参照。効果は小さい)
+#define KF_R       12.0f    // 気圧高度観測ノイズ [m²] (旧 4.0 → 3倍。気圧ノイズのVSI影響を低減)
 
 // ============================================================
-// 姿勢 ESKF（GNSS 速度援用）チューニング
+// 水平加速度による速度プロセスノイズ動的増幅（imu.cpp kf_predict で使用）
+// ============================================================
+// 水平加速度が大きいと BNO085 の重力ベクトル推定がずれ、
+// 地球座標系の鉛直加速度 a_k に誤差が混入する。
+// predict ステップで速度プロセスノイズを下式で増幅することで、
+// IMU 加速度への依存を自動的に弱め、気圧・GNSS 観測の重みを上げる。
+//
+//   q_vel_eff = KF_Q_VEL + KF_HORIZ_ACCEL_GAIN × horiz_accel²
+//
+// KF_HORIZ_ACCEL_GAIN : 増幅ゲイン [s²/m²]
+//   0    → 従来どおり（水平加速度による補正なし）
+//   大きい → 少しの水平加速度でも IMU の影響を早く落とす
+//
+// 参考: gain=0.01・KF_Q_VEL=0.02（既定値）のときの q_vel_eff
+//   horiz 0 m/s² → 0.020 (×1.0)
+//   horiz 2 m/s² → 0.060 (×3.0)
+//   horiz 4 m/s² → 0.180 (×9.0)
+//   horiz 8 m/s² → 0.660 (×33.0)
+// ※ KF_Q_VEL は SD 設定 kf_q_vel で実行時に変わるので、実際の倍率もそれに追従する。
+#define KF_HORIZ_ACCEL_GAIN  0.01f
+
+// ============================================================
+// GNSS高度補正パラメーター（imu_kalman_gnss_update で使用）
+// ============================================================
+// GNSS高度は気圧高度より誤差が大きいが、長期ドリフトのない絶対基準として使える。
+// 気圧基準（ground_alt_abs）をゆっくり修正することで、高度をGNSS基準に近づける。
+// Vertical speedへの影響は補正レート（最大 GNSS_MAX_DELTA_M m/s）に留まり無視できる。
+//
+// GNSS_VACC_MAX_M        : vAcc がこれ以上の時は補正しない（カットオフ）[m]
+// GNSS_INIT_SAMPLES      : 起動地MSL高度を平均する初期化サンプル数
+// GNSS_CORRECT_RATE      : 気圧基準補正ゲイン（イノベーション×quality に掛ける比率）
+//                          vAcc が小さい（高精度）ほど quality が高く補正が速くなる。
+// GNSS_MAX_DELTA_M       : 1更新あたりの最大補正量 [m]（バリオへの影響上限）
+// GNSS_OFFSET_UPDATE_RATE: gnss_kf_offset（起動地MSL高度）の長期更新ゲイン。
+//                          MSL絶対高度がGNSSに収束する速さを決める。quality × rate が実効値。
+//                          rate=0.005, quality=0.8 → α=0.004/s → 半減期約170秒（約3分）
+#define GNSS_VACC_MAX_M        10.0f  // 垂直精度カットオフ [m]（vAcc < 10m の時のみ補正）
+#define GNSS_INIT_SAMPLES      10     // 初期化サンプル数
+#define GNSS_CORRECT_RATE      0.02f  // 気圧基準補正ゲイン（旧 0.005 → 4倍に増速）
+#define GNSS_MAX_DELTA_M       0.05f  // 1回あたりの最大補正量 [m]（旧 0.02 → 2.5倍）
+#define GNSS_OFFSET_UPDATE_RATE 0.005f // MSL絶対基準の長期収束ゲイン
+//
+// ============================================================
+// GNSS VSI Kalman 速度観測パラメーター（imu_kalman_gnss_vel_update で使用）
+// ============================================================
+// GNSS velD（上昇正）を KF の速度観測（H=[0,1,0]）として取り込む。
+// 観測ノイズ R_vel は sAcc²（速度精度の二乗）× R_SCALE を使用。
+// ゲートは sAcc のみで判断する（vAcc=垂直位置精度 は速度品質の指標として不適切なため使用しない）。
+//
+// GNSS_VSI_SACC_MAX_MPS: sAcc がこの値以上なら速度観測更新をスキップ [m/s]
+//                        sAcc = NAV-PVT Speed Accuracy Estimate（速度精度 1-sigma）。
+//                        この値未満では R_vel = sAcc² × R_SCALE の連続曲線が機能する。
+// GNSS_VSI_R_SCALE     : 観測ノイズ R_vel の倍率（1.0 = sAcc² そのまま）
+//                        大きくするほど GNSS VSI の影響が弱まり、気圧・IMU 主体になる。
+//                        K[1] ≈ P/(P+R) なので R を 16 倍にするとゲインが大幅に減少する。
+//
+// 参考: sAcc² × R_SCALE のカルマンゲイン K[1] ≈ P/(P+R) への影響（P≈0.2 の場合）
+//   sAcc=0.1 → R=0.16  K≈0.56（有効に補正）
+//   sAcc=0.2 → R=0.64  K≈0.24（緩やかに補正）
+//   sAcc=0.5 → R=4.0   K≈0.05（ほぼ効かない。R が自動で切ってくれる）
+//
+// ★ ハードゲートは「桁違いのゴミ」だけを切る値にすること。**0.3 は低すぎた。**
+//   実機 2026-09-30 の sAcc は静止・低速で 0.15〜0.38 に散らばり、0.3 を
+//   **91 分間に 393 回（毎分 4 回）またいでいた**。またぐたびに GNSS 速度観測が
+//   入る／入らないを切り替わるので、V/S の供給元が突然差し替わる。
+//   R_vel = sAcc² × R_SCALE の曲線が既に重みを落としているので、
+//   この付近をハードゲートで切る意味は無い（sAcc=0.3 で K≈0.12）。
+//   1.0 に上げると通る割合は 89.5% → 95.0%、またぐ回数は 393 → 39 回に減り、
+//   **本物の受信不良（トンネル: sAcc 2〜27m/s）だけを切る**ようになる。
+#define GNSS_VSI_SACC_MAX_MPS  1.0f  // 速度精度ハードゲート [m/s]（以上はスキップ。旧 0.3 → 崖を外した）
+#define GNSS_VSI_R_SCALE      16.0f  // R_vel 倍率（sAcc 小さい時のみ有効に機能させる）
+
+// ============================================================
+// 高度表示設定
+// ============================================================
+// 当デバイスの GNSS は UBX NAV-PVT の hMSL（EGM96 ジオイド基準）を使用する。
+// hMSL は日本の標高（T.P.=東京湾平均海面 基準）とほぼ一致する（差は ±数十cm 程度）。
+//
+// ※注意: GNSS の「楕円体高（WGS84）」とは異なる。
+//   楕円体高 = hMSL + ジオイド高 N（日本では N ≈ +36〜38m）
+//   例: 関西で 0m 標高 → hMSL ≈ 0m、楕円体高 ≈ +37m
+//   当 GNSS は既に hMSL を出力済みなので、-37m 補正は不要。
+//
+// ELEVATION_GEOID_OFFSET_M: B.S.L. 高度 = KF_MSL - この値 [m]
+//   表示ラベルは "B.S.L."（琵琶湖基準水位面、Biwa Standard Level）。
+//   B.S.L. 0m = T.P.（日本の標高） +84.371m（瀬田川洗堰基準・国土交通省設定値）。
+//   → 琵琶湖面で B.S.L. ≈ 0m、湖面上 100m 飛行時に B.S.L. ≈ 100m と表示される。
+//   標高（T.P.）に戻したい場合は 0.0f に変更する。
+#define ELEVATION_GEOID_OFFSET_M  84.371f  // B.S.L.基準補正 [m]（T.P.84.371m = 琵琶湖面）
+
+// ============================================================
+//  姿勢 ESKF（GNSS 速度援用）
+// ============================================================
 // ============================================================
 // 実装は attitude.cpp。PC 側の tools/imulog/eskf.py と対になっているので、
 // 値を変えたら両方に反映すること（片方だけ変えると比較が成立しなくなる）。
@@ -412,37 +890,150 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 静止区間が取れないまま走り出した場合のフォールバック。
 // 初期姿勢が信用できないので大きめに取り、GNSS 観測で速く引き戻せるようにする。
 #define ESKF_INIT_ATT_SIGMA_MOVING_DEG  30.0f
-// ヨーだけは別扱いにする [度]。
-// ロール・ピッチは重力を基準にするので実際に 3 度程度の精度があるが、ヨーは
-// 地磁気が頼りで、機体の磁気環境しだいで桁違いにずれる。
-// 実測（2026-08-19 車載 3 セッション）では BNO085 の磁気ヨーは真方位から
-// -31 / -42 / -67 度ずれていた。にもかかわらず BNO085 自身は
-// ESKF_RV_ACC_MAX_DEG(25度) を通る精度を報告していたので、自己申告は当てにならない。
-// ここを小さくすると誤った初期ヨーを信じ込み、GNSS で直しきれなくなる。
-// 同データでの検証（初期ヨーを故意に 50 度ずらして 6 分走行）:
-//   初期σ  1度 → 残差 9〜24度 / 3度 → 5〜13度 / 10度 → 3〜12度 / 30度 → 3〜10度
-// 収束を優先して大きめに取る。ヨーの初期値は「向きの当たりを付ける」程度の意味しかない。
-#define ESKF_INIT_YAW_SIGMA_DEG        30.0f
+// ---- 初期ヨー ----
+// ★ **0.983 で地磁気（ROTATION_VECTOR）をやめ、GNSS 航跡から入れる方式にした。**
+//   理由は 2 つ。
+//   (1) 地磁気が当てにならない。実測（2026-08-19 車載 3 セッション）で BNO085 の
+//       磁気ヨーは真方位から -31 / -42 / -67 度ずれ、2026-09-30（0.980 のヨー修正後）
+//       でも GS 8.1m/s 走行中の GNSS 航跡と **57.8 度**ずれていた。
+//       しかも BNO085 自身は「精度 25 度以内」と申告していたので自己申告は使えない。
+//   (2) SCH16T には地磁気が無い（→ docs/imu_sch16t_plan.md）。
+//   GNSS 航跡は真方位で、偏角補正も要らない。**磁気より素性が良い。**
+//
+// ★ 接地中に入れるのが要点。しきい値を飛行速度（対気 5.8〜9.0m/s）より十分低く
+//   取ってあるので、注入の瞬間に機体は必ず接地している。接地中は横滑りできないので
+//   **航跡＝機首方位が厳密に成立し、クラブ角の誤差が原理的に入らない。**
+//   2025 大会の実機体ログでは発進から 2〜3 秒で 3m/s を超えていた
+//   （tools/olddata/PONSv5_planelog_2025-07-26_1539.csv の 15:42:15〜19）。
+#define ESKF_YAW_INIT_MIN_SPEED_MPS  3.0f  // 水平対地速度がこれ以上でヨーを入れる
+#define ESKF_YAW_INIT_ARM_FIXES      2     // これだけ連続で満たしたら注入（単発の化け対策）
 
-// ---- 初期ヨーに地磁気を使う（ROTATION_VECTOR）----
-// ESKF のヨーは水平加速度がある間しか可観測にならないため、
-// 起動直後〜収束前（旋回ありで約2分、フゴイドのみだと5〜10分）は絶対方位を持てない。
-// BNO085 の ROTATION_VECTOR は地磁気で磁北基準の方位を即座に出せるので、
-// これを初期値に使って収束を待たずに妥当な方位から始める。
-// ロール・ピッチはどちらも重力基準で同じなので劣化しない。
-#define ESKF_INIT_USE_RV        1
+// 水平化直後（ヨー未知）の初期σ [度]。180 = 全く不明。
+// ★ ここを小さくしてはいけない。既存の eskf_yaw_reliable() が yaw_acc95 (=2σ) で
+//   表示の可否を決めているので、180 にしておけば画面が自動的に「信頼できない」側に倒れる。
+#define ESKF_YAW_UNKNOWN_SIGMA_DEG   180.0f
+// GNSS 航跡から入れた直後の初期σ [度]。
+// 接地中なのでクラブ角は無いが、GS 3m/s では航跡の分解能が sAcc/GS ≒ 2 度あり、
+// 発進中は機首が振れるので余裕を見る。
+#define ESKF_YAW_INIT_SIGMA_DEG       15.0f
 
-// BNO085 が報告するヘディング精度推定 [度] の上限。
-// これより悪い（＝磁気キャリブレーション未完了・磁気環境が悪い）場合は RV を使わず
-// GAME_ROTATION_VECTOR で初期化する。-1（未受信）も使わない。
-#define ESKF_RV_ACC_MAX_DEG     25.0f
+// ---- 静止中の再水平化 ----
+// ★ **これが無いと「プラットホーム上で起動して待つ」運用が壊れる。**
+//   ヨーが未設定のあいだは GNSS 速度観測を入れない（ヨー誤差がロール・ピッチへ
+//   転嫁されるため）。つまり待機中は観測が 1 つも無く、ロール・ピッチは
+//   ジャイロ積分に任される。傾き誤差 = ジャイロオフセット × 経過時間 なので、
+//     SCH16T（生オフセット 0.1deg/s typ・0.3 max）→ 10 分で 60〜180 度（致命的）
+//   ★ **BNO085 の真のバイアスは測れない。** 静止中の出力は 3 軸とも
+//     **厳密に 0.0 に張り付く**（2026-10-01 に実ログで確認: 静止 159 秒 7958 サンプルで
+//     異なる値が 1 種類しかない）。さらに量子化 LSB が 1/512 rad/s = **0.112 deg/s** で、
+//     SCH16T のオフセット仕様（0.1deg/s typ）とほぼ同じ。
+//     **BNO085 にはここで問題にしている量を表現する分解能が無い。**
+//     だから「BNO085 なら無害」とは言えず、この対策はセンサーに関係なく必要。
+//   静止しているあいだ重力方向へ寄せ続けることで、待機時間の長さに関係なく
+//   ロール・ピッチを保つ。**回転軸が必ず水平になるのでヨーは動かない。**
+// ゲインはジャイロ 1 サンプルあたり。0.02 × 50Hz → 時定数 1 秒。
+#define ESKF_RELEVEL_GAIN            0.02f
 
-// 磁気偏角 [度]。東偏が正、西偏が負。
-//   真方位 = 磁方位 + 偏角
-// 琵琶湖（約 35.3N, 136.1E）は西偏およそ 8 度。
-// ※ 国土地理院の最新値で確認すること。偏角は年 0.02〜0.03 度ずつ変化する。
-// ※ 他の飛行場所で使うならここを変える。
-#define ESKF_MAG_DECLINATION_DEG  (-8.0f)
+// ============================================================
+// 重力観測（levelling update）— Phase 2
+// ============================================================
+// ESKF の観測は GNSS 速度だけ（H = [0 I 0 0]）で、ロール・ピッチは
+// d(dv)/dt = -[Rf]x dtheta の結合を通して**間接的にしか**拘束されない。
+// つまり **GNSS が無い間、重力の錨が 1 つも無い。**
+// 0.982 までは BNO085 の GRV が内部で常時その錨を提供していた。
+// 実測（eskf.py の gnss_cutoff、20260818 s1）: GNSS 断で 2 分 2〜4 度、5 分 4 度。
+// **バンク警報のしきい値は 4 度**なので、誤警報にも見逃しにも効く。
+//
+// ここでやること: 準定常のとき、比力をワールドへ回した f_w は (0,0,g) になるはず
+// なので、その水平 2 成分を観測量にして dtheta の水平成分を直す。
+//   d f_w_x = +g * dtheta_y,  d f_w_y = -g * dtheta_x
+//   → H は 2x12 で H[0][1] = +g, H[1][0] = -g だけが非零。**ヨーには構造的に効かない。**
+//
+// ★★ **ゲートが本体。** 無条件に入れると BNO085 の GRV と同じ間違いをする
+//   （協調旋回では比力の横成分が厳密に 0 なので、バンクを過小評価する）。
+//   ESKF が存在する理由を壊すことになる。
+//
+// ★ **`|f| ≒ g` では人力飛行機のバンク角を判別できない。**
+//   協調旋回の |f| は g/cos(φ) で、φ が小さいと二次で消える。
+//     φ=5 度 → |f|-g = 0.0375 m/s2 しかない
+//     対して BNO085 のスケール誤差 -1% = 0.098 m/s2（信号の 2.6 倍）
+//          SCH16T の感度誤差 max 0.25% = 0.0245 m/s2（信号の 65%）
+//   加速度計自身のスケール誤差に埋もれる。`|f|` は「持ち上げ・衝撃・落下」のような
+//   桁違いの事象を切る**粗い健全性チェック**としてのみ使う。
+//
+// ★ **旋回レートが正しい判別量。**
+//     φ=5 度 → 旋回レート 6.14 deg/s (V=8) / 7.02 (V=7)
+//     SCH16T のジャイロオフセット 0.1 typ / 0.3 max → 20〜61 倍の余裕
+//   `|f|` 比で S/N が約 150 倍良い。
+//   ★ さらに決定的な理由: **ゲートは GNSS が無いときに働かなければ意味が無い**
+//     （この観測はまさにその場面のためにある）。旋回レートはジャイロだけから作れる。
+//     GNSS 由来の水平加速度でゲートすると、必要なときに限って使えない。
+//
+// しきい値の根拠: 水平化の向き誤差を 1 度以下に抑える条件から
+//   V*psi_dot/g < tan(1deg) → psi_dot < 1.23 deg/s (V=8) / 1.40 (V=7)
+// → 約 1 deg/s。これは既存の ROLL_TRIM_YAWRATE_DPS と同じ値で、
+//   自動ロールトリムは**すでに同じ露出を受け入れている**（直進中にロールを 0 へ寄せる）。
+//
+// ★ 瞬時値も見る。LPF（2 秒）だけだと旋回の入り口で観測が漏れてバンクを過小評価する
+//   （合成旋回で確認。瞬時 3.0 deg/s を足すとバンク 3 度以上で漏れが 0 になった）。
+//
+// ★ フゴイド（周期 2〜6.7 秒・ピッチ std 1.23 度）は**ゼロ平均の振動なのでゲートしない**。
+//   瞬時値で切ると巡航中ほとんど閉じてしまう。持続成分でゲートし、振動は観測の
+//   時定数で平均させる。切るべきは持続的・非ゼロ平均の誤差（旋回・定常加減速）だけ。
+#define ESKF_LEVEL_ENABLED            1
+// 観測を入れる周期 [µs]。GNSS 速度観測（2Hz）と同じ桁にして、どちらかが
+// 一方的に強くなりすぎないようにする。
+#define ESKF_LEVEL_INTERVAL_US        500000UL
+// 観測ノイズ σ [m/s²]。実ログでの掃引（GNSS 断の誤差中央 / 5 度バンクの出力）:
+//   なし 5.04 / 5.16   σ=0.1 → 2.46 / 4.71   σ=0.3 → 2.36 / 4.92
+//   σ=0.5 → 2.44 / 5.03   σ=1.0 → 2.57 / 5.12
+// σ=0.5 はドリフト改善がほぼ最大で、バンクの劣化が σ=0.3 の半分。
+// ★ 大きめに取るのは、ゲートを通ってしまう残留マヌーバ（1deg/s で水平加速度
+//   0.17 m/s²）と、H に入れていない水平加速度バイアスを含めるため。
+#define ESKF_LEVEL_SIGMA_MPS2         0.5f
+#define ESKF_LEVEL_MAX_YAWRATE_DPS    1.0f   // ワールド系ヨーレートの持続成分
+#define ESKF_LEVEL_MAX_YAWRATE_INST   3.0f   // 同・瞬時値（旋回入り口の漏れ対策）
+#define ESKF_LEVEL_ACCMAG_TOL_MPS2    0.5f   // ||f|-g| の粗い健全性チェック
+// 前後加速度の持続成分 [m/s²]。1 度の誤差に相当するのが 0.17。
+// ★ GNSS が無いと作れない。断中はこの条件を省く（ピッチ側の誤差を許容して
+//   錨が無いより良しとする。σ で吸収する）。
+#define ESKF_LEVEL_MAX_LONGACC_MPS2   0.2f
+
+// ---- 水平化前の「重力方向」の暫定値（attitude.cpp の up_lp_）----
+// ★★ **バリオは起動直後から鉛直加速度を要求する。** ESKF の水平化（静止 2 秒）を
+//   待つ作りにしたら、手持ちで静止区間が取れないと **バリオが完全に止まった**
+//   （2026-10-01 実機。インドア 38 秒・|ω| 中央 5.1deg/s で静止 2 秒が無かった）。
+//   症状は「高度は追従するのに V/S だけ 0 で固まる」で、機序はバリオ KF 側:
+//   初期 P が対角なので **predict を一度も通らないと P[1][0] が 0 のままで、
+//   気圧観測のゲイン K[1] = P[1][0]/S が 0 になり速度状態が構造的に動かない。**
+//   → 加速度の低域だけで重力方向を常に持ち、水平化を待たずにバリオを動かす。
+//   ★ 旋回中は比力が鉛直からずれるので ESKF の代わりにはならない。
+//     あくまで水平化までの繋ぎで、品質は 0.982 までの GRV と同程度。
+// ゲインは加速度 1 サンプルあたり。0.02 × 約 63Hz → 時定数 0.8 秒。
+#define ESKF_UP_LP_GAIN      0.02f
+// |a| が g からこれ以上外れている間は更新しない（持ち上げ・衝撃・落下）[m/s²]
+#define ESKF_UP_LP_ACC_TOL   2.0f
+
+// ---- 静止中のジャイロバイアス学習 ----
+// 静止中のジャイロ平均はそのままゼロ点オフセット。これを bg_ の初期値にする。
+// ★ 目的は「待機中のドリフト対策」ではない（それは上の再水平化が担う）。
+//   **離陸直後のいちばん動的な時期に、ESKF が姿勢とジャイロバイアスを
+//   同じ GNSS 速度観測から同時に学ぶのを避ける**ため。BNO085 は内部校正済みで
+//   学ぶべきものが無かったが、SCH16T は 0.3deg/s あり得る。
+//   データシート §4.4 も「基板実装でオフセットが乗るので実装後のゼロ点合わせを推奨」
+//   と書いている（工場校正は実装後のオフセットを知らない）。
+// ★ **フラッシュへ保存しないこと。** SCH16T の offset drift velocity は
+//   ±0.01(deg/s)/min（0.5K/min 時）で、起動後の昇温（実測 CPU 20→36℃）で動く。
+//   一方 bias instability は 0.3〜0.5 deg/h しかないので、
+//   **その飛行の中では一度測れば最後まで有効**。毎回測り直すのが正しい。
+// ★ クランプが要る。静止判定は |ω| < ESKF_STATIC_GYRO_RADS（1.5deg/s）で、
+//   測ろうとしているバイアスの 5〜15 倍のしきい値しかない。ボートのゆっくりした
+//   回頭を「静止」と誤認してバイアスとして焼き付ける余地がある。
+//   ただし誤学習が起きるのは鉛直軸まわり（ヨー）が主で、ヨーは yaw_acc95 で
+//   ゲートされ、ヨー設定後は ESKF が GNSS から学び直すので害は小さい。
+//   ロール・ピッチ軸で緩やかな定常回転が続くと傾きが変わるので再水平化が抗う。
+#define ESKF_BIAS_LEARN_SAMPLES      250      // 50Hz で 5 秒ぶん
+#define ESKF_BIAS_LEARN_MAX_RADS     0.0087f  // 0.5 deg/s（SCH16T max 0.3 に余裕）
 
 // IMU データが途絶したと判断するまでの時間 [µs]。
 // これを超えてジャイロが来なければ ESKF を無効扱いにし、GNSS 観測も取り込まない。
@@ -508,6 +1099,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define PLATFORM_NEAR_RECHECK_MS   1000UL
 #define GROUND_ROLL_WARN_HOLD_MS   60000UL   // この時間continuous に超えたら発報
 #define GROUND_ROLL_WARN_INTERVAL_MS 120000UL // 発報間隔の下限（鳴り続けない）
+// 「較正のやり直しが必要」を音で促す間隔 [ms]。**地上にいるときだけ鳴らす**
+//（飛行中は較正できないので、対処できない警告で注意をそらすほうが危険）。
+#define ESKF_APPLY_WARN_INTERVAL_MS 120000UL
 
 // ---- マウントから外されたことの検出 ----
 // 機体に付いている限りロールもピッチもこの角度には達しない。超えたら
@@ -519,6 +1113,38 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ロールの符号は「正 = 右バンク」。2026 年大会の実測で、右旋回(ヨーレート>0)のとき
 // ロールが正、左旋回で負になることを確認済み（相関 +0.82）。
 #define OFF_MOUNT_RIGHT_ROLL_DEG    40.0f
+// 機体ゼロ点オフセット（level_roll / level_pitch）の上限 [度]。
+// SD の settings.txt から復元するときのクランプに使う。APPLY は地上でしか通らず、
+// マウントに載っている限りこの角度には達しない（超えるならマウント外れ検出が先に働く）。
+// 上限を OFF_MOUNT_DEG に揃えてあるのは、「本当の異常は隠さず、
+// 壊れた設定ファイルだけを弾く」ため。
+#define LEVEL_OFFSET_LIMIT_DEG      OFF_MOUNT_DEG
+
+// ---- BNO085 のマウント回転（センサー座標 → 機体軸）----
+// q_body = q_sensor ⊗ q_mount。実体はセンサー Y 軸まわり -90 度。
+//
+// ★ **Euler を組み替える方式に戻してはいけない。**
+//   v7 の配置（IC が基板裏面・1番ピンが天）では、機体が水平のときセンサーが
+//   ちょうど **ジンバルロック（sensor_pitch = ±90°）** に入る。そこでは
+//   sensor_roll と sensor_yaw が独立した量ではなくなるので、3 つの角を
+//   入れ替えても絶対に正しくならない（実機で roll 0 なのに pitch が +90/-270 を
+//   示し、roll 欄にヨーが出る、という壊れ方をした）。
+//   クォータニオンの段階で回してから 1 回だけ Euler を出すこと。
+//
+// 2026-09-21 に実機で測定（静止させて生加速度＝重力ベクトルを読む）:
+//   水平          a=(-9.8,   0,   0) → 機体の「下」= センサー +X
+//   機首を真下90  a=(  0,   0,-9.8) → 機体の「前」= センサー +Z
+//   右翼を真下90  a=(  0,+9.8,   0) → 機体の「右」= センサー -Y
+// マウントを変えたら、この 3 点を測り直してここだけ差し替える。
+//
+// ★ **方位が 90 度ずれても、ここを回して直そうとしないこと。**
+//   ヨーの基準（ENU は東が 0、方位は北が 0）は attitude.h の
+//   imu_yaw_to_heading_deg() の担当。ここを機体の鉛直軸まわりに 90 度回すと
+//   方位は合うが **ロールとピッチが入れ替わる**（バンク 15 度がピッチ -15 度になる）。
+#define IMU_MOUNT_QW   0.70710678f
+#define IMU_MOUNT_QX   0.0f
+#define IMU_MOUNT_QY  (-0.70710678f)
+#define IMU_MOUNT_QZ   0.0f
 
 // バンク角の警告閾値 [度]。これを超えたら地図上のロール表示を赤にする。
 // HPA は旋回半径が大きく、実運用のバンクは数度程度。
@@ -639,23 +1265,47 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ヨーの誤差が偏流角そのものと同程度あると意味を成さないため。
 // 実測（車載・機動あり）のヨー精度は 95% 値で 2.5 度程度だった。
 #define ESKF_YAW_DRIFT_95_DEG  10.0f
+
+// ヨー誤差の分散の上限 [度]（1σ）。
+// 等速直進・測位なしではヨーは不可観測なので、P_[2][2] は観測が入るまで
+// 単調に育ち続ける。実機で 13 分放置したら 1σ が 750 度まで伸びた。
+// **1σ = 180 度は「まったく分からない」と同義**で、それ以上育っても情報は
+// 増えない。ログと表示が読めなくなるうえ、カルマンゲインの計算に極端な値が
+// 入るだけなので、ここで頭打ちにする。観測が入れば普通に縮む。
+#define ESKF_YAW_SIGMA_MAX_DEG 180.0f
+// GNSS 速度観測の許容鮮度 [µs]。これを超えたら自動ロールトリムと風推定を止める。
+// GNSS は 2Hz なので 3 秒 = 6 回分の欠測。短い遮蔽では止まらず、
+// 「そもそも測位していない」状態だけを確実に弾く長さ。
+#define ESKF_GNSS_VEL_TIMEOUT_US 3000000UL
 #define ESKF_DRIFT_LINE_LEN_PX   40   // 機首の先に伸ばす点線の全長 [px]
 #define ESKF_DRIFT_LINE_DASH_PX   5   // 点線 1 本の長さ [px]
 #define ESKF_DRIFT_LINE_SKIP_PX   7   // 点線どうしの間隔 [px]
 #define ESKF_DRIFT_LINE_GAP_PX    4   // 機首から点線を描き始めるまでの隙間 [px]
 
-// ---- 対気速度の推定（ピッチからの区分線形）----
-// 「ピッチ0度で7.0m/s で飛ぶ」という設計前提を使い、ピッチから対気速度を引く。
-// ピッチが上がる（機首上げ）ほど遅く、下がるほど速い。3点を通る区分線形で、
-// 範囲外は端点でクランプする（この機体で起こり得ない対気速度を出さないため）。
-// ※ 機体・重量・重心で変わる値なので、機体が変わったらここを直すこと。
+// ---- 対気速度の推定（ピッチからの曲線）----
+// 「ピッチ 0 度で 7.0m/s で飛ぶ」という設計前提を使い、ピッチから対気速度を引く。
+// ピッチが上がる（機首上げ）ほど遅く、下がるほど速い。
+//
+//     V(θ) = V0 * sqrt( K / (K + θ) )      θ: ピッチ [度]
+//
+// ★ 区分線形をやめてこの形にした理由。**これは近似曲線ではなく式そのもの**。
+//   定常飛行では 揚力 = 重量 なので
+//       ½ρV²S・CL = W    →    V ∝ 1/sqrt(CL)
+//   CL が迎角に対して直線なら CL(θ) ∝ (θ + K) と書ける。K は
+//   **揚力がゼロになるピッチまでの角度**で、K=10 は「ピッチ -10 度で揚力ゼロ」の意味。
+//   これを上へ代入しただけ。線形補間と違い、当てはめた範囲の外でも形が崩れない。
+//   従来の 3 点（-4度/9.0、0度/7.0、+5度/5.8）を K=10 の曲線は最大 0.17m/s で通る
+//   （各点を厳密に通す K は 10.1 と 11.0 で、両端から求めた値もほぼ一致する）。
+//
+// ※ 機体・重量・重心で変わる値なので、機体が変わったら直すこと。
+//   **ここは既定値で、実際の値は SD の settings.txt から上書きできる**
+//   （`airspeed_v0` / `airspeed_k` / `airspeed_min` / `airspeed_max`。README 参照）。
+//   読み込んだ値は起動時に log.txt の AIRSPEED MODEL 行に残る。
 //   使うピッチは瞬時値ではなく平均（瞬時値は std 1.23 度の振動があるため）。
-#define AIRSPEED_PITCH_HI_DEG    5.0f   // 機首上げ側のピッチ [度]
-#define AIRSPEED_AT_PITCH_HI     5.8f   //   そのときの対気速度 [m/s]（＝推定の下限）
-#define AIRSPEED_PITCH_MID_DEG   0.0f   // 設計上の巡航ピッチ [度]
-#define AIRSPEED_AT_PITCH_MID    7.0f   //   そのときの対気速度 [m/s]
-#define AIRSPEED_PITCH_LO_DEG   (-4.0f) // 機首下げ側のピッチ [度]
-#define AIRSPEED_AT_PITCH_LO     9.0f   //   そのときの対気速度 [m/s]（＝推定の上限）
+#define AIRSPEED_V0_MPS        7.0f   // V0: 巡航ピッチ 0 度での対気速度 [m/s]
+#define AIRSPEED_CURVE_K_DEG  10.0f   // K : 揚力がゼロになるピッチまでの角度 [度]
+#define AIRSPEED_MIN_MPS       5.8f   // 推定の下限 [m/s]（この機体で起こり得ない値を出さない）
+#define AIRSPEED_MAX_MPS       9.0f   // 推定の上限 [m/s]
 
 // ---- 風の推定 ----
 // 風ベクトル = 対地速度ベクトル - 対気速度ベクトル。
@@ -668,9 +1318,16 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 30 秒まで延ばしても 0.09 m/s しか改善しないので、表示が出るまでの待ち時間を優先する。
 #define WIND_LPF_SEC            10.0f
 #define WIND_MIN_SPEED_MPS       2.0f   // これ以上の対地速度でのみ推定する（地上で回さない）
-#define WIND_ARROW_LEN_PX          44   // 矢印の全長 [px]（強さは色で表すので長さは固定）
-#define WIND_ARROW_HEAD_PX         14   // 矢じりの長さ [px]
-#define WIND_ARROW_WIDTH_PX         3   // 軸の太さ [px]
+// 矢印の寸法。0.980 までの 44/14/3 px は地図の上で小さく、飛行中に向きが読めなかった。
+// 全長は固定（強さは色で表す）。
+// ★ 全長だけ 1.5 倍で、矢じり・軸は 1.3 倍。**全長を 57px（1.3 倍）に縮めないこと。**
+//   中心に風向の 3 桁（NotoSansBold15 で 27px 幅）が入るので、矢じりの底辺が
+//   中心から 27/2 + 余白 だけ離れていないと、横向き・斜めのときに数字と重なる。
+//   矢じりの底辺は中心から (LEN/2 - HEAD) = 15px にあり、ここがぎりぎり。
+//   軸は数字を避けて中央で切れる（draw_wind_arrow() 参照）。
+#define WIND_ARROW_LEN_PX          66   // 矢印の全長 [px]（強さは色で表すので長さは固定）
+#define WIND_ARROW_HEAD_PX         18   // 矢じりの長さ [px]
+#define WIND_ARROW_WIDTH_PX         4   // 軸の太さ [px]
 // 矢印の色分けのしきい値 [m/s]。地図が白背景なので、いずれも暗い色を使う
 // （黄色やオレンジは白地でほぼ見えなかった）。
 // ---- デモモードの疑似値（表示確認用。実機の推定には一切影響しない）----
@@ -682,142 +1339,110 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define WIND_COL_LOW_MAX         2.0f   // これ以下は暗い緑
 #define WIND_COL_MID_MAX         4.0f   // これ以下は暗い青。超えたら暗い紫
 
-// バリオ KF の predict 周期 [µs]（生レポート有効時のみ使う）。
-// kf_predict() は Q を dt でスケールせず「1 ステップあたり」で加算する
-// （imu.cpp の kf_P[1][1] += q_vel_eff）。したがって predict 周期を変えると
-// 単位時間あたりのプロセスノイズ注入量が変わり、チューニング済みのバリオが壊れる。
-// ポーリングを 5ms に上げてもここで従来の 30ms を維持する。
-//
-// ※ ポーリングが 30ms のときはこのゲートを使ってはいけない。
-//   ポーリング周期とゲート周期が同じだと、わずかなジッタでゲートを 1 回外し、
-//   predict が 60ms 間隔になって dt が倍になる回が混ざるため。
-#define IMU_KF_PREDICT_INTERVAL_US  30000
+// ============================================================
+//  PONS Link（機体⇄ボート無線）
+// ============================================================
+//  送信前チェック（プリフライト）— link.cpp
+// ============================================================
+// 送信モードに入った直後だけ、数秒 mode 0 で**聴いてから**送り始める。
+// 確かめるのは 2 つ:
+//   ・選んだチャンネルの雑音レベルが妥当か
+//   ・同じチャンネルに他の送信機がいないか（とくに同じ CH/SF/Group の PONS）
+// ★ 後者は送信機側から見える唯一の機会。通常運転では送信機は送信の合間 mode 3 で
+//   寝ているので、「送信機が 2 台いる」は受信機しか検出できない（link.h 参照）。
+// 監視時間。他機は 1Hz 送信なので **3 発ぶんの受信機会**になる。
+// ★ 5000 から下げた。同じ CH に送信機が 2 台いる状況は、どちらも同じ格納庫内の
+//   至近距離なので RSSI が非常に強く、1 発でもほぼ確実に受かる。3 回あれば足りる。
+//   長くしても得られるのは「遠くの他チームの弱い電波」で、それは警告する対象でもない。
+#define LINK_PF_WINDOW_MS       3000
+// 雑音サンプル間隔。窓 3000ms に対して 9 サンプル取れる（下の FIRST 参照）。
+#define LINK_PF_SAMPLE_MS        300
+// ★ **1 回目だけは遅らせる。** e220_wake() で mode 3 から戻った直後はモジュールが
+//   落ち着いておらず、実機では早すぎる問い合わせが必ず失敗していた
+//   （AUX が High でも数百 ms 効かない）。2 回目以降は LINK_PF_SAMPLE_MS 間隔。
+#define LINK_PF_FIRST_SAMPLE_MS  500
+// 雑音の**中央値**がこれを超えたら「定常的にうるさい」とみなす。
+// 実測の環境雑音は BW500kHz で約 -104dBm（docs/pons_link.md §8）なので 4dB の余裕。
+#define LINK_PF_NOISE_WARN_DBM  (-100)
+// 雑音の**最大値 - 中央値**がこれを超えたら「断続的に誰かが出ている」とみなす。
+// 別 SF や他方式の送信はデコードできないので、この差でしか気づけない。
+#define LINK_PF_BURST_DB           8
+#define LINK_PF_WARN_SHOW_MS   10000   // 地図に警告ポップアップを出しておく時間
+// 雑音の取得が**連続でこの回数**失敗したら、そこで点検を打ち切って NOT MEASURED にする。
+// ★ 最後まで回してはいけない。1 回の問い合わせは応答が無いと待たされるので、
+//   10 回ぶん繰り返すと Core0 が長時間止まり、GNSS の受信を取りこぼす。
+//   「静かだった」ではなく「測れなかった」ので、途中で止めても失うものは無い。
+// 雑音の問い合わせが連続で失敗したら、そこで**叩くのをやめる**回数。
+// ★ 2 では足りなかった。起床直後の取りこぼしが 1〜2 回あるため、2 だと
+//   本番のサンプルを 1 つも取らずに諦めてしまう（実機で踏んだ）。
+//   Core0 を止めすぎない上限でもあるが、2 回目以降の待ちは 30ms へ落ちるので
+//   4 回でも合計 200+30*3 = 290ms に収まる。
+#define LINK_PF_NOISE_FAIL_MAX     4
 
-// ============================================================
-// Kalman フィルター チューニングパラメーター
-// ============================================================
-//
-// VSI = x[1] (速度) は以下の2ステップで更新される:
-//
-//   ① predict (約33Hz = IMU_KF_PREDICT_INTERVAL_US 30ms 周期, IMU 加速度):
-//       x[1] += (a_k - x[2]) * dt
-//       P[1][1] += KF_Q_VEL    ← 速度の不確かさを毎ステップ KF_Q_VEL だけ増やす
-//
-//   ② update (約 3.7Hz, 気圧高度):
-//      ※ 50Hz ではない。MS5611 は ~40Hz でサンプルするが、airdata_update() が
-//        true を返すのは VSPEED_WINDOW_MS(250ms) のトリム平均ウィンドウ完了時のみ。
-//        チューニング時はこの比（predict 約 33Hz : update 約 3.7Hz）を前提にすること。
-//       K[1] = P[1][0] / (P[0][0] + KF_R)
-//       x[1] += K[1] * (z_baro - x[0])   ← 気圧ノイズが VSI に乗る経路
-//
-// 静止時に VSI が揺れる → K[1] が大きすぎる → 対策:
-//   ・KF_R を大きく   : K[1] の分母が増え、気圧ノイズの影響が減る
-//   ・KF_Q_VEL を小さく: P[1][0] が小さく保たれ K[1] が減る
-//
-// トレードオフ: 値を大きく/小さくするほど静止ノイズは減るが、
-//              上昇・下降への追従がわずかに遅くなる（目安 0.5〜2 秒）。
-//
-// KF_Q_VEL  : 速度プロセスノイズ
-//   大きい → P[1][1] の成長が速く K[1] が大きくなる → 気圧変化に速く追従するが揺れやすい
-//   小さい → 速度状態が変化しにくく静止ノイズが減る
-//
-// KF_Q_BIAS : バイアスプロセスノイズ
-//   大きい → 加速度バイアスが速く変化することを許容する
-//   x[2] は本来「加速度計のゆっくりしたオフセット」を吸収するための状態。
-//   0.005 は 1 predict(30ms) あたりの値なので毎秒 0.165 (m/s²)² 相当と大きく、
-//   x[2] が数秒スケールで動けてしまい機動そのものを吸収していた
-//   （実ログで機動に同期して ±0.2 m/s² 振れることを確認）。そのため 1/10 に下げてある。
-//   ※ ただし「止めた瞬間に反対側へ振れる」現象の主因はこちらではなく、
-//     VARIO_USE_RAW_ACCEL のコメントに書いた加速度ソースの方だった。
-//     加速度ソースを直した後は Q_BIAS を 0.005 に戻しても指標はほぼ変わらない
-//     （逆符号 6.4% vs 6.5%）。物理的に妥当な方を採る、という意味での 1/10。
-// KF_R      : 気圧高度観測ノイズ [m²]
-//   大きい → K[1] が小さくなり気圧ノイズの影響が減る（IMU 主体）
-//   小さい → 気圧を強く信頼するため気圧ノイズが VSI に直接乗る
+// ---- 無線モジュールの生存確認 [ms]（link.cpp）----
+// ★ 送信機は送信の合間 mode 3 で寝ているので、**送信そのものからは生死が分からない**。
+//   モジュールが居なくても e220_send() は成功し、送信回数も地図の弧も増え続ける。
+//   問い合わせて返事があるかを見るのが唯一の確実な方法なので、この間隔で叩く。
+//   生きていれば数 ms で返るので負荷は無視できる。受信機も同じ間隔で確かめる
+//   （受信が無いだけなのか、自分のモジュールが死んだのかを区別するため）。
+// ---- 送信のノンブロッキング化（link_tx_tick の状態機械）----
+// 起床の待ちを諦める時間。mode 3 → mode 0 のセルフチェック（5.4 / 図 36）が
+// これを超えても終わらないなら、そのスロットは捨てて寝かせ直す。
+// 捨てても次の秒でやり直すので、失うのは 1 サンプルだけ。
+#define LINK_TX_WAKE_GIVEUP_MS    100UL
+// 書き込んだあと「モジュールが送信を始めた（AUX が Low に落ちた）」のを待つ時間。
+// ★★ **AUX の立ち下がりを見てから mode 3 へ落とすこと。** 見る前に落とすと、
+//   モジュールがまだ送信を始めていない場合に packet を諦める可能性がある。
+// ★★ そして**これが「本当に送信できたか」を確かめる唯一の手段**でもある。
+//   AUX が Low に落ちないまま時間切れになったら、その書き込みは
+//   モジュールに捨てられている（60 秒ログの noRf= がその回数）。
+//   実機 2026-09-27: Sent は毎秒増えるのに電波が出ず、受信機は 300 秒で 2 発しか
+//   受けなかった（bad=0・RSSI -34dBm）。この検出が無かったので気づけなかった。
+// 値の根拠: UART の吐き出し 5.9ms ＋ ARIB のキャリアセンス数 ms。余裕を見て 50ms。
+#define LINK_TX_TXSTART_MS         50UL
+// 送信が終わる（AUX が High に戻る）のを待つ上限。
+// ★★ **送信の完了を見てから mode 3 へ落とす。** e220_sleep() のコメントは
+//   「送信中なら切替はハードが先送りする」としているが、**送信を始める前**に
+//   落とした場合にどうなるかは保証が無い。実機 2026-09-27 に、送信側が
+//   noRf=0（AUX は落ちている）なのに受信側が 93% 落とす状態を観測した。
+//   完了まで待てば、少なくとも「こちらが打ち切った」可能性は消える。
+//   ついでに**実測の送信時間**が取れる（docs/pons_link.md §3 の表の検算になる）。
+// 値の根拠（**実測で改訂。2026-09-27**）:
+//   SF9(prof=2) の AUX Low は **250〜276ms** だった。docs/pons_link.md §3 の表は
+//   SF9=180ms なので、**実測はその約 1.5 倍**（差は ARIB のキャリアセンスと
+//   モード遷移ぶん）。同じ比率なら SF11(表 600ms)は **900ms 前後**になる。
+//   800ms では SF11 で取りこぼすので 1000ms にした。
+// ★★ **SF11 は 1 秒周期に対して余裕がほとんど無い。** 表の占有率 60% は
+//   キャリアセンスを含んでおらず、実測では 90% 近くになる見込み。
+//   SF11 を常用するなら送信周期を見直すこと（docs/pons_link.md §3）。
+#define LINK_TX_DONE_MS          1000UL
 
-#define KF_Q_VEL    0.02f   // 速度プロセスノイズ  (旧 0.05 → 1/2.5。VSIふらつきをさらに抑制)
-#define KF_Q_BIAS   0.0005f // バイアスプロセスノイズ (旧 0.005 → 1/10。上記コメント参照。効果は小さい)
-#define KF_R       12.0f    // 気圧高度観測ノイズ [m²] (旧 4.0 → 3倍。気圧ノイズのVSI影響を低減)
+#define LINK_ALIVE_PROBE_MS    10000UL
 
-// ============================================================
-// 水平加速度による速度プロセスノイズ動的増幅（imu.cpp kf_predict で使用）
-// ============================================================
-// 水平加速度が大きいと BNO085 の重力ベクトル推定がずれ、
-// 地球座標系の鉛直加速度 a_k に誤差が混入する。
-// predict ステップで速度プロセスノイズを下式で増幅することで、
-// IMU 加速度への依存を自動的に弱め、気圧・GNSS 観測の重みを上げる。
-//
-//   q_vel_eff = KF_Q_VEL + KF_HORIZ_ACCEL_GAIN × horiz_accel²
-//
-// KF_HORIZ_ACCEL_GAIN : 増幅ゲイン [s²/m²]
-//   0    → 従来どおり（水平加速度による補正なし）
-//   大きい → 少しの水平加速度でも IMU の影響を早く落とす
-//
-// 参考: gain=0.01・KF_Q_VEL=0.02（既定値）のときの q_vel_eff
-//   horiz 0 m/s² → 0.020 (×1.0)
-//   horiz 2 m/s² → 0.060 (×3.0)
-//   horiz 4 m/s² → 0.180 (×9.0)
-//   horiz 8 m/s² → 0.660 (×33.0)
-// ※ KF_Q_VEL は SD 設定 kf_q_vel で実行時に変わるので、実際の倍率もそれに追従する。
-#define KF_HORIZ_ACCEL_GAIN  0.01f
+// 設定が通っていない（e220_alive() が false）状態から復帰を試みる間隔。
+// ★ なぜ要るか: s_alive は e220_reconfigure() の中でしか立たない。
+//   link_set_mode() は reconfigure を呼ばないので、**一度落ちるとモードを
+//   変えても戻らない**（2026-09-23、設定画面で CH を変えた瞬間に無応答になり、
+//   以降どう操作しても復帰しなかった）。
+// ★ 復帰は e220_reconfigure() なので **Core0 が最大 0.6 秒止まる**。
+//   GNSS の受信バッファは GNSS_SERIAL_FIFO_SIZE で約 7 秒ぶんあるので
+//   0.6 秒では溢れないが、他の処理も止まる。だから間隔を長く取り、
+//   **ping が通った（＝モジュールは生きている）ときだけ**試みる。
+//   無線が死んだまま飛ぶより、1 分に 1 回 0.6 秒を払うほうが良いと判断した。
+#define LINK_REVIVE_INTERVAL_MS  60000UL
+// ★ 送信直後は問い合わせない。送信中は mode 0 への切替が保留される（AUX が Low の間は
+//   切替が効かない）ので、問い合わせが素通りして「無応答」に見える。
+//   最長は SF11・65 バイトで約 600ms（docs/pons_link.md §3 の表）。その外側に置く。
+//   送信は 1Hz なので、待てば必ず静かな時間帯に当たる（先送りするだけで飛ばさない）。
+#define LINK_PROBE_AFTER_TX_MS   700UL
 
-// ============================================================
-// GNSS高度補正パラメーター（imu_kalman_gnss_update で使用）
-// ============================================================
-// GNSS高度は気圧高度より誤差が大きいが、長期ドリフトのない絶対基準として使える。
-// 気圧基準（ground_alt_abs）をゆっくり修正することで、高度をGNSS基準に近づける。
-// Vertical speedへの影響は補正レート（最大 GNSS_MAX_DELTA_M m/s）に留まり無視できる。
-//
-// GNSS_VACC_MAX_M        : vAcc がこれ以上の時は補正しない（カットオフ）[m]
-// GNSS_INIT_SAMPLES      : 起動地MSL高度を平均する初期化サンプル数
-// GNSS_CORRECT_RATE      : 気圧基準補正ゲイン（イノベーション×quality に掛ける比率）
-//                          vAcc が小さい（高精度）ほど quality が高く補正が速くなる。
-// GNSS_MAX_DELTA_M       : 1更新あたりの最大補正量 [m]（バリオへの影響上限）
-// GNSS_OFFSET_UPDATE_RATE: gnss_kf_offset（起動地MSL高度）の長期更新ゲイン。
-//                          MSL絶対高度がGNSSに収束する速さを決める。quality × rate が実効値。
-//                          rate=0.005, quality=0.8 → α=0.004/s → 半減期約170秒（約3分）
-#define GNSS_VACC_MAX_M        10.0f  // 垂直精度カットオフ [m]（vAcc < 10m の時のみ補正）
-#define GNSS_INIT_SAMPLES      10     // 初期化サンプル数
-#define GNSS_CORRECT_RATE      0.02f  // 気圧基準補正ゲイン（旧 0.005 → 4倍に増速）
-#define GNSS_MAX_DELTA_M       0.05f  // 1回あたりの最大補正量 [m]（旧 0.02 → 2.5倍）
-#define GNSS_OFFSET_UPDATE_RATE 0.005f // MSL絶対基準の長期収束ゲイン
-//
-// ============================================================
-// GNSS VSI Kalman 速度観測パラメーター（imu_kalman_gnss_vel_update で使用）
-// ============================================================
-// GNSS velD（上昇正）を KF の速度観測（H=[0,1,0]）として取り込む。
-// 観測ノイズ R_vel は sAcc²（速度精度の二乗）× R_SCALE を使用。
-// ゲートは sAcc のみで判断する（vAcc=垂直位置精度 は速度品質の指標として不適切なため使用しない）。
-//
-// GNSS_VSI_SACC_MAX_MPS: sAcc がこの値以上なら速度観測更新をスキップ [m/s]
-//                        sAcc = NAV-PVT Speed Accuracy Estimate（速度精度 1-sigma）。
-//                        この値未満では R_vel = sAcc² × R_SCALE の連続曲線が機能する。
-// GNSS_VSI_R_SCALE     : 観測ノイズ R_vel の倍率（1.0 = sAcc² そのまま）
-//                        大きくするほど GNSS VSI の影響が弱まり、気圧・IMU 主体になる。
-//                        K[1] ≈ P/(P+R) なので R を 16 倍にするとゲインが大幅に減少する。
-//
-// 参考: sAcc² × R_SCALE のカルマンゲイン K[1] ≈ P/(P+R) への影響（P≈0.2 の場合）
-//   sAcc=0.1 → R=0.16  K≈0.56（有効に補正）
-//   sAcc=0.2 → R=0.64  K≈0.24（緩やかに補正）
-//   sAcc=0.3 → [GNSS_VSI_SACC_MAX_MPS でスキップ]
-//
-#define GNSS_VSI_SACC_MAX_MPS  0.3f  // 速度精度ハードゲート [m/s]（以上はスキップ）
-#define GNSS_VSI_R_SCALE      16.0f  // R_vel 倍率（sAcc 小さい時のみ有効に機能させる）
+// ---- 送信モードの電波アイコンを膨らませておく時間 [ms]（display_tft.cpp）----
+// 地図の再描画は約 2Hz、送信は 1Hz なので、これくらいだと 1 回おきに
+// 膨らんで見え、「1 秒に 1 回出ている」が目で分かる。
+#define LINK_TX_PULSE_MS      600
 
-// ============================================================
-// 高度表示設定
-// ============================================================
-// 当デバイスの GPS は UBX NAV-PVT の hMSL（EGM96 ジオイド基準）を使用する。
-// hMSL は日本の標高（T.P.=東京湾平均海面 基準）とほぼ一致する（差は ±数十cm 程度）。
-//
-// ※注意: GPS の「楕円体高（WGS84）」とは異なる。
-//   楕円体高 = hMSL + ジオイド高 N（日本では N ≈ +36〜38m）
-//   例: 関西で 0m 標高 → hMSL ≈ 0m、楕円体高 ≈ +37m
-//   当 GPS は既に hMSL を出力済みなので、-37m 補正は不要。
-//
-// ELEVATION_GEOID_OFFSET_M: B.S.L. 高度 = KF_MSL - この値 [m]
-//   表示ラベルは "B.S.L."（琵琶湖基準水位面、Biwa Standard Level）。
-//   B.S.L. 0m = T.P.（日本の標高） +84.371m（瀬田川洗堰基準・国土交通省設定値）。
-//   → 琵琶湖面で B.S.L. ≈ 0m、湖面上 100m 飛行時に B.S.L. ≈ 100m と表示される。
-//   標高（T.P.）に戻したい場合は 0.0f に変更する。
-#define ELEVATION_GEOID_OFFSET_M  84.371f  // B.S.L.基準補正 [m]（T.P.84.371m = 琵琶湖面）
+// ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
+// 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。
+#define OWNPOS_DOT_R            1     // 半径 1px = 直径 3px
+#define OWNPOS_TRACK_LEN_PX     5     // 進行方向の線の長さ
+#define OWNPOS_TRACK_MIN_MPS  2.0f    // これ未満は方位を出さない（停船中の方位は当てにならない）

@@ -1,6 +1,8 @@
+#ifndef TFT_ESPI_COPYSETUPFILE_H
+  #define TFT_ESPI_COPYSETUPFILE_H
+  
 // TFT_eSPI ライブラリの設定を次のように変更してください。
-
-//====================[Setting file FOR PONS v6  ST7789 16bit parallel]====================
+//====================[Setting file FOR PONS v7  ST7789 16bit parallel]====================
 #define USER_SETUP_ID 105
 #define TFT_PARALLEL_16_BIT
 #define ST7789_DRIVER
@@ -32,3 +34,7 @@
 #define SMOOTH_FONT
 #define DISABLE_ALL_LIBRARY_WARNINGS
 
+//===================設定ここまで====================
+
+
+#endif

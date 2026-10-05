@@ -15,7 +15,6 @@ static void feed_static(int n, uint32_t t0, uint32_t step) {
     for (int i=0;i<n;i++){
         test_set_us(t0 + i*step);
         attitude_on_accel(a0);
-        attitude_on_grv(1,0,0,0);
         attitude_on_gyro(g0, g_test_us);
     }
 }
