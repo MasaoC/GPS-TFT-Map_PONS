@@ -19,7 +19,7 @@
 //        加速度  オフセット ±0.01 m/s²
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/01
+// Updated : 2026/10/05
 // ============================================================
 //
 // ---- 配線（Pico 2 ←→ IMU_murata ブレイクアウト 8 ピン）----
@@ -62,6 +62,28 @@
 //   MISO_SR_CTRL / DRY_SR_CTRL を 0 に落としてしまう（データシートに
 //   "This option is not supported by Murata" と明記されている側の設定）。
 //   このスケッチは read-modify-write にしてある（下の set_dry() 参照）。
+//
+// ★ **部品は SCH16T-K01 で確定。品種分岐はしない**（2026/10/05）。
+//   ただし COMP_ID が 0x0023 かは毎回見る。**他品種を挿すとジャイロの感度だけが
+//   16 倍違い（例: K10 は同じ DYN 値で 100 LSB/(°/s)）、加速度は共通**なので、
+//   1g 検証が 1.000 に乗ってもジャイロのバイアスとノイズが 1/16 に小さく出る
+//   ＝ このスケッチが出すべき唯一の判断材料が、都合のいい方向へ 16 倍間違う。
+//   → check_comp_id() で警告し、'G' の実回転で感度そのものを測れるようにした。
+//   出典: Murata 由来ライブラリが SCH16T_K10 クラスで Rate の感度だけを
+//   上書きしている（加速度側は上書きが無い）。
+//
+// ★ **検算結果**: このスケッチのフレーム組み立てと CRC8 は、
+//   データシート Table 27 の 41 フレームすべてとビット単位で一致した。
+//   さらに Murata 由来の Arduino ライブラリ（github.com/HTY2003/smplboards-SCH16T。
+//   ヘッダは Copyright Murata Electronics Oy / BSD）の事前計算フレームと、
+//   2026/10/05 にホスト上で全件照合した:
+//     読み出しフレーム 38 件（48bit 全ビット）… 全一致
+//     書き込みフレームの上位 40bit 9 件（REQ_SET_* と REQ_SOFTRESET）… 全一致
+//   → フレーム層は 2 つの独立した出典で裏が取れている。
+//   そのうちの 7 件は `selftest_frames()` に焼いて**起動時に自動照合**する。
+//
+// ★ 軸はチップ native のまま出す。PX4 は Y/Z を反転して自分の FRD 系に直している
+//   （チップは FLU）。**PONS に取り込むときは軸変換が別途必要。**
 //
 #include <SPI.h>
 
@@ -186,15 +208,60 @@ enum : uint8_t {
 //   RATE : '001'(既定)=±327.68°/s 1600 LSB  '010'=同じ  '011'=±163.84 3200  '100'=±81.92 6400
 //   ACC12: '001'(既定)=±163.84m/s² 3200 LSB '010'=±81.92 6400 '011'=±40.96 12800 '100'=±20.48 25600
 //   ACC3 : '000'(既定)=±260m/s² 1600 LSB    '001'=±163.84 3200 …
-static const uint8_t RATE_DYN_DEFAULT  = 0b001;  // ±327.68 °/s  → 1600 LSB/(°/s)
+//
+// ★ **書くのは '010' にした（'001' ではなく）。** 上の表のとおり '001' と '010' は
+//   同じレンジだが、Murata 由来ライブラリは 1600 LSB に対して '010' を書き、
+//   読み返しの逆変換（convertBitfieldToRateSens）では **'001' を「感度不明」として
+//   0 を返す**。つまり '010' が正式な符号。どちらでも動くが、'010' なら
+//   「書いた値 → 感度」の対応が Murata の表と 1 対 1 になり、下の
+//   dyn_to_lsb_per_dps() による読み返し検証が意味を持つ。
+static const uint8_t RATE_DYN_DEFAULT  = 0b010;  // ±327.68 °/s  → 1600 LSB/(°/s)
 static const uint8_t ACC12_DYN_DEFAULT = 0b001;  // ±163.84 m/s² → 3200 LSB/(m/s²)
 static const uint8_t ACC3_DYN_DEFAULT  = 0b000;  // ±260 m/s²    → 1600 LSB/(m/s²)
 
-// 上の設定に対応する感度（データシート Table 63/64、20bit 出力）。
-// ★ レンジ設定を変えたらここも変えること。
-static const float LSB_PER_DPS   = 1600.0f;
-static const float LSB_PER_MPS2  = 3200.0f;
-static const float LSB_PER_DEGC  = 100.0f;   // Table 8
+// ------------------------------------------------------------
+// 感度（SCH16T-K01 固定）
+// ------------------------------------------------------------
+// ★ **使うのは K01 で確定。他品種には対応しない。**
+//   ただし COMP_ID が 0x0023 かどうかは必ず見る。**他品種を挿すと
+//   ジャイロの感度だけが 16 倍違い、加速度は同じ**なので、1g 検証が通っても
+//   ジャイロのバイアスとノイズが 1/16 に小さく出る（＝都合のいい方向に外れる）。
+//   「届いた部品が本当に K01 か」を確かめる 1 行のチェックとして残してある。
+//   出典: Murata 由来ライブラリが SCH16T_K10 クラスで Rate の感度だけを
+//   100/200/400 に上書きしている（加速度側は上書きが無い）。
+static const float LSB_PER_DPS  = 1600.0f;   // DYN='010'（Table 63、K01）
+static const float LSB_PER_MPS2 = 3200.0f;   // DYN='001'（Table 64）
+static const float LSB_PER_DEGC =  100.0f;   // Table 8
+static const uint16_t COMP_ID_K01 = 0x0023;  // Table 86
+
+// COMP_ID が K01 だったか。false のとき 'm' と 'h' に警告を出す。
+static bool g_is_k01 = false;
+
+// DYN ビット値 → 感度。Murata 由来ライブラリの convert*ToSens と同じ表（K01 の値）。
+// 書いた設定が本当に入っているかを読み返しから復元するために使う。
+// ★ **'001' も '010' と同じ値を返す。** データシート Table 63 では両者が同じレンジで、
+//   PX4 は '001' を書いて実機で動いている。Murata 由来ライブラリの逆変換だけが
+//   '001' を未定義（0）にしているが、それに合わせて 0 を返すと
+//   **RATE_DYN_DEFAULT を '001' に戻した瞬間にゼロ除算になる**ので、ここでは埋める。
+//   0 を返すのは本当に未定義な符号（'000' と '101'〜'111'）だけ。
+static float dyn_to_lsb_per_dps(uint8_t dyn) {
+  switch (dyn & 7) {
+    case 0b001: return  1600.0f;           // '010' と同じレンジ（Table 63）
+    case 0b010: return  1600.0f;
+    case 0b011: return  3200.0f;
+    case 0b100: return  6400.0f;
+    default:    return 0.0f;               // '000' は "Undefined"。書いてはいけない
+  }
+}
+static float dyn_to_lsb_per_mps2(uint8_t dyn) {
+  switch (dyn & 7) {
+    case 0b001: return  3200.0f;
+    case 0b010: return  6400.0f;
+    case 0b011: return 12800.0f;
+    case 0b100: return 25600.0f;
+    default:    return 0.0f;
+  }
+}
 
 // LPF ごとの最小推奨読み出しレート [Hz]（データシート §5.5 Table 16）。
 // ★ これを下回って読むと、フィルターの阻止域のノイズが折り返して帯域内に入る。
@@ -208,6 +275,23 @@ static uint32_t min_read_rate_hz(uint8_t filt) {
     case 0b011: return 1000;   // LPF3 280Hz
     case 0b100: return 2000;   // LPF4 370Hz
     default:    return 11800;  // LPF7 バイパス
+  }
+}
+
+// LPF の公称カットオフ [Hz]。ノイズ密度の帯域に使う。
+// ★ **帯域に fs/2 を使ってはいけない。** 68Hz LPF を 500Hz で読むと fs/2=250Hz だが
+//   実際にノイズが通っている帯域は 68Hz 前後なので、sd/sqrt(250) は真値の
+//   sqrt(107/250)=0.65 倍、つまり**ノイズ密度が 35% 小さく出る**。
+//   ここも「都合のいい方向に外れる」ので fc を使う。
+static float filt_cutoff_hz(uint8_t filt) {
+  switch (filt & 7) {
+    case 0b010: return  13.0f;
+    case 0b001: return  30.0f;
+    case 0b000: return  68.0f;
+    case 0b011: return 280.0f;
+    case 0b100: return 370.0f;
+    case 0b101: return 235.0f;
+    default:    return 11800.0f / 2.0f;   // バイパス: 一次レートのナイキスト
   }
 }
 
@@ -274,44 +358,56 @@ static uint32_t g_crc_err = 0, g_ids_err = 0, g_ce_err = 0, g_sat_err = 0, g_ini
 static uint32_t g_frames  = 0;
 
 // 1 フレーム送受信する。戻り値は受信した 48bit。
+// ★ **6 バイトを 1 回の transfer() で送る。`SPI.transfer16()` を 3 回呼んではいけない。**
+//   arduino-pico 4.5.1 の `transfer16()` は `spi_write16_read16_blocking(..., 1)` を
+//   呼ぶので 1 ワードごとに戻ってきて、**ワード間で SCK が止まる**。
+//   `transfer(tx, rx, 6)` なら `spi_write_read_blocking()` が 6 バイトを
+//   TX FIFO（8 段）へ先に積むので SCK が 48bit 連続する。
+//   CS は Low のままなのでどちらでも通るはずだが、連続の方を既定にする。
 static uint64_t xfer48(uint64_t frame) {
-  uint16_t buf[3];
-  buf[0] = (uint16_t)((frame >> 32) & 0xFFFF);
-  buf[1] = (uint16_t)((frame >> 16) & 0xFFFF);
-  buf[2] = (uint16_t)( frame        & 0xFFFF);
+  uint8_t tx[6], rx[6];
+  for (int i = 0; i < 6; i++) tx[i] = (uint8_t)(frame >> (8 * (5 - i)));   // big endian
 
   SPI.beginTransaction(SPISettings(g_spi_hz, MSBFIRST, SPI_MODE0));
   digitalWrite(PIN_CS, LOW);
   delayMicroseconds(1);                 // CS 立ち下がり → データ有効まで 40ns。余裕を取る
-  for (int i = 0; i < 3; i++) buf[i] = SPI.transfer16(buf[i]);
+  SPI.transfer(tx, rx, sizeof(tx));
   digitalWrite(PIN_CS, HIGH);
   SPI.endTransaction();
   delayMicroseconds(1);                 // CS の High 期間を必ず作る
 
   g_frames++;
-  return ((uint64_t)buf[0] << 32) | ((uint64_t)buf[1] << 16) | (uint64_t)buf[2];
+  uint64_t r = 0;
+  for (int i = 0; i < 6; i++) r = (r << 8) | rx[i];
+  return r;
 }
 
-// 読み出し要求を 1 フレーム投げる。**戻ってくるのは 1 つ前の要求の結果**。
-static uint64_t req_read(uint8_t addr) {
+// 要求フレームの組み立て。**送信とは分けてある**（selftest_frames() が検算に使う）。
+static uint64_t build_read_frame(uint8_t addr, uint8_t ta) {
   uint64_t f = 0;
-  f |= (uint64_t)(g_ta & 0x03) << 46;
+  f |= (uint64_t)(ta & 0x03) << 46;
   f |= (uint64_t)addr << 38;
   f |= (uint64_t)1 << 35;
-  f |= (uint64_t)crc8_frame(f);
-  return xfer48(f);
+  return f | (uint64_t)crc8_frame(f);
 }
-
-// 書き込み。応答は見ない。
-static void reg_write(uint8_t addr, uint16_t value) {
+static uint64_t build_write_frame(uint8_t addr, uint16_t value, uint8_t ta) {
   uint64_t f = 0;
-  f |= (uint64_t)(g_ta & 0x03) << 46;
+  f |= (uint64_t)(ta & 0x03) << 46;
   f |= (uint64_t)addr << 38;
   f |= (uint64_t)1 << 37;                // WRITE
   f |= (uint64_t)1 << 35;
   f |= (uint64_t)value << 8;
-  f |= (uint64_t)crc8_frame(f);
-  (void)xfer48(f);
+  return f | (uint64_t)crc8_frame(f);
+}
+
+// 読み出し要求を 1 フレーム投げる。**戻ってくるのは 1 つ前の要求の結果**。
+static uint64_t req_read(uint8_t addr) {
+  return xfer48(build_read_frame(addr, g_ta));
+}
+
+// 書き込み。応答は見ない。
+static void reg_write(uint8_t addr, uint16_t value) {
+  (void)xfer48(build_write_frame(addr, value, g_ta));
 }
 
 // 単発読み出し。アウトオブフレームなので 2 フレーム使う（同じアドレスを 2 回投げる）。
@@ -341,6 +437,125 @@ static void print_frame(const char* tag, uint64_t f) {
     (f & MASK48_S1) ? 1 : 0, (f & MASK48_S0) ? 1 : 0,
     (unsigned long)((f >> 8) & 0xFFFFF), (long)frame_data_i20(f),
     ((uint8_t)(f & 0xFF) == crc8_frame(f)) ? "OK" : "NG");
+}
+
+// ------------------------------------------------------------
+// フレーム組み立ての自己テスト（起動時に走る。SPI は叩かない）
+// ------------------------------------------------------------
+// ★ ここの期待値は **Murata Electronics Oy の BSD コード（smplboards-SCH16T の
+//   SCH16T.h の REQ_* 定数）に載っている事前計算フレーム**をそのまま写したもの。
+//   ホスト上では 2026/10/05 に 47 件すべて一致している。焼いてあるのは代表 10 件。
+// ★ **これが守るのは「将来の編集による退行」だけ。** 元の読み方が間違っていた場合は
+//   検出できない（同じ出典から持ってきた値なので）。それでも、CRC や
+//   ビット位置をうっかり触ったときに**実機を触る前に止まる**のが大きい。
+static bool selftest_frames() {
+  struct { uint64_t want; uint8_t addr; uint16_t data; bool write; const char* name; } v[] = {
+    { 0x0048000000ACULL, 0x01, 0,      false, "READ RATE_X1"      },
+    { 0x03C8000000B5ULL, 0x0F, 0,      false, "READ ACC_Z2"       },
+    { 0x0408000000B1ULL, 0x10, 0,      false, "READ TEMP"         },
+    { 0x05080000001CULL, 0x14, 0,      false, "READ STAT_SUM"     },
+    { 0x0CC80000007CULL, 0x33, 0,      false, "READ CTRL_USER_IF" },
+    { 0x0F0800000092ULL, 0x3C, 0,      false, "READ COMP_ID"      },
+    { 0x0DA800000AC3ULL, 0x36, 0b1010, true,  "WRITE SOFTRESET"   },
+  };
+  // 書き込みフレームは Murata 側が「上位 40bit のひな形」だけを持っているので、
+  // データ 0 のときの frame>>8 で照合する。
+  struct { uint64_t want40; uint8_t addr; const char* name; } w[] = {
+    { 0x0968000000ULL, 0x25, "WRITE CTRL_FILT_RATE prefix" },
+    { 0x0A28000000ULL, 0x28, "WRITE CTRL_RATE prefix"      },
+    { 0x0CE8000000ULL, 0x33, "WRITE CTRL_USER_IF prefix"   },
+  };
+
+  int ng = 0;
+  for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); i++) {
+    const uint64_t got = v[i].write ? build_write_frame(v[i].addr, v[i].data, 0)
+                                    : build_read_frame(v[i].addr, 0);
+    if (got != v[i].want) {
+      ng++;
+      Serial.printf("  NG %-26s want 0x%04X%04X%04X got 0x%04X%04X%04X\n", v[i].name,
+        (unsigned)((v[i].want >> 32) & 0xFFFF), (unsigned)((v[i].want >> 16) & 0xFFFF),
+        (unsigned)(v[i].want & 0xFFFF),
+        (unsigned)((got >> 32) & 0xFFFF), (unsigned)((got >> 16) & 0xFFFF),
+        (unsigned)(got & 0xFFFF));
+    }
+  }
+  for (unsigned i = 0; i < sizeof(w) / sizeof(w[0]); i++) {
+    const uint64_t got = (build_write_frame(w[i].addr, 0, 0) >> 8) & 0xFFFFFFFFFFULL;
+    if (got != w[i].want40) {
+      ng++;
+      Serial.printf("  NG %-26s want 0x%02X%04X%04X got 0x%02X%04X%04X\n", w[i].name,
+        (unsigned)((w[i].want40 >> 32) & 0xFF), (unsigned)((w[i].want40 >> 16) & 0xFFFF),
+        (unsigned)(w[i].want40 & 0xFFFF),
+        (unsigned)((got >> 32) & 0xFF), (unsigned)((got >> 16) & 0xFFFF),
+        (unsigned)(got & 0xFFFF));
+    }
+  }
+
+  const unsigned total = sizeof(v) / sizeof(v[0]) + sizeof(w) / sizeof(w[0]);
+  if (ng == 0)
+    Serial.printf("[self] フレーム組み立て %u 件 OK（Murata の事前計算値と一致）\n", total);
+  else
+    Serial.printf("[self] ★★ フレーム組み立てが %d / %u 件ずれている。"
+                  "CRC かビット位置を壊した。実機を触る前に直すこと\n", ng, total);
+  return ng == 0;
+}
+
+// ------------------------------------------------------------
+// 届いた部品が K01 かの確認
+// ------------------------------------------------------------
+// ★ 使うのは K01 固定なので品種分岐はしない。**ここは「挿してある部品が本当に
+//   K01 か」を確かめるだけ。** 他品種だとジャイロの感度だけが 16 倍違い、
+//   加速度は同じなので 1g 検証では気づけない。
+// 戻り値 true = COMP_ID が K01。
+static bool check_comp_id() {
+  const uint64_t fa = reg_read(REG_ASIC_ID);
+  const uint64_t fc = reg_read(REG_COMP_ID);
+  const bool frames_ok = frame_ok(fa, false) && frame_ok(fc, false);
+  const uint16_t asic = frame_data_u16(fa);
+  const uint16_t comp = frame_data_u16(fc);
+
+  if (!frames_ok) {
+    g_is_k01 = false;
+    Serial.printf("[id] ★ ID の応答が壊れている（ASIC=0x%04X COMP=0x%04X）。"
+                  "'z' と 't' で配線を確認すること\n", asic, comp);
+    return false;
+  }
+
+  g_is_k01 = (comp == COMP_ID_K01);
+  if (g_is_k01) {
+    Serial.printf("[id] COMP_ID 0x%04X = SCH16T-K01 → ジャイロ %.0f LSB/(°/s)"
+                  " / 加速度 %.0f LSB/(m/s²)\n", comp, LSB_PER_DPS, LSB_PER_MPS2);
+  } else {
+    Serial.printf("[id] ★★ COMP_ID 0x%04X は K01 の 0x%04X ではない（ASIC=0x%04X）。\n"
+                  "     このスケッチは K01 の %.0f LSB/(°/s) 固定なので、"
+                  "ジャイロの数値は信用できない。\n"
+                  "     **1g 検証では判別できない**（加速度の感度は品種共通）。"
+                  "'G' で実回転から直接測ること。\n",
+                  comp, COMP_ID_K01, asic, LSB_PER_DPS);
+  }
+  return g_is_k01;
+}
+
+// 読み返した DYN ビットから感度を復元して、スケーリングに使っている定数と照合する。
+// ★ CTRL_RATE 全体の want/got 比較とは別物。あれは「書いた値が入ったか」しか見ない。
+//   こちらは「LSB_PER_DPS / LSB_PER_MPS2 が、チップに入っているレンジ設定と
+//   本当に対応しているか」を見る。DYN1 と DYN2 が食い違っていてもここで出る。
+static bool verify_sensitivity_readback() {
+  const uint16_t cr = frame_data_u16(reg_read(REG_CTRL_RATE));
+  const uint16_t ca = frame_data_u16(reg_read(REG_CTRL_ACC12));
+  const uint8_t rd1 = (uint8_t)((cr >> 12) & 7), rd2 = (uint8_t)((cr >> 9) & 7);
+  const uint8_t ad1 = (uint8_t)((ca >> 12) & 7), ad2 = (uint8_t)((ca >> 9) & 7);
+  const float r1 = dyn_to_lsb_per_dps(rd1),  r2 = dyn_to_lsb_per_dps(rd2);
+  const float a1 = dyn_to_lsb_per_mps2(ad1), a2 = dyn_to_lsb_per_mps2(ad2);
+  const bool ok = (r1 == LSB_PER_DPS) && (r2 == LSB_PER_DPS)
+               && (a1 == LSB_PER_MPS2) && (a2 == LSB_PER_MPS2);
+
+  Serial.printf("[init] DYN 読み返し  RATE1=%u(%.0f) RATE2=%u(%.0f) LSB/(°/s)"
+                " | ACC1=%u(%.0f) ACC2=%u(%.0f) LSB/(m/s²)%s\n",
+                rd1, r1, rd2, r2, ad1, a1, ad2, a2, ok ? "" : "  <<< 定数と不一致");
+  if (!g_is_k01)
+    Serial.println("[init] ★ COMP_ID が K01 ではない。'G' で感度を実測すること");
+  return ok;
 }
 
 // ------------------------------------------------------------
@@ -394,7 +609,7 @@ static void hard_reset() {
 //   → 5ms → ステータス読み（2 回）→ 検証
 // ★ 250ms の待ちを削らないこと。EOI の前に設定が確定していないと、
 //   S1:S0 が 11（初期化中）のまま抜けてこない。
-static bool sch_init(bool use_hard_reset) {
+static bool sch_init_once(bool use_hard_reset) {
   g_inited = false;
 
   // ---- リセット ----
@@ -411,6 +626,10 @@ static bool sch_init(bool use_hard_reset) {
   reg_write(REG_CTRL_RESET, VAL_SPI_SOFT_RESET);
   delay(50);                    // 2ms（SPI 禁止）＋ 32ms（NVM 読み）に余裕
 
+  // ---- 挿してある部品が K01 かを確認（感度の前提なので設定より先）----
+  bool ok = true;
+  check_comp_id();              // 違っても止めない。'm' の出力に警告が出る
+
   // ---- 設定を書く（EN_SENSOR の前に済ませる）----
   Serial.println("[init] write config");
   reg_write(REG_CTRL_FILT_RATE,  build_filt(g_filt_rate));
@@ -419,7 +638,10 @@ static bool sch_init(bool use_hard_reset) {
   reg_write(REG_CTRL_RATE,       build_ctrl_rate());
   reg_write(REG_CTRL_ACC12,      build_ctrl_acc12());
   reg_write(REG_CTRL_ACC3,       ACC3_DYN_DEFAULT);
-  set_dry(true);                // ★ read-modify-write。素で書かないこと
+  // ★ read-modify-write。素で書かないこと。
+  //   **戻り値を捨てないこと** — 書き戻しが失敗したまま SUCCESS と出ると、
+  //   'd' が「パルスが取れていない。配線を確認」と言って配線を疑わせる。
+  if (!set_dry(true)) ok = false;
 
   // ---- EN_SENSOR → 215ms 待つ ----
   // ★ **この待ちの間、ステータスフラグの値は未定義**（データシート §5.2）。
@@ -433,7 +655,10 @@ static bool sch_init(bool use_hard_reset) {
     REG_STAT_RATE_X, REG_STAT_RATE_Y, REG_STAT_RATE_Z,
     REG_STAT_ACC_X, REG_STAT_ACC_Y, REG_STAT_ACC_Z,
   };
-  for (unsigned i = 0; i < sizeof(stat_regs); i++) req_read(stat_regs[i]);
+  // ★ 要素数は sizeof(配列)/sizeof(要素) で取る。uint8_t なので sizeof だけでも
+  //   たまたま合うが、型を変えた瞬間に静かに回数が狂う。
+  const unsigned n_stat = sizeof(stat_regs) / sizeof(stat_regs[0]);
+  for (unsigned i = 0; i < n_stat; i++) req_read(stat_regs[i]);
 
   // ★ EOI を書くと**ソフトリセットと SYS_TEST 以外の R/W レジスタが全部ロックされる**
   //   （Table 80）。以降の設定変更はリセットしない限り効かない。
@@ -444,16 +669,22 @@ static bool sch_init(bool use_hard_reset) {
 
   // ★ ステータスは 2 周読む。1 周目は初期化中のラッチが残っている。
   for (int pass = 0; pass < 2; pass++)
-    for (unsigned i = 0; i < sizeof(stat_regs); i++) req_read(stat_regs[i]);
+    for (unsigned i = 0; i < n_stat; i++) req_read(stat_regs[i]);
 
-  // 設定の読み返し検証
+  // 設定の読み返し検証。**書いた 6 本すべてを見る**（PX4 も 6 本検証している）。
+  // ★ ただしこの検証が言えるのは「書いた値が入った」だけ。
+  //   「他のビットを潰していない」は言えない（0 を書いて 0 が読めても同じ）。
+  //   潰す心配があるのはリセット値が非ゼロのレジスタだけで、該当するのは
+  //   CTRL_USER_IF（set_dry が read-modify-write）と CTRL_ST（触っていない）。
+  //   ここで書いている 6 本は幅が 9/15/3bit で、残りは reserved なので安全。
   struct { uint8_t addr; uint16_t want; const char* name; } chk[] = {
     { REG_CTRL_FILT_RATE,  build_filt(g_filt_rate), "CTRL_FILT_RATE"  },
     { REG_CTRL_FILT_ACC12, build_filt(g_filt_acc),  "CTRL_FILT_ACC12" },
+    { REG_CTRL_FILT_ACC3,  build_filt(g_filt_acc),  "CTRL_FILT_ACC3"  },
     { REG_CTRL_RATE,       build_ctrl_rate(),       "CTRL_RATE"       },
     { REG_CTRL_ACC12,      build_ctrl_acc12(),      "CTRL_ACC12"      },
+    { REG_CTRL_ACC3,       ACC3_DYN_DEFAULT,        "CTRL_ACC3"       },
   };
-  bool ok = true;
   for (unsigned i = 0; i < sizeof(chk) / sizeof(chk[0]); i++) {
     const uint16_t got = frame_data_u16(reg_read(chk[i].addr));
     const bool same = (got == chk[i].want);
@@ -461,6 +692,11 @@ static bool sch_init(bool use_hard_reset) {
     Serial.printf("[init] %-16s want 0x%04X got 0x%04X %s\n",
                   chk[i].name, chk[i].want, got, same ? "" : "  <<< MISMATCH");
   }
+
+  // ★ **感度は「書いた値」ではなく「読み返した DYN ビット」から復元して照合する。**
+  //   スケーリングに使っている g_lsb_per_* が、いま本当にチップに入っている
+  //   レンジ設定と一致しているかを見る唯一の経路。
+  if (!verify_sensitivity_readback()) ok = false;
 
   // センサーステータスの総合判定。正常なら全ビット 1（＝異常なし）。
   const uint16_t sum = frame_data_u16(reg_read(REG_STAT_SUM));
@@ -473,27 +709,54 @@ static bool sch_init(bool use_hard_reset) {
   return ok;
 }
 
+// 初期化は **2 回まで試す**（Murata の begin() も失敗したらリセットして 1 回やり直す）。
+// 2 回目は必ず EXTRESN のハードリセットから入る。
+static bool sch_init(bool use_hard_reset) {
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0)
+      Serial.println("[init] 1 回目が失敗したのでハードリセットから再試行する");
+    if (sch_init_once(use_hard_reset || attempt > 0)) return true;
+  }
+  Serial.println("[init] ★ 2 回試して失敗。's' で個別ステータス、'z'/'t' で配線を見ること");
+  return false;
+}
+
 // ------------------------------------------------------------
 // ID 読み出し
 // ------------------------------------------------------------
-static void cmd_id() {
-  const uint16_t asic = frame_data_u16(reg_read(REG_ASIC_ID));
-  const uint16_t comp = frame_data_u16(reg_read(REG_COMP_ID));
-  const uint16_t sn1  = frame_data_u16(reg_read(REG_SN_ID1));
-  const uint16_t sn2  = frame_data_u16(reg_read(REG_SN_ID2));
-  const uint16_t sn3  = frame_data_u16(reg_read(REG_SN_ID3));
+// ★ **ID は CRC を見てから信じること。** README の手順は z → t → i なので実用上は
+//   守られるが、'i' を単独で打ったときに化けた値を鵜呑みにしないため。
+static uint16_t read_u16_checked(uint8_t addr, bool* all_ok) {
+  const uint64_t f = reg_read(addr);
+  if (!frame_ok(f, false)) *all_ok = false;       // 統計は汚さない（count=false）
+  return frame_data_u16(f);
+}
 
-  Serial.printf("ASIC_ID = 0x%02X   COMP_ID = 0x%02X\n", asic, comp);
+static void cmd_id() {
+  bool frames_ok = true;
+  const uint16_t asic = read_u16_checked(REG_ASIC_ID, &frames_ok);
+  const uint16_t comp = read_u16_checked(REG_COMP_ID, &frames_ok);
+  const uint16_t sn1  = read_u16_checked(REG_SN_ID1,  &frames_ok);
+  const uint16_t sn2  = read_u16_checked(REG_SN_ID2,  &frames_ok);
+  const uint16_t sn3  = read_u16_checked(REG_SN_ID3,  &frames_ok);
+
+  if (!frames_ok)
+    Serial.println("★★ 応答フレームが壊れている（CRC/IDS/CE/S のいずれか）。"
+                   "以下の値は信用できない。'z' と 't' で配線を見ること");
+
+  // ASIC_ID は 12bit、COMP_ID は 16bit。**%04X で出す** — 0x0023 と比べる話をしながら
+  // 0x23 と表示されると読み手が混乱する。
+  Serial.printf("ASIC_ID = 0x%04X   COMP_ID = 0x%04X\n", asic, comp);
   Serial.printf("Serial  = %05u%01X%04X\n", sn2, sn1 & 0x000F, sn3);
   // ★ 部品の識別は COMP_ID。データシート Table 86 に
   //   「SCH16T-K01 = 0b0000000000100011」と明記されている（= 0x0023）。
   //   ASIC_ID はシリコンのリビジョン（Table 85: [11:8]型 [7:4]major [3:0]minor）で、
   //   部品名の判定には使えない。PX4 が 0x21 を見ているのは実機のリビジョン値。
-  if (comp == 0x0023)
-    Serial.println("-> COMP_ID が SCH16T-K01 と一致（データシート Table 86）");
-  else
-    Serial.printf("-> ★ COMP_ID が K01 の 0x0023 ではない。K10 など別品種の可能性。\n"
-                  "   感度が違うかもしれないので 'm' の 1g 検証で必ず確かめること\n");
+  //   **K01 かどうかの確認はここに集約した**（check_comp_id）。
+  //   以前ここにあった「'm' の 1g 検証で確かめること」という案内は**誤り**だった:
+  //   加速度の感度は品種共通なので、1g 検証ではジャイロの 16 倍違いを
+  //   原理的に検出できない。代わりに 'G' の実回転で測る。
+  check_comp_id();
   Serial.printf("   ASIC rev: type=%u major=%u minor=%u（部品の判定には使わない）\n",
                 (asic >> 8) & 0xF, (asic >> 4) & 0xF, asic & 0xF);
 
@@ -570,8 +833,14 @@ static Sample read_sample_dec() {
   const uint64_t faz = req_read(REG_TEMP);
   const uint64_t ft  = req_read(REG_TEMP);
 
-  s.ok = frame_ok(fgx) && frame_ok(fgy) && frame_ok(fgz)
-      && frame_ok(fax) && frame_ok(fay) && frame_ok(faz) && frame_ok(ft);
+  // ★ **`&&` で繋いではいけない。** frame_ok() は g_crc_err 等を増やす副作用がある
+  //   関数なので、短絡すると 1 本目で落ちた時点で残りが数えられず、
+  //   'm' の「うち CRC n 件」と 's' のフレーム統計が実際より少なく出る。
+  //   `&=` は短絡しないので 7 本すべてを必ず通る。
+  s.ok = true;
+  s.ok &= frame_ok(fgx); s.ok &= frame_ok(fgy); s.ok &= frame_ok(fgz);
+  s.ok &= frame_ok(fax); s.ok &= frame_ok(fay); s.ok &= frame_ok(faz);
+  s.ok &= frame_ok(ft);
   s.gx = frame_data_i20(fgx); s.gy = frame_data_i20(fgy); s.gz = frame_data_i20(fgz);
   s.ax = frame_data_i20(fax); s.ay = frame_data_i20(fay); s.az = frame_data_i20(faz);
   s.temp = frame_data_i20(ft) >> 4;             // 温度は 16bit 幅。下位 4bit は未使用
@@ -594,8 +863,14 @@ static Sample read_sample_raw() {
   const uint64_t fay = req_read(REG_ACC_Z1);
   const uint64_t faz = req_read(REG_TEMP);
   const uint64_t ft  = req_read(REG_TEMP);
-  s.ok = frame_ok(fgx) && frame_ok(fgy) && frame_ok(fgz)
-      && frame_ok(fax) && frame_ok(fay) && frame_ok(faz) && frame_ok(ft);
+  // ★ **`&&` で繋いではいけない。** frame_ok() は g_crc_err 等を増やす副作用がある
+  //   関数なので、短絡すると 1 本目で落ちた時点で残りが数えられず、
+  //   'm' の「うち CRC n 件」と 's' のフレーム統計が実際より少なく出る。
+  //   `&=` は短絡しないので 7 本すべてを必ず通る。
+  s.ok = true;
+  s.ok &= frame_ok(fgx); s.ok &= frame_ok(fgy); s.ok &= frame_ok(fgz);
+  s.ok &= frame_ok(fax); s.ok &= frame_ok(fay); s.ok &= frame_ok(faz);
+  s.ok &= frame_ok(ft);
   s.gx = frame_data_i20(fgx); s.gy = frame_data_i20(fgy); s.gz = frame_data_i20(fgz);
   s.ax = frame_data_i20(fax); s.ay = frame_data_i20(fay); s.az = frame_data_i20(faz);
   s.temp = frame_data_i20(ft) >> 4;
@@ -645,11 +920,23 @@ static void cmd_status() {
 static void cmd_measure(uint32_t seconds) {
   if (!g_inited) { Serial.println("先に 'r' で初期化すること"); return; }
 
+  // ★ 測定条件を先に全部書き出す。**ログだけ見て後から再現できるようにするため。**
   Serial.printf("静止測定 %lu 秒。動かさないこと…\n", (unsigned long)seconds);
+  Serial.printf("  条件: SCH16T-K01%s / ジャイロ %.0f LSB/(°/s) / 加速度 %.0f LSB/(m/s²)\n",
+                g_is_k01 ? "" : "（★COMP_ID 不一致）", LSB_PER_DPS, LSB_PER_MPS2);
+  Serial.printf("        LPF=%uHz(sel %u) / dec=%u / SPI=%luHz / TA=%u\n",
+                (unsigned)filt_cutoff_hz(g_filt_rate), g_filt_rate, g_dec,
+                (unsigned long)g_spi_hz, g_ta);
+  if (!g_is_k01)
+    Serial.println("  ★★ COMP_ID が K01 ではない。下のジャイロの数値は 16 倍ずれている"
+                   "可能性がある（加速度は無関係）。'G' で実回転から測ること");
+
   Stat gx, gy, gz, ax, ay, az, an, tp;
   const uint32_t t0 = millis();
   uint32_t n = 0, bad = 0;
-  const uint32_t crc0 = g_crc_err;
+  // 内訳も差分で取る。CRC だけ見ていると IDS/CE/飽和を見落とす。
+  const uint32_t crc0 = g_crc_err, ids0 = g_ids_err, ce0 = g_ce_err;
+  const uint32_t sat0 = g_sat_err, init0 = g_init_run;
 
   while (millis() - t0 < seconds * 1000UL) {
     const Sample s = read_sample_dec();
@@ -671,8 +958,11 @@ static void cmd_measure(uint32_t seconds) {
 
   Serial.printf("\n--- %lu サンプル / %.1f s = %.1f Hz（SPI 律速。ODR は 'd' で測る）\n",
                 (unsigned long)n, dur, fs);
-  Serial.printf("不良フレーム %lu 件（うち CRC %lu 件）\n",
-                (unsigned long)bad, (unsigned long)(g_crc_err - crc0));
+  Serial.printf("不良フレーム %lu 件（crc=%lu ids=%lu ce=%lu 飽和=%lu 初期化中=%lu）\n",
+                (unsigned long)bad,
+                (unsigned long)(g_crc_err  - crc0),  (unsigned long)(g_ids_err - ids0),
+                (unsigned long)(g_ce_err   - ce0),   (unsigned long)(g_sat_err - sat0),
+                (unsigned long)(g_init_run - init0));
   if (n < 100) { Serial.println("サンプルが少なすぎる。配線か初期化を疑う"); return; }
 
   // ★ エイリアシングの警告。データシート §5.5 Table 16 の最小推奨読み出しレートを
@@ -689,15 +979,22 @@ static void cmd_measure(uint32_t seconds) {
                   fs, (unsigned long)need);
   }
 
-  Serial.println("\n[ジャイロ] 単位 deg/s");
+  Serial.printf("\n[ジャイロ] 単位 deg/s%s\n",
+                g_is_k01 ? "" : "  ★COMP_ID 不一致（16 倍ずれの可能性）");
   Serial.printf("           %-12s %-12s %-12s %s\n", "bias", "sd", "p-p", "ノイズ密度*");
-  const double bw = fs / 2.0;   // *片側帯域を fs/2 と仮定した概算。真値はフィルター設定次第
+  // ★ **帯域に fs/2 を使ってはいけない。** ノイズが通っているのは LPF の帯域で、
+  //   fs/2 はそれより広いことが多い（68Hz LPF を 500Hz 読み → fs/2=250Hz）。
+  //   広い帯域で割ると**密度が小さく出る**＝都合のいい方向に外れる。
+  //   折り返しが起きている（fs/2 < fc）ときだけ fs/2 の方が実態に近いので min を取る。
+  const double fc = filt_cutoff_hz(g_filt_rate);
+  const double bw = (fs / 2.0 < fc) ? (fs / 2.0) : fc;
   const Stat* gs[3] = { &gx, &gy, &gz };
   const char* gn[3] = { "X", "Y", "Z" };
   for (int i = 0; i < 3; i++)
     Serial.printf("  %-8s %+12.5f %12.5f %12.5f %12.6f\n", gn[i],
                   gs[i]->mean, gs[i]->sd(), gs[i]->mx - gs[i]->mn, gs[i]->sd() / sqrt(bw));
-  Serial.println("  * ノイズ密度は sd/sqrt(fs/2) の概算 [deg/s/sqrt(Hz)]。");
+  Serial.printf("  * ノイズ密度は sd/sqrt(%.0fHz) [deg/s/sqrt(Hz)]。帯域は LPF の fc を使った概算。\n", bw);
+  Serial.println("    実 ENBW は fc の 1.0〜1.6 倍なので、真値はこの 0.8〜1.0 倍。桁合わせ用。");
   Serial.println("    データシート typ: XY 0.0004。桁が合っていれば妥当。");
   Serial.println("    データシート オフセット typ: XY ±0.1 / Z ±0.01 deg/s");
 
@@ -718,8 +1015,106 @@ static void cmd_measure(uint32_t seconds) {
                 an.sd(), an.sd() / g0);
   Serial.println("  BNO085 実測: |f|/g = 0.985〜0.992 (-1%), sd = 0.0008 g (2Hz LPF 後)");
   Serial.println("  ※ 傾いて置いてあっても |a| は回転不変なので、この比較は姿勢に依らない");
+  Serial.println("  ※★ この 1g 検証が確かめているのは**加速度の感度だけ**。"
+                 "加速度の LSB は品種に依らないので、");
+  Serial.println("     ここが 1.000 に乗ってもジャイロの感度の裏付けには一切ならない。"
+                 "ジャイロは 'G' で測る。");
 
   Serial.printf("\n[温度] %.2f degC (sd %.3f)\n", tp.mean, tp.sd());
+}
+
+// ------------------------------------------------------------
+// ジャイロ感度の実測（'G'）
+// ------------------------------------------------------------
+// ★★ **ジャイロのスケールを端から端まで確かめられる唯一の手段。**
+//   1g 検証（'m' の |a|/g）は加速度の感度しか見ていないので、ジャイロ側の
+//   LSB_PER_DPS・DYN ビット・20bit の符号拡張のどれが間違っていても通ってしまう。
+//   他品種が挿さっている場合もここでしか出ない（感度が 16 倍違うのはジャイロだけで、
+//   加速度は品種共通なので |a|/g は 1.000 に乗る）。
+//
+// 原理: 既知の角度だけゆっくり回し、生の LSB を時間積分する。
+//   積分値 [LSB·s] ÷ 回した角度 [°] = 感度 [LSB/(°/s)]
+//   角度は実測しなくてよい。**机の角に押し当てて 90°、一周させて 360°** で足りる。
+//   ゆっくり回せば（±300°/s 未満）飽和しないので、レンジの心配も要らない。
+static void cmd_gyro_scale() {
+  if (!g_inited) { Serial.println("先に 'r' で初期化すること"); return; }
+
+  Serial.println();
+  Serial.println("=== ジャイロ感度の実測 ===");
+  Serial.println("  1. 基板を机に平らに置く（Z 軸が鉛直）");
+  Serial.println("  2. 何かキーを押す → 積分が始まる");
+  Serial.println("  3. **ゆっくり** きっちり 90°（または 360°）回して止める");
+  Serial.println("  4. もう一度キーを押す → 止まる");
+  Serial.println("  出てきた LSB·s を回した角度で割った値が LSB/(°/s)。");
+  Serial.printf("  期待値: %.0f LSB/(°/s)（K01・DYN=0b%d%d%d）\n", LSB_PER_DPS,
+                (RATE_DYN_DEFAULT >> 2) & 1, (RATE_DYN_DEFAULT >> 1) & 1,
+                RATE_DYN_DEFAULT & 1);
+  Serial.println("  開始を待っています…");
+
+  while (Serial.available()) Serial.read();          // 溜まっている入力を捨てる
+  const uint32_t tw = millis();
+  while (!Serial.available()) {
+    if (millis() - tw > 60000UL) { Serial.println("  60 秒待って入力が無いので中止"); return; }
+  }
+  while (Serial.available()) Serial.read();
+  Serial.println("  積分開始。回してください");
+
+  // バイアス分を引くため、最初の 1 秒は静止しているものとして平均を取る。
+  // ★ ここで動かすと感度がずれる。上の手順どおり「押す → 回す」の順で。
+  double bias[3] = { 0, 0, 0 };
+  uint32_t nb = 0;
+  const uint32_t tb = millis();
+  while (millis() - tb < 1000) {
+    const Sample s = read_sample_dec();
+    if (!s.ok) continue;
+    bias[0] += s.gx; bias[1] += s.gy; bias[2] += s.gz; nb++;
+  }
+  if (nb < 10) { Serial.println("  ★ サンプルが取れない。初期化と配線を見ること"); return; }
+  for (int i = 0; i < 3; i++) bias[i] /= (double)nb;
+  Serial.printf("  静止バイアス（生 LSB）: %+.1f %+.1f %+.1f（%lu サンプル）\n",
+                bias[0], bias[1], bias[2], (unsigned long)nb);
+  Serial.println("  → いま回してください。終わったらキーを押す");
+
+  double integ[3] = { 0, 0, 0 };
+  double peak[3]  = { 0, 0, 0 };
+  uint32_t n = 0, bad = 0;
+  uint32_t t_prev = micros();
+  const uint32_t t0 = millis();
+  while (!Serial.available()) {
+    // ★ 打ち切り判定はループの先頭で。不良フレームで continue する経路の後ろに
+    //   置くと、全フレームが不良のときに永久に抜けない。
+    if (millis() - t0 > 120000UL) { Serial.println("  2 分で打ち切り"); break; }
+    const Sample s = read_sample_dec();
+    // ★ 不良フレームでは t_prev を更新しない。更新してしまうとその区間の dt が
+    //   丸ごと落ちて、**積分値が小さく出る**（＝感度が小さく見える）。
+    //   更新しなければ次の良サンプルの dt が穴を含むので積分は保存される。
+    if (!s.ok) { bad++; continue; }
+    const uint32_t t_now = micros();
+    const double dt = (double)(t_now - t_prev) * 1e-6;     // ラップしても差は正しい
+    t_prev = t_now;
+    const double g[3] = { s.gx - bias[0], s.gy - bias[1], s.gz - bias[2] };
+    for (int i = 0; i < 3; i++) {
+      integ[i] += g[i] * dt;
+      const double a = fabs(g[i]);
+      if (a > peak[i]) peak[i] = a;
+    }
+    n++;
+  }
+  while (Serial.available()) Serial.read();
+
+  Serial.printf("\n  %lu サンプル / 不良 %lu 件\n", (unsigned long)n, (unsigned long)bad);
+  const char* ax[3] = { "X", "Y", "Z" };
+  Serial.println("  軸  積分[LSB·s]      ÷90°         ÷360°        最大レート[今の感度で °/s]");
+  for (int i = 0; i < 3; i++)
+    Serial.printf("  %-3s %+14.1f %12.1f %12.1f %12.1f\n", ax[i],
+                  integ[i], fabs(integ[i]) / 90.0, fabs(integ[i]) / 360.0,
+                  peak[i] / LSB_PER_DPS);
+  Serial.println();
+  Serial.printf("  回した軸の「÷90°」または「÷360°」の列が %.0f 近辺なら、"
+                "いまのスケール %.0f は正しい。\n",
+                LSB_PER_DPS, LSB_PER_DPS);
+  Serial.println("  16 倍ずれていたら K01 ではない部品が挿さっている。'i' で COMP_ID を見ること。");
+  Serial.println("  ※ 最大レートが ±300°/s に近いなら速すぎる。飽和の疑いがあるのでやり直す。");
 }
 
 // ------------------------------------------------------------
@@ -741,6 +1136,10 @@ static void dry_isr() {
 }
 
 static void cmd_dry(uint32_t seconds) {
+  // ★ 初期化前は DRY_DRV_EN が立っていないので GP21 は誰も駆動していない。
+  //   そこで割り込みを張ると雑音を数えて**ありもしない ODR を報告する**。
+  if (!g_inited) { Serial.println("先に 'r' で初期化すること（DRY_DRV_EN が必要）"); return; }
+
   Serial.printf("DRY_SYNC の立ち上がりを %lu 秒数える…\n", (unsigned long)seconds);
   g_dry_count = 0; g_dry_last_us = 0;
   g_dry_min_us = 0xFFFFFFFF; g_dry_max_us = 0;
@@ -753,13 +1152,24 @@ static void cmd_dry(uint32_t seconds) {
   detachInterrupt(digitalPinToInterrupt(PIN_DRY));
 
   const double dur = (millis() - t0) / 1000.0;
+  const double dry_hz = g_dry_count / dur, read_hz = reads / dur;
   Serial.printf("DRY 回数 %lu / %.1f s = %.1f Hz（読み出しは %.1f Hz）\n",
-                (unsigned long)g_dry_count, dur, g_dry_count / dur, reads / dur);
+                (unsigned long)g_dry_count, dur, dry_hz, read_hz);
   if (g_dry_count > 2)
     Serial.printf("周期 min %lu us / max %lu us\n",
                   (unsigned long)g_dry_min_us, (unsigned long)g_dry_max_us);
   else
     Serial.println("★ パルスが取れていない。DRY_DRV_EN・配線・ピン番号を確認すること");
+
+  // ★★ **読み出しが ODR より遅いと、この値は ODR ではなく読み出しレートになる。**
+  //   DRY は「出力レジスタ更新 → 最初の読み出し」の間だけ High なので、
+  //   読む方が遅ければ更新ごとに 1 パルスではなく読むごとに 1 パルスになる。
+  //   dec=NONE(11.8kHz) や 5900Hz は 1MHz SPI では原理的に追いつかないので、
+  //   下の「期待値」と食い違っても故障ではない。ここを混同すると配線を疑い始める。
+  if (g_dry_count > 2 && dry_hz > read_hz * 0.9)
+    Serial.println("★ DRY 回数 ≒ 読み出し回数。**これは ODR ではなく読み出し律速の値**。"
+                   "'k' で SPI を速くするか 'e' で dec を落として再測定すること");
+
   Serial.printf("設定上の期待値: dec=%u → %s\n", g_dec,
                 g_dec == DEC_NONE ? "11.8kHz(85us)" :
                 g_dec == DEC_5900 ? "5.9kHz(169us)" :
@@ -780,14 +1190,16 @@ static void stream_tick() {
   g_stream_last_ms = millis();
   const Sample s = read_sample_dec();
   if (g_stream_csv) {
-    // t_us,gx,gy,gz,ax,ay,az,temp  （単位は deg/s, m/s^2, degC）
+    // t_us,gx,gy,gz,ax,ay,az,temp,ok （単位は deg/s, m/s^2, degC。ok は 1/0）
+    // ★ 列は 9 つ。'v' で出すヘッダ行と必ず揃えること。
     Serial.printf("%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%d\n",
       (unsigned long)micros(),
       s.gx / LSB_PER_DPS, s.gy / LSB_PER_DPS, s.gz / LSB_PER_DPS,
       s.ax / LSB_PER_MPS2, s.ay / LSB_PER_MPS2, s.az / LSB_PER_MPS2,
       s.temp / LSB_PER_DEGC, s.ok ? 1 : 0);
   } else {
-    const float axf = s.ax / LSB_PER_MPS2, ayf = s.ay / LSB_PER_MPS2, azf = s.az / LSB_PER_MPS2;
+    const float axf = s.ax / LSB_PER_MPS2, ayf = s.ay / LSB_PER_MPS2,
+                azf = s.az / LSB_PER_MPS2;
     Serial.printf("gyro %+8.3f %+8.3f %+8.3f deg/s | acc %+8.3f %+8.3f %+8.3f m/s2 "
                   "| |a|=%6.3f | %5.1fC %s\n",
       s.gx / LSB_PER_DPS, s.gy / LSB_PER_DPS, s.gz / LSB_PER_DPS,
@@ -800,6 +1212,7 @@ static void stream_tick() {
 // *_1 と *_2 の比較
 // ------------------------------------------------------------
 static void cmd_compare() {
+  if (!g_inited) { Serial.println("先に 'r' で初期化すること"); return; }
   Serial.println("補間出力(*_1) と デシメーション出力(*_2) を 10 回ずつ");
   Serial.println("  *_1 は補間（実効 ODR 非常に高・ジッタ<2.6us）、*_2 は DEC 設定で間引いた出力。");
   Serial.println("  レンジ設定は別フィールド（DYN_*_XYZ1 / XYZ2）。同じ設定なら値もほぼ一致する。");
@@ -829,6 +1242,7 @@ static void cmd_help() {
   Serial.println("  s  ステータス全ダンプ＋フレーム統計");
   Serial.println("  m  静止 10 秒測定（バイアス・ノイズ・1g スケール誤差）");
   Serial.println("  M  静止 60 秒測定");
+  Serial.println("  G  ジャイロ感度の実測（90°/360° 回して積分。**ジャイロのスケール検証はこれだけ**）");
   Serial.println("  d  DRY_SYNC で実 ODR を測る（5 秒）");
   Serial.println("  c  連続表示 開始/停止（人が読む形式）");
   Serial.println("  v  CSV 出力 開始/停止（100Hz。ログ取り用）");
@@ -840,6 +1254,8 @@ static void cmd_help() {
   Serial.printf("  現在: TA=%u  SPI=%lu Hz  filt=%u  dec=%u  init=%s\n",
                 g_ta, (unsigned long)g_spi_hz, g_filt_rate, g_dec,
                 g_inited ? "OK" : "NO");
+  Serial.printf("  感度: ジャイロ %.0f LSB/(°/s)  加速度 %.0f LSB/(m/s²)  （K01 固定%s）\n",
+                LSB_PER_DPS, LSB_PER_MPS2, g_is_k01 ? "" : " ★COMP_ID 不一致");
   Serial.println();
 }
 
@@ -854,7 +1270,12 @@ void setup() {
   pinMode(PIN_EXTRESN, OUTPUT);
   digitalWrite(PIN_EXTRESN, HIGH);      // 既定 High（Low でリセット）
   // ★ DRY_SYNC は SYNC 入力との兼用ピン。**出力にしないこと。**
-  pinMode(PIN_DRY, INPUT);
+  //   ★ プルダウンを掛ける。DRY_DRV_EN が立つまでこのピンは誰も駆動していないので、
+  //     プル無し入力だと RP2350 のパッドが中間電位に張り付いて雑音を拾い、
+  //     'd' の割り込みが**ありもしない ODR を数える**。DRY は high-active の
+  //     push-pull 出力なので、プルダウンしても動作には影響しない。
+  //     （プル無し入力を放置して踏んだ実例が本体側の GPIO42/44 にある。CLAUDE.md 参照）
+  pinMode(PIN_DRY, INPUT_PULLDOWN);
 
   SPI.setRX(PIN_MISO);
   SPI.setSCK(PIN_SCK);
@@ -872,6 +1293,11 @@ void setup() {
   Serial.println();
   Serial.println("SCH16T-K01-10 standalone test (RP2350 / Pico 2)");
   Serial.println("配線: MISO=GP16 CS=GP17 SCK=GP18 MOSI=GP19 EXTRESN=GP20 DRY=GP21");
+
+  // ★ **SPI を叩く前にフレーム組み立てを自己テストする。**
+  //   ここで落ちたら配線をいくら見ても無駄なので、先に出す。
+  selftest_frames();
+
   cmd_help();
 
   cmd_id();
@@ -893,6 +1319,7 @@ void loop() {
     case 's': cmd_status(); break;
     case 'm': cmd_measure(10); break;
     case 'M': cmd_measure(60); break;
+    case 'G': cmd_gyro_scale(); break;
     case 'd': cmd_dry(5); break;
     case 'p': cmd_compare(); break;
     case 'c':

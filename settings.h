@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261003
-#define BUILDVERSION "0.984"
+#define BUILDDATE 20261006
+#define BUILDVERSION "0.985"
 #define VERSION_TEXT "Version 7"
 
 //----------GNSS---------
@@ -192,6 +192,20 @@
 // クランプの両方がこれを見る（片方だけ直して食い違うのを防ぐ）。
 #define SOUND_VOLUME_MAX 100
 
+// 音声の「排他グループ」。同じグループの音声は **ひとつの状態を言い替えたもの**で、
+// 新しい方が鳴り始めた時点で古い方はもう事実ではない。src/sound.cpp の pending
+// （割り込まれた音声を後で鳴らし直す救済キュー）はここを見て、同じグループの
+// 古い音声を**救済せずに捨てる**。
+// ★ 捨てないと機体が嘘を喋る。設定画面のモードは OFF→SENDER→RECEIVER の回転式で、
+//   RECEIVER へ行くには SENDER を必ず通る。0.984 までは通過した sender_mode.wav が
+//   receiver_mode.wav に割り込まれて pending に入り、**受信モードにした直後の機体が
+//   「送信モード」と読み上げていた**。モード読み上げは「操作ミスに気づく手段」
+//   （link_set_mode() のコメント）なので、言い替え前の値が残ると目的が反転する。
+// ★ 「鳴らさない」グループではない。割り込まれた側を救済しないだけで、
+//   自分が割り込まれる側になる判定（優先度）は今までと同じ。
+#define WAV_EXCL_NONE      0   // 排他なし（既定）。割り込まれたら従来どおり救済する
+#define WAV_EXCL_LINKMODE  1   // 無線モードの読み上げ（sender_mode.wav / receiver_mode.wav）
+
 #define SIN_VOLUME 0.15f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
 #define VARIO_VOL_SCALE 3
 // 上昇ビープ（高音）の音量を、下降音（低音）に対して何%にするかの補正。
@@ -310,8 +324,8 @@
 //
 // ★ 有効にする前に tools/vectormap/README.md の手順でデータを生成すること。
 //   未生成のまま有効にすると #error で止まる（リンクエラーで悩まないように）。
-#define VECTORMAP_HIRES
-
+//#define VECTORMAP_HIRES
+  
 // ============================================================
 //  SD カードとリプレイ再生
 // ============================================================

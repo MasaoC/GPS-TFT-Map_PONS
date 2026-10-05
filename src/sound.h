@@ -17,7 +17,10 @@
   void loop_tone();
 
   void setup_sound();
-  void startPlayWav(const char* filename, int priority = 1, int min_volume = 0);
+  // excl_group: 音声の排他グループ（settings.h の WAV_EXCL_*）。
+  //   同じグループの音声に割り込まれた側は pending に残さず捨てる（言い替えなので）。
+  void startPlayWav(const char* filename, int priority = 1, int min_volume = 0,
+                    int excl_group = WAV_EXCL_NONE);
   void update_tone(float degpersecond);
   void playTone(int freq,int duration, int counter,int priority = 1, int min_volume = 0, bool solo_play = false);
   void update_vario();  // バリオメーター音更新（Core0 から毎ループ呼ぶ）

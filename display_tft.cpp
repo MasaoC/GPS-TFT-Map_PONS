@@ -2456,6 +2456,19 @@ void draw_wireless(int cursor) {
   backscreen.printf(" Module  : %s", link_module_alive() ? "OK" : "NO RESPONSE");
   y += lh;
 
+  // ★★ リプレイ中・デモ中は無線を「OFF 扱い」にしている（link.h）。
+  //   **設定値は書き換えていない**ので、ここに理由を出さないと
+  //   「RECEIVER のままなのに何も映らない」「Sent が増えない」の原因に辿り着けない。
+  //   ここは**無線そのもののページ**なので、地図側と違って隠さず出すのが正しい。
+  if (mode != LINK_MODE_OFF && link_rf_suppressed()) {
+    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.printf(" Hold    : %s (%s)", getReplayMode() ? "replay" : "demo",
+                      (mode == LINK_MODE_TX) ? "no TX" : "no mirror");
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    y += lh;
+  }
+
   if (mode == LINK_MODE_RX) {
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     backscreen.setCursor(2, y);
@@ -2551,7 +2564,10 @@ void draw_wireless(int cursor) {
     // モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     backscreen.setCursor(2, y);
-    backscreen.print(" Sending 1Hz (no uplink)");
+    // ★ 抑止中に「Sending 1Hz」と書くと嘘になる。上の Hold 行と二重になるが、
+    //   **断言している文のほうを直す**（Hold を見落としても誤解しない）。
+    backscreen.print(link_rf_suppressed() ? " Sending : held (not on air)"
+                                          : " Sending 1Hz (no uplink)");
     y += lh;
     backscreen.setCursor(2, y);
     backscreen.printf(" Sent    : %u", link_tx_count());
@@ -2655,6 +2671,12 @@ static uint16_t link_frame_color() {
 
 // 地図の左上に [無線アイコン][役割アイコン] を置く。
 // 受信モードでは役割アイコンを 1Hz で点滅させる（draw_replay_indicator と同じ流儀）。
+//
+// ★ **リプレイ中・デモ中はここへ来ない**（draw_link_overlay が先に return する）。
+//   0.978〜0.984 には「リプレイ中は灰色の弧 1 本」という分岐があったが、
+//   **役割アイコン（飛行機／艇）が出ること自体が「そのとき送信機だった」に見える**
+//   ので分岐ごと畳んだ。送信を止めている事実は WIRELESS 画面の "Hold" に出る。
+//   戻すときは、再生中の画面に無線の役割を描いてよいのかから考え直すこと。
 static void draw_link_icons() {
   const uint8_t mode = link_get_mode();
   if (mode == LINK_MODE_OFF) return;    // アイコンが無いこと自体が「無線オフ」の表示
@@ -2681,13 +2703,6 @@ static void draw_link_icons() {
 
   if (!link_module_alive()) {
     // モジュール自体が応答していない。強度も送出も語れない。
-  } else if (!rx && getReplayMode()) {
-    // ★ リプレイ中は意図して送信を止めている（link_tx_tick 参照）。
-    //   下の分岐に落とすと「弧 0 本＋赤い×」＝故障、に見えてしまう。
-    //   灰色の弧 1 本＋×なしで「止めている」を示す。
-    level = 1;
-    rcol  = COLOR_GRAY;
-    lost  = false;
   } else if (!rx && link_preflight_state() == LINK_PF_RUNNING) {
     // ★ 送信前チェックの最中。まだ 1 回も送っていないので、下の分岐に落とすと
     //   「弧 0 本＋赤い×」＝送れていない、に見えてしまう。故障と区別できないので
@@ -2829,6 +2844,13 @@ static void draw_link_preflight_box() {
 //       せめて「モジュールが生きていて送出できている」ことは見せる。
 //       ここを受信モード限定にしていると ICON_PLANE が一度も描かれない。
 static void draw_link_overlay() {
+  // ★★ **リプレイ中・デモ中は無線の表示を一切出さない**（link.h / docs §5）。
+  //   枠もアイコンもポップアップも「いま電波が出ているか／届いているか」の話で、
+  //   再生中・デモ中の画面の数字とは無関係。出すと **そのとき送信機／受信機
+  //   だったかのような画面**になる（まさに直したかった症状）。
+  //   出どころは `REPLAY` / `REPLAY RX` バッジ（draw_replay_indicator）が担い、
+  //   無線そのものの状態は WIRELESS 画面に残る。
+  if (!link_live_ui_ok()) return;
   const uint8_t mode = link_get_mode();
   if (mode == LINK_MODE_OFF) return;
 
@@ -3288,7 +3310,9 @@ void draw_header() {
   // ★ 0.978 で左上の "RX" バッジを削除した。塗り矩形 (3,3,44,11) が
   //   m/s の桁（setCursor(-1,3) から NM_FONT_LARGE で描く）の真上に乗り、
   //   **対地速度が読めなくなっていた**。受信モードかどうかは枠の色で分かる。
-  if (link_get_mode() == LINK_MODE_RX) {
+  // ★ 枠の色は**生の受信状況**（MIRROR / NO SIGNAL）なので、リプレイ中・デモ中は
+  //   出さない。再生の画面にティールの枠が出ると「いま機体が映っている」と読める。
+  if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) {
     const uint16_t col = link_frame_color();
     header_footer.drawRect(0, 0, SCREEN_WIDTH, HEADERFOOTER_HEIGHT, col);
     header_footer.drawRect(1, 1, SCREEN_WIDTH - 2, HEADERFOOTER_HEIGHT - 2, col);
@@ -3406,7 +3430,10 @@ void draw_footer(){
   // ★ 受信モードでは送信側(S)と受信側(R)の両方を出す（docs/pons_link.md §5）。
   //   送信側が先。機体の電池が先に切れるほうが困るので、目に入る順を優先した。
   //   未受信のときは S を "--" にする（古い値を出し続けない）。
-  if (link_get_mode() == LINK_MODE_RX) {
+  // ★ リプレイ中・デモ中は 2 本立てにしない。S は**生のリンク**から取るので、
+  //   画面の他の数字（過去のログ／仮想機体）と出どころが混ざる。
+  //   下の通常表示へ落ちれば、リプレイの電圧列はそちらが正しく出す。
+  if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) {
     const float rv = get_input_voltage();    // 自機（受信機）は必ず実測値
     // ★ AA_FONT_SMALL（約12px/文字）だと "S50 R40%" が 96px になり右端をはみ出す。
     //   組み込みフォント（6x8）に落として 48px に収める。色分けは変わらず効く。

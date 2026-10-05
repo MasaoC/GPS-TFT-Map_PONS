@@ -83,6 +83,19 @@ static uint32_t s_seqBackMs = 0;    // 直近に逆行を見た時刻
 #define SEQBACK_WINDOW_MS  10000    // この間隔が空いたら数え直す（再起動と区別）
 
 // ============================================================
+//  リプレイ中／デモ中の抑止
+//    画面の数字が電波と無関係になる場面。理由と約束は link.h に書いてある。
+//    ★ **ここが唯一の判定**。呼び出し側に getReplayMode() / is_demo_active() を
+//      書き写さないこと（0.984 までの二重記述が食い違いの温床だった）。
+//    ★ 受信（RX）の電波そのものは止めない。受信して received/ に書き続けるのは
+//      ボートの本来の仕事で、害が無いうえ失うと二度と戻らない。
+//      送信（TX）を止めるのは **嘘の電波を出す**から。この非対称には理由がある。
+// ============================================================
+static bool link_offline_scene() { return getReplayMode() || is_demo_active(); }
+bool link_rf_suppressed() { return link_offline_scene(); }
+bool link_live_ui_ok()    { return !link_offline_scene(); }
+
+// ============================================================
 //  警告の鳴らし方
 //    音声（WAV）は本体 FLASH にあるので、**SD の有無に関係なく必ず喋る**
 //    （0.982 で SD から FLASH へ移した。それまでは SD が無い機体では
@@ -234,19 +247,25 @@ void link_setup() {
 }
 
 // 起動時に無線モードを読み上げる。**setup() の末尾で呼ぶ。**
-// ★ 起動時に送信/受信の**どちらも**読み上げる（docs/pons_link.md §1）。
-//   受信側だけ読み上げる案だと「何も言わない＝正常」と受け取られ、
-//   無線が OFF になっていることに気づけない。両方読み上げれば
-//   **無音が「無線 OFF」を意味する**ようになり、3 状態が音だけで判別できる。
+// ★ **3 状態すべてを読み上げる**（docs/pons_link.md §1）。TX / RX だけ読み上げて
+//   OFF を無音にしていたころ（0.984 まで）は「無音＝OFF」という取り決めだったが、
+//   **無音は「音量 0」や「音声が焼けていない」とも区別が付かない**。意図せず OFF に
+//   なっている機体で、持ち主が「音量を絞ったままだ」と思い込む余地があった。
+//   `link_off.wav` を足して、3 状態とも**必ず何か喋る**ようにしてある。
+//   **OFF の分岐を無音に戻さないこと。**
+// ★ 範囲外の値は来ない（mysd.cpp の setLinkMode() が OFF へ丸める）。
+//   それでも else で受けてあるのは、万一来ても無音にしないため。
 // ★ link_setup() から切り離してある理由:
 //   link_setup() は起動画面に E220 の結果を出すためスプラッシュより前へ移した。
 //   読み上げもそこへ付いていくと、**起動音(opening.wav)より先に喋ってしまう**。
 //   元どおり setup() の末尾で呼ぶことで、鳴る順番は移動前と同じになる。
 void link_announce_mode() {
-    if (link_mode_setting == LINK_MODE_TX)
-        enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
+    if      (link_mode_setting == LINK_MODE_TX)
+        enqueueTask(createPlayWavTask("wav/sender_mode.wav",   2, 0, WAV_EXCL_LINKMODE));
     else if (link_mode_setting == LINK_MODE_RX)
-        enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
+        enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2, 0, WAV_EXCL_LINKMODE));
+    else
+        enqueueTask(createPlayWavTask("wav/link_off.wav",      2, 0, WAV_EXCL_LINKMODE));
 }
 
 // ============================================================
@@ -261,6 +280,13 @@ void link_announce_mode() {
 // 誤読の起点になるので、画面を見ていなくても気づけるようにする。
 static void link_watch_mirror_transition() {
     if (link_mode_setting != LINK_MODE_RX) return;
+    // ★★ **リプレイ中・デモ中は鳴らさない。** この音の意味は「いま画面に出ている
+    //   数値の意味が機体と自機の間で入れ替わった」で、再生中・デモ中の画面は
+    //   電波では一切動かない。鳴らすと言っていることが嘘になる。
+    // ★ **前回値を更新せずに戻ること。** 更新すると再生中に起きた遷移が黙って
+    //   飲まれ、再生をやめて画面が NO SIGNAL に変わったことを誰も言わなくなる。
+    //   更新しないので、再生をやめた直後の 1 回でちゃんと知らせる。
+    if (!link_live_ui_ok()) return;
     static bool was_mirror = false;
     static bool primed     = false;   // 起動直後の 1 回目は鳴らさない
     const bool now_mirror = link_is_receiving();
@@ -710,7 +736,7 @@ static uint32_t    s_txStateMs   = 0;
 static void link_tx_tick() {
     if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; return; }
 
-    // ★★ **リプレイ中は送信しない。**
+    // ★★ **リプレイ中とデモ中は送信しない**（判定は link_rf_suppressed()）。
     //   apply_replay_row()（gnss.cpp）は stored_latitude / stored_fixtype など
     //   **実センサーの格納変数そのものを上書きする**ので、そのまま送ると
     //   **過去の飛行を「いまの飛行」としてボートへ流す**ことになる。
@@ -719,9 +745,16 @@ static void link_tx_tick() {
     //   間違った値が出る）そのもの。地上での確認作業で電波を出す理由も無い。
     //   ★ ボート側は 10 秒後に NO SIGNAL になるが、それが「送っていない」という
     //     正しい表示。リプレイをやめれば次のスロットから復帰する。
+    //   ★★ **デモも同じ理由で送らない。** デモは stored_* を上書きしないので
+    //     フライト CSV には残らないが、link_push_telemetry() は get_gnss_lat() など
+    //     **accessor 経由**で詰めるため、仮想機体の位置・速度・方位・衛星数は
+    //     そのまま電波に乗る。しかも fixflags だけは実 GNSS 由来なので、
+    //     **屋外で fix がある機体がデモを出すとボートには「本物の飛行」として届く**
+    //     （機械は陸に置いたまま、画面上は琵琶湖を飛んでいる）。
+    //     **記録に残らないものだけが電波に出る**という、一番たちの悪い非対称になる。
     //   ★ 途中状態なら**寝かせてから**畳む。mode 0 に置いたままにすると
     //     8.2mA を食い続ける。
-    if (getReplayMode()) {
+    if (link_rf_suppressed()) {
         if (s_txState != LTX_IDLE) { e220_sleep(); s_txState = LTX_IDLE; }
         return;
     }
@@ -810,6 +843,10 @@ void link_loop() {
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
+    // ★ この 2 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
+    //   「送信機の電池が減っている」「自分のモジュールが応答しない」は
+    //   画面に出している数字とは無関係に**いま現実に起きている事実**なので、
+    //   再生のために黙らせる理由が無い（画面の飾りだけを止める。link.h 参照）。
     link_watch_sender_faults();
     link_watch_sender_battery();
     link_periodic_report();
@@ -844,11 +881,19 @@ void link_set_mode(uint8_t mode) {
     // ★ 変わった役割をその場で読み上げる（起動時の読み上げと同じ流儀）。
     //   機体を誤って受信モードにすると送信が止まり、ボート側の症状は
     //   「無信号」になる。起動時にしか読み上げないと、飛行前の操作ミスに
-    //   気づく機会が無い。OFF は無音＝OFF の意味を保つため鳴らさない。
+    //   気づく機会が無い。
+    //   ★ **OFF も読み上げる**（0.985 から）。回転式なので目的のモードを通り過ぎて
+    //     OFF まで回してしまうことがあり、**OFF を無音にしていると気づけない**。
+    //     無線が落ちた症状は相手側の「無信号」だけなので、自機では分からない。
     //   音量は起動時の読み上げと揃える（優先度 2・最低音量の強制なし）。
     //   意図して消音している機体を、モードを回すたびに鳴らさないため。
-    if      (mode == LINK_MODE_TX) enqueueTask(createPlayWavTask("wav/sender_mode.wav", 2));
-    else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2));
+    //   ★ WAV_EXCL_LINKMODE を必ず付ける。設定画面のモードは回転式で、RECEIVER へ
+    //     行くには SENDER を必ず通る。付けないと通過した sender_mode.wav が pending に
+    //     残り、**受信モードにした直後の機体が「送信モード」と読み上げる**（0.984 の不具合）。
+    //     OFF にも付いているので、**読み上げ中に OFF へ回せばその場で言い替わる**。
+    if      (mode == LINK_MODE_TX) enqueueTask(createPlayWavTask("wav/sender_mode.wav",   2, 0, WAV_EXCL_LINKMODE));
+    else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2, 0, WAV_EXCL_LINKMODE));
+    else                           enqueueTask(createPlayWavTask("wav/link_off.wav",      2, 0, WAV_EXCL_LINKMODE));
     s_rxValid = false;                 // モードが変わったら受信データは無効
     link_apply_power_state();
     // 送信モードに入ったら送り始める前にチャンネルを確かめる。
@@ -1043,7 +1088,11 @@ bool link_mirror_active() {
     //   ここでミラーを優先すると、再生を選んだのに生の受信データが出続けて
     //   「再生できない」ように見える。生データは received/ に残り続けるので、
     //   再生を優先しても失うものは無い。
-    if (getReplayMode()) return false;
+    // ★★ **デモ中もミラーしない。**「デモは無線 OFF 扱い」（link.h）の一部。
+    //   許すと **受信中は機体・切れた瞬間に仮想機体**という混ざり方をする。
+    //   get_gnss_lat() はミラー → デモの順に見るので、**黙って入れ替わる**
+    //   （NO SIGNAL が「自機に戻った」ではなく「デモに化けた」になる）。
+    if (!link_live_ui_ok()) return false;
     return link_mode_setting == LINK_MODE_RX && link_is_receiving();
 }
 

@@ -96,9 +96,14 @@ volatile uint32_t bufferLen[2] = {CHUNK_SIZE, CHUNK_SIZE};
 //   電池切れに気づけるように」という仕組みの目的そのものを失う。
 //   0.982 で battery_low の代替ビープ（トーン側は音量を保持していた）を
 //   消したので、この経路が唯一の警告になった。必ず運ぶこと。
-struct PendingWav { int index; int priority; int min_volume; };
+// ★ excl_group（排他グループ・settings.h の WAV_EXCL_*）も一緒に持つこと。
+//   pending から復帰した音声も「ひとつの状態の言い替え」であり続けるので、
+//   復帰後にまた同じグループの新しい読み上げが来たら捨てられる必要がある。
+//   落とすと「1 回だけ嘘を喋る」経路が残る。
+struct PendingWav { int index; int priority; int min_volume; int excl_group; };
 static int         current_wav_index     = -1;       // 現在再生中の WAV_ENTRIES 添字（-1=無し）
-static PendingWav  pending_wav[2]        = {{-1, 0, 0}, {-1, 0, 0}};
+static int         current_wav_excl      = WAV_EXCL_NONE;  // 現在再生中の排他グループ
+static PendingWav  pending_wav[2]        = {{-1, 0, 0, WAV_EXCL_NONE}, {-1, 0, 0, WAV_EXCL_NONE}};
 
 // pending からの再生は必ずファイル先頭からになる（再開位置を持たない）ため、
 // 「割り込まれる → pending に戻る → 先頭から再生 → また割り込まれる」を繰り返すと
@@ -109,7 +114,7 @@ static bool current_wav_is_replay = false;  // 現在再生中の WAV が pendin
 // 音声名から WAV_ENTRIES[] の添字を引く。見つからなければ -1。
 //
 // WAV_ENTRIES は名前の昇順に並んでいる（tools/gen_wav_flash.py が sorted() で出す）。
-// 31 件しかなく、呼ばれるのは再生開始のときだけなので線形探索で十分。
+// 数十件しかなく、呼ばれるのは再生開始のときだけなので線形探索で十分。
 static int wav_find(const char* name) {
     if (name == nullptr) return -1;
     for (uint16_t i = 0; i < WAV_COUNT; i++) {
@@ -126,7 +131,7 @@ static const char* wav_name_of(int index) {
 
 // pending_wav[] に index を追加する。
 // 空きスロットがあれば追加、両方埋まっている場合は最も低優先なスロットを上書き。
-static void push_pending_wav(int index, int priority, int min_volume) {
+static void push_pending_wav(int index, int priority, int min_volume, int excl_group) {
     // ★ 上限も見る。ここが WAV_ENTRIES[] の添字を pending に入れる唯一の入口で、
     //   復帰時は `WAV_ENTRIES[pidx].name` と添字で引くため、範囲外が 1 つ入ると
     //   そのまま配列外参照になる。いまの呼び出し元は必ず wav_find() の戻り値
@@ -141,7 +146,7 @@ static void push_pending_wav(int index, int priority, int min_volume) {
     // 空きスロットを探す
     for (int i = 0; i < 2; i++) {
         if (pending_wav[i].index < 0) {
-            pending_wav[i] = {index, priority, min_volume};
+            pending_wav[i] = {index, priority, min_volume, excl_group};
             return;
         }
     }
@@ -150,16 +155,30 @@ static void push_pending_wav(int index, int priority, int min_volume) {
     if (priority > pending_wav[lowest].priority) {
         DEBUGW_P(20260322, "WARN: pending wav overwritten: ");
         DEBUGW_PLN(20260322, wav_name_of(pending_wav[lowest].index));
-        pending_wav[lowest] = {index, priority, min_volume};
+        pending_wav[lowest] = {index, priority, min_volume, excl_group};
     } else {
         DEBUGW_P(20260322, "WARN: pending wav dropped (queue full): ");
         DEBUGW_PLN(20260322, wav_name_of(index));
     }
 }
 
+// 同じ排他グループの音声を pending から捨てる。
+// 新しい読み上げが始まる（または pending に積まれる）直前に呼ぶ。
+// WAV_EXCL_NONE は「排他なし」なので何もしない（既定値で全部消える事故を防ぐ）。
+static void drop_pending_excl_group(int excl_group) {
+    if (excl_group == WAV_EXCL_NONE) return;
+    for (int i = 0; i < 2; i++) {
+        if (pending_wav[i].index >= 0 && pending_wav[i].excl_group == excl_group) {
+            DEBUGW_P(20261006, "Pending wav superseded (same excl group): ");
+            DEBUGW_PLN(20261006, wav_name_of(pending_wav[i].index));
+            pending_wav[i] = {-1, 0, 0, WAV_EXCL_NONE};
+        }
+    }
+}
+
 // pending_wav[] から最も高優先のエントリを取り出してクリアする。なければ -1。
-// out_priority / out_min_volume に、積んだときの値をそのまま返す。
-static int pop_best_pending_wav(int &out_priority, int &out_min_volume) {
+// out_priority / out_min_volume / out_excl_group に、積んだときの値をそのまま返す。
+static int pop_best_pending_wav(int &out_priority, int &out_min_volume, int &out_excl_group) {
     int best = -1;
     for (int i = 0; i < 2; i++) {
         if (pending_wav[i].index >= 0) {
@@ -170,7 +189,8 @@ static int pop_best_pending_wav(int &out_priority, int &out_min_volume) {
     int idx        = pending_wav[best].index;
     out_priority   = pending_wav[best].priority;
     out_min_volume = pending_wav[best].min_volume;
-    pending_wav[best] = {-1, 0, 0};
+    out_excl_group = pending_wav[best].excl_group;
+    pending_wav[best] = {-1, 0, 0, WAV_EXCL_NONE};
     return idx;
 }
 
@@ -391,14 +411,17 @@ bool __not_in_flash_func(loadNextChunk)() {
 // filename: 音声名。SD 時代のパスをそのまま鍵に使う（例 "wav/track.wav"）。
 //           実体は本体 FLASH の WAV_BLOB で、SD は一切見ない。
 // priority: 優先度（高い値が高優先。現在再生中の方が高優先なら再生せずにリターン）。
+// excl_group: 排他グループ（settings.h の WAV_EXCL_*）。同じグループの音声は
+//           「ひとつの状態の言い替え」なので、古い方を pending に残さない。
 //
 // 処理フロー:
 //   1. 音声名を WAV_ENTRIES[] から索引する
-//   2. 優先度チェック：現在の再生が高優先なら中止
-//   3. 再生状態を全リセット（バッファ・位置・フラグ）
-//   4. 最初のチャンクを loadBuffer へ移す
-//   5. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
-void startPlayWav(const char* filename, int priority, int min_volume) {
+//   2. 同じ排他グループの古い読み上げを pending から捨てる
+//   3. 優先度チェック：現在の再生が高優先なら中止
+//   4. 再生状態を全リセット（バッファ・位置・フラグ）
+//   5. 最初のチャンクを loadBuffer へ移す
+//   6. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
+void startPlayWav(const char* filename, int priority, int min_volume, int excl_group) {
     // SD は触らないが、バッファと割り込みの状態を動かすので **Core1 専用**のまま。
     // Core0 から呼ぶと loop_sound() と同時にバッファを書き替えて音が壊れる。
     ASSERT_CORE1("startPlayWav");
@@ -429,9 +452,22 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
         return;
     }
 
+    // ★ ここから先はこの音声が必ず「鳴る or pending に積まれる」ので、
+    //   同じ排他グループの古い読み上げを pending から捨てる。
+    //   **この位置でなければならない**:
+    //   上の重複判定（同じ音声の再要求）より後 — 素通りする要求で消すと、
+    //   まだ有効な言い替えを失う。優先度チェックより前 — ①で自分が pending に
+    //   回る場合も古い方は捨てたいので（さもないと両方残って 2 回喋る）。
+    drop_pending_excl_group(excl_group);
+
+    // 同じ排他グループの音声を上書きするのか（= 言い替え）。
+    // 真なら、割り込まれた側を pending に退避しない（下の退避ブロック）。
+    const bool supersedes_current =
+        (excl_group != WAV_EXCL_NONE && excl_group == current_wav_excl);
+
     // 優先度チェック①：再生中 WAV の方が高優先なら新リクエストを pending に保存
     if (wav_playing && wav_playing_priority > priority) {
-        push_pending_wav(index, priority, min_volume);
+        push_pending_wav(index, priority, min_volume, excl_group);
         DEBUGW_P(20250503,"WAV pending (lower priority than playing WAV): ");
         DEBUGW_PLN(20250427,filename);
         return;
@@ -441,7 +477,7 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // 通常トーン（sin_solo=false）は WAV とミックス再生するため pending に回さない
     bool tone_in_progress = sin_playing || tone_in_gap || tone_paused;
     if (tone_in_progress && sin_solo && tone_playing_priority >= priority) {
-        push_pending_wav(index, priority, min_volume);
+        push_pending_wav(index, priority, min_volume, excl_group);
         DEBUGW_P(20250503,"WAV pending (lower priority than solo_play tone): ");
         DEBUGW_PLN(20250503,filename);
         return;
@@ -462,14 +498,22 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // push_pending_wav() は先頭で current_wav_index と同じ音声を弾くため、
     // 先に current_wav_index をクリアしてから渡す（クリアしないと必ず弾かれて退避できない）。
     // ただし pending から復帰した WAV は再度退避しない（先頭断片の繰り返しを防ぐ）。
-    if (wav_playing && current_wav_index >= 0 && !current_wav_is_replay) {
+    // ★ 同じ排他グループ（supersedes_current）も退避しない。言い替えられた古い状態を
+    //   後から鳴らすと**機体が嘘を喋る**（settings.h の WAV_EXCL_* の説明を見ること）。
+    if (wav_playing && current_wav_index >= 0 && !current_wav_is_replay &&
+        !supersedes_current) {
         const int interrupted = current_wav_index;
         current_wav_index = -1;
         // 退避する側の最低保証音量は wav_override_volume が持っている
         // （stopPlayback() でリセットされるが、ここはまだ呼ばれていない）。
-        push_pending_wav(interrupted, wav_playing_priority, (int)wav_override_volume);
+        push_pending_wav(interrupted, wav_playing_priority, (int)wav_override_volume,
+                         current_wav_excl);
         DEBUGW_P(20250503,"Interrupted wav saved to pending.:");
         DEBUGW_PLN(20250503,wav_name_of(interrupted));
+    } else if (supersedes_current && wav_playing && current_wav_index >= 0) {
+        DEBUGW_P(20261006,"Interrupted wav dropped (superseded by same excl group): ");
+        DEBUGW_PLN(20261006,wav_name_of(current_wav_index));
+        current_wav_index = -1;
     }
     DEBUG_P(20250503,"wav start:");
     DEBUG_PLN(20250503,priority);
@@ -525,6 +569,7 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
         wav_playing = true;
         current_wav_index = index;         // 現在再生中の音声を記録（同一性判定は添字）
         current_wav_is_replay = from_pending;  // pending 由来なら再退避しない（先頭断片の繰り返し防止）
+        current_wav_excl      = excl_group;    // 言い替え判定用（WAV_EXCL_*）
         wav_override_volume = min_volume;  // 最低保証ボリューム（0=制限なし）をセット
         // ★ 優先度は **下の早期 return より前に** 入れること。
         //   音量 0 の WAV も wav_playing=true のまま「無音で再生中」になる
@@ -601,18 +646,19 @@ void __not_in_flash_func(loop_sound)(){
             current_wav_index = -1;
             s_wav_src = nullptr;
             current_wav_is_replay = false;
+            current_wav_excl      = WAV_EXCL_NONE;
             stopPlayback();
             // pending WAV があれば最高優先のものを再生する
             // ただし toneBuffer にトーンが残っている場合は loop_tone() に委ねる。
             // （WAV終了直後に pending を即起動すると、ガードで待機中のトーンと同時再生になるため）
             if (toneBufHead == toneBufTail) {
-                int prio = 0, pminvol = 0;
-                const int pidx = pop_best_pending_wav(prio, pminvol);
+                int prio = 0, pminvol = 0, pexcl = WAV_EXCL_NONE;
+                const int pidx = pop_best_pending_wav(prio, pminvol, pexcl);
                 if (pidx >= 0) {
                     DEBUGW_P(20250503,"Replaying pending wav:");
                     DEBUGW_PLN(20250503, wav_name_of(pidx));
                     pending_replay_next = true;  // pending 由来の再生であることを伝える
-                    startPlayWav(WAV_ENTRIES[pidx].name, prio, pminvol);
+                    startPlayWav(WAV_ENTRIES[pidx].name, prio, pminvol, pexcl);
                 }
             }
         } else {
@@ -635,6 +681,7 @@ void __not_in_flash_func(loop_sound)(){
                 current_wav_index = -1;
                 s_wav_src = nullptr;
                 current_wav_is_replay = false;
+                current_wav_excl      = WAV_EXCL_NONE;
                 stopPlayback();
                 DEBUGW_PLN(20250508,"Buffer underrun timeout, playback aborted");
             } else {
@@ -975,11 +1022,11 @@ void loop_tone() {
                     startNextToneEntry();  // 次のエントリを開始
                 } else if (!wav_playing) {
                     // 全トーン完了かつ WAV 未再生 → pending WAV があれば再生
-                    int prio = 0, pminvol = 0;
-                    const int pidx = pop_best_pending_wav(prio, pminvol);
+                    int prio = 0, pminvol = 0, pexcl = WAV_EXCL_NONE;
+                    const int pidx = pop_best_pending_wav(prio, pminvol, pexcl);
                     if (pidx >= 0) {
                         pending_replay_next = true;  // pending 由来の再生であることを伝える
-                        startPlayWav(WAV_ENTRIES[pidx].name, prio, pminvol);
+                        startPlayWav(WAV_ENTRIES[pidx].name, prio, pminvol, pexcl);
                     }
                 }
             }

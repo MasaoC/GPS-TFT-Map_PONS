@@ -1353,7 +1353,7 @@ void loop1() {
         saveSettings();
         break;
       case TASK_PLAY_WAV:
-        startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume);
+        startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume, currentTask.playWavArgs.excl_group);
         break;
       case TASK_PLAY_MULTITONE:
         playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority, currentTask.playMultiToneArgs.min_volume, currentTask.playMultiToneArgs.solo_play);

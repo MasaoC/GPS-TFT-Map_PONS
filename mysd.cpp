@@ -806,12 +806,13 @@ Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int 
   return task;
 }
 
-Task createPlayWavTask(const char* filename, int priority, int min_volume){
+Task createPlayWavTask(const char* filename, int priority, int min_volume, int excl_group){
   Task task;
   task.type = TASK_PLAY_WAV;
   task.playWavArgs.wavfilename = filename;
   task.playWavArgs.priority = priority;
   task.playWavArgs.min_volume = min_volume;
+  task.playWavArgs.excl_group = excl_group;
   return task;
 }
 

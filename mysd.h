@@ -265,6 +265,7 @@
               const char* wavfilename;
               int priority;
               int min_volume;  // 最低保証ボリューム（0=制限なし）
+              int excl_group;  // 排他グループ（settings.h の WAV_EXCL_*）。0=排他なし
           }playWavArgs;
           struct {                           // For save_imu_replaydata
               int hour, minute, second, centisecond;
@@ -303,7 +304,8 @@
   Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms);
   void saveRxCSV(const Task& tk);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
-  Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0);
+  Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0,
+                         int excl_group=WAV_EXCL_NONE);
   Task createBrowseSDTask(int page);
   Task createBrowseReplayTask(int start_index);
   Task createLoadReplayTask();
