@@ -6,6 +6,9 @@
 GPS/GNSS navigation for human-powered aircraft, specialized for the Japan International Birdman Rally at Lake Biwa, Japan.
 
  * **現在開いている「v7」は2027、2028年向けに開発設計中のブランチで、正常に動作しない可能性があります。**
+ * **このブランチ（`PONSv7.1`）が v7 系の開発先です。** BNO085 を降ろし、
+   SCH16T を FPC で外付けした v7.1 基板用。BNO085 を搭載した初代 v7 基板用は
+   [`PONSv7`](https://github.com/MasaoC/GPS-TFT-Map_PONS/tree/PONSv7) ブランチです。
  * **v3〜v6が実際にフライト利用したことがある安定版です。**
 
 ---
