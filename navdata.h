@@ -6,7 +6,7 @@
 //           内蔵ポリゴン地図・目的地・飛行コースモードの定義、
 //           各飛行地点（琵琶湖・白浜・笠岡・富士川・東京湾など）の座標。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/10/08
 // ============================================================
 #include "settings.h"
 
@@ -156,17 +156,17 @@
 
   #define AUTO10K_AWAY 0
   #define AUTO10K_INTO 1
-  // 表示・ナビ方位に使う現在のフェーズ。リプレイ再生中は再生データで書き換わる。
+  // 表示・ナビ方位に使う現在のフェーズ。リプレイ中・デモ中は仮想位置で書き換わる。
   extern int auto10k_status;
 
   // ---- 折返しフェーズの永続化 ----
   // 飛行中に再起動すると AWAY に戻り、復路ではナビ方位が 180 度逆を指したまま
   // 自動復帰しない（距離だけでは往路と復路を区別できないため）。そこで SD に保存する。
-  // リプレイ再生でも状態遷移は起きるので、保存用の値は実飛行の遷移だけで更新する。
+  // リプレイ中とデモ中も状態遷移は起きるので、保存用の値は実飛行の遷移だけで更新する。
   void set_auto10k_status_flight(int st);   // 実飛行の遷移。現在値と保存値の両方を更新
-  int  get_auto10k_status_flight();         // SD へ書く値（リプレイの影響を受けない）
+  int  get_auto10k_status_flight();         // SD へ書く値（リプレイ・デモの影響を受けない）
   void restore_auto10k_status(int st);      // SD 設定からの復元
-  void auto10k_leave_replay();              // リプレイを抜けたとき実飛行の値へ戻す
+  void auto10k_restore_flight_phase();      // リプレイ／デモを抜けたとき実飛行の値へ戻す
 
   void init_destinations();
 

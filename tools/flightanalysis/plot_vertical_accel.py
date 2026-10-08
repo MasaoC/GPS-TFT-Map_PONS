@@ -10,7 +10,7 @@
 # 使い方  : python3 plot_vertical_accel.py
 # 出力    : vertical_accel.pdf  ＋ 標準出力のレポート
 # Author  : MasaoC (@masao_mobile)
-# Updated : 2026/09/18
+# Updated : 2026/09/19
 # ============================================================
 #
 # ===== どの量から G を出すか ==================================

@@ -4,7 +4,7 @@
 // Role    : フラッシュ内蔵ベクタ地図（OpenStreetMap 由来）のデータ形式定義と
 //           描画 API。SD カード上の BMP タイルを置き換える。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/08
+// Updated : 2026/09/11
 //
 // 地図データのライセンス:
 //   Map data (c) OpenStreetMap contributors, ODbL 1.0

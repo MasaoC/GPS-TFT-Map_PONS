@@ -35,7 +35,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/01
+// Updated : 2026/10/08
 // ============================================================
 
 #include <Arduino.h>
@@ -339,15 +339,11 @@ void imu_feed_accel(const float a[3]) {
     // BNO085 の LINEAR_ACCELERATION と違い、引く重力が固定値なので
     // 「動作に相関した誤差」が入らない（settings.h の VARIO_USE_RAW_ACCEL 参照）。
     //
-    // ★ **0.983 で上方向の出どころを GRV から ESKF の姿勢へ移した。**
-    //   式は変えていない。attitude_get_up_sensor() が返すのは回転行列の
-    //   第 3 行で、GRV から compute_earth_z_accel() が作っていた係数と同じもの。
-    //   GRV に依存しなくなったので SCH16T でも同じ経路が使える。
-    //   実ログでの影響（20260930 の 52 分 + 20260818 の 3 セッション）:
-    //     V/S の差 sd 0.012〜0.060 m/s、高度差 |max| 0.33m。
-    //     最大差が出るのは GNSS が途絶している瞬間（ESKF には重力の錨が無い）。
-    //   2026-10-03 の走行 2 時間でも sd 0.019 m/s、|max| 0.57 m/s。
-    //   → docs/imu_sch16t_plan.md
+    // ★ **0.983 で上方向の出どころを GRV から ESKF の姿勢へ移した。** 式は変えていない
+    //   （attitude_get_up_sensor() が返すのは回転行列の第 3 行で、GRV から
+    //   compute_earth_z_accel() が作っていた係数と同じもの）。実ログでの差は
+    //   V/S の sd 0.012〜0.060 m/s・高度 |max| 0.42m で、最大差は GNSS 断の瞬間に出る。
+    //   → docs/imu_sch16t_plan.md §2.3
     float u_up[3];
     if (attitude_get_up_sensor(u_up)) {
         float az_world = u_up[0]*a[0] + u_up[1]*a[1] + u_up[2]*a[2];

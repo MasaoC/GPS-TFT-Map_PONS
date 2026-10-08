@@ -2,15 +2,15 @@
 # ============================================================
 # File    : tools/imulog/compare_grv.py
 # Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-# Role    : 0.983 の変更（GRV/RV 依存の除去 ＋ 重力観測）を実ログで検証する。
+# Role    : 0.983〜0.984 の変更（GRV/RV 依存の除去 ＋ 重力観測）を実ログで検証する。
 #           走行・飛行のあと imuraw/*.bin をこれに食わせると、
 #           「新しい経路が旧経路（BNO085 の融合出力）と比べてどうか」が出る。
 # Author  : MasaoC (@masao_mobile)
-# Updated : 2026/10/01
+# Updated : 2026/10/08
 # ============================================================
 #
 # 使い方:
-#     python3 compare_grv.py /Volumes/PONSV7TEST/imuraw/20261005.bin
+#     python3 compare_grv.py /Volumes/PONSV7TEST/imuraw/20261003.bin
 #     python3 compare_grv.py <bin> --session 7        # セッションを絞る
 #     python3 compare_grv.py <bin> --cutoff 60        # GNSS 断の模擬開始を早める
 #

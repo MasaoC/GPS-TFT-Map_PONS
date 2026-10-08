@@ -23,7 +23,7 @@
 //   airdata_update() が true を返したタイミングで imu_kalman_baro_update() を呼ぶ。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/10/05
 // ============================================================
 
 #ifndef IMU_H

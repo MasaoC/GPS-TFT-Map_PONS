@@ -5,7 +5,7 @@
 //           数式・座標系・マウント補正の説明は attitude.h を参照。
 //           PC 側の tools/imulog/eskf.py と対になっている。片方を直したら両方直すこと。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/01
+// Updated : 2026/10/03
 // ============================================================
 
 #include <Arduino.h>

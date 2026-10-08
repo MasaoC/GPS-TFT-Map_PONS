@@ -8,7 +8,7 @@
 //           内蔵ポリゴンは滑走路外周や島など、ベクタ地図では表せない
 //           飛行用の注記に限る（SDが無くても必ず描画される）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/14
+// Updated : 2026/10/08
 // ============================================================
 // Geo calculations and navdata.
 #include <Arduino.h>
@@ -32,15 +32,14 @@ float truec = 0;
 float dest_dist = 0;
 
 // destination_mode: ナビモード（FLYINTO / FLYAWAY / AUTO10K）。設定画面から変更可。
-// ★ ここは **SD を読めなかったときの既定値**。SD があれば loadSettings() の
-//   navigation_mode が上書きする。
-//   AUTO10K は既定の目的地 PLATHOME（currentdestination=0）と組み合わせられる
+// ★ 初期値は **SD を読めなかったときの既定値**（SD があれば loadSettings() が上書きする）。
+//   AUTO10K × 既定の目的地 PLATHOME は許される組み合わせ
 //   （禁止は N_PILON / S_PILON / TAKESHIMA。is10K_NotAllowed_Destination()）。
 int destination_mode = DMODE_AUTO10K;
 // auto10k_status: AUTO10K モード時のフェーズ（AWAY=折り返し前 / INTO=折り返し後）。
-// リプレイ再生中は再生データに従って動くので、実飛行の値とは別に持つ。
+// リプレイ中とデモ中は仮想の位置に従って動くので、実飛行の値とは別に持つ。
 int auto10k_status = AUTO10K_AWAY;
-// SD に保存する値。実飛行の遷移だけで更新し、リプレイでは触らない。
+// SD に保存する値。実飛行の遷移だけで更新し、リプレイ中とデモ中は触らない。
 static int auto10k_status_flight = AUTO10K_AWAY;
 void set_auto10k_status_flight(int st) {
   auto10k_status = st;
@@ -50,15 +49,17 @@ int  get_auto10k_status_flight() { return auto10k_status_flight; }
 
 void restore_auto10k_status(int st) {
   auto10k_status_flight = st;
-  // 設定の読み込みは起動時（リプレイ前）にしか走らないが、念のため
-  // リプレイ中は表示側の値を書き換えない。
-  // ※ 無線のミラーはここには効かない（この関数は起動時の設定読込でしか通らず、
+  // 設定の読み込みは起動時（リプレイ前・デモ前）にしか走らないが、飛行中に
+  // SD を掴み直す経路（TASK_INIT_SD → setup_sd → loadSettings）があるので、
+  // 仮想位置で動いている最中は表示側の値を書き換えない。
+  // ※ 無線のミラーはここには効かない（起動時の設定読込でしか通らず、
   //   そのときはまだ受信していない）。ガードを足しても死んだコードになるだけ。
-  if (!getReplayMode()) auto10k_status = st;
+  if (!getReplayMode() && !is_demo_active()) auto10k_status = st;
 }
 
-void auto10k_leave_replay() {
-  // 再生した過去フライトのフェーズを実飛行に持ち込まない。
+// リプレイ／デモを抜けたときに呼ぶ。仮想位置で動いたフェーズを実飛行に
+// 持ち込まないよう、表示側の値を保存値へ戻す。
+void auto10k_restore_flight_phase() {
   auto10k_status = auto10k_status_flight;
 }
 

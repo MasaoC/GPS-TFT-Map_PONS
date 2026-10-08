@@ -7,7 +7,7 @@
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/19
+// Updated : 2026/10/08
 // ============================================================
 // 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
 #include <Arduino.h>
@@ -1154,6 +1154,7 @@ bool is_demo_active() {
 // （前の地点の軌跡が地球の反対側に残っていると描画が破綻するため）。
 void set_demo_site(demo_site_t site) {
   if (site >= DEMO_SITE_COUNT) site = DEMO_OFF;
+  const bool was_demo = (demo_site != DEMO_OFF);
   demo_site = site;
   if (site != DEMO_OFF) {
     demo_lat = DEMO_SITES[site].lat;
@@ -1162,6 +1163,10 @@ void set_demo_site(demo_site_t site) {
   }
   latlon_manager.reset();
   reset_maxgs();  // モード切替時に最大 G/S をリセット
+  // AUTO10K の折返しフェーズ。デモ中は仮想機体の位置で動くので、抜けるときに
+  // 実飛行の値へ戻す（リプレイと同じ理由。apply_auto10k_status() のコメント参照）。
+  // 地点から地点へ移るときは戻さない ― デモはそのまま続いているため。
+  if (was_demo && site == DEMO_OFF) auto10k_restore_flight_phase();
 }
 
 void next_demo_site() {
@@ -1300,7 +1305,7 @@ void set_replaymode(bool replaymode){
   reset_maxgs();  // モード切替時に最大 G/S をリセット
   // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
   // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
-  if (was_replay && !replaymode) auto10k_leave_replay();
+  if (was_replay && !replaymode) auto10k_restore_flight_phase();
   // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;
@@ -1491,12 +1496,10 @@ void gnss_loop(int id) {
 extern int max_adreading;  // display_tft.cpp で計測したバッテリー ADC 最大値
 
 // GNSS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
-// 1秒に1回だけ保存するようにクールダウンを設けている（NMEA の都合で同一秒に複数回 update が来るため）。
-// リプレイモードとデモモードでは保存しない。
-// GNSS データが揃っている場合、フライトログ CSV への保存タスクをキューに積む。
-// 400ms に1回だけ保存するようにクールダウンを設けている。
-// UBX モード・リプレイモード共に ubx_* 変数を参照する（リプレイモードでは gnss_loop() でミラー済み）。
-// リプレイモードとデモモードでは保存しない。
+// 400ms に 1 回だけのクールダウン（2Hz GNSS に合わせてある）。
+// UBX モード・リプレイモード共に ubx_* 変数を参照する（リプレイ中は gnss_loop() でミラー済み）。
+// ★ リプレイ中は保存しない。**デモ中は保存する** — 書くのは生の stored_*（実 GNSS）で、
+//   仮想機体の座標は混ざらない。軌跡だけはデモ側で登録済みなので add_latlon_track() を外す。
 void try_enque_savecsv(){
   bool all_valid = true;
   if (ubx_pos_valid) {

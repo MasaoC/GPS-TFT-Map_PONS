@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/18
+// Updated : 2026/10/08
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -1885,10 +1885,15 @@ void update_degpersecond(float true_track) {
 
 
 // AUTO10K の折返しフェーズを変更する。
-// リプレイ再生中は表示だけ変え、SD には保存しない。再生した過去フライトの
-// フェーズが実飛行の設定を上書きしてしまうため。
+// ★ **リプレイ中とデモ中は表示だけ変え、SD には保存しない。** どちらも位置が
+//   仮想なので、そこで出たフェーズを焼くと**次の起動が復路から始まる**。
+//   デモは必ず踏む: `DEMO_BIWAKO` は PLA を中心に 15km 走るので 10.475km を越え、
+//   他の地点は PLATHOME から 100km 以上あるので**開始直後の 1 回目で成立する**。
+// ★ 表示側の `auto10k_status` は動かすこと。デモの針路生成（gnss.cpp）が
+//   これを見て折り返し後に東向きへ変わる。抜けるときの復帰は
+//   `auto10k_restore_flight_phase()`（gnss.cpp の set_demo_site / set_replaymode）。
 static void apply_auto10k_status(int st) {
-  if (getReplayMode()) {
+  if (getReplayMode() || is_demo_active()) {
     auto10k_status = st;
     return;
   }

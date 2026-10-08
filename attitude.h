@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/01
+// Updated : 2026/10/03
 // ============================================================
 
 #ifndef ATTITUDE_H

@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/01
+// Updated : 2026/10/08
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -97,9 +97,8 @@ volatile uint32_t bufferLen[2] = {CHUNK_SIZE, CHUNK_SIZE};
 //   0.982 で battery_low の代替ビープ（トーン側は音量を保持していた）を
 //   消したので、この経路が唯一の警告になった。必ず運ぶこと。
 // ★ excl_group（排他グループ・settings.h の WAV_EXCL_*）も一緒に持つこと。
-//   pending から復帰した音声も「ひとつの状態の言い替え」であり続けるので、
-//   復帰後にまた同じグループの新しい読み上げが来たら捨てられる必要がある。
-//   落とすと「1 回だけ嘘を喋る」経路が残る。
+//   復帰した音声も「言い替えられる側」であり続ける。落とすと、復帰後に新しい
+//   読み上げが来ても捨てられず、**1 回だけ嘘を喋る**経路が残る。
 struct PendingWav { int index; int priority; int min_volume; int excl_group; };
 static int         current_wav_index     = -1;       // 現在再生中の WAV_ENTRIES 添字（-1=無し）
 static int         current_wav_excl      = WAV_EXCL_NONE;  // 現在再生中の排他グループ
@@ -452,12 +451,9 @@ void startPlayWav(const char* filename, int priority, int min_volume, int excl_g
         return;
     }
 
-    // ★ ここから先はこの音声が必ず「鳴る or pending に積まれる」ので、
-    //   同じ排他グループの古い読み上げを pending から捨てる。
-    //   **この位置でなければならない**:
-    //   上の重複判定（同じ音声の再要求）より後 — 素通りする要求で消すと、
-    //   まだ有効な言い替えを失う。優先度チェックより前 — ①で自分が pending に
-    //   回る場合も古い方は捨てたいので（さもないと両方残って 2 回喋る）。
+    // 同じ排他グループの古い読み上げを pending から捨てる。**この位置を動かさないこと**:
+    //   上の重複判定より後 — 素通りする要求で消すと、まだ有効な言い替えを失う。
+    //   優先度チェック①より前 — 自分が pending に回る場合も古い方は捨てる（2 回喋る）。
     drop_pending_excl_group(excl_group);
 
     // 同じ排他グループの音声を上書きするのか（= 言い替え）。
@@ -499,7 +495,7 @@ void startPlayWav(const char* filename, int priority, int min_volume, int excl_g
     // 先に current_wav_index をクリアしてから渡す（クリアしないと必ず弾かれて退避できない）。
     // ただし pending から復帰した WAV は再度退避しない（先頭断片の繰り返しを防ぐ）。
     // ★ 同じ排他グループ（supersedes_current）も退避しない。言い替えられた古い状態を
-    //   後から鳴らすと**機体が嘘を喋る**（settings.h の WAV_EXCL_* の説明を見ること）。
+    //   後から鳴らすと**機体が嘘を喋る**（docs/pons_sound.md §3）。
     if (wav_playing && current_wav_index >= 0 && !current_wav_is_replay &&
         !supersedes_current) {
         const int interrupted = current_wav_index;

@@ -5,7 +5,7 @@
 //           短押し/長押し/ダブルクリックコールバックを持つ Button クラスと、
 //           設定画面の各メニュー項目を表す Setting 構造体を定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/09/11
 // ============================================================
 #ifndef BUTTON_H
 #define BUTTON_H

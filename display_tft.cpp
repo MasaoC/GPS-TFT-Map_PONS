@@ -9,7 +9,7 @@
 //           描画の共通部品として、多角形の塗りつぶし（スキャンラインeven-odd）と
 //           線分の画面クリップ・非アンチエイリアス太線もここに置く。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/18
+// Updated : 2026/10/08
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -61,8 +61,7 @@ TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240
 #define MODE_TRACKUP 0
 #define MODE_NORTHUP 1
 #define MODE_SIZE 2
-// ★ ここは **SD を読めなかったときの既定値**。SD があれば loadSettings() の
-//   upward_mode が上書きする（設定画面で変えた値は exit_setting() で SD に戻る）。
+// ★ 初期値は **SD を読めなかったときの既定値**（SD があれば loadSettings() が上書きする）。
 int upward_mode = MODE_TRACKUP;
 
 
@@ -2673,10 +2672,9 @@ static uint16_t link_frame_color() {
 // 受信モードでは役割アイコンを 1Hz で点滅させる（draw_replay_indicator と同じ流儀）。
 //
 // ★ **リプレイ中・デモ中はここへ来ない**（draw_link_overlay が先に return する）。
-//   0.978〜0.984 には「リプレイ中は灰色の弧 1 本」という分岐があったが、
-//   **役割アイコン（飛行機／艇）が出ること自体が「そのとき送信機だった」に見える**
-//   ので分岐ごと畳んだ。送信を止めている事実は WIRELESS 画面の "Hold" に出る。
-//   戻すときは、再生中の画面に無線の役割を描いてよいのかから考え直すこと。
+//   0.978〜0.984 の「リプレイ中は灰色の弧 1 本」は畳んだ —
+//   **役割アイコンが出ること自体が「そのとき送信機だった」に見える**。
+//   戻すなら、再生中の画面に無線の役割を描いてよいのかから考え直すこと。
 static void draw_link_icons() {
   const uint8_t mode = link_get_mode();
   if (mode == LINK_MODE_OFF) return;    // アイコンが無いこと自体が「無線オフ」の表示
@@ -2845,11 +2843,8 @@ static void draw_link_preflight_box() {
 //       ここを受信モード限定にしていると ICON_PLANE が一度も描かれない。
 static void draw_link_overlay() {
   // ★★ **リプレイ中・デモ中は無線の表示を一切出さない**（link.h / docs §5）。
-  //   枠もアイコンもポップアップも「いま電波が出ているか／届いているか」の話で、
-  //   再生中・デモ中の画面の数字とは無関係。出すと **そのとき送信機／受信機
-  //   だったかのような画面**になる（まさに直したかった症状）。
-  //   出どころは `REPLAY` / `REPLAY RX` バッジ（draw_replay_indicator）が担い、
-  //   無線そのものの状態は WIRELESS 画面に残る。
+  //   枠・アイコン・ポップアップはどれも「いま電波が出ているか／届いているか」で、
+  //   再生中の画面の数字とは無関係。出どころは `REPLAY` / `REPLAY RX` バッジが担う。
   if (!link_live_ui_ok()) return;
   const uint8_t mode = link_get_mode();
   if (mode == LINK_MODE_OFF) return;

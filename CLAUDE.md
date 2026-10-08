@@ -18,7 +18,7 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 ローカル改変が効かないまま静かに通る。理由と改変点は
 [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md)。
 
-**Flash Size の 16MB は 0.982 から必須。** 音声を FLASH に焼いて約 1.9MB 増えたので、
+**Flash Size の 16MB は 0.982 から必須。** 音声を FLASH に焼いて約 2.0MB 増えたので、
 **2MB 指定ではリンクが通らない**（`region FLASH overflowed by 1700076 bytes`。
 領域は Flash Size − 8KB なので 2MB では 2,088,960B しかなく、所要は約 3.79MB）。
 入るのは 4MB 以上。0.981 までは 1.7MB だったので 2MB でも通っていた。
@@ -69,7 +69,7 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 `attitude.cpp` を触ったら必ず走らせること。**
 
 ```sh
-cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085 断線時
+cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重力観測 / BNO085 断線時
 ```
 
 **`attitude.cpp` と `tools/imulog/eskf.py` は同じ数式の二重実装。
@@ -101,13 +101,11 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   0.981 まで `strcmp` とポインタ比較が混在していて、**いつ静かに外れてもおかしくない**
   状態だった（同一ファイル内にしか出て来ないのでたまたま成立していた）。
 - **状態を読み上げる音声には排他グループ（`WAV_EXCL_*`）を付ける。** pending は
-  「割り込まれた音声の救済」だが、**いまの状態を述べる読み上げには救済が害になる**
-  （古い方があとから流れて**もう事実でないことを喋る**）。無線モードは設定画面で
-  OFF→SENDER→RECEIVER の回転式なので **RECEIVER へ行くには SENDER を必ず通り**、
-  0.984 まで通過した `sender_mode.wav` が pending から復帰して、**受信モードにした
-  直後の機体が「送信モード」と読み上げていた**。モードの読み上げは飛行前の操作ミスに
-  気づく手段なので、これは目的の反転。一覧と仕組みは
-  [docs/pons_sound.md](docs/pons_sound.md) §3「排他グループ」。
+  「割り込まれた音声の救済」だが、いまの状態を述べる読み上げには害になる。0.984 まで、
+  無線モードを RECEIVER へ回す途中で通過した `sender_mode.wav` が pending から復帰し、
+  **受信モードにした機体が「送信モード」と読み上げていた**（操作ミスに気づく手段の反転）。
+  **無線モードは 3 状態とも読み上げる。OFF を無音に戻さないこと**（0.985〜）。
+  一覧と仕組みは [docs/pons_sound.md](docs/pons_sound.md) §3「排他グループ」。
 - **pending キューは `min_volume` も運ぶ。** 落とすと `battery_low.wav`
   （優先度 1・最低音量 60）が pending から復帰したときに 60 を失い、
   音量設定 0 の機体で**電池切れの警告が完全に無音になる**
@@ -115,6 +113,8 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   0.982 で代替ビープを消したので、この経路が唯一の警告になった。
 - **表示の供給元は 3 系統ある。** 実センサー / リプレイ（`getReplayMode()`）/
   無線ミラー（`link_mirror_active()`）。表示項目を足すときは 3 つとも考える。
+  **デモ（`is_demo_active()`）は 4 つめ**だが、差し替えるのは GNSS 値とヨー精度だけで
+  姿勢・気圧は実センサーのまま（だから姿勢まわりのコメントは「3 系統」と書いてある）。
   **リプレイ中・ミラー中は SD への記録を止める**分岐が `loop()` の各所にある
   （再生した日付のファイルへ現在値を書いて実飛行ログを汚さないため）。
 - **警報を描画関数の中に書かない。** その画面を出しているときしか鳴らなくなる。
@@ -134,17 +134,15 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   [docs/pons_link.md](docs/pons_link.md) §5「ミラー中に『自機の状態』を混ぜない」。
 - **リプレイ中とデモ中は無線を「OFF 扱い」にする。判定は `link_rf_suppressed()` /
   `link_live_ui_ok()` の 2 つだけで、条件を呼び出し側に書き写さない。**
-  画面の数字が電波と無関係なので、無線の状態を混ぜると**そのとき送信機／受信機
-  だったかのような画面**になる（0.984 まで受信枠・`NO SIGNAL` ポップアップ・
-  艇アイコン・S/R 電池が出ていた）。ミラー中の原則を裏返した同じ間違いで、
-  基準も同じ**「その表示は、いま画面に出している数字の話か」**。
-  **`link_mode_setting` は書き換えないこと** — SD に保存される設定なので、
-  デモのために OFF を代入すると**翌日そのまま無線が黙って飛ぶ**。
-  デモが送信を止める理由は特に分かりにくい: デモは `stored_*` を上書きしないので
-  **フライト CSV には残らない**のに、`link_push_telemetry()` は `get_gnss_lat()` など
-  **accessor 経由**なので**仮想機体はそのまま電波に乗る**（`fixflags` だけ実 GNSS 由来
-  なので、屋外では**ボートに「本物の飛行」として届く**）。
-  一覧は [docs/pons_link.md](docs/pons_link.md) §5「リプレイ中・デモ中は無線を『OFF 扱い』にする」。
+  ミラー中の原則を裏返した同じ間違いで、基準も同じ
+  **「その表示は、いま画面に出している数字の話か」**。0.984 まで受信枠・
+  `NO SIGNAL` ポップアップ・艇アイコン・S/R 電池が再生中の画面に出ていた。
+  **`link_mode_setting` は書き換えない** — SD に保存される設定なので、デモのために
+  OFF を代入すると**翌日そのまま無線が黙って飛ぶ**。
+  デモを止める理由は特に見えにくい: デモは `stored_*` を上書きしないので**CSV には
+  残らない**のに、`link_push_telemetry()` は accessor 経由なので**仮想機体は電波に乗る**
+  （`fixflags` だけ実 GNSS 由来で、屋外では**本物の飛行として届く**）。
+  一覧は [docs/pons_link.md](docs/pons_link.md) §5。
 - **PONS Link は下り一方向で、上りの通信路そのものを持たない。**
   大会レギュレーション上の要件なので、この非対称性を壊さない。
 - **`.ino` の初期化順のコメントは消さない。** `core1_separate_stack` /
@@ -166,14 +164,21 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   回避は `imu_bus_begin()` の冒頭。`sh2_opened` のフラグごと消さないこと。
   詳細は [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) (5)。
   2026-09-23 に実機で検証済み（`[IMU] BNO085 recovery OK (INT wait 12ms)`）。
-- **GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
+- **★ ここから 2 つは「BNO085 が載っている旧 v7 基板」の話。**
+  新 v7 基板（BNO085 を降ろし SCH16T を外付けした版）では **41/42/43/44 が SPI1、
+  M0/M1 は GPIO47** へ移っていて、下の指示は**逆になる**。
+  新旧どちらの基板を触っているかを先に確かめること。確定した割り当てと
+  「新基板で動かす前に直すコード」の一覧は
+  [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §3（`settings.h` の
+  `SCH16T_PIN_*` が正本）。
+- **【旧基板】GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、`GPIO35`/`GPIO34` と
   ショートしている。RP2350 のパッドを入力・プル無しで放置すると Low 側へ
   張り付くことがあり、外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝
   **Low に見えてバスを殺す**。実機 2026-09-27 に
   `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
   実体は `imu_bus_park_unused_pins()`。**出力にはしないこと。**
-- **GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
+- **【旧基板】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
   `R53` を外してあるので **BNO085 の H_CSN とは繋がっていない**（H_CSN は
   基板上で未接続。I2C では don't care）。0.975 まで「H_CSN を浮かせない」という
   誤った理由で HIGH 駆動しており、**H_CSN に届かないまま E220 を mode 3 へ
@@ -199,8 +204,9 @@ cd tools/attitude_test && make   # 協調旋回 / 磁気偏角の符号 / BNO085
   0.976 の `e220_wake_ready()` がこれを踏んだ（実機 2026-09-27: 受信機が 300 秒で
   2 発のみ・`bad=0`・RSSI −34dBm）。実体は `s_wakeSawLow` と `E220_WAKE_SETTLE_MS`。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
-  `link_tx_tick()` の `LTX_DRAINING` が AUX の Low を待ってから mode 3 へ落とす。
-  落ちないまま `LINK_TX_TXSTART_MS` 経ったら**モジュールに捨てられた**ので
+  `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
+  `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。
+  Low が来ないまま `LINK_TX_TXSTART_MS` 経ったら**モジュールに捨てられた**ので
   `noRf` を数える（60 秒ログ `LINK TX: ... noRf=`）。
   **`Sent` は「UART へ書けた回数」でしかない。** 電波が出た証明にはならない。
 - **mode 3 へ潜るときは `enter_config_mode()` を必ず通す。**

@@ -8,7 +8,7 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/18
+// Updated : 2026/10/06
 // ============================================================
 
 #ifndef MYSD_H

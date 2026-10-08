@@ -93,7 +93,7 @@
 //   imulog_write_buffer()  : Core1 がタスク経由で呼ぶ。実際の SD 書き込み。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/10/05
 // ============================================================
 
 #ifndef IMULOG_H

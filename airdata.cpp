@@ -6,7 +6,7 @@
 //           気圧高度を算出する。airdata_update() をループから毎回呼ぶ
 //           ステートマシン方式で非ブロッキング動作する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/17
+// Updated : 2026/09/23
 // ============================================================
 #include <Wire.h>
 #include "airdata.h"

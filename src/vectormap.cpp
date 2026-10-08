@@ -5,7 +5,7 @@
 //           TRACKUP の回転は latLonToXY と同じ座標変換に吸収され、
 //           BMP 方式で欠けていた画面四隅まで隙間なく塗れる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/09/23
 //
 // 地図データのライセンス: Map data (c) OpenStreetMap contributors, ODbL 1.0
 // ============================================================
