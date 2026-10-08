@@ -4,3 +4,21 @@
 *.kicad_prl
 ~*.lck
 fp-info-cache
+
+# ガーバー・ドリルのプロット出力。発注のたびに作り直せるうえ、基板を直すたびに
+# 巨大な差分になるため git には入れない（ルート .gitignore の production/ と同じ理由）。
+# ★ 拡張子で書く。入れ物のフォルダ名（v5_1plot/ など）は付け方が毎回違うので
+#   名前で書くと次回に外れる。zip とフォルダの分は保険。
+*.gbr
+*.gbl
+*.gbs
+*.gbp
+*.gbo
+*.gm1
+*.gtl
+*.gts
+*.gtp
+*.gto
+*.drl
+*plot/
+*plot.zip

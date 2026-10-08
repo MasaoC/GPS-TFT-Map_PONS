@@ -3330,6 +3330,320 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Transistor_FET:AO3401A"
+			(pin_names
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "Q"
+				(at 5.08 1.905 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Value" "AO3401A"
+				(at 5.08 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
+				(at 5.08 -1.905 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+						(italic yes)
+					)
+					(justify left)
+				)
+			)
+			(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3401A.pdf"
+				(at 5.08 -3.81 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Description" "-4.0A Id, -30V Vds, P-Channel MOSFET, SOT-23"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "P-Channel MOSFET"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "SOT?23*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "AO3401A_0_1"
+				(polyline
+					(pts
+						(xy 0.254 1.905) (xy 0.254 -1.905)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0.254 0) (xy -2.54 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0.762 2.286) (xy 0.762 1.27)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0.762 1.778) (xy 3.302 1.778) (xy 3.302 -1.778) (xy 0.762 -1.778)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0.762 0.508) (xy 0.762 -0.508)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0.762 -1.27) (xy 0.762 -2.286)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(circle
+					(center 1.651 0)
+					(radius 2.794)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.286 0) (xy 1.27 0.381) (xy 1.27 -0.381) (xy 2.286 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.54 2.54) (xy 2.54 1.778)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(circle
+					(center 2.54 1.778)
+					(radius 0.254)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(circle
+					(center 2.54 -1.778)
+					(radius 0.254)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type outline)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.54 -2.54) (xy 2.54 0) (xy 0.762 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 2.794 -0.508) (xy 2.921 -0.381) (xy 3.683 -0.381) (xy 3.81 -0.254)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 3.302 -0.381) (xy 2.921 0.254) (xy 3.683 0.254) (xy 3.302 -0.381)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "AO3401A_1_1"
+				(pin input line
+					(at -5.08 0 0)
+					(length 2.54)
+					(name "G"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 2.54 -5.08 90)
+					(length 2.54)
+					(name "S"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 2.54 5.08 270)
+					(length 2.54)
+					(name "D"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "power:+3.3V"
 			(power global)
 			(pin_numbers
@@ -3852,7 +4166,7 @@
 		)
 		(uuid "ade291b3-2fac-41aa-af36-d4bc7bd76f3b")
 	)
-	(text "BLM31PG391SN1L"
+	(text "GZ2012D601TF"
 		(exclude_from_sim no)
 		(at 73.914 127.254 0)
 		(effects
@@ -4051,6 +4365,12 @@
 		(uuid "e485e626-6f94-41a7-94da-be9f8f93c1ea")
 	)
 	(junction
+		(at 160.02 127)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "f7085ce2-80bb-43af-b5a9-88b5f3d4f687")
+	)
+	(junction
 		(at 210.82 45.72)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -4187,6 +4507,16 @@
 			(type default)
 		)
 		(uuid "13a8c470-6e93-4df7-946f-820ab86e4cdc")
+	)
+	(wire
+		(pts
+			(xy 140.97 127) (xy 140.97 129.54)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "13d1fc38-e75c-4a1d-ab86-6a2234d41bdc")
 	)
 	(wire
 		(pts
@@ -4540,13 +4870,13 @@
 	)
 	(wire
 		(pts
-			(xy 160.02 130.81) (xy 160.02 163.83)
+			(xy 160.02 143.51) (xy 160.02 163.83)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "6fbf280d-4494-4a04-a689-386a4e2e8bbb")
+		(uuid "6d33e02d-5329-401c-9743-59da08eb07b2")
 	)
 	(wire
 		(pts
@@ -4710,6 +5040,16 @@
 	)
 	(wire
 		(pts
+			(xy 140.97 137.16) (xy 140.97 138.43)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "bd5663e6-4b34-45bc-9ed1-d7b4bb497129")
+	)
+	(wire
+		(pts
 			(xy 128.27 63.5) (xy 128.27 66.04)
 		)
 		(stroke
@@ -4860,6 +5200,16 @@
 	)
 	(wire
 		(pts
+			(xy 160.02 127) (xy 160.02 133.35)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "dfa3ca85-61bf-4a43-a390-16c8ce74aa39")
+	)
+	(wire
+		(pts
 			(xy 44.45 21.59) (xy 44.45 25.4)
 		)
 		(stroke
@@ -4890,6 +5240,16 @@
 	)
 	(wire
 		(pts
+			(xy 160.02 123.19) (xy 160.02 127)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e4cb383f-9536-41c8-be41-0394158d5670")
+	)
+	(wire
+		(pts
 			(xy 43.18 67.31) (xy 43.18 69.85)
 		)
 		(stroke
@@ -4897,6 +5257,16 @@
 			(type default)
 		)
 		(uuid "e567f5cb-8715-4054-ab0e-088344488cb9")
+	)
+	(wire
+		(pts
+			(xy 160.02 127) (xy 140.97 127)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e8ebc5ac-1a8e-42e4-b787-0fc3c4dda46f")
 	)
 	(wire
 		(pts
@@ -4937,6 +5307,16 @@
 			(type default)
 		)
 		(uuid "eee2aa60-7962-4acc-87ab-e34c08e54dbc")
+	)
+	(wire
+		(pts
+			(xy 167.64 138.43) (xy 172.72 138.43)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f0903f52-0259-4c8d-8407-1a7814ed2e32")
 	)
 	(wire
 		(pts
@@ -5018,6 +5398,30 @@
 		)
 		(uuid "ff2a2c0d-05fa-4adf-905d-a725589006e3")
 	)
+	(global_label "TFT_MOSFET_G"
+		(shape input)
+		(at 172.72 138.43 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "0d1274ee-4965-457a-9fdf-d63da654f920")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 189.1308 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
 	(global_label "TFT_WR"
 		(shape input)
 		(at 101.6 182.88 90)
@@ -5063,30 +5467,6 @@
 					(size 1.27 1.27)
 				)
 				(justify right)
-			)
-		)
-	)
-	(global_label "PWR_TFT"
-		(shape input)
-		(at 160.02 130.81 90)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "231bc081-b0f5-4d1c-ad40-3a6ffd026b23")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 160.02 119.842 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
 			)
 		)
 	)
@@ -6276,6 +6656,120 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:C")
+		(at 140.97 133.35 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "06473b98-5879-4b01-bbab-4f5c413716a3")
+		(property "Reference" "C39"
+			(at 143.891 132.1816 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10u"
+			(at 143.891 134.493 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "GPS_TFT:C_0402_1005Metric_small_pads"
+			(at 141.9352 137.16 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 140.97 133.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 140.97 133.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Sim.Device" ""
+			(at 140.97 133.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Sim.Type" ""
+			(at 140.97 133.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C15525"
+			(at 140.97 133.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "7474a0b0-2ebd-480f-87e8-d5fa26d25d9d")
+		)
+		(pin "2"
+			(uuid "299a96fa-1b47-4bf2-9b9e-45faea9cec22")
+		)
+		(instances
+			(project "DisplayModule_PONSv7"
+				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
+					(reference "C39")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "2005280040:2005280040")
 		(at 134.62 97.79 0)
 		(unit 1)
@@ -6521,6 +7015,83 @@
 		)
 	)
 	(symbol
+		(lib_id "power:+3.3V")
+		(at 160.02 123.19 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "08dca2fb-7467-4fb7-811b-e3f2897ecabb")
+		(property "Reference" "#PWR066"
+			(at 160.02 127 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "+3V3"
+			(at 158.75 118.11 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 160.02 123.19 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 160.02 123.19 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
+			(at 160.02 123.19 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "38dc9593-8d59-44c0-b393-f40c16653152")
+		)
+		(instances
+			(project "DisplayModule_PONSv7"
+				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
+					(reference "#PWR066")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:R")
 		(at 200.66 53.34 90)
 		(unit 1)
@@ -6627,6 +7198,83 @@
 			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "R15")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 140.97 138.43 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "0bcf2781-62b1-44b7-8fed-9c4ff9d1a8ff")
+		(property "Reference" "#PWR095"
+			(at 140.97 144.78 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 137.16 139.7 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 140.97 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 140.97 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 140.97 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "eb0cf1b7-af4a-4fad-a087-55a5b21ec317")
+		)
+		(instances
+			(project "DisplayModule_PONSv7"
+				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
+					(reference "#PWR095")
 					(unit 1)
 				)
 			)
@@ -12356,7 +13004,7 @@
 				)
 			)
 		)
-		(property "Value" "390"
+		(property "Value" "600"
 			(at 67.818 131.064 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12366,7 +13014,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Inductor_SMD:L_1206_3216Metric_Pad1.22x1.90mm_HandSolder"
+		(property "Footprint" "Inductor_SMD:L_0805_2012Metric"
 			(at 71.12 131.318 90)
 			(hide yes)
 			(show_name no)
@@ -12421,7 +13069,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C88995"
+		(property "LCSC" "C1017"
 			(at 71.12 129.54 90)
 			(hide yes)
 			(show_name no)
@@ -12815,7 +13463,7 @@
 				)
 			)
 		)
-		(property "Value" "390"
+		(property "Value" "600"
 			(at 68.58 133.096 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12825,7 +13473,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Inductor_SMD:L_1206_3216Metric_Pad1.22x1.90mm_HandSolder"
+		(property "Footprint" "Inductor_SMD:L_0805_2012Metric"
 			(at 71.12 136.398 90)
 			(hide yes)
 			(show_name no)
@@ -12880,7 +13528,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C88995"
+		(property "LCSC" "C1017"
 			(at 71.12 134.62 90)
 			(hide yes)
 			(show_name no)
@@ -14712,6 +15360,94 @@
 			(project "DisplayModule_PONSv7"
 				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
 					(reference "C11")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Transistor_FET:AO3401A")
+		(at 162.56 138.43 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "fb6e1f01-d655-42f6-b28d-5fb3e7827564")
+		(property "Reference" "Q2"
+			(at 156.21 137.1599 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "AO3401A"
+			(at 156.21 139.6999 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
+			(at 157.48 136.525 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+					(italic yes)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3401A.pdf"
+			(at 157.48 134.62 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "-4.0A Id, -30V Vds, P-Channel MOSFET, SOT-23"
+			(at 162.56 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "8d875edc-fc2b-47cc-bef8-fdb9b03957d5")
+		)
+		(pin "3"
+			(uuid "7739764a-3b7c-4166-a259-c2ac00581aa6")
+		)
+		(pin "2"
+			(uuid "3ed0c7b9-a50f-44b4-afda-592df48ba235")
+		)
+		(instances
+			(project "DisplayModule_PONSv7"
+				(path "/d4198ff8-2b68-4e90-8e61-04bd56061c94"
+					(reference "Q2")
 					(unit 1)
 				)
 			)
