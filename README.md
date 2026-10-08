@@ -5,6 +5,9 @@
 人力飛行機のパイロットが使いやすいことを目標とした航法装置です。琵琶湖の鳥人間コンテストに特化しています。
 GPS/GNSS navigation for human-powered aircraft, specialized for the Japan International Birdman Rally at Lake Biwa, Japan.
 
+ * **現在開いている「v7」は2027、2028年向けに開発設計中のブランチで、正常に動作しない可能性があります。**
+ * **v3〜v6が実際にフライト利用したことがある安定版です。**
+
 ---
 
 ## PONS を導入するメリット
