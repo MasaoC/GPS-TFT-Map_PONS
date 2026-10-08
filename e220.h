@@ -12,16 +12,13 @@
 //     RP2350 GPIO8  (UART1 TX) → E220 RXD
 //     RP2350 GPIO9  (UART1 RX) ← E220 TXD
 //     RP2350 GPIO30            ← E220 AUX（状態通知）
-//     RP2350 GPIO41            → E220 M0+M1（結線して 1 本で駆動）
+//     RP2350 GPIO41 / GPIO47   → E220 M0+M1（結線して 1 本で駆動。基板で変わる）
 //
-//   M0/M1 に使う GPIO は BNO085 のバス構成と排他共用だったので、
-//   BNO085 を i2c1 固定にしたことで GPIO41 が空き、そこに割り当てた。
-//   基板の 0Ω（R50/R52）も同じ組み合わせで実装すること。
-//
-// ★★ **新 v7 基板（BNO085 を降ろした版）では M0+M1 は GPIO47（ネット LORA_M01）。**
-//   2026-10-07 に PCB のネットリストで確認。GPIO41 は SCH16T の SPI1_CS になった。
-//   **下の E220_MODE_PIN は 41 のままなので、新基板で動かす前に 47 へ直すこと。**
-//   M0 と M1 を 1 本で駆動する設計は新基板も同じ（U12.5 と U12.6 が同じネット）。
+//   v7   … M0/M1 は GPIO41。BNO085 を i2c1 固定にして旧 SPI1_CS が空いたので割り当てた。
+//          基板の 0Ω（R50/R52）も同じ組み合わせで実装すること。
+//   v7.1 … M0/M1 は **GPIO47**（ネット LORA_M01）。GPIO41 は SCH16T の SPI1_CS。
+//          M0 と M1 を 1 本で駆動する設計は同じ（U12.5 と U12.6 が同じネット）。
+//   → 下の E220_MODE_PIN は settings.h の PONS_BOARD から選ぶ。
 //
 // ■ モードは 2 つしか使わない
 //     mode 0 (LOW)  : 通常送受信。受信待機 8.2mA
@@ -45,14 +42,18 @@
 #define E220_TX_PIN       8      // RP2350 → E220 RXD
 #define E220_RX_PIN       9      // RP2350 ← E220 TXD
 
-// M0+M1。旧 SPI1_CS(41) を使う。**新基板では 47（上の ★★ 参照）。**
-// ★ **R53 を外してあるので、この net は BNO085 の H_CSN とは繋がっていない。**
+// M0+M1。**基板で変わる**（v7 = 旧 SPI1_CS の 41 / v7.1 = 47）。
+// ★ **v7 では R53 を外してあるので、この net は BNO085 の H_CSN とは繋がっていない。**
 //   GPIO41 がショートしているのは E220 の M0/M1 だけで、**この無線専用のピン**。
 // ★★ それでも imu.cpp から触ってはいけない。0.975 まで
 //   imu_bus_select_protocol() が「H_CSN を浮かせない」という**誤った理由**で
 //   HIGH に駆動していた（実際には H_CSN に届かず、E220 を mode 3
 //   ＝Config/DeepSleep へ叩き落とすだけだった）。0.976 で削除した。
-#define E220_MODE_PIN  41
+#if PONS_BOARD == PONS_BOARD_V71
+  #define E220_MODE_PIN  47
+#else
+  #define E220_MODE_PIN  41
+#endif
 
 // ---- ラジオ設定 ----
 // radio_profile → 拡散率。SF を上げるほど 2.5dB ずつ強くなるが、

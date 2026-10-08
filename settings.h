@@ -23,7 +23,50 @@
 
 #define BUILDDATE 20261008
 #define BUILDVERSION "0.986"
-#define VERSION_TEXT "Version 7"
+
+// ============================================================
+//  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
+// ============================================================
+//   v7   … 初代。BNO085 を i2c1(GPIO34/35) で実装。E220 の M0/M1 は GPIO41
+//   v7.1 … BNO085 を降ろし、SCH16T を J7（Molex 200528-0080・8pin FPC）で外付け。
+//          GPIO41-44 が SPI1 一式になり、E220 の M0/M1 は GPIO47 へ移った
+//
+// ★★ **同じ GPIO が板によって逆の意味になる。** ピンを足すときは必ずここで分けること。
+//   コメントで「新基板では〜」と断り書きを増やす形にすると、必ずどこかが追従漏れする
+//   （0.986 の時点で 5 ファイル 20 箇所まで増えていた）。
+//     GPIO41    v7: E220 M0/M1          → v7.1: SCH16T CS
+//     GPIO42    v7: i2c1 と短絡（park 対象） → v7.1: SCH16T SCK
+//     GPIO43    v7: BNO085 SA0          → v7.1: SCH16T MOSI
+//     GPIO44    v7: i2c1 と短絡（park 対象） → v7.1: SCH16T MISO
+//     GPIO45    v7: BNO085 H_INTN       → v7.1: SCH16T EXTRESN
+//     GPIO46    v7: BNO085 NRST         → v7.1: SCH16T DRY(SYNC)
+//     GPIO47    v7: BNO085 PS0/WAKE     → v7.1: E220 M0/M1
+//     GPIO34/35 v7: i2c1 SDA/SCL        → v7.1: TFT バックライト（TFT_eSPI 側の設定）
+//
+// ★★ **park 処置（imu_bus_park_unused_pins）は v7 だけ。** v7.1 で GPIO42/44 を
+//   INPUT_PULLUP のまま放置すると **SPI1 が死ぬ**。向きが逆になる唯一の約束なので、
+//   「浮かせない」の指示を v7.1 へ持ち込まないこと。
+//
+// ★ 載っているセンサーは基板で決まるので、IMU_SENSOR_DEFAULT もここから導く
+//   （SD の settings.txt では切り替えられない。理由は IMU_SENSOR_* の節）。
+#define PONS_BOARD_V7    70   // 初代 v7（BNO085）
+#define PONS_BOARD_V71   71   // v7.1（SCH16T 外付け）
+
+// ★★ **いまはまだ V7。** V71 にすると SCH16T のドライバが無いので #error で止まる
+//   （imu.cpp の分割と imu_sch16t.cpp が先。docs/imu_sch16t_plan.md §1）。
+//   ドライバを実機で検証できたら、ここを PONS_BOARD_V71 にするのが切替点。
+#define PONS_BOARD       PONS_BOARD_V7
+
+#if PONS_BOARD != PONS_BOARD_V7 && PONS_BOARD != PONS_BOARD_V71
+  #error "PONS_BOARD は PONS_BOARD_V7 か PONS_BOARD_V71 のどちらか"
+#endif
+
+// 起動画面に出す基板世代の表記。PONS_BOARD から導く（手で二重管理しない）。
+#if PONS_BOARD == PONS_BOARD_V71
+  #define VERSION_TEXT "Version 7.1"
+#else
+  #define VERSION_TEXT "Version 7"
+#endif
 
 //----------GNSS---------
 // GNSS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
@@ -109,25 +152,22 @@
 // ※ SD の settings.txt では切り替えられない（設定の読み込みは Core1 の
 //   setup_sd() で、imu_setup()（Core0）より後に走るため間に合わない）。
 
+// ★ **ここから IMU_UNUSED_MISO_PIN までは v7 基板（BNO085）専用。**
+//   v7.1 ではどの GPIO も別の用途になっているので、定義ごと存在しない
+//   （BNO085 のコードを v7.1 でビルドしようとすると、未定義で止まる。
+//    どの GPIO が何になるかは冒頭の PONS_BOARD の表）。
+#if PONS_BOARD == PONS_BOARD_V7
+
 #define IMU_RST_PIN   46   // BNO085 NRST（負論理）
 // H_INTN（負論理）。**i2c1 運用では読んでいない**（完全ポーリング）。
 // 入力プルアップだけ入れて、ブート前に浮かせないようにしている（imu.cpp）。
 #define IMU_INT_PIN   45
-// ★ **新 v7 基板では GPIO47 は E220 の M0/M1（ネット LORA_M01）。**
-//   BNO085 ごと不要になるので、新基板へ移すときはこの define を消すこと。
-//   残したまま imu.cpp が駆動すると**無線のモードを勝手に切り替える**。
-//   一覧は docs/imu_sch16t_plan.md §3。
 #define IMU_PS0_WAKE_PIN 47 // BNO085 PS0/WAKE。リセット時はプロトコル選択、以降は WAKE
 
 // ---- i2c1（MS5611 の i2c0(GPIO32/33) とは別バス）----
 #define IMU_I2C_SDA   34
 #define IMU_I2C_SCL   35
 
-// ★★【旧 v7 基板（BNO085 版）の話。**新基板では成立しない**】
-//   2026-10-07 の PCB では R46/R47 も i2c1 も無く、GPIO42/44 は SCH16T の
-//   SPI1_SCK / SPI1_MISO、GPIO34/35 は TFT バックライト。この block は
-//   BNO085 を選んだときだけ有効で、SCH16T へ移したら park 処置ごと不要になる
-//   （むしろ INPUT_PULLUP で停めたままにすると SPI が死ぬ）。
 // ★★ **旧 SPI1 の SCK/MISO は I2C バスそのものなので、放置してはいけない。**
 //   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、下の 2 本は
 //   GPIO34/35 とショートしている（実測確認）。
@@ -138,10 +178,11 @@
 //   **出力にすると I2C バスを殺す。**
 #define IMU_UNUSED_SCK_PIN   42   // 旧 SPI1_SCK。H_SCL(=GPIO35) とショート
 #define IMU_UNUSED_MISO_PIN  44   // 旧 SPI1_MISO。H_SDA(=GPIO34) とショート
+
+#endif  // PONS_BOARD == PONS_BOARD_V7（BNO085 のピン）
 // ★ GPIO41（旧 SPI1_CS）は **E220 の M0/M1 専用**（e220.h）。
 //   R53 を外してあるので **BNO085 の H_CSN とは繋がっていない**。
 //   imu.cpp から駆動すると無線が mode 3 へ落ちるだけなので、触らないこと。
-//   → **新基板では GPIO41 は SCH16T の CS、M0/M1 は GPIO47。R53 も無い。**
 // ★ BNO085 の H_CSN は基板上で未接続（R53 外し）。I2C では don't care なので
 //   それでよい（データシートの I2C 接続図でも未接続）。駆動する手段は無い。
 // ★ GPIO43（旧 SPI1_MOSI）は I2C では SA0（アドレス下位ビット）。下の IMU_I2C_SA0_PIN。
@@ -161,7 +202,9 @@
 // SA0 が下位 1bit を決める（0x4A / 0x4B）。SA0 は SPI の MOSI と同じ GPIO43 なので、
 // I2C モードでは HIGH に固定して 0x4B にする。
 #define IMU_I2C_ADDR  0x4B
-#define IMU_I2C_SA0_PIN  43
+#if PONS_BOARD == PONS_BOARD_V7
+  #define IMU_I2C_SA0_PIN  43
+#endif
 
 // ============================================================
 //  電源・バッテリー
@@ -534,7 +577,13 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   詳細は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §5。
 #define IMU_SENSOR_BNO085   0
 #define IMU_SENSOR_SCH16T   1
-#define IMU_SENSOR_DEFAULT  IMU_SENSOR_BNO085
+// ★ **載っているセンサーは基板で決まる**ので、ここでは選ばせず PONS_BOARD から導く。
+//   別々に持つと「v7 基板に SCH16T」のような存在しない組み合わせが作れてしまう。
+#if PONS_BOARD == PONS_BOARD_V71
+  #define IMU_SENSOR_DEFAULT  IMU_SENSOR_SCH16T
+#else
+  #define IMU_SENSOR_DEFAULT  IMU_SENSOR_BNO085
+#endif
 
 // ---- SCH16T-K01-10 の定数（データシート Doc.No.11624 Rev.6 で全件照合済み）----
 // ★ **まだドライバが無い。** ここに置いてあるのは単独テスト
@@ -570,7 +619,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   なので LPF2 + 150Hz が妥当に見えるが、単独テストで両方のノイズを実測して
 //   決めること。決めたらここに定数を足す。
 //
-// ---- ピン（**新 v7 基板で確定。2026-10-07 に PCB のネットリストから確認**）----
+// ---- ピン（**v7.1 基板で確定。2026-10-07 に PCB のネットリストから確認**）----
 // SCH16T は基板実装ではなく **J7（Molex 200528-0080, 8pin FPC）経由の外付け**。
 // kicad/IMU_murata/ のブレイクアウトの J1 とピン順が一致している（1:1 ケーブルでよい）:
 //   J7/J1: 1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND
@@ -578,18 +627,28 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ★ 41/42/43/44 は RP2350 の **SPI1 の正規割り当て**（CSn/SCK/TX/RX）なので
 //   ハードウェア SPI が使える。**arduino-pico では `SPI1` オブジェクト**（`SPI` は spi0）。
 //   GPIO46 は SPI1_SCK の代替機能でもあるので `SPI1.setSCK(42)` を明示すること。
-// ★ **旧基板の「GPIO41 は E220 の M0/M1 専用」はこの基板では成立しない。**
-//   M0/M1 は GPIO47 へ移った（e220.h の E220_MODE_PIN は追従が必要）。
+// ★ v7 基板では**全部 SCH16T_PIN_UNSET にする**（同じ GPIO が i2c1 や E220 の
+//   M0/M1 になっている。冒頭の PONS_BOARD の表）。定義ごと消さずに UNSET を
+//   入れておくのは、ドライバ側が「載っていない」を実行時にも判定できるようにするため。
 #define SCH16T_PIN_UNSET     255
-#define SCH16T_PIN_CS         41
-#define SCH16T_PIN_SCK        42
-#define SCH16T_PIN_MOSI       43
-#define SCH16T_PIN_MISO       44
-#define SCH16T_PIN_EXTRESN    45   // 外部リセット（負論理）。ネット名 SCH16T_RESET
-#define SCH16T_PIN_DRY        46   // データ準備完了（デシメーション出力用）。SCH16T_SYNC
+#if PONS_BOARD == PONS_BOARD_V71
+  #define SCH16T_PIN_CS         41
+  #define SCH16T_PIN_SCK        42
+  #define SCH16T_PIN_MOSI       43
+  #define SCH16T_PIN_MISO       44
+  #define SCH16T_PIN_EXTRESN    45   // 外部リセット（負論理）。ネット名 SCH16T_RESET
+  #define SCH16T_PIN_DRY        46   // データ準備完了（デシメーション出力用）。SCH16T_SYNC
+#else
+  #define SCH16T_PIN_CS         SCH16T_PIN_UNSET
+  #define SCH16T_PIN_SCK        SCH16T_PIN_UNSET
+  #define SCH16T_PIN_MOSI       SCH16T_PIN_UNSET
+  #define SCH16T_PIN_MISO       SCH16T_PIN_UNSET
+  #define SCH16T_PIN_EXTRESN    SCH16T_PIN_UNSET
+  #define SCH16T_PIN_DRY        SCH16T_PIN_UNSET
+#endif
 
 #if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
-  #error "SCH16T のドライバ（imu_sch16t.cpp）がまだ無い。ピンは確定済み。docs/imu_sch16t_plan.md §3 と §4 の手順で進めること"
+  #error "SCH16T のドライバ（imu_sch16t.cpp）がまだ無い。PONS_BOARD を V7 へ戻すか、docs/imu_sch16t_plan.md §1 と §4 の手順でドライバを足すこと"
 #endif
 
 // ============================================================

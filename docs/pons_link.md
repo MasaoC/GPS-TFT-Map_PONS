@@ -126,7 +126,7 @@ RP2350 から UART で直結する。
 | UART1 TX → E220 RXD | GPIO8 | |
 | UART1 RX ← E220 TXD | GPIO9 | |
 | E220 AUX → RP | GPIO30 | 状態通知。100nF を GND へ |
-| E220 M0 + M1（結線） | **GPIO47**（旧基板は GPIO41） | 新 v7 基板のネット名 `LORA_M01`。U12.5/U12.6 を 1 本で駆動 |
+| E220 M0 + M1（結線） | v7: GPIO41 / v7.1: **GPIO47** | `settings.h` の `PONS_BOARD` で切り替わる。v7.1 のネット名は `LORA_M01`。どちらも U12.5/U12.6 を 1 本で駆動 |
 | E220 VDD | +3V3 直結 | **VCC は開放**（排他利用）。10µF + 100nF |
 | E220 ANT | — | IPEX コネクタを使用 |
 

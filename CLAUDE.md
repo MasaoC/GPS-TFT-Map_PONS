@@ -164,21 +164,24 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   回避は `imu_bus_begin()` の冒頭。`sh2_opened` のフラグごと消さないこと。
   詳細は [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) (5)。
   2026-09-23 に実機で検証済み（`[IMU] BNO085 recovery OK (INT wait 12ms)`）。
-- **★ ここから 2 つは「BNO085 が載っている旧 v7 基板」の話。**
-  新 v7 基板（BNO085 を降ろし SCH16T を外付けした版）では **41/42/43/44 が SPI1、
-  M0/M1 は GPIO47** へ移っていて、下の指示は**逆になる**。
-  新旧どちらの基板を触っているかを先に確かめること。確定した割り当てと
-  「新基板で動かす前に直すコード」の一覧は
-  [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §3（`settings.h` の
-  `SCH16T_PIN_*` が正本）。
-- **【旧基板】GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
+- **基板は `settings.h` の `PONS_BOARD` で分かれる。ピンを足すときは必ずそこで分ける。**
+  同じ GPIO が v7 と v7.1 で逆の意味になる（41-44 は v7 では i2c1 と E220 の
+  M0/M1、v7.1 では SPI1 一式。M0/M1 は v7.1 で GPIO47 へ移った）。
+  **割り当ての表は `PONS_BOARD` のところに 1 つだけ置いてある。**
+  散文の「新基板では〜」で足すと必ず追従漏れする（0.986 で 5 ファイル 20 箇所まで
+  増えたのを `#if` に畳んだ）。載っているセンサーも板で決まるので
+  `IMU_SENSOR_DEFAULT` は `PONS_BOARD` から導いている。
+  移行の段取りは [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md)。
+- **【v7 のみ】GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、`GPIO35`/`GPIO34` と
   ショートしている。RP2350 のパッドを入力・プル無しで放置すると Low 側へ
   張り付くことがあり、外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝
   **Low に見えてバスを殺す**。実機 2026-09-27 に
   `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
   実体は `imu_bus_park_unused_pins()`。**出力にはしないこと。**
-- **【旧基板】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
+  ★ **v7.1 では向きが逆**で、同じ 2 本を `INPUT_PULLUP` で停めたままにすると
+  **SPI1 が死ぬ**。この約束を v7.1 へ持ち込まないこと。
+- **【v7 のみ】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
   `R53` を外してあるので **BNO085 の H_CSN とは繋がっていない**（H_CSN は
   基板上で未接続。I2C では don't care）。0.975 まで「H_CSN を浮かせない」という
   誤った理由で HIGH 駆動しており、**H_CSN に届かないまま E220 を mode 3 へ
