@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/03
+// Updated : 2026/10/10
 // ============================================================
 
 #ifndef ATTITUDE_H
@@ -39,7 +39,7 @@
 #include "settings.h"
 
 // センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
-// ★ imu.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
+// ★ imu_bno08x.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
 //   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
 // yaw はここでは数学どおりの符号（東基準・反時計回り正）で返す。
 // 方位に直すのは呼び出し側だが、**必ず imu_yaw_to_heading_deg() を通すこと。**
@@ -83,7 +83,7 @@ static inline float imu_yaw_to_heading_deg(float yaw_rad) {
 // ---- 初期化 ----
 void attitude_setup();
 
-// ---- センサー入力（imu.cpp の SH2 コールバックから呼ぶ）----
+// ---- センサー入力（imu_feed_* 経由で呼ばれる。実体は imu.cpp）----
 // ジャイロ到着で predict を回す（加速度は直近値を使う）。単位は rad/s と m/s²。
 void attitude_on_gyro(const float g[3], uint32_t t_us);
 void attitude_on_accel(const float a[3]);

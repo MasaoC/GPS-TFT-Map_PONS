@@ -5,7 +5,7 @@
 //           「どのチップでも同じ形で生データを流し込む口」と、
 //           「そのチップに何が有るか／無いか」を表す能力ビットを定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/10
 // ============================================================
 //
 // ★ **この境界を作った理由。**
@@ -17,7 +17,7 @@
 //   比較表示と健全性カウンタ専用。その「無くてもよい」を**型で表す**のがこのヘッダ。
 //
 // ---- 使い方 ----
-//   ドライバ側（いまは imu.cpp 内の BNO085 部分）
+//   ドライバ側（imu_bno08x.cpp / 将来 imu_sch16t.cpp）
 //     ・生データが届いたら imu_feed_gyro() / imu_feed_accel() を呼ぶ。
 //       これだけで姿勢 ESKF の伝播とバリオの蓄積がつながる
 //     ・自分に何が有るかを imu_caps() で申告する
@@ -28,8 +28,9 @@
 //     ・融合出力に触る前に imu_caps() を見る。**「有って当然」と書かないこと。**
 //       SCH16T では GRV / RV / LACC / 動的校正のどれも無い
 //
-// ★ ファイル分割（imu_bno08x.cpp / imu_sch16t.cpp）と imu_drv_* は**まだ無い**。
-//   段取りと理由は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §1。
+// ★ 0.986 でファイルを割った（imu.cpp = チップ非依存 / imu_bno08x.cpp = BNO085）。
+//   下の imu_drv_* がその契約。`imu_sch16t.cpp` はまだ無い。
+//   段取りは [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §1。
 //   そこに **`imu_service_if_due()` の意味が SCH16T で変わる**ことも書いてある
 //   （飢餓対策が不要になるが、**対策コメントは消さないこと**）。
 //
@@ -72,5 +73,37 @@ const char* imu_sensor_name();
 //          sv.timestamp は sh2 のアンダーフローで壊れている（0.983 の調査）。
 void imu_feed_gyro(const float g[3], uint32_t t_us);
 void imu_feed_accel(const float a[3]);
+
+// ドライバがチップをリセット／復旧したときに呼ぶ。溜めた比力の平均を捨てる。
+// ★ 捨てないと、復旧直後の predict が**途絶前の古いサンプル**を混ぜて積分する。
+void imu_feed_reset();
+
+// ============================================================
+//  推定 → ドライバ への口（imu_drv_*）
+// ============================================================
+// ★ **実装はチップごとに 1 ファイルだけ。呼ぶのは imu.cpp だけ。**
+//   画面やログからは imu.h の公開 API を使うこと（ドライバ自身も、
+//   自分の中では imu_drv_* を呼ぶ ― 公開 API を呼ぶと層が逆流する）。
+// ★ 各ドライバは**ファイル全体を `#if IMU_SENSOR_DEFAULT == ...` で囲う**。
+//   Arduino は .cpp を全部コンパイルするので、囲わないと多重定義になる。
+
+// imu_drv_poll() の戻り値。**分割前の imu_update() の 3 分岐に 1 対 1 で対応する。**
+typedef enum {
+    IMU_DRV_DEAD = 0,   // 居ない／途絶中。呼び出し側は恒速モデル（a_k=0）へ落とす
+    IMU_DRV_WAIT,       // 生きているが、この回はポーリング周期に達していない
+    IMU_DRV_SERVICED,   // この回でサンプルを引き取った。predict へ進んでよい
+} ImuDrvState;
+
+// バス初期化とセンサー起動。**成否は imu_drv_present() が答える**ので戻り値は持たない。
+void imu_drv_setup();
+// 途絶検出・復旧・サンプルの引き取り・レート計測を 1 回分進める。
+ImuDrvState imu_drv_poll();
+// サンプルの引き取りだけ（長いブロッキング処理の中から呼ぶ。再入可・副作用なし）。
+void imu_drv_service_if_due();
+bool imu_drv_present();   // 初期化に成功して「載っている」状態か
+bool imu_drv_alive();     // 直近 1 秒以内にサンプルが届いているか
+
+// VARIO_USE_RAW_ACCEL=0（LACC ベースの predict）の旧経路用。既定では使わない。
+bool imu_drv_lacc_predict_sample(float a_body[3], float q[4], uint32_t* lacc_last_us);
 
 #endif // IMU_SENSOR_H

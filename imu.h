@@ -23,7 +23,7 @@
 //   airdata_update() が true を返したタイミングで imu_kalman_baro_update() を呼ぶ。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/05
+// Updated : 2026/10/10
 // ============================================================
 
 #ifndef IMU_H
@@ -31,17 +31,22 @@
 
 #include <Arduino.h>
 #include "attitude.h"   // imu_body_euler_rad()（マウント回転）
+// ★ ここは**チップに依らない公開 API**。実装は 0.986 で 2 つに割れている:
+//   imu.cpp（バリオ KF・観測・ゲッター）と imu_bno08x.cpp（BNO085 ドライバ）。
+//   どちらのチップかは settings.h の IMU_SENSOR_DEFAULT で決まり、
+//   呼び出し側はこのヘッダだけを見ればよい。境界は imu_sensor.h。
+
 // ---- 初期化 ----
-// BNO085 の I2C バス・割り込み・センサーレポートを初期化する。
+// IMU のバス・センサーレポートを初期化する（実体はドライバ側）。
 // airdata_setup() の後に呼ぶこと（ログ用タスクキューが必要なため）。
 void imu_setup();
 
 // ---- メインループ処理 ----
-// 15ms ポーリングで BNO085 からデータを読んで Kalman predict を実行する。
+// ドライバを 1 回進めてデータを引き取り、Kalman predict を実行する。
 // loop() から毎回呼ぶ（ノンブロッキング）。
 void imu_update();
 
-// BNO085 のレポートだけを引き取る（軽量・副作用なし）。
+// センサーのサンプルだけを引き取る（軽量・副作用なし）。
 // ★ **長いブロッキング処理の中から呼ぶこと。** 描画・無線・SD などで Core0 が
 //   数十 ms 止まると、そのあと読んだジャイロが化ける（2026-09-23 に実機で確定）。
 //   Kalman predict も復旧処理もしないので、どこから呼んでも安全。

@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/10
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261008
-#define BUILDVERSION "0.986"
+#define BUILDDATE 20261010
+#define BUILDVERSION "0.987"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
@@ -44,8 +44,9 @@
 //     GPIO34/35 v7: i2c1 SDA/SCL        → v7.1: TFT バックライト（TFT_eSPI 側の設定）
 //
 // ★★ **park 処置（imu_bus_park_unused_pins）は v7 だけ。** v7.1 で GPIO42/44 を
-//   INPUT_PULLUP のまま放置すると **SPI1 が死ぬ**。向きが逆になる唯一の約束なので、
-//   「浮かせない」の指示を v7.1 へ持ち込まないこと。
+//   INPUT_PULLUP のまま放置すると **SPI1 が死ぬ**。向きが逆になる唯一の約束。
+//   0.986 の分割で実体は imu_bno08x.cpp の中だけになり、あのファイルは
+//   #if IMU_SENSOR_DEFAULT == IMU_SENSOR_BNO085 で囲ってあるので v7.1 では消える。
 //
 // ★ 載っているセンサーは基板で決まるので、IMU_SENSOR_DEFAULT もここから導く
 //   （SD の settings.txt では切り替えられない。理由は IMU_SENSOR_* の節）。
@@ -53,7 +54,7 @@
 #define PONS_BOARD_V71   71   // v7.1（SCH16T 外付け）
 
 // ★★ **いまはまだ V7。** V71 にすると SCH16T のドライバが無いので #error で止まる
-//   （imu.cpp の分割と imu_sch16t.cpp が先。docs/imu_sch16t_plan.md §1）。
+//   （imu.cpp の分割は 0.986 で済んだ。残りは imu_sch16t.cpp だけ。計画書 §1）。
 //   ドライバを実機で検証できたら、ここを PONS_BOARD_V71 にするのが切替点。
 #define PONS_BOARD       PONS_BOARD_V7
 
@@ -160,7 +161,7 @@
 
 #define IMU_RST_PIN   46   // BNO085 NRST（負論理）
 // H_INTN（負論理）。**i2c1 運用では読んでいない**（完全ポーリング）。
-// 入力プルアップだけ入れて、ブート前に浮かせないようにしている（imu.cpp）。
+// 入力プルアップだけ入れて、ブート前に浮かせないようにしている（imu_bno08x.cpp）。
 #define IMU_INT_PIN   45
 #define IMU_PS0_WAKE_PIN 47 // BNO085 PS0/WAKE。リセット時はプロトコル選択、以降は WAKE
 
@@ -182,7 +183,7 @@
 #endif  // PONS_BOARD == PONS_BOARD_V7（BNO085 のピン）
 // ★ GPIO41（旧 SPI1_CS）は **E220 の M0/M1 専用**（e220.h）。
 //   R53 を外してあるので **BNO085 の H_CSN とは繋がっていない**。
-//   imu.cpp から駆動すると無線が mode 3 へ落ちるだけなので、触らないこと。
+//   IMU のコードから駆動すると無線が mode 3 へ落ちるだけなので、触らないこと。
 // ★ BNO085 の H_CSN は基板上で未接続（R53 外し）。I2C では don't care なので
 //   それでよい（データシートの I2C 接続図でも未接続）。駆動する手段は無い。
 // ★ GPIO43（旧 SPI1_MOSI）は I2C では SA0（アドレス下位ビット）。下の IMU_I2C_SA0_PIN。
@@ -577,6 +578,16 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   詳細は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §5。
 #define IMU_SENSOR_BNO085   0
 #define IMU_SENSOR_SCH16T   1
+
+// 能力ビットの縮退リハーサル用マスク。imu_caps() の戻り値に AND される。
+// ★ **0 にすると、BNO085 を載せたまま「融合出力の無いチップ」を再現できる。**
+//   SCH16T へ移る前に、画面とログの縮退（"---" 表示・メニューの添字ずれ・
+//   IMU/ESKF 2/3 ページが真っ白にならないか）を**いまの基板で確かめるためのもの**。
+//   囲い忘れがあれば、0 を本物として表示する箇所がその場で見える。
+#define IMU_CAPS_DEBUG_MASK 0xFFFFFFFFu
+#if IMU_CAPS_DEBUG_MASK != 0xFFFFFFFFu
+  #warning "IMU_CAPS_DEBUG_MASK is not default (capability degradation rehearsal). restore before release."
+#endif
 // ★ **載っているセンサーは基板で決まる**ので、ここでは選ばせず PONS_BOARD から導く。
 //   別々に持つと「v7 基板に SCH16T」のような存在しない組み合わせが作れてしまう。
 #if PONS_BOARD == PONS_BOARD_V71
@@ -648,7 +659,10 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #endif
 
 #if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
-  #error "SCH16T のドライバ（imu_sch16t.cpp）がまだ無い。PONS_BOARD を V7 へ戻すか、docs/imu_sch16t_plan.md §1 と §4 の手順でドライバを足すこと"
+  // ★ 0.987 で imu_sch16t.cpp（骨組み）を置いたので**リンクは通る**。基板が届く前に
+  //   新基板向けのビルド全体を確かめるための状態で、**飛ばせるファームではない**。
+  //   中身が入ったら（計画書 §4 の 6）この #warning を消すこと。
+  #warning "SCH16T driver is a STUB: no attitude, vario falls back to MS5611. DO NOT FLY."
 #endif
 
 // ============================================================

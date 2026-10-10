@@ -180,7 +180,9 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
   実体は `imu_bus_park_unused_pins()`。**出力にはしないこと。**
   ★ **v7.1 では向きが逆**で、同じ 2 本を `INPUT_PULLUP` で停めたままにすると
-  **SPI1 が死ぬ**。この約束を v7.1 へ持ち込まないこと。
+  **SPI1 が死ぬ**。0.986 でこの処置は [imu_bno08x.cpp](imu_bno08x.cpp) の中だけになり、
+  あのファイルは `#if` で囲ってあるので **v7.1 ではファイルごと消える**。
+  外から呼ばないこと（呼ぶと v7.1 で復活してしまう）。
 - **【v7 のみ】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
   `R53` を外してあるので **BNO085 の H_CSN とは繋がっていない**（H_CSN は
   基板上で未接続。I2C では don't care）。0.975 まで「H_CSN を浮かせない」という
@@ -270,7 +272,9 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [GPS_TFT_map.ino](GPS_TFT_map.ino) | Core0/Core1 の setup/loop、ボタン、**警報の発報** |
 | [display_tft.cpp](display_tft.cpp) | TFT 描画**だけ**。判断や発報は置かない |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
-| [imu.cpp](imu.cpp) | BNO085 と、MS5611 融合のバリオ用 Kalman filter |
+| [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
+| [imu_bno08x.cpp](imu_bno08x.cpp) | BNO085 ドライバ。**チップ依存はここだけ**（0.986 で imu.cpp から分離）。ファイル全体が `#if` で囲ってあるので、新しいドライバも同じ形にする |
+| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**0.987 時点では骨組みだけ**（全部「載っていない」を返す）。`PONS_BOARD` を V71 にするとこちらが生き、`#warning` で「飛ばすな」が出る |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
