@@ -2668,6 +2668,17 @@ static uint16_t link_frame_color() {
   return (link_display_state() == LINK_DISP_MIRROR) ? COLOR_CYAN : COLOR_RED;
 }
 
+// 受信枠を「いま描くか」。新鮮なあいだは出し続け、古くなったら点滅させる。
+// ★ **無信号のあいだも点滅させる**（0.988）。出しっぱなしだと見ているうちに
+//   風景になって気づけず、地図の端が常に赤くて読みにくい。
+// ★ 地図とヘッダで**同じ判定を通すこと**（別々に書くと片方だけ点滅する）。
+//   色は link_frame_color()、出す／出さないはここ。切れかけと無信号で速さは
+//   変えない（違いは色で示す。周期の根拠は settings.h の LINK_FRAME_BLINK_MS）。
+static bool link_frame_visible() {
+  if (link_age_ms() <= LINK_FRAME_STALE_MS) return true;
+  return (millis() / LINK_FRAME_BLINK_MS) % 2 == 0;
+}
+
 // 地図の左上に [無線アイコン][役割アイコン] を置く。
 // 受信モードでは役割アイコンを 1Hz で点滅させる（draw_replay_indicator と同じ流儀）。
 //
@@ -2861,12 +2872,8 @@ static void draw_link_overlay() {
 
   const uint16_t col = link_frame_color();
 
-  // 3〜10 秒の間は点滅させて「切れかけ」を示す（docs/pons_link.md §5 の鮮度表）。
-  bool show = true;
-  const uint32_t age = link_age_ms();
-  if (link_is_receiving() && age > 3000) show = ((millis() / 400) % 2 == 0);
-
-  if (show) {
+  // 3 秒以上古くなったら点滅させる（切れかけ・無信号とも。docs/pons_link.md §5）。
+  if (link_frame_visible()) {
     // ★★ **右辺は描かない。** x = VSI_X 以降は VSI が占める領域で、VSI は
     //   backscreen の push より**後**に TFT へ直接 push される
     //   （GPS_TFT_map.ino。airdata 更新ごと ≒ 40Hz）。そのため右辺だけが
@@ -3307,7 +3314,7 @@ void draw_header() {
   //   **対地速度が読めなくなっていた**。受信モードかどうかは枠の色で分かる。
   // ★ 枠の色は**生の受信状況**（MIRROR / NO SIGNAL）なので、リプレイ中・デモ中は
   //   出さない。再生の画面にティールの枠が出ると「いま機体が映っている」と読める。
-  if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) {
+  if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok() && link_frame_visible()) {
     const uint16_t col = link_frame_color();
     header_footer.drawRect(0, 0, SCREEN_WIDTH, HEADERFOOTER_HEIGHT, col);
     header_footer.drawRect(1, 1, SCREEN_WIDTH - 2, HEADERFOOTER_HEIGHT - 2, col);

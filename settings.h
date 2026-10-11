@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261010
-#define BUILDVERSION "0.987"
+#define BUILDDATE 20261011
+#define BUILDVERSION "0.988"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
@@ -1512,6 +1512,14 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 地図の再描画は約 2Hz、送信は 1Hz なので、これくらいだと 1 回おきに
 // 膨らんで見え、「1 秒に 1 回出ている」が目で分かる。
 #define LINK_TX_PULSE_MS      600
+
+// ---- 受信枠の点滅（display_tft.cpp の link_frame_visible）----
+// ★ **半周期を再描画間隔より十分長くすること。** 再描画は新しいデータか
+//   SCREEN_FRESH_INTERVAL(1050ms) で起きるので、400〜500ms だとトグルと同じ速さで
+//   サンプルすることになり、**点滅が止まって見えたり不規則にちらついたりする**
+//   （VSI の右辺で踏んだのと同じ罠）。1000ms なら 2Hz 再描画で 1 相 2 回描かれる。
+#define LINK_FRAME_STALE_MS   3000UL  // これより古い＝切れかけ／無信号 → 点滅へ
+#define LINK_FRAME_BLINK_MS   1000UL  // 点滅の半周期
 
 // ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
 // 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。

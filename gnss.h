@@ -116,6 +116,7 @@
   uint32_t get_gnss_jst_yyyymmdd();   // JST の今日の日付 YYYYMMDD。0 = 時刻がまだ無い
 
   // 最大 G/S 取得関数
+  void  reset_maxgs();          // 最大 G/S を捨てる（供給元が入れ替わるとき）
   float get_maxgs();            // 全時間最大 G/S [m/s]
   int   get_maxgs_hour();       // 全時間最大 G/S の記録時刻（JST 時）
   int   get_maxgs_min();        // 全時間最大 G/S の記録時刻（JST 分）

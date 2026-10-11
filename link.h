@@ -78,6 +78,8 @@
 
   LinkDispState link_display_state();     // 表示状態（受信モード以外では NOSIGNAL）
   bool     link_is_receiving();           // 直近に受信できているか
+  // 新しいテレメトリが届いたか。**読むと落ちる**（ミラー中の位置更新の合図）
+  bool     link_take_new_frame();
   uint32_t link_age_ms();                 // 最後の受信からの経過 [ms]
   int8_t   link_rssi();                   // 直近の RSSI [dBm]
 

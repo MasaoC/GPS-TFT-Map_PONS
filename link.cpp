@@ -31,6 +31,15 @@
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
 //   AUX(GPIO30) は e220.h の E220_AUX_PIN。送信の刻みは RP2350 が持つ。
 
+// ---- 実体が GPS_TFT_map.ino にあるもの（ヘッダが無いのでここで宣言する）----
+// 地上の姿勢チェックが「いま発報している」状態。status に載せて、受信機でも
+// 同じ音声を鳴らすために読む（飛行中は立たない。.ino 側の宣言のコメント参照）。
+extern bool ground_roll_warn_active;
+extern bool ground_pitch_warn_active;
+extern bool ground_calib_warn_active;
+extern volatile int scaleindex;    // 地図の縮尺（scalelist の添字）
+void set_scaleindex(int idx);      // 縮尺を合わせる（範囲外は無視される）
+
 // 受信が途切れてから自機表示へ移るまで（docs/pons_link.md §5）。
 // ★ RSSI10_WIN_MS と同じ値にしてあること。受信中なら 10 秒窓に必ず 1 発は入る、
 //   という前提で link_rssi_bars() が成り立っている。
@@ -50,6 +59,8 @@ uint8_t link_group           = LINK_GROUP_DEFAULT;
 static LinkRxTelem   s_rx;                 // 直近に受信したテレメトリ
 static bool          s_rxValid   = false;
 static uint32_t      s_rxMs      = 0;      // 受信した時刻（RP の millis）
+// 新しいフレームを受け取ったことの合図。link_take_new_frame() で読むと落ちる。
+static bool          s_rxNewFrame = false;
 // ---- 送信側 ----
 static uint16_t s_seqOut    = 0;    // 送信テレメトリの連番。ロールオーバーしてよい
 
@@ -156,6 +167,7 @@ static void link_poll_radio() {
         s_rx.age_ms = 0;             // 直接受け取るので遅延はほぼ無い
         s_rxValid   = true;
         s_rxMs      = millis();
+        s_rxNewFrame = true;         // ミラー中の「新しい位置が来た」の合図
 
         // 受信ログ（docs/pons_link.md §5）。received/ は無線で得た情報だけを置く。
         enqueueTask(createSaveRxCsvTask(&s_rx.t, s_rx.rssi, s_rx.age_ms));
@@ -398,12 +410,30 @@ static void link_sync_destination() {
                                  (int)di, (int)s_rx.t.nav_mode));
 }
 
-// 送信機側の異常（SD／IMU／較正未適用）。飛ぶ前に気づきたい項目。
+// 地図の縮尺を送信機に合わせる（0.988）。
+// ★ 受信機の目的は「パイロットに出ている画面の再現」なので、縮尺が違うと同じ地図に
+//   見えない。送信機が誤った縮尺のまま飛んでいることにも気づける。
+// ★ RAM 上の上書きだけ（SD には書かない）。違ったときだけ合わせる。
+//   音声では知らせない — 画面を見れば分かる変化で、送信機が拡大率を回すたびに
+//   鳴ると騒がしい。
+// ★ **ミラー中はボート側の拡大率操作（ダブルクリック）が効かなくなる。**
+//   意図どおり（送信機に合わせるのが主旨）。変えたいときは受信を切る。
+static void link_sync_scale() {
+    if (!link_mirror_active()) return;
+    if ((int)s_rx.t.scale_index == scaleindex) return;
+    set_scaleindex((int)s_rx.t.scale_index);   // 範囲外なら無視される
+}
+
+// 送信機側の異常（SD／IMU）。飛ぶ前に気づきたい項目。
 // 音声にはしない ― 内訳は無線ページに出るので「何かある」と分かれば足りる。
 // 音声を増やすほど、本当に聞くべきものが埋もれる。
 // ★ 電池低下だけは別扱い（下の link_watch_sender_battery）。ここで一緒に見ると
 //   「立ち上がりで 1 回鳴るだけ」になるが、電池は減り続けるので繰り返す必要がある。
-#define LINK_ST_FAULTS_TONE  (LINK_ST_SD_ERROR | LINK_ST_IMU_ERROR | LINK_ST_NEEDS_APPLY)
+// ★ **較正未適用（NEEDS_APPLY）はここから外した**（0.988）。地上で発報している間は
+//   LINK_ST_CALIB_GND で音声を鳴らすようになったので、残すとトーンと二重になる。
+//   飛行中に立った場合は送信機自身が黙る（対処できない警告で気をそらさない）ので、
+//   受信機も黙るのが正しい。画面には今までどおり NEEDS_APPLY で出る。
+#define LINK_ST_FAULTS_TONE  (LINK_ST_SD_ERROR | LINK_ST_IMU_ERROR)
 static void link_watch_sender_faults() {
     static uint16_t prev_st = 0;
     const uint16_t st = link_sender_status() & LINK_ST_FAULTS_TONE;
@@ -435,6 +465,30 @@ static void link_watch_sender_battery() {
     link_alert("wav/battery_low_sender.wav", 1568, 200, 4, 60);
     enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%.2fV)",
                                  (double)link_get_voltage()));
+}
+
+// 送信機の地上チェック（ロール／ピッチ／較正やり直し）を受信機でも同じ音声で鳴らす。
+// ★ 鳴らす間隔は送信機と同じ定数を使う（しきい値の判定は送信機側だけが持つ）。
+//   片方だけ変えると「機体は喋ったのにボートは黙る」になる。
+// ★ ビットは「いま送信機が言っている状態」なので、ここは繰り返すだけでよい
+//   （立ち上がりだけ拾うと、聞き逃したら二度と鳴らない）。
+static void link_watch_ground_one(uint16_t bit, const char* wav,
+                                  uint32_t interval_ms, uint32_t &last_ms) {
+    if ((link_sender_status() & bit) == 0) { last_ms = 0; return; }
+    const uint32_t now = millis();
+    if (last_ms != 0 && now - last_ms < interval_ms) return;
+    last_ms = now;
+    link_alert(wav, 370, 250, 3);
+}
+
+static void link_watch_sender_ground_att() {
+    static uint32_t roll_ms = 0, pitch_ms = 0, calib_ms = 0;
+    link_watch_ground_one(LINK_ST_GROUND_ROLL,  "wav/roll_check.wav",
+                          GROUND_ROLL_WARN_INTERVAL_MS, roll_ms);
+    link_watch_ground_one(LINK_ST_GROUND_PITCH, "wav/pitch_check.wav",
+                          GROUND_ROLL_WARN_INTERVAL_MS, pitch_ms);
+    link_watch_ground_one(LINK_ST_CALIB_GND,    "wav/eskf_calib_required.wav",
+                          ESKF_APPLY_WARN_INTERVAL_MS, calib_ms);
 }
 
 // 通信レポート（60 秒ごと）。現場でシリアルを見られない以上、
@@ -838,12 +892,15 @@ void link_loop() {
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
-    // ★ この 2 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
-    //   「送信機の電池が減っている」「自分のモジュールが応答しない」は
-    //   画面に出している数字とは無関係に**いま現実に起きている事実**なので、
-    //   再生のために黙らせる理由が無い（画面の飾りだけを止める。link.h 参照）。
+    link_sync_scale();          // 目的地と同じ「送信側に合わせる」組
+    // ★ 下の 3 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
+    //   「送信機の電池が減っている」「地上チェックに引っかかっている」
+    //   「自分のモジュールが応答しない」は、画面に出している数字とは無関係に
+    //   **いま現実に起きている事実**なので、再生のために黙らせる理由が無い
+    //   （画面の飾りだけを止める。link.h 参照）。
     link_watch_sender_faults();
     link_watch_sender_battery();
+    link_watch_sender_ground_att();
     link_periodic_report();
     link_preflight_tick();      // ★ tx_tick より先。点検中は送信を止める
     link_tx_tick();
@@ -884,6 +941,9 @@ void link_set_mode(uint8_t mode) {
     else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2, 0, WAV_EXCL_LINKMODE));
     else                           enqueueTask(createPlayWavTask("wav/link_off.wav",      2, 0, WAV_EXCL_LINKMODE));
     s_rxValid = false;                 // モードが変わったら受信データは無効
+    // ★ MAX G/S は供給元が入れ替わるのでリセットする（ミラー中は機体の値を入れる）。
+    //   残すと「ボート自身の最高速」と「機体の最高速」が混ざった値が出続ける。
+    reset_maxgs();
     link_apply_power_state();
     // 送信モードに入ったら送り始める前にチャンネルを確かめる。
     // 抜けたときは IDLE に戻す（結果を残すと古い判定が画面に出続ける）。
@@ -1036,6 +1096,7 @@ static void link_push_telemetry() {
     // ナビ設定。受信側はこれを自分の設定と突き合わせるためだけに使う。
     t.dest_index = (int8_t)currentdestination;
     t.nav_mode   = (uint8_t)destination_mode;
+    t.scale_index = (uint8_t)scaleindex;   // 受信側はこれに合わせる（link_sync_scale）
 
     t.have = have;
 
@@ -1046,6 +1107,11 @@ static void link_push_telemetry() {
     if (!get_imu_ok())                                 st |= LINK_ST_IMU_ERROR;
     if (attitude_needs_apply() && attitude_get_rpy_enabled()) st |= LINK_ST_NEEDS_APPLY;
     if (get_input_voltage() <= BAT_LOW_VOLTAGE)        st |= LINK_ST_BAT_LOW;
+    // 地上チェック（ロール／ピッチ／較正やり直し）。**送信機しか判定できない**ので
+    // ビットで運ぶ（link_proto.h の「再計算できるものは載せない」の例外）。
+    if (ground_roll_warn_active)                       st |= LINK_ST_GROUND_ROLL;
+    if (ground_pitch_warn_active)                      st |= LINK_ST_GROUND_PITCH;
+    if (ground_calib_warn_active)                      st |= LINK_ST_CALIB_GND;
     t.status = st;
 
     t.crc16 = link_telem_crc(&t);
@@ -1059,6 +1125,13 @@ static void link_push_telemetry() {
 // ============================================================
 uint32_t link_age_ms()      { return s_rxValid ? (millis() - s_rxMs) : 0xFFFFFFFF; }
 bool     link_is_receiving(){ return s_rxValid && link_age_ms() < NOSIGNAL_MS; }
+
+// 前回の問い合わせ以降に新しいテレメトリが届いたか。**読むと落ちる**（1 回限り）。
+// ★ ミラー中の「新しい位置が来た」の合図。受信モードは「CSV の代わりに電波から
+//   リプレイする」実装（このファイル冒頭）なので、リプレイの apply_replay_row() が
+//   立てている new_location_arrived / newcourse_arrived と同じ役割をここが担う。
+//   使う側は gnss_new_location_arrived()（gnss.cpp）。
+bool     link_take_new_frame(){ const bool n = s_rxNewFrame; s_rxNewFrame = false; return n; }
 int8_t   link_rssi()        { return s_rxValid ? s_rx.rssi : 0; }
 const LinkTelem* link_rx_telem() { return s_rxValid ? &s_rx.t : nullptr; }
 

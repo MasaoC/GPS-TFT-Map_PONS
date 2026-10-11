@@ -952,8 +952,8 @@ void gnss_setup() {
   setupcounter++;
 }
 
-// 最大 G/S の全情報をリセットする（デモ/リプレイモード切替時に呼ぶ）
-static void reset_maxgs() {
+// 最大 G/S の全情報をリセットする（デモ／リプレイ／無線モードの切替時に呼ぶ）
+void reset_maxgs() {
   maxgs                  = 0.0f;
   maxgs_hour             = 0;
   maxgs_min              = 0;
@@ -1282,6 +1282,24 @@ bool gnss_new_location_arrived(){
       add_latlon_track(demo_lat, demo_lon);
     }
   }
+
+  // ★★ **ミラー中は「電波が届いた」ことが新しい位置の合図。**
+  //   値は accessor が機体のものに差し替えるが、**刻みは自機の GNSS が作っていた**
+  //   ため、受信機の GNSS が不調だと（fix 未確定／NAV-PVT が来ない）ナビの判定が
+  //   丸ごと止まっていた: Auto10km の INTO/AWAY、`100km 以上離れています`、
+  //   ステア角と旋回指示、旋回角速度・旋回音・コース逸脱警報、緑の航跡。
+  //   **地図は 1050ms の強制再描画で出続けるので、止まっていることに気づけない。**
+  //   受信モードは「CSV の代わりに電波からリプレイする」実装なので、
+  //   apply_replay_row() と同じくここで刻みを作るのが筋。
+  //   ★ 航跡をここで足すのは try_enque_savecsv() が自機の ubx_* 待ちだから
+  //     （あちらはボート自身の CSV を書く役）。二重登録は add_latlon_track() の
+  //     間隔制限が防ぐ。
+  if (link_mirror_active() && link_take_new_frame()) {
+    new_location_arrived = true;
+    newcourse_arrived    = true;
+    add_latlon_track(get_gnss_lat(), get_gnss_lon());
+    update_maxgs((float)get_gnss_mps());   // MAX G/S も機体の値（上の UBX 経路参照）
+  }
   return new_location_arrived;
 }
 
@@ -1463,7 +1481,10 @@ void gnss_loop(int id) {
       if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
     }
-    update_maxgs(stored_gs);
+    // ★ ミラー中は入れない。入れると MAX G/S が**ボート自身の最高速**になる
+    //   （画面の他の数字は機体のものなので、1 項目だけ出どころが違う状態になる）。
+    //   機体の値は下のミラー分岐で入れている。
+    if (!link_mirror_active()) update_maxgs(stored_gs);
 
     if (stored_truetrack < 0 || stored_truetrack > 360) {
       DEBUGW_P(20250923,"ERROR:MT");

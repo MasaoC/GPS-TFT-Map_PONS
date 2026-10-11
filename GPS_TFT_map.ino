@@ -126,6 +126,14 @@ static void nav_alarm_tick(bool new_gnss_info);
 // 最後にボタンが操作された時刻。設定画面の放置タイムアウト（下の SETTING_IDLE_TIMEOUT_MS）用。
 // 3 つのコールバックの先頭で更新するので、押し方の種類によらず必ず記録される。
 static unsigned long last_user_input_ms = 0;
+// 地上の姿勢チェックが「いま発報している」状態。PONS Link の status に載せて、
+// **受信機でも同じ音声を鳴らす**ために公開する（link.cpp が読む）。
+// ★ 立てるのは下の地上ブロックだけ。**毎周回クリアしてから立て直す**ので、
+//   離陸して条件から外れた瞬間に落ちる。落とさないと status が立ったままになり、
+//   受信機が飛行中ずっと鳴らし続ける（送信機は飛行中は黙る）。
+bool ground_roll_warn_active  = false;
+bool ground_pitch_warn_active = false;
+bool ground_calib_warn_active = false;
 void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
@@ -770,6 +778,8 @@ void loop() {
   // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
   // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
   // ミラー中は get_gnss_mps() が機体の対地速度になるため、判定が噛み合わない。
+  // ★ 無線へ出す発報状態は、ここで毎周回落としてから下で立て直す（上の宣言参照）。
+  ground_roll_warn_active = ground_pitch_warn_active = ground_calib_warn_active = false;
   if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
       !link_mirror_active() &&
       get_gnss_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
@@ -784,7 +794,12 @@ void loop() {
     // ロール: 0（または SET ROLL で申告した値）からのズレ
     if (fabsf(gr - attitude_get_roll_target()) > GROUND_ROLL_WARN_DEG) {
       if (gnd_over_since_ms == 0) gnd_over_since_ms = now_ms;
-      if ((now_ms - gnd_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS &&
+      // 継続時間を満たした＝発報状態。無線へはこれを出す（鳴らす間隔とは別）。
+      // ★ 運搬中のミュート（充電中かつマウント外）も効かせること。入れないと
+      //   機体を鞄に入れている間ボートが 2 分おきに喋り続ける。
+      const bool gnd_held = (now_ms - gnd_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS;
+      ground_roll_warn_active = gnd_held && !warn_muted_off_mount();
+      if (gnd_held &&
           (gnd_last_warn_ms == 0 ||
            (now_ms - gnd_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
         gnd_last_warn_ms = now_ms;
@@ -822,7 +837,9 @@ void loop() {
         : (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG);
     if (pitch_bad) {
       if (gndp_over_since_ms == 0) gndp_over_since_ms = now_ms;
-      if ((now_ms - gndp_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS &&
+      const bool gndp_held = (now_ms - gndp_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS;
+      ground_pitch_warn_active = gndp_held && !warn_muted_off_mount();  // ロールと同じ
+      if (gndp_held &&
           (gndp_last_warn_ms == 0 ||
            (now_ms - gndp_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
         gndp_last_warn_ms = now_ms;
@@ -851,6 +868,10 @@ void loop() {
     {
       static uint32_t eskf_apply_last_warn_ms = 0;
       if (attitude_needs_apply()) {
+        // 無線へ。**ここは地上・静止のブロックの中**なので、飛行中は立たない
+        // （送信機が飛行中に黙るものを受信機に喋らせないため）。
+        // 運搬中のミュートも同じく効かせる（上のロールのコメント参照）。
+        ground_calib_warn_active = !warn_muted_off_mount();
         if (eskf_apply_last_warn_ms == 0 ||
             (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
           eskf_apply_last_warn_ms = now_ms;
@@ -1446,6 +1467,15 @@ void next_scaleindex() {
   scale = scalelist[scaleindex];
 }
 
+// 指定の縮尺へ切り替える（範囲外は無視）。PONS Link の受信側が
+// **送信機の縮尺に合わせる**ために使う（link.cpp）。
+// ★ scaleindex と scale は必ず対で更新すること（上と同じ）。
+void set_scaleindex(int idx) {
+  if (idx < 0 || idx >= (int)(sizeof(scalelist) / sizeof(scalelist[0]))) return;
+  scaleindex = idx;
+  scale = scalelist[scaleindex];
+}
+
 // 画面横幅 240px が何 km に相当するかを返す（設定画面のスケール表示用）。
 float scale_screen_km(int index) {
   if (index < 0 || index >= (int)(sizeof(scalelist) / sizeof(scalelist[0]))) return 0;
@@ -1821,10 +1851,9 @@ void longPressCallback() {
 // 旋回角速度をリセットする。GNSS 受信開始時や停止時などに呼ぶ。
 // サンプル配列を現在の真方位と現在時刻で埋めることで、急激な deg/s の跳ね上がりを防ぐ。
 //
-// ※ **画面を切り替えたときには意図して呼んでいない。** update_degpersecond() は
-//   地図画面でしか回らないので、設定画面などに数秒いて戻ると 4 サンプルの窓が
-//   その空白期間をまたぎ、経過時間が過大になって deg/s が実際より小さく出る
-//   （3 サンプルぶん＝約 1.5 秒で正常に戻る）。
+// ※ **画面を切り替えたときには意図して呼んでいない。** 窓は 4 サンプルなので、
+//   更新が数秒途切れたあとは窓がその空白をまたぎ、経過時間が過大になって deg/s が
+//   実際より小さく出る（3 サンプルぶん＝約 1.5 秒で正常に戻る）。
 //   小さく出る側＝「旋回していない」と見える側なので、コース警報が早く鳴ることは
 //   あっても鳴らなくなることはない。安全側に外れるため直していない。
 void reset_degpersecond() {
