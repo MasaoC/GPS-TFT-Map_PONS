@@ -470,25 +470,32 @@ static void link_watch_sender_battery() {
 // 送信機の地上チェック（ロール／ピッチ／較正やり直し）を受信機でも同じ音声で鳴らす。
 // ★ 鳴らす間隔は送信機と同じ定数を使う（しきい値の判定は送信機側だけが持つ）。
 //   片方だけ変えると「機体は喋ったのにボートは黙る」になる。
-// ★ ビットは「いま送信機が言っている状態」なので、ここは繰り返すだけでよい
-//   （立ち上がりだけ拾うと、聞き逃したら二度と鳴らない）。
-static void link_watch_ground_one(uint16_t bit, const char* wav,
-                                  uint32_t interval_ms, uint32_t &last_ms) {
-    if ((link_sender_status() & bit) == 0) { last_ms = 0; return; }
-    const uint32_t now = millis();
-    if (last_ms != 0 && now - last_ms < interval_ms) return;
-    last_ms = now;
-    link_alert(wav, 370, 250, 3);
-}
-
+// ★★ **ビットが落ちても last は落とさないこと**（0.988 の不具合）。送信機のビットは
+//   `attitude_is_static()` を含むガードの中で立てているので、機体に触ると一瞬落ちる
+//   ＝ **1Hz のテレメトリでは明滅して届く**。落としていたため明滅のたびに即・再発報した。
+//   送信機側も条件解除では `gnd_last_warn_ms` を落としていないので、これで揃う。
+// ★★ **1 回につき 1 つだけ鳴らす**（見つけたら return）。3 つは同時に立つので、
+//   同時に積むと同じ優先度どうしが互いを pending へ追い出す（settings.h の
+//   LINK_GROUND_SAY_GAP_MS 参照）。足すときは表に 1 行入れるだけ。
 static void link_watch_sender_ground_att() {
-    static uint32_t roll_ms = 0, pitch_ms = 0, calib_ms = 0;
-    link_watch_ground_one(LINK_ST_GROUND_ROLL,  "wav/roll_check.wav",
-                          GROUND_ROLL_WARN_INTERVAL_MS, roll_ms);
-    link_watch_ground_one(LINK_ST_GROUND_PITCH, "wav/pitch_check.wav",
-                          GROUND_ROLL_WARN_INTERVAL_MS, pitch_ms);
-    link_watch_ground_one(LINK_ST_CALIB_GND,    "wav/eskf_calib_required.wav",
-                          ESKF_APPLY_WARN_INTERVAL_MS, calib_ms);
+    struct Say { uint16_t bit; const char* wav; uint32_t interval; uint32_t last; };
+    static Say say[] = {
+        { LINK_ST_GROUND_ROLL,  "wav/roll_check.wav",          GROUND_ROLL_WARN_INTERVAL_MS, 0 },
+        { LINK_ST_GROUND_PITCH, "wav/pitch_check.wav",         GROUND_ROLL_WARN_INTERVAL_MS, 0 },
+        { LINK_ST_CALIB_GND,    "wav/eskf_calib_required.wav", ESKF_APPLY_WARN_INTERVAL_MS,  0 },
+    };
+    static uint32_t last_say_ms = 0;
+    const uint32_t now = millis();
+    if (last_say_ms != 0 && now - last_say_ms < LINK_GROUND_SAY_GAP_MS) return;
+    const uint16_t st = link_sender_status();
+    for (Say &g : say) {
+        if ((st & g.bit) == 0) continue;
+        if (g.last != 0 && now - g.last < g.interval) continue;
+        g.last      = now;
+        last_say_ms = now;
+        link_alert(g.wav, 370, 250, 3);
+        return;
+    }
 }
 
 // 通信レポート（60 秒ごと）。現場でシリアルを見られない以上、

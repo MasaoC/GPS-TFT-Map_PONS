@@ -2744,11 +2744,21 @@ static void draw_link_icons() {
   }
 }
 
-// 電波が途切れている間、消せないポップアップを出し続ける（docs/pons_link.md §5）。
+// 地図を覆う情報ボックスの間引き。3 秒のうち 2 秒だけ出す（残り 1 秒は地図を見せる）。
+// ★ 枠の点滅（link_frame_visible）とは目的が違う。あちらは**気づかせる**ための点滅で、
+//   こちらは**隠し続けない**ための間引き。数字を読む時間を作るのが目的。
+static bool banner_visible() { return (millis() / 1000) % 3 != 2; }
+
+// 電波が途切れている間、消せないポップアップを出す（docs/pons_link.md §5）。
 // ボタンでも消せないのは、消したまま忘れる事故を防ぐため。
-// 地図が読める程度の高さに留め、画面を覆い切らない。
+// ★ **点滅させても「消せない」は保たれる**（必ず戻ってくる）。無信号中は自機表示に
+//   戻っているので、出しっぱなしだと背景の地図が読めない。
+// ★ 位置は MUTE バナー（y=104..144）の**下**。あれと無信号は同時に出る
+//   （warn_muted_off_mount() が false を返すのはミラー中だけ）。DUP SENDER は
+//   ミラー中にしか出ず MUTE と排他なので、あちらは y=96 のまま。
 static void draw_link_nosignal_box() {
-  const int bx = 10, by = 96, bw = SCREEN_WIDTH - 20, bh = 44;
+  if (!banner_visible()) return;
+  const int bx = 10, by = 148, bw = SCREEN_WIDTH - 20, bh = 44;
   backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
   backscreen.drawRect(bx,     by,     bw,     bh,     COLOR_RED);
   backscreen.drawRect(bx + 1, by + 1, bw - 2, bh - 2, COLOR_RED);
@@ -2942,11 +2952,12 @@ static void draw_gnss_disconnect_warning() {
 // ★ **「なぜ静かなのか」を画面で示すためのもの。** 抑制は「充電中 かつ マウント外れ」
 //   のときだけで（GPS_TFT_map.ino の warn_muted_off_mount）、機体に載せて水平に
 //   戻せば自動で解除される。解除操作を覚えておく必要は無い。
-// ★ GNSS 断線の警告（y=44..99）と縦に並べる。両方出ても重ならない位置にしてある。
-// ★ 点滅させる（3 秒のうち 2 秒だけ出す）。情報表示なので地図を隠し続けない。
+// ★ 縦の並びは GNSS 断線の警告（y=44..99）→ これ（y=104..144）→ 無信号の箱
+//   （y=148..192）。3 つ同時に出ても重ならない位置にしてある。
+// ★ 点滅させる（banner_visible）。情報表示なので地図を隠し続けない。
 static void draw_warn_mute_banner() {
   if (!warn_muted_off_mount()) return;
-  if ((millis() / 1000) % 3 == 2) return;
+  if (!banner_visible()) return;
   const int bx = 5, by = 104, bw = SCREEN_WIDTH - 10, bh = 40;
   backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
   backscreen.drawRect(bx,     by,     bw,     bh,     COLOR_RED);
@@ -3070,28 +3081,44 @@ void draw_gs_track(){
 
 // ===== バッテリー監視変数 =====
 unsigned long last_maxadr_time = 0;           // max_adreading が最後に更新された時刻
-int max_adreading = 0;                        // AD 読み値のピーク保持値（ノイズ対策のためピーク追跡）
+int max_adreading = 0;                        // 下の adr_peak の整数ミラー（ログ用）
 
 // バッテリー入力電圧を読み取って返す（単位: V、上限 4.3V）。
-// ピーク追跡方式でノイズを除去する:
-//   - 急激な低下（200カウント以上）はリセット（USB が外れた瞬間の値落ち対策）。
-//   - 上昇時はすぐにピークを更新し、時刻を記録する。
-//   - ピーク更新から 3 秒経過したら指数移動平均（α=0.2）でゆっくり追従させる。
-// BATTERY_MULTIPLYER() マクロで AD 値を電圧に変換している（settings.h 参照）。
+// **ピーク追跡**でノイズを除去する。音声再生や TFT 書き込みで一瞬下がるのは負荷の
+// 影響で、電池そのものの電圧ではないため:
+//   - 急激な低下（200 カウント以上）は即追従（USB が外れた瞬間）
+//   - 上昇も即追従（= 直近のピーク ≒ 無負荷の電圧）
+//   - 下降は BATTERY_PEAK_HOLD_MS 経ってから、BATTERY_DECAY_TAU_MS を時定数に
+//     ゆっくり（係数は**経過時間から**作る。理由は settings.h 側に書いてある）
+// ★ 追跡の実体は **float**。整数で持つと下降の 1 ステップが切り捨てで 0 になり、
+//   **いつまでも下がらない**。
 float get_input_voltage(){
-  int adreading = analogRead(BATTERY_PIN);
-  if (adreading < max_adreading - 200) {//急激に低下=USBが外れた時。 0.4V相当。
-    max_adreading = adreading;
-  }
-  else if (adreading > max_adreading) {
+  static float    adr_peak  = 0.0f;
+  static uint32_t last_call_ms = 0;
+  const int      adreading = analogRead(BATTERY_PIN);
+  const uint32_t now       = millis();
+
+  if (adr_peak <= 0.0f) adr_peak = adreading;              // 初回
+  // 前回**呼ばれてから**の経過。1 秒間に何回呼ばれても合計は 1 秒なので、
+  // 呼び出し元の数（12 箇所ある）で時定数が変わらない。
+  const uint32_t dt = (last_call_ms == 0) ? 0 : (now - last_call_ms);
+  last_call_ms = now;
+
+  if (adreading < adr_peak - 200) {       // 急激に低下 = USB が外れた（0.4V 相当）
+    adr_peak = adreading;
+    last_maxadr_time = now;
+  } else if (adreading > adr_peak) {      // ピークは即追従（無負荷のときの電圧）
     DEBUG_P(20250508,"bat");
-    DEBUG_PLN(20250508,BATTERY_MULTIPLYER(max_adreading));
-    max_adreading = adreading;
-    last_maxadr_time = millis();
-  } else if (millis() - last_maxadr_time > 3000L) {
-    max_adreading += (adreading - max_adreading) * 0.2;
+    DEBUG_PLN(20250508,BATTERY_MULTIPLYER(adr_peak));
+    adr_peak = adreading;
+    last_maxadr_time = now;
+  } else if (now - last_maxadr_time > BATTERY_PEAK_HOLD_MS) {
+    float k = (float)dt / (float)BATTERY_DECAY_TAU_MS;   // 1 次 IIR の係数
+    if (k > 1.0f) k = 1.0f;               // 久しぶりに呼ばれても飛び越えない
+    adr_peak += (adreading - adr_peak) * k;
   }
-  return min(BATTERY_MULTIPLYER(max_adreading),4.3);
+  max_adreading = (int)(adr_peak + 0.5f);
+  return min(BATTERY_MULTIPLYER(adr_peak),4.3);
 }
 
 // リプレイ中で、CSV に電圧列（RHAVE_VOLT）がある間だけ true。
@@ -3356,6 +3383,24 @@ void draw_map_footer(){
   backscreen.loadFont(AA_FONT_SMALL);
 }
 
+// 受信モードの電池残量を 1 つ描く（組み込みフォント 6x8・サイズ 1 のまま呼ぶこと）。
+// ★ **低下したら点滅させる**（自機の電池表示と同じ流儀）。赤文字と赤地の白抜きを
+//   1 秒ごとに入れ替える。受信モードでは残量が S/R の 2 つ並ぶので、
+//   **低いほうだけを点滅させる**（どちらを交換するのか分からないと対処できない）。
+// 返り値は次に描き始める x（S の桁数が残量で変わるため、固定値では並べられない）。
+static int draw_batt_part(int x, const char* s, uint16_t col, bool low) {
+  const int w = 6 * (int)strlen(s);          // 組み込みフォントは 1 文字 6px
+  if (low && (millis() / 1000) % 2 == 0) {
+    header_footer.fillRect(x, 2, w, 11, COLOR_RED);
+    header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
+  } else {
+    header_footer.setTextColor(col);
+  }
+  header_footer.setCursor(x, 4);
+  header_footer.print(s);
+  return x + w;
+}
+
 // 画面下部 30px のフッターを描画して TFT の (0, 290) に転送する（HEIGHT: 30px）。
 // 左: TC（真方位コース）と目的地までの距離 km。その下にナビモード名と目的地名。
 // 右: バッテリー電圧（USB 接続時は "USB"。低電圧時は赤点滅 + 音声警告 60 秒ごと）。
@@ -3441,17 +3486,17 @@ void draw_footer(){
     //   組み込みフォント（6x8）に落として 48px に収める。色分けは変わらず効く。
     header_footer.unloadFont();
     header_footer.setTextSize(1);
-    header_footer.setCursor(SCREEN_WIDTH - 52, 4);
+    int bx = SCREEN_WIDTH - 52;
+    char buf[8];
     if (link_is_receiving()) {
       const float sv = link_get_voltage();
-      header_footer.setTextColor(battery_color(sv));
-      header_footer.printf("S%d ", battery_percent(sv));
+      snprintf(buf, sizeof(buf), "S%d ", battery_percent(sv));
+      bx = draw_batt_part(bx, buf, battery_color(sv), sv <= BAT_LOW_VOLTAGE);
     } else {
-      header_footer.setTextColor(COLOR_GRAY);
-      header_footer.print("S-- ");
+      bx = draw_batt_part(bx, "S-- ", COLOR_GRAY, false);
     }
-    header_footer.setTextColor(battery_color(rv));
-    header_footer.printf("R%d%%", battery_percent(rv));
+    snprintf(buf, sizeof(buf), "R%d%%", battery_percent(rv));
+    draw_batt_part(bx, buf, battery_color(rv), rv <= BAT_LOW_VOLTAGE);
     header_footer.loadFont(AA_FONT_SMALL);   // 後続の描画のために戻す
   }
   // リプレイ中は USB 接続でも電池表示にする。飛行時は USB が刺さっていないため、
