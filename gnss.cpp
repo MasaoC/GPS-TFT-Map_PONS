@@ -1688,6 +1688,8 @@ int   get_maxgs_5min_min()  { return maxgs_5min_min; }
 //   画面が正常なまま航法を続けるのを防ぐため（表示は
 //   draw_gnss_disconnect_warning()、ログは GPS_TFT_map.ino の遷移検出）。
 // ★ 起動直後（まだ 1 バイトも来ていない）も false。従来と同じ。
+bool gnss_ever_connected() { return gnss_connection; }
+
 bool get_gnss_connection() {
   if (!gnss_connection) return false;
   return (uint32_t)(millis() - gnss_last_byte_ms) < GNSS_CONN_TIMEOUT_MS;

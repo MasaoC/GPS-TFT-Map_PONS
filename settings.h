@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261012
-#define BUILDVERSION "0.989"
+#define BUILDDATE 20261013
+#define BUILDVERSION "0.990"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
@@ -1527,6 +1527,19 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   1 つ鳴らしたらこの時間だけ空けて次へ回す。最長の音声が 4.82 秒なので、
 //   鳴り終わるまで次を積まない値にしてある。
 #define LINK_GROUND_SAY_GAP_MS 6000UL
+
+// ---- 地図に重ねる通知ボックスの縦位置（display_tft.cpp の begin_notice_box）----
+// ★ **同時に出るものを重ねないこと。** 括弧内が実際に占める範囲。
+//   同時に出うる組: GNSS 断線 ＋ 警報ミュート ＋（無信号 または 送信前チェック）。
+//   排他な組: 無信号（受信モード）と送信前チェック（送信モード）→ 同じ段を使う。
+//            送信機 2 台（ミラー中のみ）と警報ミュート（ミラー中は出ない）。
+#define NOTICE_Y_GNSS_LOST    44   // 高さ 56 → 44..99 （GNSS モジュールの断線）
+#define NOTICE_Y_DUP_SENDER   96   // 高さ 44 → 96..139（送信機が 2 台）
+#define NOTICE_Y_WARN_MUTE   104   // 高さ 40 → 104..143（警報ミュート中）
+#define NOTICE_Y_LINK_STATE  148   // 高さ 44 → 148..191（無信号 / 送信前チェック）
+// ※ GNSS 断線（44..99）と送信機 2 台（96..139）は 4px だけ接する。両方出るのは
+//   「受信機の GNSS が抜けていて、かつ送信機が 2 台」のときで、後から描く側が
+//   相手の下枠を 4px 消すだけ。文字は隠れないのでそのままにしてある。
 
 // ---- 受信枠の点滅（display_tft.cpp の link_frame_visible）----
 // ★ **半周期を再描画間隔より十分長くすること。** 再描画は新しいデータか

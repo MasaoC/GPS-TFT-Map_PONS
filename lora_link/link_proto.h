@@ -243,6 +243,13 @@ static_assert(sizeof(LinkTelem) == 65, "LinkTelem が 65 バイトでなくな�
 #define LINK_ST_GROUND_ROLL  0x0010   // 地上チェック: ロールのズレが続いている
 #define LINK_ST_GROUND_PITCH 0x0020   // 地上チェック: ピッチのズレが続いている
 #define LINK_ST_CALIB_GND    0x0040   // 地上で較正やり直しが必要（ESKF APPLY）
+// ★★ **これは受信側では作れないし、画面にも出ない。** 送信機の GNSS が抜けると
+//   `stored_*` が凍ったまま送信は続き、`fixflags` も `numsat` も最後の値のまま、
+//   `seq` は進むので `NO SIGNAL` にもならない。つまりボートからは
+//   **「止まった正常な機体」**に見える。音で知らせるしかないのでビットで運ぶ。
+// ★ ビットを足すだけなら LINK_PROTO_VER は上げなくてよい（構造体の大きさも
+//   並びも変わらず、古い送信機は 0 を送るので誤報も出ない）。
+#define LINK_ST_GNSS_LOST    0x0080   // 送信機の GNSS モジュールが応答しない
 
 // ============================================================
 //  数値の詰め方

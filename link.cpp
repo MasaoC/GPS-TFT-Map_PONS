@@ -498,6 +498,33 @@ static void link_watch_sender_ground_att() {
     }
 }
 
+// 送信機の GNSS モジュールが抜けた／戻ったことを、送信機と同じ音で知らせる。
+// ★ **これは音でしか気づけない。** 画面は「止まった正常な機体」に見える
+//   （理由は link_proto.h の LINK_ST_GNSS_LOST）。
+// ★ 下降 2 音（784→392）は「何かが失われた」専用の形で、復帰はその逆向き。
+//   送信機自身が鳴らすものと同じにしてある（gnss_conn_tick。音を増やさない）。
+// ★ ビットが落ちても間隔は落とさない。コネクタが緩んでいると明滅するので、
+//   落とすと明滅のたびに鳴り直す（地上チェックで踏んだのと同じ）。
+static void link_watch_sender_gnss() {
+    static uint32_t last_ms = 0;
+    static bool     was_lost = false;
+    const bool lost = (link_sender_status() & LINK_ST_GNSS_LOST) != 0;
+    const uint32_t now = millis();
+    if (lost) {
+        if (last_ms == 0 || now - last_ms >= GNSS_LOST_ALERT_MS) {
+            last_ms = now;
+            enqueueTask(createPlayMultiToneTask(784, 200, 1, 3));
+            enqueueTask(createPlayMultiToneTask(392, 300, 1, 3));
+            enqueueTask(createLogSdfTask("LINK WARN: sender GNSS not responding"));
+        }
+    } else if (was_lost && link_is_receiving()) {   // 復帰（受信できているときだけ）
+        enqueueTask(createPlayMultiToneTask(392, 120, 1, 2));
+        enqueueTask(createPlayMultiToneTask(784, 160, 1, 2));
+        enqueueTask(createLogSdTask("LINK: sender GNSS restored"));
+    }
+    was_lost = lost;
+}
+
 // 通信レポート（60 秒ごと）。現場でシリアルを見られない以上、
 // SD のシステムログが「あのとき電波はどうだったか」を振り返る唯一の記録になる。
 // 出すのは「モジュールが応答したか」「何発受かったか」「seq がいくつ飛んだか」
@@ -908,6 +935,7 @@ void link_loop() {
     link_watch_sender_faults();
     link_watch_sender_battery();
     link_watch_sender_ground_att();
+    link_watch_sender_gnss();
     link_periodic_report();
     link_preflight_tick();      // ★ tx_tick より先。点検中は送信を止める
     link_tx_tick();
@@ -1119,6 +1147,11 @@ static void link_push_telemetry() {
     if (ground_roll_warn_active)                       st |= LINK_ST_GROUND_ROLL;
     if (ground_pitch_warn_active)                      st |= LINK_ST_GROUND_PITCH;
     if (ground_calib_warn_active)                      st |= LINK_ST_CALIB_GND;
+    // ★ GNSS モジュールの断線。**受信側では知りようがない**（理由は link_proto.h）。
+    //   条件は送信機自身の警報（gnss_conn_tick）と同じ「一度繋がってから切れた」。
+    //   `!get_gnss_connection()` だけだと**起動直後のまだ 1 バイトも来ていない間に
+    //   立ち**、受信機が電源投入ごとに誤報する。
+    if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
     t.status = st;
 
     t.crc16 = link_telem_crc(&t);

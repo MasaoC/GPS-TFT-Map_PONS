@@ -98,8 +98,20 @@
   int      battery_percent(float v);
   uint16_t battery_color(float v);
 
+  // GNSS の精度表示を「分からない」にすべきか（ミラー中は hAcc 以外が載っていない）。
+  // ★ display_pages.cpp の GNSS DETAIL からも参照するので公開してある。
+  bool gnss_acc_unknown();
+
+  // フォント定義: TFT_eSPI のカスタムフォント（実体は src/flashdata/font_data.h）。
+  // ★ マクロなので、使う .cpp が font_data.h を include していること。
+  //   display_tft.cpp と display_pages.cpp の両方から使うのでここに置いてある。
+  #define AA_FONT_SMALL NotoSansBold15   // 小（地図テキスト等。アンチエイリアス付き）
+  #define NM_FONT_MEDIUM Arial_Black22   // 中（ESKF のロール・ピッチ）
+  #define NM_FONT_LARGE Arial_Black56    // 大（ヘッダーの速度・真方位）
+
   extern TFT_eSPI tft;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
+  extern TFT_eSprite header_footer;  // ヘッダ／フッタ兼用（display_pages.cpp も使う）
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (VSI_W×240px, 16bit)
 
 #endif

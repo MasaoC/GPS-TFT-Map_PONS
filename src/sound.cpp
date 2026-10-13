@@ -1084,7 +1084,7 @@ void loop_tone() {
 //   WAV/Sinトーンが使用中の場合は amp を操作しない（相手任せ）。
 // CORE0
 // ============================================================
-void update_vario() {
+void update_vario(bool mute) {
     if (vario_inhibit) return;  // inhibit 中はバリオ音を出さない
     static unsigned long last_call = 0;
     if (millis() - last_call < 100) return;
@@ -1097,7 +1097,12 @@ void update_vario() {
     //   ここに `get_imu_alive()` / `get_airdata_ok()` を書き戻さないこと。
     float vspeed    = vario_vspeed_mps();
     float dead_band = vario_deadband_mps();
-    bool should_vario = (vspeed > dead_band || vspeed < -dead_band) && (vario_volume > 0);
+    // ★★ **運搬中のミュートは should_vario を落として入れること。** 関数の冒頭で
+    //   return すると下の**停止エッジを通らず**、鳴っている音がそのまま鳴り続ける
+    //   （アンプも ON のまま残る）。`vario_inhibit` が冒頭 return でよいのは、
+    //   あれが SD の設定で運転中に変わらないから。
+    bool should_vario = (vspeed > dead_band || vspeed < -dead_band)
+                     && (vario_volume > 0) && !mute;
 
     static bool prev_vario = false;
 

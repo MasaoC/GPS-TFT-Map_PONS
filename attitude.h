@@ -102,6 +102,8 @@ bool attitude_ready();                 // 初期化が完了して推定値が�
 // 機体軸のオイラー角 [度]。マウント補正とゼロ点オフセットを適用済み。
 void attitude_get_euler(float &roll, float &pitch, float &yaw);
 // マウント補正のみ適用（ゼロ点オフセット適用前）。較正のときに使う。
+// ★ **機上コードからは呼んでいないが消さないこと。** これと attitude_yaw_ready() は
+//   `tools/attitude_test/` が使っていて、あれが ESKF の唯一の自動テストになっている。
 void attitude_get_euler_raw(float &roll, float &pitch, float &yaw);
 
 // ---- 診断（設定画面の IMU/ESKF ページ用）----
@@ -166,6 +168,7 @@ enum { ATT_YAW_SRC_NONE = 0, ATT_YAW_SRC_GNSS = 1 };
 uint8_t attitude_get_yaw_source();
 // ヨーが設定済みか。false のあいだは GNSS 速度観測を入れていない
 // （ヨー誤差がロール・ピッチへ転嫁されるため。attitude.cpp のコメント参照）。
+// ★ 機上コードからは呼んでいない。消さないこと（理由は attitude_get_euler_raw）。
 bool  attitude_yaw_ready();
 // センサー座標系で見た「上」方向（= 回転行列の第 3 行）。
 // ★ バリオが比力から重力を抜くのに使う。imu.cpp の compute_earth_z_accel() が

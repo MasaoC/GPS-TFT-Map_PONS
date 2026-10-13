@@ -2469,6 +2469,30 @@ static FsFile rxcsvFile;
 static bool   rxHeaderWritten = false;
 static int    rxfileyear = 0, rxfilemonth, rxfileday, rxfilehour, rxfileminute;
 
+// 飛行 CSV と received/ で**共通の 12 列**を書く（latitude 〜 time）。行末は書かない。
+// ★★ **列の並びを 2 か所に手書きしないこと。** received/ は「飛行 CSV と同じ並び ＋
+//   末尾に rssi/seq/age_ms と姿勢・風」という約束で（docs/pons_link.md §5）、
+//   リプレイは**列名で**解釈する。片方だけ並べ替えると、受信ログの再生で
+//   その列だけが静かに別の意味になる。
+static void csv_write_common(FsFile &f, const Task &tk) {
+  const auto& a = tk.saveCsvArgs;
+  f.print(a.latitude, 6);      f.print(",");
+  f.print(a.longitude, 6);     f.print(",");
+  f.print(a.gs, 1);            f.print(",");
+  f.print(a.ttrack);           f.print(",");
+  f.print(a.gnss_altitude, 2); f.print(",");
+  f.print(a.kf_altitude, 2);   f.print(",");   // KF 推定高度 [m]（気圧基準）
+  f.print(a.kf_vspeed, 2);     f.print(",");   // KF 推定上昇率 [m/s]
+  f.print(a.pressure, 2);      f.print(",");
+  f.print(a.voltage, 2);       f.print(",");   // リプレイ時の電池表示に使う
+  f.print(a.numsat);           f.print(",");   // リプレイ時の衛星数表示に使う
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d", a.year, a.month, a.day);
+  f.print(buf);                f.print(",");
+  snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%02d", a.hour, a.minute, a.second, a.centisecond);
+  f.print(buf);
+}
+
 void saveRxCSV(const Task& tk) {
   ASSERT_SD_CORE1("saveRxCSV");
   const auto& a = tk.saveCsvArgs;
@@ -2497,21 +2521,8 @@ void saveRxCSV(const Task& tk) {
                       "own_lat,own_lon,dist_m");
     rxHeaderWritten = true;
   }
-  rxcsvFile.print(a.latitude, 6);  rxcsvFile.print(",");
-  rxcsvFile.print(a.longitude, 6); rxcsvFile.print(",");
-  rxcsvFile.print(a.gs, 1);        rxcsvFile.print(",");
-  rxcsvFile.print(a.ttrack);       rxcsvFile.print(",");
-  rxcsvFile.print(a.gnss_altitude, 2); rxcsvFile.print(",");
-  rxcsvFile.print(a.kf_altitude, 2);   rxcsvFile.print(",");
-  rxcsvFile.print(a.kf_vspeed, 2);     rxcsvFile.print(",");
-  rxcsvFile.print(a.pressure, 2);      rxcsvFile.print(",");
-  rxcsvFile.print(a.voltage, 2);       rxcsvFile.print(",");
-  rxcsvFile.print(a.numsat);           rxcsvFile.print(",");
-  char d[11]; snprintf(d, sizeof(d), "%04d-%02d-%02d", a.year, a.month, a.day);
-  rxcsvFile.print(d); rxcsvFile.print(",");
-  char t[12]; snprintf(t, sizeof(t), "%02d:%02d:%02d.%02d",
-                       a.hour, a.minute, a.second, a.centisecond);
-  rxcsvFile.print(t); rxcsvFile.print(",");
+  // 先頭 12 列は飛行 CSV と同じ並び（csv_write_common が唯一の書き手）。
+  csv_write_common(rxcsvFile, tk);  rxcsvFile.print(",");
   rxcsvFile.print(a.rssi);   rxcsvFile.print(",");
   rxcsvFile.print(a.seq);    rxcsvFile.print(",");
   rxcsvFile.print(a.age_ms); rxcsvFile.print(",");
@@ -2550,7 +2561,8 @@ void saveRxCSV(const Task& tk) {
   rxcsvFile.flush();
 }
 
-void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond) {
+void saveCSV(const Task& tk) {
+  const auto& a = tk.saveCsvArgs;
   ASSERT_SD_CORE1("saveCSV");
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
@@ -2559,13 +2571,13 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
   }
 
   //Run only once.
-  if(fileyear == 0 && year != 0){
-    fileyear = year;
-    filemonth = month;
-    fileday = day;
-    filehour = hour;
-    fileminute = minute;
-    filesecond = second;
+  if(fileyear == 0 && a.year != 0){
+    fileyear = a.year;
+    filemonth = a.month;
+    fileday = a.day;
+    filehour = a.hour;
+    fileminute = a.minute;
+    filesecond = a.second;
   }
 
   // ルート直下は設定ファイル専用にしてあるので、飛行 CSV は data/ へ書く。
@@ -2585,37 +2597,8 @@ void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_a
       headerWritten = true;
     }
 
-    csvFileStatic.print(latitude, 6);
-    csvFileStatic.print(",");
-    csvFileStatic.print(longitude, 6);
-    csvFileStatic.print(",");
-    csvFileStatic.print(gs, 1);
-    csvFileStatic.print(",");
-    csvFileStatic.print(ttrack);
-    csvFileStatic.print(",");
-    csvFileStatic.print(gnss_altitude,2);
-    csvFileStatic.print(",");
-    csvFileStatic.print(kf_altitude,2);  // KF推定高度 [m]（気圧基準）
-    csvFileStatic.print(",");
-    csvFileStatic.print(kf_vspeed,2);   // KF推定上昇率 [m/s]
-    csvFileStatic.print(",");
-    csvFileStatic.print(pressure,2);
-    csvFileStatic.print(",");
-    csvFileStatic.print(voltage,2);   // バッテリー電圧 [V]（リプレイ時の電池表示に使う）
-    csvFileStatic.print(",");
-    csvFileStatic.print(numsat);      // 測位衛星数（リプレイ時の衛星数表示に使う）
-    csvFileStatic.print(",");
-
-    // Format date as YYYY-MM-DD
-    char date[11];
-    snprintf(date, sizeof(date), "%04d-%02d-%02d", year, month, day);
-    csvFileStatic.print(date);
-    csvFileStatic.print(",");
-
-    // Format time as HH:MM:SS.ss（スプレッドシートで時刻値として読み込める形式）
-    char time[12];
-    snprintf(time, sizeof(time), "%02d:%02d:%02d.%02d", hour, minute, second, centisecond);
-    csvFileStatic.println(time);
+    csv_write_common(csvFileStatic, tk);
+    csvFileStatic.println();
 
     // flush() は SD への物理書き込みを伴うため消費電力が大きい。
     // 2秒に1回だけ flush し、それ以外は SdFat の内部バッファに留めることで消費電力を抑制する。

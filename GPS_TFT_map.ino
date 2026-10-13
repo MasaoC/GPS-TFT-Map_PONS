@@ -466,38 +466,47 @@ bool warn_muted_off_mount() {
   if (link_mirror_active()) return false;
   // ★ off_mount の判定は attitude_on_gyro() の中でしか更新されないので、
   //   BNO085 が死ぬと**前回の値のまま固まる**。その状態で「抑制中」と名乗ると
-  //   画面が嘘になる（実際には下の 4 箇所も attitude_ready() で止まっている）。
-  //   抑制対象はいずれも attitude_ready() を条件に持つので、ここで揃えても漏れない。
+  //   画面が嘘になるので、ESKF が動いていないあいだは抑制しない。
+  //   ★ 代償: **バリオだけは attitude_ready() を要求しない**（MS5611 単独でも鳴る）
+  //     ので、ESKF が収束する前は運搬中でも鳴りうる。off_mount が分からない
+  //     あいだは「傾いているか」を判定できないので、ここは諦めている。
   if (!attitude_ready()) return false;
   return digitalRead(USB_DETECT) && attitude_is_off_mount();
 }
 
-// Core0 のメインループ。以下の処理を毎ループ実行する:
-//   1. ボタン状態の読み取り
-//   2. GNSS データの受信・解析（gnss_loop は描画中にも分散して呼ぶ）
-//   3. 画面モードに応じた描画（地図 / 設定 / GNSS詳細 など）
-// gnss_loop(id) の id はデバッグ用の呼び出し箇所識別子。
-void loop() {
-  // 無線モジュールとの UART。1Hz・数十バイトなので負荷は無視できる。
-  // 無線モジュールが繋がっていなくても、link_module_alive() が false になるだけで無害。
-  link_loop();
-  //switch handling
-  sw_push.read();
-  // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
-  // リプレイを一時停止する。戻ってきたら続きから再生される。
-  replay_set_paused(screen_mode != MODE_MAP);
-  // 生 IMU ログを止めるのはリプレイ中だけ
-  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
-  //
-  // ※ GNSS 日時の有効性では止めないこと。
-  //   以前は日時未確定でも止めていたが、それだと屋内など測位できない場所で
-  //   IMU の生ログが一切取れず（wrote=0）、ベンチでの検証ができなかった。
-  //   日時が無いときは下でファイル名を imuraw/nofix.bin にフォールバックする。
-  //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
-  imulog_set_paused(getReplayMode());
-  gnss_loop(0);  // ループ先頭で GNSS データを受信
-  loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
+// 地上の姿勢チェック（ロール／ピッチ）の共通部分。
+// 「しきい値を超え**続けたら**、間隔を空けて繰り返し知らせる」。
+//   戻り値 true = いま鳴らす。active = 無線へ出す発報状態（鳴らす間隔とは別物で、
+//   継続時間を満たしていれば立つ）。運搬中のミュートもここで効かせる。
+// ★★ **条件が解除されても last_warn は落とさない。** 落とすと、条件が明滅する
+//   たびに鳴り直す（0.988 で受信側がこれを踏んだ。link.cpp の同趣旨の注意書き参照）。
+//   落とすのは継続時間（over_since）だけ。
+// ★ 較正やり直しの警告は**わざと逆**（解除されたら間隔も落とす。APPLY で直ったら
+//   次回は即座に知らせたい）なので、ここには入れていない。
+// ★ 状態を構造体にしないのは、.ino の自動プロトタイプがファイル先頭へ入るため
+//   （独自の型はその時点で未宣言になる）。
+static bool ground_warn_due(uint32_t &over_since, uint32_t &last_warn,
+                            bool bad, bool &active) {
+  const uint32_t now = millis();
+  if (!bad) { over_since = 0; active = false; return false; }
+  if (over_since == 0) over_since = now;
+  const bool held = (now - over_since) >= GROUND_ROLL_WARN_HOLD_MS;
+  active = held && !warn_muted_off_mount();
+  if (!held) return false;
+  if (last_warn != 0 && now - last_warn < GROUND_ROLL_WARN_INTERVAL_MS) return false;
+  last_warn = now;
+  return true;
+}
 
+// ============================================================
+//  loop() から毎回呼ぶ「刻み」関数
+//    ★ **どれも画面モードに依存させない。** 警報を描画関数の中に置くと、その画面を
+//      出しているときしか鳴らない（CLAUDE.md の約束）。だから loop() の最上位から
+//      順に呼ぶ。**ここに描画を混ぜないこと**（描画は draw_current_screen）。
+//    ★ 刻みの順番は loop() の並びがそのまま意味を持つ。入れ替えないこと。
+// ============================================================
+// GNSS モジュールの断線／復帰と、Fix 取得の通知。
+static void gnss_conn_tick() {
   // GNSS モジュールの断線／復帰を log.txt に残す。
   // ★ 表示は draw_gnss_disconnect_warning()（地図の上にマゼンタの枠）だが、
   //   **画面を見ていなければ気づけない**。飛行 CSV には「位置が止まった」ことしか
@@ -549,21 +558,292 @@ void loop() {
     }
     prev_gnss_fix = cur_fix;
   }
+}
 
-  // 大気データ更新（非ブロッキングのステートマシン。毎ループ呼ぶことで約50Hzで計測）
-  airdata_updated = airdata_update();
+// バンク角の警告。
+static void bank_alarm_tick() {
+  // 実測（2026-07-26 琵琶湖 45分）では 4 度超えが 31 回あったが、中央継続は 0.2 秒。
+  // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
+  // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
+  // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
+  // ★ ミラー中は「受信した機体のロール」で判定する。
+  //   受信側は警告をビットで受け取るのではなく**自分で再計算する**方針なので
+  //   （link_proto.h の status 設計を参照）、入力をミラー値に差し替えるだけでよい。
+  //   計算が 1 本のままなので、送信側と受信側で挙動がずれる余地が無い。
+  if (attitude_get_rpy_enabled() && !getReplayMode() &&
+      (link_mirror_active() ? link_get_attitude(bank_roll_tmp, bank_pitch_tmp)
+                            : attitude_ready())) {
+    static uint32_t bank_over_since_ms = 0;
+    static uint32_t bank_last_warn_ms  = 0;
+    // 発報済みフラグ。解除条件（バンクが戻る＋時間経過）を満たすまで鳴らさない。
+    // ★ true で始める。起動時点で既に 4 度を超えていた場合（マウントのズレ、
+    //   傾いた場所に置いてある、較正前など）に、一度も水平に戻らないまま
+    //   鳴り出すのを防ぐため。一度でも 3 度未満に戻れば通常動作に入る。
+    static bool     bank_warned        = true;
+    float wr, wp, wy;
+    // ミラー中は受信した機体のロール、それ以外は自機の姿勢。
+    // 入力をここで差し替えるだけで、以降の判定ロジックは 1 本のまま使える。
+    if (link_mirror_active()) { wr = bank_roll_tmp; wp = bank_pitch_tmp; wy = 0.0f; }
+    else                       attitude_get_euler(wr, wp, wy);
+    uint32_t now_ms = millis();
+    const float bank_abs = fabsf(wr);
 
-  // IMU 更新（H_INT フラグ確認 → データ読み出し → Kalman predict。毎ループ呼んでよい）
-  imu_update();
+    // 再武装。バンクが BANK_WARN_CLEAR_DEG 未満まで戻り、かつ発報から
+    // BANK_WARN_REARM_MS 以上経ってから。バンクが超過したままなら何時間でも鳴らさない
+    // （センサーのズレで超過が続く不具合を想定しているため、時間だけでは解除しない）。
+    if (bank_warned && bank_abs < BANK_WARN_CLEAR_DEG &&
+        (now_ms - bank_last_warn_ms) >= BANK_WARN_REARM_MS) {
+      bank_warned = false;
+    }
 
-  // ROTATION_VECTOR 更新時（5Hz）かつ GNSS 日時有効時 → Euler角を JST 時刻で SD ログ
-  // リプレイ中は記録しない。リプレイ中の日時は CSV 由来のため、そのまま記録すると
-  // 「再生した飛行の日付」のファイルに現在の（静止した）IMU 値を追記してしまい、
-  // 実際の飛行記録を汚してしまう。下の prev_jst_cs による単調増加チェックも
-  // 再生日時に引きずられて、通常モードに戻ったあと記録が止まる原因になる。
+    if (bank_abs > BANK_WARN_DEG) {
+      if (bank_over_since_ms == 0) bank_over_since_ms = now_ms;
+      if (!bank_warned && (now_ms - bank_over_since_ms) >= BANK_WARN_HOLD_MS) {
+        bank_last_warn_ms = now_ms;
+        bank_warned = true;
+        const bool muted = warn_muted_off_mount();
+        if (!muted) enqueueTask(createPlayWavTask("wav/bank_warning.wav", 3));
+        enqueueTask(createLogSdfTask("BANK WARN roll=%+.1f deg%s", wr,
+                                     muted ? " (MUTED: charging + off mount)" : ""));
+      }
+    } else {
+      bank_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
+    }
+  }
+}
+
+// 電池電圧の低下警告。
+static void batt_alarm_tick() {
+  // ★ **警報を描画関数の中に置かないこと。** 元は draw_footer() の中にあったため、
+  //   次の 2 つの穴があった。
+  //     1. draw_footer() は地図画面からしか呼ばれない → 設定画面・WIRELESS 画面・
+  //        IMU/ESKF 画面などを開いている間は電圧が下がっても鳴らない
+  //     2. 受信モードでは電池表示が別の分岐（S/R の 2 台ぶん表示）に入るため、
+  //        **一度も鳴らなかった**。追走ボートとプラットフォームは常に受信モードなので、
+  //        実質「ボートの電池切れは警告されない」状態だった
+  //   他の警報（バンク角・コース・地上チェック）と同じくここへ置き、画面モードにも
+  //   無線モードにも依存しないようにする。
+  //
+  //   毎秒 1 回だけ読むのは、ADC の連打を避けるためと、
+  //   get_input_voltage() のピーク追跡をどの画面でも回し続けるため
+  //   （地図画面以外では誰も呼ばないと追跡が止まり、戻ったときに古い値が出る）。
+  {
+    static uint32_t last_batt_check_ms = 0;
+    static uint32_t last_batt_warn_ms  = 0;
+    if (millis() - last_batt_check_ms >= 1000) {
+      last_batt_check_ms = millis();
+      const float bv = get_input_voltage();
+      // 充電中は鳴らさない。リプレイ中も鳴らさない（過去の電圧で今の警告を出しても
+      // 意味がなく、SD のテキストログにも当時の値が「今の警告」として混ざるため）。
+      if (!digitalRead(USB_DETECT) && !replay_voltage_active() &&
+          bv <= BAT_LOW_VOLTAGE &&
+          (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
+                                  : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
+        last_batt_warn_ms = millis();
+        // WAV を再生（最低 volume 60 保証）。音声は本体 FLASH にあるので
+        // SD の有無に関係なく鳴る。0.982 までここに「SD 未認識なら高音ビープ
+        // 3 回」の代替があったが、SD が無くても喋るようになったので消した。
+        enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
+        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
+                                     battery_percent(bv), bv));
+      }
+    }
+  }
+}
+
+// 地上での姿勢チェックと較正の催促。中の 4 つは「地上・静止」の条件を共有する。
+static void ground_check_tick() {
+  // 自動ロールトリムは対地速度 3m/s 超でしか働かないので地上では動かない。
+  // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
+  // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
+  // ミラー中は get_gnss_mps() が機体の対地速度になるため、判定が噛み合わない。
+  // ★ 無線へ出す発報状態は、ここで毎周回落としてから下で立て直す（上の宣言参照）。
+  ground_roll_warn_active = ground_pitch_warn_active = ground_calib_warn_active = false;
+  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
+      !link_mirror_active() &&
+      get_gnss_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
+    static uint32_t roll_since = 0, roll_warn = 0;    // ground_warn_due() が持つ状態
+    static uint32_t pitch_since = 0, pitch_warn = 0;
+    float gr, gp, gy;
+    attitude_get_euler(gr, gp, gy);
+    const uint32_t now_ms = millis();
+
+    // ロール: 0（または SET ROLL で申告した値）からのズレ
+    if (ground_warn_due(roll_since, roll_warn,
+          fabsf(gr - attitude_get_roll_target()) > GROUND_ROLL_WARN_DEG,
+          ground_roll_warn_active)) {
+      const bool muted = warn_muted_off_mount();
+      if (!muted) enqueueTask(createPlayWavTask("wav/roll_check.wav", 3));
+      enqueueTask(createLogSdfTask("GROUND ROLL %+.1f deg (check mount / APPLY)%s", gr,
+                                   muted ? " (MUTED: charging + off mount)" : ""));
+    }
+
+    // ピッチ: 申告値 SET PITCH からのズレで見る。
+    // 地上の機体ピッチは場所によって変わる（プラットホーム -3.5 度、平地 0 度）ので、
+    // ロールのように絶対値 0 を基準にはできない。
+    //
+    // ただしプラットホーム近傍だけは例外。台の上と台の手前の地面は装置から
+    // 区別がつかないため、基準を一点ではなく PITCH_TARGET_MIN_DEG 〜 0 度の
+    // 区間とみなす（平地で APPLY してから台へ上げても鳴らないようにする）。
+    // 測位できていないときは近傍とみなさず、従来どおりの厳しい判定を使う。
+    //
+    // ※ 距離計算（haversine, double）は loop() 毎に回すには重いので 1 秒に 1 回だけ
+    //   更新して結果を使い回す。60 秒継続してから発報する判定なので粒度は足りる。
+    static uint32_t gndp_geo_ms   = 0;
+    static bool     gndp_near_pla = false;
+    if (gndp_geo_ms == 0 || (now_ms - gndp_geo_ms) >= PLATFORM_NEAR_RECHECK_MS) {
+      gndp_geo_ms   = now_ms;
+      gndp_near_pla = get_gnss_fix() &&
+          calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), pla_lat, pla_lon) <= PLATFORM_NEAR_KM;
+    }
+    const bool near_platform = gndp_near_pla;
+    bool pitch_bad = near_platform
+        ? (gp > GROUND_PITCH_WARN_DEG ||
+           gp < PITCH_TARGET_MIN_DEG - GROUND_PITCH_WARN_DEG)
+        : (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG);
+    if (ground_warn_due(pitch_since, pitch_warn, pitch_bad, ground_pitch_warn_active)) {
+      const bool muted = warn_muted_off_mount();
+      if (!muted) enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
+      enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f, nearPLA %d)%s",
+                                   gp, attitude_get_pitch_target(), (int)near_platform,
+                                   muted ? " (MUTED: charging + off mount)" : ""));
+    }
+
+    // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
+    // 画面には赤字で出しているが、**地上では画面を見ていないことが多い**。
+    // 気づかないまま飛ぶと、姿勢表示・バンク角警告・自動ロールトリムが
+    // まとめて信用できない状態のまま飛ぶことになるので、音でも促す。
+    //
+    // ★ このブロックの条件（地上・静止・リプレイ/ミラー以外）をそのまま使う。
+    //   **飛行中は絶対に鳴らさない。**飛行中に較正はできないし、
+    //   対処のしようがない警告で注意をそらすほうが危険だから。
+    //   最低保証音量は付けない。地上で静止しているとき＝人が機体のそばにいるときにしか
+    //   鳴らないので、音量を絞る判断を上書きする理由が無い（60 は電池切れ専用）。
+    //   （0.982 まではここに「SD が無いときは低いトーンで代替」の分岐があった。
+    //     音声を FLASH に焼いたので SD の有無に関係なく必ず喋る。）
+    {
+      static uint32_t eskf_apply_last_warn_ms = 0;
+      if (attitude_needs_apply()) {
+        // 無線へ。**ここは地上・静止のブロックの中**なので、飛行中は立たない
+        // （送信機が飛行中に黙るものを受信機に喋らせないため）。
+        // 運搬中のミュートも同じく効かせる（上のロールのコメント参照）。
+        ground_calib_warn_active = !warn_muted_off_mount();
+        if (eskf_apply_last_warn_ms == 0 ||
+            (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
+          eskf_apply_last_warn_ms = now_ms;
+          const bool muted = warn_muted_off_mount();
+          if (!muted) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
+          enqueueTask(createLogSdfTask("ESKF CALIBRATION REQUIRED (on ground)%s",
+                                       muted ? " (MUTED: charging + off mount)" : ""));
+        }
+      } else {
+        eskf_apply_last_warn_ms = 0;   // 較正し直したら次回は即座に知らせる
+      }
+    }
+
+    // ---- 較正した日から日付をまたいでいる ----
+    // OFF MOUNT 判定（attitude.cpp）は ESKF が回っている間しか働かないので、
+    // **電源を切ったまま外して付け直した**ケースだけは検出できない。
+    // 地上ロール/ピッチチェックが拾えるのは 3 度を超えるズレまでで、
+    // それ未満のズレは再 APPLY 以外に直す手段が無い。そこを埋めるのがこれ。
+    //
+    // ★ これは推測であって断定ではない。本当にマウントに付けっぱなしのまま
+    //   日をまたぐこともある。だから needs_apply は立てない。
+    //   立てると、ヘッダのピッチ数字に「読むな」の赤い取り消し線が入り、
+    //   PONS Link でボート側にも fault として飛ぶ（link.cpp の
+    //   LINK_ST_FAULTS_TONE）。根拠のない推測でそこまでやらない。
+    //   画面は設定画面（IMU/ESKF 1/2）の注意書きだけ、音はここで一度だけ。
+    //
+    // ★ 繰り返さないこと。2 分おきに鳴らすと、プラットホームの上で鳴ったときに
+    //   「止めるために APPLY する」人が出る。台の上で APPLY すると、正しかった
+    //   較正が台の姿勢で上書きされてしまう（APPLY は静止していれば通る）。
+    //   一度伝えたら、あとは人の判断に任せる。
+    {
+      static bool calib_day_warned = false;
+      const uint32_t today_jst = get_gnss_jst_yyyymmdd();
+      if (!calib_day_warned && !attitude_needs_apply() &&
+          attitude_calib_date_stale(today_jst)) {
+        calib_day_warned = true;
+        // 先に 2 音鳴らしてから WAV を積む（APPLY 成功音と同じ作り）。
+        // 2 音は「これから何か言う」という注意の引き方なので、WAV が必ず鳴る
+        // ようになった今も残す。eskf_calib_required.wav は流用しない。
+        // 「較正が必要」と断定する文言になってしまうため。
+        enqueueTask(createPlayMultiToneTask(1319, 90, 2));
+        enqueueTask(createPlayWavTask("wav/eskf_calib_oldday.wav", 3));
+        enqueueTask(createLogSdfTask("ESKF CALIB from another day (calib %lu, today %lu)",
+                                     (unsigned long)attitude_get_calib_date(),
+                                     (unsigned long)today_jst));
+      }
+    }
+  }
+}
+
+// ESKF の APPLY（機体ゼロ点の較正）の実行待ちと、完了のログ。
+static void eskf_apply_tick() {
+  // APPLY の待ち時間は「指を離してから」数える。
+  // 長押しコールバックは閾値に達した時点で呼ばれるので、押しっぱなしのまま
+  // 実行されてしまう（3 秒押すと押下中に焼き付いていた）。押している間は
+  // カウントダウンを進めず、離した瞬間から改めて 1 秒待つ。
+  {
+    static bool calib_btn_held = false;
+    if (attitude_calib_pending()) {
+      if (digitalRead(SW_PUSH) == LOW) {        // 押下中（アクティブ LOW）
+        attitude_hold_calibrate();
+        calib_btn_held = true;
+      } else if (calib_btn_held) {
+        calib_btn_held = false;
+        // 離した合図。ここから 1 秒じっとしていれば較正される。
+        enqueueTask(createPlayMultiToneTask(2093, 60, 1));
+      }
+    } else {
+      calib_btn_held = false;
+    }
+  }
+
+  // 予約していた APPLY が実行された
+  if (attitude_take_calib_done()) {
+    // 較正した日を刻む。測位していなければ 0（不明）が入り、日付判定は働かない。
+    // ★ createSaveSettingTask() より先に呼ぶ。保存は Core1 が後から実行するので
+    //   どちらの順でも実害は無いが、「保存する値を全部そろえてから保存を頼む」
+    //   という読み方ができるようにしておく。
+    attitude_set_calib_date(get_gnss_jst_yyyymmdd());
+    enqueueTask(createSaveSettingTask());                  // 次回起動でも効くよう保存
+    // 成功トーン（上がり 2 音）。SD に eskf_apply_done.wav が無くても、
+    // 較正が実行されたことが分かるようにする。WAV の直前に鳴らす。
+    enqueueTask(createPlayMultiToneTask(1568, 70, 1));
+    enqueueTask(createPlayMultiToneTask(2093, 90, 1));
+    // 較正できたことを音声で知らせる。優先度 3 = 案内音声と同等。
+    // 較正の成否は取り違えると危険なので埋もれさせない。
+    enqueueTask(createPlayWavTask("wav/eskf_apply_done.wav", 3));
+    // 適用したオフセットと、そのときの GNSS 日時を残す。
+    // log.txt の行頭は「起動からの秒数」でしかないため、これが無いと
+    // 「いつ較正したか」は同じファイル中の GNSS TIME 行と突き合わせないと
+    // 分からない（測位できなかった起動ではその行自体が出ない）。
+    // 日時は UTC。GNSS TIME 行と揃えてある。未測位なら ---- を出す。
+    {
+      float lvr, lvp;
+      attitude_get_level_offset(lvr, lvp);
+      GnssDate d = get_gnss_date();
+      GnssTime t = get_gnss_time();
+      if (d.isValid() && t.isValid())
+        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at %04d-%02d-%02d %02d:%02d:%02d UTC",
+                                     lvr, lvp, d.year(), d.month(), d.day(),
+                                     t.hour(), t.minute(), t.second()));
+      else
+        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at ---- (no GNSS time)",
+                                     lvr, lvp));
+    }
+  }
+}
+
+// 飛行ログのうち Core0 が組むもの（リプレイ用 ESKF 結果 と 生 IMU ログ）。
+// ★ JST はここで自分で求める。**loop() から引き回さないこと** — 引き回すと
+//   ログを足すたびに loop() の引数が増える。get_jst_now() は四則演算だけで、
+//   2 回呼んでも誤差は 1 センチ秒（単調性のガードが吸収する）。
+static void flightlog_tick() {
   int jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs;
-  bool jst_valid = get_jst_now(jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs);
-
+  const bool jst_valid = get_jst_now(jst_year, jst_month, jst_day,
+                                     log_h, log_m, log_s, log_cs);
   // ---- リプレイ用 ESKF 結果ログ（画面の再現に使う）----
   // ESKF が未収束の間は書かない。行が無い＝そのとき画面にも出ていなかった、を意味する。
   // 契機は BNO085 のレポート到着ではなく固定周期にする。ESKF の出力は連続なので、
@@ -641,377 +921,14 @@ void loop() {
       if (!queued) imulog_release_pending(imulog_buf);
     }
   }
+}
 
-  // 気圧高度が更新されたタイミングで Kalman 観測ステップを実行する
-  // ※ update の実レートは約 3.7Hz。~40Hz ではない（2026-08-18 に実ログで確認）。
-  //   MS5611 自体は ~40Hz でサンプルするが、airdata_update() が true を返すのは
-  //   VSPEED_WINDOW_MS(250ms) のトリム平均ウィンドウが完了したときだけのため
-  //   （プロペラ干渉 ~4.5Hz を除去する意図的な設計。airdata.cpp 参照）。
-  //   したがって predict:update の比はおよそ 33:3.7 ≒ 9:1 になる。
-  if (airdata_updated) {
-    imu_kalman_baro_update(get_airdata_altitude());
-    // 生 IMU ログにも気圧を残す（ESKF の検証と高度の突き合わせ用）
-    imulog_push(IMULOG_ID_BARO, 0, IMULOG_ACC_NONE,
-                get_airdata_pressure(), get_airdata_altitude(), get_airdata_temperature());
-  }
-
-  // GNSS高度による気圧基準補正（3Dフィックス有効時のみ、内部で1秒レート制限）
-  // Vertical speed は変更せず、高度の長期ドリフトをゆっくり修正する。
-  //
-  // リプレイ中は実行しない。リプレイ中の GNSS 高度は CSV 由来（再生した飛行場所の高度）
-  // であり、GNSS 垂直速度に至っては更新されず直前の実測値のまま残る。これらを Kalman に
-  // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
-  // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
-  // 再生中のように動き続ける原因になる。
-  // ★ 無線のミラー中も同じ理由で通さない。ミラー中の get_gnss_altitude() は
-  //   受信した「機体」の高度なので、これを自機のカルマンに入れると
-  //   気圧基準と _gnss_kf_offset が壊れ、リプレイと同様に受信をやめた後まで残る。
-  if (!getReplayMode() && !link_mirror_active() &&
-      get_gnss_fixok() && get_gnss_fixtype() >= 3) {
-    imu_kalman_gnss_update(
-      (float)get_gnss_altitude(),
-      get_gnss_vacc_mm() / 1000.0f
-    );
-    // GNSS 垂直速度を KF 速度観測として追加（vAcc ゲート、sAcc で R 計算）
-    // BNO085 の有無によらず動作し、加減速中や BNO085 なし時のバリオ精度を補完する。
-    imu_kalman_gnss_vel_update(
-      get_gnss_veld_mps(),
-      get_gnss_vacc_mm()   / 1000.0f,
-      get_gnss_sacc_mmps() / 1000.0f
-    );
-  }
-
-  // バリオメーター音更新（内部で 100ms レート制限。毎ループ呼んでよい）
-  update_vario();
-
-  // ---- バンク角の警告 ----
-  // 実測（2026-07-26 琵琶湖 45分）では 4 度超えが 31 回あったが、中央継続は 0.2 秒。
-  // 継続条件を付けないとチカチカ鳴るだけなので 1 秒以上続いたときだけ発報する
-  // （同条件で実測 3 回）。さらに一度鳴ったら 60 秒は繰り返さない。
-  // 姿勢が壊れているときに鳴り続けるのを防ぐのが主目的。
-  // ★ ミラー中は「受信した機体のロール」で判定する。
-  //   受信側は警告をビットで受け取るのではなく**自分で再計算する**方針なので
-  //   （link_proto.h の status 設計を参照）、入力をミラー値に差し替えるだけでよい。
-  //   計算が 1 本のままなので、送信側と受信側で挙動がずれる余地が無い。
-  if (attitude_get_rpy_enabled() && !getReplayMode() &&
-      (link_mirror_active() ? link_get_attitude(bank_roll_tmp, bank_pitch_tmp)
-                            : attitude_ready())) {
-    static uint32_t bank_over_since_ms = 0;
-    static uint32_t bank_last_warn_ms  = 0;
-    // 発報済みフラグ。解除条件（バンクが戻る＋時間経過）を満たすまで鳴らさない。
-    // ★ true で始める。起動時点で既に 4 度を超えていた場合（マウントのズレ、
-    //   傾いた場所に置いてある、較正前など）に、一度も水平に戻らないまま
-    //   鳴り出すのを防ぐため。一度でも 3 度未満に戻れば通常動作に入る。
-    static bool     bank_warned        = true;
-    float wr, wp, wy;
-    // ミラー中は受信した機体のロール、それ以外は自機の姿勢。
-    // 入力をここで差し替えるだけで、以降の判定ロジックは 1 本のまま使える。
-    if (link_mirror_active()) { wr = bank_roll_tmp; wp = bank_pitch_tmp; wy = 0.0f; }
-    else                       attitude_get_euler(wr, wp, wy);
-    uint32_t now_ms = millis();
-    const float bank_abs = fabsf(wr);
-
-    // 再武装。バンクが BANK_WARN_CLEAR_DEG 未満まで戻り、かつ発報から
-    // BANK_WARN_REARM_MS 以上経ってから。バンクが超過したままなら何時間でも鳴らさない
-    // （センサーのズレで超過が続く不具合を想定しているため、時間だけでは解除しない）。
-    if (bank_warned && bank_abs < BANK_WARN_CLEAR_DEG &&
-        (now_ms - bank_last_warn_ms) >= BANK_WARN_REARM_MS) {
-      bank_warned = false;
-    }
-
-    if (bank_abs > BANK_WARN_DEG) {
-      if (bank_over_since_ms == 0) bank_over_since_ms = now_ms;
-      if (!bank_warned && (now_ms - bank_over_since_ms) >= BANK_WARN_HOLD_MS) {
-        bank_last_warn_ms = now_ms;
-        bank_warned = true;
-        const bool muted = warn_muted_off_mount();
-        if (!muted) enqueueTask(createPlayWavTask("wav/bank_warning.wav", 3));
-        enqueueTask(createLogSdfTask("BANK WARN roll=%+.1f deg%s", wr,
-                                     muted ? " (MUTED: charging + off mount)" : ""));
-      }
-    } else {
-      bank_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
-    }
-  }
-
-  // ---- 電池電圧の低下警告 ----
-  // ★ **警報を描画関数の中に置かないこと。** 元は draw_footer() の中にあったため、
-  //   次の 2 つの穴があった。
-  //     1. draw_footer() は地図画面からしか呼ばれない → 設定画面・WIRELESS 画面・
-  //        IMU/ESKF 画面などを開いている間は電圧が下がっても鳴らない
-  //     2. 受信モードでは電池表示が別の分岐（S/R の 2 台ぶん表示）に入るため、
-  //        **一度も鳴らなかった**。追走ボートとプラットフォームは常に受信モードなので、
-  //        実質「ボートの電池切れは警告されない」状態だった
-  //   他の警報（バンク角・コース・地上チェック）と同じくここへ置き、画面モードにも
-  //   無線モードにも依存しないようにする。
-  //
-  //   毎秒 1 回だけ読むのは、ADC の連打を避けるためと、
-  //   get_input_voltage() のピーク追跡をどの画面でも回し続けるため
-  //   （地図画面以外では誰も呼ばないと追跡が止まり、戻ったときに古い値が出る）。
-  {
-    static uint32_t last_batt_check_ms = 0;
-    static uint32_t last_batt_warn_ms  = 0;
-    if (millis() - last_batt_check_ms >= 1000) {
-      last_batt_check_ms = millis();
-      const float bv = get_input_voltage();
-      // 充電中は鳴らさない。リプレイ中も鳴らさない（過去の電圧で今の警告を出しても
-      // 意味がなく、SD のテキストログにも当時の値が「今の警告」として混ざるため）。
-      if (!digitalRead(USB_DETECT) && !replay_voltage_active() &&
-          bv <= BAT_LOW_VOLTAGE &&
-          (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
-                                  : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
-        last_batt_warn_ms = millis();
-        // WAV を再生（最低 volume 60 保証）。音声は本体 FLASH にあるので
-        // SD の有無に関係なく鳴る。0.982 までここに「SD 未認識なら高音ビープ
-        // 3 回」の代替があったが、SD が無くても喋るようになったので消した。
-        enqueueTask(createPlayWavTask("wav/battery_low.wav", 1, 60));
-        enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
-                                     battery_percent(bv), bv));
-      }
-    }
-  }
-
-  // ---- 直進中のロール自動トリムが入ったらログに残す ----
-  // 事後検証できるよう、1 回の補正量と累積量を記録する。
-  // ---- 地上待機中のバンクチェック ----
-  // 自動ロールトリムは対地速度 3m/s 超でしか働かないので地上では動かない。
-  // しかしマウントのズレを直せるのは地上だけなので、ここで別建てに見張る。
-  // 静止していることを条件に入れて、運搬中・組み立て中の傾きを除外する。
-  // ミラー中は get_gnss_mps() が機体の対地速度になるため、判定が噛み合わない。
-  // ★ 無線へ出す発報状態は、ここで毎周回落としてから下で立て直す（上の宣言参照）。
-  ground_roll_warn_active = ground_pitch_warn_active = ground_calib_warn_active = false;
-  if (attitude_get_rpy_enabled() && attitude_ready() && !getReplayMode() &&
-      !link_mirror_active() &&
-      get_gnss_mps() <= LEVEL_CALIB_MAX_MPS && attitude_is_static()) {
-    static uint32_t gnd_over_since_ms = 0;
-    static uint32_t gnd_last_warn_ms  = 0;
-    static uint32_t gndp_over_since_ms = 0;
-    static uint32_t gndp_last_warn_ms  = 0;
-    float gr, gp, gy;
-    attitude_get_euler(gr, gp, gy);
-    const uint32_t now_ms = millis();
-
-    // ロール: 0（または SET ROLL で申告した値）からのズレ
-    if (fabsf(gr - attitude_get_roll_target()) > GROUND_ROLL_WARN_DEG) {
-      if (gnd_over_since_ms == 0) gnd_over_since_ms = now_ms;
-      // 継続時間を満たした＝発報状態。無線へはこれを出す（鳴らす間隔とは別）。
-      // ★ 運搬中のミュート（充電中かつマウント外）も効かせること。入れないと
-      //   機体を鞄に入れている間ボートが 2 分おきに喋り続ける。
-      const bool gnd_held = (now_ms - gnd_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS;
-      ground_roll_warn_active = gnd_held && !warn_muted_off_mount();
-      if (gnd_held &&
-          (gnd_last_warn_ms == 0 ||
-           (now_ms - gnd_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
-        gnd_last_warn_ms = now_ms;
-        const bool muted = warn_muted_off_mount();
-        if (!muted) enqueueTask(createPlayWavTask("wav/roll_check.wav", 3));
-        enqueueTask(createLogSdfTask("GROUND ROLL %+.1f deg (check mount / APPLY)%s", gr,
-                                     muted ? " (MUTED: charging + off mount)" : ""));
-      }
-    } else {
-      gnd_over_since_ms = 0;   // 一度でも下回ったら継続時間をリセット
-    }
-
-    // ピッチ: 申告値 SET PITCH からのズレで見る。
-    // 地上の機体ピッチは場所によって変わる（プラットホーム -3.5 度、平地 0 度）ので、
-    // ロールのように絶対値 0 を基準にはできない。
-    //
-    // ただしプラットホーム近傍だけは例外。台の上と台の手前の地面は装置から
-    // 区別がつかないため、基準を一点ではなく PITCH_TARGET_MIN_DEG 〜 0 度の
-    // 区間とみなす（平地で APPLY してから台へ上げても鳴らないようにする）。
-    // 測位できていないときは近傍とみなさず、従来どおりの厳しい判定を使う。
-    //
-    // ※ 距離計算（haversine, double）は loop() 毎に回すには重いので 1 秒に 1 回だけ
-    //   更新して結果を使い回す。60 秒継続してから発報する判定なので粒度は足りる。
-    static uint32_t gndp_geo_ms   = 0;
-    static bool     gndp_near_pla = false;
-    if (gndp_geo_ms == 0 || (now_ms - gndp_geo_ms) >= PLATFORM_NEAR_RECHECK_MS) {
-      gndp_geo_ms   = now_ms;
-      gndp_near_pla = get_gnss_fix() &&
-          calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), pla_lat, pla_lon) <= PLATFORM_NEAR_KM;
-    }
-    const bool near_platform = gndp_near_pla;
-    bool pitch_bad = near_platform
-        ? (gp > GROUND_PITCH_WARN_DEG ||
-           gp < PITCH_TARGET_MIN_DEG - GROUND_PITCH_WARN_DEG)
-        : (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG);
-    if (pitch_bad) {
-      if (gndp_over_since_ms == 0) gndp_over_since_ms = now_ms;
-      const bool gndp_held = (now_ms - gndp_over_since_ms) >= GROUND_ROLL_WARN_HOLD_MS;
-      ground_pitch_warn_active = gndp_held && !warn_muted_off_mount();  // ロールと同じ
-      if (gndp_held &&
-          (gndp_last_warn_ms == 0 ||
-           (now_ms - gndp_last_warn_ms) >= GROUND_ROLL_WARN_INTERVAL_MS)) {
-        gndp_last_warn_ms = now_ms;
-        const bool muted = warn_muted_off_mount();
-        if (!muted) enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
-        enqueueTask(createLogSdfTask("GROUND PITCH %+.1f deg (target %+.1f, nearPLA %d)%s",
-                                     gp, attitude_get_pitch_target(), (int)near_platform,
-                                     muted ? " (MUTED: charging + off mount)" : ""));
-      }
-    } else {
-      gndp_over_since_ms = 0;
-    }
-
-    // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
-    // 画面には赤字で出しているが、**地上では画面を見ていないことが多い**。
-    // 気づかないまま飛ぶと、姿勢表示・バンク角警告・自動ロールトリムが
-    // まとめて信用できない状態のまま飛ぶことになるので、音でも促す。
-    //
-    // ★ このブロックの条件（地上・静止・リプレイ/ミラー以外）をそのまま使う。
-    //   **飛行中は絶対に鳴らさない。**飛行中に較正はできないし、
-    //   対処のしようがない警告で注意をそらすほうが危険だから。
-    //   最低保証音量は付けない。地上で静止しているとき＝人が機体のそばにいるときにしか
-    //   鳴らないので、音量を絞る判断を上書きする理由が無い（60 は電池切れ専用）。
-    //   （0.982 まではここに「SD が無いときは低いトーンで代替」の分岐があった。
-    //     音声を FLASH に焼いたので SD の有無に関係なく必ず喋る。）
-    {
-      static uint32_t eskf_apply_last_warn_ms = 0;
-      if (attitude_needs_apply()) {
-        // 無線へ。**ここは地上・静止のブロックの中**なので、飛行中は立たない
-        // （送信機が飛行中に黙るものを受信機に喋らせないため）。
-        // 運搬中のミュートも同じく効かせる（上のロールのコメント参照）。
-        ground_calib_warn_active = !warn_muted_off_mount();
-        if (eskf_apply_last_warn_ms == 0 ||
-            (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
-          eskf_apply_last_warn_ms = now_ms;
-          const bool muted = warn_muted_off_mount();
-          if (!muted) enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
-          enqueueTask(createLogSdfTask("ESKF CALIBRATION REQUIRED (on ground)%s",
-                                       muted ? " (MUTED: charging + off mount)" : ""));
-        }
-      } else {
-        eskf_apply_last_warn_ms = 0;   // 較正し直したら次回は即座に知らせる
-      }
-    }
-
-    // ---- 較正した日から日付をまたいでいる ----
-    // OFF MOUNT 判定（attitude.cpp）は ESKF が回っている間しか働かないので、
-    // **電源を切ったまま外して付け直した**ケースだけは検出できない。
-    // 地上ロール/ピッチチェックが拾えるのは 3 度を超えるズレまでで、
-    // それ未満のズレは再 APPLY 以外に直す手段が無い。そこを埋めるのがこれ。
-    //
-    // ★ これは推測であって断定ではない。本当にマウントに付けっぱなしのまま
-    //   日をまたぐこともある。だから needs_apply は立てない。
-    //   立てると、ヘッダのピッチ数字に「読むな」の赤い取り消し線が入り、
-    //   PONS Link でボート側にも fault として飛ぶ（link.cpp の
-    //   LINK_ST_FAULTS_TONE）。根拠のない推測でそこまでやらない。
-    //   画面は設定画面（IMU/ESKF 1/2）の注意書きだけ、音はここで一度だけ。
-    //
-    // ★ 繰り返さないこと。2 分おきに鳴らすと、プラットホームの上で鳴ったときに
-    //   「止めるために APPLY する」人が出る。台の上で APPLY すると、正しかった
-    //   較正が台の姿勢で上書きされてしまう（APPLY は静止していれば通る）。
-    //   一度伝えたら、あとは人の判断に任せる。
-    {
-      static bool calib_day_warned = false;
-      const uint32_t today_jst = get_gnss_jst_yyyymmdd();
-      if (!calib_day_warned && !attitude_needs_apply() &&
-          attitude_calib_date_stale(today_jst)) {
-        calib_day_warned = true;
-        // 先に 2 音鳴らしてから WAV を積む（APPLY 成功音と同じ作り）。
-        // 2 音は「これから何か言う」という注意の引き方なので、WAV が必ず鳴る
-        // ようになった今も残す。eskf_calib_required.wav は流用しない。
-        // 「較正が必要」と断定する文言になってしまうため。
-        enqueueTask(createPlayMultiToneTask(1319, 90, 2));
-        enqueueTask(createPlayWavTask("wav/eskf_calib_oldday.wav", 3));
-        enqueueTask(createLogSdfTask("ESKF CALIB from another day (calib %lu, today %lu)",
-                                     (unsigned long)attitude_get_calib_date(),
-                                     (unsigned long)today_jst));
-      }
-    }
-  }
-
-  // APPLY の待ち時間は「指を離してから」数える。
-  // 長押しコールバックは閾値に達した時点で呼ばれるので、押しっぱなしのまま
-  // 実行されてしまう（3 秒押すと押下中に焼き付いていた）。押している間は
-  // カウントダウンを進めず、離した瞬間から改めて 1 秒待つ。
-  {
-    static bool calib_btn_held = false;
-    if (attitude_calib_pending()) {
-      if (digitalRead(SW_PUSH) == LOW) {        // 押下中（アクティブ LOW）
-        attitude_hold_calibrate();
-        calib_btn_held = true;
-      } else if (calib_btn_held) {
-        calib_btn_held = false;
-        // 離した合図。ここから 1 秒じっとしていれば較正される。
-        enqueueTask(createPlayMultiToneTask(2093, 60, 1));
-      }
-    } else {
-      calib_btn_held = false;
-    }
-  }
-
-  // 予約していた APPLY が実行された
-  if (attitude_take_calib_done()) {
-    // 較正した日を刻む。測位していなければ 0（不明）が入り、日付判定は働かない。
-    // ★ createSaveSettingTask() より先に呼ぶ。保存は Core1 が後から実行するので
-    //   どちらの順でも実害は無いが、「保存する値を全部そろえてから保存を頼む」
-    //   という読み方ができるようにしておく。
-    attitude_set_calib_date(get_gnss_jst_yyyymmdd());
-    enqueueTask(createSaveSettingTask());                  // 次回起動でも効くよう保存
-    // 成功トーン（上がり 2 音）。SD に eskf_apply_done.wav が無くても、
-    // 較正が実行されたことが分かるようにする。WAV の直前に鳴らす。
-    enqueueTask(createPlayMultiToneTask(1568, 70, 1));
-    enqueueTask(createPlayMultiToneTask(2093, 90, 1));
-    // 較正できたことを音声で知らせる。優先度 3 = 案内音声と同等。
-    // 較正の成否は取り違えると危険なので埋もれさせない。
-    enqueueTask(createPlayWavTask("wav/eskf_apply_done.wav", 3));
-    // 適用したオフセットと、そのときの GNSS 日時を残す。
-    // log.txt の行頭は「起動からの秒数」でしかないため、これが無いと
-    // 「いつ較正したか」は同じファイル中の GNSS TIME 行と突き合わせないと
-    // 分からない（測位できなかった起動ではその行自体が出ない）。
-    // 日時は UTC。GNSS TIME 行と揃えてある。未測位なら ---- を出す。
-    {
-      float lvr, lvp;
-      attitude_get_level_offset(lvr, lvp);
-      GnssDate d = get_gnss_date();
-      GnssTime t = get_gnss_time();
-      if (d.isValid() && t.isValid())
-        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at %04d-%02d-%02d %02d:%02d:%02d UTC",
-                                     lvr, lvp, d.year(), d.month(), d.day(),
-                                     t.hour(), t.minute(), t.second()));
-      else
-        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at ---- (no GNSS time)",
-                                     lvr, lvp));
-    }
-  }
-
-  {
-    float applied, total;
-    if (attitude_take_roll_trim_event(applied, total)) {
-      enqueueTask(createLogSdfTask("ROLL TRIM %+.2f deg (total %+.2f)", applied, total));
-      // 次回起動でも効くよう保存する。設定画面を開かない運用（パイロットに預けたまま）
-      // でも残す必要があるため、ここで保存する。
-      // 補正は最短でも ROLL_TRIM_WINDOW_S × ROLL_TRIM_CONFIRM_WINDOWS 間隔でしか
-      // 起きないので、SD 書き込みの頻度は問題にならない。
-      enqueueTask(createSaveSettingTask());
-    }
-  }
-
-
-#ifndef RELEASE
-  // デバッグ時: PC シリアルから GNSS モジュールへコマンドを転送可能
-  if (Serial.available()) {
-    GNSS_SERIAL.write(Serial.read());
-  }
-#endif
-
-  // GNSS 更新や BMP ロードがなくても、一定間隔で強制再描画する
-  // （時刻表示など時間経過で変わる表示の更新保証）
-  //
-  // VARIO 詳細はセンサー値を読むための画面で、他に再描画トリガーが無いため、
-  // この間隔がそのまま表示の更新レートになる。地図画面と同じ 1050ms だと
-  // 約 0.95Hz しか出ないので、この画面だけ短い間隔を使う。
-  {
-    unsigned long fresh_interval =
-        (screen_mode == MODE_VARIODETAIL || screen_mode == MODE_IMUDETAIL)
-        ? SCREEN_FRESH_INTERVAL_DETAIL
-        : SCREEN_FRESH_INTERVAL;
-    if (millis() - screen_update_time > fresh_interval) {
-      redraw_screen = true;
-    }
-  }
-
+// 60 秒ごとのシステムログ（電圧・時刻・センサーのレート）。
+// JST は flightlog_tick() と同じ理由でここで求める。
+static void periodic_log_tick() {
+  int jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs;
+  const bool jst_valid = get_jst_now(jst_year, jst_month, jst_day,
+                                     log_h, log_m, log_s, log_cs);
   // 60秒ごとに電圧と JST 時刻をテキストログへ記録（どの画面モードでも実行）
   {
     static unsigned long last_volt_log_ms = 0;
@@ -1021,8 +938,7 @@ void loop() {
       //   以前は get_gnss_time() の生の値を無条件に使っていたため、測位できていない間は
       //   _hour/_min が 0 のままで「09:00 JST」と記録されていた。ログ上は
       //   正しい時刻に見えるので、あとから見たときに嘘に気づけない。
-      //   （ループ先頭で毎回求めている jst_valid / log_h / log_m をそのまま使う。
-      //     こちらは millis() の経過ぶんも足してあり、日跨ぎも処理済み。）
+      //   （get_jst_now() は millis() の経過ぶんも足してあり、日跨ぎも処理済み。）
       char jst_str[8];
       if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
       else           strlcpy(jst_str, "--:--", sizeof(jst_str));
@@ -1096,41 +1012,12 @@ void loop() {
       }
     }
   }
+}
 
-  // ---- ナビゲーションと警報 ----
-  // ★ **画面モードによらず必ずここで走らせる。**
-  //   以前はこの下の MODE_MAP の分岐の中に置いていたため、設定画面や各詳細画面を
-  //   開いている間は Auto10km の折返し判定・コース逸脱警報・旋回角速度の更新が
-  //   すべて止まっていた。とくに INTO→AWAY（目的地から 1.5km 以内）は「そのとき
-  //   近くにいるか」で判定するので、地図画面を離れている間に通り過ぎると
-  //   二度と成立せず、復路のまま戻らなくなる。
-  //   電池警告を loop() の最上位へ移したのと同じ理由（CLAUDE.md 参照）。
-  bool new_gnss_info = gnss_new_location_arrived();
-  nav_alarm_tick(new_gnss_info);
-
-  // ---- 設定画面の放置タイムアウト ----
-  // 設定画面を出したまま離陸してしまった場合の保険。上の nav_alarm_tick() が
-  // 画面によらず動くようになったので警報は鳴るが、地図が見えないままなのは変わらない。
-  // ボタン操作が一定時間無ければ、通常の「Save & Exit」と同じ経路で地図画面へ戻す。
-  // 別れの音声が鳴るので、戻ったことにパイロットが気づける。
-  if (screen_mode == MODE_SETTING &&
-      millis() - last_user_input_ms > SETTING_IDLE_TIMEOUT_MS) {
-    enqueueTask(createLogSdfTask("SETTING SCREEN TIMEOUT -> MAP (%lus idle)",
-                                 (unsigned long)(SETTING_IDLE_TIMEOUT_MS / 1000UL)));
-    // ★ 値変更モードのまま時間切れになった場合は、**必ず CallbackExit を通す。**
-    //   長押しで抜ける通常経路（longPressCallback の「値変更モードから抜ける（確定）」）と
-    //   同じ処理。ここには Auto10km と目的地の組み合わせチェック
-    //   （is10K_NotAllowed_Destination）や、無線の設定変更を知らせる警告が入っている。
-    //   飛ばすと、設定画面で禁止の組み合わせを作りかけたまま地図へ戻ることになる。
-    if (selectedLine != -1 && menu_settings[cursorLine].CallbackExit != nullptr)
-      menu_settings[cursorLine].CallbackExit();
-    selectedLine = -1;
-    exit_setting();      // 設定を保存し、音声を鳴らして MODE_MAP へ
-    // 画面クリアは不要。地図の再描画（ヘッダ＋backscreen＋フッタ）が 240x320 を
-    // 埋め尽くすため、通常の「Save & Exit」でもクリアしていない。
-    redraw_screen = true;
-  }
-
+// 画面モードごとの描画。**判断や発報はここに置かない**（警報は loop() の最上位の
+// *_tick() 群が持つ。CLAUDE.md の約束）。ここは「どの画面を描くか」だけ。
+// new_gnss_info: 新しい位置が届いたか。MODE_MAP が再描画の契機に使う。
+static void draw_current_screen(bool new_gnss_info) {
   if (screen_mode == MODE_SETTING) {
     if (redraw_screen) {
       draw_setting_mode(selectedLine, cursorLine);
@@ -1326,6 +1213,187 @@ void loop() {
   } else {
     DEBUGW_PLN(20250510, "ERR screen mode");
   }
+}
+
+// バリオ用 Kalman filter への観測入力（気圧高度と GNSS 高度／垂直速度）。届いたものだけ。
+static void kalman_feed_tick() {
+  // 気圧高度が更新されたタイミングで Kalman 観測ステップを実行する
+  // ※ update の実レートは約 3.7Hz。~40Hz ではない（2026-08-18 に実ログで確認）。
+  //   MS5611 自体は ~40Hz でサンプルするが、airdata_update() が true を返すのは
+  //   VSPEED_WINDOW_MS(250ms) のトリム平均ウィンドウが完了したときだけのため
+  //   （プロペラ干渉 ~4.5Hz を除去する意図的な設計。airdata.cpp 参照）。
+  //   したがって predict:update の比はおよそ 33:3.7 ≒ 9:1 になる。
+  if (airdata_updated) {
+    imu_kalman_baro_update(get_airdata_altitude());
+    // 生 IMU ログにも気圧を残す（ESKF の検証と高度の突き合わせ用）
+    imulog_push(IMULOG_ID_BARO, 0, IMULOG_ACC_NONE,
+                get_airdata_pressure(), get_airdata_altitude(), get_airdata_temperature());
+  }
+
+  // GNSS高度による気圧基準補正（3Dフィックス有効時のみ、内部で1秒レート制限）
+  // Vertical speed は変更せず、高度の長期ドリフトをゆっくり修正する。
+  //
+  // リプレイ中は実行しない。リプレイ中の GNSS 高度は CSV 由来（再生した飛行場所の高度）
+  // であり、GNSS 垂直速度に至っては更新されず直前の実測値のまま残る。これらを Kalman に
+  // 入れると airdata_adjust_ground_alt() が実際の気圧基準を書き換え、_gnss_kf_offset も
+  // ずれてしまう。どちらもリプレイ終了後まで残り、通常モードに戻っても V/S が
+  // 再生中のように動き続ける原因になる。
+  // ★ 無線のミラー中も同じ理由で通さない。ミラー中の get_gnss_altitude() は
+  //   受信した「機体」の高度なので、これを自機のカルマンに入れると
+  //   気圧基準と _gnss_kf_offset が壊れ、リプレイと同様に受信をやめた後まで残る。
+  if (!getReplayMode() && !link_mirror_active() &&
+      get_gnss_fixok() && get_gnss_fixtype() >= 3) {
+    imu_kalman_gnss_update(
+      (float)get_gnss_altitude(),
+      get_gnss_vacc_mm() / 1000.0f
+    );
+    // GNSS 垂直速度を KF 速度観測として追加（vAcc ゲート、sAcc で R 計算）
+    // BNO085 の有無によらず動作し、加減速中や BNO085 なし時のバリオ精度を補完する。
+    imu_kalman_gnss_vel_update(
+      get_gnss_veld_mps(),
+      get_gnss_vacc_mm()   / 1000.0f,
+      get_gnss_sacc_mmps() / 1000.0f
+    );
+  }
+}
+
+// 設定画面を出したまま離陸してしまった場合の保険。
+static void setting_timeout_tick() {
+  // ---- 設定画面の放置タイムアウト ----
+  // 設定画面を出したまま離陸してしまった場合の保険。上の nav_alarm_tick() が
+  // 画面によらず動くようになったので警報は鳴るが、地図が見えないままなのは変わらない。
+  // ボタン操作が一定時間無ければ、通常の「Save & Exit」と同じ経路で地図画面へ戻す。
+  // 別れの音声が鳴るので、戻ったことにパイロットが気づける。
+  if (screen_mode == MODE_SETTING &&
+      millis() - last_user_input_ms > SETTING_IDLE_TIMEOUT_MS) {
+    enqueueTask(createLogSdfTask("SETTING SCREEN TIMEOUT -> MAP (%lus idle)",
+                                 (unsigned long)(SETTING_IDLE_TIMEOUT_MS / 1000UL)));
+    // ★ 値変更モードのまま時間切れになった場合は、**必ず CallbackExit を通す。**
+    //   長押しで抜ける通常経路（longPressCallback の「値変更モードから抜ける（確定）」）と
+    //   同じ処理。ここには Auto10km と目的地の組み合わせチェック
+    //   （is10K_NotAllowed_Destination）や、無線の設定変更を知らせる警告が入っている。
+    //   飛ばすと、設定画面で禁止の組み合わせを作りかけたまま地図へ戻ることになる。
+    if (selectedLine != -1 && menu_settings[cursorLine].CallbackExit != nullptr)
+      menu_settings[cursorLine].CallbackExit();
+    selectedLine = -1;
+    exit_setting();      // 設定を保存し、音声を鳴らして MODE_MAP へ
+    // 画面クリアは不要。地図の再描画（ヘッダ＋backscreen＋フッタ）が 240x320 を
+    // 埋め尽くすため、通常の「Save & Exit」でもクリアしていない。
+    redraw_screen = true;
+  }
+}
+
+// Core0 のメインループ。以下の処理を毎ループ実行する:
+//   1. ボタン状態の読み取り
+//   2. GNSS データの受信・解析（gnss_loop は描画中にも分散して呼ぶ）
+//   3. 画面モードに応じた描画（地図 / 設定 / GNSS詳細 など）
+// gnss_loop(id) の id はデバッグ用の呼び出し箇所識別子。
+void loop() {
+  // 無線モジュールとの UART。1Hz・数十バイトなので負荷は無視できる。
+  // 無線モジュールが繋がっていなくても、link_module_alive() が false になるだけで無害。
+  link_loop();
+  //switch handling
+  sw_push.read();
+  // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
+  // リプレイを一時停止する。戻ってきたら続きから再生される。
+  replay_set_paused(screen_mode != MODE_MAP);
+  // 生 IMU ログを止めるのはリプレイ中だけ
+  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
+  //
+  // ※ GNSS 日時の有効性では止めないこと。
+  //   以前は日時未確定でも止めていたが、それだと屋内など測位できない場所で
+  //   IMU の生ログが一切取れず（wrote=0）、ベンチでの検証ができなかった。
+  //   日時が無いときは下でファイル名を imuraw/nofix.bin にフォールバックする。
+  //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
+  imulog_set_paused(getReplayMode());
+  gnss_loop(0);  // ループ先頭で GNSS データを受信
+  loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
+
+  gnss_conn_tick();
+
+  // 大気データ更新（非ブロッキングのステートマシン。毎ループ呼ぶことで約50Hzで計測）
+  airdata_updated = airdata_update();
+
+  // IMU 更新（H_INT フラグ確認 → データ読み出し → Kalman predict。毎ループ呼んでよい）
+  imu_update();
+
+  // ROTATION_VECTOR 更新時（5Hz）かつ GNSS 日時有効時 → Euler角を JST 時刻で SD ログ
+  // リプレイ中は記録しない。リプレイ中の日時は CSV 由来のため、そのまま記録すると
+  // 「再生した飛行の日付」のファイルに現在の（静止した）IMU 値を追記してしまい、
+  // 実際の飛行記録を汚してしまう。下の prev_jst_cs による単調増加チェックも
+  // 再生日時に引きずられて、通常モードに戻ったあと記録が止まる原因になる。
+
+  flightlog_tick();
+
+  kalman_feed_tick();
+
+  // バリオメーター音更新（内部で 100ms レート制限。毎ループ呼んでよい）
+  // ★ バリオも警報と同じ条件で黙らせる（机で充電しながら置くと、傾いた姿勢で
+  //   延々と鳴る。画面の `IN MUTE DUE TO CHARGING + OFF MOUNT` がその説明になる）。
+  update_vario(warn_muted_off_mount());
+
+  bank_alarm_tick();
+
+  batt_alarm_tick();
+
+  ground_check_tick();
+
+  eskf_apply_tick();
+
+  // ---- 直進中のロール自動トリムが入ったらログに残す ----
+  // 事後検証できるよう、1 回の補正量と累積量を記録する。
+  {
+    float applied, total;
+    if (attitude_take_roll_trim_event(applied, total)) {
+      enqueueTask(createLogSdfTask("ROLL TRIM %+.2f deg (total %+.2f)", applied, total));
+      // 次回起動でも効くよう保存する。設定画面を開かない運用（パイロットに預けたまま）
+      // でも残す必要があるため、ここで保存する。
+      // 補正は最短でも ROLL_TRIM_WINDOW_S × ROLL_TRIM_CONFIRM_WINDOWS 間隔でしか
+      // 起きないので、SD 書き込みの頻度は問題にならない。
+      enqueueTask(createSaveSettingTask());
+    }
+  }
+
+
+#ifndef RELEASE
+  // デバッグ時: PC シリアルから GNSS モジュールへコマンドを転送可能
+  if (Serial.available()) {
+    GNSS_SERIAL.write(Serial.read());
+  }
+#endif
+
+  // GNSS 更新や BMP ロードがなくても、一定間隔で強制再描画する
+  // （時刻表示など時間経過で変わる表示の更新保証）
+  //
+  // VARIO 詳細はセンサー値を読むための画面で、他に再描画トリガーが無いため、
+  // この間隔がそのまま表示の更新レートになる。地図画面と同じ 1050ms だと
+  // 約 0.95Hz しか出ないので、この画面だけ短い間隔を使う。
+  {
+    unsigned long fresh_interval =
+        (screen_mode == MODE_VARIODETAIL || screen_mode == MODE_IMUDETAIL)
+        ? SCREEN_FRESH_INTERVAL_DETAIL
+        : SCREEN_FRESH_INTERVAL;
+    if (millis() - screen_update_time > fresh_interval) {
+      redraw_screen = true;
+    }
+  }
+
+  periodic_log_tick();
+
+  // ---- ナビゲーションと警報 ----
+  // ★ **画面モードによらず必ずここで走らせる。**
+  //   以前はこの下の MODE_MAP の分岐の中に置いていたため、設定画面や各詳細画面を
+  //   開いている間は Auto10km の折返し判定・コース逸脱警報・旋回角速度の更新が
+  //   すべて止まっていた。とくに INTO→AWAY（目的地から 1.5km 以内）は「そのとき
+  //   近くにいるか」で判定するので、地図画面を離れている間に通り過ぎると
+  //   二度と成立せず、復路のまま戻らなくなる。
+  //   電池警告を loop() の最上位へ移したのと同じ理由（CLAUDE.md 参照）。
+  bool new_gnss_info = gnss_new_location_arrived();
+  nav_alarm_tick(new_gnss_info);
+
+  setting_timeout_tick();
+
+  draw_current_screen(new_gnss_info);
 
   if (redraw_screen) {
     //更新終了
@@ -1402,18 +1470,7 @@ void loop1() {
         log_sdf(currentTask.logSdfArgs.format, currentTask.logSdfArgs.buffer);
         break;
       case TASK_SAVE_CSV:
-        saveCSV(
-          currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.ttrack, currentTask.saveCsvArgs.gnss_altitude,
-          currentTask.saveCsvArgs.kf_altitude,
-          currentTask.saveCsvArgs.kf_vspeed,
-          currentTask.saveCsvArgs.pressure,
-          currentTask.saveCsvArgs.voltage,
-          currentTask.saveCsvArgs.numsat,
-          currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
-          currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
-          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second,
-          currentTask.saveCsvArgs.centisecond);
+        saveCSV(currentTask);
         break;
       case TASK_SAVE_RXCSV:
         saveRxCSV(currentTask);
