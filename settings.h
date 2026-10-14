@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261013
-#define BUILDVERSION "0.990"
+#define BUILDDATE 20261014
+#define BUILDVERSION "0.991"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
@@ -53,8 +53,10 @@
 #define PONS_BOARD_V7    70   // 初代 v7（BNO085）
 #define PONS_BOARD_V71   71   // v7.1（SCH16T 外付け）
 
-// ★★ **いまはまだ V7。** V71 にすると SCH16T のドライバが無いので #error で止まる
-//   （imu.cpp の分割は 0.986 で済んだ。残りは imu_sch16t.cpp だけ。計画書 §1）。
+// ★★ **いまはまだ V7。** V71 にしても**ビルドとリンクは通る**（0.987 で
+//   imu_sch16t.cpp の骨組みを置いたため。2026-10-14 に実測で確認）。
+//   通るのは**新基板向けのビルド全体を事前に確かめるため**で、中身はスタブなので
+//   `#warning "... DO NOT FLY."` が見張っている。**飛ばせるファームではない。**
 //   ドライバを実機で検証できたら、ここを PONS_BOARD_V71 にするのが切替点。
 #define PONS_BOARD       PONS_BOARD_V7
 
@@ -268,7 +270,7 @@
 // 小型スピーカーは低音の音響能率が低く、同じ振幅でも高音ばかり大きく聞こえるため高音側を絞る。
 // 下降音側は VARIO_VOL_SCALE=3 で既にほぼ振幅上限（vario_volume 33%程度でクリップ開始）なので、
 // バランス調整は原則こちらの値で行う。小さくするほど高音が控えめになる（目安 15〜40）。
-#define VARIO_ASCEND_VOL_PCT 25
+#define VARIO_ASCEND_VOL_PCT 35
 
 // バリオ音のデッドバンド [m/s]。この範囲では音を出さない。
 // KF 融合中（BNO085 生存 + MS5611 接続）は推定精度が高いので狭くできる。

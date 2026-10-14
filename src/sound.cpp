@@ -1113,8 +1113,13 @@ void update_vario(bool mute) {
             float v = vspeed < 1.5f ? vspeed : 1.5f;  // 1.5 m/s で振り切り
             int freq = (int)(700 + v * 400);        // 820〜1300 Hz（1.5 m/s → 1300Hz）
             vario_phase_inc = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
-            int off_ms = (int)(700.0f / v) - 120;
-            if (off_ms < 50) off_ms = 50;
+            // 1 周期 = 500/v [ms]（ON 120ms ＋ 残りが無音）。上昇率が高いほど忙しくなる。
+            // ★ **OFF に 1 秒の上限を付けてある**（0.991）。上限が無いと 0.3m/s で
+            //   2.2 秒無音になり、弱い上昇を「鳴っていない」と取り違える。
+            //   上限が効くのは v < 約 0.45m/s で、ちょうど KF のデッドバンド
+            //   （VARIO_DEADBAND_KF_MPS = 0.25）から上の弱い上昇帯にあたる。
+            //   MS5611 単独（デッドバンド 0.60）では上限に当たらない。
+            int off_ms = constrain((int)(500.0f / v) - 120, 50, 1000);
             vario_on_samples     = 120 * 16;         // 120ms × 16kHz = 1920 サンプル
             vario_cycle_samples  = (uint32_t)((120 + off_ms) * 16);
             vario_ascending      = true;             // 上昇フラグ ON（音量補正用）

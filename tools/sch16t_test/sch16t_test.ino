@@ -343,7 +343,11 @@ static inline uint16_t frame_data_u16(uint64_t f) {
 
 // 統計カウンタ
 static uint32_t g_crc_err = 0, g_ids_err = 0, g_ce_err = 0, g_sat_err = 0, g_init_run = 0;
+static uint32_t g_sa_err  = 0;   // 応答の SA が要求したアドレスと違った回数
 static uint32_t g_frames  = 0;
+// ★ **frame_ok() を通した回数**。これを出さないと、1 度も検査していないのに
+//   「crc=0」＝健全と読めてしまう（2026-10-14 の実機ログで実際に誤読しかけた）。
+static uint32_t g_checked = 0;
 
 // 1 フレーム送受信する。戻り値は受信した 48bit。
 // ★ **6 バイトを 1 回の transfer() で送る。`transfer16()` を 3 回呼んではいけない。**
@@ -397,14 +401,22 @@ static void reg_write(uint8_t addr, uint16_t value) {
 }
 
 // 単発読み出し。アウトオブフレームなので 2 フレーム使う（同じアドレスを 2 回投げる）。
+// ★ **応答の SA[46:37] を要求アドレスと照合する。** アウトオブフレームでは
+//   「いま手元の値がどのレジスタのものか」を SA 以外に知る方法が無い。
+//   ここを見ていないと、パイプラインが 1 つずれても別レジスタの値を
+//   そのレジスタの値として表示してしまう（0x0000 が返ると区別が付かない）。
 static uint64_t reg_read(uint8_t addr) {
   req_read(addr);
-  return req_read(addr);
+  const uint64_t f = req_read(addr);
+  const uint16_t sa = (uint16_t)((f >> 37) & 0x3FF);
+  if (sa != (uint16_t)(((uint16_t)(g_ta & 3) << 8) | addr)) g_sa_err++;
+  return f;
 }
 
 // 応答フレームの健全性を見る。戻り値 true = 使ってよいデータ。
 static bool frame_ok(uint64_t f, bool count = true) {
   bool ok = true;
+  if (count) g_checked++;
   if ((uint8_t)(f & 0xFF) != crc8_frame(f)) { if (count) g_crc_err++; ok = false; }
   if (f & MASK48_IDS) { if (count) g_ids_err++; ok = false; }
   if (f & MASK48_CE)  { if (count) g_ce_err++;  ok = false; }
@@ -594,6 +606,36 @@ static bool set_dry(bool enable, bool active_low = false) {
   return after == v;
 }
 
+// リセット後、チップが NVM を読み終えて「まともな値を返す」状態になるまで待つ。
+//
+// ★★ **これが無いと設定書き込みが黙って捨てられる。** 2026-10-14 の実機 1 回目が
+//   まさにこれだった: init 中のレジスタ読みが**全部 0x0000（CRC は OK）**になり、
+//   CTRL_RATE / CTRL_ACC12 の書き込みも効かずに FAILED。ところが直後に手で
+//   's' / 'z' / 't' を打つと **STAT_* は全部 0xFFFF、ASIC_ID=0x21、SYS_TEST 5/5 OK**。
+//   つまり配線もフレーム層も正しく、**立ち上がり待ちが足りていなかっただけ**。
+//   チップは待ちの間も「構造は正しいがデータが 0」のフレームを返すので、
+//   CRC だけ見ていると「通信できている」と誤読する。
+//
+// ASIC_ID は NVM 由来の固定値なので、**0x0000 でも 0xFFFF でもない値が読めたら
+// NVM 読み出しが終わった証拠**として使える。
+// 戻り値: 待った時間 [ms]。-1 = タイムアウト。
+static int32_t wait_chip_ready(uint32_t timeout_ms) {
+  const uint32_t t0 = millis();
+  // ★ 立ち上がり中は SA も 0 で返ってくるので、ここの不一致は**当然**。
+  //   g_sa_err に数えると「待っただけ」で統計が汚れ、本物の異常が埋もれる。
+  const uint32_t sa0 = g_sa_err;
+  for (;;) {
+    const uint64_t f = reg_read(REG_ASIC_ID);
+    const uint16_t v = frame_data_u16(f);
+    if (frame_integrity_ok(f) && v != 0x0000 && v != 0xFFFF) {
+      g_sa_err = sa0;
+      return (int32_t)(millis() - t0);
+    }
+    if (millis() - t0 >= timeout_ms) { g_sa_err = sa0; return -1; }
+    delay(2);
+  }
+}
+
 // ハードリセット（EXTRESN を Low）。
 static void hard_reset() {
   digitalWrite(PIN_EXTRESN, LOW);
@@ -624,6 +666,34 @@ static bool sch_init_once(bool use_hard_reset) {
   delay(50);                    // 2ms（SPI 禁止）＋ 32ms（NVM 読み）に余裕
 
   bool ok = true;
+
+  // ---- 設定を書く前に、チップが本当に応答できるまで待つ ----
+  // ★ 固定の delay だけに頼らないこと。上の 50ms は規定値どおりだが、
+  //   実機 2026-10-14 ではそれでも足りず、以降の書き込みが全部捨てられた。
+  const int32_t ready_ms = wait_chip_ready(1000);
+  if (ready_ms < 0) {
+    Serial.println("[init] ★★ リセット後 1 秒待っても ASIC_ID が読めない。"
+                   "以下の読み返しは意味が無い。'z' と 't' で配線から見ること");
+    ok = false;
+  } else {
+    Serial.printf("[init] チップ応答まで %ld ms（ASIC_ID が読めた）\n", (long)ready_ms);
+  }
+
+  // ---- フィルター書き込み経路を**非ゼロ値で**一度証明する ----
+  // ★★ 既定の LPF0 は符号が 0b000 なので build_filt() が 0 を返す。つまり
+  //   CTRL_FILT_* の読み返しは「0 を書いて 0 が読めた」になり、**書けているのか
+  //   リセット値のままなのか区別が付かない**（実機 2026-10-14 の SUCCESS でも
+  //   FILT 3 本が want 0x0000 got 0x0000 で、検証になっていなかった）。
+  //   ノイズ測定はフィルター設定が効いている前提なので、ここだけは実証しておく。
+  //   EOI の前でないと書けないので、本来の値を書く前にやる。
+  {
+    const uint16_t probe = build_filt(FILT_30HZ);     // 0b001001001 = 0x0049
+    reg_write(REG_CTRL_FILT_RATE, probe);
+    const uint16_t got = frame_data_u16(reg_read(REG_CTRL_FILT_RATE));
+    if (got != probe) ok = false;
+    Serial.printf("[init] FILT 書込み経路の確認: 0x%04X -> 0x%04X %s\n",
+                  probe, got, (got == probe) ? "OK" : "  <<< 書けていない");
+  }
 
   // ---- 設定を書く（EN_SENSOR の前に済ませる）----
   Serial.println("[init] write config");
@@ -678,13 +748,25 @@ static bool sch_init_once(bool use_hard_reset) {
     { REG_CTRL_ACC12,      build_ctrl_acc12(),      "CTRL_ACC12"      },
     { REG_CTRL_ACC3,       ACC3_DYN_DEFAULT,        "CTRL_ACC3"       },
   };
+  bool any_nonzero = false;
   for (unsigned i = 0; i < sizeof(chk) / sizeof(chk[0]); i++) {
-    const uint16_t got = frame_data_u16(reg_read(chk[i].addr));
+    const uint64_t f = reg_read(chk[i].addr);
+    const uint16_t got = frame_data_u16(f);
     const bool same = (got == chk[i].want);
+    if (got != 0x0000) any_nonzero = true;
     if (!same) ok = false;
+    // ★ want が 0 の行は「0 を書いて 0 が読めた」だけなので検証になっていない。
+    //   黙って OK に見せると、フィルターが効いていないのに気づけない。
     Serial.printf("[init] %-16s want 0x%04X got 0x%04X %s\n",
-                  chk[i].name, chk[i].want, got, same ? "" : "  <<< MISMATCH");
+                  chk[i].name, chk[i].want, got,
+                  !same ? "  <<< MISMATCH" : (chk[i].want == 0 ? "（0 なので検証にならず）" : ""));
+    // ★ 不一致のときは生フレームも出す。**S1:S0 が 11 なら「初期化中」**で、
+    //   値が 0 なのは壊れているからではなく、まだ答えられないから。
+    if (!same) print_frame("  frame", f);
   }
+  if (!any_nonzero)
+    Serial.println("[init] ★★ 読み返しが全部 0x0000。**チップがまだ応答していない**疑いが濃い"
+                   "（配線の問題なら 't' の SYS_TEST も落ちる。落ちないなら待ち不足）");
 
   // ★ **部品の確認は EOI の後で。** EOI の前は S1:S0 が 11（初期化中）なので、
   //   ここより前に置くと ID 読みが毎回「壊れている」判定になる。
@@ -761,6 +843,8 @@ static void cmd_id() {
 // ------------------------------------------------------------
 static void cmd_scan_ta() {
   const uint8_t save = g_ta;
+  // ★ 応答しない TA では SA が一致しないのが**正常**。統計を汚さないため退避する。
+  const uint32_t sa0 = g_sa_err;
   Serial.println("TA を 0..3 で走査する（COMP_ID が読めた組み合わせが正解）");
   Serial.println("  応答フレームの SA[46:37] は要求の TA[47:38] と一致するはず（Murata の例より）");
   for (uint8_t ta = 0; ta < 4; ta++) {
@@ -776,6 +860,7 @@ static void cmd_scan_ta() {
                   (crc_ok && sa == ta_field) ? "  <<< 応答あり" : "");
   }
   g_ta = save;
+  g_sa_err = sa0;
   Serial.printf("TA を %u に戻した\n", g_ta);
 }
 
@@ -880,18 +965,42 @@ static void cmd_status() {
                 "STAT_INFO", info, info & 1, (info >> 1) & 1, (info >> 2) & 1);
   Serial.printf("  %-14s 0x%04X（SYNC 未使用なら 0）\n", "STAT_SYNC_ACTIVE",
                 frame_data_u16(reg_read(REG_STAT_SYNC_ACTIVE)));
-  // データカウンタ。連続で読んで増えていればサンプルが更新されている証拠。
-  const uint16_t rd1 = frame_data_u16(reg_read(REG_RATE_DCNT));
-  const uint16_t ad1 = frame_data_u16(reg_read(REG_ACC_DCNT));
+  // データカウンタ。連続で読んで増えていればサンプルが更新されている証拠……のはずだが、
+  // ★★ **この 3 本（0x11/0x12/0x13）は PX4 のレジスタヘッダに無く、番地の根拠が
+  //   機密データシートの Table 29 だけ。** 実機 2026-10-14 で init SUCCESS・
+  //   STAT_* 全部 0xFFFF・CTRL_MODE=0x0003 の状態でも 0->0 のままだった。
+  //   「番地が違う／未定義」なら CE が立つので、**生フレームを出して CE で切り分ける**。
+  //   そして **DCNT はあくまで代理指標**で、「測定しているか」の本当の答えは
+  //   データレジスタそのもの。迷ったら 'c' か 'm' を打つ方が早い。
+  const uint64_t frd1 = reg_read(REG_RATE_DCNT);
+  const uint64_t fad1 = reg_read(REG_ACC_DCNT);
   delay(20);
-  const uint16_t rd2 = frame_data_u16(reg_read(REG_RATE_DCNT));
-  const uint16_t ad2 = frame_data_u16(reg_read(REG_ACC_DCNT));
+  const uint64_t frd2 = reg_read(REG_RATE_DCNT);
+  const uint64_t fad2 = reg_read(REG_ACC_DCNT);
+  const uint16_t rd1 = frame_data_u16(frd1), ad1 = frame_data_u16(fad1);
+  const uint16_t rd2 = frame_data_u16(frd2), ad2 = frame_data_u16(fad2);
+  const bool stuck = (rd1 == rd2 && ad1 == ad2);
   Serial.printf("  DCNT 20ms で RATE %u->%u (12bit ラップ)  ACC %u->%u (14bit)%s\n",
-                rd1, rd2, ad1, ad2, (rd1 == rd2 && ad1 == ad2) ? "  <<< 増えていない" : "");
-  Serial.printf("フレーム統計: total=%lu crc=%lu ids=%lu ce=%lu sat=%lu init=%lu\n",
-                (unsigned long)g_frames, (unsigned long)g_crc_err,
+                rd1, rd2, ad1, ad2, stuck ? "  （増えていない）" : "");
+  if (stuck) {
+    // ★★ **これは故障の証拠ではない。** 実機 2026-10-14 で、DCNT が 0->0 のままでも
+    //   'c' がまともな値（静止で |a|/g = 0.9988・温度 36℃）を返した ＝ センサーは
+    //   測定していた。つまり **DCNT の読み方か番地が想定と違うだけ**。
+    //   「測定しているか」の判断材料に DCNT を使わないこと。
+    print_frame("  RATE_DCNT", frd2);
+    print_frame("  ACC_DCNT",  fad2);
+    Serial.println("  ↑ これ自体は故障ではない（0x11/0x12 はデータシートのみが根拠の番地）。");
+    Serial.println("    CE=1 なら番地が未定義。CE=0 かつ S=00 なら番地は正しく意味が違うだけ。");
+    Serial.println("    **測定しているかは 'c' か 'm' で見ること**（静止なら |a| が 1g に乗る）。");
+  }
+  // ★ checked を必ず併記する。**0 なら右の 0 は「エラーが無い」ではなく「見ていない」。**
+  Serial.printf("フレーム統計: total=%lu checked=%lu / crc=%lu ids=%lu ce=%lu sat=%lu init=%lu sa=%lu\n",
+                (unsigned long)g_frames, (unsigned long)g_checked, (unsigned long)g_crc_err,
                 (unsigned long)g_ids_err, (unsigned long)g_ce_err,
-                (unsigned long)g_sat_err, (unsigned long)g_init_run);
+                (unsigned long)g_sat_err, (unsigned long)g_init_run, (unsigned long)g_sa_err);
+  if (g_checked == 0)
+    Serial.println("  ※ checked=0。上の crc/ids/ce は**まだ一度も検査していない**という意味。"
+                   "'m' か 'c' を一度走らせると埋まる");
 }
 
 // ------------------------------------------------------------
@@ -1133,11 +1242,30 @@ static void cmd_dry(uint32_t seconds) {
   const double dry_hz = g_dry_count / dur, read_hz = reads / dur;
   Serial.printf("DRY 回数 %lu / %.1f s = %.1f Hz（読み出しは %.1f Hz）\n",
                 (unsigned long)g_dry_count, dur, dry_hz, read_hz);
-  if (g_dry_count > 2)
+  if (g_dry_count > 2) {
     Serial.printf("周期 min %lu us / max %lu us\n",
                   (unsigned long)g_dry_min_us, (unsigned long)g_dry_max_us);
-  else
+    // ★★ **ODR の推定には「回数」ではなく「最短周期」を使うこと。**
+    //   DRY は「更新 → 最初の読み出し」の間だけ High なので、読み出しと更新の位相が
+    //   たまたま重なると立ち上がりが観測されず、**回数は必ず過少に出る**。
+    //   最短周期は位相に依らないので、こちらが実 ODR の素直な推定値。
+    //   実機 2026-10-14: 回数 566Hz（期待 738Hz の 77%）だが min 1381us = 724Hz で
+    //   設定値 737.5Hz と 1.8% 一致していた。回数だけ見ると故障に見える。
+    const double odr_from_min =
+        (g_dry_min_us > 0) ? 1.0e6 / (double)g_dry_min_us : 0.0;   // 0 除算を避ける
+    const double expect_hz =
+        (g_dec == DEC_NONE) ? 11800.0 : (g_dec == DEC_5900) ? 5900.0 :
+        (g_dec == DEC_2950) ? 2950.0  : (g_dec == DEC_1475) ? 1475.0 : 737.5;
+    const double err_pct = (odr_from_min / expect_hz - 1.0) * 100.0;
+    Serial.printf("**実 ODR の推定: 最短周期から %.1f Hz**（設定 %.1f Hz に対して %+.1f%%）%s\n",
+                  odr_from_min, expect_hz, err_pct,
+                  (err_pct > -5.0 && err_pct < 5.0) ? "  … 一致" : "  <<< ずれている");
+    Serial.printf("  ※ 上の「%.1f Hz」（回数ベース）は参考値。読み出しと更新の位相が重なると\n"
+                  "     立ち上がりを取りこぼすので**必ず過少に出る**。ODR は最短周期で見ること\n",
+                  dry_hz);
+  } else {
     Serial.println("★ パルスが取れていない。DRY_DRV_EN・配線・ピン番号を確認すること");
+  }
 
   // ★★ **読み出しが ODR より遅いと、この値は ODR ではなく読み出しレートになる。**
   //   DRY は読むまで High のままなので、読む方が遅ければ読むごとに 1 パルスになる。
@@ -1274,6 +1402,14 @@ void setup() {
   selftest_frames();
 
   cmd_help();
+
+  // ★ cmd_id() の前にも立ち上がりを待つ。待たずに読むと ASIC/COMP が 0x0000 になり、
+  //   健全な個体が「ID の応答が壊れている」と報告される（実機 2026-10-14 で発生）。
+  const int32_t boot_ready_ms = wait_chip_ready(1000);
+  if (boot_ready_ms < 0)
+    Serial.println("★★ 起動後 1 秒待っても ASIC_ID が読めない。'z' と 't' で配線から見ること");
+  else
+    Serial.printf("チップ応答まで %ld ms\n", (long)boot_ready_ms);
 
   cmd_id();
   sch_init(false);

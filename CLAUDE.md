@@ -255,6 +255,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
+- SCH16T の実機立ち上げ: [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md)
+  （単独テストの実測値・Step 0〜5 の手順・踏みそうな罠。設計は imu_sch16t_plan.md）
 - BNO085 を I2C へ切り替えるとき: [docs/imu_i2c_bringup.md](docs/imu_i2c_bringup.md)
   （0.944 との挙動差・ライブラリ改変の影響・JP1 と R46/R47 の手順）
 - SD カードの雛形: [sd/](sd/) — レイアウトとログの列の意味は README の「SD カードの構成」

@@ -2685,7 +2685,7 @@ static bool link_frame_visible() {
 }
 
 // 地図の左上に [無線アイコン][役割アイコン] を置く。
-// 受信モードでは役割アイコンを 1Hz で点滅させる（draw_replay_indicator と同じ流儀）。
+// 受信モードでは役割アイコンを 1 秒ごとに点滅させる（draw_replay_indicator と同じ周期）。
 //
 // ★ **リプレイ中・デモ中はここへ来ない**（draw_link_overlay が先に return する）。
 //   0.978〜0.984 の「リプレイ中は灰色の弧 1 本」は畳んだ —
@@ -2741,7 +2741,14 @@ static void draw_link_icons() {
   if (lost) draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, ICON_RSSI_X, COLOR_RED);
 
   // 役割アイコン。受信モードだけ点滅させて目を引く（docs/pons_link.md §5）。
-  const bool blink_on = !rx || ((millis() / 500) % 2 == 0);
+  // ★★ **点滅は blink_1s（半周期 1 秒）を使うこと。** 0.990 まで半周期 500ms＝
+  //   1 秒周期で、**テレメトリ 1Hz の再描画と位相が完全に固定され**ていた
+  //   （0.988 でミラー中はフレーム到着が再描画の契機になったため）。
+  //   毎回同じ位相でサンプルするので、**消えている側に当たるとずっと出ない**。
+  //   実機で確認: 受信中は出ないのに、送信機を切ると（再描画が 1050ms の
+  //   強制リフレッシュに替わって位相が流れるので）数秒だけ現れる、という症状。
+  //   同じ罠は settings.h の LINK_FRAME_BLINK_MS にも書いてある。
+  const bool blink_on = !rx || blink_1s();
   if (blink_on) {
     const int ix = x + ICON_RSSI_W + 3;
     if (rx) draw_mask(backscreen, ix, y, ICON_BOAT_W,  ICON_BOAT_H,  ICON_BOAT,  col);
@@ -2914,8 +2921,16 @@ static void draw_link_overlay() {
 // push_backscreen() の最後、draw_link_overlay() より後に呼ぶことで必ず最上位レイヤーにする。
 // 以前は draw_nomapdata() の中でこれより先に描いており、LINK アイコンやコンパスの
 // N/E/S/W など後から重なる要素に隠れていた。不透明の背景を敷いて完全に上書きする。
+// ★★ **ミラー中は出さない**（0.991）。これは**自機の**モジュールの話で、画面に出て
+//   いる数字は機体のもの。受信できている間は「送信機の画面の再現」が主旨なので、
+//   自機の GNSS の都合でその画面を覆ってはいけない（CLAUDE.md の
+//   「ミラー中に自機の状態を混ぜない」）。
+//   ★ 音（gnss_conn_tick の下降 2 音）とログは止めない。自機の GNSS が死んだことを
+//     飛行中に知る手段がほかに無く、ボート自身の位置と received/ の own_lat/own_lon が
+//     止まるため。無信号へ落ちればこの箱も復活する（そのときは自機表示に戻るので）。
 static void draw_gnss_disconnect_warning() {
   if (get_gnss_connection() || getReplayMode() || is_demo_active()) return;
+  if (link_mirror_active()) return;
   const int bx = 5, by = NOTICE_Y_GNSS_LOST, bw = SCREEN_WIDTH - 10, bh = 56;
   begin_notice_box(bx, by, bw, bh, COLOR_MAGENTA);
   backscreen.setTextSize(1);
