@@ -1,3 +1,19 @@
+> ## ⚠️ 重要なお知らせ:安全のため使用を一旦中止してください(2026-10-15)
+>
+> 充電IC **MCP73831** の **VDD** / **VBAT** に必要な **4.7µF のコンデンサが実装されていない**不具合が見つかりました。
+> 電源スイッチ投入時のチャタリング(接点の瞬間的な ON/OFF 反復)で IC に過電圧が加わり、**ごく稀に IC が故障**します。
+> 故障時は **発熱(焦げ臭くなる)・電源が切れなくなる**可能性があります。
+>
+> **改修(コンデンサの追加)が完了するまで、本バージョンの基板の使用を中止してください。**
+>
+> * **対象バージョン**:v1 を除く全バージョン(v3 / v4 / v5 / v6 / v7 / v7.1。`main` ブランチは v6 と同一のため対象)。
+> * **修正方法**:このバージョンは本リポジトリに基板データ(KiCad)が含まれていないため、現物の基板上で
+>   MCP73831(充電IC、SOT-23-5 パッケージの小さな IC)を探し、データシート(Microchip DS20001984)の
+>   ピン配置(`1=STAT, 2=VSS/GND, 3=VBAT, 4=VDD, 5=PROG`)を確認した上で、**4.7µF のセラミックコンデンサ**
+>   (X5R/X7R、耐圧 10V 以上推奨)を **VDD(4番)⟷VSS/GND(2番)間** と **VBAT(3番)⟷VSS/GND(2番)間** の
+>   それぞれに後付けで実装してください。ピンの特定に自信が無い場合は、無理に自己判断で改修せず下記へご相談ください。
+> * ご不安な場合は masaochiguchi@gmail.com までご連絡ください。
+
 # GPS_TFT_map 概要/Abstract
  * Show GPS map on TFT and data on OLED using Arduino.  Code are specialized for Birdman rally at Biwako.
  * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft
