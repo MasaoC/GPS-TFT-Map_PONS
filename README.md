@@ -1,3 +1,18 @@
+> ## ⚠️ 重要なお知らせ:安全のため使用を一旦中止してください(2026-10-15)
+>
+> 充電IC **MCP73831** の **VDD** / **VBAT** に必要な **4.7µF のコンデンサが実装されていない**不具合が見つかりました。
+> 電源スイッチ投入時のチャタリング(接点の瞬間的な ON/OFF 反復)で IC に過電圧が加わり、**ごく稀に IC が故障**します。
+> 故障時は **発熱(焦げ臭くなる)・電源が切れなくなる**可能性があります。
+>
+> **改修(コンデンサの追加)が完了するまで、本バージョンの基板の使用を中止してください。**
+>
+> * **対象バージョン**:v1 を除く全バージョン(v3 / v4 / v5 / v6 / v7 / v7.1。`main` ブランチは v6 と同一のため対象)。
+> * **修正方法**:MCP73831(本バージョンでは **U4**、`kicad/mainboard/SHT_RP2354B.kicad_sch`)の
+>   **4番ピン(VDD)⟷2番ピン(VSS/GND)間** と **3番ピン(VBAT)⟷2番ピン(VSS/GND)間** に、それぞれ
+>   **4.7µF のセラミックコンデンサ**(X5R/X7R、耐圧 10V 以上推奨)を IC のピンの近くに追加してください。
+>   追加後は KiCad の ERC/DRC で確認してから基板を発注してください。
+> * ご不安な場合は masaochiguchi@gmail.com までご連絡ください。
+
 # GPS(GNSS)-TFT-map_PONS=Pilot Oriented Navigation System v7
 <img width="1312" height="368" alt="ponsv6image" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
 <img width="240" height="52" alt="logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
