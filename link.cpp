@@ -414,14 +414,38 @@ static void link_sync_destination() {
 // ★ 受信機の目的は「パイロットに出ている画面の再現」なので、縮尺が違うと同じ地図に
 //   見えない。送信機が誤った縮尺のまま飛んでいることにも気づける。
 // ★ RAM 上の上書きだけ（SD には書かない）。違ったときだけ合わせる。
-//   音声では知らせない — 画面を見れば分かる変化で、送信機が拡大率を回すたびに
-//   鳴ると騒がしい。
 // ★ **ミラー中はボート側の拡大率操作（ダブルクリック）が効かなくなる。**
 //   意図どおり（送信機に合わせるのが主旨）。変えたいときは受信を切る。
+//
+// ★★ **「送信機が回した」と「ボート側で変えたのを引き戻した」を区別して鳴らす**（0.991）。
+//   前者で鳴らすと**送信機が拡大率を回すたびに鳴って騒がしい**（0.988 で音声に
+//   しなかった理由はこれ。画面を見れば分かる変化でもある）。
+//   後者は**自分の操作が無視された**ことなので、黙っていると
+//   「一瞬変わって戻る＝ボタンかソフトが壊れている」と思わせる。トーンだけ鳴らす。
+//   区別の方法: 送信機から来た値が前回と同じなのに自分と違う ＝ こちらで変えた。
 static void link_sync_scale() {
-    if (!link_mirror_active()) return;
-    if ((int)s_rx.t.scale_index == scaleindex) return;
-    set_scaleindex((int)s_rx.t.scale_index);   // 範囲外なら無視される
+    static uint8_t s_last_sender_scale = 0xFF;   // 0xFF = まだ送信機の値を見ていない
+    if (!link_mirror_active()) { s_last_sender_scale = 0xFF; return; }
+
+    const uint8_t sender = s_rx.t.scale_index;
+    // 受信開始直後（0xFF）とミラー再開も「送信機が動いた」側に入れる。
+    // あれは**最初の位置合わせ**で、却下ではないので鳴らさない。
+    const bool sender_moved = (sender != s_last_sender_scale);
+    s_last_sender_scale = sender;
+    if ((int)sender == scaleindex) return;
+
+    // ★ **引き戻しが実際に効いたときだけ鳴らす。** set_scaleindex() は範囲外を
+    //   無視するので、呼ぶ前に鳴らすと、送信機が壊れた値を送り続ける間
+    //   link_loop() のたびに鳴り続ける。
+    const int before = scaleindex;
+    set_scaleindex((int)sender);               // 範囲外なら無視される
+    if (!sender_moved && scaleindex != before) {
+        // 低い 2 連 = 操作を却下した。★ 優先度 3（コース警告と同等）にしないこと。
+        //   UI の「できません」が本物の警告を押しのけるのは順序が逆。
+        enqueueTask(createPlayMultiToneTask(262, 100, 2, 2));
+        enqueueTask(createLogSdfTask("LINK: scale override (local %d -> sender %d)",
+                                     before, (int)sender));
+    }
 }
 
 // 送信機側の異常（SD／IMU）。飛ぶ前に気づきたい項目。

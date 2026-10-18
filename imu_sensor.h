@@ -29,7 +29,7 @@
 //       SCH16T では GRV / RV / LACC / 動的校正のどれも無い
 //
 // ★ 0.986 でファイルを割った（imu.cpp = チップ非依存 / imu_bno08x.cpp = BNO085）。
-//   下の imu_drv_* がその契約。`imu_sch16t.cpp` はまだ無い。
+//   下の imu_drv_* がその契約。`imu_sch16t.cpp` は 0.991 で実装した。
 //   段取りは [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §1。
 //   そこに **`imu_service_if_due()` の意味が SCH16T で変わる**ことも書いてある
 //   （飢餓対策が不要になるが、**対策コメントは消さないこと**）。

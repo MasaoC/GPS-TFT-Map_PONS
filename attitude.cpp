@@ -1256,6 +1256,10 @@ float attitude_get_yaw_acc95_deg() {
 }
 bool attitude_is_static()                { return static_now_; }
 uint32_t attitude_get_gnss_updates()     { return gnss_updates_; }
+// ★ 内部の gnss_vel_fresh() をそのまま公開する。**表示側で同じ判定を書き写さないこと**
+//   （しきい値が 2 か所になり、片方だけ直した日に「錨は切れているのに取り消し線が
+//     出ない」になる）。
+bool     attitude_gnss_vel_fresh()       { return gnss_vel_fresh(); }
 uint32_t attitude_get_level_updates()    { return level_updates_; }
 
 float attitude_get_static_secs() {

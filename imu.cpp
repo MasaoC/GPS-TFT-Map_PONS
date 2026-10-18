@@ -370,7 +370,13 @@ void imu_kalman_baro_update(float z_baro_m) {
 //   ground_alt_abs -= delta  （innov>0 → 基準を下げてKF高度を上げる方向）
 //
 // ■ Varioへの影響
-//   delta 最大 GNSS_MAX_DELTA_M [m] / 更新 ≒ 0.02m/s。表示分解能（0.1m/s）以下。
+//   補正は 1Hz で 1 回、1 回あたり最大 GNSS_MAX_DELTA_M [m] なので、
+//   気圧基準は最大 **GNSS_MAX_DELTA_M [m/s]** の傾きで動く。これは
+//   KF から見ると高度観測のランプ入力なので、V/S に同じ大きさの定常バイアスが乗る。
+//   いまの値（0.05m/s）は表示分解能 0.1m/s の半分、デッドバンド
+//   VARIO_DEADBAND_KF_MPS（0.25m/s）の 1/5 で、**音を鳴らすことはできない**。
+//   ★ **数値をここに書かないこと。** 0.02 と書いてあった時代があり、
+//     GNSS_MAX_DELTA_M を 0.02→0.05 に上げたときコメントだけ古いまま残った。
 
 // GNSS補正の内部状態
 static float  _gnss_kf_offset     = 0.0f;   // GNSS MSL高度 - KF AGL高度 の推定値 [m]

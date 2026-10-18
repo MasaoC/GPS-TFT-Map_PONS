@@ -284,6 +284,25 @@ void setup(void) {
   BootCheckState airdata_check = get_airdata_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG;
   draw_boot_progress(imu_check, airdata_check, BOOT_CHECK_PENDING);
 
+  // ★★ **log.txt の最初の行はビルドの身元にする**（0.991 で追加）。
+  //   これが無いと、後からログを読んだときに**どのファームが出したものか分からない**。
+  //   バージョンだけでは足りない:
+  //     ・基板世代（v7 / v7.1）でピン配置と IMU が丸ごと変わる
+  //     ・RELEASE でないビルドは GNSS シミュレーションやデバッグ出力が入りうる
+  //   ★ 基板名は VERSION_TEXT を使う（PONS_BOARD から導いてある文字列。
+  //     ここで "v7.1" と書き直すと二重管理になる）。
+  //   ★ 置き場所はここ。setup() の冒頭に出すと、Core1 の mutex_init より先に
+  //     enqueueTask を呼ぶ窓に入る（setup1() の冒頭コメント参照）。
+  //     既存のログ呼び出しと同じ区間に置けば、**ログの 1 行目**にはなる。
+#ifdef RELEASE
+  const char* build_rel = "";
+#else
+  const char* build_rel = " [NOT RELEASE]";
+#endif
+  enqueueTask(createLogSdfTask("BOOT PONS %s build %lu board=%s imu=%s%s",
+                               BUILDVERSION, (unsigned long)BUILDDATE,
+                               VERSION_TEXT, imu_sensor_name(), build_rel));
+
   // 両センサーの初期化完了後にセンサー組み合わせをログ出力する
   if (!get_imu_ok() && !get_airdata_ok()) {
     enqueueTask(createLogSdTask("VARIO: NO SENSORS - BNO085 and MS5611 both absent"));
@@ -1276,7 +1295,14 @@ static void setting_timeout_tick() {
     if (selectedLine != -1 && menu_settings[cursorLine].CallbackExit != nullptr)
       menu_settings[cursorLine].CallbackExit();
     selectedLine = -1;
-    exit_setting();      // 設定を保存し、音声を鳴らして MODE_MAP へ
+    // ★ **別れの音声は鳴らさない**（farewell=false）。操作していないのに声が鳴ると
+    //   何が起きたのか分からない（実機 2026-10-14 の「負けんな」事件。src/button.cpp）。
+    //   代わりに専用の短い降下ペアを鳴らす。**ボタン操作音（1046/1568Hz の単発）とは
+    //   別の音にすること** — あちらは「押した」の確認で、こちらは「勝手に閉じた」の通知。
+    //   降下は「閉じた」に読める。優先度 2 は Auto10km 禁止の通知と同じ扱い。
+    exit_setting(false);                                   // 設定を保存して MODE_MAP へ
+    enqueueTask(createPlayMultiToneTask(659, 100, 1, 2));  // ミ
+    enqueueTask(createPlayMultiToneTask(523, 100, 1, 2));  // ド
     // 画面クリアは不要。地図の再描画（ヘッダ＋backscreen＋フッタ）が 240x320 を
     // 埋め尽くすため、通常の「Save & Exit」でもクリアしていない。
     redraw_screen = true;

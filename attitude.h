@@ -178,6 +178,11 @@ bool  attitude_get_up_sensor(float u[3]);
 bool  attitude_is_static();                  // 静止判定の現在値
 float attitude_get_static_secs();            // 静止が継続している秒数
 uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回数
+// GNSS 速度観測が新鮮か（ESKF_GNSS_VEL_TIMEOUT_US 以内に来ているか）。
+// ★ false の間は**ロール・ピッチの錨が無く、風推定も止まっている**。
+//   自動ロールトリムと風推定が「飛行中の機能」であるのと同じ鮮度条件
+//   （attitude.cpp の gnss_vel_fresh）。表示側は取り消し線の判定に使う。
+bool     attitude_gnss_vel_fresh();
 // 重力観測（levelling update）を取り込んだ回数。ゲートが開いているかの確認に使う。
 // ★ GNSS 断中にロール・ピッチの錨になるのがこの観測。0 のままならゲートが閉じている。
 uint32_t attitude_get_level_updates();

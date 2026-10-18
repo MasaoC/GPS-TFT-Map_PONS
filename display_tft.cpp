@@ -575,6 +575,35 @@ static bool eskf_display_needs_apply() {
   return attitude_needs_apply();
 }
 
+// 「いま画面に出している姿勢・風」が、GNSS 速度の裏付けを失っているか。
+// ★ **供給元 3 系統すべてを面倒見ること**（eskf_display_needs_apply と同じ理由）。
+//   判断の対象は *この装置* ではなく *画面に出ている数字の出どころ* である。
+//   ここに attitude_gnss_vel_fresh() を直接書くと、**ミラー中のボートが
+//   自分の GNSS の都合で機体の値に取り消し線を引く**（CLAUDE.md
+//   「ミラー中に自機の状態を混ぜない」）。
+// ★ リプレイ中は false。記録済みの値に「いまの鮮度」は関係ない
+//   （当時は出ていた値なので、取り消すと当時の画面の再現でなくなる）。
+static bool eskf_display_gnss_stale() {
+  // ★ デモ中は引かない（0.992 の判断）。デモが差し替えるのは GNSS 値とヨー精度だけで
+  //   姿勢と風は実センサーのままなので、屋内では**実際に錨が無い**。それでも線を
+  //   引かないのは、デモが「見せるための画面」だから。原則どおりに引きたくなったら
+  //   ここを消すだけで戻る。
+  if (is_demo_active()) return false;
+  if (link_mirror_active())
+    return (link_sender_status() & LINK_ST_GNSS_LOST) != 0 || !link_get_fix_ok();
+  if (getReplayMode()) return false;
+  return !attitude_gnss_vel_fresh();
+}
+
+// 取り消し線。**値は残したまま「信頼性が落ちている」ことだけを示す**ための線。
+//   y_mid … 線を引く高さ（文字の縦中央）
+// ★ 消さずに線を引くのは、参考情報としては読めるようにしておきたいため。
+//   「出さない」にすると、GNSS が切れた瞬間に画面から消えて**何が起きたか分からない**。
+static void strike_through(TFT_eSprite &spr, int x, int y_mid, int w, uint16_t col) {
+  spr.drawFastHLine(x, y_mid,     w, col);
+  spr.drawFastHLine(x, y_mid + 1, w, col);   // 2px。地図の上でも見えるように
+}
+
 // 測位品質（sAcc / vAcc）を「不明」として出すべきか。
 // ★ **PONS Link が運ぶ測位品質は hAcc / numsat / fixOK だけ**（link_proto.h の
 //   LinkTelem。65 バイト固定なので安易に足せない）。sAcc と vAcc は載っていない。
@@ -1697,8 +1726,16 @@ void draw_eskf_attitude() {
       backscreen.loadFont(AA_FONT_SMALL);
       backscreen.setCursor(ESKF_LABEL_X, ylbl);
       backscreen.print("W");
-      backscreen.setCursor(ESKF_LABEL_X + wlw + 3 + nw + 2, ylbl);
+      const int wunit_x = ESKF_LABEL_X + wlw + 3 + nw + 2;
+      backscreen.setCursor(wunit_x, ylbl);
       backscreen.print("m/s");
+
+      // ★ GNSS 速度の裏付けが切れている間は取り消し線。**風は対気速度と対地速度の差**
+      //   から出しているので、対地速度が更新されなければ原理的に推定できない。
+      //   値を消さずに線を引くのは参考情報として残すため（strike_through 参照）。
+      if (eskf_display_gnss_stale())
+        strike_through(backscreen, ESKF_LABEL_X, ywtxt + fh_m / 2,
+                       wunit_x + backscreen.textWidth("m/s") - ESKF_LABEL_X, COLOR_ORANGE);
 
       // 矢印は地図と同じ向き合わせ（TRACKUP は画面上＝トラック、NORTHUP は北）
       const float wscreen = is_trackupmode()
@@ -1738,6 +1775,12 @@ void draw_eskf_attitude() {
   backscreen.setTextColor(attitude_implausible(p) ? COLOR_GRAY : COLOR_BLACK);
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(pbuf), ypit);
   backscreen.print(pbuf);
+  // ★ GNSS 速度が止まると**ロール・ピッチの錨が無くなる**（比力から遠心力と
+  //   加減速分を差し引けないので、旋回中はロールを過小評価し加減速中はピッチがずれる。
+  //   それを直すのが GNSS 速度援用の ESKF そのもの）。値は残して線だけ引く。
+  if (eskf_display_gnss_stale())
+    strike_through(backscreen, ESKF_LABEL_X, ypit + fh_s / 2,
+                   ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, COLOR_ORANGE);
 
   // ---- 最下段: R ----
   backscreen.setTextColor(COLOR_GRAY);
@@ -1749,6 +1792,9 @@ void draw_eskf_attitude() {
                           : (fabsf(r) > BANK_WARN_DEG ? COLOR_RED : COLOR_BLACK));
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(rbuf), yroll);
   backscreen.print(rbuf);
+  if (eskf_display_gnss_stale())      // P 行と同じ理由
+    strike_through(backscreen, ESKF_LABEL_X, yroll + fh_s / 2,
+                   ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, COLOR_ORANGE);
   backscreen.setTextColor(COLOR_BLACK);
 
   // ---- R の下: 自動ロールトリムの累積補正量（内蔵フォント 8px = 最小）----
@@ -2713,10 +2759,11 @@ static void draw_link_icons() {
   uint8_t  level = 0;                      // 受信=本数 / 送信=弧の数
   uint16_t rcol  = COLOR_GRAY;
   bool     lost  = true;
+  const bool failed = !link_module_alive();   // モジュール自体が応答していない
   const uint8_t* const* icons = rx ? ICON_RSSI_BARS : ICON_TX_WAVES;
 
-  if (!link_module_alive()) {
-    // モジュール自体が応答していない。強度も送出も語れない。
+  if (failed) {
+    // 強度も送出も語れない。下で FAIL の文字に差し替える。
   } else if (!rx && link_preflight_state() == LINK_PF_RUNNING) {
     // ★ 送信前チェックの最中。まだ 1 回も送っていないので、下の分岐に落とすと
     //   「弧 0 本＋赤い×」＝送れていない、に見えてしまう。故障と区別できないので
@@ -2737,8 +2784,14 @@ static void draw_link_icons() {
   }
   // 役割アイコン(32px)の縦中央に合わせる。
   const int ry = y + (ICON_PLANE_H - ICON_RSSI_H) / 2;
-  draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, icons[level], rcol);
-  if (lost) draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, ICON_RSSI_X, COLOR_RED);
+  // ★ **モジュール故障だけは強度アイコン＋赤× にしない。** あの × は
+  //   「弱い／届いていない」にも付くので、**地上で直すべき故障**と
+  //   **運用上の無信号**が同じ絵になってしまう。前者だけがピンクの FAIL。
+  //   飛行中に直せるものではないが、「テレメトリを信用しない」の判断が変わる。
+  if (!failed) {
+    draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, icons[level], rcol);
+    if (lost) draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, ICON_RSSI_X, COLOR_RED);
+  }
 
   // 役割アイコン。受信モードだけ点滅させて目を引く（docs/pons_link.md §5）。
   // ★★ **点滅は blink_1s（半周期 1 秒）を使うこと。** 0.990 まで半周期 500ms＝
@@ -2749,10 +2802,28 @@ static void draw_link_icons() {
   //   強制リフレッシュに替わって位相が流れるので）数秒だけ現れる、という症状。
   //   同じ罠は settings.h の LINK_FRAME_BLINK_MS にも書いてある。
   const bool blink_on = !rx || blink_1s();
+  const int ix = x + ICON_RSSI_W + 3;
   if (blink_on) {
-    const int ix = x + ICON_RSSI_W + 3;
     if (rx) draw_mask(backscreen, ix, y, ICON_BOAT_W,  ICON_BOAT_H,  ICON_BOAT,  col);
     else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
+  }
+
+  // ★ 故障のときだけ、強度アイコンの代わりに役割アイコンの**右**へ FAIL を出す。
+  //   読むと「[飛行機] FAIL」＝この機体の無線が壊れている、になる。
+  //   ★ **19px の強度アイコンの枠には入れない。** あそこに文字を置くと
+  //     役割アイコン（x=25 から）と重なる。右へ逃がすと、内蔵フォント（24px）でも
+  //     AA_FONT_SMALL（約 40px）でも収まるので、**この経路のフォント状態に依らない**
+  //     （draw_link_icons はフォントを触らない。触ると後続の箱が巻き添えになる）。
+  if (failed) {
+    backscreen.setTextColor(COLOR_PINK, COLOR_WHITE);
+    backscreen.setTextSize(1);
+    backscreen.setCursor(ix + ICON_PLANE_W + 3, y + (ICON_PLANE_H - 8) / 2);
+    backscreen.print("FAIL");
+    // ★ **色を戻す。** このファイルの作法（draw_gnss_disconnect_warning /
+    //   draw_warn_mute_banner も描き終わりに黒へ戻している）。いまの下流は
+    //   begin_notice_box() が自分で色を設定するので実害は無いが、色を設定せずに
+    //   print する箇所が後から足された日にピンクで出る。
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   }
 }
 
@@ -3304,6 +3375,11 @@ void draw_header() {
     if (eskf_display_needs_apply()) {
       for (int i = 0; i < 4; i++)
         header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
+    } else if (eskf_display_gnss_stale()) {
+      // ★ GNSS 速度が止まっている間は平均ピッチも不正確（元のピッチが不正確なので）。
+      //   **較正要の赤 4px より細い橙 2px** にして段を分ける。赤＝値が無効、
+      //   橙＝精度が落ちている。両方成立するときは赤が勝つ（else if）。
+      strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_ORANGE);
     }
   } else {
     // ---- 真方位 ----
@@ -4312,8 +4388,17 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     backscreen.setCursor(10,i * separation);
     backscreen.setTextColor(col,COLOR_WHITE);
 
-    if(menu_settings[i].iconColor != nullptr)
-      backscreen.fillCircle(SCREEN_WIDTH-7,i * separation+7, 5, menu_settings[i].iconColor());
+    if (menu_settings[i].iconColor != nullptr) {
+      const int c  = menu_settings[i].iconColor();
+      const int iy = i * separation + 7;
+      // ★ MENU_ICON_HYPHEN は「この機体では評価できない」。丸を出さずハイフンにする
+      //   （理由は src/button.h の定義のところ）。グレーは get_imu_ok()==false の
+      //   行が使っているのと同じ「対象外」の色。
+      if (c == MENU_ICON_HYPHEN)
+        backscreen.drawFastHLine(SCREEN_WIDTH - 12, iy, 10, COLOR_GRAY);
+      else
+        backscreen.fillCircle(SCREEN_WIDTH - 7, iy, 5, (uint16_t)c);
+    }
 
     backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
   }

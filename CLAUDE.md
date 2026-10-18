@@ -244,7 +244,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
 | [imu_bno08x.cpp](imu_bno08x.cpp) | BNO085 ドライバ。**チップ依存はここだけ**（0.986 で imu.cpp から分離）。ファイル全体が `#if` で囲ってあるので、新しいドライバも同じ形にする |
-| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**0.987 時点では骨組みだけ**（全部「載っていない」を返す）。`PONS_BOARD` を V71 にするとこちらが生き、`#warning` で「飛ばすな」が出る |
+| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |

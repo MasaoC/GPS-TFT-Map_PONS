@@ -111,21 +111,30 @@ bool is10K_NotAllowed_Destination(const char *name) {
 
 // 設定画面を終了してマップ画面に戻る。
 // 1. 現在の設定内容を SD カードへ保存するタスクをキューに積む。
-// 2. 起動からの経過秒を 5 で割った余りで別れの音声を切り替える（毎回同じにならないランダム感）。
+// 2. farewell=true なら、起動からの経過秒を 5 で割った余りで別れの音声を切り替える
+//    （毎回同じにならないランダム感）。
 //    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな" 4: "強い"
 // 3. screen_mode を MODE_MAP に変えて設定画面を閉じる。
-void exit_setting(){
+//
+// ★★ **別れの音声は「自分で終了を操作した」ことへの反応。**
+//   放置タイムアウト（GPS_TFT_map.ino）で閉じるときは farewell=false で呼ぶこと。
+//   実機 2026-10-14 18:47 に、鞄の中でボタンが押されて設定画面が開き、180 秒後の
+//   タイムアウトで **「負けんな」が何もしていないのに鳴った**（経過 3683 秒 → 3683%5=3）。
+//   操作していないのに声が鳴ると、何が起きたのか分からない。
+void exit_setting(bool farewell){
     enqueueTask(createSaveSettingTask());
-    if((millis()/1000)%5 == 0)
-      enqueueTask(createPlayWavTask("wav/matane.wav"));
-    else if((millis()/1000)%5 == 1)
-      enqueueTask(createPlayWavTask("wav/baibai.wav"));
-    else if((millis()/1000)%5 == 2)
-      enqueueTask(createPlayWavTask("wav/arigato.wav"));
-    else if((millis()/1000)%5 == 3)
-      enqueueTask(createPlayWavTask("wav/makenna.wav"));
-    else if((millis()/1000)%5 == 4)
-      enqueueTask(createPlayWavTask("wav/tsuyoi.wav"));
+    if (farewell) {
+      if((millis()/1000)%5 == 0)
+        enqueueTask(createPlayWavTask("wav/matane.wav"));
+      else if((millis()/1000)%5 == 1)
+        enqueueTask(createPlayWavTask("wav/baibai.wav"));
+      else if((millis()/1000)%5 == 2)
+        enqueueTask(createPlayWavTask("wav/arigato.wav"));
+      else if((millis()/1000)%5 == 3)
+        enqueueTask(createPlayWavTask("wav/makenna.wav"));
+      else if((millis()/1000)%5 == 4)
+        enqueueTask(createPlayWavTask("wav/tsuyoi.wav"));
+    }
     screen_mode = MODE_MAP;
 }
 
@@ -286,6 +295,12 @@ Setting menu_settings[] = {
     },
     nullptr,
     [](){
+      // ★ 受信モード（ボート／ピット）では判定しない。緑の基準が
+      //   「飛行中でも聞こえる音量」で、**自機が飛行機ではないので成り立たない**
+      //   （MENU_ICON_HYPHEN の説明は src/button.h）。
+      //   音そのものは受信機でも鳴るので、ハイフンは「鳴らない」ではなく
+      //   「この音量が足りているかは判定できない」の意味。
+      if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
       if(sound_volume >= 30)
         return COLOR_GREEN;
       else
@@ -324,6 +339,11 @@ Setting menu_settings[] = {
     },
     nullptr,
     [](){
+      // ★ 受信モードでは判定しない（SETTING_VOLUME と同じ理由）。
+      //   ★ **ミラー中のバリオは鳴る。** 音源は送信機の V/S（imu.cpp の
+      //     vario_vspeed_mps() が link_get_kf_vspeed() を返す）なので設定は効いている。
+      //     判定できないのは「飛行中でも聞こえるか」という基準の方。
+      if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
       // inhibit 中は音が出ないので、音量値によらずオレンジ
       if(!vario_inhibit && vario_volume >= 30)
         return COLOR_GREEN;
@@ -554,6 +574,11 @@ Setting menu_settings[] = {
     nullptr,
     nullptr,
     [](){
+      // ★ 受信モード（ボート／ピット）では判定しない。姿勢の「準備できたか」は
+      //   **自機が飛ぶ前提の話**で、ボートでは成り立たない。それでも赤を出すと
+      //   正しい設定なのに異常に見える（MENU_ICON_HYPHEN の説明は src/button.h）。
+      //   ★ ミラー中の姿勢表示は送信機の値なので、この行とは別の話。
+      if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
       // BNO085 非搭載機は姿勢機能そのものが無いのでグレー（緑＝準備OK にしない）
       if (!get_imu_ok())
         return COLOR_GRAY;
@@ -571,11 +596,18 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   // [15] PONS Link 無線設定 (WIRELESS)
   //   ・Enter: 無線専用ページ（MODE_WIRELESS）へ
-  //   ・アイコン色: 大会の推奨設定はパイロット機＝送信モード。
-  //                 送信モードなら緑、それ以外（受信・無効）はオレンジ。
-  //     ※受信モードは「間違い」ではなくボート／ピット用の正しい設定なので、
-  //       赤ではなくオレンジにしてある（赤＝異常、と使い分ける）。
+  //   ・アイコン色: **いま選んでいるモードがちゃんと機能しているか**（健全性）
   // ----------------------------------------------------------
+  // ★★ **丸に「方針」を語らせないこと。** 0.991 まで
+  //   `LINK_MODE_TX ? 緑 : オレンジ` ＝「大会の推奨設定（パイロット機＝送信）か」を
+  //   色にしていたが、これは機体の状態から答えられない問いだった。
+  //   「送信のつもり」か「受信のつもり」かは操作者の頭の中にしかないので、
+  //   **正しく動いているボートが永久にオレンジ**になる。そういう丸は
+  //   やがて丸ごと無視されるようになり、本当の異常を隠す。
+  // ★ 方針の問い（意図したモードになっているか）は別の手段が担っている:
+  //   起動時の読み上げ `link_announce_mode()`（3 状態とも読む。CLAUDE.md）と、
+  //   この行のラベル（`Wireless: SENDER >` と出る）。**設定画面を開かなくても
+  //   気づけるし、まだ直せるタイミングで鳴る**ので、そちらの方が instrument として良い。
   { SETTING_WIRELESS,
     [](bool selected) -> std::string {
       const char* m = "OFF";
@@ -594,8 +626,22 @@ Setting menu_settings[] = {
     nullptr,
     nullptr,
     [](){
-      // 大会の推奨設定＝パイロット機が送信モード。
-      return (link_get_mode() == LINK_MODE_TX) ? COLOR_GREEN : COLOR_ORANGE;
+      const uint8_t m = link_get_mode();
+      // OFF は**意図的に切っている**＝異常ではない。グレー（対象外）にする。
+      // 「使うつもりだったのに OFF」は起動時の読み上げが拾う（上の ★ 参照）。
+      if (m == LINK_MODE_OFF) return COLOR_GRAY;
+      // モジュールが応答しない。送信も受信も語れないのでこれが最優先の赤。
+      if (!link_module_alive()) return COLOR_RED;
+      if (m == LINK_MODE_RX)
+        return link_is_receiving() ? COLOR_GREEN : COLOR_ORANGE;   // 受信中 / NO SIGNAL
+      // 送信モード。★ 送信前チェックの最中は**まだ 1 回も送っていない**ので、
+      //   下の判定に落とすと「送れていない」に見える。故障と区別するため緑にしない
+      //   でオレンジ（＝いまは聴いている）。draw_link_icons() と同じ扱い。
+      if (link_preflight_state() == LINK_PF_RUNNING) return COLOR_ORANGE;
+      // ★ **`Sent` は「UART へ書けた回数」でしかない**ので、ここでは
+      //   「直近に送出があったか」で見る。電波が本当に出たかは AUX の立ち下がりで
+      //   数えている `noRf`（60 秒ログ）の方が確か。丸は粗い指示器に留める。
+      return (link_since_tx_ms() != 0xFFFFFFFFu) ? COLOR_GREEN : COLOR_ORANGE;
     }
   },
 
