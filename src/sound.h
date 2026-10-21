@@ -23,5 +23,8 @@
                     int excl_group = WAV_EXCL_NONE);
   void update_tone(float degpersecond);
   void playTone(int freq,int duration, int counter,int priority = 1, int min_volume = 0, bool solo_play = false);
-  void update_vario();  // バリオメーター音更新（Core0 から毎ループ呼ぶ）
+  // バリオメーター音更新（Core0 から毎ループ呼ぶ）。
+  // mute: 充電中かつマウント外（運搬中）。警報と同じ条件を loop() から渡す
+  //       （warn_muted_off_mount()。音の層から .ino を呼び返さないため引数にした）。
+  void update_vario(bool mute);
 #endif

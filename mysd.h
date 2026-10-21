@@ -127,7 +127,6 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    void saveCSV(float latitude, float longitude, float gs, int ttrack, float gnss_altitude, float kf_altitude, float kf_vspeed, float pressure, float voltage, int numsat, int year, int month, int day, int hour, int minute, int second, int centisecond);
     // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
     // pitch_avg は 平均が溜まるまで無効。valid=false のときは空欄で書く。
     void save_imu_replaydata(int h, int m, int s, int cs,
@@ -234,6 +233,9 @@
               float voltage;      // バッテリー電圧 [V]（リプレイで当時の電池表示を再現するため）
               int numsat;         // 測位に使用した衛星数（同上）
               int year, month, day, hour, minute, second, centisecond;
+              // ---- 飛行 CSV だけの追加列（不具合の検証用。v7.1 の照度センサーとバックライト）----
+              float    lux;       // 照度 [lx]。センサーが応答していないとき・v7 は負（空欄）
+              int8_t   bl_pct;    // バックライトの点灯率 [%]。v7 は負（空欄）
               // ---- 受信ログ（received/）用の追加列。TASK_SAVE_RXCSV でのみ使う ----
               int      rssi;      // 受信強度 [dBm]
               uint16_t seq;       // 送信側の連番。取りこぼしの解析に使う
@@ -302,6 +304,9 @@
   // 列は自機のフライト CSV と同じ並びにし、末尾に rssi/seq/age/src を足す。
   // 揃えてあるので、既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
   Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms);
+  // 飛行 CSV の 1 行を書く。引数は saveRxCSV と同じく Task そのもの
+  //（17 個並べると、項目を足したとき呼び出し側とずれても気づけないため）。
+  void saveCSV(const Task& tk);
   void saveRxCSV(const Task& tk);
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0,

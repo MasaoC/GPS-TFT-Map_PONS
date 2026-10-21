@@ -79,6 +79,10 @@
   void gnss_constellation_mode();
   bool get_gnss_fix();
   bool get_gnss_connection();
+  // 一度でも GNSS から受信したか（起動直後と「抜けた」の区別に使う）。
+  // ★ これ無しで `!get_gnss_connection()` を警報の条件にすると、**起動直後の
+  //   まだ 1 バイトも来ていない間に発報する**（PONS Link の GNSS 断線ビットで踏んだ）。
+  bool gnss_ever_connected();
   bool get_gnss_cfg_ok();  // 起動時 UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
   int get_gnss_numsat();
   double get_gnss_mps();
@@ -116,6 +120,7 @@
   uint32_t get_gnss_jst_yyyymmdd();   // JST の今日の日付 YYYYMMDD。0 = 時刻がまだ無い
 
   // 最大 G/S 取得関数
+  void  reset_maxgs();          // 最大 G/S を捨てる（供給元が入れ替わるとき）
   float get_maxgs();            // 全時間最大 G/S [m/s]
   int   get_maxgs_hour();       // 全時間最大 G/S の記録時刻（JST 時）
   int   get_maxgs_min();        // 全時間最大 G/S の記録時刻（JST 分）

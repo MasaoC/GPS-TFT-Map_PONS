@@ -2,20 +2,19 @@
 
 > ## このブランチは **BNO085 基板（初代 v7）用**
 >
-> 新基板（BNO085 を降ろし、SCH16T を J7 の FPC で外付けした版）は
-> **`PONSv7.1`** ブランチ。タグ `0.986` の時点で分岐した。
-> **新基板の作業は `PONSv7.1` 側で進める。ここには持ち込まない。**
+> 新基板（BNO085 を降ろし、SCH16T を J6 の FPC で外付けした v7.1）は **`PONSv7.1`** ブランチ。
+> **v7 基板のソフト開発はこのブランチ、v7.1 基板は `PONSv7.1` で行う**（2026-10-21 から）。
 >
-> このブランチに残っている SCH16T 関連（`imu_sensor.h` の能力ビット・
-> `SCH16T_PIN_*`・`tools/sch16t_test/`・`docs/imu_sch16t_plan.md`）は
-> **分岐前の記録で、ビルドには一切効かない** —
-> `IMU_SENSOR_DEFAULT` は `IMU_SENSOR_BNO085` で、SCH16T を選ぶと `#error` で止まり、
-> `tools/sch16t_test/` は独立したスケッチでファームにリンクされない。
-> **消さないこと。** 消しても得るものが無く、`PONSv7.1` から共有コードの修正を
-> 取り込むときに、消した範囲の周辺が毎回コンフリクトする。
+> - **ファームのコードは両ブランチで共通。** `settings.h` の `PONS_BOARD` で基板を切り替える。
+>   **このブランチでは `PONS_BOARD_V7` から変えない。** 0.993 までの共通コードは
+>   `PONSv7.1` からマージで取り込んだ（SCH16T のドライバや v7.1 の電源・バックライトも
+>   入っているが、V7 のビルドでは `#if` で落ちる）。
+> - **`kicad/` は v7 基板のデータ。** `PONSv7.1` の v7.1 本体・5 ピンの GNSS 基板・
+>   `IMU_murata`・`case_cover` は持ち込まない。README の「ハードウェア」の節も v7 のまま。
+> - **共通コードの修正は、もう一方のブランチへも渡す**（マージか cherry-pick）。
+>   そのとき `kicad/`・README のハードウェアの節・この注記は**受け取る側のまま残す**。
 >
-> 下の「破ると静かに壊れる約束」のうち **【旧基板】** が付いた項目は、
-> このブランチでは**そのまま有効**（新基板では逆になる、という注記）。
+> 下の「破ると静かに壊れる約束」のうち **【v7 のみ】** が付いた項目は、このブランチで有効。
 
 PONS v7 — 人力飛行機パイロット向けの GNSS 航法装置ファームウェア。
 RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
@@ -35,10 +34,8 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 ローカル改変が効かないまま静かに通る。理由と改変点は
 [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md)。
 
-**Flash Size の 16MB は 0.982 から必須。** 音声を FLASH に焼いて約 2.0MB 増えたので、
-**2MB 指定ではリンクが通らない**（`region FLASH overflowed by 1700076 bytes`。
-領域は Flash Size − 8KB なので 2MB では 2,088,960B しかなく、所要は約 3.79MB）。
-入るのは 4MB 以上。0.981 までは 1.7MB だったので 2MB でも通っていた。
+**Flash Size は 16MB（no FS）。** 音声を FLASH へ焼いた 0.982 から所要が約 3.7MB に
+なり、2MB 指定では `region FLASH overflowed` でリンクが通らない。
 **IDE のボード設定はスケッチに保存されない**ので、別の PC や IDE の入れ直し後に必ず踏む。
 
 コンパイル確認だけなら CLI が使える（IDE 同梱の arduino-cli。動作確認済み）:
@@ -115,8 +112,6 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （実機では `ERR wav not in flash` が出るまで気づけないため）。
 - **音声の同一性は `WAV_ENTRIES[]` の添字で見る。名前のポインタで比べない。**
   同じ `"wav/track.wav"` でも別の .cpp に書かれたリテラルは別アドレスになり得る。
-  0.981 まで `strcmp` とポインタ比較が混在していて、**いつ静かに外れてもおかしくない**
-  状態だった（同一ファイル内にしか出て来ないのでたまたま成立していた）。
 - **状態を読み上げる音声には排他グループ（`WAV_EXCL_*`）を付ける。** pending は
   「割り込まれた音声の救済」だが、いまの状態を述べる読み上げには害になる。0.984 まで、
   無線モードを RECEIVER へ回す途中で通過した `sender_mode.wav` が pending から復帰し、
@@ -127,16 +122,31 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （優先度 1・最低音量 60）が pending から復帰したときに 60 を失い、
   音量設定 0 の機体で**電池切れの警告が完全に無音になる**
   （優先度 1 は最低なので、他の WAV とぶつかれば必ず pending を通る）。
-  0.982 で代替ビープを消したので、この経路が唯一の警告になった。
 - **表示の供給元は 3 系統ある。** 実センサー / リプレイ（`getReplayMode()`）/
   無線ミラー（`link_mirror_active()`）。表示項目を足すときは 3 つとも考える。
-  **デモ（`is_demo_active()`）は 4 つめ**だが、差し替えるのは GNSS 値とヨー精度だけで
-  姿勢・気圧は実センサーのまま（だから姿勢まわりのコメントは「3 系統」と書いてある）。
-  **リプレイ中・ミラー中は SD への記録を止める**分岐が `loop()` の各所にある
-  （再生した日付のファイルへ現在値を書いて実飛行ログを汚さないため）。
+  **デモ（`is_demo_active()`）は 4 つめ**だが、差し替えるのは GNSS 値とヨー精度だけで、
+  姿勢・気圧は実センサーのまま。
+  **リプレイ中・ミラー中は SD への記録を止める**（`flightlog_tick()` と
+  `try_enque_savecsv()`）。再生した日付のファイルへ現在値を書いて実飛行ログを
+  汚さないため。
 - **警報を描画関数の中に書かない。** その画面を出しているときしか鳴らなくなる。
-  発報は `loop()` の最上位へ。ナビの判断（Auto10km の折返し・コース警報・旋回角速度）は
-  `nav_alarm_tick()` にまとまっている。**ここに描画を混ぜないこと。**
+  発報は `loop()` の最上位にある `*_tick()` 群へ（`nav_alarm_tick` / `bank_alarm_tick` /
+  `batt_alarm_tick` / `ground_check_tick` …）。**ここに描画を混ぜないこと**、
+  逆に `draw_current_screen()` 以下に判断を混ぜないこと。
+- **USB の有無は `usb_power_present()`（[power.cpp](power.cpp)）だけで判定する。
+  `digitalRead(USB_DETECT)` を書かない。** 2026-10-15、v7 の充電 IC が壊れて VBUS を
+  持ち上げ、「USB」と誤判定して**電池低下警告まで止めていた**（VSYS 2.5V）。
+  v7.1 は VBUS を ADC（GPIO47）で測るので `USB_DETECT` 自体が無い。
+  電源経路の異常（`power_fault_active()`）の表示と音だけは**ミラー中・リプレイ中も出す**
+  （自機が発熱している話なので「ミラー中に自機の状態を混ぜない」の例外）。
+  経緯と全基板の対応は [docs/pons_power.md](docs/pons_power.md)。
+- **【v7.1】電池電圧を表示・警告・送信・記録するときは `power_sw_off_on_usb()` を見る。**
+  SW を OFF にしたまま USB で動いていると GPIO40 は SW4 で GND に落ちていて、
+  `get_input_voltage()` は 0V へ下がる。0V を本物として扱うと、残量 0%・電池低下の誤報
+  （自機と受信機）・CSV の 0.00V になる。いまは電池表示・`batt_alarm_tick()`・
+  `link_push_telemetry()`（`RHAVE_VOLT` を立てず `LINK_ST_USB_SW_OFF` を立てる。受信機は `s5V`）・
+  CSV（空欄）で処理してある。**`usb_power_present()` で代用しないこと** — VBUS が一瞬
+  4.3V を割っただけで外れ、その瞬間の 0V が流れる。
 - **設定値は settings.h に一箇所だけ。** 例えばバリオのデッドバンドは音（sound.cpp）と
   VSI のグレー線（display_tft.cpp）が同じ定数を見ている。片方だけ直すと
   「線は出ているのに鳴らない」になる。**「どちらの定数を選ぶか」も
@@ -156,9 +166,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   `NO SIGNAL` ポップアップ・艇アイコン・S/R 電池が再生中の画面に出ていた。
   **`link_mode_setting` は書き換えない** — SD に保存される設定なので、デモのために
   OFF を代入すると**翌日そのまま無線が黙って飛ぶ**。
-  デモを止める理由は特に見えにくい: デモは `stored_*` を上書きしないので**CSV には
-  残らない**のに、`link_push_telemetry()` は accessor 経由なので**仮想機体は電波に乗る**
-  （`fixflags` だけ実 GNSS 由来で、屋外では**本物の飛行として届く**）。
+  デモを止める理由は見えにくい: デモは `stored_*` を上書きしないので**CSV には
+  残らない**のに、`link_push_telemetry()` は accessor 経由なので**仮想機体が電波に乗る**。
   一覧は [docs/pons_link.md](docs/pons_link.md) §5。
 - **PONS Link は下り一方向で、上りの通信路そのものを持たない。**
   大会レギュレーション上の要件なので、この非対称性を壊さない。
@@ -171,8 +180,6 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （起動画面のアニメーション約 8 秒を挟むと窓が先に過ぎ、雑音を 1 つも取れずに
   NOT MEASURED になる）。読み上げ `link_announce_mode()` も末尾。
   起動音より先に喋らせないため。
-- **`src/` からルート側のヘッダは `"../mysd.h"` と 1 段戻る**（スケッチ直下は
-  include パスに入っていない）。
 - **BNO085 を再初期化する前に `sh2_close()` を呼ぶ。** 取り込んだライブラリの
   `_init()` は `sh2_open()` を呼ぶだけで close せず、`shtp.c` のインスタンスプールは
   `MAX_INSTANCES=1` で空き判定が `pHal==0`。**そのため 2 回目以降の `begin_SPI()` は
@@ -180,81 +187,61 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   **通信途絶からの復旧が一度も成功しない**（2026-09-23 に実機で判明）。
   回避は `imu_bus_begin()` の冒頭。`sh2_opened` のフラグごと消さないこと。
   詳細は [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) (5)。
-  2026-09-23 に実機で検証済み（`[IMU] BNO085 recovery OK (INT wait 12ms)`）。
-- **★ ここから 2 つは「BNO085 が載っている旧 v7 基板」の話。**
-  新 v7 基板（BNO085 を降ろし SCH16T を外付けした版）では **41/42/43/44 が SPI1、
-  M0/M1 は GPIO47** へ移っていて、下の指示は**逆になる**。
-  新旧どちらの基板を触っているかを先に確かめること。確定した割り当てと
-  「新基板で動かす前に直すコード」の一覧は
-  [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §3（`settings.h` の
-  `SCH16T_PIN_*` が正本）。
-- **【旧基板】GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
+- **基板は `settings.h` の `PONS_BOARD` で分かれる。ピンを足すときは必ずそこで分ける。**
+  同じ GPIO が v7 と v7.1 で逆の意味になる（41-44 は v7 では i2c1 と E220 の
+  M0/M1、v7.1 では SPI1 一式。M0/M1 は v7.1 で GPIO31 へ移った）。
+  **割り当ての表は `PONS_BOARD` のところに 1 つだけ置いてある。**
+  散文の「新基板では〜」で足すと必ず追従漏れする（0.986 で 5 ファイル 20 箇所まで
+  増えたのを `#if` に畳んだ）。載っているセンサーも板で決まるので
+  `IMU_SENSOR_DEFAULT` は `PONS_BOARD` から導いている。
+  移行の段取りは [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md)。
+- **【v7 のみ】GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、`GPIO35`/`GPIO34` と
   ショートしている。RP2350 のパッドを入力・プル無しで放置すると Low 側へ
   張り付くことがあり、外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝
-  **Low に見えてバスを殺す**。実機 2026-09-27 に
-  `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
+  **Low に見えてバスを殺す**（実機で 5 回中 4 回起動失敗）。
   実体は `imu_bus_park_unused_pins()`。**出力にはしないこと。**
-- **【旧基板】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
+  ★ **v7.1 では向きが逆**で、同じ 2 本を `INPUT_PULLUP` で停めたままにすると
+  **SPI1 が死ぬ**。0.986 でこの処置は [imu_bno08x.cpp](imu_bno08x.cpp) の中だけになり、
+  あのファイルは `#if` で囲ってあるので **v7.1 ではファイルごと消える**。
+  外から呼ばないこと（呼ぶと v7.1 で復活してしまう）。
+- **【v7 のみ】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
   `R53` を外してあるので **BNO085 の H_CSN とは繋がっていない**（H_CSN は
-  基板上で未接続。I2C では don't care）。0.975 まで「H_CSN を浮かせない」という
-  誤った理由で HIGH 駆動しており、**H_CSN に届かないまま E220 を mode 3 へ
-  叩き落としていた**（IMU 復旧からも呼ばれるので飛行中に無線が黙る）。
+  基板上で未接続。I2C では don't care）。駆動すると **E220 を mode 3 へ
+  叩き落とす**（IMU 復旧からも呼ばれるので飛行中に無線が黙る。0.975 で実際に起きた）。
 - **I2C が固まったら NRST だけでは戻らない。** NRST は BNO085 を初期化するが
   **RP2350 の I2C ブロックは初期化されない**。転送が途中で切れると RP2350 が
   SCL を、スレーブが SDA を握ったまま止まり、**3 回のリトライが全部同じ理由で
   失敗する**。`imu_i2c_bus_recover()`（ペリフェラルを外して SCL を 9 回叩き
   STOP を作る）をリトライの **NRST より先に**通すこと。
-- **E220 はモード切替の「あと」も AUX の立ち上がりを待つ。**
-  `set_mode()` が切替前だけ待って後を待たないと、遷移中のセルフチェック
-  （データシート 5.4 / 図 36。その間 AUX は Low）に書き込みがぶつかり、
-  **黙って捨てられる。エラーも返らない。** 症状は「状態レジスタがどの
-  コマンド形式でも無応答」で、**書式の問題に見えるが届いていないだけ**。
-  v7 立ち上げで最も長く嵌まった。同じ理由で **起床直後に最初の問い合わせを
-  叩かないこと**（プリフライトは 1 回目を意図的に後ろへずらしてある）。
-  詳細は [docs/pons_link.md](docs/pons_link.md) §6。
-- **AUX は「いま High か」を 1 回見るだけでは足りない。立ち下がりを見るか、
-  遷移全体を覆う時間を待つこと。** mode 3 → mode 0 の切替直後はモジュールが
-  セルフチェックを**始める前**で、AUX は mode 3 のアイドル High のまま。そこを
-  サンプルして「起床完了」と判定すると、セルフチェック中に書いて**黙って捨てられる**。
-  `e220_send()` は AUX が High なので成功を返し、**`Sent` は増えるのに電波が出ない**。
-  0.976 の `e220_wake_ready()` がこれを踏んだ（実機 2026-09-27: 受信機が 300 秒で
-  2 発のみ・`bad=0`・RSSI −34dBm）。実体は `s_wakeSawLow` と `E220_WAKE_SETTLE_MS`。
+- **E220 の AUX と mode 3 の扱いは [docs/pons_link.md](docs/pons_link.md) §6 に
+  全部ある。触る前に読むこと。** どれも一度ずつ嵌まっていて、症状は決まって
+  「**黙って捨てられる。エラーも返らない**」:
+  **切替は前だけでなく後も AUX を待つ**（遷移中のセルフチェックに書き込みがぶつかる。
+  v7 立ち上げで最も長く嵌まった）/ **起床は「いま High か」ではなく立ち下がりを見る**
+  （`e220_send()` は成功を返すのに電波が出ない。実体は `s_wakeSawLow` と
+  `E220_WAKE_SETTLE_MS`）/ **mode 3 へ潜るときは `enter_config_mode()` を通す**
+  （落とすと最初の 1 バイトが化け、画面が「Module NO RESPONSE」になる）/
+  **状態レジスタは Strict Mode でしか読めない**（`0x09` bit6 は不揮発。ver.1 互換の
+  `C0 C1 C2 C3 00 02` は**使ってはいけない** — 返事が無く、代わりに**電波が出る**）。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
   `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
   `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。
   Low が来ないまま `LINK_TX_TXSTART_MS` 経ったら**モジュールに捨てられた**ので
   `noRf` を数える（60 秒ログ `LINK TX: ... noRf=`）。
   **`Sent` は「UART へ書けた回数」でしかない。** 電波が出た証明にはならない。
-- **mode 3 へ潜るときは `enter_config_mode()` を必ず通す。**
-  `set_mode` + `set_baud` を自分で並べると、最後の `delay(E220_CFG_SETTLE_MS)` を
-  落とす。AUX が High に戻ってもモジュールはまだコマンドを受け付けず、
-  `set_baud()` の `end()/begin()` も線を一度落とすので、**最初の 1 バイトが化ける**。
-  症状は `FF FF FF`（エラー応答）が返って設定の読み返しが失敗し、
-  画面が「Module NO RESPONSE」になること。`e220_reconfigure()` だけこれが抜けていて、
-  **設定画面で CH を変えた瞬間に無応答**になった（2026-09-23）。
-  起動時だけ通っていたのは `e220_setup()` の `delay(120)` が代わりをしていたため。
-- **E220 の状態レジスタ（環境ノイズ 0xA3 等）は Strict Mode でしか読めない。**
-  `0x09` bit6 が切替フラグで**不揮発**。`ensure_strict_mode()` が毎起動で読み、
-  無効なときだけ書く（3 台の個体差を焼くだけで吸収するため）。
-  ver.1 互換の `C0 C1 C2 C3 00 02` は**使ってはいけない** — 実機で返事が無く、
-  代わりに**電波が出る**。
 - **BNO085 の読み出しを飢えさせない。** Core0 が数十 ms 止まると BNO085 の
   レポートが溜まり、**そのあと読んだジャイロが化ける**（gx=+v, gy=-v, gz=-v と
   3 軸が 1 つの値の符号違いのコピーになる。加速度計は同時刻に何も感じていない）。
   BNO085 内部の融合がそれを積分するので GRV と LACC も同時に飛び、**バリオの
-  V/S が暴れる**。2026-09-23 に実機で確定: `loop()` で 500ms ごとに 60ms 止める
-  だけで 14.8 件/分、同じ 60ms の間 `imu_update()` を回すとゼロ。
+  V/S が暴れる**（2026-09-23 に実機で確定）。
   **長いブロッキング処理の中では `imu_service_if_due()` を呼ぶこと**
   （地図描画・E220 の AUX 待ち・ボーレート切替・起動画面の各待ちに入れてある）。
   60 秒ログの `gapmax=` が実測値。ここが数十 ms に伸びたら疑う。
   **さらに悪いことに、1 秒空くと `imu_update()` が「通信途絶」と誤判定して
   生きている BNO085 をリセットしに行き、復旧に失敗してそのまま死ぬ。**
-  2026-09-23 に実機で発生（起動画面の 3.5 秒ホールドが原因。それまでは
-  `link_setup()` が起動画面の後ろにあり、中の `imu_service_if_due()` が
-  偶然その穴を塞いでいた）。`imu_update()` の冒頭に
-  **「呼び出し間隔が空いていたらその回の判定を見送る」ガード**を入れてあるが、
-  ガードに頼らず待ちループ側でも呼ぶこと。
+  `imu_update()` の冒頭にガード（呼び出し間隔が空いた回の判定は見送る）を
+  入れてあるが、ガードに頼らず待ちループ側でも呼ぶこと。
 - **生ログ（`src/imulog.h`）の レコード ID を再利用しない。** 退避済みの過去ログは
   id だけでレコードを解釈するので、止めた ID に別の意味を割り当てると
   **古いログが静かに誤デコードされる**（値はもっともらしく出る）。
@@ -282,11 +269,16 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 |---|---|
 | [settings.h](settings.h) | 全設定・定数・ピン定義・デバッグマクロ。まずここ |
 | [GPS_TFT_map.ino](GPS_TFT_map.ino) | Core0/Core1 の setup/loop、ボタン、**警報の発報** |
-| [display_tft.cpp](display_tft.cpp) | TFT 描画**だけ**。判断や発報は置かない |
+| [display_tft.cpp](display_tft.cpp) | TFT 描画**だけ**。判断や発報は置かない。飛行中に出るもの（地図・ヘッダ・フッタ・無線の枠） |
+| [display_pages.cpp](display_pages.cpp) | 地上で見る詳細画面（VARIO / GNSS DETAIL）。スプライトは display_tft.cpp のものを借りる |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
-| [imu.cpp](imu.cpp) | BNO085 と、MS5611 融合のバリオ用 Kalman filter |
+| [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
+| [imu_bno08x.cpp](imu_bno08x.cpp) | BNO085 ドライバ。**チップ依存はここだけ**（0.986 で imu.cpp から分離）。ファイル全体が `#if` で囲ってあるので、新しいドライバも同じ形にする |
+| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
+| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・v7.1 の「SW OFF のまま充電」の検出 |
+| [backlight.cpp](backlight.cpp) | v7.1 のバックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。v7 では空 |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
@@ -295,6 +287,9 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
+- 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.1）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
+- SCH16T の実機立ち上げ: [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md)
+  （単独テストの実測値・Step 0〜5 の手順・踏みそうな罠。設計は imu_sch16t_plan.md）
 - BNO085 を I2C へ切り替えるとき: [docs/imu_i2c_bringup.md](docs/imu_i2c_bringup.md)
   （0.944 との挙動差・ライブラリ改変の影響・JP1 と R46/R47 の手順）
 - SD カードの雛形: [sd/](sd/) — レイアウトとログの列の意味は README の「SD カードの構成」

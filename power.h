@@ -1,0 +1,42 @@
+// ============================================================
+// File    : power.h
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
+// Role    : 電源まわり。USB 判定と、電源経路の異常（充電 IC の故障）の検出と警報。
+//           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/10/20
+// ============================================================
+#ifndef POWER_H
+#define POWER_H
+
+#include <Arduino.h>
+
+void power_setup();   // setup() で analogReadResolution(12) の後に呼ぶ
+void power_tick();    // loop() の最上位で毎回呼ぶ（内部で間引く）
+
+// 本物の USB から給電されているか。
+// ★ USB の有無はこれだけで判定する。digitalRead(USB_DETECT) を直接書かないこと
+//   （2026-10-15、壊れた充電 IC が VBUS を持ち上げて「USB」と誤判定し、
+//   電池低下警告まで止めていた）。
+bool usb_power_present();
+
+// 電源経路の異常（再起動まで消えない）。
+bool power_fault_active();
+
+// v7.1: SW を OFF にしたまま USB で動いているか（電池は Q3 で切り離されている）。
+// 判定は「GPIO40 が 0V に見える」だけ（SW OFF なら電源は USB しかないので、USB の判定は使わない）。
+// ★ このあいだ GPIO40 は SW で GND に落ちているので、**電池電圧は読めない**
+//   （get_input_voltage() は 0V へ向かって下がる）。電池電圧を表示・送信・記録・警告する
+//   箇所はこれを見て「不明」として扱うこと。0V を本物として扱うと、残量 0% 表示・
+//   電池低下の誤報（自機と受信機）・CSV の 0.00V になる。
+// v7 は SW の状態を読めないので常に false。
+bool power_sw_off_on_usb();
+
+// 「SW を入れて充電して」の注意を地図に出すか。
+// 移動中・ミラー中・リプレイ中・デモ中・電源経路の異常のあいだは false。
+bool power_sw_off_notice_active();
+
+// ログ用の短い文字列（例: "usb=1" / "usb=1 vbus=4.95V"）。
+void power_format_status(char* buf, size_t n);
+
+#endif

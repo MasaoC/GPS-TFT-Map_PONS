@@ -7,7 +7,7 @@
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/20
 // ============================================================
 // 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
 #include <Arduino.h>
@@ -22,6 +22,7 @@
 #include "imu.h"
 #include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
+#include "power.h"    // power_sw_off_on_usb()（電池電圧が読めないときは CSV を空欄に）
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
 extern volatile bool userled_forced_on;
@@ -952,8 +953,8 @@ void gnss_setup() {
   setupcounter++;
 }
 
-// 最大 G/S の全情報をリセットする（デモ/リプレイモード切替時に呼ぶ）
-static void reset_maxgs() {
+// 最大 G/S の全情報をリセットする（デモ／リプレイ／無線モードの切替時に呼ぶ）
+void reset_maxgs() {
   maxgs                  = 0.0f;
   maxgs_hour             = 0;
   maxgs_min              = 0;
@@ -1282,6 +1283,24 @@ bool gnss_new_location_arrived(){
       add_latlon_track(demo_lat, demo_lon);
     }
   }
+
+  // ★★ **ミラー中は「電波が届いた」ことが新しい位置の合図。**
+  //   値は accessor が機体のものに差し替えるが、**刻みは自機の GNSS が作っていた**
+  //   ため、受信機の GNSS が不調だと（fix 未確定／NAV-PVT が来ない）ナビの判定が
+  //   丸ごと止まっていた: Auto10km の INTO/AWAY、`100km 以上離れています`、
+  //   ステア角と旋回指示、旋回角速度・旋回音・コース逸脱警報、緑の航跡。
+  //   **地図は 1050ms の強制再描画で出続けるので、止まっていることに気づけない。**
+  //   受信モードは「CSV の代わりに電波からリプレイする」実装なので、
+  //   apply_replay_row() と同じくここで刻みを作るのが筋。
+  //   ★ 航跡をここで足すのは try_enque_savecsv() が自機の ubx_* 待ちだから
+  //     （あちらはボート自身の CSV を書く役）。二重登録は add_latlon_track() の
+  //     間隔制限が防ぐ。
+  if (link_mirror_active() && link_take_new_frame()) {
+    new_location_arrived = true;
+    newcourse_arrived    = true;
+    add_latlon_track(get_gnss_lat(), get_gnss_lon());
+    update_maxgs((float)get_gnss_mps());   // MAX G/S も機体の値（上の UBX 経路参照）
+  }
   return new_location_arrived;
 }
 
@@ -1463,7 +1482,10 @@ void gnss_loop(int id) {
       if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
     }
-    update_maxgs(stored_gs);
+    // ★ ミラー中は入れない。入れると MAX G/S が**ボート自身の最高速**になる
+    //   （画面の他の数字は機体のものなので、1 項目だけ出どころが違う状態になる）。
+    //   機体の値は下のミラー分岐で入れている。
+    if (!link_mirror_active()) update_maxgs(stored_gs);
 
     if (stored_truetrack < 0 || stored_truetrack > 360) {
       DEBUGW_P(20250923,"ERROR:MT");
@@ -1546,7 +1568,8 @@ void try_enque_savecsv(){
       float csv_kf_vspeed = get_imu_vspeed_raw();   // KF推定上昇率 [m/s]
       // 実測の電圧を書く（リプレイ中の表示値ではない）。リプレイ再生中は
       // そもそもこのパスを通らないが、意図を明示するため get_input_voltage() を使う。
-      float csv_voltage   = get_input_voltage();
+      // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（power.h）→ 空欄にする。
+      float csv_voltage   = power_sw_off_on_usb() ? NAN : get_input_voltage();
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
         stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure, csv_voltage, stored_numsats,
         year, month, day, hour, ubx_min, ubx_sec, ubx_cs));
@@ -1667,6 +1690,8 @@ int   get_maxgs_5min_min()  { return maxgs_5min_min; }
 //   画面が正常なまま航法を続けるのを防ぐため（表示は
 //   draw_gnss_disconnect_warning()、ログは GPS_TFT_map.ino の遷移検出）。
 // ★ 起動直後（まだ 1 バイトも来ていない）も false。従来と同じ。
+bool gnss_ever_connected() { return gnss_connection; }
+
 bool get_gnss_connection() {
   if (!gnss_connection) return false;
   return (uint32_t)(millis() - gnss_last_byte_ms) < GNSS_CONN_TIMEOUT_MS;

@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/03
+// Updated : 2026/10/10
 // ============================================================
 
 #ifndef ATTITUDE_H
@@ -39,7 +39,7 @@
 #include "settings.h"
 
 // センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
-// ★ imu.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
+// ★ imu_bno08x.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
 //   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
 // yaw はここでは数学どおりの符号（東基準・反時計回り正）で返す。
 // 方位に直すのは呼び出し側だが、**必ず imu_yaw_to_heading_deg() を通すこと。**
@@ -83,7 +83,7 @@ static inline float imu_yaw_to_heading_deg(float yaw_rad) {
 // ---- 初期化 ----
 void attitude_setup();
 
-// ---- センサー入力（imu.cpp の SH2 コールバックから呼ぶ）----
+// ---- センサー入力（imu_feed_* 経由で呼ばれる。実体は imu.cpp）----
 // ジャイロ到着で predict を回す（加速度は直近値を使う）。単位は rad/s と m/s²。
 void attitude_on_gyro(const float g[3], uint32_t t_us);
 void attitude_on_accel(const float a[3]);
@@ -102,6 +102,8 @@ bool attitude_ready();                 // 初期化が完了して推定値が�
 // 機体軸のオイラー角 [度]。マウント補正とゼロ点オフセットを適用済み。
 void attitude_get_euler(float &roll, float &pitch, float &yaw);
 // マウント補正のみ適用（ゼロ点オフセット適用前）。較正のときに使う。
+// ★ **機上コードからは呼んでいないが消さないこと。** これと attitude_yaw_ready() は
+//   `tools/attitude_test/` が使っていて、あれが ESKF の唯一の自動テストになっている。
 void attitude_get_euler_raw(float &roll, float &pitch, float &yaw);
 
 // ---- 診断（設定画面の IMU/ESKF ページ用）----
@@ -166,6 +168,7 @@ enum { ATT_YAW_SRC_NONE = 0, ATT_YAW_SRC_GNSS = 1 };
 uint8_t attitude_get_yaw_source();
 // ヨーが設定済みか。false のあいだは GNSS 速度観測を入れていない
 // （ヨー誤差がロール・ピッチへ転嫁されるため。attitude.cpp のコメント参照）。
+// ★ 機上コードからは呼んでいない。消さないこと（理由は attitude_get_euler_raw）。
 bool  attitude_yaw_ready();
 // センサー座標系で見た「上」方向（= 回転行列の第 3 行）。
 // ★ バリオが比力から重力を抜くのに使う。imu.cpp の compute_earth_z_accel() が
@@ -175,6 +178,11 @@ bool  attitude_get_up_sensor(float u[3]);
 bool  attitude_is_static();                  // 静止判定の現在値
 float attitude_get_static_secs();            // 静止が継続している秒数
 uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回数
+// GNSS 速度観測が新鮮か（ESKF_GNSS_VEL_TIMEOUT_US 以内に来ているか）。
+// ★ false の間は**ロール・ピッチの錨が無く、風推定も止まっている**。
+//   自動ロールトリムと風推定が「飛行中の機能」であるのと同じ鮮度条件
+//   （attitude.cpp の gnss_vel_fresh）。表示側は取り消し線の判定に使う。
+bool     attitude_gnss_vel_fresh();
 // 重力観測（levelling update）を取り込んだ回数。ゲートが開いているかの確認に使う。
 // ★ GNSS 断中にロール・ピッチの錨になるのがこの観測。0 のままならゲートが閉じている。
 uint32_t attitude_get_level_updates();

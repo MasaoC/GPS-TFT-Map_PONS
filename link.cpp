@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/20
 // ============================================================
 //
 // ■ 設計の要点
@@ -27,9 +27,19 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "e220.h"        // 下位ドライバ（UART・モード制御・レジスタ）
+#include "power.h"       // 電源経路の異常・SW OFF のまま USB（送信機の電源の状態をビットで運ぶ）
 
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
 //   AUX(GPIO30) は e220.h の E220_AUX_PIN。送信の刻みは RP2350 が持つ。
+
+// ---- 実体が GPS_TFT_map.ino にあるもの（ヘッダが無いのでここで宣言する）----
+// 地上の姿勢チェックが「いま発報している」状態。status に載せて、受信機でも
+// 同じ音声を鳴らすために読む（飛行中は立たない。.ino 側の宣言のコメント参照）。
+extern bool ground_roll_warn_active;
+extern bool ground_pitch_warn_active;
+extern bool ground_calib_warn_active;
+extern volatile int scaleindex;    // 地図の縮尺（scalelist の添字）
+void set_scaleindex(int idx);      // 縮尺を合わせる（範囲外は無視される）
 
 // 受信が途切れてから自機表示へ移るまで（docs/pons_link.md §5）。
 // ★ RSSI10_WIN_MS と同じ値にしてあること。受信中なら 10 秒窓に必ず 1 発は入る、
@@ -50,6 +60,8 @@ uint8_t link_group           = LINK_GROUP_DEFAULT;
 static LinkRxTelem   s_rx;                 // 直近に受信したテレメトリ
 static bool          s_rxValid   = false;
 static uint32_t      s_rxMs      = 0;      // 受信した時刻（RP の millis）
+// 新しいフレームを受け取ったことの合図。link_take_new_frame() で読むと落ちる。
+static bool          s_rxNewFrame = false;
 // ---- 送信側 ----
 static uint16_t s_seqOut    = 0;    // 送信テレメトリの連番。ロールオーバーしてよい
 
@@ -156,6 +168,7 @@ static void link_poll_radio() {
         s_rx.age_ms = 0;             // 直接受け取るので遅延はほぼ無い
         s_rxValid   = true;
         s_rxMs      = millis();
+        s_rxNewFrame = true;         // ミラー中の「新しい位置が来た」の合図
 
         // 受信ログ（docs/pons_link.md §5）。received/ は無線で得た情報だけを置く。
         enqueueTask(createSaveRxCsvTask(&s_rx.t, s_rx.rssi, s_rx.age_ms));
@@ -398,12 +411,54 @@ static void link_sync_destination() {
                                  (int)di, (int)s_rx.t.nav_mode));
 }
 
-// 送信機側の異常（SD／IMU／較正未適用）。飛ぶ前に気づきたい項目。
+// 地図の縮尺を送信機に合わせる（0.988）。
+// ★ 受信機の目的は「パイロットに出ている画面の再現」なので、縮尺が違うと同じ地図に
+//   見えない。送信機が誤った縮尺のまま飛んでいることにも気づける。
+// ★ RAM 上の上書きだけ（SD には書かない）。違ったときだけ合わせる。
+// ★ **ミラー中はボート側の拡大率操作（ダブルクリック）が効かなくなる。**
+//   意図どおり（送信機に合わせるのが主旨）。変えたいときは受信を切る。
+//
+// ★★ **「送信機が回した」と「ボート側で変えたのを引き戻した」を区別して鳴らす**（0.991）。
+//   前者で鳴らすと**送信機が拡大率を回すたびに鳴って騒がしい**（0.988 で音声に
+//   しなかった理由はこれ。画面を見れば分かる変化でもある）。
+//   後者は**自分の操作が無視された**ことなので、黙っていると
+//   「一瞬変わって戻る＝ボタンかソフトが壊れている」と思わせる。トーンだけ鳴らす。
+//   区別の方法: 送信機から来た値が前回と同じなのに自分と違う ＝ こちらで変えた。
+static void link_sync_scale() {
+    static uint8_t s_last_sender_scale = 0xFF;   // 0xFF = まだ送信機の値を見ていない
+    if (!link_mirror_active()) { s_last_sender_scale = 0xFF; return; }
+
+    const uint8_t sender = s_rx.t.scale_index;
+    // 受信開始直後（0xFF）とミラー再開も「送信機が動いた」側に入れる。
+    // あれは**最初の位置合わせ**で、却下ではないので鳴らさない。
+    const bool sender_moved = (sender != s_last_sender_scale);
+    s_last_sender_scale = sender;
+    if ((int)sender == scaleindex) return;
+
+    // ★ **引き戻しが実際に効いたときだけ鳴らす。** set_scaleindex() は範囲外を
+    //   無視するので、呼ぶ前に鳴らすと、送信機が壊れた値を送り続ける間
+    //   link_loop() のたびに鳴り続ける。
+    const int before = scaleindex;
+    set_scaleindex((int)sender);               // 範囲外なら無視される
+    if (!sender_moved && scaleindex != before) {
+        // 低い 2 連 = 操作を却下した。★ 優先度 3（コース警告と同等）にしないこと。
+        //   UI の「できません」が本物の警告を押しのけるのは順序が逆。
+        enqueueTask(createPlayMultiToneTask(262, 100, 2, 2));
+        enqueueTask(createLogSdfTask("LINK: scale override (local %d -> sender %d)",
+                                     before, (int)sender));
+    }
+}
+
+// 送信機側の異常（SD／IMU）。飛ぶ前に気づきたい項目。
 // 音声にはしない ― 内訳は無線ページに出るので「何かある」と分かれば足りる。
 // 音声を増やすほど、本当に聞くべきものが埋もれる。
 // ★ 電池低下だけは別扱い（下の link_watch_sender_battery）。ここで一緒に見ると
 //   「立ち上がりで 1 回鳴るだけ」になるが、電池は減り続けるので繰り返す必要がある。
-#define LINK_ST_FAULTS_TONE  (LINK_ST_SD_ERROR | LINK_ST_IMU_ERROR | LINK_ST_NEEDS_APPLY)
+// ★ **較正未適用（NEEDS_APPLY）はここから外した**（0.988）。地上で発報している間は
+//   LINK_ST_CALIB_GND で音声を鳴らすようになったので、残すとトーンと二重になる。
+//   飛行中に立った場合は送信機自身が黙る（対処できない警告で気をそらさない）ので、
+//   受信機も黙るのが正しい。画面には今までどおり NEEDS_APPLY で出る。
+#define LINK_ST_FAULTS_TONE  (LINK_ST_SD_ERROR | LINK_ST_IMU_ERROR)
 static void link_watch_sender_faults() {
     static uint16_t prev_st = 0;
     const uint16_t st = link_sender_status() & LINK_ST_FAULTS_TONE;
@@ -417,7 +472,7 @@ static void link_watch_sender_faults() {
 // 送信機（機体）の電池低下を、受信側でも音声で知らせる。
 //
 // ★ 本番では飛行中に電池を替えられないが、**試験飛行では役に立つ**。
-//   ボートが先に気づいて降ろす判断ができる。画面では S の残量が赤くなるだけなので、
+//   ボートが先に気づいて降ろす判断ができる。画面では s の残量が赤くなるだけなので、
 //   ボートマンが右上を見ていなければ気づけなかった。
 //
 // ・繰り返す。電池は減り続けるので、立ち上がりで 1 回では足りない。
@@ -435,6 +490,80 @@ static void link_watch_sender_battery() {
     link_alert("wav/battery_low_sender.wav", 1568, 200, 4, 60);
     enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%.2fV)",
                                  (double)link_get_voltage()));
+}
+
+// 送信機の電源経路の異常（LINK_ST_PWR_FAULT）を受信機でも鳴らす。
+// 間隔は送信機と同じ（power.cpp）。機体が発熱している恐れがあるので、
+// 最低音量 60 も電池警告と同じく付ける（docs/pons_sound.md §5）。
+// ★ 送信機は音声（power_fault.wav）だが、受信機は**トーンのまま**にしてある。
+//   同じ音声だと「スイッチを切って電池を外して」がボート自身への指示に聞こえる
+//   （電池低下に battery_low_sender.wav を分けたのと同じ理由）。
+static void link_watch_sender_power() {
+    static uint32_t last_warn_ms = 0;
+    if ((link_sender_status() & LINK_ST_PWR_FAULT) == 0) return;
+    const uint32_t now = millis();
+    if (last_warn_ms != 0 && now - last_warn_ms < POWER_FAULT_ALERT_MS) return;
+    last_warn_ms = now;
+    link_alert(nullptr, 2637, 150, 6, 60);
+    enqueueTask(createLogSdTask("LINK WARN: sender POWER FAULT"));
+}
+
+// 送信機の地上チェック（ロール／ピッチ／較正やり直し）を受信機でも同じ音声で鳴らす。
+// ★ 鳴らす間隔は送信機と同じ定数を使う（しきい値の判定は送信機側だけが持つ）。
+//   片方だけ変えると「機体は喋ったのにボートは黙る」になる。
+// ★★ **ビットが落ちても last は落とさないこと**（0.988 の不具合）。送信機のビットは
+//   `attitude_is_static()` を含むガードの中で立てているので、機体に触ると一瞬落ちる
+//   ＝ **1Hz のテレメトリでは明滅して届く**。落としていたため明滅のたびに即・再発報した。
+//   送信機側も条件解除では `gnd_last_warn_ms` を落としていないので、これで揃う。
+// ★★ **1 回につき 1 つだけ鳴らす**（見つけたら return）。3 つは同時に立つので、
+//   同時に積むと同じ優先度どうしが互いを pending へ追い出す（settings.h の
+//   LINK_GROUND_SAY_GAP_MS 参照）。足すときは表に 1 行入れるだけ。
+static void link_watch_sender_ground_att() {
+    struct Say { uint16_t bit; const char* wav; uint32_t interval; uint32_t last; };
+    static Say say[] = {
+        { LINK_ST_GROUND_ROLL,  "wav/roll_check.wav",          GROUND_ROLL_WARN_INTERVAL_MS, 0 },
+        { LINK_ST_GROUND_PITCH, "wav/pitch_check.wav",         GROUND_ROLL_WARN_INTERVAL_MS, 0 },
+        { LINK_ST_CALIB_GND,    "wav/eskf_calib_required.wav", ESKF_APPLY_WARN_INTERVAL_MS,  0 },
+    };
+    static uint32_t last_say_ms = 0;
+    const uint32_t now = millis();
+    if (last_say_ms != 0 && now - last_say_ms < LINK_GROUND_SAY_GAP_MS) return;
+    const uint16_t st = link_sender_status();
+    for (Say &g : say) {
+        if ((st & g.bit) == 0) continue;
+        if (g.last != 0 && now - g.last < g.interval) continue;
+        g.last      = now;
+        last_say_ms = now;
+        link_alert(g.wav, 370, 250, 3);
+        return;
+    }
+}
+
+// 送信機の GNSS モジュールが抜けた／戻ったことを、送信機と同じ音で知らせる。
+// ★ **これは音でしか気づけない。** 画面は「止まった正常な機体」に見える
+//   （理由は link_proto.h の LINK_ST_GNSS_LOST）。
+// ★ 下降 2 音（784→392）は「何かが失われた」専用の形で、復帰はその逆向き。
+//   送信機自身が鳴らすものと同じにしてある（gnss_conn_tick。音を増やさない）。
+// ★ ビットが落ちても間隔は落とさない。コネクタが緩んでいると明滅するので、
+//   落とすと明滅のたびに鳴り直す（地上チェックで踏んだのと同じ）。
+static void link_watch_sender_gnss() {
+    static uint32_t last_ms = 0;
+    static bool     was_lost = false;
+    const bool lost = (link_sender_status() & LINK_ST_GNSS_LOST) != 0;
+    const uint32_t now = millis();
+    if (lost) {
+        if (last_ms == 0 || now - last_ms >= GNSS_LOST_ALERT_MS) {
+            last_ms = now;
+            enqueueTask(createPlayMultiToneTask(784, 200, 1, 3));
+            enqueueTask(createPlayMultiToneTask(392, 300, 1, 3));
+            enqueueTask(createLogSdfTask("LINK WARN: sender GNSS not responding"));
+        }
+    } else if (was_lost && link_is_receiving()) {   // 復帰（受信できているときだけ）
+        enqueueTask(createPlayMultiToneTask(392, 120, 1, 2));
+        enqueueTask(createPlayMultiToneTask(784, 160, 1, 2));
+        enqueueTask(createLogSdTask("LINK: sender GNSS restored"));
+    }
+    was_lost = lost;
 }
 
 // 通信レポート（60 秒ごと）。現場でシリアルを見られない以上、
@@ -838,12 +967,17 @@ void link_loop() {
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
-    // ★ この 2 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
-    //   「送信機の電池が減っている」「自分のモジュールが応答しない」は
-    //   画面に出している数字とは無関係に**いま現実に起きている事実**なので、
-    //   再生のために黙らせる理由が無い（画面の飾りだけを止める。link.h 参照）。
+    link_sync_scale();          // 目的地と同じ「送信側に合わせる」組
+    // ★ 下の 3 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
+    //   「送信機の電池が減っている」「地上チェックに引っかかっている」
+    //   「自分のモジュールが応答しない」は、画面に出している数字とは無関係に
+    //   **いま現実に起きている事実**なので、再生のために黙らせる理由が無い
+    //   （画面の飾りだけを止める。link.h 参照）。
     link_watch_sender_faults();
     link_watch_sender_battery();
+    link_watch_sender_power();
+    link_watch_sender_ground_att();
+    link_watch_sender_gnss();
     link_periodic_report();
     link_preflight_tick();      // ★ tx_tick より先。点検中は送信を止める
     link_tx_tick();
@@ -884,6 +1018,9 @@ void link_set_mode(uint8_t mode) {
     else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2, 0, WAV_EXCL_LINKMODE));
     else                           enqueueTask(createPlayWavTask("wav/link_off.wav",      2, 0, WAV_EXCL_LINKMODE));
     s_rxValid = false;                 // モードが変わったら受信データは無効
+    // ★ MAX G/S は供給元が入れ替わるのでリセットする（ミラー中は機体の値を入れる）。
+    //   残すと「ボート自身の最高速」と「機体の最高速」が混ざった値が出続ける。
+    reset_maxgs();
     link_apply_power_state();
     // 送信モードに入ったら送り始める前にチャンネルを確かめる。
     // 抜けたときは IDLE に戻す（結果を残すと古い判定が画面に出続ける）。
@@ -1025,8 +1162,14 @@ static void link_push_telemetry() {
         have |= RHAVE_ATT_WIND;
     }
 
-    t.volt_cv = link_pack_volt(get_input_voltage());
-    have |= RHAVE_VOLT;
+    // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（power.h）。
+    //   電圧は載せず（RHAVE_VOLT を立てない）、下で LINK_ST_USB_SW_OFF を立てる（受信機は "s5V"）。
+    const float batt_v = get_input_voltage();   // ピーク追跡を回すため、載せないときも読む
+    const bool  batt_ok = !power_sw_off_on_usb();
+    if (batt_ok) {
+        t.volt_cv = link_pack_volt(batt_v);
+        have |= RHAVE_VOLT;
+    }
 
     t.numsat  = (uint8_t)constrain(get_gnss_numsat(), 0, 255);
     have |= RHAVE_NUMSAT;
@@ -1036,6 +1179,7 @@ static void link_push_telemetry() {
     // ナビ設定。受信側はこれを自分の設定と突き合わせるためだけに使う。
     t.dest_index = (int8_t)currentdestination;
     t.nav_mode   = (uint8_t)destination_mode;
+    t.scale_index = (uint8_t)scaleindex;   // 受信側はこれに合わせる（link_sync_scale）
 
     t.have = have;
 
@@ -1045,7 +1189,21 @@ static void link_push_telemetry() {
     if (!good_sd())                                    st |= LINK_ST_SD_ERROR;
     if (!get_imu_ok())                                 st |= LINK_ST_IMU_ERROR;
     if (attitude_needs_apply() && attitude_get_rpy_enabled()) st |= LINK_ST_NEEDS_APPLY;
-    if (get_input_voltage() <= BAT_LOW_VOLTAGE)        st |= LINK_ST_BAT_LOW;
+    // 電源経路の異常のあいだは電池低下を立てない（電圧が低いのは故障のせい。下の PWR_FAULT が知らせる）
+    // 電池電圧が読めないあいだも立てない（0V を「電池切れ」と言うと受信機が誤報する）
+    if (batt_ok && batt_v <= BAT_LOW_VOLTAGE && !power_fault_active()) st |= LINK_ST_BAT_LOW;
+    // 地上チェック（ロール／ピッチ／較正やり直し）。**送信機しか判定できない**ので
+    // ビットで運ぶ（link_proto.h の「再計算できるものは載せない」の例外）。
+    if (ground_roll_warn_active)                       st |= LINK_ST_GROUND_ROLL;
+    if (ground_pitch_warn_active)                      st |= LINK_ST_GROUND_PITCH;
+    if (ground_calib_warn_active)                      st |= LINK_ST_CALIB_GND;
+    // ★ GNSS モジュールの断線。**受信側では知りようがない**（理由は link_proto.h）。
+    //   条件は送信機自身の警報（gnss_conn_tick）と同じ「一度繋がってから切れた」。
+    //   `!get_gnss_connection()` だけだと**起動直後のまだ 1 バイトも来ていない間に
+    //   立ち**、受信機が電源投入ごとに誤報する。
+    if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
+    if (power_fault_active())                          st |= LINK_ST_PWR_FAULT;
+    if (!batt_ok)                                      st |= LINK_ST_USB_SW_OFF;   // 受信機は "s5V"
     t.status = st;
 
     t.crc16 = link_telem_crc(&t);
@@ -1059,6 +1217,13 @@ static void link_push_telemetry() {
 // ============================================================
 uint32_t link_age_ms()      { return s_rxValid ? (millis() - s_rxMs) : 0xFFFFFFFF; }
 bool     link_is_receiving(){ return s_rxValid && link_age_ms() < NOSIGNAL_MS; }
+
+// 前回の問い合わせ以降に新しいテレメトリが届いたか。**読むと落ちる**（1 回限り）。
+// ★ ミラー中の「新しい位置が来た」の合図。受信モードは「CSV の代わりに電波から
+//   リプレイする」実装（このファイル冒頭）なので、リプレイの apply_replay_row() が
+//   立てている new_location_arrived / newcourse_arrived と同じ役割をここが担う。
+//   使う側は gnss_new_location_arrived()（gnss.cpp）。
+bool     link_take_new_frame(){ const bool n = s_rxNewFrame; s_rxNewFrame = false; return n; }
 int8_t   link_rssi()        { return s_rxValid ? s_rx.rssi : 0; }
 const LinkTelem* link_rx_telem() { return s_rxValid ? &s_rx.t : nullptr; }
 

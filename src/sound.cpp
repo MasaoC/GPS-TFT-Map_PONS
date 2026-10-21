@@ -251,7 +251,12 @@ volatile bool     vario_mode          = false; // true のとき割り込みが�
 volatile uint32_t vario_phase_inc     = 0;     // バリオ音の周波数（位相増分）
 volatile uint32_t vario_on_samples    = 1280;  // ON サンプル数 (80ms × 16kHz = 1280)
 volatile uint32_t vario_cycle_samples = 0;     // サイクル長（0=連続, >0=断続）
-volatile bool     vario_ascending     = false; // true=上昇中, false=下降中（音量補正用）
+// バリオ音の音量補正 [%]（vario_volume にさらに掛ける）。
+// ★ **スピーカーの周波数能率を補正するためのもの。** 上昇は一定値
+//   （VARIO_ASCEND_VOL_PCT）、下降は沈下率に応じた傾斜（settings.h の
+//   VARIO_DESCEND_* ）。update_vario()（Core0・100ms）が書き、ISR が読む。
+//   1 バイトなので書き込みはアトミック。
+volatile uint8_t  vario_vol_pct      = 100;
 volatile bool     sin_playing         = false; // トーン出力中だけ true（割り込みが参照）
 static uint32_t   s_vario_phase_acc   = 0;     // バリオ位相アキュムレータ（割り込み専用）
 static uint32_t   s_vario_cycle_pos   = 0;     // バリオサイクル位置（割り込み専用）
@@ -327,8 +332,8 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
     if (vario_cycle_samples == 0 || s_vario_cycle_pos <= vario_on_samples) {
       // ON 区間: sin 波を加算（上昇中は能率補正で音量を絞る）
       s_vario_phase_acc += vario_phase_inc;
-      // 上昇（高音）は小型スピーカーの能率差を補正するため VARIO_ASCEND_VOL_PCT[%] に減衰させる
-      int vario_vol_adj = vario_ascending ? vario_volume * VARIO_ASCEND_VOL_PCT / 100 : vario_volume;
+      // 能率補正は update_vario() が vario_vol_pct に入れてある（上昇は一定、下降は傾斜）
+      int vario_vol_adj = vario_volume * vario_vol_pct / 100;
       mix += (int)(sineTable[(s_vario_phase_acc >> 24) % tableSize] - 128) * 4 * VARIO_VOL_SCALE * vario_vol_adj / 100;
     } else {
       // OFF 区間: 加算なし（サイクルリセットのみ）
@@ -1084,7 +1089,7 @@ void loop_tone() {
 //   WAV/Sinトーンが使用中の場合は amp を操作しない（相手任せ）。
 // CORE0
 // ============================================================
-void update_vario() {
+void update_vario(bool mute) {
     if (vario_inhibit) return;  // inhibit 中はバリオ音を出さない
     static unsigned long last_call = 0;
     if (millis() - last_call < 100) return;
@@ -1097,7 +1102,12 @@ void update_vario() {
     //   ここに `get_imu_alive()` / `get_airdata_ok()` を書き戻さないこと。
     float vspeed    = vario_vspeed_mps();
     float dead_band = vario_deadband_mps();
-    bool should_vario = (vspeed > dead_band || vspeed < -dead_band) && (vario_volume > 0);
+    // ★★ **運搬中のミュートは should_vario を落として入れること。** 関数の冒頭で
+    //   return すると下の**停止エッジを通らず**、鳴っている音がそのまま鳴り続ける
+    //   （アンプも ON のまま残る）。`vario_inhibit` が冒頭 return でよいのは、
+    //   あれが SD の設定で運転中に変わらないから。
+    bool should_vario = (vspeed > dead_band || vspeed < -dead_band)
+                     && (vario_volume > 0) && !mute;
 
     static bool prev_vario = false;
 
@@ -1108,11 +1118,16 @@ void update_vario() {
             float v = vspeed < 1.5f ? vspeed : 1.5f;  // 1.5 m/s で振り切り
             int freq = (int)(700 + v * 400);        // 820〜1300 Hz（1.5 m/s → 1300Hz）
             vario_phase_inc = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
-            int off_ms = (int)(700.0f / v) - 120;
-            if (off_ms < 50) off_ms = 50;
+            // 1 周期 = 500/v [ms]（ON 120ms ＋ 残りが無音）。上昇率が高いほど忙しくなる。
+            // ★ **OFF に 1 秒の上限を付けてある**（0.991）。上限が無いと 0.3m/s で
+            //   2.2 秒無音になり、弱い上昇を「鳴っていない」と取り違える。
+            //   上限が効くのは v < 約 0.45m/s で、ちょうど KF のデッドバンド
+            //   （VARIO_DEADBAND_KF_MPS = 0.25）から上の弱い上昇帯にあたる。
+            //   MS5611 単独（デッドバンド 0.60）では上限に当たらない。
+            int off_ms = constrain((int)(500.0f / v) - 120, 50, 1000);
             vario_on_samples     = 120 * 16;         // 120ms × 16kHz = 1920 サンプル
             vario_cycle_samples  = (uint32_t)((120 + off_ms) * 16);
-            vario_ascending      = true;             // 上昇フラグ ON（音量補正用）
+            vario_vol_pct        = VARIO_ASCEND_VOL_PCT;  // 高音側の能率補正（一定）
         } else {
             // 下降: 連続低音
             float v = (-vspeed) < 1.5f ? (-vspeed) : 1.5f;  // 1.5 m/s で振り切り
@@ -1120,7 +1135,17 @@ void update_vario() {
             if (freq < 300) freq = 300;              // 下限 300Hz
             vario_phase_inc     = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
             vario_cycle_samples = 0;                 // 0 = 連続出力
-            vario_ascending     = false;             // 下降フラグ（音量補正なし）
+            // ★ **沈下率に応じた音量傾斜**（0.991。根拠と調整幅は settings.h の
+            //   VARIO_DESCEND_* ）。浅い沈みは周波数が高くスピーカーの能率が良いので
+            //   うるさく聞こえる。深い沈みほど低音で能率が落ちるため、
+            //   **浅い側を絞って深い側を 100% にする**。
+            //   span はデッドバンドが 0.60（MS5611 単独）のときも正になる。
+            const float span = VARIO_DESCEND_FULL_MPS - dead_band;
+            float t = (span > 0.01f) ? (v - dead_band) / span : 1.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            vario_vol_pct = (uint8_t)(VARIO_DESCEND_VOL_MIN_PCT +
+                                      t * (100 - VARIO_DESCEND_VOL_MIN_PCT) + 0.5f);
         }
 
         if (!prev_vario) {
