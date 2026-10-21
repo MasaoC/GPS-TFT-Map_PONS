@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "case_cover") (type "KiCad") (uri "${KIPRJMOD}/Footprints/case_cover.pretty") (options "") (descr ""))
+)

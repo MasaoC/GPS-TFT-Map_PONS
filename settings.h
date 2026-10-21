@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/10
+// Updated : 2026/10/20
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,15 +21,15 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261018
-#define BUILDVERSION "0.992"
+#define BUILDDATE 20261021
+#define BUILDVERSION "0.993"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
 // ============================================================
 //   v7   … 初代。BNO085 を i2c1(GPIO34/35) で実装。E220 の M0/M1 は GPIO41
-//   v7.1 … BNO085 を降ろし、SCH16T を J7（Molex 200528-0080・8pin FPC）で外付け。
-//          GPIO41-44 が SPI1 一式になり、E220 の M0/M1 は GPIO47 へ移った
+//   v7.1 … BNO085 を降ろし、SCH16T を J6（Molex 200528-0080・8pin FPC）で外付け。
+//          GPIO41-44 が SPI1 一式になり、E220 の M0/M1 は GPIO31 へ移った
 //
 // ★★ **同じ GPIO が板によって逆の意味になる。** ピンを足すときは必ずここで分けること。
 //   コメントで「新基板では〜」と断り書きを増やす形にすると、必ずどこかが追従漏れする
@@ -40,8 +40,11 @@
 //     GPIO44    v7: i2c1 と短絡（park 対象） → v7.1: SCH16T MISO
 //     GPIO45    v7: BNO085 H_INTN       → v7.1: SCH16T EXTRESN
 //     GPIO46    v7: BNO085 NRST         → v7.1: SCH16T DRY(SYNC)
-//     GPIO47    v7: BNO085 PS0/WAKE     → v7.1: E220 M0/M1
-//     GPIO34/35 v7: i2c1 SDA/SCL        → v7.1: TFT バックライト（TFT_eSPI 側の設定）
+//     GPIO47    v7: BNO085 PS0/WAKE     → v7.1: USB_SENS（VBUS の分圧を ADC7 で測る）
+//     GPIO31    v7: USB_DETECT（デジタル） → v7.1: E220 M0/M1
+//     GPIO34/35 v7: i2c1 SDA/SCL        → v7.1: TFT バックライト（34=PWM 出力、35=輝度スイッチ）
+//     GPIO40    v7: VSYS の分圧         → v7.1: BATPWR（電池）の分圧。比はどちらも 51/151。
+//                                          v7.1 は SW OFF で 0V（SW4 が GND に落とす。power.h）
 //
 // ★★ **park 処置（imu_bus_park_unused_pins）は v7 だけ。** v7.1 で GPIO42/44 を
 //   INPUT_PULLUP のまま放置すると **SPI1 が死ぬ**。向きが逆になる唯一の約束。
@@ -130,7 +133,15 @@
 #define GNSS_LOST_ALERT_MS    30000UL
 #define GNSS_TX 0
 #define GNSS_RX 1
-#define USB_DETECT 31
+// USB の有無。v7 は GPIO31 のデジタル入力、v7.1 は GPIO47 の ADC で VBUS を測る。
+// ★ 直接 digitalRead() しないこと。判定は power.cpp の usb_power_present() だけ。
+#if PONS_BOARD == PONS_BOARD_V71
+  #define USB_VBUS_ADC_PIN 47   // R34 10k / R35 5.1k（BATTERY_PIN と同じ比）
+  // ★ 分圧を 100k/51k のように弱くしないこと。電池だけのとき D3 の逆漏れ電流で VBUS が
+  //   浮き（151kΩ だと 13µA で 2V）、電源異常を誤報する。v7 の USB_SENS と同じ強さにしてある。
+#else
+  #define USB_DETECT 31
+#endif
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
@@ -212,7 +223,66 @@
 // ============================================================
 //  電源・バッテリー
 // ============================================================
-#define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) //VSYS 1/4098*3.3*(151/51)=0.00238423334
+// v7 は VSYS、v7.1 は BATPWR（ロードスイッチ Q3 の後ろ＝電池）を測る。分圧比は同じ。
+#define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) // 1/4096*3.3*(151/51)=0.00238423334
+// ---- 電源経路の異常（power.cpp）----
+// 2026-10-15、v7 の充電 IC（MCP73831）が電池につながったまま内部で壊れ、
+// 電池 → 充電 IC → VBUS → D3 → VSYS と回って **SW で切れず**、画面は「USB」になった
+// （VSYS は 2.6V）。本物の USB なら VSYS は 4.3V 以上あるので、
+// 「USB 判定なのに電圧が低い」状態が続いたら異常とみなす。
+//   v7  : USB_DETECT が High なのに VSYS < POWER_FAULT_VSYS_V
+//   v7.1: VBUS が POWER_FAULT_VBUS_MIN_V〜USB_VBUS_PRESENT_V の間に居続ける
+//         （故障なら VBUS は電池電圧を超えられない。抜いた後の放電は 1 秒以内に通り過ぎる）
+#define POWER_FAULT_VSYS_V      3.9f
+#define USB_VBUS_PRESENT_V      4.3f    // v7.1: これ以上なら本物の USB
+#define POWER_FAULT_VBUS_MIN_V  2.0f    // v7.1: これ未満は USB なし
+#define POWER_FAULT_HOLD_MS     3000UL  // この時間続いたら異常（USB を抜いた直後の過渡を除く）
+#define POWER_FAULT_ARM_MS      5000UL  // 起動直後は判定しない
+#define POWER_FAULT_ALERT_MS   30000UL  // 警報音を繰り返す間隔
+// 異常時に画面で頼む操作。v7 は充電 IC が SW の手前なので電池を抜くしかない。
+// v7.1 は Q3 の後ろなので SW で電池から切れる（USB からの給電は抜けば止まる）。
+#if PONS_BOARD == PONS_BOARD_V71
+  #define POWER_FAULT_ACTION_TEXT "SW OFF + UNPLUG USB"
+#else
+  #define POWER_FAULT_ACTION_TEXT "UNPLUG THE BATTERY"
+#endif
+// ---- SW を OFF にしたまま USB で充電している（v7.1 のみ。power.cpp）----
+// v7.1 は充電 IC が Q3（SW で開閉するロードスイッチ）の後ろにあるので、SW OFF のまま
+// USB を挿すと電池へは Q3 のボディダイオード経由になり、**4.2V より 0.5V 前後低いところで
+// 充電が終わる**。しかも本体は USB で起動し、充電 LED も消えるので、見た目では
+// 満充電と区別が付かない（v7 までは SW OFF のままでも満充電になった）。docs/pons_power.md。
+// 検出: SW4 の OFF 側の接点が GPIO40（電池電圧の分圧点）を GND に落とす。
+//   SW ON なら GPIO40 は電池電圧（保護回路付きの 1s なので 2.5V 以上）、OFF なら 0V。
+#define CHARGE_SW_OFF_BATT_V     1.0f    // GPIO40 の読み（電池電圧換算）がこれ未満なら SW OFF
+#define CHARGE_SW_OFF_HOLD_MS    2000UL  // この時間続いたら注意と読み上げを出す（スイッチを行き来させている途中で喋らない）
+#define CHARGE_SW_OFF_ARM_MS    15000UL  // 起動からこの時間は読み上げない（起動音・無線モードの読み上げと重ねない）
+// 「移動中は出さない」の判定。**自機の** GNSS の対地速度で見る。
+// ★ fix が無ければ静止とみなす。屋内で充電している場面が本命なので、fix 待ちで黙らせない。
+#define CHARGE_SW_MOVING_MPS     1.5f    // これを超えたら移動中（歩く速さ 1.3m/s 前後より少し上）
+#define CHARGE_SW_STILL_MS      30000UL  // この時間止まっていたら移動が終わったとみなす（信号待ちで出たり消えたりしない）
+// ---- TFT バックライト（v7.1 のみ。backlight.cpp。v7 はスライドスイッチで直接切り替える）----
+// Q1（P-ch）のゲートを PWM で駆動する。**Low で点灯**（ゲートは R47 で +3V3 へ
+// プルアップしてあるので、PWM を設定するまでは消灯）。
+// 周波数は可聴域より上にする。PAM8302 が同じ +3V3 から電源を取っているので、
+// 可聴域だとスピーカーからうなりが出る。
+//   輝度スイッチ High … 照度によらず TFT_BL_DUTY_BRIGHT
+//   輝度スイッチ Low  … 照度センサー VEML7700 で自動（BL_AUTO_*）。センサーが無いときは TFT_BL_DUTY_DIM
+#if PONS_BOARD == PONS_BOARD_V71
+  #define TFT_BL_PIN        34
+  #define TFT_SW_PIN        35      // 輝度スイッチ。High = 最大（R48 4.7k で外付けプルダウン）
+#endif
+#define TFT_BL_PWM_HZ       25000
+#define TFT_BL_DUTY_BRIGHT  1.00f   // 最大
+#define TFT_BL_DUTY_DIM     0.05f   // スイッチ Low で照度センサーが無いとき。実機で調整する
+// 照度による自動調光。照度の対数に比例させる（明るさの感じ方が対数なので）。
+// VEML7700 はケースカバー基板にあり、窓越しに測るので、値は実機で合わせる。
+#define BL_AUTO_LUX_LOW     1.0f    // これ以下は BL_AUTO_DUTY_MIN（夜）
+#define BL_AUTO_LUX_HIGH    1000.0f // これ以上は最大（屋外）
+#define BL_AUTO_DUTY_MIN    0.03f
+#define BL_AUTO_TAU_MS      2000UL  // 照度への追従の時定数（手の影や機体の向きでちらつかせない）
+// VEML7700 の 1 カウントあたりの照度（ゲイン ×1・積分 100ms）。データシートの版で
+// 0.0576〜0.0672 と違うが、上の閾値を実機で合わせるので、どちらでも困らない。
+#define VEML7700_LUX_PER_COUNT 0.0576f
 // ---- 電池電圧のピーク追跡（display_tft.cpp の get_input_voltage）----
 // 音声再生や TFT 書き込みで電圧は一瞬落ちる。あれは負荷の影響で電池そのものの
 // 電圧ではないので、**上がるときは即追従（ピーク）・下がるときはゆっくり**にする。
@@ -263,6 +333,7 @@
 // ★ 「鳴らさない」指定ではない。割り込まれた側を救済しないだけで、優先度の判定は同じ。
 #define WAV_EXCL_NONE      0   // 排他なし（既定）。割り込まれたら従来どおり救済する
 #define WAV_EXCL_LINKMODE  1   // 無線モードの読み上げ（sender_mode / receiver_mode / link_off）
+#define WAV_EXCL_CHARGE_SW 2   // 電源スイッチの読み上げ（charge_sw_off / charge_sw_on）
 
 #define SIN_VOLUME 0.15f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
 #define VARIO_VOL_SCALE 3
@@ -707,9 +778,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define SCH16T_TEMP_EVERY    64
 //
 // ---- ピン（**v7.1 基板で確定。2026-10-07 に PCB のネットリストから確認**）----
-// SCH16T は基板実装ではなく **J7（Molex 200528-0080, 8pin FPC）経由の外付け**。
-// kicad/IMU_murata/ のブレイクアウトの J1 とピン順が一致している（1:1 ケーブルでよい）:
-//   J7/J1: 1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND
+// SCH16T は基板実装ではなく **J6（Molex 200528-0080, 8pin FPC）経由の外付け**。
+// ★ **本体 J6 とブレイクアウトは番号が逆順。** 完成済みの FPC（両端とも同じ面に端子）で
+//   J6-n ↔ J3-(9-n) が繋がる（2026-10-19 に本体側を逆順へ直した）。1:1 ではない。
+//   ブレイクアウト J3（FPC）/ J1（ピンヘッダ）: 1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND
+//   本体 J6                                 : 1=GND 2=MISO 3=SYNC 4=SCK 5=CS 6=MOSI 7=RESET 8=+3V3
 //
 // ★ 41/42/43/44 は RP2350 の **SPI1 の正規割り当て**（CSn/SCK/TX/RX）なので
 //   ハードウェア SPI が使える。**arduino-pico では `SPI1` オブジェクト**（`SPI` は spi0）。
@@ -1623,6 +1696,10 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define NOTICE_Y_DUP_SENDER   96   // 高さ 44 → 96..139（送信機が 2 台）
 #define NOTICE_Y_WARN_MUTE   104   // 高さ 40 → 104..143（警報ミュート中）
 #define NOTICE_Y_LINK_STATE  148   // 高さ 44 → 148..191（無信号 / 送信前チェック）
+#define NOTICE_Y_PWR_FAULT   190   // 高さ 40 → 190..229（電源経路の異常。2px だけ上と接する）
+// SW OFF のまま充電している注意は電源経路の異常と同じ段。異常のあいだは
+// power_sw_off_notice_active() が false を返すので、2 つは同時に出ない。
+#define NOTICE_Y_CHG_SW_OFF  NOTICE_Y_PWR_FAULT
 // ※ GNSS 断線（44..99）と送信機 2 台（96..139）は 4px だけ接する。両方出るのは
 //   「受信機の GNSS が抜けていて、かつ送信機が 2 台」のときで、後から描く側が
 //   相手の下枠を 4px 消すだけ。文字は隠れないのでそのままにしてある。

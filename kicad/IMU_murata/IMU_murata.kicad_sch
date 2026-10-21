@@ -3060,7 +3060,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "261f78af-ea77-41ce-8f53-c383033701a2")
 		(property "Reference" "R2"

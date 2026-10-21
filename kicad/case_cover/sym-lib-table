@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "casecover") (type "KiCad") (uri "${KIPRJMOD}/Symbols") (options "") (descr ""))
+)

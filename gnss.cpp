@@ -7,7 +7,7 @@
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/20
 // ============================================================
 // 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
 #include <Arduino.h>
@@ -22,6 +22,7 @@
 #include "imu.h"
 #include "src/imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
+#include "power.h"    // power_sw_off_on_usb()（電池電圧が読めないときは CSV を空欄に）
 
 // GPS_TFT_map.ino で定義されている USERLED 永続点灯フラグ（致命エラー時に true にする）
 extern volatile bool userled_forced_on;
@@ -1567,7 +1568,8 @@ void try_enque_savecsv(){
       float csv_kf_vspeed = get_imu_vspeed_raw();   // KF推定上昇率 [m/s]
       // 実測の電圧を書く（リプレイ中の表示値ではない）。リプレイ再生中は
       // そもそもこのパスを通らないが、意図を明示するため get_input_voltage() を使う。
-      float csv_voltage   = get_input_voltage();
+      // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（power.h）→ 空欄にする。
+      float csv_voltage   = power_sw_off_on_usb() ? NAN : get_input_voltage();
       enqueueTask(createSaveCsvTask(stored_latitude, stored_longitude, stored_gs, stored_truetrack,
         stored_gnss_altitude, csv_kf_alt, csv_kf_vspeed, csv_pressure, csv_voltage, stored_numsats,
         year, month, day, hour, ubx_min, ubx_sec, ubx_cs));

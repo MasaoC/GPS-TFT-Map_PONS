@@ -117,6 +117,20 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   発報は `loop()` の最上位にある `*_tick()` 群へ（`nav_alarm_tick` / `bank_alarm_tick` /
   `batt_alarm_tick` / `ground_check_tick` …）。**ここに描画を混ぜないこと**、
   逆に `draw_current_screen()` 以下に判断を混ぜないこと。
+- **USB の有無は `usb_power_present()`（[power.cpp](power.cpp)）だけで判定する。
+  `digitalRead(USB_DETECT)` を書かない。** 2026-10-15、v7 の充電 IC が壊れて VBUS を
+  持ち上げ、「USB」と誤判定して**電池低下警告まで止めていた**（VSYS 2.5V）。
+  v7.1 は VBUS を ADC（GPIO47）で測るので `USB_DETECT` 自体が無い。
+  電源経路の異常（`power_fault_active()`）の表示と音だけは**ミラー中・リプレイ中も出す**
+  （自機が発熱している話なので「ミラー中に自機の状態を混ぜない」の例外）。
+  経緯と全基板の対応は [docs/pons_power.md](docs/pons_power.md)。
+- **【v7.1】電池電圧を表示・警告・送信・記録するときは `power_sw_off_on_usb()` を見る。**
+  SW を OFF にしたまま USB で動いていると GPIO40 は SW4 で GND に落ちていて、
+  `get_input_voltage()` は 0V へ下がる。0V を本物として扱うと、残量 0%・電池低下の誤報
+  （自機と受信機）・CSV の 0.00V になる。いまは電池表示・`batt_alarm_tick()`・
+  `link_push_telemetry()`（`RHAVE_VOLT` を立てず `LINK_ST_USB_SW_OFF` を立てる。受信機は `s5V`）・
+  CSV（空欄）で処理してある。**`usb_power_present()` で代用しないこと** — VBUS が一瞬
+  4.3V を割っただけで外れ、その瞬間の 0V が流れる。
 - **設定値は settings.h に一箇所だけ。** 例えばバリオのデッドバンドは音（sound.cpp）と
   VSI のグレー線（display_tft.cpp）が同じ定数を見ている。片方だけ直すと
   「線は出ているのに鳴らない」になる。**「どちらの定数を選ぶか」も
@@ -159,7 +173,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   詳細は [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) (5)。
 - **基板は `settings.h` の `PONS_BOARD` で分かれる。ピンを足すときは必ずそこで分ける。**
   同じ GPIO が v7 と v7.1 で逆の意味になる（41-44 は v7 では i2c1 と E220 の
-  M0/M1、v7.1 では SPI1 一式。M0/M1 は v7.1 で GPIO47 へ移った）。
+  M0/M1、v7.1 では SPI1 一式。M0/M1 は v7.1 で GPIO31 へ移った）。
   **割り当ての表は `PONS_BOARD` のところに 1 つだけ置いてある。**
   散文の「新基板では〜」で足すと必ず追従漏れする（0.986 で 5 ファイル 20 箇所まで
   増えたのを `#if` に畳んだ）。載っているセンサーも板で決まるので
@@ -247,6 +261,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
+| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・v7.1 の「SW OFF のまま充電」の検出 |
+| [backlight.cpp](backlight.cpp) | v7.1 のバックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。v7 では空 |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
@@ -255,6 +271,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
+- 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.1）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
 - SCH16T の実機立ち上げ: [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md)
   （単独テストの実測値・Step 0〜5 の手順・踏みそうな罠。設計は imu_sch16t_plan.md）
 - BNO085 を I2C へ切り替えるとき: [docs/imu_i2c_bringup.md](docs/imu_i2c_bringup.md)

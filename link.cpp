@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/20
 // ============================================================
 //
 // ■ 設計の要点
@@ -27,6 +27,7 @@
 #include "mysd.h"
 #include "navdata.h"
 #include "e220.h"        // 下位ドライバ（UART・モード制御・レジスタ）
+#include "power.h"       // 電源経路の異常・SW OFF のまま USB（送信機の電源の状態をビットで運ぶ）
 
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
 //   AUX(GPIO30) は e220.h の E220_AUX_PIN。送信の刻みは RP2350 が持つ。
@@ -471,7 +472,7 @@ static void link_watch_sender_faults() {
 // 送信機（機体）の電池低下を、受信側でも音声で知らせる。
 //
 // ★ 本番では飛行中に電池を替えられないが、**試験飛行では役に立つ**。
-//   ボートが先に気づいて降ろす判断ができる。画面では S の残量が赤くなるだけなので、
+//   ボートが先に気づいて降ろす判断ができる。画面では s の残量が赤くなるだけなので、
 //   ボートマンが右上を見ていなければ気づけなかった。
 //
 // ・繰り返す。電池は減り続けるので、立ち上がりで 1 回では足りない。
@@ -489,6 +490,22 @@ static void link_watch_sender_battery() {
     link_alert("wav/battery_low_sender.wav", 1568, 200, 4, 60);
     enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%.2fV)",
                                  (double)link_get_voltage()));
+}
+
+// 送信機の電源経路の異常（LINK_ST_PWR_FAULT）を受信機でも鳴らす。
+// 間隔は送信機と同じ（power.cpp）。機体が発熱している恐れがあるので、
+// 最低音量 60 も電池警告と同じく付ける（docs/pons_sound.md §5）。
+// ★ 送信機は音声（power_fault.wav）だが、受信機は**トーンのまま**にしてある。
+//   同じ音声だと「スイッチを切って電池を外して」がボート自身への指示に聞こえる
+//   （電池低下に battery_low_sender.wav を分けたのと同じ理由）。
+static void link_watch_sender_power() {
+    static uint32_t last_warn_ms = 0;
+    if ((link_sender_status() & LINK_ST_PWR_FAULT) == 0) return;
+    const uint32_t now = millis();
+    if (last_warn_ms != 0 && now - last_warn_ms < POWER_FAULT_ALERT_MS) return;
+    last_warn_ms = now;
+    link_alert(nullptr, 2637, 150, 6, 60);
+    enqueueTask(createLogSdTask("LINK WARN: sender POWER FAULT"));
 }
 
 // 送信機の地上チェック（ロール／ピッチ／較正やり直し）を受信機でも同じ音声で鳴らす。
@@ -958,6 +975,7 @@ void link_loop() {
     //   （画面の飾りだけを止める。link.h 参照）。
     link_watch_sender_faults();
     link_watch_sender_battery();
+    link_watch_sender_power();
     link_watch_sender_ground_att();
     link_watch_sender_gnss();
     link_periodic_report();
@@ -1144,8 +1162,14 @@ static void link_push_telemetry() {
         have |= RHAVE_ATT_WIND;
     }
 
-    t.volt_cv = link_pack_volt(get_input_voltage());
-    have |= RHAVE_VOLT;
+    // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（power.h）。
+    //   電圧は載せず（RHAVE_VOLT を立てない）、下で LINK_ST_USB_SW_OFF を立てる（受信機は "s5V"）。
+    const float batt_v = get_input_voltage();   // ピーク追跡を回すため、載せないときも読む
+    const bool  batt_ok = !power_sw_off_on_usb();
+    if (batt_ok) {
+        t.volt_cv = link_pack_volt(batt_v);
+        have |= RHAVE_VOLT;
+    }
 
     t.numsat  = (uint8_t)constrain(get_gnss_numsat(), 0, 255);
     have |= RHAVE_NUMSAT;
@@ -1165,7 +1189,9 @@ static void link_push_telemetry() {
     if (!good_sd())                                    st |= LINK_ST_SD_ERROR;
     if (!get_imu_ok())                                 st |= LINK_ST_IMU_ERROR;
     if (attitude_needs_apply() && attitude_get_rpy_enabled()) st |= LINK_ST_NEEDS_APPLY;
-    if (get_input_voltage() <= BAT_LOW_VOLTAGE)        st |= LINK_ST_BAT_LOW;
+    // 電源経路の異常のあいだは電池低下を立てない（電圧が低いのは故障のせい。下の PWR_FAULT が知らせる）
+    // 電池電圧が読めないあいだも立てない（0V を「電池切れ」と言うと受信機が誤報する）
+    if (batt_ok && batt_v <= BAT_LOW_VOLTAGE && !power_fault_active()) st |= LINK_ST_BAT_LOW;
     // 地上チェック（ロール／ピッチ／較正やり直し）。**送信機しか判定できない**ので
     // ビットで運ぶ（link_proto.h の「再計算できるものは載せない」の例外）。
     if (ground_roll_warn_active)                       st |= LINK_ST_GROUND_ROLL;
@@ -1176,6 +1202,8 @@ static void link_push_telemetry() {
     //   `!get_gnss_connection()` だけだと**起動直後のまだ 1 バイトも来ていない間に
     //   立ち**、受信機が電源投入ごとに誤報する。
     if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
+    if (power_fault_active())                          st |= LINK_ST_PWR_FAULT;
+    if (!batt_ok)                                      st |= LINK_ST_USB_SW_OFF;   // 受信機は "s5V"
     t.status = st;
 
     t.crc16 = link_telem_crc(&t);

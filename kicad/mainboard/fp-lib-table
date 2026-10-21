@@ -4,6 +4,5 @@
   (lib (name "solderpad")(type "KiCad")(uri "${KIPRJMOD}/Footprints/solderpad.pretty")(options "")(descr ""))
   (lib (name "2005280040")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr "GPS_TFT の別名。回路図がこの nickname で参照しているため必要"))
   (lib (name "54132-4062")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr "同上"))
-  (lib (name "CUS-12TB")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr "同上"))
   (lib (name "RP2350_80QFN_minimal")(type "KiCad")(uri "${KIPRJMOD}/Footprints")(options "")(descr "同上"))
 )

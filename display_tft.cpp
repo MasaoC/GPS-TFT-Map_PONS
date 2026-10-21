@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/13
+// Updated : 2026/10/20
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -23,6 +23,7 @@
 #include "display_tft.h"
 #include "attitude.h"
 #include "link.h"
+#include "power.h"    // USB 判定・電源経路の異常・SW OFF のまま充電（電池表示と地図の注意）
 #include "e220.h"     // 無線設定画面で SF と周波数を出すため
 #include "src/flashdata/link_icons.h"
 #include "src/flashdata/logo_data.h"
@@ -2589,10 +2590,12 @@ void draw_wireless(int cursor) {
     // 送信機の健康状態。受信側からは知りようがないので電波で運んでいる。
     // 飛ぶ前に気づきたい項目だけを載せてある（link_proto.h の status 設計）。
     const uint16_t st = link_sender_status();
+    // ★ LINK_ST_USB_SW_OFF（SW OFF のまま USB）は故障ではないので、赤／OK の判定から外す。
+    const uint16_t fault = st & (uint16_t)~LINK_ST_USB_SW_OFF;
     if (link_is_receiving()) {
-      backscreen.setTextColor(st ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
+      backscreen.setTextColor(fault ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
       backscreen.setCursor(2, y);
-      if (!st) backscreen.print(" Sender  : OK");
+      if (!fault) backscreen.print(" Sender  : OK");
       else {
         backscreen.print(" Sender  :");
         if (st & LINK_ST_SD_ERROR)    backscreen.print(" SD");
@@ -2600,6 +2603,11 @@ void draw_wireless(int cursor) {
         if (st & LINK_ST_NEEDS_APPLY) backscreen.print(" CAL");
         if (st & LINK_ST_BAT_LOW)     backscreen.print(" BAT");
         if (st & LINK_ST_GNSS_LOST)   backscreen.print(" GNSS");
+        if (st & LINK_ST_PWR_FAULT)   backscreen.print(" PWR");
+      }
+      if (st & LINK_ST_USB_SW_OFF) {
+        backscreen.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
+        backscreen.print(" 5V");
       }
       y += lh;
       if (link_dest_mismatch()) {
@@ -3049,6 +3057,41 @@ static void draw_warn_mute_banner() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// 電源経路の異常（power.cpp）。消せない・点滅させない。
+// ★ ミラー中・リプレイ中・デモ中も出す。**自機が発熱している**という話で、画面に出して
+//   いる数字の話ではないので「ミラー中に自機の状態を混ぜない」の例外（docs/pons_power.md）。
+static void draw_power_fault_warning() {
+  if (!power_fault_active()) return;
+  const int bx = 5, by = NOTICE_Y_PWR_FAULT, bw = SCREEN_WIDTH - 10, bh = 40;
+  begin_notice_box(bx, by, bw, bh, COLOR_RED);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(12, by + 5);
+  backscreen.print("POWER FAULT !!");
+  backscreen.setCursor(12, by + 21);
+  backscreen.print(POWER_FAULT_ACTION_TEXT);
+  // ★ 地図用フォントと色に戻して抜ける（このファイルの約束）。
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
+// SW を OFF にしたまま USB で充電している（v7.1。power.cpp）。満充電にならないことを知らせる。
+// ★ 点滅させる（banner_visible）。警報ではなく情報なので、地図を隠し続けない。
+// ★ 移動中・ミラー中・リプレイ中・デモ中は出さない（判定は power_sw_off_notice_active()）。
+// ★ 段は電源経路の異常と共用（settings.h の NOTICE_Y_CHG_SW_OFF。2 つは同時に出ない）。
+// ★ 白地なので COLOR_ORANGE は使わない（明るいオレンジはほぼ見えない）。
+static void draw_sw_off_notice() {
+  if (!power_sw_off_notice_active()) return;
+  if (!banner_visible()) return;
+  const int bx = 5, by = NOTICE_Y_CHG_SW_OFF, bw = SCREEN_WIDTH - 10, bh = 40;
+  begin_notice_box(bx, by, bw, bh, COLOR_DARKORANGE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(12, by + 5);
+  backscreen.print("POWER SW IS OFF.");
+  backscreen.setCursor(12, by + 21);
+  backscreen.print("TURN ON TO CHARGE");
+  // ★ 地図用フォントと色に戻して抜ける（このファイルの約束）。
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -3058,6 +3101,8 @@ void push_backscreen(){
   draw_link_overlay();
   draw_gnss_disconnect_warning();  // 最上位レイヤー。上の draw_link_overlay() より後に描く
   draw_warn_mute_banner();         // 同じく最上位。GNSS 警告の下に並ぶ
+  draw_power_fault_warning();      // 一番上。地図の下端に出す
+  draw_sw_off_notice();            // 電源経路の異常と同じ段（同時には出ない）
   backscreen.pushSprite(0, 50);
   TIMING_END(ts_push_backscreen, push_bs);
 }
@@ -3465,9 +3510,9 @@ void draw_map_footer(){
 
 // 受信モードの電池残量を 1 つ描く（組み込みフォント 6x8・サイズ 1 のまま呼ぶこと）。
 // ★ **低下したら点滅させる**（自機の電池表示と同じ流儀）。赤文字と赤地の白抜きを
-//   1 秒ごとに入れ替える。受信モードでは残量が S/R の 2 つ並ぶので、
+//   1 秒ごとに入れ替える。受信モードでは残量が s/r の 2 つ並ぶので、
 //   **低いほうだけを点滅させる**（どちらを交換するのか分からないと対処できない）。
-// 返り値は次に描き始める x（S の桁数が残量で変わるため、固定値では並べられない）。
+// 返り値は次に描き始める x（s の桁数が残量で変わるため、固定値では並べられない）。
 static int draw_batt_part(int x, const char* s, uint16_t col, bool low) {
   const int w = 6 * (int)strlen(s);          // 組み込みフォントは 1 文字 6px
   if (low && blink_1s()) {
@@ -3554,34 +3599,67 @@ void draw_footer(){
 
   header_footer.setCursor(SCREEN_WIDTH - 37, 1);
   header_footer.setTextColor(COLOR_GREEN);
-  // ★ 受信モードでは送信側(S)と受信側(R)の両方を出す（docs/pons_link.md §5）。
+  // ★ 受信モードでは送信側(s)と受信側(r)の両方を "s55r42" の形で出す（docs/pons_link.md §5）。
   //   送信側が先。機体の電池が先に切れるほうが困るので、目に入る順を優先した。
-  //   未受信のときは S を "--" にする（古い値を出し続けない）。
-  // ★ リプレイ中・デモ中は 2 本立てにしない。S は**生のリンク**から取るので、
+  //   未受信のときは s を "--" にする（古い値を出し続けない）。
+  // ★ リプレイ中・デモ中は 2 本立てにしない。s は**生のリンク**から取るので、
   //   画面の他の数字（過去のログ／仮想機体）と出どころが混ざる。
   //   下の通常表示へ落ちれば、リプレイの電圧列はそちらが正しく出す。
-  if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) {
+  // ★ 電源経路の異常が最優先。ミラー中・リプレイ中でも出す（自機が発熱している話で、
+  //   画面に出している数字の話ではないため。docs/pons_power.md）。
+  if (power_fault_active()) {
+    header_footer.setCursor(SCREEN_WIDTH - 45, 1);
+    if (blink_1s()) {
+      header_footer.fillRect(SCREEN_WIDTH - 47, 0, 47, 15, COLOR_RED);
+      header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
+    } else {
+      header_footer.setTextColor(COLOR_RED);
+    }
+    header_footer.print("PWR!");
+  }
+  else if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) {
     const float rv = get_input_voltage();    // 自機（受信機）は必ず実測値
-    // ★ AA_FONT_SMALL（約12px/文字）だと "S50 R40%" が 96px になり右端をはみ出す。
+    // ★ AA_FONT_SMALL（約12px/文字）だと最長の "s100r100" が 96px になり右端をはみ出す。
     //   組み込みフォント（6x8）に落として 48px に収める。色分けは変わらず効く。
     header_footer.unloadFont();
     header_footer.setTextSize(1);
-    int bx = SCREEN_WIDTH - 52;
-    char buf[8];
-    if (link_is_receiving()) {
+    // ★ SW OFF のまま USB で動いている側は電池電圧が読めないので "5V"（USB 給電）と出す。
+    //   送信機は LINK_ST_USB_SW_OFF で知らせてくる（そのあいだ RHAVE_VOLT は立たない）。
+    //   電圧が載っていないのに 0 を残量 0% と読まないよう、それ以外の欠けは "--"。
+    char sbuf[6], rbuf[6];
+    uint16_t scol;
+    bool slow = false;
+    const uint16_t sst = link_sender_status();   // 未受信なら 0
+    if (sst & LINK_ST_USB_SW_OFF) {
+      strlcpy(sbuf, "s5V", sizeof(sbuf));  scol = COLOR_DARKORANGE;
+    } else if (link_is_receiving() && link_has_value(RHAVE_VOLT)) {
       const float sv = link_get_voltage();
-      snprintf(buf, sizeof(buf), "S%d ", battery_percent(sv));
-      bx = draw_batt_part(bx, buf, battery_color(sv), sv <= BAT_LOW_VOLTAGE);
+      snprintf(sbuf, sizeof(sbuf), "s%d", battery_percent(sv));
+      scol = battery_color(sv);  slow = (sv <= BAT_LOW_VOLTAGE);
     } else {
-      bx = draw_batt_part(bx, "S-- ", COLOR_GRAY, false);
+      strlcpy(sbuf, "s--", sizeof(sbuf));  scol = COLOR_GRAY;
     }
-    snprintf(buf, sizeof(buf), "R%d%%", battery_percent(rv));
-    draw_batt_part(bx, buf, battery_color(rv), rv <= BAT_LOW_VOLTAGE);
+    uint16_t rcol;
+    bool rlow = false;
+    if (power_sw_off_on_usb()) {           // 自機（power.h）
+      strlcpy(rbuf, "r5V", sizeof(rbuf));  rcol = COLOR_DARKORANGE;
+    } else {
+      snprintf(rbuf, sizeof(rbuf), "r%d", battery_percent(rv));
+      rcol = battery_color(rv);  rlow = (rv <= BAT_LOW_VOLTAGE);
+    }
+    // 右端（SCREEN_WIDTH - 4）にそろえる。桁数で幅が変わるので、先に全体の幅を測る。
+    int bx = SCREEN_WIDTH - 4 - 6 * (int)(strlen(sbuf) + strlen(rbuf));
+    bx = draw_batt_part(bx, sbuf, scol, slow);
+    draw_batt_part(bx, rbuf, rcol, rlow);
     header_footer.loadFont(AA_FONT_SMALL);   // 後続の描画のために戻す
   }
   // リプレイ中は USB 接続でも電池表示にする。飛行時は USB が刺さっていないため、
   // "USB" のままだと当時の画面を再現できない。
-  else if (digitalRead(USB_DETECT) && !replay_voltage_active()) {
+  // ★ v7.1 で SW OFF のまま USB で動いているときも "USB"（色は暗い橙。満充電にならない合図）。
+  //   電池電圧は読めないので、下の残量表示へ落とすと 0% になる。usb_power_present() だけを
+  //   見ると、VBUS が一瞬 4.3V を割ったときに落ちてしまう（power.h）。
+  else if ((usb_power_present() || power_sw_off_on_usb()) && !replay_voltage_active()) {
+    if (power_sw_off_on_usb()) header_footer.setTextColor(COLOR_DARKORANGE);
     header_footer.print("USB");
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
@@ -4334,12 +4412,19 @@ uint16_t battery_color(float v) {
 
 // 設定画面フッターの電池アイコン色を返す。
 // NAV 画面ヘッダーのバッテリー残量表示（draw_header 内）と同じ配色に合わせている:
+//   電源経路の異常       : 赤
+//   SW OFF のまま USB    : 暗い橙（v7.1。満充電にならない）
 //   USB 接続中           : 緑（"USB" 表示が緑）
 //   BAT_LOW_VOLTAGE 以下 : 赤（残量警告）
 //   BAT_HALF_VOLTAGE 未満: マゼンタ（50%未満）
 //   それ以上             : 緑
+// ★ 分岐の順と条件はフッターの文言（draw_setting_mode() の電池の行）と同じにすること。
 uint16_t battery_status_color() {
-  if (digitalRead(USB_DETECT) && !replay_voltage_active())
+  if (power_fault_active())
+    return COLOR_RED;
+  if (power_sw_off_on_usb() && !replay_voltage_active())
+    return COLOR_DARKORANGE;
+  if (usb_power_present() && !replay_voltage_active())
     return COLOR_GREEN;
   return battery_color(get_display_voltage());
 }
@@ -4412,9 +4497,21 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
 
   header_footer.setCursor(2, 5);
   header_footer.setTextColor(COLOR_GRAY);
-  if (digitalRead(USB_DETECT) && !replay_voltage_active()) {
-    double input_voltage = get_display_voltage();
-    header_footer.printf("Battery: Charging %.2fV", input_voltage);
+  if (power_fault_active()) {
+    header_footer.setTextColor(COLOR_RED);
+    header_footer.print("POWER FAULT! " POWER_FAULT_ACTION_TEXT);
+  } else if (power_sw_off_on_usb() && !replay_voltage_active()) {
+    // v7.1: 電池は SW で切り離されていて電圧は読めない（power.h）。このままでは満充電にならない
+    header_footer.setTextColor(COLOR_DARKORANGE);
+    header_footer.print("Battery: SW OFF - turn ON to charge");
+  } else if (usb_power_present() && !replay_voltage_active()) {
+#if PONS_BOARD == PONS_BOARD_V71
+    // v7.1 は電池そのものを測っているので、充電中の電圧が出せる
+    header_footer.printf("Battery: Charging %.2fV", get_display_voltage());
+#else
+    // v7 は VSYS（USB 側の電圧）しか見えないので、電圧は出さない
+    header_footer.print("Battery: Charging");
+#endif
   }else{
     double input_voltage = get_display_voltage();
     // 電圧の上下限は settings.h の 1 か所に置く（battery_percent() と同じ基準）。

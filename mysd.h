@@ -233,6 +233,9 @@
               float voltage;      // バッテリー電圧 [V]（リプレイで当時の電池表示を再現するため）
               int numsat;         // 測位に使用した衛星数（同上）
               int year, month, day, hour, minute, second, centisecond;
+              // ---- 飛行 CSV だけの追加列（不具合の検証用。v7.1 の照度センサーとバックライト）----
+              float    lux;       // 照度 [lx]。センサーが応答していないとき・v7 は負（空欄）
+              int8_t   bl_pct;    // バックライトの点灯率 [%]。v7 は負（空欄）
               // ---- 受信ログ（received/）用の追加列。TASK_SAVE_RXCSV でのみ使う ----
               int      rssi;      // 受信強度 [dBm]
               uint16_t seq;       // 送信側の連番。取りこぼしの解析に使う

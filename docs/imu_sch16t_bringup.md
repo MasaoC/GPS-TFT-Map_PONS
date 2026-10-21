@@ -69,8 +69,9 @@ V7 / V71 の両ビルド OK）。残りは実機でしか見られない。
 
 | | |
 |---|---|
-| 接続 | 本体 **J7**（Molex 200528-0080, 8pin FPC）↔ ブレイクアウトの **J1** |
-| ピン順 | `1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND`（**両者一致。1:1 ケーブル**） |
+| 接続 | 本体 **J6**（Molex 200528-0080, 8pin FPC）↔ 完成済みの FPC ↔ ブレイクアウトの **J3** |
+| ピン順 | ブレイクアウト J3: `1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND`。本体 J6 は**逆順**（`1=GND … 8=+3V3`）。FPC は両端とも同じ面に端子があるので **J6-n ↔ J3-(9-n)** が繋がる。**1:1 ではない** |
+| 通電前 | **テスターで J6-8 と J3-1（+3V3）、J6-1 と J3-8（GND）の導通を確かめる**。逆だと SCH16T に電源が逆に入る |
 | 本体 GPIO | `CS=41 / SCK=42 / MOSI=43 / MISO=44 / EXTRESN=45 / DRY=46`（SPI1 の正規割り当て） |
 
 ★ **ブレイクアウトの R2（CS–GND の 4.7k）は実装しない。** CS は負論理なので、
@@ -88,7 +89,7 @@ R1（EXTRESN のプルアップ）は実装する。詳細は
 | 出る行 | 意味 |
 |---|---|
 | `[IMU] SCH16T-K01 ready. chip responded in N ms` | **成功。** N が実際の立ち上がり時間 |
-| `[IMU] SCH16T: ASIC_ID unreadable (check J7 wiring / SPI1 pins)` | 配線か SPI1 のピン |
+| `[IMU] SCH16T: ASIC_ID unreadable (check J6 wiring / SPI1 pins)` | 配線か SPI1 のピン |
 | `[IMU] SCH16T COMP_ID 0x.... != K01 0x0023`（log.txt） | 別品種。感度が違うので使わない |
 | `[IMU] SCH16T verify NG dyn=.. filt=.. STAT_SUM=0x....`（log.txt） | 設定が入っていない |
 | `[IMU] SCH16T init retry` | 1 回目が失敗して 2 回目を試した |

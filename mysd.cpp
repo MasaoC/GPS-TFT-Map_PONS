@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/06
+// Updated : 2026/10/20
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -25,6 +25,7 @@
 #include "src/sound.h"
 #include "attitude.h"
 #include "link.h"
+#include "backlight.h" // 飛行 CSV の lux / backlight 列
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -722,7 +723,8 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
   task.saveCsvArgs.kf_altitude   = t->kf_alt_dm / 10.0f;
   task.saveCsvArgs.kf_vspeed     = t->kf_vs_cms / 100.0f;
   task.saveCsvArgs.pressure      = t->press_dpa / 10.0f;
-  task.saveCsvArgs.voltage       = link_unpack_volt(t->volt_cv);
+  // 送信機が SW OFF のまま USB で動いていると電圧は載ってこない → 空欄（csv_write_common）
+  task.saveCsvArgs.voltage       = (t->have & RHAVE_VOLT) ? link_unpack_volt(t->volt_cv) : NAN;
   task.saveCsvArgs.numsat        = t->numsat;
   task.saveCsvArgs.year   = t->year;   task.saveCsvArgs.month  = t->month;
   task.saveCsvArgs.day    = t->day;    task.saveCsvArgs.hour   = t->hour;
@@ -790,6 +792,9 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   task.saveCsvArgs.minute = minute;
   task.saveCsvArgs.second = second;
   task.saveCsvArgs.centisecond = centisecond;
+  // 照度とバックライトは引数で回さず、ここ（Core0）で読む。呼び出し元は 1 か所だけ。
+  task.saveCsvArgs.lux    = backlight_get_lux();
+  task.saveCsvArgs.bl_pct = (int8_t)backlight_get_duty_pct();
   return task;
 }
 
@@ -2484,7 +2489,11 @@ static void csv_write_common(FsFile &f, const Task &tk) {
   f.print(a.kf_altitude, 2);   f.print(",");   // KF 推定高度 [m]（気圧基準）
   f.print(a.kf_vspeed, 2);     f.print(",");   // KF 推定上昇率 [m/s]
   f.print(a.pressure, 2);      f.print(",");
-  f.print(a.voltage, 2);       f.print(",");   // リプレイ時の電池表示に使う
+  // リプレイ時の電池表示に使う。測れなかったとき（NAN）は 0 ではなく空欄にする
+  // （SW OFF のまま USB で動いていた。0.00 と書くと「電池切れだった」と読めてしまう）。
+  // 空欄ならリプレイは RHAVE_VOLT を立てない（replay_get_float）。
+  if (!isnan(a.voltage)) f.print(a.voltage, 2);
+  f.print(",");
   f.print(a.numsat);           f.print(",");   // リプレイ時の衛星数表示に使う
   char buf[12];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02d", a.year, a.month, a.day);
@@ -2593,17 +2602,23 @@ void saveCSV(const Task& tk) {
 
   if (csvFileStatic) {
     if(!headerWritten){
-      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,voltage,numsat,date,time");
+      // lux / backlight は飛行 CSV だけの列（received/ には無い）。共通部分の後ろに付ける。
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,voltage,numsat,date,time,lux,backlight");
       headerWritten = true;
     }
 
     csv_write_common(csvFileStatic, tk);
+    // 照度とバックライト（不具合の検証用）。値が無いとき（センサー無し・v7）は空欄。
+    csvFileStatic.print(",");
+    if (tk.saveCsvArgs.lux >= 0.0f)  csvFileStatic.print(tk.saveCsvArgs.lux, 1);
+    csvFileStatic.print(",");
+    if (tk.saveCsvArgs.bl_pct >= 0)  csvFileStatic.print(tk.saveCsvArgs.bl_pct);
     csvFileStatic.println();
 
     // flush() は SD への物理書き込みを伴うため消費電力が大きい。
     // 2秒に1回だけ flush し、それ以外は SdFat の内部バッファに留めることで消費電力を抑制する。
-    // 2Hz×2秒 = 4行×約89バイト ≈ 356バイト → 512バイトブロックバッファに収まるため安全。
-    // （voltage・numsat 列の追加で 1 行あたり約 9 バイト増えたが、まだ余裕がある）
+    // 2Hz×2秒 = 4行×約100バイト ≈ 400バイト → 512バイトブロックバッファに収まるため安全。
+    // （voltage・numsat 列で約 9 バイト、lux・backlight 列で約 11 バイト増えたが、まだ余裕がある）
     { static unsigned long last_flush_ms = 0;
       if (millis() - last_flush_ms >= 2000) {
         TIMING_START(csv_fl);

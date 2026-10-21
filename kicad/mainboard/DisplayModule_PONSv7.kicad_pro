@@ -51,7 +51,7 @@
         "silk_text_upright": false,
         "zones": {
           "border_display_style": 2,
-          "border_hatch_pitch": 0.5,
+          "border_hatch_pitch": 1.0,
           "corner_radius": 0.0,
           "corner_smoothing": 0,
           "fill_mode": 0,
@@ -63,9 +63,9 @@
           "min_clearance": 0.25,
           "min_island_area": 10.0,
           "min_thickness": 0.25,
-          "pad_connection": 1,
+          "pad_connection": 2,
           "remove_islands": 0,
-          "thermal_relief_gap": 0.5,
+          "thermal_relief_gap": 0.3,
           "thermal_relief_spoke_width": 0.5
         }
       },
@@ -544,7 +544,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "",
-      "plot": "./v6_1plot",
+      "plot": "./v7_1plot",
       "pos_files": "production/",
       "specctra_dsn": "",
       "step": "DisplayModule_PONSv6.step",
@@ -791,17 +791,17 @@
     "top_level_sheets": [
       {
         "filename": "DisplayModule_PONSv7.kicad_sch",
-        "name": "DisplayModule_PONSv7",
+        "name": "PONSv7_Power",
         "uuid": "d4198ff8-2b68-4e90-8e61-04bd56061c94"
       }
     ],
-    "used_designators": "C39,Q2,#PWR66,#PWR89,#PWR92-93,#PWR95,J8",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
     [
       "d4198ff8-2b68-4e90-8e61-04bd56061c94",
-      "DisplayModule_PONSv7"
+      "PONSv7_Power"
     ],
     [
       "6fc81237-3f36-4001-84da-7327f8cb7e0c",

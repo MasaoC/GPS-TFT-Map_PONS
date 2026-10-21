@@ -262,7 +262,7 @@ static bool sch_init() {
     const int32_t ready_ms = wait_chip_ready(SCH16T_READY_TIMEOUT_MS);
     if (ready_ms < 0) {
         enqueueTask(createLogSdTask("[IMU] SCH16T not responding (ASIC_ID unreadable)"));
-        DEBUGW_PLN(20261014, "[IMU] SCH16T: ASIC_ID unreadable (check J7 wiring / SPI1 pins)");
+        DEBUGW_PLN(20261014, "[IMU] SCH16T: ASIC_ID unreadable (check J6 wiring / SPI1 pins)");
         return false;
     }
 

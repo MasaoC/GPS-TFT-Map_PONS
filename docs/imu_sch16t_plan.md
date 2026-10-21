@@ -359,10 +359,11 @@ BNO085 時代の実測 158 レコード/秒（4.4kB/s）の 3 倍。imulog の�
 | 44 | `SPI1_RX_MISO` | MISO | i2c1 と 0Ω 連結 |
 | 45 | `SCH16T_RESET` | EXTRESN（負論理） | BNO_INT |
 | 46 | `SCH16T_SYNC` | DRY_SYNC（入力） | BNO_NRST |
-| 47 | `LORA_M01` | **E220 の M0+M1 を結線して 1 本で駆動** | BNO_PS0/WAKE |
+| 47 | `USB_SENS` | VBUS の分圧（ADC7）。2026-10 に E220 の M0+M1 を GPIO31 へ移して空けた | BNO_PS0/WAKE |
 
-- SCH16T は基板実装ではなく **J7（Molex 200528-0080, 8pin FPC）経由の外付け**。
-  `kicad/IMU_murata/` のブレイクアウトと 1:1 ケーブルで繋がる
+- SCH16T は基板実装ではなく **J6（Molex 200528-0080, 8pin FPC）経由の外付け**。
+  `kicad/IMU_murata/` のブレイクアウトの J3 とは番号が**逆順**で、完成済みの FPC（両端とも同じ面に端子）で
+  J6-n ↔ J3-(9-n) が繋がる（2026-10-19 に本体側を逆順へ直した。1:1 ではない）
 - 41〜44 は RP2350 の SPI1 の正規割り当てなのでハードウェア SPI が使える。
   arduino-pico では **`SPI1`**（`SPI` は spi0）。GPIO46 が SPI1_SCK の代替機能でもあるので
   **`SPI1.setSCK(42)` を明示する**

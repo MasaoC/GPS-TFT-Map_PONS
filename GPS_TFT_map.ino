@@ -37,6 +37,8 @@
 #include "imu.h"
 #include "imu_sensor.h"   // imu_caps()（融合出力が有るかの判定）
 #include "link.h"   // PONS Link（機体⇄ボート無線）
+#include "power.h"      // USB 判定・電源経路の異常
+#include "backlight.h"  // v7.1 のバックライト（輝度スイッチ・照度センサー）
 #include "src/imulog.h"
 #include "attitude.h"
 #include "src/vectormap.h"
@@ -237,10 +239,13 @@ void setup(void) {
   digitalWrite(USERLED_PIN, LOW);
   // バッテリー電圧監視用 ADC の初期化
   adc_gpio_init(BATTERY_PIN);
-  pinMode(USB_DETECT, INPUT);
   pinMode(BATTERY_PIN, INPUT);
   pinMode(SD_DETECT, INPUT_PULLUP);  // SDカード検出ピン（挿入時 LOW）
   analogReadResolution(12);  // 12bit = 0〜4095
+  power_setup();
+  // v7.1 はバックライトを PWM で点けるまで消灯している。setup_tft() より前に呼ぶこと
+  // （後ろだと起動画面が見えない）。照度センサーは i2c0 の後（下の backlight_als_setup）。
+  backlight_setup();
 
   //setup switch
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
@@ -271,6 +276,7 @@ void setup(void) {
 
   // I2C バス初期化（MS5611・BNO085 共用。両 setup より先に呼ぶ）
   airdata_wire_begin();
+  backlight_als_setup();   // v7.1 の照度センサー（i2c0）。v7 では何もしない
   // BNO085 を先に初期化する（リセット後のブート時間を確保するため）
   imu_setup();
   attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gnss.cpp から流し込む）
@@ -360,7 +366,9 @@ void setup(void) {
       startup_voltage = get_input_voltage();
       delay(1);
     }
-    enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV", startup_voltage));
+    char pst[32];
+    power_format_status(pst, sizeof(pst));
+    enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV %s", startup_voltage, pst));
   }
 
   // 無線モードの読み上げ。起動音(opening.wav)の後に鳴らしたいので、
@@ -490,7 +498,7 @@ bool warn_muted_off_mount() {
   //     ので、ESKF が収束する前は運搬中でも鳴りうる。off_mount が分からない
   //     あいだは「傾いているか」を判定できないので、ここは諦めている。
   if (!attitude_ready()) return false;
-  return digitalRead(USB_DETECT) && attitude_is_off_mount();
+  return usb_power_present() && attitude_is_off_mount();
 }
 
 // 地上の姿勢チェック（ロール／ピッチ）の共通部分。
@@ -654,7 +662,15 @@ static void batt_alarm_tick() {
       const float bv = get_input_voltage();
       // 充電中は鳴らさない。リプレイ中も鳴らさない（過去の電圧で今の警告を出しても
       // 意味がなく、SD のテキストログにも当時の値が「今の警告」として混ざるため）。
-      if (!digitalRead(USB_DETECT) && !replay_voltage_active() &&
+      // ★ 「充電中」は usb_power_present() で判定する。2026-10-15 は壊れた充電 IC が
+      //   USB に見せかけたせいで、VSYS 2.5V でもこの警告が鳴らなかった。
+      // ★ 電源経路の異常のあいだは鳴らさない。電圧が低いのは電池ではなく故障のせいで、
+      //   「バッテリー低下」と言うと交換で済むと誤解させる（power_tick が別の音で鳴らす）。
+      // ★ v7.1 で SW OFF のまま USB で動いているあいだも鳴らさない。電池電圧は読めず
+      //   bv は 0V へ下がっていく（power.h）。usb_power_present() だけに頼ると、
+      //   VBUS が一瞬 4.3V を割ったときに 0V を電池切れと言ってしまう。
+      if (!usb_power_present() && !power_sw_off_on_usb() &&
+          !power_fault_active() && !replay_voltage_active() &&
           bv <= BAT_LOW_VOLTAGE &&
           (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
                                   : millis() - last_batt_warn_ms >= BAT_WARN_INTERVAL_MS)) {
@@ -961,8 +977,11 @@ static void periodic_log_tick() {
       char jst_str[8];
       if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
       else           strlcpy(jst_str, "--:--", sizeof(jst_str));
-      enqueueTask(createLogSdfTask("volt=%.2fV cpu=%.1fC %s JST",
-                                   get_input_voltage(), analogReadTemp(), jst_str));
+      char pst[32], bst[32];
+      power_format_status(pst, sizeof(pst));
+      backlight_format_status(bst, sizeof(bst));   // v7.1 だけ " bl=35% lux=12"（自動調光の調整用）
+      enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
+                                   get_input_voltage(), pst, bst, analogReadTemp(), jst_str));
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
       // 生レポートのレート要求を変えたら必ずこの行を確認すること:
@@ -1359,6 +1378,10 @@ void loop() {
   update_vario(warn_muted_off_mount());
 
   bank_alarm_tick();
+
+  power_tick();   // 電源経路の異常（USB に見えるのに電圧が低い）。電池警告より先に判定する
+
+  backlight_tick();   // v7.1 のバックライト（輝度スイッチ・照度）
 
   batt_alarm_tick();
 
