@@ -153,7 +153,7 @@ void readiness_tick() {
     if (ready_since == 0) ready_since = now;
     if (!announced && now - ready_since >= READY_HOLD_MS) {
       announced = true;
-      // 「準備完了。」★ macOS の音声合成で作った**仮の音声**。優先度 2（無線モードの読み上げと同じ）。
+      // 「準備完了。」優先度 2（無線モードの読み上げと同じ）。
       enqueueTask(createPlayWavTask("wav/ready.wav", 2));
       enqueueTask(createLogSdTask("READY: all preflight checks passed"));
     }

@@ -1233,7 +1233,7 @@ static void print_boot_check(const char* label, BootCheckState st) {
 
 // setup() の間、センサーの初期化が終わった順に呼ぶ（draw_boot_title() の下段を上書きする）。
 // ★ GNSS の行は draw_boot_diag(0) が SD の情報で上書きするので、ここだけの一時的な表示でよい。
-//   MS5611/BNO085 の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
+//   MS5611/IMU（BNO085 か SCH16T）の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
 //   最終表示に切り替わっても見た目が変わらない（チラつきが無い）。
 void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss) {
   const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
@@ -1247,7 +1247,10 @@ void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckSta
   print_boot_check("MS5611:", airdata);
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
   tft.print("  ");
-  print_boot_check("BNO085:", imu);
+  // センサー名は基板で決まる（v7 = BNO085 / v7.1 = SCH16T）。固定の文字にしないこと。
+  char imu_label[12];
+  snprintf(imu_label, sizeof imu_label, "%s:", imu_sensor_name());
+  print_boot_check(imu_label, imu);
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
@@ -1280,7 +1283,8 @@ static void draw_boot_diag(uint8_t phase) {
     tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
     tft.print("  ");
     tft.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-    tft.print(get_imu_ok() ? "BNO085:OK" : "BNO085:NG");
+    tft.print(imu_sensor_name());
+    tft.print(get_imu_ok() ? ":OK" : ":NG");
     return;
   }
 
@@ -1554,9 +1558,9 @@ static inline bool attitude_implausible(float deg) {
 
 // 風速に応じた矢印の色。しきい値は settings.h。
 static uint16_t wind_arrow_color(float mps) {
-  if (mps <= WIND_COL_LOW_MAX) return COLOR_GREEN;        // 濃い緑
-  if (mps <= WIND_COL_MID_MAX) return COLOR_WIND_PURPLE;    // 青
-  return COLOR_RED;                               // 紫
+  if (mps <= WIND_COL_LOW_MAX) return COLOR_GREEN;        // 緑
+  if (mps <= WIND_COL_MID_MAX) return COLOR_WIND_PURPLE;    // 紫
+  return COLOR_RED;                               // 赤
 }
 
 
@@ -2133,7 +2137,7 @@ static void draw_imu_page1() {
         draw_imu_row_dot(y, imu_row_col(imu_ok_rpy()));
         break;
       case IMU_MENU_NEXTPAGE:
-        backscreen.print("Next page (BNO085) >");
+        backscreen.printf("Next page (%s) >", imu_sensor_name());
         // 2/3・3/3 で見る項目の状態をここに集約して見せる。
         // 緑にならない原因が先のページにあるとき、1/3 だけ見ても分かるようにする。
         draw_imu_row_dot(y, imu_row_col(imu_ok_trim() && imu_ok_ready()));
@@ -2698,7 +2702,7 @@ void draw_wireless(int cursor) {
 void draw_imudetail(int page) {
   switch (page % 3) {
     case 0:  draw_imu_page1(); break;   // 較正（SETPITCH/APPLY）とマスタースイッチ
-    case 1:  draw_imu_page2(); break;   // BNO085 の生値と校正(DCD)
+    case 1:  draw_imu_page2(); break;   // IMU の生値と校正（DCD は BNO085 のみ）
     default: draw_imu_page3(); break;   // ESKF の状態と調整
   }
 }
@@ -4583,7 +4587,9 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     header_footer.printf("CPU %.1fC", cpu_temp);
     if (get_airdata_ok()) {
       float sensor_temp = get_airdata_temperature();
-      header_footer.setTextColor(sensor_temp >= 45.0f ? COLOR_RED : COLOR_GRAY);
+      // 赤にする温度は高温充電の警告（power.cpp）と同じ定数を見る。数字を書き写さないこと
+      // （片方だけ変えると「赤なのに警告が出ない」「警告なのに灰色」が起きる）。
+      header_footer.setTextColor(sensor_temp >= CHARGE_HOT_C ? COLOR_RED : COLOR_GRAY);
       header_footer.printf("  Sensor %.1fC", sensor_temp);
     }
     // CPU 温度の丸アイコン（電池の丸の真下）

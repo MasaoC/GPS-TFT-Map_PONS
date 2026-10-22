@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/23
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261022
-#define BUILDVERSION "0.994"
+#define BUILDDATE 20261023
+#define BUILDVERSION "0.995"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
@@ -282,7 +282,7 @@
 // 温度は MS5611（本体基板）で見る。電池はケースの中で本体基板の隣にあるので、
 // 基板の温度を電池の温度の目安にする（基板は充電 IC の熱で少し高めに出る＝早めに警告する側）。
 // MS5611 が居ない機体では判定しない。
-#define CHARGE_HOT_C           45.0f    // これ以上が CHARGE_HOT_HOLD_MS 続いたら警告
+#define CHARGE_HOT_C           45.0f    // これ以上が CHARGE_HOT_HOLD_MS 続いたら警告。設定画面下の Sensor 温度もこれ以上で赤
 #define CHARGE_HOT_CLEAR_C     42.0f    // これ以下で解除（境目で出たり消えたりしない）
 #define CHARGE_HOT_HOLD_MS     30000UL
 #define CHARGE_HOT_ALERT_MS    60000UL  // 続いている間、読み上げをくり返す間隔
@@ -515,7 +515,8 @@
 // ============================================================
 // ★ SD の使い分け
 //     ルート直下 … **設定ファイルだけ**（settings.txt / mapdata.csv /
-//                    destinations.csv / override_pilon_coordinate.csv / logo.bmp）
+//                    destinations.csv / override_pilon_coordinate.csv）
+//                    ※ 起動ロゴは FLASH（src/flashdata/logo_data.cpp）。SD の logo.bmp は読まない
 //     data/      … 自機の飛行 CSV。過去大会のデータもここへ置く
 //     received/  … 無線で受け取った機体のログ
 //   リプレイ一覧は data/ か received/ しか見ないので、**除外リストが要らない**。
@@ -1610,8 +1611,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define DEMO_CRAB_MAX_DEG       12.0f
 #define DEMO_YAW_ACC95_DEG       3.0f   // 偏流点線が出る条件を満たす値にしておく
 
-#define WIND_COL_LOW_MAX         2.0f   // これ以下は暗い緑
-#define WIND_COL_MID_MAX         4.0f   // これ以下は暗い青。超えたら暗い紫
+#define WIND_COL_LOW_MAX         2.0f   // これ以下は緑（COLOR_GREEN）
+#define WIND_COL_MID_MAX         4.0f   // これ以下は紫（COLOR_WIND_PURPLE）。超えたら赤
 
 // ============================================================
 //  PONS Link（機体⇄ボート無線）

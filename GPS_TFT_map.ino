@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/22
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -312,13 +312,13 @@ void setup(void) {
 
   // 両センサーの初期化完了後にセンサー組み合わせをログ出力する
   if (!get_imu_ok() && !get_airdata_ok()) {
-    enqueueTask(createLogSdTask("VARIO: NO SENSORS - BNO085 and MS5611 both absent"));
+    enqueueTask(createLogSdfTask("VARIO: NO SENSORS - %s and MS5611 both absent", imu_sensor_name()));
   } else if (get_imu_ok() && !get_airdata_ok()) {
-    enqueueTask(createLogSdTask("VARIO: BNO085 only - Kalman inactive, V/S=0"));
+    enqueueTask(createLogSdfTask("VARIO: %s only - Kalman inactive, V/S=0", imu_sensor_name()));
   } else if (!get_imu_ok() && get_airdata_ok()) {
     enqueueTask(createLogSdTask("VARIO: MS5611 only - baro-only fallback"));
   } else {
-    enqueueTask(createLogSdTask("VARIO: BNO085+MS5611 Kalman fusion enabled"));
+    enqueueTask(createLogSdfTask("VARIO: %s+MS5611 Kalman fusion enabled", imu_sensor_name()));
   }
 
   gnss_setup();

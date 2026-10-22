@@ -6,7 +6,7 @@ Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 Role    : SCH16T-K01 を PONS 本体へ載せるときの手順と、実機で測った値の記録。
           設計と段取りは imu_sch16t_plan.md、単独テストは tools/sch16t_test/。
 Author  : MasaoC (@masao_mobile)
-Updated : 2026/10/14
+Updated : 2026/10/22
 -->
 
 設計と段取り → [imu_sch16t_plan.md](imu_sch16t_plan.md)
@@ -67,11 +67,14 @@ V7 / V71 の両ビルド OK）。残りは実機でしか見られない。
 
 ### Step 1 — 配線（v7.1 基板 + ブレイクアウト）
 
+ブレイクアウト（`kicad/IMU_murata`）はフレキ基板で、尾の先の金端子 J3 を本体の J6 へ**直接挿す**。
+別の FPC ケーブルは使わない（廃止した）。
+
 | | |
 |---|---|
-| 接続 | 本体 **J6**（Molex 200528-0080, 8pin FPC）↔ 完成済みの FPC ↔ ブレイクアウトの **J3** |
-| ピン順 | ブレイクアウト J3: `1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND`。本体 J6 は**逆順**（`1=GND … 8=+3V3`）。FPC は両端とも同じ面に端子があるので **J6-n ↔ J3-(9-n)** が繋がる。**1:1 ではない** |
-| 通電前 | **テスターで J6-8 と J3-1（+3V3）、J6-1 と J3-8（GND）の導通を確かめる**。逆だと SCH16T に電源が逆に入る |
+| 接続 | 本体 **J6**（Molex 200528-0080, 8pin FPC）にブレイクアウトの尾（**J3**）を挿す |
+| ピン順 | ブレイクアウト J3: `1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND`。本体 J6 は**逆順**（`1=GND … 8=+3V3`）で、挿すと **J6-n ↔ J3-(9-n)** が接する。**1:1 ではない** |
+| 通電前 | **J3 を J6 に挿した状態で、テスターで J6-8 と J3-1（+3V3）、J6-1 と J3-8（GND）の導通を確かめる**。逆だと SCH16T に電源が逆に入る |
 | 本体 GPIO | `CS=41 / SCK=42 / MOSI=43 / MISO=44 / EXTRESN=45 / DRY=46`（SPI1 の正規割り当て） |
 
 ★ **ブレイクアウトの R2（CS–GND の 4.7k）は実装しない。** CS は負論理なので、

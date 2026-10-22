@@ -5,9 +5,9 @@
 	(uuid "d4198ff8-2b68-4e90-8e61-04bd56061c94")
 	(paper "A4")
 	(title_block
-		(title "SAM-M10Q PONSv7 GNSS module")
-		(date "2026-09-06")
-		(rev "1.0")
+		(title "SAM-M10Q PONS GNSS module")
+		(date "2026-10-22")
+		(rev "7.1")
 	)
 	(lib_symbols
 		(symbol "Connector_Generic:Conn_01x05"
