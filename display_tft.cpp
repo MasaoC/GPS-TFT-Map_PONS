@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/22
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -24,6 +24,7 @@
 #include "attitude.h"
 #include "link.h"
 #include "power.h"    // USB 判定・電源経路の異常・SW OFF のまま充電（電池表示と地図の注意）
+#include "readiness.h"  // 本番前チェック（設定画面の右上）
 #include "e220.h"     // 無線設定画面で SF と周波数を出すため
 #include "src/flashdata/link_icons.h"
 #include "src/flashdata/logo_data.h"
@@ -3073,6 +3074,23 @@ static void draw_power_fault_warning() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// 高温での充電（power.cpp）。電池の仕様（充電 0〜45°C）を超えている。消せない・点滅させない。
+// ★ ミラー中・リプレイ中・デモ中も出す（電源経路の異常と同じ例外。自機が熱いという話）。
+// ★ 段は電源経路の異常と共用（settings.h の NOTICE_Y_CHG_HOT）。異常のあいだは出さない
+//   （あちらは「すぐ外して」で、こちらより強い）。SW OFF の注意はこちらが出ている間は消える。
+static void draw_charge_hot_notice() {
+  if (!power_charge_hot_active() || power_fault_active()) return;
+  const int bx = 5, by = NOTICE_Y_CHG_HOT, bw = SCREEN_WIDTH - 10, bh = 40;
+  begin_notice_box(bx, by, bw, bh, COLOR_RED);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setCursor(12, by + 5);
+  backscreen.printf("TOO HOT TO CHARGE %.0fC", power_charge_hot_temp());
+  backscreen.setCursor(12, by + 21);
+  backscreen.print("UNPLUG USB AND COOL DOWN");
+  // ★ 地図用フォントと色に戻して抜ける（このファイルの約束）。
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 // SW を OFF にしたまま USB で充電している（v7.1。power.cpp）。満充電にならないことを知らせる。
 // ★ 点滅させる（banner_visible）。警報ではなく情報なので、地図を隠し続けない。
 // ★ 移動中・ミラー中・リプレイ中・デモ中は出さない（判定は power_sw_off_notice_active()）。
@@ -3102,7 +3120,8 @@ void push_backscreen(){
   draw_gnss_disconnect_warning();  // 最上位レイヤー。上の draw_link_overlay() より後に描く
   draw_warn_mute_banner();         // 同じく最上位。GNSS 警告の下に並ぶ
   draw_power_fault_warning();      // 一番上。地図の下端に出す
-  draw_sw_off_notice();            // 電源経路の異常と同じ段（同時には出ない）
+  draw_charge_hot_notice();        // 電源経路の異常と同じ段（同時には出ない）
+  draw_sw_off_notice();            // 同じ段（上の 2 つが出ている間は出ない）
   backscreen.pushSprite(0, 50);
   TIMING_END(ts_push_backscreen, push_bs);
 }
@@ -4461,6 +4480,37 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   // タイトルで上げたテキストサイズを戻す。tft は他画面と共有しているので、
   // 2 のまま抜けると次にサイズを設定せずに描く箇所が巻き添えになる。
   tft.setTextSize(1);
+
+  // ---- 本番前チェック（readiness.cpp）。タイトルの右 ----
+  // そろっていれば緑の READY、欠けていれば赤の NOT READY と、足りない項目の短い名前。
+  // 受信モード・リプレイ・デモは対象外なので何も出さない（readiness_applicable）。
+  // ★ 長さが変わるので、毎回この領域を消してから描く。
+  // ★ 項目の行は内蔵フォント（6px/文字）。120px に 20 文字まで。入りきらない名前は
+  //   readiness_format_missing() が落とす（途中で切れた名前は出さない）。
+  {
+    const int rx = 112;
+    tft.fillRect(rx, 0, SCREEN_WIDTH - rx, 29, COLOR_WHITE);
+    if (readiness_applicable()) {
+      const uint16_t m = readiness_missing();
+      if (m == 0) {
+        tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
+        tft.setCursor(rx + 8, 8);
+        tft.print("READY");
+      } else {
+        tft.setTextColor(COLOR_RED, COLOR_WHITE);
+        tft.setCursor(rx + 8, 0);
+        tft.print("NOT READY");
+        char items[21];
+        readiness_format_missing(m, items, sizeof items);
+        tft.unloadFont();
+        tft.setTextSize(1);
+        tft.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
+        tft.setCursor(rx + 8, 18);
+        tft.print(items);
+        tft.loadFont(AA_FONT_SMALL);   // この関数の残りと次の画面のために戻す
+      }
+    }
+  }
   tft.setTextColor(COLOR_BLACK);
   backscreen.fillScreen(COLOR_WHITE);
   backscreen.loadFont(AA_FONT_SMALL);  // variodetail から戻った時に unloadFont() されている場合があるため明示的にロード
@@ -4500,6 +4550,9 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   if (power_fault_active()) {
     header_footer.setTextColor(COLOR_RED);
     header_footer.print("POWER FAULT! " POWER_FAULT_ACTION_TEXT);
+  } else if (power_charge_hot_active()) {
+    header_footer.setTextColor(COLOR_RED);
+    header_footer.printf("Battery: TOO HOT TO CHARGE (%.0fC)", power_charge_hot_temp());
   } else if (power_sw_off_on_usb() && !replay_voltage_active()) {
     // v7.1: 電池は SW で切り離されていて電圧は読めない（power.h）。このままでは満充電にならない
     header_footer.setTextColor(COLOR_DARKORANGE);

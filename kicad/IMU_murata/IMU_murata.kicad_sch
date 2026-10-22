@@ -4067,7 +4067,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "Conn_01x06_MountingPin"
+		(property "Value" "Conn_01x08_MountingPin"
 			(at 228.6 83.8199 0)
 			(show_name no)
 			(do_not_autoplace no)

@@ -257,7 +257,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": "7.0"
+      "sch_revision": "7.1"
     },
     "layer_pairs": [],
     "layer_presets": [],
@@ -642,12 +642,6 @@
         },
         {
           "group_by": false,
-          "label": "MANUFACTURER",
-          "name": "MANUFACTURER",
-          "show": false
-        },
-        {
-          "group_by": false,
           "label": "MANUFACTURER_PART_NUMBER",
           "name": "MANUFACTURER_PART_NUMBER",
           "show": false
@@ -728,6 +722,18 @@
           "group_by": false,
           "label": "Availability",
           "name": "Availability",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "MANUFACTURER",
+          "name": "Manufacturer",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "MPN",
+          "name": "MPN",
           "show": false
         }
       ],

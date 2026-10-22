@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261021
-#define BUILDVERSION "0.993"
+#define BUILDDATE 20261022
+#define BUILDVERSION "0.994"
 
 // ============================================================
 //  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
@@ -108,7 +108,7 @@
 // GNSS の UART 受信リングバッファ [バイト]。既定 32 では全く足りない。
 // ★ 大きさの意味は「**Core0 が止まっても取りこぼさない時間**」。
 //   実流量は UBX のみで約 550 B/s（NAV-PVT 100B×2Hz ＋ NAV-SAT 約320B×1Hz
-//   ＋ NAV-DOP 26B×1Hz）。回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
+//   ＋ NAV-DOP 26B×1Hz ＋ NAV-AOPSTATUS 24B×1Hz）。回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
 //     1024B → 約 1.9 秒   4096B → 約 7.4 秒
 //   以前のコメントは 1024B ÷ 3840B/s = 267ms と書いていたが、それは
 //   **回線が飽和している前提の最悪値**で、実態の 7 倍きつい見積りだった。
@@ -131,6 +131,23 @@
 //   「離れていても気づける」ための仕組み（gnss.cpp の REPLAY canceled のコメント参照）。
 //   断線は飛行中に起きるので、パイロットは装置を身につけている。
 #define GNSS_LOST_ALERT_MS    30000UL
+// GNSS の AssistNow Autonomous（受信した軌道から GNSS 自身が数日先まで軌道を予測する機能）。
+// 1 = 使う / 0 = 使わない。効けば前日と同じ時間帯の起動が 23〜28 秒 → 3〜4 秒になる。
+// 条件（BT1 が生きている・3 日以内・同じ時間帯）は README の「GNSS の起動を速くする」。
+// ★ 0 にしても「使わない」を GNSS へ**書き込む**。この設定は BT1 で保たれる BBR にも
+//   書くので、送るのをやめるだけだと以前のファームが書いた「使う」が残り続ける。
+#define GNSS_USE_ANA              1
+// AssistNow Autonomous の状況（予測データのある衛星数・計算していた時間）を
+// log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
+#define GNSS_ANA_LOG_INTERVAL_MS  600000UL
+// ---- 本番前チェック（readiness.cpp）----
+// 飛ぶ前に確かめる項目がそろったら、地上で止まっているときに 1 度だけ「準備完了」と読み上げる。
+// そろっていなければ、何が足りないかを設定画面の右上に出す。項目は readiness.h の RDY_*。
+#define READY_HACC_MAX_M        5.0f     // GNSS の水平精度。GNSS DETAIL 3 で緑になる値と同じ
+#define READY_BATT_MIN_PERCENT  50       // 電池残量 [%]（battery_percent。50% ≒ 3.8V）
+#define READY_STILL_MPS         1.0f     // 自機の対地速度がこれ以下なら「地上で止まっている」
+#define READY_HOLD_MS           5000UL   // そろった状態がこれだけ続いたら読み上げる（一瞬そろっただけでは言わない）
+#define READY_REARM_MS          60000UL  // 欠けた状態がこれだけ続いたら、もう一度読み上げられるようにする
 #define GNSS_TX 0
 #define GNSS_RX 1
 // USB の有無。v7 は GPIO31 のデジタル入力、v7.1 は GPIO47 の ADC で VBUS を測る。
@@ -260,6 +277,15 @@
 // ★ fix が無ければ静止とみなす。屋内で充電している場面が本命なので、fix 待ちで黙らせない。
 #define CHARGE_SW_MOVING_MPS     1.5f    // これを超えたら移動中（歩く速さ 1.3m/s 前後より少し上）
 #define CHARGE_SW_STILL_MS      30000UL  // この時間止まっていたら移動が終わったとみなす（信号待ちで出たり消えたりしない）
+// ---- 高温での充電の警告（power.cpp。v7・v7.1 とも）----
+// 電池 DTP603048(PHR) の仕様は「充電 0〜45°C」（放電は −20〜60°C）。
+// 温度は MS5611（本体基板）で見る。電池はケースの中で本体基板の隣にあるので、
+// 基板の温度を電池の温度の目安にする（基板は充電 IC の熱で少し高めに出る＝早めに警告する側）。
+// MS5611 が居ない機体では判定しない。
+#define CHARGE_HOT_C           45.0f    // これ以上が CHARGE_HOT_HOLD_MS 続いたら警告
+#define CHARGE_HOT_CLEAR_C     42.0f    // これ以下で解除（境目で出たり消えたりしない）
+#define CHARGE_HOT_HOLD_MS     30000UL
+#define CHARGE_HOT_ALERT_MS    60000UL  // 続いている間、読み上げをくり返す間隔
 // ---- TFT バックライト（v7.1 のみ。backlight.cpp。v7 はスライドスイッチで直接切り替える）----
 // Q1（P-ch）のゲートを PWM で駆動する。**Low で点灯**（ゲートは R47 で +3V3 へ
 // プルアップしてあるので、PWM を設定するまでは消灯）。
@@ -299,6 +325,15 @@
 // 電池は減り続けるので 1 回きりの通知では足りない。逆に短くすると、
 // 本当に聞くべき他の警報（コース・バンク角）が埋もれる。
 #define BAT_WARN_INTERVAL_MS 60000UL
+// ---- 電池低下のときの省電力（v7.1 のみ。GPS_TFT_map.ino の batt_alarm_tick → backlight.cpp）----
+// 電池低下の警告と同じ条件（BAT_LOW_VOLTAGE）で、バックライトを点滅させて電池をもたせる。
+// ★ 暗くしたままにしないこと。本番では電池を最後まで使ってでも画面を見たいので、
+//   「BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消す」をくり返す（点いている間はいつもの明るさ）。
+// ★ 抜けるのは USB がつながったときか、電池が BAT_SAVER_EXIT_VOLTAGE まで戻ったとき（交換・充電）。
+//   BAT_LOW_VOLTAGE で抜けると、消えている間に負荷が減って電圧が少し戻り、点滅の入り切りをくり返す。
+#define BAT_SAVER_EXIT_VOLTAGE 3.65
+#define BL_SAVER_ON_MS   2000UL
+#define BL_SAVER_OFF_MS  4000UL
 #define BAT_ZERO_VOLTAGE 3.4
 // 満充電からの目安稼働時間 [分]。設定画面フッターの「Battery Time」の計算に使う。
 // 実測は高輝度 約3時間 / 低輝度 約12時間と幅があるので、間を取った粗い目安。
@@ -1697,9 +1732,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define NOTICE_Y_WARN_MUTE   104   // 高さ 40 → 104..143（警報ミュート中）
 #define NOTICE_Y_LINK_STATE  148   // 高さ 44 → 148..191（無信号 / 送信前チェック）
 #define NOTICE_Y_PWR_FAULT   190   // 高さ 40 → 190..229（電源経路の異常。2px だけ上と接する）
-// SW OFF のまま充電している注意は電源経路の異常と同じ段。異常のあいだは
-// power_sw_off_notice_active() が false を返すので、2 つは同時に出ない。
+// SW OFF のまま充電している注意と、高温での充電の警告も電源経路の異常と同じ段。
+// 優先は 異常 > 高温 > SW OFF で、下位のものは上位が出ている間は出さない
+// （power_sw_off_notice_active() と draw_charge_hot_notice() が見ている）。
 #define NOTICE_Y_CHG_SW_OFF  NOTICE_Y_PWR_FAULT
+#define NOTICE_Y_CHG_HOT     NOTICE_Y_PWR_FAULT
 // ※ GNSS 断線（44..99）と送信機 2 台（96..139）は 4px だけ接する。両方出るのは
 //   「受信機の GNSS が抜けていて、かつ送信機が 2 台」のときで、後から描く側が
 //   相手の下枠を 4px 消すだけ。文字は隠れないのでそのままにしてある。

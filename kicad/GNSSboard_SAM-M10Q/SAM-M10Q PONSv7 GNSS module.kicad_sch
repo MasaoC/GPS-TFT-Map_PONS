@@ -2859,7 +2859,7 @@
 				)
 			)
 		)
-		(property "Value" "Conn_01x04"
+		(property "Value" "Conn_01x05"
 			(at 69.85 59.69 0)
 			(show_name no)
 			(do_not_autoplace no)

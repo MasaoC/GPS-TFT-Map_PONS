@@ -7,7 +7,7 @@
 //           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
 //           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/01
+// Updated : 2026/10/22
 // ============================================================
 
 #ifndef GNSS_H
@@ -112,6 +112,12 @@
   //   判定しないと、loop() が速いときに同じ観測を何度も融合してしまう
   //   （imu.cpp の imu_kalman_gnss_vel_update のコメント参照）。
   uint32_t get_gnss_itow_ms();
+  // AssistNow Autonomous（GNSS が自分で予測した衛星軌道）の状態。GNSS DETAIL 3 の表示用。
+  // ★ どれも**自機の GNSS** の値（ミラー中も受信機自身のもの）。
+  int  get_gnss_ana_state();      // -1=状態がまだ届いていない / 0=無効 / 1=有効（GNSS 自身の申告）
+  bool get_gnss_ana_busy();       // 予測を計算中か（この間は GNSS の消費電流が増える）
+  int  get_gnss_ana_data_svs();   // 予測データを持っている衛星数
+  int  get_gnss_ana_orbit_svs();  // いま予測軌道を使っている衛星数
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
   bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 

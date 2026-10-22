@@ -370,7 +370,7 @@
 		(layer "F.Cu")
 		(uuid "f8acf34b-77c1-477f-ab61-1eef1a16a33c")
 		(at 127.4 148.5375)
-		(property "Reference" "VEML7700"
+		(property "Reference" "LED1"
 			(at 7.35 -1.2875 0)
 			(layer "F.SilkS")
 			(uuid "46f737b9-4ba6-4ea5-a1e3-52b3828245b2")

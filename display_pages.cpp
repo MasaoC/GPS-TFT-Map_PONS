@@ -5,7 +5,7 @@
 //           display_tft.cpp から分けただけで、役割は同じ「描画だけ」。
 //           判断や発報は置かない（CLAUDE.md の約束）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/13
+// Updated : 2026/10/22
 // ============================================================
 //
 // ★ **スプライトとフォントは display_tft.cpp のものを借りている**
@@ -781,6 +781,27 @@ static void draw_gnss_page3() {
   else {
     tft.setTextColor(saccColor, COLOR_WHITE);
     tft.printf("%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
+  }
+  y += 14;
+
+  // ---- AssistNow Autonomous（GNSS が自分で予測した衛星軌道） ----
+  // ON/NG は GNSS 自身の申告（NAV-AOPSTATUS）で決める。設定を送っただけでは ON と出さない。
+  // data = 予測データを持つ衛星数、use = いま予測軌道を使っている衛星数、
+  // calc = 予測を計算中（この間は GNSS の消費電流が増える）。
+  // ミラー中もこの行は自機の GNSS の話（ページ先頭の "rest=RX unit" に含まれる）。
+  tft.setCursor(1, y);
+  tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  tft.print("ANA:");
+  const int ana = get_gnss_ana_state();
+  if (!GNSS_USE_ANA)  { tft.print("OFF"); }
+  else if (ana < 0)   { tft.print("--"); }
+  else if (ana == 0)  { tft.setTextColor(COLOR_RED, COLOR_WHITE);   tft.print("NG"); }
+  else                { tft.setTextColor(COLOR_GREEN, COLOR_WHITE); tft.print("ON"); }
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  tft.printf("  data:%d  use:%d", get_gnss_ana_data_svs(), get_gnss_ana_orbit_svs());
+  if (get_gnss_ana_busy()) {
+    tft.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    tft.print("  calc");
   }
 }
 

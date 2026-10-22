@@ -6,8 +6,8 @@
 	(paper "A4")
 	(title_block
 		(title "PONS for HPA v7")
-		(date "2026-09-06")
-		(rev "7.0")
+		(date "2026-10-22")
+		(rev "7.1")
 		(comment 1 "GNSS, SD, Speaker, Lipo Charger")
 		(comment 2 "Good for outdoor use with high brightness")
 		(comment 3 "NHD-2.8-240320AF-CSXP-F (1000cd/m^2)")
@@ -3441,7 +3441,7 @@
 	)
 	(rectangle
 		(start 15.24 107.95)
-		(end 128.016 186.055)
+		(end 115.316 186.055)
 		(stroke
 			(width 0)
 			(type default)
@@ -3461,9 +3461,9 @@
 		)
 		(uuid "11bcde0c-c201-47bb-8c39-92a9cfd5e606")
 	)
-	(text "BT1が放電しきっていると、モジュールが起動しないバグがあった。\nV_BCKP Minimum operating voltage = 1.65V\nR2抵抗によって、BT1バッテリーが空っぽでも、V_BCKUPに電圧が生じる((3.3-0.6)*470/690)=1.8Vぐらい\n放電時は、R2の電圧降下はV=IR=10*10^-6*470 で、電圧降下はほとんどない\nP=IV=V^2/R=(0.5*10^-3)^2/500=0.5*10^-9=0.5nW"
+	(text "BT1が放電しきっていても、即座にGNSSが起動できる電圧をV_BCKUPに提供する\nV_BCKP Minimum operating voltage = 1.65V\n抵抗によって、BT1バッテリーが空っぽでも、V_BCKUPに電圧が生じる((3.3-0.6)*470/690)=1.8Vぐらい\n放電時の電圧降下はV=IR=10*10^-6*470 で、電圧降下はほとんどない\nP=IV=V^2/R=(0.5*10^-3)^2/500=0.5*10^-9=0.5nW"
 		(exclude_from_sim no)
-		(at 190.5 157.734 0)
+		(at 184.912 158.242 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3527,7 +3527,9 @@
 		(at 24.892 113.538 0)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 2.54 2.54)
+				(thickness 0.508)
+				(bold yes)
 			)
 		)
 		(uuid "924f2499-224a-41b5-a0cc-90831754d068")
@@ -3542,33 +3544,29 @@
 		)
 		(uuid "ac1e21c2-82b7-415e-8545-435d1f218d56")
 	)
-	(text "M0,M1 ピン変更あり"
-		(exclude_from_sim no)
-		(at 99.06 183.896 0)
-		(effects
-			(font
-				(size 10 10)
-			)
-		)
-		(uuid "ad9a21ee-2809-4863-9e0d-4fa02a1aa232")
-	)
 	(text "EXTERNAL CONNECTORS"
 		(exclude_from_sim no)
 		(at 99.568 19.558 0)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 2.54 2.54)
+				(thickness 0.508)
+				(bold yes)
 			)
+			(justify left)
 		)
 		(uuid "cb7f8a62-3f7e-40e5-a137-334740c16254")
 	)
 	(text "MS5611"
 		(exclude_from_sim no)
-		(at 22.86 18.034 0)
+		(at 17.526 18.796 0)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 2.54 2.54)
+				(thickness 0.508)
+				(bold yes)
 			)
+			(justify left)
 		)
 		(uuid "f9805a52-b1c0-43b1-8a5b-ae83ab004b2c")
 	)
@@ -3892,7 +3890,7 @@
 	)
 	(wire
 		(pts
-			(xy 67.31 93.98) (xy 67.31 87.63)
+			(xy 152.4 179.07) (xy 152.4 172.72)
 		)
 		(stroke
 			(width 0)
@@ -4162,7 +4160,7 @@
 	)
 	(wire
 		(pts
-			(xy 67.31 77.47) (xy 67.31 80.01)
+			(xy 152.4 162.56) (xy 152.4 165.1)
 		)
 		(stroke
 			(width 0)
@@ -4202,7 +4200,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 77.47) (xy 72.39 80.01)
+			(xy 157.48 162.56) (xy 157.48 165.1)
 		)
 		(stroke
 			(width 0)
@@ -4342,7 +4340,7 @@
 	)
 	(wire
 		(pts
-			(xy 54.61 96.52) (xy 72.39 96.52)
+			(xy 139.7 181.61) (xy 157.48 181.61)
 		)
 		(stroke
 			(width 0)
@@ -4372,7 +4370,7 @@
 	)
 	(wire
 		(pts
-			(xy 54.61 93.98) (xy 67.31 93.98)
+			(xy 139.7 179.07) (xy 152.4 179.07)
 		)
 		(stroke
 			(width 0)
@@ -4472,7 +4470,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 96.52) (xy 72.39 87.63)
+			(xy 157.48 181.61) (xy 157.48 172.72)
 		)
 		(stroke
 			(width 0)
@@ -4848,7 +4846,7 @@
 	)
 	(global_label "I2C0_SDA"
 		(shape input)
-		(at 54.61 96.52 180)
+		(at 139.7 181.61 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4858,7 +4856,7 @@
 		)
 		(uuid "d23c553e-a2e5-48db-ad69-dbe68e3ee8c5")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 42.7953 96.52 0)
+			(at 127.8853 181.61 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4944,7 +4942,7 @@
 	)
 	(global_label "I2C0_SCL"
 		(shape input)
-		(at 54.61 93.98 180)
+		(at 139.7 179.07 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4954,7 +4952,7 @@
 		)
 		(uuid "e50da57b-1ca2-4572-a5da-3031988547d4")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 42.8558 93.98 0)
+			(at 127.9458 179.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5148,7 +5146,7 @@
 	(symbol
 		(lib_name "+3V3_2")
 		(lib_id "power:+3V3")
-		(at 67.31 77.47 0)
+		(at 152.4 162.56 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5158,7 +5156,7 @@
 		(dnp no)
 		(uuid "0e96cd1b-2f60-441f-b82c-8f917a4ae78c")
 		(property "Reference" "#PWR088"
-			(at 67.31 81.28 0)
+			(at 152.4 166.37 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5169,7 +5167,7 @@
 			)
 		)
 		(property "Value" "+3V3"
-			(at 66.802 73.66 0)
+			(at 151.892 158.75 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5179,7 +5177,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 67.31 77.47 0)
+			(at 152.4 162.56 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5190,7 +5188,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 67.31 77.47 0)
+			(at 152.4 162.56 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5201,7 +5199,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3V3\""
-			(at 67.31 77.47 0)
+			(at 152.4 162.56 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6064,6 +6062,17 @@
 				)
 			)
 		)
+		(property "FT Rotation Offset" "90"
+			(at 52.07 44.45 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "2"
 			(uuid "8cf98df4-dea9-4e01-9d2a-32f0b91fd3b5")
 		)
@@ -6408,7 +6417,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 72.39 83.82 0)
+		(at 157.48 168.91 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6418,7 +6427,7 @@
 		(dnp no)
 		(uuid "66638d50-321b-4be0-81f5-4ebe29eae65b")
 		(property "Reference" "R42"
-			(at 70.358 83.82 90)
+			(at 155.448 168.91 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6428,7 +6437,7 @@
 			)
 		)
 		(property "Value" "4.7k"
-			(at 72.39 83.82 90)
+			(at 157.48 168.91 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6438,7 +6447,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 70.612 83.82 90)
+			(at 155.702 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6449,7 +6458,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 72.39 83.82 0)
+			(at 157.48 168.91 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6460,7 +6469,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 72.39 83.82 0)
+			(at 157.48 168.91 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6471,7 +6480,7 @@
 			)
 		)
 		(property "Sim.Device" ""
-			(at 72.39 83.82 90)
+			(at 157.48 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6482,7 +6491,7 @@
 			)
 		)
 		(property "Sim.Type" ""
-			(at 72.39 83.82 90)
+			(at 157.48 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6493,7 +6502,7 @@
 			)
 		)
 		(property "LCSC" "C25900"
-			(at 72.39 83.82 90)
+			(at 157.48 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6520,7 +6529,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 67.31 83.82 0)
+		(at 152.4 168.91 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6530,7 +6539,7 @@
 		(dnp no)
 		(uuid "66ddc9ca-8f0b-4338-a0c2-3d5a9ba25080")
 		(property "Reference" "R41"
-			(at 65.278 83.82 90)
+			(at 150.368 168.91 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6540,7 +6549,7 @@
 			)
 		)
 		(property "Value" "4.7k"
-			(at 67.31 83.82 90)
+			(at 152.4 168.91 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6550,7 +6559,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 65.532 83.82 90)
+			(at 150.622 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6561,7 +6570,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 67.31 83.82 0)
+			(at 152.4 168.91 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6572,7 +6581,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 67.31 83.82 0)
+			(at 152.4 168.91 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6583,7 +6592,7 @@
 			)
 		)
 		(property "Sim.Device" ""
-			(at 67.31 83.82 90)
+			(at 152.4 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6594,7 +6603,7 @@
 			)
 		)
 		(property "Sim.Type" ""
-			(at 67.31 83.82 90)
+			(at 152.4 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6605,7 +6614,7 @@
 			)
 		)
 		(property "LCSC" "C25900"
-			(at 67.31 83.82 90)
+			(at 152.4 168.91 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8712,7 +8721,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom no)
+		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -8729,7 +8738,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "RB520S-30"
+		(property "Value" "RB751S40"
 			(at 247.65 126.9999 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8751,7 +8760,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "http://www.vishay.com/docs/88503/1n4001.pdf"
+		(property "Datasheet" "https://www.onsemi.com/download/data-sheet/pdf/rb751s40t1-d.pdf"
 			(at 245.11 125.73 0)
 			(hide yes)
 			(show_name no)
@@ -8762,7 +8771,7 @@
 				)
 			)
 		)
-		(property "Description" "50V 1A General Purpose Rectifier Diode, DO-41"
+		(property "Description" "40 V SCHOTTKY BARRIER DIODE"
 			(at 245.11 125.73 0)
 			(hide yes)
 			(show_name no)
@@ -8786,6 +8795,17 @@
 		)
 		(property "Sim.Pins" "1=K 2=A"
 			(at 245.11 125.73 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C232576"
+			(at 245.11 125.73 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9082,7 +9102,7 @@
 	(symbol
 		(lib_name "+3V3_2")
 		(lib_id "power:+3V3")
-		(at 72.39 77.47 0)
+		(at 157.48 162.56 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -9092,7 +9112,7 @@
 		(dnp no)
 		(uuid "f3a650d4-b8a1-4912-8ee7-b84403b46635")
 		(property "Reference" "#PWR089"
-			(at 72.39 81.28 0)
+			(at 157.48 166.37 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9103,7 +9123,7 @@
 			)
 		)
 		(property "Value" "+3V3"
-			(at 71.882 73.66 0)
+			(at 156.972 158.75 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -9113,7 +9133,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 72.39 77.47 0)
+			(at 157.48 162.56 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9124,7 +9144,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 72.39 77.47 0)
+			(at 157.48 162.56 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9135,7 +9155,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3V3\""
-			(at 72.39 77.47 0)
+			(at 157.48 162.56 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)

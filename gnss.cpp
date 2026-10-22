@@ -5,9 +5,10 @@
 //           UBX NAV-PVT/NAV-SAT の解析、衛星情報収集、
 //           位置・速度・時刻の取得、リプレイ管理、
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
-//           フライトログCSVへの定期保存トリガー。
+//           フライトログCSVへの定期保存トリガー、
+//           AssistNow Autonomous（衛星軌道の自己予測）の設定と状況の記録。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/22
 // ============================================================
 // 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
 #include <Arduino.h>
@@ -58,6 +59,17 @@ uint32_t get_gnss_fix_millis() { return gnss_fix_millis; }
    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
    0x55,0xB4}
+// UBX-CFG-VALSET: CFG-ANA-USE_ANA（0x10230001）= 1 / 0。AssistNow Autonomous の有効・無効。
+//   layers=0x03（RAM と BBR）。**BBR にも書くのは、電源投入の瞬間から有効にしておくため。**
+//   BBR は BT1 で保たれるので、こちらが設定を送る前（起動直後の約 1 秒）の測位から
+//   保存済みの予測軌道が使われる。旧形式の CFG-NAVX5 ではなく、u-blox が M10 で推奨する
+//   VALSET で送る（Interface description UBX-21035062 §4.9.1）。
+#define UBLOX_CFG_ANA_ON  {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x03,0x00,0x00,0x01,0x00,0x23,0x10,0x01,0xD1,0xD0}
+#define UBLOX_CFG_ANA_OFF {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x03,0x00,0x00,0x01,0x00,0x23,0x10,0x00,0xD0,0xCF}
+// UBX-CFG-VALSET: CFG-MSGOUT-UBX_NAV_AOPSTATUS_UART1（0x2091007A）= 2（2 エポックに 1 回 = 1Hz）。
+//   layers=0x01（RAM のみ。毎回の起動で送り直すので BBR に残す必要は無い）。
+//   「ON になったか」を GNSS 自身の申告で確かめるのと、計算中の時間を測るのに使う。
+#define UBLOX_AOPSTATUS_1HZ {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x01,0x00,0x00,0x7A,0x00,0x91,0x20,0x02,0xC7,0x88}
 
 // --- GNSS 最新値の保持変数 ---
 // UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
@@ -108,6 +120,20 @@ static float  gsa_hdop    = 0.0f;             // Horizontal DOP
 static float  gsa_vdop    = 0.0f;             // Vertical DOP
 static int    gsa_prns[GSA_MAX_PRN] = {};     // 測位に使用中の衛星 PRN（0=未使用）
 static int    gsa_numsat  = 0;                // 測位使用衛星数
+
+// --- AssistNow Autonomous（衛星軌道の自己予測）の状態 ---
+// 仕組みと条件は README の「GNSS の起動を速くする」。ここは GNSS DETAIL 3 と log.txt 用。
+static int8_t   ana_state      = -1;     // NAV-AOPSTATUS の useAOP（-1=まだ届いていない）
+static bool     ana_busy       = false;  // 予測を計算中か（NAV-AOPSTATUS status≠0）
+static uint32_t ana_busy_ms    = 0;      // 計算していた時間の累計（ログを書くたびに 0 へ）
+static uint32_t ana_last_ms    = 0;      // 前回 NAV-AOPSTATUS を受けた millis()
+static uint8_t  ana_data_svs   = 0;      // 予測データを持っている衛星数（NAV-SAT aopAvail）
+static uint8_t  ana_orbit_svs  = 0;      // いま予測軌道を使っている衛星数（NAV-SAT orbitSource=4）
+static uint8_t  eph_orbit_svs  = 0;      // いま放送暦を使っている衛星数（NAV-SAT orbitSource=1）
+// 起動後最初の fix のあと、次の NAV-SAT で「どの軌道で測ったか」を 1 行残すための印。
+// fix の瞬間ではなく次の NAV-SAT にするのは、NAV-SAT が 10 秒に 1 回なので、
+// fix の瞬間に手元にある値は**まだ 1 度も届いていない（0 のまま）**ことがあるため。
+static bool     ana_fix_report_pending = false;
 
 // UBX ハンドラーから参照するため前方宣言
 void removeStaleSatellites();
@@ -251,8 +277,20 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     //   **1 エポック前（= まだ no-fix だったとき）の値**が出る。fix 獲得の瞬間は
     //   ほぼ必ず 0 になり、ログが "fix=3 sats=0" という矛盾した見た目になっていた。
     if (prev_fixtype <= 1 && new_fixtype >= 2) {
-      enqueueTask(createLogSdfTask("GNSS FIXED fix=%d sats=%d hAcc=%.1fm",
-        new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f));
+      // 起動後最初の fix だけ、起動からの秒数を添える。GNSS は本体と同じ +3V3 で
+      // 電源が入るので、**電源を入れて起動したときはこれが TTFF**（AssistNow Autonomous が
+      // 効けば数秒、効かなければ 20 秒台）。USB からの書き込み直後のように GNSS の電源が
+      // 切れていなかった起動では、GNSS は既に測位しているので 1 秒前後になる。
+      static bool first_fix_logged = false;
+      if (!first_fix_logged) {
+        first_fix_logged = true;
+        ana_fix_report_pending = true;
+        enqueueTask(createLogSdfTask("GNSS FIXED fix=%d sats=%d hAcc=%.1fm %.1fs after boot",
+          new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f, millis() / 1000.0f));
+      } else {
+        enqueueTask(createLogSdfTask("GNSS FIXED fix=%d sats=%d hAcc=%.1fm",
+          new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f));
+      }
     }
     prev_fixtype  = new_fixtype;
     gsa_fixtype   = new_fixtype;
@@ -292,6 +330,8 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
   // gsa_prns をリセットして使用中衛星 PRN を再構築
   int prn_idx = 0;
   for (int i = 0; i < GSA_MAX_PRN; i++) gsa_prns[i] = 0;
+  // 軌道の出どころ（AssistNow Autonomous の効き具合）を数え直す
+  uint8_t n_ana_data = 0, n_ana_orbit = 0, n_eph_orbit = 0;
 
   for (int s = 0; s < numSvs; s++) {
     const uint8_t *sv = p + 8 + s * 12;
@@ -304,6 +344,12 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     bool svUsed    = (flags & 0x08) != 0;  // bit3=svUsed
 
     if (svId == 0) continue;
+
+    // flags bit8-10 orbitSource（1=放送暦 / 4=AssistNow Autonomous）、bit14 aopAvail
+    const uint8_t orbitSource = (flags >> 8) & 0x07;
+    if (flags & (1UL << 14)) n_ana_data++;
+    if (orbitSource == 4)    n_ana_orbit++;
+    if (orbitSource == 1)    n_eph_orbit++;
 
     // gnssId → satelliteType 変換
     int satType;
@@ -341,6 +387,16 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
     if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;
   }
+  ana_data_svs  = n_ana_data;
+  ana_orbit_svs = n_ana_orbit;
+  eph_orbit_svs = n_eph_orbit;
+  if (ana_fix_report_pending) {
+    // 最初の fix で何の軌道を使っていたか。ANA が多ければ AssistNow Autonomous が効いた。
+    // fix から最大 10 秒後の値なので、放送暦に切り替わり始めた衛星も混ざりうる。
+    ana_fix_report_pending = false;
+    enqueueTask(createLogSdfTask("GNSS ORBIT after 1st fix: ANA=%d EPH=%d (ANA data %d SVs)",
+      n_ana_orbit, n_eph_orbit, n_ana_data));
+  }
   ubx_sat_updated = true;
 }
 
@@ -360,6 +416,34 @@ static void handle_navdop(const uint8_t *p, uint16_t len) {
         ubx_hacc_mm / 1000.0f, ubx_vacc_mm / 1000.0f, ubx_sacc_mmps / 1000.0f,
         gsa_fixtype, stored_numsats));
     }
+  }
+}
+
+// UBX-NAV-AOPSTATUS (class=0x01, id=0x60, payload=16 bytes) ハンドラー
+// AssistNow Autonomous が本当に有効か（useAOP）と、予測を計算中か（status≠0）を受ける。
+// 計算中は GNSS の消費電流が増える（u-blox は量を公表していない。時間は数秒、まれに
+// 60 秒超）ので、計算していた時間を積算して GNSS_ANA_LOG_INTERVAL_MS ごとに log.txt へ残す。
+static void handle_navaopstatus(const uint8_t *p, uint16_t len) {
+  if (len < 16) return;
+  const uint32_t now = millis();
+  // 前回からの間隔を「前回の状態」で積算する。途切れたあとの 1 回目は 2 秒で頭打ちにして、
+  // 受信が止まっていた間をまるごと計算中に数えないようにする（通常は 1Hz で届く）。
+  if (ana_busy && ana_last_ms != 0) {
+    const uint32_t dt = now - ana_last_ms;
+    ana_busy_ms += (dt < 2000) ? dt : 2000;
+  }
+  ana_last_ms = now;
+  ana_state   = (p[4] & 0x01) ? 1 : 0;
+  ana_busy    = (p[5] != 0);
+
+  static uint32_t window_start_ms = 0;
+  if (window_start_ms == 0) window_start_ms = now;   // 最初の窓は受信開始から数える
+  if (now - window_start_ms >= GNSS_ANA_LOG_INTERVAL_MS) {
+    enqueueTask(createLogSdfTask("GNSS ANA use=%d data=%d orbANA=%d orbEPH=%d busy=%lus/%lus",
+      (int)ana_state, ana_data_svs, ana_orbit_svs, eph_orbit_svs,
+      (unsigned long)(ana_busy_ms / 1000), (unsigned long)((now - window_start_ms) / 1000)));
+    ana_busy_ms     = 0;
+    window_start_ms = now;
   }
 }
 
@@ -480,6 +564,11 @@ static void process_ubx(uint8_t b) {
           #endif
           snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
             "UBX-NAV-DOP P=%.1f H=%.1f V=%.1f", gsa_pdop, gsa_hdop, gsa_vdop);
+        } else if (ubx_msgid == 0x60) {
+          // NAV-AOPSTATUS: AssistNow Autonomous の有効・計算中
+          handle_navaopstatus(ubx_buf, used_len);
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-NAV-AOPSTATUS use=%d busy=%d", (int)ana_state, (int)ana_busy);
         } else {
           #ifdef DEBUG_GBX_NMEA
           Serial.print("[UBX] unknown NAV cls=01 id="); Serial.print(ubx_msgid, HEX);
@@ -669,6 +758,11 @@ float    get_gnss_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（
 // 測位エポック（iTOW, ms）。ミラーは通さない — これは**自機の受信機**が
 // いつ測位したかであり、同じ観測の二重利用を防ぐためだけに使う。
 uint32_t get_gnss_itow_ms()    { return ubx_itow_ms; }   // NAV-PVT iTOW（GPS 週内時刻, ms）
+// AssistNow Autonomous の状態（GNSS DETAIL 3 用）。どれも**自機の GNSS** の値。
+int  get_gnss_ana_state()      { return ana_state; }
+bool get_gnss_ana_busy()       { return ana_busy; }
+int  get_gnss_ana_data_svs()   { return ana_data_svs; }
+int  get_gnss_ana_orbit_svs()  { return ana_orbit_svs; }
 bool get_gnss_fixok() {
   if (link_mirror_active()) return link_get_fix_ok();
   return ubx_gnssFixOK;                                    // gnssFixOK フラグ
@@ -703,11 +797,14 @@ uint32_t get_gnss_baudrate() { return gnss_current_baudrate; }
 // UBX フレームを1パケットずつ読み、ACK-ACK なら true を返す。
 // NAV-PVT など非 ACK パケットはヘッダ・ペイロード・チェックサムを
 // 丸ごと読み飛ばすため、固定バッファに収まらない問題が起きない。
+// ★ 待ちの間も BNO085 を引き取る（CLAUDE.md「BNO085 の読み出しを飢えさせない」）。
+//   GNSS が居ないと 1 回 600ms 空振りし、起動時に 7 回続く。
 static bool ubxWaitAck(uint32_t timeout_ms) {
   unsigned long t0 = millis();
   uint8_t  state = 0, cls = 0, id = 0;
   uint16_t paylen = 0, payidx = 0;
   while (millis() - t0 < timeout_ms) {
+    imu_service_if_due();
     if (!GNSS_SERIAL.available()) continue;
     uint8_t b = GNSS_SERIAL.read();
     switch (state) {
@@ -737,13 +834,21 @@ enum {
   GNSS_CFGNG_SAT  = 0x04,  // NAV-SAT 出力
   GNSS_CFGNG_DOP  = 0x08,  // NAV-DOP 出力
   GNSS_CFGNG_NAV5 = 0x10,  // CFG-NAV5 Airborne<1g
+  GNSS_CFGNG_ANA  = 0x20,  // CFG-ANA-USE_ANA（AssistNow Autonomous）
+  GNSS_CFGNG_AOPS = 0x40,  // NAV-AOPSTATUS 出力
 };
+// 起動画面の GNSS の OK/NG（gnss_cfg_ok）に数えるのはここまで。
+// AssistNow Autonomous は起動を速くするだけで、通らなくても航法は今までどおりなので
+// NG にしない（結果は log.txt の同じ行に残る）。
+static const uint8_t GNSS_CFGNG_ESSENTIAL =
+  GNSS_CFGNG_RATE | GNSS_CFGNG_PVT | GNSS_CFGNG_SAT | GNSS_CFGNG_DOP | GNSS_CFGNG_NAV5;
 
 // GNSS モジュール（u-blox SAM-M10Q）とのシリアル接続を確立する。
 // NMEA が 10 秒届かない場合は gnss_loop() から自動的に再呼出しされる。
 //
 //   1回目 : 工場デフォルトの 9600bps で開き、UBX-CFG-PRT で 38400bps・UBX 出力のみに
-//           切り替えたうえで NAV-PVT / NAV-SAT / NAV-DOP / CFG-NAV5 を設定する。
+//           切り替えたうえで NAV-PVT / NAV-SAT / NAV-DOP / CFG-NAV5 /
+//           AssistNow Autonomous（CFG-ANA）/ NAV-AOPSTATUS を設定する。
 //   2回目以降（リトライ）: ボーレートだけを交互に試す。設定コマンドは送らない。
 //           偶数回 = 9600（工場出荷デフォルトのまま起動した場合）
 //           奇数回 = 38400（CFG-PRT 設定済みのモジュールを掴み直す場合）
@@ -908,21 +1013,53 @@ void gnss_setup() {
         #endif
       }
 
+      // ⑦ CFG-ANA-USE_ANA: AssistNow Autonomous の有効・無効（settings.h の GNSS_USE_ANA）
+      // ★ 0 のときも「無効」を書き込む。BBR に残った以前の「有効」を消すため。
+      {
+        const unsigned char cmd_on[]  = UBLOX_CFG_ANA_ON;
+        const unsigned char cmd_off[] = UBLOX_CFG_ANA_OFF;
+        const unsigned char* cmd = GNSS_USE_ANA ? cmd_on : cmd_off;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd_on); i++) GNSS_SERIAL.write(cmd[i]);
+      }
+      {
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_ANA;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] CFG-ANA-USE_ANA="); Serial.print(GNSS_USE_ANA);
+        Serial.print(": "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+      // ⑧ NAV-AOPSTATUS を 1Hz で出力（有効なときだけ。GNSS DETAIL 3 と log.txt 用）
+      if (GNSS_USE_ANA) {
+        { const unsigned char cmd[] = UBLOX_AOPSTATUS_1HZ;
+          delay(50);
+          for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GNSS_CFGNG_AOPS;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAV-AOPSTATUS 1Hz: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
       // 設定結果を log.txt に 1 行だけ残す。
       // ACK が返らなかった場合、症状は「レートが半分」「方位の追従が鈍い」程度で
       // 画面には何も出ないため、後から原因に辿り着く唯一の手掛かりになる。
       {
-        gnss_cfg_ok = (cfg_ng == 0);
+        gnss_cfg_ok = ((cfg_ng & GNSS_CFGNG_ESSENTIAL) == 0);
         const char* prt = prt_nak ? "NAK" : (prt_ack ? "ack" : "none");
+        const char* ana = GNSS_USE_ANA ? "ANA" : "ANAoff";
         if (cfg_ng == 0) {
-          enqueueTask(createLogSdfTask("GNSS CFG OK 2Hz/PVT/SAT/DOP/Air1g (prt=%s)", prt));
+          enqueueTask(createLogSdfTask("GNSS CFG OK 2Hz/PVT/SAT/DOP/Air1g/%s (prt=%s)", ana, prt));
         } else {
-          enqueueTask(createLogSdfTask("GNSS CFG NO ACK:%s%s%s%s%s (prt=%s)",
+          enqueueTask(createLogSdfTask("GNSS CFG NO ACK:%s%s%s%s%s%s%s (prt=%s)",
             (cfg_ng & GNSS_CFGNG_RATE) ? " RATE2HZ"    : "",
             (cfg_ng & GNSS_CFGNG_PVT)  ? " NAVPVT"     : "",
             (cfg_ng & GNSS_CFGNG_SAT)  ? " NAVSAT"     : "",
             (cfg_ng & GNSS_CFGNG_DOP)  ? " NAVDOP"     : "",
             (cfg_ng & GNSS_CFGNG_NAV5) ? " AIRBORNE1G" : "",
+            (cfg_ng & GNSS_CFGNG_ANA)  ? (GNSS_USE_ANA ? " ANA" : " ANAOFF") : "",
+            (cfg_ng & GNSS_CFGNG_AOPS) ? " AOPSTATUS"  : "",
             prt));
         }
       }

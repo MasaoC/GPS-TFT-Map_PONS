@@ -1,10 +1,11 @@
 // ============================================================
 // File    : power.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-// Role    : 電源まわり。USB 判定と、電源経路の異常（充電 IC の故障）の検出と警報。
+// Role    : 電源まわり。USB 判定と、電源経路の異常（充電 IC の故障）の検出と警報、
+//           高温での充電の警告。
 //           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/22
 // ============================================================
 //
 // ■ 何を見張るか（docs/pons_power.md）
@@ -19,6 +20,12 @@
 //   充電 LED も消えるので見た目では分からない。SW4 の OFF 側の接点が GPIO40 を GND に
 //   落とすので、「本体が動いているのに GPIO40 ≒ 0V」で分かる。地図に注意を出し、1 度だけ読み上げる。
 //
+// ■ 高温での充電（v7・v7.1 とも）
+//   電池の仕様は「充電 0〜45°C」。MCP73831 には温度を入れる端子が無く、夏の車内や日なたでも
+//   充電を続ける。USB がつながっている間に MS5611（本体基板）の温度が CHARGE_HOT_C を
+//   超え続けたら、地図に出して読み上げる。止める手段（充電 IC の PROG を切る GPIO）は無いので、
+//   USB を抜いてもらう。
+//
 // ★ 警報はここ（loop() の最上位）で鳴らす。描画は display_tft.cpp が
 //   power_fault_active() を見て描く（CLAUDE.md「警報を描画関数の中に書かない」）。
 #include "power.h"
@@ -26,6 +33,7 @@
 #include "mysd.h"
 #include "gnss.h"         // gnss_get_own_fix()（移動中の判定）・リプレイ／デモ中か
 #include "link.h"         // link_mirror_active()
+#include "airdata.h"      // get_airdata_temperature()（高温での充電）
 
 #define POWER_SAMPLE_MS 250UL
 
@@ -43,6 +51,10 @@ static bool     s_swoff_said  = false; // この回の SW OFF をもう読み上
 static bool     s_moving      = false;
 static uint32_t s_still_since = 0;     // 移動中に止まり始めた時刻（0 = まだ止まっていない）
 #endif
+static bool     s_hot         = false; // 高温での充電（CHARGE_HOT_HOLD_MS 続いて確定）
+static uint32_t s_hot_since   = 0;
+static uint32_t s_hot_alert   = 0;
+static float    s_hot_temp    = 0.0f;  // 判定に使った温度 [°C]（表示・ログ用）
 
 // ADC の生の平均を電圧にする。ピーク追跡（get_input_voltage）は高い値を
 // 数秒保持するので、ここでは使わない。
@@ -131,19 +143,24 @@ static void update_moving(uint32_t now) {
 
 bool power_sw_off_notice_active() {
 #if PONS_BOARD == PONS_BOARD_V71
-  // !s_fault: 地図の段を電源経路の異常と共用しているので、重ねない（settings.h の NOTICE_Y_*）。
-  return s_swoff && !s_fault && !s_moving && showing_own_state();
+  // !s_fault / !s_hot: 地図の段を電源経路の異常・高温の充電と共用しているので、重ねない
+  // （settings.h の NOTICE_Y_*）。どちらも「充電しないで」の話なので、そちらを優先する。
+  return s_swoff && !s_fault && !s_hot && !s_moving && showing_own_state();
 #else
   return false;
 #endif
 }
 
+bool  power_charge_hot_active() { return s_hot; }
+float power_charge_hot_temp()   { return s_hot_temp; }
+
 void power_format_status(char* buf, size_t n) {
+  const char* hot = s_hot ? " hot" : "";
 #if PONS_BOARD == PONS_BOARD_V71
-  snprintf(buf, n, "usb=%d vbus=%.2fV%s", usb_power_present() ? 1 : 0, s_volt,
-           power_sw_off_on_usb() ? " sw=off" : "");
+  snprintf(buf, n, "usb=%d vbus=%.2fV%s%s", usb_power_present() ? 1 : 0, s_volt,
+           power_sw_off_on_usb() ? " sw=off" : "", hot);
 #else
-  snprintf(buf, n, "usb=%d", usb_power_present() ? 1 : 0);
+  snprintf(buf, n, "usb=%d%s", usb_power_present() ? 1 : 0, hot);
 #endif
 }
 
@@ -190,6 +207,48 @@ static void sw_off_tick(uint32_t now) {
 }
 #endif
 
+// 高温での充電（上の ■）。USB がつながっている間だけ見る。
+// ★ 温度は get_airdata_temperature()（MS5611 の実測。リプレイでも差し替わらない）。
+// ★ 電源経路の異常のあいだは見ない（usb_power_present() が false になる）。あちらが優先。
+// ★ ミラー中・リプレイ中・デモ中も出す。**自機が熱い**という話なので、電源経路の異常と同じく
+//   「ミラー中に自機の状態を混ぜない」の例外（docs/pons_power.md）。
+static void charge_hot_tick(uint32_t now) {
+  const bool watch = usb_power_present() && get_airdata_ok();
+  const float t = watch ? get_airdata_temperature() : 0.0f;
+  if (!watch) {
+    if (s_hot) {
+      const char* why = usb_power_present() ? "temperature sensor lost"
+                      : (s_fault ? "power fault" : "USB removed");
+      enqueueTask(createLogSdfTask("CHARGE HOT cleared (%s)", why));
+    }
+    s_hot = false;
+    s_hot_since = 0;
+    return;
+  }
+  s_hot_temp = t;
+  if (!s_hot) {
+    if (t < CHARGE_HOT_C) { s_hot_since = 0; return; }
+    if (s_hot_since == 0) { s_hot_since = now; return; }
+    if (now - s_hot_since < CHARGE_HOT_HOLD_MS) return;
+    s_hot = true;
+    s_hot_alert = 0;
+    enqueueTask(createLogSdfTask("CHARGE HOT: %.1fC (limit %.0fC while charging)", t, CHARGE_HOT_C));
+  } else if (t <= CHARGE_HOT_CLEAR_C) {
+    s_hot = false;
+    s_hot_since = 0;
+    enqueueTask(createLogSdfTask("CHARGE HOT cleared: %.1fC", t));
+    return;
+  }
+  if (s_hot_alert == 0 || now - s_hot_alert >= CHARGE_HOT_ALERT_MS) {
+    s_hot_alert = now;
+    // 「充電中の温度が高すぎます。USBを外して、涼しい場所で冷ましてください。」
+    // ★ macOS の音声合成で作った**仮の音声**（power_fault.wav と同じ）。
+    // ★ 最低音量 60: 電池の仕様外の充電で、発火の恐れにつながるので電源経路の異常と同じ扱い
+    //   （docs/pons_sound.md §5）。
+    enqueueTask(createPlayWavTask("wav/charge_hot.wav", 3, 60));
+  }
+}
+
 void power_tick() {
   const uint32_t now = millis();
   if (now - s_last_sample < POWER_SAMPLE_MS) return;
@@ -198,6 +257,7 @@ void power_tick() {
 #if PONS_BOARD == PONS_BOARD_V71
   sw_off_tick(now);
 #endif
+  charge_hot_tick(now);
 
   if (!s_fault) {
     if (now < POWER_FAULT_ARM_MS || !fault_condition()) {
