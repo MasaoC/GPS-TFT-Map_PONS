@@ -1233,7 +1233,7 @@ static void print_boot_check(const char* label, BootCheckState st) {
 
 // setup() の間、センサーの初期化が終わった順に呼ぶ（draw_boot_title() の下段を上書きする）。
 // ★ GNSS の行は draw_boot_diag(0) が SD の情報で上書きするので、ここだけの一時的な表示でよい。
-//   MS5611/IMU（BNO085 か SCH16T）の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
+//   MS5611/BNO085 の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
 //   最終表示に切り替わっても見た目が変わらない（チラつきが無い）。
 void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss) {
   const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
@@ -1247,7 +1247,7 @@ void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckSta
   print_boot_check("MS5611:", airdata);
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
   tft.print("  ");
-  // センサー名は基板で決まる（v7 = BNO085 / v7.1 = SCH16T）。固定の文字にしないこと。
+  // センサー名は imu_sensor_name() から取る（ログと画面で同じ名前にするため）。
   char imu_label[12];
   snprintf(imu_label, sizeof imu_label, "%s:", imu_sensor_name());
   print_boot_check(imu_label, imu);
@@ -1911,7 +1911,7 @@ void draw_eskf_debug() {
                         : yacc < 40.0f ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
   backscreen.setCursor(x + 186, y + 12); backscreen.printf("%4.0f", ey);
 
-  // チップ内融合（比較用）。★ **これが無いチップもある**（SCH16T）。
+  // チップ内融合（比較用）。★ **これが無いチップもある**（融合を持たないチップ）。
   //   無いときに 0 を並べると「水平で北向き」という本物らしい値になるので、
   //   行ごと "---" にする。ヨーの収束状態（右の G/数値）は ESKF の話なので常に出す。
   backscreen.setTextSize(1);
@@ -2043,7 +2043,7 @@ static void draw_imu_page1() {
     backscreen.setCursor(cx_p, y); backscreen.printf("%+6.1f", bp);
     backscreen.setCursor(cx_y, y); backscreen.printf("%6.1f", by);
   } else {
-    // 融合出力を持たないチップ（SCH16T）。0 を出すと「水平で北向き」に見える。
+    // 融合出力を持たないチップ（融合を持たないチップ）。0 を出すと「水平で北向き」に見える。
     backscreen.setCursor(cx_r, y); backscreen.print("  ---");
     backscreen.setCursor(cx_p, y); backscreen.print("  ---");
     backscreen.setCursor(cx_y, y); backscreen.print("  ---");
@@ -2226,9 +2226,8 @@ static void draw_imu_page2() {
 
   // ---- 校正（DCD）----
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  // ★ 動的校正（DCD）と申告精度は BNO085 固有。SCH16T は工場校正で、
-  //   実行中に精度を申告する仕組みが無い。**節だけ差し替えて、下のメニューと
-  //   pushSprite には必ず到達すること**（early return にするとページが真っ白になり、
+  // ★ 動的校正（DCD）と申告精度は BNO085 固有（imu_caps の CAL）。無いチップでも
+  //   **節だけ差し替えて、下のメニューと pushSprite には必ず到達すること**（early return にするとページが真っ白になり、
   //   Next page / Back も押せなくなる）。
   const bool has_cal = (imu_caps() & IMU_CAP_CAL) != 0;
   backscreen.setCursor(2, y);
@@ -2271,7 +2270,7 @@ static void draw_imu_page2() {
                       imu_cal_autosave_on() ? "ON " : "OFF", imu_cal_save_count());
     y += lh + 4;
   } else {
-    // 工場校正のチップ（SCH16T）。保存するものが無いことを 1 行で言う。
+    // 工場校正のチップ（融合を持たないチップ）。保存するものが無いことを 1 行で言う。
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.setCursor(2, y);
     backscreen.printf("%s: factory cal, nothing to save", imu_sensor_name());
@@ -2289,7 +2288,7 @@ static void draw_imu_page2() {
     switch (i) {
       case IMU2_MENU_SAVECAL: {
         // ★ 条件は acc==3 かつ gyr==3（地磁気は入れない。屋内では 3 に届かない）。
-        // ★ 保存するものが無いチップ（SCH16T）でも**行は消さない。**
+        // ★ 保存するものが無いチップ（融合を持たないチップ）でも**行は消さない。**
         //   消すと IMU2_MENU_* の添字とカーソル位置がずれる。灰色で無効を示す。
         const bool rdy = has_cal && imu_cal_ready();
         if (!sel) backscreen.setTextColor(rdy ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
@@ -3095,25 +3094,6 @@ static void draw_charge_hot_notice() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
-// SW を OFF にしたまま USB で充電している（v7.1。power.cpp）。満充電にならないことを知らせる。
-// ★ 点滅させる（banner_visible）。警報ではなく情報なので、地図を隠し続けない。
-// ★ 移動中・ミラー中・リプレイ中・デモ中は出さない（判定は power_sw_off_notice_active()）。
-// ★ 段は電源経路の異常と共用（settings.h の NOTICE_Y_CHG_SW_OFF。2 つは同時に出ない）。
-// ★ 白地なので COLOR_ORANGE は使わない（明るいオレンジはほぼ見えない）。
-static void draw_sw_off_notice() {
-  if (!power_sw_off_notice_active()) return;
-  if (!banner_visible()) return;
-  const int bx = 5, by = NOTICE_Y_CHG_SW_OFF, bw = SCREEN_WIDTH - 10, bh = 40;
-  begin_notice_box(bx, by, bw, bh, COLOR_DARKORANGE);
-  backscreen.loadFont(AA_FONT_SMALL);
-  backscreen.setCursor(12, by + 5);
-  backscreen.print("POWER SW IS OFF.");
-  backscreen.setCursor(12, by + 21);
-  backscreen.print("TURN ON TO CHARGE");
-  // ★ 地図用フォントと色に戻して抜ける（このファイルの約束）。
-  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-}
-
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -3125,7 +3105,6 @@ void push_backscreen(){
   draw_warn_mute_banner();         // 同じく最上位。GNSS 警告の下に並ぶ
   draw_power_fault_warning();      // 一番上。地図の下端に出す
   draw_charge_hot_notice();        // 電源経路の異常と同じ段（同時には出ない）
-  draw_sw_off_notice();            // 同じ段（上の 2 つが出ている間は出ない）
   backscreen.pushSprite(0, 50);
   TIMING_END(ts_push_backscreen, push_bs);
 }
@@ -3662,14 +3641,9 @@ void draw_footer(){
     } else {
       strlcpy(sbuf, "s--", sizeof(sbuf));  scol = COLOR_GRAY;
     }
-    uint16_t rcol;
-    bool rlow = false;
-    if (power_sw_off_on_usb()) {           // 自機（power.h）
-      strlcpy(rbuf, "r5V", sizeof(rbuf));  rcol = COLOR_DARKORANGE;
-    } else {
-      snprintf(rbuf, sizeof(rbuf), "r%d", battery_percent(rv));
-      rcol = battery_color(rv);  rlow = (rv <= BAT_LOW_VOLTAGE);
-    }
+    snprintf(rbuf, sizeof(rbuf), "r%d", battery_percent(rv));
+    const uint16_t rcol = battery_color(rv);
+    const bool     rlow = (rv <= BAT_LOW_VOLTAGE);
     // 右端（SCREEN_WIDTH - 4）にそろえる。桁数で幅が変わるので、先に全体の幅を測る。
     int bx = SCREEN_WIDTH - 4 - 6 * (int)(strlen(sbuf) + strlen(rbuf));
     bx = draw_batt_part(bx, sbuf, scol, slow);
@@ -3678,11 +3652,7 @@ void draw_footer(){
   }
   // リプレイ中は USB 接続でも電池表示にする。飛行時は USB が刺さっていないため、
   // "USB" のままだと当時の画面を再現できない。
-  // ★ v7.1 で SW OFF のまま USB で動いているときも "USB"（色は暗い橙。満充電にならない合図）。
-  //   電池電圧は読めないので、下の残量表示へ落とすと 0% になる。usb_power_present() だけを
-  //   見ると、VBUS が一瞬 4.3V を割ったときに落ちてしまう（power.h）。
-  else if ((usb_power_present() || power_sw_off_on_usb()) && !replay_voltage_active()) {
-    if (power_sw_off_on_usb()) header_footer.setTextColor(COLOR_DARKORANGE);
+  else if (usb_power_present() && !replay_voltage_active()) {
     header_footer.print("USB");
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
@@ -4436,7 +4406,6 @@ uint16_t battery_color(float v) {
 // 設定画面フッターの電池アイコン色を返す。
 // NAV 画面ヘッダーのバッテリー残量表示（draw_header 内）と同じ配色に合わせている:
 //   電源経路の異常       : 赤
-//   SW OFF のまま USB    : 暗い橙（v7.1。満充電にならない）
 //   USB 接続中           : 緑（"USB" 表示が緑）
 //   BAT_LOW_VOLTAGE 以下 : 赤（残量警告）
 //   BAT_HALF_VOLTAGE 未満: マゼンタ（50%未満）
@@ -4445,8 +4414,6 @@ uint16_t battery_color(float v) {
 uint16_t battery_status_color() {
   if (power_fault_active())
     return COLOR_RED;
-  if (power_sw_off_on_usb() && !replay_voltage_active())
-    return COLOR_DARKORANGE;
   if (usb_power_present() && !replay_voltage_active())
     return COLOR_GREEN;
   return battery_color(get_display_voltage());
@@ -4557,18 +4524,9 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   } else if (power_charge_hot_active()) {
     header_footer.setTextColor(COLOR_RED);
     header_footer.printf("Battery: TOO HOT TO CHARGE (%.0fC)", power_charge_hot_temp());
-  } else if (power_sw_off_on_usb() && !replay_voltage_active()) {
-    // v7.1: 電池は SW で切り離されていて電圧は読めない（power.h）。このままでは満充電にならない
-    header_footer.setTextColor(COLOR_DARKORANGE);
-    header_footer.print("Battery: SW OFF - turn ON to charge");
   } else if (usb_power_present() && !replay_voltage_active()) {
-#if PONS_BOARD == PONS_BOARD_V71
-    // v7.1 は電池そのものを測っているので、充電中の電圧が出せる
-    header_footer.printf("Battery: Charging %.2fV", get_display_voltage());
-#else
     // v7 は VSYS（USB 側の電圧）しか見えないので、電圧は出さない
     header_footer.print("Battery: Charging");
-#endif
   }else{
     double input_voltage = get_display_voltage();
     // 電圧の上下限は settings.h の 1 か所に置く（battery_percent() と同じ基準）。

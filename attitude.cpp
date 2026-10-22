@@ -191,7 +191,7 @@ static bool     static_now_ = false;
 static uint32_t static_since_us_ = 0;
 // 静止中の加速度累積（初期姿勢＝重力方向の平均用）。
 // ★ GRV の代わり。実測で GRV とロール・ピッチが 0.05 度以内で一致する
-//   （20260930 / 20260818 の計 5 セッション。→ docs/imu_sch16t_plan.md）。
+//   （20260930 / 20260818 の計 5 セッション。分析は PONSv7.1 ブランチの docs/imu_sch16t_plan.md）。
 static float    acc_sum_[3] = {0, 0, 0};
 static uint32_t acc_count_  = 0;
 

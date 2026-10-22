@@ -33,7 +33,6 @@
 #include "attitude.h"   // imu_body_euler_rad()（マウント回転）
 // ★ ここは**チップに依らない公開 API**。実装は 0.986 で 2 つに割れている:
 //   imu.cpp（バリオ KF・観測・ゲッター）と imu_bno08x.cpp（BNO085 ドライバ）。
-//   どちらのチップかは settings.h の IMU_SENSOR_DEFAULT で決まり、
 //   呼び出し側はこのヘッダだけを見ればよい。境界は imu_sensor.h。
 
 // ---- 初期化 ----

@@ -1,20 +1,20 @@
 # CLAUDE.md
 
-> ## このブランチは **BNO085 基板（初代 v7）用**
+> ## このブランチは **v7 基板（BNO085 搭載）専用**
 >
-> 新基板（BNO085 を降ろし、SCH16T を J6 の FPC で外付けした v7.1）は **`PONSv7.1`** ブランチ。
-> **v7 基板のソフト開発はこのブランチ、v7.1 基板は `PONSv7.1` で行う**（2026-10-21 から）。
+> v7.1 基板（BNO085 を降ろし、SCH16T を外付け）は **`PONSv7.1`** ブランチ。
+> **2026-10-23（0.995）にブランチごと分けた。** それまで両ブランチ共通だったファームから、
+> このブランチでは v7.1 だけのコード（`PONS_BOARD` の分岐・SCH16T のドライバ・バックライト・
+> SW OFF のまま充電の検出）と文書を外した。**基板を切り替えるスイッチはもう無い。**
 >
-> - **ファームのコードは両ブランチで共通。** `settings.h` の `PONS_BOARD` で基板を切り替える。
->   **このブランチでは `PONS_BOARD_V7` から変えない。** 0.994 までの共通コードは
->   `PONSv7.1` からマージで取り込んだ（SCH16T のドライバや v7.1 の電源・バックライトも
->   入っているが、V7 のビルドでは `#if` で落ちる）。
-> - **`kicad/` は v7 基板のデータ。** `PONSv7.1` の v7.1 本体・5 ピンの GNSS 基板・
->   `IMU_murata`・`case_cover` は持ち込まない。README の「ハードウェア」の節も v7 のまま。
-> - **共通コードの修正は、もう一方のブランチへも渡す**（マージか cherry-pick）。
->   そのとき `kicad/`・README のハードウェアの節・この注記は**受け取る側のまま残す**。
->
-> 下の「破ると静かに壊れる約束」のうち **【v7 のみ】** が付いた項目は、このブランチで有効。
+> - **`kicad/` は v7 基板のデータ。** README の「ハードウェア」の節も v7 のもの。
+> - **航法・音・無線・画面など基板に関係しない直しは、`PONSv7.1` から cherry-pick で受け取る**
+>   （逆も同じ）。分けたあとはコードが少しずつ違うので、マージではなく 1 コミットずつ取り込み、
+>   衝突したら受け取る側の基板に合わせる。
+> - **無線（PONS Link）は v7.1 の機体とも混ぜて使う。** 受信側が v7.1 の送信機の状態
+>   （`LINK_ST_USB_SW_OFF` → `s5V` など）を読む処理は消さない。飛行 CSV の列（`lux` / `backlight`）も
+>   v7.1 とそろえてあり、v7 ではいつも空欄。
+> - IMU の能力ビット（`imu_caps()`）の層は残してある（BNO085 では全部立つ）。
 
 PONS v7 — 人力飛行機パイロット向けの GNSS 航法装置ファームウェア。
 RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
@@ -136,17 +136,9 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 - **USB の有無は `usb_power_present()`（[power.cpp](power.cpp)）だけで判定する。
   `digitalRead(USB_DETECT)` を書かない。** 2026-10-15、v7 の充電 IC が壊れて VBUS を
   持ち上げ、「USB」と誤判定して**電池低下警告まで止めていた**（VSYS 2.5V）。
-  v7.1 は VBUS を ADC（GPIO47）で測るので `USB_DETECT` 自体が無い。
   電源経路の異常（`power_fault_active()`）の表示と音だけは**ミラー中・リプレイ中も出す**
   （自機が発熱している話なので「ミラー中に自機の状態を混ぜない」の例外）。
   経緯と全基板の対応は [docs/pons_power.md](docs/pons_power.md)。
-- **【v7.1】電池電圧を表示・警告・送信・記録するときは `power_sw_off_on_usb()` を見る。**
-  SW を OFF にしたまま USB で動いていると GPIO40 は SW4 で GND に落ちていて、
-  `get_input_voltage()` は 0V へ下がる。0V を本物として扱うと、残量 0%・電池低下の誤報
-  （自機と受信機）・CSV の 0.00V になる。いまは電池表示・`batt_alarm_tick()`・
-  `link_push_telemetry()`（`RHAVE_VOLT` を立てず `LINK_ST_USB_SW_OFF` を立てる。受信機は `s5V`）・
-  CSV（空欄）で処理してある。**`usb_power_present()` で代用しないこと** — VBUS が一瞬
-  4.3V を割っただけで外れ、その瞬間の 0V が流れる。
 - **設定値は settings.h に一箇所だけ。** 例えばバリオのデッドバンドは音（sound.cpp）と
   VSI のグレー線（display_tft.cpp）が同じ定数を見ている。片方だけ直すと
   「線は出ているのに鳴らない」になる。**「どちらの定数を選ぶか」も
@@ -187,25 +179,13 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   **通信途絶からの復旧が一度も成功しない**（2026-09-23 に実機で判明）。
   回避は `imu_bus_begin()` の冒頭。`sh2_opened` のフラグごと消さないこと。
   詳細は [src/bno08x/PONS_VENDORING.md](src/bno08x/PONS_VENDORING.md) (5)。
-- **基板は `settings.h` の `PONS_BOARD` で分かれる。ピンを足すときは必ずそこで分ける。**
-  同じ GPIO が v7 と v7.1 で逆の意味になる（41-44 は v7 では i2c1 と E220 の
-  M0/M1、v7.1 では SPI1 一式。M0/M1 は v7.1 で GPIO31 へ移った）。
-  **割り当ての表は `PONS_BOARD` のところに 1 つだけ置いてある。**
-  散文の「新基板では〜」で足すと必ず追従漏れする（0.986 で 5 ファイル 20 箇所まで
-  増えたのを `#if` に畳んだ）。載っているセンサーも板で決まるので
-  `IMU_SENSOR_DEFAULT` は `PONS_BOARD` から導いている。
-  移行の段取りは [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md)。
-- **【v7 のみ】GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
+- **GPIO42 / GPIO44 は I2C バスそのもの。`INPUT_PULLUP` で停めること。**
   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、`GPIO35`/`GPIO34` と
   ショートしている。RP2350 のパッドを入力・プル無しで放置すると Low 側へ
   張り付くことがあり、外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝
   **Low に見えてバスを殺す**（実機で 5 回中 4 回起動失敗）。
   実体は `imu_bus_park_unused_pins()`。**出力にはしないこと。**
-  ★ **v7.1 では向きが逆**で、同じ 2 本を `INPUT_PULLUP` で停めたままにすると
-  **SPI1 が死ぬ**。0.986 でこの処置は [imu_bno08x.cpp](imu_bno08x.cpp) の中だけになり、
-  あのファイルは `#if` で囲ってあるので **v7.1 ではファイルごと消える**。
-  外から呼ばないこと（呼ぶと v7.1 で復活してしまう）。
-- **【v7 のみ】GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
+- **GPIO41 を imu.cpp から駆動しないこと。あれは E220 の M0/M1 専用。**
   `R53` を外してあるので **BNO085 の H_CSN とは繋がっていない**（H_CSN は
   基板上で未接続。I2C では don't care）。駆動すると **E220 を mode 3 へ
   叩き落とす**（IMU 復旧からも呼ばれるので飛行中に無線が黙る。0.975 で実際に起きた）。
@@ -253,7 +233,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   0.984 で止めた `IMULOG_ID_MAG 0x03` は欠番としてコメントを残してある。
   `tools/imulog/decode_imulog.py` の `KINDS` も同じ理由で定義を残す。
 - **融合出力（GRV / RV / LACC / 動的校正）に触る前に `imu_caps()` を見る。**
-  [imu_sensor.h](imu_sensor.h) の能力ビット。SCH16T に差し替えると全部落ちるので、
+  [imu_sensor.h](imu_sensor.h) の能力ビット。融合を持たないチップでは全部落ちるので、
   「有って当然」と書いた箇所は**0 を本物として表示する**（姿勢比較の行なら
   0 は「水平で北向き」というもっともらしい値になる）。
   画面の分岐で `return` してはいけない箇所がある点にも注意
@@ -278,12 +258,10 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [display_pages.cpp](display_pages.cpp) | 地上で見る詳細画面（VARIO / GNSS DETAIL）。スプライトは display_tft.cpp のものを借りる |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
-| [imu_bno08x.cpp](imu_bno08x.cpp) | BNO085 ドライバ。**チップ依存はここだけ**（0.986 で imu.cpp から分離）。ファイル全体が `#if` で囲ってあるので、新しいドライバも同じ形にする |
-| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
+| [imu_bno08x.cpp](imu_bno08x.cpp) | BNO085 ドライバ。**チップ依存はここだけ**（0.986 で imu.cpp から分離）。契約は imu_sensor.h の `imu_drv_*` |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
-| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・v7.1 の「SW OFF のまま充電」の検出 |
-| [backlight.cpp](backlight.cpp) | v7.1 のバックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。電池低下のときの点滅（判定は `batt_alarm_tick()`）。v7 では空 |
+| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告 |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
@@ -293,9 +271,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
-- 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.1）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
-- SCH16T の実機立ち上げ: [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md)
-  （単独テストの実測値・Step 0〜5 の手順・踏みそうな罠。設計は imu_sch16t_plan.md）
+- 充電 IC 焼損（2026-10-15）の対策と、v3〜v7 の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
 - BNO085 を I2C へ切り替えるとき: [docs/imu_i2c_bringup.md](docs/imu_i2c_bringup.md)
   （0.944 との挙動差・ライブラリ改変の影響・JP1 と R46/R47 の手順）
 - SD カードの雛形: [sd/](sd/) — レイアウトとログの列の意味は README の「SD カードの構成」

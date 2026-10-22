@@ -25,7 +25,6 @@
 #include "src/sound.h"
 #include "attitude.h"
 #include "link.h"
-#include "backlight.h" // 飛行 CSV の lux / backlight 列
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -792,9 +791,11 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   task.saveCsvArgs.minute = minute;
   task.saveCsvArgs.second = second;
   task.saveCsvArgs.centisecond = centisecond;
-  // 照度とバックライトは引数で回さず、ここ（Core0）で読む。呼び出し元は 1 か所だけ。
-  task.saveCsvArgs.lux    = backlight_get_lux();
-  task.saveCsvArgs.bl_pct = (int8_t)backlight_get_duty_pct();
+  // 照度とバックライトの列は v7 基板には測る手段が無いので、いつも空欄（負の値）。
+  // ★ 列そのものは消さない。v7.1 の機体と飛行 CSV の形式をそろえておくため
+  //   （受信機のリプレイや tools/ の解析が、どちらの機体のログも同じに読める）。
+  task.saveCsvArgs.lux    = -1.0f;
+  task.saveCsvArgs.bl_pct = -1;
   return task;
 }
 

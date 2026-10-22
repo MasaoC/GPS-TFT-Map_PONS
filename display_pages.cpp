@@ -69,7 +69,7 @@ static void draw_vario_page1() {
                                         : "-- Sensor Status --");
   y += line_height;
 
-  // MS5611 と IMU（v7 = BNO085 / v7.1 = SCH16T）を 1 行にまとめる
+  // MS5611 と BNO085 を 1 行にまとめる
   backscreen.setCursor(2, y);
   backscreen.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
   backscreen.printf("MS5611:%s", get_airdata_ok() ? "OK" : "NG");
@@ -278,7 +278,7 @@ static void draw_vario_page2() {
     // イベント受信レート
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    // ★ 融合出力のレートは BNO085 にしか無い（imu_caps）。SCH16T では
+    // ★ 融合出力のレートは imu_caps() で確かめてから出す。無いのに出すと
     //   0.0Hz が並んで「飢餓している」と誤読されるので、行ごと差し替える。
     if (imu_caps() & IMU_CAP_QUAT)
       backscreen.printf("GRV:%.1fHz LACC:%.1fHz RV:%.1fHz",
@@ -302,7 +302,7 @@ static void draw_vario_page2() {
                       get_imu_altitude_msl_raw(), get_imu_vspeed_raw());
     y += nextcolumn_height;
 
-    // 線形加速度（ボディフレーム）— チップ内で重力を引いた値。SCH16T には無い。
+    // 線形加速度（ボディフレーム）— チップ内で重力を引いた値（imu_caps で確かめる）。
     if (imu_caps() & IMU_CAP_LINACC) {
       float lax, lay, laz;
       get_imu_linaccel(lax, lay, laz);
@@ -319,7 +319,7 @@ static void draw_vario_page2() {
     // Euler 角（Roll/Pitch: GAME RV、Yaw: RV+Mag）
     // ★ **これはチップ内の融合の出力**で、機上の推定には使っていない
     //   （0.983 で ESKF から切り離した）。ここは ESKF と突き合わせるための
-    //   比較表示。SCH16T には融合が無いので節ごと出さない。
+    //   比較表示。融合が無いチップでは節ごと出さない。
     if (imu_caps() & IMU_CAP_QUAT) {
       float roll, pitch, yaw;
       get_imu_euler(roll, pitch, yaw);

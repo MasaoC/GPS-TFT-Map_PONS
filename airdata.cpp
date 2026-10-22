@@ -578,8 +578,7 @@ float get_airdata_win_hz()      { return last_win_hz; }
 // どちらよりも先に呼ぶ必要がある。GPS_TFT_map.ino の setup() 冒頭から呼ぶこと。
 void airdata_wire_begin() {
     myWire.begin();
-    // i2c0 は MS5611 と、v7.1 ではケースカバーの照度センサー VEML7700（0x10。backlight.cpp）。
-    // どちらも 400kHz で動く。
+    // i2c0 は MS5611 だけ。400kHz で動く。
     // ★ v6 までは BNO085 と共用していて、BNO085 のクロックストレッチで
     //   RP2350 側がタイムアウト（error: 5）しバスがロックするため 100kHz に落としていた。
     //   v7 で BNO085 を SPI1（予備で i2c1）へ移してバスを分離したので、

@@ -38,7 +38,6 @@
 #include "imu_sensor.h"   // imu_caps()（融合出力が有るかの判定）
 #include "link.h"   // PONS Link（機体⇄ボート無線）
 #include "power.h"      // USB 判定・電源経路の異常
-#include "backlight.h"  // v7.1 のバックライト（輝度スイッチ・照度センサー）
 #include "readiness.h"  // 本番前チェック（そろったら「準備完了」）
 #include "src/imulog.h"
 #include "attitude.h"
@@ -244,9 +243,6 @@ void setup(void) {
   pinMode(SD_DETECT, INPUT_PULLUP);  // SDカード検出ピン（挿入時 LOW）
   analogReadResolution(12);  // 12bit = 0〜4095
   power_setup();
-  // v7.1 はバックライトを PWM で点けるまで消灯している。setup_tft() より前に呼ぶこと
-  // （後ろだと起動画面が見えない）。照度センサーは i2c0 の後（下の backlight_als_setup）。
-  backlight_setup();
 
   //setup switch
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
@@ -277,7 +273,6 @@ void setup(void) {
 
   // I2C バス初期化（MS5611・BNO085 共用。両 setup より先に呼ぶ）
   airdata_wire_begin();
-  backlight_als_setup();   // v7.1 の照度センサー（i2c0）。v7 では何もしない
   // BNO085 を先に初期化する（リセット後のブート時間を確保するため）
   imu_setup();
   attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gnss.cpp から流し込む）
@@ -294,10 +289,9 @@ void setup(void) {
   // ★★ **log.txt の最初の行はビルドの身元にする**（0.991 で追加）。
   //   これが無いと、後からログを読んだときに**どのファームが出したものか分からない**。
   //   バージョンだけでは足りない:
-  //     ・基板世代（v7 / v7.1）でピン配置と IMU が丸ごと変わる
+  //     ・どの基板向けのビルドか（v7 と v7.1 はブランチごと別のファーム）
   //     ・RELEASE でないビルドは GNSS シミュレーションやデバッグ出力が入りうる
-  //   ★ 基板名は VERSION_TEXT を使う（PONS_BOARD から導いてある文字列。
-  //     ここで "v7.1" と書き直すと二重管理になる）。
+  //   ★ 基板名は VERSION_TEXT を使う（settings.h。ここで書き直すと二重管理になる）。
   //   ★ 置き場所はここ。setup() の冒頭に出すと、Core1 の mutex_init より先に
   //     enqueueTask を呼ぶ窓に入る（setup1() の冒頭コメント参照）。
   //     既存のログ呼び出しと同じ区間に置けば、**ログの 1 行目**にはなる。
@@ -667,10 +661,7 @@ static void batt_alarm_tick() {
       //   USB に見せかけたせいで、VSYS 2.5V でもこの警告が鳴らなかった。
       // ★ 電源経路の異常のあいだは鳴らさない。電圧が低いのは電池ではなく故障のせいで、
       //   「バッテリー低下」と言うと交換で済むと誤解させる（power_tick が別の音で鳴らす）。
-      // ★ v7.1 で SW OFF のまま USB で動いているあいだも鳴らさない。電池電圧は読めず
-      //   bv は 0V へ下がっていく（power.h）。usb_power_present() だけに頼ると、
-      //   VBUS が一瞬 4.3V を割ったときに 0V を電池切れと言ってしまう。
-      if (!usb_power_present() && !power_sw_off_on_usb() &&
+      if (!usb_power_present() &&
           !power_fault_active() && !replay_voltage_active() &&
           bv <= BAT_LOW_VOLTAGE &&
           (last_batt_warn_ms == 0 ? millis() >= BAT_WARN_INTERVAL_MS
@@ -683,33 +674,6 @@ static void batt_alarm_tick() {
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
                                      battery_percent(bv), bv));
       }
-#if PONS_BOARD == PONS_BOARD_V71
-      // ---- 電池低下のときの省電力: バックライトを点滅させる（backlight.cpp）----
-      // 入るのは上の警告と同じ条件（電圧が測れる状態で BAT_LOW_VOLTAGE 以下。起動直後の
-      // BAT_WARN_INTERVAL_MS は待つ）。抜けるのは測れない状態（USB など）になったときか、
-      // 電池が BAT_SAVER_EXIT_VOLTAGE まで戻ったとき（交換・充電）。
-      // ★ BAT_LOW_VOLTAGE で抜けないこと。消灯中は負荷が減って電圧が少し戻るので、
-      //   点滅の入り切りをくり返す（settings.h の BAT_SAVER_EXIT_VOLTAGE）。
-      // v7 はバックライトをソフトで切れない（輝度スイッチが直接切り替える）ので対象外。
-      {
-        static bool saver = false;
-        const bool measurable = !usb_power_present() && !power_sw_off_on_usb() &&
-                                !power_fault_active() && !replay_voltage_active();
-        if (!saver) {
-          if (measurable && millis() >= BAT_WARN_INTERVAL_MS && bv <= BAT_LOW_VOLTAGE) {
-            saver = true;
-            backlight_set_saver(true);
-            enqueueTask(createLogSdfTask("BATTERY SAVER on: backlight %lus on / %lus off (%.2fV)",
-                                         BL_SAVER_ON_MS / 1000, BL_SAVER_OFF_MS / 1000, bv));
-          }
-        } else if (!measurable || bv >= BAT_SAVER_EXIT_VOLTAGE) {
-          saver = false;
-          backlight_set_saver(false);
-          enqueueTask(createLogSdfTask("BATTERY SAVER off (%.2fV%s)", bv,
-                                       measurable ? "" : ", USB / not measurable"));
-        }
-      }
-#endif
     }
   }
 }
@@ -1005,11 +969,10 @@ static void periodic_log_tick() {
       char jst_str[8];
       if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
       else           strlcpy(jst_str, "--:--", sizeof(jst_str));
-      char pst[32], bst[32];
+      char pst[32];
       power_format_status(pst, sizeof(pst));
-      backlight_format_status(bst, sizeof(bst));   // v7.1 だけ " bl=35% lux=12"（自動調光の調整用）
-      enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
-                                   get_input_voltage(), pst, bst, analogReadTemp(), jst_str));
+      enqueueTask(createLogSdfTask("volt=%.2fV %s cpu=%.1fC %s JST",
+                                   get_input_voltage(), pst, analogReadTemp(), jst_str));
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
       // 生レポートのレート要求を変えたら必ずこの行を確認すること:
@@ -1021,8 +984,8 @@ static void periodic_log_tick() {
       //   drop が増えていれば → SD 書き出しが追いつかず生ログを取りこぼしている。
       // ※ 2 行に分けること。log_sd() は logtext[128] に "<起動秒>:" を前置するため、
       //   1 行にまとめると稼働時間が延びるほど末尾が切り詰められる（実際 wrote= が消えた）。
-      // ★ 融合出力（GRV/LACC/RV）は BNO085 にしか無い。SCH16T では
-      //   imu_caps() が落ちるので、0.0Hz を並べて「飢餓している」と誤読させない。
+      // ★ 融合出力（GRV/LACC/RV）は imu_caps() で確かめてから出す。無いのに
+      //   0.0Hz を並べると「飢餓している」と誤読させる。
       if (imu_caps() & IMU_CAP_QUAT)
         enqueueTask(createLogSdfTask("rate GRV=%.1f LACC=%.1f RV=%.1f MS5611=%.1f Hz",
                                      get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz(),
@@ -1409,8 +1372,6 @@ void loop() {
 
   power_tick();   // 電源経路の異常（USB に見えるのに電圧が低い）。電池警告より先に判定する
 
-  backlight_tick();   // v7.1 のバックライト（輝度スイッチ・照度）
-
   batt_alarm_tick();
 
   ground_check_tick();
@@ -1689,7 +1650,7 @@ static void imu_execute() {
       case IMU2_MENU_SAVECAL: {
         // ★ 条件を満たさないなら**何もしない**。途中の悪い校正を不揮発へ焼くと
         //   電源を切っても戻らないので、ここは低い音で断る。
-        // ★ 動的校正を持たないチップ（SCH16T は工場校正）でも同じく断る。
+        // ★ 動的校正を持たないチップでも同じく断る。
         //   保存するものが無い（imu_caps / imu_sensor.h）。
         if (!(imu_caps() & IMU_CAP_CAL) || !imu_cal_ready()) {
           enqueueTask(createPlayMultiToneTask(440, 200, 1));

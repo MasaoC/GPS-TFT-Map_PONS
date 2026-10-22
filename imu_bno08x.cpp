@@ -6,13 +6,9 @@
 //           融合出力（GRV / RV / LACC）由来のゲッターを持つ。
 //           推定（姿勢 ESKF・バリオ KF）へは imu_feed_*() だけで渡す。
 //
-// ■ 0.986 で imu.cpp（1918 行）から切り出した（docs/imu_sch16t_plan.md §1）。
+// ■ 0.986 で imu.cpp（1918 行）から切り出した。
 //   **本文は 1 行も書き換えず行範囲ごと移した**（挙動を変えないため）。
 //   契約は imu_sensor.h の imu_drv_*。
-//
-// ★ **ファイル全体が #if IMU_SENSOR_DEFAULT == IMU_SENSOR_BNO085 で囲ってある。**
-//   Arduino はスケッチ直下の .cpp を全部コンパイルするので、囲わないと
-//   imu_sch16t.cpp を足した日に imu_drv_* が多重定義になる。
 //
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/10/10
@@ -21,7 +17,6 @@
 #include <Arduino.h>
 #include "settings.h"
 
-#if IMU_SENSOR_DEFAULT == IMU_SENSOR_BNO085
 
 // ★ **山括弧でなく相対パス。**ライブラリは src/bno08x/ に取り込んである
 //   （理由と改変点は src/bno08x/PONS_VENDORING.md）。
@@ -214,7 +209,7 @@ static int _report_count = 0;
 //  このチップに何が有るか（imu_sensor.h の能力ビット）
 // ============================================================
 // ★ **融合出力に触る画面・ログは必ずここを見ること。**
-//   SCH16T に差し替えると QUAT / MAGYAW / LINACC / CAL が全部落ちる。
+//   融合を持たないチップに差し替えると QUAT / MAGYAW / LINACC / CAL が全部落ちる。
 //   「有って当然」と書いた箇所は、そのとき**古い値を出し続ける**か
 //   0 を本物として表示する（どちらも静かな誤表示）。
 //   MAG は 0.984 で購読をやめたので BNO085 でも立てない。
@@ -1248,4 +1243,3 @@ bool imu_drv_lacc_predict_sample(float a_body[3], float q[4], uint32_t* lacc_las
     return true;
 }
 
-#endif  // IMU_SENSOR_DEFAULT == IMU_SENSOR_BNO085

@@ -90,7 +90,7 @@ void attitude_on_accel(const float a[3]);
 // ★ 0.983 で attitude_on_grv() / attitude_on_rv() を削除した。
 //   初期ロール・ピッチは静止中の平均加速度から作り（GRV と実測 0.05 度以内で一致）、
 //   初期ヨーは GNSS 航跡から入れる。**生ジャイロと生加速度だけで初期化できる**ので
-//   BNO085 でも SCH16T でも同じ経路が使える。経緯は settings.h の
+//   融合を持たない IMU でも同じ経路が使える。経緯は settings.h の
 //   ESKF_YAW_INIT_MIN_SPEED_MPS のコメント。
 
 // ---- GNSS 速度観測（gnss.cpp の NAV-PVT 解析から呼ぶ）----

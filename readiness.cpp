@@ -86,8 +86,8 @@ static uint16_t evaluate() {
 
   if (any_setting_red()) m |= RDY_SET;
 
-  // 電源。USB がつながっている間は電池の残量が測れない（v7 は VSYS、v7.1 の SW OFF は 0V）。
-  if (usb_power_present() || power_sw_off_on_usb()) {
+  // 電源。USB がつながっている間は電池の残量が測れない（測れるのは VSYS＝USB 側の電圧）。
+  if (usb_power_present()) {
     m |= RDY_USB;
   } else if (power_fault_active() ||
              battery_percent(get_input_voltage()) < READY_BATT_MIN_PERCENT) {

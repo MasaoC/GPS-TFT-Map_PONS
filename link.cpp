@@ -1162,14 +1162,9 @@ static void link_push_telemetry() {
         have |= RHAVE_ATT_WIND;
     }
 
-    // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（power.h）。
-    //   電圧は載せず（RHAVE_VOLT を立てない）、下で LINK_ST_USB_SW_OFF を立てる（受信機は "s5V"）。
-    const float batt_v = get_input_voltage();   // ピーク追跡を回すため、載せないときも読む
-    const bool  batt_ok = !power_sw_off_on_usb();
-    if (batt_ok) {
-        t.volt_cv = link_pack_volt(batt_v);
-        have |= RHAVE_VOLT;
-    }
+    const float batt_v = get_input_voltage();
+    t.volt_cv = link_pack_volt(batt_v);
+    have |= RHAVE_VOLT;
 
     t.numsat  = (uint8_t)constrain(get_gnss_numsat(), 0, 255);
     have |= RHAVE_NUMSAT;
@@ -1190,8 +1185,7 @@ static void link_push_telemetry() {
     if (!get_imu_ok())                                 st |= LINK_ST_IMU_ERROR;
     if (attitude_needs_apply() && attitude_get_rpy_enabled()) st |= LINK_ST_NEEDS_APPLY;
     // 電源経路の異常のあいだは電池低下を立てない（電圧が低いのは故障のせい。下の PWR_FAULT が知らせる）
-    // 電池電圧が読めないあいだも立てない（0V を「電池切れ」と言うと受信機が誤報する）
-    if (batt_ok && batt_v <= BAT_LOW_VOLTAGE && !power_fault_active()) st |= LINK_ST_BAT_LOW;
+    if (batt_v <= BAT_LOW_VOLTAGE && !power_fault_active()) st |= LINK_ST_BAT_LOW;
     // 地上チェック（ロール／ピッチ／較正やり直し）。**送信機しか判定できない**ので
     // ビットで運ぶ（link_proto.h の「再計算できるものは載せない」の例外）。
     if (ground_roll_warn_active)                       st |= LINK_ST_GROUND_ROLL;
@@ -1203,7 +1197,6 @@ static void link_push_telemetry() {
     //   立ち**、受信機が電源投入ごとに誤報する。
     if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
     if (power_fault_active())                          st |= LINK_ST_PWR_FAULT;
-    if (!batt_ok)                                      st |= LINK_ST_USB_SW_OFF;   // 受信機は "s5V"
     t.status = st;
 
     t.crc16 = link_telem_crc(&t);
