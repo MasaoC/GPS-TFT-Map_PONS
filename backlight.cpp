@@ -2,14 +2,21 @@
 // File    : backlight.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : v7.1 の TFT バックライト。輝度スイッチと照度センサー（VEML7700）で
-//           PWM の点灯率を決める。v7 では何もしない（スイッチで直接切り替える）。
+//           PWM の点灯率を決める。電池低下のときは点滅させて電池をもたせる。
+//           v7 では何もしない（スイッチで直接切り替える）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/19
+// Updated : 2026/10/22
 // ============================================================
 //
 // ■ 決め方（値は settings.h の TFT_BL_* / BL_AUTO_*）
 //   輝度スイッチ High … 照度によらず最大
 //   輝度スイッチ Low  … VEML7700 の照度で自動。センサーが無い・壊れたときは TFT_BL_DUTY_DIM
+//
+// ■ 電池低下のとき（backlight_set_saver。判定は GPS_TFT_map.ino の batt_alarm_tick）
+//   BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消すをくり返す。点いている間は上の明るさのまま。
+//   ★ 消している間も「本来の明るさ」（s_duty）は追い続ける。出力だけ 0 にする。
+//     s_duty まで 0 にすると、点いた瞬間から照度へゆっくり寄せ直す（BL_AUTO_TAU_MS）ので、
+//     2 秒の点灯がほとんど暗いまま終わる。
 //
 // ■ ハード
 //   Q1（P-ch）のゲートを GPIO34 の PWM で駆動。**Low で点灯**（R47 でプルアップして
@@ -49,13 +56,29 @@ static uint32_t s_als_check  = 0;       // 設定を最後に確かめた時刻
 static float    s_lux        = -1.0f;   // 点灯率に使う照度。-1 = 一度も読めていない
 static bool     s_lux_fresh  = false;   // s_lux が今のセンサーから読めた値か（ログ用）
 static uint32_t s_last_ms    = 0;
+static bool     s_saver      = false;   // 電池低下で点滅中か
+static uint32_t s_saver_t0   = 0;       // 点滅を始めた時刻（点灯から始める）
+static float    s_out        = -1.0f;   // 実際に出している点灯率（点滅で 0 になる。-1 = まだ出していない）
 
 // ---- PWM ----
-static void pwm_apply(float duty) {
-  s_duty = duty;
+static void pwm_write(float level) {
+  if (fabsf(level - s_out) <= 0.001f) return;
+  s_out = level;
   const uint slice = pwm_gpio_to_slice_num(TFT_BL_PIN);
   const uint32_t top = pwm_hw->slice[slice].top;
-  pwm_set_gpio_level(TFT_BL_PIN, (uint16_t)(duty * (top + 1)));
+  pwm_set_gpio_level(TFT_BL_PIN, (uint16_t)(level * (top + 1)));
+}
+
+// 点滅の消灯側にいるか。
+static bool saver_dark(uint32_t now) {
+  if (!s_saver) return false;
+  return (now - s_saver_t0) % (BL_SAVER_ON_MS + BL_SAVER_OFF_MS) >= BL_SAVER_ON_MS;
+}
+
+// 本来の点灯率を決め、点滅の消灯側なら出力だけ 0 にする（上の ■ 電池低下のとき）。
+static void pwm_apply(float duty) {
+  s_duty = duty;
+  pwm_write(saver_dark(millis()) ? 0.0f : duty);
 }
 
 // ---- VEML7700（レジスタは 16bit、下位バイトが先）----
@@ -161,7 +184,15 @@ static void update_duty(float k) {
   if (sw)                duty = TFT_BL_DUTY_BRIGHT;
   else if (s_lux < 0.0f) duty = TFT_BL_DUTY_DIM;   // センサー無し
   else                   duty = s_duty + (auto_duty(s_lux) - s_duty) * k;
-  if (fabsf(duty - s_duty) > 0.001f) pwm_apply(duty);
+  // 本来の点灯率が変わらなくても、点滅の切り替わりで出力は変わるので毎回通す
+  // （同じ値なら pwm_write() が何もしない）。
+  pwm_apply(duty);
+}
+
+void backlight_set_saver(bool on) {
+  if (on && !s_saver) s_saver_t0 = millis();   // 点灯の側から始める
+  s_saver = on;
+  pwm_write(saver_dark(millis()) ? 0.0f : s_duty);
 }
 
 void backlight_als_setup() {
@@ -197,8 +228,9 @@ int   backlight_get_duty_pct() { return (int)lroundf(s_duty * 100.0f); }
 
 void backlight_format_status(char* buf, size_t n) {
   const float lux = backlight_get_lux();
-  if (lux < 0.0f) snprintf(buf, n, " bl=%d%% lux=--", backlight_get_duty_pct());
-  else            snprintf(buf, n, " bl=%d%% lux=%.0f", backlight_get_duty_pct(), lux);
+  const char* sv = s_saver ? " saver" : "";
+  if (lux < 0.0f) snprintf(buf, n, " bl=%d%% lux=--%s", backlight_get_duty_pct(), sv);
+  else            snprintf(buf, n, " bl=%d%% lux=%.0f%s", backlight_get_duty_pct(), lux, sv);
 }
 
 #else  // v7: 輝度スイッチがバックライトの電源を直接切り替えるので、何もしない
@@ -206,6 +238,7 @@ void backlight_format_status(char* buf, size_t n) {
 void backlight_setup() {}
 void backlight_als_setup() {}
 void backlight_tick() {}
+void backlight_set_saver(bool) {}
 void backlight_format_status(char* buf, size_t n) { if (n) buf[0] = '\0'; }
 float backlight_get_lux() { return -1.0f; }
 int   backlight_get_duty_pct() { return -1; }

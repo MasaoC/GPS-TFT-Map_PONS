@@ -39,6 +39,7 @@
 #include "link.h"   // PONS Link（機体⇄ボート無線）
 #include "power.h"      // USB 判定・電源経路の異常
 #include "backlight.h"  // v7.1 のバックライト（輝度スイッチ・照度センサー）
+#include "readiness.h"  // 本番前チェック（そろったら「準備完了」）
 #include "src/imulog.h"
 #include "attitude.h"
 #include "src/vectormap.h"
@@ -252,8 +253,8 @@ void setup(void) {
   setup_tft();
   // ★ **ここでタイトルを出しておく。**これが無いと起動画面が始まるまで画面が真っ白になる。
   //   白のままの区間は imu_setup()（BNO085 のリセット〜ブートで約 0.4 秒）と
-  //   gnss_setup() で、**GNSS 未接続だと後者が約 3.7 秒**かかる
-  //   （CFG の ACK 待ちが 5 コマンドぶん空振りする。log.txt の "GNSS CFG NO ACK"）。
+  //   gnss_setup() で、**GNSS 未接続だと後者が約 5 秒**かかる
+  //   （CFG の ACK 待ちが 7 コマンドぶん空振りする。log.txt の "GNSS CFG NO ACK"）。
   //   GNSS を繋げば ACK が即返るので 1 秒以下に縮む。**固まっているわけではない。**
   draw_boot_title();
   // BNO085 の NRST を早期に HIGH に固定する（内蔵プルアップ）。
@@ -682,6 +683,33 @@ static void batt_alarm_tick() {
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
                                      battery_percent(bv), bv));
       }
+#if PONS_BOARD == PONS_BOARD_V71
+      // ---- 電池低下のときの省電力: バックライトを点滅させる（backlight.cpp）----
+      // 入るのは上の警告と同じ条件（電圧が測れる状態で BAT_LOW_VOLTAGE 以下。起動直後の
+      // BAT_WARN_INTERVAL_MS は待つ）。抜けるのは測れない状態（USB など）になったときか、
+      // 電池が BAT_SAVER_EXIT_VOLTAGE まで戻ったとき（交換・充電）。
+      // ★ BAT_LOW_VOLTAGE で抜けないこと。消灯中は負荷が減って電圧が少し戻るので、
+      //   点滅の入り切りをくり返す（settings.h の BAT_SAVER_EXIT_VOLTAGE）。
+      // v7 はバックライトをソフトで切れない（輝度スイッチが直接切り替える）ので対象外。
+      {
+        static bool saver = false;
+        const bool measurable = !usb_power_present() && !power_sw_off_on_usb() &&
+                                !power_fault_active() && !replay_voltage_active();
+        if (!saver) {
+          if (measurable && millis() >= BAT_WARN_INTERVAL_MS && bv <= BAT_LOW_VOLTAGE) {
+            saver = true;
+            backlight_set_saver(true);
+            enqueueTask(createLogSdfTask("BATTERY SAVER on: backlight %lus on / %lus off (%.2fV)",
+                                         BL_SAVER_ON_MS / 1000, BL_SAVER_OFF_MS / 1000, bv));
+          }
+        } else if (!measurable || bv >= BAT_SAVER_EXIT_VOLTAGE) {
+          saver = false;
+          backlight_set_saver(false);
+          enqueueTask(createLogSdfTask("BATTERY SAVER off (%.2fV%s)", bv,
+                                       measurable ? "" : ", USB / not measurable"));
+        }
+      }
+#endif
     }
   }
 }
@@ -1386,6 +1414,9 @@ void loop() {
   batt_alarm_tick();
 
   ground_check_tick();
+
+  // 本番前チェック。上の地上チェックの発報状態（ground_*_warn_active）を読むので、その後に置く。
+  readiness_tick();
 
   eskf_apply_tick();
 

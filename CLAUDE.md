@@ -6,7 +6,7 @@
 > **v7 基板のソフト開発はこのブランチ、v7.1 基板は `PONSv7.1` で行う**（2026-10-21 から）。
 >
 > - **ファームのコードは両ブランチで共通。** `settings.h` の `PONS_BOARD` で基板を切り替える。
->   **このブランチでは `PONS_BOARD_V7` から変えない。** 0.993 までの共通コードは
+>   **このブランチでは `PONS_BOARD_V7` から変えない。** 0.994 までの共通コードは
 >   `PONSv7.1` からマージで取り込んだ（SCH16T のドライバや v7.1 の電源・バックライトも
 >   入っているが、V7 のビルドでは `#if` で落ちる）。
 > - **`kicad/` は v7 基板のデータ。** `PONSv7.1` の v7.1 本体・5 ピンの GNSS 基板・
@@ -224,6 +224,11 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （落とすと最初の 1 バイトが化け、画面が「Module NO RESPONSE」になる）/
   **状態レジスタは Strict Mode でしか読めない**（`0x09` bit6 は不揮発。ver.1 互換の
   `C0 C1 C2 C3 00 02` は**使ってはいけない** — 返事が無く、代わりに**電波が出る**）。
+- **GNSS へ BBR 層で書いた設定は、BT1 が生きている限りファームを書き替えても残る。**
+  いま BBR に書いているのは `CFG-ANA-USE_ANA`（AssistNow Autonomous）だけ。やめるときは
+  送るのをやめるのではなく「無効」を書き込むこと（`GNSS_USE_ANA` を 0 にしても OFF を送るのはそのため）。
+  ほかの設定（ボーレート・出力・Airborne）は RAM にだけ書いていて、電源を切れば工場出荷に戻る前提で
+  `gnss_setup()` が組んである（毎回 9600 で開いて 38400 へ切り替える）。BBR へ移すならそこも見直す。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
   `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
   `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。
@@ -277,8 +282,9 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
-| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・v7.1 の「SW OFF のまま充電」の検出 |
-| [backlight.cpp](backlight.cpp) | v7.1 のバックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。v7 では空 |
+| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・v7.1 の「SW OFF のまま充電」の検出 |
+| [backlight.cpp](backlight.cpp) | v7.1 のバックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。電池低下のときの点滅（判定は `batt_alarm_tick()`）。v7 では空 |
+| [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
