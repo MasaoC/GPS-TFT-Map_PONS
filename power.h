@@ -16,7 +16,7 @@ void power_setup();   // setup() で analogReadResolution(12) の後に呼ぶ
 void power_tick();    // loop() の最上位で毎回呼ぶ（内部で間引く）
 
 // 本物の USB から給電されているか。
-// ★ USB の有無はこれだけで判定する。digitalRead(USB_DETECT) を直接書かないこと
+// ★ USB の有無はこれだけで判定する。VBUS の ADC（USB_VBUS_ADC_PIN）を直接読まないこと
 //   （2026-10-15、壊れた充電 IC が VBUS を持ち上げて「USB」と誤判定し、
 //   電池低下警告まで止めていた）。
 bool usb_power_present();
@@ -30,7 +30,6 @@ bool power_fault_active();
 //   （get_input_voltage() は 0V へ向かって下がる）。電池電圧を表示・送信・記録・警告する
 //   箇所はこれを見て「不明」として扱うこと。0V を本物として扱うと、残量 0% 表示・
 //   電池低下の誤報（自機と受信機）・CSV の 0.00V になる。
-// v7 は SW の状態を読めないので常に false。
 bool power_sw_off_on_usb();
 
 // 「SW を入れて充電して」の注意を地図に出すか。

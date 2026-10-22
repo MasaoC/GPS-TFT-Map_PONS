@@ -14,7 +14,7 @@
   #include <Wire.h>
 
   // MS5611 が使用する I2C バス（i2c0, GPIO32=SDA, GPIO33=SCL）。
-  // BNO085 など同じバスに繋ぐセンサーはこれを extern で参照する。
+  // VEML7700（backlight.cpp）など同じバスに繋ぐセンサーはこれを extern で参照する。
   extern TwoWire myWire;
 
   // 初期化・テスト

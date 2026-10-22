@@ -126,7 +126,7 @@ RP2350 から UART で直結する。
 | UART1 TX → E220 RXD | GPIO8 | |
 | UART1 RX ← E220 TXD | GPIO9 | |
 | E220 AUX → RP | GPIO30 | 状態通知。100nF を GND へ |
-| E220 M0 + M1（結線） | v7: GPIO41 / v7.1: **GPIO31** | `settings.h` の `PONS_BOARD` で切り替わる。v7.1 のネット名は `LORA_M01`。どちらも M0/M1 を 1 本で駆動。v7.1 は 2026-10 に GPIO47 から移した（GPIO47 は USB_SENS の ADC に回した） |
+| E220 M0 + M1（結線） | **GPIO31** | ネット名は `LORA_M01`。M0/M1 を 1 本で駆動。2026-10 に GPIO47 から移した（GPIO47 は USB_SENS の ADC に回した）。v7 は GPIO41 |
 | E220 VDD | +3V3 直結 | **VCC は開放**（排他利用）。10µF + 100nF |
 | E220 ANT | — | IPEX コネクタを使用 |
 

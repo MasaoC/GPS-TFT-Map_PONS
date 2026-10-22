@@ -41,7 +41,7 @@
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
 
-// ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
+// ---- 処理時間計測変数（IMU の読み出しを飢えさせない調査用、デバッグビルドのみ） ----
 #ifndef RELEASE
 TimingStat ts_draw_header     = TSTAT_INIT("C0_draw_header");
 TimingStat ts_push_backscreen = TSTAT_INIT("C0_push_backscreen");
@@ -666,7 +666,7 @@ static bool eskf_yaw_high_confidence() {
 // 自機アイコンの色。ESKF のヨーで機首を向けているときは黒、
 // 単に対地進路（トラック）を向けているだけのときはグレー。
 // 「いま見えている向きが機首なのかトラックなのか」を色で区別できるようにする。
-// ※ ヨーの情報源が無い場合（BNO085 非搭載機、姿勢ログの無いリプレイ）は
+// ※ ヨーの情報源が無い場合（IMU 非搭載機、姿勢ログの無いリプレイ）は
 //   区別する意味が無いので従来どおり黒。ここを入れないと IMU の無い個体で
 //   アイコンが永久にグレーになってしまう。
 static uint16_t plane_icon_color() {
@@ -1205,7 +1205,7 @@ float mapf(float x, float in_min, float in_max, float out_min, float out_max){
 // mapf() で中心座標とスケールを線形補間してスムーズなアニメーションを実現している。
 // 起動直後のタイトル。**setup_tft() の直後と startup_demo_tft() の頭の両方から呼ぶ。**
 // ★ ここを setup() の早い段階で出さないと、起動画面が始まるまで**画面が真っ白**になる。
-//   その間に何をしているかというと imu_setup()（BNO085 のリセット〜ブートで約 0.4 秒）と
+//   その間に何をしているかというと imu_setup()（SCH16T のリセット〜起動）と
 //   gnss_setup() で、後者が支配的。GNSS が繋がっていないと CFG の ACK 待ちが
 //   5 コマンドぶん空振りして **約 3.7 秒**かかる（log.txt の "GNSS CFG NO ACK"）。
 //   GNSS が繋がっていれば ACK が即返るので、ここは 1 秒以下に縮む。
@@ -1233,7 +1233,7 @@ static void print_boot_check(const char* label, BootCheckState st) {
 
 // setup() の間、センサーの初期化が終わった順に呼ぶ（draw_boot_title() の下段を上書きする）。
 // ★ GNSS の行は draw_boot_diag(0) が SD の情報で上書きするので、ここだけの一時的な表示でよい。
-//   MS5611/IMU（BNO085 か SCH16T）の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
+//   MS5611/SCH16T の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
 //   最終表示に切り替わっても見た目が変わらない（チラつきが無い）。
 void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss) {
   const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
@@ -1247,7 +1247,7 @@ void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckSta
   print_boot_check("MS5611:", airdata);
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
   tft.print("  ");
-  // センサー名は基板で決まる（v7 = BNO085 / v7.1 = SCH16T）。固定の文字にしないこと。
+  // センサー名は imu_sensor_name() から取る（ログと画面で同じ名前にするため）。
   char imu_label[12];
   snprintf(imu_label, sizeof imu_label, "%s:", imu_sensor_name());
   print_boot_check(imu_label, imu);
@@ -1327,7 +1327,7 @@ void startup_demo_tft() {
     unsigned long t = millis();
     while (!sd_setup_complete && millis() - t < 5000) {
       gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
-      imu_service_if_due();  // ★ BNO085 も引き取る。**これが無いと起動直後に殺す**
+      imu_service_if_due();  // ★ IMU も引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）
                              //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
       delay(10);
     }
@@ -1349,7 +1349,7 @@ void startup_demo_tft() {
     enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
   }
 
-  draw_boot_diag(0);      // 前半ページ: SD / MS5611 / BNO085
+  draw_boot_diag(0);      // 前半ページ: SD / MS5611 / SCH16T
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
 
@@ -1384,7 +1384,7 @@ void startup_demo_tft() {
     unsigned long wait_start = millis();
     while (millis() - wait_start < wait_timeout_ms) {
       gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
-      imu_service_if_due();  // ★ BNO085 も引き取る。**これが無いと起動直後に殺す**
+      imu_service_if_due();  // ★ IMU も引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）
                              //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
       delay(10);
     }
@@ -1441,7 +1441,7 @@ void startup_demo_tft() {
     unsigned long t0 = millis();
     while (millis() - t0 < hold_ms) {
       gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
-      imu_service_if_due();  // ★ BNO085 も引き取る。**これが無いと起動直後に殺す**
+      imu_service_if_due();  // ★ IMU も引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）
                              //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
       delay(10);
     }
@@ -1510,7 +1510,7 @@ void draw_vsi() {
     // グレー線: バリオ音デッドバンド閾値。**選び方ごと** vario_deadband_mps() に
     // 預けてあるので、音（sound.cpp）と線が構造的にずれない
     // （0.983 まで定数は共有していたが「どちらを選ぶか」の判定式が別々だった）。
-    //   KF融合中(BNO085+MS5611): ±0.25 m/s = ±20px / MS5611単独: ±0.60 m/s = ±48px
+    //   KF融合中(IMU+MS5611): ±0.25 m/s = ±20px / MS5611単独: ±0.60 m/s = ±48px
     const float db_mps = vario_deadband_mps();
     const int db_px = (int)(db_mps / MAX_VSPEED * BAR_MAX_PX + 0.5f);
     vsi_sprite.drawFastHLine(0, 120 - db_px, VSI_W, TFT_DARKGREY);
@@ -1627,7 +1627,7 @@ void draw_eskf_attitude() {
   // 機能は ON なのに姿勢が出せない状態。何も描かないと「表示が壊れた」のか
   // 「まだ準備中」なのか区別できないので、理由だけ 1 行出す。
   // 屋外で GNSS 速度が入れば 0.5 秒ほどで READY になるので、通常は一瞬しか見えない。
-  // BNO085 非搭載機は姿勢機能自体が無いので対象外（出しっぱなしになってしまう）。
+  // IMU 非搭載機は姿勢機能自体が無いので対象外（出しっぱなしになってしまう）。
   // ★ **ミラー中は出さない。** ここで言う「準備中」は *この装置の ESKF* の話で、
   //   画面に出しているのは機体の姿勢なので関係が無い。しかも return しているため、
   //   **受信機自身の ESKF が READY になるまでミラーした姿勢ブロックが丸ごと
@@ -1979,7 +1979,7 @@ static void draw_imu_row_dot(int y, uint16_t col) {
 static uint16_t imu_row_col(bool ok) { return ok ? COLOR_GREEN : COLOR_ORANGE; }
 
 static void draw_imu_status_dot() {
-  // BNO085 非搭載機。姿勢機能そのものが無いので緑（＝準備OK）にはしない。
+  // IMU 非搭載機。姿勢機能そのものが無いので緑（＝準備OK）にはしない。
   if (!get_imu_ok()) { header_footer.fillCircle(228, 18, 6, COLOR_GRAY); return; }
   // マウントから外されたあと APPLY していない＝較正が無効。これだけは赤にする。
   // 姿勢の基準そのものが失われている状態で、他の設定の良し悪しより深刻なため。
@@ -2167,10 +2167,10 @@ static uint16_t cal_acc_col(uint8_t v) {
 }
 
 // ============================================================
-//  IMU / ESKF 2/3 — BNO085 の生値と校正だけ
+//  IMU / ESKF 2/3 — IMU の生値と校正だけ
 // ============================================================
 // ★ ここに ESKF の項目を戻さないこと。校正作業をしながら見る画面なので、
-//   「BNO085 が今どう見えているか」だけに絞ってある（ESKF は 3/3）。
+//   「IMU が今どう見えているか」だけに絞ってある（ESKF は 3/3）。
 static void draw_imu_page2() {
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
@@ -2199,7 +2199,7 @@ static void draw_imu_page2() {
   backscreen.setCursor(2, y);
   backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", g[0]*R2D, g[1]*R2D, g[2]*R2D); y += lh;
   backscreen.setCursor(2, y);
-  // 静止中ならこの大きさが残留バイアス＋ノイズ。BNO085 は校正済みなので本来小さい。
+  // 静止中ならこの大きさが残留バイアス＋ノイズ（SCH16T は工場校正のゼロ点が乗る）。
   backscreen.setTextColor(gn < 0.5f ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
   backscreen.printf("|w| %.3f deg/s", gn); y += lh;
 
@@ -3332,7 +3332,7 @@ void draw_degpersec(double degpersecond){
 
 
 // ヘッダー右の大きい枠に平均ピッチを出すか（出さないときは従来どおり真方位）。
-// BNO085 非搭載機・機能 OFF・平均がまだ溜まっていない間は真方位のまま。
+// IMU 非搭載機・機能 OFF・平均がまだ溜まっていない間は真方位のまま。
 static bool header_shows_pitch() {
   // リプレイでは imu_replaydata に記録された平均ピッチを再現する
   // （実機の平均ではなく当時の画面を出す。地図側の表示を廃止したのでここが唯一の出口）。
@@ -4562,13 +4562,8 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     header_footer.setTextColor(COLOR_DARKORANGE);
     header_footer.print("Battery: SW OFF - turn ON to charge");
   } else if (usb_power_present() && !replay_voltage_active()) {
-#if PONS_BOARD == PONS_BOARD_V71
     // v7.1 は電池そのものを測っているので、充電中の電圧が出せる
     header_footer.printf("Battery: Charging %.2fV", get_display_voltage());
-#else
-    // v7 は VSYS（USB 側の電圧）しか見えないので、電圧は出さない
-    header_footer.print("Battery: Charging");
-#endif
   }else{
     double input_voltage = get_display_voltage();
     // 電圧の上下限は settings.h の 1 か所に置く（battery_percent() と同じ基準）。

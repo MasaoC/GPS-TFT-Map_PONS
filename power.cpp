@@ -41,16 +41,13 @@ static bool     s_fault       = false;
 static uint32_t s_cond_since  = 0;     // 異常の条件が成り立ち始めた時刻（0 = 成り立っていない）
 static uint32_t s_last_alert  = 0;
 static uint32_t s_last_sample = 0;
-static bool     s_usb_pin     = false; // v7: USB_DETECT の生の値
-static float    s_volt        = 0.0f;  // v7: VSYS / v7.1: VBUS（生の平均。ピーク追跡は通さない）
-#if PONS_BOARD == PONS_BOARD_V71
+static float    s_volt        = 0.0f;  // VBUS（生の平均。ピーク追跡は通さない）
 static float    s_batt_v      = 0.0f;  // GPIO40（BATPWR）の生の平均。SW OFF なら SW4 が GND に落とすので 0V
 static bool     s_swoff       = false; // SW OFF のまま USB（CHARGE_SW_OFF_HOLD_MS 続いて確定）
 static uint32_t s_swoff_since = 0;
 static bool     s_swoff_said  = false; // この回の SW OFF をもう読み上げたか
 static bool     s_moving      = false;
 static uint32_t s_still_since = 0;     // 移動中に止まり始めた時刻（0 = まだ止まっていない）
-#endif
 static bool     s_hot         = false; // 高温での充電（CHARGE_HOT_HOLD_MS 続いて確定）
 static uint32_t s_hot_since   = 0;
 static uint32_t s_hot_alert   = 0;
@@ -65,44 +62,28 @@ static float read_volt(uint8_t pin) {
 }
 
 static void sample() {
-#if PONS_BOARD == PONS_BOARD_V71
   s_volt   = read_volt(USB_VBUS_ADC_PIN);
   s_batt_v = read_volt(BATTERY_PIN);
-#else
-  s_usb_pin = digitalRead(USB_DETECT);
-  s_volt    = read_volt(BATTERY_PIN);
-#endif
 }
 
 // 異常の条件（1 回の測定ぶん）。
 static bool fault_condition() {
-#if PONS_BOARD == PONS_BOARD_V71
   // ★ SW OFF のあいだは判定しない。電池は Q3 で切り離されていて（ボディダイオードも
   //   電池 → 充電 IC の向きには流さない）、壊れた充電 IC が電池で VBUS を持ち上げることが
   //   できない。このとき VBUS が 2.0〜4.3V なのは**弱い USB**（細いケーブル・へたった
   //   モバイルバッテリー）で、異常と言うと誤報になる。
   if (power_sw_off_on_usb()) return false;
   return s_volt >= POWER_FAULT_VBUS_MIN_V && s_volt < USB_VBUS_PRESENT_V;
-#else
-  return s_usb_pin && s_volt < POWER_FAULT_VSYS_V;
-#endif
 }
 
 bool power_fault_active() { return s_fault; }
 
 bool usb_power_present() {
   if (s_fault) return false;
-#if PONS_BOARD == PONS_BOARD_V71
   return s_volt >= USB_VBUS_PRESENT_V;
-#else
-  // 異常が確定するまで（最長 POWER_FAULT_HOLD_MS）は従来どおり USB 扱い。
-  // 1 回の測定で揺らすと「USB」表示がちらつくため。
-  return s_usb_pin;
-#endif
 }
 
 bool power_sw_off_on_usb() {
-#if PONS_BOARD == PONS_BOARD_V71
   // ★ **USB の判定（usb_power_present()）を条件に入れないこと。** 本体が動いているのに
   //   電池が 0V に見えるなら、それだけで SW OFF と言い切れる（SW ON なら GPIO40 は電池の
   //   電圧で、保護回路付きの 1s は 2.5V を切らない。SW OFF なら電源は USB しかない）。
@@ -111,12 +92,8 @@ bool power_sw_off_on_usb() {
   // ★ 確定（s_swoff）を待たずに今の測定で答える。確定までの 2 秒間も 0V を本物として
   //   扱わないようにするため。
   return s_batt_v < CHARGE_SW_OFF_BATT_V;
-#else
-  return false;
-#endif
 }
 
-#if PONS_BOARD == PONS_BOARD_V71
 // 地図が自機の状態を映しているか。ミラー中は機体、リプレイ中は過去のログ、デモ中は
 // 仮想機体を映しているので、自機の充電の話は重ねない。
 // （replay_voltage_active() はリプレイ中しか true にならないので getReplayMode() で足りる）
@@ -139,16 +116,11 @@ static void update_moving(uint32_t now) {
     else if (now - s_still_since >= CHARGE_SW_STILL_MS) s_moving = false;
   }
 }
-#endif
 
 bool power_sw_off_notice_active() {
-#if PONS_BOARD == PONS_BOARD_V71
   // !s_fault / !s_hot: 地図の段を電源経路の異常・高温の充電と共用しているので、重ねない
   // （settings.h の NOTICE_Y_*）。どちらも「充電しないで」の話なので、そちらを優先する。
   return s_swoff && !s_fault && !s_hot && !s_moving && showing_own_state();
-#else
-  return false;
-#endif
 }
 
 bool  power_charge_hot_active() { return s_hot; }
@@ -156,22 +128,14 @@ float power_charge_hot_temp()   { return s_hot_temp; }
 
 void power_format_status(char* buf, size_t n) {
   const char* hot = s_hot ? " hot" : "";
-#if PONS_BOARD == PONS_BOARD_V71
   snprintf(buf, n, "usb=%d vbus=%.2fV%s%s", usb_power_present() ? 1 : 0, s_volt,
            power_sw_off_on_usb() ? " sw=off" : "", hot);
-#else
-  snprintf(buf, n, "usb=%d%s", usb_power_present() ? 1 : 0, hot);
-#endif
 }
 
 void power_setup() {
-#if PONS_BOARD != PONS_BOARD_V71
-  pinMode(USB_DETECT, INPUT);
-#endif
   sample();
 }
 
-#if PONS_BOARD == PONS_BOARD_V71
 // SW を OFF にしたまま USB で充電している、の確定と読み上げ。
 // ★ 読み上げは**この回に 1 度だけ**。一晩充電する場面で繰り返すとうるさい。画面には出し続ける。
 // ★ 読み上げたあとに SW が入ったら charge_sw_on.wav で知らせる。同じ排他グループなので、
@@ -205,7 +169,6 @@ static void sw_off_tick(uint32_t now) {
     enqueueTask(createPlayWavTask("wav/charge_sw_off.wav", 1, 0, WAV_EXCL_CHARGE_SW));
   }
 }
-#endif
 
 // 高温での充電（上の ■）。USB がつながっている間だけ見る。
 // ★ 温度は get_airdata_temperature()（MS5611 の実測。リプレイでも差し替わらない）。
@@ -253,9 +216,7 @@ void power_tick() {
   if (now - s_last_sample < POWER_SAMPLE_MS) return;
   s_last_sample = now;
   sample();
-#if PONS_BOARD == PONS_BOARD_V71
   sw_off_tick(now);
-#endif
   charge_hot_tick(now);
 
   if (!s_fault) {
@@ -266,11 +227,7 @@ void power_tick() {
     } else if (now - s_cond_since >= POWER_FAULT_HOLD_MS) {
       s_fault = true;
       s_last_alert = 0;
-#if PONS_BOARD == PONS_BOARD_V71
       enqueueTask(createLogSdfTask("POWER FAULT: VBUS=%.2fV (not USB, not 0)", s_volt));
-#else
-      enqueueTask(createLogSdfTask("POWER FAULT: USB_DETECT=1 but VSYS=%.2fV", s_volt));
-#endif
     }
   }
 

@@ -69,7 +69,7 @@ int replay_cursor = 0;       // リプレイ選択画面のカーソル位置（
 int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み込み済みのページ
 // IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_* と対応。
 int imu_cursor = 0;
-int imu2_cursor = 0;   // IMU/ESKF ページ2/3 のカーソル位置（BNO085 と校正）
+int imu2_cursor = 0;   // IMU/ESKF ページ2/3 のカーソル位置（IMU と校正）
 int imu3_cursor = 0;   // IMU/ESKF ページ3/3 のカーソル位置（ESKF の調整）
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
@@ -100,7 +100,7 @@ bool airdata_updated = false;               // airdata_update() が true を返�
 // userled_forced_on: タスクキュー溢れなど重篤エラー時に永続点灯させるフラグ（一度 true になったらリセットまで戻らない）
 volatile bool userled_forced_on = false;
 
-// ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
+// ---- 処理時間計測変数（IMU の読み出しを飢えさせない調査用、デバッグビルドのみ） ----
 #ifndef RELEASE
 TimingStat ts_redraw = TSTAT_INIT("C0_redraw");
 volatile bool c0_is_redrawing = false;  // Core1側の重複検出用フラグ
@@ -161,8 +161,8 @@ Button sw_push(SW_PUSH, shortPressCallback, longPressCallback, doublePressCallba
 // （画面ヘッダーには sats バッジと SD バッジの両方が出ている。LED はそれを
 //   見ていないとき用の手段なので、画面に出る／出ないは優先順位の理由にならない。）
 //
-// ★ 時間待ちをしない。delay() を入れると Core0 が止まり、BNO085 のレポートが溜まって
-//   ジャイロが化ける（CLAUDE.md「BNO085 の読み出しを飢えさせない」）。
+// ★ 時間待ちをしない。delay() を入れると Core0 が止まり、IMU のサンプルを
+//   取りこぼす（CLAUDE.md「IMU の読み出しを飢えさせない」）。
 // ★ **「いま位相が点灯区間か」で判定してはいけない。** Core0 の 1 周は地図描画中に
 //   数十 ms になる（60 秒ログの gapmax= が実測値。40ms 前後）。20ms の点灯区間を
 //   サンプリングで当てに行くと**ほとんど素通りして光らない**。
@@ -252,18 +252,11 @@ void setup(void) {
   pinMode(sw_push.getPin(), INPUT_PULLUP);  // This must be after setup tft for some reason of library TFT_eSPI.
   setup_tft();
   // ★ **ここでタイトルを出しておく。**これが無いと起動画面が始まるまで画面が真っ白になる。
-  //   白のままの区間は imu_setup()（BNO085 のリセット〜ブートで約 0.4 秒）と
+  //   白のままの区間は imu_setup()（SCH16T のリセット〜起動）と
   //   gnss_setup() で、**GNSS 未接続だと後者が約 5 秒**かかる
   //   （CFG の ACK 待ちが 7 コマンドぶん空振りする。log.txt の "GNSS CFG NO ACK"）。
   //   GNSS を繋げば ACK が即返るので 1 秒以下に縮む。**固まっているわけではない。**
   draw_boot_title();
-  // BNO085 の NRST を早期に HIGH に固定する（内蔵プルアップ）。
-  // RP2350 GPIO は電源投入直後フローティングになるため、imu_setup() が呼ばれるまでの間に
-  // NRST が偶然 LOW になって BNO085 がリセット状態に入るのを防ぐ。
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-  pinMode(IMU_RST_PIN, INPUT_PULLUP);
-#endif
-
   // ★★ **setup() の間は生 IMU ログを止める。**
   //   バッファの排出 imulog_take_pending() は **loop() からしか呼ばれない**ので、
   //   setup() 中に貯めるとバッファ 2 枚（IMULOG_RECS_PER_BUF × 2）で満杯になり、
@@ -275,18 +268,18 @@ void setup(void) {
   //     loop() の 1 回目で自動的に解ける（リプレイ中なら正しく止まったまま）。
   imulog_set_paused(true);
 
-  // I2C バス初期化（MS5611・BNO085 共用。両 setup より先に呼ぶ）
+  // i2c0 の初期化（MS5611・照度センサー VEML7700 共用。両 setup より先に呼ぶ）
   airdata_wire_begin();
-  backlight_als_setup();   // v7.1 の照度センサー（i2c0）。v7 では何もしない
-  // BNO085 を先に初期化する（リセット後のブート時間を確保するため）
+  backlight_als_setup();   // 照度センサー（i2c0。ケースカバー基板）
+  // IMU を先に初期化する（リセット後の起動時間を確保するため）
   imu_setup();
   attitude_setup();   // 姿勢 ESKF（センサー入力は imu.cpp/gnss.cpp から流し込む）
-  // ★ ここで一度描く。BNO085 の結果は分かった時点ですぐ出す
+  // ★ ここで一度描く。IMU の結果は分かった時点ですぐ出す
   //   （draw_boot_diag(0) まで待つと「INITIALIZING SENSORS ...」のまま約1秒固まって見える）。
   BootCheckState imu_check = get_imu_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG;
   draw_boot_progress(imu_check, BOOT_CHECK_PENDING, BOOT_CHECK_PENDING);
 
-  // MS5611 初期化（BNO085 の後に呼ぶ）
+  // MS5611 初期化（IMU の後に呼ぶ）
   airdata_setup();
   BootCheckState airdata_check = get_airdata_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG;
   draw_boot_progress(imu_check, airdata_check, BOOT_CHECK_PENDING);
@@ -294,10 +287,9 @@ void setup(void) {
   // ★★ **log.txt の最初の行はビルドの身元にする**（0.991 で追加）。
   //   これが無いと、後からログを読んだときに**どのファームが出したものか分からない**。
   //   バージョンだけでは足りない:
-  //     ・基板世代（v7 / v7.1）でピン配置と IMU が丸ごと変わる
+  //     ・どの基板向けのビルドか（v7 と v7.1 はブランチごと別のファーム）
   //     ・RELEASE でないビルドは GNSS シミュレーションやデバッグ出力が入りうる
-  //   ★ 基板名は VERSION_TEXT を使う（PONS_BOARD から導いてある文字列。
-  //     ここで "v7.1" と書き直すと二重管理になる）。
+  //   ★ 基板名は VERSION_TEXT を使う（settings.h。ここで書き直すと二重管理になる）。
   //   ★ 置き場所はここ。setup() の冒頭に出すと、Core1 の mutex_init より先に
   //     enqueueTask を呼ぶ窓に入る（setup1() の冒頭コメント参照）。
   //     既存のログ呼び出しと同じ区間に置けば、**ログの 1 行目**にはなる。
@@ -334,7 +326,7 @@ void setup(void) {
     unsigned long t = millis();
     while (!sd_setup_complete && millis() - t < 5000) {
       gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
-      imu_service_if_due();  // ★ BNO085 も引き取る（CLAUDE.md「飢えさせない」）
+      imu_service_if_due();  // ★ IMU も引き取る（CLAUDE.md「飢えさせない」）
       delay(10);
     }
   }
@@ -493,7 +485,7 @@ bool warn_muted_off_mount() {
   //   機体の本物のバンク警告を黙らせてしまう。
   if (link_mirror_active()) return false;
   // ★ off_mount の判定は attitude_on_gyro() の中でしか更新されないので、
-  //   BNO085 が死ぬと**前回の値のまま固まる**。その状態で「抑制中」と名乗ると
+  //   IMU が死ぬと**前回の値のまま固まる**。その状態で「抑制中」と名乗ると
   //   画面が嘘になるので、ESKF が動いていないあいだは抑制しない。
   //   ★ 代償: **バリオだけは attitude_ready() を要求しない**（MS5611 単独でも鳴る）
   //     ので、ESKF が収束する前は運搬中でも鳴りうる。off_mount が分からない
@@ -683,14 +675,12 @@ static void batt_alarm_tick() {
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
                                      battery_percent(bv), bv));
       }
-#if PONS_BOARD == PONS_BOARD_V71
       // ---- 電池低下のときの省電力: バックライトを点滅させる（backlight.cpp）----
       // 入るのは上の警告と同じ条件（電圧が測れる状態で BAT_LOW_VOLTAGE 以下。起動直後の
       // BAT_WARN_INTERVAL_MS は待つ）。抜けるのは測れない状態（USB など）になったときか、
       // 電池が BAT_SAVER_EXIT_VOLTAGE まで戻ったとき（交換・充電）。
       // ★ BAT_LOW_VOLTAGE で抜けないこと。消灯中は負荷が減って電圧が少し戻るので、
       //   点滅の入り切りをくり返す（settings.h の BAT_SAVER_EXIT_VOLTAGE）。
-      // v7 はバックライトをソフトで切れない（輝度スイッチが直接切り替える）ので対象外。
       {
         static bool saver = false;
         const bool measurable = !usb_power_present() && !power_sw_off_on_usb() &&
@@ -709,7 +699,6 @@ static void batt_alarm_tick() {
                                        measurable ? "" : ", USB / not measurable"));
         }
       }
-#endif
     }
   }
 }
@@ -909,7 +898,7 @@ static void flightlog_tick() {
                                      log_h, log_m, log_s, log_cs);
   // ---- リプレイ用 ESKF 結果ログ（画面の再現に使う）----
   // ESKF が未収束の間は書かない。行が無い＝そのとき画面にも出ていなかった、を意味する。
-  // 契機は BNO085 のレポート到着ではなく固定周期にする。ESKF の出力は連続なので、
+  // 契機は IMU のサンプル到着ではなく固定周期にする。ESKF の出力は連続なので、
   // レポートの到着ゆらぎで間隔がばらつくと再生が不均一になるため。
   // 保険として実測の GNSS フィックスも要求する。日時が再生由来のまま残っていると
   // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
@@ -1007,22 +996,22 @@ static void periodic_log_tick() {
       else           strlcpy(jst_str, "--:--", sizeof(jst_str));
       char pst[32], bst[32];
       power_format_status(pst, sizeof(pst));
-      backlight_format_status(bst, sizeof(bst));   // v7.1 だけ " bl=35% lux=12"（自動調光の調整用）
+      backlight_format_status(bst, sizeof(bst));   // " bl=35% lux=12"（自動調光の調整用）
       enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
                                    get_input_voltage(), pst, bst, analogReadTemp(), jst_str));
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE ビルドでもシリアルなしで確認できる）。
       // 生レポートのレート要求を変えたら必ずこの行を確認すること:
       //   GRV=15.0 LACC=15.0 RV=5.0 なら正常。
-      //   これらが設定値より低ければ → BNO085 の配信飢餓。要求レートが過大で、
+      //   これらが設定値より低ければ → チップ側の配信飢餓。要求レートが過大で、
       //     古い加速度を繰り返し積分してバリオが暴れる（2026-08-17 の回帰）。
       //   stale が増えていれば → 上記の飢餓が実際に起きて predict を止めた回数。
       //   MS5611 が ~40Hz から落ちていれば → 気圧観測レートの低下。
       //   drop が増えていれば → SD 書き出しが追いつかず生ログを取りこぼしている。
       // ※ 2 行に分けること。log_sd() は logtext[128] に "<起動秒>:" を前置するため、
       //   1 行にまとめると稼働時間が延びるほど末尾が切り詰められる（実際 wrote= が消えた）。
-      // ★ 融合出力（GRV/LACC/RV）は BNO085 にしか無い。SCH16T では
-      //   imu_caps() が落ちるので、0.0Hz を並べて「飢餓している」と誤読させない。
+      // ★ 融合出力（GRV/LACC/RV）は SCH16T には無い（imu_caps() が落ちる）。
+      //   0.0Hz を並べて「飢餓している」と誤読させない。
       if (imu_caps() & IMU_CAP_QUAT)
         enqueueTask(createLogSdfTask("rate GRV=%.1f LACC=%.1f RV=%.1f MS5611=%.1f Hz",
                                      get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz(),
@@ -1046,7 +1035,7 @@ static void periodic_log_tick() {
       //   pktmax が 384 に近づく / toobig が増える → backlog で壊れている
       //   hdrchg が増える → ヘッダ読みと本体読みの間に中身が差し替わっている
       // ★ SPI 用のパケット統計（pktmax/toobig/hdrchg）は 0.976 で削除した。
-      //   あれは spihal_read() の中でしか更新されず、i2c1 運用では常に 0 で、
+      //   あれは spihal_read() の中でしか更新されず、I2C 運用では常に 0 で、
       //   「0 だから健全」と誤読される表示だった。gapmax だけ残す。
       enqueueTask(createLogSdfTask("imu gapmax=%lums",
                                    (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
@@ -1314,7 +1303,7 @@ static void kalman_feed_tick() {
       get_gnss_vacc_mm() / 1000.0f
     );
     // GNSS 垂直速度を KF 速度観測として追加（vAcc ゲート、sAcc で R 計算）
-    // BNO085 の有無によらず動作し、加減速中や BNO085 なし時のバリオ精度を補完する。
+    // IMU の有無によらず動作し、加減速中や IMU なし時のバリオ精度を補完する。
     imu_kalman_gnss_vel_update(
       get_gnss_veld_mps(),
       get_gnss_vacc_mm()   / 1000.0f,
@@ -1482,8 +1471,8 @@ void loop() {
   }
 
 #ifndef RELEASE
-  // 30秒ごとに各処理の最大・平均・回数を Serial 出力する（BNO085配置コア決定用）
-  // 判断基準: max が 10000us (10ms) 未満 → そのコアで BNO085 割り込みを受けられる
+  // 30秒ごとに各処理の最大・平均・回数を Serial 出力する（IMU の読み出しを飢えさせない調査用）
+  // 判断基準: max が 10000us (10ms) 未満 → その処理の間も IMU を読み出せる
   { static uint32_t _last_timing_report = 0;
     if (millis() - _last_timing_report >= 30000) {
       _last_timing_report = millis();
@@ -1684,7 +1673,7 @@ void shortPressCallback() {
 static void imu_execute() {
   redraw_screen = true;
 
-  if (detail_page % 3 == 1) {     // ページ2/3: BNO085 と校正
+  if (detail_page % 3 == 1) {     // ページ2/3: IMU と校正
     switch (imu2_cursor) {
       case IMU2_MENU_SAVECAL: {
         // ★ 条件を満たさないなら**何もしない**。途中の悪い校正を不揮発へ焼くと

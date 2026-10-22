@@ -20,10 +20,6 @@
 //   LPF2(13Hz) + DEC5(737.5Hz、実測 721.5Hz)、読み出し 250Hz（最小推奨 150Hz）。
 //   選定理由は settings.h のコメントと docs/imu_sch16t_plan.md §5 の (2)。
 //
-// ★ **ファイル全体が #if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T で囲ってある。**
-//   Arduino はスケッチ直下の .cpp を全部コンパイルするので、囲わないと
-//   imu_bno08x.cpp と imu_drv_* が多重定義になる。**外さないこと。**
-//
 // ★ **本体基板では一度も動かしていない**（0.991 時点）。
 //   docs/imu_sch16t_bringup.md の Step 2〜5 を通すまで飛ばさないこと。
 //
@@ -34,7 +30,6 @@
 #include <Arduino.h>
 #include "settings.h"
 
-#if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
 
 #include <SPI.h>
 #include "imu.h"
@@ -468,8 +463,8 @@ const char* imu_sensor_name() { return "SCH16T"; }
 void imu_drv_setup() {
     // ★ ピンが UNSET（= v7 基板）なら何もしない。存在しない GPIO を叩かないため。
     if (SCH16T_PIN_CS == SCH16T_PIN_UNSET) {
-        enqueueTask(createLogSdTask("[IMU] SCH16T pins unset (wrong PONS_BOARD?)"));
-        DEBUGW_PLN(20261014, "[IMU] SCH16T pins are UNSET — check PONS_BOARD");
+        enqueueTask(createLogSdTask("[IMU] SCH16T pins unset (check settings.h)"));
+        DEBUGW_PLN(20261014, "[IMU] SCH16T pins are UNSET — check settings.h");
         return;
     }
 
@@ -509,7 +504,7 @@ void imu_drv_setup() {
 
 ImuDrvState imu_drv_poll() {
     // ★★ **「データが来ない」と「こちらが見ていなかった」を区別する。**
-    //   BNO085 で踏んだのと同じ穴（imu_bno08x.cpp の同じ位置のコメント参照）。
+    //   v7 の BNO085 で実際に踏んだ穴。
     //   起動時は setup() が長く、loop() に入るまで imu_update() が呼ばれない。
     //   その状態で最初の 1 回を迎えると、生きているチップを「途絶」と誤判定して
     //   リセットしに行く。**呼び出し間隔が空いていたら、その回の判定は見送る。**
@@ -576,8 +571,6 @@ void imu_drv_service_if_due() {
     // ★ SCH16T は**こちらが取りに行く**方式なので、BNO085 のような
     //   「溜まったレポートを掃く」ループは要らない（読まなければ DRY が立ったまま
     //   になるだけで、レポートが溢れて化けることがない）。1 回で 1 サンプル。
-    //   **ただし BNO085 側の飢餓対策コメントは消さないこと**（戻す可能性があるため。
-    //   docs/imu_sch16t_plan.md §1）。
     (void)read_sample();
 }
 
@@ -651,4 +644,3 @@ uint32_t get_imu_poll_gap_max_us() {
     return v;
 }
 
-#endif  // IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T

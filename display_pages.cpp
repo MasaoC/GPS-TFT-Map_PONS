@@ -69,7 +69,7 @@ static void draw_vario_page1() {
                                         : "-- Sensor Status --");
   y += line_height;
 
-  // MS5611 と IMU（v7 = BNO085 / v7.1 = SCH16T）を 1 行にまとめる
+  // MS5611 と SCH16T を 1 行にまとめる
   backscreen.setCursor(2, y);
   backscreen.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
   backscreen.printf("MS5611:%s", get_airdata_ok() ? "OK" : "NG");
@@ -102,7 +102,7 @@ static void draw_vario_page1() {
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   if (_mirror) {
     // ★ 送信機がどのセンサーを融合しているかは電波から完全には分からない。
-    //   分かるのは BNO085 の生死だけ（LINK_ST_IMU_ERROR）。MS5611 の状態を
+    //   分かるのは IMU の生死だけ（LINK_ST_IMU_ERROR）。MS5611 の状態を
     //   運ぶビットは無い（あっても 65 バイトの枠を増やす価値は無い）。
     backscreen.printf("KF: sender (IMU %s)",
       (link_sender_status() & LINK_ST_IMU_ERROR) ? "NG" : "OK");
@@ -147,7 +147,7 @@ static void draw_vario_page1() {
     else backscreen.printf("GNSS:%+.2fm/s %s", _gnss_vsi, _gate_ok ? "[KF]" : "[--]");
     y += line_height;
 
-    // KF VSI（BNO085 なし時も Baro+GNSS KF から出力）
+    // KF VSI（IMU なし時も Baro+GNSS KF から出力）
     float kf_vsi = get_imu_vspeed();
     backscreen.setCursor(2, y);
     backscreen.setTextColor((kf_vsi > 0.1f) ? COLOR_GREEN : (kf_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
@@ -261,7 +261,7 @@ static void draw_vario_page2() {
   int y = 2;
   const int line_height = 12;
   const int nextcolumn_height = 14;
-  // ---- Page 2: BNO085 IMU データ + Kalman 設定 + GNSS VSI 融合 ----
+  // ---- Page 2: IMU データ + Kalman 設定 + GNSS VSI 融合 ----
 
   // ★ このページは**丸ごとこの装置の IMU と KF の内部**。ミラー中も自機の値を
   //   出す（KF MSL/VSI も _raw を使う）。地図画面が機体を出している流れで
@@ -278,7 +278,7 @@ static void draw_vario_page2() {
     // イベント受信レート
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    // ★ 融合出力のレートは BNO085 にしか無い（imu_caps）。SCH16T では
+    // ★ 融合出力のレートは SCH16T には無い（imu_caps）。出すと
     //   0.0Hz が並んで「飢餓している」と誤読されるので、行ごと差し替える。
     if (imu_caps() & IMU_CAP_QUAT)
       backscreen.printf("GRV:%.1fHz LACC:%.1fHz RV:%.1fHz",
@@ -456,7 +456,7 @@ static void draw_vario_page2() {
 // ============================================================
 // Vario 詳細画面を描画する（screen_mode == MODE_VARIODETAIL 時）。
 // page % 2 == 0: センサー接続状況・VSI 全比較・MS5611 気圧データ・GNSS 垂直速度。
-// page % 2 == 1: BNO085 IMU データ（線形加速度・Euler 角）・Kalman 設定・GNSS VSI 融合。
+// page % 2 == 1: IMU データ・Kalman 設定・GNSS VSI 融合。
 // ヘッダーは GNSS DETAIL 同様に 10px 上にずらして pushSprite(0,-10) で転送。
 // VSI バーは GPS_TFT_map.ino のループ内で airdata_updated タイミングに更新される。
 void draw_variodetail(int page) {

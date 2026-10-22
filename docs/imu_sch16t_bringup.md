@@ -11,7 +11,7 @@ Updated : 2026/10/22
 
 設計と段取り → [imu_sch16t_plan.md](imu_sch16t_plan.md)
 単独テスト（Pico 2 単体） → [tools/sch16t_test/](../tools/sch16t_test/)
-BNO085 時代の記録 → [imu_i2c_bringup.md](imu_i2c_bringup.md)（**残す。v7 基板で有効**）
+BNO085（v7 基板）の記録 → `PONSv7` ブランチの docs/imu_i2c_bringup.md
 
 この文書は**実機で分かったことを足していく記録**。
 推測は書かない。測ったことと、踏んだ罠だけを置く。
@@ -57,7 +57,7 @@ Pico 2 + ブレイクアウトで `tools/sch16t_test` を通した結果。
 **「抽象化のせい」か「SCH16T のせい」か切り分けられる。**
 飛ばさずに先へ進むと、両方を同時に疑うことになる。
 
-- `PONS_BOARD = PONS_BOARD_V7`（既定のまま）
+- `PONSv7` ブランチのファームで（2026-10-23 にブランチを分けたので、このブランチでは v7 基板は動かない）
 - 見るもの: 姿勢（ロール・ピッチ・ヨー）、バリオの V/S、60 秒ログの
   `gapmax=` と `raw GYR/ACC`、`[Hz]` 行
 - 比較対象: 0.985 以前のログ。**値が変わっていなければ合格**
@@ -82,10 +82,10 @@ V7 / V71 の両ビルド OK）。残りは実機でしか見られない。
 R1（EXTRESN のプルアップ）は実装する。詳細は
 [tools/sch16t_test/README.md](../tools/sch16t_test/README.md) の「配線」。
 
-### Step 2 — `PONS_BOARD` を V71 にして焼く
+### Step 2 — 焼く
 
-`settings.h` の `#define PONS_BOARD PONS_BOARD_V7` を `PONS_BOARD_V71` へ。
-これで `imu_sch16t.cpp` が生き、`imu_bno08x.cpp` が `#if` で丸ごと落ちる。
+このブランチは v7.1 専用（2026-10-23 に分けた）なので、基板を切り替えるスイッチは無い。
+そのままビルドして焼けば `imu_sch16t.cpp` が動く。
 
 **起動ログで見るもの（0.991 のドライバが出す行）:**
 
@@ -96,7 +96,7 @@ R1（EXTRESN のプルアップ）は実装する。詳細は
 | `[IMU] SCH16T COMP_ID 0x.... != K01 0x0023`（log.txt） | 別品種。感度が違うので使わない |
 | `[IMU] SCH16T verify NG dyn=.. filt=.. STAT_SUM=0x....`（log.txt） | 設定が入っていない |
 | `[IMU] SCH16T init retry` | 1 回目が失敗して 2 回目を試した |
-| `[IMU] SCH16T pins are UNSET — check PONS_BOARD` | `PONS_BOARD` が V7 のまま |
+| `[IMU] SCH16T pins are UNSET — check settings.h` | `settings.h` の `SCH16T_PIN_*` が UNSET になっている |
 
 - **起動画面のセンサー行** — NG なら SPI が成立していない
 - `#warning "... DO NOT FLY."` は**まだ出る**。Step 5 まで通したら消す
@@ -123,6 +123,18 @@ Pico 2 + `tools/sch16t_test` で `z` → `t` → `i` → `r` を通せば、
 
 ★ **融合出力の行に `0.0` が出ていたら囲い忘れ。** 姿勢比較の行なら
 0 は「水平で北向き」というもっともらしい値なので、黙って誤表示になる。
+
+★★ **センサーの向き（マウント回転）を測り直す。** `settings.h` の `IMU_MOUNT_Q*` は
+**v7 の BNO085 で測った値のまま**で、SCH16T（IMU 基板）の向きでは測っていない。
+同じコメントにある 3 点（水平・機首を真下・右翼を真下）で生加速度（IMU/ESKF 画面 2/3 の
+`Accel raw`）を読み、違っていたら差し替える。違ったままだと**ロールとピッチが入れ替わったり
+符号が逆になったりする**。差し替えたら `tools/imulog/decode_imulog.py` の `MOUNT_Q` も同じ値にする（PC 側の解析が同じ変換を使うため）。
+
+★★ **ESKF のサンプル間隔と時定数を確かめる。** SCH16T はジャイロを 250Hz（4ms）で渡すが、
+`attitude.cpp` の間隔推定の範囲と ESKF の「1 サンプルあたり」のゲイン（`ESKF_RELEVEL_GAIN` など）は
+50Hz（`IMU_RATE_GYRO_HZ`）を前提にしている。4ms は間隔推定の範囲（0.2〜5 倍＝4〜100ms）の
+**下限ちょうど**で、外れると間隔は初期値の 20ms のままになり、回転を 5 倍に積分する恐れがある。
+机の上で本体を 90 度回して ESKF の角度が 90 度動くか、静止中の再水平化が 1 秒前後で効くかを見る。
 
 ### ★★ 250Hz が本当に出るか — ここが Step 3 の本題
 

@@ -1,11 +1,10 @@
 // ============================================================
 // File    : imu.h
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-// Role    : BNO085 IMU モジュール + Kalman フィルターフュージョンのヘッダー。
-//           MS5611 気圧高度と BNO085 加速度を融合した高精度バリオメーターを提供する。
+// Role    : IMU（SCH16T）+ Kalman フィルターフュージョンのヘッダー。
+//           MS5611 気圧高度と IMU の加速度を融合した高精度バリオメーターを提供する。
 //
-// センサー: GY-BNO080 (BNO085), I2C アドレス 0x4B
-// ライブラリ: Adafruit_BNO08x
+// センサー: Murata SCH16T-K01（SPI1。ドライバは imu_sch16t.cpp）
 //
 // 使用レポート:
 //   SH2_GAME_ROTATION_VECTOR  : クォータニオン（磁気干渉なし）30Hz
@@ -32,8 +31,7 @@
 #include <Arduino.h>
 #include "attitude.h"   // imu_body_euler_rad()（マウント回転）
 // ★ ここは**チップに依らない公開 API**。実装は 0.986 で 2 つに割れている:
-//   imu.cpp（バリオ KF・観測・ゲッター）と imu_bno08x.cpp（BNO085 ドライバ）。
-//   どちらのチップかは settings.h の IMU_SENSOR_DEFAULT で決まり、
+//   imu.cpp（バリオ KF・観測・ゲッター）と imu_sch16t.cpp（SCH16T ドライバ）。
 //   呼び出し側はこのヘッダだけを見ればよい。境界は imu_sensor.h。
 
 // ---- 初期化 ----
@@ -53,7 +51,7 @@ void imu_update();
 //   ポーリング時刻は imu_update() と共有しているので、二重に叩く心配も無い。
 void imu_service_if_due();
 
-// ---- BNO085 の校正（DCD）----
+// ---- 動的校正（DCD）。BNO085 だけの機能で、SCH16T では imu_caps() の CAL が 0 ----
 // 保存記録は**本体フラッシュ（EEPROM 領域）**に置く。SD ではない。理由は imu.cpp。
 // 目的は「一度も校正していない機体」を画面で明示すること。
 bool     imu_cal_ready();              // acc==3 かつ gyr==3。SAVE を許す条件
@@ -81,16 +79,16 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m);
 // ---- GNSS垂直速度による Kalman 速度観測更新 ----
 // gnssFixOK && fixtype==3D のとき、GNSS高度補正と同じタイミングで呼ぶ。
 // sAcc を観測ノイズ（R_vel = sAcc²）、vAcc をゲーティングに使い、KF の z_dot を補正する。
-// BNO085 の有無によらず動作する。
+// IMU の有無によらず動作する。
 //   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
 //   vacc_m    : 垂直位置精度 [m]（get_gnss_vacc_mm() / 1000.0f）
 //   sacc_mps  : 速度精度 [m/s]（get_gnss_sacc_mmps() / 1000.0f）
 void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps);
 
 // ---- センサー状態 ----
-// BNO085 の接続・初期化が正常に完了しているか（imu_setup() 後に確定）。
+// IMU の接続・初期化が正常に完了しているか（imu_setup() 後に確定）。
 bool get_imu_ok();
-// BNO085 が正常稼働中か（接続済み かつ 直近1秒以内にデータ受信）。
+// IMU が正常稼働中か（接続済み かつ 直近1秒以内にデータ受信）。
 // 通信途絶時は false を返す点が get_imu_ok() と異なる。
 // update_vario() の MS5611 フォールバック判定に使用する。
 bool get_imu_alive();

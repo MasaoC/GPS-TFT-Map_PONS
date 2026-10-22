@@ -9,7 +9,7 @@
 #include "e220.h"
 #include <string.h>
 #include "mysd.h"   // enqueueTask / createLogSdfTask
-#include "imu.h"    // imu_service_if_due（待っている間に BNO085 を飢えさせない）
+#include "imu.h"    // imu_service_if_due（待っている間に IMU を飢えさせない）
 #include "lora_link/link_proto.h"
 
 #define E220_SERIAL       Serial2      // RP2350 UART1 = GPIO8(TX)/GPIO9(RX)
@@ -141,7 +141,7 @@ static uint8_t air_data_rate_bits(uint8_t sf) {
 static void wait_aux_idle(uint16_t timeout_ms) {
     const uint32_t t0 = millis();
     while (digitalRead(E220_AUX_PIN) == LOW) {
-        // ★ 待っている間も BNO085 を引き取る。ここは最大 200ms 回るので、
+        // ★ 待っている間も IMU を引き取る。ここは最大 200ms 回るので、
         //   放っておくとレポートが溜まってジャイロが化ける（imu.h 参照）。
         imu_service_if_due();
         if (millis() - t0 > timeout_ms) {
@@ -187,7 +187,7 @@ static void set_baud(uint32_t baud) {
     E220_SERIAL.setFIFOSize(256);
     E220_SERIAL.begin(baud);
     // ★ end()/begin() は数 ms 止まる。mode 3 への往復で 2 回通るので、
-    //   ここで引き取っておかないと BNO085 のレポートが溜まる（imu.h 参照）。
+    //   ここで引き取っておかないと IMU のサンプルを取りこぼす（imu.h 参照）。
     imu_service_if_due();
 }
 
@@ -200,8 +200,8 @@ static void flush_input() {
 }
 
 // 設定まわりの待ち。**素の delay() を使わないこと。**
-// Core0 が数十 ms 止まると BNO085 のレポートが溜まり、次に読んだジャイロが化ける
-// （CLAUDE.md「BNO085 の読み出しを飢えさせない」）。設定操作は 1 回で
+// Core0 が数十 ms 止まると IMU のサンプルを取りこぼす
+// （CLAUDE.md「IMU の読み出しを飢えさせない」）。設定操作は 1 回で
 // 100ms 以上待つので、素の delay() だとバリオが暴れる。
 static void cfg_wait_ms(uint32_t ms) {
     const uint32_t t0 = millis();
@@ -271,7 +271,7 @@ static bool reg_xfer(uint8_t opcode, uint8_t addr, uint8_t len,
     bool    errResp = false;
     const uint32_t t0 = millis();
     while (millis() - t0 < 300) {
-        imu_service_if_due();     // ★ 最大 300ms 回る。その間も BNO085 を引き取る
+        imu_service_if_due();     // ★ 最大 300ms 回る。その間も IMU を引き取る
         while (E220_SERIAL.available() && got < sizeof(buf)) buf[got++] = (uint8_t)E220_SERIAL.read();
 
         // ★★ **バイト数で打ち切ってはいけない。**
@@ -806,7 +806,7 @@ static bool stat_reg_read(uint8_t reg, uint8_t len, uint8_t* out) {
     const uint16_t need = (uint16_t)(5 + len);
     const uint32_t t0 = millis();
     while (millis() - t0 < wait_ms) {
-        imu_service_if_due();     // ★ 最大 200ms 回る。その間も BNO085 を引き取る
+        imu_service_if_due();     // ★ 最大 200ms 回る。その間も IMU を引き取る
         rx_pump();
         for (uint16_t i = from; (uint16_t)(i + need) <= s_rxLen; i++) {
             if (s_rx[i]     != 0xFF || s_rx[i + 1] != 0xFF ||

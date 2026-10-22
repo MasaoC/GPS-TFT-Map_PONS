@@ -86,7 +86,7 @@ static uint16_t evaluate() {
 
   if (any_setting_red()) m |= RDY_SET;
 
-  // 電源。USB がつながっている間は電池の残量が測れない（v7 は VSYS、v7.1 の SW OFF は 0V）。
+  // 電源。USB がつながっている間は電池の残量が測れない（SW OFF のあいだは 0V）。
   if (usb_power_present() || power_sw_off_on_usb()) {
     m |= RDY_USB;
   } else if (power_fault_active() ||

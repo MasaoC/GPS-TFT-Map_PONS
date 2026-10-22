@@ -37,7 +37,7 @@ volatile bool sdError = false;        // SD アクセス中にエラーが発生
 volatile bool sd_setup_complete = false;  // Core1 の setup_sd() が完了したことを示すフラグ（Core0 が待機に使用）
 #define LOGFILE_NAME "log.txt"
 
-// ---- 処理時間計測変数（BNO085配置コア決定用、デバッグビルドのみ） ----
+// ---- 処理時間計測変数（IMU の読み出しを飢えさせない調査用、デバッグビルドのみ） ----
 #ifndef RELEASE
 TimingStat ts_savecsv_flush = TSTAT_INIT("C1_savecsv_flush");
 extern volatile bool c0_is_redrawing;  // Core0 描画中フラグ（重複検出用）

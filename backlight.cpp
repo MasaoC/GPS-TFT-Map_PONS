@@ -3,7 +3,6 @@
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : v7.1 の TFT バックライト。輝度スイッチと照度センサー（VEML7700）で
 //           PWM の点灯率を決める。電池低下のときは点滅させて電池をもたせる。
-//           v7 では何もしない（スイッチで直接切り替える）。
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/10/22
 // ============================================================
@@ -26,7 +25,6 @@
 #include "backlight.h"
 #include "settings.h"
 
-#if PONS_BOARD == PONS_BOARD_V71
 #include "airdata.h"   // myWire（i2c0）
 #include "mysd.h"
 #include "hardware/pwm.h"
@@ -233,14 +231,3 @@ void backlight_format_status(char* buf, size_t n) {
   else            snprintf(buf, n, " bl=%d%% lux=%.0f%s", backlight_get_duty_pct(), lux, sv);
 }
 
-#else  // v7: 輝度スイッチがバックライトの電源を直接切り替えるので、何もしない
-
-void backlight_setup() {}
-void backlight_als_setup() {}
-void backlight_tick() {}
-void backlight_set_saver(bool) {}
-void backlight_format_status(char* buf, size_t n) { if (n) buf[0] = '\0'; }
-float backlight_get_lux() { return -1.0f; }
-int   backlight_get_duty_pct() { return -1; }
-
-#endif

@@ -2,7 +2,7 @@
 // File    : imu.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : バリオ用 3 状態 Kalman フィルターと、推定側のゲッター。
-//           **チップ非依存。** BNO085 固有のコードは imu_bno08x.cpp にある。
+//           **チップ非依存。** チップ固有のコードは imu_sch16t.cpp にある。
 //
 //   0.986 で 1918 行から BNO085 依存部を切り出した（docs/imu_sch16t_plan.md §1）。
 //   チップ側とのやり取りは imu_sensor.h の imu_drv_* だけ。
@@ -43,8 +43,7 @@
 
 #include <Arduino.h>
 
-// ★ **Adafruit_BNO08x.h / EEPROM.h / imulog.h はここには無い。**
-//   どれも BNO085 固有なので imu_bno08x.cpp 側にある。
+// ★ **imulog.h はここには無い。** 生ログのレコードはチップ固有なのでドライバ側にある。
 //   ここへ戻すと「チップ非依存」という前提が静かに崩れる。
 #include "imu.h"
 #include "imu_sensor.h"   // チップ境界（能力ビット・feed の口・imu_drv_*）
@@ -660,8 +659,7 @@ float get_imu_kf_R()      { return kf_R; }
 // ============================================================
 //  チップとの境界 — 公開 API はドライバへ委譲するだけ
 // ============================================================
-// ★ **ここに「どのチップか」の分岐を書かないこと。** 実装はドライバ側の 1 ファイルで、
-//   settings.h の IMU_SENSOR_DEFAULT（＝ PONS_BOARD 由来）がファイルごと切り替える。
+// ★ **ここに「どのチップか」の分岐を書かないこと。** 実装はドライバ側の 1 ファイル（imu_sch16t.cpp）。
 
 void imu_setup() { imu_drv_setup(); }
 

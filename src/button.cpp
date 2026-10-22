@@ -13,7 +13,7 @@
 #include "../mysd.h"
 #include "../gnss.h"
 #include "../attitude.h"
-#include "../imu.h"      // get_imu_ok(): BNO085 非搭載機の判定
+#include "../imu.h"      // get_imu_ok(): IMU 非搭載機の判定
 #include "../link.h"     // PONS Link（機体⇄ボート無線）
 
 
@@ -579,7 +579,7 @@ Setting menu_settings[] = {
       //   正しい設定なのに異常に見える（MENU_ICON_HYPHEN の説明は src/button.h）。
       //   ★ ミラー中の姿勢表示は送信機の値なので、この行とは別の話。
       if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
-      // BNO085 非搭載機は姿勢機能そのものが無いのでグレー（緑＝準備OK にしない）
+      // IMU 非搭載機は姿勢機能そのものが無いのでグレー（緑＝準備OK にしない）
       if (!get_imu_ok())
         return COLOR_GRAY;
       // 較正が無効（マウントから外された後 APPLY していない）は赤で最優先

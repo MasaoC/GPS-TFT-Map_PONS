@@ -17,7 +17,7 @@
 //
 // ■ 座標系（重要）
 //   ワールド : ENU（X=East, Y=North, Z=Up）。BNO085 (SH2) のワールド系に合わせてある。
-//   ボディ   : BNO085 センサー軸そのもの。
+//   ボディ   : IMU のセンサー軸そのもの（settings.h の IMU_MOUNT_Q* で機体軸へ回す）。
 //   q は body → ENU。フィルタ内部でマウントのズレを意識する必要はない。
 //   機体軸の roll/pitch/yaw は出力時にマウント補正を通して得る。
 //   GNSS は NED なので [E,N,U] = [velE, velN, -velD] に変換して渡す。
@@ -39,7 +39,7 @@
 #include "settings.h"
 
 // センサー座標のクォータニオン → 機体軸のオイラー角 [rad]。
-// ★ imu_bno08x.cpp / attitude.cpp / tools/imulog/decode_imulog.py の 3 つが
+// ★ attitude.cpp と tools/imulog/decode_imulog.py が
 //   **同じ変換であること。**片方だけ直すと表示とログが静かに食い違う。
 // yaw はここでは数学どおりの符号（東基準・反時計回り正）で返す。
 // 方位に直すのは呼び出し側だが、**必ず imu_yaw_to_heading_deg() を通すこと。**

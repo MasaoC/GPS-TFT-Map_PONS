@@ -269,7 +269,7 @@ void airdata_adjust_ground_alt(float delta_m) {
 // 係数の読み取りに 1 つでも失敗したら false を返す。
 // MS5611 にリセットコマンドを送り、内部 PROM を再ロードさせる。
 // データシート上の復帰時間は約 2.8ms。余裕を見て 10ms 待つ。
-// 送り先は 0x77 なので、同じ i2c0 にいる BNO085(0x4B) には影響しない。
+// 送り先は 0x77 なので、同じ i2c0 にいる VEML7700(0x10) には影響しない。
 static bool ms5611_reset() {
     if (!ms5611_write_cmd(CMD_RESET)) return false;
     delay(10);
@@ -574,11 +574,11 @@ float get_airdata_win_hz()      { return last_win_hz; }
 // ----------------------------
 
 // I2C バス（myWire）を初期化する。
-// imu_setup()（BNO085）と airdata_setup()（MS5611）の両方が使うバスであるため、
+// airdata_setup()（MS5611）と backlight_als_setup()（VEML7700）の両方が使うバスであるため、
 // どちらよりも先に呼ぶ必要がある。GPS_TFT_map.ino の setup() 冒頭から呼ぶこと。
 void airdata_wire_begin() {
     myWire.begin();
-    // i2c0 は MS5611 と、v7.1 ではケースカバーの照度センサー VEML7700（0x10。backlight.cpp）。
+    // i2c0 は MS5611 と、ケースカバーの照度センサー VEML7700（0x10。backlight.cpp）。
     // どちらも 400kHz で動く。
     // ★ v6 までは BNO085 と共用していて、BNO085 のクロックストレッチで
     //   RP2350 側がタイムアウト（error: 5）しバスがロックするため 100kHz に落としていた。

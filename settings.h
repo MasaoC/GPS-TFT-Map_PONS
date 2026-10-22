@@ -25,54 +25,22 @@
 #define BUILDVERSION "0.995"
 
 // ============================================================
-//  基板の世代（**ピン割り当てと IMU がまるごと変わる**）
+//  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
 // ============================================================
-//   v7   … 初代。BNO085 を i2c1(GPIO34/35) で実装。E220 の M0/M1 は GPIO41
-//   v7.1 … BNO085 を降ろし、SCH16T を J6（Molex 200528-0080・8pin FPC）で外付け。
-//          GPIO41-44 が SPI1 一式になり、E220 の M0/M1 は GPIO31 へ移った
-//
-// ★★ **同じ GPIO が板によって逆の意味になる。** ピンを足すときは必ずここで分けること。
-//   コメントで「新基板では〜」と断り書きを増やす形にすると、必ずどこかが追従漏れする
-//   （0.986 の時点で 5 ファイル 20 箇所まで増えていた）。
-//     GPIO41    v7: E220 M0/M1          → v7.1: SCH16T CS
-//     GPIO42    v7: i2c1 と短絡（park 対象） → v7.1: SCH16T SCK
-//     GPIO43    v7: BNO085 SA0          → v7.1: SCH16T MOSI
-//     GPIO44    v7: i2c1 と短絡（park 対象） → v7.1: SCH16T MISO
-//     GPIO45    v7: BNO085 H_INTN       → v7.1: SCH16T EXTRESN
-//     GPIO46    v7: BNO085 NRST         → v7.1: SCH16T DRY(SYNC)
-//     GPIO47    v7: BNO085 PS0/WAKE     → v7.1: USB_SENS（VBUS の分圧を ADC7 で測る）
-//     GPIO31    v7: USB_DETECT（デジタル） → v7.1: E220 M0/M1
-//     GPIO34/35 v7: i2c1 SDA/SCL        → v7.1: TFT バックライト（34=PWM 出力、35=輝度スイッチ）
-//     GPIO40    v7: VSYS の分圧         → v7.1: BATPWR（電池）の分圧。比はどちらも 51/151。
-//                                          v7.1 は SW OFF で 0V（SW4 が GND に落とす。power.h）
-//
-// ★★ **park 処置（imu_bus_park_unused_pins）は v7 だけ。** v7.1 で GPIO42/44 を
-//   INPUT_PULLUP のまま放置すると **SPI1 が死ぬ**。向きが逆になる唯一の約束。
-//   0.986 の分割で実体は imu_bno08x.cpp の中だけになり、あのファイルは
-//   #if IMU_SENSOR_DEFAULT == IMU_SENSOR_BNO085 で囲ってあるので v7.1 では消える。
-//
-// ★ 載っているセンサーは基板で決まるので、IMU_SENSOR_DEFAULT もここから導く
-//   （SD の settings.txt では切り替えられない。理由は IMU_SENSOR_* の節）。
-#define PONS_BOARD_V7    70   // 初代 v7（BNO085）
-#define PONS_BOARD_V71   71   // v7.1（SCH16T 外付け）
+// このブランチ（PONSv7.1）は **v7.1 基板専用**。初代 v7 基板（BNO085 搭載）は PONSv7 ブランチで、
+// ピン割り当てがまるで違う（2026-10-23 にブランチごと分けた）。
+//   v7.1 だけの事情があるピン:
+//     GPIO41-44 SPI1（SCH16T の CS / SCK / MOSI / MISO）
+//     GPIO45    SCH16T EXTRESN / GPIO46 SCH16T DRY(SYNC)
+//     GPIO47    USB_SENS（VBUS の分圧を ADC7 で測る）
+//     GPIO31    E220 の M0/M1
+//     GPIO34/35 TFT バックライト（34=PWM 出力、35=輝度スイッチ）
+//     GPIO40    BATPWR（電池）の分圧（51/151）。SW OFF で 0V（SW4 が GND に落とす。power.h）
+// ★ GPIO42/44 を INPUT_PULLUP で停めないこと。v7 で I2C を守るためにやっていた処置で、
+//   v7.1 では **SPI1 が死ぬ**。
 
-// ★★ **いまはまだ V7。** V71 にすると SCH16T のドライバ（imu_sch16t.cpp、0.991 で
-//   実装）が生き、BNO085 側が #if で丸ごと落ちる。ビルドとリンクは通る。
-//   ただし**本体基板では一度も動かしていない**ので `#warning "... DO NOT FLY."` が
-//   見張っている。手順は docs/imu_sch16t_bringup.md の Step 2〜5。
-//   実機で検証できたら、ここを PONS_BOARD_V71 にするのが切替点。
-#define PONS_BOARD       PONS_BOARD_V7
-
-#if PONS_BOARD != PONS_BOARD_V7 && PONS_BOARD != PONS_BOARD_V71
-  #error "PONS_BOARD は PONS_BOARD_V7 か PONS_BOARD_V71 のどちらか"
-#endif
-
-// 起動画面に出す基板世代の表記。PONS_BOARD から導く（手で二重管理しない）。
-#if PONS_BOARD == PONS_BOARD_V71
-  #define VERSION_TEXT "Version 7.1"
-#else
-  #define VERSION_TEXT "Version 7"
-#endif
+// 起動画面に出す基板世代の表記
+#define VERSION_TEXT "Version 7.1"
 
 //----------GNSS---------
 // GNSS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
@@ -150,124 +118,40 @@
 #define READY_REARM_MS          60000UL  // 欠けた状態がこれだけ続いたら、もう一度読み上げられるようにする
 #define GNSS_TX 0
 #define GNSS_RX 1
-// USB の有無。v7 は GPIO31 のデジタル入力、v7.1 は GPIO47 の ADC で VBUS を測る。
+// USB の有無（GPIO47 の ADC で VBUS を測る）。
 // ★ 直接 digitalRead() しないこと。判定は power.cpp の usb_power_present() だけ。
-#if PONS_BOARD == PONS_BOARD_V71
   #define USB_VBUS_ADC_PIN 47   // R34 10k / R35 5.1k（BATTERY_PIN と同じ比）
   // ★ 分圧を 100k/51k のように弱くしないこと。電池だけのとき D3 の逆漏れ電流で VBUS が
-  //   浮き（151kΩ だと 13µA で 2V）、電源異常を誤報する。v7 の USB_SENS と同じ強さにしてある。
-#else
-  #define USB_DETECT 31
-#endif
+  //   浮き（151kΩ だと 13µA で 2V）、電源異常を誤報する。
 #define RP_CLK_GPIO 2 // Set to CLK GPIO
 #define RP_CMD_GPIO 3 // Set to CMD GPIO
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
 #define SD_DETECT 10  //v7 8->10に変更
-// ---- BNO085 のホストバス — **i2c1 固定** ----
-// imu_update() は Core0 から呼ぶ。
-//
-// ★ 0.976 で SPI 対応を削除した。触ると必ずジャイロが化ける問題
-//   （触診で約 0.8 件/分、gx=+v gy=-v gz=-v の署名）が SPI でしか起きず、
-//   I2C では一度も再現しなかったため I2C 運用に確定した。
-//   SPI に戻す必要が生じたら 0.975 の settings.h / imu.cpp を見ること。
-//
-// ★ ハード側の前提（これが揃っていないと起動しない）:
-//     JP1（PS1）= 2-3 ブリッジ ＝ **GND**
-//       BNO085 は PS1/PS0 でプロトコルを決める（データシート Figure 1-5）。
-//       PS1=0, PS0=0 → I2C。**I2C は PS1=0。HIGH ではない。**
-//       PS0 は GPIO47 でソフトが LOW に駆動する。
-//     R46 / R47（0Ω）実装 ＝ H_SCL/H_SDA を i2c1 へ繋ぐ
-//     GPIO34/35 に外部プルアップ 4.7kΩ（実装済み）
-//
-// ※ SD の settings.txt では切り替えられない（設定の読み込みは Core1 の
-//   setup_sd() で、imu_setup()（Core0）より後に走るため間に合わない）。
-
-// ★ **ここから IMU_UNUSED_MISO_PIN までは v7 基板（BNO085）専用。**
-//   v7.1 ではどの GPIO も別の用途になっているので、定義ごと存在しない
-//   （BNO085 のコードを v7.1 でビルドしようとすると、未定義で止まる。
-//    どの GPIO が何になるかは冒頭の PONS_BOARD の表）。
-#if PONS_BOARD == PONS_BOARD_V7
-
-#define IMU_RST_PIN   46   // BNO085 NRST（負論理）
-// H_INTN（負論理）。**i2c1 運用では読んでいない**（完全ポーリング）。
-// 入力プルアップだけ入れて、ブート前に浮かせないようにしている（imu_bno08x.cpp）。
-#define IMU_INT_PIN   45
-#define IMU_PS0_WAKE_PIN 47 // BNO085 PS0/WAKE。リセット時はプロトコル選択、以降は WAKE
-
-// ---- i2c1（MS5611 の i2c0(GPIO32/33) とは別バス）----
-#define IMU_I2C_SDA   34
-#define IMU_I2C_SCL   35
-
-// ★★ **旧 SPI1 の SCK/MISO は I2C バスそのものなので、放置してはいけない。**
-//   R46/R47 の 0Ω で H_SCL/H_SDA に連結されており、下の 2 本は
-//   GPIO34/35 とショートしている（実測確認）。
-//   RP2350 のパッドを入力・プル無しで放置すると Low 側へ張り付くことがあり、
-//   外部 4.7kΩ と分圧して約 2.1V（VIH 2.31V 未満）＝ Low に見える。
-//   実機 2026-09-27: `stage=2(no-SHTP) SDA=0 SCL=0` で 5 回中 4 回起動失敗した。
-//   → imu_bus_park_unused_pins() が **INPUT_PULLUP で明示的に停める**。
-//   **出力にすると I2C バスを殺す。**
-#define IMU_UNUSED_SCK_PIN   42   // 旧 SPI1_SCK。H_SCL(=GPIO35) とショート
-#define IMU_UNUSED_MISO_PIN  44   // 旧 SPI1_MISO。H_SDA(=GPIO34) とショート
-
-#endif  // PONS_BOARD == PONS_BOARD_V7（BNO085 のピン）
-// ★ GPIO41（旧 SPI1_CS）は **E220 の M0/M1 専用**（e220.h）。
-//   R53 を外してあるので **BNO085 の H_CSN とは繋がっていない**。
-//   IMU のコードから駆動すると無線が mode 3 へ落ちるだけなので、触らないこと。
-// ★ BNO085 の H_CSN は基板上で未接続（R53 外し）。I2C では don't care なので
-//   それでよい（データシートの I2C 接続図でも未接続）。駆動する手段は無い。
-// ★ GPIO43（旧 SPI1_MOSI）は I2C では SA0（アドレス下位ビット）。下の IMU_I2C_SA0_PIN。
-// ★ この値は**アドレス探査のビット幅も決める**（下げると安全側になる）。
-//   arduino-pico のアドレス探査（0 バイト書き込み = Adafruit_I2CDevice::detected）は
-//   **I2C ペリフェラルを使わず、ピンを SIO に切り替えてビットバンギングする**
-//   （Wire.cpp の _probe）。そのビット幅は **(1000000 / この値) / 2** で決まり、
-//   400kHz では **1µs**、100kHz なら 5µs。
-//   実機 2026-09-27 に 400kHz で `init_step=1`（アドレス応答なし）が 5 回中 4〜5 回
-//   起きたが、**真因は探査を二重に走らせていたこと**で、そちらを直して解決した
-//   （imu_bus_begin() のコメント参照）。クロックは 400kHz のままでよい。
-//   ★ 外部プルアップ 4.7kΩ は GPIO34/35 に実装済み。立ち上がり時間は問題ない。
-//   ★ **もし `init_step=1` が再発したら、まずここを 100000 に下げて切り分ける。**
-//     レポートは 135 件/秒なので 100kHz でもバス占有率は約 30% に収まり、
-//     レートは足りる（400kHz が必須ではない）。
-#define IMU_I2C_HZ    400000
-// SA0 が下位 1bit を決める（0x4A / 0x4B）。SA0 は SPI の MOSI と同じ GPIO43 なので、
-// I2C モードでは HIGH に固定して 0x4B にする。
-#define IMU_I2C_ADDR  0x4B
-#if PONS_BOARD == PONS_BOARD_V7
-  #define IMU_I2C_SA0_PIN  43
-#endif
-
 // ============================================================
 //  電源・バッテリー
 // ============================================================
-// v7 は VSYS、v7.1 は BATPWR（ロードスイッチ Q3 の後ろ＝電池）を測る。分圧比は同じ。
+// BATPWR（ロードスイッチ Q3 の後ろ＝電池）を 51/151 で分圧して測る。
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) // 1/4096*3.3*(151/51)=0.00238423334
 // ---- 電源経路の異常（power.cpp）----
 // 2026-10-15、v7 の充電 IC（MCP73831）が電池につながったまま内部で壊れ、
 // 電池 → 充電 IC → VBUS → D3 → VSYS と回って **SW で切れず**、画面は「USB」になった
 // （VSYS は 2.6V）。本物の USB なら VSYS は 4.3V 以上あるので、
 // 「USB 判定なのに電圧が低い」状態が続いたら異常とみなす。
-//   v7  : USB_DETECT が High なのに VSYS < POWER_FAULT_VSYS_V
-//   v7.1: VBUS が POWER_FAULT_VBUS_MIN_V〜USB_VBUS_PRESENT_V の間に居続ける
-//         （故障なら VBUS は電池電圧を超えられない。抜いた後の放電は 1 秒以内に通り過ぎる）
-#define POWER_FAULT_VSYS_V      3.9f
-#define USB_VBUS_PRESENT_V      4.3f    // v7.1: これ以上なら本物の USB
-#define POWER_FAULT_VBUS_MIN_V  2.0f    // v7.1: これ未満は USB なし
+// v7.1 では VBUS が POWER_FAULT_VBUS_MIN_V〜USB_VBUS_PRESENT_V の間に居続けたら異常
+//   （故障なら VBUS は電池電圧を超えられない。抜いた後の放電は 1 秒以内に通り過ぎる）
+#define USB_VBUS_PRESENT_V      4.3f    // これ以上なら本物の USB
+#define POWER_FAULT_VBUS_MIN_V  2.0f    // これ未満は USB なし
 #define POWER_FAULT_HOLD_MS     3000UL  // この時間続いたら異常（USB を抜いた直後の過渡を除く）
 #define POWER_FAULT_ARM_MS      5000UL  // 起動直後は判定しない
 #define POWER_FAULT_ALERT_MS   30000UL  // 警報音を繰り返す間隔
-// 異常時に画面で頼む操作。v7 は充電 IC が SW の手前なので電池を抜くしかない。
-// v7.1 は Q3 の後ろなので SW で電池から切れる（USB からの給電は抜けば止まる）。
-#if PONS_BOARD == PONS_BOARD_V71
+// 異常時に画面で頼む操作。充電 IC が Q3 の後ろなので SW で電池から切れる（USB からの給電は抜けば止まる）。
   #define POWER_FAULT_ACTION_TEXT "SW OFF + UNPLUG USB"
-#else
-  #define POWER_FAULT_ACTION_TEXT "UNPLUG THE BATTERY"
-#endif
-// ---- SW を OFF にしたまま USB で充電している（v7.1 のみ。power.cpp）----
-// v7.1 は充電 IC が Q3（SW で開閉するロードスイッチ）の後ろにあるので、SW OFF のまま
+// ---- SW を OFF にしたまま USB で充電している（power.cpp）----
+// 充電 IC が Q3（SW で開閉するロードスイッチ）の後ろにあるので、SW OFF のまま
 // USB を挿すと電池へは Q3 のボディダイオード経由になり、**4.2V より 0.5V 前後低いところで
 // 充電が終わる**。しかも本体は USB で起動し、充電 LED も消えるので、見た目では
-// 満充電と区別が付かない（v7 までは SW OFF のままでも満充電になった）。docs/pons_power.md。
+// 満充電と区別が付かない。docs/pons_power.md。
 // 検出: SW4 の OFF 側の接点が GPIO40（電池電圧の分圧点）を GND に落とす。
 //   SW ON なら GPIO40 は電池電圧（保護回路付きの 1s なので 2.5V 以上）、OFF なら 0V。
 #define CHARGE_SW_OFF_BATT_V     1.0f    // GPIO40 の読み（電池電圧換算）がこれ未満なら SW OFF
@@ -277,7 +161,7 @@
 // ★ fix が無ければ静止とみなす。屋内で充電している場面が本命なので、fix 待ちで黙らせない。
 #define CHARGE_SW_MOVING_MPS     1.5f    // これを超えたら移動中（歩く速さ 1.3m/s 前後より少し上）
 #define CHARGE_SW_STILL_MS      30000UL  // この時間止まっていたら移動が終わったとみなす（信号待ちで出たり消えたりしない）
-// ---- 高温での充電の警告（power.cpp。v7・v7.1 とも）----
+// ---- 高温での充電の警告（power.cpp）----
 // 電池 DTP603048(PHR) の仕様は「充電 0〜45°C」（放電は −20〜60°C）。
 // 温度は MS5611（本体基板）で見る。電池はケースの中で本体基板の隣にあるので、
 // 基板の温度を電池の温度の目安にする（基板は充電 IC の熱で少し高めに出る＝早めに警告する側）。
@@ -286,17 +170,15 @@
 #define CHARGE_HOT_CLEAR_C     42.0f    // これ以下で解除（境目で出たり消えたりしない）
 #define CHARGE_HOT_HOLD_MS     30000UL
 #define CHARGE_HOT_ALERT_MS    60000UL  // 続いている間、読み上げをくり返す間隔
-// ---- TFT バックライト（v7.1 のみ。backlight.cpp。v7 はスライドスイッチで直接切り替える）----
+// ---- TFT バックライト（backlight.cpp）----
 // Q1（P-ch）のゲートを PWM で駆動する。**Low で点灯**（ゲートは R47 で +3V3 へ
 // プルアップしてあるので、PWM を設定するまでは消灯）。
 // 周波数は可聴域より上にする。PAM8302 が同じ +3V3 から電源を取っているので、
 // 可聴域だとスピーカーからうなりが出る。
 //   輝度スイッチ High … 照度によらず TFT_BL_DUTY_BRIGHT
 //   輝度スイッチ Low  … 照度センサー VEML7700 で自動（BL_AUTO_*）。センサーが無いときは TFT_BL_DUTY_DIM
-#if PONS_BOARD == PONS_BOARD_V71
   #define TFT_BL_PIN        34
   #define TFT_SW_PIN        35      // 輝度スイッチ。High = 最大（R48 4.7k で外付けプルダウン）
-#endif
 #define TFT_BL_PWM_HZ       25000
 #define TFT_BL_DUTY_BRIGHT  1.00f   // 最大
 #define TFT_BL_DUTY_DIM     0.05f   // スイッチ Low で照度センサーが無いとき。実機で調整する
@@ -325,7 +207,7 @@
 // 電池は減り続けるので 1 回きりの通知では足りない。逆に短くすると、
 // 本当に聞くべき他の警報（コース・バンク角）が埋もれる。
 #define BAT_WARN_INTERVAL_MS 60000UL
-// ---- 電池低下のときの省電力（v7.1 のみ。GPS_TFT_map.ino の batt_alarm_tick → backlight.cpp）----
+// ---- 電池低下のときの省電力（GPS_TFT_map.ino の batt_alarm_tick → backlight.cpp）----
 // 電池低下の警告と同じ条件（BAT_LOW_VOLTAGE）で、バックライトを点滅させて電池をもたせる。
 // ★ 暗くしたままにしないこと。本番では電池を最後まで使ってでも画面を見たいので、
 //   「BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消す」をくり返す（点いている間はいつもの明るさ）。
@@ -399,7 +281,7 @@
 #define VARIO_DESCEND_FULL_MPS   1.0f    // この沈下率[m/s]以上で 100%
 
 // バリオ音のデッドバンド [m/s]。この範囲では音を出さない。
-// KF 融合中（BNO085 生存 + MS5611 接続）は推定精度が高いので狭くできる。
+// KF 融合中（IMU 生存 + MS5611 接続）は推定精度が高いので狭くできる。
 // 0.30 → 0.25 に縮小（GNSS 垂直速度の取り込みで精度が上がったため, v0.942）。
 // ※ sound.cpp の音の判定と display_tft.cpp の VSI のグレー線が同じ値を使う。
 //   片方だけ変えると「線は出ているのに鳴らない」状態になるので必ずここで変える。
@@ -462,8 +344,7 @@
 //   ・1 回の試行は「アドレス応答の確認 1 トランザクション」から始める。
 //     応答が無ければそこで諦めるので、不在時のコストは数十 µs で済む
 //     （PROM 8 ワードまで読みに行くのは応答があったときだけ）。
-//   ・BNO085 の復旧が 60 秒間隔なのは 1 回が NRST 410ms かかるため。
-//     こちらは 1ms 未満なので、同じ間隔にする理由は無い。
+//   ・IMU の復旧（IMU_RECOVERY_INTERVAL_MS）とは別の値。こちらは 1 回 1ms 未満なので短くてよい。
 //   ・待っている相手は「一瞬のバス擾乱（即復帰）」「結露（数分）」
 //     「ハンダ不良（永久に戻らない）」のどれか。30 秒なら一瞬の擾乱を
 //     取りこぼさず、永久故障でも 2 分に 4 回の空振りで済む。
@@ -656,10 +537,10 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
     } \
   } while(0)
 
-  // ---- 処理時間計測ユーティリティ（BNO085配置コア決定用） ----
+  // ---- 処理時間計測ユーティリティ（IMU の読み出しを飢えさせない調査用） ----
   // 使い方: TIMING_START(名前) → 重い処理 → TIMING_END(統計変数, 名前)
   // 30秒ごとに TIMING_REPORT で max/avg/count を Serial 出力する。
-  // 閾値: BNO085 H_INT 応答リミット = 10ms = 10000 us
+  // 閾値: 10ms = 10000 us（IMU の読み出し間隔の目安）
   struct TimingStat {
     uint32_t max_us;   // ワーストケース（マイクロ秒）
     uint32_t sum_us;   // 累計（平均計算用。オーバーフロー対策として count も管理）
@@ -699,38 +580,18 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #endif
 
 // ============================================================
-//  IMU チップの選択（0.984 で導入。SCH16T-K01 への差し替え準備）
+//  IMU（SCH16T-K01）
 // ============================================================
-// BNO085 は中で融合までやるチップ、SCH16T-K01（Murata）はジャイロと加速度しか
-// 出さないチップ。0.983〜0.984 で機上の推定（姿勢 ESKF・バリオ KF）から
-// BNO085 の融合出力を全部外したので、**どちらでも推定は成立する**。
-// 境界と「何が有るか」の申告は [imu_sensor.h](imu_sensor.h) にある。
-//
-// ★ **切替は起動時のみ有効にすること。** 実行中に変えると imu_setup() の
-//   やり直しになり、バス初期化・ESKF リセット・バリオ KF の再初期化が絡む。
-//   `link_mode` と同じ「SD に保存して次回起動から」の扱いにする。
-// ★ **SCH16T 側は `EOI` を書いた時点でレジスタが全部ロックされる**
-//   （データシート Table 80。リセットするまで解除できない）。だから
-//   フィルターやレンジを設定画面から実行中に変えることも原理的にできない。
-//   詳細は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §5。
-#define IMU_SENSOR_BNO085   0
-#define IMU_SENSOR_SCH16T   1
+// ジャイロと加速度しか出さないチップ（融合は無い）。機上の推定（姿勢 ESKF・バリオ KF）は
+// この 2 つだけで成り立つ。「何が有るか」の申告は [imu_sensor.h](imu_sensor.h) の imu_caps()。
+// ★ **`EOI` を書いた時点でレジスタが全部ロックされる**（データシート Table 80。
+//   リセットするまで解除できない）。フィルターやレンジを設定画面から実行中に変えることは
+//   原理的にできない。詳細は [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §5。
 
-// 能力ビットの縮退リハーサル用マスク。imu_caps() の戻り値に AND される。
-// ★ **0 にすると、BNO085 を載せたまま「融合出力の無いチップ」を再現できる。**
-//   SCH16T へ移る前に、画面とログの縮退（"---" 表示・メニューの添字ずれ・
-//   IMU/ESKF 2/3 ページが真っ白にならないか）を**いまの基板で確かめるためのもの**。
-//   囲い忘れがあれば、0 を本物として表示する箇所がその場で見える。
+// 能力ビットのマスク。imu_caps() の戻り値に AND される（既定は全部通す）。
 #define IMU_CAPS_DEBUG_MASK 0xFFFFFFFFu
 #if IMU_CAPS_DEBUG_MASK != 0xFFFFFFFFu
   #warning "IMU_CAPS_DEBUG_MASK is not default (capability degradation rehearsal). restore before release."
-#endif
-// ★ **載っているセンサーは基板で決まる**ので、ここでは選ばせず PONS_BOARD から導く。
-//   別々に持つと「v7 基板に SCH16T」のような存在しない組み合わせが作れてしまう。
-#if PONS_BOARD == PONS_BOARD_V71
-  #define IMU_SENSOR_DEFAULT  IMU_SENSOR_SCH16T
-#else
-  #define IMU_SENSOR_DEFAULT  IMU_SENSOR_BNO085
 #endif
 
 // ---- SCH16T-K01-10 の定数（データシート Doc.No.11624 Rev.6 で全件照合済み）----
@@ -815,44 +676,31 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //
 // ---- ピン（**v7.1 基板で確定。2026-10-07 に PCB のネットリストから確認**）----
 // SCH16T は基板実装ではなく **J6（Molex 200528-0080, 8pin FPC）経由の外付け**。
-// ★ **本体 J6 とブレイクアウトは番号が逆順。** 完成済みの FPC（両端とも同じ面に端子）で
-//   J6-n ↔ J3-(9-n) が繋がる（2026-10-19 に本体側を逆順へ直した）。1:1 ではない。
+// ★ **本体 J6 とブレイクアウトは番号が逆順。** ブレイクアウトはフレキ基板で、尾の金端子 J3 を
+//   J6 へ直接挿すと J6-n ↔ J3-(9-n) が接する（2026-10-19 に本体側を逆順へ直した）。1:1 ではない。
 //   ブレイクアウト J3（FPC）/ J1（ピンヘッダ）: 1=+3V3 2=RESET 3=MOSI 4=CS 5=SCK 6=SYNC 7=MISO 8=GND
 //   本体 J6                                 : 1=GND 2=MISO 3=SYNC 4=SCK 5=CS 6=MOSI 7=RESET 8=+3V3
 //
 // ★ 41/42/43/44 は RP2350 の **SPI1 の正規割り当て**（CSn/SCK/TX/RX）なので
 //   ハードウェア SPI が使える。**arduino-pico では `SPI1` オブジェクト**（`SPI` は spi0）。
 //   GPIO46 は SPI1_SCK の代替機能でもあるので `SPI1.setSCK(42)` を明示すること。
-// ★ v7 基板では**全部 SCH16T_PIN_UNSET にする**（同じ GPIO が i2c1 や E220 の
-//   M0/M1 になっている。冒頭の PONS_BOARD の表）。定義ごと消さずに UNSET を
-//   入れておくのは、ドライバ側が「載っていない」を実行時にも判定できるようにするため。
+// SCH16T_PIN_UNSET は「ピンが割り当てられていない」を表す値（ドライバが実行時に確かめる）。
 #define SCH16T_PIN_UNSET     255
-#if PONS_BOARD == PONS_BOARD_V71
   #define SCH16T_PIN_CS         41
   #define SCH16T_PIN_SCK        42
   #define SCH16T_PIN_MOSI       43
   #define SCH16T_PIN_MISO       44
   #define SCH16T_PIN_EXTRESN    45   // 外部リセット（負論理）。ネット名 SCH16T_RESET
   #define SCH16T_PIN_DRY        46   // データ準備完了（デシメーション出力用）。SCH16T_SYNC
-#else
-  #define SCH16T_PIN_CS         SCH16T_PIN_UNSET
-  #define SCH16T_PIN_SCK        SCH16T_PIN_UNSET
-  #define SCH16T_PIN_MOSI       SCH16T_PIN_UNSET
-  #define SCH16T_PIN_MISO       SCH16T_PIN_UNSET
-  #define SCH16T_PIN_EXTRESN    SCH16T_PIN_UNSET
-  #define SCH16T_PIN_DRY        SCH16T_PIN_UNSET
-#endif
 
-#if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
   // ★ 0.991 で imu_sch16t.cpp に中身が入った（骨組みは 0.987）。ただし
   //   **本体基板では一度も動かしていない。** 単独テスト（Pico 2）で裏付いたのは
   //   チップとフレーム層までで、SPI1 のピン・ESKF への接続・バリオ・画面は未確認。
   //   **docs/imu_sch16t_bringup.md の Step 2〜5 を通してからこの #warning を消すこと。**
   #warning "SCH16T driver is implemented but NEVER RUN ON THE BOARD. do docs/imu_sch16t_bringup.md Step 2-5 first. DO NOT FLY."
-#endif
 
 // ============================================================
-//  IMU（BNO085）
+//  IMU の生ログと読み出し
 // ============================================================
 // ---- 生 IMU ロガー（姿勢 ESKF のオフライン開発用）----
 // 目的: BNO085 内蔵フュージョンは比力を鉛直とみなすため、旋回中はロールを過小評価し、
@@ -890,43 +738,18 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // （#if で判定するため true/false ではなく 1/0 で書く）
 #define IMULOG_RAW_REPORTS_ENABLED  1
 
-// BNO085 レポート周期 [Hz]（IMULOG_RAW_REPORTS_ENABLED が 1 のときのみ有効）
-//   合計要求レートを配信能力の内側に保つこと。上げすぎると既存レポートが飢餓になり
-//   バリオが壊れる（上記参照）。既存 35 + 生 100 = 135 レポート/秒
-//   （0.984 で MAG 10Hz を外したので 145 → 135）。
-#define IMU_RATE_GYRO_HZ    50  // SH2_GYROSCOPE_CALIBRATED
-#define IMU_RATE_ACCEL_HZ   50  // SH2_ACCELEROMETER（重力込みの生比力。ESKF と、VARIO_USE_RAW_ACCEL=1 のときバリオ KF が使う）
-// 既存レポート（バリオ KF・姿勢表示用。変更するとバリオのチューニングに影響する）
-#define IMU_RATE_GRV_HZ     15  // SH2_GAME_ROTATION_VECTOR
-#define IMU_RATE_LACC_HZ    15  // SH2_LINEAR_ACCELERATION
-#define IMU_RATE_RV_HZ       5  // SH2_ROTATION_VECTOR
+// ジャイロのサンプル周期 [Hz]。attitude.cpp がサンプル間隔の初期値と、測った間隔の
+// 妥当性の範囲（0.2〜5 倍）に使う。BNO085 時代の 50Hz のまま。
+// ★ **SCH16T は 250Hz（4ms）で届くので、4ms がこの範囲の下限ちょうどになる。**
+//   ESKF の「1 サンプルあたり」のゲイン（ESKF_RELEVEL_GAIN など）も 50Hz を前提にしている。
+//   v7.1 の実機で、測ったサンプル間隔と時定数を確かめること（docs/imu_sch16t_bringup.md）。
+#define IMU_RATE_GYRO_HZ    50
 
-// ポーリング周期 [µs]。
-//   生レポート有効時: 4ms（250Hz）。BNO085 はポーリング 1 回につきおおむね
-//                     1 レポートしか返さないため、ポーリング周期が配信能力の
-//                     上限を決める。要求 135 レポート/秒に対し約 1.9 倍の余裕。
-//                     描画で 64ms 止まった後の取り戻しにもこの余裕が要る。
-//   無効時          : 従来どおり 30ms（変更前と同一）。
-// ★★ **SCH16T では生ログの有無に関係なく 250Hz 側を使う。**
-//   33ms（33Hz）では LPF2(13Hz) の最小推奨 150Hz すら満たせず、阻止域のノイズが
-//   折り返して帯域内に入る（SCH16T_MIN_READ_HZ）。BNO085 は「レポートを要求する」
-//   方式なので生ログの有無で間引いてよかったが、**SCH16T はこちらが取りに行く方式で、
-//   読み出しレートがそのまま信号品質を決める**。紐づけてよい条件ではなくなった。
-#if IMU_SENSOR_DEFAULT == IMU_SENSOR_SCH16T
+// 読み出し周期 [µs]。4ms（250Hz）。
+// ★★ **生ログの有無に関係なくこの値。** 33ms（33Hz）では LPF2(13Hz) の最小推奨 150Hz すら
+//   満たせず、阻止域のノイズが折り返して帯域内に入る（SCH16T_MIN_READ_HZ）。
+//   SCH16T はこちらが取りに行く方式で、**読み出しレートがそのまま信号品質を決める**。
   #define IMU_POLL_INTERVAL_US   4000
-#elif IMULOG_RAW_REPORTS_ENABLED
-  #define IMU_POLL_INTERVAL_US   4000
-#else
-  #define IMU_POLL_INTERVAL_US   30000
-#endif
-
-// 1 回のポーリングで引き取る SHTP パケットの上限。
-// ★ sh2_service() は 1 回で 1 パケットしか処理しない（shtp_service() はループしない）
-//   ので、1 回だけだと「4ms に 1 パケット」しか掃けない。Core0 が数十 ms 止まった
-//   あとは溜まった分に追いつけず、**読むのが遅れるとジャイロが化ける**
-//   （2026-09-23 に実機で確定。imu_service_if_due() のコメント参照）。
-//   上限を付けるのは、ここで長居して別の飢餓を作らないため。
-#define IMU_DRAIN_MAX_PACKETS   8
 
 // 加速度サンプルの許容鮮度 [µs]（安全網）。
 // LINEAR_ACCELERATION が 15Hz = 67ms 周期なので、150ms は正常時には決して発火しない。
@@ -936,25 +759,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // （古い加速度を繰り返し積分して暴れるより遥かに安全）。
 #define IMU_LACC_MAX_AGE_US  150000
 
-// ---- 無応答の検出と復旧（imu.cpp）----
-// ★ **timeout_us を設定していない SH-2 の op がある。**
-//   sh2.c の sh2_Op_t 初期化子は 17 個すべてが timeout_us を省略している
-//   （指定初期化子なので 0 = 無期限）。応答待ちをする op は全部ハングし得る。
-//   実害があるのは sh2_getMetadata()（getFrsOp。.rx を持ち、getFrsStart は
-//   opCompleted() を呼ばない）で、FRS 応答が 1 回失われると戻ってこない。
-//   → 診断用のメタデータ読み出しは RELEASE では実行しない（imu.cpp 参照）。
-//   i2c1 運用では begin_I2C() の中の detected() が「居ないチップに対して
-//   _init() へ進まない」保護を果たす。**自前で二重に探査しないこと**（imu_bus_begin）。
-//
-//   sh2_setSensorConfig() は setSensorConfigStart() が中で opCompleted() を
-//   呼ぶのでハングはしないが、1 回ごとに応答を待つ。レポートは 6 件あるので
-//   imu_enable_reports() に総時間の上限を設ける。
-//   正常時は 6 件合計で 10ms 程度なので、300ms なら「健全なのに打ち切る」ことは無い。
-#define IMU_ENABLE_BUDGET_MS      300
-
-// BNO085 が途絶したときの復旧試行の間隔 [ms]。
-// 復旧は NRST パルス(10ms)＋ブート待機(400ms)＋バス初期化 という手順で、
-// imu.cpp のステートマシンが 1 ループ 1 段ずつ進める（Core0 は止めない）。
+// IMU が途絶したときの復旧試行の間隔 [ms]（imu_sch16t.cpp）。
 // 短くしても直る見込みは増えないので、1 分で十分。
 #define IMU_RECOVERY_INTERVAL_MS  60000UL
 
@@ -1005,7 +810,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   静止時のスケール/バイアス誤差を打ち消してしまうので見えない。
 //   **VertAccel のほうが診断に使える**（この -1.58 で校正ずれに気づけた）。
 //   直し方は加速度計の 6 姿勢校正（cal acc= が 3 になるまで）。
-//   詳細は docs/imu_i2c_bringup.md の「加速度計の校正」。
+//   詳細は PONSv7 ブランチの docs/imu_i2c_bringup.md の「加速度計の校正」。
 #define GRAVITY_MPS2  9.80665f
 
 // バリオ KF の predict 周期 [µs]（生レポート有効時のみ使う）。
@@ -1395,18 +1200,21 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 壊れた設定ファイルだけを弾く」ため。
 #define LEVEL_OFFSET_LIMIT_DEG      OFF_MOUNT_DEG
 
-// ---- BNO085 のマウント回転（センサー座標 → 機体軸）----
+// ---- IMU のマウント回転（センサー座標 → 機体軸）----
 // q_body = q_sensor ⊗ q_mount。実体はセンサー Y 軸まわり -90 度。
 //
 // ★ **Euler を組み替える方式に戻してはいけない。**
-//   v7 の配置（IC が基板裏面・1番ピンが天）では、機体が水平のときセンサーが
+//   v7 の BNO085 の配置（IC が基板裏面・1番ピンが天）では、機体が水平のときセンサーが
 //   ちょうど **ジンバルロック（sensor_pitch = ±90°）** に入る。そこでは
 //   sensor_roll と sensor_yaw が独立した量ではなくなるので、3 つの角を
 //   入れ替えても絶対に正しくならない（実機で roll 0 なのに pitch が +90/-270 を
 //   示し、roll 欄にヨーが出る、という壊れ方をした）。
 //   クォータニオンの段階で回してから 1 回だけ Euler を出すこと。
 //
-// 2026-09-21 に実機で測定（静止させて生加速度＝重力ベクトルを読む）:
+// ★★ **下の値は v7 基板の BNO085 で測ったもの。SCH16T（IMU 基板）の向きでは測っていない。**
+//   v7.1 の実機で同じ 3 点を測り、違っていたらここを差し替える（docs/imu_sch16t_bringup.md）。
+//   違ったまま飛ぶと、ロールとピッチが入れ替わったり符号が逆になったりする。
+// 2026-09-21 に v7 の実機で測定（静止させて生加速度＝重力ベクトルを読む）:
 //   水平          a=(-9.8,   0,   0) → 機体の「下」= センサー +X
 //   機首を真下90  a=(  0,   0,-9.8) → 機体の「前」= センサー +Z
 //   右翼を真下90  a=(  0,+9.8,   0) → 機体の「右」= センサー -Y

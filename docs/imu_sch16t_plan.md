@@ -1,5 +1,10 @@
 # SCH16T-K01-10 導入計画 — 変更が必要な箇所の洗い出し
 
+> **2026-10-23 にブランチを分けた。** このブランチ（`PONSv7.1`）は v7.1 基板専用で、
+> `PONS_BOARD` のスイッチ・`imu_bno08x.cpp`・`src/bno08x/`・docs/imu_i2c_bringup.md は外した
+> （v7 基板と BNO085 の側は `PONSv7` ブランチにある）。下の `PONS_BOARD` / `IMU_SENSOR_DEFAULT` /
+> `imu_bno08x.cpp` の記述は、そのときの計画と経緯の記録として残してある。
+
 BNO085 の加速度・ジャイロ精度に課題があるため、Murata **SCH16T-K01-10**（SPI）を導入し、
 **設定で BNO085(I2C) / SCH16T(SPI) を選べる**ようにする。
 

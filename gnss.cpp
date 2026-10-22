@@ -797,7 +797,7 @@ uint32_t get_gnss_baudrate() { return gnss_current_baudrate; }
 // UBX フレームを1パケットずつ読み、ACK-ACK なら true を返す。
 // NAV-PVT など非 ACK パケットはヘッダ・ペイロード・チェックサムを
 // 丸ごと読み飛ばすため、固定バッファに収まらない問題が起きない。
-// ★ 待ちの間も BNO085 を引き取る（CLAUDE.md「BNO085 の読み出しを飢えさせない」）。
+// ★ 待ちの間も IMU を引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）。
 //   GNSS が居ないと 1 回 600ms 空振りし、起動時に 7 回続く。
 static bool ubxWaitAck(uint32_t timeout_ms) {
   unsigned long t0 = millis();
