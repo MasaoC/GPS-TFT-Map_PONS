@@ -69,13 +69,13 @@ static void draw_vario_page1() {
                                         : "-- Sensor Status --");
   y += line_height;
 
-  // MS5611 と BNO085 を 1 行にまとめる
+  // MS5611 と IMU（v7 = BNO085 / v7.1 = SCH16T）を 1 行にまとめる
   backscreen.setCursor(2, y);
   backscreen.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
   backscreen.printf("MS5611:%s", get_airdata_ok() ? "OK" : "NG");
   backscreen.setCursor(84, y);
   backscreen.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-  backscreen.printf("BNO085:%s", get_imu_ok() ? "OK" : "NG");
+  backscreen.printf("%s:%s", imu_sensor_name(), get_imu_ok() ? "OK" : "NG");
   y += line_height;
 
   // GNSS fix 状態
@@ -111,7 +111,7 @@ static void draw_vario_page1() {
   else if (get_imu_ok() && get_airdata_ok())              backscreen.print("KF: Baro+IMU");
   else if (get_airdata_ok() && _gnss3d)                   backscreen.print("KF: Baro+GNSS");
   else if (get_airdata_ok())                              backscreen.print("KF: Baro only");
-  else if (get_imu_ok())                                  backscreen.print("Mode: BNO085 only");
+  else if (get_imu_ok())                                  backscreen.printf("Mode: %s only", imu_sensor_name());
   else                                                     backscreen.print("Mode: No sensors");
   y += nextcolumn_height;
 
@@ -271,7 +271,7 @@ static void draw_vario_page2() {
   const bool _mirror2 = link_mirror_active();
   backscreen.setCursor(2, y);
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.print(_mirror2 ? "-- BNO085 IMU (RX) --" : "-- BNO085 IMU --");
+  backscreen.printf(_mirror2 ? "-- %s IMU (RX) --" : "-- %s IMU --", imu_sensor_name());
   y += line_height;
 
   if (get_imu_ok()) {
@@ -349,7 +349,7 @@ static void draw_vario_page2() {
   } else {
     backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
     backscreen.setCursor(2, y);
-    backscreen.print("BNO085 not connected.");
+    backscreen.printf("%s not connected.", imu_sensor_name());
     y += line_height;
     if (get_airdata_ok()) {
       backscreen.setCursor(2, y);

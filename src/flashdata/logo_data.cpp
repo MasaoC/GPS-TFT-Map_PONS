@@ -1,12 +1,12 @@
 // ============================================================
 // File    : logo_data.cpp
 // Project : PONS v7
-// Role    : 起動スプラッシュのロゴ画像の実体。自動生成ファイル。
-//           sd/logo.bmp（240x52 / 16bpp RGB565）から生成した。
+// Role    : 起動スプラッシュのロゴ画像の実体。自動生成ファイル。手で編集しないこと。
+//           生成: tools/gen_logo_flash.py（原本は tools/logo.bmp。240x52 / 16bpp RGB565）。
 //           BMP はボトムアップだが、ここでは**上から順**に並べ替えてあるので
 //           pushImage にそのまま渡せる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/10/22
 // ============================================================
 #include "logo_data.h"
 

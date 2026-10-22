@@ -2,9 +2,10 @@
 // File    : logo_data.h
 // Project : PONS v7
 // Role    : 起動スプラッシュのロゴ画像（240x52, RGB565）の**宣言**。
-//           実体は logo_data.cpp にある。
+//           実体は logo_data.cpp にある（tools/gen_logo_flash.py の生成物。
+//           原本は tools/logo.bmp。手で編集しないこと）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/06
+// Updated : 2026/10/22
 // ============================================================
 //
 // ■ なぜ .h に実体を置かないのか

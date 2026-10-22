@@ -3,7 +3,7 @@
 // Project : PONS v7 — PONS Link
 // Role    : E220-900T22S(JP) の下位ドライバ実装
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/27
+// Updated : 2026/10/22
 // ============================================================
 
 #include "e220.h"
@@ -596,7 +596,7 @@ bool e220_send(const uint8_t* payload, uint8_t n) {
 //    位相がずれても立て直せるよう、magic('P','L') を探して CRC で確定する。
 // ============================================================
 
-// magic は合ったが ver/type/CRC の検証に落ちたフレームの累計。
+// magic は合ったが ver/type/CRC の検証に落ちたフレームの累計（1 フレーム 1 回）。
 // 「届いたが化けた」を「そもそも来ない」と区別するための診断カウンタ。
 static uint32_t s_badFrames = 0;
 uint32_t e220_bad_frames() { return s_badFrames; }
@@ -618,8 +618,9 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
     rx_pump();
 
     const uint16_t need = (uint16_t)frame_len + 1;   // ペイロード + RSSI
-    for (uint16_t i = 0; i + need <= s_rxLen; i++) {
-        if (s_rx[i] != 'P' || s_rx[i + 1] != 'L') continue;
+    uint16_t i = 0;
+    while (i + need <= s_rxLen) {
+        if (s_rx[i] != 'P' || s_rx[i + 1] != 'L') { i++; continue; }
 
         // ★ s_rx + i は任意オフセットなので、そのまま LinkTelem* にキャストすると
         //   アラインメント違反になる（Cortex-M33 で uint16/int32 の非整列アクセス）。
@@ -637,6 +638,15 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
             //   （雑音の中にたまたま "PL" が並んだ場合もここに入るが、
             //     それも「その CH に何か出ている」ことの手掛かりになる）
             s_badFrames++;
+            // ★ 数えたら magic の 2 バイトを捨てて頭から探し直す。捨てないと
+            //   次の正しいフレームが来るまで**ループのたびに同じフレームを数え直し**、
+            //   0.994 までは 1 分で bad=35166 まで膨らんだ（2026-10-22 の距離試験。
+            //   届いたのは 2,200 バイトほど）。件数として読めなくなる。
+            //   フレーム丸ごと（need）は捨てない。途中のバイトが欠けた短いフレームの
+            //   すぐ後ろから正しいフレームが始まっている場合に、その頭を削ってしまうため。
+            //   手前の i バイトは "PL" で始まらないことを確かめ済みなので一緒に捨ててよい。
+            rx_drop_front((uint16_t)(i + 2));
+            i = 0;
             continue;
         }
 

@@ -242,7 +242,6 @@ static void charge_hot_tick(uint32_t now) {
   if (s_hot_alert == 0 || now - s_hot_alert >= CHARGE_HOT_ALERT_MS) {
     s_hot_alert = now;
     // 「充電中の温度が高すぎます。USBを外して、涼しい場所で冷ましてください。」
-    // ★ macOS の音声合成で作った**仮の音声**（power_fault.wav と同じ）。
     // ★ 最低音量 60: 電池の仕様外の充電で、発火の恐れにつながるので電源経路の異常と同じ扱い
     //   （docs/pons_sound.md §5）。
     enqueueTask(createPlayWavTask("wav/charge_hot.wav", 3, 60));
@@ -280,8 +279,6 @@ void power_tick() {
     // 「電源回路に異常があります。すぐにスイッチを切って、電池とUSBを外してください。」
     // ★ 文言は v7 と v7.1 の両方で正しい手順にしてある（v7 は電池を抜くしかなく、v7.1 は
     //   SW で切れる。画面の POWER_FAULT_ACTION_TEXT は基板ごとに違うが、音声はその和）。
-    // ★ macOS の音声合成で作った**仮の音声**。録音したら同じ名前で wav/ に置き、
-    //   tools/clean_wav8.py → tools/gen_wav_flash.py を回す。
     // ★ 最低音量 60 は電池警告だけの約束だが、これは**発火の恐れ**なので例外にする
     //   （音量 0 の機体でも聞こえないと意味が無い）。docs/pons_sound.md §5。
     enqueueTask(createPlayWavTask("wav/power_fault.wav", 4, 60));
