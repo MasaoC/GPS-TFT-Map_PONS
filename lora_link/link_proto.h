@@ -4,7 +4,7 @@
 // Role    : 電波に載せるテレメトリ構造体と、無線モジュールとの
 //           UART フレーム形式の定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/23
 // ============================================================
 //
 // ■ このファイルが持つもの
@@ -17,7 +17,7 @@
 // ■ ★ 無線方式に依存しない作りにしてある
 //   電波の設定は radio_ch / radio_profile という 2 つの数値だけで、
 //   意味を決めるのは無線層。LoRa では radio_ch = E220 のチャネル番号
-//   （CH0-12 = 920.8-923.2MHz）、radio_profile = SF のプリセット。
+//   （CH0-12 = 920.8-923.2MHz。使うのは 0/3/6/9/12 の 5 つ）、radio_profile = SF のプリセット。
 //   **無線層の都合をこのファイルより上へ漏らさないこと。**
 //   実際、方式を差し替えても上位（link.cpp / display_tft.cpp）は無変更で通った。
 //
@@ -87,6 +87,34 @@ typedef enum {
 // E220 の BW500kHz で使うのは CH0-12（920.8-923.2MHz）。
 // ここが休止 50ms 固定の帯域で、400ms 制限も 10 倍休止もかからない（docs/pons_link.md §7）。
 #define LINK_RADIO_CH_MAX   12
+
+// ★ 選べるのは **CH0 / 3 / 6 / 9 / 12 の 5 つだけ**（LINK_RADIO_CH_STEP 刻み。2026-10-23〜）。
+//   帯域幅 500kHz に対してチャンネルの間隔は 200kHz なので、隣の CH とは 300kHz、
+//   2 つ隣とも 100kHz 帯域が重なる。重ならないのは 3 つ（0.6MHz）以上離したときで、
+//   CH0〜12 に収まるのがこの 5 つ。間の CH を選んでも隣のチームと帯域を分け合うだけで、
+//   得るものが無い（狭い妨害波を避けるのも、この 5 つの中で足りる）。
+//   ★ それでも至近距離（同じ格納庫）では 0.6MHz 離しても漏れ込み、送信前チェックは
+//     BUSY になる（2026-10-22 の実測。CH9 の送信機から CH12 で −62dBm）。
+//   ★ 無線層（e220.cpp）は 0〜12 のどれでも設定できる。絞っているのはこの層の方針。
+#define LINK_RADIO_CH_STEP   3
+static_assert(LINK_RADIO_CH_MAX % LINK_RADIO_CH_STEP == 0, "最後の CH が刻みに乗っていない");
+
+// 刻みに乗っている CH か。
+static inline bool link_radio_ch_valid(int ch) {
+    return ch >= 0 && ch <= LINK_RADIO_CH_MAX && (ch % LINK_RADIO_CH_STEP) == 0;
+}
+// 一番近い CH へ寄せる（以前の settings.txt に残った CH10 → 9、CH11 → 12 など）。
+// ★ 3 台が同じ版なら必ず同じ値に揃うよう、決まった規則（四捨五入）で丸めること。
+static inline uint8_t link_radio_ch_snap(int ch) {
+    if (ch <= 0) return 0;
+    if (ch >= LINK_RADIO_CH_MAX) return LINK_RADIO_CH_MAX;
+    return (uint8_t)(((ch + LINK_RADIO_CH_STEP / 2) / LINK_RADIO_CH_STEP) * LINK_RADIO_CH_STEP);
+}
+// 設定画面で長押しするたびの次の CH（12 の次は 0）。
+static inline uint8_t link_radio_ch_next(uint8_t ch) {
+    const int n = link_radio_ch_snap(ch) + LINK_RADIO_CH_STEP;
+    return (n > LINK_RADIO_CH_MAX) ? 0 : (uint8_t)n;
+}
 
 // ============================================================
 //  グループ ID

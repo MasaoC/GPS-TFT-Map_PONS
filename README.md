@@ -379,7 +379,7 @@ SAM-M10Q が受信した軌道データ（エフェメリス。GPS で約 4 時�
 |---|---|
 | モジュール | E220-900T22S(JP)（920MHz LoRa、技適取得済・免許不要） |
 | 帯域幅 / 拡散率 | 500kHz / **SF8**（設定で SF7〜SF11） |
-| チャンネル | CH0〜12（920.8〜923.2MHz） |
+| チャンネル | CH0 / 3 / 6 / 9 / 12（920.8〜923.2MHz。帯域 500kHz が重ならない 5 つ） |
 | 送信出力 | 13dBm（20mW）。アンテナ 2dBi、EIRP 15dBm |
 | 送信周期 | 1Hz |
 | 1 回の送信時間 | 98.4ms（SF8・65 バイト。メーカーの送信時間計算表による） |
@@ -636,6 +636,8 @@ SD カードに保存された**飛行 CSV をそのまま再生**します。�
   合格なら上昇 2 音。問題があれば音声で知らせますが、**送信は止めません**
   （予備機を緊急で載せ替える場面で送信が始まらないほうが危険なため）。
   * `link_ch_busy.wav` … 同じチャンネルに他の送信機がいる（**送信機が 2 台**／他チームの PONS）
+  * `wireless_busy.wav` … 解読できない電波が断続的に出ている。同じチャンネルとは限らない
+    （格納庫などの至近距離では、別チャンネルの PONS でも出ます）
   * `link_ch_noisy.wav` … 雑音が高い。チャンネルを変える
   * 結果は WIRELESS 画面の `Preflt` 行と `log.txt` の `LINK PREFLIGHT:` に残ります
 
@@ -1028,7 +1030,7 @@ SD が無い・壊れている機体でも警報の音声が鳴るようにす�
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
 | 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `eskf_calib_oldday.wav`（較正した日から日付をまたいだ。地上で起動ごとに 1 回）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
-| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
+| 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`wireless_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |
 

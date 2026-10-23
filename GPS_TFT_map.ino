@@ -1869,9 +1869,10 @@ void longPressCallback() {
                // 3 択のトグルなので「送受同時 ON」を表現できない（docs/pons_link.md §1）。
         link_set_mode((link_get_mode() + 1) % 3);
         break;
-      case 1:  // チャネル CH0-12（920.8-923.2MHz）を回す。
-               // ここまでが休止 50ms 固定の帯域なので上限を越えさせない。
-        link_set_radio_ch((link_get_radio_ch() + 1) % (LINK_RADIO_CH_MAX + 1));
+      case 1:  // チャネルを CH0 → 3 → 6 → 9 → 12 → 0 と回す（920.8-923.2MHz）。
+               // 帯域 500kHz が重ならない 5 つだけにしてある（link_proto.h の LINK_RADIO_CH_STEP）。
+               // CH12 までが休止 50ms 固定の帯域なので上限を越えさせない。
+        link_set_radio_ch(link_radio_ch_next(link_get_radio_ch()));
         break;
       case 2:  // 拡散率 SF7→SF8→…→SF11→SF7 と回す（帯域幅 500kHz は固定）。
                // SF を上げるほど届くが、送信時間＝送信電流が倍々に増える。
