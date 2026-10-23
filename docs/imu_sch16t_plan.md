@@ -15,7 +15,7 @@ BNO085 の加速度・ジャイロ精度に課題があるため、Murata **SCH1
 どちらも BNO085 のままで実ログによる無回帰確認ができたため、SCH16T が届く前にやっておいた。
 
 - 単独テストのスケッチと手順 → [tools/sch16t_test/README.md](../tools/sch16t_test/README.md)
-- 現状（BNO085 I2C）の立ち上げ記録 → [imu_i2c_bringup.md](imu_i2c_bringup.md)
+- BNO085（I2C）の立ち上げ記録 → `PONSv7` ブランチの docs/imu_i2c_bringup.md（このブランチには無い）
 
 ---
 
@@ -56,7 +56,7 @@ BNO085 の加速度・ジャイロ精度に課題があるため、Murata **SCH1
 | ファイル | 行数 | 中身 |
 |---|--:|---|
 | [imu.cpp](../imu.cpp) | 801 | バリオ KF・気圧/GNSS 観測・`imu_feed_*()`・V/S と高度のゲッター。**チップ非依存** |
-| [imu_bno08x.cpp](../imu_bno08x.cpp) | 1248 | BNO085 ドライバ。バス・リセット・レポート受信・DCD 校正・復旧・融合出力のゲッター |
+| `imu_bno08x.cpp`（`PONSv7` ブランチ） | 1248 | BNO085 ドライバ。バス・リセット・レポート受信・DCD 校正・復旧・融合出力のゲッター |
 | [imu_sch16t.cpp](../imu_sch16t.cpp) | 650 | SCH16T ドライバ（0.991 で実装）。SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証** |
 
 ★ **移動は行範囲のコピーで行い、本文は 1 行も書き換えていない**（挙動を変えないため）。
@@ -339,7 +339,7 @@ BNO085 時代の実測 158 レコード/秒（4.4kB/s）の 3 倍。imulog の�
   （`sh2_close()`、GPIO42/44 の park、GPIO41、i2c 固まり、レポート飢餓など）は
   **BNO085 を選んだときだけ有効**。見出しにその条件を書く
 - [README.md](../README.md) のスペック表と「v7 での主な変更点」
-- [imu_i2c_bringup.md](imu_i2c_bringup.md) は BNO085 専用として残す
+- imu_i2c_bringup.md は BNO085 専用として残す（2026-10-23 の分離で `PONSv7` ブランチだけに残した）
 - ~~新規 `docs/imu_sch16t_bringup.md`（実機立ち上げの記録用）~~ → **2026-10-14 に作成**。
   単独テストの実測と実機確認の手順（Step 0〜5）、踏みそうな罠の一覧を入れた
 
