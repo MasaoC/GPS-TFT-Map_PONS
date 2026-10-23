@@ -1245,7 +1245,6 @@ bool     link_is_receiving(){ return s_rxValid && link_age_ms() < NOSIGNAL_MS; }
 //   使う側は gnss_new_location_arrived()（gnss.cpp）。
 bool     link_take_new_frame(){ const bool n = s_rxNewFrame; s_rxNewFrame = false; return n; }
 int8_t   link_rssi()        { return s_rxValid ? s_rx.rssi : 0; }
-const LinkTelem* link_rx_telem() { return s_rxValid ? &s_rx.t : nullptr; }
 
 // ★ ミラー中か。各センサ accessor はこれを見て、自機の値の代わりに
 //   受信した機体の値を返す（gnss.cpp の is_demo_active() と同じ流儀）。

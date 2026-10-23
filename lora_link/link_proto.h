@@ -258,7 +258,7 @@ static_assert(sizeof(LinkTelem) == 65, "LinkTelem が 65 バイトでなくな�
 //    **「受信側からは知りようがない、送信機自身の健康状態」だけ**にする。
 //    どれも飛ぶ前に気づきたいもので、飛行中の値からは推し量れない。
 #define LINK_ST_SD_ERROR    0x0001   // SD が使えない（ログが残らない）
-#define LINK_ST_IMU_ERROR   0x0002   // BNO085 が応答しない（姿勢が出ない）
+#define LINK_ST_IMU_ERROR   0x0002   // IMU が応答しない（姿勢が出ない）
 #define LINK_ST_NEEDS_APPLY 0x0004   // ロールトリムが未適用（設定し忘れ）
 #define LINK_ST_BAT_LOW     0x0008   // 送信機の電池が少ない
 // ★ 以下 3 つは「受信側で再計算できるものは載せない」の**例外**。どれも判定に

@@ -86,15 +86,14 @@
   uint32_t link_age_ms();                 // 最後の受信からの経過 [ms]
   int8_t   link_rssi();                   // 直近の RSSI [dBm]
 
-  // 受信したテレメトリの生データ。表示側はこれを読む。
-  const LinkTelem* link_rx_telem();
-
   // ---- 受信テレメトリの取り出し ----
   // ★ **LinkTelem の詰め方（スケール）を知ってよいのは link.cpp だけ。**
-  //   呼び出し側で link_rx_telem()->kf_alt_dm / 10.0f のように書いてしまうと、
+  //   受信した LinkTelem をそのまま外へ渡して kf_alt_dm / 10.0f のように書かせると、
   //   同じ換算が 2 か所に存在することになり、分解能を変えたとき片方だけ直して
   //   「ミラー表示のときだけ桁がずれる」という静かな壊れ方をする。
   //   受信側の値が要るときは必ずこの getter を通すこと。
+  //   だから生の LinkTelem を返す関数は置かない（使われていなかった link_rx_telem() は
+  //   2026-10-23 に消した）。
   //   どれも link_mirror_active() が真のときだけ呼ぶ前提（未受信なら 0 を返す）。
   bool  link_has_value(uint16_t havebit);
   double   link_get_lat();

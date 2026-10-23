@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/10/23
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -1911,7 +1911,8 @@ void draw_eskf_debug() {
                         : yacc < 40.0f ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
   backscreen.setCursor(x + 186, y + 12); backscreen.printf("%4.0f", ey);
 
-  // チップ内融合（比較用）。★ **これが無いチップもある**（融合を持たないチップ）。
+  // チップ内融合（比較用）。★ **これが無いチップもある**（v7.1 の SCH16T。v7 の BNO085 には必ずあり、
+  //   この分岐は PONSv7.1 とコードの形をそろえるために残してある）。
   //   無いときに 0 を並べると「水平で北向き」という本物らしい値になるので、
   //   行ごと "---" にする。ヨーの収束状態（右の G/数値）は ESKF の話なので常に出す。
   backscreen.setTextSize(1);
@@ -2043,7 +2044,7 @@ static void draw_imu_page1() {
     backscreen.setCursor(cx_p, y); backscreen.printf("%+6.1f", bp);
     backscreen.setCursor(cx_y, y); backscreen.printf("%6.1f", by);
   } else {
-    // 融合出力を持たないチップ（融合を持たないチップ）。0 を出すと「水平で北向き」に見える。
+    // 融合出力を持たないチップ（v7 の BNO085 では通らない）。0 を出すと「水平で北向き」に見える。
     backscreen.setCursor(cx_r, y); backscreen.print("  ---");
     backscreen.setCursor(cx_p, y); backscreen.print("  ---");
     backscreen.setCursor(cx_y, y); backscreen.print("  ---");
@@ -2270,7 +2271,7 @@ static void draw_imu_page2() {
                       imu_cal_autosave_on() ? "ON " : "OFF", imu_cal_save_count());
     y += lh + 4;
   } else {
-    // 工場校正のチップ（融合を持たないチップ）。保存するものが無いことを 1 行で言う。
+    // 動的校正を持たないチップ（v7 の BNO085 では通らない）。保存するものが無いことを 1 行で言う。
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.setCursor(2, y);
     backscreen.printf("%s: factory cal, nothing to save", imu_sensor_name());
@@ -2288,7 +2289,7 @@ static void draw_imu_page2() {
     switch (i) {
       case IMU2_MENU_SAVECAL: {
         // ★ 条件は acc==3 かつ gyr==3（地磁気は入れない。屋内では 3 に届かない）。
-        // ★ 保存するものが無いチップ（融合を持たないチップ）でも**行は消さない。**
+        // ★ 保存するものが無いチップ（v7 の BNO085 では起きない）でも**行は消さない。**
         //   消すと IMU2_MENU_* の添字とカーソル位置がずれる。灰色で無効を示す。
         const bool rdy = has_cal && imu_cal_ready();
         if (!sel) backscreen.setTextColor(rdy ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
