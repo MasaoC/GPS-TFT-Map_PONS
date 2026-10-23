@@ -2448,6 +2448,7 @@ void draw_wireless(int cursor) {
   // ---- [1] チャネル / [2] 拡散率 ----
   // 番号だけだと現地で何を選んでいるのか分からないので、実際の周波数と SF を出す。
   // CH0 = 920.8MHz、0.2MHz 刻み（CH12 = 923.2MHz。ここまでが休止 50ms 固定の帯域）。
+  // 選べるのは帯域が重ならない 0/3/6/9/12 だけ（link_proto.h）。
   const uint8_t ch = link_get_radio_ch();
   backscreen.setTextColor(cursor == 1 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);

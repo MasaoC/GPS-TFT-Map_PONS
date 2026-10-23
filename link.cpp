@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/23
 // ============================================================
 //
 // ■ 設計の要点
@@ -259,6 +259,11 @@ void link_setup() {
     //   link_announce_mode() / link_preflight_restart() を呼ぶこと。理由は両関数の頭。
 }
 
+// settings.txt の CH を寄せたとき、その元の値。0xFF = 寄せていない。
+// 読み込み（Core1）で立てて、起動の末尾（Core0）で 1 回だけ知らせて消す。
+static volatile uint8_t s_chSnappedFrom = 0xFF;
+void link_note_radio_ch_snapped(uint8_t from) { s_chSnappedFrom = from; }
+
 // 起動時に無線モードを読み上げる。**setup() の末尾で呼ぶ。**
 // ★ **3 状態すべてを読み上げる。OFF の分岐を無音に戻さないこと**（0.985〜）。
 //   「無音＝OFF」では音量 0 や音声の焼き忘れと区別が付かない。docs/pons_link.md §1。
@@ -268,6 +273,19 @@ void link_setup() {
 //   読み上げもそこへ付いていくと、**起動音(opening.wav)より先に喋ってしまう**。
 //   元どおり setup() の末尾で呼ぶことで、鳴る順番は移動前と同じになる。
 void link_announce_mode() {
+    // ★ 以前の版の settings.txt に 0/3/6/9/12 以外の CH が残っていたので寄せた。
+    //   3 台とも同じ版なら同じ CH に揃うが、1 台だけ古い版のままだと CH がずれて
+    //   「無信号」になり、現場では距離や故障と区別が付かない。だから黙って寄せない。
+    //   ★ モードの読み上げより**先に**積むこと。こちらは優先度 3 なので、後から積むと
+    //     読み上げを途中で止めて頭から鳴り直させる（docs/pons_sound.md §3）。
+    //   寄せた値で保存し直すので、知らせるのはこの 1 回だけ。
+    if (s_chSnappedFrom != 0xFF) {
+        enqueueTask(createLogSdfTask("LINK ch %u -> %u (only 0/3/6/9/12 are used)",
+                                     (unsigned)s_chSnappedFrom, (unsigned)link_radio_ch));
+        link_alert("wav/link_setting_changed.wav", 880, 200, 3);
+        enqueueTask(createSaveSettingTask());
+        s_chSnappedFrom = 0xFF;
+    }
     if      (link_mode_setting == LINK_MODE_TX)
         enqueueTask(createPlayWavTask("wav/sender_mode.wav",   2, 0, WAV_EXCL_LINKMODE));
     else if (link_mode_setting == LINK_MODE_RX)
@@ -739,9 +757,17 @@ static void link_preflight_finish() {
         //（較正完了と同じ流儀）。無音にすると「点検が走ったのか」が分からない。
         enqueueTask(createPlayMultiToneTask(1568, 60, 1, 2));
         enqueueTask(createPlayMultiToneTask(2093, 90, 1, 2));
-    } else if (s_pfFlags & (LINK_PFF_PONS_SAME | LINK_PFF_PONS_OTHER | LINK_PFF_BURST)) {
-        // 他の送信機がいる。対処は「設定を確認する／他チームと調整する」。
+    } else if (s_pfFlags & (LINK_PFF_PONS_SAME | LINK_PFF_PONS_OTHER)) {
+        // 同じ CH/SF の PONS を受けた（送信機が 2 台／他チーム）。
+        // 対処は「設定を確認する／他チームと調整する」。
         link_alert("wav/link_ch_busy.wav", 294, 350, 3);
+    } else if (s_pfFlags & LINK_PFF_BURST) {
+        // ★ 解読できない電波が断続的に出ている。**同じチャンネルとは限らない。**
+        //   帯域が重なる隣の CH の PONS や、至近距離なら重ならない CH の PONS でも出る
+        //   （2026-10-22 の実測。CH9 の送信機で CH10 −28dBm / CH12 −62dBm）。
+        //   以前は link_ch_busy.wav（「同じチャンネルに他に送信機がいます」）を鳴らしていて、
+        //   隣のチームが別 CH で送っているだけなのに自分の設定を疑わせていた。
+        link_alert("wav/wireless_busy.wav", 294, 350, 3);
     } else if (s_pfFlags & LINK_PFF_NOISY) {
         // 雑音が高いだけ。対処は「チャンネルを変える」。音を分けてあるのはこのため。
         link_alert("wav/link_ch_noisy.wav", 440, 250, 3);
@@ -1027,14 +1053,14 @@ void link_set_mode(uint8_t mode) {
     if (link_mode_setting == LINK_MODE_TX) link_preflight_start();
     else                                   s_pfState = LINK_PF_IDLE;
 }
-// 値の範囲は E220 の制約（CH0-12 / SF7-11）で決まる。
+// 値の範囲は E220 の制約（CH0-12 / SF7-11）で決まる。CH はそのうち 0/3/6/9/12 だけを使う。
 // チャンネル/プロファイルの変更はモジュールへ書き直しが要る。
 // mode 3 へ入って書き、読み返して照合し、mode 0 へ戻る（e220.cpp）。
 // ★ この間 Core0 が最大 0.6 秒ほど止まる（9600 での往復とタイムアウト）。
 //   設定画面はメニューからしか入れないので飛行中には起きないが、
 //   **飛行中に呼んではいけない**関数である点は意識しておくこと。
-// ★★ 書込みは **RAM のみ（0xC2）**。設定画面で CH を 0→12 と回すだけで
-//   13 回になるので、不揮発（0xC0）で書くとモジュールの書換え寿命を無駄に削る。
+// ★★ 書込みは **RAM のみ（0xC2）**。設定画面で CH を一周させるだけで
+//   5 回（SF も回せばさらに）書くので、不揮発（0xC0）で書くとモジュールの書換え寿命を無駄に削る。
 //   設定の正本は SD の settings.txt 側なので、次回起動時に e220_setup() が
 //   同じ値を書き直す（そのときだけ不揮発）。
 // ★ 電波の設定が変わったら送信前チェックをやり直す。前の CH で測った結果を
@@ -1044,7 +1070,8 @@ void link_set_mode(uint8_t mode) {
 //   TX のときは直後の link_preflight_start() が改めて起こすので、
 //   「寝かせる → 起こす」の往復になるが、どちらもピン 1 本の書き換えで済む。
 void link_set_radio_ch(uint8_t ch) {
-    if (ch > E220_CH_MAX || ch == link_radio_ch) return;
+    // 刻み（0/3/6/9/12）に乗らない値は受け付けない（link_proto.h の LINK_RADIO_CH_STEP）
+    if (!link_radio_ch_valid(ch) || ch == link_radio_ch) return;
     link_radio_ch = ch;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();

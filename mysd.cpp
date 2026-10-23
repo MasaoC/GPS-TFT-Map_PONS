@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/20
+// Updated : 2026/10/23
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -92,7 +92,7 @@ void dateTime(uint16_t* date, uint16_t* time);
 // ============================================================
 // ---- PONS Link（機体⇄ボート無線）----
 // 電波の ch / profile は「数値を保存するだけ」で、意味は無線層（e220.cpp）が決める。
-// LoRa では ch = E220 のチャネル(CH0-12)、profile = SF のプリセット(0=SF7 … 4=SF11)。
+// LoRa では ch = E220 のチャネル(CH0-12 のうち 0/3/6/9/12)、profile = SF のプリセット(0=SF7 … 4=SF11)。
 void getLinkMode(char* b, size_t n)      { snprintf(b, n, "%u", link_mode_setting); }
 void setLinkMode(const char* v) {
   int m = atoi(v);
@@ -103,7 +103,13 @@ void setLinkMode(const char* v) {
 void getLinkRadioCh(char* b, size_t n)   { snprintf(b, n, "%u", link_radio_ch); }
 void setLinkRadioCh(const char* v) {
   int c = atoi(v);
-  if (c >= 0 && c <= LINK_RADIO_CH_MAX) link_radio_ch = (uint8_t)c;
+  if (c < 0 || c > LINK_RADIO_CH_MAX) return;
+  // ★ 使うのは 0/3/6/9/12 だけ（link_proto.h の LINK_RADIO_CH_STEP）。以前の版で
+  //   間の CH を保存していたら一番近いものへ寄せ、起動の末尾で知らせる（link_announce_mode）。
+  //   ここは Core1 で走るので、音とログはここでは出さない。
+  const uint8_t s = link_radio_ch_snap(c);
+  if (s != c) link_note_radio_ch_snapped((uint8_t)c);
+  link_radio_ch = s;
 }
 void getLinkRadioProf(char* b, size_t n) { snprintf(b, n, "%u", link_radio_profile); }
 void setLinkRadioProf(const char* v) {

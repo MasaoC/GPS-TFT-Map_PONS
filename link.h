@@ -5,7 +5,7 @@
 //           UART1 で無線モジュール(E220-900T22S)と話し、送信テレメトリの組み立てと
 //           受信テレメトリの供給を行う。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/23
 // ============================================================
 //
 // 受信データの供給関数は、意図的に gnss.h のリプレイ用関数
@@ -21,6 +21,9 @@
   // ---- 初期化・周期処理 ----
   void link_setup();          // UART1 を開き、設定を無線モジュールへ送る
   void link_announce_mode();  // 無線モードを読み上げる。**setup() の末尾で呼ぶ**
+  // settings.txt の CH が刻み（0/3/6/9/12）に乗っていなかったので寄せた、と記録する。
+  // 設定の読み込み（mysd.cpp）から呼ぶ。知らせて保存し直すのは link_announce_mode()。
+  void link_note_radio_ch_snapped(uint8_t from);
   void link_loop();           // Core0 のループから毎回呼ぶ（軽い。1Hz・65Bのみ）
 
   // ---- 設定 ----
@@ -28,7 +31,7 @@
   // ★ 電波の設定は「数値」でしかない。意味を決めるのは無線層（e220.cpp）。
   //   LoRa では radio_ch = E220 チャネル(CH0-12)、radio_profile = SF プリセット。
   void link_set_mode(uint8_t mode);          // LINK_MODE_OFF / TX / RX
-  void link_set_radio_ch(uint8_t ch);        // 0..LINK_RADIO_CH_MAX
+  void link_set_radio_ch(uint8_t ch);        // 0/3/6/9/12 のどれか。それ以外は無視（link_proto.h）
   void link_set_radio_profile(uint8_t p);    // 0..LINK_PROFILE_COUNT-1
   // グループ ID。**3 台とも同じ値**にすること。既定 0。
   // モジュールへの書き込みは不要（電波の設定ではなくペイロードの中身）。
