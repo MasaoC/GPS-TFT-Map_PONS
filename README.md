@@ -17,9 +17,9 @@
 > * ご不安な場合は masaochiguchi@gmail.com までご連絡ください。
 
 # GPS_TFT_map 概要/Abstract
- * Show GPS map on TFT and data on OLED using Arduino.  Code are specialized for Birdman rally at Biwako.
+ * Show GPS map and navigation data on 2.4" TFT using Raspberry Pi Pico (RP2040). Code is specialized for Birdman rally at Biwako.
  * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft
- * 人力飛行機用のパイロットが使いやすいナビゲーションシステムです。Designed to assist pilots while flying over lake Biwa.
+ * 人力飛行機および追走ボート向けのナビゲーションシステムです。Designed to assist pilots and chase boats at Lake Biwa.
 
 # 推奨機器
 ## マイコン  Recommended Microcontroller
