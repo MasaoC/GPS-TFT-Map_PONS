@@ -1,228 +1,541 @@
+// ============================================================
+// File    : sound.cpp
+// Project : PONS v5 (Pilot Oriented Navigation System for HPA)
+// Role    : 音声出力の実装。
+//           PWMによるSin波トーン生成、本体 FLASH に内蔵した WAV の再生、
+//           旋回角速度(degpersecond)に応じた音程変化、
+//           アンプシャットダウン制御（省電力）。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/10/25
+// ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "settings.h"
 #include "sound.h"
 #include "gps.h"
 #include "mysd.h"
+#include "src/flashdata/wav_data.h"
 #include "hardware/pwm.h"
 #include "hardware/timer.h"
 #include "pico/stdlib.h"
-#include "SdFat.h"
 
-#define PWM_PIN 9           // PWM output pin
-#define AMP_SHUTDOWN_PIN 10 // PAM8302 shutdown pin
+// ★ このファイルは SD を一切触らない。SdFat を include しないこと（v7 の 0.982）。
+//   音声は本体 FLASH（WAV_BLOB）に焼いてある。**SD が無くても壊れていても
+//   警報の音声が鳴る**ようにするのが目的なので、SD への依存を戻してはいけない。
+//   音声の実体と索引は src/flashdata/wav_data.cpp（tools/gen_wav_flash.py の生成物。原本は wav/）。
+//   ★ v5 は Pico 2（Flash 4MB）なので入る。内蔵地図 1.3MB と合わせて 2MB には収まらない。
+//
+// WAV の仕様: 8bit unsigned PCM・16kHz モノラル・無音は 128。
+//   ヘッダは生成時に取り除いてあるので、WAV_ENTRIES[i].off から len バイトが
+//   そのまま音声データ。**実機側でヘッダを飛ばす処理は無い。**
+const int sampleRate = 16000;  // サンプルレート [Hz]。タイマー割り込みもこの周波数で動く。
+// 音声を別のレートで焼いたら、ここで止める（再生速度が変わって気づきにくいため）。
+static_assert(sampleRate == WAV_SAMPLE_RATE,
+              "sampleRate と wav_data の WAV_SAMPLE_RATE が違う（tools/gen_wav_flash.py を確認）");
 
-//makesure file does not contain meta data.  8 bit unsigned PCM , 16kHz.
+// ============================================================
+// ダブルバッファ方式による WAV ストリーミング再生
+//
+// 考え方:
+//   バッファ 0 / 1 の 2 つを交互に使う。
+//   タイマー割り込み（16kHz）が activeBuffer から 1 サンプルずつ出力する間に、
+//   Core1 の loop_sound() が loadBuffer に次のデータを先読みしておく。
+//   activeBuffer が空になったら両者を入れ替える（バッファスワップ）。
+//
+// ★ 音声が FLASH に移った後もこの二段構えを残している理由（v7 の 0.982 と同じ）:
+//   FLASH はメモリマップされているので割り込みから直接読むことも**できる**が、
+//   それをやると 16kHz の割り込みハンドラが XIP を触ることになる。timerCallback() は
+//   __not_in_flash_func で RAM に置いてあり、読む先も RAM に限られているという性質を
+//   崩したくない。**割り込みの経路は変えず、供給元（loadNextChunk）だけを SD → FLASH に替えた。**
+// ============================================================
+const int CHUNK_SIZE = 16 * 1024;  // 1 チャンク = 16KB ≒ 1.0秒分のデータ
+uint8_t audioBuffer[2][CHUNK_SIZE];  // ダブルバッファ本体
+volatile int activeBuffer = 0;       // 現在再生中のバッファ番号（割り込みから参照）
+volatile int loadBuffer = 1;         // 次のデータを書き込む先のバッファ番号
+volatile uint32_t bufferPos = 0;     // activeBuffer 内の現在再生位置
+volatile bool wav_playing = false;   // WAV 再生中フラグ
+volatile int wav_override_volume = 0;  // WAV再生時の最低保証ボリューム（0=制限なし）
+volatile int tone_override_volume = 0; // トーン再生時の最低保証ボリューム（0=制限なし）
+                                       // WAV とトーンは同時に鳴るため、最低保証ボリュームは
+                                       // 系統ごとに別変数で持つ（共用すると互いに上書きし合う）
+volatile int wav_playing_priority = 0;  // 現在再生中 WAV の優先度（高い方が優先）
+volatile int tone_playing_priority = 0; // 現在再生中トーンの優先度
 
-extern SdFat32 SD;
-const int sampleRate = 16000;  // 16 kHz sample rate
-// Audio parameters
-const int WAV_HEADER_SIZE = 45;  // Standard WAV header size
+volatile bool endOfFile = false;            // ファイル末尾に達したフラグ
+volatile bool bufferReady[2] = {false, false};  // 各バッファにデータが入っているか
+volatile bool bufferSwapRequest = false;    // 割り込み→メインへのバッファスワップ依頼フラグ
+// 各バッファの有効サンプル数（最終チャンクは実データ長 < CHUNK_SIZE になる）。
+// 割り込みはここまで再生したら出力を止める。これがないと末尾のパディング（無音）まで
+// 鳴らしてしまい、再生枠が実際の音声より長くなる。
+volatile uint32_t bufferLen[2] = {CHUNK_SIZE, CHUNK_SIZE};
 
-// Double buffering setup
-const int CHUNK_SIZE = 16 * 1024;  // 8KB chunks for 1.0 seconds of audio
-uint8_t audioBuffer[2][CHUNK_SIZE];  // Double buffer
-volatile int activeBuffer = 0;  // Currently playing buffer (0 or 1)
-volatile int loadBuffer = 1;    // Buffer to load data into (0 or 1, opposite of activeBuffer)
-volatile uint32_t bufferPos = 0;  // Position in active buffer
-volatile bool wav_playing = false;  // Playback state
-volatile int wav_playing_priority = 0;
-volatile int tone_playing_priority = 0;
+// ============================================================
+// 優先度付き WAV 再生制御 — ペンディングキュー（最大2件）
+//
+// 高優先 WAV が割り込んで低優先 WAV を中断した場合、中断された WAV を
+// pending_wav[] に保存する。再生終了後に最も高優先の pending を自動再生。
+//
+// ポインタは文字列リテラルを指すため寿命は無限（コピー不要）。
+// filename == nullptr のスロットは「空き」。
+//
+// ★ min_volume（最低保証音量）も一緒に持つこと（v7 の 0.985）。
+//   以前は filename と priority だけを持っていて、復帰再生は
+//   startPlayWav(name, prio) と呼んでいたため **min_volume が既定の 0 に戻っていた**。
+//   実害: battery_low.wav は優先度 1・最低音量 60 で、優先度 1 は最低なので
+//   他の WAV とぶつかると必ず pending に回る。そこから復帰すると 60 が抜け、
+//   音量設定が 0 だと startPlayWav() の早期 return でアンプが上がらず
+//   **電池切れの警告が完全に無音になる**。必ず運ぶこと。
+// ============================================================
+struct PendingWav { const char* filename; int priority; int min_volume; };
+static const char* current_wav_filename  = nullptr;  // 現在再生中のファイル名
+static PendingWav  pending_wav[2]        = {{nullptr, 0, 0}, {nullptr, 0, 0}};
 
-volatile bool endOfFile = false;  // Flag to indicate end of file reached
-volatile bool bufferReady[2] = {false, false};  // Flags to indicate if buffers are loaded
-volatile bool bufferSwapRequest = false;  // Flag to request buffer swap
+// WAV 名が同じか（v7 の 0.963）。★ ポインタ比較ではなく中身で比べること。
+//   同じ名前でも別ファイルに書かれた文字列リテラルは別アドレスになり得るため、
+//   ポインタ比較だと重複検出が静かに外れる（今は同一ファイル内にしか出ないので
+//   たまたま成立しているだけ）。
+static inline bool wav_name_eq(const char* a, const char* b) {
+    return a != nullptr && b != nullptr && strcmp(a, b) == 0;
+}
 
+// pending からの再生は必ずファイル先頭からになる（再開位置を持たない）ため、
+// 「割り込まれる → pending に戻る → 先頭から再生 → また割り込まれる」を繰り返すと
+// 先頭の断片だけが鳴り続ける。救済は 1 回までに制限する。
+static bool pending_replay_next = false;  // 次の startPlayWav() が pending 由来か
+static bool current_wav_is_replay = false;  // 現在再生中の WAV が pending 由来か
 
-// File object and size tracking
-File32 audioFile;
-uint32_t totalAudioSize = 0;    // Total size of audio data
-uint32_t audioDataRead = 0;     // How much data we've read so far
-uint32_t chunksLoaded = 0;      // Counter for tracking how many chunks were loaded
-
-// Timing variables
-const unsigned long playInterval = 10000;  // 2 seconds between plays
-extern volatile int sound_volume;
-
-//------
-const int tableSize = 256;     // Sine wave table size
-uint8_t sineTable[tableSize];
-
-volatile uint32_t phaseAcc = 0;
-volatile uint32_t phaseInc = 0;
-
-bool wavmode = true;
-bool sinmode = true;
-
-
-
-// Timer interrupt callback
-bool timerCallback(struct repeating_timer *t) {
-  if(wavmode){
-    if (!wav_playing || !bufferReady[activeBuffer]) {
-        return true;  // Nothing to play
+// pending_wav[] に filename を追加する。
+// 空きスロットがあれば追加、両方埋まっている場合は最も低優先なスロットを上書き。
+static void push_pending_wav(const char* filename, int priority, int min_volume) {
+    // 現在再生中と同じファイルなら追加しない（連続再生不要）
+    if (wav_name_eq(current_wav_filename, filename)) return;
+    // 同じファイルが既に pending にあれば無視（重複防止）
+    for (int i = 0; i < 2; i++) {
+        if (wav_name_eq(pending_wav[i].filename, filename)) return;
     }
-    // Output PCM value directly from active buffer
-    pwm_set_gpio_level(PWM_PIN, audioBuffer[activeBuffer][bufferPos]*sound_volume/100.0);
+    // 空きスロットを探す
+    for (int i = 0; i < 2; i++) {
+        if (pending_wav[i].filename == nullptr) {
+            pending_wav[i] = {filename, priority, min_volume};
+            return;
+        }
+    }
+    // 両方埋まっている → 最も低優先なスロットを上書き（または追加を破棄）
+    int lowest = (pending_wav[0].priority <= pending_wav[1].priority) ? 0 : 1;
+    if (priority > pending_wav[lowest].priority) {
+        DEBUGW_P(20260322, "WARN: pending wav overwritten: ");
+        DEBUGW_PLN(20260322, pending_wav[lowest].filename);
+        pending_wav[lowest] = {filename, priority, min_volume};
+    } else {
+        DEBUGW_P(20260322, "WARN: pending wav dropped (queue full): ");
+        DEBUGW_PLN(20260322, filename);
+    }
+}
+
+// pending_wav[] から最も高優先のエントリを取り出してクリアする。なければ nullptr。
+// 最低保証音量も一緒に返す（上の ★）。
+static const char* pop_best_pending_wav(int &out_priority, int &out_min_volume) {
+    int best = -1;
+    for (int i = 0; i < 2; i++) {
+        if (pending_wav[i].filename != nullptr) {
+            if (best < 0 || pending_wav[i].priority > pending_wav[best].priority) best = i;
+        }
+    }
+    if (best < 0) return nullptr;
+    const char* f = pending_wav[best].filename;
+    out_priority   = pending_wav[best].priority;
+    out_min_volume = pending_wav[best].min_volume;
+    pending_wav[best] = {nullptr, 0, 0};
+    return f;
+}
+
+
+// ============================================================
+// トーン専用バッファ（最大 TONE_BUFFER_SIZE 件、Core1 内でのみアクセス）
+//
+// loop1() が TASK_PLAY_MULTITONE を受け取ると pushToneBuffer() で積み、
+// loop_tone() が WAV 再生状況に応じて順番に非ブロッキングで再生する。
+// ミューテックス不要（Core1 の loop1 / loop_tone のみがアクセス）。
+// ============================================================
+#define TONE_BUFFER_SIZE 10
+struct ToneEntry { int freq, duration, count, priority, min_volume; bool solo_play; };
+static ToneEntry     toneBuffer[TONE_BUFFER_SIZE];
+static int           toneBufHead    = 0;
+static int           toneBufTail    = 0;
+
+// 現在再生中のトーン状態（loop_tone() が管理する）
+static int           tone_remaining = 0;     // 現在エントリの残りカウント
+static int           tone_cur_freq  = 0;     // 現在のトーン周波数
+static int           tone_cur_dur   = 0;     // 1 トーン / ギャップの長さ [ms]
+static bool          tone_in_gap    = false; // true = カウント間の無音ギャップ中
+static bool          tone_paused    = false; // true = WAV 割込みで一時停止中
+static unsigned long tone_stop_time = 0;     // 現在フェーズの終了時刻 [ms]
+
+// トーンをバッファに追加する。
+// 満杯の場合はエラーを Serial と SD に記録してスキップする。
+static bool pushToneBuffer(int freq, int dur, int cnt, int pri, int vol, bool solo_play) {
+    int next = (toneBufTail + 1) % TONE_BUFFER_SIZE;
+    if (next == toneBufHead) {
+        DEBUGW_PLN(20260322, "ERR: tone buffer full, tone dropped");
+        enqueueTask(createLogSdTask("ERR: tone buffer full, tone dropped"));
+        return false;
+    }
+    toneBuffer[toneBufTail] = {freq, dur, cnt, pri, vol, solo_play};
+    toneBufTail = next;
+    return true;
+}
+
+// 再生中の音声の位置づけ（FLASH 上）
+// s_wav_src == nullptr のときは「再生対象なし」。loadNextChunk() の入口判定に使う。
+static const uint8_t* s_wav_src = nullptr;  // WAV_BLOB 内の音声データ先頭
+uint32_t totalAudioSize = 0;    // その音声のバイト数（= サンプル数）
+uint32_t audioDataRead = 0;     // これまでにバッファへ移したバイト数
+uint32_t chunksLoaded = 0;      // ロード済みチャンク数（デバッグ用カウンタ）
+
+extern volatile int sound_volume;          // 音量（0〜100）。button.cpp の設定画面から変更。
+
+volatile bool     sin_playing         = false; // トーン出力中だけ true（割り込みが参照）
+
+// ============================================================
+// Sin 波トーン生成用変数（位相アキュムレータ方式）
+//
+// 位相アキュムレータ (phaseAcc) を毎割り込みごとに phaseInc 分進め、
+// 上位 8bit を sineTable のインデックスとして使うことで周波数を制御する。
+// テーブルに事前計算した sin 値を入れておくことで、
+// 割り込みハンドラ内での重い sin() 計算を避けている。
+// ============================================================
+const int tableSize = 256;     // sin 波テーブルのサンプル数（8bit = 256 点）
+uint8_t sineTable[tableSize];  // 事前計算した sin 波の振幅値（0〜255 の unsigned 8bit）
+
+volatile uint32_t phaseAcc = 0;  // 位相アキュムレータ（32bit 固定小数点、上位 8bit が有効）
+volatile uint32_t phaseInc = 0;  // 1 割り込みごとに加算する位相増分（周波数に比例）
+
+// wavmode / sinmode: タイマー割り込み内で各モードの出力を有効にするフラグ。
+// 両方同時に true になることで WAV + トーンの加算ミックスが可能。
+// solo_play トーン再生中のみ従来通り排他制御する（sin_solo=true のとき WAV を止める）。
+// どちらも Core1（loop_tone / startPlayWav）が書き、タイマー割り込みが読むため volatile 必須。
+volatile bool wavmode = true;   // true のとき割り込みが WAV バッファを再生する
+volatile bool sinmode = true;   // true のとき割り込みが Sin 波を出力する
+volatile bool sin_solo = false;  // true のとき solo_play トーン再生中（WAV との同時再生を禁止）
+
+
+
+// ============================================================
+// タイマー割り込みコールバック（16kHz = 62.5μs ごとに呼ばれる）
+//
+// WAV・Sin トーンを加算ミックスして出力する。
+// 各ソースのサンプルを中央値(512)基準のオフセットとして mix に加算し、
+// 最後に 0〜1023 にハードクリップして PWM に書き込む。
+//
+// ミックス制御:
+//   sin_solo=false (デフォルト): WAV + トーン を同時ミックス
+//   sin_solo=true  (solo_play トーン): WAV はバッファを進めず待機、トーンのみ出力
+// ============================================================
+bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
+  int mix = 0;  // 中央(512)からのオフセット合計
+
+  // 【WAV】sin_solo=true かつ sin_playing=true（solo トーン実出力中）のときのみバッファを止める。
+  // sin_playing=false（一時停止中）のときはWAVを進める。
+  // sin_solo=true のまま高優先WAVに割り込まれると tone_paused=true になるが、
+  // !sin_solo 条件のままだと ISR がバッファを進めず stopPlayback() に届かず
+  // loop_tone() も wav_playing=true でリターンし続けるデッドロックになる。
+  if ((!sin_solo || !sin_playing) && wavmode && wav_playing && bufferReady[activeBuffer]) {
+    // 8bit unsigned PCM (0〜255, 中心128) → オフセット値に変換して加算
+    mix += (int)(audioBuffer[activeBuffer][bufferPos] - 128) * 4 * max((int)sound_volume, wav_override_volume) / 100;
     bufferPos++;
-    
-    // Check if we've reached the end of the current buffer
-    if (bufferPos >= CHUNK_SIZE) {
-        bufferPos = 0;  // Reset position
-        
-        // Request buffer swap - we'll handle it in the main loop
+    if (bufferPos >= bufferLen[activeBuffer]) {
+        bufferPos = 0;
+        // このバッファは出し切ったので「未準備」に落として出力を止める。
+        // これをしないと bufferReady が true のままなので、Core1 が loop_sound() で
+        // スワップ／停止処理をするまでの間、割り込みが同じバッファの先頭から
+        // 再生し直してしまう（＝1チャンク未満の WAV が先頭から鳴り直す原因）。
+        bufferReady[activeBuffer] = false;
         bufferSwapRequest = true;
         DEBUG_P(20250424,"bufferSwapRequest");
     }
   }
-  if(sinmode){
+
+  // 【Sin トーン】アンプ ON 中（sin_playing=true）のときだけ加算
+  if (sinmode && sin_playing) {
     phaseAcc += phaseInc;
-    pwm_set_gpio_level(PIN_TONE, sineTable[(phaseAcc >> 24) % tableSize]*sound_volume/100.0); // Output sine wave
+    mix += (int)(sineTable[(phaseAcc >> 24) % tableSize] - 128) * 4 * max((int)sound_volume, tone_override_volume) / 100;
   }
-  //keep running
+
+  // ハードクリップして PWM に出力
+  int out = 512 + mix;
+  if (out < 0)    out = 0;
+  if (out > 1023) out = 1023;
+  pwm_set_gpio_level(PIN_PWMTONE, out);
   return true;
 }
 
 
-// Controls the PAM8302 amplifier
+// PAM8302 アンプの電源を制御する（省電力対策）。
+// 再生中だけ HIGH にし、それ以外では LOW にしてアンプをシャットダウンする。
+// PIN_AMP_SD は SD（シャットダウン）ピンに相当。
 void setAmplifierState(bool enable) {
-    digitalWrite(AMP_SHUTDOWN_PIN, enable ? HIGH : LOW);
+    digitalWrite(PIN_AMP_SD, enable ? HIGH : LOW);
     DEBUG_P(20250424,"Amplifier ");
     DEBUG_P(20250424,enable ? "enabled" : "disabled");
 }
 
-// Function to load the next chunk of audio data
-bool loadNextChunk() {
-    if (audioFile && !bufferReady[loadBuffer] && audioDataRead < totalAudioSize) {
+// loadBuffer（待機側バッファ）に次のチャンクを FLASH から移す（v7 の 0.982）。
+// 戻り値: 移せたら true、スキップなら false。
+//
+// 処理内容:
+//   1. loadBuffer がまだ使用中（bufferReady==true）なら何もしない
+//   2. WAV_BLOB から最大 CHUNK_SIZE バイト memcpy する
+//   3. チャンクが途中で終わった場合（音声の末尾）、残りを 128（無音）でパディング
+//      ※ 8bit unsigned PCM の無音値は 128（0 は最大負圧でノイズになる）
+//   4. bufferReady[loadBuffer] = true にして割り込みが使える状態にする
+//
+// ★ SD 時代ここにあった「末尾の 0x00 を 128 に直す」後始末は消してある。
+//   あれは RIFF の偶数パディング 1 バイトを WAV のヘッダ長の固定の引き算で
+//   拾ってしまうのが原因だった。tools/gen_wav_flash.py が data チャンクを
+//   正しい長さで切り出すので、**焼いた時点で 0x00 は入っていない**
+//   （生成側にも同じ後始末を保険として残してある）。
+bool __not_in_flash_func(loadNextChunk)() {
+    if (s_wav_src != nullptr && !bufferReady[loadBuffer] && audioDataRead < totalAudioSize) {
         uint32_t remaining = totalAudioSize - audioDataRead;
         uint32_t toRead = (remaining < CHUNK_SIZE) ? remaining : CHUNK_SIZE;
-        
-        uint32_t bytesRead = audioFile.read(audioBuffer[loadBuffer], toRead);
-        
-        if (bytesRead > 0) {
-            audioDataRead += bytesRead;
-            chunksLoaded++;  // Increment the chunks loaded counter
-            // If we couldn't fill the buffer completely, pad with silence
-            if (bytesRead < CHUNK_SIZE) {
-                // Use 128 as silence for unsigned 8-bit audio. (remove last 1 byte due to value 0 at the end of wav file makes noise.)
-                memset(audioBuffer[loadBuffer] + bytesRead, 128, CHUNK_SIZE - bytesRead);
-                endOfFile = true;
-                DEBUG_PLN(20250424,"endOfFile");
-            }
-            
-            bufferReady[loadBuffer] = true;
-            return true;
-        } else {
+
+        // FLASH はメモリマップされているので単なるコピー。失敗し得ない。
+        memcpy(audioBuffer[loadBuffer], s_wav_src + audioDataRead, toRead);
+        audioDataRead += toRead;
+        chunksLoaded++;
+
+        if (toRead < CHUNK_SIZE) {
+            // 音声の末尾：残りバッファを 128（無音）で埋める
+            // 0 で埋めると直流成分でポップノイズが出るため 128 を使う
+            memset(audioBuffer[loadBuffer] + toRead, 128, CHUNK_SIZE - toRead);
             endOfFile = true;
-            return false;
+            DEBUG_PLN(20250424,"endOfFile");
         }
+
+        // 音声データを移し切ったら EOF とする。
+        // toRead < CHUNK_SIZE だけで判定すると、音声データ長がちょうど
+        // CHUNK_SIZE の倍数のときに EOF を取り逃してアンダーラン扱いになる。
+        if (audioDataRead >= totalAudioSize) {
+            endOfFile = true;
+        }
+
+        // 有効サンプル数を記録してから bufferReady を立てる。
+        // 割り込みは bufferReady が true になって初めてこのバッファを見るため、この順序が必要。
+        bufferLen[loadBuffer] = toRead;
+        bufferReady[loadBuffer] = true;
+        return true;
     }
     return false;
 }
 
-extern bool sdError;
-void startPlayWav(const char* filename, int priority) {
-    if(wav_playing && wav_playing_priority > priority){
-        DEBUGW_P(20250503,"Start play wav canceled due to priority.:");
+// 音声名から WAV_ENTRIES[] の添字を引く。見つからなければ -1。
+// WAV_ENTRIES は名前の昇順に並んでいる（tools/gen_wav_flash.py が sorted() で出す）。
+// 数十件しかなく、呼ばれるのは再生開始のときだけなので線形探索で十分。
+static int wav_find(const char* name) {
+    if (name == nullptr) return -1;
+    for (uint16_t i = 0; i < WAV_COUNT; i++) {
+        if (strcmp(WAV_ENTRIES[i].name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+
+// 音声の再生を開始する。
+// filename: 音声名。SD 時代のパスをそのまま鍵に使う（例 "wav/track.wav"）。
+//           実体は本体 FLASH の WAV_BLOB で、SD は一切見ない。
+// priority: 優先度（高い値が高優先。現在再生中の方が高優先なら再生せずにリターン）。
+//
+// 処理フロー:
+//   1. 音声名を WAV_ENTRIES[] から索引する
+//   2. 優先度チェック：現在の再生が高優先なら中止
+//   3. 再生状態を全リセット（バッファ・位置・フラグ）
+//   4. 最初のチャンクを loadBuffer へ移す
+//   5. バッファをスワップして activeBuffer に昇格し、アンプを ON にして再生開始
+void startPlayWav(const char* filename, int priority, int min_volume) {
+    // この呼び出しが pending からの再生かどうかを受け取り、フラグは即クリアする
+    const bool from_pending = pending_replay_next;
+    pending_replay_next = false;
+
+    // 音声名を索引する。**ここで落ちるのは打ち間違いだけ。**
+    // tools/gen_wav_flash.py がソース中の "wav/*.wav" を全部突き合わせて
+    // 生成の時点で止めるので、通常はあり得ない。最後の保険として音とログを残す。
+    const int index = wav_find(filename);
+    if (index < 0) {
+        DEBUGW_P(20261001, "WAV not in flash: ");
+        DEBUGW_PLN(20261001, filename);
+        // Core1 からしか来ないので log_sdf() を直接呼べる（キューに積むと
+        // どの名前で失敗したのか残らないことがある）。
+        log_sdf("ERR wav not in flash: %s", filename);
+        enqueueTask(createPlayMultiToneTask(500, 200, 2)); // エラー音を鳴らす
+        return;
+    }
+
+    // 同じファイルを再生中なら何もしない（先頭に戻して鳴り直すのを防ぐ）。
+    // 優先度チェック①は strict > のため、同一ファイル・同一優先度の再要求は素通りしてしまう。
+    // 例: 旋回継続中に update_tone() が 900ms ごとに track.wav を再要求するケース。
+    if (wav_playing && wav_name_eq(current_wav_filename, filename)) {
+        DEBUGW_P(20260806,"WAV already playing, ignore duplicate request: ");
+        DEBUGW_PLN(20260806,filename);
+        return;
+    }
+
+    // 優先度チェック①：再生中 WAV の方が高優先なら新リクエストを pending に保存
+    if (wav_playing && wav_playing_priority > priority) {
+        push_pending_wav(filename, priority, min_volume);
+        DEBUGW_P(20250503,"WAV pending (lower priority than playing WAV): ");
         DEBUGW_PLN(20250427,filename);
         return;
     }
+
+    // 優先度チェック②（solo_play トーンのみ）: 同等以上の優先度なら WAV を pending に回す
+    // 通常トーン（sin_solo=false）は WAV とミックス再生するため pending に回さない
+    bool tone_in_progress = sin_playing || tone_in_gap || tone_paused;
+    if (tone_in_progress && sin_solo && tone_playing_priority >= priority) {
+        push_pending_wav(filename, priority, min_volume);
+        DEBUGW_P(20250503,"WAV pending (lower priority than solo_play tone): ");
+        DEBUGW_PLN(20250503,filename);
+        return;
+    }
+
+    // solo_play トーンが進行中で WAV の優先度が高い → トーンを一時停止して WAV を開始
+    // 通常トーン（sin_solo=false）はそのままミックス再生するため停止しない
+    if (tone_in_progress && sin_solo) {
+        sin_playing = false;
+        tone_paused = true;
+        pwm_set_gpio_level(PIN_PWMTONE, 512);
+        setAmplifierState(false);
+        DEBUGW_P(20250503,"Solo tone paused by higher-priority WAV: ");
+        DEBUGW_PLN(20250503,filename);
+    }
+
+    // 現在再生中の低優先 WAV を pending に退避してから上書き。
+    // push_pending_wav() は先頭で current_wav_filename と同じファイルを弾くため、
+    // 先に current_wav_filename をクリアしてから渡す（クリアしないと必ず弾かれて退避できない）。
+    // ただし pending から復帰した WAV は再度退避しない（先頭断片の繰り返しを防ぐ）。
+    if (wav_playing && current_wav_filename != nullptr && !current_wav_is_replay) {
+        const char* interrupted = current_wav_filename;
+        current_wav_filename = nullptr;
+        // 退避する側の最低保証音量は wav_override_volume が持っている
+        // （stopPlayback() でリセットされるが、ここはまだ呼ばれていない）。
+        push_pending_wav(interrupted, wav_playing_priority, (int)wav_override_volume);
+        DEBUGW_P(20250503,"Interrupted wav saved to pending.:");
+        DEBUGW_PLN(20250503,interrupted);
+    }
     DEBUG_P(20250503,"wav start:");
     DEBUG_PLN(20250503,priority);
-    // Stop current playback if any
+
+    // WAV モードに切り替え。
+    // solo_play トーン中のみ sinmode を落とす（通常トーンはミックスのため継続）
     wavmode = true;
-    sinmode = false;
+    if (sin_solo) sinmode = false;
     wav_playing = false;
-    delay(50);  // Give time for interrupt to stop
-    
-    // Reset state
+    delay(1);  // 割り込みが現在のバッファ出力を終えるのを待つ (50ms->1msに変更)
+
+    // 再生状態を全リセット
     endOfFile = false;
     audioDataRead = 0;
-    chunksLoaded = 0;  // Reset chunks loaded counter
+    chunksLoaded = 0;
     bufferPos = 0;
     bufferReady[0] = false;
     bufferReady[1] = false;
-    activeBuffer = 0;  // Start with buffer 0 as active
-    loadBuffer = 1;    // Start loading into buffer 1
+    bufferLen[0] = CHUNK_SIZE;
+    bufferLen[1] = CHUNK_SIZE;
+    activeBuffer = 0;      // 最初は buffer0 をアクティブに（後でスワップする）
+    loadBuffer = 1;        // 最初のデータは buffer1 に読み込む
     bufferSwapRequest = false;
-    
-    // Close previous file if open
-    if (audioFile) {
-        audioFile.close();
-    }
-    
-    // Open WAV file
-    audioFile = SD.open(filename, FILE_READ);
-    if (!audioFile) {
-        sdError = true;
-        DEBUG_P(20250424,"Error opening file: ");
-        DEBUG_PLN(20250424,filename);
-        enqueueTask(createPlayMultiToneTask(500, 200, 2));//error sound.
-        return;
-    }
-    
-    // Get file size and calculate audio data size
-    uint32_t fileSize = audioFile.size();
-    totalAudioSize = fileSize - WAV_HEADER_SIZE;
-    
-    DEBUG_P(20250424,"File: ");
+
+    // FLASH 上の音声データを指す。
+    // ★ s_wav_src は loadNextChunk() の入口判定も兼ねるので、
+    //   totalAudioSize と **必ず同時に**更新すること。片方だけ更新すると
+    //   前の音声の長さで別の音声を読み、末尾に隣の音声が混ざる。
+    // ★ 生成時に data チャンクだけを切り出してあるので、ここでヘッダを
+    //   飛ばす処理は要らない（SD 時代の seek(ヘッダ長) は廃止）。
+    s_wav_src      = WAV_BLOB + WAV_ENTRIES[index].off;
+    totalAudioSize = WAV_ENTRIES[index].len;
+
+    DEBUG_P(20250424,"WAV: ");
     DEBUG_P(20250424,filename);
-    DEBUG_P(20250424,", Size: ");
-    DEBUG_P(20250424,fileSize);
-    DEBUG_P(20250424," bytes, Audio data: ");
+    DEBUG_P(20250424,", Audio data: ");
     DEBUG_P(20250424,totalAudioSize);
     DEBUG_P(20250424," bytes (");
     DEBUG_P(20250424,(float)totalAudioSize / sampleRate);
     DEBUG_PLN(20250424," seconds)");
-    
-    // Skip WAV header
-    audioFile.seek(WAV_HEADER_SIZE);
-    
-    // Load initial buffer
-    loadNextChunk();  // Load first buffer into loadBuffer (buffer 1)
-    
-    // Start playback only after we have data
+
+    // 最初のチャンクを loadBuffer へ移す
+    loadNextChunk();  // → buffer1 にデータが入り bufferReady[1]=true になる
+
+    // データが用意できたらバッファをスワップして再生開始
     if (bufferReady[loadBuffer]) {
-        // Swap buffers so the first loaded buffer becomes active
+        // buffer1（データ済み）をアクティブにする
         int temp = activeBuffer;
         activeBuffer = loadBuffer;
         loadBuffer = temp;
-        
-        // Enable the amplifier before starting playback
-        setAmplifierState(true);
-        
-        // Start playback
+
         bufferPos = 0;
         wav_playing = true;
+        current_wav_filename = filename;   // 現在再生中のファイル名を記録
+        current_wav_is_replay = from_pending;  // pending 由来なら再退避しない（先頭断片の繰り返し防止）
+        wav_override_volume = min_volume;  // 最低保証ボリューム（0=制限なし）をセット
+        // ★ 優先度は **下の早期 return より前に** 入れること（v7 の 0.965）。
+        //   音量 0 の WAV も wav_playing=true のまま「無音で再生中」になる
+        //   （バッファは回り、EOF で正常に終わる）。にもかかわらず
+        //   ここを return の後ろに置いていたため、その間 wav_playing_priority が
+        //   **前に鳴った WAV の値のまま**残り、次の WAV の割り込み判定が狂っていた。
+        //   実害: 音量 0 でも鳴るはずの battery_low.wav（優先度 1・最低音量 60）が
+        //   古い優先度（例えば fixed.wav の 4）に負けて pending へ回され、
+        //   鳴り出しが数秒遅れる。最低音量を入れた目的そのものを損なう。
         wav_playing_priority = priority;
+        if(sound_volume == 0 && min_volume == 0){ return; }  // volume=0 かつ override なし ならアンプ ON しない（ポップノイズ防止）
+        setAmplifierState(true);   // アンプを ON にする
         DEBUG_P(20250424,"Playback started");
     } else {
         DEBUG_P(20250424,"Failed to load initial audio data");
     }
 }
 
+// 再生を停止し、アンプをシャットダウンする。
+// トーン（SE）が残っている場合はアンプを切らない。
 void stopPlayback() {
     wav_playing = false;
-    delay(50);  // Short delay to ensure the interrupt handler stops
-    
-    // Disable the amplifier when playback stops
-    setAmplifierState(false);
-    
+    wav_override_volume = 0;  // 最低保証ボリュームをリセット
+    delay(5);  // 割り込みが確実に止まるまで待つ
+    pwm_set_gpio_level(PIN_PWMTONE, 512); // 10bit 中点 (=無音) に戻す。これを忘れるとポップノイズが出る。
+    delay(5);  // 信号が安定してからアンプを切る
+    // トーン（SE）再生中はアンプを維持する。
+    // WAV とトーンは同時に鳴るため、WAV が先に終わってもトーンが残っていることがある。
+    if (!sin_playing && !tone_in_gap) {
+        setAmplifierState(false);
+    }
     DEBUG_P(20250424,"Playback stopped");
 }
 
 
 
 
-void loop_sound(){
+// Core1 のメインループから毎ループ呼ばれる WAV 再生管理関数。
+//
+// 役割1: バッファスワップ処理
+//   タイマー割り込みが bufferSwapRequest を立てたら、
+//   次のバッファが準備済みかチェックしてスワップを実行する。
+//   ファイル末尾でバッファが尽きたら stopPlayback() を呼ぶ。
+//   バッファが間に合わなかった場合は「バッファアンダーラン」警告を出す。
+//
+// 役割2: 先読みロード
+//   再生中に loadBuffer が空ならば loadNextChunk() を呼んで次のデータを先読みする。
+//   これにより、再生と読み込みが並行して進む。
+void __not_in_flash_func(loop_sound)(){
     unsigned long currentTime = millis();
-    
-    // Handle buffer swap request outside of interrupt
+
+    // アンダーラン（次チャンク待ち）に入った時刻。0 = アンダーラン中でない。
+    static unsigned long underrun_start_ms = 0;
+
+    // バッファスワップ依頼を処理（割り込みの外側で実行するのでメモリ競合が起きない）
     if (bufferSwapRequest && wav_playing) {
         bufferSwapRequest = false;
-        bufferReady[activeBuffer] = false;  // Mark current buffer as processed
-        
-        // Swap buffers if the next one is ready
+        bufferReady[activeBuffer] = false;  // 使い終わったバッファを空き状態にする
+
         if (bufferReady[loadBuffer]) {
+            // 次のバッファが準備済み → スワップして継続再生
+            underrun_start_ms = 0;
             int temp = activeBuffer;
             activeBuffer = loadBuffer;
             loadBuffer = temp;
@@ -231,16 +544,52 @@ void loop_sound(){
             DEBUG_P(20240424,", chunks loaded so far: ");
             DEBUG_PLN(20240424,chunksLoaded);
         } else if (endOfFile) {
-            // If next buffer isn't ready and we've reached EOF, stop playing
+            // 音声の末尾でバッファも尽きた → 再生終了
             DEBUG_PLN(20240424,"End of file reached");
-            stopPlayback();  // This will disable the amplifier
+            underrun_start_ms = 0;
+            current_wav_filename = nullptr;
+            s_wav_src = nullptr;
+            current_wav_is_replay = false;
+            stopPlayback();
+            // pending WAV があれば最高優先のものを再生する
+            // ただし toneBuffer にトーンが残っている場合は loop_tone() に委ねる。
+            // （WAV終了直後に pending を即起動すると、ガードで待機中のトーンと同時再生になるため）
+            if (toneBufHead == toneBufTail) {
+                int prio = 0, pminvol = 0;
+                const char* pf = pop_best_pending_wav(prio, pminvol);
+                if (pf != nullptr) {
+                    DEBUGW_P(20250503,"Replaying pending wav:");
+                    DEBUGW_PLN(20250503, pf);
+                    pending_replay_next = true;  // pending 由来の再生であることを伝える
+                    startPlayWav(pf, prio, pminvol);
+                }
+            }
         } else {
-            // Buffer underrun - this is bad, we couldn't load the next buffer in time
-            DEBUGW_PLN(20250508,"WARNING: Buffer underrun detected!");
+            // バッファアンダーラン: 次のチャンクが間に合わなかった。
+            // FLASH の memcpy なので原理的には起きないが、Core1 が長く止まったときに
+            // wav_playing=true のまま無音で固まるのを防ぐ受け皿として残してある。
+            // 割り込みは bufferReady[activeBuffer]=false で出力を止めているので、
+            // スワップ依頼を立て直して次ループで再判定する（読み込みが済み次第、音は途切れるが再生継続）。
+            // これをしないと二度とスワップされず、wav_playing=true のまま無音で固まる。
+            if (underrun_start_ms == 0) {
+                underrun_start_ms = currentTime;  // 警告は 1 回だけ出す（毎ループ出すと Core1 が遅くなる）
+                DEBUGW_PLN(20250508,"WARNING: Buffer underrun detected!");
+            }
+            if (currentTime - underrun_start_ms > 1000) {
+                // 1 秒待っても次のチャンクが来ない → 再生を打ち切って解放する
+                underrun_start_ms = 0;
+                current_wav_filename = nullptr;
+                s_wav_src = nullptr;
+                current_wav_is_replay = false;
+                stopPlayback();
+                DEBUGW_PLN(20250508,"Buffer underrun timeout, playback aborted");
+            } else {
+                bufferSwapRequest = true;  // 次ループで再判定させる
+            }
         }
     }
-    
-    // If we're playing, try to load the next chunk into the load buffer
+
+    // 再生中に loadBuffer が空ければ次のチャンクを先読みする
     if (wav_playing && !bufferReady[loadBuffer] && !endOfFile) {
         if (loadNextChunk()) {
             DEBUG_P(20240424,"Loaded chunk #");
@@ -249,11 +598,11 @@ void loop_sound(){
             DEBUG_PLN(20240424,loadBuffer);
         }
     }
-    
-    
-    // Simple playback status indicator - but not too often
+
+    #ifndef RELEASE
+    // デバッグ用: 1 秒ごとに再生進捗（%）を出力。RELEASE では丸ごと除く。
     static unsigned long lastStatusTime = 0;
-    if (wav_playing && (currentTime - lastStatusTime >= 1000)) {  // Update every second
+    if (wav_playing && (currentTime - lastStatusTime >= 1000)) {
         lastStatusTime = currentTime;
         float percentComplete = (float)audioDataRead / totalAudioSize * 100.0;
         DEBUG_P(20250424,"Playing: ");
@@ -262,12 +611,18 @@ void loop_sound(){
         DEBUG_P(20250424,chunksLoaded);
         DEBUG_PLN(20250424," chunks loaded)");
     }
+    #endif
 }
 
 
+// 最後に音が鳴った時のtrue track、つまり "track" 音声再生用のために、前回の GPS 真方位を記録しておく変数。
+float last_tone_tt = 0;  // 前回の update_tone() 呼び出し時の GPS 真方位 [deg]
 
-float last_tone_tt = 0;
-
+// ============================================================
+// 音符周波数テーブル（C3 ～ C8）
+// update_tone() が生成した周波数を nearest_note_frequency() で
+// 最も近い音符にスナップするために使用する。
+// ============================================================
 float note_frequencies[] = {
     130.81,  // C3 (Do)
     146.83,  // D3 (Re)
@@ -307,7 +662,9 @@ float note_frequencies[] = {
     4186.01  // C8 (Do)
 };
 
-// Function to find the nearest frequency using binary search
+// 入力周波数に最も近い音符周波数を二分探索で返す。
+// 「旋回音」として連続的な周波数を出すのではなく、
+// 音楽的な音程にスナップさせることで聞き取りやすくする。
 float nearest_note_frequency(float input_freq) {
     int left = 0;
     int right = sizeof(note_frequencies) / sizeof(note_frequencies[0]) - 1;
@@ -343,116 +700,251 @@ float nearest_note_frequency(float input_freq) {
     }
 }
 
+// Core1 の setup で 1 度だけ呼ばれる音声システムの初期化。
+//
+// 処理内容:
+//   1. アンプ制御ピン (PIN_AMP_SD) を出力に設定し、シャットダウン状態で開始
+//   2. PWM を音声出力用に設定する
+//      - clkdiv=2: 125MHz / 2 / 1024 ≒ 61kHz の PWM 周波数（可聴域の十分上）
+//      - wrap=1023: 10bit 分解能（0〜1023）中心=512
+//   3. 16kHz のリピートタイマーを設定して timerCallback を登録する
+//      - add_repeating_timer_us(-62, ...) ≒ 62.5μs ごとに割り込み
+//      - 負値は「前回の起動から計測」を意味し、ジッターを減らす
+//   4. Sin 波テーブルを事前計算する
+//      - 値範囲: 128 ± (127 * SIN_VOLUME)
+//      - SIN_VOLUME で最大振幅を調整（1.0 で最大、クリッピング防止のため通常は小さめ）
 // CORE1
 void setup_sound(){
-    // Initialize amplifier control pin
-  pinMode(AMP_SHUTDOWN_PIN, OUTPUT);
-  setAmplifierState(false);  // Start with amplifier disabled
+  // アンプ制御ピンを初期化（まずシャットダウン状態にする）
+  pinMode(PIN_AMP_SD, OUTPUT);
+  setAmplifierState(false);
 
-  // Initialize PWM with proper settings for audio
-  pinMode(PWM_PIN, OUTPUT);
-  uint slice_num = pwm_gpio_to_slice_num(PWM_PIN);
+  // PWM ピンを音声出力用に初期化
+  pinMode(PIN_PWMTONE, OUTPUT);
+  uint slice_num = pwm_gpio_to_slice_num(PIN_PWMTONE);
   pwm_config config = pwm_get_default_config();
-  
-  pwm_config_set_clkdiv(&config, 8);      //Less than 32 required for audio quality.
-  pwm_config_set_wrap(&config, 255);     // 8-bit resolution
-  
-  pwm_init(slice_num, &config, true);
-  gpio_set_function(PWM_PIN, GPIO_FUNC_PWM);
-  
-  // Set PWM to mid-point (silence) initially
-  pwm_set_gpio_level(PWM_PIN, 128);
 
-  // Setup timer for 16kHz playback
+  pwm_config_set_clkdiv(&config, 2);   // クロック分周: 125MHz / 2 / 1024 ≒ 61kHz の PWM 周波数
+  pwm_config_set_wrap(&config, 1023);  // 10bit 分解能（0〜1023 のデューティ比）
+
+  pwm_init(slice_num, &config, true);
+  gpio_set_function(PIN_PWMTONE, GPIO_FUNC_PWM);
+
+  // 初期値を 10bit 中点（512）に設定して無音状態にする
+  pwm_set_gpio_level(PIN_PWMTONE, 512);
+
+  // 16kHz の繰り返しタイマーを登録する（-62.5μs → 1/16000 秒ごとに呼ばれる）
   static struct repeating_timer timer;
   add_repeating_timer_us(-1000000 / sampleRate, timerCallback, NULL, &timer);
 
-  
-    for (int i = 0; i < tableSize; i++) {
-        sineTable[i] = 128 + 127 *SIN_VOLUME* sin(2 * M_PI * i / tableSize);
-    }
-
+  // Sin 波テーブルを事前計算して格納する
+  // sineTable[i] = 128 + 127 * SIN_VOLUME * sin(2π * i / 256)
+  for (int i = 0; i < tableSize; i++) {
+      sineTable[i] = 128 + 127 * SIN_VOLUME * sin(2 * M_PI * i / tableSize);
+  }
 }
 
-unsigned long trackwarning_until;
+unsigned long trackwarning_until;  // コース警告音を鳴らし続ける期限 [ms]
+
+// Core0 のメインループから約 1 秒ごとに呼ばれる音声トーン更新関数。
+//
+// 処理ロジック（2 段階）:
+//   【警告1: コース逸脱警告】
+//     前回呼び出し時の GPS 真方位 (last_tone_tt) と現在の真方位の差 (angle_diff) が
+//     15° を超えたとき → コース逸脱と判断して警告音 + "track.wav" を再生する。
+//     速度が 2.0m/s 以上のときのみ発動（静止中の GPS ブレを無視するため）。
+//
+//   【警告2: 旋回角速度トーン】
+//     上記に当てはまらない場合で、degpersecond が 2.0 以上かつ速度 2.0m/s 以上のとき、
+//     旋回の強さに応じた音程のトーンを鳴らす。
+//     周波数の計算: freq = |degpersecond| * 600 - 680
+//       - 2 deg/s → 520Hz,  5 deg/s → 2320Hz,  上限は 3136Hz（G7, スピーカー限界）
+//     速度や旋回が小さいときは短いトーン（80ms）、大きいときは長めのトーン（160ms）。
 // CORE0
 unsigned long last_update_tone = 0;
 void update_tone(float degpersecond){
+    // 前回の呼び出しから 900ms 以上経過していなければスキップ（過剰な再生防止）
     if(millis() - last_update_tone < 900){
-        DEBUG_PLN(20250508,"errrr");
+        DEBUG_PLN(20250508,"update_tone: rate limited, skip");
         return;
     }
-    last_update_tone - millis();
-  int relativedif = get_gps_truetrack()-last_tone_tt;
-  if(relativedif > 180)
-    relativedif -= 180;
-  if(relativedif < -180)
-    relativedif += 180;
-  int angle_diff = abs(relativedif);
+    last_update_tone = millis();
 
-  //角度変化が大きい時。
+  // 前回の方位との差を計算し、-180〜+180 の範囲に収める
+  // ★ float で持つこと。以前は int で受けていたため 15.9 度が 15 に切り捨てられ、
+  //   下の「15 度超」が実際には 16 度超になっていた（音で鳴る警報なので影響が出る）。
+  //   last_tone_tt 側は full precision で latch してあるので、粗かったのは比較だけ。
+  float relativedif = get_gps_truetrack()-last_tone_tt;
+  if(relativedif > 180)
+    relativedif -= 360;
+  if(relativedif < -180)
+    relativedif += 360;
+  float angle_diff = abs(relativedif);
+
+  //【警告1】方位変化が 15° 超 → コース逸脱警告
   if(angle_diff > 15){
     last_tone_tt = get_gps_truetrack();
     if(get_gps_mps() > 2.0){
         trackwarning_until = millis()+8000;
-        enqueueTask(createPlayMultiToneTask(3136,120,angle_diff>30?5:3));// スピーカー性能都合 ソの音
-        if(good_sd()){
-            enqueueTask(createPlayWavTask("wav/track.wav"));
-        }
+        // 変化量に応じて警告音の回数を変える（30°超なら 5 回、15°超なら 3 回）
+        enqueueTask(createPlayMultiToneTask(3136,120,angle_diff>30?5:3)); // G7（スピーカー上限付近）
+        enqueueTask(createPlayWavTask("wav/track.wav")); // 音声警告も再生（FLASH 内蔵なので SD は見ない）
     }
   }
-  //音を出す閾値は、2.0deg/s かつ 2.0 m/s 以上 かつ 音再生設定がある時。
-  //また。angle_diffが15より大きい時は上記警告音+wavファイル再生を優先し、deg/sの警告音は流さない。
+  //【警告2】旋回角速度トーン: 2.0 deg/s 以上 かつ 2.0 m/s 以上のとき発動
+  // angle_diff > 15 のときは警告1 が優先されるためここには来ない
+  // 固定高音 2093Hz（C7）のピピ2回（v6 と同じ音。v6 ではバリオ音と混同しないよう固定にした）
   else if(abs(degpersecond) > 2.0 && get_gps_mps() > 2.0){
-    int freq = abs(degpersecond)*600-680;// 1200-680=520Hz以上 (speaker性能都合)
-    if(freq > 3136){
-      freq = 3136;// スピーカー性能都合 ソの音
-    }
-    //精度が低い状況や角度変化少ない状況では、音は短めにする。
-    int newduration = (abs(degpersecond)<3 || get_gps_mps() < 4.0)?80:160;
-    enqueueTask(createPlayMultiToneTask(nearest_note_frequency(freq), newduration,1));
+    enqueueTask(createPlayMultiToneTask(2093, 80, 2));
   }
 }
 
 
-// Change the note
+// Sin 波トーンの周波数を設定する（位相アキュムレータ方式）。
+// 位相増分 (phaseInc) を周波数から計算し、割り込みが自動的にその周波数で Sin 波を出力する。
+//
+// 計算式: phaseInc = (frequency * tableSize * 2^24) / sampleRate
+//   - 32bit の phaseAcc を毎割り込み phaseInc 分進める
+//   - 上位 8bit (= phaseAcc >> 24) が 0〜255 のテーブルインデックスになる
+//   - → 1 秒間に frequency 回テーブルをループすることで周波数が決まる
 void playNextNote(int frequency) {
-    phaseAcc = 0;
-    phaseInc = (frequency * tableSize * (1ULL << 24)) / 16150; // Use 1ULL for 64-bit
+    phaseAcc = 0;  // 位相をリセット（音が途切れないよう最初は 0 から）
+    
+    phaseInc = (frequency * tableSize * (1ULL << 24)) / 16150; // 1ULL で 64bit 演算してオーバーフロー防止
+    //16150 は sampleRate より少し高めにして、実際の周波数がやや高く出るように補正（耳で聞いた感じの補正、スピーカーの特性を考慮）
     DEBUG_P(20250412,"FRQ: ");
     DEBUG_PLN(20250412,frequency);
 }
 
 
-void myTone(int freq,int duration){
-  digitalWrite(AMP_SHUTDOWN_PIN,HIGH);
-  playNextNote(freq);
-  delay(duration);
-  digitalWrite(AMP_SHUTDOWN_PIN,LOW);
+// トーン再生要求をバッファに積む。実際の再生は loop_tone() が担当する。
+// WAV 優先制御・タイミング管理は loop_tone() / startPlayWav() が行う。
+void playTone(int freq, int duration, int counter, int priority, int min_volume, bool solo_play) {
+    pushToneBuffer(freq, duration, counter, priority, min_volume, solo_play);
 }
 
 
+// toneBuffer から次のエントリを取り出してトーン再生を開始する。
+// loop_tone() から呼ばれる（WAV 未再生時のみ）。
+static void startNextToneEntry() {
+    ToneEntry& e    = toneBuffer[toneBufHead];
+    toneBufHead     = (toneBufHead + 1) % TONE_BUFFER_SIZE;
 
-void playTone(int freq, int duration, int counter,int priority){
-    if(wav_playing && wav_playing_priority >= priority){
-        DEBUG_P(20250503,"failed playTone due to Wav file playing.");
-        DEBUG_PLN(20250503,priority);
-        //caution.  Do not wait wav file finish playing here, because that will stop loop1 and cause wav file unable finish playing.
+    tone_remaining        = e.count;
+    tone_cur_freq         = e.freq;
+    tone_cur_dur          = e.duration;
+    tone_playing_priority = e.priority;
+    tone_override_volume  = e.min_volume;
+    tone_in_gap           = false;
+    sin_solo              = e.solo_play;  // solo_play フラグを ISR 参照変数に反映
+
+    sinmode     = true;
+    sin_playing = true;
+    setAmplifierState(true);
+    playNextNote(tone_cur_freq);
+    tone_stop_time = millis() + tone_cur_dur;
+}
+
+// ============================================================
+// Core1 のメインループから毎ループ呼ばれるトーン再生管理関数。
+//
+// toneBuffer に積まれたトーンを非ブロッキングで順番に再生する。
+// delay() を使わず millis() でタイミングを管理する。
+//
+// WAV との関係:
+//   通常トーン (solo_play=false, クリック音など):
+//     WAV 再生中でも待たずに開始し、割り込み内で WAV と加算ミックスされる。
+//     優先度は見ない（短い SE が WAV を潰すことはないため）。
+//   solo_play トーン (コース外れ警告など、後続の音声 WAV より先に鳴らしたいもの):
+//     WAV 再生中 (wav_playing=true): 出力を停止し、WAV 終了まで待機
+//     WAV 終了後: 一時停止していたトーンを再開（tone_paused=true の場合）
+//     WAV 開始時の優先度制御は startPlayWav() が行う
+//       - WAV priority > tone priority: WAV 割込み → トーン一時停止・WAV 後に再開
+//       - WAV priority ≤ tone priority: WAV を pending に退避 → トーン完了後に再生
+// ============================================================
+void loop_tone() {
+    // solo_play トーン再生中のみ WAV を待機させる
+    // （sin_solo=false の通常トーンは WAV とミックス再生するためここでは止めない）
+    if (wav_playing && sin_solo) {
+        if (sin_playing) {
+            sin_playing = false;
+            tone_paused = true;
+            pwm_set_gpio_level(PIN_PWMTONE, 512);  // 無音（中点）
+            setAmplifierState(false);
+        }
         return;
     }
-    tone_playing_priority = priority;
 
-    wavmode = false;
-    wav_playing = false;
-    endOfFile = true;
-  
-  sinmode = true;
-  myTone(freq, duration);
-  if(counter <= 1){
-    return;
-  }
-  for(int i = counter; i > 1; i--){
-    delay(duration);
-    myTone(freq, duration);
-  }
+    // WAV 割込みからの再開（solo_play トーンが WAV に中断された後の復帰）
+    if (tone_paused) {
+        tone_paused = false;
+        sinmode     = true;
+        sin_playing = true;
+        setAmplifierState(true);
+        playNextNote(tone_cur_freq);
+        tone_stop_time = millis() + tone_cur_dur;
+        return;
+    }
+
+    // ギャップ中: 時間が経過したら次のトーンを開始
+    if (tone_in_gap) {
+        if (millis() >= tone_stop_time) {
+            tone_in_gap = false;
+            sin_playing = true;
+            setAmplifierState(true);
+            playNextNote(tone_cur_freq);
+            tone_stop_time = millis() + tone_cur_dur;
+        }
+        return;
+    }
+
+    // トーン再生中: 時間が経過したら終了処理
+    if (sin_playing) {
+        if (millis() >= tone_stop_time) {
+            sin_playing = false;
+            pwm_set_gpio_level(PIN_PWMTONE, 512);  // 無音（中点）
+            // WAV 再生中はアンプを切らない（WAV がアンプを使用中）
+            if (!wav_playing) setAmplifierState(false);
+
+            tone_remaining--;
+            if (tone_remaining > 0) {
+                // カウント残り → ギャップ（無音）を挟んで次のトーンへ
+                tone_in_gap    = true;
+                tone_stop_time = millis() + tone_cur_dur;
+            } else {
+                // このエントリ完了 → クリーンアップ
+                sinmode               = false;
+                sin_solo              = false;  // solo_play フラグをリセット
+                tone_playing_priority = 0;
+                tone_override_volume  = 0;
+                if (toneBufHead != toneBufTail) {
+                    startNextToneEntry();  // 次のエントリを開始
+                } else if (!wav_playing) {
+                    // 全トーン完了かつ WAV 未再生 → pending WAV があれば再生
+                    int prio = 0, pminvol = 0;
+                    const char* pf = pop_best_pending_wav(prio, pminvol);
+                    if (pf != nullptr) {
+                        pending_replay_next = true;  // pending 由来の再生であることを伝える
+                        startPlayWav(pf, prio, pminvol);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // 未再生: バッファに積まれていれば開始
+    if (toneBufHead != toneBufTail) {
+        // solo_play トーンは WAV のバッファ送出を止めてしまうので、
+        // より高優先の WAV 再生中は開始を待機する（fixed.wav などが埋もれないよう）。
+        // 通常トーン（solo_play=false）は WAV と加算ミックスされるだけで WAV を潰さないため、
+        // 優先度に関係なく即座に開始する。ここで待たせると、WAV 再生中に押した
+        // クリック音が溜まり、WAV 終了後にまとめて鳴る不自然な挙動になる。
+        if (wav_playing && toneBuffer[toneBufHead].solo_play &&
+            wav_playing_priority > toneBuffer[toneBufHead].priority) {
+            // 待機 — 次ループで再チェック
+        } else {
+            startNextToneEntry();
+        }
+    }
 }
