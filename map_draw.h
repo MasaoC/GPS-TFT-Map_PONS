@@ -93,6 +93,7 @@ struct MapView {
   int replay_speed;
   bool gps_connected;       // GPS の状態の文字（live でないとき）
   int fix_age_s;            // 測位を失ってからの秒数（-1 = 一度も測位していない）
+  float degpersecond;       // 旋回角速度 [deg/s]（0.5 deg/s 以上で画面端にオーバーレイ表示）
 };
 void draw_map_screen(const MapView& v);    // ベクタ地図から自機まで全部描いて TFT へ送る
 void draw_startup_map(float scale);         // 起動画面の琵琶湖（ベクタ地図だけ。push はしない）

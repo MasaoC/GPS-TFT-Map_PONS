@@ -246,8 +246,8 @@ static uint16_t mapdata_color(const char* name) {
   }
 }
 
-// 内蔵の折れ線地図のうち、ベクタ地図に無いもの（大阪大学の構内）と、SD の mapdata.csv。
-// ★ 琵琶湖・浦安・日本の海岸線の内蔵の折れ線は描かない。ベクタ地図の湖岸・海岸と少しずれて二重に見えるため。
+// 内蔵の折れ線地図（大阪大学の構内）と、SD の mapdata.csv。
+// 琵琶湖・浦安・日本の海岸線の内蔵の折れ線は 0.503 で削除した（ベクタ地図の湖岸・海岸と少しずれて二重に見えるため。v7 と同じ）。
 static void draw_line_maps(const MapView& v) {
   if (v.scale <= SCALE_SMALL_GMAP) return;
   if (check_within_latlon(0.6, 0.6, v.lat, OSAKA_LAT, v.lon, OSAKA_LON)) {
@@ -318,6 +318,17 @@ static void draw_turn_circle() {
   }
 }
 
+// 始点 (lat1,lon1) から方位 bearing_rad（北基準・時計回り・ラジアン）へ distance km 進んだ点
+static void calculatePointFromBearing(double lat1, double lon1, double bearing_rad, double distance, double& lat2, double& lon2) {
+  const double R = 6371.0;
+  lat1 = deg2rad(lat1); lon1 = deg2rad(lon1);
+  const double d = distance / R;
+  lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing_rad));
+  lon2 = lon1 + atan2(sin(bearing_rad) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat2));
+  lat2 = rad2deg(lat2);
+  lon2 = rad2deg(lon2);
+}
+
 // 琵琶湖のコース。プラットホームから北・南パイロンと竹島への線、パイロンの印、折り返しの円。
 // 座標は navdata.cpp の course_*（SD の override_pilon_coordinate.csv で上書きできる）。
 static void draw_course_layer(const MapView& v) {
@@ -331,6 +342,19 @@ static void draw_course_layer(const MapView& v) {
   draw_map_line(pla_x, pla_y, n_x, n_y, 3, COLOR_GREEN);   // パイロンへの基準線は太く（v7 の 0.921）
   draw_map_line(pla_x, pla_y, s_x, s_y, 3, COLOR_GREEN);
   draw_map_line(pla_x, pla_y, t_x, t_y, 1, COLOR_GREEN);   // 竹島は 1px のまま
+
+  // 2本のパイロン基準線の「角度的な中間」を通るセンターライン（オレンジ）。
+  // 方位はパイロン座標から実行時に計算するので、パイロンが移動しても自動で追従する（v7 と同じ）。
+  // 1km 円〜10.975km 円の間だけ描き、PLA 付近のスタート台・1km パイロンのアイコンを隠さない。
+  const double centerline_bearing = pla_centerline_bearing_rad();
+  double in_lat, in_lon, out_lat, out_lon;
+  calculatePointFromBearing(course_pla[0][0], course_pla[0][1], centerline_bearing, 1.0, in_lat, in_lon);
+  calculatePointFromBearing(course_pla[0][0], course_pla[0][1], centerline_bearing, 10.975, out_lat, out_lon);
+  int cl_in_x, cl_in_y, cl_out_x, cl_out_y;
+  map_project(in_lat, in_lon, &cl_in_x, &cl_in_y);
+  map_project(out_lat, out_lon, &cl_out_x, &cl_out_y);
+  draw_map_line(cl_in_x, cl_in_y, cl_out_x, cl_out_y, 2, COLOR_ORANGE);
+
   draw_pylon_mark(course_npilon, COLOR_RED);
   draw_pylon_mark(course_spilon, COLOR_RED);
   draw_pylon_mark(course_1km, COLOR_RED);
@@ -466,7 +490,7 @@ static void draw_hacc_circle(float hacc_m) {
   }
 }
 
-// 修正の円弧と誘導三角形（v7 の draw_triangle と同じ形）。base_rad は画面上での「進路」の向き。
+// 修正の円弧と誘導三角形（v7 の draw_triangle と同じ形）。base_deg は画面上での「進路」の向き [deg]。
 // ・円弧: 目的地の方位へのズレに比例。修正しないまま外れ続けるほど長くなる（course_warning_index / 900）。
 // ・三角: ズレが 15 度・55 度・100 度を超えると 1 つずつ増える。3 秒に 1 回消えて点滅する。
 static void draw_steer(float base_deg, int len, float steer, float index) {
@@ -513,17 +537,18 @@ static void draw_ownship_layer(const MapView& v) {
     const int len = MAP_H / 2 - 5;
     draw_tone_triangle(v.tone_tt, len, v.tone_warning);
     draw_steer(v.ttrack, len, v.steer, v.course_warning_index);
-    // 進路の針（先の方を赤く。以前の v3 の針と同じ見た目）
+    // 進路の針（先の方を赤く。v0.87 仕様の太い針: 幅 5px で視認性を向上）
     const float a = v.ttrack * DEG_TO_RAD, s = sinf(a), c = cosf(a);
-    backscreen.drawWideLine(f.cx + s * 9, f.cy - c * 9, f.cx + s * (len - 22), f.cy - c * (len - 22), 3, COLOR_BLACK);
-    backscreen.drawWideLine(f.cx + s * (len - 22), f.cy - c * (len - 22), f.cx + s * (len - 10), f.cy - c * (len - 10), 3, COLOR_RED);
+    backscreen.drawWideLine(f.cx + s * 9, f.cy - c * 9, f.cx + s * (len - 22), f.cy - c * (len - 22), 5, COLOR_BLACK);
+    backscreen.drawWideLine(f.cx + s * (len - 22), f.cy - c * (len - 22), f.cx + s * (len - 10), f.cy - c * (len - 10), 5, COLOR_RED);
     const int rbx = -TRIANGLE_HWIDTH * c - TRIANGLE_SIZE * s, rby = -TRIANGLE_HWIDTH * s + TRIANGLE_SIZE * c;
     const int lbx = TRIANGLE_HWIDTH * c - TRIANGLE_SIZE * s, lby = TRIANGLE_HWIDTH * s + TRIANGLE_SIZE * c;
     backscreen.fillTriangle(f.cx, f.cy, f.cx + rbx, f.cy + rby, f.cx + lbx, f.cy + lby, COLOR_BLACK);
   } else {
-    // TRACK UP: 画面の上 = 対地進路。進路の縦線と、上向きの三角。
+    // TRACK UP: 画面の上 = 対地進路。進路の縦線（幅 3px で強調）と、上向きの三角。
     const int len = f.cy - 16;
-    backscreen.drawFastVLine(f.cx, 16, f.cy - 21, COLOR_BLACK);
+    backscreen.drawFastVLine(f.cx - 1, 16, f.cy - 21, COLOR_BLACK);
+    backscreen.drawFastVLine(f.cx,     16, f.cy - 21, COLOR_BLACK);
     backscreen.drawFastVLine(f.cx + 1, 16, f.cy - 21, COLOR_BLACK);
     draw_tone_triangle(v.tone_tt - v.ttrack, len, v.tone_warning);
     draw_steer(0, len - 10, v.steer, v.course_warning_index);
@@ -582,6 +607,41 @@ static void draw_gps_status(const MapView& v) {
   }
 }
 
+// 旋回角速度（deg/s）のオーバーレイ表示（v7 仕様）。
+// 旋回中に旋回方向（右旋回＝右上、左旋回＝左上）に出す。直進中（|dps| < 0.5）は消して地図を広く見せる。
+static void draw_degpersec(float dps) {
+  if (fabsf(dps) < 0.5f) return;
+  uint16_t col = COLOR_GRAY;
+  if (get_gps_mps() > 2.0f) {
+    if (dps > 1.0f) col = COLOR_GREEN;
+    if (dps < -1.0f) col = COLOR_BLUE;
+    if (fabsf(dps) > 3.0f) {
+      if (dps < 0) backscreen.fillRect(0, 15, 48, 35, col);
+      else         backscreen.fillRect(MAP_W - 48, 15, 48, 35, col);
+      if (fabsf(dps) > 4.0f) {
+        if (dps > 0) {
+          backscreen.drawRect(MAP_W - 48, 15, 48, 35, COLOR_RED);
+          backscreen.drawRect(MAP_W - 47, 16, 46, 33, COLOR_RED);
+        } else {
+          backscreen.drawRect(0, 15, 48, 35, COLOR_RED);
+          backscreen.drawRect(1, 16, 46, 33, COLOR_RED);
+        }
+      }
+      backscreen.setTextColor(COLOR_WHITE, col);
+    } else {
+      backscreen.setTextColor(col);
+    }
+  } else {
+    backscreen.setTextColor(col);
+  }
+  const int posx = (dps > 0) ? (MAP_W - 45) : 5;
+  backscreen.setTextWrap(false);
+  backscreen.setCursor(posx, 17);
+  backscreen.printf("%+.1f", dps);
+  backscreen.setCursor(posx - 2, 31);
+  backscreen.print("deg/s");
+}
+
 void draw_map_screen(const MapView& v) {
   static bool reported = false;
   if (!backscreen_ok) {
@@ -598,6 +658,7 @@ void draw_map_screen(const MapView& v) {
   draw_km_circles();
   draw_ownship_layer(v);
   draw_compass_layer(v.up);
+  draw_degpersec(v.degpersecond);
   draw_course_warning_box(v);
   if (v.demo) draw_label(4, MAP_H - 24, "DEMO");
   if (v.replay) {

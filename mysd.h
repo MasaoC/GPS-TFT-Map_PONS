@@ -15,7 +15,8 @@
       TASK_REPLAY_LOAD      // リプレイの行を読み足す
   } TaskType;
 
-  #define TASK_QUEUE_SIZE 20   // 10 だとログ（電源・GPS・設定）と CSV が重なったときに溢れうる（v7 も 20→40 に増やした）
+  // SD書き込み遅延時にログ・CSV・設定保存が重なっても溢れないよう 40 に拡張（v7 と同じ）
+  #define TASK_QUEUE_SIZE 40
 
   // 飛行 CSV の 1 行（gps.cpp が作る）。列名は v7 にそろえてある（v7 のツールとリプレイが列名で読む）。
   struct CsvRow {
@@ -70,7 +71,7 @@
               char buffer[256];
           } logSdfArgs;
           CsvRow saveCsvArgs;                // For saveCSV
-          SavedSettings saveSettingsArgs;    // For save_settings
+          SavedSettings saveSettingsArgs;    // For saveSettings
           char replayName[REPLAY_NAME_LEN];  // For replay_init
       };
   } Task;
@@ -84,7 +85,6 @@
 
 
   Task createLogSdTask(const char* logText);
-  Task createLogSdfTask(const char* format, ...);
   Task createSaveCsvTask(const CsvRow& row);
   Task createSaveSettingsTask();   // Core0 で呼ぶ（その時点の設定を写す）
   // 起動時に SD から読んだ設定を 1 回だけ受け取る（Core0 で反映するため）。まだ読んでいなければ false。
@@ -93,7 +93,7 @@
 
   // Functions to handle the queue (declarations)
   bool enqueueTask(const Task& task);   // 積めたら true（キューが満杯なら捨てて false）。Task は大きいので参照で渡す
-  bool enqueueLogSdf(const char* format, ...);   // enqueueTask(createLogSdfTask(...)) と同じ（Core0 のスタックを使わない）
+  bool enqueueLogSdf(const char* format, ...);   // 書式つきのログを積む（Task を呼び出し側のスタックに置かない）
   void enqueueTaskWithAbortCheck(const Task& task);
   bool dequeueTask(Task *task);
 
@@ -112,5 +112,4 @@
   extern volatile unsigned long loop1counter;
   extern volatile int loop1pos;
   extern volatile int loop0pos;
-  extern volatile int restartcount;
 #endif

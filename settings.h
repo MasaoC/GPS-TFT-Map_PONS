@@ -2,11 +2,34 @@
 
 // リリース時 削除
 #define BUILDDATE 20261025
-#define BUILDVERSION "0.503"
+#define BUILDVERSION "0.504v3"
 
 #define RELEASE
 #define DEBUG_P(num,txt)  if(num >= BUILDDATE-1)Serial.print(txt);
 #define DEBUG_PLN(num,txt)  if(num >= BUILDDATE-1)Serial.println(txt);
+
+// ============================================================
+// SD アクセスがどのコアから来たかの見張り（デバッグビルドのみ）
+//
+// SD へのアクセスは Core1 に閉じる規律だが、Core0 から直接触ると
+// 偶発的な SDIO/SPI バスハングを引き起こすため、開発中に検知できるようにする。
+// Core0 から good_sd() を呼ぶのは安全（フラグを読むだけ）なのでそこには置かない。
+// RELEASE では空マクロになりサイズ不変。1秒に1回までに抑制。
+// ============================================================
+#ifndef RELEASE
+  #define ASSERT_SD_CORE1(label) do { \
+    if (get_core_num() != 1) { \
+      static unsigned long _sdc_; \
+      if (_sdc_ == 0 || millis() - _sdc_ >= 1000) { \
+        _sdc_ = millis(); \
+        Serial.print("!!! SD access from Core0: " label); \
+        Serial.println(" (SD operations must be delegated to Core1)"); \
+      } \
+    } \
+  } while(0)
+#else
+  #define ASSERT_SD_CORE1(label) do {} while(0)
+#endif
 
 
 //----------GPS---------
@@ -48,10 +71,8 @@
 
 
 //---------TFT----------
-// TFTを選択
-  #define TFT_USE_ST7789    //Tested well. Change User Setting at TFT_eSPI
-  //#define TFT_USE_ILI9341   //Tested well.  Change User Setting at TFT_eSPI
-  //#define TFT_USE_ST7735      //Not supported anymore.  Screen size too small.
+// TFT の種類（ST7789 / ILI9341）は TFT_eSPI の User_Setup.h で選ぶ（CopySetupFile_TFT_eSPI.h を写す）。
+// ここには選ぶ設定は無い（以前の TFT_USE_ST7789 などはどこからも使われていなかった）。
 
 // 地図を描き直す最小の間隔 [ms]。描き直しは新しい NAV-PVT を受けた直後（gps_loop() が true）だけなので、
 // 実際の間隔は測位の周期（2Hz なら 500ms）になる。周期ぴったりにすると、前の描画が長引いて NAV-PVT の
@@ -145,6 +166,8 @@
 #define BAT_FULL_VOLTAGE 4.2f   // 100%。満充電でも負荷で 4.2V を切るので 100% に届かないことがあるが正常
 #define BAT_HALF_VOLTAGE 3.8f   // これ未満はマゼンタ（50% 未満）
 #define BAT_ZERO_VOLTAGE 3.4f   // 0%
+// 満充電からの目安稼働時間 [分]。設定画面フッターの電池稼働目安時間の計算に使う。
+#define BAT_FULL_RUNTIME_MIN 240
 // 表示する電圧は「上がるときは即追従・下がるときはゆっくり」（GPS 受信や描画の負荷の谷を拾わない）。
 // ★ 下降は時間で鈍らせる。以前は描画のたびに 0.4 ずつ寄せていて、時定数が描画の回数で変わっていた
 //   （v7 で 0.988 に同じ理由で直したもの）。
@@ -167,7 +190,7 @@
 #define CPU_TEMP_MIN_C     (-20.0f)    // この外の値は ADC_VREF_V が違う証拠として使わない（警告もしない）
 #define CPU_TEMP_MAX_C      90.0f
 
-// ----- Auto 10km モード（GPS_TFT_map.ino の auto10k_tick()。v7 と同じ判定） -----
+// ----- Auto 10km モード（GPS_TFT_map.ino の auto10k_check()。v7 と同じ判定） -----
 // 目的地（通常は PLATHOME）から離れる向きに誘導し（10K AWAY）、AUTO10K_TURN_KM を超えたら
 // 戻る向き（10K INTO）に切り替える。戻ってきて AUTO10K_RETURN_KM 以内に入ったら再び AWAY。
 #define AUTO10K_TURN_KM   10.475   // 公式ルールの折り返しは 10.975km。潮流などを見込んで 500m 手前
@@ -203,8 +226,6 @@
 
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
-// 秋月で売っているGPS など、Mediatek GPSを使う場合は、ublox_gps.h ではなく mediatek_gps.h に全て書き換えてください。
-
 
 
 
@@ -220,7 +241,7 @@
 //destination mode
 #define DMODE_FLYINTO 0
 #define DMODE_FLYAWAY 1
-#define DMODE_AUTO10K 2   // Auto 10km（AWAY と INTO を距離で自動で切り替える。GPS_TFT_map.ino の auto10k_tick()）
+#define DMODE_AUTO10K 2   // Auto 10km（AWAY と INTO を距離で自動で切り替える。GPS_TFT_map.ino の auto10k_check()）
 
 #if !defined(TEMP)
   #define TEMP

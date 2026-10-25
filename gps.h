@@ -80,7 +80,6 @@
   double get_gps_truetrack();   // 方位はすべて真方位（磁方位の get_gps_magtrack() は 0.503 で廃止）
   double get_gps_lat();
   double get_gps_lon();
-  double get_gps_altitude();
 
   GpsDate get_gpsdate();
   GpsTime get_gpstime();
@@ -97,5 +96,7 @@
   const char* replay_selected_name();     // 選んでいるファイル（OFF なら nullptr）
   bool replay_selected_is_playing();
   void replay_apply_selection();          // 選んだファイルを再生する／OFF なら止める
+  void replay_set_paused(bool paused);    // 地図画面以外で一時停止する
+  bool replay_is_paused();
 
 #endif

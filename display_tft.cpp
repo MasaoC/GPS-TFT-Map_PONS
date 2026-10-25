@@ -14,7 +14,7 @@
 
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_MEDIUM Arial_Black22
-#define NM_FONT_LARGE Arial_Black42
+#define NM_FONT_LARGE Arial_Black56
 
 
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
@@ -79,8 +79,8 @@ void setup_tft() {
 
 
   tft.setRotation(2);           //set 0 for newhaven
+  tft.setTextWrap(false);       // 文字列のはみ出しによる次行折り返しを防止
   tft.loadFont(AA_FONT_SMALL);  // Must load the font first
-  //tft.setTextFont(2);
 
 
   tft.fillScreen(COLOR_WHITE);
@@ -88,21 +88,11 @@ void setup_tft() {
 }
 
 
-struct line {
-  int x1, y1, x2, y2;
-};
-
-
 class Point {
 public:
   int x, y;
   Point(int x = 0, int y = 0)
     : x(x), y(y) {};
-
-  //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
-  bool isOutsideTft(){
-    return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
-  }
 };
 
 class Text {
@@ -218,6 +208,7 @@ public:
     }
     // If found, overwrite text with white.
     if (foundText != nullptr) {
+      tft.setTextWrap(false);
       tft.setCursor(foundText->getCord().x, foundText->getCord().y);
       tft.setTextColor(COLOR_WHITE);
       tft.setTextSize(foundText->getSize());
@@ -236,6 +227,7 @@ public:
       }
     }
     // Print the text.
+    tft.setTextWrap(false);
     tft.setCursor(foundText->cord.x, foundText->cord.y);
     tft.setTextColor(col, COLOR_WHITE);
     tft.setTextSize(foundText->size);
@@ -293,61 +285,6 @@ void startup_demo_tft() {
     tft.print(BUILDDATE);
     tft.print(")");
   }
-}
-
-void drawbar(float degpersecond, int col) {
-  if (col == -1) {
-    if (degpersecond > 0) {
-      col = COLOR_GREEN;
-    } else {
-      col = COLOR_LIGHT_BLUE;
-    }
-  }
-  int barposy = 32;
-  float abs_degpersecond = abs(degpersecond);
-  int barwidth = (abs_degpersecond * (SCREEN_WIDTH / 2)) / 3.0;  //3deg = max width
-  int thickness = 13;
-  if (degpersecond > 0) {
-    for (int i = 0; i < thickness; i++) {
-      tft.drawFastHLine(SCREEN_WIDTH / 2, barposy + i, barwidth, col);
-    }
-  } else {
-    for (int i = 0; i < thickness; i++) {
-      tft.drawFastHLine(SCREEN_WIDTH / 2 - barwidth, barposy + i, barwidth, col);
-    }
-  }
-}
-
-float last_degpersecond;
-
-void draw_degpersecond(double degpersecond) {
-  int col = COLOR_GRAY;
-  int posx = SCREEN_WIDTH / 2 - 18;
-
-  if(get_gps_mps() > 2.0){
-    if (degpersecond > 1.0)
-      col = COLOR_GREEN;
-    if (degpersecond < -1.0)
-      col = COLOR_BLUE;
-  }
-  if (degpersecond != 0)
-    posx -= 5;
-  if (abs(degpersecond) > 10)
-    posx -= 9;
-
-
-  drawbar(last_degpersecond, COLOR_WHITE);
-  drawbar(degpersecond, -1);
-  last_degpersecond = degpersecond;
-
-  tft.loadFont(NM_FONT_MEDIUM);  // Must load the font first
-  if (degpersecond > 0)
-    textmanager.drawTextf(ND_DEGPERSEC_VAL, 1, posx, 9, col, "+%.1f", degpersecond);
-  else
-    textmanager.drawTextf(ND_DEGPERSEC_VAL, 1, posx, 9, col, "%.1f", degpersecond);
-
-  tft.loadFont(AA_FONT_SMALL);  // Must load the font first
-  textmanager.drawText(ND_DEGPERSEC_TEX, 1, SCREEN_WIDTH / 2 - 15, 32, col, "deg/s");
 }
 
 bool bankwarning_flipflop = true;
@@ -419,10 +356,13 @@ void draw_power_status(bool force) {
     case BATT_FAULT:    col1 = COLOR_RED; snprintf(line1, sizeof(line1), "POWER FAULT! SW OFF+UNPLUG USB"); break;
     case BATT_OFF:      col1 = COLOR_RED; snprintf(line1, sizeof(line1), "Battery: SW OFF (not charging)"); break;
     case BATT_CHARGING: snprintf(line1, sizeof(line1), "Battery: Charging (USB)"); break;
-    default:
+    default: {
       col1 = battery_color(power_battery_volts());
-      snprintf(line1, sizeof(line1), "Battery: %d%% (%.2fV)", power_battery_percent(), power_battery_volts());
+      const int pct = power_battery_percent();
+      const int mins = (int)((float)pct / 100.0f * BAT_FULL_RUNTIME_MIN);
+      snprintf(line1, sizeof(line1), "Battery: %d%% (%.2fV) ~%dh%02dm", pct, power_battery_volts(), mins / 60, mins % 60);
       break;
+    }
   }
   char line2[64];
   power_format_status(line2, sizeof(line2));
@@ -465,7 +405,7 @@ void draw_readiness(bool force) {
   tft.loadFont(AA_FONT_SMALL);
 }
 
-// Auto 10km のフェーズが切り替わった知らせ（GPS_TFT_map.ino の auto10k_tick() が時刻を入れる）。
+// Auto 10km のフェーズが切り替わった知らせ（GPS_TFT_map.ino の apply_auto10k_status() が時刻を入れる）。
 // v3 は音が無いので、地図に AUTO10K_NOTICE_MS のあいだ出す。
 // 戻り値: 知らせの時間が終わった（地図を描き直して消す必要がある）なら true。
 extern unsigned long auto10k_notice_since;
@@ -535,24 +475,46 @@ void draw_loading_image() {
 
 
 void draw_gpsinfo() {
+  tft.setTextWrap(false);
   // GPS が止まった・測位を失ったら、残っている速度と方位をグレーにする（今の値と見誤らないため）。
   int col = get_gps_live() ? COLOR_BLACK : COLOR_GRAY;
-  const int mtlx = SCREEN_WIDTH - 40;
-  const int mtvx = SCREEN_WIDTH - 85;
-  tft.setTextColor(TFT_BLACK, TFT_WHITE);
-  tft.drawString("TT", mtlx, 34);  // True Track（真方位。以前は偏差 8 度を足した MT）
-  tft.drawString("GS    m/s", 12, 34);
+  const int mtvx = 120;   // 中央区切り線（画面幅 240px の中央。左: 速度、右: 方位）
 
-  tft.loadFont(NM_FONT_LARGE);  // Must load the font first
-  textmanager.drawTextf(ND_MT, 1, mtvx, 3, col, "%03d", (int)lround(get_gps_truetrack()) % 360);
+  // 中央縦線とヘッダー下部境界線
+  tft.drawFastVLine(mtvx, 0, 50, COLOR_GRAY);
+  tft.drawFastHLine(0, 49, SCREEN_WIDTH, COLOR_BLACK);
 
-  // 対地速度は 2.0m/s 未満もグレー（v7 と同じ。その速さでは方位が当てにならない）
-  textmanager.drawTextf(ND_MPS, 1, 1, 3, get_gps_mps() < 2.0 ? COLOR_GRAY : col, "%4.1f", get_gps_mps());
-  tft.loadFont(AA_FONT_SMALL);  // Must load the font first
+  // 速度の単位を縦書き("m","p","s")で中央縦線のすぐ左に置く（v7 と同じ省スペース配置）
+  tft.unloadFont();
+  tft.loadFont(AA_FONT_SMALL);
+  tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  const int uh = tft.fontHeight() - 2;
+  static const char* const kUnit[3] = { "m", "p", "s" };
+  for (int i = 0; i < 3; i++) {
+    const int w = tft.textWidth(kUnit[i]);
+    tft.setCursor(mtvx - 2 - w - i * 2, 49 - uh * (3 - i));
+    tft.print(kUnit[i]);
+  }
 
+  // 大フォント（Arial_Black56 56pt）で速度と方位を表示
+  tft.loadFont(NM_FONT_LARGE);
+  // 対地速度（2.0m/s 未満はグレー）
+  const float mps = get_gps_mps();
+  const uint16_t spd_col = mps < 2.0f ? COLOR_GRAY : col;
+  textmanager.drawTextf(ND_MPS, 1, 1, 3, spd_col, mps >= 100.0f ? "%4.0f" : "%4.1f", mps);
+
+  // 真方位（3桁）。mtvx+2(122px)から開始し、右端(240px)まで118pxの余裕を確保して折り返しを防止
+  textmanager.drawTextf(ND_MT, 1, mtvx + 2, 3, col, "%03d", (int)lround(get_gps_truetrack()) % 360);
+  tft.loadFont(AA_FONT_SMALL);
+
+  // 測位が無効なときは速度と方位に取り消し線（赤線4本）を引いて明示（v7 と同じ）
+  if (!get_gps_live() || get_gps_numsat() == 0) {
+    for (int i = 0; i < 4; i++) {
+      tft.drawFastHLine(5, 23 + i, SCREEN_WIDTH - 10, COLOR_RED);
+    }
+  }
 
   // 電池（判定は power.cpp。ここは描くだけ）。CHARGE は「USB から充電中」、BATOFF は「USB はあるが SW OFF」。
-  // 以前は電圧が 4.25V を超えたら CHARGE としていて、USB の有無は見ていなかった。
   switch (power_battery_state()) {
     case BATT_FAULT:
       textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 67, SCREEN_HEIGHT - 28, COLOR_RED, "PWR NG");
@@ -563,11 +525,15 @@ void draw_gpsinfo() {
     case BATT_CHARGING:
       textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 67, SCREEN_HEIGHT - 28, COLOR_GREEN, "CHARGE");
       break;
-    case BATT_LOW:
-      // 点滅させる（白で描いた回は消えて見える）。v3 は音が無いので気づかせる手段がこれだけ。
-      textmanager.drawText(ND_BATTERY, 1, SCREEN_WIDTH - 67, SCREEN_HEIGHT - 28,
-                           (millis() / 1000) % 2 ? COLOR_WHITE : COLOR_RED, "BATLOW");
+    case BATT_LOW: {
+      // ★ 電池低下視覚アラート: 赤ベタ塗り反転点滅（500ms周期）。v3 は音が無いので操船中でも絶対に気づくよう強調。
+      const bool blink_on = (millis() / 500) % 2;
+      tft.fillRect(SCREEN_WIDTH - 68, SCREEN_HEIGHT - 29, 66, 15, blink_on ? COLOR_RED : COLOR_WHITE);
+      tft.drawRect(SCREEN_WIDTH - 68, SCREEN_HEIGHT - 29, 66, 15, COLOR_RED);
+      tft.setTextColor(blink_on ? COLOR_WHITE : COLOR_RED, blink_on ? COLOR_RED : COLOR_WHITE);
+      tft.drawString("BATLOW", SCREEN_WIDTH - 64, SCREEN_HEIGHT - 27);
       break;
+    }
     default:
       textmanager.drawTextf(ND_BATTERY, 1, SCREEN_WIDTH - 45, SCREEN_HEIGHT - 28,
                             battery_color(power_battery_volts()), "%d%%", power_battery_percent());
@@ -582,12 +548,12 @@ void draw_gpsinfo() {
       double destlat = extradestinations[currentdestination].cords[0][0];
       double destlon = extradestinations[currentdestination].cords[0][1];
       double dist = calculateDistance(get_gps_lat(), get_gps_lon(), destlat, destlon);
-      // 目的地への True Course（真方位）。以前は偏差 8 度を足した MC だった。
-      int tc = (int)lround(true_course_deg(get_gps_lat(), get_gps_lon(), destlat, destlon)) % 360;
-      // FLY AWAY と Auto 10km の AWAY は目的地から離れる向き
+      // 目的地への True Course（真方位）。反転計算後に四捨五入する（v7 と同じ）。
+      double tc_raw = true_course_deg(get_gps_lat(), get_gps_lon(), destlat, destlon);
       if(nav_effective_mode() == DMODE_FLYAWAY){
-        tc = (tc+180)%360;
+        tc_raw += 180.0;
       }
+      int tc = (int)lround(tc_raw) % 360;
       int posx_km = dist>1000?51:53;
       textmanager.drawTextf(ND_MC_PLAT, 2, 1, SCREEN_HEIGHT - 28, COLOR_MAGENTA, "TC%03d", tc);
       textmanager.drawTextf(ND_DIST_PLAT, 2, posx_km, SCREEN_HEIGHT - 28, COLOR_BLACK, dist>1000?"%.0fkm":dist>100?"%.1fkm":"%.2fkm", dist);
@@ -788,8 +754,8 @@ bool draw_gpsdetail(bool redraw, int page) {
 // 地図一覧。1 行ずつの項目を通し番号で並べ、ページごとに MAPLIST_LINES 行ずつ出す。
 // ★ 以前はページの終わりを決めておらず、1 ページ目から SD の地図を最後まで描いて画面の外へはみ出していた（v7 の 0.923）。
 #define MAPLIST_LINES 27
-static const mapdata* const flash_maps[] = { &map_shinura, &map_okishima, &map_takeshima, &map_chikubushima, &map_biwako, &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
-                                             &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe, &map_japan1, &map_japan2, &map_japan3, &map_japan4 };
+static const mapdata* const flash_maps[] = { &map_handaioutside, &map_handaihighway, &map_handaihighway2, &map_handaiinside1, &map_handaiinside2, &map_handaiinside3,
+                                             &map_handaiinside4, &map_handaiinside5, &map_handairailway, &map_handaicafe };
 #define FLASH_MAP_COUNT ((int)(sizeof(flash_maps) / sizeof(flash_maps[0])))
 #define MAPLIST_HEAD_LINES 8   // ベクタ地図 2 行 + コース 6 行
 

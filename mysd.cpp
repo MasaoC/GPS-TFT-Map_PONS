@@ -12,7 +12,6 @@ extern volatile bool quick_redraw;
 SdFat32 SD;
 bool sdInitialized = false;
 bool sdError = false;
-#define LOGFILE_NAME "log.txt"
 
 unsigned long lasttrytime_sd = 0;
 bool headerWritten = false;
@@ -25,8 +24,6 @@ int filesecond;
 
 
 
-mutex_t sdMutex;
-volatile bool core0NeedsAccess = false;
 TaskQueue taskQueue;
 mutex_t taskQueueMutex;
 Task currentTask;
@@ -55,23 +52,9 @@ Task createLogSdTask(const char* logText) {
   return task;
 }
 
-// Initializer for TASK_LOG_SDF
-Task createLogSdfTask(const char* format, ...) {
-  loop0pos = 40;
-  Task task;
-  task.type = TASK_LOG_SDF;
-  va_list args;
-  va_start(args, format);
-  vsnprintf(task.logSdfArgs.buffer, sizeof(task.logSdfArgs.buffer), format, args);
-  va_end(args);
-  task.logSdfArgs.format = "%s";
-  return task;
-}
-
-
-// createLogSdfTask() を積むのと同じことを、Task を呼び出し側のスタックに置かずに行う。
+// 書式つきのログ（TASK_LOG_SDF）を Core1 に積む。Core0 で整形してから積む。
 // ★ Core0 のスタックは 4KB しかない（SCRATCH_Y。あふれると Core1 のスタックを壊す）。Task は 264 バイトあり、
-//   enqueueTask(createLogSdfTask(...)) を 1 つの関数に何か所も書くと戻り値の分がそれぞれ積まれて、
+//   以前の enqueueTask(createLogSdfTask(...)) を 1 つの関数に何か所も書くと戻り値の分がそれぞれ積まれて、
 //   gps_loop() だけで 2.8KB になっていた。ログはこの関数（noinline）の中でだけ Task を作る。
 __attribute__((noinline)) bool enqueueLogSdf(const char* format, ...) {
   loop0pos = 40;
@@ -121,8 +104,6 @@ void removeDuplicateTask(TaskType type) {
 
 void enqueueTaskWithAbortCheck(const Task& newTask) {
   loop0pos = 26;
-  //Serial.println("enq task");
-  loop0pos = 27;
   removeDuplicateTask(newTask.type);
   loop0pos = 28;
   enqueueTask(newTask);  // Enqueue the new task
@@ -171,7 +152,7 @@ bool dequeueTask(Task* task) {
 //
 // mapdata.csv の 1 行（名前,点の数,経度1,緯度1,経度2,緯度2,...）を地図の線に足す。
 // 戻り値: 登録したら true、行を捨てたら false。
-bool process_mapcsv_line(String line) {
+bool process_mapcsv_line(String line, int target_idx) {
   int index = 0;
   int commaIndex = line.indexOf(',');
   if (commaIndex <= 0) return false;             // コンマが無い / 名前が空
@@ -214,16 +195,15 @@ bool process_mapcsv_line(String line) {
     index = commaIndex + 1;
   }
 
-  char* dupname = strdup(name.c_str()); // Duplicate string to allocate memory
+  char* dupname = pons_strdup(name.c_str()); // Duplicate string to allocate memory
   if (dupname == nullptr) {
     delete[] cords;
     return false;
   }
-  extramaps[mapdata_count].id = current_id++;
-  extramaps[mapdata_count].name = dupname;
-  extramaps[mapdata_count].size = size;
-  extramaps[mapdata_count].cords = cords;
-  mapdata_count++;
+  extramaps[target_idx].id = current_id++;
+  extramaps[target_idx].name = dupname;
+  extramaps[target_idx].size = size;
+  extramaps[target_idx].cords = cords;
   return true;
 }
 
@@ -232,7 +212,7 @@ bool process_mapcsv_line(String line) {
 // ★ 以前はコンマの無い行が「名前＝行全体・座標 (0,0)」の目的地として登録されていた
 //   （String::substring() に -1 を渡すと行全体が返るため）。選ぶと誘導がギニア湾を指す。
 // 戻り値: 登録したら true、行を捨てたら false。
-bool process_destinationcsv_line(String line) {
+bool process_destinationcsv_line(String line, int target_idx) {
   const int c1 = line.indexOf(',');
   if (c1 <= 0) return false;                    // コンマが無い / 名前が空
   const int c2 = line.indexOf(',', c1 + 1);
@@ -255,11 +235,10 @@ bool process_destinationcsv_line(String line) {
   cords[0][0] = lat;
   cords[0][1] = lon;
 
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = cords;
-  destinations_count++;
+  extradestinations[target_idx].id = current_id++;
+  extradestinations[target_idx].name = pons_strdup(name.c_str()); // Duplicate string to allocate memory
+  extradestinations[target_idx].size = 1;
+  extradestinations[target_idx].cords = cords;
   return true;
 }
 
@@ -268,6 +247,7 @@ void init_mapdata() {
   #ifdef DISABLE_SD
     return;
   #endif
+  ASSERT_SD_CORE1("init_mapdata");
   // setup_sd() は SD の復旧時にも呼ばれる。読めたら 2 回目からは読まない（地図を二重に足さない）。
   static bool loaded = false;
   if (loaded) {
@@ -279,15 +259,22 @@ void init_mapdata() {
   }
   loaded = true;
   int added = 0, rejected = 0;
-  while (myFile.available() && mapdata_count < MAX_MAPDATAS) {
+  int count = mapdata_count;
+  while (myFile.available() && count < MAX_MAPDATAS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      if (process_mapcsv_line(line)) added++;
-      else rejected++;
+      if (process_mapcsv_line(line, count)) {
+        count++;
+        added++;
+      } else {
+        rejected++;
+      }
     }
   }
   myFile.close();
+  __sync_synchronize();   // 全要素の書き込み完了を保証してから件数を公開（Core0 が参照する）
+  mapdata_count = count;
   log_sdf("MAPDATA: %d added, %d ignored", added, rejected);
 }
 
@@ -295,6 +282,7 @@ void init_mapdata() {
 // ★ setup_sd() は SD の復旧時にも呼ばれるので、読めたら 2 回目からは読まない（二重に足さない）。
 //   以前は呼ぶたびに目的地を作り直していて、選んでいた目的地も PLATHOME に戻っていた。
 void init_destinations(){
+  ASSERT_SD_CORE1("init_destinations");
   static bool loaded = false;
   if (loaded) {
     return;
@@ -305,15 +293,22 @@ void init_destinations(){
   }
   loaded = true;
   int added = 0, rejected = 0;
-  while (myFile.available() && destinations_count < MAX_DESTINATIONS) {
+  int count = destinations_count;
+  while (myFile.available() && count < MAX_DESTINATIONS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      if (process_destinationcsv_line(line)) added++;
-      else rejected++;
+      if (process_destinationcsv_line(line, count)) {
+        count++;
+        added++;
+      } else {
+        rejected++;
+      }
     }
   }
   myFile.close();
+  __sync_synchronize();   // 全要素の書き込み完了を保証してから件数を公開（Core0 が参照する）
+  destinations_count = count;
   log_sdf("DESTINATIONS: %d added, %d ignored", added, rejected);
 }
 
@@ -341,6 +336,7 @@ static bool apply_pilon_override(const char* name, double lat, double lon) {
 }
 
 void load_pilon_override() {
+  ASSERT_SD_CORE1("load_pilon_override");
   static bool loaded = false;  // setup_sd() は SD の復旧時にも呼ばれる
   if (loaded) return;
   File32 f = SD.open("override_pilon_coordinate.csv");
@@ -395,6 +391,7 @@ static const char* navmode_name(int m) {
 }
 
 static void saveSettings(const SavedSettings& st) {
+  ASSERT_SD_CORE1("saveSettings");
   #ifdef DISABLE_SD
     return;
   #endif
@@ -430,6 +427,7 @@ static void parse_setting_line(char* line, SavedSettings& st) {
 }
 
 static void loadSettings() {
+  ASSERT_SD_CORE1("loadSettings");
   static bool loaded = false;  // setup_sd() は SD の復旧時にも呼ばれる。反映は起動時の 1 回だけ
   if (loaded) return;
   File32 f = SD.open(SETTINGS_FILE, FILE_READ);
@@ -508,6 +506,7 @@ static bool is_flight_csv_name(const char* n) {
 
 // SD のルートの飛行 CSV を数える（起動時に 1 回。並びはディレクトリの登録順＝書き込まれた順。v7 と同じ）
 static void scan_replay_files() {
+  ASSERT_SD_CORE1("scan_replay_files");
   static bool scanned = false;
   if (scanned) return;
   File32 root = SD.open("/");
@@ -565,6 +564,7 @@ static float replay_float(const char* line, int col) {
 }
 
 static void replay_init(const char* name) {
+  ASSERT_SD_CORE1("replay_init");
   if (replay_file) replay_file.close();
   replay_head = 0;
   replay_tail = 0;
@@ -602,6 +602,7 @@ static void replay_init(const char* name) {
 
 // リングの空きを埋められるだけ埋める。読めない行は飛ばす。
 static void replay_load() {
+  ASSERT_SD_CORE1("replay_load");
   while (replay_file && !replay_eof) {
     const uint8_t used = (uint8_t)((replay_head - replay_tail) & (REPLAY_BUF_SIZE - 1));
     if (used >= REPLAY_BUF_SIZE - 1) break;   // 満杯（1 スロットは空けておく）
@@ -647,6 +648,7 @@ static void replay_load() {
 }
 
 void setup_sd(){
+  ASSERT_SD_CORE1("setup_sd");
   #ifdef DISABLE_SD
     return;
   #endif
@@ -684,9 +686,6 @@ void setup_sd(){
 volatile unsigned long loop1counter = 0;
 volatile int loop1pos = 0;
 volatile int loop0pos = 0;
-
-unsigned long last_loop1counter = 0;
-unsigned long time_loop1counter_updated = 0;
 
 void setup1(void){
   mutex_init(&taskQueueMutex);
@@ -764,6 +763,7 @@ bool good_sd(){
 
 File32 logFile;
 void log_sd(const char* text){
+  ASSERT_SD_CORE1("log_sd");
   loop1pos = 100;
   #ifdef DISABLE_SD
     return;
@@ -821,6 +821,7 @@ void log_sdf(const char* format, ...){
 
 
 void saveCSV(const CsvRow& r) {
+  ASSERT_SD_CORE1("saveCSV");
   loop1pos = 200;
   #ifdef DISABLE_SD
     return;

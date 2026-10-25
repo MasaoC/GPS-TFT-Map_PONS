@@ -202,9 +202,7 @@ void switch_handling() {
 void setup(void) {
   Serial.begin(38400);
   setup_switch();
-
-  //setup_sd();//sd init must be before tft for somereason of library TFT_eSPI
-  setup_tft();
+  setup_tft();   // SD は Core1 が初期化する（mysd.cpp の setup1()）
   power_setup();  // setup_tft() の analogReadResolution(12) より後
 
   gps_setup();
@@ -435,11 +433,14 @@ static MapView make_map_view() {
   v.tone_warning = millis() < trackwarning_until;
   v.gps_connected = get_gps_connection();
   v.fix_age_s = get_gps_fix_age_s();
+  v.degpersecond = degpersecond;
   return v;
 }
 
 void loop() {
   switch_handling();
+  // リプレイ再生中、地図画面以外（設定画面・GPS詳細・地図一覧）では進行を一時停止
+  replay_set_paused(screen_mode != MODE_MAP);
   // gps_loop() は新しい位置（NAV-PVT かリプレイの行）を受けた回だけ true を返す
   bool new_position = gps_loop();
   // デモは GPS と無関係に動くので、2Hz で新しい位置とみなす
@@ -499,7 +500,6 @@ void loop() {
     if (bank_warning) {
       draw_bankwarning();
     }
-    draw_degpersecond(degpersecond);  //after gpsinfo preferred
     draw_gpsinfo();
     draw_sdinfo();
 

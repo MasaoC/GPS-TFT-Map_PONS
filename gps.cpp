@@ -53,7 +53,6 @@ static unsigned long last_fix_ms = 0;   // 位置が有効な NAV-PVT を最後�
 static bool     pvt_new       = false;  // gps_loop() に新しい NAV-PVT を知らせる
 static uint8_t  ana_data_svs  = 0;      // AssistNow Autonomous の予測データを持つ衛星数（NAV-SAT aopAvail）
 static uint8_t  ana_orbit_svs = 0;      // いま予測軌道で測っている衛星数（NAV-SAT orbitSource=4）
-static uint8_t  eph_orbit_svs = 0;      // いま放送暦で測っている衛星数（NAV-SAT orbitSource=1）
 static bool     ana_fix_report_pending = false;  // 最初の測位のあと、次の NAV-SAT で軌道の出どころを記録する
 
 static void maxgs_update(float gs);
@@ -235,7 +234,6 @@ static void handle_navsat(const uint8_t* p, uint16_t len) {
   }
   ana_data_svs  = n_ana_data;
   ana_orbit_svs = n_ana_orbit;
-  eph_orbit_svs = n_eph_orbit;
   if (ana_fix_report_pending) {
     // 最初の測位で何の軌道を使っていたか。ANA が多ければ AssistNow Autonomous が効いた（v7 と同じ記録）。
     ana_fix_report_pending = false;
@@ -306,6 +304,15 @@ int gps_cfg_total = 0;
 bool gps_cfg_log_pending = false;  // gps_setup() の結果を、次の gps_loop() で SD に残す
 static bool gps_prt_ack = false;   // 9600bps で送った CFG-PRT に ACK が返ったか（38400bps 済みなら返らない）
 
+enum {
+  GPS_CFGNG_RATE = 0x01,  // UBX-CFG-RATE
+  GPS_CFGNG_PVT  = 0x02,  // UBX-CFG-MSG (NAV-PVT)
+  GPS_CFGNG_SAT  = 0x04,  // UBX-CFG-MSG (NAV-SAT)
+  GPS_CFGNG_NAV5 = 0x08,  // UBX-CFG-NAV5 (Airborne <1g)
+  GPS_CFGNG_ANA  = 0x10,  // UBX-CFG-VALSET (CFG-ANA-USE_ANA)
+};
+static uint8_t gps_cfg_ng = 0;
+
 // UBX のフレームを組んで送る（チェックサムは class〜payload の Fletcher-8）。
 static void ubx_send(uint8_t cls, uint8_t id, const uint8_t* payload, uint16_t len) {
   uint8_t ck_a = 0, ck_b = 0;
@@ -355,9 +362,13 @@ static void ubx_set_nav_rate(uint8_t nav_id, uint8_t rate) {
 #define NAVSAT_RATE_SLOW (10 * GPS_RATE_HZ)  // 10 秒に 1 回（地図の画面）
 #define NAVSAT_RATE_FAST (GPS_RATE_HZ)       // 1Hz（GPS 詳細画面）
 
-static bool cfg_step(bool acked) {
+static bool cfg_step(bool acked, uint8_t flag) {
   gps_cfg_total++;
-  if (acked) gps_cfg_acked++;
+  if (acked) {
+    gps_cfg_acked++;
+  } else {
+    gps_cfg_ng |= flag;
+  }
   return acked;
 }
 
@@ -367,28 +378,29 @@ static bool cfg_step(bool acked) {
 static void gps_configure() {
   gps_cfg_acked = 0;
   gps_cfg_total = 0;
+  gps_cfg_ng = 0;
   delay(50);  // ボーレートを切り替えた直後なので少し待つ（v7 と同じ）
   // UBX-CFG-RATE: 測位を 1000/GPS_RATE_HZ ms ごとに（navRate=1, timeRef=GPS）
   const uint16_t meas_ms = 1000 / GPS_RATE_HZ;
   const uint8_t rate[6] = { (uint8_t)(meas_ms & 0xFF), (uint8_t)(meas_ms >> 8), 0x01, 0x00, 0x01, 0x00 };
   ubx_send(0x06, 0x08, rate, sizeof(rate));
-  if (!cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS))) return;
+  if (!cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS), GPS_CFGNG_RATE)) return;
 
   ubx_set_nav_rate(UBX_NAV_PVT, 1);  // 毎回
-  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS));
+  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS), GPS_CFGNG_PVT);
   ubx_set_nav_rate(UBX_NAV_SAT, sat_fast ? NAVSAT_RATE_FAST : NAVSAT_RATE_SLOW);
-  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS));
+  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS), GPS_CFGNG_SAT);
 
   // UBX-CFG-NAV5: ダイナミックモデルを Airborne <1g（6）に。mask=0x0001（dynModel だけ変える）。v7 と同じ。
   uint8_t nav5[36] = { 0x01, 0x00, 0x06 };
   ubx_send(0x06, 0x24, nav5, sizeof(nav5));
-  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS));
+  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS), GPS_CFGNG_NAV5);
 
   // UBX-CFG-VALSET: CFG-ANA-USE_ANA（0x10230001）。layers=RAM+BBR（電源を入れた瞬間から効かせるため。v7 と同じ）。
   // ★ GNSS_USE_ANA が 0 のときも「無効」を書く（BBR に残った「有効」を消すため）。
   const uint8_t ana[9] = { 0x00, 0x03, 0x00, 0x00, 0x01, 0x00, 0x23, 0x10, (uint8_t)(GNSS_USE_ANA ? 1 : 0) };
   ubx_send(0x06, 0x8A, ana, sizeof(ana));
-  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS));
+  cfg_step(ubx_wait_ack(GPS_ACK_TIMEOUT_MS), GPS_CFGNG_ANA);
 }
 
 //Due compability
@@ -475,6 +487,8 @@ static int rp_speed = 1;
 static uint32_t rp_clock = 0, rp_last_tick = 0;
 static int rp_selected = -1;           // 設定画面で選んでいる番号（-1 = OFF）
 
+static bool rp_paused = false;         // 地図画面以外ではリプレイの仮想時刻の進行を止める
+
 bool replay_active() { return rp_active; }
 int replay_get_speed() { return rp_speed; }
 void replay_cycle_speed() { rp_speed = (rp_speed == 1) ? 4 : (rp_speed == 4) ? 16 : 1; }
@@ -488,6 +502,8 @@ bool replay_selected_is_playing() {
   const char* n = replay_selected_name();
   return rp_active && n != nullptr && strcmp(n, rp_name) == 0;
 }
+void replay_set_paused(bool paused) { rp_paused = paused; }
+bool replay_is_paused() { return rp_paused; }
 
 // 再生する飛行の値と今の値を混ぜない（航跡・最大 G/S・測位の時刻）
 static void replay_reset_view() {
@@ -570,6 +586,11 @@ static void apply_replay_row(const ReplayRow& r) {
 // gps_loop() から毎回呼ぶ。再生の時計（実時間 × 倍率）に達した行を取り出して入れる。
 static void replay_pump() {
   if (!rp_active) return;
+  const uint32_t now = millis();
+  if (rp_paused) {
+    rp_last_tick = now;
+    return;
+  }
   if (rp_init_pending) {
     if (!rp_init_queued) {
       if (!enqueueTask(createReplayInitTask(rp_name))) return;   // キューが満杯。次の回に積む
@@ -586,7 +607,6 @@ static void replay_pump() {
       return;
     }
   }
-  const uint32_t now = millis();
   rp_clock += (now - rp_last_tick) * (uint32_t)rp_speed;
   rp_last_tick = now;
   while (replay_tail != replay_head) {
@@ -664,8 +684,19 @@ bool gps_loop() {
   // gps_setup() の結果を SD に残す（gps_setup() の中では書けないので、ここで）。
   if (gps_cfg_log_pending) {
     gps_cfg_log_pending = false;
-    enqueueLogSdf("GPS CFG %d/%d acked (prt=%s, %dHz, Air1g, ANA=%d)", gps_cfg_acked, gps_cfg_total,
-                                 gps_prt_ack ? "ack" : "none", GPS_RATE_HZ, GNSS_USE_ANA);
+    const char* prt = gps_prt_ack ? "ack" : "none";
+    const char* ana = GNSS_USE_ANA ? "ANA" : "ANAoff";
+    if (gps_cfg_ng == 0 && gps_cfg_total > 0) {
+      enqueueLogSdf("GPS CFG OK %dHz/PVT/SAT/Air1g/%s (prt=%s)", GPS_RATE_HZ, ana, prt);
+    } else {
+      enqueueLogSdf("GPS CFG NO ACK:%s%s%s%s%s (prt=%s)",
+        (gps_cfg_ng & GPS_CFGNG_RATE) ? " RATE" : "",
+        (gps_cfg_ng & GPS_CFGNG_PVT)  ? " NAVPVT" : "",
+        (gps_cfg_ng & GPS_CFGNG_SAT)  ? " NAVSAT" : "",
+        (gps_cfg_ng & GPS_CFGNG_NAV5) ? " AIR1G" : "",
+        (gps_cfg_ng & GPS_CFGNG_ANA)  ? (GNSS_USE_ANA ? " ANA" : " ANAOFF") : "",
+        prt);
+    }
   }
 
   // 通信が戻った
@@ -870,10 +901,6 @@ float get_maxgs_recent() {
       m = maxgs_bucket[i];
   }
   return m;
-}
-
-double get_gps_altitude() {
-  return stored_altitude;
 }
 
 

@@ -19,7 +19,6 @@
     LatLonManager();
     void addCoord(Coordinate position);
     int getCount();
-    void printData();
     void reset();
     Coordinate getData(int newest_index);
   };
@@ -36,16 +35,17 @@
   double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2);
   // 1 から 2 への真方位 [deg]（引数は度。0 以上 360 未満、四捨五入しない）
   double true_course_deg(double lat1, double lon1, double lat2, double lon2);
-  // Function to calculate y-coordinate in Mercator projection
-  double latitudeToMercatorY(double latitude);
   bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);
 
+  // プラットホームから北・南パイロンへの 2 等分線方位 [rad]（-PI..PI）。
+  // パイロン座標が SD 等で上書きされた場合も自動で追従する。
+  double pla_centerline_bearing_rad();
+
+  // 文字列を new[] でヒープに複製する。解放は必ず delete[]。
+  // libc の strdup()（malloc確保）との衝突・未定義動作を防ぐため名前を分けて宣言。
+  char* pons_strdup(const char* str);
 
 
-
-
-  #define ROW_FILLDATA 28
-  #define COL_FILLDATA 28
 
 
 
@@ -121,12 +121,8 @@
 
 
 
-  extern mapdata map_shinura;
-  extern mapdata map_takeshima;
-  extern mapdata map_chikubushima;
-  extern mapdata map_biwako;
-  extern mapdata map_okishima;
-
+  // 内蔵の折れ線地図（大阪大学の構内だけ。v7 と同じ）。
+  // ★ 琵琶湖・沖島・竹島・竹生島・浦安・日本の海岸線の折れ線は 0.503 で削除した（内蔵のベクタ地図にある）。
   extern mapdata map_handaioutside;
   extern mapdata map_handaihighway;
   extern mapdata map_handaihighway2;
@@ -137,13 +133,5 @@
   extern mapdata map_handaiinside5;
   extern mapdata map_handairailway;
   extern mapdata map_handaicafe;
-
-  extern mapdata map_japan1;
-  extern mapdata map_japan2;
-  extern mapdata map_japan3;
-  extern mapdata map_japan4;
-
-
-  extern const bool filldata[ROW_FILLDATA][COL_FILLDATA];
 
 #endif
