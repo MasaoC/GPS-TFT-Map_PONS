@@ -1,3 +1,15 @@
+// ============================================================
+// File    : GPS_TFT_map.ino
+// Project : PONS v3 (Pilot Oriented Navigation System for HPA)
+// Role    : メインエントリポイント。
+//           Core0: 画面描画・GPS処理・ボタン入力・コース警告
+//           Core1: SDカード操作
+//           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
+//           SDカード上のBMPタイル方式は廃止済み。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/10/25
+// ============================================================
+
 #include "navdata.h"
 #include "display_tft.h"
 #include "map_draw.h"
