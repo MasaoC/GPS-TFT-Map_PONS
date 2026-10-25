@@ -2,3 +2,7 @@ volume:10
 destination:PLATHOME
 navigation_mode:AUTO10K
 scaleindex:4
+airspeed_v0:7.00
+airspeed_k:10.00
+airspeed_min:5.80
+airspeed_max:9.00

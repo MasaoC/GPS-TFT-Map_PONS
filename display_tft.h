@@ -7,8 +7,13 @@
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/10/25
 // ============================================================
+// ★ この先頭ガードが無いと、mysd.h 経由と直接 include の二重読み込みで
+//   関数プロトタイプの再宣言までは黙って通るが、enum の再定義は
+//   コンパイルエラーになる（BootCheckState を足すときに入れた。v7 と同じ）。
+#ifndef DISPLAY_TFT_H
+#define DISPLAY_TFT_H
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
 #include "settings.h"
@@ -35,9 +40,11 @@
     int x;
     int y;
 
-    //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
+    // cord_tft は latLonToXY() が返す **backscreen（240x240）内の座標**なので、
+    // 判定も backscreen の大きさで行う。以前は SCREEN_HEIGHT(320) と比べていたため、
+    // y が 240〜320 の点を「画面内」と判定してから TFT_eSPI 側で捨てていた。
     bool isOutsideTft(){
-      return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
+      return x < 0 || x > BACKSCREEN_SIZE || y < 0 || y > BACKSCREEN_SIZE;
     }
   };
 
@@ -89,6 +96,8 @@ void setup_tft();
 void draw_header();
 void draw_footer();
 float get_input_voltage();      // 実測のバッテリー電圧 [V]（ピーク追跡込み）
+int battery_percent(float v);
+bool warn_muted_off_mount();     // 充電中かつマウント外れで警告音を止めているか（GPS_TFT_map.ino）   // 電池電圧 → 残量 [%]（BAT_ZERO_VOLTAGE〜BAT_FULL_VOLTAGE）
 float get_display_voltage();    // 画面表示用。リプレイ中は CSV の電圧を返す
 bool  replay_voltage_active();  // リプレイの電圧を表示中か（USB 判定の抑止に使う）
 
@@ -126,11 +135,19 @@ void draw_maplist_mode(int maplist_page);
 #define IMU_MENU_COUNT    6
 
 // ページ2: 調整用。日常の運用では触らない項目を置く。
-#define IMU2_MENU_AUTOROLL 0
-#define IMU2_MENU_WIND     1
+// IMU/ESKF 2/3 — BNO085 の生値と校正だけ。ESKF の項目は 3/3 へ移した。
+#define IMU2_MENU_SAVECAL  0   // 校正(DCD)を BNO085 のフラッシュへ保存（長押し）
+#define IMU2_MENU_NEXTPAGE 1
 #define IMU2_MENU_BACK     2
 #define IMU2_MENU_COUNT    3
-extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2のカーソル位置
+
+// IMU/ESKF 3/3 — ESKF の状態と調整
+#define IMU3_MENU_AUTOROLL 0
+#define IMU3_MENU_WIND     1
+#define IMU3_MENU_BACK     2
+#define IMU3_MENU_COUNT    3
+extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/3のカーソル位置
+extern int imu3_cursor;   // GPS_TFT_map.ino で定義。ページ3/3のカーソル位置
 void draw_imudetail(int page);
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
@@ -187,9 +204,18 @@ bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
                           const uint16_t* ring_start, uint8_t nrings, uint16_t color);
 void draw_nofix_cross();                              // GPS fix なし時のグレー × 描画
 void draw_hacc_circle(double scale, uint32_t hacc_mm); // hAcc 不良・gnssFixOK=false 時の不確かさ円描画
-void draw_triangle(int ttrack,int steer_angle);
-void draw_course_warning(int steer_angle);
+void draw_triangle(int ttrack,float steer_angle);   // steer_angle は小数のまま渡す（しきい値 15/55/100 度を正確に判定するため）
+void draw_course_warning(float steer_angle);   // 左右の判定だけに使う。int だと |ズレ|<1度 で左右が逆になる
 void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
+
+// ---- 起動画面（v7 の 0.975 / 0.979）----
+void draw_boot_title();   // 起動直後のタイトル（白画面を埋めるため setup() からも呼ぶ）
+// 起動時センサーチェックの進捗表示（draw_boot_progress() 用）。まだ確認できていない項目は PENDING。
+enum BootCheckState : uint8_t { BOOT_CHECK_PENDING, BOOT_CHECK_OK, BOOT_CHECK_NG };
+// setup() の間、センサーの初期化が終わった順に OK/NG を出す。
+// startup_demo_tft() が最終結果（SD 含む）を出すまで「INITIALIZING SENSORS ...」のまま
+// 何も変わらず固まって見える時間を減らすための中間表示。
+void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gps);
 void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
 
-
+#endif  // DISPLAY_TFT_H

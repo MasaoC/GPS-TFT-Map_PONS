@@ -35,11 +35,14 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/07/31
+// Updated : 2026/10/25
 // ============================================================
 
 #include <Arduino.h>
-#include <Adafruit_BNO08x.h>
+// ★ ライブラリはリポジトリに取り込んだ版を使う（v7 と同じ。src/bno08x/PONS_VENDORING.md）。
+//   **山括弧 <Adafruit_BNO08x.h> にしてはいけない。** インストール済みの方が拾われ、
+//   失敗箇所の記録（pons_init_fail_step）が無いまま静かにビルドが通る。
+#include "src/bno08x/Adafruit_BNO08x.h"
 
 #include "imu.h"
 #include "settings.h"
@@ -48,6 +51,7 @@
 #include "gps.h"      // replay_has_value / replay_get_* （リプレイ時のセンサ値差し替え）
 #include "imulog.h"   // 姿勢 ESKF のオフライン開発用 生データロガー
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
+#include <EEPROM.h>       // BNO085 の校正保存記録（本体フラッシュ。下の ImuCalRec）
 
 // ============================================================
 // I2C バス（MS5611 と共用: i2c0, GPIO32=SDA, GPIO33=SCL）
@@ -67,6 +71,12 @@ static sh2_SensorValue_t sv;  // imu_sensor_handler() が sh2_decodeSensorEvent(
 
 // センサー初期化成功フラグ（imu_setup() 後に確定）
 static bool bno085_ok = false;
+// sh2_open() が成功したままか。**sh2_close() を呼ぶ判断にだけ使う**（imu_bus_begin() 参照）。
+static bool sh2_opened = false;
+// 起動時に BNO085 が見つかったか（アドレスが応答した）。**途中で止まっても false に戻さない。**
+// bno085_ok は「いま動いているか」で、通信が途絶えると false に落ちるので、
+// 「この機体は BNO085 を載せているか」の判定（本番前チェック）には使えない。
+static bool bno085_present = false;
 
 // ============================================================
 // センサー最新値（imu_update() で更新）
@@ -183,6 +193,68 @@ static int _report_count = 0;
 static volatile float _raw_gyro[3]  = {0, 0, 0};   // [rad/s]
 static volatile float _raw_accel[3] = {0, 0, 0};   // [m/s²]
 
+// ★ BNO085 が申告するセンサー精度（0=信頼できない 1=低 2=中 3=高）。
+//   SH-2 の sv.status の下位 2bit。**融合（GRV/RV）の品質はここに強く依存する。**
+//   v7 の実機では加速度が 2 で止まり、ジャイロは全件 0 だった（v6 も同じチップ）。
+//   加速度が 2 のとき静止時 |a| が 9.355（-4.6%）、6 面を動かして 3 に上がると
+//   約 9.80 へ改善した。**つまりこの値が低い間の加速度は信用できない。**
+static uint8_t _acc_accuracy = 0;
+static uint8_t _gyr_accuracy = 0;
+static uint8_t _mag_accuracy = 0;
+static uint8_t _cal_cfg      = 0xFF;   // sh2_getCalConfig の結果。0xFF = 未取得
+
+// ============================================================
+//  BNO085 の校正（DCD）の保存記録 — **本体フラッシュ（EEPROM 領域）**
+// ============================================================
+// （v7 の 0.976 から移植）
+// ★ **SD には置かない。** DCD は基板上の BNO085 の中にあるので、記録の寿命を
+//   基板に合わせる。SD に置くと機体どうしでカードを入れ替えたときに別基板の日付が出て、
+//   「校正済みの機体が NEVER」「未校正の機体が日付付き」という一番まずい嘘になる。
+//   （level offset の較正日は SD の設定に入っているが、あれは設定値なので別物）
+// ★ 目的は日付そのものではなく **「一度も校正していない」を画面で明示すること**。
+//   RTC が無く時刻は GNSS 由来なので、屋内で校正すると日付は手に入らない。
+//   その場合も「保存した」ことだけは残し、日付は不明（0）として出す。
+#define IMU_CAL_EE_MAGIC   0x504E5343UL   // 'P','N','S','C'
+#define IMU_CAL_EE_VERSION 1
+#define IMU_CAL_EE_ADDR    0
+#define IMU_CAL_EE_SIZE    64             // EEPROM エミュレーションに要求する大きさ
+
+struct ImuCalRec {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  saved;        // 1 = 過去に一度以上「手動で」保存した
+    uint16_t count;        // 手動保存の回数
+    uint32_t date;         // 最後に保存した日 YYYYMMDD。0 = 日付不明
+};
+static ImuCalRec _cal_rec        = { 0, 0, 0, 0, 0 };
+static bool      _cal_autosave_on = false;   // 今回の起動で自動保存を許したか
+
+static void imu_cal_rec_load() {
+    EEPROM.begin(IMU_CAL_EE_SIZE);
+    ImuCalRec r;
+    EEPROM.get(IMU_CAL_EE_ADDR, r);
+    if (r.magic == IMU_CAL_EE_MAGIC && r.version == IMU_CAL_EE_VERSION) {
+        _cal_rec = r;
+        return;
+    }
+    // 未初期化または版違い。**ここで書き戻さない**（起動時に commit しないため）。
+    _cal_rec.magic   = IMU_CAL_EE_MAGIC;
+    _cal_rec.version = IMU_CAL_EE_VERSION;
+    _cal_rec.saved   = 0;
+    _cal_rec.count   = 0;
+    _cal_rec.date    = 0;
+}
+
+static bool imu_cal_rec_store() {
+    _cal_rec.magic   = IMU_CAL_EE_MAGIC;
+    _cal_rec.version = IMU_CAL_EE_VERSION;
+    EEPROM.put(IMU_CAL_EE_ADDR, _cal_rec);
+    // ★★ **commit() は Core1 を止め、割り込みを切ってから 4KB セクタを消す。**
+    //   数十 ms 止まるので音が一瞬切れ、その間 BNO085 の読み出しも進まない。
+    //   **人が長押ししたときだけ呼ぶこと。起動時は読むだけで commit しない。**
+    return EEPROM.commit();
+}
+
 
 // ============================================================
 // imu_sensor_handler(): SH2 レポート受信コールバック
@@ -230,6 +302,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
         // ---- 以下は姿勢 ESKF のオフライン開発用。機上の推定には使わない ----
         case SH2_GYROSCOPE_CALIBRATED: {
             _gyro_cnt++;
+            _gyr_accuracy = (uint8_t)(sv.status & 0x03);
             imulog_push(IMULOG_ID_GYRO, (uint32_t)sv.timestamp, sv.status,
                         sv.un.gyroscope.x, sv.un.gyroscope.y, sv.un.gyroscope.z);
             // ESKF の伝播はジャイロ到着で回す（加速度は直近値を使う）。
@@ -244,6 +317,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
         case SH2_ACCELEROMETER: {
             // 重力込みの生比力 [m/s²]。ESKF はこれを伝播に使う。
             _accel_cnt++;
+            _acc_accuracy = (uint8_t)(sv.status & 0x03);
             imulog_push(IMULOG_ID_ACCEL, (uint32_t)sv.timestamp, sv.status,
                         sv.un.accelerometer.x, sv.un.accelerometer.y, sv.un.accelerometer.z);
             const float a[3] = { sv.un.accelerometer.x, sv.un.accelerometer.y,
@@ -273,6 +347,7 @@ static void imu_sensor_handler(void *cookie, sh2_SensorEvent_t *event) {
 
         case SH2_MAGNETIC_FIELD_CALIBRATED:
             _mag_cnt++;
+            _mag_accuracy = (uint8_t)(sv.status & 0x03);
             imulog_push(IMULOG_ID_MAG, (uint32_t)sv.timestamp, sv.status,
                         sv.un.magneticField.x, sv.un.magneticField.y, sv.un.magneticField.z);
             break;
@@ -351,6 +426,59 @@ static bool imu_enable_reports() {
     // begin_I2C() 内で Adafruit の sensorHandler が登録済みなので、必ずその後に呼ぶこと。
     // これにより 1 パケットに複数レポートが載っていても全件処理できる（取りこぼし解消）。
     sh2_setSensorCallback(imu_sensor_handler, NULL);
+
+    // ---- 動的校正の設定を読む → 足りない分だけ書く（v7 の 0.975）----
+    //   SH2_CAL_ACCEL=0x01 / GYRO=0x02 / MAG=0x04 / PLANAR=0x08。
+    {
+        uint8_t cfg = 0;
+        const int rc = sh2_getCalConfig(&cfg);
+        if (rc == SH2_OK) {
+            _cal_cfg = cfg;
+            enqueueTask(createLogSdfTask(
+                "BNO085 calcfg=0x%02X (accel=%d gyro=%d mag=%d planar=%d)",
+                cfg, (cfg & 0x01) ? 1 : 0, (cfg & 0x02) ? 1 : 0,
+                (cfg & 0x04) ? 1 : 0, (cfg & 0x08) ? 1 : 0));
+        } else {
+            enqueueTask(createLogSdfTask("BNO085 calcfg read FAILED rc=%d", rc));
+        }
+
+        // ---- ★ ジャイロの動的校正を有効にする ----
+        //   v7 の実機（同じ BNO085）の既定は 0x05 ＝ accel と mag だけで、**gyro(0x02) が無効**。
+        //   そのため申告精度が全レポートで 0 のままだった。
+        //   GRV は**加速度とジャイロの融合**なので、ジャイロのゼロ点(ZRO)が
+        //   工場出荷値のまま温度ドリフトすると、融合が周期的に重力で引き戻される。
+        //   また IMU/ESKF 2/3 の SAVE CAL は gyr==3 を条件にしているので、
+        //   これが無効のままだと**一度も保存できない**。
+        const uint8_t want = (uint8_t)(SH2_CAL_ACCEL | SH2_CAL_GYRO | SH2_CAL_MAG);
+        if (_cal_cfg != 0xFF && _cal_cfg != want) {
+            const int rc2 = sh2_setCalConfig(want);
+            uint8_t back = 0;
+            if (rc2 == SH2_OK && sh2_getCalConfig(&back) == SH2_OK) _cal_cfg = back;
+            enqueueTask(createLogSdfTask("BNO085 calcfg set 0x%02X -> 0x%02X (rc=%d)",
+                                         want, _cal_cfg, rc2));
+        }
+    }
+
+    // ---- DCD 自動保存の可否を決める（v7 の 0.976）----
+    // ★ **ここ（imu_enable_reports）に置くのは意図的。** この関数は imu_setup() と
+    //   復旧の両方から呼ばれる。チップをリセットすると自動保存の
+    //   設定は既定へ戻るので、**復旧のたびに再適用しないと効かなくなる。**
+    //   判定そのものはフラッシュの記録を読むだけなので、何度通っても同じ結果。
+    // ★★ **一度も手動保存していない機体だけ、チップ自身の自動保存を許す。**
+    //   未校正のまま飛ぶのを防ぐ保険。一度でも手動で保存したなら、その校正を
+    //   黙って上書きされたくないので自動保存は切る。
+    //   こうしておくと画面の「DCD: SAVED / NEVER」が**チップの中身と一致する**。
+    //   （自動保存を常時オンにすると、チップは良い校正を持っているのに
+    //     画面は NEVER と出る、という嘘になる）
+    {
+        imu_cal_rec_load();
+        _cal_autosave_on = !imu_cal_saved_ever();
+        const int rc = sh2_setDcdAutoSave(_cal_autosave_on);
+        enqueueTask(createLogSdfTask(
+            "BNO085 dcdAutoSave=%d rc=%d (savedEver=%d date=%lu cnt=%u)",
+            (int)_cal_autosave_on, rc, (int)imu_cal_saved_ever(),
+            (unsigned long)_cal_rec.date, _cal_rec.count));
+    }
     return all_ok;
 }
 
@@ -607,6 +735,37 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
     (void)vacc_m;  // 使用しない（引数互換性維持）
     if (!kf_initialized) return;
 
+    // ---- ★★ 同じ測位を 2 回融合しないこと ----
+    // **呼び出し元（GPS_TFT_map.ino）のブロックは「新しい測位が来たとき」ではなく
+    //   loop() の毎回を通る。** imu_kalman_gnss_update() は内部に 1 秒のレート制限を
+    //   持っているので守られているが、こちらには何も無かった。その結果 2Hz の
+    //   1 サンプルが毎ループ **独立な観測として再融合**されていた。
+    //   ループ回数は直接は測っていないが、生ログからの再現が合う倍率は
+    //   1000〜2000 回/秒。つまり 1 つの観測を 500〜1000 回使っていた。
+    //
+    // 同一観測の多重融合は共分散を不当に潰す。実機 2026-09-30 のログを生データから
+    // 再現して測った値（設計どおり 1 回だけ融合した場合の定常値と比較）:
+    //   P[0][0]  3.08 → 0.15 (1/21)   気圧のゲイン K[0] 0.257 → 0.012
+    //   P[1][1]  1.78 → 0.025 (1/71)  気圧から速度への補正 K[1] は実質ゼロ
+    // つまり **気圧計と加速度計がほとんど効かず、V/S は実質 GNSS velD そのもの**に
+    // なっていた。ふだんは GNSS velD が良いので問題に見えないが、
+    // **sAcc ゲートが閉じた瞬間に速度も高度も何の観測でも止められなくなり**、
+    // 加速度計バイアスの誤差をそのまま積分して走り出す。
+    //   2026-09-30 18:09:18 実機: 停止中（GS=0.0・気圧 1014.65hPa で完全に平坦）に
+    //   V/S が +1.6m/s まで伸び、KF 高度が +4m ずれたまま残った。
+    //   sAcc が 0.30 を挟んで振動してゲートが 6 秒閉じたのが引き金。
+    //   生ログからの再現で、この多重融合を入れたときだけ一致する（相関 0.97、
+    //   1 回だけ融合した場合は 0.81）。
+    //
+    // 判定は millis() ではなく **iTOW（測位エポック）** で行う。ループが速いときに
+    // 時間で区切ると同じ観測を取り込む余地が残るため。
+    {
+        static uint32_t s_last_itow_ms = 0xFFFFFFFFu;
+        const uint32_t itow_ms = get_gps_itow_ms();
+        if (itow_ms == s_last_itow_ms) return;   // この測位はもう融合済み
+        s_last_itow_ms = itow_ms;
+    }
+
     // 無効値チェック
     if (isnan(veld_mps) || isinf(veld_mps)) return;
 
@@ -658,34 +817,159 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
 
 
 // ============================================================
+// NRST パルスで BNO085 を確実にリセットする（**ステートマシン**。v7 の 0.962）
+// ============================================================
+// USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は前回実行時の
+// SHTP/SH2 状態を保持したままになる。この状態では begin_I2C() が失敗するため必ず通す。
+//   LOW 期間 : 10ms（最小パルス幅 100µs を大幅に超える）
+//   ブート待機: 400ms（データシート推奨値）
+//
+// ★ **ここを delay() で書いてはいけない。**
+//   以前は delay(10)+delay(400) を直に並べていたため、飛行中の復旧試行のたびに
+//   Core0 が 410ms 止まっていた。地図・ボタン・バリオ・MS5611 が同時に止まる。
+//   しかも BNO085 が死んでいる限り復旧は 1 分ごとに走り続けるので、症状が繰り返す。
+//   経過時間で進める形にして、待っている間 Core0 を返せるようにした。
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+  #define IMU_RST_LOW_MS   10    // NRST を LOW に保持する時間
+  #define IMU_RST_BOOT_MS  400   // 解除してからブート完了までの待ち
+#else
+  #define IMU_RST_LOW_MS   0     // NRST が繋がっていないので、ピンは触らず待つだけ
+  #define IMU_RST_BOOT_MS  200
+#endif
+
+typedef enum {
+    IMU_RST_IDLE = 0,   // 進行中のリセットは無い
+    IMU_RST_LOW,        // NRST を LOW にした。パルス幅を待っている
+    IMU_RST_BOOT,       // NRST を HIGH に戻した。ブート完了を待っている
+} ImuResetPhase;
+
+static ImuResetPhase imu_rst_phase = IMU_RST_IDLE;
+static unsigned long imu_rst_ms    = 0;
+
+// リセットを開始する（ブロックしない）。
+static void imu_reset_start() {
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+    pinMode(IMU_RST_PIN, OUTPUT);
+    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
+#endif
+    imu_rst_phase = IMU_RST_LOW;
+    imu_rst_ms    = millis();
+}
+
+// リセットを進める。完了したら true を返し、IDLE へ戻る。ブロックしない。
+static bool imu_reset_poll() {
+    const unsigned long now = millis();
+    switch (imu_rst_phase) {
+        case IMU_RST_LOW:
+            if (now - imu_rst_ms < IMU_RST_LOW_MS) return false;
+#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
+            digitalWrite(IMU_RST_PIN, HIGH);      // リセット解除
+#endif
+            imu_rst_phase = IMU_RST_BOOT;
+            imu_rst_ms    = now;
+            return false;
+        case IMU_RST_BOOT:
+            if (now - imu_rst_ms < IMU_RST_BOOT_MS) return false;
+            imu_rst_phase = IMU_RST_IDLE;
+            return true;
+        default:
+            return true;                          // 開始していない＝待つものが無い
+    }
+}
+
+// 起動時（imu_setup）専用。ここで止まるのは構わないので待ち切る。
+// タイミングの実体は上のステートマシン 1 つだけにして、
+// 「起動時と復旧時で片方だけ直し忘れる」を構造的に防ぐ。
+static void imu_reset_blocking() {
+    imu_reset_start();
+    while (!imu_reset_poll()) delay(1);
+}
+
+// バスはそのままで Adafruit_BNO08x を開始する。成功で true。リトライは呼び出し側が行う。
+// ★★ **再オープンの前に必ず sh2_close() を呼ぶ。呼ばないと 2 回目は必ず失敗する**（v7 の 0.975）。
+//   SH-2 ドライバ（src/bno08x/shtp.c）の SHTP インスタンスプールは MAX_INSTANCES=1 で、
+//   空きの判定は instances[n].pHal == 0。これを 0 に戻すのは shtp_close() だけなのに、
+//   Adafruit_BNO08x::_init() は sh2_open() を呼ぶだけで close しない。
+//   その結果、2 回目以降の begin_I2C() は構造的に必ず失敗する。
+//   **これまでの「BNO085 recovery FAILED」の正体で、復旧は一度も成功していなかった。**
+//   起動時のリトライも、1 回目が sh2_open の後（getProdIds）で落ちていたら同じく全滅していた。
+// ★ 開いていないのに sh2_close() を呼ぶと NULL を踏む。開いたかどうかは
+//   pons_init_fail_step（取り込んだライブラリの改変 (4)）で判定する:
+//   成功、または 3（sh2_open は通って getProdIds で落ちた）なら開いている。
+static bool imu_bus_begin() {
+    if (sh2_opened) {
+        sh2_close();
+        sh2_opened = false;
+    }
+    const bool ok = bno08x.begin_I2C(IMU_I2C_ADDR, &myWire);
+    sh2_opened = ok || (pons_init_fail_step >= 3);
+    return ok;
+}
+
+// I2C バスのロックアップを解く（v7 の 0.976）。**リトライの前に通すこと。**
+// ★★ **NRST を打つだけでは足りない。** NRST は BNO085 を初期化するが、
+//   RP2350 側の I2C ブロックは初期化されない。転送の途中で中断すると
+//   RP2350 は SCL を Low に握ったまま止まり、スレーブも次のクロックを待って
+//   SDA を握ったままになる。この状態ではリトライが全部同じ理由で失敗する。
+// ★ v6 はこのバスを MS5611 と共用している（i2c0）。BNO085 がバスを握って固まると
+//   **MS5611 も道連れ**になるので、v7（BNO085 専用バス）以上に効く。
+//   MS5611 はこの間の 1〜2 回の読み出しに失敗するだけで、airdata.cpp の
+//   失敗の数え方（MS5611_FAIL_LIMIT）の内側に収まる。
+// 手順は I2C の標準的な復旧手順:
+//   1. ペリフェラルを外してピンを GPIO に戻す（SCL/SDA を解放する）
+//   2. SCL を 9 回叩いてスレーブに残りのビットを吐き出させる
+//   3. STOP を作って解放する
+//   4. ペリフェラルを張り直す
+static void imu_i2c_bus_recover() {
+    myWire.end();                        // ピンを SIO へ戻す（ペリフェラルを解放）
+
+    pinMode(I2C0_SCL_PIN, OUTPUT);
+    pinMode(I2C0_SDA_PIN, INPUT_PULLUP); // SDA はスレーブに任せて観測する
+    for (int i = 0; i < 9; i++) {        // 1 バイト分 + ACK のクロックを供給
+        digitalWrite(I2C0_SCL_PIN, LOW);  delayMicroseconds(5);
+        digitalWrite(I2C0_SCL_PIN, HIGH); delayMicroseconds(5);
+    }
+    // STOP 条件（SCL が High のあいだに SDA を Low → High）
+    pinMode(I2C0_SDA_PIN, OUTPUT);
+    digitalWrite(I2C0_SDA_PIN, LOW);  delayMicroseconds(5);
+    digitalWrite(I2C0_SCL_PIN, HIGH); delayMicroseconds(5);
+    digitalWrite(I2C0_SDA_PIN, HIGH); delayMicroseconds(5);
+    pinMode(I2C0_SDA_PIN, INPUT_PULLUP);
+    pinMode(I2C0_SCL_PIN, INPUT_PULLUP);
+
+    myWire.begin();
+    myWire.setClock(I2C0_HZ);
+    enqueueTask(createLogSdfTask("BNO085 i2c bus recover -> SDA=%d SCL=%d",
+                                 (int)digitalRead(I2C0_SDA_PIN),
+                                 (int)digitalRead(I2C0_SCL_PIN)));
+}
+
+// ============================================================
 // imu_setup(): BNO085 の初期化
 // ============================================================
 void imu_setup() {
     DEBUG_PLN(20260315, "[IMU] imu_setup() start");
 
-    // ---- NRST によるハードウェアリセット ----
-    // USB 書き込みや RUN リセットでは RP2350 だけがリセットされ、BNO085 は
-    // 前回実行時の SHTP/SH2 状態を保持したままになる。
-    // この状態では I2C が不整合のまま begin_I2C() が失敗するため、
-    // setup() 冒頭で NRST を手動でアサートして BNO085 自体を確実にリセットする。
-    //   LOW 期間: 10ms（最小パルス幅 100µs を大幅に超える）
-    //   ブート待機: 400ms（BNO085 データシート推奨値。電源投入後のブート時間と同等）
-    //
+    // 校正（DCD）の保存記録を先に読んでおく。読むのは imu_enable_reports() でもやるが、
+    // そこは初期化に成功したときしか通らない。**BNO085 が起動時に応答しなかった機体で
+    // 画面が「NEVER SAVED」と嘘をつかないように**、成否によらずここで 1 回読む（読むだけ）。
+    imu_cal_rec_load();
+
+    // ---- NRST によるハードウェアリセット（上のステートマシンを待ち切る）----
     // ※ NRST は負論理: LOW でリセットアサート、HIGH で通常動作。
     // ※ setup() で INPUT_PULLUP 設定済みだが、ここで OUTPUT に切り替えてパルスを出す。
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-    pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート
-    delay(10);                         // 10ms 保持（min 100µs）
-    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
-    delay(400);                        // BNO085 ブート完了を待つ（~400ms）
+    imu_reset_blocking();
     DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
-#endif
 
     // I2C バスは airdata_wire_begin() で初期化済みのため begin()/setClock() は不要。
-    // myWire (i2c0, GPIO32/33, 100kHz) をそのまま使う。
+    // myWire (i2c0, GPIO32/33) をそのまま使う。
 
-    // BNO085 への接続確認（アドレス応答チェック）
+    // BNO085 への接続確認（アドレス応答チェック）。
+    // ★ v6 は BNO085 が載っていない機体の方が多い（β 試験版だけ）。ここで弾いて
+    //   下のリトライ（1 回 410ms のリセットを挟む）で起動を遅くしないようにしている。
+    // ★ v7 ではこの確認と begin_I2C() の中の detected() が背中合わせの 2 回の探査になり、
+    //   1 回目は通って 2 回目が落ちる形で起動に失敗していた（v7 の 0.976）。v6 でも
+    //   1 回目の begin_I2C() は落ち得るが、下のリトライ（リセットで間が空く）で通る。
     myWire.beginTransmission(IMU_I2C_ADDR);
     if (myWire.endTransmission() != 0) {
         DEBUGW_PLN(20260315, "[IMU] BNO085 not found on I2C bus. Check wiring/address.");
@@ -693,23 +977,35 @@ void imu_setup() {
         enqueueTask(createLogSdTask("BNO085 not found"));
         return;
     }
+    bno085_present = true;   // 応答した。この先の初期化に失敗しても「載っている機体」として扱う
 
     // Adafruit_BNO08x でセンサーを初期化する。
-    // BNO085 は I2C アドレスに ACK を返せても SH2/SHTP 層の Ready まで時間がかかるため、
-    // begin_I2C() を最大 5 回リトライする（各リトライ前に 200ms 待機）。
+    // ★ **リトライのたびに NRST を打ち直し、その前にバスを解くこと**（v7 の 0.975 / 0.976）。
+    //   sh2_open() はリセットを送らず、ブート直後に積まれた advertisement を待つだけ
+    //   （bno08x(-1) なのでライブラリも NRST を触らない）。1 回目が advertisement を
+    //   消費してしまうと、**単に待ち直すだけのリトライは必ず失敗する**。
+    //   リセットを挟めば advertisement が積み直されるので、2 回目以降も意味を持つ。
+    //   ★ NRST より先にバスを解く。握られたままだとリセット後の最初の転送も失敗する。
     bool imu_begun = false;
-    for (int retry = 0; retry < 5; retry++) {
-        if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire)) {
+    for (int retry = 0; retry < 3; retry++) {
+        if (retry > 0) {
+            DEBUGW_P(20260315, "[IMU] begin_I2C retry ");
+            DEBUGW_PLN(20260315, retry);
+            imu_i2c_bus_recover();
+            imu_reset_blocking();   // advertisement を積み直させる
+        }
+        if (imu_bus_begin()) {
             imu_begun = true;
             break;
         }
-        DEBUGW_P(20260315, "[IMU] begin_I2C retry ");
-        DEBUGW_PLN(20260315, retry + 1);
-        delay(200);
     }
     if (!imu_begun) {
         DEBUGW_PLN(20260315, "[IMU] BNO085 begin_I2C() FAILED.");
-        enqueueTask(createLogSdTask("BNO085 begin_I2C FAILED"));
+        // ★ どこで失敗したかを残す（1 = アドレスが応答しない、2 = sh2_open、3 = getProdIds）。
+        //   "FAILED" だけだと「チップが居ない」のか「SHTP で喋れない」のかが分からない。
+        enqueueTask(createLogSdfTask("BNO085 begin_I2C FAILED init_step=%u sh2=%ld SDA=%d SCL=%d",
+                                     pons_init_fail_step, (long)pons_init_fail_status,
+                                     (int)digitalRead(I2C0_SDA_PIN), (int)digitalRead(I2C0_SCL_PIN)));
         bno085_ok = false;
         return;
     }
@@ -719,6 +1015,13 @@ void imu_setup() {
     }
 
     // ---- センサーが自己申告する レンジ / 分解能 を SD に記録する ----
+    // ★ **RELEASE では実行しない。ハングし得るため**（v7 の 0.966）。
+    //   sh2_getMetadata() は getFrsOp を使い、sh2.c の op は timeout_us を設定していない
+    //   （= 0 = 無期限）。FRS 応答が 1 回失われると opProcess() が永久ループに入り、
+    //   **setup() が終わらない＝画面が真っ暗のまま起動しない**。
+    //   これは「分解能を設定で上げられるか」を確かめるための診断ログであって
+    //   飛行に必要な情報ではないので、実機ビルドからは外す。
+#ifndef RELEASE
     // 実ログから求めた実効分解能（加速度 0.039 m/s²、ジャイロ 約1.0 deg/s）が
     // センサー本体の上限なのか、設定で上げられるのかを確定させるため。
     //
@@ -748,6 +1051,7 @@ void imu_setup() {
             }
         }
     }
+#endif  // !RELEASE
 
     bno085_ok = true;
     DEBUGW_PLN(20260315, "[IMU] BNO085 init OK!");
@@ -757,36 +1061,68 @@ void imu_setup() {
 
 
 // ============================================================
-// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数）
+// imu_try_recovery(): BNO085 通信途絶時の再起動試行（内部関数・ステートマシン）
 // ============================================================
-// imu_update() から呼ばれる。内部で1分レート制限する。
-// NRST を LOW→HIGH してハードウェアリセット後、begin_I2C() で再初期化を試みる。
-// 成功すれば bno085_ok=true に戻し、失敗なら次の1分後に再試行する。
-// MS5611 と I2C バスを共用しているため Wire のリセットは行わない
-//（NRST による BNO085 リセットで SDA が解放されることを期待する）。
-// ※ NRST パルス＋ブート待機で Core0 が最大 410ms ブロックする。
-//   1分に1度のみ実行のため、画面の一時的な停止は許容する。
+// imu_update() から毎ループ呼ばれる。1 分に 1 回だけ復旧手順を開始し、
+// 以降は 1 ループにつき 1 段ずつ進める。**待ちのために Core0 を止めない**（v7 の 0.962）。
+//
+//   IDLE ──(1分経過)──▶ RESET ──(410ms 経過)──▶ BEGIN ──▶ IDLE
+//                       バス復旧＋NRST パルス              再初期化＋レポート再有効化
+//
+// ★ 以前はこの関数の中で delay(10)+delay(400) を通していたため、
+//   1 分ごとに Core0 が 410ms 止まり、地図もボタンもバリオも同時に止まっていた。
+// ★ 以前は sh2_close() を呼ばずに begin_I2C() し直していたので、**復旧は構造的に
+//   一度も成功していなかった**（imu_bus_begin() の ★★）。
+// ★ v6 は MS5611 と I2C バスを共用している。バスを握ったまま固まっているときは
+//   MS5611 も読めなくなっているので、リセットの前にバスを解く（imu_i2c_bus_recover()）。
+//
+// ※ 残るブロックは BEGIN の 1 ティックだけ。ただし**チップが応答しているときは最大約 0.5 秒**
+//   止まる（ライブラリの i2chal_open() のソフトリセット後の delay(300) と、sh2_open() の
+//   advertisement 待ち最大 200ms）。BNO085 が止まっている間の 1 分に 1 回だけで、以前の
+//   410ms ＋ この待ちよりは短い。なくすにはライブラリの改変が要る（v7 も同じ）。
+//   begin_I2C() の中の detected() が「居ないチップ」を _init() の前に弾くので、
+//   居ないときはこの待ちに入らない（数十 µs で返る）。
+//
+// 成功すれば bno085_ok=true に戻し、失敗なら次の 1 分後に再試行する。
 // CORE0
+typedef enum {
+    IMU_RECOV_IDLE = 0,   // 待機中（次の試行までのインターバル）
+    IMU_RECOV_RESET,      // NRST パルス〜ブート待ち（imu_reset_poll() が進める）
+    IMU_RECOV_BEGIN,      // バス初期化とレポート再有効化
+} ImuRecovState;
+static ImuRecovState imu_recov_state = IMU_RECOV_IDLE;
+static unsigned long imu_recov_wait_ms = 0;   // BEGIN へ進んだ時刻（所要時間のログ用）
+
 static void imu_try_recovery() {
     static unsigned long last_recovery_ms = 0;
-    unsigned long now_ms = millis();
-    // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
-    if (last_recovery_ms > 0 && now_ms - last_recovery_ms < 60000UL) return;
-    last_recovery_ms = now_ms;
+    const unsigned long now_ms = millis();
 
-    enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
-    DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+    switch (imu_recov_state) {
+    case IMU_RECOV_IDLE:
+        // 1分以内の再試行はスキップ（last_recovery_ms==0 は初回なので即実行）
+        if (last_recovery_ms > 0 && now_ms - last_recovery_ms < IMU_RECOVERY_INTERVAL_MS) return;
+        last_recovery_ms = now_ms;   // 間隔は「試行の開始から開始まで」で数える
 
-    // ---- BNO085 ハードウェアリセット ----
-#if defined(IMU_RST_PIN) && IMU_RST_PIN >= 0
-    pinMode(IMU_RST_PIN, OUTPUT);
-    digitalWrite(IMU_RST_PIN, LOW);   // リセットアサート（負論理）
-    delay(10);
-    digitalWrite(IMU_RST_PIN, HIGH);  // リセット解除
-    delay(400);                        // BNO085 ブート完了待機（データシート推奨値）
-#else
-    delay(200);  // RST ピンなし: SH2 リセット完了を待つだけ
-#endif
+        enqueueTask(createLogSdTask("[IMU] BNO085 comm lost, attempting recovery"));
+        DEBUGW_PLN(20260325, "[IMU] BNO085 recovery attempt");
+
+        // ---- バスを解いてからハードウェアリセット開始 ----
+        imu_i2c_bus_recover();
+        imu_reset_start();
+        imu_recov_state = IMU_RECOV_RESET;
+        return;                      // ★ 待たずに帰る。410ms は次のループ以降で数える
+
+    case IMU_RECOV_RESET:
+        if (!imu_reset_poll()) return;   // まだリセット中。1 ループも止めない
+        imu_recov_wait_ms = now_ms;
+        imu_recov_state   = IMU_RECOV_BEGIN;
+        return;
+
+    case IMU_RECOV_BEGIN:
+    default:
+        imu_recov_state = IMU_RECOV_IDLE;
+        break;                           // 下の再初期化へ進む
+    }
 
     // ---- 再初期化 ----
     // レポート有効化と SH2 コールバック登録は imu_enable_reports() に集約している。
@@ -795,7 +1131,7 @@ static void imu_try_recovery() {
     //   ・生レポート（ESKF 用）が復旧後に復活しない
     //   ・begin_I2C() が再登録した Adafruit 既定ハンドラを上書きし損ね、
     //     レポート取りこぼしのバグが静かに戻る
-    if (bno08x.begin_I2C(IMU_I2C_ADDR, &myWire) && imu_enable_reports()) {
+    if (imu_bus_begin() && imu_enable_reports()) {
         // 受信時刻をリセット（クォータニオン・加速度も無効化）。
         // millis() をセットすることで、1秒以内にデータが届かなければ再度 timeout → 再試行の
         // サイクルに入れる。0 にすると bno085_ok=true のまま再試行が永遠に発火しなくなる。
@@ -808,11 +1144,14 @@ static void imu_try_recovery() {
         _acc_cnt  = 0;
 #endif
         bno085_ok = true;
-        enqueueTask(createLogSdTask("[IMU] BNO085 recovery OK"));
+        enqueueTask(createLogSdfTask("[IMU] BNO085 recovery OK (begin %lums)",
+                                     (unsigned long)(millis() - imu_recov_wait_ms)));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery OK");
     } else {
         // 失敗: bno085_ok は false のまま。次の1分後に再試行する。
-        enqueueTask(createLogSdTask("[IMU] BNO085 recovery FAILED"));
+        // ★ どの段で落ちたかを残す（1 = アドレスが応答しない、2 = sh2_open、3 = getProdIds）。
+        enqueueTask(createLogSdfTask("[IMU] BNO085 recovery FAILED (init_step=%u sh2=%ld)",
+                                     pons_init_fail_step, (long)pons_init_fail_status));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery FAILED");
     }
 }
@@ -824,11 +1163,22 @@ static void imu_try_recovery() {
 // loop() から毎回呼ぶ（ノンブロッキング）。
 // 30ms 未満の呼び出しは即リターン（33Hz ポーリング → 最大 30ms 遅延）。
 // MS5611 と I2C バスを共用するため高頻度呼び出しを避ける（i2c0）。
-// ※ バスクロックは airdata.cpp:414 の setClock() が実際の設定値。
-//   現在 400000 が書かれているが、同ファイルの直上コメントは
-//   「100kHz にする／400kHz では error:5 でバスがロックする」と逆のことを述べており、
-//   両者は同一コミットで同時に入っている（要確認事項）。
+// ※ バスクロックは settings.h の I2C0_HZ（400kHz）。airdata.cpp の myWire と共用。
 void imu_update() {
+    // ★★ **「データが来ない」と「こちらが見ていなかった」を区別する**（v7 の 0.975）。
+    //   下の途絶判定は 1 秒しか猶予が無い。Core0 が何かで 1 秒以上ここへ来なかったあと
+    //   最初の 1 回を迎えると、**生きている BNO085 を「途絶」と誤判定してリセットしに行く**。
+    //   呼び出し間隔が空いていたら、その回の判定は見送る。
+    //   見送っても検出が 1 周期遅れるだけで、本当の断線は次の回で捕まる。
+    {
+        static unsigned long _last_update_call_ms = 0;
+        const unsigned long now_ms = millis();
+        const bool resumed = (_last_update_call_ms == 0) ||
+                             (now_ms - _last_update_call_ms > 500UL);
+        _last_update_call_ms = now_ms;
+        if (resumed && _last_sensor_event_ms > 0) _last_sensor_event_ms = now_ms;
+    }
+
     // ---- 通信途絶の自動検出 ----
     // bno085_ok=true でも1秒以上データが届かない場合は途絶と判定し false に落とす。
     // これにより get_imu_alive() が false を返し、update_vario() が MS5611 にフォールバックする。
@@ -1027,6 +1377,7 @@ void imu_update() {
 // ゲッター
 // ============================================================
 bool  get_imu_ok()       { return bno085_ok; }
+bool  get_imu_present()  { return bno085_present; }
 
 // BNO085 が正常稼働中かどうかを返す（接続済み かつ 直近1秒以内にデータ受信）。
 // bno085_ok=true でも通信途絶の場合 false を返す点が get_imu_ok() と異なる。
@@ -1144,6 +1495,62 @@ float get_imu_gyro_hz()  { return _gyro_hz; }
 // 生ジャイロ [rad/s] / 生加速度 [m/s²] の直近値（IMU/ESKF 画面の表示用）
 void get_imu_raw_gyro(float g[3])  { for (int i=0;i<3;i++) g[i] = _raw_gyro[i]; }
 void get_imu_raw_accel(float a[3]) { for (int i=0;i<3;i++) a[i] = _raw_accel[i]; }
+
+uint8_t  get_imu_acc_accuracy() { return _acc_accuracy; }
+uint8_t  get_imu_gyr_accuracy() { return _gyr_accuracy; }
+uint8_t  get_imu_mag_accuracy() { return _mag_accuracy; }
+uint8_t  get_imu_cal_cfg()      { return _cal_cfg; }
+
+
+// ============================================================
+// BNO085 の校正（DCD）— v7 の 0.976
+// ============================================================
+// 校正が終わったかどうか。**SAVE を押せる条件。**
+// ★ 地磁気は条件に入れない。屋内の金属付近では 3 に届かないことが多く、
+//   バリオも GRV も地磁気を使わない（ESKF の初期ヨーだけ）。
+//   地磁気まで揃えたいなら屋外で 8 の字を回すこと。
+bool imu_cal_ready() {
+    return bno085_ok && _acc_accuracy >= 3 && _gyr_accuracy >= 3;
+}
+
+bool     imu_cal_saved_ever()  { return _cal_rec.saved != 0; }
+uint32_t imu_cal_saved_date()  { return _cal_rec.date; }
+uint16_t imu_cal_save_count()  { return _cal_rec.count; }
+bool     imu_cal_autosave_on() { return _cal_autosave_on; }
+
+// 校正（DCD）を BNO085 のフラッシュへ書き、記録をこちらのフラッシュへ残す。
+// yyyymmdd は 0 可（GNSS 時刻が無い＝屋内で保存したとき）。
+// ★ **ここは人が長押しで呼ぶときだけ通る。**自動では呼ばない。
+bool imu_save_calibration(uint32_t yyyymmdd) {
+    if (!bno085_ok) {
+        enqueueTask(createLogSdTask("BNO085 saveDcd SKIP (not connected)"));
+        return false;
+    }
+    const int rc = sh2_saveDcdNow();
+    if (rc != SH2_OK) {
+        enqueueTask(createLogSdfTask("BNO085 saveDcd FAILED rc=%d (acc=%u gyr=%u mag=%u)",
+                                     rc, _acc_accuracy, _gyr_accuracy, _mag_accuracy));
+        return false;
+    }
+    _cal_rec.saved = 1;
+    if (_cal_rec.count < 65535) _cal_rec.count++;
+    // ★ 日付は**毎回上書きする**。取れなかったら 0（不明）にする。
+    //   前回の日付を残すと「その日に校正した」と読めてしまい嘘になる。
+    _cal_rec.date = yyyymmdd;
+    const bool ee = imu_cal_rec_store();
+    // ★ 手動で保存したら、この起動からもう自動保存は切る。
+    //   次回起動を待たずに切るのは、画面の autosave 表示と実際を一致させるため
+    //   （一度意図して焼いた校正を、同じ起動中にチップが上書きしてしまうのも防ぐ）。
+    if (_cal_autosave_on) {
+        sh2_setDcdAutoSave(false);
+        _cal_autosave_on = false;
+    }
+    enqueueTask(createLogSdfTask(
+        "BNO085 saveDcd OK date=%lu cnt=%u ee=%d (acc=%u gyr=%u mag=%u)",
+        (unsigned long)yyyymmdd, _cal_rec.count, (int)ee,
+        _acc_accuracy, _gyr_accuracy, _mag_accuracy));
+    return true;
+}
 float get_imu_accel_hz() { return _accel_hz; }
 float get_imu_mag_hz()   { return _mag_hz; }
 

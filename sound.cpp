@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/03/23
+// Updated : 2026/10/25
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "settings.h"
@@ -35,7 +35,7 @@ const int sampleRate = 16000;  // サンプルレート [Hz]。タイマー割�
 //   メインループが loadBuffer に次のデータを先読みしておく。
 //   activeBuffer が空になったら両者を入れ替える（バッファスワップ）。
 // ============================================================
-const int WAV_HEADER_SIZE = 45;  // WAV ファイルのヘッダサイズ（このバイト数をスキップする）
+const int WAV_HEADER_SIZE = 44;  // WAV ファイルのヘッダサイズ（このバイト数をスキップする）。v7 の 0.963 で 45 → 44（標準の PCM ヘッダは 44 バイト）
 const int CHUNK_SIZE = 16 * 1024;  // 1 チャンク = 16KB ≒ 1.0秒分のデータ
 uint8_t audioBuffer[2][CHUNK_SIZE];  // ダブルバッファ本体
 volatile int activeBuffer = 0;       // 現在再生中のバッファ番号（割り込みから参照）
@@ -65,10 +65,26 @@ volatile uint32_t bufferLen[2] = {CHUNK_SIZE, CHUNK_SIZE};
 //
 // ポインタは文字列リテラルを指すため寿命は無限（コピー不要）。
 // filename == nullptr のスロットは「空き」。
+//
+// ★ min_volume（最低保証音量）も一緒に持つこと（v7 の 0.985）。
+//   以前は filename と priority だけを持っていて、復帰再生は
+//   startPlayWav(name, prio) と呼んでいたため **min_volume が既定の 0 に戻っていた**。
+//   実害: battery_low.wav は優先度 1・最低音量 60 で、優先度 1 は最低なので
+//   他の WAV とぶつかると必ず pending に回る。そこから復帰すると 60 が抜け、
+//   音量設定が 0 だと startPlayWav() の早期 return でアンプが上がらず
+//   **電池切れの警告が完全に無音になる**。必ず運ぶこと。
 // ============================================================
-struct PendingWav { const char* filename; int priority; };
+struct PendingWav { const char* filename; int priority; int min_volume; };
 static const char* current_wav_filename  = nullptr;  // 現在再生中のファイル名
-static PendingWav  pending_wav[2]        = {{nullptr, 0}, {nullptr, 0}};
+static PendingWav  pending_wav[2]        = {{nullptr, 0, 0}, {nullptr, 0, 0}};
+
+// WAV 名が同じか（v7 の 0.963）。★ ポインタ比較ではなく中身で比べること。
+//   同じ名前でも別ファイルに書かれた文字列リテラルは別アドレスになり得るため、
+//   ポインタ比較だと重複検出が静かに外れる（今は同一ファイル内にしか出ないので
+//   たまたま成立しているだけ）。
+static inline bool wav_name_eq(const char* a, const char* b) {
+    return a != nullptr && b != nullptr && strcmp(a, b) == 0;
+}
 
 // pending からの再生は必ずファイル先頭からになる（再開位置を持たない）ため、
 // 「割り込まれる → pending に戻る → 先頭から再生 → また割り込まれる」を繰り返すと
@@ -78,17 +94,17 @@ static bool current_wav_is_replay = false;  // 現在再生中の WAV が pendin
 
 // pending_wav[] に filename を追加する。
 // 空きスロットがあれば追加、両方埋まっている場合は最も低優先なスロットを上書き。
-static void push_pending_wav(const char* filename, int priority) {
+static void push_pending_wav(const char* filename, int priority, int min_volume) {
     // 現在再生中と同じファイルなら追加しない（連続再生不要）
-    if (current_wav_filename == filename) return;
+    if (wav_name_eq(current_wav_filename, filename)) return;
     // 同じファイルが既に pending にあれば無視（重複防止）
     for (int i = 0; i < 2; i++) {
-        if (pending_wav[i].filename == filename) return;
+        if (wav_name_eq(pending_wav[i].filename, filename)) return;
     }
     // 空きスロットを探す
     for (int i = 0; i < 2; i++) {
         if (pending_wav[i].filename == nullptr) {
-            pending_wav[i] = {filename, priority};
+            pending_wav[i] = {filename, priority, min_volume};
             return;
         }
     }
@@ -97,7 +113,7 @@ static void push_pending_wav(const char* filename, int priority) {
     if (priority > pending_wav[lowest].priority) {
         DEBUGW_P(20260322, "WARN: pending wav overwritten: ");
         DEBUGW_PLN(20260322, pending_wav[lowest].filename);
-        pending_wav[lowest] = {filename, priority};
+        pending_wav[lowest] = {filename, priority, min_volume};
     } else {
         DEBUGW_P(20260322, "WARN: pending wav dropped (queue full): ");
         DEBUGW_PLN(20260322, filename);
@@ -105,7 +121,8 @@ static void push_pending_wav(const char* filename, int priority) {
 }
 
 // pending_wav[] から最も高優先のエントリを取り出してクリアする。なければ nullptr。
-static const char* pop_best_pending_wav(int &out_priority) {
+// 最低保証音量も一緒に返す（上の ★）。
+static const char* pop_best_pending_wav(int &out_priority, int &out_min_volume) {
     int best = -1;
     for (int i = 0; i < 2; i++) {
         if (pending_wav[i].filename != nullptr) {
@@ -114,8 +131,9 @@ static const char* pop_best_pending_wav(int &out_priority) {
     }
     if (best < 0) return nullptr;
     const char* f = pending_wav[best].filename;
-    out_priority  = pending_wav[best].priority;
-    pending_wav[best] = {nullptr, 0};
+    out_priority   = pending_wav[best].priority;
+    out_min_volume = pending_wav[best].min_volume;
+    pending_wav[best] = {nullptr, 0, 0};
     return f;
 }
 
@@ -176,7 +194,12 @@ volatile bool     vario_mode          = false; // true のとき割り込みが�
 volatile uint32_t vario_phase_inc     = 0;     // バリオ音の周波数（位相増分）
 volatile uint32_t vario_on_samples    = 1280;  // ON サンプル数 (80ms × 16kHz = 1280)
 volatile uint32_t vario_cycle_samples = 0;     // サイクル長（0=連続, >0=断続）
-volatile bool     vario_ascending     = false; // true=上昇中, false=下降中（音量補正用）
+// バリオ音の音量補正 [%]（vario_volume にさらに掛ける。v7 の 0.992）。
+// ★ **スピーカーの周波数能率を補正するためのもの。** 上昇は一定値
+//   （VARIO_ASCEND_VOL_PCT）、下降は沈下率に応じた傾斜（settings.h の
+//   VARIO_DESCEND_* ）。update_vario()（Core0・100ms）が書き、ISR が読む。
+//   1 バイトなので書き込みはアトミック。
+volatile uint8_t  vario_vol_pct       = 100;
 volatile bool     sin_playing         = false; // トーン出力中だけ true（割り込みが参照）
 static uint32_t   s_vario_phase_acc   = 0;     // バリオ位相アキュムレータ（割り込み専用）
 static uint32_t   s_vario_cycle_pos   = 0;     // バリオサイクル位置（割り込み専用）
@@ -252,8 +275,8 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
     if (vario_cycle_samples == 0 || s_vario_cycle_pos <= vario_on_samples) {
       // ON 区間: sin 波を加算（上昇中は能率補正で音量を絞る）
       s_vario_phase_acc += vario_phase_inc;
-      // 上昇（高音）は小型スピーカーの能率差を補正するため VARIO_ASCEND_VOL_PCT[%] に減衰させる
-      int vario_vol_adj = vario_ascending ? vario_volume * VARIO_ASCEND_VOL_PCT / 100 : vario_volume;
+      // 能率補正は update_vario() が vario_vol_pct に入れてある（上昇は一定、下降は傾斜）
+      int vario_vol_adj = vario_volume * vario_vol_pct / 100;
       mix += (int)(sineTable[(s_vario_phase_acc >> 24) % tableSize] - 128) * 4 * VARIO_VOL_SCALE * vario_vol_adj / 100;
     } else {
       // OFF 区間: 加算なし（サイクルリセットのみ）
@@ -358,7 +381,7 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // 同じファイルを再生中なら何もしない（先頭に戻して鳴り直すのを防ぐ）。
     // 優先度チェック①は strict > のため、同一ファイル・同一優先度の再要求は素通りしてしまう。
     // 例: 旋回継続中に update_tone() が 900ms ごとに track.wav を再要求するケース。
-    if (wav_playing && current_wav_filename == filename) {
+    if (wav_playing && wav_name_eq(current_wav_filename, filename)) {
         DEBUGW_P(20260806,"WAV already playing, ignore duplicate request: ");
         DEBUGW_PLN(20260806,filename);
         return;
@@ -366,7 +389,7 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
 
     // 優先度チェック①：再生中 WAV の方が高優先なら新リクエストを pending に保存
     if (wav_playing && wav_playing_priority > priority) {
-        push_pending_wav(filename, priority);
+        push_pending_wav(filename, priority, min_volume);
         DEBUGW_P(20250503,"WAV pending (lower priority than playing WAV): ");
         DEBUGW_PLN(20250427,filename);
         return;
@@ -376,7 +399,7 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // 通常トーン（sin_solo=false）は WAV とミックス再生するため pending に回さない
     bool tone_in_progress = sin_playing || tone_in_gap || tone_paused;
     if (tone_in_progress && sin_solo && tone_playing_priority >= priority) {
-        push_pending_wav(filename, priority);
+        push_pending_wav(filename, priority, min_volume);
         DEBUGW_P(20250503,"WAV pending (lower priority than solo_play tone): ");
         DEBUGW_PLN(20250503,filename);
         return;
@@ -400,7 +423,9 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     if (wav_playing && current_wav_filename != nullptr && !current_wav_is_replay) {
         const char* interrupted = current_wav_filename;
         current_wav_filename = nullptr;
-        push_pending_wav(interrupted, wav_playing_priority);
+        // 退避する側の最低保証音量は wav_override_volume が持っている
+        // （stopPlayback() でリセットされるが、ここはまだ呼ばれていない）。
+        push_pending_wav(interrupted, wav_playing_priority, (int)wav_override_volume);
         DEBUGW_P(20250503,"Interrupted wav saved to pending.:");
         DEBUGW_PLN(20250503,interrupted);
     }
@@ -435,16 +460,51 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     // WAV ファイルを開く
     audioFile = SD.open(filename, FILE_READ);
     if (!audioFile) {
-        sdError = true;
         DEBUG_P(20250424,"Error opening file: ");
         DEBUG_PLN(20250424,filename);
-        enqueueTask(createLogSdTask(filename));  // SD にエラーログを保存
+
+        // ★ 「ファイルが無いだけ」と「カードが応答しない」を区別する（v7 の 0.965）。
+        //   区別せずに sdError を立てていたころは、WAV が 1 つ足りないだけで
+        //   SD 表示が赤・USERLED 点滅・10 秒ごとの再初期化まで走っていた。
+        //   （新しい音声を SD にコピーし忘れた機体で、毎回これが起きる）
+        //
+        //   判定は SdFat のカード層エラーコード。FAT 層の「そのパスが無い」は
+        //   カード層のエラーにならないので、0 のままなら「カードは応答している」。
+        //   ※ このコードは begin() でしかクリアされない sticky な値だが、
+        //     sdError が立つと try_sd_recovery() が 10 秒ごとに setup_sd() →
+        //     begin() を呼ぶので実運用ではクリアされる。外れるとしても
+        //     「無いだけなのにカード異常と判定する」＝安全側に倒れる。
+        const uint8_t sd_ec = SD.sdErrorCode();
+
+        // ★ ログは **sdError を立てる前に、キューに積まず直接書く。**
+        //   startPlayWav() は Core1 からしか呼ばれないので log_sdf() を直接呼べる。
+        //   以前はここで sdError=true にしてからログタスクを積んでいたため、
+        //   Core1 がそのタスクを処理するころには good_sd() が false になっていて、
+        //   **どのファイルで失敗したのかが log.txt に残らなかった。**
+        if (sd_ec == 0) log_sdf("ERR wav missing: %s", filename);
+        else            log_sdf("ERR wav open: %s (SD err 0x%02X)", filename, sd_ec);
+
+        if (sd_ec != 0) sdError = true;   // 本当にカードがおかしいときだけ
+
         enqueueTask(createPlayMultiToneTask(500, 200, 2)); // エラー音を鳴らす
         return;
     }
 
     // ファイルサイズからヘッダを引いたバイト数が実際の音声データ量
     uint32_t fileSize = audioFile.size();
+    // ★ ヘッダぶんに満たないファイルを通さないこと（v7 の 0.963）。
+    //   uint32_t 同士の引き算なのでアンダーフローして約 43 億になる。
+    //   実害は「読み出しが 0 を返して無音のまま何も起きない」で済むが、
+    //   ログも残らないので **書き出しをミスった WAV に気づけない**。
+    //   ここで弾いて名前とサイズを残す。SD 自体は正常なので sdError は立てない。
+    if (fileSize <= WAV_HEADER_SIZE) {
+        DEBUGW_P(20260910, "WAV too small: ");
+        DEBUGW_PLN(20260910, filename);
+        log_sdf("ERR wav too small: %s (%u B)", filename, (unsigned)fileSize);
+        enqueueTask(createPlayMultiToneTask(500, 200, 2));
+        audioFile.close();
+        return;
+    }
     totalAudioSize = fileSize - WAV_HEADER_SIZE;
 
     DEBUG_P(20250424,"File: ");
@@ -457,7 +517,7 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
     DEBUG_P(20250424,(float)totalAudioSize / sampleRate);
     DEBUG_PLN(20250424," seconds)");
 
-    // WAV ヘッダ（45バイト）をスキップして音声データの先頭へ移動
+    // WAV ヘッダ（44バイト）をスキップして音声データの先頭へ移動
     audioFile.seek(WAV_HEADER_SIZE);
 
     // 最初のチャンクを loadBuffer に読み込む
@@ -475,9 +535,17 @@ void startPlayWav(const char* filename, int priority, int min_volume) {
         current_wav_filename = filename;   // 現在再生中のファイル名を記録
         current_wav_is_replay = from_pending;  // pending 由来なら再退避しない（先頭断片の繰り返し防止）
         wav_override_volume = min_volume;  // 最低保証ボリューム（0=制限なし）をセット
+        // ★ 優先度は **下の早期 return より前に** 入れること（v7 の 0.965）。
+        //   音量 0 の WAV も wav_playing=true のまま「無音で再生中」になる
+        //   （バッファは回り、SD も読み、EOF で正常に終わる）。にもかかわらず
+        //   ここを return の後ろに置いていたため、その間 wav_playing_priority が
+        //   **前に鳴った WAV の値のまま**残り、次の WAV の割り込み判定が狂っていた。
+        //   実害: 音量 0 でも鳴るはずの battery_low.wav（優先度 1・最低音量 60）が
+        //   古い優先度（例えば fixed.wav の 4）に負けて pending へ回され、
+        //   鳴り出しが数秒遅れる。最低音量を入れた目的そのものを損なう。
+        wav_playing_priority = priority;
         if(sound_volume == 0 && min_volume == 0){ return; }  // volume=0 かつ override なし ならアンプ ON しない（ポップノイズ防止）
         setAmplifierState(true);   // アンプを ON にする
-        wav_playing_priority = priority;
         DEBUG_P(20250424,"Playback started");
     } else {
         DEBUG_P(20250424,"Failed to load initial audio data");
@@ -546,13 +614,13 @@ void __not_in_flash_func(loop_sound)(){
             // ただし toneBuffer にトーンが残っている場合は loop_tone() に委ねる。
             // （WAV終了直後に pending を即起動すると、ガードで待機中のトーンと同時再生になるため）
             if (toneBufHead == toneBufTail) {
-                int prio = 0;
-                const char* pf = pop_best_pending_wav(prio);
+                int prio = 0, pminvol = 0;
+                const char* pf = pop_best_pending_wav(prio, pminvol);
                 if (pf != nullptr) {
                     DEBUGW_P(20250503,"Replaying pending wav:");
                     DEBUGW_PLN(20250503, pf);
                     pending_replay_next = true;  // pending 由来の再生であることを伝える
-                    startPlayWav(pf, prio);
+                    startPlayWav(pf, prio, pminvol);
                 }
             }
         } else {
@@ -587,7 +655,8 @@ void __not_in_flash_func(loop_sound)(){
         }
     }
 
-    // デバッグ用: 1 秒ごとに再生進捗（%）を出力
+    #ifndef RELEASE
+    // デバッグ用: 1 秒ごとに再生進捗（%）を出力。RELEASE では丸ごと除く。
     static unsigned long lastStatusTime = 0;
     if (wav_playing && (currentTime - lastStatusTime >= 1000)) {
         lastStatusTime = currentTime;
@@ -598,6 +667,7 @@ void __not_in_flash_func(loop_sound)(){
         DEBUG_P(20250424,chunksLoaded);
         DEBUG_PLN(20250424," chunks loaded)");
     }
+    #endif
 }
 
 
@@ -757,12 +827,15 @@ void update_tone(float degpersecond){
     last_update_tone = millis();
 
   // 前回の方位との差を計算し、-180〜+180 の範囲に収める
-  int relativedif = get_gps_truetrack()-last_tone_tt;
+  // ★ float で持つこと。以前は int で受けていたため 15.9 度が 15 に切り捨てられ、
+  //   下の「15 度超」が実際には 16 度超になっていた（音で鳴る警報なので影響が出る）。
+  //   last_tone_tt 側は full precision で latch してあるので、粗かったのは比較だけ。
+  float relativedif = get_gps_truetrack()-last_tone_tt;
   if(relativedif > 180)
     relativedif -= 360;
   if(relativedif < -180)
     relativedif += 360;
-  int angle_diff = abs(relativedif);
+  float angle_diff = abs(relativedif);
 
   //【警告1】方位変化が 15° 超 → コース逸脱警告
   if(angle_diff > 15){
@@ -906,11 +979,11 @@ void loop_tone() {
                     startNextToneEntry();  // 次のエントリを開始
                 } else if (!wav_playing) {
                     // 全トーン完了かつ WAV 未再生 → pending WAV があれば再生
-                    int prio = 0;
-                    const char* pf = pop_best_pending_wav(prio);
+                    int prio = 0, pminvol = 0;
+                    const char* pf = pop_best_pending_wav(prio, pminvol);
                     if (pf != nullptr) {
                         pending_replay_next = true;  // pending 由来の再生であることを伝える
-                        startPlayWav(pf, prio);
+                        startPlayWav(pf, prio, pminvol);
                     }
                 }
             }
@@ -997,11 +1070,16 @@ void update_vario() {
             float v = vspeed < 1.5f ? vspeed : 1.5f;  // 1.5 m/s で振り切り
             int freq = (int)(700 + v * 400);        // 820〜1300 Hz（1.5 m/s → 1300Hz）
             vario_phase_inc = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
-            int off_ms = (int)(700.0f / v) - 120;
-            if (off_ms < 50) off_ms = 50;
+            // 1 周期 = 500/v [ms]（ON 120ms ＋ 残りが無音）。上昇率が高いほど忙しくなる。
+            // ★ **OFF に 1 秒の上限を付けてある**（v7 の 0.991）。上限が無いと 0.3m/s で
+            //   2.2 秒無音になり、弱い上昇を「鳴っていない」と取り違える。
+            //   上限が効くのは v < 約 0.45m/s で、ちょうど KF のデッドバンド
+            //   （VARIO_DEADBAND_KF_MPS = 0.25）から上の弱い上昇帯にあたる。
+            //   MS5611 単独（デッドバンド 0.60）では上限に当たらない。
+            int off_ms = constrain((int)(500.0f / v) - 120, 50, 1000);
             vario_on_samples     = 120 * 16;         // 120ms × 16kHz = 1920 サンプル
             vario_cycle_samples  = (uint32_t)((120 + off_ms) * 16);
-            vario_ascending      = true;             // 上昇フラグ ON（音量補正用）
+            vario_vol_pct        = VARIO_ASCEND_VOL_PCT;  // 高音側の能率補正（一定）
         } else {
             // 下降: 連続低音
             float v = (-vspeed) < 1.5f ? (-vspeed) : 1.5f;  // 1.5 m/s で振り切り
@@ -1009,7 +1087,17 @@ void update_vario() {
             if (freq < 300) freq = 300;              // 下限 300Hz
             vario_phase_inc     = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
             vario_cycle_samples = 0;                 // 0 = 連続出力
-            vario_ascending     = false;             // 下降フラグ（音量補正なし）
+            // ★ **沈下率に応じた音量傾斜**（v7 の 0.992。根拠と調整幅は settings.h の
+            //   VARIO_DESCEND_* ）。浅い沈みは周波数が高くスピーカーの能率が良いので
+            //   うるさく聞こえる。深い沈みほど低音で能率が落ちるため、
+            //   **浅い側を絞って深い側を 100% にする**。
+            //   span はデッドバンドが 0.60（MS5611 単独）のときも正になる。
+            const float span = VARIO_DESCEND_FULL_MPS - dead_band;
+            float t = (span > 0.01f) ? (v - dead_band) / span : 1.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            vario_vol_pct = (uint8_t)(VARIO_DESCEND_VOL_MIN_PCT +
+                                      t * (100 - VARIO_DESCEND_VOL_MIN_PCT) + 0.5f);
         }
 
         if (!prev_vario) {

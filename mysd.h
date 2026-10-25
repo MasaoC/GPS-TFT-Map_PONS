@@ -8,13 +8,14 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/10/25
 // ============================================================
 
 #ifndef MYSD_H
   #define MYSD_H
   #include "display_tft.h"
   #include <Arduino.h>
+  #include <limits.h>   // INT_MAX（removeDuplicateTask の既定引数）
 
   typedef enum {
       TASK_NONE,
@@ -186,6 +187,18 @@
     // マウントから外されたまま APPLY されていない状態
     void setNeedsApply(const char* value);
     void getNeedsApply(char* buffer, size_t bufferSize);
+    // 最後に APPLY した日（JST の YYYYMMDD、0 = 不明）
+    void setCalibDate(const char* value);
+    void getCalibDate(char* buffer, size_t bufferSize);
+    // 対気速度モデル V(θ)=V0*sqrt(K/(K+θ)) の係数（機体依存。既定は settings.h）
+    void setAirspeedV0(const char* value);
+    void getAirspeedV0(char* buffer, size_t bufferSize);
+    void setAirspeedK(const char* value);
+    void getAirspeedK(char* buffer, size_t bufferSize);
+    void setAirspeedMin(const char* value);
+    void getAirspeedMin(char* buffer, size_t bufferSize);
+    void setAirspeedMax(const char* value);
+    void getAirspeedMax(char* buffer, size_t bufferSize);
     // 自動ロールトリムの累積補正量（度）
     void setRollTrim(const char* value);
     void getRollTrim(char* buffer, size_t bufferSize);
@@ -290,7 +303,15 @@
   // Functions to handle the queue (declarations)
   // 戻り値: キューに入れられたら true、満杯で捨てたら false。
   // 捨てられたタスクは実行されない。後始末が要る呼び出し側は戻り値を見ること。
+  // 設定ファイル（settings.txt）を読み終えたか。Core1 が立て、Core0 が読む。
+  // 通常は startup_demo_tft() の sd_setup_complete 待ちで true になってから
+  // link_setup() が走る。あの待ちが 5 秒で切れたときだけ false のまま来るので、
+  // link_setup() がログに残して後から分かるようにしてある。
+  extern volatile bool settings_loaded;
   bool enqueueTask(Task task);
+  // type が同じで、かつ優先度が max_priority 以下のタスクをキューから消す。
+  // 多重トーン以外は優先度を見ない（置き場所が種別ごとに違うため）。
+  void removeDuplicateTask(TaskType type, int max_priority = INT_MAX);
   bool enqueueTaskWithAbortCheck(Task task);
   bool dequeueTask(Task *task);
 
@@ -313,6 +334,15 @@
   extern volatile ReplayRow replay_rows[REPLAY_BUF_SIZE];
   extern volatile uint8_t replay_head, replay_tail;
   extern volatile bool replay_eof;
+  // リプレイを続けられない。Core0 が見て解除し、理由に応じたログを残す。
+  // ★ bool ではなく理由を持たせてある。「ファイルが壊れている」と
+  //   「SD が読めない」は現場での対処が違うのに、ログが同じだと区別できない。
+  enum ReplayBadReason : uint8_t {
+      REPLAY_BAD_NONE = 0,   // 問題なし
+      REPLAY_BAD_FILE,       // 開けない / ヘッダが無い / 空 / 未選択
+      REPLAY_BAD_NOSD,       // SD が使えない（未初期化・書き込みエラー・カード抜け）
+  };
+  extern volatile uint8_t replay_file_bad;
   extern volatile uint32_t replay_init_seq;  // init_replay() のたびに加算（再生時計のリセット通知）
   extern char replay_filename[REPLAY_FILENAME_LEN];
 

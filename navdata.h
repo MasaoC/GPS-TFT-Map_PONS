@@ -6,7 +6,7 @@
 //           内蔵ポリゴン地図・目的地・飛行コースモードの定義、
 //           各飛行地点（琵琶湖・白浜・笠岡・富士川・東京湾など）の座標。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/10/25
 // ============================================================
 #include "settings.h"
 
@@ -101,9 +101,13 @@
     double (*cords)[2]; // Pointer to an array of 2-element arrays
   };
 
-  float deg2rad(float degrees);
+  // 文字列を new[] でコピーする。**解放は必ず delete[]**（navdata.cpp のコメント参照）。
+  // libc の strdup() と混ざらないよう、名前を分けてここで宣言しておく。
+  char* pons_strdup(const char* str);
+
+  double deg2rad(double degrees);
   double rad2deg(double rad);
-  extern int truec;
+  extern float truec;   // 小数を保つ（表示は draw_footer() で四捨五入する）
 
   // ---- 実行時のコース座標 ----
   // 既定値は上の #define。SD の override_pilon_coordinate.csv があれば起動時に上書きする。
@@ -162,7 +166,7 @@
   void set_auto10k_status_flight(int st);   // 実飛行の遷移。現在値と保存値の両方を更新
   int  get_auto10k_status_flight();         // SD へ書く値（リプレイの影響を受けない）
   void restore_auto10k_status(int st);      // SD 設定からの復元
-  void auto10k_leave_replay();              // リプレイを抜けたとき実飛行の値へ戻す
+  void auto10k_restore_flight_phase();      // リプレイ／デモを抜けたとき実飛行の値へ戻す
 
   void init_destinations();
 

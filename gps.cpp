@@ -7,7 +7,7 @@
 //           地点選択式のデモ飛行（琵琶湖/白浜/笠岡/富士川/東京湾）、
 //           フライトログCSVへの定期保存トリガー。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/10/25
 // ============================================================
 // Handle GNSS modules. Currently optimized for LC86GPAMD.
 #include <Arduino.h>
@@ -28,6 +28,20 @@ extern volatile bool userled_forced_on;
 // GPS時刻を最後に受信したときのmillis()（Euler角ログの時刻推定用）
 static uint32_t gps_fix_millis = 0;
 uint32_t get_gps_fix_millis() { return gps_fix_millis; }
+
+// GPS の UTC 日時から、JST の日付を YYYYMMDD の整数で返す。0 = 時刻がまだ無い（v7 の 0.970）。
+// 「前回の較正から日付をまたいだか」の判定に使う。
+// ★ UTC の日付では使えない。夜明けの飛行（05:00 JST）は 前日 20:00 UTC なので、
+//   前日夕方に較正したときと UTC 日付が一致してしまい、
+//   「前日に組み立てて較正 → 翌朝飛ぶ」という一番ありそうな経路を取りこぼす。
+uint32_t get_gps_jst_yyyymmdd() {
+  GpsDate d = get_gpsdate();
+  GpsTime t = get_gpstime();
+  if (!d.isValid() || !t.isValid()) return 0;
+  int y = d.year(), mo = d.month(), da = d.day(), h = t.hour();
+  utcToJst(&y, &mo, &da, &h);
+  return (uint32_t)y * 10000UL + (uint32_t)mo * 100UL + (uint32_t)da;
+}
 
 // v6 は u-blox SAM-M10Q 専用。Mediatek(PMTK) / Quectel(PAIR) 用のコマンド定義は
 // v5 以前のモジュール向けだったため削除した（必要になったら git 履歴から戻す）。
@@ -56,6 +70,35 @@ uint32_t get_gps_fix_millis() { return gps_fix_millis; }
    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, \
    0x55,0xB4}
+// UBX-CFG-VALSET: CFG-ANA-USE_ANA（0x10230001）= 1 / 0。AssistNow Autonomous の有効・無効（v7 の 0.994）。
+//   layers=0x03（RAM と BBR）。**BBR にも書くのは、電源投入の瞬間から有効にしておくため。**
+//   BBR はバックアップ電池で保たれるので、こちらが設定を送る前（起動直後の約 1 秒）の測位から
+//   保存済みの予測軌道が使われる。旧形式の CFG-NAVX5 ではなく、u-blox が M10 で推奨する
+//   VALSET で送る（Interface description UBX-21035062 §4.9.1）。
+#define UBLOX_CFG_ANA_ON  {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x03,0x00,0x00,0x01,0x00,0x23,0x10,0x01,0xD1,0xD0}
+#define UBLOX_CFG_ANA_OFF {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x03,0x00,0x00,0x01,0x00,0x23,0x10,0x00,0xD0,0xCF}
+// UBX-CFG-VALSET: CFG-MSGOUT-UBX_NAV_AOPSTATUS_UART1（0x2091007A）= 2（2 エポックに 1 回 = 1Hz）。
+//   layers=0x01（RAM のみ。毎回の起動で送り直すので BBR に残す必要は無い）。
+//   「ON になったか」を GPS 自身の申告で確かめるのと、計算中の時間を測るのに使う。
+#define UBLOX_AOPSTATUS_1HZ {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x01,0x00,0x00,0x7A,0x00,0x91,0x20,0x02,0xC7,0x88}
+
+// --- AssistNow Autonomous（衛星軌道の自己予測）の状態 ---
+// 仕組みと条件は README の「GNSS の起動を速くする」。ここは GPS DETAIL と log.txt 用。
+static int8_t   ana_state      = -1;     // NAV-AOPSTATUS の useAOP（-1=まだ届いていない）
+static bool     ana_busy       = false;  // 予測を計算中か（NAV-AOPSTATUS status≠0）
+static uint32_t ana_busy_ms    = 0;      // 計算していた時間の累計（ログを書くたびに 0 へ）
+static uint32_t ana_last_ms    = 0;      // 前回 NAV-AOPSTATUS を受けた millis()
+static uint8_t  ana_data_svs   = 0;      // 予測データを持っている衛星数（NAV-SAT aopAvail）
+static uint8_t  ana_orbit_svs  = 0;      // いま予測軌道を使っている衛星数（NAV-SAT orbitSource=4）
+static uint8_t  eph_orbit_svs  = 0;      // いま放送暦を使っている衛星数（NAV-SAT orbitSource=1）
+// 起動後最初の fix のあと、次の NAV-SAT で「どの軌道で測ったか」を 1 行残すための印。
+// fix の瞬間ではなく次の NAV-SAT にするのは、NAV-SAT が 10 秒に 1 回なので、
+// fix の瞬間に手元にある値は**まだ 1 度も届いていない（0 のまま）**ことがあるため。
+static bool     ana_fix_report_pending = false;
+int  get_gps_ana_state()      { return ana_state; }
+bool get_gps_ana_busy()       { return ana_busy; }
+int  get_gps_ana_data_svs()   { return ana_data_svs; }
+int  get_gps_ana_orbit_svs()  { return ana_orbit_svs; }
 
 // --- GPS 最新値の保持変数 ---
 // UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
@@ -73,7 +116,11 @@ static float  maxgs_5min       = 0.0f;
 static int    maxgs_5min_hour  = 0;
 static int    maxgs_5min_min   = 0;
 static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
-bool gps_connection = false;  // GPS モジュールから1文字でも受信したら true
+bool gps_connection = false;  // GPS モジュールから1文字でも受信したことがあるか
+// ★ 最後にバイトが届いた時刻。**飛行中の断線を検出するために要る**（v7 の 0.979）。
+//   gps_connection だけだと一度 true になったら戻らないので、コネクタが抜けても
+//   画面は正常なまま航法を続けてしまっていた（get_gps_connection 参照）。
+static uint32_t gps_last_byte_ms = 0;
 // デモ飛行の現在地点（DEMO_OFF でデモ停止）。GPS を使わず仮想位置を生成する。
 demo_site_t demo_site = DEMO_OFF;
 double demo_lat = PLA_LAT;        // 仮想機体の現在位置
@@ -237,9 +284,24 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     else if (fixType >= 3)  new_fixtype = 3;
     else                    new_fixtype = 1;
     // no-fix → fix への遷移タイミングをSDに記録
+    // ★ 衛星数はこのパケットの numSV を出す（v7 の 0.980）。stored_numsats への代入は
+    //   この下なので、以前は **1 エポック前（= まだ no-fix だったとき）の値**が出て、
+    //   ログが "fix=3 sats=0" という矛盾した見た目になっていた。
     if (prev_fixtype <= 1 && new_fixtype >= 2) {
-      enqueueTask(createLogSdfTask("GPS FIXED fix=%d sats=%d hAcc=%.1fm",
-        new_fixtype, stored_numsats, ubx_hacc_mm / 1000.0f));
+      // 起動後最初の fix だけ、起動からの秒数を添える。GPS は本体と同じ電源で入るので、
+      // **電源を入れて起動したときはこれが TTFF**（AssistNow Autonomous が効けば数秒、
+      // 効かなければ 20 秒台）。USB からの書き込み直後のように GPS の電源が切れていなかった
+      // 起動では、GPS は既に測位しているので 1 秒前後になる。
+      static bool first_fix_logged = false;
+      if (!first_fix_logged) {
+        first_fix_logged = true;
+        ana_fix_report_pending = true;
+        enqueueTask(createLogSdfTask("GPS FIXED fix=%d sats=%d hAcc=%.1fm %.1fs after boot",
+          new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f, millis() / 1000.0f));
+      } else {
+        enqueueTask(createLogSdfTask("GPS FIXED fix=%d sats=%d hAcc=%.1fm",
+          new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f));
+      }
     }
     prev_fixtype  = new_fixtype;
     gsa_fixtype   = new_fixtype;
@@ -279,6 +341,8 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
   // gsa_prns をリセットして使用中衛星 PRN を再構築
   int prn_idx = 0;
   for (int i = 0; i < GSA_MAX_PRN; i++) gsa_prns[i] = 0;
+  // 軌道の出どころ（AssistNow Autonomous の効き具合）を数え直す
+  uint8_t n_ana_data = 0, n_ana_orbit = 0, n_eph_orbit = 0;
 
   for (int s = 0; s < numSvs; s++) {
     const uint8_t *sv = p + 8 + s * 12;
@@ -291,6 +355,12 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     bool svUsed    = (flags & 0x08) != 0;  // bit3=svUsed
 
     if (svId == 0) continue;
+
+    // flags bit8-10 orbitSource（1=放送暦 / 4=AssistNow Autonomous）、bit14 aopAvail
+    const uint8_t orbitSource = (flags >> 8) & 0x07;
+    if (flags & (1UL << 14)) n_ana_data++;
+    if (orbitSource == 4)    n_ana_orbit++;
+    if (orbitSource == 1)    n_eph_orbit++;
 
     // gnssId → satelliteType 変換
     int satType;
@@ -328,7 +398,45 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
     if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;
   }
+  ana_data_svs  = n_ana_data;
+  ana_orbit_svs = n_ana_orbit;
+  eph_orbit_svs = n_eph_orbit;
+  if (ana_fix_report_pending) {
+    // 最初の fix で何の軌道を使っていたか。ANA が多ければ AssistNow Autonomous が効いた。
+    // fix から最大 10 秒後の値なので、放送暦に切り替わり始めた衛星も混ざりうる。
+    ana_fix_report_pending = false;
+    enqueueTask(createLogSdfTask("GPS ORBIT after 1st fix: ANA=%d EPH=%d (ANA data %d SVs)",
+      n_ana_orbit, n_eph_orbit, n_ana_data));
+  }
   ubx_sat_updated = true;
+}
+
+// UBX-NAV-AOPSTATUS (class=0x01, id=0x60, payload=16 bytes) ハンドラー
+// AssistNow Autonomous が本当に有効か（useAOP）と、予測を計算中か（status≠0）を受ける。
+// 計算中は GPS の消費電流が増える（u-blox は量を公表していない。時間は数秒、まれに
+// 60 秒超）ので、計算していた時間を積算して GNSS_ANA_LOG_INTERVAL_MS ごとに log.txt へ残す。
+static void handle_navaopstatus(const uint8_t *p, uint16_t len) {
+  if (len < 16) return;
+  const uint32_t now = millis();
+  // 前回からの間隔を「前回の状態」で積算する。途切れたあとの 1 回目は 2 秒で頭打ちにして、
+  // 受信が止まっていた間をまるごと計算中に数えないようにする（通常は 1Hz で届く）。
+  if (ana_busy && ana_last_ms != 0) {
+    const uint32_t dt = now - ana_last_ms;
+    ana_busy_ms += (dt < 2000) ? dt : 2000;
+  }
+  ana_last_ms = now;
+  ana_state   = (p[4] & 0x01) ? 1 : 0;
+  ana_busy    = (p[5] != 0);
+
+  static uint32_t window_start_ms = 0;
+  if (window_start_ms == 0) window_start_ms = now;   // 最初の窓は受信開始から数える
+  if (now - window_start_ms >= GNSS_ANA_LOG_INTERVAL_MS) {
+    enqueueTask(createLogSdfTask("GPS ANA use=%d data=%d orbANA=%d orbEPH=%d busy=%lus/%lus",
+      (int)ana_state, ana_data_svs, ana_orbit_svs, eph_orbit_svs,
+      (unsigned long)(ana_busy_ms / 1000), (unsigned long)((now - window_start_ms) / 1000)));
+    ana_busy_ms     = 0;
+    window_start_ms = now;
+  }
 }
 
 // UBX-NAV-DOP (class=0x01, id=0x04, payload=18 bytes) ハンドラー
@@ -467,6 +575,11 @@ static void process_ubx(uint8_t b) {
           #endif
           snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
             "UBX-NAV-DOP P=%.1f H=%.1f V=%.1f", gsa_pdop, gsa_hdop, gsa_vdop);
+        } else if (ubx_msgid == 0x60) {
+          // NAV-AOPSTATUS: AssistNow Autonomous の有効・計算中
+          handle_navaopstatus(ubx_buf, used_len);
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-NAV-AOPSTATUS use=%d busy=%d", (int)ana_state, (int)ana_busy);
         } else {
           #ifdef DEBUG_GBX_NMEA
           Serial.print("[UBX] unknown NAV cls=01 id="); Serial.print(ubx_msgid, HEX);
@@ -650,6 +763,8 @@ uint32_t get_gps_hacc_mm()    { return ubx_hacc_mm; }    // hAcc（水平精度�
 uint32_t get_gps_vacc_mm()    { return ubx_vacc_mm; }    // vAcc（垂直精度推定値, mm）
 uint32_t get_gps_sacc_mmps()  { return ubx_sacc_mmps; }  // sAcc（速度精度推定値, mm/s）
 float    get_gps_veld_mps()   { return ubx_veld_mps; }  // GNSS 垂直速度（上昇正, m/s）
+// 測位エポック（iTOW, ms）。同じ観測の二重利用を防ぐためだけに使う（v7 の 0.981）。
+uint32_t get_gps_itow_ms()    { return ubx_itow_ms; }   // NAV-PVT iTOW（GPS 週内時刻, ms）
 bool     get_gps_gnssFixOK()  { return ubx_gnssFixOK; } // gnssFixOK フラグ
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
@@ -707,6 +822,25 @@ static bool ubxWaitAck(uint32_t timeout_ms) {
   return false;  // タイムアウト
 }
 
+// gps_setup() の設定コマンドのうち、ACK が返らなかったものを表す内部ビット。
+// RELEASE ではシリアルのデバッグ出力が消えるため、結果は log.txt に残す。
+enum {
+  GPS_CFGNG_RATE = 0x01,  // CFG-RATE 2Hz
+  GPS_CFGNG_PVT  = 0x02,  // NAV-PVT 出力
+  GPS_CFGNG_SAT  = 0x04,  // NAV-SAT 出力
+  GPS_CFGNG_DOP  = 0x08,  // NAV-DOP 出力
+  GPS_CFGNG_NAV5 = 0x10,  // CFG-NAV5 Airborne<1g
+  GPS_CFGNG_ANA  = 0x20,  // CFG-ANA-USE_ANA（AssistNow Autonomous）
+  GPS_CFGNG_AOPS = 0x40,  // NAV-AOPSTATUS 出力
+};
+// 起動画面の GPS の OK/NG（gps_cfg_ok）に数えるのはここまで（v7 の 0.979）。
+// AssistNow Autonomous は起動を速くするだけで、通らなくても航法は今までどおりなので
+// NG にしない（結果は log.txt の同じ行に残る）。
+static const uint8_t GPS_CFGNG_ESSENTIAL =
+  GPS_CFGNG_RATE | GPS_CFGNG_PVT | GPS_CFGNG_SAT | GPS_CFGNG_DOP | GPS_CFGNG_NAV5;
+// gps_setup() 初回の UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
+static bool gps_cfg_ok = false;
+
 // GPS モジュール（u-blox SAM-M10Q）とのシリアル接続を確立する。
 // NMEA が 10 秒届かない場合は gps_loop() から自動的に再呼出しされる。
 //
@@ -728,11 +862,16 @@ void gps_setup() {
 
   //初回SETUP
   if(setupcounter == 1){
+      // 設定コマンドの結果。最後にまとめて log.txt へ残す。
+      // 通らなかった設定は動作が静かに変わるだけで画面に出ないため、
+      // ログが唯一の手掛かりになる（特に Airborne<1g）。
+      uint8_t cfg_ng = 0;
+      bool prt_ack = false, prt_nak = false;
 
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] setup start");
       #endif
-      GPS_SERIAL.setFIFOSize(1024);  // バッファオーバーフロー防止（デフォルト 32 バイトでは不足）
+      GPS_SERIAL.setFIFOSize(GPS_SERIAL_FIFO_SIZE);  // バッファオーバーフロー防止（デフォルト 32 バイトでは不足）
       GPS_SERIAL.begin(gps_current_baudrate = 9600);  // u-blox 工場デフォルトは 9600bps
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] opened 9600");
@@ -766,19 +905,20 @@ void gps_setup() {
         while (millis() - t < 300 && ack_len < 32) {
           if (GPS_SERIAL.available()) ack_buf[ack_len++] = GPS_SERIAL.read();
         }
+        // 応答の判定は RELEASE でも行う（結果は最後のログ行に載せる）。
+        // 無応答はボーレート切替が先に効いた場合にも起こるので失敗とは断定できない。
+        for (int i = 0; i <= ack_len - 4; i++) {
+          if (ack_buf[i]==0xB5 && ack_buf[i+1]==0x62 && ack_buf[i+2]==0x05) {
+            if (ack_buf[i+3] == 0x01) prt_ack = true;
+            if (ack_buf[i+3] == 0x00) prt_nak = true;
+          }
+        }
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] CFG-PRT resp ("); Serial.print(ack_len); Serial.print(" bytes): ");
         for (int i = 0; i < ack_len; i++) { Serial.print(ack_buf[i], HEX); Serial.print(" "); }
         Serial.println();
-        bool got_ack = false, got_nak = false;
-        for (int i = 0; i <= ack_len - 4; i++) {
-          if (ack_buf[i]==0xB5 && ack_buf[i+1]==0x62 && ack_buf[i+2]==0x05) {
-            if (ack_buf[i+3] == 0x01) got_ack = true;
-            if (ack_buf[i+3] == 0x00) got_nak = true;
-          }
-        }
-        if      (got_ack) Serial.println("[UBX] CFG-PRT: ACK OK");
-        else if (got_nak) Serial.println("[UBX] CFG-PRT: NAK!");
+        if      (prt_ack) Serial.println("[UBX] CFG-PRT: ACK OK");
+        else if (prt_nak) Serial.println("[UBX] CFG-PRT: NAK!");
         else              Serial.println("[UBX] CFG-PRT: no response (may be OK if baud change happened)");
         #endif
       }
@@ -802,6 +942,7 @@ void gps_setup() {
       {
         // NAV-PVT など既存パケットを読み飛ばしながら ACK を待つ
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_RATE;
         #ifdef DEBUG_GBX_NMEA
         if      (got_ack) Serial.println("[UBX] CFG-RATE 2Hz: ACK OK");
         else              Serial.println("[UBX] CFG-RATE 2Hz: no ACK");
@@ -817,6 +958,7 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_PVT;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVPVT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
@@ -831,6 +973,7 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_SAT;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVSAT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
@@ -845,6 +988,7 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_DOP;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVDOP enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
@@ -860,9 +1004,61 @@ void gps_setup() {
         for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_NAV5;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] CFG-NAV5 Airborne<1g: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
+      }
+
+      // ⑦ CFG-ANA-USE_ANA: AssistNow Autonomous の有効・無効（settings.h の GNSS_USE_ANA）
+      // ★ 0 のときも「無効」を書き込む。BBR に残った以前の「有効」を消すため。
+      {
+        const unsigned char cmd_on[]  = UBLOX_CFG_ANA_ON;
+        const unsigned char cmd_off[] = UBLOX_CFG_ANA_OFF;
+        const unsigned char* cmd = GNSS_USE_ANA ? cmd_on : cmd_off;
+        delay(50);
+        for (unsigned i = 0; i < sizeof(cmd_on); i++) GPS_SERIAL.write(cmd[i]);
+      }
+      {
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_ANA;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] CFG-ANA-USE_ANA="); Serial.print(GNSS_USE_ANA);
+        Serial.print(": "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+      // ⑧ NAV-AOPSTATUS を 1Hz で出力（有効なときだけ。GPS DETAIL と log.txt 用）
+      if (GNSS_USE_ANA) {
+        { const unsigned char cmd[] = UBLOX_AOPSTATUS_1HZ;
+          delay(50);
+          for (unsigned i = 0; i < sizeof(cmd); i++) GPS_SERIAL.write(cmd[i]); }
+        bool got_ack = ubxWaitAck(600);
+        if (!got_ack) cfg_ng |= GPS_CFGNG_AOPS;
+        #ifdef DEBUG_GBX_NMEA
+        Serial.print("[UBX] NAV-AOPSTATUS 1Hz: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
+        #endif
+      }
+
+      // 設定結果を log.txt に 1 行だけ残す。
+      // ACK が返らなかった場合、症状は「レートが半分」「方位の追従が鈍い」程度で
+      // 画面には何も出ないため、後から原因に辿り着く唯一の手掛かりになる。
+      {
+        gps_cfg_ok = ((cfg_ng & GPS_CFGNG_ESSENTIAL) == 0);
+        const char* prt = prt_nak ? "NAK" : (prt_ack ? "ack" : "none");
+        const char* ana = GNSS_USE_ANA ? "ANA" : "ANAoff";
+        if (cfg_ng == 0) {
+          enqueueTask(createLogSdfTask("GPS CFG OK 2Hz/PVT/SAT/DOP/Air1g/%s (prt=%s)", ana, prt));
+        } else {
+          enqueueTask(createLogSdfTask("GPS CFG NO ACK:%s%s%s%s%s%s%s (prt=%s)",
+            (cfg_ng & GPS_CFGNG_RATE) ? " RATE2HZ"    : "",
+            (cfg_ng & GPS_CFGNG_PVT)  ? " NAVPVT"     : "",
+            (cfg_ng & GPS_CFGNG_SAT)  ? " NAVSAT"     : "",
+            (cfg_ng & GPS_CFGNG_DOP)  ? " NAVDOP"     : "",
+            (cfg_ng & GPS_CFGNG_NAV5) ? " AIRBORNE1G" : "",
+            (cfg_ng & GPS_CFGNG_ANA)  ? (GNSS_USE_ANA ? " ANA" : " ANAOFF") : "",
+            (cfg_ng & GPS_CFGNG_AOPS) ? " AOPSTATUS"  : "",
+            prt));
+        }
       }
 
       #ifdef DEBUG_GBX_NMEA
@@ -874,11 +1070,11 @@ void gps_setup() {
     // 偶数回=9600（工場出荷デフォルト）、奇数回=38400（CFG-PRT 設定済み想定）で交互に試す。
     if(setupcounter % 2 == 0){
       DEBUG_PLN(20251025,"UBX retry: 9600bps (factory default)");
-      GPS_SERIAL.setFIFOSize(1024);
+      GPS_SERIAL.setFIFOSize(GPS_SERIAL_FIFO_SIZE);
       GPS_SERIAL.begin(gps_current_baudrate = 9600);
     }else{
       DEBUG_PLN(20251025,"UBX retry: 38400bps (UBX mode)");
-      GPS_SERIAL.setFIFOSize(1024);
+      GPS_SERIAL.setFIFOSize(GPS_SERIAL_FIFO_SIZE);
       GPS_SERIAL.begin(gps_current_baudrate = 38400);
     }
   }
@@ -1093,6 +1289,7 @@ bool is_demo_active() {
 // （前の地点の軌跡が地球の反対側に残っていると描画が破綻するため）。
 void set_demo_site(demo_site_t site) {
   if (site >= DEMO_SITE_COUNT) site = DEMO_OFF;
+  const bool was_demo = (demo_site != DEMO_OFF);
   demo_site = site;
   if (site != DEMO_OFF) {
     demo_lat = DEMO_SITES[site].lat;
@@ -1101,6 +1298,10 @@ void set_demo_site(demo_site_t site) {
   }
   latlon_manager.reset();
   reset_maxgs();  // モード切替時に最大 G/S をリセット
+  // AUTO10K の折返しフェーズ。デモ中は仮想機体の位置で動くので、抜けるときに
+  // 実飛行の値へ戻す（リプレイと同じ理由。apply_auto10k_status() のコメント参照）。
+  // 地点から地点へ移るときは戻さない ― デモはそのまま続いているため。
+  if (was_demo && site == DEMO_OFF) auto10k_restore_flight_phase();
 }
 
 void next_demo_site() {
@@ -1215,10 +1416,14 @@ bool getReplayMode(){
 void set_replaymode(bool replaymode){
   const bool was_replay = replaymode_gpsoff;
   replaymode_gpsoff = replaymode;
+  // ★ 再生を始めるときに必ず落とす。Core1 の init_replay() も先頭で落とすが、
+  //   あちらは非同期なので、Core0 が先に前回の true を読んで
+  //   **正常なファイルの再生をいきなり解除してしまう**競合が起きる。
+  if (replaymode) replay_file_bad = REPLAY_BAD_NONE;
   reset_maxgs();  // モード切替時に最大 G/S をリセット
   // AUTO10K の折返しフェーズ。再生中は再生データで動くので、抜けるときに
   // 実飛行の値へ戻す（再生した過去フライトのフェーズを持ち込まないため）。
-  if (was_replay && !replaymode) auto10k_leave_replay();
+  if (was_replay && !replaymode) auto10k_restore_flight_phase();
   // 別ファイルに切り替えた直後に、前のファイルの高度/上昇率/気圧を
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;
@@ -1290,6 +1495,7 @@ void gps_loop(int id) {
       }
       #endif
       gps_connection = true;
+      gps_last_byte_ms = millis();
       process_ubx(c);  // UBX バイナリパーサーに渡す
     } else {
       // リプレイモードでは実 GPS シリアルデータを単純に読み捨てる。
@@ -1297,6 +1503,7 @@ void gps_loop(int id) {
       //   128 以上のバイトが常に流れるため GPS 再初期化を繰り返してしまっていた）
       (void)c;
       gps_connection = true;
+      gps_last_byte_ms = millis();
     }
   }
 
@@ -1309,6 +1516,23 @@ void gps_loop(int id) {
   // ============================================================
   if (replaymode_gpsoff) {
     static unsigned long last_replay_request = 0;
+
+    // ★ リプレイを続けられない。ここで解除しないと、下の「末尾ならループ再生」が
+    //   延々と init を繰り返し、地図が固まったまま SD を叩き続ける。
+    //   通常の GPS に戻して音で知らせ、理由をログに残す（対処が違うため）。
+    if (replay_file_bad != REPLAY_BAD_NONE) {
+      const uint8_t reason = replay_file_bad;
+      replay_file_bad = REPLAY_BAD_NONE;
+      set_replaymode(false);
+      set_replay_filename("");
+      // 最低保証音量は付けない。設定画面で操作した直後に鳴るので持ち主はその場にいる
+      // （60 は「離れていても電池切れに気づける」ための仕組みで、電池警告専用）。
+      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3));
+      enqueueTask(createLogSdTask(reason == REPLAY_BAD_NOSD
+                                  ? "REPLAY canceled: SD not available"
+                                  : "REPLAY canceled: file is not a flight log"));
+      return;
+    }
 
     // --- 再生時計の更新 ---
     uint32_t now = millis();
@@ -1422,11 +1646,13 @@ void try_enque_savecsv(){
 
     //リプレイは保存しない。
     if(!getReplayMode()){
+      #ifndef RELEASE
+      // 保存間隔の実測（デバッグ専用）。RELEASE では DEBUG_* が消えるので丸ごと除く。
       DEBUG_P(20250923,"SAVED!");
       static int lastsavedtime = 0;
       DEBUG_PLN(20250923,millis()-lastsavedtime);
-
       lastsavedtime = millis();
+      #endif
       int year  = ubx_year;
       int month = ubx_month;
       int day   = ubx_day;
@@ -1535,8 +1761,20 @@ int   get_maxgs_5min_hour() { return maxgs_5min_hour; }
 int   get_maxgs_5min_min()  { return maxgs_5min_min; }
 
 
+// GPS モジュールと「いま」通信できているか。
+// ★★ **一度でも受信したか、ではない。** GPS_CONN_TIMEOUT_MS のあいだバイトが
+//   届かなければ false を返す。飛行中にコネクタが抜けたり配線が切れたりしても
+//   画面が正常なまま航法を続けるのを防ぐため（表示は display_tft.cpp の
+//   draw_gnss_disconnect_warning()、ログと音は GPS_TFT_map.ino の gnss_conn_tick()）。
+// ★ 起動直後（まだ 1 バイトも来ていない）も false。従来と同じ。
+// gps_setup() 初回の UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
+bool get_gps_cfg_ok() {
+  return gps_cfg_ok;
+}
+
 bool get_gps_connection() {
-  return gps_connection;
+  if (!gps_connection) return false;
+  return (uint32_t)(millis() - gps_last_byte_ms) < GPS_CONN_TIMEOUT_MS;
 }
 bool get_gps_fix() {
   if(is_demo_active()){

@@ -79,6 +79,7 @@
   void gps_constellation_mode();
   bool get_gps_fix();
   bool get_gps_connection();
+  bool get_gps_cfg_ok();  // 起動時 UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
   int get_gps_numsat();
   double get_gps_mps();
   double get_gps_truetrack();
@@ -141,6 +142,17 @@
   bool get_replay_wind(float &speed_mps, float &dir_to_deg);
   void set_replaymode(bool replaymode);
 
-  uint32_t get_gps_fix_millis();  // 最後にGPS時刻を受信したときのmillis()（時刻推定用）
+  uint32_t get_gps_fix_millis();
+  // 測位エポック（NAV-PVT iTOW、GPS 週内時刻 ms）。
+  // ★ 「その測位をもう使ったか」の判定に使う。millis() ではなく**測位の時刻**で
+  //   判定しないと、loop() が速いときに同じ観測を何度も融合してしまう
+  //   （imu.cpp の imu_kalman_gnss_vel_update のコメント参照）。
+  uint32_t get_gps_itow_ms();
+  uint32_t get_gps_jst_yyyymmdd();   // JST の今日の日付 YYYYMMDD。0 = 時刻がまだ無い
+  // AssistNow Autonomous（GPS 自身の衛星軌道の予測）の状態。GPS DETAIL 用。
+  int  get_gps_ana_state();      // NAV-AOPSTATUS の useAOP（1=有効 0=無効 -1=まだ届いていない）
+  bool get_gps_ana_busy();       // 予測を計算中か
+  int  get_gps_ana_data_svs();   // 予測データを持っている衛星数
+  int  get_gps_ana_orbit_svs();  // いま予測軌道で測っている衛星数  // 最後にGPS時刻を受信したときのmillis()（時刻推定用）
 
 #endif

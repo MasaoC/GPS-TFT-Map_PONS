@@ -121,6 +121,11 @@ bool  attitude_yaw_from_mag();
 bool  attitude_is_static();                  // 静止判定の現在値
 float attitude_get_static_secs();            // 静止が継続している秒数
 uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回数
+// GNSS 速度観測が新鮮か（ESKF_GNSS_VEL_TIMEOUT_US 以内に来ているか）。
+// ★ false の間は**ロール・ピッチの錨が無く、風推定も止まっている**。
+//   自動ロールトリムと風推定が「飛行中の機能」であるのと同じ鮮度条件
+//   （attitude.cpp の gnss_vel_fresh）。表示側は取り消し線の判定に使う。
+bool     attitude_gnss_vel_fresh();
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう
@@ -149,6 +154,27 @@ bool attitude_take_calib_done();
 void attitude_get_level_offset(float &roll_deg, float &pitch_deg);
 void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定からの復元用
 
+// ---- 較正した日（JST の YYYYMMDD、0 = 不明）----
+// 電源が切れている間にマウントから外されると OFF_MOUNT 判定が働かない
+// （ESKF が回っていないため）。その穴を埋めるための、日付だけの弱い手がかり。
+// 「日付をまたいだ＝一度持ち帰った可能性がある」として設定画面に注意を出すのに使う。
+// 断定はしない。付けっぱなしで日をまたぐこともあるため。
+// ---- 対気速度モデル V(θ) = V0 * sqrt(K / (K + θ)) の係数 ----
+// 既定値は settings.h、実際の値は SD の settings.txt から上書きできる。
+// 機体・重量・重心で変わるので、機体ごとに SD 側で設定する運用を想定している。
+float attitude_get_airspeed_v0();
+void  attitude_set_airspeed_v0(float mps);   // V0 [m/s]
+float attitude_get_airspeed_k();
+void  attitude_set_airspeed_k(float deg);    // K [度]
+float attitude_get_airspeed_min();
+void  attitude_set_airspeed_min(float mps);  // 推定の下限 [m/s]
+float attitude_get_airspeed_max();
+void  attitude_set_airspeed_max(float mps);  // 推定の上限 [m/s]
+
+uint32_t attitude_get_calib_date();
+void     attitude_set_calib_date(uint32_t yyyymmdd);   // APPLY 直後と SD 復元から呼ぶ
+bool     attitude_calib_date_stale(uint32_t today_jst);
+
 // ---- 較正時に申告するピッチ角（画面の SET PITCH 行の値）----
 // 次に較正するときの目標値。SD に保存して次回起動でも同じ値から始められるようにする。
 float attitude_get_pitch_target();
@@ -159,6 +185,10 @@ void  attitude_set_roll_target(float deg);
 void  attitude_cycle_roll_target();
 
 // ---- マウントから外された状態 ----
+// いまこの瞬間マウントから外れた姿勢か。**ラッチしない**（attitude_needs_apply とは別物）。
+// 充電中の警告抑制に使う（GPS_TFT_map.ino の warn_muted_off_mount）。
+bool attitude_is_off_mount();
+
 // ロールかピッチが OFF_MOUNT_DEG を超えると「手に持って外した」とみなして true になり、
 // APPLY するまで戻らない。SD に保存して起動をまたいで保持する。
 bool  attitude_needs_apply();

@@ -6,7 +6,7 @@
 //           設定画面の全メニュー項目（目的地・音量・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/08/17
+// Updated : 2026/10/25
 // ============================================================
 // Handle button updates
 #include "Button.h"
@@ -113,18 +113,23 @@ bool is10K_NotAllowed_Destination(const char *name) {
 // 2. 起動からの経過秒を 5 で割った余りで別れの音声を切り替える（毎回同じにならないランダム感）。
 //    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな" 4: "強い"
 // 3. screen_mode を MODE_MAP に変えて設定画面を閉じる。
-void exit_setting(){
+// farewell=false（放置タイムアウトで閉じるとき）は 2. を鳴らさない。操作していないのに
+// 声が鳴ると何が起きたのか分からない（v7 で鞄の中でボタンが押されて開き、3 分後に
+// 「負けんな」が勝手に鳴った。v7 の 0.992）。
+void exit_setting(bool farewell){
     enqueueTask(createSaveSettingTask());
-    if((millis()/1000)%5 == 0)
-      enqueueTask(createPlayWavTask("wav/matane.wav"));
-    else if((millis()/1000)%5 == 1)
-      enqueueTask(createPlayWavTask("wav/baibai.wav"));
-    else if((millis()/1000)%5 == 2)
-      enqueueTask(createPlayWavTask("wav/arigato.wav"));
-    else if((millis()/1000)%5 == 3)
-      enqueueTask(createPlayWavTask("wav/makenna.wav"));
-    else if((millis()/1000)%5 == 4)
-      enqueueTask(createPlayWavTask("wav/tsuyoi.wav"));
+    if (farewell) {
+      if((millis()/1000)%5 == 0)
+        enqueueTask(createPlayWavTask("wav/matane.wav"));
+      else if((millis()/1000)%5 == 1)
+        enqueueTask(createPlayWavTask("wav/baibai.wav"));
+      else if((millis()/1000)%5 == 2)
+        enqueueTask(createPlayWavTask("wav/arigato.wav"));
+      else if((millis()/1000)%5 == 3)
+        enqueueTask(createPlayWavTask("wav/makenna.wav"));
+      else if((millis()/1000)%5 == 4)
+        enqueueTask(createPlayWavTask("wav/tsuyoi.wav"));
+    }
     screen_mode = MODE_MAP;
 }
 
@@ -271,7 +276,7 @@ Setting menu_settings[] = {
         sound_volume += 20;
       }
 
-      if(sound_volume >= 101)
+      if(sound_volume > SOUND_VOLUME_MAX)
         sound_volume = 0;
       else if(sound_volume <= 0)
         sound_volume = 0;
@@ -318,7 +323,7 @@ Setting menu_settings[] = {
       } else {
         vario_volume += 20;
       }
-      if (vario_volume >= 101) vario_volume = 0;
+      if (vario_volume > SOUND_VOLUME_MAX) vario_volume = 0;
       if (vario_volume <= 0) vario_volume = 0;
     },
     nullptr,

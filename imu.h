@@ -41,6 +41,18 @@ void imu_setup();
 // loop() から毎回呼ぶ（ノンブロッキング）。
 void imu_update();
 
+// ---- BNO085 の校正（DCD）（v7 の 0.976）----
+// 保存記録は**本体フラッシュ（EEPROM 領域）**に置く。SD ではない。理由は imu.cpp。
+// 目的は「一度も校正していない機体」を画面で明示すること。
+bool     imu_cal_ready();              // acc==3 かつ gyr==3。SAVE を許す条件
+bool     imu_cal_saved_ever();         // 過去に一度でも手動保存したか
+uint32_t imu_cal_saved_date();         // 最後に保存した日 YYYYMMDD。0 = 日付不明
+uint16_t imu_cal_save_count();         // 手動保存の回数
+bool     imu_cal_autosave_on();        // 今回の起動でチップの自動保存を許したか
+// 手動保存。yyyymmdd は 0 可（GNSS 時刻が無いとき）。**長押しからのみ呼ぶこと**
+// （中で EEPROM.commit() が Core1 を止め、割り込みを切って数十 ms ブロックする）。
+bool     imu_save_calibration(uint32_t yyyymmdd);
+
 // ---- 気圧高度による Kalman 観測更新 ----
 // MS5611 の高度が更新されたときに外部から呼ぶ。
 // airdata_update() が true を返したタイミングで get_airdata_altitude() を渡す。
@@ -66,6 +78,9 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps);
 // ---- センサー状態 ----
 // BNO085 の接続・初期化が正常に完了しているか（imu_setup() 後に確定）。
 bool get_imu_ok();
+// 起動時に BNO085 が見つかったか（載っている機体か）。途中で止まっても false にならない。
+// ★ get_imu_ok() は「いま動いているか」なので、載っているかの判定には使わないこと（本番前チェック）。
+bool get_imu_present();
 // BNO085 が正常稼働中か（接続済み かつ 直近1秒以内にデータ受信）。
 // 通信途絶時は false を返す点が get_imu_ok() と異なる。
 // update_vario() の MS5611 フォールバック判定に使用する。
@@ -97,6 +112,11 @@ float get_imu_mag_hz();    // MAGNETIC_FIELD_CALIBRATED
 // 生ジャイロ・生加速度の直近値（設定画面の IMU/ESKF ページで実測値を見るため）
 void get_imu_raw_gyro(float g[3]);   // [rad/s]
 void get_imu_raw_accel(float a[3]);  // [m/s²]
+// BNO085 が申告するセンサー精度（0=信頼できない〜3=高）。sv.status の下位 2bit。
+uint8_t  get_imu_acc_accuracy();
+uint8_t  get_imu_gyr_accuracy();
+uint8_t  get_imu_mag_accuracy();
+uint8_t  get_imu_cal_cfg();      // 動的校正の設定（SH2_CAL_*）。0xFF = 未取得
 
 // ---- Kalman パラメーターの動的変更（実行時チューニング用）----
 void imu_set_kf_params(float q_vel, float q_bias, float R);
