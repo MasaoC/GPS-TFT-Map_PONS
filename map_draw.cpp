@@ -290,15 +290,20 @@ static void draw_track_layer() {
   }
 }
 
-// パイロンの印（小さなひし形）
-static void draw_pylon_mark(double (*pt)[2], uint16_t color) {
-  int x, y;
-  map_project(pt[0][0], pt[0][1], &x, &y);
-  const int r = 5;
-  draw_map_line(x, y - r, x + r, y, 2, color);
-  draw_map_line(x + r, y, x, y + r, 2, color);
-  draw_map_line(x, y + r, x - r, y, 2, color);
-  draw_map_line(x - r, y, x, y - r, 2, color);
+// パイロンのアイコン（オレンジの三角コーン・黒枠。v7 仕様）
+static void draw_pylon_icon(int x, int y) {
+  if (x < -10 || x >= MAP_W + 10 || y < -10 || y >= MAP_H + 10) return;
+  backscreen.fillTriangle(x - 3, y, x + 3, y, x, y - 9, COLOR_ORANGE);
+  backscreen.drawTriangle(x - 3, y, x + 3, y, x, y - 9, COLOR_BLACK);
+}
+
+// プラットホーム（PLA）のロゴアイコン（青ベース＋黄色スロープ＋赤デッキ。v7 仕様）
+static void draw_plathome_icon(int x, int y) {
+  if (x < -10 || x >= MAP_W + 10 || y < -10 || y >= MAP_H + 10) return;
+  backscreen.fillRect(x - 3, y - 2, 6, 8, COLOR_BLUE);
+  backscreen.fillTriangle(x - 2, y - 1, x + 1, y - 1, x, y + 3, COLOR_YELLOW);
+  backscreen.drawLine(x - 2, y - 2, x + 2, y - 2, COLOR_RED);
+  backscreen.drawLine(x - 2, y - 3, x + 2, y - 3, COLOR_RED);
 }
 
 // 折り返しの目安の円（PLATHOME 中心・半径 PLA_TURN_CIRCLE_KM。v7 と同じ）。72 角形。
@@ -329,7 +334,7 @@ static void calculatePointFromBearing(double lat1, double lon1, double bearing_r
   lon2 = rad2deg(lon2);
 }
 
-// 琵琶湖のコース。プラットホームから北・南パイロンと竹島への線、パイロンの印、折り返しの円。
+// 琵琶湖のコース基準線。プラットホームから北・南パイロンと竹島への線、センターライン、折り返しの円。
 // 座標は navdata.cpp の course_*（SD の override_pilon_coordinate.csv で上書きできる）。
 static void draw_course_layer(const MapView& v) {
   if (v.scale <= SCALE_SMALL_GMAP) return;
@@ -355,10 +360,24 @@ static void draw_course_layer(const MapView& v) {
   map_project(out_lat, out_lon, &cl_out_x, &cl_out_y);
   draw_map_line(cl_in_x, cl_in_y, cl_out_x, cl_out_y, 2, COLOR_ORANGE);
 
-  draw_pylon_mark(course_npilon, COLOR_RED);
-  draw_pylon_mark(course_spilon, COLOR_RED);
-  draw_pylon_mark(course_1km, COLOR_RED);
   if (v.scale >= 3.0f) draw_turn_circle();   // 縮尺が小さすぎると点になるので zoom9 以上だけ
+}
+
+// 琵琶湖コースのアイコン（PLA スタート台ロゴ、北・南・1km パイロンコーンマーク）。
+// マゼンタの誘導ラインより後に呼び、線でアイコンが隠れないようにする（v7 仕様）。
+static void draw_course_marks(const MapView& v) {
+  if (v.scale <= SCALE_SMALL_GMAP) return;
+  if (!check_within_latlon(0.6, 0.6, v.lat, course_pla[0][0], v.lon, course_pla[0][1])) return;
+  int pla_x, pla_y, n_x, n_y, s_x, s_y, p1k_x, p1k_y;
+  map_project(course_pla[0][0], course_pla[0][1], &pla_x, &pla_y);
+  map_project(course_npilon[0][0], course_npilon[0][1], &n_x, &n_y);
+  map_project(course_spilon[0][0], course_spilon[0][1], &s_x, &s_y);
+  map_project(course_1km[0][0], course_1km[0][1], &p1k_x, &p1k_y);
+
+  draw_pylon_icon(n_x, n_y);
+  draw_pylon_icon(s_x, s_y);
+  draw_pylon_icon(p1k_x, p1k_y);
+  draw_plathome_icon(pla_x, pla_y);
 }
 
 // A→B を B の先へ distance km 延ばした点 C（B で見た A→B の方位で）
@@ -655,6 +674,7 @@ void draw_map_screen(const MapView& v) {
   draw_track_layer();
   draw_course_layer(v);
   draw_destination_layer(v);
+  draw_course_marks(v);
   draw_km_circles();
   draw_ownship_layer(v);
   draw_compass_layer(v.up);
@@ -680,4 +700,5 @@ void draw_startup_map(float scale) {
   MapView v = {};
   v.lat = map_frame.cLat; v.lon = map_frame.cLon; v.scale = scale;
   draw_course_layer(v);
+  draw_course_marks(v);
 }
