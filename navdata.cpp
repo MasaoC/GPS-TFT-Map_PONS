@@ -48,6 +48,37 @@ LatLonManager latlon_manager;
 double deg2rad(double degrees) {
   return degrees * PI / 180.0;
 }
+double rad2deg(double rad) {
+  return rad * (180.0 / PI);
+}
+
+#define RADIUS_EARTH_KM 6371.0  // Earth's radius in kilometers
+
+// Function to calculate distance using Haversine formula
+double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  lat1 = deg2rad(lat1);
+  lon1 = deg2rad(lon1);
+  lat2 = deg2rad(lat2);
+  lon2 = deg2rad(lon2);
+  double dlon = lon2 - lon1;
+  double dlat = lat2 - lat1;
+  double a = pow(sin(dlat / 2), 2) + cos(lat1) * cos(lat2) * pow(sin(dlon / 2), 2);
+  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return RADIUS_EARTH_KM * c;
+}
+
+double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2) {
+  double deltaLon = lon2 - lon1;
+  return atan2(sin(deltaLon) * cos(lat2), cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(deltaLon));
+}
+
+double true_course_deg(double lat1, double lon1, double lat2, double lon2) {
+  double tc = rad2deg(calculateTrueCourseRad(deg2rad(lat1), deg2rad(lon1), deg2rad(lat2), deg2rad(lon2)));
+  if (tc < 0) tc += 360.0;
+  if (tc >= 360.0) tc -= 360.0;
+  return tc;
+}
+
 // Function to calculate y-coordinate in Mercator projection
 double latitudeToMercatorY(double latitude) {
   double radLatitude = deg2rad(latitude);
@@ -69,9 +100,49 @@ mapdata extramaps[MAX_MAPDATAS];
 int current_id = 100;
 int mapdata_count = 0;
 
-mapdata extradestinations[MAX_DESTINATIONS];
-int destinations_count = 0;
-int currentdestination = -1;
+double course_pla[1][2]       = { { PLA_LAT, PLA_LON } };
+double course_npilon[1][2]    = { { PILON_NORTH_LAT, PILON_NORTH_LON } };
+double course_spilon[1][2]    = { { PILON_SOUTH_LAT, PILON_SOUTH_LON } };
+double course_1km[1][2]       = { { PILON_1KM_LAT, PILON_1KM_LON } };
+double course_takeshima[1][2] = { { TAKESHIMA_LAT, TAKESHIMA_LON } };
+volatile bool course_override_loaded = false;
+static double dest_shinura[1][2] = { { SHINURA_LAT, SHINURA_LON } };
+
+// 内蔵の目的地。SD が無くても目的地への方位と距離が出るよう、最初から入れておく
+// （以前は SD の初期化に成功したときだけ入れていて、SD が無いと目的地が 1 つも無かった）。
+// SD の destinations.csv の分は mysd.cpp の init_destinations() がこの後ろに足す。
+// コースの地点は上の course_* を指すので、SD での上書きがそのまま目的地にも効く。
+#define BUILTIN_DESTINATIONS 5
+mapdata extradestinations[MAX_DESTINATIONS] = {
+  { 50, (char*)"PLATHOME",  1, course_pla },
+  { 51, (char*)"N_PILON",   1, course_npilon },
+  { 52, (char*)"S_PILON",   1, course_spilon },
+  { 53, (char*)"TAKESHIMA", 1, course_takeshima },
+  { 54, (char*)"SHINURA",   1, dest_shinura },
+};
+int destinations_count = BUILTIN_DESTINATIONS;
+int currentdestination = 0;
+
+int auto10k_status = AUTO10K_AWAY;
+int auto10k_status_flight = AUTO10K_AWAY;
+
+extern int destination_mode;  // GPS_TFT_map.ino
+
+int nav_effective_mode() {
+  if (destination_mode == DMODE_AUTO10K)
+    return auto10k_status == AUTO10K_INTO ? DMODE_FLYINTO : DMODE_FLYAWAY;
+  return destination_mode;
+}
+
+const char* nav_mode_text() {
+  if (destination_mode == DMODE_AUTO10K) return auto10k_status == AUTO10K_INTO ? "10K INTO" : "10K AWAY";
+  if (destination_mode == DMODE_FLYAWAY) return "FLY AWAY FRM";
+  return "FLY INTO";
+}
+
+bool is10k_not_allowed(const char* name) {
+  return strcmp(name, "N_PILON") == 0 || strcmp(name, "S_PILON") == 0 || strcmp(name, "TAKESHIMA") == 0;
+}
 
 char* strdup(const char* str) {
     if (str == nullptr) return nullptr;  // Handle nullptr case

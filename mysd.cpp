@@ -27,14 +27,12 @@ int filesecond;
 
 mutex_t sdMutex;
 volatile bool core0NeedsAccess = false;
-volatile bool abortTask = false;
 TaskQueue taskQueue;
 mutex_t taskQueueMutex;
 Task currentTask;
 
 
-void load_mapimage(double center_lat, double center_lon,int zoomlevel);
-void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second);
+void saveCSV(const CsvRow& row);
 void log_sd(const char* text);
 void log_sdf(const char* format, ...);
 void dateTime(uint16_t* date, uint16_t* time);
@@ -71,92 +69,68 @@ Task createLogSdfTask(const char* format, ...) {
 }
 
 
+// createLogSdfTask() を積むのと同じことを、Task を呼び出し側のスタックに置かずに行う。
+// ★ Core0 のスタックは 4KB しかない（SCRATCH_Y。あふれると Core1 のスタックを壊す）。Task は 264 バイトあり、
+//   enqueueTask(createLogSdfTask(...)) を 1 つの関数に何か所も書くと戻り値の分がそれぞれ積まれて、
+//   gps_loop() だけで 2.8KB になっていた。ログはこの関数（noinline）の中でだけ Task を作る。
+__attribute__((noinline)) bool enqueueLogSdf(const char* format, ...) {
+  loop0pos = 40;
+  Task task;
+  task.type = TASK_LOG_SDF;
+  va_list args;
+  va_start(args, format);
+  vsnprintf(task.logSdfArgs.buffer, sizeof(task.logSdfArgs.buffer), format, args);
+  va_end(args);
+  task.logSdfArgs.format = "%s";
+  return enqueueTask(task);
+}
+
+
 // Initializer for TASK_SAVE_CSV
-Task createSaveCsvTask(float latitude, float longitude, float gs, int mtrack, int year, int month, int day, int hour, int minute, int second) {
+Task createSaveCsvTask(const CsvRow& row) {
   loop0pos = 39;
   Task task;
   task.type = TASK_SAVE_CSV;
-  task.saveCsvArgs.latitude = latitude;
-  task.saveCsvArgs.longitude = longitude;
-  task.saveCsvArgs.gs = gs;
-  task.saveCsvArgs.mtrack = mtrack;
-  task.saveCsvArgs.year = year;
-  task.saveCsvArgs.month = month;
-  task.saveCsvArgs.day = day;
-  task.saveCsvArgs.hour = hour;
-  task.saveCsvArgs.minute = minute;
-  task.saveCsvArgs.second = second;
+  task.saveCsvArgs = row;
   return task;
 }
 
-// Initializer for TASK_LOAD_MAPIMAGE
-Task createLoadMapImageTask(double center_lat, double center_lon, int zoomlevel) {
-  loop0pos = 38;
-  Task task;
-  task.type = TASK_LOAD_MAPIMAGE;
-  task.loadMapImageArgs.center_lat = center_lat;
-  task.loadMapImageArgs.center_lon = center_lon;
-  task.loadMapImageArgs.zoomlevel = zoomlevel;
-  return task;
-}
 
+// キューに積まれている（まだ実行していない）同じ種類のタスクを消す（v7 と同じ実装）。
+// ★ 以前は tail から head へ、つまり「空いている側」（実行済みの古いスロット）を走査して head を戻していた。
+//   古いスロットに同じ種類が残っていると、先頭のタスクが 2 回実行されたり、満杯近くでは積んだタスクが
+//   全部消えたりしえた（設定の保存を積むたびに起こりうる）。
 void removeDuplicateTask(TaskType type) {
   loop0pos = 29;
   mutex_enter_blocking(&taskQueueMutex);
   loop0pos = 30;
-  int newTail = taskQueue.tail;
-  int originalHead = taskQueue.head;
-
-  // Iterate through the queue from tail to head
-  while (newTail != originalHead) {
-    // Check if the task at the current position matches the type to be removed
+  int read = taskQueue.head;
+  int write = taskQueue.head;
+  while (read != taskQueue.tail) {
     loop0pos = 31;
-    if (taskQueue.tasks[newTail].type == type) {
-      // Shift the remaining tasks forward in the queue
-      int current = newTail;
-      loop0pos = 32;
-      while (current != originalHead) {
-          int next = (current + 1) % TASK_QUEUE_SIZE;
-          loop0pos = 33;
-          taskQueue.tasks[current] = taskQueue.tasks[next];
-          current = next;
-      }
-      loop0pos = 34;
-      // Update the head pointer to reflect the removal
-      taskQueue.head = (taskQueue.head - 1 + TASK_QUEUE_SIZE) % TASK_QUEUE_SIZE;
-      loop0pos = 35;
-      originalHead = taskQueue.head; // Update the new head after the removal
-    } else {
-      // Move to the next task in the queue
-      loop0pos = 36;
-      newTail = (newTail + 1) % TASK_QUEUE_SIZE;
+    if (taskQueue.tasks[read].type != type) {
+      if (write != read) taskQueue.tasks[write] = taskQueue.tasks[read];
+      write = (write + 1) % TASK_QUEUE_SIZE;
     }
+    read = (read + 1) % TASK_QUEUE_SIZE;
   }
+  taskQueue.tail = write;  // 消した分だけ末尾を詰める
   loop0pos = 37;
   mutex_exit(&taskQueueMutex);
 }
 
-void enqueueTaskWithAbortCheck(Task newTask) {
+void enqueueTaskWithAbortCheck(const Task& newTask) {
   loop0pos = 26;
   //Serial.println("enq task");
-  if (isTaskRunning(newTask.type) && newTask.type == TASK_LOAD_MAPIMAGE) {  // Implement this check based on your task handling
-    if(newTask.loadMapImageArgs.zoomlevel == currentTask.loadMapImageArgs.zoomlevel){
-      //Same zoom level. Meaning mapimage loading in progress, just be patient and dont add another task of loading image.
-      Serial.println("NOT enque the task.");
-      return;
-    }
-    
-    // Abort the old task with different zoomlevel = meaning user changed zoom level while loading image.
-    abortTask = true;  // Notify the running task to abort
-  }
   loop0pos = 27;
   removeDuplicateTask(newTask.type);
   loop0pos = 28;
   enqueueTask(newTask);  // Enqueue the new task
 }
 
-void enqueueTask(Task task) {
+bool enqueueTask(const Task& task) {
   loop0pos = 17;
+  bool queued = false;
   mutex_enter_blocking(&taskQueueMutex);
   loop0pos = 18;
   int nextTail = (taskQueue.tail + 1) % TASK_QUEUE_SIZE;
@@ -167,10 +141,12 @@ void enqueueTask(Task task) {
     loop0pos = 21;
     taskQueue.tail = nextTail;
     loop0pos = 22;
+    queued = true;
   }
   loop0pos = 23;
   mutex_exit(&taskQueueMutex);
   loop0pos = 24;
+  return queued;
 }
 
 bool dequeueTask(Task* task) {
@@ -193,76 +169,98 @@ bool dequeueTask(Task* task) {
 }
 
 //
-void process_mapcsv_line(String line) {
+// mapdata.csv の 1 行（名前,点の数,経度1,緯度1,経度2,緯度2,...）を地図の線に足す。
+// 戻り値: 登録したら true、行を捨てたら false。
+bool process_mapcsv_line(String line) {
   int index = 0;
   int commaIndex = line.indexOf(',');
+  if (commaIndex <= 0) return false;             // コンマが無い / 名前が空
   String name = line.substring(index, commaIndex);
   index = commaIndex + 1;
 
   commaIndex = line.indexOf(',', index);
+  if (commaIndex < 0) return false;              // 座標が無い
   int size = line.substring(index, commaIndex).toInt();
   index = commaIndex + 1;
 
+  // 点の数は CSV の値をそのまま使うので、確保する前に必ず確かめる（v7 と同じ）。
+  // 座標 1 組は短くても "0,0," の 4 文字なので、行の長さから上限が決まる。
+  // ★ 以前は確かめていなかった。壊れた mapdata.csv（巨大な値・負の値）だと new が失敗し、
+  //   例外の無いビルドでは abort() して起動しなくなる（SD を抜くまで直らない）。
+  if (size <= 0 || size > (int)(line.length() / 4)) {
+    log_sdf("ERR mapdata.csv bad size %d: %.20s", size, name.c_str());
+    return false;
+  }
+
   // Allocate memory for the coordinates
   double (*cords)[2] = new double[size][2];
+  if (cords == nullptr) return false;            // nothrow 版の new に備える
 
   for (int i = 0; i < size; i++) {
     commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
+    // 最後の点の経度より前でコンマが切れたら、点の数と合わない行として捨てる
+    if (commaIndex == -1) {
       delete[] cords;
-      return;
+      return false;
     }
     cords[i][0] = line.substring(index, commaIndex).toDouble();
     index = commaIndex + 1;
     commaIndex = line.indexOf(',', index);
     if (commaIndex == -1 && i < size - 1) {
       delete[] cords;
-      return;
+      return false;
     }
     cords[i][1] = line.substring(index, commaIndex).toDouble();
     index = commaIndex + 1;
   }
 
+  char* dupname = strdup(name.c_str()); // Duplicate string to allocate memory
+  if (dupname == nullptr) {
+    delete[] cords;
+    return false;
+  }
   extramaps[mapdata_count].id = current_id++;
-  extramaps[mapdata_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
+  extramaps[mapdata_count].name = dupname;
   extramaps[mapdata_count].size = size;
   extramaps[mapdata_count].cords = cords;
   mapdata_count++;
+  return true;
 }
 
 
-void process_destinationcsv_line(String line) {
-  int index = 0;
-  int commaIndex = line.indexOf(',');
-  String name = line.substring(index, commaIndex);
-  index = commaIndex + 1;
+// destinations.csv の 1 行（名前,緯度,経度）を目的地に足す。v7 と同じく壊れた行は捨てる。
+// ★ 以前はコンマの無い行が「名前＝行全体・座標 (0,0)」の目的地として登録されていた
+//   （String::substring() に -1 を渡すと行全体が返るため）。選ぶと誘導がギニア湾を指す。
+// 戻り値: 登録したら true、行を捨てたら false。
+bool process_destinationcsv_line(String line) {
+  const int c1 = line.indexOf(',');
+  if (c1 <= 0) return false;                    // コンマが無い / 名前が空
+  const int c2 = line.indexOf(',', c1 + 1);
+  if (c2 < 0) return false;                     // 経度が無い
 
-  int size = 1;
-  // Allocate memory for the coordinates
-  double (*cords)[2] = new double[size][2];
+  String name = line.substring(0, c1);
+  String slat = line.substring(c1 + 1, c2);
+  String slon = line.substring(c2 + 1);
+  name.trim(); slat.trim(); slon.trim();
+  if (name.length() == 0 || slat.length() == 0 || slon.length() == 0) return false;
 
-  for (int i = 0; i < size; i++) {
-    commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
-      delete[] cords;
-      return;
-    }
-    cords[i][0] = line.substring(index, commaIndex).toDouble();
-    index = commaIndex + 1;
-    commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
-      delete[] cords;
-      return;
-    }
-    cords[i][1] = line.substring(index, commaIndex).toDouble();
-    index = commaIndex + 1;
-  }
+  // 明らかな打ち間違いを弾く（toDouble() は数値でない文字列でも 0 を返す）
+  const double lat = slat.toDouble();
+  const double lon = slon.toDouble();
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+  if (lat == 0.0 && lon == 0.0) return false;
+
+  // 目的地は 1 点だけ持つ。cords[0][0]=緯度 / cords[0][1]=経度（地図ポリゴンとは順序が逆）
+  double (*cords)[2] = new double[1][2];
+  cords[0][0] = lat;
+  cords[0][1] = lon;
 
   extradestinations[destinations_count].id = current_id++;
   extradestinations[destinations_count].name = strdup(name.c_str()); // Duplicate string to allocate memory
-  extradestinations[destinations_count].size = size;
+  extradestinations[destinations_count].size = 1;
   extradestinations[destinations_count].cords = cords;
   destinations_count++;
+  return true;
 }
 
 
@@ -270,61 +268,382 @@ void init_mapdata() {
   #ifdef DISABLE_SD
     return;
   #endif
+  // setup_sd() は SD の復旧時にも呼ばれる。読めたら 2 回目からは読まない（地図を二重に足さない）。
+  static bool loaded = false;
+  if (loaded) {
+    return;
+  }
   File32 myFile = SD.open("mapdata.csv");
   if (!myFile) {
     return;
   }
+  loaded = true;
+  int added = 0, rejected = 0;
   while (myFile.available() && mapdata_count < MAX_MAPDATAS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      process_mapcsv_line(line);
+      if (process_mapcsv_line(line)) added++;
+      else rejected++;
     }
   }
   myFile.close();
+  log_sdf("MAPDATA: %d added, %d ignored", added, rejected);
 }
 
+// 内蔵の目的地（PLATHOME など）は navdata.cpp で最初から入っている。ここは SD の分を後ろに足すだけ。
+// ★ setup_sd() は SD の復旧時にも呼ばれるので、読めたら 2 回目からは読まない（二重に足さない）。
+//   以前は呼ぶたびに目的地を作り直していて、選んでいた目的地も PLATHOME に戻っていた。
 void init_destinations(){
-  destinations_count = 0;
-  currentdestination = 0;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("PLATHOME");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PLA_LAT, PLA_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("N_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PILON_NORTH_LAT, PILON_NORTH_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("W_PILON");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {PILON_WEST_LAT, PILON_WEST_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("TAKESHIMA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {TAKESHIMA_LAT, TAKESHIMA_LON} };
-  destinations_count++;
-  extradestinations[destinations_count].id = current_id++;
-  extradestinations[destinations_count].name = strdup("SHINURA");
-  extradestinations[destinations_count].size = 1;
-  extradestinations[destinations_count].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
-  destinations_count++;
-
+  static bool loaded = false;
+  if (loaded) {
+    return;
+  }
   File32 myFile = SD.open("destinations.csv");
   if (!myFile) {
     return;
   }
+  loaded = true;
+  int added = 0, rejected = 0;
   while (myFile.available() && destinations_count < MAX_DESTINATIONS) {
     String line = myFile.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      process_destinationcsv_line(line);
+      if (process_destinationcsv_line(line)) added++;
+      else rejected++;
     }
   }
   myFile.close();
+  log_sdf("DESTINATIONS: %d added, %d ignored", added, rejected);
+}
+
+// ===== パイロン座標の上書き（override_pilon_coordinate.csv。v7 と同じ）=====
+// パイロンの座標は毎年変わり得るが、大会直前にファームウェアを再ビルドするのは難しい。
+// SD のトップに override_pilon_coordinate.csv があれば、起動時にその値で上書きする。
+//   # で始まる行と空行は無視。NAME,緯度,経度 の 1 行 1 地点。書かれた地点だけが上書きされる。
+//   NAME: PLATHOME / N_PILON / S_PILON / PILON_1KM / TAKESHIMA
+// 上書きするのは navdata.cpp の course_*。内蔵の目的地・地図のパイロンと基準線・折り返しの円が
+// すべてこれを見る。Auto 10km の折り返しは「選んでいる目的地からの距離」なので PLATHOME だけが効く。
+static bool apply_pilon_override(const char* name, double lat, double lon) {
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+  if (lat == 0.0 && lon == 0.0) return false;
+  double (*p)[2] = nullptr;
+  if      (!strcmp(name, "PLATHOME"))  p = course_pla;
+  else if (!strcmp(name, "N_PILON"))   p = course_npilon;
+  else if (!strcmp(name, "S_PILON"))   p = course_spilon;
+  else if (!strcmp(name, "PILON_1KM")) p = course_1km;
+  else if (!strcmp(name, "TAKESHIMA")) p = course_takeshima;
+  else return false;
+  p[0][0] = lat;
+  p[0][1] = lon;
+  log_sdf("PILON OVERRIDE %s %.6f %.6f", name, lat, lon);
+  return true;
+}
+
+void load_pilon_override() {
+  static bool loaded = false;  // setup_sd() は SD の復旧時にも呼ばれる
+  if (loaded) return;
+  File32 f = SD.open("override_pilon_coordinate.csv");
+  if (!f) return;
+  loaded = true;
+  int applied = 0, rejected = 0;
+  char line[80];
+  while (f.fgets(line, sizeof(line)) > 0) {
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == '\r' || *p == '\n' || *p == '\0') continue;
+    char name[16];
+    double lat = 0.0, lon = 0.0;
+    if (sscanf(p, "%15[^,],%lf,%lf", name, &lat, &lon) != 3) { rejected++; continue; }
+    for (int i = (int)strlen(name) - 1; i >= 0 && (name[i] == ' ' || name[i] == '\t'); i--) name[i] = '\0';
+    if (apply_pilon_override(name, lat, lon)) applied++;
+    else rejected++;
+  }
+  f.close();
+  if (applied > 0) course_override_loaded = true;
+  log_sdf("PILON OVERRIDE: %d applied, %d ignored", applied, rejected);
+}
+
+// ===== 設定の保存（settings.txt。v7 と同じ "id:value" 形式）=====
+// 書くのは Core1（SD は Core1 専用）。中身は Core0 が createSaveSettingsTask() で写したもの。
+// 読むのは起動時に 1 回。読んだ値はここでは反映せず、Core0 が take_loaded_settings() で受け取って
+// 反映する（地図の縮尺などを Core0 が描いている最中に Core1 から書き換えないため）。
+#define SETTINGS_FILE "settings.txt"
+extern int destination_mode;   // GPS_TFT_map.ino
+extern int scaleindex;         // GPS_TFT_map.ino
+
+
+static SavedSettings loaded_settings;
+static volatile bool loaded_settings_ready = false;
+
+Task createSaveSettingsTask() {
+  Task task;
+  task.type = TASK_SAVE_SETTINGS;
+  SavedSettings& st = task.saveSettingsArgs;
+  memset(&st, 0, sizeof(st));
+  if (currentdestination >= 0 && currentdestination < destinations_count)
+    strncpy(st.destination, extradestinations[currentdestination].name, sizeof(st.destination) - 1);
+  st.navigation_mode = destination_mode;
+  st.auto10k_status = auto10k_status_flight;
+  st.upward_mode = get_upward_mode();
+  st.scaleindex = scaleindex;
+  return task;
+}
+
+static const char* navmode_name(int m) {
+  return m == DMODE_AUTO10K ? "AUTO10K" : m == DMODE_FLYAWAY ? "AWAY" : "INTO";
+}
+
+static void saveSettings(const SavedSettings& st) {
+  #ifdef DISABLE_SD
+    return;
+  #endif
+  if (!good_sd()) return;
+  // ★ 読んだ設定を Core0 がまだ反映していない間は書かない。起動直後に縮尺ボタンなどで保存が走ると、
+  //   反映前の既定値で settings.txt を上書きして、保存していた設定が消えてしまうため。
+  if (loaded_settings_ready) return;
+  SD.remove(SETTINGS_FILE);  // 古い項目が残らないよう、消してから書き直す
+  File32 f = SD.open(SETTINGS_FILE, FILE_WRITE);
+  if (!f) {
+    log_sd("ERR settings.txt write");
+    return;
+  }
+  f.print("destination:");     f.print(st.destination); f.print("\n");
+  f.print("navigation_mode:"); f.print(navmode_name(st.navigation_mode)); f.print("\n");
+  f.print("auto10k_status:");  f.print(st.auto10k_status == AUTO10K_INTO ? "INTO" : "AWAY"); f.print("\n");
+  f.print("upward_mode:");     f.print(st.upward_mode == 0 ? "TRACKUP" : "NORTHUP"); f.print("\n");
+  f.print("scaleindex:");      f.print(st.scaleindex); f.print("\n");
+  f.close();
+}
+
+static void parse_setting_line(char* line, SavedSettings& st) {
+  char* colon = strchr(line, ':');
+  if (!colon) return;
+  *colon = '\0';
+  const char* key = line;
+  const char* v = colon + 1;
+  if      (!strcmp(key, "destination"))     { strncpy(st.destination, v, sizeof(st.destination) - 1); st.destination[sizeof(st.destination) - 1] = '\0'; }
+  else if (!strcmp(key, "navigation_mode")) st.navigation_mode = !strcmp(v, "AUTO10K") ? DMODE_AUTO10K : !strcmp(v, "AWAY") ? DMODE_FLYAWAY : !strcmp(v, "INTO") ? DMODE_FLYINTO : -1;
+  else if (!strcmp(key, "auto10k_status"))  st.auto10k_status = !strcmp(v, "INTO") ? AUTO10K_INTO : !strcmp(v, "AWAY") ? AUTO10K_AWAY : -1;
+  else if (!strcmp(key, "upward_mode"))     st.upward_mode = !strcmp(v, "TRACKUP") ? 0 : !strcmp(v, "NORTHUP") ? 1 : -1;
+  else if (!strcmp(key, "scaleindex"))      st.scaleindex = (v[0] >= '0' && v[0] <= '9') ? atoi(v) : -1;
+}
+
+static void loadSettings() {
+  static bool loaded = false;  // setup_sd() は SD の復旧時にも呼ばれる。反映は起動時の 1 回だけ
+  if (loaded) return;
+  File32 f = SD.open(SETTINGS_FILE, FILE_READ);
+  if (!f) return;
+  loaded = true;
+  SavedSettings st;
+  memset(&st, 0, sizeof(st));
+  st.navigation_mode = st.auto10k_status = st.upward_mode = st.scaleindex = -1;
+  // ★ CR も行の終わりとして扱う（PC のエディタが CRLF で保存すると、値の末尾に \r が残って
+  //   文字列の比較が全部外れる。v7 で実際に起きた）。
+  char line[48];
+  int n = 0;
+  while (true) {
+    const int c = f.read();
+    if (c < 0 || c == '\n' || c == '\r') {
+      line[n] = '\0';
+      if (n > 0) parse_setting_line(line, st);
+      n = 0;
+      if (c < 0) break;
+    } else if (n < (int)sizeof(line) - 1) {
+      line[n++] = (char)c;
+    }
+  }
+  f.close();
+  loaded_settings = st;
+  __sync_synchronize();  // 中身を書き終えてから「読んだ」を立てる（Core0 が読む）
+  loaded_settings_ready = true;
+  log_sdf("SETTINGS loaded: dest=%s mode=%d 10k=%d up=%d scale=%d", st.destination,
+          st.navigation_mode, st.auto10k_status, st.upward_mode, st.scaleindex);
+}
+
+bool take_loaded_settings(SavedSettings* out) {
+  if (!loaded_settings_ready) return false;
+  __sync_synchronize();
+  *out = loaded_settings;
+  loaded_settings_ready = false;
+  return true;
+}
+
+// ===== リプレイ（SD の飛行 CSV を本体で再生する。v7 の 0.92 を v3 の大きさにしたもの）=====
+// ★ CSV は列名で解釈する（v3 0.502 までの 6 列、0.503 の 11 列、v7 の CSV のどれでも読める）。
+//   要るのは latitude / longitude / time。ほかの列は有れば使う。
+ReplayRow replay_rows[REPLAY_BUF_SIZE];
+volatile uint8_t replay_head = 0, replay_tail = 0;
+volatile bool replay_eof = false;
+volatile bool replay_bad = false;
+volatile bool replay_load_pending = false;
+volatile uint32_t replay_init_seq = 0;
+
+static char replay_files[REPLAY_MAX_FILES][REPLAY_NAME_LEN];
+static volatile int replay_files_n = 0;
+int replay_file_count() { return replay_files_n; }
+const char* replay_file_name(int i) { return (i >= 0 && i < replay_files_n) ? replay_files[i] : nullptr; }
+
+Task createReplayInitTask(const char* name) {
+  Task task;
+  task.type = TASK_REPLAY_INIT;
+  strncpy(task.replayName, name ? name : "", REPLAY_NAME_LEN - 1);
+  task.replayName[REPLAY_NAME_LEN - 1] = '\0';
+  return task;
+}
+
+// 飛行 CSV の名前か（"YYYY-MM-DD_HHMM.csv"）。設定や地図の CSV を再生しないため。
+static bool is_flight_csv_name(const char* n) {
+  if (strlen(n) != 19) return false;
+  for (int i = 0; i < 19; i++) {
+    const char c = n[i];
+    if (i == 4 || i == 7) { if (c != '-') return false; }
+    else if (i == 10) { if (c != '_') return false; }
+    else if (i == 15) { if (c != '.') return false; }
+    else if (i > 15) continue;
+    else if (c < '0' || c > '9') return false;
+  }
+  return strcasecmp(n + 15, ".csv") == 0;
+}
+
+// SD のルートの飛行 CSV を数える（起動時に 1 回。並びはディレクトリの登録順＝書き込まれた順。v7 と同じ）
+static void scan_replay_files() {
+  static bool scanned = false;
+  if (scanned) return;
+  File32 root = SD.open("/");
+  if (!root) return;
+  scanned = true;
+  File32 f;
+  int n = 0;
+  while (n < REPLAY_MAX_FILES && f.openNext(&root, O_RDONLY)) {
+    char name[32];
+    f.getName(name, sizeof(name));
+    if (!f.isDir() && is_flight_csv_name(name)) {
+      strncpy(replay_files[n], name, REPLAY_NAME_LEN - 1);
+      replay_files[n][REPLAY_NAME_LEN - 1] = '\0';
+      n++;
+    }
+    f.close();
+  }
+  root.close();
+  __sync_synchronize();  // 名前を書き終えてから数を公開する（Core0 が読む）
+  replay_files_n = n;
+  log_sdf("REPLAY files: %d", n);
+}
+
+enum { RC_LAT, RC_LON, RC_GS, RC_TT, RC_ALT, RC_NUMSAT, RC_HACC, RC_SACC, RC_DATE, RC_TIME, RC_COUNT };
+static const char* const replay_col_names[RC_COUNT] = {
+  "latitude", "longitude", "gs", "truetrack", "gnss_altitude", "numsat", "hacc", "sacc", "date", "time"
+};
+static int8_t replay_col[RC_COUNT];
+static File32 replay_file;
+static uint32_t replay_t0 = 0, replay_prev_tod = 0, replay_day_ms = 0, replay_gap_ms = 0, replay_prev_abs = 0, replay_last_t = 0;
+static bool replay_t0_valid = false;
+
+// CSV の 1 行から index 番目の欄を取り出す（前後の空白・改行は落とす）
+static bool replay_field(const char* line, int index, char* out, size_t n) {
+  if (index < 0) return false;
+  const char* p = line;
+  for (int k = 0; k < index; k++) {
+    p = strchr(p, ',');
+    if (!p) return false;
+    p++;
+  }
+  const char* e = strchr(p, ',');
+  size_t len = e ? (size_t)(e - p) : strlen(p);
+  if (len >= n) len = n - 1;
+  memcpy(out, p, len);
+  out[len] = '\0';
+  while (len > 0 && (out[len - 1] == '\r' || out[len - 1] == '\n' || out[len - 1] == ' ')) out[--len] = '\0';
+  return len > 0;
+}
+
+static float replay_float(const char* line, int col) {
+  char buf[24];
+  if (!replay_field(line, replay_col[col], buf, sizeof(buf))) return NAN;
+  return atof(buf);
+}
+
+static void replay_init(const char* name) {
+  if (replay_file) replay_file.close();
+  replay_head = 0;
+  replay_tail = 0;
+  replay_eof = false;
+  replay_bad = false;
+  replay_t0_valid = false;
+  replay_day_ms = 0;
+  replay_gap_ms = 0;
+  replay_last_t = 0;
+  if (name[0] != '\0') {
+    replay_file = SD.open(name, FILE_READ);
+    char header[200];
+    const int n = replay_file ? replay_file.fgets(header, sizeof(header)) : 0;
+    for (int c = 0; c < RC_COUNT; c++) replay_col[c] = -1;
+    if (n > 0) {
+      // 列名を大文字小文字を区別せずに探す
+      char tok[24];
+      for (int idx = 0; replay_field(header, idx, tok, sizeof(tok)); idx++) {
+        for (int c = 0; c < RC_COUNT; c++) if (strcasecmp(tok, replay_col_names[c]) == 0) replay_col[c] = idx;
+        if (strcasecmp(tok, "altitude") == 0 && replay_col[RC_ALT] < 0) replay_col[RC_ALT] = idx;  // v7 の 0.923 以前の名前
+      }
+    }
+    if (!replay_file || n <= 0 || replay_col[RC_LAT] < 0 || replay_col[RC_LON] < 0 || replay_col[RC_TIME] < 0) {
+      log_sdf("ERR REPLAY cannot play: %s", name);
+      if (replay_file) replay_file.close();
+      replay_eof = true;
+      replay_bad = true;
+    } else {
+      log_sdf("REPLAY start: %s", name);
+    }
+  }
+  __sync_synchronize();
+  replay_init_seq = replay_init_seq + 1;   // Core0 はこれが変わったのを見て再生の時計を 0 に戻す
+}
+
+// リングの空きを埋められるだけ埋める。読めない行は飛ばす。
+static void replay_load() {
+  while (replay_file && !replay_eof) {
+    const uint8_t used = (uint8_t)((replay_head - replay_tail) & (REPLAY_BUF_SIZE - 1));
+    if (used >= REPLAY_BUF_SIZE - 1) break;   // 満杯（1 スロットは空けておく）
+    char line[200];
+    if (replay_file.fgets(line, sizeof(line)) <= 0) { replay_eof = true; break; }
+    char buf[24];
+    int hh, mm, ss;
+    if (!replay_field(line, replay_col[RC_TIME], buf, sizeof(buf)) || sscanf(buf, "%d:%d:%d", &hh, &mm, &ss) != 3) continue;
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60) continue;
+    char la[24], lo[24];
+    if (!replay_field(line, replay_col[RC_LAT], la, sizeof(la)) || !replay_field(line, replay_col[RC_LON], lo, sizeof(lo))) continue;
+    ReplayRow& r = replay_rows[replay_head];
+    r.latitude = atof(la);
+    r.longitude = atof(lo);
+    if (r.latitude == 0.0 && r.longitude == 0.0) continue;
+    const uint32_t tod = ((uint32_t)hh * 3600UL + mm * 60UL + ss) * 1000UL;
+    if (replay_t0_valid && tod + 60000UL < replay_prev_tod) replay_day_ms += 86400000UL;  // 日付をまたいだ
+    replay_prev_tod = tod;
+    const uint32_t abs_ms = tod + replay_day_ms;
+    if (!replay_t0_valid) { replay_t0 = abs_ms; replay_prev_abs = abs_ms; replay_t0_valid = true; }
+    // 記録が途切れた区間（電源を切った・測位を失った）は 1 秒に詰める（何分も止まったまま再生しない）
+    if (abs_ms > replay_prev_abs + 5000UL) replay_gap_ms += abs_ms - replay_prev_abs - 1000UL;
+    replay_prev_abs = abs_ms;
+    // 時刻が少し戻った行（記録の乱れ）は前の行と同じ時刻にする。
+    // ★ そのまま引くと 0 より前になって uint32_t が回り込み、そこで再生が止まったままになる。
+    const int32_t t = (int32_t)(abs_ms - replay_t0 - replay_gap_ms);
+    r.t_ms = (t < (int32_t)replay_last_t) ? replay_last_t : (uint32_t)t;
+    replay_last_t = r.t_ms;
+    r.gs = replay_float(line, RC_GS);
+    r.truetrack = replay_float(line, RC_TT);
+    r.altitude = replay_float(line, RC_ALT);
+    r.hacc = replay_float(line, RC_HACC);
+    r.sacc = replay_float(line, RC_SACC);
+    const float ns = replay_float(line, RC_NUMSAT);
+    r.numsat = isnan(ns) ? -1 : (int)ns;
+    r.year = 0;
+    if (replay_field(line, replay_col[RC_DATE], buf, sizeof(buf))) sscanf(buf, "%d-%d-%d", &r.year, &r.month, &r.day);
+    r.hour = hh; r.minute = mm; r.second = ss;
+    __sync_synchronize();   // 行を書き終えてから head を進める（Core0 が読む）
+    replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
+  }
+  replay_load_pending = false;
 }
 
 void setup_sd(){
@@ -354,7 +673,10 @@ void setup_sd(){
     SdFile::dateTimeCallback(dateTime);
     log_sd("SD INIT");
     init_mapdata();
+    load_pilon_override();   // 目的地より先（内蔵の目的地は course_* を指しているので、順序は表示だけの問題）
     init_destinations();
+    loadSettings();          // 目的地の後（目的地を名前で探すのは Core0 だが、SD の目的地が出そろってから渡す）
+    scan_replay_files();
   }
 }
 
@@ -392,20 +714,21 @@ void loop1() {
         break;
       case TASK_SAVE_CSV:
         loop1pos = 6;
-        saveCSV(
-          currentTask.saveCsvArgs.latitude, currentTask.saveCsvArgs.longitude,
-          currentTask.saveCsvArgs.gs, currentTask.saveCsvArgs.mtrack,
-          currentTask.saveCsvArgs.year, currentTask.saveCsvArgs.month,
-          currentTask.saveCsvArgs.day, currentTask.saveCsvArgs.hour,
-          currentTask.saveCsvArgs.minute, currentTask.saveCsvArgs.second
-        );
+        saveCSV(currentTask.saveCsvArgs);
         break;
-      case TASK_LOAD_MAPIMAGE:
-        loop1pos = 7;
-        load_mapimage(
-          currentTask.loadMapImageArgs.center_lat, currentTask.loadMapImageArgs.center_lon,
-          currentTask.loadMapImageArgs.zoomlevel
-        );
+      case TASK_REPLAY_INIT:
+        loop1pos = 12;
+        replay_init(currentTask.replayName);
+        break;
+      case TASK_REPLAY_LOAD:
+        loop1pos = 13;
+        replay_load();
+        break;
+      case TASK_SAVE_SETTINGS:
+        loop1pos = 11;
+        saveSettings(currentTask.saveSettingsArgs);
+        break;
+      case TASK_NONE:
         break;
     }
     loop1pos = 8;
@@ -457,9 +780,11 @@ void log_sd(const char* text){
   // if the file opened okay, write to it:
   if (logFile) {
     loop1pos = 102;
-    char logtext[100];   // array to hold the result.
+    // log_sdf() は 256 バイトまで整形してくるので、それより大きくして snprintf で切る
+    // （以前は 100 バイトに sprintf していて、長い行で Core1 のスタックを壊しえた）。
+    char logtext[280];
     loop1pos = 103;
-    sprintf(logtext,"%d:%s",(int)(millis()/1000),text);
+    snprintf(logtext, sizeof(logtext), "%d:%s",(int)(millis()/1000),text);
     loop1pos = 104;
     logFile.println(logtext);
     loop1pos = 105;
@@ -495,7 +820,7 @@ void log_sdf(const char* format, ...){
 
 
 
-void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int month, int day, int hour, int minute, int second) {
+void saveCSV(const CsvRow& r) {
   loop1pos = 200;
   #ifdef DISABLE_SD
     return;
@@ -520,19 +845,24 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   loop1pos = 202;
 
   //Run only once.
-  if(fileyear == 0 && year != 0){
-    fileyear = year;
-    filemonth = month;
-    fileday = day;
-    filehour = hour;
-    fileminute = minute;
-    filesecond = second;
+  if(fileyear == 0 && r.year != 0){
+    fileyear = r.year;
+    filemonth = r.month;
+    fileday = r.day;
+    filehour = r.hour;
+    fileminute = r.minute;
+    filesecond = r.second;
   }
   loop1pos = 203;
 
   char csv_filename[30];
-  sprintf(csv_filename, "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
-  log_sdf("%d:%s",millis(),csv_filename);
+  snprintf(csv_filename, sizeof(csv_filename), "%04d-%02d-%02d_%02d%02d.csv", fileyear, filemonth, fileday,filehour,fileminute);
+  // ファイル名は起動ごとに 1 つなので、記録も最初の 1 回だけ（以前は毎秒 log2.txt に書いていた）
+  static bool filename_logged = false;
+  if (!filename_logged) {
+    filename_logged = true;
+    log_sdf("CSV %s", csv_filename);
+  }
   loop1pos = 204;
 
   File32 csvFile = SD.open(csv_filename, FILE_WRITE);
@@ -540,32 +870,19 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
 
   if (csvFile) {
     if(!headerWritten){
-      csvFile.println("latitude,longitude,gs,TrueTrack,date,time");
+      // 列名は v7 にそろえてある（v7 のリプレイ・ツールは列名で読む）。hAcc / sAcc は v3 で足した列。
+      csvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,voltage,numsat,date,time,hAcc,sAcc");
       headerWritten = true;
     }
     loop1pos = 206;
 
-    csvFile.print(latitude, 6);
-    csvFile.print(",");
-    csvFile.print(longitude, 6);
-    csvFile.print(",");
-    csvFile.print(gs, 1);
-    csvFile.print(",");
-    csvFile.print(ttrack);
-    csvFile.print(",");
-
-    // Format date as YYYY-MM-DD
-    char date[11];
-    sprintf(date, "%04d-%02d-%02d", year, month, day);
-    csvFile.print(date);
-    csvFile.print(",");
-
-    loop1pos = 207;
-
-    // Format time as HH:MM:SS
-    char time[9];
-    sprintf(time, "%02d:%02d:%02d", hour, minute, second);
-    csvFile.println(time);
+    char line[160];
+    char volt[8] = "";
+    if (!isnan(r.voltage)) snprintf(volt, sizeof(volt), "%.2f", r.voltage);
+    snprintf(line, sizeof(line), "%.7f,%.7f,%.2f,%.1f,%.1f,%s,%d,%04d-%02d-%02d,%02d:%02d:%02d,%.1f,%.2f",
+             r.latitude, r.longitude, r.gs, r.truetrack, r.altitude, volt, r.numsat,
+             r.year, r.month, r.day, r.hour, r.minute, r.second, r.hacc, r.sacc);
+    csvFile.println(line);
 
     loop1pos = 208;
     csvFile.close();
@@ -580,308 +897,6 @@ void saveCSV(float latitude, float longitude,float gs,int ttrack, int year, int 
   loop1pos = 209;
 }
 
-// Define BMP header structures
-struct bmp_file_header_t {
-  uint16_t signature;       // 2 bytes: should be 'BM'
-  uint32_t file_size;       // 4 bytes: total file size
-  uint16_t reserved[2];     // 4 bytes: reserved, should be 0
-  uint32_t image_offset;    // 4 bytes: offset to image data
-};
-
-struct bmp_image_header_t {
-  uint32_t header_size;         // 4 bytes: header size (40 bytes for BITMAPINFOHEADER)
-  uint32_t image_width;         // 4 bytes: width of the image in pixels
-  uint32_t image_height;        // 4 bytes: height of the image in pixels
-  uint16_t color_planes;        // 2 bytes: number of color planes (should be 1)
-  uint16_t bits_per_pixel;      // 2 bytes: bits per pixel (1, 4, 8, 16, 24, 32)
-  uint32_t compression_method;  // 4 bytes: compression method (0 for no compression)
-  uint32_t image_size;          // 4 bytes: size of the image data
-  uint32_t horizontal_resolution;  // 4 bytes: horizontal resolution (pixels per meter)
-  uint32_t vertical_resolution;    // 4 bytes: vertical resolution (pixels per meter)
-  uint32_t colors_in_palette;      // 4 bytes: number of colors in the palette
-  uint32_t important_colors;       // 4 bytes: number of important colors
-};
-
-
-
-
-double pixelsPerDegree(int zoom) {
-  // Google Maps API approximation: pixels per degree at the given zoom level
-  // Zoom 5 is used as the base reference in this example
-  return 256 * pow(2, zoom) / 360.0;
-}
-
-double pixelsPerKM_zoom(int zoom){
-  return pixelsPerDegree(zoom)/KM_PER_DEG_LAT;//px/deg / (km/deg) = px /km
-}
-
-double pixelsPerDegreeLat(int zoom,double latitude) {
-  // Calculate pixels per degree for latitude
-  return pixelsPerDegree(zoom) / cos(radians(latitude)); // Reference latitude
-}
-
-
-// Function to round a value to the nearest 5 degrees
-double roundToNearestXDegrees(double x, double value) {
-  return round(value / x) * x;
-}
-
-TFT_eSprite gmap_sprite = TFT_eSprite(&tft);
-bool init_gmap = false;
-volatile bool gmap_loaded = false;
-volatile bool new_gmap_loaded = false;
-char lastsprite_id[20] = "\0";
-int last_start_x,last_start_y = 0;
-
-void load_mapimage(double center_lat, double center_lon,int zoomlevel) {
-  loop1pos = 300;
-  DEBUG_PLN(20240828,"load mapimage begin");
-  //Setting up resolution of bmp image according to zoomlevel.
-  double round_degrees = 0.0;
-  if(zoomlevel == 5) round_degrees = 12.0;
-  else if(zoomlevel == 7) round_degrees = 3.0;
-  else if(zoomlevel == 9) round_degrees = 0.8;
-  else if(zoomlevel == 11) round_degrees = 0.2;
-  else if(zoomlevel == 13) round_degrees = 0.05;
-
-  loop1pos = 301;
-  //Invalid zoomleel
-  if(round_degrees == 0.0){
-    gmap_loaded = false;
-    return;
-  }
-  loop1pos = 302;
-
-  double map_lat,map_lon;
-  // Round latitude and longitude to the nearest 5 degrees
-  map_lat = roundToNearestXDegrees(round_degrees, center_lat);
-  map_lon = roundToNearestXDegrees(round_degrees, center_lon);
-  
-  loop1pos = 303;
-  // Calculate pixel coordinates for given latitude and longitude
-  int center_x = (int)(320.0 + (center_lon - map_lon) * pixelsPerDegree(zoomlevel));
-  int center_y = (int)(320.0 - (center_lat - map_lat) * pixelsPerDegreeLat(zoomlevel,center_lat));
-  // Calculate top-left corner of 240x240 region
-  int start_x = center_x - 120;
-  int start_y = center_y - 120;
-
-  loop1pos = 304;
-
-  char current_sprite_id[36];
-  int maplat4 = round(map_lat*100);
-  int maplon5 = round(map_lon*100);
-  sprintf(current_sprite_id,"%2d%4d%5d%3d%3d",zoomlevel,maplat4,maplon5,start_x,start_y);
-
-  loop1pos = 305;
-
-  //Already loaded.
-  if(strcmp(current_sprite_id,lastsprite_id) == 0 && gmap_loaded){
-    loop1pos = 306;
-    //if(rotation != 0){
-      //tft.setPivot(SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
-      //gmap_sprite.pushRotated(-rotation);
-    //}
-    //else
-    //  gmap_sprite.pushSprite(0, 40);
-    return;
-  }
-
-  loop1pos = 307;
-  
-  //Check to scroll bmp
-  bool samefile = true;
-  for(int i = 0; i< 11; i++){
-    if(current_sprite_id[i] != lastsprite_id[i]){
-      samefile = false;
-      break;
-    }
-  }
-  int scrollx = 0;
-  int scrolly = 0;
-  //If exact same file already loaded.
-  if(samefile && gmap_loaded){
-    scrollx = (start_x-last_start_x);
-    scrolly = (start_y-last_start_y);
-  }
-
-  loop1pos = 308;
-  strcpy(lastsprite_id,current_sprite_id);
-
-  char filename[36];
-  sprintf(filename, "z%d/%04d_%05d_z%d.bmp", zoomlevel,maplat4,maplon5,zoomlevel);
-
-  loop1pos = 309;
-
-  // Open BMP file
-  File32 bmpImage = SD.open(filename, FILE_READ);
-  if (!bmpImage) {
-    gmap_loaded = false;
-    return;
-  }
-  loop1pos = 310;
-
-  // Read the file header
-  bmp_file_header_t fileHeader;
-  bmpImage.read((uint8_t*)&fileHeader.signature, sizeof(fileHeader.signature));
-  bmpImage.read((uint8_t*)&fileHeader.file_size, sizeof(fileHeader.file_size));
-  bmpImage.read((uint8_t*)fileHeader.reserved, sizeof(fileHeader.reserved));
-  bmpImage.read((uint8_t*)&fileHeader.image_offset, sizeof(fileHeader.image_offset));
-
-  loop1pos = 311;
-
-  // Check signature
-  if (fileHeader.signature != 0x4D42) { // 'BM' in little-endian
-    bmpImage.close();
-    gmap_loaded = false;
-    return;
-  }
-
-  loop1pos = 312;
-
-  // Image header (assuming 640x640, 16-bit RGB565 BMP file)
-  bmp_image_header_t imageHeader;
-  bmpImage.read((uint8_t*)&imageHeader.header_size, sizeof(imageHeader.header_size));
-  bmpImage.read((uint8_t*)&imageHeader.image_width, sizeof(imageHeader.image_width));
-  bmpImage.read((uint8_t*)&imageHeader.image_height, sizeof(imageHeader.image_height));
-  bmpImage.read((uint8_t*)&imageHeader.color_planes, sizeof(imageHeader.color_planes));
-  bmpImage.read((uint8_t*)&imageHeader.bits_per_pixel, sizeof(imageHeader.bits_per_pixel));
-  bmpImage.read((uint8_t*)&imageHeader.compression_method, sizeof(imageHeader.compression_method));
-  bmpImage.read((uint8_t*)&imageHeader.image_size, sizeof(imageHeader.image_size));
-  bmpImage.read((uint8_t*)&imageHeader.horizontal_resolution, sizeof(imageHeader.horizontal_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.vertical_resolution, sizeof(imageHeader.vertical_resolution));
-  bmpImage.read((uint8_t*)&imageHeader.colors_in_palette, sizeof(imageHeader.colors_in_palette));
-  bmpImage.read((uint8_t*)&imageHeader.important_colors, sizeof(imageHeader.important_colors));
-
-
-  loop1pos = 313;
-
-  if (imageHeader.image_width != 640 || imageHeader.image_height != 640 || imageHeader.bits_per_pixel != 16) {
-    bmpImage.close();
-    gmap_loaded = false;
-    return;
-  }
-
-  loop1pos = 314;
-
-  // Create the 240x240 sprite
-  if(!gmap_sprite.created()){
-    gmap_sprite.setColorDepth(16);
-    gmap_sprite.createSprite(240, 240);
-  }
-  int tloadbmp_start = millis();
-
-  loop1pos = 315;
-
-  //From nowon, gmap under edit. so unload gmap.
-  gmap_loaded = false;
-
-  //Scroll
-  if(scrollx != 0 || scrolly != 0){
-    //gmap_sprite is already loaded.
-    // Step 1: Horizontal Scroll
-
-    if (scrollx != 0) {
-        gmap_sprite.setScrollRect(0, 0, 240, 240);
-        gmap_sprite.scroll(-scrollx, 0);
-
-        // Horizontal filling
-        int x_start = scrollx > 0 ? 240 - scrollx : 0;
-        int x_end = scrollx > 0 ? 240 : -scrollx;
-
-        for (int y = 0; y < 240; y++) {
-            int bmp_y = last_start_y + y;//Y must be old start_y since we have not scrolled vertically yet.
-            if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
-            if(abortTask)
-              break;
-            bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2 + x_start * 2);
-            for (int x = x_start; x < x_end; x++) {
-                int bmp_x = start_x + x;
-                if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
-
-                // Read pixel data byte by byte
-                uint16_t color = bmpImage.read(); // Read low byte
-                color |= (bmpImage.read() << 8);  // Read high byte
-                gmap_sprite.drawPixel(x, y, color);
-            }
-        }
-    }
-
-    // Step 2: Vertical Scroll
-    if (scrolly != 0) {
-        gmap_sprite.scroll(0, -scrolly);
-
-        // Vertical filling
-        int y_start = scrolly > 0 ? 240 - scrolly : 0;
-        int y_end = scrolly > 0 ? 240 : -scrolly;
-
-        for (int y = y_start; y < y_end; y++) {
-            if(abortTask)
-              break;
-            int bmp_y = start_y + y;
-            if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
-            bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2);
-            for (int x = 0; x < 240; x++) {
-                int bmp_x = start_x + x;
-                if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
-
-                // Read pixel data byte by byte
-                uint16_t color = bmpImage.read(); // Read low byte
-                color |= (bmpImage.read() << 8);  // Read high byte
-                gmap_sprite.drawPixel(x, y, color);
-            }
-        }
-    }
-    DEBUG_P(20240815,"scroll x/y/load time=");
-    DEBUG_P(20240815,scrollx);
-    DEBUG_P(20240815,"/");
-    DEBUG_P(20240815,scrolly);
-    DEBUG_P(20240815,"/");
-    DEBUG_P(20240815,millis()-tloadbmp_start);
-    DEBUG_PLN(20240815,"ms");
-  }
-  // scrollx and scrolly is zero = New file loading.
-  else{
-    
-    for (int y = 0; y < 240; y++) {
-      if(abortTask)
-        break;
-      int bmp_y = start_y + y;
-      if (bmp_y < 0 || bmp_y >= 640) continue; // Skip out-of-bound rows
-      bmpImage.seek(fileHeader.image_offset + (640 - bmp_y - 1) * 640 * 2 + start_x * 2);
-      for (int x = 0; x < 240; x++) {
-        int bmp_x = start_x + x;
-        if (bmp_x < 0 || bmp_x >= 640) continue; // Skip out-of-bound columns
-        // Read pixel data byte by byte
-        uint16_t color = bmpImage.read();           // Read low byte
-        color |= (bmpImage.read() << 8);            // Read high byte
-        gmap_sprite.drawPixel(x, y, color);
-      }
-    }
-  }
-
-  loop1pos = 318;
-  DEBUG_P(20240815,"bmp load time=");
-  DEBUG_P(20240815,millis()-tloadbmp_start);
-  DEBUG_PLN(20240815,"ms");
-  
-  bmpImage.close();
-  
-  loop1pos = 319;
-  if(abortTask){
-    DEBUG_PLN(20240828,"aborted task! gmap unloaded");
-    gmap_loaded = false;
-    abortTask = false;
-    return;
-  }
-
-  last_start_x = start_x;
-  last_start_y = start_y;
-  gmap_loaded = true;
-  new_gmap_loaded = true;
-
-  loop1pos = 320;
-
-  DEBUG_PLN(20240828,"gmap_loaded! new_gmap_loaded!");
-}
+// 地図画像（SD の BMP）の読み込みは 0.503 で廃止した。地図はフラッシュ内蔵のベクタ地図（src/vectormap.cpp）。
 
 

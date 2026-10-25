@@ -34,24 +34,11 @@
 
   extern Setting settings[];
 
-  struct cord_tft{
-    int x;
-    int y;
-
-    //xr_offset は、画面右端を狭めるオプション。これによって改行してはいけない状況での、isOutsideTftを実行可能。
-    bool isOutsideTft(){
-      return x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT;
-    }
-  };
-
-  enum stroke_group{
-    STRK_PILONLINE,STRK_MAP1,STRK_SEALAND,STRK_OTHER,STRK_TRACK,STRK_TARGETLINE,STRK_TARGETLINE2
-  };  
-
   enum text_id{
     SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_TITLE,SETTING_BRIGHTNESS,SETTING_DEMOBIWA,SETTING_UPWARD,SETTING_GPSDETAIL,SETTING_MAPDETAIL,SETTING_EXIT,
+    SETTING_MAPSCALE,SETTING_REPLAY,SETTING_REPLAYSPEED,
     ND_MPS,ND_MPS_LGND,ND_SATS,ND_MT,ND_DIST_PLAT,ND_DESTNAME,ND_TIME,ND_DESTMODE,ND_MC_PLAT,ND_LAT,ND_LON,ND_DEGPERSEC_VAL,ND_DEGPERSEC_TEX,ND_BATTERY,
-    ND_SEARCHING,ND_GPSDOTS,ND_GPSCOND,COUNTER,
+    ND_MAXGS,ND_ACC,COUNTER,
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -69,63 +56,51 @@
   #define COLOR_LIGHT_BLUE 0x3dbf
   #define COLOR_PINK TFT_PINK
 
+  // 目的地へ「向かう（INTO）」か「離れる（AWAY）」かの文字の色（v7 と同じ）。
+  // AWAY は誘導の向きを 180 度反転させるので、取り違えると矢印が真逆を指す。文字だけだと似ていて
+  // 見分けにくいので色を分ける。Auto 10km と通常のモードで同じ配色にして「青なら目的地の方へ」と読める。
+  // ★ 白の背景なので明るいオレンジ（COLOR_ORANGE）は使わない（ほとんど見えない）。
+  #define COLOR_NAV_INTO COLOR_BLUE
+  #define COLOR_NAV_AWAY COLOR_DARKORANGE
+
   extern TFT_eSPI tft;
-  extern bool fresh_display;
   extern int screen_brightness;
-  
+
 #endif
-
-// Function to convert x, y coordinates on the TFT screen to latitude and longitude
-
-cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection);
-Coordinate xyToLatLon(int x, int y, float mapCenterLat, float mapCenterLon, float mapScale, float mapUpDirection,int mapshiftdown);
-// Function to calculate the distance between two points (latitude and longitude) using an optimized formula
 
 
 void draw_loading_image();
 void draw_sdinfo();
-void draw_nogmap();
 void draw_gpsinfo();
 void setup_tft();
 void clean_display();
-void clean_map();
 
 
 void tft_change_brightness(int increment);
 void toggle_mode();
 bool is_trackupmode();
 bool is_northupmode();
+void set_upward_mode(int mode);   // 0=TRACK UP, 1=NORTH UP（SD の設定を戻すとき）
+int get_upward_mode();
 
 
-void redraw_compass(float up,int col,int bgcolor);
-void draw_compass(float truetrack, uint16_t col);
-void draw_nomapdata();
-void draw_gpsdetail(bool redraw,int page);
-void draw_maplist_mode(bool redraw,int maplist_page);
+bool draw_gpsdetail(bool redraw,int page);         // 描き直したら true
+bool draw_maplist_mode(bool redraw,int maplist_page); // 描き直したら true
 void draw_setting_mode(bool redraw, int selectedLine, int cursorLine);
+
+// 電源の知らせ（電源経路の異常・高温での充電。power.cpp が判断、ここは描くだけ）。
+#define POWER_NOTICE_Y_MAP 86                    // 地図: バンク警告（46〜82）のすぐ下
+#define POWER_NOTICE_Y_SUB (SCREEN_HEIGHT - 64)  // 設定・GPS 詳細・地図一覧: 下端（GPS 詳細の日時の行より上）
+void draw_power_notice(int y, bool force);
+void draw_power_status(bool force);              // 設定画面の最下行に電源の生の値
+void draw_readiness(bool force);                 // 設定画面の右上に本番前チェック（readiness.cpp）
+// Auto 10km の切り替わりの知らせ。地図の上端（ヘッダのすぐ下）に出す。TRACK UP の自機は下寄りなので、
+// 進行方向の地図の真ん中をふさがない位置。バンク警告と同じ段だが、両方が同時に出ることはまず無い。
+#define AUTO10K_NOTICE_Y 52
+bool draw_auto10k_notice(bool force);            // 時間が終わって消す必要があれば true
 void draw_bankwarning();
 void draw_degpersecond(double degpersecond);
-
-
-void drawThickLine(int x0, int y0, int x1, int y1, int thickness, uint16_t color);
-void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);
-void draw_flyawayfrom(double dest_lat,double dest_lon, double center_lat, double center_lon, float scale, float up);
-void draw_track(double center_lat,double center_lon,float scale,float up);
-void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
-void draw_Japan(double center_lat,double center_lon,float scale,float up);
-void draw_Shinura(double center_lat,double center_lon,float scale,float up);
-void draw_Biwako(double center_lat,double center_lon,float scale,float up);
-void draw_Osaka(double center_lat,double center_lon,float scale,float up);
-bool draw_circle_km(float scale, float km);
-void draw_km_circle(float scale);
 void startup_demo_tft();
-void draw_map(stroke_group id, float mapUpDirection, double center_lat, double center_lon,float mapScale, const mapdata* mp,uint16_t color);
-void fill_sea_land(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
-void erase_triangle();
-void draw_triangle();
-void draw_pilon_takeshima_line(double mapcenter_lat, double mapcenter_lon,float scale, float upward);
-
 
 
 int mod( int x, int y );
-

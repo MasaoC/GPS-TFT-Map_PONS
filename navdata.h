@@ -26,6 +26,16 @@
   extern LatLonManager latlon_manager;
 
 
+  // 度 → ラジアン。距離・方位の計算は double で行う
+  // （以前は display_tft.cpp に float 版があり、緯度経度が float に丸められていた）。
+  double deg2rad(double degrees);
+  double rad2deg(double rad);
+  // 2 点間の大円距離 [km]（Haversine）
+  double calculateDistance(double lat1, double lon1, double lat2, double lon2);
+  // 1 から 2 への真方位 [rad]（引数はラジアン。-PI..PI）
+  double calculateTrueCourseRad(double lat1, double lon1, double lat2, double lon2);
+  // 1 から 2 への真方位 [deg]（引数は度。0 以上 360 未満、四捨五入しない）
+  double true_course_deg(double lat1, double lon1, double lat2, double lon2);
   // Function to calculate y-coordinate in Mercator projection
   double latitudeToMercatorY(double latitude);
   bool check_within_latlon(double latdif,double londif,double lat1,double lat2,double lon1,double lon2);
@@ -44,8 +54,12 @@
   #define PLA_LON 136.254333
   #define PILON_NORTH_LAT 35.377878
   #define PILON_NORTH_LON 136.189907
-  #define PILON_WEST_LAT 35.274220
-  #define PILON_WEST_LON 136.136183
+  // 南パイロン。公式ルールの呼称は「南」。以前は西パイロン(W_PILON)と呼んでいた（座標は同じ）。
+  #define PILON_SOUTH_LAT 35.274220
+  #define PILON_SOUTH_LON 136.136183
+  // 1km パイロン（復路の折り返し。v7 と同じ座標）
+  #define PILON_1KM_LAT 35.297961
+  #define PILON_1KM_LON 136.243624
 
 
   
@@ -86,6 +100,24 @@
   extern mapdata extradestinations[MAX_DESTINATIONS];
   extern int destinations_count;
   extern int currentdestination;
+
+  // コースの地点の実際に使う座標。既定値は上の #define で、SD の override_pilon_coordinate.csv が
+  // あれば起動時に上書きする（mysd.cpp の load_pilon_override()）。内蔵の目的地・地図のパイロンと
+  // 基準線・折り返しの円がすべてこれを見るので、1 か所直せば全部が一致して変わる。
+  // ★ 目的地の cords と同じ形（[0][0]=緯度, [0][1]=経度）。地図ポリゴンとは順序が逆。
+  extern double course_pla[1][2], course_npilon[1][2], course_spilon[1][2], course_1km[1][2], course_takeshima[1][2];
+  extern volatile bool course_override_loaded;   // SD から上書きしたか（地図一覧の表示用）
+
+  // Auto 10km（DMODE_AUTO10K）の折り返しのフェーズ
+  #define AUTO10K_AWAY 0
+  #define AUTO10K_INTO 1
+  extern int auto10k_status;          // 表示中のフェーズ（デモ中は仮想の位置で動く）
+  extern int auto10k_status_flight;   // 実際の位置でのフェーズ（SD に保存する値）
+  // 誘導に使う向き（DMODE_FLYINTO / DMODE_FLYAWAY）。Auto 10km はフェーズで置き換える。
+  int nav_effective_mode();
+  const char* nav_mode_text();        // 地図の下に出す文字（FLY INTO / FLY AWAY FRM / 10K AWAY / 10K INTO）
+  // Auto 10km にしてはいけない目的地（パイロン・竹島。v7 と同じ）。そこから 10km 離れる誘導は意味が無い。
+  bool is10k_not_allowed(const char* name);
 
 
 

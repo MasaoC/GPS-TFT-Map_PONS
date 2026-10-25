@@ -1,0 +1,61 @@
+地図データのライセンス / Map Data License
+==========================================
+
+このリポジトリは 2 種類のライセンスで構成されています。
+
+  * ソースコード (*.ino, *.cpp, *.h, tools/*.py など) : MIT License → LICENSE を参照
+  * 地図データ (vectormap_data.cpp)                     : ODbL 1.0  → 本ファイル
+
+Open Database License (ODbL) 1.0 の 4.5(a) は Collective Database の免除を定めており、
+ODbL のデータベースを他のライセンスの著作物と併せて配布することを認めています。
+そのため、ファームウェアのソースコードは MIT のままで問題ありません。
+
+
+対象データ
+----------
+
+  vectormap_data.cpp
+
+  Map data (c) OpenStreetMap contributors
+  https://www.openstreetmap.org/copyright
+
+  Licensed under the Open Database License (ODbL) v1.0
+  https://opendatacommons.org/licenses/odbl/1-0/
+
+このファイルは tools/vectormap/build_vectormap.py により OpenStreetMap のデータから
+生成されたもので、ODbL における Derivative Database（派生データベース）に該当します。
+（座標列を格納したベクタ形式であり、ラスタ画像のような Produced Work ではありません。）
+
+
+再配布時の義務
+--------------
+
+1. Share Alike (ODbL 4.4)
+   vectormap_data.cpp およびそれを改変したものは、ODbL 1.0 のまま配布してください。
+   MIT には変更できません。
+
+2. Attribution (ODbL 4.3)
+   "OpenStreetMap" への帰属表示を保持してください。本ファームウェアでは
+   起動時のスプラッシュ画面に以下を表示しています:
+       Map data (c) OpenStreetMap contributors - ODbL 1.0
+
+3. Access to Derivative Database (ODbL 4.6)
+   受領者が派生データベースを入手できる状態にしてください。本リポジトリでは
+   生成済みの vectormap_data.cpp と、生成スクリプト tools/vectormap/build_vectormap.py の
+   両方を公開することでこれを満たしています。
+
+4. No Technological Measures (ODbL 4.7)
+   データの取り出しを妨げる技術的保護手段を加えないでください。
+
+
+ライセンス全文
+--------------
+
+ODbL 1.0 の全文は以下で参照できます。
+
+  https://opendatacommons.org/licenses/odbl/1-0/
+  https://www.openstreetmap.org/copyright
+
+OSMF の Attribution Guidelines（帰属表示の具体的な要件）:
+
+  https://osmfoundation.org/wiki/Licence/Attribution_Guidelines
