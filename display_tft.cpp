@@ -7,10 +7,10 @@
 #include "map_draw.h"
 #include "src/vectormap.h"
 #include "font_data.h"
-#include "hardware/adc.h"
-#include <cstring>  // for strlen and strcpy
+#include <cstring>
 #include <string>
-#include <cstdlib>  // for malloc and free
+#include <cstdlib>
+#include "hardware/adc.h"
 
 #define AA_FONT_SMALL NotoSansBold15
 #define NM_FONT_MEDIUM Arial_Black22

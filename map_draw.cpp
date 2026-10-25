@@ -20,7 +20,10 @@ MapFrame map_frame;
 uint32_t map_frame_ms_last = 0, map_frame_ms_max = 0;
 static bool backscreen_ok = false;
 
+static const uint8_t* s_map_font = nullptr;
+
 void map_setup(const uint8_t* font) {
+  s_map_font = font;
   backscreen.setColorDepth(16);
   backscreen_ok = backscreen.createSprite(MAP_W, MAP_H) != nullptr;
   if (!backscreen_ok) {
@@ -661,6 +664,44 @@ static void draw_degpersec(float dps) {
   backscreen.print("deg/s");
 }
 
+// backscreen の最上部に小さなテキスト（GS・TT ラベル、sAcc）を描画する（v7 仕様）。
+// trackwarning_until が有効な間は「TT」ラベルを赤/黒で点滅させてコース警告を示す。
+extern unsigned long trackwarning_until;
+static void draw_gs_track() {
+  backscreen.setTextWrap(false);
+
+  // 右上: TT (True Track) ラベル。コース警告中は 1 秒おきに赤/黒点滅
+  const int hdr_lx = MAP_W - 40;
+  if (trackwarning_until > millis()) {
+    const bool blink_red = (millis() / 1000) % 2 == 0;
+    backscreen.setTextColor(blink_red ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+    backscreen.drawString("TT", hdr_lx, 1);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  } else {
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.drawString("TT", hdr_lx, 1);
+  }
+
+  // 左上: GS (Ground Speed) ラベル
+  backscreen.drawString("GS", 1, 1);
+
+  // sAcc（速度精度）は GS のすぐ右。常時見るものではないので内蔵フォント最小サイズで控えめに表示
+  const int gsw = backscreen.textWidth("GS");
+  const int gsh = backscreen.fontHeight();
+  const float sacc_mps = get_gps_sacc_mps();
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  backscreen.setTextColor((sacc_mps < 0.0f) ? COLOR_GRAY
+                        : (sacc_mps < 1.0f) ? COLOR_GREEN
+                        : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED);
+  backscreen.setCursor(1 + gsw + 4, 1 + (gsh - 8) / 2);
+  if (sacc_mps < 0.0f) backscreen.print("sAcc--");
+  else                 backscreen.printf("sAcc%.2f", sacc_mps);
+
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  if (s_map_font) backscreen.loadFont(s_map_font);
+}
+
 void draw_map_screen(const MapView& v) {
   static bool reported = false;
   if (!backscreen_ok) {
@@ -686,6 +727,7 @@ void draw_map_screen(const MapView& v) {
     snprintf(buf, sizeof(buf), "REPLAY x%d", v.replay_speed);
     draw_label(v.demo ? 64 : 4, MAP_H - 24, buf);
   }
+  draw_gs_track();
   draw_gps_status(v);
   backscreen.pushSprite(0, MAP_Y);
   map_frame_ms_last = millis() - t0;
