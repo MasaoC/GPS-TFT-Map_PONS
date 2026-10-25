@@ -460,18 +460,18 @@ static void draw_km_circles() {
   }
 }
 
-// 方位の文字（真方位。画面の上の方位 up に合わせて回す）
+// 方位の文字（真方位。画面の上の方位 up に合わせて回す。N は赤、E/S/W は黒。v7 仕様）
 static void draw_compass_layer(float up) {
   const MapFrame& f = map_frame;
   const int dist = is_northupmode() ? (MAP_H / 2 - 12) : 73;
-  static const char* const names[8] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
-  backscreen.setTextColor(COLOR_BLACK);
-  for (int i = 0; i < 8; i++) {
-    const float a = (i * 45.0f - up) * DEG_TO_RAD;
+  static const char* const names[4] = { "N", "E", "S", "W" };
+  for (int i = 0; i < 4; i++) {
+    const float a = (i * 90.0f - up) * DEG_TO_RAD;
     const int x = f.cx + (int)(sinf(a) * dist);
     const int y = f.cy - (int)(cosf(a) * dist);
-    if (x < 4 || x > MAP_W - 16 || y < 2 || y > MAP_H - 14) continue;
-    backscreen.setCursor(x - (i % 2 ? 8 : 4), y - 7);
+    if (x < 4 || x > MAP_W - 14 || y < 2 || y > MAP_H - 14) continue;
+    backscreen.setTextColor(i == 0 ? COLOR_RED : COLOR_BLACK);
+    backscreen.setCursor(x - 4, y - 7);
     backscreen.print(names[i]);
   }
 }
