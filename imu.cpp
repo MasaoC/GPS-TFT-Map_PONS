@@ -939,9 +939,11 @@ static void imu_i2c_bus_recover() {
 
     myWire.begin();
     myWire.setClock(I2C0_HZ);
-    enqueueTask(createLogSdfTask("BNO085 i2c bus recover -> SDA=%d SCL=%d",
-                                 (int)digitalRead(I2C0_SDA_PIN),
-                                 (int)digitalRead(I2C0_SCL_PIN)));
+    if (millis() > 3000) {
+        enqueueTask(createLogSdfTask("BNO085 i2c bus recover -> SDA=%d SCL=%d",
+                                     (int)digitalRead(I2C0_SDA_PIN),
+                                     (int)digitalRead(I2C0_SCL_PIN)));
+    }
 }
 
 // ============================================================
@@ -955,37 +957,25 @@ void imu_setup() {
     // 画面が「NEVER SAVED」と嘘をつかないように**、成否によらずここで 1 回読む（読むだけ）。
     imu_cal_rec_load();
 
-    // ---- NRST によるハードウェアリセット（上のステートマシンを待ち切る）----
+    // ---- NRST によるハードウェアリセット ----
     // ※ NRST は負論理: LOW でリセットアサート、HIGH で通常動作。
-    // ※ setup() で INPUT_PULLUP 設定済みだが、ここで OUTPUT に切り替えてパルスを出す。
     imu_reset_blocking();
     DEBUG_PLN(20260315, "[IMU] BNO085 NRST pulse done, waiting boot.");
 
     // I2C バスは airdata_wire_begin() で初期化済みのため begin()/setClock() は不要。
     // myWire (i2c0, GPIO32/33) をそのまま使う。
 
-    // BNO085 への接続確認（アドレス応答チェック）。
-    // ★ v6 は BNO085 が載っていない機体の方が多い（β 試験版だけ）。ここで弾いて
-    //   下のリトライ（1 回 410ms のリセットを挟む）で起動を遅くしないようにしている。
-    // ★ v7 ではこの確認と begin_I2C() の中の detected() が背中合わせの 2 回の探査になり、
-    //   1 回目は通って 2 回目が落ちる形で起動に失敗していた（v7 の 0.976）。v6 でも
-    //   1 回目の begin_I2C() は落ち得るが、下のリトライ（リセットで間が空く）で通る。
-    myWire.beginTransmission(IMU_I2C_ADDR);
-    if (myWire.endTransmission() != 0) {
-        DEBUGW_PLN(20260315, "[IMU] BNO085 not found on I2C bus. Check wiring/address.");
-        bno085_ok = false;
-        enqueueTask(createLogSdTask("BNO085 not found"));
-        return;
-    }
-    bno085_present = true;   // 応答した。この先の初期化に失敗しても「載っている機体」として扱う
-
     // Adafruit_BNO08x でセンサーを初期化する。
-    // ★ **リトライのたびに NRST を打ち直し、その前にバスを解くこと**（v7 の 0.975 / 0.976）。
-    //   sh2_open() はリセットを送らず、ブート直後に積まれた advertisement を待つだけ
-    //   （bno08x(-1) なのでライブラリも NRST を触らない）。1 回目が advertisement を
-    //   消費してしまうと、**単に待ち直すだけのリトライは必ず失敗する**。
-    //   リセットを挟めば advertisement が積み直されるので、2 回目以降も意味を持つ。
-    //   ★ NRST より先にバスを解く。握られたままだとリセット後の最初の転送も失敗する。
+    // ★ 手前で myWire.beginTransmission() などの探査を叩かないこと（v7 の 0.976。0.951v6 で v6 も外した）。
+    //   arduino-pico の 0 バイト書き込みは I2C ペリフェラルを使わず、ピンを SIO に切り替えて
+    //   ビットバンギングで叩く（Wire.cpp の _probe）。begin_I2C() の中の detected() も
+    //   **まったく同じ探査をする**ので、手前で叩くと背中合わせの 2 回になり、
+    //   **1 回目は通って 2 回目が落ちる**ことがある（v7 では 5 回中 4〜5 回、init_step=1）。
+    //   0.950v6 までは手前の 1 回が落ちると「not found」でリトライも復旧もせずに終わっていた。
+    //   居ないチップを _init() の前に弾く役目は detected() が果たす。
+    // ★ リトライのたびに NRST を打ち直し、その前にバスを解くこと（v7 の 0.975 / 0.976）。
+    //   sh2_open() はブート直後に積まれた advertisement を待つだけなので、1 回目が
+    //   それを消費すると、単に待ち直すだけのリトライは必ず失敗する。
     bool imu_begun = false;
     for (int retry = 0; retry < 3; retry++) {
         if (retry > 0) {
@@ -996,16 +986,28 @@ void imu_setup() {
         }
         if (imu_bus_begin()) {
             imu_begun = true;
+            bno085_present = true;
             break;
+        }
+        // 1 回目でアドレス自体が応答せず（pons_init_fail_step == 1）、
+        // かつ EEPROM 校正記録も無い場合は「BNO085 非搭載機」と判断して即座に抜ける。
+        // これにより非搭載機の起動時間を一切遅くしない。
+        if (retry == 0 && pons_init_fail_step == 1 && _cal_rec.saved == 0) {
+            DEBUGW_PLN(20260315, "[IMU] BNO085 not found on I2C bus (non-present board).");
+            bno085_present = false;
+            bno085_ok      = false;
+            return;
         }
     }
     if (!imu_begun) {
         DEBUGW_PLN(20260315, "[IMU] BNO085 begin_I2C() FAILED.");
-        // ★ どこで失敗したかを残す（1 = アドレスが応答しない、2 = sh2_open、3 = getProdIds）。
-        //   "FAILED" だけだと「チップが居ない」のか「SHTP で喋れない」のかが分からない。
-        enqueueTask(createLogSdfTask("BNO085 begin_I2C FAILED init_step=%u sh2=%ld SDA=%d SCL=%d",
-                                     pons_init_fail_step, (long)pons_init_fail_status,
-                                     (int)digitalRead(I2C0_SDA_PIN), (int)digitalRead(I2C0_SCL_PIN)));
+        // ★ EEPROM に校正記録がある機体、またはアドレスは応答した（step >= 2）機体なら
+        //   「載っている機体」としてマークし、起動後のバックグラウンド復旧に託す。
+        if (_cal_rec.saved > 0 || pons_init_fail_step >= 2) {
+            bno085_present = true;
+        } else {
+            bno085_present = false;
+        }
         bno085_ok = false;
         return;
     }
@@ -1144,6 +1146,7 @@ static void imu_try_recovery() {
         _acc_cnt  = 0;
 #endif
         bno085_ok = true;
+        bno085_present = true;
         enqueueTask(createLogSdfTask("[IMU] BNO085 recovery OK (begin %lums)",
                                      (unsigned long)(millis() - imu_recov_wait_ms)));
         DEBUGW_PLN(20260325, "[IMU] BNO085 recovery OK");
@@ -1190,9 +1193,10 @@ void imu_update() {
     }
 
     if (!bno085_ok) {
-        // 起動後に一度でもデータを受信した（= 途中で途絶えた）場合のみ復旧を試みる。
-        // _last_sensor_event_ms==0 は最初から未接続 → 復旧試行しない。
-        if (_last_sensor_event_ms > 0) {
+        // 起動後に一度でもデータを受信した（= 途中で途絶えた）場合、
+        // または BNO085 搭載機（bno085_present）である場合に復旧を試みる。
+        // ※ BNO085 非搭載機（!bno085_present かつ _last_sensor_event_ms==0）では復旧試行しない。
+        if (_last_sensor_event_ms > 0 || bno085_present) {
             imu_try_recovery();  // 内部で1分レート制限
         }
         // BNO085 なし: KF 初期化済みなら恒速モデル（a_k=0）で共分散を伝播させる。

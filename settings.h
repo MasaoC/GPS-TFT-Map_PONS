@@ -15,10 +15,11 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261025
+#define BUILDDATE 20261027
 // v6 ハード向けの版。v7（PONSv7 ブランチ 0.950〜0.995）と番号が重ならないよう "v6" を付ける。
-// 0.949 に v7 の改良を移植したもの（README の「v7 からの移植（2026-10）」）。
-#define BUILDVERSION "0.950v6"
+// 0.950v6 は 0.949 に v7 の改良を移植したもの（README の「v7 からの移植（2026-10）」）。
+// 0.951v6 は BNO085 が起動時に応答しなかったときも、起動後に復旧を試みるようにした。
+#define BUILDVERSION "0.951v6"
 #define VERSION_TEXT "Version 6"
 
 

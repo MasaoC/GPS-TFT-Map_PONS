@@ -274,7 +274,7 @@ void setup(void) {
   //   ★ BNO085 の有無も残す（v6 は β 機だけが載せている。見つからなかった機体は "none"）。
   //   ★ 置き場所はここ。setup() の冒頭に出すと、Core1 の mutex_init より先に
   //     enqueueTask を呼ぶ窓に入る（setup1() の冒頭コメント参照）。
-  //     imu_setup() / airdata_setup() のログ（"BNO085 not found" など）が数行先に並ぶが、
+  //     imu_setup() / airdata_setup() のログ（"BNO085 init OK" など）が数行先に並ぶが、
   //     どの起動でもその直後に出るので、電源投入の区切りとして探せる。
 #ifdef RELEASE
   const char* build_rel = "";
