@@ -10,6 +10,7 @@
 #include <cstring>
 #include <string>
 #include <cstdlib>
+#include <cmath>
 #include "hardware/adc.h"
 
 #define AA_FONT_SMALL NotoSansBold15
@@ -256,7 +257,7 @@ void clean_display() {
 }
 
 
-// 起動画面。内蔵ベクタ地図を琵琶湖拡大から日本列島全景へ対数ズームアウトして表示する。
+// 起動画面。内蔵ベクタ地図を琵琶湖拡大から日本列島全景へ滑らかに対数ズームアウトして表示する。
 // ★ 地図データの帰属表示（OpenStreetMap、ODbL）をここに出す（v7 と同じ。LICENSE.ODbL）。
 void startup_demo_tft() {
   tft.fillScreen(COLOR_WHITE);
@@ -276,26 +277,32 @@ void startup_demo_tft() {
   tft.print(BUILDDATE);
   tft.print(")");
 
-  // 琵琶湖（zoom9相当: scale 3.0）から日本海沖・日本列島全景（zoom5相当: scale 0.15）への対数ズームアウト
-  struct BootFrame {
-    float lat;
-    float lon;
-    float scale;
-  };
-  static const BootFrame frames[] = {
-    { 35.2334f, 136.0911f, 3.00f }, // 0: 琵琶湖拡大（パイロン・スタート台）
-    { 35.6000f, 136.2500f, 1.80f }, // 1: 近畿〜中部
-    { 36.1500f, 136.4500f, 1.00f }, // 2: 中部・本州
-    { 36.8000f, 136.7500f, 0.55f }, // 3: 東日本〜西日本
-    { 37.4000f, 137.0500f, 0.32f }, // 4: 日本列島広域
-    { 37.8000f, 137.1500f, 0.20f }, // 5: 日本全国
-    { 38.0000f, 137.2000f, 0.15f }, // 6: 日本列島全景（画面中央に収まる）
-  };
-  const int num_frames = sizeof(frames) / sizeof(frames[0]);
+  // 琵琶湖（zoom9相当: scale 3.0）から日本海沖・日本列島全景（zoom5相当: scale 0.15）への滑らかな対数ズームアウト
+  const double lat_start = 35.233423;
+  const double lon_start = 136.091056; // 琵琶湖（松原水泳場・パイロンコース）
+  const float scale_start = 3.0f;
 
+  const double lat_end = 38.0000;
+  const double lon_end = 137.2000;     // 日本列島全体の中央（日本海・能登沖）
+  const float scale_end = 0.15f;
+
+  const int NUM_FRAMES = 30; // 約1.5秒かけて滑らかにズームアウト（視覚的にアニメーションを認識しやすいフレーム数）
   int last_count = -1;
-  for (int i = 0; i < num_frames; i++) {
-    draw_startup_map(frames[i].lat, frames[i].lon, frames[i].scale);
+
+  for (int i = 0; i < NUM_FRAMES; i++) {
+    const uint32_t frame_start = millis();
+
+    // 0.0〜1.0 の正規化時間
+    const float t = (float)i / (float)(NUM_FRAMES - 1);
+    // Smoothstep イージング（滑らかな加減速で映画のようなカメラワークを実現）
+    const float s = t * t * (3.0f - 2.0f * t);
+
+    const double cur_lat = lat_start + (lat_end - lat_start) * s;
+    const double cur_lon = lon_start + (lon_end - lon_start) * s;
+    // 対数ズーム補間（人間の視覚にとって一定のズーム速度に感じる）
+    const float cur_scale = scale_start * powf(scale_end / scale_start, s);
+
+    draw_startup_map(cur_lat, cur_lon, cur_scale);
     backscreen.setTextColor(COLOR_BLACK);
     backscreen.setCursor(4, MAP_H - 18);
     backscreen.print("Map data (c) OpenStreetMap");
@@ -309,12 +316,18 @@ void startup_demo_tft() {
       tft.print(mapdata_count);
     }
     gps_loop();
+
+    // 1フレーム最低 35ms（最大約28fps）を確保し、フレームレートのばらつきを抑えて滑らかに遷移
+    while (millis() - frame_start < 35) {
+      delay(2);
+      gps_loop();
+    }
   }
 
-  // 最終フレーム（日本列島全景）を約1.2秒キープし、視認できるようにする
+  // 最終フレーム（日本列島全景）を約1.0秒キープし、日本全体とバージョン情報を確認できるようにする
   // この間も gps_loop() を回して UART バッファ溢れを防ぎ、SD MAP COUNT の進行を表示する
   const uint32_t hold_start = millis();
-  while (millis() - hold_start < 1200) {
+  while (millis() - hold_start < 1000) {
     gps_loop();
     if (mapdata_count != last_count) {
       last_count = mapdata_count;
