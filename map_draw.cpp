@@ -734,9 +734,9 @@ void draw_map_screen(const MapView& v) {
   if (map_frame_ms_last > map_frame_ms_max) map_frame_ms_max = map_frame_ms_last;
 }
 
-void draw_startup_map(float scale) {
+void draw_startup_map(double lat, double lon, float scale) {
   if (!backscreen_ok) return;
-  map_begin_frame(35.2334225841915, 136.091056306493, scale, 0);
+  map_begin_frame(lat, lon, scale, 0);
   map_frame.cy = MAP_H / 2;   // 起動画面は TRACK UP でも中央
   draw_vectormap();
   MapView v = {};

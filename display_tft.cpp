@@ -256,36 +256,77 @@ void clean_display() {
 }
 
 
-// 起動画面。内蔵のベクタ地図の琵琶湖を少しずつ寄せて描く。
+// 起動画面。内蔵ベクタ地図を琵琶湖拡大から日本列島全景へ対数ズームアウトして表示する。
 // ★ 地図データの帰属表示（OpenStreetMap、ODbL）をここに出す（v7 と同じ。LICENSE.ODbL）。
 void startup_demo_tft() {
   tft.fillScreen(COLOR_WHITE);
-  for (int i = 0; i < 10; i++) {
-    draw_startup_map(3.0f - i * 0.19f);
+
+  // タイトル等の静的テキストは初回に1回だけ描画（毎フレーム再描画による負荷・ちらつきを防止）
+  tft.setTextColor(COLOR_RED, COLOR_WHITE);
+  tft.setCursor(5, 2);
+  tft.println(" Pilot Oriented");
+  tft.println("   Navigation System   for HPA");
+  tft.println("========== PONS ==========");
+
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  tft.setCursor(1, MAP_Y + MAP_H + 20);
+  tft.print("SOFT VER:");
+  tft.print(BUILDVERSION);
+  tft.print("(b");
+  tft.print(BUILDDATE);
+  tft.print(")");
+
+  // 琵琶湖（zoom9相当: scale 3.0）から日本海沖・日本列島全景（zoom5相当: scale 0.15）への対数ズームアウト
+  struct BootFrame {
+    float lat;
+    float lon;
+    float scale;
+  };
+  static const BootFrame frames[] = {
+    { 35.2334f, 136.0911f, 3.00f }, // 0: 琵琶湖拡大（パイロン・スタート台）
+    { 35.6000f, 136.2500f, 1.80f }, // 1: 近畿〜中部
+    { 36.1500f, 136.4500f, 1.00f }, // 2: 中部・本州
+    { 36.8000f, 136.7500f, 0.55f }, // 3: 東日本〜西日本
+    { 37.4000f, 137.0500f, 0.32f }, // 4: 日本列島広域
+    { 37.8000f, 137.1500f, 0.20f }, // 5: 日本全国
+    { 38.0000f, 137.2000f, 0.15f }, // 6: 日本列島全景（画面中央に収まる）
+  };
+  const int num_frames = sizeof(frames) / sizeof(frames[0]);
+
+  int last_count = -1;
+  for (int i = 0; i < num_frames; i++) {
+    draw_startup_map(frames[i].lat, frames[i].lon, frames[i].scale);
     backscreen.setTextColor(COLOR_BLACK);
     backscreen.setCursor(4, MAP_H - 18);
     backscreen.print("Map data (c) OpenStreetMap");
     backscreen.pushSprite(0, MAP_Y);
 
-    tft.setTextColor(COLOR_RED, COLOR_WHITE);
-    tft.setCursor(5, 2);
-    tft.println(" Piolot Oriented");
-    tft.println("   Navigation System   for HPA");
-    tft.println("========== PONS ==========");
+    if (mapdata_count != last_count) {
+      last_count = mapdata_count;
+      tft.fillRect(1, MAP_Y + MAP_H + 2, 200, 16, COLOR_WHITE);
+      tft.setCursor(1, MAP_Y + MAP_H + 2);
+      tft.print("SD MAP COUNT:  ");
+      tft.print(mapdata_count);
+    }
+    gps_loop();
+  }
 
-    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    tft.fillRect(1, MAP_Y + MAP_H + 2, 200, 18, COLOR_WHITE);
-    tft.setCursor(1, MAP_Y + MAP_H + 2);
-    tft.print("SD MAP COUNT:  ");
-    tft.print(mapdata_count);
-    tft.setCursor(1, MAP_Y + MAP_H + 20);
-    tft.print("SOFT VER:");
-    tft.print(BUILDVERSION);
-    tft.print("(b");
-    tft.print(BUILDDATE);
-    tft.print(")");
+  // 最終フレーム（日本列島全景）を約1.2秒キープし、視認できるようにする
+  // この間も gps_loop() を回して UART バッファ溢れを防ぎ、SD MAP COUNT の進行を表示する
+  const uint32_t hold_start = millis();
+  while (millis() - hold_start < 1200) {
+    gps_loop();
+    if (mapdata_count != last_count) {
+      last_count = mapdata_count;
+      tft.fillRect(1, MAP_Y + MAP_H + 2, 200, 16, COLOR_WHITE);
+      tft.setCursor(1, MAP_Y + MAP_H + 2);
+      tft.print("SD MAP COUNT:  ");
+      tft.print(mapdata_count);
+    }
+    delay(20);
   }
 }
+
 
 bool bankwarning_flipflop = true;
 void draw_bankwarning() {

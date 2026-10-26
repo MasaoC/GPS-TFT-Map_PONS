@@ -96,7 +96,7 @@ struct MapView {
   float degpersecond;       // 旋回角速度 [deg/s]（0.5 deg/s 以上で画面端にオーバーレイ表示）
 };
 void draw_map_screen(const MapView& v);    // ベクタ地図から自機まで全部描いて TFT へ送る
-void draw_startup_map(float scale);         // 起動画面の琵琶湖（ベクタ地図だけ。push はしない）
+void draw_startup_map(double lat, double lon, float scale); // 起動画面の地図（ベクタ地図だけ。push はしない）
 
 // 地図 1 フレームの所要時間（地図一覧とログ用）
 extern uint32_t map_frame_ms_last, map_frame_ms_max;
