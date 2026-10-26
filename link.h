@@ -83,6 +83,10 @@
   bool     link_is_receiving();           // 直近に受信できているか
   // 新しいテレメトリが届いたか。**読むと落ちる**（ミラー中の位置更新の合図）
   bool     link_take_new_frame();
+  // 同じ合図の描画用（地図の描き直しをフレームを受けた直後にそろえる。読むと落ちる）
+  bool     link_take_draw_frame();
+  // ミラー中に TFT を描いてよい時間か（受信中のフレームに描画を重ねない）。ミラー中以外は true
+  bool     link_draw_window_ok();
   uint32_t link_age_ms();                 // 最後の受信からの経過 [ms]
   int8_t   link_rssi();                   // 直近の RSSI [dBm]
 

@@ -577,6 +577,22 @@ static bool eskf_display_needs_apply() {
   return attitude_needs_apply();
 }
 
+// 地上の姿勢チェック（.ino の ground_check_tick）が「いま鳴らしている」状態か。pitch=false はロール。
+// 音声（roll_check / pitch_check）が鳴っても、画面のどの値が何度ずれているのか分からなかった
+// （ロールの赤はバンク警告の 4 度で、地上チェックの 3 度とは別。ピッチは色が変わらなかった）。
+// そこで鳴らしている間は、その値を赤にして許容範囲を添える。
+// ★ **供給元 3 系統**（eskf_display_needs_apply と同じ理由）。ミラー中は送信機の status
+//   （LINK_ST_GROUND_*。受信機も同じ音声を鳴らしている）、リプレイ中は出さない。
+//   判定はここに書き写さず、.ino の結果を読むだけ。
+extern bool  ground_roll_warn_active, ground_pitch_warn_active;
+extern float ground_roll_ok_lo, ground_roll_ok_hi, ground_pitch_ok_lo, ground_pitch_ok_hi;
+static bool ground_warn_shown(bool pitch) {
+  if (link_mirror_active())
+    return (link_sender_status() & (pitch ? LINK_ST_GROUND_PITCH : LINK_ST_GROUND_ROLL)) != 0;
+  if (getReplayMode()) return false;
+  return pitch ? ground_pitch_warn_active : ground_roll_warn_active;
+}
+
 // 「いま画面に出している姿勢・風」が、GNSS 速度の裏付けを失っているか。
 // ★ **供給元 3 系統すべてを面倒見ること**（eskf_display_needs_apply と同じ理由）。
 //   判断の対象は *この装置* ではなく *画面に出ている数字の出どころ* である。
@@ -1038,20 +1054,35 @@ void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double ce
 }
 
 
+// 航跡の 2 点が TRACK_BREAK_M 以上離れているか（その間には線を引かない）。
+// 数百 m の判定なので正距円筒近似で足りる。点ごとに三角関数を呼ばないよう、
+// 経度 1 度あたりの長さ m_per_deg_lon は呼び出し側で 1 回だけ求めて渡す。
+static bool track_gap(float lat0, float lon0, float lat1, float lon1, float m_per_deg_lon) {
+  const float dy = (lat1 - lat0) * 111320.0f;
+  const float dx = (lon1 - lon0) * m_per_deg_lon;
+  return dx * dx + dy * dy > TRACK_BREAK_M * TRACK_BREAK_M;
+}
+
 // LatLonManager（latlon_manager）に蓄積されたフライトトラックを backscreen に描画する。
 // 最新座標（getData(0)）から自機位置（画面中央）への緑線を引き、
 // その後 getData(i) → getData(i+1) を順に繋いでトラック履歴を表示する。
+// ★ 隣り合う点が TRACK_BREAK_M 以上離れていたら、その間だけ線を引かない。
+//   GNSS が不安定な所やトンネルの出入りで fix が遠くへ跳ぶと、跳んだ点へ向かう線が
+//   画面を横切っていた。点は記録したままなので、線が切れて見えるだけ。
 void draw_track(double center_lat, double center_lon, float scale, float up) {
   int sizetrack = latlon_manager.getCount();
   if(sizetrack <= 0){
     return;
   }
+  const float m_per_deg_lon = 111320.0f * cosf((float)deg2rad(center_lat));
   //latest
   Coordinate c0 = latlon_manager.getData(0);
   cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
   
 
-  if(p0.x != BACKSCREEN_SIZE/2 || p0.y != get_self_cy()){
+  // いまの位置（画面中央）が跳んだ点のときも、最新の記録点から線を引かない
+  if((p0.x != BACKSCREEN_SIZE/2 || p0.y != get_self_cy()) &&
+     !track_gap(c0.latitude, c0.longitude, (float)center_lat, (float)center_lon, m_per_deg_lon)){
     draw_map_line(p0.x,p0.y,BACKSCREEN_SIZE/2,get_self_cy(),2,COLOR_GREEN);
   }
 
@@ -1063,6 +1094,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     return;
   }
   cord_tft prev = p0;
+  Coordinate prevc = c0;
   for (int i = 0; i < sizetrack-1; i++) {
     Coordinate c1 = latlon_manager.getData(i+1);
     if(c1.latitude == 0 && c1.longitude == 0){
@@ -1072,10 +1104,12 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
 
     cord_tft cur = latLonToXY(c1.latitude, c1.longitude, center_lat, center_lon, scale, up);
     //Only if cordinates are different.
-    if (prev.x != cur.x || prev.y != cur.y) {
+    if ((prev.x != cur.x || prev.y != cur.y) &&
+        !track_gap(prevc.latitude, prevc.longitude, c1.latitude, c1.longitude, m_per_deg_lon)) {
       draw_map_line(prev.x,prev.y,cur.x,cur.y,2,COLOR_GREEN);
     }
-    prev = cur;
+    prev  = cur;
+    prevc = c1;
   }
 }
 
@@ -1620,6 +1654,18 @@ static void draw_wind_arrow(int cx, int cy, float screen_deg, uint16_t col, floa
 // 最下段(Rtrim, 内蔵フォント8px)の下端から最下行(JST 時刻)までの余白 [px]。
 // sAcc と MaxGS を他所へ移して空いたので、ブロック全体を下へ寄せてある。
 #define ESKF_BOTTOM_GAP     2
+
+// 地上チェックの許容範囲を値の右へ赤で添える（ground_warn_shown の間だけ呼ぶ）。
+// ★ 範囲が分かるのは自機のときだけ。ミラー中は電波に載っていないので色だけにする
+//   （ボートの範囲を出すと、機体の判定とは別物を「機体の許容範囲」と読まれる）。
+static void draw_ground_ok_range(int y, bool pitch) {
+  if (link_mirror_active()) return;
+  backscreen.setTextColor(COLOR_RED);
+  backscreen.setCursor(ESKF_VALUE_RIGHT_X + 4, y);
+  backscreen.printf("ok %+.1f..%+.1f", pitch ? ground_pitch_ok_lo : ground_roll_ok_lo,
+                                       pitch ? ground_pitch_ok_hi : ground_roll_ok_hi);
+}
+
 void draw_eskf_attitude() {
   // 機能そのものが OFF なら何も出さない（ESKF 導入前と同じ見た目に戻す）。
   if (!attitude_get_rpy_enabled()) return;
@@ -1735,22 +1781,34 @@ void draw_eskf_attitude() {
       const int wunit_x = ESKF_LABEL_X + wlw + 3 + nw + 2;
       backscreen.setCursor(wunit_x, ylbl);
       backscreen.print("m/s");
+      const int wtext_r = wunit_x + backscreen.textWidth("m/s");   // 風速の行の右端
 
-      // ★ GNSS 速度の裏付けが切れている間は取り消し線。**風は対気速度と対地速度の差**
-      //   から出しているので、対地速度が更新されなければ原理的に推定できない。
-      //   値を消さずに線を引くのは参考情報として残すため（strike_through 参照）。
-      if (eskf_display_gnss_stale())
-        strike_through(backscreen, ESKF_LABEL_X, ywtxt + fh_m / 2,
-                       wunit_x + backscreen.textWidth("m/s") - ESKF_LABEL_X, COLOR_ORANGE);
+      // ★ GNSS 速度の裏付けが切れている間は、**矢印を灰色にして風のブロック全体に × を重ねる。**
+      //   風は対気速度と対地速度の差から出しているので、対地速度が更新されなければ
+      //   原理的に推定できない（値は最後に推定できたときのまま止まっている）。
+      //   以前は数字に細い取り消し線を引くだけで、色の付いた矢印はそのまま出ていたため、
+      //   **GNSS を失っている間の風を正しいと信じてしまった**（実機。トンネルの出入りで踏んだ）。
+      //   値と向きを消さずに × を重ねるのは、参考情報としては読めるようにするため
+      //   （strike_through と同じ考え方。色も P / R の取り消し線とそろえた）。
+      const bool wstale = eskf_display_gnss_stale();
 
       // 矢印は地図と同じ向き合わせ（TRACKUP は画面上＝トラック、NORTHUP は北）
       const float wscreen = is_trackupmode()
                             ? (wdir - (float)get_gnss_truetrack()) : wdir;
       // 中心の数字は真方位なので、地図の向き（wscreen）とは別に wdir をそのまま渡す。
-      draw_wind_arrow(ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2,
-                      ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2,
-                      wscreen, wind_arrow_color(wspd), wdir);
+      const int acx = ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2;
+      const int acy = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2;
+      draw_wind_arrow(acx, acy, wscreen, wstale ? COLOR_GRAY : wind_arrow_color(wspd), wdir);
       yblock_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
+
+      // × は矢印の数字より後に描く（上に重ねる）。範囲は矢印の上端から風速の行の下端まで。
+      if (wstale) {
+        const int ax_r = acx + WIND_ARROW_LEN_PX / 2;
+        const int x0 = ESKF_LABEL_X, x1 = (ax_r > wtext_r) ? ax_r : wtext_r;
+        const int y0 = yblock_top,   y1 = ywtxt + fh_m;
+        backscreen.drawWideLine(x0, y0, x1, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
+        backscreen.drawWideLine(x1, y0, x0, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
+      }
     }
 
     // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
@@ -1763,24 +1821,41 @@ void draw_eskf_attitude() {
     //   対処できるのは地上だけなので、音は地上でしか鳴らさない（.ino 参照）。
     //   そのぶん、万一この状態で飛んでしまったときに地図を隠し続けないよう、
     //   表示のほうは消えている時間を長めに取る。
+    // ★ 自機の状態を出しているときは、下に「ボートなら ESKF を切る」を添える。
+    //   ボートに積んだ PONS は揺れでマウントから外れたと判定されやすいが、ボートでは
+    //   自機の姿勢を使わないので、較正ではなく ESKF（IMU/ESKF 画面の Roll/Pitch/Yaw func）を
+    //   OFF にすれば済む。この 1 行だけだと「較正しなければならない」と勘違いされていた。
+    //   ミラー中は添えない。このときの警告は**機体の**状態で、機体は較正するのが正しい
+    //   （ボートの ESKF を切っても消えない）。
     if (eskf_display_needs_apply() && (millis() / 1000) % 3 == 0) {
+      const bool boat_hint = !link_mirror_active();
+      int yw = yblock_top - ESKF_ROW_GAP - fh_s;
+      if (boat_hint) yw -= fh_s + ESKF_ROW_GAP;
       backscreen.setTextColor(COLOR_RED);
-      backscreen.setCursor(ESKF_LABEL_X, yblock_top - ESKF_ROW_GAP - fh_s);
+      backscreen.setCursor(ESKF_LABEL_X, yw);
       backscreen.print("ESKF CALIBRATION REQUIRED!");
+      if (boat_hint) {
+        backscreen.setCursor(ESKF_LABEL_X, yw + fh_s + ESKF_ROW_GAP);
+        backscreen.print("OR TURN OFF ESKF ON BOAT");
+      }
       backscreen.setTextColor(COLOR_BLACK);
     }
   }
 
   // ---- 中段: P ----
-  // ピッチは色を変えない。ピッチ単独では失速余裕を判定できないため
+  // 飛行中のピッチは色を変えない。ピッチ単独では失速余裕を判定できないため
   // （本来は迎角が要る。実測でも 平均ピッチと対気速度の相関は -0.14 と弱く、
   //   迎角推定も対地経路角の 平均がほぼゼロで補正にならなかった）。
+  // 赤にするのは地上チェックが鳴っている間だけ（ground_warn_shown）。許容範囲も添える。
+  const bool gpitch = ground_warn_shown(true);
   backscreen.setTextColor(COLOR_GRAY);
   backscreen.setCursor(ESKF_LABEL_X, ypit);
   backscreen.print("P");
-  backscreen.setTextColor(attitude_implausible(p) ? COLOR_GRAY : COLOR_BLACK);
+  backscreen.setTextColor(attitude_implausible(p) ? COLOR_GRAY
+                          : (gpitch ? COLOR_RED : COLOR_BLACK));
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(pbuf), ypit);
   backscreen.print(pbuf);
+  if (gpitch) draw_ground_ok_range(ypit, true);
   // ★ GNSS 速度が止まると**ロール・ピッチの錨が無くなる**（比力から遠心力と
   //   加減速分を差し引けないので、旋回中はロールを過小評価し加減速中はピッチがずれる。
   //   それを直すのが GNSS 速度援用の ESKF そのもの）。値は残して線だけ引く。
@@ -1792,12 +1867,15 @@ void draw_eskf_attitude() {
   backscreen.setTextColor(COLOR_GRAY);
   backscreen.setCursor(ESKF_LABEL_X, yroll);
   backscreen.print("R");
-  // ありえない値なら灰色（設置ミスの疑い）。それ以外はバンク超過だけ赤。
-  // 地図の上に直接描くので通常色は黒（フッターと同じ）。
+  // ありえない値なら灰色（設置ミスの疑い）。それ以外はバンク超過と、地上チェックが
+  // 鳴っている間だけ赤（地上チェックのしきい値 3 度はバンク警告の 4 度より小さいので、
+  // 3〜4 度では以前は黒のままだった）。地図の上に直接描くので通常色は黒（フッターと同じ）。
+  const bool groll = ground_warn_shown(false);
   backscreen.setTextColor(attitude_implausible(r) ? COLOR_GRAY
-                          : (fabsf(r) > BANK_WARN_DEG ? COLOR_RED : COLOR_BLACK));
+                          : ((fabsf(r) > BANK_WARN_DEG || groll) ? COLOR_RED : COLOR_BLACK));
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(rbuf), yroll);
   backscreen.print(rbuf);
+  if (groll) draw_ground_ok_range(yroll, false);
   if (eskf_display_gnss_stale())      // P 行と同じ理由
     strike_through(backscreen, ESKF_LABEL_X, yroll + fh_s / 2,
                    ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, COLOR_ORANGE);
@@ -3411,7 +3489,9 @@ void draw_header() {
     // 対地速度が遅いと sel_col が灰色になるが、それは速度表示の都合。
     // ピッチの信頼性とは無関係なので巻き込まない。灰色にするのは「ありえない値」のときだけ。
     const float pv = header_pitch_value();
-    const uint16_t pcol = attitude_implausible(pv) ? COLOR_GRAY : COLOR_BLACK;
+    // 地上チェックでピッチがずれて鳴っている間は赤（地図の P 行と同じ条件。許容範囲は P 行に出る）
+    const uint16_t pcol = attitude_implausible(pv) ? COLOR_GRAY
+                        : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
     header_footer.setTextColor(pcol, TFT_WHITE);
     draw_header_pitch(mtvx, pv, pcol);
     // ★ 較正のやり直しが必要な間は、この数字そのものが信用できない。

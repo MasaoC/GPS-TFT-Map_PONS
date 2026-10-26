@@ -86,6 +86,7 @@ static float  maxgs_5min       = 0.0f;
 static int    maxgs_5min_hour  = 0;
 static int    maxgs_5min_min   = 0;
 static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
+static float  maxgs_prev_gs    = -1.0f;  // 直前のエポックの速度（feed_maxgs）。-1 = 直前は使えなかった
 bool gnss_connection = false;  // GNSS モジュールから1文字でも受信したことがあるか
 // ★ 最後にバイトが届いた時刻。**飛行中の断線を検出するために要る。**
 //   gnss_connection だけだと一度 true になったら戻らないので、コネクタが抜けても
@@ -1098,6 +1099,7 @@ void reset_maxgs() {
   maxgs_5min_hour        = 0;
   maxgs_5min_min         = 0;
   maxgs_5min_last_update = 0;
+  maxgs_prev_gs          = -1.0f;
 }
 
 // 最大 G/S を更新する（NMEAパス・DEMOパス共通）。
@@ -1128,6 +1130,21 @@ static void update_maxgs(float gs) {
     maxgs_5min_min         = jst_m;
     maxgs_5min_last_update = millis();
   }
+}
+
+// 最大 G/S の候補を 1 エポックぶん受け取る。ok = その速度を信じてよいか（供給元ごとに呼び出し側が決める）。
+// ★ **トンネルの出入りで 237m/s のような値が出て、そのまま MAX G/S に残っていた**（実機）。
+//   NAV-PVT の gSpeed は測位が切れたエポックでも値を持ち、受信不良の間は sAcc 2〜27m/s の
+//   暴れ値になる（settings.h の GNSS_VSI_SACC_MAX_MPS / ESKF_SACC_MAX。ESKF は 248m/s を見ている）。
+//   以前は stored_gs を無条件に入れていたので、1 エポックの化けが一日中残った。
+// ★ さらに **2 エポック続けて ok だったときだけ、小さいほうを入れる。** 品質の申告が
+//   正常なまま 1 エポックだけ跳ねる値も捨てるため。本物の最高速は 1 エポック（0.5 秒）では終わらない。
+//   供給元が入れ替わった直後の 1 回は前の供給元の値と比べるが、小さいほうを入れるので
+//   大きく出ることは無い。
+static void feed_maxgs(float gs, bool ok) {
+  if (!ok) { maxgs_prev_gs = -1.0f; return; }
+  if (maxgs_prev_gs >= 0.0f) update_maxgs(fminf(maxgs_prev_gs, gs));
+  maxgs_prev_gs = gs;
 }
 
 extern unsigned long last_gnss_time;  // 実体は下方で定義（apply_replay_row から先に参照するため）
@@ -1209,7 +1226,8 @@ static void apply_replay_row(const ReplayRow* row) {
     stored_gnss_altitude = row->gnss_altitude;
   if (row->have & RHAVE_GS) {
     stored_gs = row->gs;
-    update_maxgs(stored_gs);
+    // CSV には測位の品質（fixOK・sAcc）の列が無いので、1 エポックだけの跳ねを捨てるだけ（feed_maxgs）
+    feed_maxgs(stored_gs, true);
   }
   if (row->have & RHAVE_TTRACK) {
     if (!is_demo_active()) newcourse_arrived = true;
@@ -1365,6 +1383,13 @@ void add_latlon_track(float lat,float lon){
   if(is_demo_active()){
     tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
   }
+  // ★ リプレイの早送り中は、間隔を倍率で割って**点の間隔を実時間のときと同じ約 50m に保つ**。
+  //   間隔は実時間（millis）で数えているので、x20 だと点が 20 倍離れる。航跡の描画は
+  //   TRACK_BREAK_M（300m）以上離れた点の間に線を引かないので、割らないと早送りの航跡が
+  //   ほとんど切れてしまう。
+  if(getReplayMode()){
+    tracklog_interval /= get_replay_speed();
+  }
   if(millis() - last_latlon_manager > tracklog_interval){
     latlon_manager.addCoord({ lat, lon});
     last_latlon_manager = millis();
@@ -1435,7 +1460,10 @@ bool gnss_new_location_arrived(){
     new_location_arrived = true;
     newcourse_arrived    = true;
     add_latlon_track(get_gnss_lat(), get_gnss_lon());
-    update_maxgs((float)get_gnss_mps());   // MAX G/S も機体の値（上の UBX 経路参照）
+    // MAX G/S も機体の値（下の UBX 経路参照）。sAcc は電波に載っていないので、
+    // 機体の gnssFixOK と GNSS の断線（LINK_ST_GNSS_LOST）で判断する。
+    feed_maxgs((float)get_gnss_mps(),
+               link_get_fix_ok() && !(link_sender_status() & LINK_ST_GNSS_LOST));
   }
   return new_location_arrived;
 }
@@ -1620,8 +1648,12 @@ void gnss_loop(int id) {
     }
     // ★ ミラー中は入れない。入れると MAX G/S が**ボート自身の最高速**になる
     //   （画面の他の数字は機体のものなので、1 項目だけ出どころが違う状態になる）。
-    //   機体の値は下のミラー分岐で入れている。
-    if (!link_mirror_active()) update_maxgs(stored_gs);
+    //   機体の値は上のミラー分岐で入れている。
+    // ★ 入れるのは 3D フィックス・gnssFixOK・sAcc が MAXGS_SACC_MAX_MPS 以下のエポックだけ
+    //   （ESKF への速度観測と同じ考え方。理由は feed_maxgs）。
+    if (!link_mirror_active())
+      feed_maxgs(stored_gs, gsa_fixtype >= 3 && ubx_gnssFixOK &&
+                            ubx_sacc_mmps * 1e-3f <= MAXGS_SACC_MAX_MPS);
 
     if (stored_truetrack < 0 || stored_truetrack > 360) {
       DEBUGW_P(20250923,"ERROR:MT");

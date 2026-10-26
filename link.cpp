@@ -62,6 +62,12 @@ static bool          s_rxValid   = false;
 static uint32_t      s_rxMs      = 0;      // 受信した時刻（RP の millis）
 // 新しいフレームを受け取ったことの合図。link_take_new_frame() で読むと落ちる。
 static bool          s_rxNewFrame = false;
+// 同じ合図の**描画用**（link_take_draw_frame）。上はミラーの位置更新（gnss.cpp）が読んで落とすので、
+// 描画が同じものを読むと片方が取りこぼす。だから別に持つ。
+static bool          s_drawFrame  = false;
+// 送信機の送信周期の推定 [ms]（link_draw_window_ok）。送信機は約 1 秒ごとに送るが、
+// ループの遅れの分だけ長くなるので、続けて受かったフレームの間隔から求める。
+static uint32_t      s_txPeriodEstMs = 1000;
 // ---- 送信側 ----
 static uint16_t s_seqOut    = 0;    // 送信テレメトリの連番。ロールオーバーしてよい
 
@@ -167,8 +173,10 @@ static void link_poll_radio() {
         s_rx.rssi   = (int8_t)constrain((int)rssi, -128, 127);
         s_rx.age_ms = 0;             // 直接受け取るので遅延はほぼ無い
         s_rxValid   = true;
+        const uint32_t prev_rx_ms = s_rxMs;   // 送信周期の推定に使う（下の seq の解析）
         s_rxMs      = millis();
         s_rxNewFrame = true;         // ミラー中の「新しい位置が来た」の合図
+        s_drawFrame  = true;         // 同じ合図の描画用（link_take_draw_frame）
 
         // 受信ログ（docs/pons_link.md §5）。received/ は無線で得た情報だけを置く。
         enqueueTask(createSaveRxCsvTask(&s_rx.t, s_rx.rssi, s_rx.age_ms));
@@ -188,6 +196,13 @@ static void link_poll_radio() {
         //   送信機が 1 台なら seq は必ず増える。減る・止まるのは異常。
         if (s_haveLastSeq) {
             const uint16_t d = (uint16_t)(t.seq - s_lastSeq);
+            // 続けて受かった 2 発の間隔から送信周期を求める（1/8 の移動平均）。
+            // 再起動や電波の途切れをまたいだ値は入れない（範囲外は捨てる）。
+            if (d == 1) {
+                const uint32_t iv = s_rxMs - prev_rx_ms;
+                if (iv >= LINK_TX_PERIOD_MIN_MS && iv <= LINK_TX_PERIOD_MAX_MS)
+                    s_txPeriodEstMs = (7 * s_txPeriodEstMs + iv) / 8;
+            }
             if (d > 1 && d < 1000) {
                 // 順方向の飛び＝電波側で落ちた数
                 s_seqGaps += (d - 1); s_missTotal += (d - 1);
@@ -318,9 +333,15 @@ static void link_watch_mirror_transition() {
     const bool now_mirror = link_is_receiving();
     if (primed && now_mirror != was_mirror) {
         if (now_mirror) {
-            // 復帰は頻繁に起きうるので短い音で足りる（低→高）。
-            enqueueTask(createPlayMultiToneTask(880, 90, 1, 2));
-            enqueueTask(createPlayMultiToneTask(1318, 120, 1, 2));
+            // 復帰は頻繁に起きうるので音声にはせず、上昇 3 音（ラ・ド#・ミ）を 2 回。
+            // ★ 以前の 2 音（880 → 1318Hz・計 0.2 秒）は短すぎて気づけなかった
+            //   （同時に鳴っていた「測位しました」にもかき消されていた。.ino の gnss_conn_tick で直した）。
+            //   GNSS の復帰（392 → 784Hz の 2 音）と取り違えないよう、高い音域の 3 音にしてある。
+            for (int rep = 0; rep < 2; rep++) {
+                enqueueTask(createPlayMultiToneTask(880,  150, 1, 2));
+                enqueueTask(createPlayMultiToneTask(1109, 150, 1, 2));
+                enqueueTask(createPlayMultiToneTask(1319, 300, 1, 2));
+            }
         } else {
             // 失ったほうは表示の意味が変わるので、言葉で知らせる。
             link_alert("wav/link_no_signal.wav", 1318, 250, 3);
@@ -1244,6 +1265,25 @@ bool     link_is_receiving(){ return s_rxValid && link_age_ms() < NOSIGNAL_MS; }
 //   立てている new_location_arrived / newcourse_arrived と同じ役割をここが担う。
 //   使う側は gnss_new_location_arrived()（gnss.cpp）。
 bool     link_take_new_frame(){ const bool n = s_rxNewFrame; s_rxNewFrame = false; return n; }
+bool     link_take_draw_frame(){ const bool n = s_drawFrame; s_drawFrame = false; return n; }
+
+// ミラー中に TFT を描いてよい時間か。ミラー中でなければ常に true。
+// ★ **送信機のフレームを受けている最中に描かないため。** TFT の 16bit バスが動くと
+//   E220 の雑音の値が最大で +8〜10dB 上がる（debug/v7-noise-test の雑音試験）。
+//   地図の描き直しはフレームを受けた直後にそろえてある（.ino の draw_current_screen）ので、
+//   それ以外の描き直し（強制再描画）だけをここで止める。
+// 前回受けた時刻から送信周期ごとに次のフレームが来るとみなし（落ちた分も同じ刻みで数える）、
+// 「受け終わった直後」から「次の受信が始まる LINK_DRAW_BUDGET_MS + LINK_DRAW_MARGIN_MS 手前」
+// までを窓にする。描き始めから最後の転送までの時間を見込んで手前で締め切る。
+bool link_draw_window_ok() {
+    if (!link_mirror_active()) return true;
+    const uint32_t T  = s_txPeriodEstMs;
+    const uint32_t ph = (millis() - s_rxMs) % T;
+    int32_t last = (int32_t)T - (int32_t)e220_airtime_ms(link_radio_profile)
+                 - LINK_DRAW_BUDGET_MS - LINK_DRAW_MARGIN_MS;
+    if (last < LINK_DRAW_MIN_WINDOW_MS) last = LINK_DRAW_MIN_WINDOW_MS;   // SF11 は送信時間が長い
+    return (int32_t)ph <= last;
+}
 int8_t   link_rssi()        { return s_rxValid ? s_rx.rssi : 0; }
 
 // ★ ミラー中か。各センサ accessor はこれを見て、自機の値の代わりに
