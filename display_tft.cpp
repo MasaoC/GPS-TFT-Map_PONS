@@ -277,17 +277,50 @@ void startup_demo_tft() {
   tft.print(BUILDDATE);
   tft.print(")");
 
-  // 琵琶湖（zoom9相当: scale 3.0）から日本海沖・日本列島全景（zoom5相当: scale 0.15）への滑らかな対数ズームアウト
+  // 琵琶湖（zoom9相当: scale 3.0）から日本列島全景（北海道〜沖縄・先島諸島まで全域: scale 0.070）への滑らかな対数ズームアウト
   const double lat_start = 35.233423;
   const double lon_start = 136.091056; // 琵琶湖（松原水泳場・パイロンコース）
   const float scale_start = 3.0f;
 
-  const double lat_end = 38.0000;
-  const double lon_end = 137.2000;     // 日本列島全体の中央（日本海・能登沖）
-  const float scale_end = 0.15f;
+  // 北海道（宗谷岬・根室）から沖縄（先島諸島・与那国島）まで 240x230 の画面に過不足なく収まる中心と縮尺
+  const double lat_end = 35.5000;
+  const double lon_end = 134.5000;     // 兵庫沖・関西（日本列島全域のメルカトル中心）
+  const float scale_end = 0.070f;      // zoom4相当（北海道〜沖縄まで全景が収まる）
 
-  const int NUM_FRAMES = 30; // 約1.5秒かけて滑らかにズームアウト（視覚的にアニメーションを認識しやすいフレーム数）
   int last_count = -1;
+
+  // ① 初期状態（琵琶湖周辺拡大）を描画
+  draw_startup_map(lat_start, lon_start, scale_start);
+  backscreen.setTextColor(COLOR_BLACK);
+  backscreen.setCursor(4, MAP_H - 18);
+  backscreen.print("Map data (c) OpenStreetMap");
+  backscreen.pushSprite(0, MAP_Y);
+
+  if (mapdata_count != last_count) {
+    last_count = mapdata_count;
+    tft.fillRect(1, MAP_Y + MAP_H + 2, 200, 16, COLOR_WHITE);
+    tft.setCursor(1, MAP_Y + MAP_H + 2);
+    tft.print("SD MAP COUNT:  ");
+    tft.print(mapdata_count);
+  }
+
+  // ② 一番拡大している琵琶湖周辺の状態を1秒間維持（ホールド）してからズームアウトを開始
+  // この間も gps_loop() を回して UART バッファ溢れを防ぎ、SD MAP COUNT の進行を表示する
+  const uint32_t init_hold_start = millis();
+  while (millis() - init_hold_start < 1000) {
+    gps_loop();
+    if (mapdata_count != last_count) {
+      last_count = mapdata_count;
+      tft.fillRect(1, MAP_Y + MAP_H + 2, 200, 16, COLOR_WHITE);
+      tft.setCursor(1, MAP_Y + MAP_H + 2);
+      tft.print("SD MAP COUNT:  ");
+      tft.print(mapdata_count);
+    }
+    delay(20);
+  }
+
+  // ③ 30フレームかけて日本列島全景へ滑らかに対数ズームアウト
+  const int NUM_FRAMES = 30; // 約1.5秒かけて滑らかにズームアウト
 
   for (int i = 0; i < NUM_FRAMES; i++) {
     const uint32_t frame_start = millis();
@@ -324,7 +357,7 @@ void startup_demo_tft() {
     }
   }
 
-  // 最終フレーム（日本列島全景）を約1.0秒キープし、日本全体とバージョン情報を確認できるようにする
+  // ④ 最終フレーム（日本列島全景）を約1.0秒キープし、日本全体とバージョン情報を確認できるようにする
   // この間も gps_loop() を回して UART バッファ溢れを防ぎ、SD MAP COUNT の進行を表示する
   const uint32_t hold_start = millis();
   while (millis() - hold_start < 1000) {
