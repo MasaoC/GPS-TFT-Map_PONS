@@ -1554,21 +1554,34 @@ void draw_eskf_attitude() {
       const int wunit_x = ESKF_LABEL_X + wlw + 3 + nw + 2;
       backscreen.setCursor(wunit_x, ylbl);
       backscreen.print("m/s");
+      const int wtext_r = wunit_x + backscreen.textWidth("m/s");   // 風速の行の右端
 
-      // ★ GPS 速度の裏付けが切れている間は取り消し線。**風は対気速度と対地速度の差**
-      //   から出しているので、対地速度が更新されなければ原理的に推定できない。
-      if (eskf_display_gnss_stale())
-        strike_through(backscreen, ESKF_LABEL_X, ywtxt + fh_m / 2,
-                       wunit_x + backscreen.textWidth("m/s") - ESKF_LABEL_X, COLOR_ORANGE);
+      // ★ GPS 速度の裏付けが切れている間は、**矢印を灰色にして風のブロック全体に × を重ねる。**
+      //   風は対気速度と対地速度の差から出しているので、対地速度が更新されなければ
+      //   原理的に推定できない（値は最後に推定できたときのまま止まっている）。
+      //   以前は数字に細い取り消し線を引くだけで、色の付いた矢印はそのまま出ていたため、
+      //   **GPS を失っている間の風を正しいと信じてしまった**（v7 の実機。トンネルの出入りで踏んだ）。
+      //   値と向きを消さずに × を重ねるのは、参考情報としては読めるようにするため
+      //   （strike_through と同じ考え方。色も P / R の取り消し線とそろえた）。
+      const bool wstale = eskf_display_gnss_stale();
 
       // 矢印は地図と同じ向き合わせ（TRACKUP は画面上＝トラック、NORTHUP は北）
       const float wscreen = is_trackupmode()
                             ? (wdir - (float)get_gps_truetrack()) : wdir;
       // 中心の数字は真方位なので、地図の向き（wscreen）とは別に wdir をそのまま渡す。
-      draw_wind_arrow(ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2,
-                      ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2,
-                      wscreen, wind_arrow_color(wspd), wdir);
+      const int acx = ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2;
+      const int acy = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2;
+      draw_wind_arrow(acx, acy, wscreen, wstale ? COLOR_GRAY : wind_arrow_color(wspd), wdir);
       yblock_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
+
+      // × は矢印の数字より後に描く（上に重ねる）。範囲は矢印の上端から風速の行の下端まで。
+      if (wstale) {
+        const int ax_r = acx + WIND_ARROW_LEN_PX / 2;
+        const int x0 = ESKF_LABEL_X, x1 = (ax_r > wtext_r) ? ax_r : wtext_r;
+        const int y0 = yblock_top,   y1 = ywtxt + fh_m;
+        backscreen.drawWideLine(x0, y0, x1, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
+        backscreen.drawWideLine(x1, y0, x0, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
+      }
     }
 
     // ---- 較正のやり直しが必要（マウントから外された形跡がある）----

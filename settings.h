@@ -861,6 +861,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define WIND_ARROW_LEN_PX          66   // 矢印の全長 [px]（強さは色で表すので長さは固定）
 #define WIND_ARROW_HEAD_PX         18   // 矢じりの長さ [px]
 #define WIND_ARROW_WIDTH_PX         4   // 軸の太さ [px]
+// GPS 速度の裏付けが切れている間に、風のブロック（矢印＋風速）へ重ねる × の線の太さ [px]。
+// 地図の × （draw_nofix_cross）と同じ 3px。細いと地図の線に紛れて気づけない。
+#define WIND_STALE_CROSS_PX         3
 // 矢印の色分けのしきい値 [m/s]。地図が白背景なので、いずれも暗い色を使う
 // （黄色やオレンジは白地でほぼ見えなかった）。
 // ---- デモモードの疑似値（表示確認用。実機の推定には一切影響しない）----
@@ -1007,6 +1010,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   **本物の受信不良（トンネル: sAcc 2〜27m/s）だけを切る**ようになる。
 #define GNSS_VSI_SACC_MAX_MPS  1.0f  // 速度精度ハードゲート [m/s]（以上はスキップ。旧 0.3 → 崖を外した）
 #define GNSS_VSI_R_SCALE      64.0f  // R_vel 倍率（旧 16 → 64。反射で荒れた velD の重みを落とす）
+
+// MAX G/S（画面下部の最大 GS）に入れてよい速度精度 sAcc の上限 [m/s]。
+// 上の GNSS_VSI_SACC_MAX_MPS と同じく「桁違いのゴミ」（トンネル: sAcc 2〜27m/s）だけを切る値。
+// トンネルの出入りで 237m/s が MAX G/S に残っていた（v7 の実機。gps.cpp の feed_maxgs）。
+#define MAXGS_SACC_MAX_MPS     1.0f
 
 // ============================================================
 // 高度表示設定
