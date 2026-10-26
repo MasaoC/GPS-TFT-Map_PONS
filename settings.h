@@ -99,6 +99,10 @@
 //   「離れていても気づける」ための仕組み（gnss.cpp の REPLAY canceled のコメント参照）。
 //   断線は飛行中に起きるので、パイロットは装置を身につけている。
 #define GNSS_LOST_ALERT_MS    30000UL
+// 「測位しました」（fixed.wav）を一度鳴らしたら、この間は鳴らさない [ms]。
+// GNSS が不安定な所では fix が付いたり外れたりを繰り返し、毎秒のように連発してうるさかった。
+// ログ（GNSS FIX acquired）は毎回残す。
+#define GNSS_FIXED_VOICE_GAP_MS 10000UL
 // GNSS の AssistNow Autonomous（受信した軌道から GNSS 自身が数日先まで軌道を予測する機能）。
 // 1 = 使う / 0 = 使わない。効けば前日と同じ時間帯の起動が 23〜28 秒 → 3〜4 秒になる。
 // 条件（BT1 が生きている・3 日以内・同じ時間帯）は README の「GNSS の起動を速くする」。
@@ -352,6 +356,11 @@
 #define MS5611_RECOVERY_INTERVAL_MS 30000UL
 
 #define MAX_TRACK_CORDS 500
+// 航跡の隣り合う点がこれ以上離れていたら、その間に線を引かない [m]（点の記録は続ける）。
+// GNSS が不安定な所やトンネルの出入りで fix が遠くへ跳ぶと、画面を横切る線が出ていた。
+// 普段の点の間隔は約 50m（速くても 100m 未満。gnss.cpp の add_latlon_track）なので十分大きい。
+// トンネルや電波の途切れで本当に 300m 以上動いたときは、航跡がそこで切れて見えるだけ。
+#define TRACK_BREAK_M 300.0f
 
 // TFTとの接続Pin設定は、TFT_eSPIも設定してください。設定サンプルは、CopySetupFile_TFT_eSPI.h にあります。
 
@@ -910,6 +919,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define GNSS_VSI_SACC_MAX_MPS  1.0f  // 速度精度ハードゲート [m/s]（以上はスキップ。旧 0.3 → 崖を外した）
 #define GNSS_VSI_R_SCALE      64.0f  // R_vel 倍率（旧 16 → 64。反射で荒れた velD の重みを落とす）
 
+// MAX G/S（画面下部の最大 GS）に入れてよい速度精度 sAcc の上限 [m/s]。
+// 上の GNSS_VSI_SACC_MAX_MPS と同じく「桁違いのゴミ」（トンネル: sAcc 2〜27m/s）だけを切る値。
+// トンネルの出入りで 237m/s が MAX G/S に残っていた（gnss.cpp の feed_maxgs）。
+#define MAXGS_SACC_MAX_MPS     1.0f
+
 // ============================================================
 // 高度表示設定
 // ============================================================
@@ -1391,6 +1405,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define WIND_ARROW_LEN_PX          66   // 矢印の全長 [px]（強さは色で表すので長さは固定）
 #define WIND_ARROW_HEAD_PX         18   // 矢じりの長さ [px]
 #define WIND_ARROW_WIDTH_PX         4   // 軸の太さ [px]
+// GNSS 速度の裏付けが切れている間に、風のブロック（矢印＋風速）へ重ねる × の線の太さ [px]。
+// 地図の × （draw_nofix_cross）と同じ 3px。細いと地図の線に紛れて気づけない。
+#define WIND_STALE_CROSS_PX         3
 // 矢印の色分けのしきい値 [m/s]。地図が白背景なので、いずれも暗い色を使う
 // （黄色やオレンジは白地でほぼ見えなかった）。
 // ---- デモモードの疑似値（表示確認用。実機の推定には一切影響しない）----
@@ -1537,6 +1554,18 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   （VSI の右辺で踏んだのと同じ罠）。1000ms なら 2Hz 再描画で 1 相 2 回描かれる。
 #define LINK_FRAME_STALE_MS   3000UL  // これより古い＝切れかけ／無信号 → 点滅へ
 #define LINK_FRAME_BLINK_MS   1000UL  // 点滅の半周期
+
+// ---- ミラー中の描画の窓（link.cpp の link_draw_window_ok）----
+// 受信機は、送信機のフレームを受けている最中に TFT を描かない。16bit バスが動くと E220 の
+// 雑音の値が最大で +8〜10dB 上がるため（debug/v7-noise-test の雑音試験。普段の描画で受信率が
+// 落ちるところまでは確かめられていないので、手間の小さい保険として入れている）。
+// 地図はフレームを受けた直後だけ描き直し、強制再描画は次の受信が始まる手前で締め切る。
+#define LINK_DRAW_BUDGET_MS      250   // 描き始めから最後の転送までの見込み [ms]（地図 1 枚）
+#define LINK_DRAW_MARGIN_MS      100   // 送信周期の揺れの分の余裕 [ms]
+#define LINK_DRAW_MIN_WINDOW_MS   50   // 窓の下限 [ms]。SF11 は送信時間が長く、引き算すると窓が無くなる
+// 送信周期の推定に使う、続けて受かった 2 発の間隔の範囲 [ms]（送信機は 1000ms + ループの遅れ）
+#define LINK_TX_PERIOD_MIN_MS    900
+#define LINK_TX_PERIOD_MAX_MS   1300
 
 // ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
 // 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。

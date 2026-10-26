@@ -137,6 +137,11 @@ static unsigned long last_user_input_ms = 0;
 bool ground_roll_warn_active  = false;
 bool ground_pitch_warn_active = false;
 bool ground_calib_warn_active = false;
+// 上のロール・ピッチの判定に使った許容範囲 [度]。**画面に「何度なら良いか」を出すため**に公開する
+// （display_tft.cpp が読む）。音声が鳴っても、どちらの値が何度ずれているのか画面で分からなかった。
+// 範囲を画面側で計算し直さないこと（プラットホーム近傍の緩和など、判定と食い違う）。
+float ground_roll_ok_lo  = 0.0f, ground_roll_ok_hi  = 0.0f;
+float ground_pitch_ok_lo = 0.0f, ground_pitch_ok_hi = 0.0f;
 void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
@@ -569,14 +574,27 @@ static void gnss_conn_tick() {
   // GNSS Fix 取得時に音声で通知（false→true の立ち上がりエッジを検出）
   // "wav/fixed.wav" は本体 FLASH にあるので SD の有無に関係なく鳴る
   // （0.982 まではここに SD が無いときのチャイム音（ド・ミ・ソ）の代替があった）。
+  // ★ 一度鳴らしたら GNSS_FIXED_VOICE_GAP_MS は鳴らさない。不安定な所では fix が付いたり
+  //   外れたりして毎秒のように連発していた。その間に付き直した分は黙って捨てる（ログには残す）。
+  // ★ **測位の出どころが入れ替わった周回は鳴らさない（ログにも残さない）。** get_gnss_fix() は
+  //   ミラー中は機体の測位、ミラーが切れると受信機自身の測位を返す。受信機自身が測位できて
+  //   いない（車内など）と、電波が戻った瞬間に「未測位 → 測位」に見えて「測位しました」が鳴り、
+  //   電波が戻った知らせ（link.cpp の上昇 3 音）をかき消していた（実機ログで 103 回中 14 回）。
   {
-    static bool prev_gnss_fix = false;
-    bool cur_fix = get_gnss_fix();
-    if (!prev_gnss_fix && cur_fix) {
-      enqueueTask(createPlayWavTask("wav/fixed.wav", 4));  // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
+    static bool     prev_gnss_fix  = false;
+    static bool     prev_mirror    = false;
+    static uint32_t fixed_voice_ms = 0;   // 最後に鳴らした時刻。0 = まだ鳴らしていない
+    const bool cur_fix    = get_gnss_fix();
+    const bool cur_mirror = link_mirror_active();
+    if (!prev_gnss_fix && cur_fix && cur_mirror == prev_mirror) {
+      if (fixed_voice_ms == 0 || millis() - fixed_voice_ms >= GNSS_FIXED_VOICE_GAP_MS) {
+        fixed_voice_ms = millis();
+        enqueueTask(createPlayWavTask("wav/fixed.wav", 4));  // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
+      }
       enqueueTask(createLogSdTask("GNSS FIX acquired"));
     }
     prev_gnss_fix = cur_fix;
+    prev_mirror   = cur_mirror;
   }
 }
 
@@ -721,6 +739,8 @@ static void ground_check_tick() {
     const uint32_t now_ms = millis();
 
     // ロール: 0（または SET ROLL で申告した値）からのズレ
+    ground_roll_ok_lo = attitude_get_roll_target() - GROUND_ROLL_WARN_DEG;
+    ground_roll_ok_hi = attitude_get_roll_target() + GROUND_ROLL_WARN_DEG;
     if (ground_warn_due(roll_since, roll_warn,
           fabsf(gr - attitude_get_roll_target()) > GROUND_ROLL_WARN_DEG,
           ground_roll_warn_active)) {
@@ -749,6 +769,11 @@ static void ground_check_tick() {
           calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), pla_lat, pla_lon) <= PLATFORM_NEAR_KM;
     }
     const bool near_platform = gndp_near_pla;
+    // 許容範囲。下の判定（pitch_bad）と同じ式なので、片方だけ直さないこと。
+    ground_pitch_ok_lo = near_platform ? PITCH_TARGET_MIN_DEG - GROUND_PITCH_WARN_DEG
+                                       : attitude_get_pitch_target() - GROUND_PITCH_WARN_DEG;
+    ground_pitch_ok_hi = near_platform ? GROUND_PITCH_WARN_DEG
+                                       : attitude_get_pitch_target() + GROUND_PITCH_WARN_DEG;
     bool pitch_bad = near_platform
         ? (gp > GROUND_PITCH_WARN_DEG ||
            gp < PITCH_TARGET_MIN_DEG - GROUND_PITCH_WARN_DEG)
@@ -1111,7 +1136,14 @@ static void draw_current_screen(bool new_gnss_info) {
       vsi_sprite.pushSprite(VSI_X, 40);  // backscreen は y=40 から開始
     }
   } else if (screen_mode == MODE_MAP) {
-    if (new_gnss_info) {
+    // ★ **ミラー中は、機体のフレームを受けた直後だけ描き直す**（link_take_draw_frame）。
+    //   受信中のフレームに TFT のバスの雑音を重ねないため（settings.h の LINK_DRAW_*）。
+    //   ミラー中の画面の中身はフレームが届いたときしか変わらないので、見た目はほぼ同じ。
+    //   受信機自身の GNSS（2Hz）では描き直さない（変わるのはボート自身の位置の点だけ）。
+    //   強制再描画は loop() の側で link_draw_window_ok() の窓に入れてある。
+    if (link_mirror_active()) {
+      if (link_take_draw_frame()) redraw_screen = true;
+    } else if (new_gnss_info) {
       redraw_screen = true;
     }
 
@@ -1261,7 +1293,11 @@ static void draw_current_screen(bool new_gnss_info) {
 
     // backscreen 非更新時、airdata が更新されたタイミングで VSI を TFT へ直接転写
     // バリオ音量が 0 の場合は非表示
-    if (!redraw_screen && vario_volume > 0 && !vario_inhibit && airdata_updated) {
+    // ★ ミラー中は転写しない。V/S は機体の値でフレームが届いたときしか変わらず、
+    //   受信機自身の気圧計の更新（約 3.7Hz）で同じ絵を送り直していただけだった。
+    //   フレームを受けた直後の描き直しで push_backscreen() が合成して出す。
+    if (!redraw_screen && !link_mirror_active() &&
+        vario_volume > 0 && !vario_inhibit && airdata_updated) {
       draw_vsi();
       vsi_sprite.pushSprite(VSI_X, 50);  // TFT座標: X=VSI_X, Y=50（backscreenオフセット）
     }
@@ -1442,7 +1478,11 @@ void loop() {
         (screen_mode == MODE_VARIODETAIL || screen_mode == MODE_IMUDETAIL)
         ? SCREEN_FRESH_INTERVAL_DETAIL
         : SCREEN_FRESH_INTERVAL;
-    if (millis() - screen_update_time > fresh_interval) {
+    // ★ ミラー中の地図だけは、受信中のフレームに重ならない時間に限る（link_draw_window_ok）。
+    //   フレームを 1 つ落とすと、1.05 秒後の強制再描画がちょうど次のフレームの受信に重なる。
+    //   間隔を延ばしても重なる位相は残るので、間隔ではなく時刻（窓）で避ける。
+    if (millis() - screen_update_time > fresh_interval &&
+        (screen_mode != MODE_MAP || link_draw_window_ok())) {
       redraw_screen = true;
     }
   }
@@ -1936,6 +1976,12 @@ void longPressCallback() {
         // （値変更モード）になっている。WIRELESS 項目には CallbackToggle が無い
         // (nullptr) ため、戻さずに戻ると次の短押しで nullptr 呼び出し→フリーズする。
         selectedLine = -1;
+        // ★ 画面を白で消してから戻る（ほかの「設定画面へ戻る」経路と同じ）。
+        //   設定画面はタイトルを tft へ字の背景色だけで上書きし、本体を y=30〜269・
+        //   フッタを y=280〜 に置くので、**塗らない所が残る**。WIRELESS 画面は
+        //   ヘッダを y=0〜39・本体を y=40〜279 に置くので、戻ると `WIRELESS LINK` の
+        //   タイトルの一部と、本体の下端（フッタのすぐ上の帯）が古いまま残っていた。
+        tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
         break;
     }
     redraw_screen = true;
