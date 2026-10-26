@@ -70,6 +70,12 @@ static sh2_SensorValue_t sv;  // imu_sensor_handler() が sh2_decodeSensorEvent(
 // センサー初期化成功フラグ（imu_drv_setup() 後に確定）
 static bool bno085_ok = false;
 
+// 起動時の初期化（imu_drv_setup()）に失敗したか。**失敗しても復旧に回すため**に使う（0.996）。
+// ★ v7 基板には BNO085 が必ず載っているので、起動時の失敗も一時的なものとして扱う。
+//   以前は復旧の条件が「起動後に一度でもデータを受信した」だけだったので、
+//   起動時に失敗すると電源を入れ直すまで BNO085 が使えなかった（v6 の 0.951v6 と同じ直し）。
+static bool bno085_boot_failed = false;
+
 // ============================================================
 // センサー最新値（imu_update() で更新）
 // ============================================================
@@ -758,6 +764,7 @@ void imu_drv_setup() {
             (int)digitalRead(IMU_I2C_SDA), (int)digitalRead(IMU_I2C_SCL),
             IMU_I2C_ADDR));
         bno085_ok = false;
+        bno085_boot_failed = true;   // 起動後の復旧に回す（imu_drv_update()）
         return;
     }
     if (!imu_enable_reports()) {
@@ -1141,9 +1148,10 @@ ImuDrvState imu_drv_poll() {
     }
 
     if (!bno085_ok) {
-        // 起動後に一度でもデータを受信した（= 途中で途絶えた）場合のみ復旧を試みる。
-        // _last_sensor_event_ms==0 は最初から未接続 → 復旧試行しない。
-        if (_last_sensor_event_ms > 0) {
+        // 起動後に一度でもデータを受信した（= 途中で途絶えた）場合と、
+        // 起動時の初期化に失敗した場合（bno085_boot_failed）に復旧を試みる。
+        // ★ 後者が無いと、起動時に失敗した BNO085 は電源を入れ直すまで使えない（0.996）。
+        if (_last_sensor_event_ms > 0 || bno085_boot_failed) {
             imu_try_recovery();  // 内部で1分レート制限
         }
         return IMU_DRV_DEAD;     // 恒速モデルへの縮退は呼び出し側（imu.cpp）が行う
