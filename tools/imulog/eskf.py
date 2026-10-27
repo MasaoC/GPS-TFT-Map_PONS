@@ -329,7 +329,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                gnss_cutoff=None, init_from_grv=False, use_level=True,
                level_sigma=0.5, level_yawrate_dps=1.0,
                level_yawrate_inst_dps=3.0,
-               level_accmag_tol=0.5, level_longacc=0.2):
+               level_accmag_tol=0.5, level_longacc=0.2,
+               level_rate_dps=10.0, level_rate_quiet=0.5, use_ground=True):
     """decode_imulog.split() の結果に ESKF を適用して姿勢時系列を返す。
 
     セッション（起動）ごとに独立して処理し、フィルタも都度初期化する。
@@ -339,6 +340,15 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     use_level: 重力観測（Phase 2 の levelling update）を入れるか。
       ★ **既定 True は機上の ESKF_LEVEL_ENABLED=1 に合わせてある。**
         機上の挙動を再現したいときは触らない。効果を見たいときだけ False にする。
+
+    level_rate_dps / level_rate_quiet: 重力観測のゲートの全角速度 |ω| の上限 [deg/s] と、
+      それを下回り続けていなければならない時間 [s]（機上 ESKF_LEVEL_MAX_RATE_DPS /
+      ESKF_LEVEL_RATE_QUIET_US）。旋回レートは水平な軸まわりの回転を見ないので足した
+      （2026-10-27。手で回している間に観測が通って bg が壊れた）。
+
+    use_ground: ヨーが決まった後も、地上で止まっているときは重力へ寄せるか
+      （機上 attitude_on_gyro の「地上での維持」と ESKF_GROUND_*）。
+      ★ 既定 True は機上に合わせてある。効果を見たいときだけ False にする。
 
     use_gnss: False にすると速度観測を一切入れない（純粋なジャイロ/加速度の積分）。
       GNSS 援用の効果を見るための比較用。観測が無いと姿勢を引き戻すものが何も無いので、
@@ -481,21 +491,53 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         last_gsp = None
         last_gsp_t = None
         level_last_t = -1e9
+        rate_high_t = -1e9       # |ω| が level_rate_dps を最後に超えた時刻（機上 rate_high_us_）
+        static_t0 = None         # 静止が始まった時刻（機上 static_since_us_）
+        good_gsp = None          # 信用できる最後の測位の対地速度（機上 good_gsp_）
+        good_gsp_t = None
+        ground_flags = np.zeros(n_out, dtype=bool)
+
+        def learn_bias(wi):
+            # 機上 learn_gyro_bias() と同じ（ESKF_BIAS_LEARN_SAMPLES / ESKF_BIAS_LEARN_MAX_RADS）
+            nonlocal bias_n
+            bias_sum[:] += wi
+            bias_n += 1
+            if bias_n >= 250:
+                f.bg = np.clip(bias_sum / bias_n, -0.0087, 0.0087)
+                bias_sum[:] = 0.0
+                bias_n = 0
+
         for k, i in enumerate(range(i_start, len(ts))):
             dt = ts[i] - ts[i - 1] if i else 0.0
+            if static_flags is not None:
+                if static_flags[i]:
+                    if static_t0 is None:
+                        static_t0 = ts[i]
+                else:
+                    static_t0 = None
+            # ---- 地上の判定（機上 on_ground_still / gnss_says_ground と同じ）----
+            good_fresh = good_gsp_t is not None and (ts[i] - good_gsp_t) < 3.0  # ESKF_GNSS_VEL_TIMEOUT_US
+            ground = (use_ground and yaw_set and static_t0 is not None
+                      and ts[i] - static_t0 >= 2.0                     # ESKF_GROUND_STATIC_US
+                      and not (good_fresh and good_gsp >= 1.0))        # ESKF_GROUND_MAX_GS_MPS
             # ---- 待機中の維持（機上 attitude_on_gyro の該当ブロックと同じ）----
             if (not yaw_set) and static_flags is not None and static_flags[i]:
                 f.q = level_toward_gravity(f.q, acc[i], 0.02)     # ESKF_RELEVEL_GAIN
-                bias_sum += w[i]
-                bias_n += 1
-                if bias_n >= 250:                                # ESKF_BIAS_LEARN_SAMPLES
-                    f.bg = np.clip(bias_sum / bias_n, -0.0087, 0.0087)
-                    bias_sum[:] = 0.0
-                    bias_n = 0
+                learn_bias(w[i])
                 f.reset_covariance(3.0, 180.0)
+            elif ground:
+                # ---- 地上での維持（ヨーが決まった後。機上の同名ブロックと同じ）----
+                # ヨーの分散は残し、ロール・ピッチの分だけ入れ直す（機上 reset_tilt_covariance）。
+                f.q = level_toward_gravity(f.q, acc[i], 0.02)
+                if good_fresh and good_gsp < 1.0:
+                    learn_bias(w[i])
+                f.P[0:2, :] = 0.0
+                f.P[:, 0:2] = 0.0
+                f.P[0, 0] = f.P[1, 1] = np.deg2rad(3.0) ** 2      # ESKF_INIT_ATT_SIGMA_DEG
             elif static_flags is not None and not static_flags[i]:
                 bias_sum[:] = 0.0
                 bias_n = 0
+            ground_flags[k] = ground
             f.predict(w[i], acc[i], dt)
             # ---- ワールド系ヨーレートの持続成分（機上 yaw_rate_lp_ と同じ式）----
             wz_dps = 0.0
@@ -504,6 +546,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 wz = float(R_[2] @ (np.asarray(w[i], float) - f.bg))
                 wz_dps = np.degrees(wz)
                 yaw_rate_lp += (wz_dps - yaw_rate_lp) * (dt / (2.0 + dt))
+                # 全角速度（機上 rate_high_us_ と同じ。ESKF_LEVEL_MAX_RATE_DPS）
+                if np.degrees(np.linalg.norm(np.asarray(w[i], float) - f.bg)) > level_rate_dps:
+                    rate_high_t = ts[i]
             # ---- 重力観測（ゲートを通ったときだけ）----
             # ★ ヨーレートの更新は**この直前**で済ませてある。後ろに置くと
             #   1 サンプル前の値で判定して旋回の入り口で漏れる（機上で踏んだ）。
@@ -513,6 +558,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 #   観測が漏れてバンクを過小評価する（合成旋回で確認）。
                 ok = (abs(yaw_rate_lp) <= level_yawrate_dps and
                       abs(wz_dps) <= level_yawrate_inst_dps and
+                      ts[i] - rate_high_t >= level_rate_quiet and
                       abs(amag - 9.80665) <= level_accmag_tol)
                 # ★ 機上と同じ: 測位が古い（断中）ならこの条件を省く。
                 #   前後加速度は GNSS からしか作れないので、断中に古い値で
@@ -529,6 +575,13 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                     dtg = g_ts[gi] - last_gsp_t
                     longacc_lp += ((gsp - last_gsp) / dtg - longacc_lp) * (dtg / (2.0 + dtg))
                 last_gsp, last_gsp_t = gsp, g_ts[gi]
+                # 地上の判定用（機上 good_gsp_）。g_ts は sAcc <= sacc_max で振り落とし済みなので、
+                # ここに来る測位はすべて「信用できる」測位になる。
+                # ★ 機上の last_gsp_（前後加速度）は sAcc を問わず全測位で更新するが、ここは
+                #   振り落とした後の測位で作っている。前後加速度のゲートだけは機上と入力が違う
+                #   （生ログに 3D フィックスかどうかが残っていないため。0.983 からの既知の差）。
+                good_gsp, good_gsp_t = gsp, g_ts[gi]
+                # ★ 機上も sAcc の悪い測位ではヨーを入れない（2026-10-27）。ここは振り落とし済み。
                 if not yaw_set:
                     sp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
                     if sp < 3.0:                                 # ESKF_YAW_INIT_MIN_SPEED_MPS
@@ -563,6 +616,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             # 生のクォータニオン（センサー→ENU）。重力除去の検証で
             # 「上方向」を取り出すのに使う（compare_grv.py）。
             "qw": qs[:, 0], "qx": qs[:, 1], "qy": qs[:, 2], "qz": qs[:, 3],
+            # ヨーが決まった後の「地上での維持」が働いていたサンプル（機上 gnd= の元）
+            "ground": ground_flags,
         }))
 
     if not out:

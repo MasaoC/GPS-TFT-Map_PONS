@@ -1059,10 +1059,13 @@ static void periodic_log_tick() {
         // ★ **ここが増えていなければゲートが閉じている。** GNSS 断中に
         //   ロール・ピッチの錨になるのがこの観測なので、0 のままなら
         //   settings.h の ESKF_LEVEL_* を見直す（旋回レートのしきい値が主）。
-        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f yawsrc=%d gobs=%lu lvl R%+.1f P%+.1f",
+        // gnd: ヨーが決まった後に、地上での再水平化に入った回数（ESKF_GROUND_*）。
+        //   飛行中に増えていたら、地上の判定が飛行中に誤って成立している。
+        enqueueTask(createLogSdfTask("eskf ready=%d yawsig=%.1f yawsrc=%d gobs=%lu gnd=%lu lvl R%+.1f P%+.1f",
                                      (int)attitude_ready(), attitude_get_yaw_sigma_deg(),
                                      (int)attitude_get_yaw_source(),
-                                     (unsigned long)attitude_get_level_updates(), lvr, lvp));
+                                     (unsigned long)attitude_get_level_updates(),
+                                     (unsigned long)attitude_get_ground_relevels(), lvr, lvp));
       }
     }
   }

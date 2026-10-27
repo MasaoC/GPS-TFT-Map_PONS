@@ -9,6 +9,8 @@
 //   E) **水平化できない状況でもバリオ用の上方向が出るか**（実機回帰の再発防止）
 //   F) 重力観測（Phase 2）— 直進では入り、**5 度の協調旋回では入らない**こと、
 //      GNSS 無しでもロール・ピッチの錨になること
+//   G) 2026-10-27 の発散（VertAccel -18 m/s²）の再発防止 — 悪い測位でヨーを入れない、
+//      速く回している間は重力観測を入れない、ヨーが決まった後も地上で止まれば戻る
 //
 // 旧 decl_test.cpp（地磁気偏角の符号）はここに置き換わった。
 // 初期ヨーに地磁気を使わなくなったので、あのテストは対象そのものが無くなった。
@@ -268,7 +270,130 @@ int main() {
         ok &= fabsf(r - r0) < 2.0f;
         ok &= attitude_get_level_updates() > 100;
     }
-    printf("\n結果: %s\n", ok ? "PASS — 水平化・航跡ヨー・待機中の維持・上方向の常時提供・重力観測がすべて正しい"
+
+    // ================= G) 2026-10-27 の発散の再発防止 =================
+    // ★ 実機で VertAccel が -18 m/s² になり、バリオが数分沈降で鳴り続けた。
+    //   バリオの上方向は ESKF から取るので、姿勢が上下逆さまになると鉛直加速度も狂う。
+    //   手で 90 度回している間に重力観測が通って bg_ が壊れ、屋内の偽の速度でヨーが
+    //   決まり、そのあと傾きの誤差が 60 度を超えて戻せなくなった。
+    //   G1: sAcc の悪い測位ではヨーを入れない
+    //   G2: 水平な軸まわりに速く回している間は重力観測を入れない
+    //   G3: ヨーが決まった後でも、地上で止まれば 60 度を超える傾きの誤差から戻る
+    //   G4: GNSS が「動いている」と言っている間は G3 が働かない（飛行中の誤作動の防止）
+    {
+        float a_lv[3]; static_accel_for_bank(0.0, a_lv);   // 機体水平
+        // 上方向と比力のなす角 [deg]（0 が正しい）
+        auto up_err_deg = [](const float a[3]) {
+            float uu[3];
+            if (!attitude_get_up_sensor(uu)) return 999.0f;
+            const float n = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+            float d = 0;
+            for (int i = 0; i < 3; i++) d += uu[i] * a[i] / n;
+            if (d > 1.0f) d = 1.0f;
+            if (d < -1.0f) d = -1.0f;
+            return acosf(d) * 180.0f / (float)M_PI;
+        };
+        // 良い測位でヨーを入れる（真方位 0 度へ 8m/s）
+        auto set_yaw_good = [&]() {
+            for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES; i++) {
+                feed(25, dt, t, a_lv, gz);
+                attitude_on_gnss_velocity(8.0f, 0.0f, 0.0f, 0.08f);
+            }
+        };
+
+        // ---- G1) sAcc の悪い測位ではヨーを入れない ----
+        attitude_setup();
+        t = 0;
+        feed(200, dt, t, a_lv, gz);                       // 水平化
+        for (int i = 0; i < 6; i++) {
+            feed(25, dt, t, a_lv, gz);
+            attitude_on_gnss_velocity(3.8f, 0.0f, 0.0f, 2.06f);   // 実機の屋内の値
+        }
+        const bool yaw_bad = attitude_yaw_ready();
+        for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES; i++) {
+            feed(25, dt, t, a_lv, gz);
+            attitude_on_gnss_velocity(3.8f, 0.0f, 0.0f, 0.30f);
+        }
+        printf("\nG1) sAcc の悪い測位ではヨーを入れない\n");
+        printf("   sAcc 2.06 を 6 回: yaw_ready=%d（0 が正しい）\n", (int)yaw_bad);
+        printf("   続けて sAcc 0.30 を %d 回: yaw_ready=%d（1 が正しい）\n",
+               ESKF_YAW_INIT_ARM_FIXES, (int)attitude_yaw_ready());
+        ok &= !yaw_bad && attitude_yaw_ready();
+
+        // ---- G2) 水平な軸まわりに速く回している間は重力観測を入れない ----
+        // 機体のピッチ軸（水平のまま）まわりに 20deg/s。ワールド系のヨーレートは 0 なので
+        // 旋回レートのゲートは開いたまま。比力は動かさない（回転に伴う加速度の代わり）。
+        attitude_setup();
+        t = 0;
+        feed(200, dt, t, a_lv, gz);
+        float bg0[3]; attitude_get_gyro_bias(bg0);
+        const double wb2[3] = { 0.0, 20.0 * M_PI / 180.0, 0.0 };
+        float wv2[3]; body_to_sensor(wb2, wv2);
+        const uint32_t m0 = attitude_get_level_updates();
+        feed((int)(1.5 * fs), dt, t, a_lv, wv2);         // 1.5 秒（30 度）
+        const uint32_t m1 = attitude_get_level_updates();
+        float bg1[3]; attitude_get_gyro_bias(bg1);
+        float dbg = 0;
+        for (int i = 0; i < 3; i++) dbg += (bg1[i] - bg0[i]) * (bg1[i] - bg0[i]);
+        dbg = sqrtf(dbg) * 180.0f / (float)M_PI;
+        feed((int)(3 * fs), dt, t, a_lv, gz);            // 止まって 3 秒
+        const uint32_t m2 = attitude_get_level_updates();
+        printf("\nG2) 水平な軸まわりに 20deg/s で回している間は重力観測を入れない\n");
+        printf("   回している 1.5 秒で %u 回（0 が正しい）  bg の変化 %.3f deg/s（0 が正しい）\n",
+               (unsigned)(m1 - m0), dbg);
+        printf("   止まってから 3 秒で %u 回（0.5 秒待ってから 2Hz で入るのが正しい）\n",
+               (unsigned)(m2 - m1));
+        ok &= (m1 - m0) == 0 && dbg < 0.01f;
+        ok &= (m2 - m1) >= 4;
+
+        // ---- G3) ヨーが決まった後でも、地上で止まれば大きな誤差から戻る ----
+        attitude_setup();
+        t = 0;
+        feed(200, dt, t, a_lv, gz);
+        set_yaw_good();
+        const bool yaw3 = attitude_yaw_ready();
+        // 傾きの推定だけを 120 度狂わせる。ジャイロだけ 60deg/s で 2 秒回し、比力は水平のまま。
+        // 実機の「狂った bg_ のまま積分した」状態の代わり。|ω| が大きいので重力観測は入らない。
+        const double wb3[3] = { 0.0, 60.0 * M_PI / 180.0, 0.0 };
+        float wv3[3]; body_to_sensor(wb3, wv3);
+        feed((int)(2 * fs), dt, t, a_lv, wv3);
+        const float e_before = up_err_deg(a_lv);
+        const uint32_t g0 = attitude_get_ground_relevels();
+        feed((int)(10 * fs), dt, t, a_lv, gz);           // 止まって 10 秒。GNSS は来ない
+        const float e_after = up_err_deg(a_lv);
+        const uint32_t g1 = attitude_get_ground_relevels();
+        printf("\nG3) ヨーが決まった後に傾きの推定が 120 度狂った状態で、止まって 10 秒\n");
+        printf("   yaw_ready=%d（1 が正しい）  上方向の誤差 %.1f → %.2f deg（2 未満が正しい）\n",
+               (int)yaw3, e_before, e_after);
+        printf("   地上での再水平化 %u 回（1 が正しい）  yaw_ready=%d  yaw_acc95=%.1f deg（ヨーを捨てないこと）\n",
+               (unsigned)(g1 - g0), (int)attitude_yaw_ready(), attitude_get_yaw_acc95_deg());
+        ok &= yaw3 && e_before > 100.0f && e_after < 2.0f;
+        ok &= (g1 - g0) == 1;
+        ok &= attitude_yaw_ready() && attitude_get_yaw_acc95_deg() < 179.0f;
+
+        // ---- G4) GNSS が「動いている」と言っている間は働かない ----
+        // 止まっているのに GNSS は 8m/s（飛行中に静止判定が成立した場合の代わり）。
+        attitude_setup();
+        t = 0;
+        feed(200, dt, t, a_lv, gz);
+        set_yaw_good();
+        const uint32_t h0 = attitude_get_ground_relevels();
+        for (int i = 0; i < 20; i++) {                   // 10 秒
+            feed(25, dt, t, a_lv, gz);
+            attitude_on_gnss_velocity(8.0f, 0.0f, 0.0f, 0.08f);
+        }
+        const uint32_t h1 = attitude_get_ground_relevels();
+        for (int i = 0; i < 6; i++) {                    // GNSS が 0.3m/s に変わった
+            feed(25, dt, t, a_lv, gz);
+            attitude_on_gnss_velocity(0.3f, 0.0f, 0.0f, 0.08f);
+        }
+        const uint32_t h2 = attitude_get_ground_relevels();
+        printf("\nG4) GNSS が 8m/s と言っている間は地上の再水平化をしない\n");
+        printf("   静止 10 秒・GNSS 8m/s: %u 回（0 が正しい）  GNSS 0.3m/s へ変わったら %u 回（1 が正しい）\n",
+               (unsigned)(h1 - h0), (unsigned)(h2 - h1));
+        ok &= (h1 - h0) == 0 && (h2 - h1) == 1;
+    }
+    printf("\n結果: %s\n", ok ? "PASS — 水平化・航跡ヨー・待機中の維持・上方向の常時提供・重力観測・発散の再発防止がすべて正しい"
                              : "FAIL");
     return ok ? 0 : 1;
 }

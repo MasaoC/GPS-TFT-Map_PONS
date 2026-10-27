@@ -65,6 +65,16 @@ static uint32_t last_gsp_us_  = 0;
 static uint32_t level_last_us_ = 0;
 // ワールド系ヨーレートの瞬時値 [deg/s]。持続成分は yaw_rate_lp_（下）。
 static float    yaw_rate_inst_ = 0.0f;
+// |ω| が ESKF_LEVEL_MAX_RATE_DPS を最後に超えた時刻（重力観測のゲート用）。
+static uint32_t rate_high_us_  = 0;
+// 信用できる（sAcc <= ESKF_SACC_MAX）最後の測位の対地速度と時刻。地上の判定に使う
+// （settings.h の ESKF_GROUND_*）。
+// ★ last_gsp_ は前後加速度のゲート用で、sAcc を問わず全測位で更新している。別物。
+static float    good_gsp_      = -1.0f;   // 負 = まだ来ていない
+static uint32_t good_gsp_us_   = 0;
+// ヨーが決まった後に、地上での再水平化に入った回数（60 秒ログの gnd=）。
+static volatile uint32_t ground_relevels_ = 0;
+static bool     ground_now_    = false;
 
 // ---- 機体ゼロ点（マウント基準）のオフセット [度] ----
 static float level_roll_off_ = 0.0f;
@@ -336,6 +346,16 @@ static void reset_covariance(float att_sigma_deg, float yaw_sigma_deg) {
     for (int i = 9; i < 12; i++) P_[i][i]       = 0.01f;                // 加速度バイアス
 }
 
+// ロール・ピッチを外部情報（重力）で置き換えたときの共分散の入れ直し。
+// init_yaw_from_track() のヨーと同じ扱いで、**他の状態との相関は意味を失うので落とす。**
+// ヨー・速度・バイアスの分散はそのまま残す（reset_covariance と違ってヨーを捨てない）。
+static void reset_tilt_covariance(float att_sigma_deg) {
+    const float s = att_sigma_deg * (float)M_PI / 180.0f;
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < N_ERR; i++) { P_[k][i] = 0.0f; P_[i][k] = 0.0f; }
+    P_[0][0] = P_[1][1] = s * s;
+}
+
 void attitude_setup() {
     q_[0] = 1; q_[1] = q_[2] = q_[3] = 0;
     v_[0] = v_[1] = v_[2] = 0;
@@ -361,6 +381,11 @@ void attitude_setup() {
     last_gsp_us_ = 0;
     level_last_us_ = 0;
     yaw_rate_inst_ = 0.0f;
+    rate_high_us_ = 0;
+    good_gsp_ = -1.0f;
+    good_gsp_us_ = 0;
+    ground_relevels_ = 0;
+    ground_now_ = false;
     dt_count_ = 0;
     dt_idx_ = 0;
     dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
@@ -406,6 +431,24 @@ static bool imu_fresh() {
 static bool gnss_vel_fresh() {
     if (!gnss_vel_seen_) return false;
     return (uint32_t)(time_us_32() - last_gnss_vel_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
+}
+
+// ---- 地上の判定（settings.h の ESKF_GROUND_*）----
+// 信用できる測位が新しいか。鮮度の基準は gnss_vel_fresh() と同じ。
+static bool good_gnss_fresh() {
+    if (good_gsp_ < 0.0f) return false;
+    return (uint32_t)(time_us_32() - good_gsp_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
+}
+// GNSS が対地速度で「地上で止まっている」と確かめているか（ゼロ点を学習してよいか）。
+static bool gnss_says_ground() {
+    return good_gnss_fresh() && good_gsp_ < ESKF_GROUND_MAX_GS_MPS;
+}
+// 静止が続いていて、GNSS が「動いている」と言っていないか（重力へ寄せてよいか）。
+// ★ 信用できる測位が無いときも地上とみなす。屋内や GNSS 断ではこちらになる。
+static bool on_ground_still(uint32_t t_us) {
+    if (!static_now_) return false;
+    if ((uint32_t)(t_us - static_since_us_) < ESKF_GROUND_STATIC_US) return false;
+    return !(good_gnss_fresh() && good_gsp_ >= ESKF_GROUND_MAX_GS_MPS);
 }
 
 // 重力方向から姿勢を初期化する。**ロール・ピッチだけが決まり、ヨーは未知。**
@@ -606,6 +649,22 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         reset_covariance(ESKF_INIT_ATT_SIGMA_DEG, ESKF_YAW_UNKNOWN_SIGMA_DEG);
     }
 
+    // ---- 地上での維持（ヨーが決まった後）----
+    // ★ 上の待機中の維持はヨーが決まるまでしか働かない。ヨーが決まった後に傾きの誤差が
+    //   60 度を超えると戻す手段が無かったので、地上で止まっているときは寄せる
+    //   （2026-10-27。理由と条件は settings.h の ESKF_GROUND_* のコメント）。
+    //   上と違ってヨーの分散は残し、ゼロ点は GNSS が地上を確かめたときだけ学習する。
+    {
+        const bool ground = yaw_set_ && on_ground_still(t_us);
+        if (ground) {
+            if (!ground_now_) ground_relevels_++;
+            level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
+            if (gnss_says_ground()) learn_gyro_bias(g);   // ★ bg_ を引く前の生の値を渡すこと
+            reset_tilt_covariance(ESKF_INIT_ATT_SIGMA_DEG);
+        }
+        ground_now_ = ground;
+    }
+
     const float dt = dt_est_;
     float w[3], f[3];
     for (int i = 0; i < 3; i++) {
@@ -670,12 +729,16 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         const float wz_dps = wz * 180.0f / (float)M_PI;
         yaw_rate_inst_ = wz_dps;
         yaw_rate_lp_ += (wz_dps - yaw_rate_lp_) * (dt / (2.0f + dt));
+        // 全角速度。重力観測のゲート用（settings.h の ESKF_LEVEL_MAX_RATE_DPS）。
+        const float wn_dps = sqrtf(w[0]*w[0] + w[1]*w[1] + w[2]*w[2]) * 180.0f / (float)M_PI;
+        if (wn_dps > ESKF_LEVEL_MAX_RATE_DPS) rate_high_us_ = t_us;
     }
 
     // ---- 重力観測（Phase 2）----
     // ★ 根拠と数値は settings.h の ESKF_LEVEL_* のコメント。要点だけ:
     //   主ゲートは**旋回レート**（ジャイロだけから作れるので GNSS 断中も働く）。
     //   `|f| ≒ g` は人力機のバンク角を判別できないので粗い健全性チェックのみ。
+    //   旋回レートは水平な軸まわりの回転を見ないので、全角速度 |ω| でも切る（2026-10-27）。
     //   前後加速度は GNSS からしか作れないので、断中はその条件を省く。
 #if ESKF_LEVEL_ENABLED
     if ((uint32_t)(t_us - level_last_us_) >= ESKF_LEVEL_INTERVAL_US) {
@@ -684,6 +747,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
                                + accel_last_[2]*accel_last_[2]);
         bool pass = (fabsf(yaw_rate_lp_)   <= ESKF_LEVEL_MAX_YAWRATE_DPS)
                  && (fabsf(yaw_rate_inst_) <= ESKF_LEVEL_MAX_YAWRATE_INST)
+                 && ((uint32_t)(t_us - rate_high_us_) >= ESKF_LEVEL_RATE_QUIET_US)
                  && (fabsf(amag - GRAVITY) <= ESKF_LEVEL_ACCMAG_TOL_MPS2);
         // 前後加速度は測位があるときだけ見る（無いときは条件ごと省く）
         if (pass && last_gsp_ >= 0.0f && gnss_vel_fresh())
@@ -988,6 +1052,11 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         }
         last_gsp_    = gsp;
         last_gsp_us_ = now_us;
+        // 地上の判定用（settings.h の ESKF_GROUND_*）。こちらは信用できる測位だけで更新する。
+        if (sAcc <= ESKF_SACC_MAX) {
+            good_gsp_    = gsp;
+            good_gsp_us_ = now_us;
+        }
     }
 
     // IMU が途絶しているときは観測を取り込まない。
@@ -1022,6 +1091,12 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
     //   接地している。接地中は横滑りできないので航跡＝機首方位が厳密に成立する。
     //   詳細は settings.h の ESKF_YAW_INIT_MIN_SPEED_MPS のコメント。
     if (!yaw_set_) {
+        // ★ **sAcc の悪い測位ではヨーを入れない**（観測と同じ ESKF_SACC_MAX）。
+        //   以前はここに門が無く、屋内の偽の速度（3.8m/s・sAcc 2.06m/s）でヨーが決まった
+        //   （2026-10-27）。ヨーが決まると待機中の維持が止まるので影響が大きい。
+        //   悪い測位は「無かったもの」として扱い、連続の数え方は止めない
+        //   （tools/imulog/eskf.py は sAcc で先に振り落としているので、それと同じになる）。
+        if (sAcc > ESKF_SACC_MAX) return;
         const float sp = sqrtf(z[0]*z[0] + z[1]*z[1]);
         if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) { yaw_arm_ = 0; return; }
         if (++yaw_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;  // 単発の化けで焼き付けない
@@ -1261,6 +1336,7 @@ uint32_t attitude_get_gnss_updates()     { return gnss_updates_; }
 //     出ない」になる）。
 bool     attitude_gnss_vel_fresh()       { return gnss_vel_fresh(); }
 uint32_t attitude_get_level_updates()    { return level_updates_; }
+uint32_t attitude_get_ground_relevels()  { return ground_relevels_; }
 
 float attitude_get_static_secs() {
     if (!static_now_) return 0.0f;
