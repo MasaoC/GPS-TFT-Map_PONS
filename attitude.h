@@ -186,6 +186,9 @@ bool     attitude_gnss_vel_fresh();
 // 重力観測（levelling update）を取り込んだ回数。ゲートが開いているかの確認に使う。
 // ★ GNSS 断中にロール・ピッチの錨になるのがこの観測。0 のままならゲートが閉じている。
 uint32_t attitude_get_level_updates();
+// ヨーが決まった後に、地上での再水平化に入った回数（settings.h の ESKF_GROUND_*）。
+// 飛行中に増えていたら、地上の判定が飛行中に誤って成立している。
+uint32_t attitude_get_ground_relevels();
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう
