@@ -5,7 +5,7 @@
 //           UART1 で無線モジュール(E220-900T22S)と話し、送信テレメトリの組み立てと
 //           受信テレメトリの供給を行う。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/23
+// Updated : 2026/10/27
 // ============================================================
 //
 // 受信データの供給関数は、意図的に gnss.h のリプレイ用関数
@@ -21,18 +21,27 @@
   // ---- 初期化・周期処理 ----
   void link_setup();          // UART1 を開き、設定を無線モジュールへ送る
   void link_announce_mode();  // 無線モードを読み上げる。**setup() の末尾で呼ぶ**
-  // settings.txt の CH が刻み（0/3/6/9/12）に乗っていなかったので寄せた、と記録する。
+  // settings.txt の CH が選べる CH（0/3/6/9/12・アッパーの 15/21/27）でなかったので寄せた、と記録する。
   // 設定の読み込み（mysd.cpp）から呼ぶ。知らせて保存し直すのは link_announce_mode()。
   void link_note_radio_ch_snapped(uint8_t from);
-  void link_loop();           // Core0 のループから毎回呼ぶ（軽い。1Hz・65Bのみ）
+  void link_loop();           // Core0 のループから毎回呼ぶ（軽い。1Hz・32B。アッパーの SF9 以上は間隔が長い）
 
   // ---- 設定 ----
   // 設定画面から変更されたときに呼ぶ。無線モジュールへ即座に反映される。
   // ★ 電波の設定は「数値」でしかない。意味を決めるのは無線層（e220.cpp）。
-  //   LoRa では radio_ch = E220 チャネル(CH0-12)、radio_profile = SF プリセット。
+  //   LoRa では radio_ch = E220 チャネル、radio_profile = SF プリセット。
   void link_set_mode(uint8_t mode);          // LINK_MODE_OFF / TX / RX
-  void link_set_radio_ch(uint8_t ch);        // 0/3/6/9/12 のどれか。それ以外は無視（link_proto.h）
-  void link_set_radio_profile(uint8_t p);    // 0..LINK_PROFILE_COUNT-1
+  void link_set_radio_ch(uint8_t ch);        // 0/3/6/9/12・15/21/27 のどれか。それ以外は無視（link_proto.h）
+  void link_set_radio_profile(uint8_t p);    // 0..LINK_PROFILE_COUNT-1（アッパーでは SF10 まで）
+
+  // ---- アッパーバンド（CH15 / 21 / 27。docs/pons_link.md §2）----
+  // 電波はどの CH でも 32 バイトのフレーム（lora_link/link_wire2.h）。アッパーでは休止に合わせた間隔で送る。
+  // 受信機の「無信号」などの時間は、送る間隔に比例して伸ばす（「何発落ちたら」をローワーとそろえる）。
+  bool     link_radio_profile_allowed(uint8_t ch, uint8_t prof);  // アッパーでは SF11 を使わない
+  uint8_t  link_next_radio_profile(uint8_t prof);  // WIRELESS 画面で長押しのたびに回す次の SF
+  uint32_t link_tx_period_ms();              // 送る間隔 [ms]。ローワーは 1000、アッパーは休止の分だけ長い
+  uint32_t link_nosignal_ms();               // 無信号とみなすまで [ms]（10 秒 × 間隔 / 1 秒）
+  uint32_t link_stale_ms();                  // 受信枠を点滅させ始めるまで [ms]（LINK_FRAME_STALE_MS × 間隔 / 1 秒）
   // グループ ID。**3 台とも同じ値**にすること。既定 0。
   // モジュールへの書き込みは不要（電波の設定ではなくペイロードの中身）。
   void link_set_group(uint8_t g);
@@ -152,6 +161,8 @@
   // 目的地／ナビモードが送信側と食い違っているか。
   // 食い違うとコース警告だけが静かにずれるので、明示的に出す。
   bool     link_dest_mismatch();
+  bool     link_dest_missing();       // 送信機の目的地が受信機に無い（ID が一致するものが無い）
+  uint16_t link_dest_id(int idx);     // 目的地の ID（名前と座標の CRC16。0 = 未選択）
 
   // ============================================================
   //  送信前チェック（プリフライト）
@@ -192,5 +203,46 @@
   // 判定が出てからの経過 [ms]。地図の警告ポップアップを引っ込める判断に使う。
   // DONE 以外では 0xFFFFFFFF（＝「出す時間はとうに過ぎている」）。
   uint32_t link_preflight_since_done_ms();
+
+  // ---- チャンネル調査（WIRELESS 画面の Ch scan → MODE_CHSCAN）----
+  // 選べるチャンネル（link_proto.h の LINK_RADIO_CHS。ローワーの CH0 / 3 / 6 / 9 / 12 と、アッパーの
+  // CH15 / 21 / 27）を順に聴いて、雑音と他の PONS を一覧にする。
+  // 1 チャンネル LINK_SCAN_DWELL_MS ずつ LINK_SCAN_SWEEPS 周して、結果を積み上げる。
+  // ★ **調べている間は送信も受信もしない。** モジュールのチャンネルを動かすため。
+  //   終わったら（途中で止めても）元のチャンネルと電源状態に戻す。
+  // ★ チャンネルは自動では変えない。3 台そろえる必要があるので、選ぶのは人
+  //   （WIRELESS 画面の Ch。戻るときに link_warn_setting_changed() が知らせる）。
+  typedef enum {
+      LINK_SCAN_IDLE = 0,
+      LINK_SCAN_RUNNING,  // 調べている。送信・受信は止まっている
+      LINK_SCAN_DONE,     // 予定の周回を終えた
+      LINK_SCAN_STOPPED,  // 途中で止めた（取れた分は残る）
+  } LinkScanState;
+
+  struct LinkScanRow {
+      uint8_t  ch;
+      uint8_t  n;            // 雑音のサンプル数（0 = まだ／測れなかった）
+      int16_t  med, max;     // 雑音の中央値・最大値 [dBm]（n = 0 なら 0）
+      uint16_t pons_same;    // 解読できた PONS のフレーム数（自分と同じ Group）
+      uint16_t pons_other;   // 同じく別の Group（他チーム）
+      int8_t   pons_rssi;    // 解読できた PONS の最大 RSSI [dBm]。0 = 無し
+      bool     burst;        // 断続的な電波（最大値 − 中央値 > LINK_PF_BURST_DB）
+      bool     measuring;    // いま測っているチャンネル
+      bool     upper;        // アッパーバンド（CH13〜）
+      bool     usable;       // いまの SF で選べる（アッパーでは SF11 が使えない）
+  };
+  #define LINK_SCAN_LOWER_COUNT LINK_LOWER_CH_COUNT   // link_proto.h。CH0 / 3 / 6 / 9 / 12
+  #define LINK_SCAN_CH_COUNT    LINK_ALL_CH_COUNT     // ローワー 5 つ ＋ アッパー 3 つ
+
+  bool          link_chscan_start();      // モジュールが応答しないなら false（何もしない）
+  void          link_chscan_stop();       // 途中で止める。元の設定に戻す。走っていなければ何もしない
+  bool          link_chscan_running();
+  LinkScanState link_chscan_state();
+  uint8_t       link_chscan_sweep();      // いま（終わったなら最後に）何周目か。1 始まり
+  bool          link_chscan_row(uint8_t idx, LinkScanRow* out);  // idx 0..LINK_SCAN_CH_COUNT-1（小さい CH から）
+  // 一番静かなチャンネルの idx。他チームの PONS がいるものと、自チーム以外の断続的な電波があるもの、
+  // いまの SF で使えないもの（アッパーで SF11）は除いて、雑音の中央値が一番低いもの。候補が無ければ -1。
+  int8_t        link_chscan_best();                 // ローワーとアッパーの両方から
+  int8_t        link_chscan_best_band(bool upper);  // 片方の帯域だけから（一覧で帯域ごとに best を付ける）
 
 #endif // LINK_H

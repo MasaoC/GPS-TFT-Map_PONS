@@ -3,7 +3,7 @@
 // Project : PONS v7 — PONS Link
 // Role    : E220-900T22S(JP) の下位ドライバ実装
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/10/27
 // ============================================================
 
 #include "e220.h"
@@ -11,6 +11,7 @@
 #include "mysd.h"   // enqueueTask / createLogSdfTask
 #include "imu.h"    // imu_service_if_due（待っている間に IMU を飢えさせない）
 #include "lora_link/link_proto.h"
+#include "lora_link/link_wire2.h"   // 電波に載せる 32 バイトのフレーム（印と CRC の検査）
 
 #define E220_SERIAL       Serial2      // RP2350 UART1 = GPIO8(TX)/GPIO9(RX)
 
@@ -383,8 +384,10 @@ static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
     v[0] = 0x00;                                   // 00H ADDH
     v[1] = 0x00;                                   // 01H ADDL
     v[2] = (uint8_t)((BAUD_BITS_115200 << 5) | air_data_rate_bits(sf));  // 02H REG0
-    // 03H REG1: subpacket(00=200B)<<6 | 環境ノイズ有効<<5 | 送信出力(01=13dBm)
-    v[3] = (uint8_t)((0b00 << 6) | (1 << 5) | 0b01);
+    // 03H REG1: subpacket(11=32B)<<6 | 環境ノイズ有効<<5 | 送信出力(01=13dBm)
+    //   ★ どの CH でも 32B（2026-10-27〜。電波に載せるのは 32 バイトのフレームで、ちょうど 1 パケット）。
+    //     アッパーはモジュールが 32B に固定するので、200B と書くと読み返しが食い違いうる。
+    v[3] = (uint8_t)((0b11 << 6) | (1 << 5) | 0b01);
     v[4] = ch;                                     // 04H REG2 チャンネル
     s_ch = ch;                                     // 送信時の宛先チャンネルに使う
     // 05H REG3: RSSIバイト付加<<7 | 送信方法<<6 | WORサイクル(011=2000ms)
@@ -497,8 +500,7 @@ void e220_setup(uint8_t ch, uint8_t profile) {
 }
 
 bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
-    if (ch > E220_CH_MAX) ch = E220_CH_MAX;
-
+    if (ch > E220_CH_MAX_ALL) ch = E220_CH_MAX_ALL;
     enter_config_mode();
     s_alive = write_config(ch, profile, persist);
     // ★ 1 回だけやり直す。**「一度失敗したら二度と戻らない」を防ぐための保険。**
@@ -557,6 +559,11 @@ bool e220_alive() { return s_alive && (s_noResp < E220_NORESP_LIMIT); }
 
 bool e220_send(const uint8_t* payload, uint8_t n) {
     if (!s_alive || !payload || n == 0) return false;
+    // ★ **アッパーバンド（CH13〜）では 32 バイトを超えて送らない。** 1 パケットが 32 バイトに
+    //   固定されるので、65 バイトは 3 つに分割され、休止（送信時間の 10 倍）も 3 回入る
+    //   （docs/pons_link.md §2）。上位は 32 バイトのフレームで送るが、どこかの経路で 65 バイトを
+    //   送ってしまうのをここで最後に塞ぐ。s_ch は write_config() が書いたチャンネル。
+    if (s_ch > E220_CH_MAX && n > E220_UPPER_MAX_PAYLOAD) return false;
     if (s_asleep) e220_wake();
 
     // ★ **通常(Fixed-block)送信モード**なので、ペイロードの前に
@@ -593,59 +600,70 @@ bool e220_send(const uint8_t* payload, uint8_t n) {
 // ============================================================
 //  受信
 //    ペイロード + RSSI 1 バイトが並んで出てくる。
-//    位相がずれても立て直せるよう、magic('P','L') を探して CRC で確定する。
+//    位相がずれても立て直せるよう、32 バイトのフレームの印（LINK_W2_MAGIC）を探して CRC で確定する。
 // ============================================================
 
-// magic は合ったが ver/type/CRC の検証に落ちたフレームの累計（1 フレーム 1 回）。
+// 印は合ったが CRC の検証に落ちたフレームの累計（1 フレーム 1 回）。
 // 「届いたが化けた」を「そもそも来ない」と区別するための診断カウンタ。
 static uint32_t s_badFrames = 0;
 uint32_t e220_bad_frames() { return s_badFrames; }
 
-// 65B ペイロードを 1 回送るのにかかる時間 [ms]（BW500kHz）。
-// ★ SF8 の 98ms だけがメーカー公開の「E220-900T22X(JP) LoRa データ送信時間計算表」の実値。
-//   他は「SF が 1 段上がるごとに約 1.8 倍」から外挿した概算なので、
-//   **同じ表から取り直すこと**（docs/pons_link.md §3 の注意書きを参照）。
-// 1Hz 運用なので、電波占有率 [%] は airtime_ms / 10 でそのまま出せる。
+// 32 バイトのペイロードを 1 回送るのにかかる時間 [ms]（BW500kHz）。
+// ★ メーカー公開「E220-900T22X(JP)_ver1.x/ver2.x LoRaデータ送信時間計算表」の実値
+//   （32bytes・BW500kHz）: SF7=41.546ms / SF8=70.272ms / SF9=120.064ms / SF10=209.408ms / SF11=357.376ms。
+// ローワーの 1Hz 運用なら、電波占有率 [%] は airtime_ms / 10 でそのまま出せる。
 uint16_t e220_airtime_ms(uint8_t profile) {
-    static const uint16_t tbl[E220_SF_MAX - E220_SF_MIN + 1] = { 55, 98, 180, 340, 600 };
+    static const uint16_t tbl[E220_SF_MAX - E220_SF_MIN + 1] = { 42, 70, 120, 209, 358 };
     return (profile < (E220_SF_MAX - E220_SF_MIN + 1)) ? tbl[profile] : 0;
 }
 
+// from から後ろに、もう揃っていて CRC も通るフレームがあればその位置。無ければ 0xFFFF。
+// ★ 揃っていない候補（途中で切れたフレームや、ゴミの中の印）の後ろに正しいフレームが届いているのに
+//   候補が揃うのを待つと、次のフレームが来るまで（1 秒以上）止まる。後ろに正しいものがあるなら、
+//   手前の候補は残骸として捨ててよい（正しいかどうかは CRC で確かめるので、本物を捨てる心配は無い）。
+//   印が 1 バイトしか無いので、65 バイトの頃の "PL" より偶然に出やすい。
+static uint16_t later_valid_frame(uint16_t from) {
+    for (uint16_t j = from; j + LINK_W2_LEN + 1 <= s_rxLen; j++)
+        if (s_rx[j] == LINK_W2_MAGIC && link_w2_valid(s_rx + j)) return j;
+    return 0xFFFF;
+}
+
 bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
-    // magic + CRC の検査を LinkTelem として行うので、長さが違うと読み過ぎる。
-    if (!out || frame_len != sizeof(LinkTelem)) return false;
+    // 印 + CRC の検査を 32 バイトのフレームとして行うので、長さが違うと読み過ぎる。
+    if (!out || frame_len != LINK_W2_LEN) return false;
 
     rx_pump();
 
     const uint16_t need = (uint16_t)frame_len + 1;   // ペイロード + RSSI
     uint16_t i = 0;
-    while (i + need <= s_rxLen) {
-        if (s_rx[i] != 'P' || s_rx[i + 1] != 'L') { i++; continue; }
-
-        // ★ s_rx + i は任意オフセットなので、そのまま LinkTelem* にキャストすると
-        //   アラインメント違反になる（Cortex-M33 で uint16/int32 の非整列アクセス）。
-        //   必ず整列した領域へコピーしてから検査する。
-        LinkTelem cand;
-        memcpy(&cand, s_rx + i, sizeof(cand));
-        if (!link_telem_valid(&cand)) {
-            // ★ magic は合ったのに検証に落ちた＝**電波は届いたが化けている**。
+    while (i < s_rxLen) {
+        if (s_rx[i] != LINK_W2_MAGIC) { i++; continue; }
+        if (i + need > s_rxLen) {
+            // 揃うまで待つ。ただし後ろにもう正しいフレームがあれば、これは残骸
+            const uint16_t j = later_valid_frame((uint16_t)(i + 1));
+            if (j == 0xFFFF) break;
+            s_badFrames++;
+            rx_drop_front(j);
+            i = 0;
+            continue;
+        }
+        if (!link_w2_valid(s_rx + i)) {
+            // ★ 印は合ったのに検証に落ちた＝**電波は届いたが化けている**。
             //   「そもそも来ていない」と区別できると、現場の対処がまるで変わる:
             //     壊れフレームが多い → 信号は届いている。SNR 不足。
             //                          アンテナの向き・位置・SF を上げる
             //     何も来ない         → 圏外・CH 違い・送信機が送っていない
             //   マージナルなリンクは全損より先に必ずここに現れるので、
             //   アンテナ調整の一番の指標になる。
-            //   （雑音の中にたまたま "PL" が並んだ場合もここに入るが、
+            //   （雑音や他方式の LoRa の中にたまたま印が出た場合もここに入るが、
             //     それも「その CH に何か出ている」ことの手掛かりになる）
             s_badFrames++;
-            // ★ 数えたら magic の 2 バイトを捨てて頭から探し直す。捨てないと
+            // ★ 数えたら印の 1 バイトだけ捨てて頭から探し直す。捨てないと
             //   次の正しいフレームが来るまで**ループのたびに同じフレームを数え直し**、
-            //   0.994 までは 1 分で bad=35166 まで膨らんだ（2026-10-22 の距離試験。
-            //   届いたのは 2,200 バイトほど）。件数として読めなくなる。
+            //   0.994 までは 1 分で bad=35166 まで膨らんだ（2026-10-22 の距離試験）。
             //   フレーム丸ごと（need）は捨てない。途中のバイトが欠けた短いフレームの
             //   すぐ後ろから正しいフレームが始まっている場合に、その頭を削ってしまうため。
-            //   手前の i バイトは "PL" で始まらないことを確かめ済みなので一緒に捨ててよい。
-            rx_drop_front((uint16_t)(i + 2));
+            rx_drop_front((uint16_t)(i + 1));
             i = 0;
             continue;
         }
@@ -658,7 +676,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
         return true;
     }
 
-    // 溜まりすぎたら古い方を捨てる（magic が見つからないまま埋まった場合）
+    // 溜まりすぎたら古い方を捨てる（印が見つからないまま埋まった場合）
     if (s_rxLen > RXBUF_SIZE - 8) rx_drop_front((uint16_t)(s_rxLen / 2));
     return false;
 }

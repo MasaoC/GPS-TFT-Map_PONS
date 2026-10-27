@@ -7,7 +7,7 @@
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/27
+// Updated : 2026/10/27
 // ============================================================
 // ★ この先頭ガードが無いと、mysd.h 経由と直接 include の二重読み込みで
 //   関数プロトタイプの再宣言までは黙って通っていたが、enum の再定義は
@@ -188,8 +188,10 @@ void draw_imudetail(int page);
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
 void draw_wireless(int cursor);
-#define WIRELESS_MENU_COUNT 6    // MODE / CH / SF / GROUP / PREFLIGHT / RETURN
+#define WIRELESS_MENU_COUNT 7    // MODE / CH / SF / GROUP / PREFLIGHT / CH SCAN / RETURN
 extern int wireless_cursor;
+// 選べるチャンネルの雑音の一覧（display_pages.cpp）。WIRELESS 画面の Ch scan から入る。
+void draw_chscan();
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
 // 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。

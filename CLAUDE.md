@@ -164,6 +164,16 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   デモを止める理由は見えにくい: デモは `stored_*` を上書きしないので**CSV には
   残らない**のに、`link_push_telemetry()` は accessor 経由なので**仮想機体が電波に乗る**。
   一覧は [docs/pons_link.md](docs/pons_link.md) §5。
+- **電波に載るのは `LinkTelem`（65 バイト）ではなく 32 バイトのフレーム**
+  （[lora_link/link_wire2.h](lora_link/link_wire2.h)。2026-10-27〜、どの CH でも）。`LinkTelem` はメモリの上の形で、
+  送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは無い**ので、65 バイトの古い版とは通じない（3 台そろえる）。
+  並びを変えたら `LINK_W2_MAGIC` も変え、PONSv7 / PONSv7.1 / debug/v7-noise-test で並びを同じに保つ
+  （目的地の ID は PONSv7 / v7.1 だけ。noise-test は 0 ＝「送っていない」を送るので混ぜても通じる）。
+  ゆっくりした項目は 8 発に分けた回転枠で運ぶので、**have ビットの無い目的地・ナビモード・縮尺は
+  `link_rx_slot_known()` を見てから使う**（受け始めは 0 のままで、使うと受信機が目的地 0・縮尺 0 に書き換えられる）。
+  **目的地は番号ではなく `dest_id`（名前と座標の CRC16）で照合する**（`link_sender_dest_local()`）。番号で合わせると、
+  3 台の destinations.csv やパイロンの上書きが違うとき**黙って別の場所**に合う。`dest_id` の 0 は「送っていない」。
+  アッパーバンド（CH15 / 21 / 27）は休止の決まりに合わせて送る間隔を延ばし、SF11 は使わない（docs/pons_link.md §2）。
 - **PONS Link は下り一方向で、上りの通信路そのものを持たない。**
   大会レギュレーション上の要件なので、この非対称性を壊さない。
 - **`.ino` の初期化順のコメントは消さない。** `core1_separate_stack` /
@@ -250,6 +260,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。電池低下のときの点滅（判定は `batt_alarm_tick()`） |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
+| [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。noise-test ブランチと並びを同じに保つ |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
 | [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) | 焼き込んだ音声の実体。`tools/gen_wav_flash.py` の生成物。手で編集しない |

@@ -1,11 +1,11 @@
 // ============================================================
 // File    : display_pages.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-// Role    : 地上で見る詳細画面の描画（VARIO 1-2 / GNSS DETAIL 1-3）。
+// Role    : 地上で見る詳細画面の描画（VARIO 1-2 / GNSS DETAIL 1-3 / CH SCAN）。
 //           display_tft.cpp から分けただけで、役割は同じ「描画だけ」。
 //           判断や発報は置かない（CLAUDE.md の約束）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/10/27
 // ============================================================
 //
 // ★ **スプライトとフォントは display_tft.cpp のものを借りている**
@@ -103,7 +103,7 @@ static void draw_vario_page1() {
   if (_mirror) {
     // ★ 送信機がどのセンサーを融合しているかは電波から完全には分からない。
     //   分かるのは IMU の生死だけ（LINK_ST_IMU_ERROR）。MS5611 の状態を
-    //   運ぶビットは無い（あっても 65 バイトの枠を増やす価値は無い）。
+    //   運ぶビットは無い（あっても電波の 32 バイトの枠を増やす価値は無い）。
     backscreen.printf("KF: sender (IMU %s)",
       (link_sender_status() & LINK_ST_IMU_ERROR) ? "NG" : "OK");
   }
@@ -814,4 +814,139 @@ void draw_gnssdetail(int page) {
     case 1:  draw_gnss_page2(); break;
     default: draw_gnss_page3(); break;
   }
+}
+
+// ============================================================
+//  チャンネル調査の一覧（screen_mode == MODE_CHSCAN、link.cpp の link_chscan_*）
+//    選べるチャンネル（CH0 / 3 / 6 / 9 / 12）の雑音と、解読できた PONS を並べる。
+//    その下に、アッパーバンドの CH15 / 21 / 27 を区切って並べる（SF11 のときはアッパーでは使えないので灰色）。
+//    帯域ごとに一番静かなものに best を付ける（大会当日にローワーが混んでいたら、アッパーと比べて選ぶ）。
+//    判断は link.cpp（link_chscan_best*）にあり、ここは並べて色を付けるだけ。
+//    ★ チャンネルはここでは変えない。3 台そろえる必要があるので、WIRELESS 画面の Ch で人が選ぶ。
+// ============================================================
+void draw_chscan() {
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("CH SCAN");
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextWrap(false);
+  const int lh = 14;
+  int y = 4;
+
+  // ---- 状態 ----
+  const LinkScanState st = link_chscan_state();
+  backscreen.setCursor(2, y);
+  if (st == LINK_SCAN_RUNNING) {
+    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    backscreen.printf(" Scanning  sweep %u/%u", (unsigned)link_chscan_sweep(), (unsigned)LINK_SCAN_SWEEPS);
+    y += lh;
+    // 調べている間は送信も受信も止まっている。送信機ならボートが無信号になる
+    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    const uint8_t m = link_get_mode();
+    backscreen.print(m == LINK_MODE_TX ? " TX paused while scanning"
+                   : m == LINK_MODE_RX ? " RX paused while scanning"
+                                       : " Radio busy while scanning");
+  } else if (st == LINK_SCAN_DONE) {
+    backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    backscreen.printf(" DONE  (%u sweeps, SF%u)", (unsigned)link_chscan_sweep(),
+                      e220_profile_to_sf(link_get_radio_profile()));
+  } else {
+    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    backscreen.printf(" STOPPED  (sweep %u)", (unsigned)link_chscan_sweep());
+  }
+  y += lh + 4;
+
+  // ---- 一覧 ----
+  // 列: 今の CH の印・CH・周波数・雑音の中央値・最大値・メモ
+  static const int cx[6] = { 2, 12, 34, 86, 126, 166 };
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(cx[1], y); backscreen.print("CH");
+  backscreen.setCursor(cx[2], y); backscreen.print("MHz");
+  backscreen.setCursor(cx[3], y); backscreen.print("med");
+  backscreen.setCursor(cx[4], y); backscreen.print("max");
+  backscreen.setCursor(cx[5], y); backscreen.print("note");
+  y += lh;
+
+  const int8_t  best    = link_chscan_best();
+  const int8_t  best_lo = link_chscan_best_band(false);
+  const int8_t  best_up = link_chscan_best_band(true);
+  const uint8_t cur     = link_get_radio_ch();
+  for (uint8_t i = 0; i < LINK_SCAN_CH_COUNT; i++) {
+    LinkScanRow r;
+    link_chscan_row(i, &r);
+    // ローワーとアッパーの境目に区切りの行（SF11 ならアッパーは使えないと書く）
+    if (i == LINK_SCAN_LOWER_COUNT) {
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.setCursor(cx[1], y);
+      backscreen.print(r.usable ? "-- upper band --" : "-- upper band (no SF11) --");
+      y += lh;
+    }
+    // 今使っている CH には印。測っている CH は青。いまの SF で使えない CH は灰色。
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    if (r.ch == cur) { backscreen.setCursor(cx[0], y); backscreen.print(">"); }
+    backscreen.setTextColor(r.measuring ? COLOR_BLUE : (r.usable ? COLOR_BLACK : COLOR_GRAY), COLOR_WHITE);
+    backscreen.setCursor(cx[1], y); backscreen.printf("%u", r.ch);
+    backscreen.setCursor(cx[2], y); backscreen.printf("%.1f", 920.8f + 0.2f * r.ch);
+    if (r.n == 0) {
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.setCursor(cx[3], y);
+      backscreen.print(r.measuring ? "..." : "--");
+      y += lh;
+      continue;
+    }
+    // 中央値は送信前チェックと同じしきい値（LINK_PF_NOISE_WARN_DBM）を超えたら橙
+    backscreen.setTextColor(r.med > LINK_PF_NOISE_WARN_DBM ? COLOR_ORANGE : COLOR_BLACK, COLOR_WHITE);
+    backscreen.setCursor(cx[3], y); backscreen.printf("%d", r.med);
+    backscreen.setTextColor(r.burst ? COLOR_ORANGE : COLOR_BLACK, COLOR_WHITE);
+    backscreen.setCursor(cx[4], y); backscreen.printf("%d", r.max);
+    // メモ: 他チームの PONS（赤）> 自チームの送信機（灰）> 断続的な電波（橙）> 帯域で一番静か（緑）
+    backscreen.setCursor(cx[5], y);
+    if (r.pons_other > 0) {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.print("PONS");
+    } else if (r.pons_same > 0) {
+      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      backscreen.print("own TX");
+    } else if (r.burst) {
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print("busy");
+    } else if ((int8_t)i == best_lo || (int8_t)i == best_up) {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      backscreen.print("best");
+    }
+    y += lh;
+  }
+  y += 4;
+
+  // ---- まとめ ----
+  backscreen.setCursor(2, y);
+  if (best >= 0) {
+    LinkScanRow b;
+    link_chscan_row((uint8_t)best, &b);
+    backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+    backscreen.printf(" Quietest: CH%u (%d dBm)%s", b.ch, b.med, b.upper ? " UP" : "");
+  } else {
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.print(" Quietest: --");
+  }
+  y += lh;
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print(" Set Ch on WIRELESS (all 3)");
+  y += lh + 4;
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(2, y);
+  backscreen.print(st == LINK_SCAN_RUNNING ? " short: stop   long: back"
+                                           : " short: rescan  long: back");
+
+  backscreen.unloadFont();
+  // draw_wireless() と同じく自前で置く（push_backscreen は地図専用）。フッタも消す。
+  backscreen.pushSprite(0, 40);
+  tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
 }

@@ -8,7 +8,7 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/06
+// Updated : 2026/10/27
 // ============================================================
 
 #ifndef MYSD_H
@@ -254,6 +254,9 @@
               bool     own_valid;
               float    own_lat, own_lon;
               float    dist_m;    // 機体までの距離 [m]
+              // 受けた 32 バイトのフレームの回転枠の番号（0〜7。lora_link/link_wire2.h）。
+              //   回転枠の項目（日付・平均ピッチ・風・電圧・気圧など）は、その枠の行で更新された値。
+              uint8_t  slot;
           } saveCsvArgs;
           struct {
               int freq;
@@ -303,7 +306,8 @@
   // 無線で受信したテレメトリを received/ へ書き出すタスク。
   // 列は自機のフライト CSV と同じ並びにし、末尾に rssi/seq/age/src を足す。
   // 揃えてあるので、既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
-  Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms);
+  // slot = 32 バイトのフレームの回転枠の番号（分からなければ 0xFF）
+  Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t slot);
   // 飛行 CSV の 1 行を書く。引数は saveRxCSV と同じく Task そのもの
   //（17 個並べると、項目を足したとき呼び出し側とずれても気づけないため）。
   void saveCSV(const Task& tk);
