@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/10
+// Updated : 2026/10/27
 // ============================================================
 
 #ifndef ATTITUDE_H
@@ -144,6 +144,8 @@ void  attitude_set_roll_trim_enabled(bool on);
 //   処理 : 自動ロールトリム、風推定、imu_replaydata への記録
 // OFF にすると見た目も動作も ESKF 導入前と同じになる。
 // ESKF の計算自体は止めない（診断ページの表示と、ON に戻したときの即応性のため）。
+// ★ PONS Link: 送信機が OFF なら姿勢を送らない。受信機はミラー中、**自分のこのスイッチを見ずに**
+//   送信機の姿勢を出す（送信機の ON/OFF に従う。docs/pons_link.md §5）。
 bool  attitude_get_rpy_enabled();
 void  attitude_set_rpy_enabled(bool on);
 

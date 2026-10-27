@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/10/27
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -610,7 +610,9 @@ static void bank_alarm_tick() {
   //   受信側は警告をビットで受け取るのではなく**自分で再計算する**方針なので
   //   （link_proto.h の status 設計を参照）、入力をミラー値に差し替えるだけでよい。
   //   計算が 1 本のままなので、送信側と受信側で挙動がずれる余地が無い。
-  if (attitude_get_rpy_enabled() && !getReplayMode() &&
+  // ★ ミラー中は自機の Roll/Pitch/Yaw func を見ない（2026-10-27）。送信機が ON なら機体の画面でも
+  //   バンク警報が鳴るので、受信機でも鳴らす。送信機が OFF なら姿勢が来ないので鳴らない。
+  if ((link_mirror_active() || attitude_get_rpy_enabled()) && !getReplayMode() &&
       (link_mirror_active() ? link_get_attitude(bank_roll_tmp, bank_pitch_tmp)
                             : attitude_ready())) {
     static uint32_t bank_over_since_ms = 0;
@@ -1101,6 +1103,10 @@ static void draw_current_screen(bool new_gnss_info) {
   } else if (screen_mode == MODE_WIRELESS) {
     if (redraw_screen)
       draw_wireless(wireless_cursor);
+  } else if (screen_mode == MODE_CHSCAN) {
+    // チャンネル調査の一覧。進み具合は 1.05 秒の強制再描画で更新する
+    if (redraw_screen)
+      draw_chscan();
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -1367,6 +1373,10 @@ void loop() {
   // 無線モジュールとの UART。1Hz・数十バイトなので負荷は無視できる。
   // 無線モジュールが繋がっていなくても、link_module_alive() が false になるだけで無害。
   link_loop();
+  // ★ チャンネル調査は一覧の画面にいる間だけ。ほかへ移ったら止めて元の設定へ戻す
+  //   （調査中は送信も受信も止まっているので、画面を離れたまま走らせない）。
+  //   ボタンで戻るときは longPressCallback が先に止めるので、普通はここを通らない。
+  if (link_chscan_running() && screen_mode != MODE_CHSCAN) link_chscan_stop();
   //switch handling
   sw_push.read();
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
@@ -1641,6 +1651,14 @@ void shortPressCallback() {
 
   enqueueTask(createPlayMultiToneTask(1046, 80, 1));  // 短押し音
 
+  // チャンネル調査の一覧: 調べている途中なら止める、終わっていればもう一度。
+  // 断られたら（モジュール無応答）低い音。
+  if (screen_mode == MODE_CHSCAN) {
+    if (link_chscan_running())    link_chscan_stop();
+    else if (!link_chscan_start()) enqueueTask(createPlayMultiToneTask(440, 200, 1));
+    return;
+  }
+
   if (screen_mode == MODE_SETTING) {
     if (selectedLine == -1) {  // 値変更モードでない → カーソルを次の行へ
       cursorLine = (cursorLine + 1) % setting_size;
@@ -1903,6 +1921,14 @@ void longPressCallback() {
     return;
   }
 
+  // チャンネル調査の一覧からの長押し = WIRELESS 画面へ戻る（調べている途中なら止めて元の設定へ）。
+  // ★ 下の汎用パス（設定画面以外 → 設定画面へ）より先に見ること。
+  if (screen_mode == MODE_CHSCAN) {
+    link_chscan_stop();
+    screen_mode = MODE_WIRELESS;
+    return;
+  }
+
   // IMU / ESKF 画面での長押し = 「実行」。
   // 設定画面が「短押し=移動 / 長押し=実行」なので、そちらに操作感を合わせる。
   // この画面には Exit 項目があるため、長押しで設定画面へ戻る動作は持たせない。
@@ -1912,14 +1938,15 @@ void longPressCallback() {
                // 3 択のトグルなので「送受同時 ON」を表現できない（docs/pons_link.md §1）。
         link_set_mode((link_get_mode() + 1) % 3);
         break;
-      case 1:  // チャネルを CH0 → 3 → 6 → 9 → 12 → 0 と回す（920.8-923.2MHz）。
-               // 帯域 500kHz が重ならない 5 つだけにしてある（link_proto.h の LINK_RADIO_CH_STEP）。
-               // CH12 までが休止 50ms 固定の帯域なので上限を越えさせない。
+      case 1:  // チャネルを CH0 → 3 → 6 → 9 → 12 → 15 → 21 → 27 → 0 と回す（920.8-926.2MHz）。
+               // 帯域 500kHz が重ならないものだけにしてある（link_proto.h の LINK_RADIO_CHS）。
+               // CH15 から上はアッパーバンド（休止に合わせた間隔で送り、SF11 は使わない。docs/pons_link.md §2）。
         link_set_radio_ch(link_radio_ch_next(link_get_radio_ch()));
         break;
       case 2:  // 拡散率 SF7→SF8→…→SF11→SF7 と回す（帯域幅 500kHz は固定）。
                // SF を上げるほど届くが、送信時間＝送信電流が倍々に増える。
-        link_set_radio_profile((link_get_radio_profile() + 1) % LINK_PROFILE_COUNT);
+               // アッパーバンドの CH では SF11 を飛ばす（link_next_radio_profile）。
+        link_set_radio_profile(link_next_radio_profile(link_get_radio_profile()));
         break;
       case 3:  // グループ ID。電波の設定ではないのでモジュールへの書き込みは不要
                //（ペイロードの中身なので即座に反映される）。
@@ -1935,6 +1962,12 @@ void longPressCallback() {
                //  （設定画面の「いま実行できない操作」と同じ 440Hz）。
         if (!link_preflight_restart())
           enqueueTask(createPlayMultiToneTask(440, 200, 1));
+        break;
+      case 5:  // 選べるチャンネルを全部聴いて一覧にする（link_chscan_*）。
+               // モジュールが応答しないなら走らないので、断られたら低い音。
+               // ★ チャンネルは変えない。一覧を見てから、この画面の Ch で人が選ぶ。
+        if (link_chscan_start()) screen_mode = MODE_CHSCAN;
+        else                     enqueueTask(createPlayMultiToneTask(440, 200, 1));
         break;
       default: // 戻る
         // ★ CH / SF / Group を触ったまま出るときは必ず知らせる。

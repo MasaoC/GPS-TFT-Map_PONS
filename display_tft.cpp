@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/23
+// Updated : 2026/10/27
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -546,11 +546,13 @@ static bool eskf_display_yaw_acc(float &acc95) {
 }
 
 bool eskf_display_enabled() {
+  // ミラー中は「受信データに姿勢が載っているか」で判断する。**自機のマスタースイッチは見ない**
+  // （2026-10-27）。画面に出しているのは機体の姿勢で、受信機の ESKF を OFF にしていても
+  // 機体の姿勢は見たい。送信機が OFF なら姿勢を送ってこない（link_push_telemetry）ので出ない。
+  if (link_mirror_active()) { float r, p; return link_get_attitude(r, p); }
   // マスタースイッチ。OFF なら地図上の姿勢表示は一切出さない（リプレイ含む）。
   // 表示系はすべてこの関数を通るので、ここ 1 か所で塞げる。
   if (!attitude_get_rpy_enabled()) return false;
-  // ミラー中は「受信データに姿勢が載っているか」で判断する。
-  if (link_mirror_active()) { float r, p; return link_get_attitude(r, p); }
   // リプレイ中は IMU 生データ（.bin）を再生しないので実機 ESKF の値は使えないが、
   // 同じ日の姿勢ログ（imu_replaydata/ か旧 euler/）があれば当時の値を再現できる。
   if (getReplayMode()) {
@@ -624,7 +626,7 @@ static void strike_through(TFT_eSprite &spr, int x, int y_mid, int w, uint16_t c
 
 // 測位品質（sAcc / vAcc）を「不明」として出すべきか。
 // ★ **PONS Link が運ぶ測位品質は hAcc / numsat / fixOK だけ**（link_proto.h の
-//   LinkTelem。65 バイト固定なので安易に足せない）。sAcc と vAcc は載っていない。
+//   LinkTelem。65 バイト固定で、電波では 32 バイトに詰めるので安易に足せない）。sAcc と vAcc は載っていない。
 //   それなのに get_gnss_sacc_mmps() / get_gnss_vacc_mm() はミラーで差し替わらない
 //   ので、**ミラー中は受信機自身の値がそのまま出る**。隣に並ぶ GS・高度・hAcc は
 //   機体の値なので、**機体の測位品質だと読まれる**（ボートは止まっているから
@@ -1668,7 +1670,8 @@ static void draw_ground_ok_range(int y, bool pitch) {
 
 void draw_eskf_attitude() {
   // 機能そのものが OFF なら何も出さない（ESKF 導入前と同じ見た目に戻す）。
-  if (!attitude_get_rpy_enabled()) return;
+  // ★ ミラー中は自機のスイッチを見ない（送信機の姿勢を出す。下の eskf_display_enabled() が判断する）。
+  if (!link_mirror_active() && !attitude_get_rpy_enabled()) return;
 
   // 機能は ON なのに姿勢が出せない状態。何も描かないと「表示が壊れた」のか
   // 「まだ準備中」なのか区別できないので、理由だけ 1 行出す。
@@ -2526,28 +2529,32 @@ void draw_wireless(int cursor) {
   // ---- [1] チャネル / [2] 拡散率 ----
   // 番号だけだと現地で何を選んでいるのか分からないので、実際の周波数と SF を出す。
   // CH0 = 920.8MHz、0.2MHz 刻み（CH12 = 923.2MHz。ここまでが休止 50ms 固定の帯域）。
-  // 選べるのは帯域が重ならない 0/3/6/9/12 だけ（link_proto.h）。
+  // 選べるのは帯域が重ならない 0/3/6/9/12 と、アッパーバンドの 15/21/27（link_proto.h）。
+  // アッパーには UP を付ける（休止の決まりがかかり、SF9 以上は送る間隔が 1 秒より長い。SF11 は使えない）。
   const uint8_t ch = link_get_radio_ch();
   backscreen.setTextColor(cursor == 1 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sCh      : %u  (%.1f MHz)", cursor == 1 ? ">" : " ",
-                    ch, 920.8f + 0.2f * ch);
+  backscreen.printf("%sCh      : %u  (%.1f MHz)%s", cursor == 1 ? ">" : " ",
+                    ch, 920.8f + 0.2f * ch, link_radio_ch_upper(ch) ? " UP" : "");
   y += lh;
   // ★ 帯域幅（500kHz 固定）ではなく **送信時間と電波占有率** を出す。
   //   BW は変えられないので毎回出しても情報にならない。一方 SF は現地で
   //   「届かないから上げよう」と回す項目で、1 段上げると感度が 2.5dB 上がる代わりに
-  //   **送信時間＝送信電流が約 1.8 倍**になる（SF8 98ms/9.8% → SF10 340ms/34%）。
+  //   **送信時間＝送信電流が約 1.7〜1.8 倍**になる（32 バイトで SF8 70ms/7% → SF10 209ms/21%）。
   //   その代償を**回すその場で**見せる。すぐ下の Group 行の注意書きと同じ考え方で、
   //   「変更してから警告するより、変更する前に見えているほうが効く」。
-  //   1Hz 運用なので占有率 [%] は送信時間 [ms] / 10 で出せる（docs/pons_link.md §3）。
+  //   占有率 [%] は送信時間 [ms] × 100 / 送る間隔（ローワーの 1Hz なら / 10。docs/pons_link.md §3）。
+  //   ★ 送信時間は 32 バイトのフレームの実値（e220_airtime_ms）。アッパーは送る間隔も長くなる
+  //     （link_tx_period_ms）。受信機でも送信機と同じ値を出す。
   //   ※ 文字数は従来の "(BW 500kHz)" と同じ 26 文字に収まる（最長 SF11）。
   {
     const uint8_t  prof = link_get_radio_profile();
     const uint16_t at   = e220_airtime_ms(prof);
+    const uint32_t per  = link_tx_period_ms();
     backscreen.setTextColor(cursor == 2 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
     backscreen.setCursor(2, y);
     backscreen.printf("%sSF      : %u  (%ums %u%%)", cursor == 2 ? ">" : " ",
-                      e220_profile_to_sf(prof), at, (unsigned)(at / 10));
+                      e220_profile_to_sf(prof), at, (unsigned)(at * 100UL / per));
   }
   y += lh;
   // ★ グループ ID。**3 台とも同じ値**にすること。既定 0。
@@ -2575,6 +2582,22 @@ void draw_wireless(int cursor) {
     backscreen.setCursor(2, y);
     backscreen.printf("%sPreflight: %s", cursor == 4 ? ">" : " ",
                       can_pf ? "re-run" : "(TX only)");
+  }
+  y += lh;
+
+  // ---- [5] チャンネル調査（link.cpp の link_chscan_*）----
+  // 選べるチャンネル（ローワー 5・アッパー 3）を聴いて、雑音と他の PONS を一覧にする。どのモードでも
+  // 走るが、調べている約 75 秒は送信も受信も止まる（画面でも知らせる）。モジュール無応答ではグレー。
+  // ※ 1 行増えたので、RX で Hold 行（リプレイ・デモ中）と Dest 行（目的地の不一致）が
+  //   両方出ると、最下行の Return が画面の外へ押し出される（見えないが選べはする）。
+  //   どちらも出るのは地上でチャンネルを選ぶ場面ではないので許容している。
+  {
+    const bool can_scan = link_module_alive();
+    backscreen.setTextColor(cursor == 5 ? COLOR_BLUE
+                                        : (can_scan ? COLOR_BLACK : COLOR_GRAY), COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.printf("%sCh scan  : %s", cursor == 5 ? ">" : " ",
+                      can_scan ? "run (75s)" : "(no module)");
   }
   y += lh + 4;
 
@@ -2612,7 +2635,9 @@ void draw_wireless(int cursor) {
     if (link_is_receiving()) {
       const uint8_t bars = link_rssi_bars();
       backscreen.setTextColor(bars >= 2 ? COLOR_GREEN : COLOR_ORANGE, COLOR_WHITE);
-      backscreen.printf(" Signal  : %d dBm (10s)  %u/3", link_rssi_avg10(), bars);
+      // 平均の窓はアッパーでは送る間隔に合わせて伸びる（10 発ぶん。link_rssi_avg10）
+      backscreen.printf(" Signal  : %d dBm (%lus)  %u/3", link_rssi_avg10(),
+                        (unsigned long)(link_nosignal_ms() / 1000), bars);
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     } else if (link_other_group_seen()) {
       // ★ 電波は届いていて、グループ ID だけが食い違っている。
@@ -2697,7 +2722,9 @@ void draw_wireless(int cursor) {
       if (link_dest_mismatch()) {
         backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
         backscreen.setCursor(2, y);
-        backscreen.print(" Dest    : DIFFERS from sender");
+        // 送信機の目的地が受信機に無い（destinations.csv やパイロンの上書きが違う）なら別の文言
+        backscreen.print(link_dest_missing() ? " Dest    : NOT IN THIS UNIT"
+                                             : " Dest    : DIFFERS from sender");
         y += lh;
       }
     }
@@ -2759,13 +2786,13 @@ void draw_wireless(int cursor) {
   }
   y += 4;
 
-  // ---- [5] 戻る ----
+  // ---- [6] 戻る ----
   // ★ 項目を足したら**ここの番号も直すこと。**WIRELESS_MENU_COUNT・
   //   longPressCallback の case・この描画の 3 つが揃っていないと、
   //   カーソルが 2 箇所で反転したり、選べない項目ができたりする。
-  backscreen.setTextColor(cursor == 5 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
+  backscreen.setTextColor(cursor == 6 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sReturn", cursor == 5 ? ">" : " ");
+  backscreen.printf("%sReturn", cursor == 6 ? ">" : " ");
 
   backscreen.unloadFont();
   // ★ **push_backscreen() を呼んではいけない。**あれは地図画面専用で、
@@ -2818,7 +2845,7 @@ static uint16_t link_frame_color() {
 //   色は link_frame_color()、出す／出さないはここ。切れかけと無信号で速さは
 //   変えない（違いは色で示す。周期の根拠は settings.h の LINK_FRAME_BLINK_MS）。
 static bool link_frame_visible() {
-  if (link_age_ms() <= LINK_FRAME_STALE_MS) return true;
+  if (link_age_ms() <= link_stale_ms()) return true;   // アッパーでは送る間隔に合わせて伸びる
   return (millis() / LINK_FRAME_BLINK_MS) % 2 == 0;
 }
 
@@ -2917,6 +2944,24 @@ static void draw_link_icons() {
     //   print する箇所が後から足された日にピンクで出る。
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   }
+
+  // 設定の一致確認（CH - SF - Group）。
+  // 電波アイコン・アンテナアイコンのすぐ下、風矢印の上の空き領域（x=3, y=69..76）に
+  // 一番小さいデフォルトフォント（GLCD 8px）で表示（例: 3-9-0）。
+  // 役割アイコンのピクセル下端（y=66..67）および風矢印上端（y=78）と重ならない安全位置。
+  char cfg_str[16];
+  snprintf(cfg_str, sizeof(cfg_str), "%u-%u-%u",
+           link_get_radio_ch(),
+           e220_profile_to_sf(link_get_radio_profile()),
+           link_get_group());
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_BLACK);
+  backscreen.setCursor(x, 69);
+  backscreen.print(cfg_str);
+  // ★ 地図用フォントに戻して抜ける（このファイルの約束）。
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
 // 地図を覆う情報ボックスの間引き。3 秒のうち 2 秒だけ出す（残り 1 秒は地図を見せる）。
@@ -3075,7 +3120,9 @@ static void draw_link_overlay() {
       backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
       backscreen.setTextSize(1);
       backscreen.setCursor(bx + 6, by + 7);
-      backscreen.print("DEST DIFFERS FROM SENDER");
+      // 受信機に無い目的地なら、受信機は「未選択」にしてある（link_sync_destination）
+      backscreen.print(link_dest_missing() ? "SENDER DEST NOT IN THIS UNIT"
+                                           : "DEST DIFFERS FROM SENDER");
     }
   }
 }

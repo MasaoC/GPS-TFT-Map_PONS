@@ -5,7 +5,7 @@
 //           UART の叩き方・モード制御・レジスタ設定だけを持ち、
 //           テレメトリの意味は一切知らない（それは link.cpp の仕事）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/27
 // ============================================================
 //
 // ■ 配線（docs/pons_link.md §2）
@@ -53,12 +53,18 @@
 // 送信時間（＝送信電流）が倍々に増える。既定は SF8。
 #define E220_SF_MIN       7
 #define E220_SF_MAX      11
-// 帯域幅は CH0-12 を使う前提で固定（docs/pons_link.md §2）。変更手段は無い。
+// 帯域幅は 500kHz 固定（CH の番号と周波数の対応もこれが前提。docs/pons_link.md §2）。変更手段は無い。
 // ※ 以前は WIRELESS 画面の SF 行に出していたが、変えられない値を毎回出しても
 //   情報にならないので、そこは送信時間と電波占有率（e220_airtime_ms）へ譲った。
 //   この定数は仕様の記録として残してある。
 #define E220_BW_KHZ     500
-#define E220_CH_MAX      12      // 923.2MHz。ここまでが休止 50ms 固定の帯域
+#define E220_CH_MAX      12      // 923.2MHz。ここまでが休止 50ms 固定の帯域（ローワーバンド）
+// BW500kHz のチャンネルの上限（データシート 表15。926.8MHz）。CH13 から上がアッパーバンド。
+// ★ アッパーで送れるのは E220_UPPER_MAX_PAYLOAD バイトまで（1 パケットが 32 バイトに固定される）。
+//   上位はどの CH でも 32 バイトのフレーム（lora_link/link_wire2.h）で送る。それを超えるものは e220_send が断る。
+//   休止（送信時間の 10 倍）に合わせた送る間隔は link.cpp が守る（link_tx_period_ms）。
+#define E220_CH_MAX_ALL        30
+#define E220_UPPER_MAX_PAYLOAD 32
 
 uint8_t e220_profile_to_sf(uint8_t profile);   // 0→SF7 … 4→SF11
 
@@ -74,8 +80,9 @@ void e220_setup(uint8_t ch, uint8_t profile);
 //     true  … 0xC0（不揮発）。**書換え寿命がある**ので起動時の 1 回だけ。
 //     false … 0xC2（RAM のみ）。設定画面で値を回している間はこちら。
 //   設定の正本は SD の settings.txt なので、RAM に書くだけでも
-//   次回起動時に同じ値が復元される。CH を 0→12 と回すだけで 13 回
+//   次回起動時に同じ値が復元される。CH を一周させるだけで何回も
 //   フラッシュに書くのは、モジュールの寿命を無駄に削るだけになる。
+// ch は E220_CH_MAX_ALL まで（アッパーバンドも受け付ける。サブパケット長はどの CH でも 32B）。
 bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist);
 
 // モジュールが生きているか。次の 2 つを **両方** 満たすときだけ true。
@@ -92,19 +99,22 @@ bool e220_alive();
 // n バイトを 1 パケットとしてブロードキャスト送信する。
 //   ★ write() はハード FIFO が空くまでスピンする（arduino-pico 4.5.1 で確認済。
 //     送信側にソフトバッファは無く、setFIFOSize() が効くのは受信側だけ）。
-//     115200bps で 68 バイトなら約 3.1ms ブロックする。ブロックするおかげで
+//     115200bps で 35 バイト（32 + 宛先 3）なら FIFO にほぼ収まり、ブロックは 0.3ms ほど
+//     （65 バイトの頃の 68 バイトで約 3.1ms）。ブロックするおかげで
 //     バイト列に隙間ができず、E220 にパケットを分割されない（§4）。
 bool e220_send(const uint8_t* payload, uint8_t n);
 
 // 受信バイトを取り込み、完全な 1 パケットが揃ったら true。
 // 毎ループ呼ぶこと。frame_len バイトのペイロードと RSSI 1 バイトを想定する。
+// frame_len は LINK_W2_LEN（32 バイトのフレーム。印 0xA2。lora_link/link_wire2.h）。それ以外は false。
 bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm);
 
-// magic('P','L') は合ったが ver/type/CRC の検証に落ちたフレームの累計。
+// 印は合ったが CRC の検証に落ちたフレームの累計。
 // 「電波は届いたが化けている」と「そもそも来ていない」を区別する診断用。
 uint32_t e220_bad_frames();
 
-// 65B ペイロード 1 回ぶんの送信時間 [ms]（BW500kHz）。1Hz 運用なら /10 が占有率 [%]。
+// 32 バイトのペイロード 1 回ぶんの送信時間 [ms]（BW500kHz。見積もり）。
+// ローワーの 1Hz 運用なら /10 が占有率 [%]（アッパーは送る間隔が長いので link.cpp で割る）。
 // SF を上げると感度が 2.5dB 上がる代わりにここが約 1.8 倍になるので、
 // 設定画面で SF を選ぶその場に出して代償を見せるために使う。
 uint16_t e220_airtime_ms(uint8_t profile);

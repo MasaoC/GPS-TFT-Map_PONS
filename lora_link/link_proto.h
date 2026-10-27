@@ -1,46 +1,48 @@
 // ============================================================
 // File    : link_proto.h
 // Project : PONS v7 — PONS Link (機体⇄ボート テレメトリ)
-// Role    : 電波に載せるテレメトリ構造体と、無線モジュールとの
-//           UART フレーム形式の定義。
+// Role    : テレメトリ構造体（LinkTelem。メモリの上の形）と、無線モジュールとの UART の約束。
+//           電波に載せる 32 バイトの形は lora_link/link_wire2.h（2026-10-27〜）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/23
+// Updated : 2026/10/27
 // ============================================================
 //
 // ■ このファイルが持つもの
-//     ・LinkTelem  … 電波に載る 65 バイトそのもの
+//     ・LinkTelem  … テレメトリの 65 バイト（メモリの上の形）。**電波には 32 バイトに詰めて載せる**
+//                    （lora_link/link_wire2.h。2026-10-27〜）
 //     ・LinkRxTelem… 受信結果を RP 内部で持ち回す入れ物
 //     ・RHAVE_*    … mysd.h からも参照される「値の有無」ビット
-//     ・CRC と検査 … 送受で同じ実装を使うため
+//     ・CRC16      … 送受で同じ実装を使うため（電波のフレームの検査は link_wire2.h の link_w2_valid）
 //   モジュールの叩き方（UART・モード制御・レジスタ）は e220.h / e220.cpp。
 //
 // ■ ★ 無線方式に依存しない作りにしてある
 //   電波の設定は radio_ch / radio_profile という 2 つの数値だけで、
 //   意味を決めるのは無線層。LoRa では radio_ch = E220 のチャネル番号
-//   （CH0-12 = 920.8-923.2MHz。使うのは 0/3/6/9/12 の 5 つ）、radio_profile = SF のプリセット。
+//   （使うのはローワーの 0/3/6/9/12 とアッパーの 15/21/27。下の LINK_RADIO_CHS）、radio_profile = SF のプリセット。
 //   **無線層の都合をこのファイルより上へ漏らさないこと。**
 //   実際、方式を差し替えても上位（link.cpp / display_tft.cpp）は無変更で通った。
 //
 // ■ 設計の前提（詳細は docs/pons_link.md §4）
 //   ・通信は下り一方向のみ。受信側から送信側へ返すものは何も無い。
 //   ・ブロードキャスト。ペアリングも宛先指定も不要。
-//   ・異物の排除は magic + ver + CRC16 で行う。
+//   ・異物の排除は、電波に載せる 32 バイトのフレームの印（LINK_W2_MAGIC）と CRC16 で行う（link_wire2.h）。
 //
 #ifndef LINK_PROTO_H
 #define LINK_PROTO_H
 
 #include <stdint.h>
 
-// 版数。構造体レイアウトを変えたら必ず上げる。
-//   v3: 使われていなかった tx_us（送信側 micros）を group + 予備 3 バイトへ置き換えた。
-//       受信側は自分の millis() で経過を測っており、tx_us を読む場所は 1 つも無かった。
-//       版を上げてあるので、古いファームの機体を新しい受信機がミラーすることは無い。
-// ★ **rsv に意味を与えたら必ず上げること。** 構造体の大きさは変わらないので、
-//   上げないと古い送信機の 0 を「縮尺 0 番」として読み、受信機の地図が黙って
-//   最広域に張り付く。版が違えば link_telem_valid() が丸ごと捨てる（= NO SIGNAL
-//   という分かる壊れ方）。**3 台とも焼き直すこと。**
+// LinkTelem の版数。構造体レイアウトを変えたら上げる。
+// ★ **2026-10-27 からこの版数は電波に載らない。** 電波には 32 バイトのフレーム（link_wire2.h）が載り、
+//   古い形との食い違いは**そちらの印 LINK_W2_MAGIC** で見分ける（形を変えたら印を変える）。
+//   32 バイトの予備ビットに意味を与えるときは、古い機体が送る 0 を「無し」と読めるようにすること
+//   （0 を本物の値として読むと黙って壊れる。v4 で縮尺 0 番が最広域に張り付いたのと同じ形）。
+//   3: 使われていなかった tx_us（送信側 micros）を group + 予備 3 バイトへ置き換えた。
 //   4: scale_index を追加（0.988）
-#define LINK_PROTO_VER      4
+//   5: 予備 2 バイトを dest_id（目的地の ID）にした（2026-10-27）。dest_id は 32 バイトの回転枠 7 の
+//      予備（以前は必ず 0）に載せ、**0 =「ID を送っていない」**と決めてある。ID を送らない機体
+//      （2026-10-26 までの 32 バイト・debug/v7-noise-test）とは、以前どおり番号で合わせる。
+#define LINK_PROTO_VER      5
 
 // ============================================================
 //  UART のボーレート
@@ -48,6 +50,7 @@
 //     スピンするので、ボーレートがそのまま Core0 のブロック時間になる。
 //       9600  : 68 バイトで 37.5 ms   ← マップ描画 64ms と合わせて許容できない
 //     115200  : 68 バイトで  3.1 ms
+//     （65 バイトを送っていた頃の値。2026-10-27 からは 32 バイト + 宛先 3 = 35 バイトで、115200 なら 0.3ms ほど）
 //
 //     Config/DeepSleep モード(mode 3) は **レジスタ設定に関わらず常に 9600 8N1**
 //     なので、設定を読み書きする間だけ 9600 へ落とす。切替は起動時と
@@ -84,8 +87,9 @@ typedef enum {
 //   0=SF7 / 1=SF8(既定) / 2=SF9 / 3=SF10 / 4=SF11
 //   SF を 1 段上げると 2.5dB 強くなるが、送信時間＝送信電流が倍々に増える。
 #define LINK_PROFILE_COUNT   5
-// E220 の BW500kHz で使うのは CH0-12（920.8-923.2MHz）。
+// E220 の BW500kHz で、ふだん使うのは CH0-12（920.8-923.2MHz、ローワーバンド）。
 // ここが休止 50ms 固定の帯域で、400ms 制限も 10 倍休止もかからない（docs/pons_link.md §7）。
+// ★ 名前は「CH の上限」のままだが、意味は**ローワーバンドの上限**。アッパーの CH は下の LINK_UPPER_CHS。
 #define LINK_RADIO_CH_MAX   12
 
 // ★ 選べるのは **CH0 / 3 / 6 / 9 / 12 の 5 つだけ**（LINK_RADIO_CH_STEP 刻み。2026-10-23〜）。
@@ -99,21 +103,43 @@ typedef enum {
 #define LINK_RADIO_CH_STEP   3
 static_assert(LINK_RADIO_CH_MAX % LINK_RADIO_CH_STEP == 0, "最後の CH が刻みに乗っていない");
 
-// 刻みに乗っている CH か。
+// ★ アッパーバンド（CH13〜30）から **CH15 / 21 / 27 の 3 つも選べる**（2026-10-27〜）。
+//   923.5MHz から上に BW500kHz が丸ごと入る CH15 から、帯域が重ならない 1.2MHz おき
+//   （923.8 / 925.0 / 926.2MHz）。大会当日にローワーが混んでいたときの逃げ場。
+//   アッパーは 1 回送るごとに休止（送信時間の 10 倍）が要り、1 パケットが 32 バイトに固定されるので、
+//   送るのはどの CH でも同じ 32 バイトのフレーム（lora_link/link_wire2.h）で、アッパーでは休止に合わせて
+//   送る間隔を延ばす。決まりと送る間隔は docs/pons_link.md §2「アッパーバンド」。
+#define LINK_UPPER_CHS      15, 21, 27
+#define LINK_UPPER_CH_COUNT  3
+#define LINK_LOWER_CH_COUNT  (LINK_RADIO_CH_MAX / LINK_RADIO_CH_STEP + 1)
+#define LINK_ALL_CH_COUNT    (LINK_LOWER_CH_COUNT + LINK_UPPER_CH_COUNT)
+// 選べる CH を小さい順に（ローワー 5 つ、続けてアッパー 3 つ）。
+static const uint8_t LINK_RADIO_CHS[LINK_ALL_CH_COUNT] = { 0, 3, 6, 9, 12, LINK_UPPER_CHS };
+static_assert(LINK_LOWER_CH_COUNT == 5, "LINK_RADIO_CHS のローワーの並びを直すこと");
+
+// アッパーバンドの CH か（休止の決まりがかかる CH か）。
+static inline bool link_radio_ch_upper(int ch) { return ch > LINK_RADIO_CH_MAX; }
+// 選べる CH か。
 static inline bool link_radio_ch_valid(int ch) {
-    return ch >= 0 && ch <= LINK_RADIO_CH_MAX && (ch % LINK_RADIO_CH_STEP) == 0;
+    for (uint8_t i = 0; i < LINK_ALL_CH_COUNT; i++) if (LINK_RADIO_CHS[i] == ch) return true;
+    return false;
 }
-// 一番近い CH へ寄せる（以前の settings.txt に残った CH10 → 9、CH11 → 12 など）。
-// ★ 3 台が同じ版なら必ず同じ値に揃うよう、決まった規則（四捨五入）で丸めること。
+// 一番近い選べる CH へ寄せる（以前の settings.txt に残った CH10 → 9、CH11 → 12、CH13 → 12 など）。
+// ★ 3 台が同じ版なら必ず同じ値に揃うよう、決まった規則で丸めること。ちょうど中間なら大きいほう（四捨五入）。
 static inline uint8_t link_radio_ch_snap(int ch) {
-    if (ch <= 0) return 0;
-    if (ch >= LINK_RADIO_CH_MAX) return LINK_RADIO_CH_MAX;
-    return (uint8_t)(((ch + LINK_RADIO_CH_STEP / 2) / LINK_RADIO_CH_STEP) * LINK_RADIO_CH_STEP);
+    uint8_t best = LINK_RADIO_CHS[0];
+    for (uint8_t i = 1; i < LINK_ALL_CH_COUNT; i++) {
+        const int d  = ch - (int)LINK_RADIO_CHS[i];
+        const int db = ch - (int)best;
+        if ((d < 0 ? -d : d) <= (db < 0 ? -db : db)) best = LINK_RADIO_CHS[i];   // 小さい順なので <= で中間は大きいほう
+    }
+    return best;
 }
-// 設定画面で長押しするたびの次の CH（12 の次は 0）。
+// 設定画面で長押しするたびの次の CH（0 → 3 → … → 12 → 15 → 21 → 27 → 0）。
 static inline uint8_t link_radio_ch_next(uint8_t ch) {
-    const int n = link_radio_ch_snap(ch) + LINK_RADIO_CH_STEP;
-    return (n > LINK_RADIO_CH_MAX) ? 0 : (uint8_t)n;
+    for (uint8_t i = 0; i < LINK_ALL_CH_COUNT; i++)
+        if (LINK_RADIO_CHS[i] > ch) return LINK_RADIO_CHS[i];
+    return LINK_RADIO_CHS[0];
 }
 
 // ============================================================
@@ -164,15 +190,17 @@ static inline uint8_t link_radio_ch_next(uint8_t ch) {
 #define RHAVE_ATT_TRIM 0x1000   // 自動ロールトリムの累積補正量
 #define RHAVE_ATT_WIND 0x2000   // 風速・風向（推定できていた区間のみ）
 
-// type の値。0 = テレメトリ。将来ほかの種類を足すための欄で、
-// 受信側は 0 以外を捨てる（link_telem_valid）。
+// type の値。0 = テレメトリ。将来ほかの種類を足すための欄。
+// ★ LinkTelem の magic / ver / type / crc16 は 65 バイトを送っていた頃の検査用。電波には載らなくなった
+//   （2026-10-27）ので、いまは検査していない。形と値はメモリの上の LinkTelem のために残してある。
 #define LINK_TYPE_TELEM     0
 
 // ============================================================
-//  テレメトリ本体
-//    UART と電波の両方で、この構造体がそのまま流れる。
-//    詰め方は「表示に必要な分解能ぎりぎり」。ペイロードを増やすと
-//    受信窓と送信電流の両方に直接効くので、安易に足さないこと（docs/pons_link.md §4）。
+//  テレメトリ本体（メモリの上の形）
+//    2026-10-27 までは UART と電波の両方でこの構造体がそのまま流れていた。いまは送る直前に
+//    link_wire2.h が 32 バイトに詰め、受けたらすぐ戻す。上の層はこの 65 バイトのまま扱う。
+//    電波に載る大きさは受信窓と送信電流の両方に直接効くので、項目を安易に足さないこと
+//    （足すなら 32 バイトの核か回転枠のどこに載せるかも決める。docs/pons_link.md §4）。
 //
 //    have ビットは上の RHAVE_* をそのまま使う。SD のリプレイと同じ定義なので、
 //    受信モードを既存のリプレイ経路に相乗りさせられる（表示側の改造が要らない）。
@@ -190,7 +218,11 @@ typedef struct __attribute__((packed)) {
     // ★ 受信機の目的は「パイロットに出ている画面の再現」なので、縮尺が違うと
     //   同じ地図に見えない。送信機が誤った縮尺のまま飛んでいることにも気づける。
     uint8_t  scale_index;
-    uint8_t  rsv[2];            // 予備。必ず 0 を入れること（将来の拡張用）
+    // 送信側が選んでいる目的地の ID（名前と座標の CRC16。0 = 送っていない・未選択）。
+    // ★ 受信側は番号（dest_index）ではなくこれで自分の目的地を探す。3 台の destinations.csv の
+    //   中身や並び、パイロンの上書きが違うと、番号では**黙って別の場所**に合ってしまうため
+    //   （link.cpp の link_sender_dest_local、docs/pons_link.md §5）。
+    uint16_t dest_id;
 
     // --- 時刻（GNSS）---
     uint16_t year;
@@ -235,12 +267,12 @@ typedef struct __attribute__((packed)) {
     uint16_t have;              // RHAVE_* と同一のビットマスク
     uint16_t status;            // LINK_ST_* のビット
 
-    uint16_t crc16;             // magic0 から status までの CRC16-CCITT
+    uint16_t crc16;             // 65 バイトを送っていた頃の CRC 欄。電波に載らないので、いまは 0 のまま
 } LinkTelem;
 
-// ★ 65 バイトは仕様書（docs/pons_link.md §4）と、そこから導いた
-//   送信時間・送信電流・電波法の検討がすべて前提にしている数値。
-//   項目を足して黙って伸びると、その検討が全部ずれる。ビルドで止める。
+// ★ 65 バイトは仕様書（docs/pons_link.md §4）の数値。2026-10-27 から電波には 32 バイトに詰めて
+//   載せる（lora_link/link_wire2.h）ので、項目を足すなら詰め方（核か回転枠か）も一緒に決めること。
+//   黙って伸びると詰め方とずれる。ビルドで止める。
 static_assert(sizeof(LinkTelem) == 65, "LinkTelem が 65 バイトでなくなっている");
 
 // ============================================================
@@ -275,8 +307,8 @@ static_assert(sizeof(LinkTelem) == 65, "LinkTelem が 65 バイトでなくな�
 //   `stored_*` が凍ったまま送信は続き、`fixflags` も `numsat` も最後の値のまま、
 //   `seq` は進むので `NO SIGNAL` にもならない。つまりボートからは
 //   **「止まった正常な機体」**に見える。音で知らせるしかないのでビットで運ぶ。
-// ★ ビットを足すだけなら LINK_PROTO_VER は上げなくてよい（構造体の大きさも
-//   並びも変わらず、古い送信機は 0 を送るので誤報も出ない）。
+// ★ ビットを足すだけなら LINK_PROTO_VER も LINK_W2_MAGIC も変えなくてよい（status は 32 バイトの核に
+//   16 ビットのまま載り、古い送信機は 0 を送るので誤報も出ない）。
 #define LINK_ST_GNSS_LOST    0x0080   // 送信機の GNSS モジュールが応答しない
 // 送信機の電源経路の異常（充電 IC の故障。power.cpp）。機体が発熱している恐れがあり、
 // ボート側からも知らせたい。受信側では作れない（送信機の電圧と USB 判定が要る）。
@@ -354,21 +386,5 @@ static inline uint16_t link_crc16(const uint8_t* data, uint16_t len) {
     return crc;
 }
 
-// テレメトリの CRC を計算する（crc16 フィールド自身は除く）
-static inline uint16_t link_telem_crc(const LinkTelem* t) {
-    return link_crc16((const uint8_t*)t, (uint16_t)(sizeof(LinkTelem) - 2));
-}
-
-// 受け取ったテレメトリが自分たちのものかを判定する。
-// magic / ver / type / CRC を通らないものは捨てる。
-// ★ **グループ ID はここで見ない。** ここで弾くと「電波は来ているがグループが違う」
-//   状態を無信号と区別できなくなり、SD が飛んで group が 0 に戻った事故に
-//   気づけなくなる。突き合わせは link.cpp が別に行う（docs/pons_link.md §1）。
-static inline bool link_telem_valid(const LinkTelem* t) {
-    if (t->magic0 != 'P' || t->magic1 != 'L') return false;
-    if (t->ver != LINK_PROTO_VER)             return false;
-    if (t->type != LINK_TYPE_TELEM)           return false;
-    return t->crc16 == link_telem_crc(t);
-}
 
 #endif // LINK_PROTO_H

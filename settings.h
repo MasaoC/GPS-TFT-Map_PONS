@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/23
+// Updated : 2026/10/27
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20261027
-#define BUILDVERSION "0.997v7"
+#define BUILDVERSION "0.998v7"
 
 // ============================================================
 //  基板（初代 v7。BNO085 を i2c1 で実装）
@@ -397,6 +397,7 @@
 #define MODE_REPLAYSELECT 7  // リプレイ再生ファイルの選択画面
 #define MODE_IMUDETAIL 8     // IMU / 姿勢 ESKF の詳細画面
 #define MODE_WIRELESS 9      // PONS Link（機体⇄ボート無線）の設定画面
+#define MODE_CHSCAN 10       // 選べるチャンネルの雑音を調べて一覧にする画面（WIRELESS の Ch scan から）
 
 // ============================================================
 //  内蔵ベクタ地図
@@ -1450,6 +1451,23 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   4 回でも合計 200+30*3 = 290ms に収まる。
 #define LINK_PF_NOISE_FAIL_MAX     4
 
+// ---- チャンネル調査（WIRELESS 画面の Ch scan。link.cpp の link_chscan_*）----
+// 選べる 8 チャンネル（ローワー 5・アッパー 3。link_proto.h の LINK_RADIO_CHS）を
+// 1 つ LINK_SCAN_DWELL_MS ずつ聴き、LINK_SCAN_SWEEPS 周する。
+// 切り替えに約 0.6 秒かかるので、1 周約 25 秒・全体で約 75 秒。
+// ★ 1 チャンネル 2.5 秒は、1 秒に 1 回送る PONS を 2 発以上聴ける長さ。周を重ねるのは、
+//   数十秒おきにしか出ない電波（LoRaWAN の端末など）を拾う機会を増やすため。
+//   アッパーの SF9 以上は PONS の送る間隔が 1.8 秒以上なので、1 発も聴けないことがある。
+#define LINK_SCAN_DWELL_MS        2500   // 1 チャンネルに居る時間 [ms]（最初の待ちを含む）
+#define LINK_SCAN_FIRST_SAMPLE_MS  500   // 切り替え直後の待ち [ms]（LINK_PF_FIRST_SAMPLE_MS と同じ理由）
+#define LINK_SCAN_SAMPLE_MS        100   // 雑音のサンプル間隔 [ms]
+#define LINK_SCAN_SWEEPS             3   // 何周するか
+#define LINK_SCAN_MAX_SAMPLES       64   // チャンネルごとに覚えておく雑音の数（3 周で約 63 個）
+// 終わってからこの間は「電波が途切れた／戻った」を知らせない [ms]。調査中は受信を止めているので、
+// 終わった直後は次のフレームが届くまで「途切れた」に見えるため。ローワーでの値で、実際は送る間隔に
+// 比例させる（link.cpp の link_chscan_holds_radio）。
+#define LINK_SCAN_RESUME_GRACE_MS 3000
+
 // ---- 無線モジュールの生存確認 [ms]（link.cpp）----
 // ★ 送信機は送信の合間 mode 3 で寝ているので、**送信そのものからは生死が分からない**。
 //   モジュールが居なくても e220_send() は成功し、送信回数も地図の弧も増え続ける。
@@ -1471,7 +1489,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   受けなかった（bad=0・RSSI -34dBm）。この検出が無かったので気づけなかった。
 // 値の根拠: UART の吐き出し 5.9ms ＋ ARIB のキャリアセンス数 ms。余裕を見て 50ms。
 #define LINK_TX_TXSTART_MS         50UL
-// 送信が終わる（AUX が High に戻る）のを待つ上限。
+// 送信が終わる（AUX が High に戻る）のを待つ上限（ローワーバンド CH0〜12 用）。
 // ★★ **送信の完了を見てから mode 3 へ落とす。** e220_sleep() のコメントは
 //   「送信中なら切替はハードが先送りする」としているが、**送信を始める前**に
 //   落とした場合にどうなるかは保証が無い。実機 2026-09-27 に、送信側が
@@ -1486,6 +1504,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ★★ **SF11 は 1 秒周期に対して余裕がほとんど無い。** 表の占有率 60% は
 //   キャリアセンスを含んでおらず、実測では 90% 近くになる見込み。
 //   SF11 を常用するなら送信周期を見直すこと（docs/pons_link.md §3）。
+// ★ アッパーバンド（CH13〜30）は電波法(ARIB STD-T108)で送信時間の10倍休止を
+//   モジュールが強制するため AUX Low が 1000ms を超える。link.cpp では
+//   link_tx_period_ms() を上限として動的に待つ。
 #define LINK_TX_DONE_MS          1000UL
 
 #define LINK_ALIVE_PROBE_MS    10000UL
@@ -1503,7 +1524,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define LINK_REVIVE_INTERVAL_MS  60000UL
 // ★ 送信直後は問い合わせない。送信中は mode 0 への切替が保留される（AUX が Low の間は
 //   切替が効かない）ので、問い合わせが素通りして「無応答」に見える。
-//   最長は SF11・65 バイトで約 600ms（docs/pons_link.md §3 の表）。その外側に置く。
+//   最長は SF11 で、32 バイトの見積もり 360ms・実測の AUX Low なら約 540ms（65 バイトの頃は約 600ms。
+//   docs/pons_link.md §3）。その外側に置く。
 //   送信は 1Hz なので、待てば必ず静かな時間帯に当たる（先送りするだけで飛ばさない）。
 #define LINK_PROBE_AFTER_TX_MS   700UL
 
@@ -1553,8 +1575,20 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define LINK_DRAW_MARGIN_MS      100   // 送信周期の揺れの分の余裕 [ms]
 #define LINK_DRAW_MIN_WINDOW_MS   50   // 窓の下限 [ms]。SF11 は送信時間が長く、引き算すると窓が無くなる
 // 送信周期の推定に使う、続けて受かった 2 発の間隔の範囲 [ms]（送信機は 1000ms + ループの遅れ）
+// ★ アッパーバンドは送る間隔が長くなる（link_tx_period_ms。SF10 で約 3.5 秒）ので、範囲はその間隔に
+//   合わせて動かす（下は 間隔 − 100、上は 間隔 × 1.3。link.cpp）。この 2 つはローワーでの値。
 #define LINK_TX_PERIOD_MIN_MS    900
 #define LINK_TX_PERIOD_MAX_MS   1300
+
+// ---- アッパーバンド（CH15 / 21 / 27。link.cpp・docs/pons_link.md §2）----
+// アッパーは 1 回送るごとに送信時間のこの倍の休止が要る（ARIB STD-T108）
+#define LINK_UPPER_PAUSE_X       10
+// 送る間隔の余裕 [%]。送信時間は計算表の実値（e220_airtime_ms）で、実測の AUX Low は表の約 1.5 倍
+// （docs/pons_link.md §3。キャリアセンスの分を含む）なので、その分を見込む。
+#define LINK_UPPER_TX_MARGIN_PCT 150
+// アッパーで選べる SF の上限（radio_profile。3 = SF10）。SF11 は送信時間の計算値 358ms が 400ms の
+// 上限に近いので、アッパーでは最初から選べない（link_radio_profile_allowed）。
+#define LINK_UPPER_PROF_MAX      3
 
 // ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
 // 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。

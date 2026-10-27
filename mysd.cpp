@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/23
+// Updated : 2026/10/27
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -25,6 +25,7 @@
 #include "src/sound.h"
 #include "attitude.h"
 #include "link.h"
+#include "e220.h"      // E220_CH_MAX_ALL（settings.txt の CH の範囲）
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -91,7 +92,7 @@ void dateTime(uint16_t* date, uint16_t* time);
 // ============================================================
 // ---- PONS Link（機体⇄ボート無線）----
 // 電波の ch / profile は「数値を保存するだけ」で、意味は無線層（e220.cpp）が決める。
-// LoRa では ch = E220 のチャネル(CH0-12 のうち 0/3/6/9/12)、profile = SF のプリセット(0=SF7 … 4=SF11)。
+// LoRa では ch = E220 のチャネル(0/3/6/9/12 とアッパーの 15/21/27)、profile = SF のプリセット(0=SF7 … 4=SF11)。
 void getLinkMode(char* b, size_t n)      { snprintf(b, n, "%u", link_mode_setting); }
 void setLinkMode(const char* v) {
   int m = atoi(v);
@@ -102,8 +103,8 @@ void setLinkMode(const char* v) {
 void getLinkRadioCh(char* b, size_t n)   { snprintf(b, n, "%u", link_radio_ch); }
 void setLinkRadioCh(const char* v) {
   int c = atoi(v);
-  if (c < 0 || c > LINK_RADIO_CH_MAX) return;
-  // ★ 使うのは 0/3/6/9/12 だけ（link_proto.h の LINK_RADIO_CH_STEP）。以前の版で
+  if (c < 0 || c > E220_CH_MAX_ALL) return;
+  // ★ 使うのは 0/3/6/9/12 と、アッパーの 15/21/27 だけ（link_proto.h の LINK_RADIO_CHS）。以前の版で
   //   間の CH を保存していたら一番近いものへ寄せ、起動の末尾で知らせる（link_announce_mode）。
   //   ここは Core1 で走るので、音とログはここでは出さない。
   const uint8_t s = link_radio_ch_snap(c);
@@ -717,9 +718,10 @@ Task createLogSdfTask(const char* format, ...) {
 //   同じ行に入れる。RSSI と距離が 1 行に揃っていないと「距離 vs RSSI」が引けず、
 //   別ファイルに分けると seq で突き合わせる手間が増えるため。
 //   リプレイは列名で解釈するので、列が増えても既存の再生は壊れない。
-Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms) {
+Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t slot) {
   Task task;
   task.type = TASK_SAVE_RXCSV;
+  task.saveCsvArgs.slot = slot;
   task.saveCsvArgs.latitude      = t->lat_1e7 / 1e7;
   task.saveCsvArgs.longitude     = t->lon_1e7 / 1e7;
   task.saveCsvArgs.gs            = t->gs_cms / 100.0f;
@@ -1779,14 +1781,14 @@ void init_replay(){
   }
 
   // 1行目 = ヘッダ。列名から列マップを作る。
-  // ★ **received/ のヘッダは 180 文字ある。** ここを切り詰めると、切れた列は
+  // ★ **received/ のヘッダは 208 文字ある。** ここを切り詰めると、切れた列は
   //   「名前が壊れたトークン」または「存在しない列」になり、静かに -1 のまま残る。
   //   実際 160 では末尾が "...,roll_trim,yaw_ac" で切れ、yaw_acc95 / wind_mps /
   //   wind_dir が拾えず、**受信ログを再生してもヨーと風だけ出ない**という
   //   気づきにくい壊れ方をしていた（列名解釈なのでエラーにもならない）。
   //   列を足すときはここも必ず見直すこと。
   //     data/     : 101 文字
-  //     received/ : 180 文字（飛行 CSV + rssi,seq,age_ms + 姿勢 6 列 + 風 2 列）
+  //     received/ : 208 文字（飛行 CSV + rssi,seq,age_ms + 姿勢 6 列 + 風 2 列 + 自機位置 3 列 + slot）
   char header[256];
   int n = replayFileStatic.fgets(header, sizeof(header));
   if (n <= 0) {
@@ -2534,7 +2536,7 @@ void saveRxCSV(const Task& tk) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
                       "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
                       "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
-                      "own_lat,own_lon,dist_m");
+                      "own_lat,own_lon,dist_m,slot");
     rxHeaderWritten = true;
   }
   // 先頭 12 列は飛行 CSV と同じ並び（csv_write_common が唯一の書き手）。
@@ -2571,6 +2573,10 @@ void saveRxCSV(const Task& tk) {
     snprintf(own, sizeof(own), "%.6f,%.6f,",     a.own_lat, a.own_lon);
   else
     snprintf(own, sizeof(own), ",,");
+  rxcsvFile.print(own);
+  // 回転枠の番号（2026-10-27〜。分からなければ空欄）
+  if (a.slot != 0xFF) snprintf(own, sizeof(own), ",%u", a.slot);
+  else                snprintf(own, sizeof(own), ",");
   rxcsvFile.println(own);
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
