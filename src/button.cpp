@@ -123,29 +123,28 @@ bool is10K_NotAllowed_Destination(const char *name) {
 
 // 設定画面を終了してマップ画面に戻る。
 // 1. 現在の設定内容を SD カードへ保存するタスクをキューに積む。
-// 2. farewell=true なら、起動からの経過秒を 5 で割った余りで別れの音声を切り替える
+// 2. farewell=true なら、起動からの経過秒を 4 で割った余りで別れの音声を切り替える
 //    （毎回同じにならないランダム感）。
-//    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな" 4: "強い"
+//    0: "またね"  1: "バイバイ"  2: "ありがとう" 3: "負けんな"
 // 3. screen_mode を MODE_MAP に変えて設定画面を閉じる。
 //
 // ★★ **別れの音声は「自分で終了を操作した」ことへの反応。**
 //   放置タイムアウト（GPS_TFT_map.ino）で閉じるときは farewell=false で呼ぶこと。
 //   実機 2026-10-14 18:47 に、鞄の中でボタンが押されて設定画面が開き、180 秒後の
-//   タイムアウトで **「負けんな」が何もしていないのに鳴った**（経過 3683 秒 → 3683%5=3）。
+//   タイムアウトで **「負けんな」が何もしていないのに鳴った**（経過 3683 秒 → 3683%4=3）。
 //   操作していないのに声が鳴ると、何が起きたのか分からない。
 void exit_setting(bool farewell){
     enqueueTask(createSaveSettingTask());
     if (farewell) {
-      if((millis()/1000)%5 == 0)
+      const uint32_t s = (millis() / 1000) % 4;
+      if(s == 0)
         enqueueTask(createPlayWavTask("wav/matane.wav"));
-      else if((millis()/1000)%5 == 1)
+      else if(s == 1)
         enqueueTask(createPlayWavTask("wav/baibai.wav"));
-      else if((millis()/1000)%5 == 2)
+      else if(s == 2)
         enqueueTask(createPlayWavTask("wav/arigato.wav"));
-      else if((millis()/1000)%5 == 3)
+      else if(s == 3)
         enqueueTask(createPlayWavTask("wav/makenna.wav"));
-      else if((millis()/1000)%5 == 4)
-        enqueueTask(createPlayWavTask("wav/tsuyoi.wav"));
     }
     screen_mode = MODE_MAP;
 }
