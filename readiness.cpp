@@ -5,7 +5,7 @@
 //           1 度だけ「準備完了」と読み上げる。そろっていなければ何が足りないかを
 //           設定画面の右上に出す（描画は display_tft.cpp の draw_setting_mode）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/10/29
 // ============================================================
 //
 // ■ なぜ
@@ -87,9 +87,10 @@ static uint16_t evaluate() {
   if (any_setting_red()) m |= RDY_SET;
 
   // 電源。USB がつながっている間は電池の残量が測れない（SW OFF のあいだは 0V）。
+  // 過放電ラッチが残っている機体も点検・解除前は READY にしない。
   if (usb_power_present() || power_sw_off_on_usb()) {
     m |= RDY_USB;
-  } else if (power_fault_active() ||
+  } else if (power_fault_active() || power_overdischarge_latched() ||
              battery_percent(get_input_voltage()) < READY_BATT_MIN_PERCENT) {
     m |= RDY_BATT;
   }

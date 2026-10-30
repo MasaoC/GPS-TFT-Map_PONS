@@ -93,7 +93,7 @@
 //   imulog_write_buffer()  : Core1 がタスク経由で呼ぶ。実際の SD 書き込み。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/05
+// Updated : 2026/10/29
 // ============================================================
 
 #ifndef IMULOG_H
@@ -162,6 +162,11 @@ void imulog_release_pending(int bufidx);
 // ---- Core1: バッファを SD へ書き出す（タスクから呼ばれる）----
 void imulog_write_buffer(int bufidx, const char* filename,
                          int year, int month, int day, int hour, int minute, int second);
+
+// ---- Core1: SD 再初期化（setup_sd 2 回目以降）の前に開いているハンドルを破棄する ----
+// SD.begin() でボリュームを再マウントする前に、旧ボリュームを指したままの静的 FsFile を
+// メモリ上でリセットする（カード差し替え後に旧 FAT クラスタへ書き込むのを防ぐ）。
+void imulog_on_sd_reinit();
 
 // ---- 診断 ----
 uint32_t imulog_get_dropped();     // バッファ枯渇で捨てたレコード数（累計）

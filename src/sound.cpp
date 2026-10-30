@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/08
+// Updated : 2026/10/29
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -490,7 +490,7 @@ void startPlayWav(const char* filename, int priority, int min_volume, int excl_g
         sin_playing = false;
         tone_paused = true;
         pwm_set_gpio_level(PIN_PWMTONE, 512);
-        if (!vario_mode) setAmplifierState(false);
+        if (!vario_mode && !wav_playing) setAmplifierState(false);
         DEBUGW_P(20250503,"Solo tone paused by higher-priority WAV: ");
         DEBUGW_PLN(20250503,filename);
     }
@@ -925,12 +925,84 @@ void playTone(int freq, int duration, int counter, int priority, int min_volume,
     pushToneBuffer(freq, duration, counter, priority, min_volume, solo_play);
 }
 
+// SD 裏コマンド（batt_unlock.txt）で過放電ラッチが解除された直後に、
+// 再生中・待機中の過放電警告トーン（2637Hz solo_play p=4）と音声（batt_overdischarge.wav）を止める。
+// 止めないと、緑の解除完了画面の裏で「充電せずUSBを外し…」が最後まで鳴り続けてしまう。
+void stop_overdischarge_alert_core1() {
+    ASSERT_CORE1("stop_overdischarge_alert_core1");
+    const int od_idx = wav_find("wav/batt_overdischarge.wav");
+
+    for (int i = 0; i < 2; i++) {
+        if (od_idx >= 0 && pending_wav[i].index == od_idx) {
+            pending_wav[i] = {-1, 0, 0, WAV_EXCL_NONE};
+        }
+    }
+
+    int newTail = toneBufHead;
+    for (int idx = toneBufHead; idx != toneBufTail; idx = (idx + 1) % TONE_BUFFER_SIZE) {
+        const ToneEntry& te = toneBuffer[idx];
+        if (te.freq == 2637 && te.solo_play && te.priority == 4) continue;
+        if (newTail != idx) toneBuffer[newTail] = te;
+        newTail = (newTail + 1) % TONE_BUFFER_SIZE;
+    }
+    toneBufTail = newTail;
+
+    if ((sin_playing || tone_in_gap || tone_paused) &&
+        sin_solo && tone_cur_freq == 2637 && tone_playing_priority == 4) {
+        sin_playing           = false;
+        tone_in_gap           = false;
+        tone_paused           = false;
+        tone_remaining        = 0;
+        sinmode               = false;
+        sin_solo              = false;
+        tone_playing_priority = 0;
+        tone_override_volume  = 0;
+        pwm_set_gpio_level(PIN_PWMTONE, 512);
+        if (!vario_mode && !wav_playing) setAmplifierState(false);
+    }
+
+    if (wav_playing && od_idx >= 0 && current_wav_index == od_idx) {
+        current_wav_index     = -1;
+        s_wav_src             = nullptr;
+        current_wav_is_replay = false;
+        current_wav_excl      = WAV_EXCL_NONE;
+        wav_playing_priority  = 0;
+        bufferSwapRequest     = false;
+        bufferReady[0]        = false;
+        bufferReady[1]        = false;
+        stopPlayback();
+    }
+}
+
 
 // toneBuffer から次のエントリを取り出してトーン再生を開始する。
-// loop_tone() から呼ばれる（WAV 未再生時のみ）。
+// ★ solo_play トーンが開始される時点で wav_playing==true なのは、呼び出し側（loop_tone）の
+//   優先度チェックを通過した「このトーンの優先度 >= 再生中 WAV の優先度」のときだけ。
+//   そのまま wav_playing を残して開始すると、直後の loop_tone() 先頭の `if (wav_playing && sin_solo)`
+//   が高優先のはずの solo_play トーンを即座に一時停止させ、アンプまで切ってしまうため、
+//   startPlayWav() と同じ手順で低優先 WAV を pending_wav へ退避・停止してから開始する。
 static void startNextToneEntry() {
-    ToneEntry& e    = toneBuffer[toneBufHead];
+    ToneEntry e     = toneBuffer[toneBufHead];
     toneBufHead     = (toneBufHead + 1) % TONE_BUFFER_SIZE;
+
+    if (e.solo_play && wav_playing) {
+        if (current_wav_index >= 0 && !current_wav_is_replay) {
+            const int interrupted = current_wav_index;
+            current_wav_index = -1;
+            push_pending_wav(interrupted, wav_playing_priority, (int)wav_override_volume,
+                             current_wav_excl);
+        } else {
+            current_wav_index = -1;
+        }
+        s_wav_src             = nullptr;
+        current_wav_is_replay = false;
+        current_wav_excl      = WAV_EXCL_NONE;
+        wav_playing_priority  = 0;
+        bufferSwapRequest     = false;
+        bufferReady[0]        = false;
+        bufferReady[1]        = false;
+        stopPlayback();
+    }
 
     tone_remaining        = e.count;
     tone_cur_freq         = e.freq;
@@ -957,22 +1029,23 @@ static void startNextToneEntry() {
 //   通常トーン (solo_play=false, クリック音など):
 //     WAV 再生中でも待たずに開始し、割り込み内で WAV と加算ミックスされる。
 //     優先度は見ない（短い SE が WAV を潰すことはないため）。
-//   solo_play トーン (コース外れ警告など、後続の音声 WAV より先に鳴らしたいもの):
-//     WAV 再生中 (wav_playing=true): 出力を停止し、WAV 終了まで待機
-//     WAV 終了後: 一時停止していたトーンを再開（tone_paused=true の場合）
+//   solo_play トーン (コース外れ警告・過放電警告など、後続の音声 WAV より先に鳴らしたいもの):
+//     開始時: より高優先の WAV が再生中なら待機し、同等以下の WAV が再生中なら pending に退避して割り込む
+//     再生中に高優先 WAV が割り込んだ場合: startPlayWav() がトーンを一時停止（tone_paused=true）し、WAV 終了後に再開
 //     WAV 開始時の優先度制御は startPlayWav() が行う
 //       - WAV priority > tone priority: WAV 割込み → トーン一時停止・WAV 後に再開
 //       - WAV priority ≤ tone priority: WAV を pending に退避 → トーン完了後に再生
 // ============================================================
 void loop_tone() {
-    // solo_play トーン再生中のみ WAV を待機させる
+    // 高優先 WAV の割り込み中（wav_playing=true）は solo_play トーンを待機させる
     // （sin_solo=false の通常トーンは WAV とミックス再生するためここでは止めない）
     if (wav_playing && sin_solo) {
         if (sin_playing) {
             sin_playing = false;
             tone_paused = true;
             pwm_set_gpio_level(PIN_PWMTONE, 512);  // 無音（中点）
-            if (!vario_mode) setAmplifierState(false);
+            // wav_playing==true で WAV がアンプを使用中のため、ここでは絶対にアンプを切らない
+            if (!vario_mode && !wav_playing) setAmplifierState(false);
         }
         return;
     }
@@ -1020,7 +1093,11 @@ void loop_tone() {
                 tone_playing_priority = 0;
                 tone_override_volume  = 0;
                 if (toneBufHead != toneBufTail) {
-                    startNextToneEntry();  // 次のエントリを開始
+                    // 通常トーン完了直後に solo_play トーンが続く場合も、より高優先の WAV 再生中は待つ
+                    if (!(wav_playing && toneBuffer[toneBufHead].solo_play &&
+                          wav_playing_priority > toneBuffer[toneBufHead].priority)) {
+                        startNextToneEntry();  // 次のエントリを開始
+                    }
                 } else if (!wav_playing) {
                     // 全トーン完了かつ WAV 未再生 → pending WAV があれば再生
                     int prio = 0, pminvol = 0, pexcl = WAV_EXCL_NONE;

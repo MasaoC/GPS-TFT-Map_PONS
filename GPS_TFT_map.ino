@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/10/29
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -226,6 +226,159 @@ void loop_userled() {
   digitalWrite(USERLED_PIN, led_on ? HIGH : LOW);
 }
 
+// SD 裏コマンド（batt_unlock.txt）で過放電ラッチが解除されたときの完了画面を 2 秒表示する。
+static void show_overdischarge_cleared_and_hold() {
+  enqueueTask(createPlayMultiToneTask(1568, 80, 1, 3, 60));
+  enqueueTask(createPlayMultiToneTask(2093, 120, 1, 3, 60));
+  draw_overdischarge_cleared_screen();
+  const uint32_t t0 = millis();
+  while (millis() - t0 < 2000UL) {
+    power_tick();
+    airdata_update();
+    backlight_tick();
+    gnss_loop(7);
+    imu_service_if_due();
+    loop_userled();
+    delay(10);
+  }
+  sw_push.reset();
+  tft.fillScreen(COLOR_WHITE);
+}
+
+// 過放電（3.0V 未満）ラッチの全画面警告／完全ロックループ。
+//   - USB 接続中（power_overdischarge_usb_active() == true）:
+//       ボタン操作で抜けられない完全ロックとし、30 秒おきに警告トーン＋音声を鳴らす。
+//   - 電池単体（power_overdischarge_usb_active() == false）:
+//       警告トーン＋音声を 1 回鳴らしたあと、ボタン押下→解放で抜けてナビ画面へ進める。
+//   - 画面表示中に解除用 SD（batt_unlock.txt）が認識されてラッチが消えた場合も即座に抜ける
+//     （別カードで起動した状態から抜き差しして解除用 SD を入れた場合も検知して再マウントする）。
+static void run_overdischarge_warning_loop(bool from_loop) {
+  backlight_set_saver(BL_SAVER_OFF);   // 警告画面中は点滅省電力を止めて常時読めるようにする
+  if (from_loop) {
+    imulog_set_paused(true);
+    if (link_chscan_running()) link_chscan_stop();  // チャンネル調査中に USB を挿されたら元の無線設定へ戻す
+    update_vario(true);
+  }
+  power_overdischarge_screen_enter();
+
+  const int      btn_pin         = sw_push.getPin();
+  const uint32_t enter_ms        = millis();
+  uint32_t       last_draw_ms    = 0;
+  uint32_t       last_sd_try_ms  = enter_ms;
+  uint32_t       sd_high_since   = 0;
+  uint32_t       sd_low_since    = 0;
+  bool           sd_card_swapped = false;
+  uint32_t       usb_clear_ms    = power_overdischarge_usb_active() ? 0 : (enter_ms ? enter_ms : 1);
+  bool           prev_usb        = power_overdischarge_usb_active();
+  bool           prev_dismiss    = false;
+  bool           seen_released   = false;
+  bool           pressed_down    = false;
+  uint32_t       press_down_ms   = 0;
+  uint32_t       release_high_ms = 0;
+
+  while (power_overdischarge_latched()) {
+    const uint32_t now = millis();
+    power_tick();
+    airdata_update();
+    if (from_loop) update_vario(true);  // update_vario 内部の 100ms 間引きを跨いで確実に停止エッジを通す
+    backlight_tick();
+    gnss_loop(7);
+    imu_service_if_due();
+    loop_userled();
+
+    // ロック画面中に解除用 SD カードを挿した場合・既存カードを抜いて書き換え後に挿し直した場合の検出。
+    // SD_DETECT が HIGH（未挿入）を 50ms 以上経てから LOW（挿入）が 500ms 安定したら即座に再マウントし、
+    // 初期化失敗中（!good_sd()）は 5 秒おきにリトライする。
+    const bool sd_present = (digitalRead(SD_DETECT) == LOW);
+    if (!sd_present) {
+      sd_low_since = 0;
+      if (sd_high_since == 0) sd_high_since = now ? now : 1;
+      else if (now - sd_high_since >= 50UL) sd_card_swapped = true;
+    } else {
+      sd_high_since = 0;
+      if (sd_low_since == 0) sd_low_since = now ? now : 1;
+      if (now - sd_low_since >= 500UL &&
+          (sd_card_swapped || (!good_sd() && now - last_sd_try_ms >= 5000UL)) &&
+          !isTaskInQueue(TASK_INIT_SD) && !isTaskRunning(TASK_INIT_SD)) {
+        sd_card_swapped = false;
+        last_sd_try_ms  = now;
+        Task t;
+        t.type = TASK_INIT_SD;
+        enqueueTask(t);
+      }
+    }
+
+    if (!power_overdischarge_latched()) break;
+
+    const bool usb_locked = power_overdischarge_usb_active();
+    bool can_dismiss = false;
+
+    if (usb_locked) {
+      // USB 接続中は完全ロック: ボタン状態を毎回リセットして絶対に抜けさせない
+      usb_clear_ms    = 0;
+      seen_released   = false;
+      pressed_down    = false;
+      release_high_ms = 0;
+    } else {
+      if (usb_clear_ms == 0) usb_clear_ms = now ? now : 1;
+      // 電源投入直後の押しっぱなしや USB 抜去直後の過渡で誤スキップしないよう 800ms 待つ
+      can_dismiss = (now - enter_ms >= 800UL) && (now - usb_clear_ms >= 800UL);
+      const bool pin_high = (digitalRead(btn_pin) == HIGH);
+      if (!can_dismiss) {
+        seen_released   = pin_high;
+        pressed_down    = false;
+        release_high_ms = 0;
+      } else if (!seen_released) {
+        if (pin_high) seen_released = true;
+      } else if (!pressed_down) {
+        if (!pin_high) {
+          pressed_down    = true;
+          press_down_ms   = now;
+          release_high_ms = 0;
+        }
+      } else if (!pin_high) {
+        // 押下継続中（または離し始めのチャタリングで LOW に戻った場合は解放タイマをやり直す）
+        release_high_ms = 0;
+      } else if (now - press_down_ms < 25UL) {
+        // 25ms 未満の短いノイズは押下とみなさない
+        pressed_down    = false;
+        release_high_ms = 0;
+      } else {
+        // HIGH → LOW（25ms 以上）→ HIGH（25ms 連続安定）を確認してから抜ける。
+        // 解放チャタリングが収まるまで待つことで、直後の loop() の sw_push.read() への誤入力を防ぐ。
+        if (release_high_ms == 0) {
+          release_high_ms = now ? now : 1;
+        } else if (now - release_high_ms >= 25UL) {
+          enqueueTask(createPlayMultiToneTask(1046, 80, 1));
+          enqueueTask(createLogSdTask("BATT LATCH: warning dismissed on battery"));
+          break;
+        }
+      }
+    }
+
+    if (last_draw_ms == 0 || now - last_draw_ms >= 250UL ||
+        usb_locked != prev_usb || can_dismiss != prev_dismiss) {
+      last_draw_ms = now ? now : 1;
+      prev_usb     = usb_locked;
+      prev_dismiss = can_dismiss;
+      draw_overdischarge_warning_screen(usb_locked, can_dismiss);
+    }
+    delay(10);
+  }
+
+  power_overdischarge_screen_exit();
+  if (power_take_overdischarge_cleared() || !power_overdischarge_latched()) {
+    show_overdischarge_cleared_and_hold();
+  }
+  if (from_loop) {
+    imulog_set_paused(getReplayMode());
+  }
+  sw_push.reset();
+  tft.fillScreen(COLOR_WHITE);
+  last_user_input_ms = millis();
+  redraw_screen = true;
+}
+
 //===============SET UP CORE0=================
 // Core0 の初期化処理。
 // 初期化順の注意:
@@ -335,13 +488,43 @@ void setup(void) {
       delay(10);
     }
   }
+  // Core1 の初期フラッシュ読込完了を念のため確認（通常は setup1 冒頭で数 ms 以内に完了済み）
+  {
+    unsigned long t = millis();
+    while (!power_latch_ready() && millis() - t < 200) {
+      delay(1);
+    }
+  }
+
+  // ---- 過放電（3.0V 未満）ラッチの起動時判定 ----
+  // SD 裏コマンド（batt_unlock.txt）は上の sd_setup_complete 待ちの間に Core1 で処理済み。
+  // ラッチが残っている場合は startup_demo_tft()（約 8 秒）より前に即座に警告／ロック画面へ入る。
+  bool skip_startup_splash = false;
+  if (power_take_overdischarge_cleared()) {
+    show_overdischarge_cleared_and_hold();
+  } else if (power_overdischarge_boot_latched()) {
+    enqueueTask(createLogSdfTask("BATT LATCH active at boot (usb=%d)",
+                                 power_overdischarge_usb_active() ? 1 : 0));
+    run_overdischarge_warning_loop(false);
+    // 電池単体でボタン操作により警告を抜けた場合は、そのままナビ画面へ進める（SD 解除時は通常起動演出へ）
+    if (power_overdischarge_latched()) {
+      skip_startup_splash = true;
+    }
+  }
 
   // ★ **起動画面より先に無線を開く。** 起動画面の下段に E220 の結果を出すため
   //   （ここより後だと、結果が出る頃には loop() が画面を描き替えてしまう）。
   //   読み上げと送信前チェックはここではやらない。setup() 末尾を見ること。
   link_setup();
 
-  startup_demo_tft();
+  if (skip_startup_splash) {
+    // startup_demo_tft() を飛ばす場合も、SD 異常を音で知らせる 500Hz×10 ビープだけは残す
+    if (!good_sd()) {
+      enqueueTask(createPlayMultiToneTask(500, 150, 10));
+    }
+  } else {
+    startup_demo_tft();
+  }
 
   // スケールリストの初期化（Google Map のズームレベルに対応する pixel/km 値）
   scalelist[0] = SCALE_EXSMALL_GMAP;  //pixelsPerDegreeLat(5,35)/KM_PER_DEG_LAT; 最広域（日本全体スケール）
@@ -364,7 +547,7 @@ void setup(void) {
       startup_voltage = get_input_voltage();
       delay(1);
     }
-    char pst[32];
+    char pst[40];
     power_format_status(pst, sizeof(pst));
     enqueueTask(createLogSdfTask("SETUP DONE Battery: %.2fV %s", startup_voltage, pst));
   }
@@ -392,6 +575,10 @@ void setup1(void) {
   // 呼ぶので、mutex_init が遅れると未初期化の mutex を掴む危険がある。
   // 特に下の while(!Serial) は USB 接続まで待つため、その後ろに置くと窓が極端に長くなる。
   mutex_init(&taskQueueMutex);  // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
+  // 過放電ラッチを本体フラッシュ（EEPROM）から読み込む。
+  // ★ 下の while(!Serial) より前に置くこと（デバッグビルドの電池単体起動で止まらないようにするため）。
+  // ★ ここでは log.txt へ何も積まない（setup() の "BOOT PONS ..." を必ず 1 行目に保つため）。
+  power_latch_init_core1();
 
   Serial.begin(38400);
   #ifndef RELEASE
@@ -695,28 +882,42 @@ static void batt_alarm_tick() {
         enqueueTask(createLogSdfTask("Battery low: %d%% (%.2fV)",
                                      battery_percent(bv), bv));
       }
-      // ---- 電池低下のときの省電力: バックライトを点滅させる（backlight.cpp）----
-      // 入るのは上の警告と同じ条件（電圧が測れる状態で BAT_LOW_VOLTAGE 以下。起動直後の
-      // BAT_WARN_INTERVAL_MS は待つ）。抜けるのは測れない状態（USB など）になったときか、
-      // 電池が BAT_SAVER_EXIT_VOLTAGE まで戻ったとき（交換・充電）。
-      // ★ BAT_LOW_VOLTAGE で抜けないこと。消灯中は負荷が減って電圧が少し戻るので、
-      //   点滅の入り切りをくり返す（settings.h の BAT_SAVER_EXIT_VOLTAGE）。
+      // ---- 電池低下のときの省電力: バックライトを 2 段階で点滅させる（backlight.cpp）----
+      //   第 1 段階（<= 3.50V）: 2s 点灯 /  4s 消灯（復帰 >= 3.65V または USB）
+      //   第 2 段階（<= 3.00V）: 2s 点灯 / 10s 消灯（第 1 段階へ戻る閾値は >= 3.20V）
+      // ★ BAT_LOW_VOLTAGE / BAT_CRIT_VOLTAGE そのもので抜けないこと。消灯中は負荷が減って
+      //   電圧が戻るため、点滅の往復が起きる（settings.h の *_EXIT_VOLTAGE）。
       {
-        static bool saver = false;
+        static BacklightSaver saver = BL_SAVER_OFF;
         const bool measurable = !usb_power_present() && !power_sw_off_on_usb() &&
                                 !power_fault_active() && !replay_voltage_active();
-        if (!saver) {
-          if (measurable && millis() >= BAT_WARN_INTERVAL_MS && bv <= BAT_LOW_VOLTAGE) {
-            saver = true;
-            backlight_set_saver(true);
-            enqueueTask(createLogSdfTask("BATTERY SAVER on: backlight %lus on / %lus off (%.2fV)",
-                                         BL_SAVER_ON_MS / 1000, BL_SAVER_OFF_MS / 1000, bv));
+        if (!measurable || (saver != BL_SAVER_OFF && bv >= BAT_SAVER_EXIT_VOLTAGE)) {
+          if (saver != BL_SAVER_OFF) {
+            saver = BL_SAVER_OFF;
+            backlight_set_saver(BL_SAVER_OFF);
+            enqueueTask(createLogSdfTask("BATTERY SAVER off (%.2fV%s)", bv,
+                                         measurable ? "" : ", USB / not measurable"));
           }
-        } else if (!measurable || bv >= BAT_SAVER_EXIT_VOLTAGE) {
-          saver = false;
-          backlight_set_saver(false);
-          enqueueTask(createLogSdfTask("BATTERY SAVER off (%.2fV%s)", bv,
-                                       measurable ? "" : ", USB / not measurable"));
+        } else if (millis() >= BAT_WARN_INTERVAL_MS || saver != BL_SAVER_OFF) {
+          BacklightSaver next = saver;
+          if (bv <= BAT_CRIT_VOLTAGE) {
+            next = BL_SAVER_CRIT;
+          } else if (saver == BL_SAVER_CRIT) {
+            if (bv >= BAT_CRIT_SAVER_EXIT_VOLTAGE) next = BL_SAVER_LOW;
+          } else if (saver == BL_SAVER_OFF) {
+            if (bv <= BAT_LOW_VOLTAGE) next = BL_SAVER_LOW;
+          }
+          if (next != saver) {
+            saver = next;
+            backlight_set_saver(saver);
+            const unsigned long off_s =
+              (saver == BL_SAVER_CRIT ? BL_SAVER_CRIT_OFF_MS : BL_SAVER_OFF_MS) / 1000UL;
+            enqueueTask(createLogSdfTask("BATTERY SAVER stage%d: backlight %lus on / %lus off (%.2fV)",
+                                         (int)saver, BL_SAVER_ON_MS / 1000UL, off_s, bv));
+          } else if (saver != BL_SAVER_OFF) {
+            // 警告画面ループ等で一時的に BL_SAVER_OFF にされていた場合にも状態を揃える
+            backlight_set_saver(saver);
+          }
         }
       }
     }
@@ -1021,7 +1222,7 @@ static void periodic_log_tick() {
       char jst_str[8];
       if (jst_valid) snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
       else           strlcpy(jst_str, "--:--", sizeof(jst_str));
-      char pst[32], bst[32];
+      char pst[40], bst[32];
       power_format_status(pst, sizeof(pst));
       backlight_format_status(bst, sizeof(bst));   // " bl=35% lux=12"（自動調光の調整用）
       enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
@@ -1445,7 +1646,11 @@ void loop() {
 
   bank_alarm_tick();
 
-  power_tick();   // 電源経路の異常（USB に見えるのに電圧が低い）。電池警告より先に判定する
+  power_tick();   // 電源経路の異常・高温充電・過放電監視。電池警告より先に判定する
+  if (power_overdischarge_usb_lock_due()) {
+    enqueueTask(createLogSdTask("BATT LATCH: USB connected while latched -> entering lock screen"));
+    run_overdischarge_warning_loop(true);
+  }
 
   backlight_tick();   // v7.1 のバックライト（輝度スイッチ・照度）
 
@@ -1564,13 +1769,25 @@ void loop1() {
         saveSettings();
         break;
       case TASK_PLAY_WAV:
+        if (strcmp(currentTask.playWavArgs.wavfilename, "wav/batt_overdischarge.wav") == 0 &&
+            !power_overdischarge_latched()) {
+          break;
+        }
         startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume, currentTask.playWavArgs.excl_group);
         break;
       case TASK_PLAY_MULTITONE:
+        if (currentTask.playMultiToneArgs.freq == 2637 &&
+            currentTask.playMultiToneArgs.solo_play &&
+            currentTask.playMultiToneArgs.priority == 4 &&
+            !power_overdischarge_latched()) {
+          break;
+        }
         playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority, currentTask.playMultiToneArgs.min_volume, currentTask.playMultiToneArgs.solo_play);
         break;
       case TASK_INIT_SD:
-        setup_sd(1);
+        // ★ 実行中の再マウントで操作中の設定値を settings.txt で上書きしないよう false にする
+        //   （まだ一度も settings.txt を読めていない起動失敗時だけは setup_sd 側が自動で読む）。
+        setup_sd(1, false);
         break;
       case TASK_BROWSE_SD:
         browse_sd(currentTask.pagenum);
@@ -1628,6 +1845,9 @@ void loop1() {
                             currentTask.imuLogArgs.hour,
                             currentTask.imuLogArgs.minute,
                             currentTask.imuLogArgs.second);
+        break;
+      case TASK_LATCH_BATT_OVERDISCHARGE:
+        power_latch_commit_core1();
         break;
     }
     clearCurrentTask();  // mutex 内で TASK_NONE にする（Core0 の isTaskRunning() と整合させるため）

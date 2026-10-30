@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/10/29
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261027
-#define BUILDVERSION "0.998v71"
+#define BUILDDATE 20261029
+#define BUILDVERSION "0.999v71"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -68,7 +68,6 @@
 //  ハードウェア — ピン割り当て
 // ============================================================
 
-// Hardware Ver6
 #define SW_PUSH 37  // v7 35->37に変更
 #define BATTERY_PIN 40 //A0
 #define GNSS_SERIAL Serial1
@@ -77,32 +76,19 @@
 // ★ 大きさの意味は「**Core0 が止まっても取りこぼさない時間**」。
 //   実流量は UBX のみで約 550 B/s（NAV-PVT 100B×2Hz ＋ NAV-SAT 約320B×1Hz
 //   ＋ NAV-DOP 26B×1Hz ＋ NAV-AOPSTATUS 24B×1Hz）。回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
-//     1024B → 約 1.9 秒   4096B → 約 7.4 秒
-//   以前のコメントは 1024B ÷ 3840B/s = 267ms と書いていたが、それは
-//   **回線が飽和している前提の最悪値**で、実態の 7 倍きつい見積りだった。
-//   RAM は 4096B でも全体の 1% 未満。ここを削る理由が無い。
+//   4096B → 約 7.4 秒  RAM は 4096B でも全体の 1% 未満。ここを削る理由が無い。
 #define GNSS_SERIAL_FIFO_SIZE  4096
 
 // GNSS モジュールからのバイトがこの時間届かなければ「断線」とみなす [ms]。
-// ★ **飛行中に断線したことを検出するためのもの。** 以前は
-//   「1 バイトでも受信したら true、以降ずっと true」のラッチだったので、
-//   途中でコネクタが抜けても画面は正常なまま航法を続けていた。
-// 値の根拠: 設定が通っていれば NAV-PVT が 2Hz（500ms 間隔）、通っていなくても
-//   既定の NMEA が 1Hz で流れ続ける。一方こちらの読み出しが遅れても FIFO
-//   （GNSS_SERIAL_FIFO_SIZE = 4096B ≒ 7 秒ぶん）に溜まるので、描画で数百 ms
-//   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
-//   5 秒なら「本当に来ていない」ときだけ立つ。
+// ★ **飛行中に断線したことを検出するためのもの。** 
 #define GNSS_CONN_TIMEOUT_MS   5000UL
 // 断線している間、警報トーンを繰り返す間隔 [ms]。
-// ★ 1 回きりにしない。**聞き逃したら二度と鳴らない**のは航法が止まる故障には合わない。
-// ★ 最低保証音量（min_volume）は付けない。あれは電池警告専用で
-//   「離れていても気づける」ための仕組み（gnss.cpp の REPLAY canceled のコメント参照）。
-//   断線は飛行中に起きるので、パイロットは装置を身につけている。
 #define GNSS_LOST_ALERT_MS    30000UL
+
 // 「測位しました」（fixed.wav）を一度鳴らしたら、この間は鳴らさない [ms]。
 // GNSS が不安定な所では fix が付いたり外れたりを繰り返し、毎秒のように連発してうるさかった。
-// ログ（GNSS FIX acquired）は毎回残す。
 #define GNSS_FIXED_VOICE_GAP_MS 10000UL
+
 // GNSS の AssistNow Autonomous（受信した軌道から GNSS 自身が数日先まで軌道を予測する機能）。
 // 1 = 使う / 0 = 使わない。効けば前日と同じ時間帯の起動が 23〜28 秒 → 3〜4 秒になる。
 // 条件（BT1 が生きている・3 日以内・同じ時間帯）は README の「GNSS の起動を速くする」。
@@ -112,6 +98,7 @@
 // AssistNow Autonomous の状況（予測データのある衛星数・計算していた時間）を
 // log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
 #define GNSS_ANA_LOG_INTERVAL_MS  600000UL
+
 // ---- 本番前チェック（readiness.cpp）----
 // 飛ぶ前に確かめる項目がそろったら、地上で止まっているときに 1 度だけ「準備完了」と読み上げる。
 // そろっていなければ、何が足りないかを設定画面の右上に出す。項目は readiness.h の RDY_*。
@@ -220,6 +207,36 @@
 #define BAT_SAVER_EXIT_VOLTAGE 3.65
 #define BL_SAVER_ON_MS   2000UL
 #define BL_SAVER_OFF_MS  4000UL
+// 3.0V 以下（過放電領域）に入ったときの第 2 段階点滅。
+// 点灯時間（BL_SAVER_ON_MS）は目のピント合わせのため 2 秒のまま維持し、消灯時間だけを伸ばして
+// フライト終了まで少しでも長くもたせる。3.0V 付近は内部抵抗が高く、10 秒消灯している間に電圧が
+// 0.1〜0.15V 戻るので、第 1 段階へ戻る閾値は BAT_CRIT_SAVER_EXIT_VOLTAGE に離して往復を防ぐ。
+#define BAT_CRIT_VOLTAGE             3.0
+#define BAT_CRIT_SAVER_EXIT_VOLTAGE  3.20
+#define BL_SAVER_CRIT_OFF_MS        10000UL
+// ---- 過放電（3.0V 未満）の本体フラッシュ記録と充電禁止警告・ロック（power.cpp / mysd.cpp）----
+// 3.0V 未満を経験した LiPo 電池をそのまま USB で再充電すると内部微小短絡・発火の危険がある。
+// 回路からは充電 IC（MCP73831）を止められず、v7.1 では SW OFF でも Q3 のボディダイオード経由で
+// USB 充電電流が流れるため、本体フラッシュ（EEPROM 領域）にラッチして次回起動以降に全画面で警告する。
+// ★ フライト中に 3.0V を割ったその場では新しい警告も音も出さず、電池を使い切るまで航法を続ける。
+// ★ 次回起動時: 電池単体なら警告＋音声の後にボタン操作でナビ画面へ進めるが、USB 接続時はボタンで
+//   抜けられない完全ロックにする。電池単体で進んだ後や同一セッション中に USB を挿された場合も
+//   BATT_LATCH_USB_HOLD_MS 継続で即座に完全ロック画面へ入る。
+// ★ 誤検知防止: SW OFF（GPIO40=0V）や電源切断時の電圧降下（数十 ms）を拾わないよう、
+//   物理下限（TPS63031 が電池で動ける 1.8V 以上）と連続継続（5 秒）を両方要求する。
+// ★ 解除（裏コマンド）: SD ルートに BATT_UNLOCK_FILENAME を置いて起動（中身照合なし・照合後に自動削除）。
+// ★ EEPROM のオフセット 64 は PONSv7（BNO085 の ImuCalRec = 0..11）との非衝突のため。
+#define BAT_OVERDISCHARGE_VOLTAGE      3.00f
+#define BAT_OVERDISCHARGE_MIN_VALID_V  1.80f   // これ未満は SW OFF 遷移中または USB 給電時のみ
+#define BAT_OVERDISCHARGE_ARM_MS       5000UL  // 起動直後は判定しない
+#define BAT_OVERDISCHARGE_HOLD_MS      5000UL  // ピーク追跡・生 ADC の両方が連続して未満なら確定
+#define BATT_LATCH_USB_HOLD_MS         2000UL  // ラッチ中に USB 接続が続いたら即完全ロック画面へ
+#define BATT_LATCH_ALERT_MS           30000UL  // 完全ロック画面で USB 給電中に警告トーン＋音声を繰り返す間隔
+#define BATT_LATCH_EE_TOTAL_SIZE       256     // arduino-pico の EEPROM 最小単位（256B 境界）
+#define BATT_LATCH_EE_ADDR             64      // 0..11 は PONSv7 の ImuCalRec 予約域
+#define BATT_LATCH_EE_MAGIC            0x54414250UL  // 'P','B','A','T'（リトルエンディアン）
+#define BATT_LATCH_EE_VERSION          1
+#define BATT_UNLOCK_FILENAME           "batt_unlock.txt"
 #define BAT_ZERO_VOLTAGE 3.4
 // 満充電からの目安稼働時間 [分]。設定画面フッターの「Battery Time」の計算に使う。
 // 実測は高輝度 約3時間 / 低輝度 約12時間と幅があるので、間を取った粗い目安。
@@ -1578,6 +1595,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   1 つ鳴らしたらこの時間だけ空けて次へ回す。最長の音声が 4.82 秒なので、
 //   鳴り終わるまで次を積まない値にしてある。
 #define LINK_GROUND_SAY_GAP_MS 6000UL
+
+// ---- 受信機で NO SIGNAL 状態が継続したときの反復音声（link_no_signal_repeat.wav）の間隔 ----
+// 途切れた瞬間は link_no_signal.wav（「受信が途切れました。自機の情報を表示します。」）が鳴り、
+// その後も信号が無い状態が続く間は 120 秒ごとに「信号がありません」を繰り返す。
+#define LINK_NOSIGNAL_REPEAT_MS 120000UL
 
 // ---- 地図に重ねる通知ボックスの縦位置（display_tft.cpp の begin_notice_box）----
 // ★ **同時に出るものを重ねないこと。** 括弧内が実際に占める範囲。

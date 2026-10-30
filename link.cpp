@@ -63,6 +63,7 @@ uint8_t link_group           = LINK_GROUP_DEFAULT;
 static LinkRxTelem   s_rx;                 // 直近に受信したテレメトリ
 static bool          s_rxValid   = false;
 static uint32_t      s_rxMs      = 0;      // 受信した時刻（RP の millis）
+static uint32_t      s_rxIntervalMs = 0;   // 直近の受信間隔 [ms]（前回の受信からの経過時間。未計測は0）
 // 新しいフレームを受け取ったことの合図。link_take_new_frame() で読むと落ちる。
 static bool          s_rxNewFrame = false;
 // 同じ合図の**描画用**（link_take_draw_frame）。上はミラーの位置更新（gnss.cpp）が読んで落とすので、
@@ -219,6 +220,7 @@ static void link_poll_radio() {
         s_rxValid   = true;
         const uint32_t prev_rx_ms = s_rxMs;   // 送信周期の推定に使う（下の seq の解析）
         s_rxMs      = millis();
+        if (prev_rx_ms > 0) s_rxIntervalMs = s_rxMs - prev_rx_ms;
         s_rxNewFrame = true;         // ミラー中の「新しい位置が来た」の合図
         s_drawFrame  = true;         // 同じ合図の描画用（link_take_draw_frame）
 
@@ -419,6 +421,51 @@ static void link_watch_mirror_transition() {
     }
     was_mirror = now_mirror;
     primed = true;
+}
+
+// NO SIGNAL 状態が長時間続いているとき、120 秒ごとに周期的に知らせる。
+// 初回（途切れた瞬間）は上の link_watch_mirror_transition() が「受信が途切れました。
+// 自機の情報を表示します。」（link_no_signal.wav）を鳴らすので、
+// ここはその状態が継続したときの「信号がありません」（link_no_signal_repeat.wav）を担当する。
+static void link_watch_no_signal_repeat() {
+    static uint32_t last_repeat_ms = 0;
+    static uint8_t  prev_mode      = LINK_MODE_OFF;
+    const uint32_t  now            = millis();
+
+    if (link_mode_setting != LINK_MODE_RX) {
+        prev_mode      = link_mode_setting;
+        last_repeat_ms = 0;
+        return;
+    }
+    if (prev_mode != LINK_MODE_RX) {
+        prev_mode      = LINK_MODE_RX;
+        last_repeat_ms = now;
+        return;
+    }
+
+    // ★★ リプレイ中・デモ中・チャンネル調査中は鳴らさない。
+    //   復帰直後にいきなり鳴らないよう基準時刻を更新しておく。
+    if (!link_live_ui_ok() || link_chscan_holds_radio()) {
+        last_repeat_ms = now;
+        return;
+    }
+
+    if (link_is_receiving()) {
+        // 受信できている間はタイマーを進めない（途切れた瞬間から 120 秒後に鳴らす）。
+        last_repeat_ms = now;
+        return;
+    }
+
+    if (last_repeat_ms == 0) {
+        last_repeat_ms = now;
+        return;
+    }
+
+    if (now - last_repeat_ms >= LINK_NOSIGNAL_REPEAT_MS) {
+        last_repeat_ms = now;
+        link_alert("wav/link_no_signal_repeat.wav", 1318, 250, 3);
+        enqueueTask(createLogSdTask("LINK WARN: no signal (periodic 120s)"));
+    }
 }
 
 // モジュールが今も応答するかを定期的に確かめる。
@@ -1378,6 +1425,7 @@ void link_loop() {
     }
     link_poll_radio();
     link_watch_mirror_transition();
+    link_watch_no_signal_repeat();
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
@@ -1432,6 +1480,8 @@ void link_set_mode(uint8_t mode) {
     else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2, 0, WAV_EXCL_LINKMODE));
     else                           enqueueTask(createPlayWavTask("wav/link_off.wav",      2, 0, WAV_EXCL_LINKMODE));
     s_rxValid = false;                 // モードが変わったら受信データは無効
+    s_rxMs = 0;
+    s_rxIntervalMs = 0;
     // ★ MAX G/S は供給元が入れ替わるのでリセットする（ミラー中は機体の値を入れる）。
     //   残すと「ボート自身の最高速」と「機体の最高速」が混ざった値が出続ける。
     reset_maxgs();
@@ -1684,8 +1734,9 @@ static void link_push_telemetry() {
 // ============================================================
 //  受信側：状態
 // ============================================================
-uint32_t link_age_ms()      { return s_rxValid ? (millis() - s_rxMs) : 0xFFFFFFFF; }
-bool     link_is_receiving(){ return s_rxValid && link_age_ms() < link_nosignal_ms(); }
+uint32_t link_age_ms()         { return s_rxValid ? (millis() - s_rxMs) : 0xFFFFFFFF; }
+uint32_t link_rx_interval_ms() { return s_rxIntervalMs; }
+bool     link_is_receiving()   { return s_rxValid && link_age_ms() < link_nosignal_ms(); }
 
 // 「無信号」と受信枠の「切れかけ」の時間を、送る間隔に比例させる（ローワーは 1000ms なので
 // 元の 10 秒 / 3 秒のまま）。アッパーの SF9 以上は間隔が 1 秒より長く、元の時間のままだと 1〜2 発

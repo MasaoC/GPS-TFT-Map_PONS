@@ -6,7 +6,7 @@
 //           設定画面の全メニュー項目（目的地・音量・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/19
+// Updated : 2026/10/29
 // ============================================================
 // Handle button updates
 #include "button.h"
@@ -92,6 +92,18 @@ void Button::read() {
             longPressHandled = true;
         }
     }
+}
+
+// モーダル画面（過放電警告など）から通常ループへ戻る際にボタン状態を初期化する。
+// 遷移前の押下状態や直前の短押し時刻が残っていると、復帰直後の read() で
+// 意図しない短押し・長押し・ダブルクリックが誤発火するのを防ぐ。
+void Button::reset() {
+    const bool cur = digitalRead(pin);
+    switchState        = cur;
+    lastSwitchState    = cur;
+    pressTime          = millis() - (longPressDuration + 100UL);
+    lastShortPressTime = 0;
+    longPressHandled   = true;
 }
 
 // Method to get the pin number

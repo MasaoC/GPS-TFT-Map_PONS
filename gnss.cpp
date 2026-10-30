@@ -333,6 +333,8 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
   for (int i = 0; i < GSA_MAX_PRN; i++) gsa_prns[i] = 0;
   // 軌道の出どころ（AssistNow Autonomous の効き具合）を数え直す
   uint8_t n_ana_data = 0, n_ana_orbit = 0, n_eph_orbit = 0;
+  const unsigned long now = millis();
+  bool seen[MAX_SATELLITES] = {};
 
   for (int s = 0; s < numSvs; s++) {
     const uint8_t *sv = p + 8 + s * 12;
@@ -363,30 +365,53 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
       default: satType = SATELLITE_TYPE_UNKNOWN; break;
     }
 
-    bool stored = false;
+    // 同じ衛星（PRN と星座が一致）が既にあればそこを上書きし、無ければ最初の空き枠に入れる。
+    // ★ 1 ループで「一致 || PRN==0」と書くと、手前に空き枠（removeStaleSatellites() で
+    //   PRN=0 になった枠）があるときに奥の既存エントリより先に空き枠へ入れてしまい、
+    //   同じ衛星が二重に入って 64 枠を使い切る（WARN:sat full）。
+    int slot = -1;
     for (int j = 0; j < MAX_SATELLITES; j++) {
-      if ((satellites[j].PRN == svId && satellites[j].satelliteType == satType) || satellites[j].PRN == 0) {
-        satellites[j].PRN          = svId;
-        satellites[j].elevation    = (elev >= -90 && elev <= 90) ? elev : satellites[j].elevation;
-        satellites[j].azimuth      = (azim >= 0 && azim < 360)   ? azim : satellites[j].azimuth;
-        satellites[j].SNR          = (cno <= 99) ? cno : satellites[j].SNR;
-        satellites[j].satelliteType = satType;
-        satellites[j].lastReceived = millis();
-        stored = true;
+      if (satellites[j].PRN == svId && satellites[j].satelliteType == satType) {
+        slot = j;
         break;
       }
+      if (slot < 0 && satellites[j].PRN == 0) {
+        slot = j;
+      }
     }
-    if (!stored) {
+    if (slot >= 0) {
+      const bool is_new = (satellites[slot].PRN == 0);
+      satellites[slot].PRN           = svId;
+      satellites[slot].elevation     = (elev >= -90 && elev <= 90) ? elev : (is_new ? 0 : satellites[slot].elevation);
+      satellites[slot].azimuth       = (azim >= 0 && azim < 360)   ? azim : (is_new ? 0 : satellites[slot].azimuth);
+      // 同一 NAV-SAT 内で同じ (svId, satType) が複数回出た場合（GLONASS 未識別 svId=255 等）は高い方の C/N0 を残す
+      if (cno <= 99) {
+        if (!seen[slot] || (int)cno > satellites[slot].SNR) satellites[slot].SNR = cno;
+      } else if (!seen[slot]) {
+        satellites[slot].SNR = 0;
+      }
+      satellites[slot].satelliteType = satType;
+      satellites[slot].lastReceived  = now;
+      seen[slot]                     = true;
+    } else {
       // 衛星ごとにログを積むと、1 メッセージで 20 スロットのタスクキューを溢れさせて
       // 他のタスクを落としてしまう（キュー満杯は USERLED 点灯として現れる）。10 秒に 1 回に制限する。
       static unsigned long last_satfull_log = 0;
-      if (millis() - last_satfull_log > 10000) {
-        last_satfull_log = millis();
+      if (now - last_satfull_log > 10000) {
+        last_satfull_log = now;
         enqueueTask(createLogSdfTask("WARN:sat full svId=%d gnss=%d", svId, gnssId));
       }
     }
     // 使用中衛星を gsa_prns[] に記録（最大 GSA_MAX_PRN 個）
     if (svUsed && prn_idx < GSA_MAX_PRN) gsa_prns[prn_idx++] = svId;
+  }
+  // 今回の NAV-SAT に載っていなかった衛星は枠を空ける（古い C/N0 が追尾数・平均に残るのと、
+  // 30 秒以内に衛星が入れ替わったときの枠不足を防ぐ。UBX-NAV-SAT は 1 パケットに全衛星が載る）。
+  for (int j = 0; j < MAX_SATELLITES; j++) {
+    if (!seen[j] && satellites[j].PRN != 0) {
+      satellites[j].PRN = 0;
+      satellites[j].SNR = 0;
+    }
   }
   ana_data_svs  = n_ana_data;
   ana_orbit_svs = n_ana_orbit;

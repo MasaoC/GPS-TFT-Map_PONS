@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に連動した音程更新の
 //           関数プロトタイプ宣言。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/06
+// Updated : 2026/10/29
 // ============================================================
 
 #ifndef SOUND_H
@@ -23,6 +23,8 @@
                     int excl_group = WAV_EXCL_NONE);
   void update_tone(float degpersecond);
   void playTone(int freq,int duration, int counter,int priority = 1, int min_volume = 0, bool solo_play = false);
+  // Core1 専用: SD 裏コマンドで過放電ラッチが解除された直後に、再生中・待機中の過放電警報を止める。
+  void stop_overdischarge_alert_core1();
   // バリオメーター音更新（Core0 から毎ループ呼ぶ）。
   // mute: 充電中かつマウント外（運搬中）。警報と同じ条件を loop() から渡す
   //       （warn_muted_off_mount()。音の層から .ino を呼び返さないため引数にした）。

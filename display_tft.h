@@ -7,7 +7,7 @@
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/10/29
 // ============================================================
 // ★ この先頭ガードが無いと、mysd.h 経由と直接 include の二重読み込みで
 //   関数プロトタイプの再宣言までは黙って通っていたが、enum の再定義は
@@ -236,6 +236,10 @@ enum BootCheckState : uint8_t { BOOT_CHECK_PENDING, BOOT_CHECK_OK, BOOT_CHECK_NG
 // 何も変わらず 1 秒近く固まって見える体感時間を減らすための中間表示。
 void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss);
 void startup_demo_tft();
+// 過放電（3.0V 未満）ラッチの全画面警告／完全ロック描画と、SD 裏コマンド解除完了通知。
+// usb_locked=true（USB 接続中）は完全ロック表示、false（電池単体）はボタン進行案内を出す。
+void draw_overdischarge_warning_screen(bool usb_locked, bool can_dismiss);
+void draw_overdischarge_cleared_screen();
 void draw_demo_biwako();
 void draw_replay_indicator();
 // 線分を backscreen の矩形にクリップする。完全に画面外なら false を返す。

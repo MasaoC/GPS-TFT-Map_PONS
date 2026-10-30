@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/10/29
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -27,6 +27,8 @@
 #include "link.h"
 #include "e220.h"      // E220_CH_MAX_ALL（settings.txt の CH の範囲）
 #include "backlight.h" // 飛行 CSV の lux / backlight 列
+#include "power.h"     // 過放電ラッチの裏コマンド解除（setup_sd）
+#include "src/imulog.h" // SD 再初期化時の生 IMU ログハンドル破棄
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -1170,10 +1172,15 @@ volatile bool settings_loaded = false;
 bool get_sd_use_spi()    { return sd_use_spi; }
 int  get_sd_setup_count(){ return sd_setup_count; }
 
+static void reset_open_files_before_reinit();
+
 void setup_sd(int trycount, bool load_settings){
   ASSERT_SD_CORE1("setup_sd");
   sd_setup_count++;
   sdInitialized = false;
+  if (sd_setup_count > 1) {
+    reset_open_files_before_reinit();
+  }
 
   // --- SDIO 試行（SPI モード中はスキップ）---
   if (!sd_use_spi) {
@@ -1216,6 +1223,37 @@ void setup_sd(int trycount, bool load_settings){
   sdError = false;
   SdFile::dateTimeCallback(dateTime);
   log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
+
+  // 過放電ラッチの裏コマンド解除（SD ルートに BATT_UNLOCK_FILENAME があるだけで発動・中身照合なし）。
+  // ★ 先に SD.remove() の成功を確認してからラッチを解除する（フェイルセーフ順序）:
+  //   削除に失敗したままフラッシュのラッチだけ消すと、batt_unlock.txt がカード上に残り続けて
+  //   次回の過放電発生時も起動と同時に自動解除されてしまうため。
+  //   SdFat では開いているファイルは remove できないので、通常ファイルであることを確認して閉じてから消す。
+  if (SD.exists(BATT_UNLOCK_FILENAME)) {
+    bool is_file = false;
+    FsFile uf = SD.open(BATT_UNLOCK_FILENAME, FILE_READ);
+    if (uf) {
+      is_file = !uf.isDir();
+      uf.close();
+    }
+    if (is_file) {
+      const bool removed = SD.remove(BATT_UNLOCK_FILENAME);
+      if (!removed) {
+        log_sd("ERR BATT LATCH UNLOCK aborted: failed to remove " BATT_UNLOCK_FILENAME);
+      } else {
+        uint16_t ev = 0, rst = 0, mv = 0;
+        const bool cleared = power_latch_unlock_core1(&ev, &rst, &mv);
+        stop_overdischarge_alert_core1();
+        if (cleared) {
+          log_sdf("BATT OVERDISCHARGE LATCH CLEARED via SD (events=%u resets=%u last=%.2fV removed=1)",
+                  (unsigned)ev, (unsigned)rst, mv / 1000.0f);
+        } else {
+          log_sd("BATT LATCH UNLOCK file removed on SD (already clear)");
+        }
+      }
+    }
+  }
+
   init_mapdata();
 
   // ★ 目的地とパイロン座標の構築は「最初に SD を掴めた 1 回だけ」。
@@ -2527,6 +2565,7 @@ void saveRxCSV(const Task& tk) {
     char fn[48];
     snprintf(fn, sizeof(fn), REPLAY_RECEIVED_DIR "/%04d-%02d-%02d_%02d%02d.csv",
              rxfileyear, rxfilemonth, rxfileday, rxfilehour, rxfileminute);
+    if (!SD.exists(fn)) rxHeaderWritten = false;  // 別カードへ差し替えた場合も新規作成時はヘッダを書く
     rxcsvFile = SD.open(fn, FILE_WRITE);
   }
   if (!rxcsvFile) return;
@@ -2609,6 +2648,7 @@ void saveCSV(const Task& tk) {
   // ファイルが未オープンの場合のみ open する（毎回 open/close しない）
   if (!csvFileStatic.isOpen()) {
     if (!SD.exists(REPLAY_FLIGHT_DIR)) SD.mkdir(REPLAY_FLIGHT_DIR);
+    if (!SD.exists(csv_filename)) headerWritten = false;  // 別カードへ差し替えた場合も新規作成時はヘッダを書く
     csvFileStatic = SD.open(csv_filename, FILE_WRITE);
   }
 
@@ -2734,6 +2774,24 @@ void save_imu_replaydata(int h, int m, int s, int cs,
   }
 }
 
+// SD.begin() を 2 回目以降に呼ぶ直前に、旧ボリュームを指したままの静的 FsFile を破棄する。
+// カード抜き差しやバス異常の後に close() を呼ぶと旧 FAT セクタへ sync を試みて別カードを壊す恐れが
+// あるため、SdFat のムーブ代入（ポインタのクリアのみ・I/O なし）でメモリ上の開状態だけを外す。
+static void reset_open_files_before_reinit() {
+  logFileStatic        = FsFile();
+  csvFileStatic        = FsFile();
+  rxcsvFile            = FsFile();
+  replayDataFileStatic = FsFile();
+  replayFileStatic     = FsFile();
+  replayAttFile        = FsFile();
+  replayDataOpenedFilename[0] = '\0';
+  replayDataWriteCount = 0;
+  replay_att_tried     = false;
+  replay_att_ok        = false;
+  replay_att_eof       = false;
+  imulog_on_sd_reinit();
+}
+
 // 生 IMU ログのバッファ書き出しタスクを生成する。
 // bufidx は imulog_take_pending() が返した索引をそのまま渡すこと
 //（この索引は Core1 へ引き渡し済みとしてマークされているため、必ず enqueue する必要がある）。
@@ -2780,6 +2838,13 @@ Task createLogImuReplayTask(int h, int m, int s, int cs,
   t.imuReplayArgs.wind_valid  = wind_valid;
   strncpy(t.imuReplayArgs.filename, filename, sizeof(t.imuReplayArgs.filename) - 1);
   t.imuReplayArgs.filename[sizeof(t.imuReplayArgs.filename) - 1] = '\0';
+  return t;
+}
+
+// 過放電（3.0V 未満）ラッチの本体フラッシュ書き込みタスクを生成する（Core1 専用処理）。
+Task createLatchBattTask() {
+  Task t;
+  t.type = TASK_LATCH_BATT_OVERDISCHARGE;
   return t;
 }
 

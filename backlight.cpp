@@ -2,9 +2,9 @@
 // File    : backlight.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : v7.1 の TFT バックライト。輝度スイッチと照度センサー（VEML7700）で
-//           PWM の点灯率を決める。電池低下のときは点滅させて電池をもたせる。
+//           PWM の点灯率を決める。電池低下のときは 2 段階で点滅させて電池をもたせる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/10/29
 // ============================================================
 //
 // ■ 決め方（値は settings.h の TFT_BL_* / BL_AUTO_*）
@@ -12,7 +12,9 @@
 //   輝度スイッチ Low  … VEML7700 の照度で自動。センサーが無い・壊れたときは TFT_BL_DUTY_DIM
 //
 // ■ 電池低下のとき（backlight_set_saver。判定は GPS_TFT_map.ino の batt_alarm_tick）
-//   BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消すをくり返す。点いている間は上の明るさのまま。
+//   第 1 段階（<=3.5V）は BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消す、
+//   第 2 段階（<=3.0V）は BL_SAVER_ON_MS 点けて BL_SAVER_CRIT_OFF_MS 消すをくり返す。
+//   点いている間は上の明るさのまま。
 //   ★ 消している間も「本来の明るさ」（s_duty）は追い続ける。出力だけ 0 にする。
 //     s_duty まで 0 にすると、点いた瞬間から照度へゆっくり寄せ直す（BL_AUTO_TAU_MS）ので、
 //     2 秒の点灯がほとんど暗いまま終わる。
@@ -53,10 +55,10 @@ static uint32_t s_als_retry  = 0;
 static uint32_t s_als_check  = 0;       // 設定を最後に確かめた時刻
 static float    s_lux        = -1.0f;   // 点灯率に使う照度。-1 = 一度も読めていない
 static bool     s_lux_fresh  = false;   // s_lux が今のセンサーから読めた値か（ログ用）
-static uint32_t s_last_ms    = 0;
-static bool     s_saver      = false;   // 電池低下で点滅中か
-static uint32_t s_saver_t0   = 0;       // 点滅を始めた時刻（点灯から始める）
-static float    s_out        = -1.0f;   // 実際に出している点灯率（点滅で 0 になる。-1 = まだ出していない）
+static uint32_t       s_last_ms  = 0;
+static BacklightSaver s_saver    = BL_SAVER_OFF; // 電池低下で点滅中か（2 段階）
+static uint32_t       s_saver_t0 = 0;            // 今の段階の点滅を始めた時刻（点灯から始める）
+static float          s_out      = -1.0f;        // 実際に出している点灯率（点滅で 0 になる。-1 = まだ出していない）
 
 // ---- PWM ----
 static void pwm_write(float level) {
@@ -69,8 +71,9 @@ static void pwm_write(float level) {
 
 // 点滅の消灯側にいるか。
 static bool saver_dark(uint32_t now) {
-  if (!s_saver) return false;
-  return (now - s_saver_t0) % (BL_SAVER_ON_MS + BL_SAVER_OFF_MS) >= BL_SAVER_ON_MS;
+  if (s_saver == BL_SAVER_OFF) return false;
+  const uint32_t off_ms = (s_saver == BL_SAVER_CRIT) ? BL_SAVER_CRIT_OFF_MS : BL_SAVER_OFF_MS;
+  return (now - s_saver_t0) % (BL_SAVER_ON_MS + off_ms) >= BL_SAVER_ON_MS;
 }
 
 // 本来の点灯率を決め、点滅の消灯側なら出力だけ 0 にする（上の ■ 電池低下のとき）。
@@ -187,9 +190,13 @@ static void update_duty(float k) {
   pwm_apply(duty);
 }
 
-void backlight_set_saver(bool on) {
-  if (on && !s_saver) s_saver_t0 = millis();   // 点灯の側から始める
-  s_saver = on;
+void backlight_set_saver(BacklightSaver mode) {
+  if (mode != s_saver) {
+    // 段階が変わったとき（OFF→LOW / LOW↔CRIT）は点灯の側から周期を張り直す。
+    // 張り直さないと (now - s_saver_t0) % (on + off) の周期長が変わった瞬間に位相が飛ぶ。
+    if (mode != BL_SAVER_OFF) s_saver_t0 = millis();
+    s_saver = mode;
+  }
   pwm_write(saver_dark(millis()) ? 0.0f : s_duty);
 }
 
@@ -226,7 +233,8 @@ int   backlight_get_duty_pct() { return (int)lroundf(s_duty * 100.0f); }
 
 void backlight_format_status(char* buf, size_t n) {
   const float lux = backlight_get_lux();
-  const char* sv = s_saver ? " saver" : "";
+  const char* sv = (s_saver == BL_SAVER_CRIT) ? " saver2"
+                 : (s_saver == BL_SAVER_LOW)  ? " saver" : "";
   if (lux < 0.0f) snprintf(buf, n, " bl=%d%% lux=--%s", backlight_get_duty_pct(), sv);
   else            snprintf(buf, n, " bl=%d%% lux=%.0f%s", backlight_get_duty_pct(), lux, sv);
 }

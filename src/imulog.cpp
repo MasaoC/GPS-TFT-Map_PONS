@@ -4,7 +4,7 @@
 // Role    : 生 IMU / GNSS 速度データの高レート バイナリロガー（実装）。
 //           形式・目的・レコード定義は imulog.h のコメントを参照。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/19
+// Updated : 2026/10/29
 // ============================================================
 
 #include "../settings.h"
@@ -251,6 +251,21 @@ static void imulog_write_boot_marker() {
     imuOpenCount++;
 }
 
+
+// ============================================================
+// imulog_on_sd_reinit(): SD 再マウント前の静的ハンドル破棄（Core1 専用）
+// ============================================================
+// setup_sd() が 2 回目以降に SD.begin() を呼ぶ直前に呼ばれる。
+// カード抜き差しやバス異常の後に close() を呼ぶと壊れた旧ボリュームへ sync を試みて
+// 失敗・再汚染するため、SdFat の FsFile 代入（ポインタのクリアのみ・I/O なし）で破棄する。
+// 差し替えたカードで nofix 番号も取り直すよう imuNofixName も空に戻す。
+void imulog_on_sd_reinit() {
+    ASSERT_SD_CORE1("imulog_on_sd_reinit");
+    imuFileStatic = FsFile();
+    imuOpenedFilename[0] = '\0';
+    imuFlushCount = 0;
+    imuNofixName[0] = '\0';
+}
 
 // ============================================================
 // imulog_write_buffer(): バッファを SD へ書き出す（Core1 専用）

@@ -5,7 +5,7 @@
 //           短押し/長押し/ダブルクリックコールバックを持つ Button クラスと、
 //           設定画面の各メニュー項目を表す Setting 構造体を定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/14
+// Updated : 2026/10/29
 // ============================================================
 #ifndef BUTTON_H
 #define BUTTON_H
@@ -42,6 +42,7 @@
   public:
       Button(int p, void (*shortPressCb)() = NULL, void (*longPressCb)() = NULL, void (*doublePressCb)() = NULL);
       void read();
+      void reset(); // モーダル画面終了時にボタン状態を現在のピンレベルへ同期・初期化する
       int getPin(); // Method to get the pin number
 
   private:

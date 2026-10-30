@@ -8,7 +8,7 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/10/29
 // ============================================================
 
 #ifndef MYSD_H
@@ -33,7 +33,8 @@
       TASK_INIT_REPLAY,
       TASK_LOG_IMUREPLAY,
       TASK_FLUSH_IMULOG,  // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
-      TASK_SAVE_RXCSV     // 無線で受信したテレメトリを received/ へ書き出す
+      TASK_SAVE_RXCSV,    // 無線で受信したテレメトリを received/ へ書き出す
+      TASK_LATCH_BATT_OVERDISCHARGE // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
   } TaskType;
 
 
@@ -327,6 +328,7 @@
                               const char* filename, int year, int month, int day);
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
+  Task createLatchBattTask();
 
   // Functions to handle the queue (declarations)
   // 戻り値: キューに入れられたら true、満杯で捨てたら false。

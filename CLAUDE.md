@@ -256,8 +256,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
-| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・「SW OFF のまま充電」の検出 |
-| [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。電池低下のときの点滅（判定は `batt_alarm_tick()`） |
+| [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出 |
+| [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。noise-test ブランチと並びを同じに保つ |

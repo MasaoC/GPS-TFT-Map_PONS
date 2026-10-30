@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/10/29
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -2927,6 +2927,23 @@ static void draw_link_icons() {
     else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
   }
 
+  // 受信モード: 船アイコンの真上に直近の受信周期 [s] を重ねて表示（例: 1.0s, 2.1s）。
+  // 平均化せず、最後に受信した時の1個前からの経過時間をそのまま出す。
+  if (rx && link_is_receiving()) {
+    const uint32_t iv_ms = link_rx_interval_ms();
+    if (iv_ms > 0) {
+      char per_str[8];
+      snprintf(per_str, sizeof(per_str), "%.1fs", iv_ms / 1000.0f);
+      backscreen.unloadFont();
+      backscreen.setTextSize(1);
+      backscreen.setTextColor(COLOR_BLACK);
+      const int tw = (int)strlen(per_str) * 6;
+      const int tx = ix + (ICON_BOAT_W - tw) / 2;
+      backscreen.setCursor(tx, y);
+      backscreen.print(per_str);
+    }
+  }
+
   // ★ 故障のときだけ、強度アイコンの代わりに役割アイコンの**右**へ FAIL を出す。
   //   読むと「[飛行機] FAIL」＝この機体の無線が壊れている、になる。
   //   ★ **19px の強度アイコンの枠には入れない。** あそこに文字を置くと
@@ -3794,6 +3811,10 @@ void draw_footer(){
     bool rlow = false;
     if (power_sw_off_on_usb()) {           // 自機（power.h）
       strlcpy(rbuf, "r5V", sizeof(rbuf));  rcol = COLOR_DARKORANGE;
+    } else if (usb_power_present()) {
+      const int rpct = power_charging_percent();
+      snprintf(rbuf, sizeof(rbuf), "r%d", rpct);
+      rcol = (rpct >= 100) ? COLOR_GREEN : COLOR_BLUE;
     } else {
       snprintf(rbuf, sizeof(rbuf), "r%d", battery_percent(rv));
       rcol = battery_color(rv);  rlow = (rv <= BAT_LOW_VOLTAGE);
@@ -3805,13 +3826,31 @@ void draw_footer(){
     header_footer.loadFont(AA_FONT_SMALL);   // 後続の描画のために戻す
   }
   // リプレイ中は USB 接続でも電池表示にする。飛行時は USB が刺さっていないため、
-  // "USB" のままだと当時の画面を再現できない。
-  // ★ v7.1 で SW OFF のまま USB で動いているときも "USB"（色は暗い橙。満充電にならない合図）。
-  //   電池電圧は読めないので、下の残量表示へ落とすと 0% になる。usb_power_present() だけを
-  //   見ると、VBUS が一瞬 4.3V を割ったときに落ちてしまう（power.h）。
+  // 当時の画面を再現する。
+  // ★ v7.1 で SW OFF のまま USB で動いているときは "SW OFF"（暗い橙。満充電にならない合図）。
+  //   電池電圧は読めないので、下の残量表示へ落とすと 0% になる。
+  // ★ SW ON での USB 充電中は、回路物理モデルから逆算した充電残量 %（"CHG 72%" / 満充電時は "FULL"）
+  //   を表示し、充電中であることを明示する（docs/pons_charge_estimation.md）。
   else if ((usb_power_present() || power_sw_off_on_usb()) && !replay_voltage_active()) {
-    if (power_sw_off_on_usb()) header_footer.setTextColor(COLOR_DARKORANGE);
-    header_footer.print("USB");
+    char chgbuf[12];
+    uint16_t chgcol;
+    if (power_sw_off_on_usb()) {
+      strlcpy(chgbuf, "SW OFF", sizeof(chgbuf));
+      chgcol = COLOR_DARKORANGE;
+    } else {
+      const int chg_pct = power_charging_percent();
+      if (chg_pct >= 100) {
+        strlcpy(chgbuf, "FULL", sizeof(chgbuf));
+        chgcol = COLOR_GREEN;
+      } else {
+        snprintf(chgbuf, sizeof(chgbuf), "CHG %d%%", chg_pct);
+        chgcol = COLOR_BLUE;
+      }
+    }
+    const int w = header_footer.textWidth(chgbuf);
+    header_footer.setCursor(SCREEN_WIDTH - 2 - w, 1);
+    header_footer.setTextColor(chgcol);
+    header_footer.print(chgbuf);
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_display_voltage();
@@ -4562,21 +4601,21 @@ uint16_t battery_color(float v) {
 }
 
 // 設定画面フッターの電池アイコン色を返す。
-// NAV 画面ヘッダーのバッテリー残量表示（draw_header 内）と同じ配色に合わせている:
-//   電源経路の異常       : 赤
+// NAV 画面ヘッダーのバッテリー残量表示（draw_footer 内）と同じ配色に合わせている:
+//   電源経路の異常 / 過放電ラッチ済み（起動時） / 高温充電 : 赤
 //   SW OFF のまま USB    : 暗い橙（v7.1。満充電にならない）
-//   USB 接続中           : 緑（"USB" 表示が緑）
+//   USB 充電中           : 青（充電中） / 緑（FULL 満充電）
 //   BAT_LOW_VOLTAGE 以下 : 赤（残量警告）
 //   BAT_HALF_VOLTAGE 未満: マゼンタ（50%未満）
 //   それ以上             : 緑
 // ★ 分岐の順と条件はフッターの文言（draw_setting_mode() の電池の行）と同じにすること。
 uint16_t battery_status_color() {
-  if (power_fault_active())
+  if (power_fault_active() || power_overdischarge_boot_latched() || power_charge_hot_active())
     return COLOR_RED;
   if (power_sw_off_on_usb() && !replay_voltage_active())
     return COLOR_DARKORANGE;
   if (usb_power_present() && !replay_voltage_active())
-    return COLOR_GREEN;
+    return (power_charging_percent() >= 100) ? COLOR_GREEN : COLOR_BLUE;
   return battery_color(get_display_voltage());
 }
 
@@ -4682,6 +4721,11 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   if (power_fault_active()) {
     header_footer.setTextColor(COLOR_RED);
     header_footer.print("POWER FAULT! " POWER_FAULT_ACTION_TEXT);
+  } else if (power_overdischarge_boot_latched()) {
+    // 電池単体で起動時の過放電警告をボタンで抜けた後の設定画面表示（フライト中の初発では出さない）。
+    // 自機の電池に対する安全警告なので、リプレイ中でも実測の get_input_voltage() を出す。
+    header_footer.setTextColor(COLOR_RED);
+    header_footer.printf("Battery: OVER-DISCHARGED (%.2fV)", get_input_voltage());
   } else if (power_charge_hot_active()) {
     header_footer.setTextColor(COLOR_RED);
     header_footer.printf("Battery: TOO HOT TO CHARGE (%.0fC)", power_charge_hot_temp());
@@ -4690,8 +4734,22 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     header_footer.setTextColor(COLOR_DARKORANGE);
     header_footer.print("Battery: SW OFF - turn ON to charge");
   } else if (usb_power_present() && !replay_voltage_active()) {
-    // v7.1 は電池そのものを測っているので、充電中の電圧が出せる
-    header_footer.printf("Battery: Charging %.2fV", get_display_voltage());
+    // USB 充電中: 推定残量 % と残り時間を表示（docs/pons_charge_estimation.md）
+    const int chg_pct = power_charging_percent();
+    const int rem_min = power_charging_remaining_min();
+    if (chg_pct >= 100) {
+      header_footer.setTextColor(COLOR_GREEN);
+      header_footer.printf("Charging: FULL 100%% (%.2fV)", get_display_voltage());
+    } else {
+      header_footer.setTextColor(COLOR_BLUE);
+      if (rem_min >= 60) {
+        header_footer.printf("Charging: %d%% (%dh %dm to FULL)",
+                             chg_pct, rem_min / 60, rem_min % 60);
+      } else {
+        header_footer.printf("Charging: %d%% (%dm to FULL)",
+                             chg_pct, rem_min);
+      }
+    }
   }else{
     double input_voltage = get_display_voltage();
     // 電圧の上下限は settings.h の 1 か所に置く（battery_percent() と同じ基準）。
@@ -4726,4 +4784,200 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
 
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.pushSprite(0,SCREEN_HEIGHT-40);
+}
+
+// ============================================================
+// 過放電（3.0V 未満）ラッチの全画面警告・完全ロック描画と解除完了通知
+// ============================================================
+// スプライト 3 分割（header_footer 0..49 / backscreen 50..289 / header_footer 290..319）で
+// 240×320 全画面をちらつき無く更新する。
+// ★ 警報音は描画関数の中では鳴らさない（power.cpp の overdischarge_tick が担当）。
+// ★ 抜ける前に backscreen / header_footer とも AA_FONT_SMALL・黒字白背景へ戻すこと。
+static void print_centered_aa(TFT_eSprite& sp, int y, const char* s) {
+  int x = (SCREEN_WIDTH - sp.textWidth(s)) / 2;
+  if (x < 2) x = 2;
+  sp.setCursor(x, y);
+  sp.print(s);
+}
+
+void draw_overdischarge_warning_screen(bool usb_locked, bool can_dismiss) {
+  // ---- 1. 上段ヘッダー (y = 0..49) ----
+  header_footer.fillScreen(COLOR_RED);
+  header_footer.setTextWrap(false);
+  header_footer.unloadFont();
+  header_footer.setTextSize(2);
+  header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
+  header_footer.setCursor((SCREEN_WIDTH - 16 * 12) / 2, 6);
+  header_footer.print("DO NOT CHARGE !!");
+
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_YELLOW, COLOR_RED);
+  print_centered_aa(header_footer, 28, "BATTERY OVER-DISCHARGED");
+  header_footer.drawFastHLine(0, 49, SCREEN_WIDTH, COLOR_WHITE);
+  header_footer.pushSprite(0, 0);
+
+  // ---- 2. 中央ボディ (y = 50..289, 240x240) ----
+  backscreen.fillScreen(COLOR_BLACK);
+  backscreen.setTextWrap(false);
+  backscreen.drawRect(0, 0, SCREEN_WIDTH, BACKSCREEN_SIZE, COLOR_RED);
+  backscreen.drawRect(1, 1, SCREEN_WIDTH - 2, BACKSCREEN_SIZE - 2, COLOR_RED);
+
+  if (usb_locked) {
+    // USB 接続中（完全ロック）: 赤／黄反転点滅で即座に USB を抜かせる
+    const bool inv = blink_1s();
+    const uint16_t box_bg = inv ? COLOR_YELLOW : COLOR_RED;
+    const uint16_t box_fg = inv ? COLOR_BLACK  : COLOR_WHITE;
+    backscreen.fillRect(6, 8, SCREEN_WIDTH - 12, 52, box_bg);
+    backscreen.drawRect(6, 8, SCREEN_WIDTH - 12, 52, COLOR_WHITE);
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(box_fg, box_bg);
+    print_centered_aa(backscreen, 14, "UNPLUG USB IMMEDIATELY!");
+
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(box_fg, box_bg);
+    // v7.1 は SW OFF でも Q3 のボディダイオード経由で電池へ充電電流が流れるため明記する
+    backscreen.setCursor((SCREEN_WIDTH - 28 * 6) / 2, 40);
+    backscreen.print("* USB charges even at SW OFF");
+  } else {
+    // 電池単体: 充電禁止を警告しつつ、ボタンでナビ画面へ進める案内を出す
+    backscreen.fillRect(6, 8, SCREEN_WIDTH - 12, 52, COLOR_BLACK);
+    backscreen.drawRect(6, 8, SCREEN_WIDTH - 12, 52, COLOR_YELLOW);
+    backscreen.drawRect(7, 9, SCREEN_WIDTH - 14, 50, COLOR_YELLOW);
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_YELLOW, COLOR_BLACK);
+    print_centered_aa(backscreen, 14, "DO NOT PLUG IN USB !!");
+
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+    backscreen.setCursor((SCREEN_WIDTH - 31 * 6) / 2, 40);
+    backscreen.print("Battery-only mode (no charging)");
+  }
+
+  // 理由と開発者連絡案内（詳細なしの "Contact developer." 固定表記）
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+  backscreen.setCursor(10, 68);
+  backscreen.print("Battery dropped below 3.0V.");
+
+  backscreen.setTextColor(COLOR_RED, COLOR_BLACK);
+  backscreen.setCursor(10, 88);
+  backscreen.print("Charging may cause FIRE.");
+
+  backscreen.setTextColor(COLOR_CYAN, COLOR_BLACK);
+  backscreen.setCursor(10, 114);
+  backscreen.print("Contact developer.");
+
+  // 診断スナップショット（スマホで撮影して送るだけで状況が分かるようにする）
+  backscreen.drawFastHLine(8, 142, SCREEN_WIDTH - 16, COLOR_GRAY);
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+
+  BattLatchRecord rec = {};
+  power_get_overdischarge_record(&rec);
+
+  backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
+  backscreen.setCursor(10, 148);
+  backscreen.print("--- Diagnostic Info ---");
+
+  backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+  backscreen.setCursor(10, 162);
+  backscreen.printf("Recorded : %.2fV  (events:%u%s)",
+                    rec.min_volt_mv / 1000.0f,
+                    (unsigned)rec.event_count,
+                    (rec.flags & BATT_LATCH_FLAG_MOVING) ? " FLY" : "");
+
+  backscreen.setCursor(10, 176);
+  if ((rec.flags & BATT_LATCH_FLAG_JST_VALID) && rec.date_yyyymmdd > 0) {
+    const unsigned long d = rec.date_yyyymmdd;
+    const unsigned long t = rec.time_hhmmss;
+    backscreen.printf("When     : %04lu-%02lu-%02lu %02lu:%02lu:%02lu JST",
+                      d / 10000UL, (d / 100UL) % 100UL, d % 100UL,
+                      t / 10000UL, (t / 100UL) % 100UL, t % 100UL);
+  } else {
+    const unsigned long s = rec.uptime_sec;
+    backscreen.printf("When     : Uptime %02lu:%02lu:%02lu (no fix)",
+                      s / 3600UL, (s / 60UL) % 60UL, s % 60UL);
+  }
+
+  backscreen.setCursor(10, 190);
+  if (usb_locked) {
+    backscreen.setTextColor(COLOR_YELLOW, COLOR_BLACK);
+    backscreen.printf("Now      : VBUS %.2fV %s",
+                      power_get_vbus_voltage(),
+                      power_sw_off_on_usb() ? "(SW OFF+USB!)" : "(USB PLUGGED!)");
+  } else if (power_fault_active()) {
+    backscreen.setTextColor(COLOR_RED, COLOR_BLACK);
+    backscreen.printf("Now      : VBUS %.2fV (PWR FAULT!)", power_get_vbus_voltage());
+  } else {
+    backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+    backscreen.printf("Now      : BATT %.2fV (USB unplugged)", get_input_voltage());
+  }
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
+  backscreen.setCursor(10, 206);
+  backscreen.printf("SW: %s (%s)  Resets: %u",
+                    VERSION_TEXT, BUILDVERSION, (unsigned)rec.reset_count);
+
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.pushSprite(0, 50);
+
+  // ---- 3. 下段フッター (y = 290..319, 30px) ----
+  const uint16_t fbg = usb_locked ? COLOR_RED : (can_dismiss ? COLOR_BLUE : COLOR_GRAY);
+  header_footer.fillScreen(fbg);
+  header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_WHITE);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_WHITE, fbg);
+  if (usb_locked) {
+    print_centered_aa(header_footer, 7, "LOCKED WHILE USB PLUGGED");
+  } else if (can_dismiss) {
+    print_centered_aa(header_footer, 7, "PRESS BUTTON TO CONTINUE");
+  } else {
+    print_centered_aa(header_footer, 7, "PLEASE WAIT...");
+  }
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.pushSprite(0, 290);
+}
+
+void draw_overdischarge_cleared_screen() {
+  header_footer.fillScreen(COLOR_GREEN);
+  header_footer.setTextWrap(false);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_WHITE, COLOR_GREEN);
+  print_centered_aa(header_footer, 17, "BATTERY LATCH CLEARED");
+  header_footer.drawFastHLine(0, 49, SCREEN_WIDTH, COLOR_BLACK);
+  header_footer.pushSprite(0, 0);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.setTextWrap(false);
+  backscreen.drawRect(4, 4, SCREEN_WIDTH - 8, BACKSCREEN_SIZE - 8, COLOR_GREEN);
+  backscreen.drawRect(5, 5, SCREEN_WIDTH - 10, BACKSCREEN_SIZE - 10, COLOR_GREEN);
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+  print_centered_aa(backscreen, 50, "Over-discharge latch");
+  print_centered_aa(backscreen, 72, "has been reset via SD.");
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  print_centered_aa(backscreen, 112, "Unlock file auto-deleted.");
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  print_centered_aa(backscreen, 156, "Starting system...");
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.pushSprite(0, 50);
+
+  header_footer.fillScreen(COLOR_GREEN);
+  header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_BLACK);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_WHITE, COLOR_GREEN);
+  print_centered_aa(header_footer, 7, "UNLOCK OK");
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.pushSprite(0, 290);
 }
