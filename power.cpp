@@ -91,6 +91,8 @@ static bool            s_od_screen_active = false;  // いま全画面の過放�
 static uint32_t        s_od_last_usb_alert = 0;     // 完全ロック中に最後に警報を鳴らした時刻
 static bool            s_od_batt_announced = false; // 電池単体の警告画面で 1 回目を鳴らしたか
 
+static void charge_log_tick(uint32_t now);
+
 // ADC の生の平均を電圧にする。ピーク追跡（get_input_voltage）は高い値を
 // 数秒保持するので、ここでは使わない。
 static float read_volt(uint8_t pin) {
@@ -528,6 +530,7 @@ void power_tick() {
   sw_off_tick(now);
   charge_hot_tick(now);
   overdischarge_tick(now);
+  charge_log_tick(now);
 
   if (!s_fault) {
     if (now < POWER_FAULT_ARM_MS || !fault_condition()) {
@@ -593,6 +596,107 @@ int power_charging_remaining_min() {
   } else {
     // CV フェーズ: 残り 20% 分を 45分かけて指数減衰
     return (int)((100 - pct) * 2.25f);
+  }
+}
+
+// USB 充電中の状態・残量推定ロジックの妥当性検証ログ（docs/pons_charge_estimation.md §7）
+// 後から log.txt を確認して以下の物理特性を検証・チューニングできるように記録する:
+//  1) 開始/途中挿し時の電圧・残量・推定残り時間（CHG START）
+//  2) 60 秒ごとの推移（電圧上昇カーブ、温度と熱ダレの関係、残り時間カウントダウン）
+//  3) CV モード突入点（4.125V）の到達タイミング（CHG CV ENTER）
+//  4) 満充電（FULL）判定の到達タイミング（CHG FULL）
+//  5) USB 抜去時の IR ドロップ測定値（充電中電圧 - 抜去後開放電圧 = 実測 ΔV）（CHG UNPLUG）
+static void charge_log_tick(uint32_t now) {
+  static bool     s_chg_active            = false;
+  static uint32_t s_chg_start_ms          = 0;
+  static uint32_t s_last_periodic_log_ms  = 0;
+  static bool     s_cv_logged             = false;
+  static bool     s_full_logged           = false;
+  static float    s_last_chg_raw_v        = 0.0f;
+  static int      s_last_chg_pct          = 0;
+  static bool     s_unplug_pending        = false;
+  static uint32_t s_unplug_ms             = 0;
+
+  const bool charging_now = usb_power_present() && !power_sw_off_on_usb();
+
+  // A) 充電開始（USB 接続 ＆ SW ON）
+  if (charging_now) {
+    s_unplug_pending = false; // 抜去待ち中の再接続はキャンセル
+    if (!s_chg_active) {
+      s_chg_active           = true;
+      s_chg_start_ms         = now ? now : 1;
+      s_last_periodic_log_ms = now;
+      s_cv_logged            = false;
+      s_full_logged          = false;
+      const float raw_v   = s_batt_v;
+      const float cell_v  = power_estimated_cell_voltage();
+      const int   pct     = power_charging_percent();
+      const int   rem_m   = power_charging_remaining_min();
+      const float vbus    = s_volt;
+      const float temp    = get_airdata_ok() ? get_airdata_temperature() : 0.0f;
+      enqueueTask(createLogSdfTask("CHG START: vbus=%.2fV raw=%.2fV cell=%.2fV soc=%d%% rem=%dm T=%.1fC",
+                                   vbus, raw_v, cell_v, pct, rem_m, temp));
+    }
+  }
+
+  // B) 充電中の状態追跡とログ
+  if (s_chg_active) {
+    if (charging_now) {
+      s_last_chg_raw_v = s_batt_v;
+      s_last_chg_pct   = power_charging_percent();
+
+      const float raw_v  = s_batt_v;
+      const float cell_v = power_estimated_cell_voltage();
+      const int   pct    = s_last_chg_pct;
+      const int   rem_m  = power_charging_remaining_min();
+      const float temp   = get_airdata_ok() ? get_airdata_temperature() : 0.0f;
+
+      // 1) CV 突入イベント（4.125V 到達）
+      if (!s_cv_logged && raw_v >= 4.125f) {
+        s_cv_logged = true;
+        const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
+        enqueueTask(createLogSdfTask("CHG CV ENTER: raw=%.2fV cell=%.2fV soc=%d%% rem=%dm t=%lum T=%.1fC",
+                                     raw_v, cell_v, pct, rem_m, (unsigned long)elap_m, temp));
+      }
+
+      // 2) 満充電到達イベント
+      if (!s_full_logged && pct >= 100) {
+        s_full_logged = true;
+        const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
+        enqueueTask(createLogSdfTask("CHG FULL: raw=%.2fV cell=%.2fV t=%lum T=%.1fC",
+                                     raw_v, cell_v, (unsigned long)elap_m, temp));
+      }
+
+      // 3) 60 秒ごとの定周期スナップショット
+      if (now - s_last_periodic_log_ms >= 60000UL) {
+        s_last_periodic_log_ms = now;
+        const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
+        const char* mode = (pct >= 100) ? "FULL" : (raw_v >= 4.125f ? "CV" : "CC");
+        enqueueTask(createLogSdfTask("CHG [%lum]: raw=%.2fV cell=%.2fV soc=%d%% rem=%dm %s T=%.1fC",
+                                     (unsigned long)elap_m, raw_v, cell_v, pct, rem_m, mode, temp));
+      }
+    } else {
+      // 充電状態から抜けた（USB 抜去、または SW OFF）
+      s_chg_active = false;
+      // 5秒以上充電していた場合のみ抜去過渡測定に入る（ノイズやチャタリング防止）
+      if (!power_sw_off_on_usb() && now - s_chg_start_ms >= 5000UL) {
+        s_unplug_pending = true;
+        s_unplug_ms      = now;
+      }
+    }
+  }
+
+  // C) USB 抜去直後の実測 IR ドロップ測定（抜去後 750ms で過渡現象が落ち着いた瞬間にサンプリング）
+  if (s_unplug_pending && !power_sw_off_on_usb()) {
+    if (now - s_unplug_ms >= 750UL) {
+      s_unplug_pending = false;
+      const float post_v = s_batt_v; // 抜去後の実測電池電圧（本体負荷接続時）
+      const int   post_pct = battery_percent(post_v);
+      const int   drop_mv = (int)lroundf((s_last_chg_raw_v - post_v) * 1000.0f);
+      const uint32_t elap_m = (s_unplug_ms - s_chg_start_ms) / 60000UL;
+      enqueueTask(createLogSdfTask("CHG UNPLUG: chg=%.2fV(%d%%) post=%.2fV(%d%%) dV=%dmV t=%lum",
+                                   s_last_chg_raw_v, s_last_chg_pct, post_v, post_pct, drop_mv, (unsigned long)elap_m));
+    }
   }
 }
 

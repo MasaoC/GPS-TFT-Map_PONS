@@ -48,7 +48,7 @@ static void feed(int n, double dt_s, uint32_t &t_us,
 
 int main() {
     bool ok = true;
-    const double fs = 50.0, dt = 1.0 / fs;
+    const double fs = (double)IMU_RATE_GYRO_HZ, dt = 1.0 / fs;
     const double phi = 20.0 * M_PI / 180.0;
 
     // ================= A) 加速度だけで水平化 =================
@@ -56,7 +56,7 @@ int main() {
     uint32_t t = 0;
     float a20[3]; static_accel_for_bank(phi, a20);
     const float gz[3] = {0, 0, 0};
-    feed(200, dt, t, a20, gz);                 // 4 秒静止（初期化は 2 秒）
+    feed((int)(4 * fs), dt, t, a20, gz);                 // 4 秒静止（初期化は 2 秒）
 
     float r, p, y;
     attitude_get_euler_raw(r, p, y);
@@ -92,7 +92,7 @@ int main() {
     {
         float r0, p0, y0; attitude_get_euler_raw(r0, p0, y0);
         for (int i = 0; i < 20; i++) {
-            feed(25, dt, t, a20, gz);                       // 0.5 秒
+            feed((int)(0.5 * fs), dt, t, a20, gz);                       // 0.5 秒
             attitude_on_gnss_velocity(2.0f, 0.0f, 0.0f, 0.08f);   // 北へ 2m/s
         }
         attitude_get_euler_raw(r, p, y);
@@ -112,7 +112,7 @@ int main() {
         const double trk = 300.0 * M_PI / 180.0;
         const float vN = (float)(8.0 * cos(trk)), vE = (float)(8.0 * sin(trk));
         for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES; i++) {
-            feed(25, dt, t, a20, gz);
+            feed((int)(0.5 * fs), dt, t, a20, gz);
             attitude_on_gnss_velocity(vN, vE, 0.0f, 0.08f);   // NED で渡す
         }
         attitude_get_euler_raw(r, p, y);
@@ -136,7 +136,7 @@ int main() {
         t = 0;
         const float bias = (float)(0.2 * M_PI / 180.0);   // 0.2 deg/s（クランプ 0.5 未満）
         const float gb[3] = { bias, 0.0f, 0.0f };          // センサー X 軸まわり
-        feed(200, dt, t, a20, gb);                         // 初期化
+        feed((int)(4 * fs), dt, t, a20, gb);               // 初期化
         attitude_get_euler_raw(r, p, y);
         const float r_init = r;
         feed((int)(600 * fs), dt, t, a20, gb);             // 10 分待機
@@ -163,7 +163,7 @@ int main() {
         t = 0;
         const float big = (float)(1.2 * M_PI / 180.0);     // 1.2 deg/s（静止判定 1.5 未満）
         const float gbig[3] = { 0.0f, big, 0.0f };
-        feed(1000, dt, t, a20, gbig);                      // 20 秒
+        feed((int)(20 * fs), dt, t, a20, gbig);            // 20 秒
         attitude_get_gyro_bias(bg);
         const float lim = ESKF_BIAS_LEARN_MAX_RADS * 180.0f / (float)M_PI;
         printf("\nD3) 1.2deg/s を学習させる（クランプ %.2f deg/s）\n", lim);
@@ -191,7 +191,7 @@ int main() {
         const float spin[3] = { (float)(5.0 * M_PI / 180.0), 0.0f, 0.0f };
         float u0[3];
         const bool before_any = attitude_get_up_sensor(u0);
-        feed(400, dt, t, a20, spin);          // 8 秒。静止しないので水平化はされない
+        feed((int)(8 * fs), dt, t, a20, spin);        // 8 秒。静止しないので水平化はされない
         float u2[3];
         const bool have = attitude_get_up_sensor(u2);
         const float an2 = sqrtf(a20[0]*a20[0] + a20[1]*a20[1] + a20[2]*a20[2]);
@@ -221,7 +221,7 @@ int main() {
         // ---- F1) 静止・直進では観測が入る ----
         attitude_setup();
         t = 0;
-        feed(200, dt, t, a20, gz);                  // 水平化
+        feed((int)(4 * fs), dt, t, a20, gz);                // 水平化
         const uint32_t n0 = attitude_get_level_updates();
         feed((int)(10 * fs), dt, t, a20, gz);       // 10 秒
         const uint32_t n1 = attitude_get_level_updates();
@@ -259,7 +259,7 @@ int main() {
         const float sc = (float)((G + 0.4) / G);
         for (int i = 0; i < 3; i++) a_off[i] *= sc;        // |a| = g + 0.4 → 静止判定を外す
         const float gb3[3] = { (float)(0.5 * M_PI / 180.0), 0.0f, 0.0f };  // 0.5deg/s
-        feed(200, dt, t, a20, gz);                         // まず静止で水平化
+        feed((int)(4 * fs), dt, t, a20, gz);               // まず静止で水平化
         attitude_get_euler_raw(r, p, y);
         const float r0 = r;
         feed((int)(120 * fs), dt, t, a_off, gb3);          // 2 分（GNSS は一切入れない）
@@ -296,7 +296,7 @@ int main() {
         // 良い測位でヨーを入れる（真方位 0 度へ 8m/s）
         auto set_yaw_good = [&]() {
             for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES; i++) {
-                feed(25, dt, t, a_lv, gz);
+                feed((int)(0.5 * fs), dt, t, a_lv, gz);
                 attitude_on_gnss_velocity(8.0f, 0.0f, 0.0f, 0.08f);
             }
         };
@@ -304,14 +304,14 @@ int main() {
         // ---- G1) sAcc の悪い測位ではヨーを入れない ----
         attitude_setup();
         t = 0;
-        feed(200, dt, t, a_lv, gz);                       // 水平化
+        feed((int)(4 * fs), dt, t, a_lv, gz);                       // 水平化
         for (int i = 0; i < 6; i++) {
-            feed(25, dt, t, a_lv, gz);
+            feed((int)(0.5 * fs), dt, t, a_lv, gz);
             attitude_on_gnss_velocity(3.8f, 0.0f, 0.0f, 2.06f);   // 実機の屋内の値
         }
         const bool yaw_bad = attitude_yaw_ready();
         for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES; i++) {
-            feed(25, dt, t, a_lv, gz);
+            feed((int)(0.5 * fs), dt, t, a_lv, gz);
             attitude_on_gnss_velocity(3.8f, 0.0f, 0.0f, 0.30f);
         }
         printf("\nG1) sAcc の悪い測位ではヨーを入れない\n");
@@ -325,7 +325,7 @@ int main() {
         // 旋回レートのゲートは開いたまま。比力は動かさない（回転に伴う加速度の代わり）。
         attitude_setup();
         t = 0;
-        feed(200, dt, t, a_lv, gz);
+        feed((int)(4 * fs), dt, t, a_lv, gz);
         float bg0[3]; attitude_get_gyro_bias(bg0);
         const double wb2[3] = { 0.0, 20.0 * M_PI / 180.0, 0.0 };
         float wv2[3]; body_to_sensor(wb2, wv2);
@@ -349,7 +349,7 @@ int main() {
         // ---- G3) ヨーが決まった後でも、地上で止まれば大きな誤差から戻る ----
         attitude_setup();
         t = 0;
-        feed(200, dt, t, a_lv, gz);
+        feed((int)(4 * fs), dt, t, a_lv, gz);
         set_yaw_good();
         const bool yaw3 = attitude_yaw_ready();
         // 傾きの推定だけを 120 度狂わせる。ジャイロだけ 60deg/s で 2 秒回し、比力は水平のまま。
@@ -375,16 +375,16 @@ int main() {
         // 止まっているのに GNSS は 8m/s（飛行中に静止判定が成立した場合の代わり）。
         attitude_setup();
         t = 0;
-        feed(200, dt, t, a_lv, gz);
+        feed((int)(4 * fs), dt, t, a_lv, gz);
         set_yaw_good();
         const uint32_t h0 = attitude_get_ground_relevels();
         for (int i = 0; i < 20; i++) {                   // 10 秒
-            feed(25, dt, t, a_lv, gz);
+            feed((int)(0.5 * fs), dt, t, a_lv, gz);
             attitude_on_gnss_velocity(8.0f, 0.0f, 0.0f, 0.08f);
         }
         const uint32_t h1 = attitude_get_ground_relevels();
         for (int i = 0; i < 6; i++) {                    // GNSS が 0.3m/s に変わった
-            feed(25, dt, t, a_lv, gz);
+            feed((int)(0.5 * fs), dt, t, a_lv, gz);
             attitude_on_gnss_velocity(0.3f, 0.0f, 0.0f, 0.08f);
         }
         const uint32_t h2 = attitude_get_ground_relevels();

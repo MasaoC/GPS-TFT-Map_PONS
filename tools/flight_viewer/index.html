@@ -1,0 +1,2847 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PONS Flight Viewer & Player</title>
+  <!-- Leaflet Map CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <style>
+    :root {
+      --bg-color: #f1f5f9;
+      --card-bg: #ffffff;
+      --card-border: #cbd5e1;
+      --text-main: #0f172a;
+      --text-sub: #64748b;
+      --accent-blue: #0284c7;
+      --accent-cyan: #0284c7;
+      --accent-yellow: #d97706;
+      --accent-orange: #ea580c;
+      --accent-red: #dc2626;
+      --accent-purple: #7c3aed;
+      --accent-green: #16a34a;
+      --grid-line: #e2e8f0;
+      --font-mono: "SF Mono", Monaco, Menlo, Consolas, "Courier New", monospace;
+    }
+
+    /* クロマキー用グリーンバックモード */
+    body.theme-chromakey {
+      --bg-color: #00ff00;
+      --card-bg: #008800;
+      --card-border: #00ff00;
+      --text-main: #000000;
+      --text-sub: #111111;
+      --grid-line: rgba(0, 0, 0, 0.2);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ヘッダー */
+    header {
+      background-color: var(--card-bg);
+      border-bottom: 1px solid var(--card-border);
+      padding: 6px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .app-title {
+      font-size: 1.15rem;
+      font-weight: bold;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #0f172a;
+    }
+    .badge {
+      font-size: 0.72rem;
+      background: var(--accent-blue);
+      color: white;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: bold;
+    }
+    .flight-info-text {
+      font-size: 0.82rem;
+      color: var(--text-sub);
+      font-family: var(--font-mono);
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    button, .btn {
+      background-color: #ffffff;
+      color: var(--text-main);
+      border: 1px solid var(--card-border);
+      padding: 5px 11px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+      white-space: nowrap;
+    }
+    button:hover, .btn:hover {
+      background-color: #f8fafc;
+      border-color: #94a3b8;
+    }
+    .btn-primary {
+      background-color: #0284c7;
+      border-color: #0284c7;
+      color: white;
+    }
+    .btn-primary:hover {
+      background-color: #0369a1;
+      border-color: #0369a1;
+    }
+
+    /* メインコンテンツ配置 (PC: 100%拡大率で収まるよう動的フィット) */
+    main {
+      flex: 1;
+      padding: 8px 12px;
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 10px;
+      height: calc(100vh - 110px);
+      min-height: 480px;
+    }
+
+    /* オリジナル縦長レイアウトモード */
+    body.layout-vertical main {
+      grid-template-columns: 1fr;
+      max-width: 680px;
+      margin: 0 auto;
+      height: auto;
+    }
+
+    .panel {
+      background-color: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    /* 左側: 地図パネル */
+    .map-container {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #e2e8f0;
+    }
+    .leaflet-control-layers {
+      background: #ffffff !important;
+      color: var(--text-main) !important;
+      border: 1px solid var(--card-border) !important;
+      border-radius: 6px !important;
+      font-size: 0.82rem !important;
+      padding: 6px 10px !important;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1) !important;
+    }
+    .leaflet-control-layers label {
+      cursor: pointer;
+      margin-bottom: 3px;
+    }
+    .target-label {
+      background: rgba(255, 255, 255, 0.92) !important;
+      color: #0f172a !important;
+      border: 1px solid var(--card-border) !important;
+      border-radius: 4px !important;
+      font-size: 0.75rem !important;
+      font-weight: bold !important;
+      padding: 2px 6px !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+    }
+    .plane-marker-icon, .boat-marker-icon {
+      background: none !important;
+      border: none !important;
+    }
+    .plane-marker-svg {
+      transform-origin: center center;
+      transition: transform 0.04s linear;
+      filter: drop-shadow(0 2px 5px rgba(0,0,0,0.45));
+    }
+    .boat-marker-svg {
+      transform-origin: center center;
+      transition: transform 0.08s linear;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.35));
+    }
+
+    /* 右側: 計器・グラフ群 */
+    .instrument-col {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+    }
+    .gauges-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      height: clamp(160px, 24vh, 215px);
+      min-height: 150px;
+    }
+    .gauge-card {
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .gauge-header {
+      padding: 3px 8px;
+      background: #f8fafc;
+      border-bottom: 1px solid var(--card-border);
+      font-size: 0.70rem;
+      font-weight: bold;
+      color: var(--text-sub);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .gauge-body {
+      flex: 1;
+      position: relative;
+      min-height: 0;
+      width: 100%;
+      background: #f8fafc;
+    }
+    .gauge-body canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .gauge-footer {
+      padding: 4px 6px;
+      background: #ffffff;
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 3px 8px;
+      font-family: var(--font-mono);
+      font-size: 0.73rem;
+      font-weight: bold;
+      flex-shrink: 0;
+      line-height: 1.2;
+    }
+    .gauge-title {
+      position: absolute;
+      top: 5px;
+      left: 8px;
+      font-size: 0.72rem;
+      font-weight: bold;
+      color: var(--text-sub);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      z-index: 2;
+    }
+    .hud-overlay {
+      position: absolute;
+      top: 5px;
+      right: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: bold;
+      text-align: right;
+      z-index: 2;
+      line-height: 1.25;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 2px 5px;
+      border-radius: 4px;
+      border: 1px solid var(--card-border);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+
+    /* チャートエリア (高さ動的フィット) */
+    .chart-panel {
+      height: clamp(75px, 12vh, 105px);
+      min-height: 70px;
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .chart-panel canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* HUDステータスバッジ群 */
+    .hud-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+    }
+    .hud-cell {
+      background: #ffffff;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 3px 6px;
+      text-align: center;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .hud-cell-label {
+      font-size: 0.65rem;
+      color: var(--text-sub);
+      text-transform: uppercase;
+    }
+    .hud-cell-value {
+      font-family: var(--font-mono);
+      font-size: 0.92rem;
+      font-weight: bold;
+      margin-top: 1px;
+      color: #0f172a;
+    }
+
+    /* 下部コントローラーフッター */
+    footer {
+      background-color: var(--card-bg);
+      border-top: 1px solid var(--card-border);
+      padding: 6px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      z-index: 1000;
+      box-shadow: 0 -1px 3px rgba(0,0,0,0.05);
+    }
+    .timeline-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .time-display {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-weight: bold;
+      min-width: 130px;
+      text-align: center;
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--card-border);
+    }
+    .slider-container {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .seek-slider {
+      width: 100%;
+      height: 7px;
+      border-radius: 4px;
+      background: #cbd5e1;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .seek-slider::-webkit-slider-thumb {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--accent-blue);
+      cursor: pointer;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    }
+    .controls-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .play-buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    select {
+      background: #ffffff;
+      color: var(--text-main);
+      border: 1px solid var(--card-border);
+      padding: 5px 8px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      outline: none;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+
+    /* ドラッグ＆ドロップ用オーバーレイ */
+    #drop-zone {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 20, 28, 0.9);
+      border: 3px dashed var(--accent-cyan);
+      z-index: 9999;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 15px;
+      font-size: 1.5rem;
+      font-weight: bold;
+    }
+    #drop-zone.active {
+      display: flex;
+    }
+
+    /* Web Serial モーダル */
+    #serial-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+      z-index: 10000;
+      justify-content: center;
+      align-items: center;
+    }
+    #serial-modal.active {
+      display: flex;
+    }
+    .modal-box {
+      background: #ffffff;
+      border-radius: 12px;
+      width: 720px;
+      max-width: 95vw;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--card-border);
+      overflow: hidden;
+    }
+    .modal-header {
+      padding: 16px 20px;
+      background: #f8fafc;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-title {
+      font-size: 1.1rem;
+      font-weight: bold;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .status-card {
+      background: #f1f5f9;
+      padding: 12px 16px;
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.9rem;
+    }
+    .file-table-container {
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      overflow: hidden;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .file-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    .file-table th {
+      background: #f8fafc;
+      padding: 8px 12px;
+      text-align: left;
+      font-weight: bold;
+      color: #475569;
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .file-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #f1f5f9;
+      color: #1e293b;
+    }
+    .file-table tr:hover {
+      background: #f8fafc;
+    }
+    .btn-download {
+      background: var(--accent-blue);
+      color: #ffffff;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .btn-download:hover {
+      background: #1d4ed8;
+    }
+    .progress-box {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      background: #f8fafc;
+      border: 1px solid var(--card-border);
+      padding: 14px;
+      border-radius: 8px;
+    }
+    .progress-bar-bg {
+      height: 10px;
+      background: #e2e8f0;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #0284c7, #2563eb);
+      transition: width 0.1s ease;
+    }
+    .modal-footer {
+      padding: 12px 20px;
+      background: #f8fafc;
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    /* レスポンシブ (タブレット・Android/iPhone スマートフォン対応) */
+    @media (max-width: 820px) {
+      header {
+        padding: 6px 10px;
+        gap: 6px;
+      }
+      .app-title {
+        font-size: 1.05rem;
+      }
+      .flight-info-text {
+        font-size: 0.75rem;
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .header-actions {
+        width: 100%;
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+      button, .btn {
+        padding: 5px 9px;
+        font-size: 0.78rem;
+      }
+      main {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: auto;
+        padding: 6px;
+        gap: 8px;
+        overflow: visible;
+      }
+      .panel {
+        height: 42vh;
+        min-height: 250px;
+        max-height: 380px;
+      }
+      .map-container {
+        height: 100%;
+      }
+      .gauges-row {
+        height: 180px;
+      }
+      .chart-panel {
+        height: 95px;
+      }
+      /* スマホ表示時、再生コントローラーを下部固定バーに吸着 */
+      footer {
+        position: sticky;
+        bottom: 0;
+        padding: 6px 10px;
+        box-shadow: 0 -2px 8px rgba(0,0,0,0.12);
+        background: rgba(255, 255, 255, 0.98);
+        backdrop-filter: blur(8px);
+      }
+      .timeline-row {
+        gap: 8px;
+      }
+      .time-display {
+        min-width: 110px;
+        font-size: 0.75rem;
+        padding: 3px 5px;
+      }
+      .controls-row {
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .play-buttons button {
+        padding: 4px 8px;
+        font-size: 0.8rem;
+      }
+      /* モーダルをスマホ画面幅に最適化 */
+      .modal-box {
+        width: 96vw;
+        max-height: 90vh;
+      }
+      .modal-header {
+        padding: 10px 14px;
+      }
+      .modal-body {
+        padding: 12px;
+        gap: 10px;
+      }
+      .file-table-container {
+        max-height: 240px;
+      }
+      .file-table th, .file-table td {
+        padding: 6px 8px;
+        font-size: 0.8rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ドラッグ＆ドロップ受け取り -->
+  <div id="drop-zone">
+    <div>📂 飛行CSVファイルをここにドロップ</div>
+    <div style="font-size: 0.9rem; color: var(--text-sub);">PONSフライトログ（*.csv）を自動解析します</div>
+  </div>
+
+  <!-- Web Serial モーダル -->
+  <div id="serial-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>⚡ PONS SDフライトログ転送 (Web Serial)</span>
+          <span class="badge" id="serial-status-badge" style="background:#e2e8f0; color:#475569;">未接続</span>
+        </div>
+        <button onclick="closeSerialModal()" style="border:none; background:none; font-size:1.2rem; cursor:pointer;">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="status-card" id="serial-hw-info">
+          <div>状態: <span id="serial-status-text" style="font-weight:bold;">PONSに接続してください</span></div>
+          <div id="serial-board-ver" style="font-family:var(--font-mono); font-size:0.85rem; color:#64748b;"></div>
+        </div>
+
+        <!-- 転送進捗表示 -->
+        <div class="progress-box" id="serial-progress-box">
+          <div style="display:flex; justify-content:space-between; font-size:0.88rem; font-weight:bold;">
+            <span id="serial-progress-filename">転送中...</span>
+            <span id="serial-progress-stats">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="serial-progress-fill"></div>
+          </div>
+          <div style="display:flex; justify-content:space-between; font-size:0.78rem; color:#64748b;">
+            <span id="serial-progress-bytes">0 / 0 KB</span>
+            <span id="serial-progress-speed">-- KB/s</span>
+          </div>
+          <div style="text-align:right;">
+            <button onclick="cancelPonsDownload()" style="padding:4px 10px; font-size:0.8rem; background:#ef4444; color:white; border:none; border-radius:4px; cursor:pointer;">転送中断</button>
+          </div>
+        </div>
+
+        <!-- SDカード内ファイル一覧 -->
+        <div style="font-weight:bold; font-size:0.95rem; color:#1e293b; display:flex; justify-content:space-between; align-items:center;">
+          <span>📂 SDカード内のフライトログ一覧</span>
+          <button onclick="requestFileList()" style="padding:3px 8px; font-size:0.8rem;">🔄 再読み込み</button>
+        </div>
+        <div class="file-table-container">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th>ファイル名</th>
+                <th>種別</th>
+                <th>サイズ</th>
+                <th>更新日時</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="serial-file-list">
+              <tr>
+                <td colspan="5" style="text-align:center; color:#94a3b8; padding:20px;">PONSを接続すると一覧が表示されます</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="disconnectWebSerial()" id="btn-modal-disconnect" style="background:#fee2e2; color:#b91c1c; border-color:#fca5a5;">🔌 切断</button>
+        <button onclick="closeSerialModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ヘッダー -->
+  <header>
+    <div class="header-left">
+      <div class="app-title">
+        <span>✈️ PONS Flight Viewer</span>
+        <span class="badge" id="board-badge">PONS v7.1</span>
+      </div>
+      <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
+    </div>
+    <div class="header-actions">
+      <input type="file" id="file-input" accept=".csv" style="display: none;">
+      <button onclick="document.getElementById('file-input').click()">📁 CSVを開く</button>
+      <button class="btn-primary" onclick="loadSampleFlight()">🚀 自機デモ読込</button>
+      <button onclick="loadSampleRxFlight()" style="border-color: #ea580c; color: #ea580c; font-weight:bold;">📡 受信デモ読込</button>
+      <button id="btn-webserial" onclick="connectWebSerial()" style="border-color: var(--accent-cyan);">⚡ PONSに接続 (USB)</button>
+      <select id="theme-select" onchange="toggleTheme(this.value)">
+        <option value="light" selected>☀️ ライト (白ベース)</option>
+        <option value="chromakey">🟩 グリーンバック (動画用)</option>
+      </select>
+      <select id="layout-select" onchange="toggleLayout(this.value)">
+        <option value="wide">🖥️ ワイド画面</option>
+        <option value="vertical">📱 8:9 縦型 (動画形式)</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- メイン表示領域 -->
+  <main>
+    <!-- 左側: 地図 -->
+    <div class="panel">
+      <div class="map-container">
+        <div id="map"></div>
+      </div>
+    </div>
+
+    <!-- 右側: 計器・ストリップチャート群 -->
+    <div class="instrument-col">
+      <!-- 2連計器: 風の三角形 ＆ 人工水平儀 -->
+      <div class="gauges-row">
+        <!-- 風の三角形 (Vector Triangle) -->
+        <div class="gauge-card">
+          <div class="gauge-header">
+            <span>風の三角形 (Wind Triangle)</span>
+          </div>
+          <div class="gauge-body">
+            <canvas id="canvas-vector"></canvas>
+          </div>
+          <div class="gauge-footer" id="hud-vector-text">
+            <span style="color: #0284c7;">Yaw: ---°</span>
+            <span style="color: #ea580c;">TAS: --.- m/s</span>
+            <span style="color: #d97706; font-weight:bold;">Est.Beta: --.-°</span>
+            <span style="color: #16a34a;">Wind: --.- m/s</span>
+            <span style="color: #0f172a;">TT: ---° (--.-m/s)</span>
+          </div>
+        </div>
+
+        <!-- 人工水平儀 (Artificial Horizon) -->
+        <div class="gauge-card">
+          <div class="gauge-header">
+            <span>人工水平儀 (Attitude)</span>
+          </div>
+          <div class="gauge-body">
+            <canvas id="canvas-horizon"></canvas>
+          </div>
+          <div class="gauge-footer" id="hud-attitude-text">
+            <span style="color: #dc2626;">Roll: ---°</span>
+            <span style="color: #7c3aed;">Pitch: ---°</span>
+            <span style="color: #d97706; font-weight:bold;">Est.Beta: --.-°</span>
+            <span style="color: #64748b;">AvgP: ---°</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- チャート1: G/S (対地速度) ＆ TAS (対気速度) -->
+      <div class="chart-panel">
+        <div class="gauge-title">G/S & TAS [m/s] (過去10秒)</div>
+        <div class="hud-overlay" style="top:4px;">
+          <span style="color: #0f172a; font-weight:bold;">G/S: </span><span id="chart-val-gs" style="color: #0f172a; font-size:1.1rem;">--.-</span>
+          <span style="color: #ea580c; font-weight:bold; margin-left: 8px;">TAS: </span><span id="chart-val-tas" style="color: #ea580c; font-size:1.1rem;">--.-</span>
+        </div>
+        <canvas id="canvas-chart-speed"></canvas>
+      </div>
+
+      <!-- チャート2: Roll, Pitch & Est.Beta [deg] -->
+      <div class="chart-panel">
+        <div class="gauge-title">Roll, Pitch & Est.Beta [deg] (過去10秒)</div>
+        <div class="hud-overlay" style="top:4px;">
+          <span style="color: #dc2626; font-weight:bold;">R: </span><span id="chart-val-roll" style="color: #dc2626; font-size:1.05rem;">--.-°</span>
+          <span style="color: #7c3aed; font-weight:bold; margin-left: 6px;">P: </span><span id="chart-val-pitch" style="color: #7c3aed; font-size:1.05rem;">--.-°</span>
+          <span style="color: #d97706; font-weight:bold; margin-left: 6px;">Est.Beta: </span><span id="chart-val-beta" style="color: #d97706; font-size:1.05rem;">--.-°</span>
+        </div>
+        <canvas id="canvas-chart-rp"></canvas>
+      </div>
+
+      <!-- チャート3: 高度 Alt [m] ＆ 昇降速度 VSI [m/s] -->
+      <div class="chart-panel">
+        <div class="gauge-title">Altitude [m] (青実線) & VSI [m/s] (緑破線)</div>
+        <div class="hud-overlay" style="top:4px;">
+          <span style="color: #0284c7; font-weight:bold;">Alt: </span><span id="chart-val-alt" style="color: #0284c7; font-size:1.1rem;">--.-m</span>
+          <span style="color: #16a34a; font-weight:bold; margin-left: 8px;">VSI: </span><span id="chart-val-vsi" style="color: #16a34a; font-size:1.1rem;">--.--</span>
+        </div>
+        <canvas id="canvas-chart-alt"></canvas>
+      </div>
+
+      <!-- 最新PONSステータスセル群 -->
+      <div class="hud-grid">
+        <div class="hud-cell">
+          <div class="hud-cell-label">気圧 / 湖面気圧</div>
+          <div class="hud-cell-value" id="hud-press" style="color: #0284c7;">--- hPa</div>
+        </div>
+        <div class="hud-cell">
+          <div class="hud-cell-label">GNSS 衛星 / 精度</div>
+          <div class="hud-cell-value" id="hud-sats" style="color: #16a34a;">-- sats</div>
+        </div>
+        <div class="hud-cell">
+          <div class="hud-cell-label">バッテリー電圧</div>
+          <div class="hud-cell-value" id="hud-volt" style="color: #d97706;">-.-- V</div>
+        </div>
+        <div class="hud-cell" id="hud-cell-dynamic">
+          <div class="hud-cell-label" id="hud-label-dynamic">照度 / 画面輝度</div>
+          <div class="hud-cell-value" id="hud-lux" style="color: #ea580c;">--- lux</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- コントローラーフッター -->
+  <footer>
+    <div class="timeline-row">
+      <div class="time-display" id="time-display">00:00:00 / 00:00:00</div>
+      <div class="slider-container">
+        <input type="range" class="seek-slider" id="seek-slider" min="0" max="1000" value="0">
+      </div>
+    </div>
+    <div class="controls-row">
+      <div class="play-buttons">
+        <button id="btn-play" onclick="togglePlay()" style="width: 80px;">▶ 再生</button>
+        <button onclick="skipTime(-5)">⏪ -5秒</button>
+        <button onclick="skipTime(5)">⏩ +5秒</button>
+        <button onclick="jumpToTakeoff()">🛫 離陸</button>
+        <button onclick="jumpToLand()">💧 着水</button>
+        <label style="font-size: 0.82rem; color: var(--text-sub); display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" id="check-loop" checked> ループ
+        </label>
+        <label style="font-size: 0.82rem; color: var(--text-sub); display: flex; align-items: center; gap: 4px; cursor: pointer;" title="対地速度1.0m/s未満の待機・着水後などの静止区間を自動スキップして飛行中のみ再生します">
+          <input type="checkbox" id="check-flight-only" checked> 🛫 飛行のみ (静止スキップ)
+        </label>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 0.85rem; color: var(--text-sub);">再生速度:</span>
+        <select id="speed-select" onchange="setPlaybackSpeed(parseFloat(this.value))">
+          <option value="0.5">0.5x</option>
+          <option value="1.0" selected>1.0x (等倍)</option>
+          <option value="2.0">2.0x</option>
+          <option value="5.0">5.0x</option>
+          <option value="10.0">10.0x</option>
+        </select>
+        <span style="font-size: 0.8rem; color: var(--text-sub); margin-left: 8px;">[Space: 再生/停止, ←/→: 5秒]</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // ============================================================
+    // グローバル状態管理
+    // ============================================================
+    let flightData = [];       // パース済みデータ行配列
+    let isPlaying = false;
+    let playbackSpeed = 1.0;
+    let currentTimeSec = 0;    // ログ先頭からの相対秒 [0 .. duration]
+    let totalDurationSec = 0;
+    let lastAnimFrameTime = null;
+    let takeoffSec = 0;
+    let landSec = 0;
+    let flightAltMin = 0.0;
+    let flightAltMax = 12.0;
+    const FLIGHT_SPEED_THRESHOLD = 1.0; // [m/s] 飛行判定しきい値 (1.0 m/s = 3.6 km/h)
+
+    // 静止スキップ用ヘルパー
+    function findNextFlightTime(fromSec) {
+      if (!flightData || flightData.length === 0) return -1;
+      for (let i = 0; i < flightData.length; i++) {
+        if (flightData[i].t >= fromSec && flightData[i].gs >= FLIGHT_SPEED_THRESHOLD) {
+          return flightData[i].t;
+        }
+      }
+      return -1;
+    }
+
+    function getFirstFlightTime() {
+      if (!flightData || flightData.length === 0) return 0;
+      for (let i = 0; i < flightData.length; i++) {
+        if (flightData[i].gs >= FLIGHT_SPEED_THRESHOLD) {
+          return flightData[i].t;
+        }
+      }
+      return 0;
+    }
+
+    // 地図オブジェクト
+    let map = null;
+    let trailPolyline = null;
+    let currentMarker = null;
+    let boatMarker = null;
+    let linkPolyline = null;
+    let mapInitialized = false;
+    let isReceivedLog = false;
+
+    // パイロン等の固定目標 (PONS公式 navdata.h より)
+    const TARGETS = {
+      PLATFORM:    { name: "プラットホーム", lat: 35.294222, lon: 136.254333, color: '#ff9800', radius: 8 },
+      PILON_1KM:   { name: "1kmパイロン",   lat: 35.297961, lon: 136.243624, color: '#00d2ff', radius: 6 },
+      NORTH_PILON: { name: "北パイロン",    lat: 35.377878, lon: 136.189907, color: '#388bfd', radius: 7 },
+      SOUTH_PILON: { name: "南パイロン",    lat: 35.274220, lon: 136.136183, color: '#388bfd', radius: 7 },
+      TAKESHIMA:   { name: "多景島",        lat: 35.296584, lon: 136.178054, color: '#a3e635', radius: 5 }
+    };
+
+    // ============================================================
+    // 初期化
+    // ============================================================
+    window.addEventListener('DOMContentLoaded', () => {
+      initMap();
+      setupEventListeners();
+      window.addEventListener('resize', handleResize);
+      handleResize();
+      // 初期アニメーションループ開始
+      requestAnimationFrame(animationLoop);
+    });
+
+    function setupEventListeners() {
+      // ファイル選択
+      document.getElementById('file-input').addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          readCSVFile(e.target.files[0]);
+        }
+      });
+
+      // ドラッグ＆ドロップ
+      const dropZone = document.getElementById('drop-zone');
+      window.addEventListener('dragenter', (e) => { e.preventDefault(); dropZone.classList.add('active'); });
+      dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
+      dropZone.addEventListener('dragleave', (e) => {
+        if (e.relatedTarget === null) dropZone.classList.remove('active');
+      });
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('active');
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+          readCSVFile(e.dataTransfer.files[0]);
+        }
+      });
+
+      // シークスライダー
+      const slider = document.getElementById('seek-slider');
+      slider.addEventListener('input', () => {
+        if (totalDurationSec > 0) {
+          currentTimeSec = (slider.value / 1000) * totalDurationSec;
+          updateUI(currentTimeSec);
+        }
+      });
+
+      // キーボードショートカット
+      window.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+        if (e.code === 'Space') {
+          e.preventDefault();
+          togglePlay();
+        } else if (e.code === 'ArrowLeft') {
+          e.preventDefault();
+          skipTime(-5);
+        } else if (e.code === 'ArrowRight') {
+          e.preventDefault();
+          skipTime(5);
+        }
+      });
+
+      // 飛行のみ (静止スキップ) 切り替え
+      const checkFlightOnly = document.getElementById('check-flight-only');
+      if (checkFlightOnly) {
+        checkFlightOnly.addEventListener('change', () => {
+          if (checkFlightOnly.checked && totalDurationSec > 0) {
+            const cur = interpolateAt(currentTimeSec);
+            if (cur && cur.gs < FLIGHT_SPEED_THRESHOLD) {
+              const nextT = findNextFlightTime(currentTimeSec);
+              if (nextT >= 0) {
+                currentTimeSec = nextT;
+              } else {
+                currentTimeSec = (takeoffSec > 0 ? takeoffSec : getFirstFlightTime());
+              }
+              updateUI(currentTimeSec);
+            }
+          }
+        });
+      }
+    }
+
+    // ============================================================
+    // 地図初期化 (Leaflet)
+    // ============================================================
+    function initMap() {
+      // 琵琶湖・彦根周辺を中心に初期化
+      map = L.map('map', {
+        zoomControl: true,
+        attributionControl: true
+      }).setView([35.32, 136.21], 11);
+
+      // APIキー完全不要・無制限に利用可能な公式地図レイヤー群
+      const baseMaps = {
+        "🗾 国土地理院 (標準地図)": L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+          maxZoom: 18,
+          attribution: '&copy; <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+        }),
+        "🛰️ 国土地理院 (写真・航空写真)": L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+          maxZoom: 18,
+          attribution: '&copy; <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+        }),
+        "📄 国土地理院 (淡色地図)": L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
+          maxZoom: 18,
+          attribution: '&copy; <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+        })
+      };
+
+      // デフォルトは視認性の高い国土地理院 標準地図
+      baseMaps["🗾 国土地理院 (標準地図)"].addTo(map);
+
+      // 右上に地図切り替えコントロールを追加
+      L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
+
+      // コース基準線 (PONS公式コース)
+      // プラットホーム ➔ 北パイロン (10km往路)
+      L.polyline([[TARGETS.PLATFORM.lat, TARGETS.PLATFORM.lon], [TARGETS.NORTH_PILON.lat, TARGETS.NORTH_PILON.lon]], {
+        color: '#d97706', weight: 2.0, dashArray: '6, 6', opacity: 0.9
+      }).addTo(map);
+
+      // プラットホーム ➔ 南パイロン
+      L.polyline([[TARGETS.PLATFORM.lat, TARGETS.PLATFORM.lon], [TARGETS.SOUTH_PILON.lat, TARGETS.SOUTH_PILON.lon]], {
+        color: '#2563eb', weight: 2.0, dashArray: '6, 6', opacity: 0.9
+      }).addTo(map);
+
+      // パイロン固定目標のプロット
+      for (const [key, t] of Object.entries(TARGETS)) {
+        L.circleMarker([t.lat, t.lon], {
+          radius: t.radius || 6,
+          color: t.color || '#2563eb',
+          fillColor: t.color || '#2563eb',
+          fillOpacity: 0.9
+        }).bindTooltip(t.name, { permanent: true, direction: 'right', className: 'target-label' }).addTo(map);
+      }
+
+      // 航跡ライン (白・水色の地図上でくっきり見える濃い赤色)
+      trailPolyline = L.polyline([], { color: '#e11d48', weight: 3.5, opacity: 0.95 }).addTo(map);
+
+      // 現在位置マーカー (PONS本体「士」型 人力飛行機アイコン)
+      const planeIcon = L.divIcon({
+        className: 'plane-marker-icon',
+        html: `
+          <svg id="plane-marker" class="plane-marker-svg" width="40" height="40" viewBox="-20 -20 40 40" style="transform: rotate(0deg); overflow: visible;">
+            <!-- 主翼 (スパン36px) -->
+            <rect x="-18" y="-5" width="36" height="4.2" rx="1.5" fill="#facc15" stroke="#0f172a" stroke-width="1.6"/>
+            <!-- 胴体 (全長28px) -->
+            <rect x="-2.2" y="-14" width="4.4" height="28" rx="2" fill="#facc15" stroke="#0f172a" stroke-width="1.6"/>
+            <!-- 水平尾翼 (スパン15px) -->
+            <rect x="-7.5" y="9" width="15" height="3.2" rx="1" fill="#facc15" stroke="#0f172a" stroke-width="1.4"/>
+            <!-- 機首ピトー管/前方基準点 (赤ポインタ) -->
+            <circle cx="0" cy="-14" r="2.2" fill="#dc2626" stroke="#ffffff" stroke-width="0.8"/>
+          </svg>
+        `,
+        iconSize: [40, 40],
+        iconAnchor: [20, 20]
+      });
+      currentMarker = L.marker([TARGETS.PLATFORM.lat, TARGETS.PLATFORM.lon], { icon: planeIcon }).addTo(map);
+
+      // 受信ログ用ボートマーカー＆通信リンク線
+      const boatIcon = L.divIcon({
+        className: 'boat-marker-icon',
+        html: `
+          <svg id="boat-marker" class="boat-marker-svg" width="28" height="28" viewBox="-14 -14 28 28" style="transform: rotate(0deg); overflow: visible;" title="追尾ボート (LoRa受信機)">
+            <!-- 船体 (前が尖ったボート平面形) -->
+            <path d="M 0,-11 C 5.5,-6 6.5,5 5,11 L -5,11 C -6.5,5 -5.5,-6 0,-11 Z" fill="#ea580c" stroke="#0f172a" stroke-width="1.6"/>
+            <!-- 操舵席 / キャビン -->
+            <rect x="-3" y="1" width="6" height="5.5" rx="1" fill="#ffffff" stroke="#0f172a" stroke-width="1"/>
+            <!-- 船首ポインタ -->
+            <circle cx="0" cy="-10" r="1.5" fill="#ffffff"/>
+          </svg>
+        `,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+      });
+      boatMarker = L.marker([TARGETS.PLATFORM.lat, TARGETS.PLATFORM.lon], { icon: boatIcon });
+      linkPolyline = L.polyline([], { color: '#ea580c', weight: 2.0, dashArray: '4, 4', opacity: 0.8 });
+
+      mapInitialized = true;
+    }
+
+    // ============================================================
+    // CSVパース処理
+    // ============================================================
+    function readCSVFile(file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        parseCSVText(e.target.result, file.name);
+      };
+      reader.readAsText(file);
+    }
+
+    function parseCSVText(text, filename = "フライトログ") {
+      const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
+      if (lines.length < 2) {
+        alert("有効なCSVデータが見つかりませんでした。");
+        return;
+      }
+
+      // ヘッダー行の解析
+      const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const col = {
+        lat: header.indexOf('latitude'),
+        lon: header.indexOf('longitude'),
+        gs: header.indexOf('gs'),
+        tt: header.indexOf('truetrack'),
+        gnss_alt: header.indexOf('gnss_altitude') >= 0 ? header.indexOf('gnss_altitude') : header.indexOf('altitude'),
+        kf_alt: header.indexOf('kf_altitude') >= 0 ? header.indexOf('kf_altitude') : (header.indexOf('kf_alt') >= 0 ? header.indexOf('kf_alt') : header.indexOf('altitude')),
+        kf_vs: header.indexOf('kf_vspeed') >= 0 ? header.indexOf('kf_vspeed') : (header.indexOf('kf_vs') >= 0 ? header.indexOf('kf_vs') : header.indexOf('vspeed')),
+        press: header.indexOf('pressure'),
+        roll: header.indexOf('roll'),
+        pitch: header.indexOf('pitch'),
+        yaw: header.indexOf('yaw'),
+        pavg: header.indexOf('pitch_avg'),
+        rtrim: header.indexOf('roll_trim'),
+        wspd: header.indexOf('wind_mps'),
+        wdir: header.indexOf('wind_dir'),
+        beta: header.indexOf('beta_air') >= 0 ? header.indexOf('beta_air') : (header.indexOf('beta') >= 0 ? header.indexOf('beta') : (header.indexOf('est_beta') >= 0 ? header.indexOf('est_beta') : -1)),
+        tas: header.indexOf('tas') >= 0 ? header.indexOf('tas') : -1,
+        time: header.indexOf('time'),
+        date: header.indexOf('date'),
+        volt: header.indexOf('voltage'),
+        sats: header.indexOf('numsat'),
+        lux: header.indexOf('lux'),
+        backlight: header.indexOf('backlight'),
+        rssi: header.indexOf('rssi'),
+        seq: header.indexOf('seq'),
+        age_ms: header.indexOf('age_ms'),
+        yaw_acc95: header.indexOf('yaw_acc95'),
+        own_lat: header.indexOf('own_lat'),
+        own_lon: header.indexOf('own_lon'),
+        dist_m: header.indexOf('dist_m'),
+        slot: header.indexOf('slot')
+      };
+
+      // 自機フライトログかボート受信ログかを自動判別
+      isReceivedLog = (col.rssi >= 0 || col.dist_m >= 0 || col.own_lat >= 0 || filename.toLowerCase().includes('received'));
+
+      if (col.lat < 0 || col.lon < 0) {
+        alert("エラー: latitude または longitude 列が存在しません。");
+        return;
+      }
+
+      flightData = [];
+      let t0_sec = null;
+
+      for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',').map(p => p.trim());
+        if (parts.length < header.length / 2) continue;
+
+        const lat = parseFloat(parts[col.lat]);
+        const lon = parseFloat(parts[col.lon]);
+        if (isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) continue;
+
+        // 時刻パース
+        let timeStr = col.time >= 0 ? parts[col.time] : `00:00:${i}`;
+        let sec = parseTimeToSeconds(timeStr);
+        if (t0_sec === null) t0_sec = sec;
+        const rel_sec = sec - t0_sec;
+
+        const gs = (col.gs >= 0 && parts[col.gs] !== '') ? parseFloat(parts[col.gs]) : null;
+        const tt = (col.tt >= 0 && parts[col.tt] !== '') ? parseFloat(parts[col.tt]) : null;
+        let kf_alt = null;
+        if (col.kf_alt >= 0 && parts[col.kf_alt] !== '') kf_alt = parseFloat(parts[col.kf_alt]);
+        else if (col.gnss_alt >= 0 && parts[col.gnss_alt] !== '') kf_alt = parseFloat(parts[col.gnss_alt]);
+        const kf_vs = (col.kf_vs >= 0 && parts[col.kf_vs] !== '') ? parseFloat(parts[col.kf_vs]) : null;
+        const press = (col.press >= 0 && parts[col.press] !== '') ? parseFloat(parts[col.press]) : null;
+
+        // 姿勢・風・横滑り (データ欠損時は 0 ではなく null で保持)
+        const roll = (col.roll >= 0 && parts[col.roll] !== '') ? parseFloat(parts[col.roll]) : null;
+        const pitch = (col.pitch >= 0 && parts[col.pitch] !== '') ? parseFloat(parts[col.pitch]) : null;
+        const yaw = (col.yaw >= 0 && parts[col.yaw] !== '') ? parseFloat(parts[col.yaw]) : (tt !== null ? tt : null);
+        const pavg = (col.pavg >= 0 && parts[col.pavg] !== '') ? parseFloat(parts[col.pavg]) : null;
+        const rtrim = (col.rtrim >= 0 && parts[col.rtrim] !== '') ? parseFloat(parts[col.rtrim]) : null;
+        const wspd = (col.wspd >= 0 && parts[col.wspd] !== '') ? parseFloat(parts[col.wspd]) : null;
+        const wdir = (col.wdir >= 0 && parts[col.wdir] !== '') ? parseFloat(parts[col.wdir]) : null;
+        const csvBeta = (col.beta >= 0 && parts[col.beta] !== '') ? parseFloat(parts[col.beta]) : null;
+        const csvTas = (col.tas >= 0 && parts[col.tas] !== '') ? parseFloat(parts[col.tas]) : null;
+
+        // システム・自機特有
+        const volt = (col.volt >= 0 && parts[col.volt] !== '') ? parseFloat(parts[col.volt]) : null;
+        const sats = (col.sats >= 0 && parts[col.sats] !== '') ? parseInt(parts[col.sats]) : null;
+        const lux = (col.lux >= 0 && parts[col.lux] !== '') ? parseInt(parts[col.lux]) : null;
+        const backlight = (col.backlight >= 0 && parts[col.backlight] !== '') ? parseInt(parts[col.backlight]) : null;
+
+        // 受信ログ特有 (無線通信・ボート位置)
+        const rssi = (col.rssi >= 0 && parts[col.rssi] !== '') ? parseFloat(parts[col.rssi]) : null;
+        const age_ms = (col.age_ms >= 0 && parts[col.age_ms] !== '') ? parseInt(parts[col.age_ms]) : null;
+        const own_lat = (col.own_lat >= 0 && parts[col.own_lat] !== '') ? parseFloat(parts[col.own_lat]) : null;
+        const own_lon = (col.own_lon >= 0 && parts[col.own_lon] !== '') ? parseFloat(parts[col.own_lon]) : null;
+        const dist_m = (col.dist_m >= 0 && parts[col.dist_m] !== '') ? parseFloat(parts[col.dist_m]) : null;
+
+        flightData.push({
+          t: rel_sec,
+          timeStr,
+          lat, lon, gs, tt,
+          kf_alt, kf_vs, press,
+          roll, pitch, yaw, pavg, rtrim,
+          wspd, wdir,
+          csvBeta, csvTas,
+          estBeta: (csvBeta !== null && !isNaN(csvBeta)) ? csvBeta : null,
+          volt, sats, lux, backlight,
+          rssi, age_ms, own_lat, own_lon, dist_m
+        });
+      }
+
+      if (flightData.length === 0) {
+        alert("有効なレコードがありませんでした。");
+        return;
+      }
+
+      // 相対時刻でソート
+      flightData.sort((a, b) => a.t - b.t);
+      totalDurationSec = flightData[flightData.length - 1].t;
+
+      // 横滑り角 (Est.Beta) の自動推定
+      estimateSideslipBeta(flightData);
+
+      // 高度範囲の自動計算 (フライトデータに完全追従するオートスケール)
+      let alts = flightData.map(d => d.kf_alt);
+      let minA = Math.min(...alts);
+      let maxA = Math.max(...alts);
+      flightAltMin = Math.floor(minA - 1);
+      flightAltMax = Math.ceil(maxA + 1);
+      if (flightAltMax - flightAltMin < 6) {
+        flightAltMax = flightAltMin + 6;
+      }
+
+      // VSIの自動補完 (もしCSVにVSI列がなく全て0の場合、高度差分から算出)
+      let hasVsi = flightData.some(d => Math.abs(d.kf_vs) > 0.05);
+      if (!hasVsi && flightData.length > 1) {
+        for (let i = 1; i < flightData.length; i++) {
+          let dt = flightData[i].t - flightData[i - 1].t;
+          if (dt > 0.05) {
+            flightData[i].kf_vs = (flightData[i].kf_alt - flightData[i - 1].kf_alt) / dt;
+          }
+        }
+      }
+
+      // 離陸・着水の自動検出 (G/S > 3.0 m/s の区間)
+      let firstFlyIdx = flightData.findIndex(d => d.gs > 3.0);
+      let lastFlyIdx = flightData.findLastIndex ? flightData.findLastIndex(d => d.gs > 2.0) : flightData.length - 1;
+      takeoffSec = firstFlyIdx >= 0 ? flightData[firstFlyIdx].t : 0;
+      landSec = lastFlyIdx >= 0 ? flightData[lastFlyIdx].t : totalDurationSec;
+
+      const typeTag = isReceivedLog
+        ? '<span class="badge" style="background:#ea580c; margin-left:8px;">📡 ボート受信ログ (LoRa)</span>'
+        : '<span class="badge" style="background:#0284c7; margin-left:8px;">✈️ 自機フライトログ</span>';
+      document.getElementById('flight-title').innerHTML = `${filename} <span style="font-size:0.85rem; font-weight:normal; color:var(--text-sub);">(${formatTime(totalDurationSec)})</span> ${typeTag}`;
+      const flightOnly = document.getElementById('check-flight-only')?.checked;
+      currentTimeSec = flightOnly ? (takeoffSec > 0 ? takeoffSec : getFirstFlightTime()) : 0;
+
+      // 地図の航跡更新
+      updateMapTrajectory();
+
+      // UI初期更新
+      updateUI(currentTimeSec);
+      console.log(`CSV読込完了: ${flightData.length}点, 全長 ${totalDurationSec.toFixed(1)}s, 離陸 ${takeoffSec.toFixed(1)}s, 着水 ${landSec.toFixed(1)}s`);
+    }
+
+    // ============================================================
+    // 横滑り角 (Est.Beta) 自動推定エンジン
+    // 運動方程式: d(Beta)/dt = -Beta/TAU + GAIN * (-r + (g/TAS)*cos(pitch)*sin(roll))
+    // ============================================================
+    function estimateSideslipBeta(records) {
+      if (!records || records.length === 0) return;
+
+      // CSVに既にbeta列が含まれている場合はそちらを優先
+      const hasCsvBeta = records.some(r => r.csvBeta !== null && !isNaN(r.csvBeta));
+      if (hasCsvBeta) {
+        for (let i = 0; i < records.length; i++) {
+          records[i].estBeta = (records[i].csvBeta !== null && !isNaN(records[i].csvBeta)) ? records[i].csvBeta : null;
+        }
+        return;
+      }
+
+      // 姿勢データ（roll, pitch）が存在するか確認。存在しない場合は横滑り角を推定できないため null
+      const hasAttitude = records.some(r => r.roll !== null && !isNaN(r.roll) && r.pitch !== null && !isNaN(r.pitch));
+      if (!hasAttitude) {
+        for (let i = 0; i < records.length; i++) {
+          records[i].estBeta = null;
+        }
+        return;
+      }
+
+      const GRAVITY = 9.80; // [m/s^2]
+      const TAU = 5.0;      // 横滑り減衰時定数 [s] (方向安定性)
+      const GAIN = 0.25;    // 協調操作度合い (1.0=無操舵、0.25=ラダー協調旋回)
+
+      // ヨー角の360°アンラップ
+      const unwrappedYaw = [];
+      let prevY = records[0].yaw || 0;
+      unwrappedYaw.push(prevY);
+      for (let i = 1; i < records.length; i++) {
+        const yVal = records[i].yaw !== null ? records[i].yaw : prevY;
+        let diff = (yVal - prevY + 540) % 360 - 180;
+        prevY += diff;
+        unwrappedYaw.push(prevY);
+      }
+
+      let betaRad = 0.0;
+      records[0].estBeta = null;
+
+      for (let i = 1; i < records.length; i++) {
+        const r0 = records[i - 1];
+        const r1 = records[i];
+        const dt = Math.max(0.01, r1.t - r0.t);
+
+        // 姿勢データが欠損、または地上滑走前・着水後 (gs < 2.0 m/s) は横滑り角未定義 (null)
+        if (r1.roll === null || r1.pitch === null || r1.gs === null || r1.gs < 2.0) {
+          betaRad = 0.0;
+          r1.estBeta = null;
+          continue;
+        }
+
+        const phi = (r1.roll * Math.PI) / 180;
+        const theta = (r1.pitch * Math.PI) / 180;
+
+        const p0 = r0.pitch !== null ? r0.pitch : r1.pitch;
+        const thetaDot = ((r1.pitch - p0) * Math.PI / 180) / dt;
+        const psiDot = ((unwrappedYaw[i] - unwrappedYaw[i - 1]) * Math.PI / 180) / dt;
+
+        // 機体座標系のヨー角速度 r [rad/s]
+        const r_body = -thetaDot * Math.sin(phi) + psiDot * Math.cos(theta) * Math.cos(phi);
+
+        // 推定TAS [m/s]
+        const wspd = r1.wspd || 0;
+        const wdir = r1.wdir || 0;
+        const yaw = r1.yaw || 0;
+        let tas = (r1.csvTas !== null && r1.csvTas > 0) ? r1.csvTas :
+                  Math.max(1.0, r1.gs + Math.cos((yaw - wdir) * Math.PI / 180) * wspd);
+
+        // 旋回・バンクによる横滑り駆動項 drive [rad/s]
+        // 協調旋回なら drive = 0 となり Beta は減衰
+        const drive = -r_body + (GRAVITY / Math.max(tas, 1.0)) * Math.cos(theta) * Math.sin(phi);
+
+        // 指数積分 (厳密解)
+        const decay = Math.exp(-dt / TAU);
+        const step = GAIN * TAU * (1.0 - decay);
+        betaRad = betaRad * decay + step * drive;
+
+        // 度数法へ変換 (±15°クリップ)
+        let betaDeg = (betaRad * 180) / Math.PI;
+        betaDeg = Math.max(-15.0, Math.min(15.0, betaDeg));
+        r1.estBeta = betaDeg;
+      }
+    }
+
+    function parseTimeToSeconds(tStr) {
+      if (!tStr) return 0;
+      const parts = tStr.split(':');
+      if (parts.length === 3) {
+        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
+      }
+      return parseFloat(tStr) || 0;
+    }
+
+    // ============================================================
+    // サンプルフライト生成 (琵琶湖 プラットホーム〜北旋回〜着水)
+    // ============================================================
+    function loadSampleFlight() {
+      const rows = ["time,latitude,longitude,gs,truetrack,gnss_altitude,kf_altitude,kf_vspeed,pressure,roll,pitch,yaw,pitch_avg,roll_trim,wind_mps,wind_dir,numsat,voltage,lux,backlight"];
+      const baseLat = TARGETS.PLATFORM.lat;
+      const baseLon = TARGETS.PLATFORM.lon;
+      const N = 400; // 400サンプル (約200秒)
+      const dt = 0.5;
+
+      let curLat = baseLat;
+      let curLon = baseLon;
+      let curAlt = 10.0; // プラットホーム高さ 10m
+      let prevAlt = 10.0;
+      let curYaw = 328;  // 北パイロン方向 (北北西 328度)
+
+      for (let i = 0; i < N; i++) {
+        const sec = i * dt;
+        const hh = String(Math.floor(sec / 3600) + 8).padStart(2, '0');
+        const mm = String(Math.floor((sec % 3600) / 60) + 21).padStart(2, '0');
+        const ss = (sec % 60).toFixed(2).padStart(5, '0');
+        const timeStr = `${hh}:${mm}:${ss}`;
+
+        prevAlt = curAlt;
+
+        // 助走〜離陸〜巡航〜北パイロン旋回〜降下
+        let gs = 0, roll = 0, pitch = 0, wind_mps = 1.8, wind_dir = 280;
+
+        if (sec < 10) {
+          // プラットホーム上待機
+          gs = 0;
+          curAlt = 10.0;
+        } else if (sec < 20) {
+          // 発進・飛び出し
+          gs = (sec - 10) * 0.7;
+          curAlt = 10.0 - (sec - 10) * 0.4; // 飛び出しの沈み込み
+        } else if (sec < 95) {
+          // 北上巡航 (10kmコース往路: 北パイロンへ向かう)
+          gs = 7.5 + Math.sin(sec * 0.2) * 0.4;
+          curYaw = 328;
+          curAlt = 6.5 + Math.sin(sec * 0.1) * 0.8;
+          roll = Math.sin(sec * 0.4) * 2.0;
+          pitch = Math.sin(sec * 0.2) * 1.5;
+        } else if (sec < 145) {
+          // 北パイロン旋回 (左旋回 180度)
+          gs = 6.8;
+          curYaw = (328 - (sec - 95) * 3.6 + 360) % 360; // 50秒で180度回る
+          roll = -5.5 + Math.sin(sec * 0.5) * 1.0;       // 左バンク
+          pitch = 0.5;
+          curAlt = 5.0 + Math.sin(sec * 0.15) * 0.5;
+        } else if (sec < 185) {
+          // 復路南下 (南東方向 148度へ戻る)
+          gs = 7.8;
+          curYaw = 148;
+          roll = Math.sin(sec * 0.3) * 1.5;
+          pitch = -0.2;
+          curAlt = 4.0 - (sec - 145) * 0.08; // 徐々に降下
+        } else {
+          // 着水
+          gs = Math.max(0, 7.0 - (sec - 185) * 1.5);
+          curAlt = Math.max(0, 0.5 - (sec - 185) * 0.1);
+          roll = 0;
+          pitch = 3.0; // 着水フレア
+        }
+
+        // 昇降速度 VSI の計算 [m/s]
+        let vs = sec > 0 ? (curAlt - prevAlt) / dt : 0;
+
+        // 位置の積分
+        if (gs > 0) {
+          const rad = (curYaw * Math.PI) / 180;
+          curLat += (Math.cos(rad) * gs * dt) / 111000;
+          curLon += (Math.sin(rad) * gs * dt) / (111000 * Math.cos(curLat * Math.PI / 180));
+        }
+
+        const press = 1013.25 - curAlt * 0.12;
+        const volt = (4.15 - (sec / N) * 0.3).toFixed(2);
+        rows.push(`${timeStr},${curLat.toFixed(6)},${curLon.toFixed(6)},${gs.toFixed(2)},${curYaw.toFixed(1)},${curAlt.toFixed(2)},${curAlt.toFixed(2)},${vs.toFixed(2)},${press.toFixed(2)},${roll.toFixed(1)},${pitch.toFixed(1)},${curYaw.toFixed(1)},0.2,-0.1,${wind_mps},${wind_dir},14,${volt},3200,80`);
+      }
+
+      parseCSVText(rows.join('\n'), "琵琶湖デモフライト_2026.csv");
+    }
+
+    // ============================================================
+    // サンプル受信ログ生成 (ボート側 PONS が受信した LoRa ログ)
+    // ============================================================
+    function loadSampleRxFlight() {
+      const rows = ["latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,own_lat,own_lon,dist_m,slot"];
+      const baseLat = TARGETS.PLATFORM.lat;
+      const baseLon = TARGETS.PLATFORM.lon;
+      const N = 400;
+      const dt = 0.5;
+
+      let curLat = baseLat;
+      let curLon = baseLon;
+      let curAlt = 10.0;
+      let prevAlt = 10.0;
+      let curYaw = 328;
+
+      for (let i = 0; i < N; i++) {
+        const sec = i * dt;
+        const hh = String(Math.floor(sec / 3600) + 8).padStart(2, '0');
+        const mm = String(Math.floor((sec % 3600) / 60) + 21).padStart(2, '0');
+        const ss = (sec % 60).toFixed(2).padStart(5, '0');
+        const timeStr = `${hh}:${mm}:${ss}`;
+
+        prevAlt = curAlt;
+
+        let gs = 0, roll = 0, pitch = 0, wind_mps = 1.8, wind_dir = 280;
+
+        if (sec < 10) {
+          gs = 0;
+          curAlt = 10.0;
+        } else if (sec < 20) {
+          gs = (sec - 10) * 0.7;
+          curAlt = 10.0 - (sec - 10) * 0.4;
+        } else if (sec < 95) {
+          gs = 7.5 + Math.sin(sec * 0.2) * 0.4;
+          curYaw = 328;
+          curAlt = 6.5 + Math.sin(sec * 0.1) * 0.8;
+          roll = Math.sin(sec * 0.4) * 2.0;
+          pitch = Math.sin(sec * 0.2) * 1.5;
+        } else if (sec < 145) {
+          gs = 6.8;
+          curYaw = (328 - (sec - 95) * 3.6 + 360) % 360;
+          roll = -5.5 + Math.sin(sec * 0.5) * 1.0;
+          pitch = 0.5;
+          curAlt = 5.0 + Math.sin(sec * 0.15) * 0.5;
+        } else if (sec < 185) {
+          gs = 7.8;
+          curYaw = 148;
+          roll = Math.sin(sec * 0.3) * 1.5;
+          pitch = -0.2;
+          curAlt = 4.0 - (sec - 145) * 0.08;
+        } else {
+          gs = Math.max(0, 7.0 - (sec - 185) * 1.5);
+          curAlt = Math.max(0, 0.5 - (sec - 185) * 0.1);
+          roll = 0;
+          pitch = 3.0;
+        }
+
+        let vs = sec > 0 ? (curAlt - prevAlt) / dt : 0;
+
+        if (gs > 0) {
+          const rad = (curYaw * Math.PI) / 180;
+          curLat += (Math.cos(rad) * gs * dt) / 111000;
+          curLon += (Math.sin(rad) * gs * dt) / (111000 * Math.cos(curLat * Math.PI / 180));
+        }
+
+        // ボート（追尾艇）の位置: 機体の後方約 60〜85m を追従
+        const boatLagDist = 72.0 + Math.sin(sec * 0.12) * 14.0;
+        const boatRad = ((curYaw + 180) * Math.PI) / 180;
+        const own_lat = curLat + (Math.cos(boatRad) * boatLagDist) / 111000;
+        const own_lon = curLon + (Math.sin(boatRad) * boatLagDist) / (111000 * Math.cos(curLat * Math.PI / 180));
+        const dist_m = boatLagDist;
+
+        // 通信ステータス
+        const rssi = Math.round(-74 - (dist_m / 80.0) * 8 + (Math.sin(sec * 0.7) * 3));
+        const age_ms = Math.round(180 + Math.random() * 40);
+        const seq = (i % 256);
+
+        const press = 1013.25 - curAlt * 0.12;
+        const volt = (4.15 - (sec / N) * 0.3).toFixed(2);
+
+        rows.push(`${curLat.toFixed(6)},${curLon.toFixed(6)},${gs.toFixed(2)},${curYaw.toFixed(1)},${curAlt.toFixed(2)},${curAlt.toFixed(2)},${vs.toFixed(2)},${press.toFixed(2)},${volt},14,2026-07-26,${timeStr},${rssi},${seq},${age_ms},${roll.toFixed(2)},${pitch.toFixed(2)},${curYaw.toFixed(2)},0.20,-0.10,1.2,${wind_mps},${wind_dir},${own_lat.toFixed(6)},${own_lon.toFixed(6)},${dist_m.toFixed(1)},0`);
+      }
+
+      parseCSVText(rows.join('\n'), "received/2026-07-26_0804_boat.csv");
+    }
+
+    // ============================================================
+    // データ補間エンジン
+    // ============================================================
+    function interpolateAt(t) {
+      if (flightData.length === 0) return null;
+      if (t <= flightData[0].t) return flightData[0];
+      if (t >= flightData[flightData.length - 1].t) return flightData[flightData.length - 1];
+
+      // 2分探索
+      let low = 0, high = flightData.length - 1;
+      while (low <= high) {
+        let mid = Math.floor((low + high) / 2);
+        if (flightData[mid].t < t) low = mid + 1;
+        else high = mid - 1;
+      }
+
+      let i0 = Math.max(0, low - 1);
+      let i1 = Math.min(flightData.length - 1, low);
+      if (i0 === i1) return flightData[i0];
+
+      let d0 = flightData[i0], d1 = flightData[i1];
+      let frac = (t - d0.t) / (d1.t - d0.t);
+
+      // 角度の補間 (360度跨ぎ対応、null 対応)
+      function lerpAngle(a0, a1, f) {
+        if (a0 === null && a1 === null) return null;
+        if (a0 === null) return a1;
+        if (a1 === null) return a0;
+        let diff = (a1 - a0 + 540) % 360 - 180;
+        return (a0 + diff * f + 360) % 360;
+      }
+
+      function lerp(v0, v1, f) {
+        if (v0 === null && v1 === null) return null;
+        if (v0 === null) return v1;
+        if (v1 === null) return v0;
+        return v0 + (v1 - v0) * f;
+      }
+
+      return {
+        t,
+        timeStr: d0.timeStr,
+        lat: lerp(d0.lat, d1.lat, frac),
+        lon: lerp(d0.lon, d1.lon, frac),
+        gs: lerp(d0.gs, d1.gs, frac),
+        tt: lerpAngle(d0.tt, d1.tt, frac),
+        kf_alt: lerp(d0.kf_alt, d1.kf_alt, frac),
+        kf_vs: lerp(d0.kf_vs, d1.kf_vs, frac),
+        press: lerp(d0.press, d1.press, frac),
+        roll: lerp(d0.roll, d1.roll, frac),
+        pitch: lerp(d0.pitch, d1.pitch, frac),
+        yaw: lerpAngle(d0.yaw, d1.yaw, frac),
+        pavg: lerp(d0.pavg, d1.pavg, frac),
+        rtrim: lerp(d0.rtrim, d1.rtrim, frac),
+        wspd: lerp(d0.wspd, d1.wspd, frac),
+        wdir: lerpAngle(d0.wdir, d1.wdir, frac),
+        csvBeta: d0.csvBeta,
+        csvTas: d0.csvTas,
+        estBeta: lerp(d0.estBeta, d1.estBeta, frac),
+        volt: d0.volt,
+        sats: d0.sats,
+        lux: d0.lux,
+        backlight: d0.backlight,
+        rssi: d0.rssi,
+        age_ms: d0.age_ms,
+        own_lat: (d0.own_lat !== null && d1.own_lat !== null) ? lerp(d0.own_lat, d1.own_lat, frac) : (d0.own_lat || d1.own_lat),
+        own_lon: (d0.own_lon !== null && d1.own_lon !== null) ? lerp(d0.own_lon, d1.own_lon, frac) : (d0.own_lon || d1.own_lon),
+        dist_m: (d0.dist_m !== null && d1.dist_m !== null) ? lerp(d0.dist_m, d1.dist_m, frac) : (d0.dist_m || d1.dist_m)
+      };
+    }
+
+    // ============================================================
+    // アニメーション＆UI更新ループ
+    // ============================================================
+    function animationLoop(timestamp) {
+      if (!lastAnimFrameTime) lastAnimFrameTime = timestamp;
+      const dt = (timestamp - lastAnimFrameTime) / 1000;
+      lastAnimFrameTime = timestamp;
+
+      if (isPlaying && totalDurationSec > 0) {
+        currentTimeSec += dt * playbackSpeed;
+
+        const flightOnly = document.getElementById('check-flight-only')?.checked;
+        if (flightOnly) {
+          const curData = interpolateAt(currentTimeSec);
+          if (curData && curData.gs < FLIGHT_SPEED_THRESHOLD) {
+            const nextT = findNextFlightTime(currentTimeSec);
+            if (nextT >= 0) {
+              // 待機・静止区間を検知 ➔ 次の飛行区間開始点へ自動スキップ
+              currentTimeSec = nextT;
+            } else {
+              // これ以降に飛行データなし (着水・着陸完了)
+              if (document.getElementById('check-loop').checked) {
+                currentTimeSec = (takeoffSec > 0 ? takeoffSec : getFirstFlightTime());
+              } else {
+                currentTimeSec = landSec;
+                isPlaying = false;
+                document.getElementById('btn-play').textContent = "▶ 再生";
+              }
+            }
+          }
+        }
+
+        if (currentTimeSec > totalDurationSec) {
+          if (document.getElementById('check-loop').checked) {
+            currentTimeSec = flightOnly ? (takeoffSec > 0 ? takeoffSec : getFirstFlightTime()) : 0;
+          } else {
+            currentTimeSec = totalDurationSec;
+            isPlaying = false;
+            document.getElementById('btn-play').textContent = "▶ 再生";
+          }
+        }
+        updateUI(currentTimeSec);
+      }
+
+      requestAnimationFrame(animationLoop);
+    }
+
+    function updateUI(t) {
+      const data = interpolateAt(t);
+      if (!data) return;
+
+      // タイムラインスライダー
+      const slider = document.getElementById('seek-slider');
+      if (document.activeElement !== slider) {
+        slider.value = totalDurationSec > 0 ? (t / totalDurationSec) * 1000 : 0;
+      }
+      document.getElementById('time-display').textContent = `${formatTime(t)} / ${formatTime(totalDurationSec)}`;
+
+      // HUD テキスト更新 (データなし時は --- を表示)
+      document.getElementById('hud-press').textContent = (data.press !== null && !isNaN(data.press)) ? `${data.press.toFixed(1)} hPa` : "--- hPa";
+      document.getElementById('hud-sats').textContent = (data.sats !== null && !isNaN(data.sats)) ? `${data.sats} sats` : "-- sats";
+      document.getElementById('hud-volt').textContent = (data.volt !== null && !isNaN(data.volt)) ? `${data.volt.toFixed(2)} V` : "--.- V";
+
+      // 自機ログと受信ログで右下HUDセルを自動切り替え
+      const dynLabel = document.getElementById('hud-label-dynamic');
+      const dynVal = document.getElementById('hud-lux');
+      if (isReceivedLog) {
+        if (dynLabel) dynLabel.textContent = "ボート距離 / LoRa電波";
+        const distStr = (data.dist_m !== null && !isNaN(data.dist_m)) ? `${data.dist_m.toFixed(0)}m` : "--m";
+        const rssiStr = (data.rssi !== null && !isNaN(data.rssi)) ? `${data.rssi.toFixed(0)}dBm` : "--";
+        if (dynVal) dynVal.textContent = `${distStr} (${rssiStr})`;
+      } else {
+        if (dynLabel) dynLabel.textContent = "照度 / 画面輝度";
+        const luxStr = (data.lux !== null && !isNaN(data.lux)) ? `${data.lux} lux` : "-- lux";
+        const blStr = (data.backlight !== null && !isNaN(data.backlight)) ? ` (${data.backlight}%)` : "";
+        if (dynVal) dynVal.textContent = `${luxStr}${blStr}`;
+      }
+
+      document.getElementById('chart-val-gs').textContent = (data.gs !== null && !isNaN(data.gs)) ? data.gs.toFixed(1) : "--.-";
+      // 推定TAS: CSV値があれば優先、無ければ風と偏流から簡易推計 (データ欠損時は null)
+      let tasEst = null;
+      if (data.csvTas !== null && !isNaN(data.csvTas)) {
+        tasEst = data.csvTas;
+      } else if (data.gs !== null && data.yaw !== null && data.wdir !== null && data.wspd !== null) {
+        tasEst = Math.max(0, data.gs + (Math.cos((data.yaw - data.wdir) * Math.PI / 180) * data.wspd));
+      }
+      document.getElementById('chart-val-tas').textContent = (tasEst !== null && !isNaN(tasEst)) ? tasEst.toFixed(1) : "--.-";
+
+      document.getElementById('chart-val-roll').textContent = (data.roll !== null && !isNaN(data.roll)) ? `${data.roll > 0 ? '+' : ''}${data.roll.toFixed(1)}°` : "--.-°";
+      document.getElementById('chart-val-pitch').textContent = (data.pitch !== null && !isNaN(data.pitch)) ? `${data.pitch > 0 ? '+' : ''}${data.pitch.toFixed(1)}°` : "--.-°";
+      const betaEl = document.getElementById('chart-val-beta');
+      if (betaEl) {
+        betaEl.textContent = (data.estBeta !== null && !isNaN(data.estBeta)) ? `${data.estBeta > 0 ? '+' : ''}${data.estBeta.toFixed(1)}°` : "--.-°";
+      }
+      document.getElementById('chart-val-alt').textContent = (data.kf_alt !== null && !isNaN(data.kf_alt)) ? `${data.kf_alt.toFixed(1)}m` : "--.-m";
+      document.getElementById('chart-val-vsi').textContent = (data.kf_vs !== null && !isNaN(data.kf_vs)) ? `${data.kf_vs >= 0 ? '+' : ''}${data.kf_vs.toFixed(2)}` : "--.--";
+
+      // 計器Canvas描画
+      drawVectorTriangle(data, tasEst);
+      drawArtificialHorizon(data);
+      drawSpeedChart(t);
+      drawRollPitchChart(t);
+      drawAltChart(t);
+
+      // 地図マーカー位置更新
+      if (mapInitialized && currentMarker) {
+        currentMarker.setLatLng([data.lat, data.lon]);
+        const el = document.getElementById('plane-marker');
+        if (el) el.style.transform = `rotate(${data.yaw}deg)`;
+
+        // 受信ログ時の追尾ボートマーカー＆機体間リンク線
+        if (isReceivedLog && boatMarker && linkPolyline) {
+          if (data.own_lat && data.own_lon && !isNaN(data.own_lat) && !isNaN(data.own_lon) && data.own_lat !== 0) {
+            if (!map.hasLayer(boatMarker)) boatMarker.addTo(map);
+            boatMarker.setLatLng([data.own_lat, data.own_lon]);
+
+            const boatEl = document.getElementById('boat-marker');
+            if (boatEl) {
+              const dLat = (data.lat - data.own_lat) * 111000;
+              const dLon = (data.lon - data.own_lon) * 111000 * Math.cos(data.lat * Math.PI / 180);
+              const boatHeading = (Math.atan2(dLon, dLat) * 180 / Math.PI + 360) % 360;
+              boatEl.style.transform = `rotate(${boatHeading}deg)`;
+            }
+
+            if (!map.hasLayer(linkPolyline)) linkPolyline.addTo(map);
+            linkPolyline.setLatLngs([[data.lat, data.lon], [data.own_lat, data.own_lon]]);
+          } else {
+            if (map.hasLayer(boatMarker)) map.removeLayer(boatMarker);
+            if (map.hasLayer(linkPolyline)) map.removeLayer(linkPolyline);
+          }
+        } else {
+          if (boatMarker && map.hasLayer(boatMarker)) map.removeLayer(boatMarker);
+          if (linkPolyline && map.hasLayer(linkPolyline)) map.removeLayer(linkPolyline);
+        }
+      }
+    }
+
+    // ============================================================
+    // 地図航跡ライン更新
+    // ============================================================
+    function updateMapTrajectory() {
+      if (!mapInitialized || flightData.length === 0) return;
+      const latlngs = flightData.map(d => [d.lat, d.lon]);
+      trailPolyline.setLatLngs(latlngs);
+
+      let bounds = trailPolyline.getBounds();
+      if (isReceivedLog) {
+        flightData.forEach(d => {
+          if (d.own_lat && d.own_lon && d.own_lat !== 0 && !isNaN(d.own_lat) && !isNaN(d.own_lon)) {
+            bounds.extend([d.own_lat, d.own_lon]);
+          }
+        });
+      }
+      map.fitBounds(bounds, { padding: [30, 30] });
+    }
+
+    // ============================================================
+    // 計器描画: 風の三角形 (Vector Triangle) - 白ベース対応
+    // ============================================================
+    function drawVectorTriangle(d, tas) {
+      const canvas = document.getElementById('canvas-vector');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w / 2;
+      const cy = h / 2;
+      const baseR = Math.min(w, h) * 0.38;
+      const scale = baseR / 7.2; // 1 m/s あたりのピクセル数
+
+      // 方位盤リング (濃いグレー)
+      ctx.save();
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 十字クロス目盛
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - baseR * 1.05, cy); ctx.lineTo(cx + baseR * 1.05, cy);
+      ctx.moveTo(cx, cy - baseR * 1.05); ctx.lineTo(cx, cy + baseR * 1.05);
+      ctx.stroke();
+      ctx.restore();
+
+      // 機体アイコン (士 型)
+      ctx.save();
+      ctx.translate(cx, cy);
+      const yawAngle = d.yaw !== null ? d.yaw : 0;
+      ctx.rotate((yawAngle * Math.PI) / 180);
+
+      ctx.fillStyle = "#0f172a";
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 1.5;
+
+      // 胴体
+      ctx.fillRect(-2, -22, 4, 34);
+      // 主翼
+      ctx.fillRect(-24, -14, 48, 4);
+      // 尾翼
+      ctx.fillRect(-9, 8, 18, 3);
+      ctx.restore();
+
+      // ベクトルの計算 (北=上、東=右の直交座標系)
+      // 原点 = 機首 (cx, cy)
+      const beta = d.estBeta !== null ? d.estBeta : 0;
+      const yawVal = d.yaw !== null ? d.yaw : 0;
+      const yawRad = (yawVal * Math.PI) / 180;
+      const airBearingDeg = (yawVal + beta + 360) % 360;
+      const airBearingRad = (airBearingDeg * Math.PI) / 180;
+      const tasVal = (tas !== null && !isNaN(tas)) ? tas : 0;
+      const tasX = cx + Math.sin(airBearingRad) * (tasVal * scale);
+      const tasY = cy - Math.cos(airBearingRad) * (tasVal * scale);
+
+      // 1. 機首方位点線 (Yaw reference) : 濃いシアン (向き: yaw)
+      if (d.yaw !== null) {
+        const yawRefLen = Math.max(tasVal * scale * 1.25, baseR * 0.5);
+        ctx.save();
+        ctx.strokeStyle = "#0284c7";
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.sin(yawRad) * yawRefLen, cy - Math.cos(yawRad) * yawRefLen);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 横滑り角 (Est.Beta) の扇形アーク表示 (推定値があり |beta| >= 0.3° で表示)
+      if (d.estBeta !== null && Math.abs(d.estBeta) >= 0.3 && tasVal > 0) {
+        ctx.save();
+        ctx.strokeStyle = "#d97706";
+        ctx.fillStyle = "rgba(217, 119, 6, 0.18)";
+        ctx.lineWidth = 1.5;
+        const arcR = Math.min(baseR * 0.65, tasVal * scale * 0.85);
+        // Canvasの角度系 (右=0, 下=π/2)
+        const a0 = -Math.PI / 2 + yawRad;
+        const a1 = -Math.PI / 2 + airBearingRad;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, arcR, Math.min(a0, a1), Math.max(a0, a1));
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 2. 対気ベクトル (TAS) : 濃いアンバー (向き: yaw + estBeta)
+      if (tas !== null && tas > 0) {
+        drawArrow(ctx, cx, cy, tasX, tasY, "#ea580c", 3.2);
+      }
+
+      // 3. 風ベクトル (WIND) : 濃いグリーン (TASの先端から吹いていく向き)
+      let ttTargetX = tasX;
+      let ttTargetY = tasY;
+      if (d.wspd !== null && d.wspd > 0 && d.wdir !== null) {
+        const windFlowRad = ((d.wdir + 180) * Math.PI) / 180;
+        ttTargetX = tasX + Math.sin(windFlowRad) * (d.wspd * scale);
+        ttTargetY = tasY - Math.cos(windFlowRad) * (d.wspd * scale);
+        drawArrow(ctx, tasX, tasY, ttTargetX, ttTargetY, "#16a34a", 3.2);
+      }
+
+      // 4. 対地移動ベクトル (TT) : 漆黒太線
+      if (d.gs !== null && d.gs > 0 && d.tt !== null) {
+        const ttRad = (d.tt * Math.PI) / 180;
+        const ttDirectX = cx + Math.sin(ttRad) * (d.gs * scale);
+        const ttDirectY = cy - Math.cos(ttRad) * (d.gs * scale);
+        drawArrow(ctx, cx, cy, (d.wspd !== null && d.wspd > 0) ? ttTargetX : ttDirectX, (d.wspd !== null && d.wspd > 0) ? ttTargetY : ttDirectY, "#0f172a", 4.0);
+      }
+
+      ctx.restore();
+
+      // HUDテキスト更新 (下部ステータスバー: データ欠損時は --- を表示)
+      const yawStr = (d.yaw !== null && !isNaN(d.yaw)) ? `${d.yaw.toFixed(0)}°` : "---°";
+      const tasStr = (tas !== null && !isNaN(tas)) ? `${tas.toFixed(1)}m/s` : "--.-m/s";
+      const betaStr = (d.estBeta !== null && !isNaN(d.estBeta)) ? `${d.estBeta > 0 ? '+' : ''}${d.estBeta.toFixed(1)}°` : "--.-°";
+      const wspdStr = (d.wspd !== null && !isNaN(d.wspd)) ? `${d.wspd.toFixed(1)}m/s` : "--.-m/s";
+      const ttStr = (d.tt !== null && !isNaN(d.tt)) ? `${d.tt.toFixed(0)}°` : "---°";
+      const gsStr = (d.gs !== null && !isNaN(d.gs)) ? `${d.gs.toFixed(1)}m/s` : "--.-m/s";
+
+      document.getElementById('hud-vector-text').innerHTML = `
+        <span style="color: #0284c7;">Yaw: ${yawStr}</span>
+        <span style="color: #ea580c;">TAS: ${tasStr}</span>
+        <span style="color: #d97706; font-weight:bold;">Est.Beta: ${betaStr}</span>
+        <span style="color: #16a34a;">Wind: ${wspdStr}</span>
+        <span style="color: #0f172a;">TT: ${ttStr} (${gsStr})</span>
+      `;
+    }
+
+    function drawArrow(ctx, x1, y1, x2, y2, color, width) {
+      const headlen = 10;
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // 矢印の先端
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - headlen * Math.cos(angle - Math.PI / 6), y2 - headlen * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(x2 - headlen * Math.cos(angle + Math.PI / 6), y2 - headlen * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ============================================================
+    // 計器描画: 人工水平儀 (Artificial Horizon) - 白ベース対応
+    // ============================================================
+    function drawArtificialHorizon(d) {
+      const canvas = document.getElementById('canvas-horizon');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w / 2, cy = h / 2;
+      const radius = Math.min(w, h) * 0.37;
+      const pitchPixelsPerDeg = radius / 18.0;
+
+      ctx.save();
+      // 丸型マスク
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.clip();
+
+      const hasAttitude = (d.roll !== null && !isNaN(d.roll) && d.pitch !== null && !isNaN(d.pitch));
+
+      if (hasAttitude) {
+        const pitchOffset = d.pitch * pitchPixelsPerDeg;
+
+        // ロール回転
+        ctx.translate(cx, cy);
+        ctx.rotate((-d.roll * Math.PI) / 180);
+
+        // 空 (深みのあるブルー)
+        ctx.fillStyle = "#0284c7";
+        ctx.fillRect(-w, -h + pitchOffset, w * 2, h);
+
+        // 地面 (ディープアースブラウン)
+        ctx.fillStyle = "#78350f";
+        ctx.fillRect(-w, pitchOffset, w * 2, h);
+
+        // 水平線 (白実線 + 黒フチで白背景でもくっきり)
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 3.0;
+        ctx.beginPath();
+        ctx.moveTo(-w, pitchOffset);
+        ctx.lineTo(w, pitchOffset);
+        ctx.stroke();
+
+        // ピッチ目盛 (±5°, ±10°)
+        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = "#ffffff";
+        for (let p = -20; p <= 20; p += 5) {
+          if (p === 0) continue;
+          const py = pitchOffset - p * pitchPixelsPerDeg;
+          const lineLen = p % 10 === 0 ? radius * 0.45 : radius * 0.22;
+          ctx.beginPath();
+          ctx.moveTo(-lineLen, py);
+          ctx.lineTo(lineLen, py);
+          ctx.stroke();
+        }
+      } else {
+        // 姿勢データ欠損時: 偽の水平を出さずグレーアウトして「NO ATTITUDE」表示
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("NO ATTITUDE DATA", cx, cy - 6);
+        ctx.font = "9px monospace";
+        ctx.fillText("(NO IMU / ESKF)", cx, cy + 10);
+      }
+
+      ctx.restore();
+
+      // 固定機体シンボル (黄色のレティクル + 黒フチ)
+      const reticleW = radius * 0.6;
+      ctx.save();
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 4.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - reticleW, cy); ctx.lineTo(cx - reticleW * 0.3, cy);
+      ctx.moveTo(cx - 3, cy); ctx.lineTo(cx + 3, cy);
+      ctx.moveTo(cx + reticleW * 0.3, cy); ctx.lineTo(cx + reticleW, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#eab308";
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+      ctx.moveTo(cx - reticleW, cy); ctx.lineTo(cx - reticleW * 0.3, cy);
+      ctx.moveTo(cx - 3, cy); ctx.lineTo(cx + 3, cy);
+      ctx.moveTo(cx + reticleW * 0.3, cy); ctx.lineTo(cx + reticleW, cy);
+      ctx.stroke();
+      ctx.restore();
+
+      // ロールインジケーター外枠リング (濃いグレー)
+      ctx.save();
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // スリップ・スキッド・ボール (Turn & Slip Indicator: 横滑り角 Est.Beta)
+      const hasBeta = (d.estBeta !== null && !isNaN(d.estBeta));
+      const beta = hasBeta ? d.estBeta : 0;
+      const tubeW = radius * 0.88;
+      const tubeH = 13;
+      const tubeY = cy + radius * 0.68;
+      const ballR = 4.8;
+
+      ctx.save();
+      // チューブ外枠・背景 (半透明の暗色)
+      ctx.fillStyle = "rgba(15, 23, 42, 0.50)";
+      ctx.strokeStyle = "#cbd5e1";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(cx - tubeW / 2, tubeY - tubeH / 2, tubeW, tubeH, 6);
+      } else {
+        ctx.rect(cx - tubeW / 2, tubeY - tubeH / 2, tubeW, tubeH);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      // 中央基準線 (| |)
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      const centerGap = 6.0;
+      ctx.beginPath();
+      ctx.moveTo(cx - centerGap, tubeY - tubeH / 2 + 1);
+      ctx.lineTo(cx - centerGap, tubeY + tubeH / 2 - 1);
+      ctx.moveTo(cx + centerGap, tubeY - tubeH / 2 + 1);
+      ctx.lineTo(cx + centerGap, tubeY + tubeH / 2 - 1);
+      ctx.stroke();
+
+      // ボールの描画 (データあり時のみ描画、欠損時は透明)
+      if (hasBeta) {
+        const maxDisplace = tubeW / 2 - ballR - 2;
+        const ballOffset = Math.max(-maxDisplace, Math.min(maxDisplace, (beta / 6.0) * maxDisplace));
+        const ballX = cx + ballOffset;
+
+        ctx.beginPath();
+        ctx.arc(ballX, tubeY, ballR, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.shadowColor = "rgba(0,0,0,0.5)";
+        ctx.shadowBlur = 3;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "#0f172a";
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      }
+
+      // 小さなインジケーターラベル
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.font = "bold 8px " + (getComputedStyle(document.body).getPropertyValue('--font-mono') || 'monospace');
+      ctx.textAlign = "center";
+      ctx.fillText(hasBeta ? "SLIP" : "NO SLIP DATA", cx, tubeY - tubeH / 2 - 2);
+      ctx.restore();
+
+      // HUDテキスト (下部ステータスバー: データ欠損時は --- を表示)
+      const rollStr = (d.roll !== null && !isNaN(d.roll)) ? `${d.roll > 0 ? '+' : ''}${d.roll.toFixed(1)}°` : "---°";
+      const pitchStr = (d.pitch !== null && !isNaN(d.pitch)) ? `${d.pitch > 0 ? '+' : ''}${d.pitch.toFixed(1)}°` : "---°";
+      const betaStr = (d.estBeta !== null && !isNaN(d.estBeta)) ? `${d.estBeta > 0 ? '+' : ''}${d.estBeta.toFixed(1)}°` : "--.-°";
+      const pavgStr = (d.pavg !== null && !isNaN(d.pavg)) ? `${d.pavg.toFixed(1)}°` : "---°";
+
+      document.getElementById('hud-attitude-text').innerHTML = `
+        <span style="color: #dc2626;">Roll: ${rollStr}</span>
+        <span style="color: #7c3aed;">Pitch: ${pitchStr}</span>
+        <span style="color: #d97706; font-weight:bold;">Est.Beta: ${betaStr}</span>
+        <span style="color: #64748b;">AvgP: ${pavgStr}</span>
+      `;
+    }
+
+    // ============================================================
+    // スクロールグラフ (ストリップチャート) 描画 - 白ベース対応
+    // ============================================================
+    function drawSpeedChart(t) {
+      const canvas = document.getElementById('canvas-chart-speed');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const winSec = 10.0;
+      const yMin = 3.0, yMax = 10.0;
+
+      drawChartGrid(ctx, w, h, winSec, yMin, yMax, 1.0, "m/s");
+
+      ctx.save();
+
+      // G/S (黒実線)
+      ctx.strokeStyle = "#0f172a";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      let started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.2) {
+        let sample = interpolateAt(t + dt);
+        if (!sample || sample.gs === null || isNaN(sample.gs)) {
+          started = false;
+          continue;
+        }
+        let x = w + (dt / winSec) * w;
+        let y = h - ((sample.gs - yMin) / (yMax - yMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // TAS (濃いオレンジ破線)
+      ctx.strokeStyle = "#ea580c";
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.2) {
+        let sample = interpolateAt(t + dt);
+        if (!sample) { started = false; continue; }
+        let tasEst = null;
+        if (sample.csvTas !== null && !isNaN(sample.csvTas)) {
+          tasEst = sample.csvTas;
+        } else if (sample.gs !== null && sample.yaw !== null && sample.wdir !== null && sample.wspd !== null) {
+          tasEst = Math.max(0, sample.gs + (Math.cos((sample.yaw - sample.wdir) * Math.PI / 180) * sample.wspd));
+        }
+        if (tasEst === null || isNaN(tasEst)) {
+          started = false;
+          continue;
+        }
+        let x = w + (dt / winSec) * w;
+        let y = h - ((tasEst - yMin) / (yMax - yMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawRollPitchChart(t) {
+      const canvas = document.getElementById('canvas-chart-rp');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const winSec = 10.0;
+      const yMin = -8.0, yMax = 8.0;
+
+      drawChartGrid(ctx, w, h, winSec, yMin, yMax, 4.0, "deg");
+
+      // 水平0°基準線 (見やすいグレー実線)
+      const zeroY = h - ((0 - yMin) / (yMax - yMin)) * h;
+      ctx.save();
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY);
+      ctx.stroke();
+
+      // Roll (赤実線)
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      let started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.2) {
+        let sample = interpolateAt(t + dt);
+        if (!sample || sample.roll === null || isNaN(sample.roll)) {
+          started = false;
+          continue;
+        }
+        let x = w + (dt / winSec) * w;
+        let y = h - ((sample.roll - yMin) / (yMax - yMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Pitch (紫実線)
+      ctx.strokeStyle = "#7c3aed";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.2) {
+        let sample = interpolateAt(t + dt);
+        if (!sample || sample.pitch === null || isNaN(sample.pitch)) {
+          started = false;
+          continue;
+        }
+        let x = w + (dt / winSec) * w;
+        let y = h - ((sample.pitch - yMin) / (yMax - yMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Est.Beta (アンバー破線: 横滑り角)
+      ctx.strokeStyle = "#d97706";
+      ctx.lineWidth = 2.0;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.2) {
+        let sample = interpolateAt(t + dt);
+        if (!sample || sample.estBeta === null || isNaN(sample.estBeta)) {
+          started = false;
+          continue;
+        }
+        let betaVal = sample.estBeta;
+        let x = w + (dt / winSec) * w;
+        let y = h - ((betaVal - yMin) / (yMax - yMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ============================================================
+    // 高度 Alt [m] ＆ 昇降速度 VSI [m/s] 描画 (オートスケール＆2軸対応)
+    // ============================================================
+    function drawAltChart(t) {
+      const canvas = document.getElementById('canvas-chart-alt');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const winSec = 20.0;
+      const altMin = flightAltMin;
+      const altMax = flightAltMax;
+      const vsiMin = -2.0, vsiMax = 2.0;       // 昇降速度スケール [-2 .. +2 m/s]
+
+      const step = Math.max(1, Math.round((altMax - altMin) / 4));
+      drawChartGrid(ctx, w, h, winSec, altMin, altMax, step, "m");
+
+      // VSI 目盛り表示 (右端)
+      ctx.save();
+      ctx.fillStyle = "#16a34a";
+      ctx.font = "bold 9px monospace";
+      ctx.fillText("+2m/s", w - 42, 12);
+      ctx.fillText(" 0m/s", w - 42, h / 2 - 2);
+      ctx.fillText("-2m/s", w - 42, h - 4);
+
+      // VSI 0 m/s 基準線 (中央・濃い破線)
+      const zeroVsiY = h / 2;
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(0, zeroVsiY); ctx.lineTo(w, zeroVsiY);
+      ctx.stroke();
+
+      // 1. 高度 Alt [m] (シアンブルー実線)
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "#0284c7";
+      ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      let started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.25) {
+        let sample = interpolateAt(t + dt);
+        if (!sample || sample.kf_alt === null || isNaN(sample.kf_alt)) {
+          started = false;
+          continue;
+        }
+        let x = w + (dt / winSec) * w;
+        let y = h - ((sample.kf_alt - altMin) / (altMax - altMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // 2. 昇降速度 VSI [m/s] (濃い緑色破線)
+      ctx.strokeStyle = "#16a34a";
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      started = false;
+      for (let dt = -winSec; dt <= 0; dt += 0.25) {
+        let sample = interpolateAt(t + dt);
+        if (!sample || sample.kf_vs === null || isNaN(sample.kf_vs)) {
+          started = false;
+          continue;
+        }
+        let x = w + (dt / winSec) * w;
+        let clampedVs = Math.max(vsiMin, Math.min(vsiMax, sample.kf_vs));
+        let y = h - ((clampedVs - vsiMin) / (vsiMax - vsiMin)) * h;
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawChartGrid(ctx, w, h, winSec, yMin, yMax, yStep, unit) {
+      ctx.save();
+      // チャート背景を薄いグレーで塗って白パネルと境界をつける
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, w, h);
+
+      // グリッド線 (はっきり見えるスレートグレー)
+      ctx.strokeStyle = "#cbd5e1";
+      ctx.lineWidth = 1.0;
+      ctx.fillStyle = "#334155";
+      ctx.font = "bold 10px monospace";
+
+      // 縦グリッド (時間目盛)
+      for (let sec = 2; sec < winSec; sec += 2) {
+        let x = w - (sec / winSec) * w;
+        ctx.beginPath();
+        ctx.moveTo(x, 0); ctx.lineTo(x, h);
+        ctx.stroke();
+        ctx.fillText(`-${sec}s`, x + 3, h - 4);
+      }
+
+      // 横グリッド (数値目盛)
+      for (let val = yMin; val <= yMax; val += yStep) {
+        let y = h - ((val - yMin) / (yMax - yMin)) * h;
+        ctx.beginPath();
+        ctx.moveTo(0, y); ctx.lineTo(w, y);
+        ctx.stroke();
+        ctx.fillText(`${val}`, 4, y - 2);
+      }
+      ctx.restore();
+    }
+
+    // ============================================================
+    // 再生コントロール
+    // ============================================================
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      document.getElementById('btn-play').textContent = isPlaying ? "⏸ 一時停止" : "▶ 再生";
+      if (isPlaying && totalDurationSec > 0) {
+        const flightOnly = document.getElementById('check-flight-only')?.checked;
+        if (flightOnly) {
+          const cur = interpolateAt(currentTimeSec);
+          if (cur && cur.gs < FLIGHT_SPEED_THRESHOLD) {
+            const nextT = findNextFlightTime(currentTimeSec);
+            if (nextT >= 0) {
+              currentTimeSec = nextT;
+            } else {
+              currentTimeSec = (takeoffSec > 0 ? takeoffSec : getFirstFlightTime());
+            }
+            updateUI(currentTimeSec);
+          }
+        }
+      }
+    }
+
+    function skipTime(deltaSec) {
+      if (totalDurationSec === 0) return;
+      currentTimeSec = Math.max(0, Math.min(totalDurationSec, currentTimeSec + deltaSec));
+      updateUI(currentTimeSec);
+    }
+
+    function jumpToTakeoff() {
+      currentTimeSec = takeoffSec;
+      updateUI(currentTimeSec);
+    }
+
+    function jumpToLand() {
+      currentTimeSec = landSec;
+      updateUI(currentTimeSec);
+    }
+
+    function setPlaybackSpeed(s) {
+      playbackSpeed = s;
+    }
+
+    function formatTime(totalSec) {
+      const m = Math.floor(totalSec / 60);
+      const s = Math.floor(totalSec % 60);
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    // ============================================================
+    // 表示レイアウト＆テーマ切り替え
+    // ============================================================
+    function toggleTheme(theme) {
+      document.body.className = document.body.className.replace(/theme-\w+/g, '');
+      if (theme === 'chromakey') document.body.classList.add('theme-chromakey');
+    }
+
+    function toggleLayout(layout) {
+      document.body.className = document.body.className.replace(/layout-\w+/g, '');
+      if (layout === 'vertical') document.body.classList.add('layout-vertical');
+      setTimeout(() => {
+        if (map) map.invalidateSize();
+        handleResize();
+      }, 200);
+    }
+
+    function handleResize() {
+      // 計器およびチャート用 Canvas の解像度フィット
+      ['canvas-vector', 'canvas-horizon', 'canvas-chart-speed', 'canvas-chart-rp', 'canvas-chart-alt'].forEach(id => {
+        const c = document.getElementById(id);
+        if (c && c.parentElement) {
+          c.width = c.parentElement.clientWidth;
+          c.height = c.parentElement.clientHeight;
+        }
+      });
+      if (flightData.length > 0) updateUI(currentTimeSec);
+    }
+
+    // ============================================================
+    // Web Serial 接続 & PONS ファイル転送
+    // ============================================================
+    let serialPort = null;
+    let serialReader = null;
+    let serialWriter = null;
+    let serialReadLoopActive = false;
+    let ponsFileList = [];
+
+    let isDataStreaming = false;
+    let dataBuffer = "";
+    let lineBuffer = "";
+    let currentDownloadFile = "";
+    let currentDownloadSize = 0;
+    let downloadStartTime = 0;
+    let lastProgressUpdate = 0;
+
+    // 標準 CRC32 (IEEE 802.3, poly 0xEDB88320)
+    function computeCrc32(str) {
+      if (!computeCrc32.table) {
+        const table = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          let c = i;
+          for (let j = 0; j < 8; j++) {
+            c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          }
+          table[i] = c >>> 0;
+        }
+        computeCrc32.table = table;
+      }
+      let crc = 0xFFFFFFFF;
+      const bytes = new TextEncoder().encode(str);
+      for (let i = 0; i < bytes.length; i++) {
+        crc = (crc >>> 8) ^ computeCrc32.table[(crc ^ bytes[i]) & 0xFF];
+      }
+      crc = (crc ^ 0xFFFFFFFF) >>> 0;
+      return crc.toString(16).toUpperCase().padStart(8, '0');
+    }
+
+    function openSerialModal() {
+      document.getElementById('serial-modal').classList.add('active');
+    }
+
+    function closeSerialModal() {
+      document.getElementById('serial-modal').classList.remove('active');
+    }
+
+    async function sendSerialLine(str) {
+      if (!serialWriter) return;
+      const encoder = new TextEncoder();
+      await serialWriter.write(encoder.encode(str + "\r\n"));
+    }
+
+    async function connectWebSerial() {
+      if (serialPort && serialPort.readable) {
+        // すでに接続中ならモーダルを開く
+        openSerialModal();
+        return;
+      }
+
+      if (!('serial' in navigator)) {
+        alert("お使いのブラウザはWeb Serial APIに対応していません。Google ChromeまたはMicrosoft Edgeをご利用ください。");
+        return;
+      }
+
+      try {
+        serialPort = await navigator.serial.requestPort();
+        await serialPort.open({ baudRate: 115200 });
+
+        serialWriter = serialPort.writable.getWriter();
+        serialReadLoopActive = true;
+        lineBuffer = "";
+        dataBuffer = "";
+        isDataStreaming = false;
+        readSerialLoop();
+
+        openSerialModal();
+        updateSerialUIStatus('connecting');
+
+        // ハンドシェイク送信
+        setTimeout(() => {
+          sendSerialLine("PONS:CONNECT");
+        }, 200);
+
+      } catch (err) {
+        console.warn("Serial connection canceled or failed:", err);
+        updateSerialUIStatus('disconnected');
+      }
+    }
+
+    async function disconnectWebSerial() {
+      if (!serialPort) {
+        closeSerialModal();
+        return;
+      }
+      try {
+        if (isDataStreaming) {
+          await sendSerialLine("PONS:CANCEL");
+        }
+        await sendSerialLine("PONS:DISCONNECT");
+      } catch (e) {}
+
+      serialReadLoopActive = false;
+      isDataStreaming = false;
+      if (serialReader) {
+        try { await serialReader.cancel(); } catch (e) {}
+      }
+      if (serialWriter) {
+        try { serialWriter.releaseLock(); } catch (e) {}
+        serialWriter = null;
+      }
+      if (serialPort) {
+        try { await serialPort.close(); } catch (e) {}
+        serialPort = null;
+      }
+
+      updateSerialUIStatus('disconnected');
+      closeSerialModal();
+    }
+
+    function updateSerialUIStatus(state, info = {}) {
+      const badge = document.getElementById('serial-status-badge');
+      const text = document.getElementById('serial-status-text');
+      const verText = document.getElementById('serial-board-ver');
+      const headerBtn = document.getElementById('btn-webserial');
+
+      if (state === 'connected') {
+        badge.style.background = '#dcfce7';
+        badge.style.color = '#15803d';
+        badge.textContent = '接続完了';
+        text.textContent = 'PONS本体と通信確立中 (SD保護モード有効)';
+        verText.textContent = `${info.board || 'PONS v7.1'} (FW: ${info.version || '--'}, Build: ${info.build || '--'})`;
+        headerBtn.textContent = '🔌 PONS切断';
+        headerBtn.style.borderColor = 'var(--accent-red)';
+      } else if (state === 'connecting') {
+        badge.style.background = '#fef3c7';
+        badge.style.color = '#b45309';
+        badge.textContent = '接続中...';
+        text.textContent = 'PONSからの応答を待機しています...';
+        verText.textContent = '';
+      } else {
+        badge.style.background = '#e2e8f0';
+        badge.style.color = '#475569';
+        badge.textContent = '未接続';
+        text.textContent = 'PONSに接続してください';
+        verText.textContent = '';
+        headerBtn.textContent = '⚡ PONSに接続 (USB)';
+        headerBtn.style.borderColor = 'var(--accent-cyan)';
+      }
+    }
+
+    async function requestFileList() {
+      if (!serialWriter) return;
+      ponsFileList = [];
+      renderFileList();
+      document.getElementById('serial-file-list').innerHTML = `<tr><td colspan="5" style="text-align:center; color:#64748b; padding:20px;">SDカードを走査中...</td></tr>`;
+      await sendSerialLine("PONS:LIST");
+    }
+
+    function renderFileList() {
+      const tbody = document.getElementById('serial-file-list');
+      if (ponsFileList.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:20px;">フライトログ（*.csv）が見つかりませんでした</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = ponsFileList.map((item, idx) => {
+        let typeBadge = '<span style="background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px; font-size:0.75rem;">自機ログ</span>';
+        if (item.path.startsWith('received/')) {
+          typeBadge = '<span style="background:#fef3c7; color:#b45309; padding:2px 6px; border-radius:4px; font-size:0.75rem;">無線受信</span>';
+        }
+        const sizeKb = Math.round(item.size / 1024) + ' KB';
+        return `
+          <tr>
+            <td style="font-family:var(--font-mono); font-weight:bold;">${item.path}</td>
+            <td>${typeBadge}</td>
+            <td style="font-family:var(--font-mono);">${sizeKb}</td>
+            <td style="font-family:var(--font-mono); font-size:0.8rem; color:#64748b;">${item.date}</td>
+            <td>
+              <button class="btn-download" onclick="downloadPonsFile('${item.path}', ${item.size})">開く</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function downloadPonsFile(filename, size) {
+      if (!serialWriter || isDataStreaming) return;
+
+      currentDownloadFile = filename;
+      currentDownloadSize = size;
+      dataBuffer = "";
+      downloadStartTime = performance.now();
+      lastProgressUpdate = 0;
+      // isDataStreaming は DATA_START 受信時に true にする（ヘッダー行混入防止）
+
+      // プログレスバー表示
+      const progBox = document.getElementById('serial-progress-box');
+      progBox.style.display = 'flex';
+      document.getElementById('serial-progress-filename').textContent = `転送中: ${filename}`;
+      document.getElementById('serial-progress-fill').style.width = '0%';
+      document.getElementById('serial-progress-stats').textContent = '0%';
+      document.getElementById('serial-progress-bytes').textContent = `0 / ${Math.round(size / 1024)} KB`;
+      document.getElementById('serial-progress-speed').textContent = '-- KB/s';
+
+      await sendSerialLine("PONS:GET," + filename);
+    }
+
+    async function cancelPonsDownload() {
+      if (!isDataStreaming) return;
+      await sendSerialLine("PONS:CANCEL");
+      isDataStreaming = false;
+      document.getElementById('serial-progress-box').style.display = 'none';
+    }
+
+    function checkDataEnd() {
+      const endIdx = dataBuffer.indexOf("PONS:DATA_END,");
+      if (endIdx !== -1) {
+        const rawData = dataBuffer.substring(0, endIdx);
+        const csvContent = rawData.replace(/\r\n$/, '').replace(/\n$/, '');
+        const endPart = dataBuffer.substring(endIdx);
+        const crcMatch = endPart.match(/PONS:DATA_END,([0-9A-Fa-f]+)/);
+        const expectedCrc = crcMatch ? crcMatch[1].toUpperCase() : null;
+
+        isDataStreaming = false;
+        document.getElementById('serial-progress-box').style.display = 'none';
+
+        // CRC32 検証
+        let crcSuccess = true;
+        if (expectedCrc) {
+          const calculatedCrc = computeCrc32(rawData);
+          if (calculatedCrc !== expectedCrc) {
+            console.warn(`CRC mismatch! Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
+            alert(`⚠️ CRC32チェックサムが一致しません（計算値: ${calculatedCrc} / 受信値: ${expectedCrc}）。\n通信中に一部データが破損した可能性があります。`);
+            crcSuccess = false;
+          } else {
+            console.log(`✅ CRC32 検証成功: ${calculatedCrc}`);
+          }
+        }
+
+        // CSVパース＆画面展開
+        document.getElementById('flight-title').textContent = `${currentDownloadFile} (PONSより転送${crcSuccess ? '・CRC正常' : ''})`;
+        parseCSVText(csvContent);
+        closeSerialModal();
+
+        // 余分な行があれば行バッファへ戻す
+        const nextNl = endPart.indexOf('\n');
+        if (nextNl !== -1) {
+          lineBuffer = endPart.substring(nextNl + 1);
+        } else {
+          lineBuffer = "";
+        }
+      } else {
+        // 進捗表示の定期更新
+        const now = performance.now();
+        if (now - lastProgressUpdate > 100) {
+          lastProgressUpdate = now;
+          const received = dataBuffer.length;
+          const pct = currentDownloadSize > 0 ? Math.min(100, Math.round((received / currentDownloadSize) * 100)) : 0;
+          document.getElementById('serial-progress-fill').style.width = pct + '%';
+          document.getElementById('serial-progress-stats').textContent = pct + '%';
+          document.getElementById('serial-progress-bytes').textContent = `${Math.round(received / 1024)} / ${Math.round(currentDownloadSize / 1024)} KB`;
+          const elapsedSec = (now - downloadStartTime) / 1000;
+          const kbps = elapsedSec > 0 ? Math.round((received / 1024) / elapsedSec) : 0;
+          document.getElementById('serial-progress-speed').textContent = `${kbps} KB/s`;
+        }
+      }
+    }
+
+    async function readSerialLoop() {
+      const decoder = new TextDecoder('utf-8');
+
+      try {
+        while (serialPort && serialPort.readable && serialReadLoopActive) {
+          serialReader = serialPort.readable.getReader();
+          try {
+            while (true) {
+              const { value, done } = await serialReader.read();
+              if (done) break;
+              if (!value) continue;
+
+              const chunkText = decoder.decode(value, { stream: true });
+
+              if (isDataStreaming) {
+                // ファイルデータストリーミング受信中
+                dataBuffer += chunkText;
+                checkDataEnd();
+              } else {
+                // 通常の行指向コマンド処理
+                lineBuffer += chunkText;
+
+                // チャンク内に DATA_START が届いた場合の確実な分離
+                const startIdx = lineBuffer.indexOf("PONS:DATA_START,");
+                if (startIdx !== -1) {
+                  const nlIdx = lineBuffer.indexOf('\n', startIdx);
+                  if (nlIdx !== -1) {
+                    const before = lineBuffer.substring(0, startIdx);
+                    if (before.trim().length > 0) {
+                      before.split('\n').forEach(l => {
+                        const tr = l.trim();
+                        if (tr) handleSerialLine(tr);
+                      });
+                    }
+                    const startLine = lineBuffer.substring(startIdx, nlIdx).trim();
+                    handleSerialLine(startLine);
+
+                    // 改行以降を純粋なデータバッファへ
+                    dataBuffer = lineBuffer.substring(nlIdx + 1);
+                    lineBuffer = "";
+                    isDataStreaming = true;
+                    checkDataEnd();
+                    continue;
+                  }
+                }
+
+                let nlIdx;
+                while ((nlIdx = lineBuffer.indexOf('\n')) !== -1) {
+                  const line = lineBuffer.substring(0, nlIdx).replace(/\r$/, '').trim();
+                  lineBuffer = lineBuffer.substring(nlIdx + 1);
+                  if (line.length > 0) {
+                    handleSerialLine(line);
+                  }
+                }
+              }
+            }
+          } finally {
+            serialReader.releaseLock();
+            serialReader = null;
+          }
+        }
+      } catch (err) {
+        if (serialReadLoopActive) {
+          console.warn("Serial read loop error:", err);
+          disconnectWebSerial();
+        }
+      }
+    }
+
+    function handleSerialLine(line) {
+      console.log("PONS <<", line);
+
+      if (line.startsWith("PONS:READY")) {
+        const parts = line.split(',');
+        updateSerialUIStatus('connected', {
+          board: parts[1] || 'PONS v7.1',
+          version: parts[2] || '--',
+          build: parts[3] || '--'
+        });
+        // 接続直後にファイル一覧を自動取得
+        requestFileList();
+      } else if (line.startsWith("PONS:FILE,")) {
+        // PONS:FILE,<path>,<size>,<datetime>
+        const parts = line.split(',');
+        if (parts.length >= 4) {
+          ponsFileList.push({
+            path: parts[1],
+            size: parseInt(parts[2], 10) || 0,
+            date: parts[3]
+          });
+        }
+      } else if (line === "PONS:LIST_END") {
+        renderFileList();
+      } else if (line.startsWith("PONS:DATA_START,")) {
+        const parts = line.split(',');
+        currentDownloadFile = parts[1] || currentDownloadFile;
+        currentDownloadSize = parseInt(parts[2], 10) || currentDownloadSize;
+      } else if (line === "PONS:CANCEL_OK") {
+        isDataStreaming = false;
+        document.getElementById('serial-progress-box').style.display = 'none';
+      } else if (line === "PONS:BYE") {
+        updateSerialUIStatus('disconnected');
+      } else if (line.startsWith("PONS:ERROR,")) {
+        const errMsg = line.substring(11);
+        if (errMsg === 'BUSY') {
+          alert("PONSが現在別のタスクを実行中です。少し待ってから再試行してください。");
+        } else if (errMsg === 'FILE_NOT_FOUND') {
+          alert("指定されたファイルがSDカード上に見つかりませんでした。");
+        } else if (errMsg === 'SD_NOT_READY') {
+          alert("SDカードが認識されていないかエラー状態です。PONS本体を確認してください。");
+        } else {
+          alert("PONSエラー: " + errMsg);
+        }
+        isDataStreaming = false;
+        document.getElementById('serial-progress-box').style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>

@@ -29,6 +29,11 @@
 
 #include "airdata.h"   // myWire（i2c0）
 #include "mysd.h"
+#include "gnss.h"      // gnss_get_own_fix(), get_gnss_connection(), getReplayMode(), is_demo_active()
+#include "imu.h"       // get_imu_alive()
+#include "attitude.h"   // attitude_is_static()
+#include "power.h"     // usb_power_present(), power_sw_off_on_usb(), power_fault_active(), power_charge_hot_active(), power_overdischarge_latched()
+#include "link.h"      // link_mirror_active()
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
 
@@ -59,6 +64,32 @@ static uint32_t       s_last_ms  = 0;
 static BacklightSaver s_saver    = BL_SAVER_OFF; // 電池低下で点滅中か（2 段階）
 static uint32_t       s_saver_t0 = 0;            // 今の段階の点滅を始めた時刻（点灯から始める）
 static float          s_out      = -1.0f;        // 実際に出している点灯率（点滅で 0 になる。-1 = まだ出していない）
+
+// ---- 待機中自動減光（Auto-Dimming）ステート ----
+static bool     s_dimmed       = false;    // 待機中自動減光中か
+static uint32_t s_dim_wait_t0  = 0;        // 待機継続の起点時刻 [ms]
+static float    s_lux_baseline = -1.0f;    // 静止待機中の基準照度 [lx]
+
+static void update_duty(float k);
+
+static bool showing_own_state() {
+  return !getReplayMode() && !link_mirror_active() && !is_demo_active();
+}
+
+bool backlight_is_dimmed() {
+  return s_dimmed;
+}
+
+void backlight_notify_activity() {
+  const uint32_t now = millis();
+  s_dim_wait_t0 = now;
+  if (s_dimmed) {
+    s_dimmed = false;
+    s_lux_baseline = s_lux;
+    enqueueTask(createLogSdTask("BACKLIGHT: wake (manual activity)"));
+    update_duty(1.0f);   // パッと瞬時に本来の明るさへ復帰
+  }
+}
 
 // ---- PWM ----
 static void pwm_write(float level) {
@@ -181,13 +212,149 @@ static void update_duty(float k) {
   const bool sw = digitalRead(TFT_SW_PIN);
   if (sw != s_sw_bright) k = 1.0f;             // スイッチを動かしたときはすぐに効かせる
   s_sw_bright = sw;
-  float duty;
-  if (sw)                duty = TFT_BL_DUTY_BRIGHT;
-  else if (s_lux < 0.0f) duty = TFT_BL_DUTY_DIM;   // センサー無し
-  else                   duty = s_duty + (auto_duty(s_lux) - s_duty) * k;
+  float target;
+  if (sw)                target = TFT_BL_DUTY_BRIGHT;  // スイッチ High は何があっても常時最大（緊急バイパス）
+  else if (s_dimmed)     target = TFT_BL_DUTY_DIM;     // 待機中自動減光（5%）
+  else if (s_lux < 0.0f) target = TFT_BL_DUTY_DIM;     // センサー無し
+  else                   target = auto_duty(s_lux);    // 通常自動調光
+
+  const float duty = s_duty + (target - s_duty) * k;
   // 本来の点灯率が変わらなくても、点滅の切り替わりで出力は変わるので毎回通す
   // （同じ値なら pwm_write() が何もしない）。
   pwm_apply(duty);
+}
+
+// 待機中の自動減光・復帰監視。
+// ★ スイッチ High は緊急バイパスとして何があっても常時最大（減光しない）。
+// ★ 減光中に何か一つでもトリガーを検知したらパッと通常輝度へ即座に復帰し、
+//    タイマー起点を現在時刻にリセットして最低 BL_DIM_TIMEOUT_MS（30秒）は通常輝度を維持する。
+static void dim_tick(uint32_t now) {
+  // 1) 輝度スイッチ High の監視（緊急バイパス）
+  const bool sw_high = digitalRead(TFT_SW_PIN);
+  if (sw_high) {
+    if (s_dimmed) {
+      s_dimmed = false;
+      enqueueTask(createLogSdTask("BACKLIGHT: wake (switch HIGH)"));
+      update_duty(1.0f);
+    }
+    s_dim_wait_t0 = now ? now : 1;
+    return;
+  }
+
+  // 2) 操作ボタン（SW_PUSH）の押下検知
+  if (digitalRead(SW_PUSH) == LOW) {
+    s_dim_wait_t0 = now ? now : 1;
+    if (s_dimmed) {
+      s_dimmed = false;
+      s_lux_baseline = s_lux;
+      enqueueTask(createLogSdTask("BACKLIGHT: wake (button)"));
+      update_duty(1.0f);
+      return;
+    }
+  }
+
+  // 3) システム前提条件（実機フライト待機中、USBなし、重大安全警告なし）
+  const bool sys_ok = showing_own_state() &&
+                      !usb_power_present() &&
+                      !power_sw_off_on_usb() &&
+                      !power_overdischarge_latched() &&
+                      !power_fault_active() &&
+                      !power_charge_hot_active();
+
+  if (!sys_ok) {
+    if (s_dimmed) {
+      s_dimmed = false;
+      s_lux_baseline = s_lux;
+      enqueueTask(createLogSdTask("BACKLIGHT: wake (system state / USB)"));
+      update_duty(1.0f);
+    }
+    s_dim_wait_t0 = now ? now : 1;
+    return;
+  }
+
+  // 4) 減光中の復帰トリガー判定
+  if (s_dimmed) {
+    const char* wake_reason = nullptr;
+    char reason_buf[48];
+
+    // ① 対地速度の上昇（発進）
+    double lat, lon, gs = 0.0, trk;
+    const bool fix = get_gnss_connection() && gnss_get_own_fix(lat, lon, gs, trk);
+    if (fix && gs >= BL_DIM_SPEED_EXIT) {
+      snprintf(reason_buf, sizeof(reason_buf), "speed %.2fm/s", gs);
+      wake_reason = reason_buf;
+    }
+
+    // ② IMU 振動（漕ぎ始め・ペダリング・機体運動）
+    // ★ SCH16T / BNO085 共に姿勢推定コア（attitude.cpp）の 230Hz ジャイロ＋比力静止判定を使用
+    if (!wake_reason && get_imu_alive() && !attitude_is_static()) {
+      wake_reason = "imu motion";
+    }
+
+    // ③ 照度急変（手を仰ぐ）
+    if (!wake_reason && s_als_ok && s_lux >= 0.0f && s_lux_baseline >= 0.0f) {
+      const float d_lux = fabsf(s_lux - s_lux_baseline);
+      const float thresh = max(BL_DIM_LUX_CHANGE_EXIT_MIN, s_lux_baseline * BL_DIM_LUX_CHANGE_EXIT_RATIO);
+      if (d_lux >= thresh) {
+        snprintf(reason_buf, sizeof(reason_buf), "lux change %.0f->%.0f", s_lux_baseline, s_lux);
+        wake_reason = reason_buf;
+      }
+    }
+
+    if (wake_reason) {
+      s_dimmed = false;
+      s_dim_wait_t0 = now ? now : 1;   // ★ 復帰後は起点を現在時刻にリセットし最低30秒維持！
+      s_lux_baseline = s_lux;
+      enqueueTask(createLogSdfTask("BACKLIGHT: wake (%s)", wake_reason));
+      update_duty(1.0f);    // パッと瞬時に復帰
+    } else {
+      // ★ 減光中も環境光の自然なドリフト（雲の移動や夕暮れ）にベースラインを緩やかに追従させ、
+      //    長時間の待機中に自然光変化で誤復帰するのを防ぐ
+      if (s_als_ok && s_lux >= 0.0f) {
+        if (s_lux_baseline < 0.0f) s_lux_baseline = s_lux;
+        else s_lux_baseline += (s_lux - s_lux_baseline) * 0.05f;
+      }
+    }
+    return;
+  }
+
+  // 5) 減光突入の判定（通常表示中）
+  // 対地速度
+  double lat, lon, gs = 0.0, trk;
+  const bool fix = get_gnss_connection() && gnss_get_own_fix(lat, lon, gs, trk);
+  const bool speed_still = !fix || (gs < BL_DIM_SPEED_ENTER);
+
+  // IMU 振動（静止しているか）
+  const bool imu_still = !get_imu_alive() || attitude_is_static();
+
+  // 照度安定
+  bool lux_still = true;
+  if (s_als_ok && s_lux >= 0.0f) {
+    if (s_lux_baseline < 0.0f) {
+      s_lux_baseline = s_lux;
+    } else {
+      const float d_lux = fabsf(s_lux - s_lux_baseline);
+      const float thresh = max(BL_DIM_LUX_CHANGE_EXIT_MIN, s_lux_baseline * BL_DIM_LUX_CHANGE_EXIT_RATIO);
+      if (d_lux >= thresh) {
+        lux_still = false;
+        s_lux_baseline = s_lux;  // 急変したので新ベースラインに更新
+      } else {
+        s_lux_baseline += (s_lux - s_lux_baseline) * 0.05f;  // 緩やかに追従
+      }
+    }
+  }
+
+  const bool is_still = speed_still && imu_still && lux_still;
+
+  if (!is_still) {
+    s_dim_wait_t0 = now ? now : 1;
+  } else {
+    if (s_dim_wait_t0 == 0) s_dim_wait_t0 = now ? now : 1;
+    if (now - s_dim_wait_t0 >= BL_DIM_TIMEOUT_MS) {
+      s_dimmed = true;
+      enqueueTask(createLogSdfTask("BACKLIGHT: enter auto-dim (gs=%.2f lux=%.0f)", gs, s_lux));
+    }
+  }
 }
 
 void backlight_set_saver(BacklightSaver mode) {
@@ -219,6 +386,7 @@ void backlight_tick() {
   if (dt < BL_TICK_MS) return;
   s_last_ms = now;
   read_als(now);
+  dim_tick(now);
   // 照度はゆっくり追う（手の影や機体の向きでちらつかせない）。
   // 係数は経過時間から作る（呼ばれる頻度で時定数を変えない）。
   float k = (float)dt / (float)BL_AUTO_TAU_MS;
@@ -235,7 +403,8 @@ void backlight_format_status(char* buf, size_t n) {
   const float lux = backlight_get_lux();
   const char* sv = (s_saver == BL_SAVER_CRIT) ? " saver2"
                  : (s_saver == BL_SAVER_LOW)  ? " saver" : "";
-  if (lux < 0.0f) snprintf(buf, n, " bl=%d%% lux=--%s", backlight_get_duty_pct(), sv);
-  else            snprintf(buf, n, " bl=%d%% lux=%.0f%s", backlight_get_duty_pct(), lux, sv);
+  const char* dm = s_dimmed ? " dim" : "";
+  if (lux < 0.0f) snprintf(buf, n, " bl=%d%% lux=--%s%s", backlight_get_duty_pct(), sv, dm);
+  else            snprintf(buf, n, " bl=%d%% lux=%.0f%s%s", backlight_get_duty_pct(), lux, sv, dm);
 }
 

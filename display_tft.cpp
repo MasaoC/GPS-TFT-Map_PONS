@@ -4981,3 +4981,51 @@ void draw_overdischarge_cleared_screen() {
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.pushSprite(0, 290);
 }
+
+// PC接続・Web Serial データ転送画面
+void draw_pcconnect() {
+  header_footer.fillScreen(COLOR_BLUE);
+  header_footer.drawFastHLine(0, 39, SCREEN_WIDTH, COLOR_CYAN);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_WHITE, COLOR_BLUE);
+  print_centered_aa(header_footer, 10, "PONS v7.1 - PC CONNECTED");
+  header_footer.pushSprite(0, -10);
+
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.setTextWrap(false);
+  backscreen.drawRect(6, 6, SCREEN_WIDTH - 12, BACKSCREEN_SIZE - 12, COLOR_BLUE);
+  backscreen.drawRect(8, 8, SCREEN_WIDTH - 16, BACKSCREEN_SIZE - 16, COLOR_CYAN);
+
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextSize(1);
+
+  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  print_centered_aa(backscreen, 30, "USB SERIAL LINK ACTIVE");
+
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  print_centered_aa(backscreen, 65, "Web Flight Viewer Connected");
+
+  backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+  print_centered_aa(backscreen, 95, "SD Card: Read-Only (Protected)");
+
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  print_centered_aa(backscreen, 130, "Transferring flight logs via USB...");
+  print_centered_aa(backscreen, 155, "Safe to disconnect at any time.");
+
+  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  print_centered_aa(backscreen, 195, "Press Push-SW to Disconnect");
+
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.pushSprite(0, 40);
+
+  // フッター
+  header_footer.fillScreen(COLOR_BLUE);
+  header_footer.drawFastHLine(0, 0, SCREEN_WIDTH, COLOR_CYAN);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_WHITE, COLOR_BLUE);
+  print_centered_aa(header_footer, 7, "WEB SERIAL MODE");
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.pushSprite(0, 290);
+}

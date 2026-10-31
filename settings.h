@@ -179,6 +179,15 @@
 #define BL_AUTO_LUX_HIGH    1000.0f // これ以上は最大（屋外）
 #define BL_AUTO_DUTY_MIN    0.03f
 #define BL_AUTO_TAU_MS      2000UL  // 照度への追従の時定数（手の影や機体の向きでちらつかせない）
+// ---- 待機中自動減光（Auto-Dimming、backlight.cpp）----
+// TF や本番の待機時間中（速度 < 0.3m/s かつ照度・機体静止）にバックライトを
+// TFT_BL_DUTY_DIM（5%）へ減光して電池を延命する。
+// 輝度スイッチ High は緊急用バイパスのため何があっても常時最大（100%）。
+#define BL_DIM_TIMEOUT_MS            30000UL // 待機状態がこの時間続いたら減光へ移行 [ms]
+#define BL_DIM_SPEED_ENTER           0.30f   // 減光に入る対地速度上限 [m/s]（約 1.1 km/h）
+#define BL_DIM_SPEED_EXIT            0.60f   // 減光から復帰する対地速度下限 [m/s]（約 2.2 km/h）
+#define BL_DIM_LUX_CHANGE_EXIT_RATIO 0.30f   // 手を仰いだ時の照度相対変化率（30%）
+#define BL_DIM_LUX_CHANGE_EXIT_MIN   30.0f   // 手を仰いだ時の最小照度変化量 [lx]
 // VEML7700 の 1 カウントあたりの照度（ゲイン ×1・積分 100ms）。データシートの版で
 // 0.0576〜0.0672 と違うが、上の閾値を実機で合わせるので、どちらでも困らない。
 #define VEML7700_LUX_PER_COUNT 0.0576f
@@ -400,6 +409,7 @@
 #define MODE_IMUDETAIL 8     // IMU / 姿勢 ESKF の詳細画面
 #define MODE_WIRELESS 9      // PONS Link（機体⇄ボート無線）の設定画面
 #define MODE_CHSCAN 10       // 選べるチャンネルの雑音を調べて一覧にする画面（WIRELESS の Ch scan から）
+#define MODE_PCCONNECT 11    // PC接続・Web Serial データ転送画面
 
 // ============================================================
 //  内蔵ベクタ地図
@@ -751,11 +761,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #endif
 
 // ジャイロのサンプル周期 [Hz]。attitude.cpp がサンプル間隔の初期値と、測った間隔の
-// 妥当性の範囲（0.2〜5 倍）に使う。BNO085 時代の 50Hz のまま。
-// ★ **SCH16T は 250Hz（4ms）で届くので、4ms がこの範囲の下限ちょうどになる。**
-//   ESKF の「1 サンプルあたり」のゲイン（ESKF_RELEVEL_GAIN など）も 50Hz を前提にしている。
-//   v7.1 の実機で、測ったサンプル間隔と時定数を確かめること（docs/imu_sch16t_bringup.md）。
-#define IMU_RATE_GYRO_HZ    50
+// 妥当性の範囲（0.2〜5 倍）に使う。SCH16T では 250Hz（4ms）。
+// 250Hz に合わせることで、許容範囲は 0.8ms〜20ms となり、ジッターに対する十分なマージンを確保。
+#define IMU_RATE_GYRO_HZ    250
 
 // 読み出し周期 [µs]。4ms（250Hz）。
 // ★★ **生ログの有無に関係なくこの値。** 33ms（33Hz）では LPF2(13Hz) の最小推奨 150Hz すら
@@ -1036,8 +1044,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //     だから「BNO085 なら無害」とは言えず、この対策はセンサーに関係なく必要。
 //   静止しているあいだ重力方向へ寄せ続けることで、待機時間の長さに関係なく
 //   ロール・ピッチを保つ。**回転軸が必ず水平になるのでヨーは動かない。**
-// ゲインはジャイロ 1 サンプルあたり。0.02 × 50Hz → 時定数 1 秒。
-#define ESKF_RELEVEL_GAIN            0.02f
+// ゲインはジャイロ 1 サンプルあたり。250Hz で 0.004 × 250Hz → 時定数 1 秒。
+#define ESKF_RELEVEL_GAIN            (1.0f / (float)IMU_RATE_GYRO_HZ)
 
 // ---- ヨーが決まった後の、地上での静止中の再水平化 ----
 // ★ 上の再水平化はヨーが決まるまでしか働かない（ヨーが決まる＝発進した＝飛んでいる、
@@ -1130,8 +1138,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   通らないとゲインが 0 になる）。だから加速度の低域だけで重力方向を常に持つ。
 //   ★ 旋回中は比力が鉛直からずれるので ESKF の代わりにはならない。
 //     あくまで水平化までの繋ぎで、品質は 0.982 までの GRV と同程度。
-// ゲインは加速度 1 サンプルあたり。0.02 × 約 63Hz → 時定数 0.8 秒。
-#define ESKF_UP_LP_GAIN      0.02f
+// ゲインは加速度 1 サンプルあたり。250Hz で 0.005 × 250Hz → 時定数 0.8 秒。
+#define ESKF_UP_LP_GAIN      0.005f
 // |a| が g からこれ以上外れている間は更新しない（持ち上げ・衝撃・落下）[m/s²]
 #define ESKF_UP_LP_ACC_TOL   2.0f
 
@@ -1153,7 +1161,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   ただし誤学習が起きるのは鉛直軸まわり（ヨー）が主で、ヨーは yaw_acc95 で
 //   ゲートされ、ヨー設定後は ESKF が GNSS から学び直すので害は小さい。
 //   ロール・ピッチ軸で緩やかな定常回転が続くと傾きが変わるので再水平化が抗う。
-#define ESKF_BIAS_LEARN_SAMPLES      250      // 50Hz で 5 秒ぶん
+#define ESKF_BIAS_LEARN_SAMPLES      (5 * IMU_RATE_GYRO_HZ)   // 5 秒ぶん（250Hz なら 1250 サンプル）
 #define ESKF_BIAS_LEARN_MAX_RADS     0.0087f  // 0.5 deg/s（SCH16T max 0.3 に余裕）
 
 // IMU データが途絶したと判断するまでの時間 [µs]。

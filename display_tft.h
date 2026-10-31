@@ -153,6 +153,7 @@ extern volatile bool loading_replaylist;   // Core1 でリプレイ用ファイ�
 extern bool replay_loading_displayed;      // "Stand by..." 表示中（読み込み完了時の再描画判定用）
 void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
+void draw_pcconnect();
 
 
 // IMU / ESKF 画面（ページ1）のメニュー項目。

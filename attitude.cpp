@@ -635,7 +635,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     //   重力へ寄せ続け、同時にジャイロのゼロ点を測る。理由と数値は settings.h の
     //   ESKF_RELEVEL_GAIN / ESKF_BIAS_LEARN_SAMPLES のコメント。
     // ★ Phase 2 の重力観測（level_update）とここは**併存させている。**役割が違う:
-    //   ・ここ（相補フィルタ・50Hz・時定数 1 秒）… 待機中の維持。下の
+    //   ・ここ（相補フィルタ・ジャイロレート 250Hz・時定数 1 秒）… 待機中の維持。下の
     //     reset_covariance が毎サンプル P を初期値へ戻すので、level_update が
     //     溜めた情報はどうせ捨てられる。実効の引き戻しはこちらが担う
     //   ・level_update（正式な観測・2Hz）… 飛行中と GNSS 断中の錨

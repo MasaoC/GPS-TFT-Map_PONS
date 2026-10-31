@@ -10,7 +10,7 @@
 //   **定数を変えたいときは直下の settings.h を直すこと。**
 // ============================================================
 #define IMULOG_RAW_REPORTS_ENABLED 1
-#define IMU_RATE_GYRO_HZ 50
+#define IMU_RATE_GYRO_HZ 250
 #define ESKF_SIGMA_G    2e-3f
 #define ESKF_SIGMA_A    3e-2f
 #define ESKF_SIGMA_BG   1e-5f

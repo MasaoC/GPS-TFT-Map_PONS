@@ -1334,6 +1334,9 @@ static void draw_current_screen(bool new_gnss_info) {
     // チャンネル調査の一覧。進み具合は 1.05 秒の強制再描画で更新する
     if (redraw_screen)
       draw_chscan();
+  } else if (screen_mode == MODE_PCCONNECT) {
+    if (redraw_screen)
+      draw_pcconnect();
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -1591,6 +1594,124 @@ static void setting_timeout_tick() {
   }
 }
 
+// ===== Web Serial コマンド受信・処理（Core0） =====
+static char serial_cmd_buf[128];
+static size_t serial_cmd_len = 0;
+static int prev_screen_mode = MODE_MAP;
+static uint32_t last_serial_rx_ms = 0;
+
+static void handle_serial_command(const char* raw_cmd) {
+  last_serial_rx_ms = millis();
+  // 前後の空白をトリム
+  while (*raw_cmd == ' ') raw_cmd++;
+  if (*raw_cmd == '\0') return;
+
+  char cmd[128];
+  strlcpy(cmd, raw_cmd, sizeof(cmd));
+  int clen = strlen(cmd);
+  while (clen > 0 && (cmd[clen - 1] == ' ' || cmd[clen - 1] == '\r' || cmd[clen - 1] == '\n')) {
+    cmd[--clen] = '\0';
+  }
+
+  if (strcmp(cmd, "PONS:CONNECT") == 0) {
+    webserial_connected = true;
+    prev_screen_mode = screen_mode;
+    screen_mode = MODE_PCCONNECT;
+    redraw_screen = true;
+    enqueueTask(createLogSdTask("PC CONNECTED (WEB SERIAL ACTIVE)"));
+    Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION, (unsigned long)BUILDDATE);
+  } else if (strcmp(cmd, "PONS:LIST") == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    // 多重実行防止
+    if (isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST)) {
+      return;
+    }
+    enqueueTask(createSerialListTask());
+  } else if (strncmp(cmd, "PONS:GET,", 9) == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    // 転送中なら BUSY を返す
+    if (isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:ERROR,BUSY");
+      return;
+    }
+    const char* filename = cmd + 9;
+    while (*filename == ' ') filename++;
+    if (*filename == '\0') {
+      Serial.println("PONS:ERROR,INVALID_FILENAME");
+      return;
+    }
+    enqueueTask(createSerialGetTask(filename));
+  } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
+    webserial_cancel_requested = true;
+    Serial.println("PONS:CANCEL_OK");
+  } else if (strcmp(cmd, "PONS:DISCONNECT") == 0) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    Serial.println("PONS:BYE");
+    enqueueTask(createLogSdTask("PC DISCONNECTED (BYE) -> RESUME MAP"));
+    if (screen_mode == MODE_PCCONNECT) {
+      screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+      redraw_screen = true;
+    }
+  } else {
+#ifndef RELEASE
+    // PONS コマンド以外は GNSS へ中継（デバッグ用）
+    for (size_t i = 0; cmd[i] != '\0'; i++) {
+      GNSS_SERIAL.write(cmd[i]);
+    }
+    GNSS_SERIAL.write('\r');
+    GNSS_SERIAL.write('\n');
+#endif
+  }
+}
+
+static void serial_command_service() {
+  // USB ケーブル抜去監視: 給電が断たれたら通常画面へ安全自動復帰
+  if ((webserial_connected || screen_mode == MODE_PCCONNECT) && !usb_power_present()) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    enqueueTask(createLogSdTask("USB DISCONNECTED (CABLE REMOVED) -> RESUME MAP"));
+    if (screen_mode == MODE_PCCONNECT) {
+      screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+      redraw_screen = true;
+    }
+    return;
+  }
+
+  // 無通信フェイルセーフ: PC接続モードのまま 60 秒間無通信なら自動で通常航法へ復帰
+  if (screen_mode == MODE_PCCONNECT && (millis() - last_serial_rx_ms >= 60000UL)) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    enqueueTask(createLogSdTask("PC TIMEOUT (60s IDLE) -> RESUME MAP"));
+    screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    redraw_screen = true;
+    return;
+  }
+
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (serial_cmd_len > 0) {
+        serial_cmd_buf[serial_cmd_len] = '\0';
+        handle_serial_command(serial_cmd_buf);
+        serial_cmd_len = 0;
+      }
+    } else {
+      if (serial_cmd_len < sizeof(serial_cmd_buf) - 1) {
+        serial_cmd_buf[serial_cmd_len++] = c;
+      } else {
+        serial_cmd_len = 0;  // 溢れたらリセット
+      }
+    }
+  }
+}
+
 // Core0 のメインループ。以下の処理を毎ループ実行する:
 //   1. ボタン状態の読み取り
 //   2. GNSS データの受信・解析（gnss_loop は描画中にも分散して呼ぶ）
@@ -1609,15 +1730,15 @@ void loop() {
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
   // リプレイを一時停止する。戻ってきたら続きから再生される。
   replay_set_paused(screen_mode != MODE_MAP);
-  // 生 IMU ログを止めるのはリプレイ中だけ
-  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
+  // 生 IMU ログを止めるのはリプレイ中と PC Web Serial 接続中
+  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない / SD カード読み出し専用保護）。
   //
   // ※ GNSS 日時の有効性では止めないこと。
   //   以前は日時未確定でも止めていたが、それだと屋内など測位できない場所で
   //   IMU の生ログが一切取れず（wrote=0）、ベンチでの検証ができなかった。
   //   日時が無いときは下でファイル名を imuraw/nofix.bin にフォールバックする。
   //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
-  imulog_set_paused(getReplayMode());
+  imulog_set_paused(getReplayMode() || webserial_connected);
   gnss_loop(0);  // ループ先頭で GNSS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
 
@@ -1678,12 +1799,8 @@ void loop() {
   }
 
 
-#ifndef RELEASE
-  // デバッグ時: PC シリアルから GNSS モジュールへコマンドを転送可能
-  if (Serial.available()) {
-    GNSS_SERIAL.write(Serial.read());
-  }
-#endif
+  // USB シリアルからの Web Serial コマンド受信処理（非ブロッキング）
+  serial_command_service();
 
   // GNSS 更新や BMP ロードがなくても、一定間隔で強制再描画する
   // （時刻表示など時間経過で変わる表示の更新保証）
@@ -1849,6 +1966,12 @@ void loop1() {
       case TASK_LATCH_BATT_OVERDISCHARGE:
         power_latch_commit_core1();
         break;
+      case TASK_SERIAL_LIST:
+        serial_list_csv_files();
+        break;
+      case TASK_SERIAL_GET:
+        serial_send_csv_file(currentTask.serialGetArgs.filename);
+        break;
     }
     clearCurrentTask();  // mutex 内で TASK_NONE にする（Core0 の isTaskRunning() と整合させるため）
   } else {
@@ -1888,6 +2011,7 @@ float scale_screen_km(int index) {
 //   MAPLIST/GNSSDETAIL: 次のページへ
 // 操作音は Button クラスではなくここで鳴らす。何も起きない画面では鳴らさないため。
 void shortPressCallback() {
+  backlight_notify_activity();
   last_user_input_ms = millis();
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
@@ -1896,6 +2020,17 @@ void shortPressCallback() {
   // 何も起きないのに音だけ鳴ると紛らわしいので、音も鳴らさずに抜ける。
   if (screen_mode == MODE_MAP)
     return;
+
+  // PC接続モード中: プッシュスイッチで手動切断して通常画面へ復帰
+  if (screen_mode == MODE_PCCONNECT) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    Serial.println("PONS:BYE");
+    enqueueTask(createLogSdTask("PC DISCONNECTED (BUTTON) -> RESUME MAP"));
+    screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    redraw_screen = true;
+    return;
+  }
 
   enqueueTask(createPlayMultiToneTask(1046, 80, 1));  // 短押し音
 
@@ -2071,6 +2206,7 @@ static void imu_execute() {
 // 短押しは毎回発火するため、ここでは短押しと重複しない処理だけを行う。
 // 操作音は shortPressCallback() と同じ理由でここで鳴らす（効かない画面では鳴らさない）。
 void doublePressCallback() {
+  backlight_notify_activity();
   last_user_input_ms = millis();
   DEBUG_PLN(20240801, "double press");
 
@@ -2159,6 +2295,7 @@ static void handleReplaySelect() {
 //   SETTING（未選択）→ 長押し → 現在行を「値変更モード」に入る
 //   SETTING（変更中）→ 長押し → 値変更モードを終了し確定する
 void longPressCallback() {
+  backlight_notify_activity();
   last_user_input_ms = millis();
   redraw_screen = true;
 

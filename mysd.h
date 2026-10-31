@@ -34,7 +34,9 @@
       TASK_LOG_IMUREPLAY,
       TASK_FLUSH_IMULOG,  // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
       TASK_SAVE_RXCSV,    // 無線で受信したテレメトリを received/ へ書き出す
-      TASK_LATCH_BATT_OVERDISCHARGE // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
+      TASK_LATCH_BATT_OVERDISCHARGE, // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
+      TASK_SERIAL_LIST,   // Web Serial: SD 内の CSV ファイル一覧をシリアル出力
+      TASK_SERIAL_GET     // Web Serial: 指定 CSV ファイルをシリアルへストリーミング送出
   } TaskType;
 
 
@@ -288,6 +290,9 @@
               int  year, month, day, hour, minute, second;  // ファイルタイムスタンプ用
               char filename[24];             // "imuraw/20260316.bin" = 19文字
           } imuLogArgs;
+          struct {                           // For TASK_SERIAL_GET
+              char filename[64];             // 送信対象ファイル名（相対パス含む）
+          } serialGetArgs;
       };
   } Task;
 
@@ -329,6 +334,14 @@
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
   Task createLatchBattTask();
+  Task createSerialListTask();
+  Task createSerialGetTask(const char* filename);
+  void serial_list_csv_files();
+  void serial_send_csv_file(const char* filename);
+
+  // Web Serial 通信状態フラグ（Core0 / Core1 共有）
+  extern volatile bool webserial_connected;
+  extern volatile bool webserial_cancel_requested;
 
   // Functions to handle the queue (declarations)
   // 戻り値: キューに入れられたら true、満杯で捨てたら false。

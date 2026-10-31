@@ -41,7 +41,7 @@ int main() {
     const double phi = 20.0*M_PI/180.0;      // 真のバンク角
     const double V = 8.0;
     const double psid = -G*tan(phi)/V;        // 協調旋回（符号は test_eskf.py と同じ導出）
-    const double fs = 50.0, dt = 1.0/fs;
+    const double fs = (double)IMU_RATE_GYRO_HZ, dt = 1.0/fs;
 
     // ---- 1) 静止させて初期化する（水平・機首東）----
     // 静止中は比力が +Z（機体上向き）に g だけ出る
@@ -51,7 +51,9 @@ int main() {
         float g0[3]={0,0,0}, a0[3];
         body_to_sensor(ab, a0);                  // → センサー座標
         // ★ 0.983 以降は GRV を渡さない。静止中の平均加速度から水平化される。
-        for (int i=0;i<200;i++) {
+        // 静止初期化には ESKF_STATIC_INIT_US (2 秒) 必要なので 4 秒流す。
+        int init_samples = (int)(4.0 * fs);
+        for (int i=0; i<init_samples; i++) {
             attitude_on_accel(a0);
             test_set_us((uint32_t)(i*dt*1e6)); attitude_on_gyro(g0, g_test_us);
         }
@@ -82,7 +84,7 @@ int main() {
 
         attitude_on_accel(f);
         test_set_us((uint32_t)((10.0+t)*1e6)); attitude_on_gyro(w, g_test_us);
-        if (i%25==0) {   // GNSS 2Hz。NED で渡す: velN=v[1], velE=v[0], velD=-v[2]
+        if (i % (int)(fs * 0.5) == 0) {   // GNSS 2Hz (0.5s ごと)。NED で渡す: velN=v[1], velE=v[0], velD=-v[2]
             attitude_on_gnss_velocity((float)v[1],(float)v[0],(float)(-v[2]),0.08f);
         }
     }

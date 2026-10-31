@@ -38,6 +38,10 @@ SdFs SD;                     // SdFat ライブラリのファイルシステム
 volatile bool sdInitialized = false;  // SD カードの初期化が完了しているか（Core0/Core1 両方から参照）
 volatile bool sdError = false;        // SD アクセス中にエラーが発生したか（Core0/Core1 両方から参照）
 volatile bool sd_setup_complete = false;  // Core1 の setup_sd() が完了したことを示すフラグ（Core0 が待機に使用）
+
+// Web Serial 通信状態フラグ
+volatile bool webserial_connected = false;
+volatile bool webserial_cancel_requested = false;
 #define LOGFILE_NAME "log.txt"
 
 // ---- 処理時間計測変数（IMU の読み出しを飢えさせない調査用、デバッグビルドのみ） ----
@@ -2550,6 +2554,7 @@ static void csv_write_common(FsFile &f, const Task &tk) {
 
 void saveRxCSV(const Task& tk) {
   ASSERT_SD_CORE1("saveRxCSV");
+  if (webserial_connected) return;  // PC接続中はSD読み出し専用に固定
   const auto& a = tk.saveCsvArgs;
   if (!good_sd()) return;
 
@@ -2624,6 +2629,7 @@ void saveRxCSV(const Task& tk) {
 void saveCSV(const Task& tk) {
   const auto& a = tk.saveCsvArgs;
   ASSERT_SD_CORE1("saveCSV");
+  if (webserial_connected) return;  // PC接続中はSD読み出し専用に固定
   // 未初期化・エラー時は good_sd() 内の try_sd_recovery() が10秒クールダウン付きで回復を試みる
   if (!good_sd()) {
     if (csvFileStatic.isOpen()) csvFileStatic.close();  // SDエラー時はファイルをリセット
@@ -2718,6 +2724,7 @@ void save_imu_replaydata(int h, int m, int s, int cs,
                          float roll_trim, float yaw_acc95,
                          float wind_mps, float wind_dir, bool wind_valid,
                          const char* filename, int year, int month, int day) {
+  if (webserial_connected) return;  // PC接続中はSD読み出し専用に固定
   if (!good_sd()) return;
 
   // ファイル名が変わった場合（日付変更等）は sync してから閉じて開き直す
@@ -2846,6 +2853,185 @@ Task createLatchBattTask() {
   Task t;
   t.type = TASK_LATCH_BATT_OVERDISCHARGE;
   return t;
+}
+
+// ===== Web Serial 通信連携タスク生成 =====
+
+Task createSerialListTask() {
+  Task t;
+  t.type = TASK_SERIAL_LIST;
+  return t;
+}
+
+Task createSerialGetTask(const char* filename) {
+  Task t;
+  t.type = TASK_SERIAL_GET;
+  if (filename) {
+    strlcpy(t.serialGetArgs.filename, filename, sizeof(t.serialGetArgs.filename));
+  } else {
+    t.serialGetArgs.filename[0] = '\0';
+  }
+  return t;
+}
+
+// オープン中のログファイルを安全に flush/close して SD を静止させる（Core1専用）
+static void webserial_prepare_sd() {
+  if (csvFileStatic.isOpen()) {
+    csvFileStatic.sync();
+    csvFileStatic.close();
+  }
+  if (rxcsvFile.isOpen()) {
+    rxcsvFile.sync();
+    rxcsvFile.close();
+  }
+  if (replayDataFileStatic.isOpen()) {
+    replayDataFileStatic.sync();
+    replayDataFileStatic.close();
+    replayDataOpenedFilename[0] = '\0';
+    replayDataWriteCount = 0;
+  }
+  if (logFileStatic.isOpen()) {
+    logFileStatic.sync();
+    logFileStatic.close();
+  }
+  // 生 IMU ログのハンドルも安全に破棄
+  imulog_on_sd_reinit();
+}
+
+// 標準 CRC32 (IEEE 802.3, poly 0xEDB88320)
+static uint32_t calc_crc32_step(uint32_t crc, const uint8_t* data, size_t len) {
+  while (len--) {
+    crc ^= *data++;
+    for (int j = 0; j < 8; j++) {
+      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+  }
+  return crc;
+}
+
+// 指定ディレクトリ内の CSV ファイルを列挙してシリアル出力する（Core1専用）
+static void list_csv_in_dir(const char* dirpath, const char* prefix) {
+  FsFile dir = SD.open(dirpath);
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return;
+  }
+
+  while (true) {
+    if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) break;
+
+    FsFile entry = dir.openNextFile();
+    if (!entry) break;
+
+    char name[64];
+    entry.getName(name, sizeof(name));
+    bool isdir = entry.isDirectory();
+    uint32_t fsize = isdir ? 0 : entry.size();
+    uint16_t pdate = 0, ptime = 0;
+    if (!isdir) {
+      entry.getModifyDateTime(&pdate, &ptime);
+    }
+    entry.close();
+
+    if (isdir) continue;
+
+    // 隠しファイル除外
+    if (name[0] == '.' || (name[0] == '/' && name[1] == '.')) continue;
+
+    // .csv または .CSV か判定
+    size_t len = strlen(name);
+    if (len < 4) continue;
+    if (strcasecmp(name + len - 4, ".csv") != 0) continue;
+
+    int yr = FS_YEAR(pdate);
+    int mo = FS_MONTH(pdate);
+    int dy = FS_DAY(pdate);
+    int hr = FS_HOUR(ptime);
+    int mn = FS_MINUTE(ptime);
+    int sc = FS_SECOND(ptime);
+
+    char fullpath[96];
+    if (prefix && prefix[0] != '\0') {
+      snprintf(fullpath, sizeof(fullpath), "%s/%s", prefix, name);
+    } else {
+      strlcpy(fullpath, name, sizeof(fullpath));
+    }
+
+    Serial.printf("PONS:FILE,%s,%lu,%04d-%02d-%02d %02d:%02d:%02d\r\n",
+                  fullpath, (unsigned long)fsize, yr, mo, dy, hr, mn, sc);
+
+    loop_sound();
+    yield();
+  }
+  dir.close();
+}
+
+// SD 内の全フライトログ CSV を列挙してシリアル出力（Core1専用）
+void serial_list_csv_files() {
+  ASSERT_SD_CORE1("serial_list_csv_files");
+  if (!good_sd()) {
+    Serial.println("PONS:ERROR,SD_NOT_READY");
+    return;
+  }
+  webserial_prepare_sd();
+
+  list_csv_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR);
+  list_csv_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR);
+  list_csv_in_dir("/", "");
+
+  Serial.println("PONS:LIST_END");
+}
+
+// 指定された CSV ファイルをストリーミング送出（Core1専用）
+void serial_send_csv_file(const char* filename) {
+  ASSERT_SD_CORE1("serial_send_csv_file");
+  if (!good_sd()) {
+    Serial.println("PONS:ERROR,SD_NOT_READY");
+    return;
+  }
+  if (!filename || filename[0] == '\0') {
+    Serial.println("PONS:ERROR,INVALID_FILENAME");
+    return;
+  }
+  webserial_prepare_sd();
+
+  FsFile file = SD.open(filename, O_RDONLY);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    Serial.println("PONS:ERROR,FILE_NOT_FOUND");
+    return;
+  }
+
+  uint32_t total_size = file.size();
+  Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
+
+  webserial_cancel_requested = false;
+  uint8_t buf[512];
+  uint32_t crc = 0xFFFFFFFF;
+
+  while (file.available()) {
+    // 中断要求または USB ケーブル抜去・切断検知時は即座にファイルを閉じて抜ける
+    if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
+      file.close();
+      if (webserial_connected && usb_power_present()) {
+        Serial.println("\r\nPONS:CANCEL_OK");
+      }
+      return;
+    }
+    int n = file.read(buf, sizeof(buf));
+    if (n <= 0) break;
+
+    crc = calc_crc32_step(crc, buf, (size_t)n);
+    Serial.write(buf, n);
+
+    loop_sound();
+    yield();
+  }
+
+  file.close();
+  crc ^= 0xFFFFFFFF;
+  Serial.printf("\r\nPONS:DATA_END,%08lX\r\n", (unsigned long)crc);
+  Serial.flush();
 }
 
 // 起動時ロゴ BMP 読み込みタスクを生成する（引数なし、ファイル名はハードコード）

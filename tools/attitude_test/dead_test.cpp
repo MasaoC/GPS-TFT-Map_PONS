@@ -1,4 +1,4 @@
-// BNO085 の断線・未接続時に ESKF が安全側に倒れるかを検証する。
+// IMU（SCH16T）の断線・未接続時に ESKF が安全側に倒れるかを検証する。
 //
 // 1) 未接続（センサー入力が一度も来ない）: 初期化されず ready=false のまま
 // 2) 初期化後に断線: ジャイロが止まったら ready=false に落ち、
@@ -32,7 +32,8 @@ int main(){
 
     // ---- 2) 初期化後に断線 ----
     attitude_setup();
-    feed_static(300, 0, 20000);            // 6 秒静止して初期化
+    const uint32_t step_us = 1000000UL / IMU_RATE_GYRO_HZ; // 250Hz -> 4000us
+    feed_static((int)(6 * IMU_RATE_GYRO_HZ), 0, step_us);  // 6 秒静止して初期化
     printf("[初期化後] ready=%d (1 が正しい)  ", (int)attitude_ready());
     attitude_get_euler_raw(r,p,y);
     printf("roll=%+.2f\n", r);
@@ -52,11 +53,11 @@ int main(){
         }
     }
     attitude_get_euler_raw(r,p,y);
-    ok &= !attitude_ready();                       // 途絶を検出できたか
+    ok &= !attitude_ready();                       // 途読を検出できたか
     ok &= (fabsf(r-roll0) < 0.1f);                 // 姿勢が回されていないか
 
     // ---- 3) 復帰したら再び使えるか ----
-    feed_static(300, t+1000000, 20000);
+    feed_static((int)(6 * IMU_RATE_GYRO_HZ), t+1000000, step_us);
     printf("[復帰後] ready=%d (1 が正しい)\n", (int)attitude_ready());
     ok &= attitude_ready();
 

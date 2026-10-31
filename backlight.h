@@ -24,6 +24,11 @@ void backlight_tick();       // loop() から毎回呼ぶ（内部で間引く�
 // 電池低下の点滅モードを切り替える。段階が変わったときは点灯の側から周期を始める。
 void backlight_set_saver(BacklightSaver mode);
 
+// 待機中自動減光中か。
+bool backlight_is_dimmed();
+// ユーザー操作（ボタン等）や活動発生時に呼び、減光解除・ディミングタイマーをリセットする。
+void backlight_notify_activity();
+
 // ログ用（例: " bl=35% lux=12"）。
 void backlight_format_status(char* buf, size_t n);
 
