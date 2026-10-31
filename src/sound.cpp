@@ -15,6 +15,7 @@
 #include "../mysd.h"
 #include "../airdata.h"
 #include "../imu.h"
+#include "../power.h"
 #include "flashdata/wav_data.h"
 #include "hardware/pwm.h"
 #include "hardware/timer.h"
@@ -930,7 +931,7 @@ void playTone(int freq, int duration, int counter, int priority, int min_volume,
 // 止めないと、緑の解除完了画面の裏で「充電せずUSBを外し…」が最後まで鳴り続けてしまう。
 void stop_overdischarge_alert_core1() {
     ASSERT_CORE1("stop_overdischarge_alert_core1");
-    const int od_idx = wav_find("wav/batt_overdischarge.wav");
+    const int od_idx = wav_find(BATT_OVERDISCHARGE_WAV_FILE);
 
     for (int i = 0; i < 2; i++) {
         if (od_idx >= 0 && pending_wav[i].index == od_idx) {
@@ -941,14 +942,16 @@ void stop_overdischarge_alert_core1() {
     int newTail = toneBufHead;
     for (int idx = toneBufHead; idx != toneBufTail; idx = (idx + 1) % TONE_BUFFER_SIZE) {
         const ToneEntry& te = toneBuffer[idx];
-        if (te.freq == 2637 && te.solo_play && te.priority == 4) continue;
+        if (te.freq == BATT_OVERDISCHARGE_TONE_FREQ && te.solo_play &&
+            te.priority == BATT_OVERDISCHARGE_TONE_PRIORITY) continue;
         if (newTail != idx) toneBuffer[newTail] = te;
         newTail = (newTail + 1) % TONE_BUFFER_SIZE;
     }
     toneBufTail = newTail;
 
     if ((sin_playing || tone_in_gap || tone_paused) &&
-        sin_solo && tone_cur_freq == 2637 && tone_playing_priority == 4) {
+        sin_solo && tone_cur_freq == BATT_OVERDISCHARGE_TONE_FREQ &&
+        tone_playing_priority == BATT_OVERDISCHARGE_TONE_PRIORITY) {
         sin_playing           = false;
         tone_in_gap           = false;
         tone_paused           = false;

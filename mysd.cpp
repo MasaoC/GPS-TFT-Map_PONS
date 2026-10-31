@@ -2531,20 +2531,34 @@ static int    rxfileyear = 0, rxfilemonth, rxfileday, rxfilehour, rxfileminute;
 //   その列だけが静かに別の意味になる。
 static void csv_write_common(FsFile &f, const Task &tk) {
   const auto& a = tk.saveCsvArgs;
+  const bool is_rx = (tk.type == TASK_SAVE_RXCSV);
+
   f.print(a.latitude, 6);      f.print(",");
   f.print(a.longitude, 6);     f.print(",");
   f.print(a.gs, 1);            f.print(",");
   f.print(a.ttrack);           f.print(",");
-  f.print(a.gnss_altitude, 2); f.print(",");
+
+  // GNSS 高度: 受信ログでは回転枠 4 を受けるまで空欄（受け始めの 0m や途切れ時の古い値を防止）
+  if (!is_rx || (a.have & RHAVE_GNSSALT)) f.print(a.gnss_altitude, 2);
+  f.print(",");
+
   f.print(a.kf_altitude, 2);   f.print(",");   // KF 推定高度 [m]（気圧基準）
   f.print(a.kf_vspeed, 2);     f.print(",");   // KF 推定上昇率 [m/s]
-  f.print(a.pressure, 2);      f.print(",");
+
+  // 気圧: 受信ログでは回転枠 5 を受けるまで空欄（0.00hPa を防止）
+  if (!is_rx || (a.have & RHAVE_PRESS)) f.print(a.pressure, 2);
+  f.print(",");
+
   // リプレイ時の電池表示に使う。測れなかったとき（NAN）は 0 ではなく空欄にする
   // （SW OFF のまま USB で動いていた。0.00 と書くと「電池切れだった」と読めてしまう）。
   // 空欄ならリプレイは RHAVE_VOLT を立てない（replay_get_float）。
-  if (!isnan(a.voltage)) f.print(a.voltage, 2);
+  if (!isnan(a.voltage) && (!is_rx || (a.have & RHAVE_VOLT))) f.print(a.voltage, 2);
   f.print(",");
-  f.print(a.numsat);           f.print(",");   // リプレイ時の衛星数表示に使う
+
+  // 衛星数: 受信ログでは回転枠 3 を受けるまで空欄（0衛星を防止）
+  if (!is_rx || (a.have & RHAVE_NUMSAT)) f.print(a.numsat);
+  f.print(",");
+
   char buf[12];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02d", a.year, a.month, a.day);
   f.print(buf);                f.print(",");
@@ -2894,8 +2908,8 @@ static void webserial_prepare_sd() {
     logFileStatic.sync();
     logFileStatic.close();
   }
-  // 生 IMU ログのハンドルも安全に破棄
-  imulog_on_sd_reinit();
+  // 生 IMU ログのハンドルも安全に sync してクローズ
+  imulog_flush_and_close();
 }
 
 // 標準 CRC32 (IEEE 802.3, poly 0xEDB88320)
@@ -2974,6 +2988,7 @@ void serial_list_csv_files() {
     return;
   }
   webserial_prepare_sd();
+  webserial_cancel_requested = false;
 
   list_csv_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR);
   list_csv_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR);

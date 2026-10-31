@@ -168,6 +168,9 @@ void imulog_write_buffer(int bufidx, const char* filename,
 // メモリ上でリセットする（カード差し替え後に旧 FAT クラスタへ書き込むのを防ぐ）。
 void imulog_on_sd_reinit();
 
+// ---- Core1: PC 接続（WebSerial）移行時に生 IMU ログをフラッシュして安全に閉じる ----
+void imulog_flush_and_close();
+
 // ---- 診断 ----
 uint32_t imulog_get_dropped();     // バッファ枯渇で捨てたレコード数（累計）
 uint32_t imulog_get_written();     // SD へ書いたレコード数（累計）

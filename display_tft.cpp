@@ -455,24 +455,28 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm) {
     backscreen.drawFastVLine(cx + 1, shortening, cy - shortening - 5, COLOR_BLACK);
   }
 
+  const bool acc_unknown = (hacc_mm == 0xFFFFFFFFu);
+
   // 誤差半径: [mm] → [m] → [km] → ピクセル（四捨五入で正確な円サイズに）
-  float accuracy_m = hacc_mm / 1000.0f;
-  int r = (int)roundf((accuracy_m / 1000.0f) * (float)scale);
+  float accuracy_m = acc_unknown ? 0.0f : (hacc_mm / 1000.0f);
+  int r = acc_unknown ? 0 : (int)roundf((accuracy_m / 1000.0f) * (float)scale);
 
   // 中心位置を示す小さい塗りつぶし青円
   backscreen.fillCircle(cx, cy, HDOP_CENTER_DOT_RADIUS, COLOR_BLUE);
 
   // 円半径がバックスクリーン半分を超えると画面外にはみ出して青い点だけに見えるため、
-  // 大きすぎる場合もテキスト表示にフォールバックする。
+  // 大きすぎる場合もテキスト表示にフォールバックする（精度未知時もテキスト表示）。
   const int MAX_CIRCLE_R = BACKSCREEN_SIZE / 2;  // 120px
 
-  if (r >= HDOP_MIN_CIRCLE_RADIUS && r <= MAX_CIRCLE_R) {
+  if (!acc_unknown && r >= HDOP_MIN_CIRCLE_RADIUS && r <= MAX_CIRCLE_R) {
     // 不確かさ範囲を示す輪郭青円
     backscreen.drawCircle(cx, cy, r, COLOR_BLUE);
   } else {
-    // 円が小さすぎ／大きすぎる場合: 精度数値をテキストで表示（例: "Acc:8m" / "Acc:1.2km"）
+    // 円が小さすぎ／大きすぎる場合、または精度未知の場合: 精度数値をテキストで表示（例: "Acc:8m" / "Acc:1.2km" / "Acc:--"）
     char buf[16];
-    if (accuracy_m < 1000.0f)
+    if (acc_unknown)
+      snprintf(buf, sizeof(buf), "Acc:--");
+    else if (accuracy_m < 1000.0f)
       snprintf(buf, sizeof(buf), "Acc:%.0fm", accuracy_m);
     else
       snprintf(buf, sizeof(buf), "Acc:%.1fkm", accuracy_m / 1000.0f);
@@ -2949,7 +2953,7 @@ static void draw_link_icons() {
   //   ★ **19px の強度アイコンの枠には入れない。** あそこに文字を置くと
   //     役割アイコン（x=25 から）と重なる。右へ逃がすと、内蔵フォント（24px）でも
   //     AA_FONT_SMALL（約 40px）でも収まるので、**この経路のフォント状態に依らない**
-  //     （draw_link_icons はフォントを触らない。触ると後続の箱が巻き添えになる）。
+  //     （draw_link_icons は cfg_str 表示後に loadFont(AA_FONT_SMALL) で地図用フォントに戻して抜けるため、後続の描画と干渉しない）。
   if (failed) {
     backscreen.setTextColor(COLOR_PINK, COLOR_WHITE);
     backscreen.setTextSize(1);
@@ -5027,5 +5031,5 @@ void draw_pcconnect() {
   header_footer.setTextColor(COLOR_WHITE, COLOR_BLUE);
   print_centered_aa(header_footer, 7, "WEB SERIAL MODE");
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.pushSprite(0, 290);
+  header_footer.pushSprite(0, 280);
 }

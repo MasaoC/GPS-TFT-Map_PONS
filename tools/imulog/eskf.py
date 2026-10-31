@@ -482,6 +482,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             gi += 1                      # 初期化前の測位は捨てる
         bias_sum = np.zeros(3)
         bias_n = 0
+        bias_sum_t = 0.0
         yaw_arm = 0
         # ---- 重力観測（Phase 2）のためのゲート用の量 ----
         # ★ ゲートはジャイロだけから作れるものを主にする。GNSS 断中に働かないと
@@ -497,18 +498,24 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         good_gsp_t = None
         ground_flags = np.zeros(n_out, dtype=bool)
 
-        def learn_bias(wi):
-            # 機上 learn_gyro_bias() と同じ（ESKF_BIAS_LEARN_SAMPLES / ESKF_BIAS_LEARN_MAX_RADS）
-            nonlocal bias_n
-            bias_sum[:] += wi
+        def learn_bias(wi, dt_i):
+            # 機上 learn_gyro_bias() と同じ（時定数 5.0 秒 / ESKF_BIAS_LEARN_MAX_RADS）
+            # サンプリング間隔 dt から時間を積算し、250Hz 機上と 62.5Hz ログの両方で一致させる
+            nonlocal bias_n, bias_sum_t
+            if dt_i <= 0.0:
+                return
+            bias_sum[:] += wi * dt_i
+            bias_sum_t += dt_i
             bias_n += 1
-            if bias_n >= 250:
-                f.bg = np.clip(bias_sum / bias_n, -0.0087, 0.0087)
+            if bias_sum_t >= 5.0:
+                f.bg = np.clip(bias_sum / bias_sum_t, -0.0087, 0.0087)
                 bias_sum[:] = 0.0
+                bias_sum_t = 0.0
                 bias_n = 0
 
         for k, i in enumerate(range(i_start, len(ts))):
             dt = ts[i] - ts[i - 1] if i else 0.0
+            relevel_gain = min(1.0, dt / 1.0) if dt > 0.0 else 0.004   # 時定数 1.0 秒（機上 ESKF_RELEVEL_GAIN）
             if static_flags is not None:
                 if static_flags[i]:
                     if static_t0 is None:
@@ -522,20 +529,21 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                       and not (good_fresh and good_gsp >= 1.0))        # ESKF_GROUND_MAX_GS_MPS
             # ---- 待機中の維持（機上 attitude_on_gyro の該当ブロックと同じ）----
             if (not yaw_set) and static_flags is not None and static_flags[i]:
-                f.q = level_toward_gravity(f.q, acc[i], 0.02)     # ESKF_RELEVEL_GAIN
-                learn_bias(w[i])
+                f.q = level_toward_gravity(f.q, acc[i], relevel_gain)     # 時定数 1.0 秒
+                learn_bias(w[i], dt)
                 f.reset_covariance(3.0, 180.0)
             elif ground:
                 # ---- 地上での維持（ヨーが決まった後。機上の同名ブロックと同じ）----
                 # ヨーの分散は残し、ロール・ピッチの分だけ入れ直す（機上 reset_tilt_covariance）。
-                f.q = level_toward_gravity(f.q, acc[i], 0.02)
+                f.q = level_toward_gravity(f.q, acc[i], relevel_gain)
                 if good_fresh and good_gsp < 1.0:
-                    learn_bias(w[i])
+                    learn_bias(w[i], dt)
                 f.P[0:2, :] = 0.0
                 f.P[:, 0:2] = 0.0
                 f.P[0, 0] = f.P[1, 1] = np.deg2rad(3.0) ** 2      # ESKF_INIT_ATT_SIGMA_DEG
             elif static_flags is not None and not static_flags[i]:
                 bias_sum[:] = 0.0
+                bias_sum_t = 0.0
                 bias_n = 0
             ground_flags[k] = ground
             f.predict(w[i], acc[i], dt)

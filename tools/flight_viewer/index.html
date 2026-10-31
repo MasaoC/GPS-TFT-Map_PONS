@@ -745,8 +745,8 @@
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
     </div>
     <div class="header-actions">
-      <input type="file" id="file-input" accept=".csv" style="display: none;">
-      <button onclick="document.getElementById('file-input').click()">📁 CSVを開く</button>
+      <input type="file" id="file-input" accept=".csv,.txt" multiple style="display: none;">
+      <button onclick="document.getElementById('file-input').click()" title="飛行CSVファイルや自機姿勢ログ(imu_replaydata/*.txt)を開きます">📁 ログファイルを開く</button>
       <button class="btn-primary" onclick="loadSampleFlight()">🚀 自機デモ読込</button>
       <button onclick="loadSampleRxFlight()" style="border-color: #ea580c; color: #ea580c; font-weight:bold;">📡 受信デモ読込</button>
       <button id="btn-webserial" onclick="connectWebSerial()" style="border-color: var(--accent-cyan);">⚡ PONSに接続 (USB)</button>
@@ -965,14 +965,14 @@
     });
 
     function setupEventListeners() {
-      // ファイル選択
+      // ファイル選択（CSV または imu_replaydata/*.txt、同時選択可能）
       document.getElementById('file-input').addEventListener('change', (e) => {
-        if (e.target.files && e.target.files[0]) {
-          readCSVFile(e.target.files[0]);
+        if (e.target.files && e.target.files.length > 0) {
+          readFiles(e.target.files);
         }
       });
 
-      // ドラッグ＆ドロップ
+      // ドラッグ＆ドロップ（CSV / TXT ドロップ対応）
       const dropZone = document.getElementById('drop-zone');
       window.addEventListener('dragenter', (e) => { e.preventDefault(); dropZone.classList.add('active'); });
       dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
@@ -982,8 +982,8 @@
       dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         dropZone.classList.remove('active');
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-          readCSVFile(e.dataTransfer.files[0]);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          readFiles(e.dataTransfer.files);
         }
       });
 
@@ -1130,14 +1130,110 @@
     }
 
     // ============================================================
-    // CSVパース処理
+    // CSV / IMU 姿勢ログ パース処理
     // ============================================================
+    function readFiles(files) {
+      if (!files || files.length === 0) return;
+      const fileArr = Array.from(files);
+      const csvFile = fileArr.find(f => f.name.toLowerCase().endsWith('.csv'));
+      const txtFile = fileArr.find(f => f.name.toLowerCase().endsWith('.txt'));
+
+      if (csvFile) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          parseCSVText(e.target.result, csvFile.name);
+          if (txtFile) {
+            const txtReader = new FileReader();
+            txtReader.onload = (te) => {
+              mergeImuReplayData(te.target.result, txtFile.name);
+            };
+            txtReader.readAsText(txtFile);
+          }
+        };
+        reader.readAsText(csvFile);
+      } else if (txtFile) {
+        // TXT のみ選択された場合: 既存の flightData に姿勢をマージ
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          mergeImuReplayData(e.target.result, txtFile.name);
+        };
+        reader.readAsText(txtFile);
+      }
+    }
+
     function readCSVFile(file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        parseCSVText(e.target.result, file.name);
+      readFiles([file]);
+    }
+
+    // 自機姿勢ログ（imu_replaydata/*.txt）を既存のフライトデータに時刻照合でマージ
+    function mergeImuReplayData(text, filename = "姿勢ログ") {
+      if (!flightData || flightData.length === 0) {
+        alert("先に自機フライトCSVを読み込んでから、対応する imu_replaydata/*.txt を選択してください。");
+        return;
+      }
+      const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
+      if (lines.length < 2) return;
+
+      const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const col = {
+        time: header.indexOf('time'),
+        roll: header.indexOf('roll'),
+        pitch: header.indexOf('pitch'),
+        yaw: header.indexOf('yaw'),
+        pavg: header.indexOf('pitch_avg'),
+        rtrim: header.indexOf('roll_trim'),
+        wspd: header.indexOf('wind_mps'),
+        wdir: header.indexOf('wind_dir')
       };
-      reader.readAsText(file);
+
+      if (col.roll < 0 || col.pitch < 0) {
+        alert("imu_replaydata の形式と一致しませんでした。");
+        return;
+      }
+
+      // 時刻 -> 姿勢レコードのインデックス作成
+      const imuRecords = [];
+      for (let i = 1; i < lines.length; i++) {
+        const p = lines[i].split(',').map(s => s.trim());
+        if (p.length < 3) continue;
+        const tSec = parseTimeToSeconds(p[col.time]);
+        const roll = p[col.roll] !== '' ? parseFloat(p[col.roll]) : null;
+        const pitch = p[col.pitch] !== '' ? parseFloat(p[col.pitch]) : null;
+        const yaw = col.yaw >= 0 && p[col.yaw] !== '' ? parseFloat(p[col.yaw]) : null;
+        const pavg = col.pavg >= 0 && p[col.pavg] !== '' ? parseFloat(p[col.pavg]) : null;
+        const rtrim = col.rtrim >= 0 && p[col.rtrim] !== '' ? parseFloat(p[col.rtrim]) : null;
+        const wspd = col.wspd >= 0 && p[col.wspd] !== '' ? parseFloat(p[col.wspd]) : null;
+        const wdir = col.wdir >= 0 && p[col.wdir] !== '' ? parseFloat(p[col.wdir]) : null;
+        imuRecords.push({ tSec, roll, pitch, yaw, pavg, rtrim, wspd, wdir });
+      }
+
+      if (imuRecords.length === 0) return;
+
+      // 既存の各 flightData レコードに対し、最近傍の IMU レコード（±1.0秒以内）を補間・バインド
+      let mergedCount = 0;
+      let imuIdx = 0;
+      for (let d of flightData) {
+        const targetSec = parseTimeToSeconds(d.timeStr);
+        while (imuIdx < imuRecords.length - 1 && imuRecords[imuIdx + 1].tSec <= targetSec) {
+          imuIdx++;
+        }
+        const best = imuRecords[imuIdx];
+        if (best && Math.abs(best.tSec - targetSec) <= 1.0) {
+          d.roll = best.roll;
+          d.pitch = best.pitch;
+          if (best.yaw !== null) d.yaw = best.yaw;
+          if (best.pavg !== null) d.pavg = best.pavg;
+          if (best.rtrim !== null) d.rtrim = best.rtrim;
+          if (best.wspd !== null) d.wspd = best.wspd;
+          if (best.wdir !== null) d.wdir = best.wdir;
+          mergedCount++;
+        }
+      }
+
+      estimateSideslipBeta(flightData);
+      updateUI(currentTimeSec);
+      console.log(`IMU姿勢マージ完了: ${mergedCount}/${flightData.length}点に姿勢を適用 (${filename})`);
+      alert(`✅ 自機姿勢データ (${filename}) を ${mergedCount} 点にマージしました。\n人工水平儀・風の三角形・Est.Beta が有効化されました。`);
     }
 
     function parseCSVText(text, filename = "フライトログ") {
@@ -1378,7 +1474,7 @@
         const wdir = r1.wdir || 0;
         const yaw = r1.yaw || 0;
         let tas = (r1.csvTas !== null && r1.csvTas > 0) ? r1.csvTas :
-                  Math.max(1.0, r1.gs + Math.cos((yaw - wdir) * Math.PI / 180) * wspd);
+                  Math.max(1.0, r1.gs - Math.cos((yaw - wdir) * Math.PI / 180) * wspd);
 
         // 旋回・バンクによる横滑り駆動項 drive [rad/s]
         // 協調旋回なら drive = 0 となり Beta は減衰
@@ -1730,7 +1826,7 @@
       if (data.csvTas !== null && !isNaN(data.csvTas)) {
         tasEst = data.csvTas;
       } else if (data.gs !== null && data.yaw !== null && data.wdir !== null && data.wspd !== null) {
-        tasEst = Math.max(0, data.gs + (Math.cos((data.yaw - data.wdir) * Math.PI / 180) * data.wspd));
+        tasEst = Math.max(0, data.gs - (Math.cos((data.yaw - data.wdir) * Math.PI / 180) * data.wspd));
       }
       document.getElementById('chart-val-tas').textContent = (tasEst !== null && !isNaN(tasEst)) ? tasEst.toFixed(1) : "--.-";
 
@@ -1904,7 +2000,7 @@
       let ttTargetX = tasX;
       let ttTargetY = tasY;
       if (d.wspd !== null && d.wspd > 0 && d.wdir !== null) {
-        const windFlowRad = ((d.wdir + 180) * Math.PI) / 180;
+        const windFlowRad = (d.wdir * Math.PI) / 180;
         ttTargetX = tasX + Math.sin(windFlowRad) * (d.wspd * scale);
         ttTargetY = tasY - Math.cos(windFlowRad) * (d.wspd * scale);
         drawArrow(ctx, tasX, tasY, ttTargetX, ttTargetY, "#16a34a", 3.2);
@@ -2177,7 +2273,7 @@
         if (sample.csvTas !== null && !isNaN(sample.csvTas)) {
           tasEst = sample.csvTas;
         } else if (sample.gs !== null && sample.yaw !== null && sample.wdir !== null && sample.wspd !== null) {
-          tasEst = Math.max(0, sample.gs + (Math.cos((sample.yaw - sample.wdir) * Math.PI / 180) * sample.wspd));
+          tasEst = Math.max(0, sample.gs - (Math.cos((sample.yaw - sample.wdir) * Math.PI / 180) * sample.wspd));
         }
         if (tasEst === null || isNaN(tasEst)) {
           started = false;
@@ -2523,7 +2619,8 @@
 
       try {
         serialPort = await navigator.serial.requestPort();
-        await serialPort.open({ baudRate: 115200 });
+        // 受信バッファを 16KB に拡張して大容量転送時のドロップとオーバーヘッドを抑制
+        await serialPort.open({ baudRate: 115200, bufferSize: 16384 });
 
         serialWriter = serialPort.writable.getWriter();
         serialReadLoopActive = true;
@@ -2547,6 +2644,7 @@
     }
 
     async function disconnectWebSerial() {
+      stopSerialPing();
       if (!serialPort) {
         closeSerialModal();
         return;
@@ -2671,22 +2769,53 @@
       document.getElementById('serial-progress-box').style.display = 'none';
     }
 
+    let pingTimer = null;
+
+    function startSerialPing() {
+      stopSerialPing();
+      pingTimer = setInterval(async () => {
+        const modal = document.getElementById('serial-modal');
+        const isModalOpen = modal && modal.classList.contains('active');
+        if (serialPort && serialPort.writable && !isDataStreaming && isModalOpen) {
+          try {
+            await sendSerialLine("PONS:PING");
+          } catch (e) {
+            console.warn("Serial PING failed:", e);
+          }
+        }
+      }, 15000);
+    }
+
+    function stopSerialPing() {
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = null;
+      }
+    }
+
     function checkDataEnd() {
-      const endIdx = dataBuffer.indexOf("PONS:DATA_END,");
+      // バッファ末尾付近（直前に追加された可能性がある領域）のみを走査（終わりの印は必ず末尾に来るため高速走査）
+      const searchStart = Math.max(0, dataBuffer.length - 256);
+      const endIdx = dataBuffer.indexOf("PONS:DATA_END,", searchStart);
+
       if (endIdx !== -1) {
-        const rawData = dataBuffer.substring(0, endIdx);
-        const csvContent = rawData.replace(/\r\n$/, '').replace(/\n$/, '');
         const endPart = dataBuffer.substring(endIdx);
-        const crcMatch = endPart.match(/PONS:DATA_END,([0-9A-Fa-f]+)/);
-        const expectedCrc = crcMatch ? crcMatch[1].toUpperCase() : null;
+        const crcMatch = endPart.match(/PONS:DATA_END,([0-9A-Fa-f]{8})\r?\n/);
+        if (!crcMatch) return;   // 行がまだ揃っていない
+
+        // ファームウェアはファイル本体データのみで CRC を計算し、直後に \r\nPONS:DATA_END を出力する。
+        // そのため DATA_END 直前の改行文字（\r\n または \n）を正確に外してファイル本体のバイナリ文字列を得る。
+        const rawWithNl = dataBuffer.substring(0, endIdx);
+        const fileData = rawWithNl.replace(/\r?\n$/, '');
+        const expectedCrc = crcMatch[1].toUpperCase();
 
         isDataStreaming = false;
         document.getElementById('serial-progress-box').style.display = 'none';
 
-        // CRC32 検証
+        // CRC32 検証（ファイル本体データのみで計算）
         let crcSuccess = true;
         if (expectedCrc) {
-          const calculatedCrc = computeCrc32(rawData);
+          const calculatedCrc = computeCrc32(fileData);
           if (calculatedCrc !== expectedCrc) {
             console.warn(`CRC mismatch! Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
             alert(`⚠️ CRC32チェックサムが一致しません（計算値: ${calculatedCrc} / 受信値: ${expectedCrc}）。\n通信中に一部データが破損した可能性があります。`);
@@ -2698,16 +2827,11 @@
 
         // CSVパース＆画面展開
         document.getElementById('flight-title').textContent = `${currentDownloadFile} (PONSより転送${crcSuccess ? '・CRC正常' : ''})`;
-        parseCSVText(csvContent);
+        parseCSVText(fileData);
         closeSerialModal();
 
         // 余分な行があれば行バッファへ戻す
-        const nextNl = endPart.indexOf('\n');
-        if (nextNl !== -1) {
-          lineBuffer = endPart.substring(nextNl + 1);
-        } else {
-          lineBuffer = "";
-        }
+        lineBuffer = endPart.substring(crcMatch[0].length);
       } else {
         // 進捗表示の定期更新
         const now = performance.now();
@@ -2804,8 +2928,12 @@
           version: parts[2] || '--',
           build: parts[3] || '--'
         });
+        startSerialPing();
         // 接続直後にファイル一覧を自動取得
         requestFileList();
+      } else if (line.startsWith("PONS:PONG")) {
+        // 生存確認応答
+        console.log("PONS PONG received");
       } else if (line.startsWith("PONS:FILE,")) {
         // PONS:FILE,<path>,<size>,<datetime>
         const parts = line.split(',');
@@ -2831,6 +2959,9 @@
         const errMsg = line.substring(11);
         if (errMsg === 'BUSY') {
           alert("PONSが現在別のタスクを実行中です。少し待ってから再試行してください。");
+        } else if (errMsg === 'NOT_CONNECTED') {
+          console.warn("PONS: NOT_CONNECTED received. Auto-reconnecting...");
+          sendSerialLine("PONS:CONNECT");
         } else if (errMsg === 'FILE_NOT_FOUND') {
           alert("指定されたファイルがSDカード上に見つかりませんでした。");
         } else if (errMsg === 'SD_NOT_READY') {

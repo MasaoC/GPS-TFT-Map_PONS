@@ -729,13 +729,17 @@ static void link_watch_sender_battery() {
 // ★ 送信機は音声（power_fault.wav）だが、受信機は**トーンのまま**にしてある。
 //   同じ音声だと「スイッチを切って電池を外して」がボート自身への指示に聞こえる
 //   （電池低下に battery_low_sender.wav を分けたのと同じ理由）。
+// ★ 過放電警告とは独立した専用のトーン定数とする（過放電の音定義変更に巻き込まれないため）。
+#define LINK_SENDER_PWR_FAULT_TONE_FREQ     2637
+#define LINK_SENDER_PWR_FAULT_TONE_DUR_MS   150
+
 static void link_watch_sender_power() {
     static uint32_t last_warn_ms = 0;
     if ((link_sender_status() & LINK_ST_PWR_FAULT) == 0) return;
     const uint32_t now = millis();
     if (last_warn_ms != 0 && now - last_warn_ms < POWER_FAULT_ALERT_MS) return;
     last_warn_ms = now;
-    link_alert(nullptr, 2637, 150, 6, 60);
+    link_alert(nullptr, LINK_SENDER_PWR_FAULT_TONE_FREQ, LINK_SENDER_PWR_FAULT_TONE_DUR_MS, 6, 60);
     enqueueTask(createLogSdTask("LINK WARN: sender POWER FAULT"));
 }
 
@@ -1321,6 +1325,12 @@ static void link_chscan_finish(bool complete) {
     s_txState   = LTX_IDLE;
     s_scanState = complete ? LINK_SCAN_DONE : LINK_SCAN_STOPPED;
     s_scanEndMs = millis();
+    s_haveLastSeq = false; // ★ 調査中に進んだ seq を受信再開時に取りこぼしと誤認しないようリセット
+
+    // TX モードの場合、チャンネル調査で送信前チェックが打ち切られていたので再開する
+    if (link_mode_setting == LINK_MODE_TX) {
+        link_preflight_restart();
+    }
 
     LinkScanRow r;
     for (uint8_t i = 0; i < LINK_SCAN_CH_COUNT; i++) {
@@ -1940,7 +1950,10 @@ double   link_get_truetrack()     {
 }
 double   link_get_gnss_altitude() { return s_rx.t.gnss_alt_dm /  10.0; }
 int      link_get_numsat()        { return s_rx.t.numsat; }
-uint32_t link_get_hacc_mm()       { return (uint32_t)s_rx.t.hacc_dm * 100u; }
+uint32_t link_get_hacc_mm()       {
+  if (!link_rx_slot_known(W2S_HACC)) return 0xFFFFFFFFu; // 枠6受信前は精度未知
+  return (uint32_t)s_rx.t.hacc_dm * 100u;
+}
 bool     link_get_fix_ok()        { return (s_rx.t.fixflags & 0x01) != 0; }
 
 float link_get_kf_altitude() { return s_rx.t.kf_alt_dm  * 0.1f; }

@@ -752,7 +752,8 @@ static void draw_gnss_page3() {
   y += 12;
 
   // hAcc / vAcc を横並び表示
-  float hacc_m = get_gnss_hacc_mm() / 1000.0f;
+  uint32_t hacc_mm = get_gnss_hacc_mm();
+  float hacc_m = hacc_mm / 1000.0f;
   float vacc_m = get_gnss_vacc_mm() / 1000.0f;
   uint16_t haccColor = (hacc_m < 5.0f)  ? COLOR_GREEN : (hacc_m < 25.0f) ? COLOR_ORANGE : COLOR_RED;
   uint16_t vaccColor = (vacc_m < 10.0f) ? COLOR_GREEN : (vacc_m < 50.0f) ? COLOR_ORANGE : COLOR_RED;
@@ -760,8 +761,13 @@ static void draw_gnss_page3() {
   tft.setCursor(1, y);
   tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
   tft.print("hAcc:");
-  tft.setTextColor(haccColor, COLOR_WHITE);
-  tft.printf("%.1fm  ", hacc_m);
+  if (hacc_mm == 0xFFFFFFFFu) {
+    tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    tft.print("--  ");
+  } else {
+    tft.setTextColor(haccColor, COLOR_WHITE);
+    tft.printf("%.1fm  ", hacc_m);
+  }
   tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
   tft.print("vAcc:");
   // ★ hAcc はリンクで運んでいるが vAcc は運んでいない。ミラー中にここへ

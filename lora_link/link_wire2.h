@@ -213,6 +213,8 @@ struct LinkW2Rx {
     // 水平精度）は、受けるまで 0 のままなので、使う側がこれで確かめる（link_w2_slot_seen）。
     uint8_t   slot_seen;
     bool      yawacc_known; // ヨー精度（回転枠 1）を受けたか。受けるまでヨーは出さない
+    bool      wind_spd_ok;  // 風速（回転枠 2）で風有効ビットを受けたか
+    bool      wind_dir_ok;  // 風向（回転枠 3）で風有効ビットを受けたか
     bool      hour_known;
     uint8_t   hour;
     uint16_t  prev_tod;
@@ -244,6 +246,7 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     if (st->seq_known && gap_ms > LINK_W2_STALE_FRAMES * per_ms) {
         // 長く途切れた後。回転枠で覚えていた値はもう信用しない（受け直すまで出さない）
         st->slot_have = 0; st->slot_seen = 0; st->yawacc_known = false;
+        st->wind_spd_ok = false; st->wind_dir_ok = false;
         // ★ 時は 30 分より短い途切れなら、下の「その時の中の 0.1 秒が戻ったら繰り上げる」で追える
         //   （時をまたげば必ず 30 分以上戻る）ので覚えておく。忘れると回転枠 0 が来るまでの最大 8 発、
         //   受信ログの時刻が 0 時になる。それより長い途切れは分からないので捨てる。
@@ -329,18 +332,23 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         if (s & (1u << 20)) st->slot_have |= RHAVE_ATT_AVG; else st->slot_have &= (uint16_t)~RHAVE_ATT_AVG;
         st->yawacc_known = (s & (1u << 21)) != 0;
         break;
-    case W2S_TRIMW:
+    case W2S_TRIMW: {
         t.roll_trim_cdeg = (int16_t)w2_sext(s & 0xFFF, 12);
         t.wind_dmps      = (uint8_t)((s >> 12) & 0xFF);
         if (s & (1u << 20)) st->slot_have |= RHAVE_ATT_TRIM; else st->slot_have &= (uint16_t)~RHAVE_ATT_TRIM;
-        if (s & (1u << 21)) st->slot_have |= RHAVE_ATT_WIND; else st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;
-        break;
-    case W2S_WDIR:
+        st->wind_spd_ok  = (s & (1u << 21)) != 0;
+        // 風速(枠2)と風向(枠3)の両方が揃って初めて風情報を有効化（片方だけの時に0°や古い向きを出さない）
+        if (!st->wind_spd_ok) st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;
+        else if (st->wind_dir_ok) st->slot_have |= RHAVE_ATT_WIND;
+        break; }
+    case W2S_WDIR: {
         t.wind_dir_cdeg = (uint16_t)((s & 0xFFF) * 10);
         t.numsat        = (uint8_t)((s >> 12) & 0x3F);
         if (s & (1u << 18)) st->slot_have |= RHAVE_NUMSAT; else st->slot_have &= (uint16_t)~RHAVE_NUMSAT;
-        if (!(s & (1u << 19))) st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;   // 風が切れたら速度の枠を待たない
-        break;
+        st->wind_dir_ok = (s & (1u << 19)) != 0;
+        if (!st->wind_dir_ok) st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;   // 風が切れたら速度の枠を待たない
+        else if (st->wind_spd_ok) st->slot_have |= RHAVE_ATT_WIND;
+        break; }
     case W2S_ALTV: {
         const uint16_t alt = (uint16_t)(s & 0xFFFF);
         const uint8_t  v   = (uint8_t)((s >> 16) & 0xFF);

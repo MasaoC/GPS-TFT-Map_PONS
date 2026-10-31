@@ -332,8 +332,11 @@ static void enqueue_overdischarge_alert() {
   // トーンと音声が重ならずに順番に再生される（src/sound.cpp）。
   // ★ 最低音量 60: 過放電電池への充電は発火の恐れがあるため、音量 0 設定でも鳴らす
   //   （power_fault.wav / charge_hot.wav と同じ例外。docs/pons_sound.md §5）。
-  enqueueTask(createPlayMultiToneTask(2637, 150, 4, 4, 60, true));
-  enqueueTask(createPlayWavTask("wav/batt_overdischarge.wav", 4, 60));
+  enqueueTask(createPlayMultiToneTask(BATT_OVERDISCHARGE_TONE_FREQ,
+                                      BATT_OVERDISCHARGE_TONE_DUR_MS,
+                                      BATT_OVERDISCHARGE_TONE_COUNT,
+                                      BATT_OVERDISCHARGE_TONE_PRIORITY, 60, true));
+  enqueueTask(createPlayWavTask(BATT_OVERDISCHARGE_WAV_FILE, BATT_OVERDISCHARGE_TONE_PRIORITY, 60));
 }
 
 // 過放電（3.0V 未満）の監視・フラッシュ記録要求・警告画面中の警報送出。
@@ -562,32 +565,60 @@ void power_tick() {
 // ============================================================
 //  USB 充電中の残量(%)・残り時間推定（docs/pons_charge_estimation.md）
 // ============================================================
-// 完全ステートレス物理モデル:
+// 完全ステートレス物理モデル ＋ 満充電ラッチ:
 // 1) ロードシェアリング（Q2+D3）により、USB 給電中は本体負荷電流が電池経路に流れない。
 // 2) ADC 測定点 BATPWR は F1(~0.25Ω) と Q3/Q4/保護回路(~0.25Ω) の中間点にある。
 //    - CC モード (< 4.125V): 下流 IR ドロップ (~75mV) を減算してセル開放電圧を逆算。
 //    - CV モード (>= 4.125V): 電流減衰により BATPWR は 4.125V〜4.200V へ上昇。
 //      上流・下流が対称抵抗のため BATPWR = (4.20V + V_cell) / 2 となり、
 //      V_cell = 2 * BATPWR - 4.20V で完全連続（4.125V で 4.05V、4.200V で 4.20V）に推計。
-// 3) タイマーや状態変数を一切使わないため、途中から USB を挿しても再起動しても即座に正しく推定する。
+// 3) 満充電ラッチ（課題5対策）:
+//    MCP73831 の充電終止（約23mA）では BATPWR（測定点）が約 4.194V に達し、その後充電電流が
+//    ゼロになってセル電圧は 4.15〜4.18V へ自然緩和する。充電停止後も CV 式を当て続けると
+//    ずれが倍に膨らんで 90% 前後に急落してしまうため、BATPWR が 4.190V（推定セル電圧 4.180V、終止直前）
+//    に達したら USB を抜くまで FULL（100%、残り0分）をラッチ保持する（4.05V 再充電しきい値割れで解除）。
+//    ※ 充電完了後に USB を挿したまま本体を再起動した場合は RAM のラッチが消えるため、
+//       緩和したセル電圧（4.15〜4.18V）に基づき「CHG 90〜96%」前後が表示される限界はある。
+static bool s_chg_full_latched = false;
+
 float power_estimated_cell_voltage() {
   const float v = get_input_voltage();
   if (!usb_power_present() || power_sw_off_on_usb()) {
+    s_chg_full_latched = false;
     return v;
   }
+
+  // 満充電ラッチの判定と維持
+  if (s_chg_full_latched) {
+    if (v < 4.05f) {
+      s_chg_full_latched = false; // 再充電しきい値(4.05V)を下回ったら解除
+    } else {
+      return 4.20f;
+    }
+  } else if (v >= 4.190f) {
+    s_chg_full_latched = true;
+    return 4.20f;
+  }
+
   if (v < 4.125f) {
     return v - 0.075f;
   } else {
     const float est = 2.0f * v - 4.20f;
+    if (est >= 4.180f) {
+      s_chg_full_latched = true;
+      return 4.20f;
+    }
     return (est > 4.20f) ? 4.20f : est;
   }
 }
 
 int power_charging_percent() {
+  if (s_chg_full_latched) return 100;
   return battery_percent(power_estimated_cell_voltage());
 }
 
 int power_charging_remaining_min() {
+  if (s_chg_full_latched) return 0;
   const int pct = power_charging_percent();
   if (pct >= 100) return 0;
   if (pct < 80) {
@@ -660,7 +691,7 @@ static void charge_log_tick(uint32_t now) {
       }
 
       // 2) 満充電到達イベント
-      if (!s_full_logged && pct >= 100) {
+      if (!s_full_logged && (pct >= 100 || s_chg_full_latched)) {
         s_full_logged = true;
         const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
         enqueueTask(createLogSdfTask("CHG FULL: raw=%.2fV cell=%.2fV t=%lum T=%.1fC",
@@ -671,13 +702,14 @@ static void charge_log_tick(uint32_t now) {
       if (now - s_last_periodic_log_ms >= 60000UL) {
         s_last_periodic_log_ms = now;
         const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
-        const char* mode = (pct >= 100) ? "FULL" : (raw_v >= 4.125f ? "CV" : "CC");
+        const char* mode = (pct >= 100 || s_chg_full_latched) ? "FULL" : (raw_v >= 4.125f ? "CV" : "CC");
         enqueueTask(createLogSdfTask("CHG [%lum]: raw=%.2fV cell=%.2fV soc=%d%% rem=%dm %s T=%.1fC",
                                      (unsigned long)elap_m, raw_v, cell_v, pct, rem_m, mode, temp));
       }
     } else {
       // 充電状態から抜けた（USB 抜去、または SW OFF）
       s_chg_active = false;
+      s_chg_full_latched = false;
       // 5秒以上充電していた場合のみ抜去過渡測定に入る（ノイズやチャタリング防止）
       if (!power_sw_off_on_usb() && now - s_chg_start_ms >= 5000UL) {
         s_unplug_pending = true;

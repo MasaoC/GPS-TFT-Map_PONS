@@ -286,7 +286,7 @@ static void dim_tick(uint32_t now) {
     }
 
     // ② IMU 振動（漕ぎ始め・ペダリング・機体運動）
-    // ★ SCH16T / BNO085 共に姿勢推定コア（attitude.cpp）の 230Hz ジャイロ＋比力静止判定を使用
+    // ★ SCH16T 姿勢推定コア（attitude.cpp）の 250Hz ジャイロ＋比力静止判定を使用
     if (!wake_reason && get_imu_alive() && !attitude_is_static()) {
       wake_reason = "imu motion";
     }
@@ -319,13 +319,20 @@ static void dim_tick(uint32_t now) {
   }
 
   // 5) 減光突入の判定（通常表示中）
+  static bool s_ever_flown = false;
+
   // 対地速度
   double lat, lon, gs = 0.0, trk;
   const bool fix = get_gnss_connection() && gnss_get_own_fix(lat, lon, gs, trk);
-  const bool speed_still = !fix || (gs < BL_DIM_SPEED_ENTER);
+  if (fix && gs >= BL_DIM_SPEED_ENTER) {
+    s_ever_flown = true;
+  }
 
-  // IMU 振動（静止しているか）
-  const bool imu_still = !get_imu_alive() || attitude_is_static();
+  // 飛行実績があった後は、GNSS が抜けても未測位を安易に静止とみなさない（フェイルセーフ）
+  const bool speed_still = fix ? (gs < BL_DIM_SPEED_ENTER) : (!s_ever_flown);
+
+  // IMU 振動（静止しているか）。IMU 異常時・非稼働時は静止とみなさない
+  const bool imu_still = get_imu_alive() && attitude_is_static();
 
   // 照度安定
   bool lux_still = true;

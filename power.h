@@ -15,8 +15,20 @@
 // 本体フラッシュ（EEPROM 領域）に残す過放電ラッチの記録（32 バイト固定）。
 // ★ PONSv7（BNO085 搭載）の ImuCalRec がオフセット 0..11 を使っているため、
 //   cherry-pick しても衝突しないよう BATT_LATCH_EE_ADDR（64）に置く。
+// ★ PONSv7 への cherry-pick 注意:
+//   v7 では Core0 の ImuCalRec（オフセット 0..11）と Core1 の過放電ラッチ（オフセット 64..95）が
+//   同一 EEPROM（EEPROM.commit()）を共有する。両方のコアが同時に commit() すると
+//   arduino-pico の idleOtherCore 機構によってデッドロック（フリーズ）する恐れがある。
+//   v7 へ取り込む際は commit() をどちらか単一のコア（Core1 推奨）に集約するか mutex で保護すること。
 #define BATT_LATCH_FLAG_MOVING    0x01  // 検知時に移動中（フライト中）だった
 #define BATT_LATCH_FLAG_JST_VALID 0x02  // date_yyyymmdd / time_hhmmss が有効
+
+// ---- 過放電警告トーン・音声の共通定義 ----
+#define BATT_OVERDISCHARGE_TONE_FREQ      2637
+#define BATT_OVERDISCHARGE_TONE_DUR_MS    150
+#define BATT_OVERDISCHARGE_TONE_COUNT     4
+#define BATT_OVERDISCHARGE_TONE_PRIORITY  4
+#define BATT_OVERDISCHARGE_WAV_FILE       "wav/batt_overdischarge.wav"
 
 struct BattLatchRecord {
   uint32_t magic;          // BATT_LATCH_EE_MAGIC ('PBAT')

@@ -1615,11 +1615,17 @@ static void handle_serial_command(const char* raw_cmd) {
 
   if (strcmp(cmd, "PONS:CONNECT") == 0) {
     webserial_connected = true;
+    webserial_cancel_requested = false;
     prev_screen_mode = screen_mode;
     screen_mode = MODE_PCCONNECT;
     redraw_screen = true;
     enqueueTask(createLogSdTask("PC CONNECTED (WEB SERIAL ACTIVE)"));
     Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION, (unsigned long)BUILDDATE);
+  } else if (strcmp(cmd, "PONS:PING") == 0) {
+    // GET タスク待機中または実行中はデータストリームに PONG が混ざるのを防ぐため応答を抑止
+    if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:PONG");
+    }
   } else if (strcmp(cmd, "PONS:LIST") == 0) {
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
@@ -1649,7 +1655,10 @@ static void handle_serial_command(const char* raw_cmd) {
     enqueueTask(createSerialGetTask(filename));
   } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
     webserial_cancel_requested = true;
-    Serial.println("PONS:CANCEL_OK");
+    // 転送タスク実行中でなければ即座に応答（転送中なら Core1 がファイルを閉じた直後に出す）
+    if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:CANCEL_OK");
+    }
   } else if (strcmp(cmd, "PONS:DISCONNECT") == 0) {
     webserial_connected = false;
     webserial_cancel_requested = true;
@@ -1682,6 +1691,12 @@ static void serial_command_service() {
       redraw_screen = true;
     }
     return;
+  }
+
+  // 転送タスク実行中・待機中は無通信タイマーを更新し続け、転送中の誤切断を防止
+  if (isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST) ||
+      isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+    last_serial_rx_ms = millis();
   }
 
   // 無通信フェイルセーフ: PC接続モードのまま 60 秒間無通信なら自動で通常航法へ復帰
@@ -1886,16 +1901,16 @@ void loop1() {
         saveSettings();
         break;
       case TASK_PLAY_WAV:
-        if (strcmp(currentTask.playWavArgs.wavfilename, "wav/batt_overdischarge.wav") == 0 &&
+        if (strcmp(currentTask.playWavArgs.wavfilename, BATT_OVERDISCHARGE_WAV_FILE) == 0 &&
             !power_overdischarge_latched()) {
           break;
         }
         startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume, currentTask.playWavArgs.excl_group);
         break;
       case TASK_PLAY_MULTITONE:
-        if (currentTask.playMultiToneArgs.freq == 2637 &&
+        if (currentTask.playMultiToneArgs.freq == BATT_OVERDISCHARGE_TONE_FREQ &&
             currentTask.playMultiToneArgs.solo_play &&
-            currentTask.playMultiToneArgs.priority == 4 &&
+            currentTask.playMultiToneArgs.priority == BATT_OVERDISCHARGE_TONE_PRIORITY &&
             !power_overdischarge_latched()) {
           break;
         }
@@ -2298,6 +2313,17 @@ void longPressCallback() {
   backlight_notify_activity();
   last_user_input_ms = millis();
   redraw_screen = true;
+
+  // PC接続モード中: プッシュスイッチ長押しでも手動切断して通常画面へ安全復帰
+  if (screen_mode == MODE_PCCONNECT) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    Serial.println("PONS:BYE");
+    enqueueTask(createLogSdTask("PC DISCONNECTED (BUTTON LONG) -> RESUME MAP"));
+    screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    redraw_screen = true;
+    return;
+  }
 
   // リプレイ選択画面での長押し = 「決定」。
   // 下の汎用パス（設定画面以外 → 設定画面へ戻る）より先に処理しないと項目を選べない。

@@ -268,6 +268,19 @@ void imulog_on_sd_reinit() {
 }
 
 // ============================================================
+// imulog_flush_and_close(): PC 接続（WebSerial）移行時の安全な同期・クローズ（Core1 専用）
+// ============================================================
+void imulog_flush_and_close() {
+    ASSERT_SD_CORE1("imulog_flush_and_close");
+    if (imuFileStatic.isOpen()) {
+        imuFileStatic.sync();
+        imuFileStatic.close();
+        imuOpenedFilename[0] = '\0';
+        imuFlushCount = 0;
+    }
+}
+
+// ============================================================
 // imulog_write_buffer(): バッファを SD へ書き出す（Core1 専用）
 // ============================================================
 // save_imu_replaydata() と同じ方針: ファイルは開きっぱなしにし、
