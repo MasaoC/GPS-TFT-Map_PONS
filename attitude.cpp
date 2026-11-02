@@ -13,13 +13,6 @@
 #include "attitude.h"
 #include "settings.h"
 
-// ESKF はジャイロと加速度の生レポートが無いと動かない。
-// これらは settings.h の IMULOG_RAW_REPORTS_ENABLED でしか有効化されないため、
-// 0 のままだと attitude_ready() が永久に false になる（画面には INIT... と出続ける）。
-#if !IMULOG_RAW_REPORTS_ENABLED
-  #warning "IMULOG_RAW_REPORTS_ENABLED=0 のため姿勢 ESKF は動作しません（ジャイロ/加速度レポートが無効）"
-#endif
-
 #define N_ERR 12   // 誤差状態の数: dtheta(3) + dv(3) + dbg(3) + dba(3)
 
 static const float GRAVITY = 9.80665f;
@@ -28,7 +21,7 @@ static const float GRAVITY = 9.80665f;
 // 状態
 // ============================================================
 // ★ **センサー座標系 → ENU。機体軸ではない。**
-//   入力（attitude_on_gyro / on_accel / on_grv）はすべて IMU の生の
+//   入力（attitude_on_gyro / on_accel）はすべて IMU の生の
 //   センサー軸で入れているので、この状態量もセンサー軸のまま。
 //   機体軸へのマウント回転は **出力の euler_from_state() で 1 回だけ**掛ける。
 //   ここを「機体軸」と誤解してマウント回転を二重に掛けないこと。
@@ -200,7 +193,7 @@ static float    dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
 static bool     static_now_ = false;
 static uint32_t static_since_us_ = 0;
 // 静止中の加速度累積（初期姿勢＝重力方向の平均用）。
-// ★ GRV の代わり。実測で GRV とロール・ピッチが 0.05 度以内で一致する
+// ★ v7 の実測で、チップ内融合のロール・ピッチと 0.05 度以内で一致した
 //   （20260930 / 20260818 の計 5 セッション。→ docs/imu_sch16t_plan.md）。
 static float    acc_sum_[3] = {0, 0, 0};
 static uint32_t acc_count_  = 0;
@@ -229,7 +222,7 @@ static uint32_t bias_n_      = 0;
 //   対策は 2 段構え。こちらは (1) で、加速度の低域だけで重力方向を常に持っておく。
 //   (2) は imu.cpp 側で「上方向が無くても predict は止めない」。
 // ★ 旋回中は比力が鉛直からずれるので、これは ESKF の代わりにはならない。
-//   あくまで水平化までの繋ぎ（＝ 0.982 までの GRV と同程度の品質）。
+//   あくまで水平化までの繋ぎ（チップ内融合の姿勢と同程度の品質）。
 static float up_lp_[3] = {0.0f, 0.0f, 1.0f};
 static bool  up_lp_valid_ = false;
 
@@ -530,7 +523,7 @@ void attitude_on_accel(const float a[3]) {
         }
     }
 
-    // 静止中は平均を溜める。これが初期姿勢の重力方向になる（旧 GRV の平均の代わり）。
+    // 静止中は平均を溜める。これが初期姿勢の重力方向になる。
     if (!static_now_ || initialized_) return;
     for (int i = 0; i < 3; i++) acc_sum_[i] += a[i];
     acc_count_++;
@@ -540,8 +533,7 @@ uint8_t attitude_get_yaw_source() { return yaw_src_; }
 bool    attitude_yaw_ready()      { return yaw_set_; }
 
 // センサー座標系で見た「上」方向 = 回転行列の第 3 行。
-// ★ imu.cpp の compute_earth_z_accel() が GRV から作っていたものと**同じ量**。
-//   バリオはこれと比力の内積で鉛直加速度を取る。
+//   バリオはこれと比力の内積で鉛直加速度を取る（imu.cpp の imu_feed_accel）。
 // ★ **水平化前でも使える値を返すこと。** 呼び出し側（バリオ）は起動直後から
 //   鉛直加速度を要求する。false を返して predict を止めさせると V/S が 0 に
 //   固まる（up_lp_ の宣言のコメント参照。2026-10-01 に実機で発覚）。
@@ -910,10 +902,10 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 // GNSS 速度による観測更新
 // ============================================================
 // バイアス推定が物理的にあり得ない大きさへ発散しないよう制限する。
-// BNO085 は校正済みの値を出すので残留バイアスは本来ごく小さい。
+// 工場校正のチップなので残留バイアスは本来ごく小さい。
 // 上限が無いと初期姿勢誤差の行き場としてバイアス状態が使われ、
 // 誤った値に固着して姿勢補正が効かなくなる
-// （2026-08-18 の実測で bg が 5.9deg/s に張り付き、ESKF が BNO085 と同じ挙動になった）。
+// （2026-08-18 の v7 の実測で bg が 5.9deg/s に張り付き、偽ピッチを出した）。
 // 定義は下にあるが level_update() から先に使うため前方宣言する。
 static void clamp_bias(float b[3], float lim);
 
@@ -1194,11 +1186,10 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
 bool attitude_ready() { return initialized_ && imu_fresh(); }
 
 // センサー座標系のオイラー角 → 機体軸 [度]。
-// imu.cpp の get_imu_euler() および tools/imulog/decode_imulog.py の
-// mount_correct() と同じ変換であること（実体は attitude.h の imu_body_euler_rad）。
+// tools/imulog/decode_imulog.py の mount_correct() と同じ変換であること（実体は attitude.h の imu_body_euler_rad）。
 static void euler_from_state(float &roll, float &pitch, float &yaw) {
     // ★ マウント回転はクォータニオンの段階で掛ける（imu_body_euler_rad）。
-    //   **Euler を組み替える旧方式には戻さないこと。**v7 の BNO085 の配置では機体が水平の
+    //   **Euler を組み替える旧方式には戻さないこと。**この取付けでは機体が水平の
     //   ときセンサーがジンバルロックに入り、角の入れ替えでは原理的に直らない
     //   （settings.h の IMU_MOUNT_Q* のコメント参照）。
     float r, p, y;

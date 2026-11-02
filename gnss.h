@@ -79,6 +79,8 @@
   void gnss_constellation_mode();
   bool get_gnss_fix();
   bool get_gnss_connection();
+  // 起動時点で GNSS 内部 RTC が有効な日時を保持していたか（バックアップ電池 MS621FE の生存判定用）
+  bool gnss_rtc_alive_on_boot();
   // 一度でも GNSS から受信したか（起動直後と「抜けた」の区別に使う）。
   // ★ これ無しで `!get_gnss_connection()` を警報の条件にすると、**起動直後の
   //   まだ 1 バイトも来ていない間に発報する**（PONS Link の GNSS 断線ビットで踏んだ）。

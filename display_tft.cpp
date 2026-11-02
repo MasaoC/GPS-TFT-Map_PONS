@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/03
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -36,7 +36,7 @@
 #include "src/button.h"
 #include "airdata.h"
 #include "imu.h"
-#include "imu_sensor.h"   // imu_caps()（融合出力が有るかの判定）
+#include "imu_sensor.h"   // imu_sensor_name()
 #include "src/vectormap.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
@@ -1227,7 +1227,8 @@ void draw_version_backscreen(){
   backscreen.print(BUILDDATE);
   backscreen.print(")");
 
-  backscreen.setCursor(160,0);
+  // 160 だと "Version 7.1" の末尾 "1" が右端（240px）を超えて折り返されるため、少し左（145）に寄せる
+  backscreen.setCursor(145,0);
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.println(VERSION_TEXT);
 }
@@ -1945,11 +1946,8 @@ void draw_eskf_yaw() {
 // ============================================================
 // draw_eskf_debug(): 比較用の詳細表示（DEBUG_ESKF 有効時のみ）
 // ============================================================
-// 姿勢推定の精度を実機で見比べるための評価用。地図上部に被せる。
+// 姿勢推定を実機で確かめるための評価用。地図上部に被せる。
 // draw_eskf_attitude() が使う左下の領域には触れないこと。
-//
-// 見方: 旋回中・加減速中に ESKF と BNO085 が開いていれば、その差が BNO085 の誤差。
-//   BNO085 は比力を鉛直とみなすため、定常旋回でロールを過小評価し、加減速でピッチがずれる。
 // ヨーは σ（推定標準偏差）で信頼度を示す。水平加速度が無いと可観測にならず育つ。
 void draw_eskf_debug() {
   const int x = 0, y = 2, w = 240, h = 46;
@@ -1975,7 +1973,6 @@ void draw_eskf_debug() {
   }
 
   float er, ep, ey;  attitude_get_euler(er, ep, ey);
-  float br, bp, by;  get_imu_euler(br, bp, by);
   float yacc = attitude_get_yaw_acc95_deg();   // 95%(2σ) 表記
 
   // 見出し
@@ -1996,24 +1993,8 @@ void draw_eskf_debug() {
                         : yacc < 40.0f ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
   backscreen.setCursor(x + 186, y + 12); backscreen.printf("%4.0f", ey);
 
-  // チップ内融合（比較用）。★ **これが無いチップもある**（SCH16T）。
-  //   無いときに 0 を並べると「水平で北向き」という本物らしい値になるので、
-  //   行ごと "---" にする。ヨーの収束状態（右の G/数値）は ESKF の話なので常に出す。
+  // ヨーの収束状態: 数値は 95%(2σ) の精度 [度]
   backscreen.setTextSize(1);
-  backscreen.setTextColor(COLOR_ORANGE, COLOR_BLACK);
-  backscreen.setCursor(x + 2, y + 32); backscreen.print(imu_sensor_name());
-  backscreen.setTextColor(COLOR_BRIGHTGRAY, COLOR_BLACK);
-  if (imu_caps() & IMU_CAP_QUAT) {
-    backscreen.setCursor(x + 36,  y + 32); backscreen.printf("%+6.1f", br);
-    backscreen.setCursor(x + 108, y + 32); backscreen.printf("%+6.1f", bp);
-    backscreen.setCursor(x + 186, y + 32); backscreen.printf("%4.0f", by);
-  } else {
-    backscreen.setCursor(x + 36,  y + 32); backscreen.print("   ---");
-    backscreen.setCursor(x + 108, y + 32); backscreen.print("   ---");
-    backscreen.setCursor(x + 186, y + 32); backscreen.print(" ---");
-  }
-
-  // ヨーの収束状態: M=地磁気で初期化済み / -=収束待ち、数値は 95%(2σ) の精度 [度]
   backscreen.setTextColor(COLOR_GRAY, COLOR_BLACK);
   backscreen.setCursor(x + 142, y + 32);
   // ヨーの情報源。'G' = GNSS 航跡から入れた / '-' = まだ入っていない（絶対方位は無意味）
@@ -2030,7 +2011,7 @@ void draw_eskf_debug() {
 // ============================================================
 // IMU / 姿勢 ESKF 画面（2 ページ構成）
 // ============================================================
-// ページ1: 姿勢の比較と、機体ゼロ点の較正操作
+// ページ1: 姿勢と、機体ゼロ点の較正操作
 // ページ2: センサーの生値・ESKF の内部状態（診断用）
 //
 // 操作: 短押し = カーソル移動 / 長押し = 実行（Exit 項目で設定画面へ戻る）
@@ -2093,19 +2074,17 @@ static void draw_imu_page1() {
   const int lh = 12;
   bool ready = attitude_ready();
 
-  // ---- 姿勢の比較 ----
+  // ---- 姿勢 ----
   // ★ **列は固定 x から描く。** AA_FONT_SMALL はプロポーショナルなので、
-  //   空白で詰めても桁は揃わない（"ESKF" と "BNO085" で幅が違う）。
-  //   チップ名が可変長になった 0.984 で、空白詰めでは成立しなくなった。
+  //   空白で詰めても桁は揃わない。
   const int cx_r = 56, cx_p = 112, cx_y = 168;   // ロール / ピッチ / ヨーの左端
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(cx_r, y);  backscreen.print("ROLL");
   backscreen.setCursor(cx_p, y);  backscreen.print("PITCH");
   backscreen.setCursor(cx_y, y);  backscreen.print("YAW");
   y += lh;
-  float er, ep, ey, br, bp, by;
+  float er, ep, ey;
   attitude_get_euler(er, ep, ey);
-  get_imu_euler(br, bp, by);
   backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
   backscreen.setCursor(2, y); backscreen.print("ESKF");
   // 未初期化・IMU 途絶時は数値を出さない（単位クォータニオンのままだと
@@ -2120,19 +2099,6 @@ static void draw_imu_page1() {
     backscreen.setCursor(cx_y, y); backscreen.print("  ---");
   }
   draw_imu_row_dot(y - 2, imu_row_col(imu_ok_ready()));
-  y += lh;
-  backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-  backscreen.setCursor(2, y); backscreen.print(imu_sensor_name());
-  if (imu_caps() & IMU_CAP_QUAT) {
-    backscreen.setCursor(cx_r, y); backscreen.printf("%+6.1f", br);
-    backscreen.setCursor(cx_p, y); backscreen.printf("%+6.1f", bp);
-    backscreen.setCursor(cx_y, y); backscreen.printf("%6.1f", by);
-  } else {
-    // 融合出力を持たないチップ（SCH16T）。0 を出すと「水平で北向き」に見える。
-    backscreen.setCursor(cx_r, y); backscreen.print("  ---");
-    backscreen.setCursor(cx_p, y); backscreen.print("  ---");
-    backscreen.setCursor(cx_y, y); backscreen.print("  ---");
-  }
   y += lh;
   // 巡航のトリム状態は瞬時ピッチではなく 平均で見る（瞬時値は std 1.23 度の振動があるため）。
   // 直進中のロール自動トリムの累積量も併記して、どれだけ補正が入ったか分かるようにする。
@@ -2245,16 +2211,10 @@ static void draw_imu_page1() {
 }
 
 
-// ページ2: センサー生値と ESKF 内部状態（診断用）
-// 校正の申告精度（0-3）の色。3=収束 / 2=まだ / それ以下は当てにならない。
-static uint16_t cal_acc_col(uint8_t v) {
-  return (v >= 3) ? COLOR_GREEN : (v == 2) ? COLOR_ORANGE : COLOR_RED;
-}
-
 // ============================================================
-//  IMU / ESKF 2/3 — IMU の生値と校正だけ
+//  IMU / ESKF 2/3 — IMU の生値だけ
 // ============================================================
-// ★ ここに ESKF の項目を戻さないこと。校正作業をしながら見る画面なので、
+// ★ ここに ESKF の項目を戻さないこと。マウントの向きを測りながら見る画面なので、
 //   「IMU が今どう見えているか」だけに絞ってある（ESKF は 3/3）。
 static void draw_imu_page2() {
   header_footer.fillScreen(COLOR_WHITE);
@@ -2293,9 +2253,7 @@ static void draw_imu_page2() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("X%+7.3f Y%+7.3f Z%+7.3f", a[0], a[1], a[2]); y += lh;
-  // ★★ **|a| が校正の合否そのもの。** 静止していれば姿勢に関係なく必ず 9.807。
-  //   申告精度(acc)が 3 でもここがずれていることがあるので、**数字を信じるのはこちら**。
-  //   2026-09-27 に実機で |a|=8.22（X 軸に +1.31 m/s^2 のバイアス）を踏んだ。
+  // ★★ **|a| が加速度計の健全性そのもの。** 静止していれば姿勢に関係なく必ず 9.807。
   //   姿勢を変えながらこの値が動かないことを確かめるのが確実な判定。
   const float aerr = an - 9.80665f;
   backscreen.setCursor(2, y);
@@ -2309,60 +2267,6 @@ static void draw_imu_page2() {
   backscreen.printf("STATIC: %s  %.1fs", st ? "YES" : "no ", attitude_get_static_secs());
   y += lh + 2;
 
-  // ---- 校正（DCD）----
-  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  // ★ 動的校正（DCD）と申告精度は BNO085 固有。SCH16T は工場校正で、
-  //   実行中に精度を申告する仕組みが無い。**節だけ差し替えて、下のメニューと
-  //   pushSprite には必ず到達すること**（early return にするとページが真っ白になり、
-  //   Next page / Back も押せなくなる）。
-  const bool has_cal = (imu_caps() & IMU_CAP_CAL) != 0;
-  backscreen.setCursor(2, y);
-  backscreen.print(has_cal ? "-- Calibration --" : "-- Calibration (n/a) --");
-  y += lh;
-  if (has_cal) {
-    // BNO085 の申告精度。**加速度は 6 姿勢（各軸の上下）で静止させると上がる。**
-    //   くるくる回すのは地磁気向けだが、**M: は 0.984 で消した**（地磁気レポートの
-    //   購読をやめたので更新されない。真方位しか使わないので購読そのものが不要）。
-    const uint8_t ca = get_imu_acc_accuracy(), cg = get_imu_gyr_accuracy();
-    backscreen.setCursor(2, y);
-    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);  backscreen.print("Cal ");
-    backscreen.setTextColor(cal_acc_col(ca), COLOR_WHITE); backscreen.printf("A:%u ", ca);
-    backscreen.setTextColor(cal_acc_col(cg), COLOR_WHITE); backscreen.printf("G:%u", cg);
-    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.printf("  cfg:%02X", get_imu_cal_cfg());
-    y += lh;
-
-    // ★★ **「一度も保存していない」を赤で明示する。** この画面を作った目的そのもの。
-    //   記録は本体フラッシュ（EEPROM 領域）にあり、SD を入れ替えても嘘にならない。
-    //   日付が --/-- なのは GNSS 時刻が無い場所（屋内）で保存したとき。RTC は無い。
-    const uint32_t sd_ = imu_cal_saved_date();
-    backscreen.setCursor(2, y);
-    if (!imu_cal_saved_ever()) {
-      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-      backscreen.print("DCD: NEVER SAVED");
-    } else if (sd_) {
-      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      backscreen.printf("DCD: SAVED %04u/%02u/%02u", (unsigned)(sd_ / 10000),
-                        (unsigned)(sd_ / 100 % 100), (unsigned)(sd_ % 100));
-    } else {
-      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      backscreen.print("DCD: SAVED (date unknown)");
-    }
-    y += lh;
-    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.setCursor(2, y);
-    // autosave は「まだ手動保存していない機体だけ ON」。保険なので ON が初期状態。
-    backscreen.printf("autosave:%s  saves:%u",
-                      imu_cal_autosave_on() ? "ON " : "OFF", imu_cal_save_count());
-    y += lh + 4;
-  } else {
-    // 工場校正のチップ（SCH16T）。保存するものが無いことを 1 行で言う。
-    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.setCursor(2, y);
-    backscreen.printf("%s: factory cal, nothing to save", imu_sensor_name());
-    y += lh + 4;
-  }
-
   // ---- メニュー ----
   const int mh2 = 15;
   for (int i = 0; i < IMU2_MENU_COUNT; i++) {
@@ -2372,17 +2276,6 @@ static void draw_imu_page2() {
     backscreen.print(sel ? ">" : " ");
     backscreen.setCursor(14, y);
     switch (i) {
-      case IMU2_MENU_SAVECAL: {
-        // ★ 条件は acc==3 かつ gyr==3（地磁気は入れない。屋内では 3 に届かない）。
-        // ★ 保存するものが無いチップ（SCH16T）でも**行は消さない。**
-        //   消すと IMU2_MENU_* の添字とカーソル位置がずれる。灰色で無効を示す。
-        const bool rdy = has_cal && imu_cal_ready();
-        if (!sel) backscreen.setTextColor(rdy ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
-        if (!has_cal) backscreen.print("SAVE CAL  (n/a)");
-        else if (rdy) backscreen.print("SAVE CAL  [READY]");
-        else          backscreen.print("SAVE CAL  (need A=3 G=3)");
-        break;
-      }
       case IMU2_MENU_NEXTPAGE:
         backscreen.print("Next page (ESKF) >");
         break;
@@ -2455,7 +2348,6 @@ static void draw_imu_page3() {
   // 較正した日（JST の MM/DD）も併記する。警告が出ていないときでも
   // 「いつ APPLY したのか」を人が確認できるようにしておく。--/-- は不明
   // （測位していない場所で APPLY した、または一度も APPLY していない）。
-  // ★ これは SD の設定に入っている値で、上のページの DCD とは別物。
   const uint32_t cd = attitude_get_calib_date();
   if (cd) backscreen.printf("level offset R%+.1f P%+.1f %02u/%02u", lr, lp,
                             (unsigned)(cd / 100 % 100), (unsigned)(cd % 100));
@@ -2812,7 +2704,7 @@ void draw_wireless(int cursor) {
 void draw_imudetail(int page) {
   switch (page % 3) {
     case 0:  draw_imu_page1(); break;   // 較正（SETPITCH/APPLY）とマスタースイッチ
-    case 1:  draw_imu_page2(); break;   // IMU の生値と校正（DCD は BNO085 のみ）
+    case 1:  draw_imu_page2(); break;   // IMU の生値
     default: draw_imu_page3(); break;   // ESKF の状態と調整
   }
 }
@@ -3261,6 +3153,69 @@ static void draw_sw_off_notice() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// USB 充電中かつ地上静止中の充電ポップアップ（充電ダッシュボード）
+// メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、USB通電時間、RTCバックアップ目安を表示
+static void draw_charge_popup() {
+  if (screen_mode != MODE_MAP) return;
+  if (!get_gnss_connection()) return; // GNSS 断線警告を最優先
+  if (!power_charge_popup_active()) return;
+
+  const int bx = 6, by = NOTICE_Y_CHG_POPUP, bw = SCREEN_WIDTH - 12, bh = CHG_POPUP_BOX_H;
+  const int pct = power_charging_percent();
+  const int rem_m = power_charging_remaining_min();
+  const int rem_90_m = power_charging_remaining_90_min();
+  const bool is_full = (pct >= 100 || rem_m == 0);
+  const bool cutoff_confirmed = power_charging_full_cutoff_confirmed();
+  const uint16_t box_col = is_full ? COLOR_GREEN : COLOR_BLUE;
+
+  begin_notice_box(bx, by, bw, bh, box_col);
+
+  // 1行目: メイン電池充電残量と残り時間（90%確実目安）
+  char l1[32];
+  if (is_full) {
+    if (cutoff_confirmed) {
+      snprintf(l1, sizeof(l1), "CHG: FULL (90%%+ Cutoff)");
+    } else {
+      snprintf(l1, sizeof(l1), "CHG: FULL (Main 100%%)");
+    }
+  } else {
+    snprintf(l1, sizeof(l1), "CHG %d%%  Rem:%dm (~%dm)", pct, rem_m, rem_90_m);
+  }
+
+  // 2行目: USB 通電経過時間 と GNSS バックアップ電池(RTC)状態
+  const uint32_t elap_s = power_charging_elapsed_sec();
+  const uint32_t elap_h = elap_s / 3600UL;
+  const uint32_t elap_m = (elap_s % 3600UL) / 60UL;
+  char l2[40];
+  snprintf(l2, sizeof(l2), "USB: %luh%02lum  RTC: %s", (unsigned long)elap_h, (unsigned long)elap_m, power_rtc_backup_status_str());
+
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(box_col, COLOR_WHITE);
+  backscreen.setCursor(bx + 8, by + 5);
+  backscreen.print(l1);
+
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(bx + 8, by + 23);
+  backscreen.print(l2);
+  backscreen.unloadFont();
+
+  // 3行目: ハードウェア LED 消灯確認案内（補足注記のため標準フォントで横幅に余裕を持たせる）
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor(bx + 8, by + 45);
+  if (cutoff_confirmed) {
+    backscreen.print("* Side RED LED should be OFF now");
+  } else if (is_full) {
+    backscreen.print("* Check side RED LED is OFF");
+  } else {
+    backscreen.print("* Wait until side RED LED turns off");
+  }
+
+  // 地図用フォントと色に戻して抜ける
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -3273,6 +3228,7 @@ void push_backscreen(){
   draw_power_fault_warning();      // 一番上。地図の下端に出す
   draw_charge_hot_notice();        // 電源経路の異常と同じ段（同時には出ない）
   draw_sw_off_notice();            // 同じ段（上の 2 つが出ている間は出ない）
+  draw_charge_popup();             // USB 充電・地上静止時の充電ダッシュボードポップアップ
   backscreen.pushSprite(0, 50);
   TIMING_END(ts_push_backscreen, push_bs);
 }
@@ -3394,7 +3350,20 @@ float get_input_voltage(){
   const uint32_t dt = (last_call_ms == 0) ? 0 : (now - last_call_ms);
   last_call_ms = now;
 
-  if (adreading < adr_peak - 200) {       // 急激に低下 = USB が外れた（0.4V 相当）
+  // ★ USB を抜いた直後は、下がる側もすぐ追う（BATTERY_UNPLUG_FOLLOW_MS の間）。
+  //   充電中の BATPWR は充電電流のぶんセル電圧より高く（約 75mV。docs/pons_charge_estimation.md）、
+  //   そのピークを 3 秒保持＋時定数 20 秒で下げていたので、抜いた瞬間に残量が 52% → 71% へ跳ね、
+  //   30 秒かけて戻っていた。下の「200 カウント」の判定は SW OFF 用で、この段差（数十カウント）は拾えない。
+  //   上がる側は追わない（負荷で一瞬下がった値が、そのまま表示に出ないように）。
+  static bool     prev_usb       = false;
+  static uint32_t usb_removed_ms = 0;
+  const bool usb = usb_power_present();
+  if (prev_usb && !usb) usb_removed_ms = now ? now : 1;
+  prev_usb = usb;
+  const bool just_unplugged = usb_removed_ms != 0 && (now - usb_removed_ms) < BATTERY_UNPLUG_FOLLOW_MS;
+
+  if (adreading < adr_peak - 200 ||       // 急激に低下 = SW OFF などで電池が切り離された（0.4V 相当）
+      (just_unplugged && adreading < adr_peak)) {
     adr_peak = adreading;
     last_maxadr_time = now;
   } else if (adreading > adr_peak) {      // ピークは即追従（無負荷のときの電圧）
@@ -3851,10 +3820,22 @@ void draw_footer(){
         chgcol = COLOR_BLUE;
       }
     }
-    const int w = header_footer.textWidth(chgbuf);
-    header_footer.setCursor(SCREEN_WIDTH - 2 - w, 1);
+    // ★ この欄に使えるのは右端から 48px まで。左隣の衛星数（"12sats"）が x=140〜188 を使い、
+    //   しかも後から描かれる。AA_FONT_SMALL だと "CHG 64%" は 64px、"SW OFF" は 51px あり、
+    //   はみ出した頭（"C"）が衛星数の文字や赤箱に潰れて読めなかった。
+    //   収まらないときは受信モードの s/r 表示と同じく組み込みフォント（1 文字 6px）へ落とす。
+    const int CHG_FIELD_W = 48;
+    int w = header_footer.textWidth(chgbuf);
+    const bool small = (w > CHG_FIELD_W);
+    if (small) {
+      header_footer.unloadFont();
+      header_footer.setTextSize(1);
+      w = 6 * (int)strlen(chgbuf);
+    }
+    header_footer.setCursor(SCREEN_WIDTH - 2 - w, small ? 4 : 1);   // 縦位置は draw_batt_part() と同じ
     header_footer.setTextColor(chgcol);
     header_footer.print(chgbuf);
+    if (small) header_footer.loadFont(AA_FONT_SMALL);   // 後続の描画（衛星数・SD）のために戻す
   } else {
     header_footer.setCursor(SCREEN_WIDTH - 45, 1);
     float input_voltage = get_display_voltage();
@@ -4842,9 +4823,9 @@ void draw_overdischarge_warning_screen(bool usb_locked, bool can_dismiss) {
     backscreen.unloadFont();
     backscreen.setTextSize(1);
     backscreen.setTextColor(box_fg, box_bg);
-    // v7.1 は SW OFF でも Q3 のボディダイオード経由で電池へ充電電流が流れるため明記する
-    backscreen.setCursor((SCREEN_WIDTH - 28 * 6) / 2, 40);
-    backscreen.print("* USB charges even at SW OFF");
+    // v7.1 は SW OFF なら充電されないが、SW を入れた瞬間に始まる（SW OFF のままでもロックする理由）
+    backscreen.setCursor((SCREEN_WIDTH - 27 * 6) / 2, 40);
+    backscreen.print("* USB charges when SW is ON");
   } else {
     // 電池単体: 充電禁止を警告しつつ、ボタンでナビ画面へ進める案内を出す
     backscreen.fillRect(6, 8, SCREEN_WIDTH - 12, 52, COLOR_BLACK);

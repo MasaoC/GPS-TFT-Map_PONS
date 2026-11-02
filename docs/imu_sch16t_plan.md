@@ -4,6 +4,13 @@
 > `PONS_BOARD` のスイッチ・`imu_bno08x.cpp`・`src/bno08x/`・docs/imu_i2c_bringup.md は外した
 > （v7 基板と BNO085 の側は `PONSv7` ブランチにある）。下の `PONS_BOARD` / `IMU_SENSOR_DEFAULT` /
 > `imu_bno08x.cpp` の記述は、そのときの計画と経緯の記録として残してある。
+>
+> **2026-11-03 に v7.1 の実機（Step 2〜3）を通したので、BNO085 のための残りも外した。**
+> 能力ビット `imu_caps()` / `IMU_CAP_*` / `IMU_CAPS_DEBUG_MASK`、融合出力（GRV / RV / LACC）と
+> 動的校正（DCD）のゲッター・画面・60 秒ログ・SAVE CAL メニュー、
+> `VARIO_USE_RAW_ACCEL` / `IMULOG_RAW_REPORTS_ENABLED` のスイッチと `#else` 側の経路。
+> **この文書の §1・§2.5〜2.7 にある能力ビットや融合出力の話は、もうコードに無い。**
+> 今の境界は [imu_sensor.h](../imu_sensor.h)（feed の口と `imu_drv_*` だけ）。
 
 BNO085 の加速度・ジャイロ精度に課題があるため、Murata **SCH16T-K01-10**（SPI）を導入し、
 **設定で BNO085(I2C) / SCH16T(SPI) を選べる**ようにする。
@@ -127,7 +134,9 @@ mag_accuracy）/ レート 5 / 校正と申告精度 9 / 健全性 4。
 「読まないとレポートが溜まってジャイロが化ける」ための飢餓対策だが、
 SCH16T は**こちらが SPI で取りに行く**方式なので飢餓が起きない
 （読まなければ DRY が立ったままになるだけ）。
-**ただし CLAUDE.md とコード中の飢餓対策コメントは消さないこと。** BNO085 に戻す可能性がある。
+~~**ただし CLAUDE.md とコード中の飢餓対策コメントは消さないこと。** BNO085 に戻す可能性がある。~~
+→ 2026-11-03 に BNO085 へ戻さないと決めて、BNO085 固有の飢餓対策の説明は外した。
+`imu_service_if_due()` は「呼ばれない間のサンプルが抜ける」意味で残っている。
 
 ---
 
@@ -282,6 +291,9 @@ BNO085 時代の実測 158 レコード/秒（4.4kB/s）の 3 倍。imulog の�
 
 ### 2.5 画面（[display_tft.cpp](../display_tft.cpp) — `BNO085` の言及 35 箇所）
 
+> **2026-11-03 に完了。** 融合出力の行・DCD の節・SAVE CAL を削除した。
+> 故障ビット・CRC エラー数などを画面へ出す作業は §2.7 と一緒に残っている。
+
 | 箇所 | 変更 |
 |---|---|
 | `display_tft.cpp:1182,1215` | 起動診断の `print_boot_check("BNO085:", imu)` → センサー名を可変に |
@@ -305,6 +317,9 @@ BNO085 時代の実測 158 レコード/秒（4.4kB/s）の 3 倍。imulog の�
 
 ### 2.6 校正・EEPROM
 
+> **2026-11-03 に DCD 関係の API と画面を削除した。** EEPROM のオフセット 0..11 は
+> PONSv7 の `ImuCalRec` が使うので、このブランチでも空けたまま（settings.h の過放電記録の番地）。
+
 - `imu.cpp` の `ImuCalRec`（EEPROM に DCD 保存記録）は SCH16T では不要
 - `settings.txt` の `calib_date` の意味が変わる
 - ★ **自前のジャイロ ZRO は 0.983 で入れた（実装済み・PC テスト済み）。
@@ -324,7 +339,8 @@ BNO085 時代の実測 158 レコード/秒（4.4kB/s）の 3 倍。imulog の�
 [GPS_TFT_map.ino:1031 付近](../GPS_TFT_map.ino) の 60 秒ログ。
 
 - `rate GRV=.. LACC=.. RV=..` / `cal cfg=..` / `quat grvbad=.. grvjump=.. rvbad=..`
-  → SCH16T では別の指標（実測 ODR / CRC エラー / STAT ビット / 飽和回数）
+  → **2026-11-03 に削除。** SCH16T では別の指標（実測 ODR / CRC エラー / STAT ビット / 飽和回数）。
+  実測 ODR は `raw GYR= ACC=` で出ている。**CRC エラー・STAT・飽和はまだ繋いでいない**
 - `imu gapmax=` は **SCH16T でも有用**（SPI を叩けていない時間）。そのまま残す
 
 ### 2.8 無線（PONS Link）

@@ -9,7 +9,6 @@
 //   このファイルは消してもビルドは通るが、履歴のため残してある。
 //   **定数を変えたいときは直下の settings.h を直すこと。**
 // ============================================================
-#define IMULOG_RAW_REPORTS_ENABLED 1
 #define IMU_RATE_GYRO_HZ 250
 #define ESKF_SIGMA_G    2e-3f
 #define ESKF_SIGMA_A    3e-2f
@@ -26,7 +25,7 @@
 #define ESKF_INIT_ATT_SIGMA_MOVING_DEG  30.0f
 
 
-// BNO085 のマウント回転（実機 settings.h と同じ値にすること）。
+// IMU のマウント回転（実機 settings.h と同じ値にすること）。
 // センサー Y 軸まわり -90 度。測定の根拠は実機側 settings.h のコメント参照。
 #define IMU_MOUNT_QW   0.70710678f
 #define IMU_MOUNT_QX   0.0f

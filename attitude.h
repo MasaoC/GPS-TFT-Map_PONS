@@ -6,17 +6,18 @@
 //           片方を直したらもう片方も必ず合わせること。
 //
 // ■ なぜ必要か
-//   BNO085 内蔵フュージョンは加速度計が測る「比力」を鉛直とみなすため、
+//   SCH16T には融合が無いので、姿勢はここで作る。加速度計が測る「比力」を
+//   鉛直とみなすだけの一般的な AHRS では、
 //     ・定常旋回中はロールを過小評価する
 //       （協調旋回では比力の横成分が厳密に 0 になり、加速度計にバンクが見えない）
 //     ・加減速中はピッチがずれる
 //   GNSS 速度から対地加速度を与えると、比力から遠心力・加減速分を差し引けるので
-//   真の重力方向が求まる。実測（2026-08-18 車載）での効果:
-//       単位前後加速度あたりのピッチ誤差  BNO085 4.4〜5.6 → ESKF 0.2〜0.5 deg/(m/s²)
-//       単位旋回レートあたりのロール誤差  BNO085 0.12〜0.22 → ESKF 0.01〜0.03 deg/(deg/s)
+//   真の重力方向が求まる。実測（2026-08-18 車載。比力＝鉛直の AHRS との比較）:
+//       単位前後加速度あたりのピッチ誤差  AHRS 4.4〜5.6 → ESKF 0.2〜0.5 deg/(m/s²)
+//       単位旋回レートあたりのロール誤差  AHRS 0.12〜0.22 → ESKF 0.01〜0.03 deg/(deg/s)
 //
 // ■ 座標系（重要）
-//   ワールド : ENU（X=East, Y=North, Z=Up）。BNO085 (SH2) のワールド系に合わせてある。
+//   ワールド : ENU（X=East, Y=North, Z=Up）。
 //   ボディ   : IMU のセンサー軸そのもの（settings.h の IMU_MOUNT_Q* で機体軸へ回す）。
 //   q は body → ENU。フィルタ内部でマウントのズレを意識する必要はない。
 //   機体軸の roll/pitch/yaw は出力時にマウント補正を通して得る。
@@ -87,10 +88,8 @@ void attitude_setup();
 // ジャイロ到着で predict を回す（加速度は直近値を使う）。単位は rad/s と m/s²。
 void attitude_on_gyro(const float g[3], uint32_t t_us);
 void attitude_on_accel(const float a[3]);
-// ★ 0.983 で attitude_on_grv() / attitude_on_rv() を削除した。
-//   初期ロール・ピッチは静止中の平均加速度から作り（GRV と実測 0.05 度以内で一致）、
-//   初期ヨーは GNSS 航跡から入れる。**生ジャイロと生加速度だけで初期化できる**ので
-//   BNO085 でも SCH16T でも同じ経路が使える。経緯は settings.h の
+// ★ 初期ロール・ピッチは静止中の平均加速度から作り、初期ヨーは GNSS 航跡から入れる。
+//   **生ジャイロと生加速度だけで初期化できる。** 経緯は settings.h の
 //   ESKF_YAW_INIT_MIN_SPEED_MPS のコメント。
 
 // ---- GNSS 速度観測（gnss.cpp の NAV-PVT 解析から呼ぶ）----
@@ -173,8 +172,7 @@ uint8_t attitude_get_yaw_source();
 // ★ 機上コードからは呼んでいない。消さないこと（理由は attitude_get_euler_raw）。
 bool  attitude_yaw_ready();
 // センサー座標系で見た「上」方向（= 回転行列の第 3 行）。
-// ★ バリオが比力から重力を抜くのに使う。imu.cpp の compute_earth_z_accel() が
-//   GRV で計算していたものと**同じ量**で、q の出どころだけが違う。
+// ★ バリオが比力から重力を抜くのに使う（imu.cpp の imu_feed_accel）。
 //   戻り値 false = まだ水平化できていないので使ってはいけない。
 bool  attitude_get_up_sensor(float u[3]);
 bool  attitude_is_static();                  // 静止判定の現在値

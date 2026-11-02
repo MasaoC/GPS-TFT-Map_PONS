@@ -5,7 +5,6 @@
 ■ 目的
 「実際に加速・減速した地点でピッチがどう変わったか」
 「カーブでバンクがどう変わったか」を 1 つの表で見られるようにする。
-BNO085 内蔵フュージョンの値も併記するので、両者の差 = 過小評価分が直接読める。
 
 ■ 時刻の橋渡し
   生 IMU ログ : ホスト時刻 t（time_us_32。起動ごとに 0 に戻る）
@@ -29,7 +28,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from decode_imulog import load, split, build_euler
+from decode_imulog import load, split
 from eskf import run_on_log
 
 GPS_LEAP_SECONDS = 18       # GPS 時系は UTC より 18 秒進んでいる（2017 年以降）
@@ -131,14 +130,13 @@ def main():
     ap.add_argument("--csvdir", default=".", help="飛行 CSV のあるディレクトリ")
     ap.add_argument("-o", "--out", default="merged.csv")
     ap.add_argument("--hz", type=float, default=10.0,
-                    help="出力レート [Hz]（既定 10。生は約 50Hz）")
+                    help="出力レート [Hz]（既定 10。生ログは約 62.5Hz）")
     ap.add_argument("--sacc-max", type=float, default=1.0,
                     help="運動量の算出に使う GNSS の sAcc 上限 [m/s]")
     args = ap.parse_args()
 
     parts = split(load(args.path))
     est = run_on_log(parts)
-    bno = build_euler(parts)
     gnss = parts.get("gnssvel")
     if gnss is None or gnss.empty:
         raise SystemExit("GNSS レコードが無いので時刻を対応付けられない")
@@ -161,17 +159,6 @@ def main():
         step = max(1, int(round((len(e) / (e["ts"].max() - e["ts"].min())) / args.hz)))
         e = e.iloc[::step].reset_index(drop=True)
 
-        # BNO085 の姿勢（同じセッション内で結合）
-        if bno is not None:
-            b = bno[bno["session"] == sess]
-            if not b.empty:
-                e = pd.merge_asof(
-                    e.sort_values("t"),
-                    b[["t", "roll", "pitch", "yaw"]]
-                     .rename(columns={"roll": "bno_roll", "pitch": "bno_pitch",
-                                      "yaw": "bno_yaw"}).sort_values("t"),
-                    on="t", direction="nearest")
-
         # GNSS 由来の運動量
         mot = motion_from_gnss(gs, args.sacc_max)
         if mot is not None:
@@ -184,10 +171,6 @@ def main():
                                "GNSS_Altitude", "KF_Altitude", "KF_Vspeed",
                                "pressure", "csv_file"]].sort_values("jst"),
                           on="jst", direction="nearest", tolerance=1.0)
-
-        if "bno_roll" in e:
-            e["d_roll"] = e["roll"] - e["bno_roll"]
-            e["d_pitch"] = e["pitch"] - e["bno_pitch"]
 
         matched = int(e["latitude"].notna().sum())
         def hhmm(x):
@@ -206,8 +189,7 @@ def main():
     cols = ["session", "jst_time", "jst", "t",
             "latitude", "longitude", "gs", "TrueTrack",
             "gnss_speed", "accel_long", "accel_lat", "turn_rate",
-            "roll", "pitch", "yaw", "yaw_sigma", "bno_roll", "bno_pitch", "bno_yaw",
-            "d_roll", "d_pitch",
+            "roll", "pitch", "yaw", "yaw_sigma",
             "GNSS_Altitude", "KF_Altitude", "KF_Vspeed", "pressure", "csv_file"]
     cols = [c for c in cols if c in m.columns]
     m[cols].to_csv(args.out, index=False)

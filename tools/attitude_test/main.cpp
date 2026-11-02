@@ -50,7 +50,7 @@ int main() {
         const double ab[3]={0,0,G};              // 機体座標の比力（上向き g）
         float g0[3]={0,0,0}, a0[3];
         body_to_sensor(ab, a0);                  // → センサー座標
-        // ★ 0.983 以降は GRV を渡さない。静止中の平均加速度から水平化される。
+        // 静止中の平均加速度から水平化される（機上と同じ）。
         // 静止初期化には ESKF_STATIC_INIT_US (2 秒) 必要なので 4 秒流す。
         int init_samples = (int)(4.0 * fs);
         for (int i=0; i<init_samples; i++) {

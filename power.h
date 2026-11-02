@@ -112,6 +112,12 @@ float power_charge_hot_temp();   // 判定に使っている温度 [°C]
 float power_estimated_cell_voltage();    // 推定セル開放電圧 [V] (CC: V-75mV / CV: 2V-4.20V)
 int   power_charging_percent();          // 充電中残量 [%] (0〜100)
 int   power_charging_remaining_min();    // 満充電までの推定残り時間 [分] (0=FULL)
+int   power_charging_remaining_90_min(); // 90%確実完了までの残り時間 [分] (0=FULL)
+bool  power_charging_full_cutoff_confirmed(); // 満充電到達後、90%確実消灯目安（+20分）を達成したか
+uint32_t power_charging_elapsed_sec();   // USB 通電（充電開始）からの経過時間 [秒]
+const char* power_rtc_backup_status_str(); // GNSS バックアップ電池(MS621FE)の充電状態目安
+bool  power_charge_popup_active();       // 充電ポップアップを地図画面に表示すべきか
+void  power_charge_popup_snooze();       // ボタン操作時にポップアップを一時非表示にする
 
 // ログ用の短い文字列（例: "usb=1" / "usb=1 vbus=4.95V"）。
 void power_format_status(char* buf, size_t n);

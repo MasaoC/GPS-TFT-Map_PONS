@@ -5,7 +5,7 @@
 //           高温での充電の警告、過放電（3.0V 未満）の本体フラッシュ記録と充電禁止ロック。
 //           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/03
 // ============================================================
 //
 // ■ 何を見張るか（docs/pons_power.md）
@@ -15,10 +15,10 @@
 //   続いたら異常として、画面・音・ログ・無線で知らせる。判定値は settings.h。
 //
 // ■ SW を OFF にしたまま USB で充電している（v7.1 のみ）
-//   v7.1 は充電 IC が SW（ロードスイッチ Q3）の後ろにあるので、SW OFF のままだと電池へは
-//   Q3 のボディダイオード経由になり、満充電の手前で充電が終わる。本体は USB で起動し、
-//   充電 LED も消えるので見た目では分からない。SW4 の OFF 側の接点が GPIO40 を GND に
-//   落とすので、「本体が動いているのに GPIO40 ≒ 0V」で分かる。地図に注意を出し、1 度だけ読み上げる。
+//   v7.1 は充電 IC が SW（ロードスイッチ Q3/Q4）の後ろにあるので、SW OFF のままだと電池は
+//   充電されない。本体は USB で起動し、充電 LED も点かないので見た目では分からない。SW4 の OFF 側の
+//   接点が GPIO40 を GND に落とすので、「本体が動いているのに GPIO40 ≒ 0V」で分かる。
+//   地図に注意を出し、1 度だけ読み上げる。
 //
 // ■ 高温での充電（v7・v7.1 とも）
 //   電池の仕様は「充電 0〜45°C」。MCP73831 には温度を入れる端子が無く、夏の車内や日なたでも
@@ -28,9 +28,8 @@
 //
 // ■ 過放電（3.0V 未満）の記録と充電禁止ロック（v7・v7.1 とも）
 //   LiPo 電池が一度でも 3.0V 未満に入ると負極銅箔の溶出が進み、次回の USB 充電時に内部微小短絡・
-//   発火に至る危険がある。ソフトから充電 IC を止める手段は無く、v7.1 では SW OFF でも Q3 の
-//   ボディダイオード経由で USB 充電電流が流れるため、本体フラッシュ（EEPROM 領域）にラッチして
-//   次回起動以降に全画面で警告する。
+//   発火に至る危険がある。ソフトから充電 IC を止める手段は無く、SW を入れたまま USB を挿せば
+//   充電が始まるため、本体フラッシュ（EEPROM 領域）にラッチして次回起動以降に全画面で警告する。
 //   - フライト中（電池単体で動作中）に 3.0V を割ったその場では新しい警告も音も出さず、電池を
 //     使い切るまで航法を続けさせる（1 回だけ Core1 経由でフラッシュへラッチを記録する）。
 //   - 次回以降の起動時は、電池単体なら警告画面＋警告トーン・音声の後にボタン操作でナビ画面へ
@@ -108,8 +107,8 @@ static void sample() {
 
 // 異常の条件（1 回の測定ぶん）。
 static bool fault_condition() {
-  // ★ SW OFF のあいだは判定しない。電池は Q3 で切り離されていて（ボディダイオードも
-  //   電池 → 充電 IC の向きには流さない）、壊れた充電 IC が電池で VBUS を持ち上げることが
+  // ★ SW OFF のあいだは判定しない。電池は Q3/Q4 で両方向とも切り離されていて、
+  //   壊れた充電 IC が電池で VBUS を持ち上げることが
   //   できない。このとき VBUS が 2.0〜4.3V なのは**弱い USB**（細いケーブル・へたった
   //   モバイルバッテリー）で、異常と言うと誤報になる。
   if (power_sw_off_on_usb()) return false;
@@ -254,7 +253,8 @@ bool power_overdischarge_usb_active() {
   //      過放電電池への充電は現に進行するためロックを解除してはいけない。
   if (s_volt >= USB_VBUS_PRESENT_V) return true;
   // 2) v7.1 で SW OFF のまま USB 給電中（GPIO40 < 0.5V）。
-  //    SW OFF でも Q3 のボディダイオード経由で電池へ充電電流が流れる。
+  //    いまは電池へ流れていないが、SW を入れた瞬間に充電が始まるので、SW OFF のうちからロックする。
+  //    （2026-11-02 の回路変更の前の基板は、SW OFF でも Q3 のボディダイオード経由で電池へ流れた）
   if (power_sw_off_on_usb()) return true;
   // 3) 細いケーブルや弱い USB 電源で過放電電池を引いて VBUS が 4.3V 未満へ垂れている場合。
   //    MCP73831 は降圧リニア充電 IC（昇圧回路なし）なので、充電 IC 故障による電池からの逆流では
@@ -579,7 +579,10 @@ void power_tick() {
 //    に達したら USB を抜くまで FULL（100%、残り0分）をラッチ保持する（4.05V 再充電しきい値割れで解除）。
 //    ※ 充電完了後に USB を挿したまま本体を再起動した場合は RAM のラッチが消えるため、
 //       緩和したセル電圧（4.15〜4.18V）に基づき「CHG 90〜96%」前後が表示される限界はある。
-static bool s_chg_full_latched = false;
+static bool     s_chg_full_latched       = false;
+static uint32_t s_chg_start_ms           = 0;  // USB 充電開始時刻 [ms]
+static uint32_t s_chg_full_since_ms      = 0;  // 満充電ラッチ到達時刻 [ms]
+static uint32_t s_chg_popup_snooze_since = 0;  // 充電ポップアップをスヌーズした時刻 [ms]
 
 float power_estimated_cell_voltage() {
   const float v = get_input_voltage();
@@ -591,12 +594,14 @@ float power_estimated_cell_voltage() {
   // 満充電ラッチの判定と維持
   if (s_chg_full_latched) {
     if (v < 4.05f) {
-      s_chg_full_latched = false; // 再充電しきい値(4.05V)を下回ったら解除
+      s_chg_full_latched  = false; // 再充電しきい値(4.05V)を下回ったら解除
+      s_chg_full_since_ms = 0;
     } else {
       return 4.20f;
     }
   } else if (v >= 4.190f) {
     s_chg_full_latched = true;
+    if (s_chg_full_since_ms == 0) s_chg_full_since_ms = millis() ? millis() : 1;
     return 4.20f;
   }
 
@@ -606,6 +611,7 @@ float power_estimated_cell_voltage() {
     const float est = 2.0f * v - 4.20f;
     if (est >= 4.180f) {
       s_chg_full_latched = true;
+      if (s_chg_full_since_ms == 0) s_chg_full_since_ms = millis() ? millis() : 1;
       return 4.20f;
     }
     return (est > 4.20f) ? 4.20f : est;
@@ -630,6 +636,71 @@ int power_charging_remaining_min() {
   }
 }
 
+// 90%以上の確率で完了していると言える安全マージン込みの残り時間 [分]
+// 熱ダレ（最大1.3倍の電流低下）および終止テーリング（+15分）を織り込んだ推定
+int power_charging_remaining_90_min() {
+  if (s_chg_full_latched) return 0;
+  const int rem = power_charging_remaining_min();
+  if (rem == 0) return 0;
+  return (int)(rem * 1.3f) + 15;
+}
+
+// 満充電到達後、90%確実消灯目安（到達後 +20分）を達成したか
+bool power_charging_full_cutoff_confirmed() {
+  if (!s_chg_full_latched || s_chg_full_since_ms == 0) return false;
+  return (millis() - s_chg_full_since_ms) >= 1200000UL; // 満充電到達から 20 分経過
+}
+
+// USB 通電（充電開始）からの経過時間 [秒]
+uint32_t power_charging_elapsed_sec() {
+  if (!usb_power_present() || power_sw_off_on_usb() || s_chg_start_ms == 0) return 0;
+  return (millis() - s_chg_start_ms) / 1000UL;
+}
+
+// GNSS バックアップ電池（MS621FE 5.5mAh）の充電状態目安
+// MS621FE は本体 3.3V レールから給電されているため、USB 接続中だけでなく
+// 電池動作中（フライト中など）も電源 SW が入っている間は全く同じようにトリクル充電される。
+// そのため、評価には USB 接続時間だけでなく本体の累積通電時間（millis()）を用いる。
+// （例: 電池で 2 時間飛行した後に USB を挿した場合、即座に Ready と判定される）
+//
+// ★ 起動時 RTC 生存（Hot/Warm スタート）と 4 段階安全評価:
+// SAM-M10Q の RTC 保持最低動作電圧は 1.65V（満充電 3.0V）。
+// 10日間放置などで 1.8V（残量数%・あと数時間で切れる瀕死状態）でも起動直後の RTC 時計は保持されている。
+// そのため「時計が生きていたから」と過大評価せず、安全側に倒して「数時間分（当日のみ）しかない（Few-h）」として
+// 初期化（通電 15分相当の下駄 900s を付与）し、通電とともに 1-2d, Ready へ昇格させる。
+// 一方、起動時に RTC が死んでいた（コールドスタート）場合は Low（15分未満）からスタートする。
+const char* power_rtc_backup_status_str() {
+  const uint32_t powered_sec = millis() / 1000UL;
+  const uint32_t base_sec    = gnss_rtc_alive_on_boot() ? 900UL : 0UL;
+  const uint32_t eff_sec     = powered_sec + base_sec;
+
+  if (eff_sec < 900UL) {
+    return "Low";        // 15分未満（時計喪失コールドスタート、ほぼ空）
+  } else if (eff_sec < 3600UL) {
+    return "Few-h";      // 15分〜1時間（または時計生存初期値：数時間分・当日保持）
+  } else if (eff_sec < 7200UL) {
+    return "1-2d";       // 1〜2時間通電（1〜2日保持可能）
+  } else {
+    return "Ready";      // 2時間以上通電（満充電・数週間保持）
+  }
+}
+
+// ボタン操作時に充電ポップアップを一時非表示（スヌーズ）にする
+void power_charge_popup_snooze() {
+  s_chg_popup_snooze_since = millis() ? millis() : 1;
+}
+
+// 地図画面に充電ポップアップを表示すべきか
+// 条件: USB接続中 ＆ SW ON ＆ 危険異常なし ＆ 地上静止中 ＆ 自機表示中 ＆ スヌーズ時間外
+bool power_charge_popup_active() {
+  const uint32_t now = millis();
+  if (s_chg_popup_snooze_since != 0 && (now - s_chg_popup_snooze_since < CHG_POPUP_SNOOZE_MS)) return false;
+  if (!usb_power_present() || power_sw_off_on_usb()) return false;
+  if (power_overdischarge_latched() || s_fault || s_hot) return false;
+  if (s_moving || !showing_own_state()) return false;
+  return true;
+}
+
 // USB 充電中の状態・残量推定ロジックの妥当性検証ログ（docs/pons_charge_estimation.md §7）
 // 後から log.txt を確認して以下の物理特性を検証・チューニングできるように記録する:
 //  1) 開始/途中挿し時の電圧・残量・推定残り時間（CHG START）
@@ -639,7 +710,6 @@ int power_charging_remaining_min() {
 //  5) USB 抜去時の IR ドロップ測定値（充電中電圧 - 抜去後開放電圧 = 実測 ΔV）（CHG UNPLUG）
 static void charge_log_tick(uint32_t now) {
   static bool     s_chg_active            = false;
-  static uint32_t s_chg_start_ms          = 0;
   static uint32_t s_last_periodic_log_ms  = 0;
   static bool     s_cv_logged             = false;
   static bool     s_full_logged           = false;
@@ -714,6 +784,8 @@ static void charge_log_tick(uint32_t now) {
       if (!power_sw_off_on_usb() && now - s_chg_start_ms >= 5000UL) {
         s_unplug_pending = true;
         s_unplug_ms      = now;
+      } else {
+        s_chg_start_ms   = 0;
       }
     }
   }
@@ -726,6 +798,7 @@ static void charge_log_tick(uint32_t now) {
       const int   post_pct = battery_percent(post_v);
       const int   drop_mv = (int)lroundf((s_last_chg_raw_v - post_v) * 1000.0f);
       const uint32_t elap_m = (s_unplug_ms - s_chg_start_ms) / 60000UL;
+      s_chg_start_ms = 0;
       enqueueTask(createLogSdfTask("CHG UNPLUG: chg=%.2fV(%d%%) post=%.2fV(%d%%) dV=%dmV t=%lum",
                                    s_last_chg_raw_v, s_last_chg_pct, post_v, post_pct, drop_mv, (unsigned long)elap_m));
     }

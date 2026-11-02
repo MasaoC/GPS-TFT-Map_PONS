@@ -2,57 +2,29 @@
 // File    : imu_sensor.h
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : IMU チップと、その上に乗る推定（姿勢 ESKF・バリオ KF）の境界。
-//           「どのチップでも同じ形で生データを流し込む口」と、
-//           「そのチップに何が有るか／無いか」を表す能力ビットを定義する。
+//           「チップから生データを流し込む口」と、推定からドライバを呼ぶ口（imu_drv_*）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/10
+// Updated : 2026/11/03
 // ============================================================
 //
-// ★ **この境界を作った理由。**
-//   v7 の BNO085 から SCH16T-K01（Murata）へ差し替えた。両者は種類が違う:
-//     BNO085 … 中で融合までやる。姿勢・重力除去済み加速度・地磁気方位が出てくる
-//     SCH16T … ジャイロと加速度しか出ない。融合は無い
-//   0.983〜0.984 で機上の推定（ESKF・バリオ）から BNO085 の融合出力を全部外したので、
-//   **必要なのはジャイロと加速度だけ**になった。残っている融合出力（GRV/RV）は
-//   比較表示と健全性カウンタ専用。その「無くてもよい」を**型で表す**のがこのヘッダ。
+// ★ SCH16T はジャイロと加速度しか出さない（融合は無い）。機上の推定は
+//   **この 2 つだけで成り立つ**ので、チップ固有のコードとの境界はここに閉じ込める。
 //
 // ---- 使い方 ----
 //   ドライバ側（imu_sch16t.cpp）
 //     ・生データが届いたら imu_feed_gyro() / imu_feed_accel() を呼ぶ。
 //       これだけで姿勢 ESKF の伝播とバリオの蓄積がつながる
-//     ・自分に何が有るかを imu_caps() で申告する
 //     ★ **生ログ（imulog_push）はドライバ側に残してある。** レコードの `s_us`
 //       （センサー時刻）と `acc`（申告精度）がチップ固有で、ここへ移すと
-//       BNO085 時代のログとバイト互換でなくなる。過去ログを同じツールで読み続けるため
-//   呼び出し側（画面・ログ）
-//     ・融合出力に触る前に imu_caps() を見る。**「有って当然」と書かないこと。**
-//       SCH16T では GRV / RV / LACC / 動的校正のどれも無い
+//       過去ログとバイト互換でなくなる。過去ログを同じツールで読み続けるため
 //
-// ★ 0.986 でファイルを割った（imu.cpp = チップ非依存 / ドライバ = チップ固有）。
-//   下の imu_drv_* がその契約。`imu_sch16t.cpp` は 0.991 で実装した。
-//   段取りは [docs/imu_sch16t_plan.md](docs/imu_sch16t_plan.md) §1。
-//   そこに **`imu_service_if_due()` の意味が SCH16T で変わる**ことも書いてある
-//   （飢餓対策が不要になるが、**対策コメントは消さないこと**）。
+// ★ imu.cpp = チップ非依存 / ドライバ = チップ固有。下の imu_drv_* がその契約。
 //
 #ifndef IMU_SENSOR_H
 #define IMU_SENSOR_H
 
 #include <Arduino.h>
 
-// ============================================================
-//  能力ビット — そのチップから「何が出てくるか」
-// ============================================================
-// ★ ジャイロと加速度は**全チップ必須**なので能力ビットを持たない。
-//   無ければ姿勢もバリオも成立しないので、分岐させる意味が無い。
-#define IMU_CAP_QUAT    (1u << 0)   // 融合クォータニオン（BNO085 の GRV 相当）
-#define IMU_CAP_MAGYAW  (1u << 1)   // 磁北基準クォータニオン（RV 相当）＋ヘディング精度
-#define IMU_CAP_MAG     (1u << 2)   // 生地磁気（0.984 で購読をやめたので BNO085 でも 0）
-#define IMU_CAP_LINACC  (1u << 3)   // 重力除去済み加速度（LACC 相当）
-#define IMU_CAP_CAL     (1u << 4)   // 動的校正と申告精度（BNO085 の DCD / accuracy）
-#define IMU_CAP_STATUS  (1u << 5)   // 故障・飽和ステータス（SCH16T の S1:S0 / CE）
-
-// いま載っているチップの能力。**融合出力に触る前にこれを見る。**
-uint32_t imu_caps();
 // ログ・画面に出す短い名前（"SCH16T"）。
 const char* imu_sensor_name();
 
@@ -69,8 +41,6 @@ const char* imu_sensor_name();
 //   a[3] : センサー軸の比力 [m/s²]。**重力を含んだまま**
 //          （重力を引いた値を渡すと ESKF の伝播と水平化の両方が壊れる）
 //   t_us : そのサンプルを受け取った時刻 [µs]（time_us_32()）。
-//          **チップが付けたタイムスタンプを使わないこと。** BNO085 の
-//          sv.timestamp は sh2 のアンダーフローで壊れている（0.983 の調査）。
 void imu_feed_gyro(const float g[3], uint32_t t_us);
 void imu_feed_accel(const float a[3]);
 
@@ -85,7 +55,7 @@ void imu_feed_reset();
 //   画面やログからは imu.h の公開 API を使うこと（ドライバ自身も、
 //   自分の中では imu_drv_* を呼ぶ ― 公開 API を呼ぶと層が逆流する）。
 
-// imu_drv_poll() の戻り値。**分割前の imu_update() の 3 分岐に 1 対 1 で対応する。**
+// imu_drv_poll() の戻り値。imu_update() はこの 3 つで分岐する。
 typedef enum {
     IMU_DRV_DEAD = 0,   // 居ない／途絶中。呼び出し側は恒速モデル（a_k=0）へ落とす
     IMU_DRV_WAIT,       // 生きているが、この回はポーリング周期に達していない
@@ -100,8 +70,5 @@ ImuDrvState imu_drv_poll();
 void imu_drv_service_if_due();
 bool imu_drv_present();   // 初期化に成功して「載っている」状態か
 bool imu_drv_alive();     // 直近 1 秒以内にサンプルが届いているか
-
-// VARIO_USE_RAW_ACCEL=0（LACC ベースの predict）の旧経路用。既定では使わない。
-bool imu_drv_lacc_predict_sample(float a_body[3], float q[4], uint32_t* lacc_last_us);
 
 #endif // IMU_SENSOR_H

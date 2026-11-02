@@ -12,12 +12,13 @@
 >   衝突したら受け取る側の基板に合わせる。
 > - **無線（PONS Link）は v7 の機体とも混ぜて使う。** プロトコル（`lora_link/link_proto.h`）と
 >   飛行 CSV の列は両ブランチでそろえておくこと。
-> - **SCH16T は本体基板でまだ一度も動かしていない**（`#warning "... DO NOT FLY."`）。
->   [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) の Step 2〜5。とくに
->   **マウント回転（`IMU_MOUNT_Q*`）が v7 の BNO085 の値のまま**なことを確かめる。
+> - **SCH16T は本体基板で起動と机上確認まで済み（2026-11-03）。まだ飛ばしていない**（`#warning "... DO NOT FLY."`）。
+>   [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) の Step 3 の残り〜5。
+>   マウント回転（`IMU_MOUNT_Q*`）は v7.1 で測り直して **v7 と同じ向き**だったので据え置き。
 >   **ESKF のゲインとサンプル間隔は 250Hz（4ms）に適合済み**（`tools/attitude_test` で検証済み）。ブリングアップ時は SCH16T の実機データで確認する。
-> - IMU の能力ビット（`imu_caps()`）の層と、BNO085 用の画面・ログの枝は残してある
->   （SCH16T では能力ビットが 0 なので通らない）。外すなら実機で確かめてから。
+> - BNO085 用の能力ビット（`imu_caps()`）・融合出力（GRV / RV / LACC）・動的校正（DCD）の
+>   コードと画面は **2026-11-03 に実機確認のうえ削除した。** PONSv7 から IMU 周りの直しを
+>   cherry-pick するときは、受け取る側（SCH16T）に合わせて読み替える。
 
 PONS v7 — 人力飛行機パイロット向けの GNSS 航法装置ファームウェア。
 RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
@@ -31,7 +32,7 @@ RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
 ## ビルド
 
 Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / Flash **16MB (no FS)**。
-必要ライブラリは `TFT_eSPI` / `SdFat`（v7 の BNO085 用の `Adafruit_BusIO` と取り込みライブラリは要らない）。
+必要ライブラリは `TFT_eSPI` / `SdFat`。
 
 **Flash Size は 16MB（no FS）。** 音声を FLASH へ焼いた 0.982 から所要が約 3.7MB に
 なり、2MB 指定では `region FLASH overflowed` でリンクが通らない。
@@ -57,7 +58,7 @@ Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / 
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
-- `RELEASE` — 有効に。無効だと `setup1()` が `while(!Serial)` で待ち、実機が起動しない。
+- `RELEASE` — 有効に。無効だと `setup()`（Core0）が `while(!Serial)` で待ち、実機が起動しない。
 - `RELEASE_GNSS` — GNSS シミュレーション（`DEBUG_GNSS_SIM_*`）が全部コメントアウト済みか。
 - `BUILDDATE` / `BUILDVERSION` — 更新する。README のバージョン記載も合わせる。
 - どちらかが抜けていると `#warning NOT RELEASE!` が出る。これが唯一の保険。
@@ -220,20 +221,14 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （地図描画・E220 の AUX 待ち・ボーレート切替・起動画面の各待ちに入れてある）。
   60 秒ログの `gapmax=` が実測値。ここが数十 ms に伸びたら疑う。
   **さらに 1 秒空くと「通信途絶」と誤判定して、生きているチップをリセットしに行く**
-  （v7 の BNO085 で実際に起き、復旧に失敗してそのまま死んだ）。`imu_drv_poll()` の冒頭に
+  （v7 で実際に起き、復旧に失敗してそのまま死んだ）。`imu_drv_poll()` の冒頭に
   ガード（呼び出し間隔が空いた回の判定は見送る）を入れてあるが、ガードに頼らず待ちループ側でも呼ぶこと。
 - **生ログ（`src/imulog.h`）の レコード ID を再利用しない。** 退避済みの過去ログは
   id だけでレコードを解釈するので、止めた ID に別の意味を割り当てると
   **古いログが静かに誤デコードされる**（値はもっともらしく出る）。
-  0.984 で止めた `IMULOG_ID_MAG 0x03` は欠番としてコメントを残してある。
+  0.984 で止めた `IMULOG_ID_MAG 0x03` と、v7 のログにだけ出る `0x04〜0x06`（GAMERV / RV / LINACC）は
+  欠番としてコメントを残してある。
   `tools/imulog/decode_imulog.py` の `KINDS` も同じ理由で定義を残す。
-- **融合出力（GRV / RV / LACC / 動的校正）に触る前に `imu_caps()` を見る。**
-  [imu_sensor.h](imu_sensor.h) の能力ビット。SCH16T では全部落ちるので、
-  「有って当然」と書いた箇所は**0 を本物として表示する**（姿勢比較の行なら
-  0 は「水平で北向き」というもっともらしい値になる）。
-  画面の分岐で `return` してはいけない箇所がある点にも注意
-  （IMU/ESKF 2/3 ページは下にメニューと `pushSprite` があり、早期 return すると
-  ページが真っ白になって操作もできなくなる）。
 - 方位はすべて真方位。磁方位は廃止済み。
 - デバッグ出力 `DEBUG_P(date, txt)` の**第 1 引数はその print を書いた日付**。
   `BUILDDATE` から一定以上古いものは出なくなる（`RELEASE` 時は全部消える）。
@@ -253,8 +248,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [display_pages.cpp](display_pages.cpp) | 地上で見る詳細画面（VARIO / GNSS DETAIL）。スプライトは display_tft.cpp のものを借りる |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
-| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では未検証**なので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
-| [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**能力ビット `imu_caps()` と feed の口**。融合出力（GRV/RV/LACC/校正）に触る前にここを見る |
+| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では起動と机上確認まで（Step 2〜3）**で、まだ飛ばしていないので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
+| [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |

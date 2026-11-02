@@ -330,7 +330,8 @@ void imulog_write_buffer(int bufidx, const char* filename,
             if (imuFileStatic.write(imulog_buf[bufidx], bytes) == bytes) {
                 imulog_written += n;
             }
-            // 4 バッファごと（約 2 秒）に sync。CSV の 2 秒フラッシュ方針に合わせる。
+            // 4 バッファごとに sync。v7.1（SCH16T・約 130 レコード/秒、settings.h の SCH16T_IMULOG_DECIM）では
+            // 1 バッファ 146 レコード ≒ 1.1 秒なので約 4.5 秒ごと。電源断で失うのは最大でこの分。
             if (++imuFlushCount >= 4) {
                 imuFileStatic.timestamp(T_WRITE, year, month, day, hour, minute, second);
                 imuFileStatic.sync();

@@ -1153,7 +1153,7 @@ void load_destinations(){
 }
 
 // SD カードを初期化し、地図・目的地・設定を読み込む。
-// trycount: 1回の呼び出しで SDIO を試みる最大回数。失敗時は 100ms 待って再試行する。
+// trycount: 1回の呼び出しで SDIO を試みる最大回数。失敗時は SD_BEGIN_RETRY_MS 待って再試行する。
 // 成功時: FAT タイムスタンプコールバック登録 → ログ記録 → init_mapdata / load_destinations / loadSettings を実行。
 // 失敗時: sdInitialized=false のまま処理を戻す（Core1 タスクはエラーをユーザーに報告する）。
 // SDIO / SPI フォールバック状態
@@ -1182,6 +1182,12 @@ void setup_sd(int trycount, bool load_settings){
   ASSERT_SD_CORE1("setup_sd");
   sd_setup_count++;
   sdInitialized = false;
+  // 前回の成功から SD.begin(SDIO) が失敗した回数と、失敗ごとの時刻・エラーコード・所要時間。
+  // 失敗中は log.txt に書けないので、次に成功したときの SD INIT 行にまとめて出して消す。
+  // 呼び出しをまたいで持ち越すのは、起動時に全部外れて try_sd_recovery() で復帰した場合も
+  // 起動時の失敗の中身を残すため。入りきらない分は捨てる（先頭の失敗ほど大事）。
+  static int  sdio_try_failed = 0;
+  static char sdio_fail_desc[160] = "";
   if (sd_setup_count > 1) {
     reset_open_files_before_reinit();
   }
@@ -1189,9 +1195,19 @@ void setup_sd(int trycount, bool load_settings){
   // --- SDIO 試行（SPI モード中はスキップ）---
   if (!sd_use_spi) {
     for (int i = 0; i < trycount; i++) {  // trycount 回だけ試行
+      const uint32_t t0 = millis();
       sdInitialized = SD.begin(SdioConfig(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO));
       if (sdInitialized) break;
-      delay(100);
+      // 失敗の中身を覚えておき、成功したときの SD INIT 行に並べる（失敗中は log.txt に書けないため）。
+      // err=0 ならカードの初期化は通っていて、FAT ボリュームのマウントで落ちている。
+      int n = (int)strlen(sdio_fail_desc);
+      if (n < (int)sizeof(sdio_fail_desc) - 1) {
+        snprintf(sdio_fail_desc + n, sizeof(sdio_fail_desc) - n, " [@%lums err=0x%02X data=0x%lX %lums]",
+                 (unsigned long)t0, (unsigned)SD.sdErrorCode(), (unsigned long)SD.sdErrorData(),
+                 (unsigned long)(millis() - t0));
+      }
+      sdio_try_failed++;
+      if (i + 1 < trycount) delay(SD_BEGIN_RETRY_MS);  // 最後の失敗のあとは待たない
     }
   }
 
@@ -1226,7 +1242,11 @@ void setup_sd(int trycount, bool load_settings){
 
   sdError = false;
   SdFile::dateTimeCallback(dateTime);
-  log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
+  // 行頭の "SD INIT" は tools/createmovie_csv2mp4.py が前方一致で読むので変えないこと。
+  // fails は前回の成功から SDIO が失敗した回数。[@起動からの ms err=SdFat のエラーコード data=… 所要 ms]。
+  log_sdf(sd_use_spi ? "SD INIT SPI (fails=%d%s)" : "SD INIT (fails=%d%s)", sdio_try_failed, sdio_fail_desc);
+  sdio_try_failed   = 0;
+  sdio_fail_desc[0] = '\0';
 
   // 過放電ラッチの裏コマンド解除（SD ルートに BATT_UNLOCK_FILENAME があるだけで発動・中身照合なし）。
   // ★ 先に SD.remove() の成功を確認してからラッチを解除する（フェイルセーフ順序）:

@@ -5,7 +5,7 @@ ESKF の合成データ検証: 定常協調旋回で真のバンク角を復元�
 ■ なぜこの試験なのか
 協調旋回中、機体が感じる比力は機体 -Z 方向一直線になり、横方向成分がゼロになる。
 つまり「加速度計から見ると水平飛行と区別がつかない」。
-BNO085 内蔵フュージョンは長期的に加速度計を鉛直の基準にするため、
+「比力＝鉛直」の AHRS は長期的に加速度計を鉛直の基準にするため、
 旋回が続くとロールが 0 へ引き戻される ＝ 実機で報告された「旋回中のロール過小評価」。
 
 GNSS 速度から対地加速度を与えれば遠心力分を差し引けるので、真のバンクが復元できる。
@@ -119,7 +119,7 @@ def test_pitch_accel(fs=50.0, ax=1.0, dur=20.0):
     pe = np.rad2deg(pitch[settled]).mean()
     print()
     print(f"== 水平直進 + 加速 {ax} m/s^2 (真のピッチ = 0) ==")
-    print(f"  加速度計のみ(BNO085相当): {pa:6.2f} deg  (誤差 {pa:+.2f})")
+    print(f"  加速度計のみ(AHRS相当): {pa:6.2f} deg  (誤差 {pa:+.2f})")
     print(f"  ESKF                  : {pe:6.2f} deg  (誤差 {pe:+.2f})")
     return abs(pe) < 1.0 and abs(pa) > 2.0
 
@@ -164,7 +164,7 @@ def main():
     gyro_m = gyro + bg_true + rng.normal(0, 2e-3, (n, 3))
     accel_m = accel + rng.normal(0, 3e-2, (n, 3))
 
-    # ---- 加速度計だけで水平出し（BNO085 が長期的に収束する先）----
+    # ---- 加速度計だけで水平出し（AHRS が長期的に収束する先）----
     roll_accel = np.arctan2(-accel_m[:, 1], accel_m[:, 2])
 
     # ---- ESKF ----
@@ -192,7 +192,7 @@ def main():
     print()
     print("== 定常協調旋回 (V=8m/s, bank=20deg, GNSS 2Hz) ==")
     print(f"  真のバンク角          : {truth_deg:6.2f} deg")
-    print(f"  加速度計のみ(BNO085相当): {accel_deg.mean():6.2f} deg  "
+    print(f"  加速度計のみ(AHRS相当): {accel_deg.mean():6.2f} deg  "
           f"(誤差 {accel_deg.mean()-truth_deg:+.2f})")
     print(f"  ESKF                  : {eskf_deg.mean():6.2f} deg  "
           f"(誤差 {eskf_deg.mean()-truth_deg:+.2f}, std {eskf_deg.std():.2f})")

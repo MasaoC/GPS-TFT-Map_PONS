@@ -6,14 +6,9 @@
 //           入力データを SD に記録する。機上では推定を行わない。
 //
 // なぜ生データが要るか:
-//   BNO085 内蔵フュージョンは加速度計が測る「比力」を鉛直とみなすため、
-//   定常旋回中はロールを過小評価し、加減速中はピッチがずれる。
-//   これを直すには GNSS 速度から対地加速度を与えて真の重力方向を求める必要がある。
-//   その ESKF は実飛行データに対して PC 上で開発・チューニングしてから移植する。
-//
-//   ※ ESKF には SH2_ACCELEROMETER（重力込みの生比力）を使う。
-//     SH2_LINEAR_ACCELERATION は「BNO085 自身の（旋回中に誤る）姿勢推定」を使って
-//     重力を除去した値なので、まさに信用できない情報が混入しており使えない。
+//   姿勢 ESKF（attitude.cpp）は GNSS 速度から対地加速度を与えて真の重力方向を求める。
+//   その ESKF は実飛行データに対して PC 上で開発・チューニングしてから移植する
+//   （tools/imulog/eskf.py が同じ数式の PC 版）。
 //
 // ---- バイナリ形式（PC 側デコーダはこの定義に従うこと）----
 // ファイルは ImuLogRec（28 バイト固定長・リトルエンディアン）の並びのみ。
@@ -21,9 +16,9 @@
 //
 //   offset size type      field
 //   0      4    uint32    t_us   ホスト時刻 time_us_32() [µs]（全種別共通の時間軸）
-//   4      4    uint32    s_us   センサー時刻 sv.timestamp [µs]（GNSS では iTOW [ms]）
+//   4      4    uint32    s_us   センサー時刻 [µs]（GNSS では iTOW [ms]）
 //   8      1    uint8     id     レコード種別（IMULOG_ID_*）
-//   9      1    uint8     acc    accuracy / status（BNO085 の 0-3、無い場合 0xFF）
+//   9      1    uint8     acc    accuracy / status（v7.1 の IMU は 0 固定。v7 のログは 0-3）
 //   10     2    uint16    seq    連番（全種別通し）。欠落検出用
 //   12     16   float[4]  v      種別ごとの意味（下表）
 //
@@ -38,11 +33,9 @@
 //   逆に BOOT レコードだけでも足りない。ファームを更新した日は 1 ファイルに
 //   旧形式（マーカー無し）と新形式が連結され、旧側の再起動はマーカーに現れない。
 //
-// ※【重要】s_us（sv.timestamp）は時刻として使えない。
-//   sh2 が「ホスト時刻 - 遅延」を計算する際にアンダーフローしており、
-//   実測では値が 2^32 近傍（符号付きなら小さな負値）に張り付いていた。
-//   時刻が要る場合は t_us から復元すること。BNO085 はレポートを一定周期で
-//   スケジュールするので、区間内で等間隔に割り付ければ正確な時刻が得られる
+// ※ IMU レコードの s_us は v7.1 では受信時刻（t_us と同じ値）。SCH16T はサンプルに
+//   タイムスタンプを付けない。★ **v7 のログの s_us は時刻として使えない**（チップ側の
+//   計算がアンダーフローして 2^32 近傍に張り付いていた）。時刻は t_us から復元すること
 //   （tools/imulog/decode_imulog.py の reconstruct_time() がこれを行う）。
 // ※ seq は「捨てたレコードでも消費する」。ただし **seq の飛び = 取りこぼし とは限らない**。
 //   ファイルが切り替わると（nofix → 日付）、切り替わり前のレコードは別ファイルへ
@@ -69,9 +62,10 @@
 //            ★ **この番号を別の用途に再利用してはいけない。** 退避済みの過去ログ
 //              （〜2026-10-03）は id でレコードを解釈するので、別の意味を割り当てると
 //              **古いログが静かに誤デコードされる**。解析側（tools/imulog）は読める。
-//   IMULOG_ID_GAMERV 0x04  qw     qx     qy     qz     センサー時刻   BNO085 の推定（比較用）
-//   IMULOG_ID_RV     0x05  qw     qx     qy     qz     センサー時刻   地磁気補正（比較用）
-//   IMULOG_ID_LINACC 0x06  lax    lay    laz    -      センサー時刻   既存バリオ KF 用（比較用）
+//   IMULOG_ID_GAMERV 0x04  ---- **v7 のログだけ**（チップ内融合の姿勢 qw qx qy qz）----
+//   IMULOG_ID_RV     0x05  ---- **v7 のログだけ**（地磁気補正の姿勢 qw qx qy qz）----
+//   IMULOG_ID_LINACC 0x06  ---- **v7 のログだけ**（重力除去済み加速度 lax lay laz）----
+//            v7.1 は書き出さない。★ 0x03 と同じく**番号を再利用しないこと**（過去ログの解読用）。
 //   IMULOG_ID_GNSSVEL 0x10 velN   velE   velD   sAcc   iTOW [ms]     [m/s] NED、sAcc も m/s
 //   IMULOG_ID_BARO   0x20  press  alt    temp   -      0             [hPa][m][℃]
 //
@@ -106,9 +100,9 @@
 #define IMULOG_ID_GYRO     0x01
 #define IMULOG_ID_ACCEL    0x02
 #define IMULOG_ID_MAG      0x03   // 欠番（0.984〜書き出さない。番号は再利用しない）
-#define IMULOG_ID_GAMERV   0x04
-#define IMULOG_ID_RV       0x05
-#define IMULOG_ID_LINACC   0x06
+#define IMULOG_ID_GAMERV   0x04   // v7 のログだけ（v7.1 は書き出さない。番号は再利用しない）
+#define IMULOG_ID_RV       0x05   // 同上
+#define IMULOG_ID_LINACC   0x06   // 同上
 #define IMULOG_ID_GNSSVEL  0x10
 #define IMULOG_ID_BARO     0x20
 

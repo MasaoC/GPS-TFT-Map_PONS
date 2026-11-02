@@ -5,9 +5,7 @@
 //           imu_sensor.h の契約を実装する。チップ依存はこのファイルだけ。
 //
 // ■ このチップは「ジャイロと加速度しか出さない」
-//   BNO085 と違って融合が無いので、姿勢は attitude.cpp の ESKF、重力除去は
-//   バリオ KF が自分でやる（0.983〜0.984 で依存を外した）。
-//   したがって **imu_caps() は融合系を全部 0 にする**。画面とログはそれで縮退する。
+//   融合が無いので、姿勢は attitude.cpp の ESKF、重力除去はバリオ KF が自分でやる。
 //
 // ■ フレーム層は tools/sch16t_test/ からの移植
 //   あちらは Pico 2 単体で動く単独テストで、**実機で全項目が通っている**
@@ -20,11 +18,11 @@
 //   LPF2(13Hz) + DEC5(737.5Hz、実測 721.5Hz)、読み出し 250Hz（最小推奨 150Hz）。
 //   選定理由は settings.h のコメントと docs/imu_sch16t_plan.md §5 の (2)。
 //
-// ★ **本体基板では一度も動かしていない**（0.991 時点）。
-//   docs/imu_sch16t_bringup.md の Step 2〜5 を通すまで飛ばさないこと。
+// ★ **本体基板では起動と机上確認（Step 2〜3）まで済み**（2026-11-03）。
+//   docs/imu_sch16t_bringup.md の Step 4〜5 を通すまで飛ばさないこと。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/14
+// Updated : 2026/11/03
 // ============================================================
 
 #include <Arduino.h>
@@ -76,7 +74,7 @@ static bool     s_present = false;          // 初期化に成功して「載っ
 // ★★ **「一度でも動いたか」を別に持つ。** これが false の間は復旧を試みない。
 //   sch_init() は合計 300ms 前後ブロックするので、センサーが載っていない機体で
 //   60 秒ごとに呼ぶと **Core0 が定期的に 300ms 止まる**（地図描画と E220 の
-//   AUX 窓に効く。BNO085 側も同じ理由で「最初から未接続なら復旧しない」にしてある）。
+//   AUX 窓に効く）。
 static bool     s_ever_alive = false;
 static uint32_t s_last_sample_ms = 0;       // 最後にサンプルを引き取った時刻
 static uint32_t s_poll_last_us = 0;
@@ -88,8 +86,7 @@ static uint32_t s_hz_last_ms = 0;
 static uint16_t s_gyro_cnt = 0, s_accel_cnt = 0;
 static float    s_gyro_hz = 0.0f, s_accel_hz = 0.0f;
 
-// 健全性カウンタ。★ SCH16T では GRV/RV が無いので、見るのはこちら。
-//   いまは 60 秒ログではなくシリアルと SD ログへ出している
+// 健全性カウンタ。いまは 60 秒ログではなくシリアルと SD ログへ出している
 //   （画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業）。
 static uint32_t s_crc_err = 0;      // CRC 不一致
 static uint32_t s_ce_err  = 0;      // CE（コマンドエラー）
@@ -397,8 +394,7 @@ static bool read_sample() {
     const float az = frame_data_i20(faz) / SCH16T_LSB_PER_MPS2;
 
     // ★ 生ログの s_us には**受信時刻**を入れる。SCH16T はサンプルに
-    //   タイムスタンプを付けないので、BNO085 の `sv.timestamp` 相当が存在しない。
-    //   acc（申告精度）も無いので 0 固定。decode_imulog.py はどちらも
+    //   タイムスタンプを付けない。acc（申告精度）も無いので 0 固定。decode_imulog.py はどちらも
     //   「チップ固有」として扱うので、ID は GYRO/ACCEL をそのまま使ってよい。
     const float g[3] = { gx, gy, gz };
     const float a[3] = { ax, ay, az };
@@ -419,7 +415,7 @@ static bool read_sample() {
     return true;
 }
 
-// 復旧。★ 1 分のレート制限（BNO085 の imu_try_recovery と同じ流儀）。
+// 復旧。★ 1 分のレート制限（IMU_RECOVERY_INTERVAL_MS）。
 static void try_recovery() {
     // ★ **最初から未接続なら試みない**（上の s_ever_alive のコメント）。
     if (!s_ever_alive) return;
@@ -428,7 +424,7 @@ static void try_recovery() {
     s_recover_last_ms = now_ms;
     DEBUGW_PLN(20261014, "[IMU] SCH16T recovery attempt");
     // ★ SPI は I2C と違ってバスが固まらない（クロックはこちらが出す）ので、
-    //   BNO085 の imu_i2c_bus_recover() 相当は要らない。リセットから入れ直すだけ。
+    //   バスの復旧処理は要らない。リセットから入れ直すだけ。
     if (sch_init()) {
         s_present = true;
         s_last_sample_ms = millis();
@@ -441,27 +437,15 @@ static void try_recovery() {
 }
 
 // ============================================================
-//  能力ビット
+//  名前
 // ============================================================
-// ★ 融合出力（QUAT / MAGYAW / LINACC / CAL）はこのチップに無いので全部 0。
-//   これを 0 にしてあるおかげで、画面とログは自動的に "---" へ縮退する。
-// ★ IMU_CAP_STATUS を立てる。S1:S0 / CE / STAT_SUM を実際に読んで判定に使っている
-//   （frame_sample_ok / sch_init）。
-// ★ **ただし外へ出す accessor はまだ無い。** いまこのビットを読んでいる箇所も無い。
-//   故障ビット・CRC エラー数・飽和回数を画面と 60 秒ログへ出すのは
-//   docs/imu_sch16t_plan.md §2.7 の作業。**「立っているから accessor がある」と
-//   思って書かないこと**（s_crc_err などは static のまま）。
-uint32_t imu_caps() {
-    return IMU_CAP_STATUS & IMU_CAPS_DEBUG_MASK;
-}
-
 const char* imu_sensor_name() { return "SCH16T"; }
 
 // ============================================================
 //  imu_drv_*
 // ============================================================
 void imu_drv_setup() {
-    // ★ ピンが UNSET（= v7 基板）なら何もしない。存在しない GPIO を叩かないため。
+    // ★ ピンが UNSET なら何もしない。存在しない GPIO を叩かないため。
     if (SCH16T_PIN_CS == SCH16T_PIN_UNSET) {
         enqueueTask(createLogSdTask("[IMU] SCH16T pins unset (check settings.h)"));
         DEBUGW_PLN(20261014, "[IMU] SCH16T pins are UNSET — check settings.h");
@@ -488,7 +472,7 @@ void imu_drv_setup() {
     //   失敗したらリセットして 1 回やり直す）。立ち上がりのタイミングが絡むので、
     //   1 回目の失敗が最終判定になると取りこぼす。
     //   ここで失敗すると s_ever_alive が立たず、以降の復旧も試みない
-    //   （BNO085 と同じ約束。載っていない機体で 300ms 止まるのを避けるため）。
+    //   （載っていない機体で 300ms 止まるのを避けるため）。
     for (int attempt = 0; attempt < 2 && !s_present; attempt++) {
         // ★ 中括弧を省かないこと。RELEASE では DEBUGW_* が空に展開されるので
         //   `if (x) ;` になり -Wempty-body が出る（意図も読めなくなる）。
@@ -504,7 +488,7 @@ void imu_drv_setup() {
 
 ImuDrvState imu_drv_poll() {
     // ★★ **「データが来ない」と「こちらが見ていなかった」を区別する。**
-    //   v7 の BNO085 で実際に踏んだ穴。
+    //   v7 で実際に踏んだ穴（生きているチップをリセットしに行き、復旧に失敗した）。
     //   起動時は setup() が長く、loop() に入るまで imu_update() が呼ばれない。
     //   その状態で最初の 1 回を迎えると、生きているチップを「途絶」と誤判定して
     //   リセットしに行く。**呼び出し間隔が空いていたら、その回の判定は見送る。**
@@ -568,9 +552,8 @@ void imu_drv_service_if_due() {
     }
     s_poll_last_us = now_us;
 
-    // ★ SCH16T は**こちらが取りに行く**方式なので、BNO085 のような
-    //   「溜まったレポートを掃く」ループは要らない（読まなければ DRY が立ったまま
-    //   になるだけで、レポートが溢れて化けることがない）。1 回で 1 サンプル。
+    // ★ SCH16T は**こちらが取りに行く**方式なので、溜まったデータを掃くループは
+    //   要らない（読まなければ出力レジスタが上書きされるだけ）。1 回で 1 サンプル。
     (void)read_sample();
 }
 
@@ -582,62 +565,14 @@ bool imu_drv_alive() {
     return (millis() - s_last_sample_ms <= 1000UL);
 }
 
-// VARIO_USE_RAW_ACCEL=0 の旧経路用。SCH16T は LACC を持たないので常に false。
-bool imu_drv_lacc_predict_sample(float a_body[3], float q[4], uint32_t* lacc_last_us) {
-    (void)a_body; (void)q; (void)lacc_last_us;
-    return false;
-}
-
-// ============================================================
-//  融合出力のゲッター — 無いので「無効値」を返す
-// ============================================================
-// ★ **0 をそのまま返さないものがある。** get_imu_euler() の 0,0,0 は
-//   「水平で北向き」というもっともらしい値なので、呼び出し側が imu_caps() を
-//   見ずに表示すると静かな誤表示になる。いまは全箇所が囲ってあるが、
-//   **囲い忘れに備えて参照は必ず埋める**（未初期化のまま返さない）。
-void get_imu_euler(float &roll, float &pitch, float &yaw) {
-    roll = 0.0f; pitch = 0.0f; yaw = 0.0f;
-}
-void get_imu_linaccel(float &ax, float &ay, float &az) {
-    ax = 0.0f; ay = 0.0f; az = 0.0f;
-}
-float get_imu_mag_accuracy_deg() { return -1.0f; }   // -1 = 未受信（BNO085 と同じ約束）
-
-// 融合レポートは存在しないので 0。生ジャイロ・加速度は実測値を返す。
-float get_imu_grv_hz()   { return 0.0f; }
-float get_imu_lacc_hz()  { return 0.0f; }
-float get_imu_rv_hz()    { return 0.0f; }
+// 生ジャイロ・加速度の受信レート [Hz]（60 秒ログの raw GYR / ACC）
 float get_imu_gyro_hz()  { return s_gyro_hz; }
 float get_imu_accel_hz() { return s_accel_hz; }
 
-// ============================================================
-//  校正と申告精度 — SCH16T には無い
-// ============================================================
-// ★ 自前のジャイロ ZRO 学習（attitude.cpp の learn_gyro_bias）が代わりを務める。
-//   バイアスの温度係数は実測 約 −0.005 °/s/℃（docs/imu_sch16t_bringup.md §1）で、
-//   ESKF がオンライン推定するので焼く必要はない。
-bool     imu_cal_ready()       { return false; }
-bool     imu_cal_saved_ever()  { return false; }
-uint32_t imu_cal_saved_date()  { return 0; }
-uint16_t imu_cal_save_count()  { return 0; }
-bool     imu_cal_autosave_on() { return false; }
-bool     imu_save_calibration(uint32_t yyyymmdd) { (void)yyyymmdd; return false; }
-
-uint8_t  get_imu_acc_accuracy() { return 0; }
-uint8_t  get_imu_gyr_accuracy() { return 0; }
-uint8_t  get_imu_cal_cfg()      { return 0xFF; }     // 0xFF = 未取得（BNO085 と同じ約束）
-
-// ============================================================
-//  健全性カウンタ
-// ============================================================
-// ★ GRV / RV はこのチップに無いので 0。SCH16T 側で意味があるのは
-//   CRC エラー・CE・飽和・STAT_SUM の故障ビットで、いまはシリアルと SD ログへ
+// ★ 健全性（CRC エラー・CE・飽和・STAT_SUM の故障ビット）はいまシリアルと SD ログへ
 //   出している。**画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業。**
-uint32_t get_imu_grv_bad()  { return 0; }
-uint32_t get_imu_grv_jump() { return 0; }
-uint32_t get_imu_rv_bad()   { return 0; }
 
-// Core0 が止まった最長時間 [µs]。★ **読むたびに 0 へ戻す約束**（BNO085 と同じ）。
+// Core0 が止まった最長時間 [µs]。★ **読むたびに 0 へ戻す約束**。
 uint32_t get_imu_poll_gap_max_us() {
     const uint32_t v = s_poll_gap_max_us;
     s_poll_gap_max_us = 0;

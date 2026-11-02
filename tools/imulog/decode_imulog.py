@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PONS v6 生 IMU ログ (imuraw/YYYYMMDD.bin) のデコーダ。
+PONS 生 IMU ログ (imuraw/YYYYMMDD.bin) のデコーダ。
 
 姿勢 ESKF を PC 上で開発するための入力を作る。
 バイナリ形式の定義は imulog.h のコメントが正（このファイルはそれに従う）。
@@ -11,7 +11,9 @@ PONS v6 生 IMU ログ (imuraw/YYYYMMDD.bin) のデコーダ。
 
 出力される DataFrame の時刻:
     t   : ホスト時刻 [s]。32bit ラップをアンラップ済み。全種別で共通の時間軸。
-    ts  : センサー時刻 [s]（BNO085 の sv.timestamp 由来）。同じくアンラップ済み。
+    ts  : サンプル時刻 [s]。t と同じ時計の上にある。
+          v7.1（SCH16T）はレコードの s_us（ドライバが読んだ時刻）をそのまま使う。
+          v7 のログは s_us が壊れているので、t から等間隔サンプリングを仮定して復元する。
           GNSS レコードでは iTOW [s]（ラップ処理はしない）。
 """
 
@@ -40,9 +42,11 @@ KINDS = {
     #   退避済みの過去ログ（〜2026-10-03）には入っているので定義は残す。
     #   **この番号を別の用途に再利用してはいけない**（古いログが誤デコードされる）。
     0x03: ("mag",     ["mx", "my", "mz"]),           # [uT] 0.984〜欠番
-    0x04: ("gamerv",  ["qw", "qx", "qy", "qz"]),     # BNO085 の推定（比較用）
-    0x05: ("rv",      ["qw", "qx", "qy", "qz"]),     # 地磁気補正（比較用）
-    0x06: ("linacc",  ["lax", "lay", "laz"]),        # 既存バリオ KF 用（比較用）
+    # ★ 0x04〜0x06 は v7 のログにだけ入っている（チップ内融合の出力）。v7.1 は書き出さない。
+    #   読む側のツールはもう無いが、0x03 と同じ理由で定義は残す（番号を再利用しない）。
+    0x04: ("gamerv",  ["qw", "qx", "qy", "qz"]),     # v7 のみ
+    0x05: ("rv",      ["qw", "qx", "qy", "qz"]),     # v7 のみ
+    0x06: ("linacc",  ["lax", "lay", "laz"]),        # v7 のみ
     0x10: ("gnssvel", ["velN", "velE", "velD", "sAcc"]),  # [m/s] NED
     0x20: ("baro",    ["press", "alt", "temp"]),     # [hPa][m][degC]
 }
@@ -119,18 +123,19 @@ def detect_sessions(t_us, ids=None, v0=None):
 
 
 def reconstruct_time(t, max_gap=0.5):
-    """ホスト時刻の列から、センサーの等間隔サンプリング時刻を復元する。
+    """ホスト時刻の列から、センサーの等間隔サンプリング時刻を復元する（**v7 のログ専用**）。
 
     なぜ必要か:
-      レコードの s_us（BNO085 の sv.timestamp）は使えない。sh2 が
-      「ホスト時刻 - 遅延」を計算する際にアンダーフローしており、
-      実測では値が 2^32 近傍（符号付きなら小さな負値）に張り付いていた。
-      一方ホスト時刻 t は Core0 が処理した時刻なので、地図描画で 64ms 止まると
-      その間のサンプルがバーストで届き dt≈0 が並ぶ（実測で 5〜7%）。
+      v7 のログの s_us は使えない（チップ側の計算がアンダーフローして 2^32 近傍に
+      張り付いていた）。一方ホスト時刻 t は Core0 が処理した時刻なので、
+      地図描画で 64ms 止まるとその間のサンプルがバーストで届き dt≈0 が並ぶ。
       そのまま積分すると、まとめて届いた回転がごっそり抜け落ちる。
+      ★ v7.1 では使わない（split() の _uses_host_read_time）。SCH16T はこちらから
+        読みに行く方式なのでバーストが起きず、s_us が本当の読み出し時刻になっている。
+        等間隔に均すと、描画で読み出しが空いた区間の dt がかえって狂う。
 
     復元方法:
-      BNO085 はレポートを一定周期でスケジュールするので、i 番目のサンプルは
+      v7 のチップはレポートを一定周期でスケジュールするので、i 番目のサンプルは
       t0 + i*T にある。取りこぼしが無ければ T = (t[-1]-t[0])/(n-1) で正確に求まる
       （実測: gyro 19.97ms ≒ 設定 50Hz、accel 15.95ms ≒ 実効 62.7Hz）。
       max_gap を超える中断があれば、そこで区切って区間ごとに復元する。
@@ -187,6 +192,17 @@ def load(path):
     return df
 
 
+def _uses_host_read_time(sub):
+    """s_us が「ドライバが読んだ時刻」（v7.1 / SCH16T）か。
+
+    v7.1 のドライバは読み出した瞬間の time_us_32() を s_us に入れ、imulog_push() が
+    その直後に t_us を入れるので、両者の差は数十 µs しかない。v7 のログの s_us は
+    2^32 近傍に張り付いた壊れた値なので、差は桁違いに大きい。
+    """
+    d = (sub["t_us"].to_numpy(np.int64) - sub["s_us"].to_numpy(np.int64)) % WRAP
+    return bool(np.median(d) < 5000)      # 5ms 未満なら同じ時計
+
+
 def split(df):
     """種別ごとの DataFrame に分ける。センサー時刻は種別ごとにアンラップする。"""
     out = {}
@@ -208,12 +224,19 @@ def split(df):
         elif rid == 0x20:
             sub["ts"] = np.nan                    # baro はセンサー時刻を持たない
         else:
-            # ※ s_us（sv.timestamp）は sh2 のアンダーフローで壊れているため使わない。
-            #   等間隔サンプリングを前提にホスト時刻から復元する。
+            # IMU レコード。セッションごとに時刻の出どころを決める。
+            #   v7.1: s_us = 読み出し時刻。t からの差（数十 µs）を引くだけ
+            #   v7  : s_us が壊れているので、等間隔サンプリングを前提に t から復元する
             tsv = np.zeros(len(sub), dtype=float)
             tv = sub["t"].to_numpy()
             for _, idx in sub.groupby("session").indices.items():
-                tsv[idx] = reconstruct_time(tv[idx])
+                ss = sub.iloc[idx]
+                if _uses_host_read_time(ss):
+                    lag = ((ss["t_us"].to_numpy(np.int64) - ss["s_us"].to_numpy(np.int64))
+                           % WRAP) * 1e-6
+                    tsv[idx] = tv[idx] - lag
+                else:
+                    tsv[idx] = reconstruct_time(tv[idx])
             sub["ts"] = tsv
 
         for i, c in enumerate(cols):
@@ -231,7 +254,8 @@ def split(df):
 def euler_from_quat(qw, qx, qy, qz):
     """クォータニオン → センサー座標系の ZYX オイラー角 [rad]。
 
-    imu.cpp の get_imu_euler() と同じ式を使うこと（値が食い違うと比較にならない）。
+    eskf.py の s_roll / s_pitch / s_yaw（フィルタの素の出力）に使う。機体軸の姿勢は
+    mount_correct_quat() を通すこと。
     """
     qw, qx, qy, qz = (np.asarray(v, dtype=float) for v in (qw, qx, qy, qz))
     sensor_roll = np.arctan2(2.0 * (qw * qx + qy * qz),
@@ -272,45 +296,6 @@ def mount_correct_quat(qw, qx, qy, qz):
     # 符号反転だけでなく 90 度足す（機上 attitude.h の imu_yaw_to_heading_deg と同じ）。
     return np.degrees(roll), np.degrees(pitch), (90.0 - np.degrees(yaw)) % 360.0
 
-
-
-def build_euler(parts):
-    """機体軸の roll/pitch/yaw [deg] を作る（機上の表示値と一致させる）。
-
-    ---- マウント補正 ----
-    変換の実体は mount_correct_quat()。**ここに式を書き写さないこと**
-    （写した式が古くなって実機と食い違う事故を 2026-09-22 に踏んだ）。
-    生クォータニオンのままでは機体軸の姿勢にならない。
-    """
-    grv = parts.get("gamerv")
-    if grv is None or grv.empty:
-        return None
-
-    roll, pitch, _ = mount_correct_quat(grv.qw, grv.qx, grv.qy, grv.qz)
-    out = pd.DataFrame({"session": grv["session"].to_numpy(),
-                        "t": grv["t"].to_numpy(), "roll": roll, "pitch": pitch})
-
-    rv = parts.get("rv")
-    if rv is not None and not rv.empty:
-        _, _, yaw_deg = mount_correct_quat(rv.qw, rv.qx, rv.qy, rv.qz)
-        yaw_src = pd.DataFrame({"session": rv["session"].to_numpy(),
-                                "t": rv["t"].to_numpy(), "yaw": yaw_deg})
-        # RV は 5Hz と低レートなので GRV の各時刻へ直近値を割り当てる。
-        # セッションごとに t が 0 に戻るため、必ずセッション単位で結合すること。
-        merged = []
-        for sess, o in out.groupby("session"):
-            y = yaw_src[yaw_src["session"] == sess]
-            if y.empty:
-                o = o.copy(); o["yaw"] = np.nan
-            else:
-                o = pd.merge_asof(o.sort_values("t"),
-                                  y[["t", "yaw"]].sort_values("t"),
-                                  on="t", direction="nearest")
-            merged.append(o)
-        out = pd.concat(merged, ignore_index=True)
-    else:
-        out["yaw"] = mount_correct_quat(grv.qw, grv.qx, grv.qy, grv.qz)[2]
-    return out
 
 
 def report(df, parts):
@@ -399,9 +384,6 @@ def main():
         return 1
 
     parts = split(df)
-    eul = build_euler(parts)
-    if eul is not None:
-        parts["euler"] = eul
     report(df, parts)
 
     if args.csv:

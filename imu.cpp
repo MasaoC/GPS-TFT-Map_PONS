@@ -4,7 +4,6 @@
 // Role    : バリオ用 3 状態 Kalman フィルターと、推定側のゲッター。
 //           **チップ非依存。** チップ固有のコードは imu_sch16t.cpp にある。
 //
-//   0.986 で 1918 行から BNO085 依存部を切り出した（docs/imu_sch16t_plan.md §1）。
 //   チップ側とのやり取りは imu_sensor.h の imu_drv_* だけ。
 //
 // ■ アーキテクチャ
@@ -16,7 +15,7 @@
 // ■ 座標系
 //   imu_feed_accel() が受け取るのはセンサー軸の比力（重力込み）。
 //   「上方向」は姿勢 ESKF（attitude_get_up_sensor）から取るので、
-//   **チップの融合出力には依存しない**（0.983 で GRV 依存を外した）。
+//   **チップの融合出力には依存しない。**
 //
 // ■ Kalman フィルター 状態 x = [z, z_dot, b]
 //   z     : 推定高度 [m]
@@ -46,7 +45,7 @@
 // ★ **imulog.h はここには無い。** 生ログのレコードはチップ固有なのでドライバ側にある。
 //   ここへ戻すと「チップ非依存」という前提が静かに崩れる。
 #include "imu.h"
-#include "imu_sensor.h"   // チップ境界（能力ビット・feed の口・imu_drv_*）
+#include "imu_sensor.h"   // チップ境界（feed の口・imu_drv_*）
 #include "link.h"
 #include "settings.h"
 #include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
@@ -55,11 +54,10 @@
 #include "attitude.h" // 姿勢 ESKF（機上リアルタイム版）
 
 
-#if VARIO_USE_RAW_ACCEL
 // ============================================================
-// 生比力から作る鉛直加速度の蓄積バッファ（VARIO_USE_RAW_ACCEL=1 用）
+// 生比力から作る鉛直加速度の蓄積バッファ
 // ============================================================
-// 加速度は 250Hz で届くが（v7 の BNO085 は 50Hz だった）kf_predict() は 30ms 周期でしか回らない。
+// 加速度は 250Hz で届くが kf_predict() は 30ms 周期でしか回らない。
 // 「最新の 1 サンプル」だけを使うと間のサンプルを捨てることになり、
 // 振動成分がエイリアシングして推定上昇率のノイズになる。
 // そこで受信のたびにここへ足し込み、predict のときに平均を取り出して使う。
@@ -70,14 +68,8 @@
 static float    _acc_vsum = 0.0f;   // 鉛直加速度の合計 [m/s²]（重力除去済み）
 static float    _acc_hsum = 0.0f;   // 水平加速度の大きさの合計 [m/s²]
 static uint16_t _acc_cnt  = 0;      // 合計したサンプル数
-static uint32_t _acc_last_us = 0;   // 最後に ACCELEROMETER を受信した時刻 [µs]（鮮度チェック用）
+static uint32_t _acc_last_us = 0;   // 最後に加速度を受信した時刻 [µs]（鮮度チェック用）
 static bool     _accel_valid = false;
-
-// ★ 0.983 で imu_sensor_handler() が compute_earth_z_accel() を呼ばなくなった
-//   （上方向を ESKF から取るようになった）ので前方宣言は要らない。
-//   関数自体は VARIO_USE_RAW_ACCEL=0 の経路（LINEAR_ACCELERATION）が使う。
-//   v7.1 では settings.h の #error で 0 を選べない（PONSv7 と形をそろえて残してある）。
-#endif
 
 // ============================================================
 // Kalman フィルター 内部状態
@@ -85,7 +77,7 @@ static bool     _accel_valid = false;
 
 // 鮮度不足で predict をスキップした回数（診断用。正常時は 0 のまま）。
 // ★ predict 側の計数なのでチップ非依存。0.986 の分割でここへ置いた。
-static volatile uint32_t _lacc_stale_skips = 0;
+static volatile uint32_t _acc_stale_skips = 0;
 
 // 状態ベクトル x = [z, z_dot, b]
 static float kf_x[3] = { 0.0f, 0.0f, 0.0f };
@@ -142,34 +134,25 @@ static volatile float _raw_accel[3] = {0, 0, 0};   // [m/s²]
 void imu_feed_gyro(const float g[3], uint32_t t_us) {
     _raw_gyro[0] = g[0]; _raw_gyro[1] = g[1]; _raw_gyro[2] = g[2];
     // ESKF の伝播はジャイロ到着で回す（加速度は直近値を使う）。
-    // ※ チップのタイムスタンプは使わない。BNO085 の sv.timestamp は sh2 の
-    //   アンダーフローで壊れている。バーストで届く分は attitude.cpp が窓平均で吸収する。
+    // ※ 時刻は受信時刻（SCH16T はサンプルにタイムスタンプを付けない）。
+    //   バーストで届く分は attitude.cpp が窓平均で吸収する。
     attitude_on_gyro(g, t_us);
 }
 
 // ドライバがリセット／復旧したときに呼ばれる（imu_sensor.h の契約）。
 void imu_feed_reset() {
-#if VARIO_USE_RAW_ACCEL
     _accel_valid = false;
     _acc_vsum = _acc_hsum = 0.0f;
     _acc_cnt  = 0;
-#endif
 }
 
 void imu_feed_accel(const float a[3]) {
     _raw_accel[0] = a[0]; _raw_accel[1] = a[1]; _raw_accel[2] = a[2];
     attitude_on_accel(a);
-#if VARIO_USE_RAW_ACCEL
     // ---- バリオ KF 用: 地球座標系の鉛直/水平加速度をここで作って足し込む ----
-    // 重力込みの比力を「上方向」へ射影し、重力を引く。
-    // BNO085 の LINEAR_ACCELERATION と違い、引く重力が固定値なので
-    // 「動作に相関した誤差」が入らない（settings.h の VARIO_USE_RAW_ACCEL 参照）。
-    //
-    // ★ **0.983 で上方向の出どころを GRV から ESKF の姿勢へ移した。** 式は変えていない
-    //   （attitude_get_up_sensor() が返すのは回転行列の第 3 行で、GRV から
-    //   compute_earth_z_accel() が作っていた係数と同じもの）。実ログでの差は
-    //   V/S の sd 0.012〜0.060 m/s・高度 |max| 0.42m で、最大差は GNSS 断の瞬間に出る。
-    //   → docs/imu_sch16t_plan.md §2.3
+    // 重力込みの比力を「上方向」（ESKF の回転行列の第 3 行）へ射影し、重力を引く。
+    // 引く重力が固定値なので「動作に相関した誤差」が入らない
+    // （settings.h の「KF に入れる鉛直加速度の作り方」）。
     float u_up[3];
     if (attitude_get_up_sensor(u_up)) {
         float az_world = u_up[0]*a[0] + u_up[1]*a[1] + u_up[2]*a[2];
@@ -196,33 +179,10 @@ void imu_feed_accel(const float a[3]) {
     if (_acc_cnt < 60000) _acc_cnt++;   // 念のための飽和ガード
     _acc_last_us = time_us_32();
     _accel_valid = true;
-#endif
 }
 
 
 
-
-
-// ============================================================
-// 内部ヘルパー: ボディフレームの加速度を地球座標系の Z 成分に変換
-// ============================================================
-// BNO085 の GAME_ROTATION_VECTOR クォータニオン q = (qw, qx, qy, qz) を使って、
-// ボディフレームのベクトル a = (ax, ay, az) を世界座標系に回転させたときの
-// Z 成分（上向き正）を回転行列の第3行から直接計算する。
-//
-// 回転行列 R (ボディ→ワールド) の第3行:
-//   R[2][0] = 2*(qx*qz - qw*qy)
-//   R[2][1] = 2*(qy*qz + qw*qx)
-//   R[2][2] = 1 - 2*(qx² + qy²)
-//
-// BNO085 LINEAR_ACCELERATION はすでに重力を除去しているため、
-// このゼロ点は重力加速度 g を引く必要がない。
-static float compute_earth_z_accel(float ax, float ay, float az,
-                                   float qw, float qx, float qy, float qz) {
-    return  2.0f * (qx * qz - qw * qy) * ax
-          + 2.0f * (qy * qz + qw * qx) * ay
-          + (1.0f - 2.0f * (qx * qx + qy * qy)) * az;
-}
 
 
 // ============================================================
@@ -633,16 +593,13 @@ bool  get_imu_gnss_offset_ready() { return _gnss_offset_ready; }
 float get_imu_az()           { return _imu_az; }
 float get_imu_horiz_accel()  { return _imu_horiz_accel; }  // 地球座標系 水平加速度 [m/s²]
 
-// 各センサーイベントの受信レート [Hz]（1 秒ウィンドウで計測）
 // 加速度サンプルの鮮度不足で Kalman predict をスキップした累計回数。
-// 正常時は 0。増えていれば IMU のサンプル配信が滞っている（レート要求過大など）。
-uint32_t get_imu_lacc_stale_skips() { return _lacc_stale_skips; }
-// 生ログ用レポートの受信レート（設定値どおり出ていれば飢餓は起きていない）
+// 正常時は 0。増えていれば読み出しが止まっている（Core0 の長いブロック・途絶）。
+uint32_t get_imu_acc_stale_skips() { return _acc_stale_skips; }
 // 生ジャイロ [rad/s] / 生加速度 [m/s²] の直近値（IMU/ESKF 画面の表示用）
 void get_imu_raw_gyro(float g[3])  { for (int i=0;i<3;i++) g[i] = _raw_gyro[i]; }
 void get_imu_raw_accel(float a[3]) { for (int i=0;i<3;i++) a[i] = _raw_accel[i]; }
 
-// 新着ROTATION_VECTORフラグ: trueを返し同時にクリア（Euler角ログのトリガー用）
 // Kalman パラメーターの動的変更（設定画面からのチューニング用）
 void imu_set_kf_params(float q_vel, float q_bias, float R) {
     kf_q_vel  = q_vel;
@@ -664,9 +621,8 @@ float get_imu_kf_R()      { return kf_R; }
 
 void imu_setup() { imu_drv_setup(); }
 
-// ★ 長いブロッキング処理の中から呼ぶためのもの（経緯はドライバ側のコメント）。
-//   SCH16T では飢餓が起きないので意味が変わるが、**呼び出し側を変えずに済むよう
-//   名前と役割（サンプルを引き取るだけ）は据え置く。**
+// ★ 長いブロッキング処理の中から呼ぶためのもの。SCH16T はこちらから取りに行く方式なので、
+//   呼ばれない間のサンプルは抜ける（settings.h の IMU_POLL_INTERVAL_US）。
 void imu_service_if_due() { imu_drv_service_if_due(); }
 
 bool get_imu_ok()    { return imu_drv_present(); }
@@ -707,12 +663,8 @@ void imu_update() {
     if (st == IMU_DRV_WAIT) return;
 
     // ---- Kalman predict ステップ ----
-    // クォータニオンと加速度の両方が揃っており、かつ Kalman が初期化済みのときのみ実行。
+    // 加速度が足し込まれていて、かつ Kalman が初期化済みのときのみ実行。
     // （初期化は最初の気圧高度到着時に imu_kalman_baro_update() が行う）
-#if VARIO_USE_RAW_ACCEL
-    // ★ _quat_valid（GRV）は条件から外した。上方向は ESKF から取るので、
-    //   「足し込めたか」を表す _accel_valid だけで足りる（足し込みは
-    //   attitude_get_up_sensor() が成功したときにしか起きない）。
     if (!_accel_valid || !kf_initialized) {
         // KF 初期化前（最初の気圧高度が来る前）は predict しない。
         // ここで捨てておかないと、初期化されるまで蓄積が伸び続けてしまう。
@@ -720,53 +672,27 @@ void imu_update() {
         _acc_cnt  = 0;
         return;
     }
-#else
-    // ★ 0.986 の分割で融合出力（LACC/GRV）はドライバ側にある。ここで取り出す。
-    float _la[3], _q[4];
-    uint32_t _la_last_us = 0;
-    if (!imu_drv_lacc_predict_sample(_la, _q, &_la_last_us) || !kf_initialized) return;
-#endif
 
     // ---- 安全網: 古い加速度サンプルでは predict しない ----
-    // 加速度レポートの配信が滞ったとき、同じサンプルを何度も積分してしまうと
-    // 加速度スパイクが数倍に増幅されて数秒尾を引く（2026-08-17 の回帰）。
-    // 正常時は ACCEL 50Hz = 20ms 周期（LACC 使用時は 15Hz = 67ms 周期）なので
-    // 150ms を超えることはなく、このゲートは発火しない。
+    // 通信途絶や Core0 の長いブロックからの復帰で、巨大な dt を積分しないためのゲート。
+    // 正常時は 4ms 周期なので 150ms を超えることはなく、このゲートは発火しない。
     // 発火時は predict を止めるだけで、出力は imu_kalman_baro_update() が
     // 気圧更新のたびに更新し続けるため、気圧ベースのバリオに劣化するだけで済む。
-    // ※ VARIO_USE_RAW_ACCEL=1 では受信時に足し込む方式なので「同じサンプルの重複積分」
-    //   自体は起きないが、通信途絶からの復帰で巨大な dt を積分しない意味は変わらない。
-#if VARIO_USE_RAW_ACCEL
-    if ((uint32_t)(time_us_32() - _acc_last_us) > IMU_LACC_MAX_AGE_US) {
-        _lacc_stale_skips++;
+    if ((uint32_t)(time_us_32() - _acc_last_us) > IMU_ACC_MAX_AGE_US) {
+        _acc_stale_skips++;
         kf_last_predict_us = time_us_32();  // 復帰時に巨大な dt で積分しないよう進めておく
         _acc_vsum = _acc_hsum = 0.0f;       // 溜まった古い分は捨てる
         _acc_cnt  = 0;
         return;
     }
-#else
-    if ((uint32_t)(time_us_32() - _la_last_us) > IMU_LACC_MAX_AGE_US) {
-        _lacc_stale_skips++;
-        kf_last_predict_us = time_us_32();  // 復帰時に巨大な dt で積分しないよう進めておく
-        return;
-    }
-#endif
 
-#if IMULOG_RAW_REPORTS_ENABLED
     // ---- predict はポーリング周期ではなく専用周期（30ms）で回す ----
     // kf_predict() は Q を dt でスケールせず「1 ステップあたり」で加算するため
     // （kf_P[1][1] += q_vel_eff）、predict 周期を変えると単位時間あたりの
-    // プロセスノイズ注入量が変わり、チューニング済みのバリオが壊れる。
-    // ポーリングを 30ms → 4ms に上げても、ここで従来の 30ms 周期を維持することで
-    // バリオの挙動を変えずに生ログのレートだけを上げられる。
-    //
-    // ※ ポーリングが 30ms のとき（生レポート無効時）はこのゲートを通してはいけない。
-    //   周期が同じだとジッタでゲートを 1 回外し、predict が 60ms 間隔になる回が混ざる。
-    //   そのため #if で丸ごと除外し、変更前と同じ「ポーリング毎に predict」に戻す。
+    // プロセスノイズ注入量が変わり、チューニング済みのバリオが壊れる
+    // （settings.h の IMU_KF_PREDICT_INTERVAL_US）。
     if ((uint32_t)(time_us_32() - kf_last_predict_us) < IMU_KF_PREDICT_INTERVAL_US) return;
-#endif
 
-#if VARIO_USE_RAW_ACCEL
     // 前回 predict からこの瞬間までに届いた生比力サンプルの平均を使う。
     // 変換（回転 → 重力除去）は受信のたびに済ませてあるので、ここでは平均するだけ。
     if (_acc_cnt == 0) return;   // 新しいサンプルが1つも無ければ predict しない
@@ -774,18 +700,6 @@ void imu_update() {
     float horiz_accel = _acc_hsum / _acc_cnt;
     _acc_vsum = _acc_hsum = 0.0f;
     _acc_cnt  = 0;
-#else
-    // 地球座標系の鉛直加速度を計算（BNO085 が重力を除去済みなので g を引く必要なし）
-    float a_k = compute_earth_z_accel(_la[0], _la[1], _la[2], _q[0], _q[1], _q[2], _q[3]);
-
-    // 地球座標系の水平加速度の大きさ（ワールドフレーム X・Y 成分のノルム）
-    // 全加速度の二乗ノルムは回転で不変なので:
-    //   horiz² = |a_body|² − a_world_z²  = (lax²+lay²+laz²) − a_k²
-    // これにより姿勢変化の影響を受けず、純粋な水平加速度のみを取り出せる。
-    float _body_sq   = _la[0]*_la[0] + _la[1]*_la[1] + _la[2]*_la[2];
-    float _horiz_sq  = _body_sq - a_k * a_k;
-    float horiz_accel = (_horiz_sq > 0.0f) ? sqrtf(_horiz_sq) : 0.0f;
-#endif
 
     // dt を計算（前回 predict からの経過時間 [s]）
     uint32_t now_us = time_us_32();

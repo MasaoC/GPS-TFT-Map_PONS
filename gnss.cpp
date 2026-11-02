@@ -184,6 +184,10 @@ static float    ubx_veln_mps     = 0.0f;  // 北向き速度（NAV-PVT velN byte
 static float    ubx_vele_mps     = 0.0f;  // 東向き速度（NAV-PVT velE bytes 52-55、m/s）
 static uint32_t ubx_itow_ms      = 0;     // GPS 週内時刻（NAV-PVT iTOW bytes 0-3、ms）
 static bool     ubx_gnssFixOK    = false; // NAV-PVT flags bit0: gnssFixOK（GNSS フィックスが有効かつ品質 OK）
+static bool     s_rtc_alive_on_boot = false; // 起動直後に GNSS 内部 RTC が生きていたか（MS621FE 生存判定）
+static bool     s_rtc_boot_checked  = false;
+
+bool gnss_rtc_alive_on_boot() { return s_rtc_alive_on_boot; }
 
 // UBX-NAV-PVT (class=0x01, id=0x07, payload=92 bytes) ハンドラー
 // 位置・速度・時刻・衛星数・フィックスタイプをすべて解析して内部変数を更新する。
@@ -204,6 +208,15 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     // 13 以上が通ると配列外読み出しになる（utcToJst() は既に両側チェックしている）。
     if (ubx_year < 2020 || ubx_month == 0 || ubx_month > 12 || ubx_day == 0 || ubx_day > 31) {
       ubx_date_valid = false;
+    }
+  }
+
+  // 起動後最初の NAV-PVT で、衛星測位前（未補足）でも有効な日時が届いたかを記録する。
+  // 有効であればバックアップ電池（MS621FE）が生きて RTC を保持していた証拠。
+  if (!s_rtc_boot_checked) {
+    s_rtc_boot_checked = true;
+    if (ubx_date_valid && ubx_year >= 2026) {
+      s_rtc_alive_on_boot = true;
     }
   }
   if (ubx_time_valid) {

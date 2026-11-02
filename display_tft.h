@@ -167,12 +167,10 @@ void draw_pcconnect();
 #define IMU_MENU_EXIT     5
 #define IMU_MENU_COUNT    6
 
-// ページ2: 調整用。日常の運用では触らない項目を置く。
-// IMU/ESKF 2/3 — IMU の生値と校正だけ。ESKF の項目は 3/3 へ移した。
-#define IMU2_MENU_SAVECAL  0   // 校正(DCD)を BNO085 のフラッシュへ保存（長押し）
-#define IMU2_MENU_NEXTPAGE 1
-#define IMU2_MENU_BACK     2
-#define IMU2_MENU_COUNT    3
+// IMU/ESKF 2/3 — IMU の生値だけ。ESKF の項目は 3/3。
+#define IMU2_MENU_NEXTPAGE 0
+#define IMU2_MENU_BACK     1
+#define IMU2_MENU_COUNT    2
 
 // IMU/ESKF 3/3 — ESKF の状態と調整
 #define IMU3_MENU_AUTOROLL 0
@@ -213,7 +211,7 @@ bool eskf_yaw_reliable();
 // デモ・リプレイ中は GNSS が再生データなので、IMU 由来の静止判定で代替する。
 bool eskf_calib_allowed();
 #ifdef DEBUG_ESKF
-// DEBUG_ESKF 有効時のみ、比較用の詳細（BNO085 の姿勢・ヨー・収束状態）を上部に足す。
+// DEBUG_ESKF 有効時のみ、ESKF の詳細（姿勢・ヨーの収束状態）を上部に足す。
 // draw_eskf_attitude() の表示位置は変えないこと。
 void draw_eskf_debug();
 #endif

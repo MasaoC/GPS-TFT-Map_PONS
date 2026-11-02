@@ -275,16 +275,10 @@ static void draw_vario_page2() {
   y += line_height;
 
   if (get_imu_ok()) {
-    // イベント受信レート
+    // 生ジャイロ・加速度の受信レート。250Hz 付近が正常（最小推奨 150Hz）。
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    // ★ 融合出力のレートは SCH16T には無い（imu_caps）。出すと
-    //   0.0Hz が並んで「飢餓している」と誤読されるので、行ごと差し替える。
-    if (imu_caps() & IMU_CAP_QUAT)
-      backscreen.printf("GRV:%.1fHz LACC:%.1fHz RV:%.1fHz",
-                        get_imu_grv_hz(), get_imu_lacc_hz(), get_imu_rv_hz());
-    else
-      backscreen.printf("%s: no fusion output", imu_sensor_name());
+    backscreen.printf("GYR:%.1fHz ACC:%.1fHz", get_imu_gyro_hz(), get_imu_accel_hz());
     y += line_height;
 
     float az = get_imu_az();
@@ -295,56 +289,12 @@ static void draw_vario_page2() {
 
     backscreen.setCursor(2, y);
     backscreen.setTextColor(get_imu_gnss_offset_ready() ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
-    // ★ _raw（必ず自機）を使う。この節の他の行（GRV/LACC/RV・VertAccel・
-    //   LinAccel）は自機しか出しようがないので、ここだけミラー値にすると
+    // ★ _raw（必ず自機）を使う。この節の他の行（レート・VertAccel）は
+    //   自機しか出しようがないので、ここだけミラー値にすると
     //   **同じ枠の中で出どころが混ざる**。
     backscreen.printf("KF MSL:%.1fm  VSI:%+.2fm/s",
                       get_imu_altitude_msl_raw(), get_imu_vspeed_raw());
     y += nextcolumn_height;
-
-    // 線形加速度（ボディフレーム）— チップ内で重力を引いた値。SCH16T には無い。
-    if (imu_caps() & IMU_CAP_LINACC) {
-      float lax, lay, laz;
-      get_imu_linaccel(lax, lay, laz);
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("-- LinAccel[body] --");
-      y += line_height;
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("X:%+.3f Y:%+.3f Z:%+.3fm/s2", lax, lay, laz);
-      y += line_height;
-    }
-
-    // Euler 角（Roll/Pitch: GAME RV、Yaw: RV+Mag）
-    // ★ **これはチップ内の融合の出力**で、機上の推定には使っていない
-    //   （0.983 で ESKF から切り離した）。ここは ESKF と突き合わせるための
-    //   比較表示。SCH16T には融合が無いので節ごと出さない。
-    if (imu_caps() & IMU_CAP_QUAT) {
-      float roll, pitch, yaw;
-      get_imu_euler(roll, pitch, yaw);
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-      backscreen.print("-- Euler Angles --");
-      y += line_height;
-      backscreen.setCursor(2, y);
-      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-      backscreen.printf("R:%+.1f P:%+.1f (GAME RV)", roll, pitch);
-      y += line_height;
-      if (imu_caps() & IMU_CAP_MAGYAW) {
-        const float mag_acc = get_imu_mag_accuracy_deg();
-        backscreen.setCursor(2, y);
-        if (mag_acc >= 0.0f) {
-          backscreen.setTextColor(mag_acc < 5.0f ? COLOR_GREEN : mag_acc < 15.0f ? COLOR_ORANGE : COLOR_RED, COLOR_WHITE);
-          backscreen.printf("Yaw:%+.1f(mag) acc:+/-%.1fdeg", yaw, mag_acc);
-        } else {
-          backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-          backscreen.printf("Yaw:%+.1f(game,no mag)", yaw);
-        }
-        y += line_height;
-      }
-      y += nextcolumn_height - line_height;
-    }
 
   } else {
     backscreen.setTextColor(COLOR_RED, COLOR_WHITE);

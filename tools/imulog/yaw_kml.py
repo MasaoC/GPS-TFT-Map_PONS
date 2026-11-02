@@ -9,7 +9,6 @@
 ■ 出力
   軌跡        : 走行ライン
   ESKF ヨー   : 推定方位へ伸ばした線分。色は真値（対地コース）との誤差
-  BNO085 ヨー : 同上（比較用）
   色: 青=負 緑=0付近 赤=正、±20度でスケール
 
 ■ 注意
@@ -60,17 +59,16 @@ def main():
     kml=['<?xml version="1.0" encoding="UTF-8"?>',
          '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
          '<name>ESKF yaw</name>']
-    print(f"{'sess':>5}{'点数':>8}{'ESKF残差RMS':>13}{'BNO残差RMS':>12}")
+    print(f"{'sess':>5}{'点数':>8}{'ESKF残差RMS':>13}")
     for s in sess:
         d=m[(m.session==s)&m.latitude.notna()&(m.gnss_speed>4)].dropna(
-            subset=["yaw","bno_yaw","TrueTrack"]).sort_values("t")
+            subset=["yaw","TrueTrack"]).sort_values("t")
         if len(d)<100: continue
         d=d[d.t >= d.t.min()+args.skip]        # 収束前を除外
         if len(d)<100: continue
         # 取り付け方位のズレ（定数）を除去
         de=wrap(d.yaw-d.TrueTrack);  oe=cmean(de); ee=wrap(de-oe)
-        db=wrap(d.bno_yaw-d.TrueTrack); ob=cmean(db); eb=wrap(db-ob)
-        print(f"{s:>5}{len(d):>8}{np.sqrt((ee**2).mean()):>13.2f}{np.sqrt((eb**2).mean()):>12.2f}")
+        print(f"{s:>5}{len(d):>8}{np.sqrt((ee**2).mean()):>13.2f}")
 
         kml.append(f'<Folder><name>session {s}</name>')
         # 軌跡
@@ -80,7 +78,7 @@ def main():
                    f'<LineString><coordinates>{coords}</coordinates></LineString></Placemark>')
         # 矢印（間引き）
         step=max(1,int(args.every/np.median(np.diff(d.t))))
-        for lab, yawcol, err, off in (("ESKF", d.yaw, ee, oe), ("BNO085", d.bno_yaw, eb, ob)):
+        for lab, yawcol, err, off in (("ESKF", d.yaw, ee, oe),):
             kml.append(f'<Folder><name>{lab} yaw</name>')
             for i in range(0, len(d), step):
                 r=d.iloc[i]; e=err.iloc[i]

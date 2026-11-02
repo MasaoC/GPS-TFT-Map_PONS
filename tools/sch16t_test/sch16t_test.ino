@@ -107,12 +107,27 @@ struct Stat {
 // ------------------------------------------------------------
 // ピン定義
 // ------------------------------------------------------------
+// ★ PONS v7.1 本体の J6 にブレイクアウトを挿したまま走らせるときは、
+//   次の行を有効にする（SPI1・GPIO41〜46。本体の settings.h の SCH16T_PIN_* と同じ）。
+//   ボード設定は本体ファームと同じ RP2350B（48 GPIO）にすること。
+//#define PONS_V71_BOARD
+#if defined(PONS_V71_BOARD)
+static const int PIN_MISO    = 44;
+static const int PIN_CS      = 41;
+static const int PIN_SCK     = 42;
+static const int PIN_MOSI    = 43;
+static const int PIN_EXTRESN = 45;
+static const int PIN_DRY     = 46;
+#define SCH_SPI SPI1          // GPIO41-44 は SPI1 の正規割り当て
+#else
 static const int PIN_MISO    = 16;
 static const int PIN_CS      = 17;
 static const int PIN_SCK     = 18;
 static const int PIN_MOSI    = 19;
 static const int PIN_EXTRESN = 20;
 static const int PIN_DRY     = 21;
+#define SCH_SPI SPI           // Pico 2 の GP16-19 は SPI0
+#endif
 
 // SPI クロック。データシート Table 12 より、既定モード（MISO_HI_SPD=0）で
 // 0.095〜10.5MHz。25.5MHz は CTRL_USER_IF の MISO_HI_SPD=1 が必要（非標準）。
@@ -358,12 +373,12 @@ static uint64_t xfer48(uint64_t frame) {
   uint8_t tx[6], rx[6];
   for (int i = 0; i < 6; i++) tx[i] = (uint8_t)(frame >> (8 * (5 - i)));   // big endian
 
-  SPI.beginTransaction(SPISettings(g_spi_hz, MSBFIRST, SPI_MODE0));
+  SCH_SPI.beginTransaction(SPISettings(g_spi_hz, MSBFIRST, SPI_MODE0));
   digitalWrite(PIN_CS, LOW);
   delayMicroseconds(1);                 // CS 立ち下がり → データ有効まで 40ns。余裕を取る
-  SPI.transfer(tx, rx, sizeof(tx));
+  SCH_SPI.transfer(tx, rx, sizeof(tx));
   digitalWrite(PIN_CS, HIGH);
-  SPI.endTransaction();
+  SCH_SPI.endTransaction();
   delayMicroseconds(1);                 // CS の High 期間を必ず作る
 
   g_frames++;
@@ -1380,10 +1395,10 @@ void setup() {
   //   DRY は high-active の push-pull 出力なのでプルダウンしても影響しない。
   pinMode(PIN_DRY, INPUT_PULLDOWN);
 
-  SPI.setRX(PIN_MISO);
-  SPI.setSCK(PIN_SCK);
-  SPI.setTX(PIN_MOSI);
-  SPI.begin(false);                     // CS はこちらで叩くのでライブラリには任せない
+  SCH_SPI.setRX(PIN_MISO);
+  SCH_SPI.setSCK(PIN_SCK);
+  SCH_SPI.setTX(PIN_MOSI);
+  SCH_SPI.begin(false);                     // CS はこちらで叩くのでライブラリには任せない
 
   // データシートのパワーオン待ち。250ms 経つ前に SPI を叩くと初期化中の応答になる。
   const uint32_t t0 = millis();

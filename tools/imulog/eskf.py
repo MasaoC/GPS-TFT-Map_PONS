@@ -3,7 +3,7 @@
 GNSS 速度援用 姿勢 ESKF（誤差状態カルマンフィルタ）。
 
 ■ 目的
-BNO085 内蔵フュージョンは加速度計が測る「比力」を鉛直とみなすため、
+加速度計が測る「比力」を鉛直とみなすだけの AHRS では、
   ・定常旋回中はロールを過小評価する（協調旋回では比力が機体 -Z 一直線になり、
     加速度計からはバンクがまったく見えない）
   ・加減速中はピッチがずれる
@@ -11,8 +11,8 @@ BNO085 内蔵フュージョンは加速度計が測る「比力」を鉛直と�
 差し引いて真の重力方向を求める必要がある。それがこのフィルタの役割。
 
 ■ 座標系（重要）
-  ワールド : ENU（X=East, Y=North, Z=Up）。BNO085 (SH2) のワールド系に合わせてある。
-  ボディ   : BNO085 センサー軸そのもの。
+  ワールド : ENU（X=East, Y=North, Z=Up）。
+  ボディ   : IMU のセンサー軸そのもの。
   クォータニオン q は body → ENU。
   → フィルタ内部でマウント（センサー軸と機体軸のズレ）を意識する必要がない。
     機体軸の roll/pitch/yaw は出力時に decode_imulog の補正を通して得る。
@@ -99,8 +99,7 @@ def level_quat_from_accel(a):
     R(q)·â = ẑ となる最小回転。**ロール・ピッチだけが決まり、ヨーは任意。**
     u→v の最小回転は q = normalize([1 + u·v, u×v])。v = ẑ なので
       q = normalize([1 + az_n, ay_n, -ax_n, 0])
-    0.983 まで BNO085 の GRV を初期姿勢に使っていたが、実ログで
-    ロール・ピッチが 0.05 度以内で一致したので置き換えた。
+    v7 の実ログで、チップ内融合のロール・ピッチと 0.05 度以内で一致した。
     """
     a = np.asarray(a, dtype=float)
     n = np.linalg.norm(a)
@@ -152,7 +151,7 @@ def set_heading(q, want_deg):
 class AttitudeESKF:
     """GNSS 速度で援用する 12 誤差状態の姿勢 ESKF。
 
-    チューニングパラメータ（既定値は BNO085 の実力と HPA の運動を想定した初期値。
+    チューニングパラメータ（既定値は v7 で調整し HPA の運動を想定した初期値。
     実飛行ログで詰めること）:
       sigma_g  : ジャイロ白色雑音 [rad/s/sqrt(Hz)]
       sigma_a  : 加速度計白色雑音 [m/s^2/sqrt(Hz)]
@@ -167,7 +166,7 @@ class AttitudeESKF:
         self.sbg, self.sba = sigma_bg, sigma_ba
         self.estimate_accel_bias = estimate_accel_bias
         # バイアス推定の物理的な上限。
-        # BNO085 は校正済みのジャイロ・加速度を出すので、残留バイアスは本来ごく小さい。
+        # 工場校正のチップなので、残留バイアスは本来ごく小さい。
         # 上限を置かないと、初期姿勢誤差の行き場としてバイアス状態が使われ、
         # 物理的にあり得ない値に固着して二度と戻らないことがある
         # （2026-08-18 の session 2 で bg が 5.9deg/s に張り付き、姿勢補正が効かなくなった。
@@ -317,16 +316,14 @@ class AttitudeESKF:
 # ============================================================
 
 def _map_host_to_sensor_time(imu_df):
-    """互換のため残しているが、現在 ts は decode_imulog.reconstruct_time() が
-    ホスト時刻と同じ時計の上で復元しているため、変換は恒等でよい。
-    （以前は BNO085 の sv.timestamp を別時計として扱っていたが、
-      あの値は sh2 のアンダーフローで壊れていたので使うのをやめた）
+    """ts は decode_imulog.reconstruct_time() がホスト時刻と同じ時計の上で
+    復元しているため、変換は恒等でよい。
     """
     return lambda x: np.asarray(x, dtype=float)
 
 
 def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
-               gnss_cutoff=None, init_from_grv=False, use_level=True,
+               gnss_cutoff=None, use_level=True,
                level_sigma=0.5, level_yawrate_dps=1.0,
                level_yawrate_inst_dps=3.0,
                level_accmag_tol=0.5, level_longacc=0.2,
@@ -353,7 +350,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     use_gnss: False にすると速度観測を一切入れない（純粋なジャイロ/加速度の積分）。
       GNSS 援用の効果を見るための比較用。観測が無いと姿勢を引き戻すものが何も無いので、
       初期姿勢＋ジャイロ積分のまま漂う。加速度計は伝播にしか入らないため、
-      BNO085 のように比力へ引き寄せられることもない（＝別種の壊れ方をする）。
+      「比力＝鉛直」の AHRS のように比力へ引き寄せられることもない（＝別種の壊れ方をする）。
 
     gnss_cutoff: ホスト時刻 t がこの値を超えたら GNSS 観測を止める（None で常時使う）。
       「飛行中に GNSS が途絶したら姿勢がどれだけ崩れるか」を測るために使う。
@@ -382,10 +379,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     gyro, accel = parts.get("gyro"), parts.get("accel")
     if gyro is None or accel is None or gyro.empty or accel.empty:
         raise SystemExit("gyro / accel レコードが無い。"
-                         "settings.h の IMULOG_RAW_REPORTS_ENABLED を 1 にして記録すること。")
+                         "settings.h の IMULOG_DEFAULT_ENABLED を確かめること。")
 
     gnss_all = parts.get("gnssvel")
-    grv_all = parts.get("gamerv")
     out = []
 
     for sess in sorted(gyro["session"].unique()):
@@ -423,47 +419,36 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                   else gnss_cutoff)
 
         f = AttitudeESKF(**(sigma_kw or {}))
-        # ---- 初期姿勢 ----
-        # ★ 0.983 で GRV をやめ、機上と同じ「静止中の平均加速度で水平化 →
-        #   GS がしきい値を超えた最初の測位の航跡でヨーを入れる」に合わせた。
-        #   GRV を使いたい（旧挙動と比べたい）ときは init_from_grv=True を渡す。
+        # ---- 初期姿勢（機上と同じ手順）----
         i_start = 0
-        yaw_set = True          # GRV 経路は「ヨーあり」として扱う（旧挙動の再現用）
-        static_flags = None
-        if init_from_grv and grv_all is not None and not grv_all.empty:
-            gv = grv_all[grv_all["session"] == sess]
-            if not gv.empty:
-                f.init(q0=[gv.qw.iloc[0], gv.qx.iloc[0], gv.qy.iloc[0], gv.qz.iloc[0]])
-        else:
-            # ---- 機上と同じ手順 ----
-            #   1) 静止 2 秒の平均加速度で水平化（ヨーは未知）
-            #   2) 静止しているあいだ再水平化＋ジャイロバイアス学習（ループ内）
-            #   3) GS >= 3m/s を 2 測位連続で満たしたら航跡でヨーを注入（ループ内）
-            # ★ attitude.cpp と同じ数式・同じ順序であること。片方を直したら両方直す。
-            gyv = imu[["gx", "gy", "gz"]].to_numpy(float)
-            acv = imu[["ax", "ay", "az"]].to_numpy(float)
-            static_flags = ((np.linalg.norm(gyv, axis=1) < 0.026) &
-                            (np.abs(np.linalg.norm(acv, axis=1) - 9.80665) < 0.30))
-            tsv = imu["ts"].to_numpy(float)
-            i_lv = run0 = None
-            for i in range(len(tsv)):
-                if static_flags[i]:
-                    if run0 is None:
-                        run0 = i
-                    elif tsv[i] - tsv[run0] >= 2.0:
-                        i_lv = i
-                        break
-                else:
-                    run0 = None
-            if i_lv is None:
-                print(f"warn: session {sess} に 2 秒の静止区間が無い。"
-                      f"先頭の比力で水平化する（機上の走行中フォールバック相当）")
-                a0, sig = acv[0], 30.0            # ESKF_INIT_ATT_SIGMA_MOVING_DEG
+        #   1) 静止 2 秒の平均加速度で水平化（ヨーは未知）
+        #   2) 静止しているあいだ再水平化＋ジャイロバイアス学習（ループ内）
+        #   3) GS >= 3m/s を 2 測位連続で満たしたら航跡でヨーを注入（ループ内）
+        # ★ attitude.cpp と同じ数式・同じ順序であること。片方を直したら両方直す。
+        gyv = imu[["gx", "gy", "gz"]].to_numpy(float)
+        acv = imu[["ax", "ay", "az"]].to_numpy(float)
+        static_flags = ((np.linalg.norm(gyv, axis=1) < 0.026) &
+                        (np.abs(np.linalg.norm(acv, axis=1) - 9.80665) < 0.30))
+        tsv = imu["ts"].to_numpy(float)
+        i_lv = run0 = None
+        for i in range(len(tsv)):
+            if static_flags[i]:
+                if run0 is None:
+                    run0 = i
+                elif tsv[i] - tsv[run0] >= 2.0:
+                    i_lv = i
+                    break
             else:
-                a0, sig = acv[run0:i_lv + 1].mean(axis=0), 3.0   # ESKF_INIT_ATT_SIGMA_DEG
-                i_start = i_lv
-            f.init(q0=level_quat_from_accel(a0), att_sigma_deg=sig, yaw_sigma_deg=180.0)
-            yaw_set = False
+                run0 = None
+        if i_lv is None:
+            print(f"warn: session {sess} に 2 秒の静止区間が無い。"
+                  f"先頭の比力で水平化する（機上の走行中フォールバック相当）")
+            a0, sig = acv[0], 30.0            # ESKF_INIT_ATT_SIGMA_MOVING_DEG
+        else:
+            a0, sig = acv[run0:i_lv + 1].mean(axis=0), 3.0   # ESKF_INIT_ATT_SIGMA_DEG
+            i_start = i_lv
+        f.init(q0=level_quat_from_accel(a0), att_sigma_deg=sig, yaw_sigma_deg=180.0)
+        yaw_set = False
 
         ts = imu["ts"].to_numpy(float)
         w = imu[["gx", "gy", "gz"]].to_numpy(float)
@@ -621,8 +606,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             "s_yaw": np.degrees(s_yaw),
             "roll": roll, "pitch": pitch, "yaw": yaw,
             "yaw_sigma": ysig,
-            # 生のクォータニオン（センサー→ENU）。重力除去の検証で
-            # 「上方向」を取り出すのに使う（compare_grv.py）。
+            # 生のクォータニオン（センサー→ENU）。回転行列の第 3 行が
+            # 「上方向」で、バリオの重力除去の検証に使う。
             "qw": qs[:, 0], "qx": qs[:, 1], "qy": qs[:, 2], "qz": qs[:, 3],
             # ヨーが決まった後の「地上での維持」が働いていたサンプル（機上 gnd= の元）
             "ground": ground_flags,
@@ -636,8 +621,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
 def main():
     import argparse, os, sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from decode_imulog import load, split, build_euler
-    import pandas as pd
+    from decode_imulog import load, split
 
     ap = argparse.ArgumentParser(description="生 IMU ログに姿勢 ESKF を適用する")
     ap.add_argument("path")
@@ -647,35 +631,12 @@ def main():
     parts = split(load(args.path))
     est = run_on_log(parts)
 
-    # BNO085 内蔵フュージョンの結果と並べる（旋回中の差がこの計画の狙い）
-    # ※ セッションごとに t が 0 に戻るので、突き合わせも必ずセッション単位で行う。
-    #   全体を通して merge_asof すると別セッションの行に接続されてしまう。
-    bno = build_euler(parts)
-    if bno is not None:
-        bno = bno.rename(columns={"roll": "bno_roll", "pitch": "bno_pitch",
-                                  "yaw": "bno_yaw"})
-        merged = []
-        for sess, e in est.groupby("session"):
-            b = bno[bno["session"] == sess]
-            if b.empty:
-                merged.append(e)
-                continue
-            merged.append(pd.merge_asof(
-                e.sort_values("t"),
-                b[["t", "bno_roll", "bno_pitch", "bno_yaw"]].sort_values("t"),
-                on="t", direction="nearest"))
-        est = pd.concat(merged, ignore_index=True)
-
-        print(f"サンプル数 : {len(est)}   セッション数 : {est['session'].nunique()}")
-        print(f"{'sess':>5}{'件数':>9}{'長さ[s]':>10}"
-              f"{'ロール差 平均':>15}{'最大':>9}")
-        for sess, e in est.groupby("session"):
-            if "bno_roll" not in e or e["bno_roll"].isna().all():
-                continue
-            d = (e["roll"] - e["bno_roll"]).abs()
-            dur = e["ts"].max() - e["ts"].min()
-            print(f"{sess:>5}{len(e):>9}{dur:>10.1f}{d.mean():>15.2f}{d.max():>9.2f}")
-        print("  ※ 旋回中に大きく開いていれば、それが BNO085 の過小評価分。")
+    print(f"サンプル数 : {len(est)}   セッション数 : {est['session'].nunique()}")
+    print(f"{'sess':>5}{'件数':>9}{'長さ[s]':>10}{'|roll|最大':>12}{'yawσ 最終':>11}")
+    for sess, e in est.groupby("session"):
+        dur = e["ts"].max() - e["ts"].min()
+        print(f"{sess:>5}{len(e):>9}{dur:>10.1f}{e['roll'].abs().max():>12.1f}"
+              f"{e['yaw_sigma'].iloc[-1]:>11.1f}")
 
     if args.csv:
         est.to_csv(args.csv, index=False)

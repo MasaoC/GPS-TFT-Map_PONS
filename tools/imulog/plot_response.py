@@ -3,17 +3,17 @@
 merged.csv を可視化する。
 
 ■ 何を見るための図か
-  1) 時系列 : 実際の走行中、加減速・旋回に対して ESKF と BNO085 の姿勢が
+  1) 時系列 : 実際の走行中、加減速・旋回に対して ESKF の姿勢が
               どう動いたかを時間軸で並べる。
   2) 応答   : 「単位入力あたり」の時間変化。加速イベント（または旋回イベント）の
               立ち上がりで揃えて平均し、入力の大きさで割る。
-              縦軸は deg/(m/s²) または deg/(deg/s) になり、
-              BNO085 が数秒かけて偽の傾きへ寄っていく様子が直接読める。
-              ESKF が平坦なら、その偽の傾きを消せているということ。
+              縦軸は deg/(m/s²) または deg/(deg/s) になる。
+              ESKF が平坦なら、加速度由来の偽の傾きを消せているということ
+              （v7 の実測で ESKF 0.2〜0.5 deg/(m/s²)・0.01〜0.03 deg/(deg/s)）。
 
 ■ 作図上の約束
   ・2 軸グラフにはしない。入力と姿勢は縦に並べて x 軸を共有する。
-  ・系列色は参照パレットのスロット 1/2 を固定順で使う（ESKF=青, BNO085=橙）。
+  ・系列色は参照パレットのスロットを固定で使う（ESKF=青, ESKF GNSS なし=緑）。
   ・凡例は常に出す。グリッドと軸は控えめにする。
 
 使い方: python3 plot_response.py merged.csv -o figs/
@@ -41,7 +41,6 @@ plt.rcParams["ytick.color"] = "#52514e"
 plt.rcParams["text.color"] = "#0b0b0b"
 
 C_ESKF = "#2a78d6"     # 参照パレット スロット1: ESKF（GNSS あり）
-C_BNO  = "#eb6834"     # 参照パレット スロット2: BNO085
 C_NOG  = "#1baf7a"     # 参照パレット スロット3: ESKF（GNSS なし）
 # 色は系列（エンティティ）に固定で紐付ける。系列が増えても既存の割り当ては変えない。
 C_IN   = "#52514e"     # 入力（加速度・旋回率）は系列色を使わず地の色で描く
@@ -105,11 +104,9 @@ def hhmm(x):
 
 
 def plot_timeseries(m, outdir):
-    for kind, in_col, in_lab, cols, labs, unit in [
-        ("pitch", "accel_long", "前後加速度 [m/s²]",
-         ("pitch", "bno_pitch"), ("ESKF", "BNO085"), "ピッチ [deg]"),
-        ("roll", "turn_rate", "旋回レート [deg/s]",
-         ("roll", "bno_roll"), ("ESKF", "BNO085"), "ロール [deg]"),
+    for kind, in_col, in_lab, col, unit in [
+        ("pitch", "accel_long", "前後加速度 [m/s²]", "pitch", "ピッチ [deg]"),
+        ("roll", "turn_rate", "旋回レート [deg/s]", "roll", "ロール [deg]"),
     ]:
         sess = sorted(m["session"].unique())
         fig, axes = plt.subplots(len(sess) * 2, 1, figsize=(13, 3.1 * len(sess)),
@@ -121,8 +118,7 @@ def plot_timeseries(m, outdir):
             if d.empty:
                 continue
             ax_in, ax_y = axes[si * 2], axes[si * 2 + 1]
-            b0 = baseline(d, cols[0], in_col, 0.3)
-            b1 = baseline(d, cols[1], in_col, 0.3)
+            b0 = baseline(d, col, in_col, 0.3)
 
             ax_in.plot(d.jst, d[in_col], color=C_IN, lw=1.0)
             ax_in.axhline(0, color="#c9c9c4", lw=0.8)
@@ -135,11 +131,9 @@ def plot_timeseries(m, outdir):
                             fontsize=10, loc="left", pad=4)
             ax_in.tick_params(labelbottom=False, labelsize=8)
 
-            ax_y.plot(d.jst, d[cols[0]] - b0, color=C_ESKF, lw=LW, label=labs[0])
-            ax_y.plot(d.jst, d[cols[1]] - b1, color=C_BNO, lw=LW, label=labs[1], alpha=0.9)
+            ax_y.plot(d.jst, d[col] - b0, color=C_ESKF, lw=LW, label="ESKF")
             ax_y.axhline(0, color="#c9c9c4", lw=0.8)
-            yl = np.nanpercentile(np.abs(pd.concat([d[cols[0]] - b0,
-                                                    d[cols[1]] - b1])), 99.5) * 1.3
+            yl = np.nanpercentile(np.abs(d[col] - b0), 99.5) * 1.3
             if np.isfinite(yl) and yl > 0:
                 ax_y.set_ylim(-yl, yl)
             ax_y.set_ylabel(unit, fontsize=8)
@@ -158,10 +152,10 @@ def plot_timeseries(m, outdir):
 
 def plot_response(m, outdir):
     specs = [
-        ("pitch", "accel_long", {"ESKF": "pitch", "BNO085": "bno_pitch"},
+        ("pitch", "accel_long", {"ESKF": "pitch"},
          8.0, "ピッチ感度 [deg / (m/s²)]",
          "単位前後加速度あたりのピッチ応答", 9.80665 / np.pi * 180 / 9.80665),
-        ("roll", "turn_rate", {"ESKF": "roll", "BNO085": "bno_roll"},
+        ("roll", "turn_rate", {"ESKF": "roll"},
          60.0, "ロール感度 [deg / (deg/s)]",
          "単位旋回レートあたりのロール応答", None),
     ]
@@ -176,11 +170,10 @@ def plot_response(m, outdir):
             ax.axhline(0, color="#c9c9c4", lw=0.8)
             ax.axvline(0, color="#c9c9c4", lw=0.8, ls=":")
             npts = 0
-            plots = [("ESKF", C_ESKF, series["ESKF"]),
-                     ("BNO085", C_BNO, series["BNO085"])]
+            plots = [("ESKF", C_ESKF, series["ESKF"])]
             nog_col = series["ESKF"] + "_nognss"
             if nog_col in d.columns and d[nog_col].notna().any():
-                plots.insert(1, ("ESKF (GNSS なし)", C_NOG, nog_col))
+                plots.append(("ESKF (GNSS なし)", C_NOG, nog_col))
             for name, c, ycol in plots:
                 b, se = lagged_slope(d["jst"], d[in_col], d[ycol],
                                      lags, clip=clip)
@@ -236,7 +229,7 @@ def attach_gnss_variants(m, binpath, cut_frac=0.6):
 
 
 def plot_gnss_timeseries(m, outdir):
-    """GNSS あり／なし／BNO085 の姿勢を時系列で並べる。"""
+    """GNSS あり／なしの姿勢を時系列で並べる。"""
     for kind, col, labl in (("roll", "roll", "ロール [deg]"),
                             ("pitch", "pitch", "ピッチ [deg]")):
         sess = sorted(m["session"].unique())
@@ -250,14 +243,12 @@ def plot_gnss_timeseries(m, outdir):
             ax.plot(d.jst, d[col] - b0, color=C_ESKF, lw=LW, label="ESKF (GNSS あり)")
             ax.plot(d.jst, d[col + "_nognss"] - d[col + "_nognss"].median(),
                     color=C_NOG, lw=LW, label="ESKF (GNSS なし)")
-            ax.plot(d.jst, d["bno_" + col] - d["bno_" + col].median(),
-                    color=C_BNO, lw=1.2, alpha=0.85, label="BNO085")
             ax.axhline(0, color="#c9c9c4", lw=0.8)
             ax.set_ylabel(labl, fontsize=8)
             ax.set_title(f"session {s_}   {hhmm(d.jst.min())}–{hhmm(d.jst.max())} JST",
                          fontsize=10, loc="left", pad=4)
             ax.tick_params(labelsize=8)
-            ax.legend(loc="upper right", fontsize=8, frameon=False, ncol=3)
+            ax.legend(loc="upper right", fontsize=8, frameon=False, ncol=2)
             ticks = np.linspace(d.jst.min(), d.jst.max(), 7)
             ax.set_xticks(ticks); ax.set_xticklabels([hhmm(x) for x in ticks])
             yl = np.nanpercentile(np.abs(d[col] - b0), 99.5) * 2.2
@@ -281,7 +272,7 @@ def plot_gnss_dropout(m, outdir):
     行ったり来たりしてギザギザになり、運用判断に使えないため
     （いちど 3 度ずれたら、その後たまたま戻っても信用は戻らない）。
 
-    セッションはパネルで分ける。色は他の図で系列（ESKF/BNO085）に
+    セッションはパネルで分ける。色は他の図で系列（ESKF / GNSS なし）に
     割り当ててあるので、ここで別の意味に再利用しない。
     """
     sess = [s_ for s_ in sorted(m["session"].unique())
