@@ -1414,6 +1414,8 @@ static void periodic_log_tick() {
       enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
                                    get_input_voltage(), pst, bst,
                                    analogReadTemp(), jst_str));
+      // GNSS の受信状態の 1 分まとめ（`grf` 行。debug/v7-noise-test と同じ並びで v7 と比べられる。gnss.cpp）
+      gnss_log_rf_minute();
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE
       // ビルドでもシリアルなしで確認できる）。

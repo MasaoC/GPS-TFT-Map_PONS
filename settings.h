@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261103
-#define BUILDVERSION "1.01"
+#define BUILDDATE 20261105
+#define BUILDVERSION "1.02"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -92,6 +92,13 @@
 //   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
 //   5 秒なら「本当に来ていない」ときだけ立つ。
 #define GNSS_CONN_TIMEOUT_MS   5000UL
+// バイトは届いているのに UBX がこれだけ来なければ、GNSS が設定を失った（電源の瞬断などで GNSS だけが
+// リセットし、工場出荷の NMEA だけに戻った）とみて設定を一式送り直す（gnss.cpp の gnss_ubx_watchdog）。
+// NAV-PVT は 0.5 秒ごとなので 10 秒は 20 回ぶんの欠け。描画で Core0 が止まっても FIFO に溜まるので誤発火しない。
+#define GNSS_UBX_LOST_RECONFIG_MS 10000UL
+// 1 を入れると、MON-RF が届くたび（1 秒に 1 回）に log.txt へ `GRF:` の生の行を出す（gnss.cpp の rf_minute_add）。
+// 1 分まとめの `grf` 行はいつも出る。生の行は 1 時間で約 3600 行・約 250KB 増えるので、比べる試験のときだけ 1 にする。
+#define GNSS_RF_LOG_RAW 0
 // 断線している間、警報トーンを繰り返す間隔 [ms]。
 // ★ 1 回きりにしない。**聞き逃したら二度と鳴らない**のは航法が止まる故障には合わない。
 // ★ 最低保証音量（min_volume）は付けない。あれは電池警告専用で

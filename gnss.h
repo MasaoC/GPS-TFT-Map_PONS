@@ -168,4 +168,23 @@
 
   uint32_t get_gnss_fix_millis();  // 最後にGNSS時刻を受信したときのmillis()（時刻推定用）
 
+  // ---- UBX-MON-RF (0x0A 0x38) 関連（debug/v7-noise-test から移した）----
+  struct GnssMonRf {
+    bool     valid;          // 一度でも受信できたか
+    uint8_t  jamInd;         // CW干渉・妨害インジケータ (0..255, 0=なし)
+    uint16_t agcCnt;         // AGCカウント値 (0..8191)
+    uint16_t noisePerMS;     // 雑音レベル
+    int8_t   ofsI;           // I成分 DCオフセット
+    uint8_t  magI;           // I成分 振幅
+    int8_t   ofsQ;           // Q成分 DCオフセット
+    uint8_t  magQ;           // Q成分 振幅
+    uint8_t  jammingState;   // 0=unknown, 1=OK, 2=warning, 3=critical
+    uint32_t lastReceivedMs; // 受信時刻 (millis)
+    uint32_t count;          // 受信フレーム数
+  };
+  GnssMonRf get_gnss_mon_rf();
+  void      gnss_enable_mon_rf(uint8_t rate = 1);
+  // 1 分ぶんの受信状態を log.txt の `grf` 行にする（60 秒ログから呼ぶ。debug/v7-noise-test と同じ行）
+  void      gnss_log_rf_minute();
+
 #endif

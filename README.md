@@ -55,7 +55,7 @@ SD カードのログを付属ツール（`tools/`）で解析し、機体特性
 | **外形寸法 / 重量** | W59 × H81 × D20 mm / 約 62g（ケース込） |
 | **ディスプレイ** | 2.8 インチ **1000 ニト** 高輝度 TFT（Newhaven NHD-2.8-240320AF-CSXP-F）。自動調光対応 |
 | **GNSS** | u-blox SAM-M10Q（2Hz、位置精度 1.5m、AssistNow Autonomous 対応） |
-| **気圧センサー** | MS5611（2Hz SD 記録、バリオメーター融合） |
+| **気圧センサー** | MS5611（約 40Hz 計測・約 4Hz でバリオ KF へ融合、2Hz SD 記録） |
 | **モーションセンサー** | Murata **SCH16T-K01-10**（外付けフレキ、SPI1 250Hz ポーリング） |
 | **姿勢推定** | **機上 250Hz ESKF**（GNSS 航跡ヨー注入 ＋ 2Hz 重力観測レベリング） |
 | **昇降計（バリオ）** | **KF 融合**（SCH16T 鉛直加速度 ＋ MS5611 気圧高度。デッドバンド ±0.25m/s） |
@@ -219,6 +219,15 @@ NAV 画面でスイッチ長押しで入ります。
   大会直前に再ビルドなしでパイロン座標を上書き可能（`PLATHOME`, `N_PILON`, `S_PILON`, `PILON_1KM`, `TAKESHIMA`）。設定画面の `Map data detail >` で `COURSE SD OVERRIDE` と表示されていれば適用完了。
 * **独自追加地図 (`mapdata.csv`)**:
   Google Earth の KML パスから `tools/kml_to_mapcsv.py` で生成。PATH 名の 1 文字目で線の色を指定可能（`r`=赤 / `o`=橙 / `g`=灰 / `m`=マゼンタ / `c`=シアン / `b`=青）。
+* **GNSS の受信状態（`log.txt` の `grf` 行。60 秒ごと）**:
+  ```
+  120:grf n=60 jam50=0 jmax=12 agc=3300(2976-3534) noise=82 cno=31.8/19.5 trk=12.3 used=8.1 fix=100%
+  ```
+  `n` は 1 分に届いた MON-RF の数（60 前後。大きく少なければ GNSS が止まっていた）、`jam50` は jamInd（狭帯域の妨害の強さ）が
+  50 以上だった数、`jmax` はその最大、`agc` は AGC の平均（最小-最大）、`noise` は雑音、`cno` は C/N0 の上位 4 / 全体 [dB-Hz]、
+  `trk` は追尾していた衛星・`used` は測位に使っていた衛星の平均、`fix` は Fix していた割合。値は自機の GNSS（ミラー中も）。
+  **v7 の debug/v7-noise-test と同じ行**なので、2 つの基板の GNSS の受け方をそのまま比べられる（2026-11 の GNSS 干渉試験）。
+  1 秒ごとの生の行（`GRF:`）が要るときは settings.h の `GNSS_RF_LOG_RAW` を 1 にする。
 
 ---
 

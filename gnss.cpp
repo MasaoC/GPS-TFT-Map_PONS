@@ -93,8 +93,8 @@ bool gnss_connection = false;  // GNSS モジュールから1文字でも受信�
 //   gnss_connection だけだと一度 true になったら戻らないので、コネクタが抜けても
 //   画面は正常なまま航法を続けてしまっていた（get_gnss_connection 参照）。
 static uint32_t gnss_last_byte_ms = 0;
-// gnss_setup() 初回呼び出しでの UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）。
-// リトライ呼び出し(setupcounter!=1)は設定を送り直さないので、初回の結果のまま変わらない。
+// 設定コマンド（gnss_setup_impl の send_config）が全部 ACK されたか（起動画面の進捗表示用）。
+// GNSS が設定を失って送り直したとき（gnss_ubx_watchdog）は、その結果で上書きする。
 static bool gnss_cfg_ok = false;
 // デモ飛行の現在地点（DEMO_OFF でデモ停止）。GNSS を使わず仮想位置を生成する。
 demo_site_t demo_site = DEMO_OFF;
@@ -107,6 +107,9 @@ double demo_truetrack = 280;      // 仮想真方位 [deg]
 SatelliteData satellites[MAX_SATELLITES];  // 最大 MAX_SATELLITES 衛星分のデータを保持（PRN 0 = 空き）
 char last_nmea[MAX_LAST_NMEA][NMEA_MAX_CHAR];   // 直近の受信フレーム概要のリングバッファ（GNSS詳細画面用）
 unsigned long last_nmea_time[MAX_LAST_NMEA];     // 各フレームの受信時刻（受信途絶の監視にも使う）
+// 受けた UBX フレームの数。GNSS へ設定を送り直したあと、本当に UBX が戻ったかを見る（gnss_ubx_watchdog）。
+// ★ last_nmea_time[] は gnss_setup() の終わりで「今」に揃えるので、戻ったかの判定には使えない。
+static uint32_t ubx_frames = 0;
 unsigned long last_gnss_setup_time = 0;   // 最後に gnss_setup() を呼んだ時刻（再接続ガード用）
 int stored_nmea_index = 0;               // リングバッファの書き込み位置
 bool new_location_arrived = false;       // 新しい位置情報が届いたことを Core0 に知らせるフラグ
@@ -486,6 +489,147 @@ static void handle_navaopstatus(const uint8_t *p, uint16_t len) {
   }
 }
 
+
+// ---- UBX-MON-RF (class=0x0A, id=0x38) ----
+// ★ debug/v7-noise-test（GNSS 干渉試験）から移した。受けた値は 60 秒ごとの `grf` 行（gnss_log_rf_minute）に出す。
+// Header: version(1), nBlocks(1), reserved(2) = 4 bytes
+// Block 0: blockId(1), flags(1), antStatus(1), antPower(1), postStatus(4),
+//          reserved1(4), noisePerMS(2), agcCnt(2), jamInd(1),
+//          ofsI(1), magI(1), ofsQ(1), magQ(1), reserved2(3) = 24 bytes
+static GnssMonRf s_mon_rf = {};
+
+// ---- GNSS の受信状態の 1 分まとめ（log.txt の `grf` 行）----
+// ★ v7（debug/v7-noise-test）と v7.1 で**同じ行を出す**（2 つの基板の GNSS の受け方を比べるため。
+//   2026-11 の GNSS 干渉試験で、焼損した v7 の主基板だけ CW のバーストが出ていた）。
+//   **並びや数え方を変えるときは両方のブランチを同じに直すこと。**
+//   MON-RF が届くたび（1 秒に 1 回）に 1 つ数え、60 秒ログ（.ino の periodic_log_tick）が
+//   gnss_log_rf_minute() で 1 行にして空にする。どちらも Core0。
+//   C/N0 と追尾数は NAV-SAT の値。ナビ画面では NAV-SAT が 10 秒に 1 回なので、12 秒以内に届いた衛星を数える。
+//   値はすべて自機の GNSS（ミラー中も送信機の値ではない）。リプレイ中は実 GNSS を読まないので数えない。
+struct GnssRfMinute {
+  uint16_t n;          // 数えた MON-RF の数（60 前後。大きく少なければ MON-RF が止まっていた＝GNSS のリセットなど）
+  uint16_t jam50;      // jamInd >= 50 だった数（CW のバースト。干渉試験の物差し）
+  uint8_t  jmax;       // jamInd の最大
+  uint16_t agc_min, agc_max;
+  uint32_t agc_sum, noise_sum;
+  float    cno4_sum, cnoall_sum;
+  uint16_t cno_n;      // C/N0 を足した数（衛星が 1 つも無い回は足さない）
+  uint32_t trk_sum;    // 追尾していた衛星（C/N0 > 0）の数の和
+  uint32_t used_sum;   // 測位に使っていた衛星（NAV-PVT の numSV）の数の和
+  uint16_t fix_n;      // Fix していた数
+};
+static GnssRfMinute s_rfmin = {};
+
+static void rf_minute_add() {
+  const unsigned long now = millis();
+  uint8_t snr[MAX_SATELLITES];
+  uint8_t k = 0;
+  for (int i = 0; i < MAX_SATELLITES; i++) {
+    if (satellites[i].PRN != 0 && satellites[i].SNR > 0 && now - satellites[i].lastReceived <= 12000)
+      snr[k++] = (uint8_t)satellites[i].SNR;
+  }
+  float cno4 = 0.0f, cnoall = 0.0f;
+  if (k > 0) {
+    // 大きい順に並べる（多くて 64 個。1 秒に 1 回なので単純な挿入で足りる）
+    for (uint8_t i = 1; i < k; i++) {
+      const uint8_t v = snr[i];
+      int j = i - 1;
+      while (j >= 0 && snr[j] < v) { snr[j + 1] = snr[j]; j--; }
+      snr[j + 1] = v;
+    }
+    uint32_t s4 = 0, sa = 0;
+    for (uint8_t i = 0; i < k; i++) { sa += snr[i]; if (i < 4) s4 += snr[i]; }
+    cno4   = (float)s4 / (k < 4 ? k : 4);
+    cnoall = (float)sa / k;
+  }
+  const bool fix = (stored_fixtype >= 1);
+
+  GnssRfMinute& m = s_rfmin;
+  if (m.n == 0) { m.agc_min = 0xFFFF; m.agc_max = 0; }
+  m.n++;
+  if (s_mon_rf.jamInd >= 50) m.jam50++;
+  if (s_mon_rf.jamInd > m.jmax) m.jmax = s_mon_rf.jamInd;
+  m.agc_sum   += s_mon_rf.agcCnt;
+  if (s_mon_rf.agcCnt < m.agc_min) m.agc_min = s_mon_rf.agcCnt;
+  if (s_mon_rf.agcCnt > m.agc_max) m.agc_max = s_mon_rf.agcCnt;
+  m.noise_sum += s_mon_rf.noisePerMS;
+  if (k > 0) { m.cno4_sum += cno4; m.cnoall_sum += cnoall; m.cno_n++; }
+  m.trk_sum   += k;
+  m.used_sum  += (uint32_t)stored_numsats;
+  if (fix) m.fix_n++;
+
+#if GNSS_RF_LOG_RAW
+  // 1 秒ごとの生の行。列は干渉試験の NT_DAT から試験の列（段・送信・AUX・音）を抜いたもの:
+  // 時刻, 使用衛星, 追尾衛星, Fix, C/N0 上位4, C/N0 全体, AGC, 雑音, jamInd, ofsI, magI, ofsQ, magQ, MON-RF の数
+  enqueueTask(createLogSdfTask("GRF:%lu,%d,%u,%d,%.1f,%.1f,%u,%u,%u,%d,%u,%d,%u,%lu",
+    (unsigned long)now, (int)stored_numsats, (unsigned)k, fix ? 1 : 0, cno4, cnoall,
+    (unsigned)s_mon_rf.agcCnt, (unsigned)s_mon_rf.noisePerMS, (unsigned)s_mon_rf.jamInd,
+    (int)s_mon_rf.ofsI, (unsigned)s_mon_rf.magI, (int)s_mon_rf.ofsQ, (unsigned)s_mon_rf.magQ,
+    (unsigned long)s_mon_rf.count));
+#endif
+}
+
+static void handle_mon_rf(const uint8_t *p, uint16_t len) {
+  if (len < 4) return;
+  const uint8_t nBlocks = p[1];
+  if (nBlocks < 1 || len < 4 + 24) return;
+
+  const uint8_t *b = p + 4;  // block 0 (L1 band)
+  s_mon_rf.jammingState   = b[1] & 0x03;
+  s_mon_rf.noisePerMS     = (uint16_t)(b[12] | ((uint16_t)b[13] << 8));
+  s_mon_rf.agcCnt         = (uint16_t)(b[14] | ((uint16_t)b[15] << 8));
+  s_mon_rf.jamInd         = b[16];
+  s_mon_rf.ofsI           = (int8_t)b[17];
+  s_mon_rf.magI           = b[18];
+  s_mon_rf.ofsQ           = (int8_t)b[19];
+  s_mon_rf.magQ           = b[20];
+  s_mon_rf.valid          = true;
+  s_mon_rf.lastReceivedMs = millis();
+  s_mon_rf.count++;
+  rf_minute_add();
+}
+
+GnssMonRf get_gnss_mon_rf() {
+  return s_mon_rf;
+}
+
+// UBX フレーム送信ヘルパー（Fletcher-8 チェックサム自動付加）
+static void ubx_send_packet(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len) {
+  GNSS_SERIAL.write(0xB5);
+  GNSS_SERIAL.write(0x62);
+  GNSS_SERIAL.write(cls);
+  GNSS_SERIAL.write(id);
+  GNSS_SERIAL.write((uint8_t)(len & 0xFF));
+  GNSS_SERIAL.write((uint8_t)((len >> 8) & 0xFF));
+  uint8_t cka = cls, ckb = cls;
+  cka += id;  ckb += cka;
+  cka += (uint8_t)(len & 0xFF);         ckb += cka;
+  cka += (uint8_t)((len >> 8) & 0xFF);  ckb += cka;
+  for (uint16_t i = 0; i < len; i++) {
+    GNSS_SERIAL.write(payload[i]);
+    cka += payload[i];
+    ckb += cka;
+  }
+  GNSS_SERIAL.write(cka);
+  GNSS_SERIAL.write(ckb);
+}
+
+// MON-RF 出力設定 (rate: 何秒に 1 回か。1=1Hz、0=停止。航法の周期ではなく秒で数える)
+void gnss_enable_mon_rf(uint8_t rate) {
+  // ① CFG-VALSET (Protocol 27+)
+  // Key: CFG_MSGOUT_UBX_MON_RF_UART1 (0x2091035A), layer=RAM(0x01)
+  const uint8_t valset[9] = {
+    0x00, 0x01, 0x00, 0x00,
+    0x5A, 0x03, 0x91, 0x20,
+    rate
+  };
+  ubx_send_packet(0x06, 0x8A, valset, sizeof(valset));
+
+  // ② CFG-MSG (従来互換)
+  const uint8_t msg_cmd[3] = { 0x0A, 0x38, rate };
+  ubx_send_packet(0x06, 0x01, msg_cmd, sizeof(msg_cmd));
+}
+
 // UBX バイナリフレームを 1 バイトずつ処理するステートマシン。
 // B5 62 ヘッダーを検出し、クラス・ID・ペイロードを組み立ててチェックサムを確認する。
 // チェックサム OK でハンドラーを呼び出し、last_nmea[] にラベルを記録する。
@@ -626,6 +770,17 @@ static void process_ubx(uint8_t b) {
         snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
           "%s %02X%02X", (ubx_msgid==0x01)?"UBX-ACK-ACK":"UBX-ACK-NAK",
           (used_len>=1?ubx_buf[0]:0), (used_len>=2?ubx_buf[1]:0));
+      } else if (ubx_cls == 0x0A) {
+        // MON (Monitoring) クラス
+        if (ubx_msgid == 0x38) {
+          handle_mon_rf(ubx_buf, used_len);   // MON-RF: RF フロントエンドの状態
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-MON-RF jam=%u agc=%u noise=%u",
+            (unsigned)s_mon_rf.jamInd, (unsigned)s_mon_rf.agcCnt, (unsigned)s_mon_rf.noisePerMS);
+        } else {
+          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
+            "UBX-MON-%02X len=%d", ubx_msgid, ubx_paylen);
+        }
       } else {
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] frame cls="); Serial.print(ubx_cls, HEX);
@@ -637,6 +792,7 @@ static void process_ubx(uint8_t b) {
       }
       last_nmea_time[stored_nmea_index] = millis();
       stored_nmea_index = (stored_nmea_index + 1) % MAX_LAST_NMEA;
+      ubx_frames++;
       break;
     }
     default:
@@ -814,7 +970,12 @@ bool get_gnss_fixok() {
 // GNSS モジュールを「位置取得優先モード」に切り替える。
 // GSV（衛星情報）出力を停止することで NMEA の量を減らし、位置・速度の更新レートを上げる。
 // 設定画面の GNSS 詳細からメインマップへ戻る際に呼ばれる。
+// いま GNSS に頼んでいる NAV-SAT のレート（2 = 1Hz、20 = 0.1Hz）。設定を送り直すと ④ の 0.1Hz に戻るので、
+// 星座画面や干渉試験が上げていたら送り直したあとに戻す（gnss_setup_impl）。
+static uint8_t s_navsat_rate = 20;
+
 void gnss_getposition_mode() {
+  s_navsat_rate = 20;
   // ナビ画面では NAV-SAT を 0.1Hz（10秒に1回）に落としてトラフィックを抑制
   { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
     for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
@@ -824,6 +985,7 @@ void gnss_getposition_mode() {
 // GSV を有効化して衛星の仰角・方位・SNR を表示できるようにする。
 // GNSS 詳細画面に入る際に呼ばれる。
 void gnss_constellation_mode() {
+  s_navsat_rate = 2;
   // 星座画面では NAV-SAT を 1Hz に上げて衛星情報をリアルタイム更新
   { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
     for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
@@ -865,6 +1027,14 @@ static bool ubxWaitAck(uint32_t timeout_ms) {
   return false;  // タイムアウト
 }
 
+// 設定を送る途中の待ち（delay の代わり）。★ GNSS が設定を失ったときは飛行中にも送り直すので、
+// 待ちの間も IMU を引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」。1 秒空くと SCH16T を
+// 途絶と誤判定する。起動時にしか送らなかった頃は delay() で済んでいた）。
+static void gnss_cfg_wait(uint32_t ms) {
+  const unsigned long t0 = millis();
+  while (millis() - t0 < ms) imu_service_if_due();
+}
+
 // gnss_setup() の設定コマンドのうち、ACK が返らなかったものを表す内部ビット。
 // RELEASE ではシリアルのデバッグ出力が消えるため、結果は log.txt に残す。
 enum {
@@ -883,15 +1053,15 @@ static const uint8_t GNSS_CFGNG_ESSENTIAL =
   GNSS_CFGNG_RATE | GNSS_CFGNG_PVT | GNSS_CFGNG_SAT | GNSS_CFGNG_DOP | GNSS_CFGNG_NAV5;
 
 // GNSS モジュール（u-blox SAM-M10Q）とのシリアル接続を確立する。
-// NMEA が 10 秒届かない場合は gnss_loop() から自動的に再呼出しされる。
+// UBX が途絶えると gnss_loop() の見張り（gnss_ubx_watchdog）から再び呼ばれる。
 //
-//   1回目 : 工場デフォルトの 9600bps で開き、UBX-CFG-PRT で 38400bps・UBX 出力のみに
-//           切り替えたうえで NAV-PVT / NAV-SAT / NAV-DOP / CFG-NAV5 /
-//           AssistNow Autonomous（CFG-ANA）/ NAV-AOPSTATUS を設定する。
-//   2回目以降（リトライ）: ボーレートだけを交互に試す。設定コマンドは送らない。
+//   send_config = true（1回目と、GNSS が設定を失ったとき）: 工場デフォルトの 9600bps で開き、
+//           UBX-CFG-PRT で 38400bps・UBX 出力のみに切り替えたうえで NAV-PVT / NAV-SAT / NAV-DOP /
+//           CFG-NAV5 / AssistNow Autonomous（CFG-ANA）/ NAV-AOPSTATUS を設定する。
+//   send_config = false（バイトも届かないときの再試行）: ボーレートだけを交互に試す。設定コマンドは送らない。
 //           偶数回 = 9600（工場出荷デフォルトのまま起動した場合）
 //           奇数回 = 38400（CFG-PRT 設定済みのモジュールを掴み直す場合）
-void gnss_setup() {
+static void gnss_setup_impl(bool send_config) {
   last_gnss_setup_time = millis();
   DEBUG_P(20260307,"GNSS SETUP:setupcounter=");
   DEBUG_PLN(20260307,setupcounter);
@@ -902,8 +1072,8 @@ void gnss_setup() {
   GNSS_SERIAL.setTX(GNSS_TX);
   GNSS_SERIAL.setRX(GNSS_RX);
 
-  //初回SETUP
-  if(setupcounter == 1){
+  // 設定を一式送る（1回目と、GNSS が設定を失ったとき）
+  if(send_config){
       // 設定コマンドの結果。最後にまとめて log.txt へ残す。
       // 通らなかった設定は動作が静かに変わるだけで画面に出ないため、
       // ログが唯一の手掛かりになる（特に Airborne<1g）。
@@ -922,7 +1092,7 @@ void gnss_setup() {
       // ① UBX-CFG-PRT: UART1 を 38400bps・UBX 出力のみに変更（NMEA 無効化）
       {
         const unsigned char cmd[] = UBLOX_CFG_PRT_38400_UBXONLY;
-        delay(50);  // なぜか必要（Do not delete without care.)
+        gnss_cfg_wait(50);  // なぜか必要（Do not delete without care.)
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] sending CFG-PRT (bytes=");
         Serial.print(sizeof(cmd)); Serial.println("):");
@@ -938,13 +1108,14 @@ void gnss_setup() {
         #endif
       }
       // CFG-PRT の ACK は旧ボーレート（9600）で返ってくる
-      delay(100);
+      gnss_cfg_wait(100);
       {
         // ACK を読み捨ててバッファをクリアする（機能的に必要）
         uint8_t ack_buf[32] = {};
         int ack_len = 0;
         unsigned long t = millis();
         while (millis() - t < 300 && ack_len < 32) {
+          imu_service_if_due();
           if (GNSS_SERIAL.available()) ack_buf[ack_len++] = GNSS_SERIAL.read();
         }
         // 応答の判定は RELEASE でも行う（結果は最後のログ行に載せる）。
@@ -965,7 +1136,7 @@ void gnss_setup() {
         #endif
       }
       GNSS_SERIAL.end();
-      delay(50);   // なぜか必要（Do not delete without care.)
+      gnss_cfg_wait(50);   // なぜか必要（Do not delete without care.)
       GNSS_SERIAL.begin(gnss_current_baudrate = 38400);
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] reopened 38400");
@@ -975,7 +1146,7 @@ void gnss_setup() {
       // Payload: measRate=0x01F4(500ms), navRate=0x0001, timeRef=0x0001(GPS)
       {
         const unsigned char UBLOX_RATE_2HZ[] = {0xB5,0x62,0x06,0x08,0x06,0x00,0xF4,0x01,0x01,0x00,0x01,0x00,0x0B,0x77};
-        delay(50);
+        gnss_cfg_wait(50);
         #ifdef DEBUG_GBX_NMEA
         Serial.println("[UBX] sending CFG-RATE 2Hz");
         #endif
@@ -996,7 +1167,7 @@ void gnss_setup() {
       Serial.println("[UBX] sending ENABLE NAVPVT");
       #endif
       { const unsigned char cmd[] = UBLOX_ENABLE_NAVPVT;
-        delay(50);
+        gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
@@ -1011,7 +1182,7 @@ void gnss_setup() {
       Serial.println("[UBX] sending NAVSAT rate=20");
       #endif
       { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
-        delay(50);
+        gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
@@ -1026,7 +1197,7 @@ void gnss_setup() {
       Serial.println("[UBX] sending ENABLE NAVDOP");
       #endif
       { const unsigned char cmd[] = UBLOX_ENABLE_NAVDOP;
-        delay(50);
+        gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
@@ -1042,7 +1213,7 @@ void gnss_setup() {
       Serial.println("[UBX] sending CFG-NAV5 Airborne<1g");
       #endif
       { const unsigned char cmd[] = UBLOX_CFG_NAV5_AIRBORNE1G;
-        delay(50);
+        gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
         bool got_ack = ubxWaitAck(600);
@@ -1058,7 +1229,7 @@ void gnss_setup() {
         const unsigned char cmd_on[]  = UBLOX_CFG_ANA_ON;
         const unsigned char cmd_off[] = UBLOX_CFG_ANA_OFF;
         const unsigned char* cmd = GNSS_USE_ANA ? cmd_on : cmd_off;
-        delay(50);
+        gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd_on); i++) GNSS_SERIAL.write(cmd[i]);
       }
       {
@@ -1072,13 +1243,33 @@ void gnss_setup() {
       // ⑧ NAV-AOPSTATUS を 1Hz で出力（有効なときだけ。GNSS DETAIL 3 と log.txt 用）
       if (GNSS_USE_ANA) {
         { const unsigned char cmd[] = UBLOX_AOPSTATUS_1HZ;
-          delay(50);
+          gnss_cfg_wait(50);
           for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
         bool got_ack = ubxWaitAck(600);
         if (!got_ack) cfg_ng |= GNSS_CFGNG_AOPS;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAV-AOPSTATUS 1Hz: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
+      }
+
+      // ⑨ MON-RF を 1Hz で出力（受信状態の 1 分まとめ `grf` 用。debug/v7-noise-test と同じ）
+      // ★ MON の出力の rate は航法の周期（2Hz）ではなく秒で数えるので、rate=1 で 1 秒に 1 回。
+      // ★ 2 つのコマンド（CFG-VALSET と旧式の CFG-MSG）を送るので、返事も 2 つ待つ。片方だけ待つと
+      //   残りの ACK が後ろに残る。どちらか一方が通れば出力される（届いた数は `grf` の n= に出る）。
+      gnss_enable_mon_rf(1);
+      {
+        const bool ack1 = ubxWaitAck(300);
+        const bool ack2 = ubxWaitAck(300);
+        enqueueTask(createLogSdfTask("GNSS MON-RF 1Hz: VALSET=%s MSG=%s",
+                                     ack1 ? "ack" : "no", ack2 ? "ack" : "no"));
+      }
+
+      // 送り直したときは、星座画面が上げていた NAV-SAT のレート（1Hz）へ戻す（④ は 0.1Hz で送るため）
+      if (setupcounter != 1 && s_navsat_rate == 2) {
+        const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
+        gnss_cfg_wait(50);
+        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]);
+        (void)ubxWaitAck(300);
       }
 
       // 設定結果を log.txt に 1 行だけ残す。
@@ -1127,6 +1318,10 @@ void gnss_setup() {
   }
 
   setupcounter++;
+}
+
+void gnss_setup() {
+  gnss_setup_impl(setupcounter == 1);
 }
 
 // 最大 G/S の全情報をリセットする（デモ／リプレイ／無線モードの切替時に呼ぶ）
@@ -1549,22 +1744,60 @@ void set_replaymode(bool replaymode){
 // GNSS モジュールからの Serial データを受信・解析するメインループ処理。
 // 描画の途中でも複数回呼ばれることで、GNSS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
 //
-// 異常検知:
-//   - 30 秒間 UBX フレームが届かない → gnss_setup() で再接続を試みる
+// 異常検知（gnss_ubx_watchdog）:
+//   - バイトは届くのに UBX が GNSS_UBX_LOST_RECONFIG_MS 来ない → 設定を一式送り直す（GNSS がリセットした）
+//   - 30 秒間バイトも UBX も届かない → gnss_setup() でボーレートを替えて掴み直す
 //   - リプレイモードで非 ASCII 文字が 10 回連続 → gnss_setup()
 //   - FIFO バッファが 256 を超えている → 警告ログを出す
+// UBX の見張り（gnss_loop の頭で呼ぶ）。
+// ★ バイトは届いているのに UBX が来ない＝GNSS は生きているが設定を失った。電源の瞬断などで GNSS だけが
+//   リセットすると工場出荷の設定（NMEA だけで UBX は出さない）に戻る。ボーレートを替えるだけの再試行では
+//   戻らず、こちらは NMEA を読まないので、**本体を再起動するまで位置が二度と戻らなかった**
+//   （2026-11-04、焼損した主基板の機体で GNSS が 2 回リセットして判明。debug/v7-noise-test の docs/noise_test.md）。
+//   そのときは設定を一式送り直す。
+// ★ バイトも来ないとき（コネクタが抜けた・GNSS に電源が無い）は今までどおりボーレートだけを替える。
+//   設定を送ると ACK 待ちの空振りで Core0 が約 5 秒止まるため。
+// ★ 送り直しても戻らないときは間隔を倍にしていく（30 → 60 → 120 → 240 秒）。壊れた GNSS がゴミを出し続けると、
+//   30 秒ごとに数秒ずつ止まることになるため。
+static uint8_t  s_reconfig_count  = 0;   // 設定を送り直した回数（起動から）
+static uint8_t  s_reconfig_streak = 0;   // 続けて送り直した回数（UBX が戻ったら 0）
+static uint32_t s_reconfig_ms     = 0;   // 最後に送り直した時刻（0 = 戻るのを待っていない）
+static uint32_t s_reconfig_frames = 0;   // 送り直したときの ubx_frames
+static void gnss_ubx_watchdog() {
+  const uint32_t now = millis();
+  if (s_reconfig_ms != 0 && ubx_frames != s_reconfig_frames) {   // 送り直したあと UBX が戻った
+    enqueueTask(createLogSdfTask("GNSS RECONFIG #%u: UBX back %lus after resend",
+                                 (unsigned)s_reconfig_count, (unsigned long)((now - s_reconfig_ms) / 1000)));
+    s_reconfig_ms     = 0;
+    s_reconfig_streak = 0;
+  }
+  if (GNSS_SERIAL.available() != 0) return;
+  const uint32_t guard = 30000UL << (s_reconfig_streak < 3 ? s_reconfig_streak : 3);
+  if (now - last_gnss_setup_time <= guard) return;
+  const uint32_t ubx_age     = now - get_gnss_nmea_time(0);
+  const bool     bytes_alive = (now - gnss_last_byte_ms) < GNSS_CONN_TIMEOUT_MS;
+  if (ubx_age > GNSS_UBX_LOST_RECONFIG_MS && bytes_alive) {
+    if (s_reconfig_count  < 255) s_reconfig_count++;
+    if (s_reconfig_streak < 255) s_reconfig_streak++;
+    enqueueTask(createLogSdfTask("GNSS RECONFIG #%u: no UBX for %lus but bytes arriving (GNSS reset?) -> resend config",
+                                 (unsigned)s_reconfig_count, (unsigned long)(ubx_age / 1000)));
+    gnss_setup_impl(true);
+    s_reconfig_ms     = millis();
+    s_reconfig_frames = ubx_frames;
+  } else if (ubx_age > 30000) {
+    DEBUGW_PLN(20250923,"Lost UBX frame for 30 seconds. resetup.");
+    gnss_setup();   // バイトも来ない: ボーレートだけを替える
+  }
+}
+
 void gnss_loop(int id) {
 
-  // 30 秒以上 UBX フレームが途絶えた場合は GNSS を再初期化する。
+  // UBX が途絶えたら GNSS を掴み直す・設定を送り直す（gnss_ubx_watchdog）。
   // リプレイ中は実 GNSS のデータを読み捨てており last_nmea_time が更新されないため、
-  // このウォッチドッグが 30 秒ごとに誤発火してしまう。gnss_setup() は合計数百 ms の
-  // delay() を含み Core0 を止めるので、リプレイ中は無効にする。
+  // この見張りが 30 秒ごとに誤発火してしまう。gnss_setup() は合計数百 ms の
+  // 待ちを含み Core0 を止めるので、リプレイ中は無効にする。
   // （リプレイ終了後は last_nmea_time が古いままなので、必要なら一度だけ再初期化が走る）
-  if(!replaymode_gnssoff &&
-     GNSS_SERIAL.available() == 0 && millis() - get_gnss_nmea_time(0) > 30000 && millis() - last_gnss_setup_time > 30000){
-    DEBUGW_PLN(20250923,"Lost UBX frame for 30 seconds. resetup.");
-    gnss_setup();
-  }
+  if (!replaymode_gnssoff) gnss_ubx_watchdog();
   if(GNSS_SERIAL.available() > 256){
     DEBUGW_P(20250923,"ID=");
     DEBUGW_P(20250923,id);
@@ -1949,3 +2182,22 @@ int get_gnss_numsat() {
   return stored_numsats;
 }
 
+// 60 秒ログ（.ino の periodic_log_tick）から呼ぶ。1 分ぶんの受信状態を `grf` の 1 行にして空にする。
+// 列: n=MON-RF の数 / jam50=jamInd>=50 の数 / jmax / agc=平均(最小-最大) / noise=平均 /
+//     cno=C/N0 上位4/全体 の平均 / trk=追尾衛星の平均 / used=使用衛星の平均 / fix=Fix していた割合
+// ★ 並びは v7（debug/v7-noise-test）と v7.1 で同じに保つ（上の GnssRfMinute の説明）。
+void gnss_log_rf_minute() {
+  const GnssRfMinute m = s_rfmin;   // Core0 だけが触るので、写して空にするだけでよい
+  s_rfmin = {};
+  if (replaymode_gnssoff) return;
+  if (m.n == 0) {
+    enqueueTask(createLogSdfTask("grf n=0 (no MON-RF)"));
+    return;
+  }
+  enqueueTask(createLogSdfTask("grf n=%u jam50=%u jmax=%u agc=%lu(%u-%u) noise=%lu cno=%.1f/%.1f trk=%.1f used=%.1f fix=%u%%",
+    (unsigned)m.n, (unsigned)m.jam50, (unsigned)m.jmax,
+    (unsigned long)(m.agc_sum / m.n), (unsigned)m.agc_min, (unsigned)m.agc_max,
+    (unsigned long)(m.noise_sum / m.n),
+    m.cno_n ? m.cno4_sum / m.cno_n : 0.0f, m.cno_n ? m.cnoall_sum / m.cno_n : 0.0f,
+    (float)m.trk_sum / m.n, (float)m.used_sum / m.n, (unsigned)(100u * m.fix_n / m.n)));
+}

@@ -1273,16 +1273,24 @@ static void print_boot_check(const char* label, BootCheckState st) {
 }
 
 // setup() の間、センサーの初期化が終わった順に呼ぶ（draw_boot_title() の下段を上書きする）。
-// ★ GNSS の行は draw_boot_diag(0) が SD の情報で上書きするので、ここだけの一時的な表示でよい。
-//   MS5611/SCH16T の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
-//   最終表示に切り替わっても見た目が変わらない（チラつきが無い）。
+// ★ draw_boot_diag(0)（起動アニメーション中の前半ページ）もこの関数で描くので、
+//   最終表示に切り替わっても文言と位置が変わらない（チラつきが無い）。
 void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss) {
   const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
   const int16_t y2 = SCREEN_HEIGHT - 16;   // 304
   tft.fillRect(0, y1, SCREEN_WIDTH, 28, COLOR_WHITE);
 
-  tft.setCursor(20, y1);
+  tft.setCursor(10, y1);
+  BootCheckState sd = !sd_setup_complete ? BOOT_CHECK_PENDING : (good_sd() ? BOOT_CHECK_OK : BOOT_CHECK_NG);
+  print_boot_check("SD:", sd);
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  tft.print("  ");
   print_boot_check("GNSS:", gnss);
+  if (sd == BOOT_CHECK_OK) {
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.print("  MAPs:");
+    tft.print(mapdata_count);
+  }
 
   tft.setCursor(10, y2);
   print_boot_check("MS5611:", airdata);
@@ -1309,23 +1317,13 @@ static void draw_boot_diag(uint8_t phase) {
   tft.fillRect(0, y1, SCREEN_WIDTH, 28, COLOR_WHITE);   // 前のページを消す
 
   if (phase == 0) {
-    tft.setCursor(20, y1);
-    if (good_sd()) {
-      tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      tft.print("SD OK! MAP COUNT: ");
-      tft.print(mapdata_count);
-    } else {
-      tft.setTextColor(COLOR_RED, COLOR_WHITE);
-      tft.print("[ERROR: CHECK SD CARD !]");
-    }
-    tft.setCursor(10, y2);
-    tft.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-    tft.print(get_airdata_ok() ? "MS5611:OK" : "MS5611:NG");
-    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    tft.print("  ");
-    tft.setTextColor(get_imu_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-    tft.print(imu_sensor_name());
-    tft.print(get_imu_ok() ? ":OK" : ":NG");
+    // ★ draw_boot_progress() に今の状態を渡すだけにする（文言と位置を 1 か所で持つ）。
+    //   startup_demo_tft() の頭では Core1 の setup_sd() がまだ終わっていないことがあり、
+    //   good_sd() だけで描くと正常な SD でも `SD:NG`（赤）が最大 5 秒出る。
+    //   draw_boot_progress() は終わるまで `SD:...`（灰）にする。
+    draw_boot_progress(get_imu_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG,
+                       get_airdata_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG,
+                       get_gnss_cfg_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG);
     return;
   }
 
@@ -1360,6 +1358,7 @@ static void draw_boot_diag(uint8_t phase) {
 
 void startup_demo_tft() {
   draw_boot_title();
+  draw_boot_diag(0);      // ★ タイトル描画直後に診断結果を表示し、GNSS等の表示が消える隙間をなくす
 
   
   // Core1 の setup_sd() が完了するまで待機（最大5秒）。
@@ -1390,7 +1389,7 @@ void startup_demo_tft() {
     enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
   }
 
-  draw_boot_diag(0);      // 前半ページ: SD / MS5611 / SCH16T
+  draw_boot_diag(0);      // 前半ページ: SD / GNSS / MS5611 / SCH16T
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
 
