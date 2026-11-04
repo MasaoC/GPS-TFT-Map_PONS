@@ -92,6 +92,10 @@
 //   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
 //   5 秒なら「本当に来ていない」ときだけ立つ。
 #define GNSS_CONN_TIMEOUT_MS   5000UL
+// バイトは届いているのに UBX がこれだけ来なければ、GNSS が設定を失った（電源の瞬断などで GNSS だけが
+// リセットし、工場出荷の NMEA だけに戻った）とみて設定を一式送り直す（gnss.cpp の gnss_ubx_watchdog）。
+// NAV-PVT は 0.5 秒ごとなので 10 秒は 20 回ぶんの欠け。描画で Core0 が止まっても FIFO に溜まるので誤発火しない。
+#define GNSS_UBX_LOST_RECONFIG_MS 10000UL
 // 断線している間、警報トーンを繰り返す間隔 [ms]。
 // ★ 1 回きりにしない。**聞き逃したら二度と鳴らない**のは航法が止まる故障には合わない。
 // ★ 最低保証音量（min_volume）は付けない。あれは電池警告専用で
@@ -1540,6 +1544,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   1 つ鳴らしたらこの時間だけ空けて次へ回す。最長の音声が 4.82 秒なので、
 //   鳴り終わるまで次を積まない値にしてある。
 #define LINK_GROUND_SAY_GAP_MS 6000UL
+
+// ---- 受信機で NO SIGNAL 状態が継続したときの反復音声（link_no_signal_repeat.wav）の間隔 ----
+// 途切れた瞬間は link_no_signal.wav（「受信が途切れました。自機の情報を表示します。」）が鳴り、
+// その後も信号が無い状態が続く間は 120 秒ごとに「信号がありません」を繰り返す。
+#define LINK_NOSIGNAL_REPEAT_MS 120000UL
 
 // ---- 地図に重ねる通知ボックスの縦位置（display_tft.cpp の begin_notice_box）----
 // ★ **同時に出るものを重ねないこと。** 括弧内が実際に占める範囲。

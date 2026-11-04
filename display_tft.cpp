@@ -1259,6 +1259,14 @@ void draw_boot_title() {
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// SD の状態。Core1 の setup_sd() が終わるまでは「...」（灰）。
+// ★ good_sd() をそのまま見ないこと。startup_demo_tft() は setup_sd() の完了を待つ前にも
+//   draw_boot_diag(0) を呼ぶので、正常な SD でも待っている間だけ赤い「SD:NG」が出てしまう。
+static BootCheckState boot_sd_state() {
+  if (!sd_setup_complete) return BOOT_CHECK_PENDING;
+  return good_sd() ? BOOT_CHECK_OK : BOOT_CHECK_NG;
+}
+
 // draw_boot_progress() の1項目分を描く。PENDING はグレーで "..." のまま。
 static void print_boot_check(const char* label, BootCheckState st) {
   tft.setTextColor(st == BOOT_CHECK_PENDING ? COLOR_GRAY :
@@ -1268,16 +1276,24 @@ static void print_boot_check(const char* label, BootCheckState st) {
 }
 
 // setup() の間、センサーの初期化が終わった順に呼ぶ（draw_boot_title() の下段を上書きする）。
-// ★ GNSS の行は draw_boot_diag(0) が SD の情報で上書きするので、ここだけの一時的な表示でよい。
-//   MS5611/BNO085 の行は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
+// ★ SD/GNSS/MS5611/BNO085 の各項目は draw_boot_diag(0) と同じ文言・同じ位置にしてあるので、
 //   最終表示に切り替わっても見た目が変わらない（チラつきが無い）。
 void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckState gnss) {
   const int16_t y1 = SCREEN_HEIGHT - 28;   // 292
   const int16_t y2 = SCREEN_HEIGHT - 16;   // 304
   tft.fillRect(0, y1, SCREEN_WIDTH, 28, COLOR_WHITE);
 
-  tft.setCursor(20, y1);
+  tft.setCursor(10, y1);
+  const BootCheckState sd = boot_sd_state();
+  print_boot_check("SD:", sd);
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  tft.print("  ");
   print_boot_check("GNSS:", gnss);
+  if (sd == BOOT_CHECK_OK) {
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.print("  MAPs:");
+    tft.print(mapdata_count);
+  }
 
   tft.setCursor(10, y2);
   print_boot_check("MS5611:", airdata);
@@ -1304,14 +1320,16 @@ static void draw_boot_diag(uint8_t phase) {
   tft.fillRect(0, y1, SCREEN_WIDTH, 28, COLOR_WHITE);   // 前のページを消す
 
   if (phase == 0) {
-    tft.setCursor(20, y1);
-    if (good_sd()) {
-      tft.setTextColor(COLOR_GREEN, COLOR_WHITE);
-      tft.print("SD OK! MAP COUNT: ");
+    tft.setCursor(10, y1);
+    const BootCheckState sd = boot_sd_state();
+    print_boot_check("SD:", sd);
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.print("  ");
+    print_boot_check("GNSS:", get_gnss_cfg_ok() ? BOOT_CHECK_OK : BOOT_CHECK_NG);
+    if (sd == BOOT_CHECK_OK) {
+      tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      tft.print("  MAPs:");
       tft.print(mapdata_count);
-    } else {
-      tft.setTextColor(COLOR_RED, COLOR_WHITE);
-      tft.print("[ERROR: CHECK SD CARD !]");
     }
     tft.setCursor(10, y2);
     tft.setTextColor(get_airdata_ok() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
@@ -1355,6 +1373,7 @@ static void draw_boot_diag(uint8_t phase) {
 
 void startup_demo_tft() {
   draw_boot_title();
+  draw_boot_diag(0);      // ★ タイトル描画直後に診断結果を表示し、GNSS等の表示が消える隙間をなくす
 
   
   // Core1 の setup_sd() が完了するまで待機（最大5秒）。
@@ -1385,7 +1404,7 @@ void startup_demo_tft() {
     enqueueTask(createPlayMultiToneTask(500, 150, 10));    // SD エラー: 警告ビープ（500Hz を 10 回）
   }
 
-  draw_boot_diag(0);      // 前半ページ: SD / MS5611 / BNO085
+  draw_boot_diag(0);      // 前半ページ: SD / GNSS / MS5611 / BNO085
   float center_lat = 35.2334225841915;
   float center_lon = 136.091056306493;
 
@@ -2927,12 +2946,30 @@ static void draw_link_icons() {
     else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
   }
 
+  // 受信モード: 船アイコンの真上に直近の受信周期 [s] を重ねて表示（例: 1.0s, 2.1s）。
+  // 平均化せず、最後に受信した時の1個前からの経過時間をそのまま出す。
+  if (rx && link_is_receiving()) {
+    const uint32_t iv_ms = link_rx_interval_ms();
+    if (iv_ms > 0) {
+      char per_str[8];
+      snprintf(per_str, sizeof(per_str), "%.1fs", iv_ms / 1000.0f);
+      backscreen.unloadFont();
+      backscreen.setTextSize(1);
+      backscreen.setTextColor(COLOR_BLACK);
+      const int tw = (int)strlen(per_str) * 6;
+      const int tx = ix + (ICON_BOAT_W - tw) / 2;
+      backscreen.setCursor(tx, y);
+      backscreen.print(per_str);
+    }
+  }
+
   // ★ 故障のときだけ、強度アイコンの代わりに役割アイコンの**右**へ FAIL を出す。
   //   読むと「[飛行機] FAIL」＝この機体の無線が壊れている、になる。
   //   ★ **19px の強度アイコンの枠には入れない。** あそこに文字を置くと
   //     役割アイコン（x=25 から）と重なる。右へ逃がすと、内蔵フォント（24px）でも
   //     AA_FONT_SMALL（約 40px）でも収まるので、**この経路のフォント状態に依らない**
-  //     （draw_link_icons はフォントを触らない。触ると後続の箱が巻き添えになる）。
+  //     （draw_link_icons の中では受信周期と CH-SF-Group のために内蔵フォントへ落とすが、
+  //     最後に地図用フォントへ戻して抜ける。戻さないと後続の箱が巻き添えになる）。
   if (failed) {
     backscreen.setTextColor(COLOR_PINK, COLOR_WHITE);
     backscreen.setTextSize(1);
