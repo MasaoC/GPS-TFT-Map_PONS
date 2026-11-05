@@ -22,6 +22,15 @@
 #include "imu.h"
 //#define DISABLE_FS_H_WARNING
 #include "SdFat.h"
+// ★ SdFat は 2.3.1 以上。2.3.0 の RP2040/RP2350 SDIO（PioSdioCard.cpp の pioInit()）は、PIO を選ぶ
+//   判定に未初期化の値を渡していて、RP2350 では PIO を取れないまま進むことがある（起動時の SD INIT が
+//   err=0x01・300ms で外れる。カードは関係ない。CMD0 は応答を待たないので PIO が死んでいてもここまで進む）。
+//   2.3.1（2025-08）で直った。古い版で黙って焼かないように止める。
+//   ※ 2.3.1 は Arduino の Library Manager に載っていない（同梱の pioasm.exe で登録を弾かれている）。
+//     GitHub の 2.3.1 を libraries/SdFat に手で入れる（古い SdFat は libraries の外へ出すこと）。
+#if !defined(SD_FAT_VERSION) || SD_FAT_VERSION < 20301
+#error "SdFat 2.3.1 以上が必要。Library Manager には無いので GitHub の 2.3.1 を入れる（mysd.cpp の include 部の説明を参照）"
+#endif
 #include "src/sound.h"
 #include "attitude.h"
 #include "link.h"
@@ -132,6 +141,15 @@ void setLinkGroup(const char* v) {
   link_group = (g >= 0 && g <= LINK_GROUP_MAX) ? (uint8_t)g : LINK_GROUP_DEFAULT;
 }
 
+// 輝度スイッチ Low のときの明るさの曲線（設定画面の AUTO Brightness）。ECO / BRIGHT。
+// ★ 知らない値は ECO に倒す（backlight_set_auto_mode）。項目が無い古い settings.txt も既定の ECO のまま。
+void getAutoBrightness(char* b, size_t n) {
+  strlcpy(b, backlight_get_auto_mode() == BL_AUTO_BRIGHT ? "BRIGHT" : "ECO", n);
+}
+void setAutoBrightness(const char* v) {
+  backlight_set_auto_mode(strcmp(v, "BRIGHT") == 0 ? BL_AUTO_BRIGHT : BL_AUTO_ECO);
+}
+
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"vario_volume",    setVarioVolume,    getVarioVolume},
@@ -140,6 +158,7 @@ SDSetting settings[] = {
   {"navigation_mode", setNavigationMode, getNavigationMode},
   {"scaleindex",      setScaleIndex,     getScaleIndex},
   {"upward_mode",     setUpwardMode,     getUpwardMode},
+  {"auto_brightness", setAutoBrightness, getAutoBrightness},
   {"kf_q_vel",        setKfQVel,         getKfQVel},
   {"kf_q_bias",       setKfQBias,        getKfQBias},
   {"kf_R",            setKfR,            getKfR},
@@ -1200,6 +1219,8 @@ void setup_sd(int trycount, bool load_settings){
       if (sdInitialized) break;
       // 失敗の中身を覚えておき、成功したときの SD INIT 行に並べる（失敗中は log.txt に書けないため）。
       // err=0 ならカードの初期化は通っていて、FAT ボリュームのマウントで落ちている。
+      // err=0x01（CMD0）で 300ms かかっていたら、カードではなく PIO が動いていない
+      // （CMD0 は応答を待たない。上の SdFat の版の説明を参照）。
       int n = (int)strlen(sdio_fail_desc);
       if (n < (int)sizeof(sdio_fail_desc) - 1) {
         snprintf(sdio_fail_desc + n, sizeof(sdio_fail_desc) - n, " [@%lums err=0x%02X data=0x%lX %lums]",
@@ -2237,16 +2258,28 @@ bool browse_replay_files(int start_index) {
 }
 
 
-// ===== リプレイ選択画面の項目モデル =====
-// 一覧の通し番号（index）は次の並びになっている:
-//   0 : Replay OFF
-//   1 : PLAY FLIGHT ONLY: YES/NO（トグル）
-//   2 : PLAY SPEED: x1/x2/x??（トグル）
-//   3 : SOURCE: FLIGHT/RECEIVED（トグル）
+// ===== REPLAY/DEMO 画面の項目モデル =====
+// 一覧の通し番号（index）は次の並びになっている（番号は mysd.h の REPLAY_IDX_*）:
+//   0     : OFF（リプレイもデモも止めて通常の GNSS へ）
+//   1..6  : DEMO: 地点（BIWAKO … OSAKA。選ぶとその地点でデモ飛行を始める）
+//   7     : PLAY FLIGHT ONLY: YES/NO（トグル）
+//   8     : PLAY SPEED: x1/x2/x??（トグル）
+//   9     : SOURCE: FLIGHT/RECEIVED（トグル）
 //   REPLAY_FIXED_COUNT .. +replayfiles_total-1 : 再生元フォルダ内の CSV
 //   REPLAY_FIXED_COUNT + replayfiles_total     : Return
-// ★ 固定項目は**常にこの 4 つだけ**。大会データもただの CSV として一覧に並ぶ。
+// ★ 固定項目は**常にこの 10 個だけ**。大会データもただの CSV として一覧に並ぶ。
 //   描画側もボタン処理側もこのモデルを共有する。
+// ★ デモの行はリプレイの設定（FLIGHT ONLY / SPEED / SOURCE）より上に置く。
+//   リプレイの設定はファイルの一覧のすぐ上にあるほうが、どれに効くのか分かりやすい。
+//   デモとリプレイは同時に使えないので、どちらを選んでももう片方は止まる（.ino の startDemo / startReplay）。
+static_assert(REPLAY_DEMO_ROWS == DEMO_SITE_COUNT - 1,
+              "REPLAY_DEMO_ROWS (settings.h) must match the demo sites in gnss.h");
+
+// 通し番号がデモの行なら、その地点（demo_site_t の値。1〜）を返す。デモの行でなければ 0（DEMO_OFF）。
+int replay_menu_demo_site(int index) {
+  if (index < REPLAY_IDX_DEMO_FIRST || index >= REPLAY_IDX_DEMO_FIRST + REPLAY_DEMO_ROWS) return DEMO_OFF;
+  return DEMO_OFF + 1 + (index - REPLAY_IDX_DEMO_FIRST);
+}
 
 // 一覧の総項目数（固定項目 + ファイル数 + Return）。
 int replay_menu_total_items() {
@@ -2281,16 +2314,21 @@ ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsi
 
   if (index < 0 || index >= replay_menu_total_items()) return RITEM_NONE;
 
-  if (index == 0) { strlcpy(label, "Replay OFF (Normal GNSS)", labelsize); return RITEM_OFF; }
-  if (index == 1) {
+  if (index == REPLAY_IDX_OFF) { strlcpy(label, "OFF (Normal GNSS)", labelsize); return RITEM_OFF; }
+  const int site = replay_menu_demo_site(index);
+  if (site != DEMO_OFF) {
+    snprintf(label, labelsize, "DEMO: %s", get_demo_site_name((demo_site_t)site));
+    return RITEM_DEMO;
+  }
+  if (index == REPLAY_IDX_FLIGHTONLY) {
     snprintf(label, labelsize, "PLAY FLIGHT ONLY: %s", replay_flight_only ? "YES" : "NO");
     return RITEM_FLIGHTONLY;
   }
-  if (index == 2) {
+  if (index == REPLAY_IDX_SPEED) {
     snprintf(label, labelsize, "PLAY SPEED: x%d", replay_speed);
     return RITEM_SPEED;
   }
-  if (index == 3) {
+  if (index == REPLAY_IDX_SOURCE) {
     snprintf(label, labelsize, "SOURCE: %s",
              replay_from_received ? "RECEIVED (radio)" : "FLIGHT (own)");
     return RITEM_SOURCE;

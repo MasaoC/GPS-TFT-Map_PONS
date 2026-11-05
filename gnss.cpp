@@ -8,7 +8,7 @@
 //           フライトログCSVへの定期保存トリガー、
 //           AssistNow Autonomous（衛星軌道の自己予測）の設定と状況の記録。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/11/05
 // ============================================================
 // 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
 #include <Arduino.h>
@@ -398,8 +398,23 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     if (slot >= 0) {
       const bool is_new = (satellites[slot].PRN == 0);
       satellites[slot].PRN           = svId;
-      satellites[slot].elevation     = (elev >= -90 && elev <= 90) ? elev : (is_new ? 0 : satellites[slot].elevation);
-      satellites[slot].azimuth       = (azim >= 0 && azim < 360)   ? azim : (is_new ? 0 : satellites[slot].azimuth);
+      // 仰角・方位。UBX の仕様では仰角が ±90 の外なら「不明」で、そのとき方位も不明。
+      // 仰角・方位がどちらも 0 のときも不明として扱う（実在の衛星がちょうど真北の地平線に
+      // いることはまず無い）。どちらの形で来ても、星座画面で 1 点に重ならないように。
+      // ★ 1.02 までは仰角だけ範囲を見て、不明のときの方位 0 をそのまま入れていた。
+      //   星座画面で軌道の分からない衛星が全部同じ点（方位 0・地平線）に重なっていた。
+      // 不明でも、前に分かっていた衛星はその位置のまま（衛星は 1 分に 0.5° ほどしか動かない）。
+      const bool pos_ok = (elev >= -90 && elev <= 90) && (azim >= 0 && azim < 360) &&
+                          !(elev == 0 && azim == 0);
+      if (pos_ok) {
+        satellites[slot].elevation = elev;
+        satellites[slot].azimuth   = azim;
+        satellites[slot].posKnown  = true;
+      } else if (is_new) {
+        satellites[slot].elevation = 0;
+        satellites[slot].azimuth   = 0;
+        satellites[slot].posKnown  = false;
+      }
       // 同一 NAV-SAT 内で同じ (svId, satType) が複数回出た場合（GLONASS 未識別 svId=255 等）は高い方の C/N0 を残す
       if (cno <= 99) {
         if (!seen[slot] || (int)cno > satellites[slot].SNR) satellites[slot].SNR = cno;
@@ -1556,10 +1571,6 @@ void set_demo_site(demo_site_t site) {
   // 実飛行の値へ戻す（リプレイと同じ理由。apply_auto10k_status() のコメント参照）。
   // 地点から地点へ移るときは戻さない ― デモはそのまま続いているため。
   if (was_demo && site == DEMO_OFF) auto10k_restore_flight_phase();
-}
-
-void next_demo_site() {
-  set_demo_site((demo_site_t)((demo_site + 1) % DEMO_SITE_COUNT));
 }
 
 void set_demo_off() {

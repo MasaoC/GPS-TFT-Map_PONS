@@ -90,7 +90,8 @@
     // リプレイ選択画面の項目種別
     typedef enum {
         RITEM_NONE = 0,     // 空行（そのページに項目が無い）
-        RITEM_OFF,          // リプレイ解除（通常 GNSS に戻す）
+        RITEM_OFF,          // リプレイもデモも止めて通常 GNSS に戻す
+        RITEM_DEMO,         // デモ飛行の地点（選ぶとその地点で始める。replay_menu_demo_site）
         RITEM_FLIGHTONLY,   // 静止区間をスキップするか（YES/NO トグル）
         RITEM_SPEED,        // 再生速度の倍率（x1 / x2 / x?? トグル）
         RITEM_SOURCE,       // 再生元フォルダ（FLIGHT = 自機 / RECEIVED = 無線で受けた機体）
@@ -106,6 +107,14 @@
     int  replay_menu_page_count();
     int  replay_menu_file_start_for_page(int page);
     ReplayItemType replay_menu_item(int index, int page, char* label, size_t labelsize, int* filesize);
+    int  replay_menu_demo_site(int index);   // デモの行なら地点（demo_site_t）、それ以外は 0（DEMO_OFF）
+    // REPLAY/DEMO 画面の固定項目の通し番号（並びの説明は mysd.cpp の「項目モデル」）
+    #define REPLAY_IDX_OFF         0
+    #define REPLAY_IDX_DEMO_FIRST  1                                        // ここから REPLAY_DEMO_ROWS 行
+    #define REPLAY_IDX_FLIGHTONLY  (REPLAY_IDX_DEMO_FIRST + REPLAY_DEMO_ROWS)
+    #define REPLAY_IDX_SPEED       (REPLAY_IDX_FLIGHTONLY + 1)
+    #define REPLAY_IDX_SOURCE      (REPLAY_IDX_SPEED + 1)
+    static_assert(REPLAY_IDX_SOURCE + 1 == REPLAY_FIXED_COUNT, "REPLAY_IDX_* and REPLAY_FIXED_COUNT disagree");
     // 以下は Core0（gnss.cpp）から呼ぶリングバッファ操作
     bool     replay_available();
     uint32_t replay_peek_t_ms();

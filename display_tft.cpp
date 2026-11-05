@@ -37,6 +37,7 @@
 #include "airdata.h"
 #include "imu.h"
 #include "imu_sensor.h"   // imu_sensor_name()
+#include "backlight.h"    // 照度センサー（VEML7700）の状態と照度（起動画面・設定画面のフッター）
 #include "src/vectormap.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
@@ -52,6 +53,7 @@ TimingStat ts_push_backscreen = TSTAT_INIT("C0_push_backscreen");
 // backscreen : メインの 240×240 マップ描画用スプライト。描画後 pushSprite(0,50) で転送。
 // header_footer: ヘッダー（50px）・フッター（30px）共有スプライト。pushSprite で位置を変えて転送。
 TFT_eSPI tft = TFT_eSPI();                 // Invoke custom library
+volatile bool tft_pio_ready = false;       // tft.begin() が PIO を確保し終えた（display_tft.h）
 TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
 TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240px, 16bit, 2,400 Byte)
@@ -207,6 +209,8 @@ void setup_tft() {
 
 
   tft.begin();
+  // Core1 の setup1() はこれを待ってから SD.begin() する（PIO の取り合いを避ける。display_tft.h）。
+  tft_pio_ready = true;
 
 #ifdef VERTICAL_FLIP
   tft.setRotation(0);           //set 0 for newhaven
@@ -1286,11 +1290,6 @@ void draw_boot_progress(BootCheckState imu, BootCheckState airdata, BootCheckSta
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
   tft.print("  ");
   print_boot_check("GNSS:", gnss);
-  if (sd == BOOT_CHECK_OK) {
-    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
-    tft.print("  MAPs:");
-    tft.print(mapdata_count);
-  }
 
   tft.setCursor(10, y2);
   print_boot_check("MS5611:", airdata);
@@ -1335,6 +1334,7 @@ static void draw_boot_diag(uint8_t phase) {
   //   飛行中の画面には何も出ないので、**飛ぶ前に目で確かめられる場所がここしかない**
   //   （docs/pons_link.md §1）。
   const uint8_t m = link_get_mode();
+  int line2_end = 10;   // 2 行目の左側の文字の右端（右に寄せる VEML の表示と重ならないように）
   tft.setCursor(10, y1);
   if (m == LINK_MODE_OFF) {
     tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
@@ -1347,11 +1347,30 @@ static void draw_boot_diag(uint8_t phase) {
     tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
     tft.setCursor(10, y2);
     tft.printf("LINK GROUP: %u", link_get_group());
+    line2_end = tft.getCursorX();
   } else {
     tft.setTextColor(COLOR_RED, COLOR_WHITE);
     tft.print("E220:NG  NO RESPONSE");
     tft.setCursor(10, y2);
-    tft.print("[CHECK RADIO MODULE !]");
+    tft.print("[CHECK RADIO !]");   // 右に VEML の表示を入れるので短くしてある
+    line2_end = tft.getCursorX();
+  }
+
+  // ---- 照度センサー（VEML7700。ケースカバー基板）。2 行目の右端 ----
+  // ★ 居ないと輝度スイッチ Low で 5% 固定になり、昼間に画面が読めない（backlight.cpp）。
+  //   起動時に気づけるよう、無線の結果と同じページに出す。照度は入りきるときだけ足す。
+  {
+    const bool ok = backlight_als_ok();
+    const float lux = backlight_get_lux();
+    char s[24];
+    // 1 万 lx 以上は k で出す（設定画面のフッターと同じ。明るい所では 120000 lx まで出る）
+    if (ok && lux >= 9999.5f)   snprintf(s, sizeof s, "VEML:OK %.0fklx", lux / 1000.0f);
+    else if (ok && lux >= 0.0f) snprintf(s, sizeof s, (lux < 10.0f) ? "VEML:OK %.1flx" : "VEML:OK %.0flx", lux);
+    else                        snprintf(s, sizeof s, ok ? "VEML:OK" : "VEML:NG");
+    if (ok && SCREEN_WIDTH - 6 - tft.textWidth(s) < line2_end + 8) snprintf(s, sizeof s, "VEML:OK");
+    tft.setTextColor(ok ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    tft.setCursor(SCREEN_WIDTH - 6 - tft.textWidth(s), y2);
+    tft.print(s);
   }
   tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
@@ -2010,28 +2029,24 @@ void draw_eskf_debug() {
 // ============================================================
 // IMU / 姿勢 ESKF 画面（2 ページ構成）
 // ============================================================
-// ページ1: 姿勢と、機体ゼロ点の較正操作
-// ページ2: センサーの生値・ESKF の内部状態（診断用）
+// ページ1: 姿勢と、機体ゼロ点の較正操作。姿勢機能のスイッチ（マスター・自動ロールトリム・風推定）もここ
+// ページ2: センサーの生値・ESKF の内部状態（診断用。見るだけ）
 //
 // 操作: 短押し = カーソル移動 / 長押し = 実行（Exit 項目で設定画面へ戻る）
 // 他の設定画面と同じ操作系に揃えてある。
 extern int imu_cursor;   // GPS_TFT_map.ino で定義。ページ1のカーソル位置
 
 
-// タイトル右端の状態ドット。緑になる条件は次の 3 つを全て満たすとき。
-//   ・バンク警告が ON
-//   ・自動ロールトリムが ON
-//   ・自動トリムの累積が小さい（ROLL_TRIM_WARN_DEG 未満）
-// 3 つ目を入れているのは、累積が大きい＝取り付けがずれていて
-// バンク警報の基準が信用できない状態だから。飛行前点検で気づけるようにする。
-// 右上の状態ドットが緑になる条件を 1 か所にまとめる。
+// タイトル右端の状態ドットが緑になる条件を 1 か所にまとめる。
 // 各メニュー行の丸もここを参照するので、条件と表示が食い違わない。
-//   緑になるのは次の 3 つを全て満たすとき:
+//   緑になるのは次の 4 つを全て満たすとき（どれもページ1で見える）:
 //     1. ESKF が収束している（READY）        … ページ1の ESKF 行 / ページ2の READY 行
 //     2. Roll/Pitch/Yaw func が ON          … ページ1
-//     3. Roll trim during flight が ON      … ページ2
+//     3. Roll trim during flight が ON      … ページ1
 //     4. 自動トリムの累積が ROLL_TRIM_WARN_DEG 未満  … ページ1の Rtrim 表示
 // 1 は「まだ姿勢が出せていない」状態なので、これを緑にすると準備完了と誤解する。
+// 4 は、累積が大きい＝取り付けがずれていてバンク警報の基準が信用できない状態だから。
+// 飛行前点検で気づけるようにする。
 static bool imu_ok_ready() { return attitude_ready(); }
 static bool imu_ok_rpy()   { return attitude_get_rpy_enabled(); }
 static bool imu_ok_trim()  { return attitude_get_roll_trim_enabled(); }
@@ -2043,17 +2058,21 @@ static void draw_imu_row_dot(int y, uint16_t col) {
 }
 static uint16_t imu_row_col(bool ok) { return ok ? COLOR_GREEN : COLOR_ORANGE; }
 
-static void draw_imu_status_dot() {
+// IMU / ESKF の状態の色。この画面の右上の丸と、設定画面の IMU 行の丸（src/button.cpp）が両方これを見る。
+// ★ 条件を呼び出し側に書き写さないこと。2026-11-05 まで設定画面の行は 1（READY）を見ておらず、
+//   コメントでは「右上と同じ意味」なのに ESKF が収束する前から緑になっていた。
+uint16_t imu_status_color() {
   // IMU 非搭載機。姿勢機能そのものが無いので緑（＝準備OK）にはしない。
-  if (!get_imu_ok()) { header_footer.fillCircle(228, 18, 6, COLOR_GRAY); return; }
+  if (!get_imu_ok()) return COLOR_GRAY;
   // マウントから外されたあと APPLY していない＝較正が無効。これだけは赤にする。
   // 姿勢の基準そのものが失われている状態で、他の設定の良し悪しより深刻なため。
-  if (attitude_needs_apply() && attitude_get_rpy_enabled()) {
-    header_footer.fillCircle(228, 18, 6, COLOR_RED);
-    return;
-  }
+  if (attitude_needs_apply() && attitude_get_rpy_enabled()) return COLOR_RED;
   const bool ok = imu_ok_ready() && imu_ok_rpy() && imu_ok_trim() && imu_ok_rtrim();
-  header_footer.fillCircle(228, 18, 6, ok ? COLOR_GREEN : COLOR_ORANGE);
+  return ok ? COLOR_GREEN : COLOR_ORANGE;
+}
+
+static void draw_imu_status_dot() {
+  header_footer.fillCircle(228, 18, 6, imu_status_color());
 }
 
 static void draw_imu_page1() {
@@ -2061,7 +2080,7 @@ static void draw_imu_page1() {
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);
-  header_footer.print("IMU / ESKF  1/3");
+  header_footer.print("IMU / ESKF  1/2");
   draw_imu_status_dot();
   header_footer.pushSprite(0, -10);
 
@@ -2147,7 +2166,8 @@ static void draw_imu_page1() {
   }
 
   // ---- 操作メニュー ----
-  // 項目数 6。8 項目のときは 15 まで詰めていたが、2 ページ目へ移して余裕ができた。
+  // 項目数 8（自動ロールトリム・風推定を 3/3 から移した）。行間 17 で最終行（stored offset）が
+  // y≈226 に収まる（backscreen は 240px）。項目を足すときは行間を詰めるか、上の注意書きを削る。
   const int mh = 17;
   bool on_ground = eskf_calib_allowed();
   for (int i = 0; i < IMU_MENU_COUNT; i++) {
@@ -2186,11 +2206,21 @@ static void draw_imu_page1() {
                           attitude_get_rpy_enabled() ? "ON " : "OFF");
         draw_imu_row_dot(y, imu_row_col(imu_ok_rpy()));
         break;
+      // 日常の運用では触らない 2 つ。実飛行での検証がまだなので、片方だけ切って
+      // 切り分けられるよう残してある（上のマスタースイッチとは別物）。
+      case IMU_MENU_AUTOROLL:
+        backscreen.printf("Roll trim during flight: %s",
+                          attitude_get_roll_trim_enabled() ? "ON " : "OFF");
+        draw_imu_row_dot(y, imu_row_col(imu_ok_trim()));
+        break;
+      case IMU_MENU_WIND:
+        backscreen.printf("Wind estimate: %s",
+                          attitude_get_wind_enabled() ? "ON " : "OFF");
+        break;
       case IMU_MENU_NEXTPAGE:
-        backscreen.printf("Next page (%s) >", imu_sensor_name());
-        // 2/3・3/3 で見る項目の状態をここに集約して見せる。
-        // 緑にならない原因が先のページにあるとき、1/3 だけ見ても分かるようにする。
-        draw_imu_row_dot(y, imu_row_col(imu_ok_trim() && imu_ok_ready()));
+        // ★ 丸は出さない。右上の丸が緑になる条件は全部このページの行に丸として出ているので、
+        //   2/2 だけに原因が隠れることはもう無い（3 ページのころは自動ロールトリムが先のページにあった）。
+        backscreen.printf("Next page (%s / ESKF) >", imu_sensor_name());
         break;
       case IMU_MENU_EXIT:     backscreen.print("Exit >>");              break;
     }
@@ -2211,16 +2241,18 @@ static void draw_imu_page1() {
 
 
 // ============================================================
-//  IMU / ESKF 2/3 — IMU の生値だけ
+//  IMU / ESKF 2/2 — IMU の生値（上）と ESKF の状態（下）。見るだけ
 // ============================================================
-// ★ ここに ESKF の項目を戻さないこと。マウントの向きを測りながら見る画面なので、
-//   「IMU が今どう見えているか」だけに絞ってある（ESKF は 3/3）。
+// ★ 生値を上に置く。マウントの向きを測りながら見る画面なので、「IMU が今どう見えているか」を
+//   いちばん目に入る所に置き、ESKF はその下に分けてある（2026-11-05 までは 2/3 と 3/3 に分かれていた）。
+// ★ ここに操作する項目を足さないこと。スイッチはページ1に集めてある（display_tft.h の IMU_MENU_*）。
+//   行は画面を移るもの（戻る / Exit）だけ。
 static void draw_imu_page2() {
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);
-  header_footer.print("IMU / ESKF  2/3");
+  header_footer.print("IMU / ESKF  2/2");
   draw_imu_status_dot();
   header_footer.pushSprite(0, -10);
 
@@ -2264,52 +2296,9 @@ static void draw_imu_page2() {
   backscreen.setTextColor(st ? COLOR_GREEN : COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("STATIC: %s  %.1fs", st ? "YES" : "no ", attitude_get_static_secs());
-  y += lh + 2;
+  y += lh + 6;
 
-  // ---- メニュー ----
-  const int mh2 = 15;
-  for (int i = 0; i < IMU2_MENU_COUNT; i++) {
-    const bool sel = (imu2_cursor == i);
-    backscreen.setCursor(2, y);
-    backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
-    backscreen.print(sel ? ">" : " ");
-    backscreen.setCursor(14, y);
-    switch (i) {
-      case IMU2_MENU_NEXTPAGE:
-        backscreen.print("Next page (ESKF) >");
-        break;
-      case IMU2_MENU_BACK:
-        backscreen.print("< Back to page 1");
-        break;
-    }
-    y += mh2;
-  }
-
-  backscreen.unloadFont();
-  backscreen.pushSprite(0, 40);
-}
-
-
-// ============================================================
-//  IMU / ESKF 3/3 — ESKF の状態と調整
-// ============================================================
-static void draw_imu_page3() {
-  header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
-  header_footer.setCursor(1, 11);
-  header_footer.print("IMU / ESKF  3/3");
-  draw_imu_status_dot();
-  header_footer.pushSprite(0, -10);
-
-  backscreen.fillScreen(COLOR_WHITE);
-  backscreen.loadFont(AA_FONT_SMALL);
-  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-
-  int y = 2;
-  const int lh = 12;
-  const float R2D = 180.0f / (float)M_PI;
-
+  // ---- ESKF の状態（旧 3/3）----
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y); backscreen.print("-- ESKF --"); y += lh;
   const bool ready = attitude_ready();
@@ -2353,28 +2342,21 @@ static void draw_imu_page3() {
   else    backscreen.printf("level offset R%+.1f P%+.1f --/--", lr, lp);
   y += lh + 4;
 
-  // ---- 調整メニュー ----
-  // 日常の運用では触らない項目。実飛行での検証がまだなので、片方だけ切って
-  // 切り分けられるよう残してある（ページ1のマスタースイッチとは別物）。
+  // ---- メニュー（戻る / Exit）----
+  // この行は y≈174 から。2 行で y≈204 まで（backscreen は 240px）。
   const int mh2 = 15;
-  for (int i = 0; i < IMU3_MENU_COUNT; i++) {
-    const bool sel = (imu3_cursor == i);
+  for (int i = 0; i < IMU2_MENU_COUNT; i++) {
+    const bool sel = (imu2_cursor == i);
     backscreen.setCursor(2, y);
     backscreen.setTextColor(sel ? COLOR_MAGENTA : COLOR_BLACK, COLOR_WHITE);
     backscreen.print(sel ? ">" : " ");
     backscreen.setCursor(14, y);
     switch (i) {
-      case IMU3_MENU_AUTOROLL:
-        backscreen.printf("Roll trim during flight: %s",
-                          attitude_get_roll_trim_enabled() ? "ON " : "OFF");
-        backscreen.fillCircle(232, y + 6, 4, imu_row_col(imu_ok_trim()));
-        break;
-      case IMU3_MENU_WIND:
-        backscreen.printf("Wind estimate: %s",
-                          attitude_get_wind_enabled() ? "ON " : "OFF");
-        break;
-      case IMU3_MENU_BACK:
+      case IMU2_MENU_BACK:
         backscreen.print("< Back to page 1");
+        break;
+      case IMU2_MENU_EXIT:
+        backscreen.print("Exit >>");
         break;
     }
     y += mh2;
@@ -2701,10 +2683,9 @@ void draw_wireless(int cursor) {
 }
 
 void draw_imudetail(int page) {
-  switch (page % 3) {
-    case 0:  draw_imu_page1(); break;   // 較正（SETPITCH/APPLY）とマスタースイッチ
-    case 1:  draw_imu_page2(); break;   // IMU の生値
-    default: draw_imu_page3(); break;   // ESKF の状態と調整
+  switch (page % IMU_PAGE_COUNT) {
+    case 0:  draw_imu_page1(); break;   // 較正（SETPITCH/APPLY）と姿勢機能のスイッチ
+    default: draw_imu_page2(); break;   // IMU の生値と ESKF の状態
   }
 }
 
@@ -4321,25 +4302,28 @@ void draw_sddetail(int page) {
 volatile bool loading_replaylist = true;   // Core1 でファイル一覧を取得中
 bool replay_loading_displayed = false;     // "Stand by..." を表示中か（読み込み完了時の再描画判定用）
 
-// リプレイする対象を選ぶ画面を描画する（screen_mode == MODE_REPLAYSELECT 時）。
-// 1ページ 20 行（12px ピッチ）。先頭に固定項目（Replay OFF / 2025 / 2026）、
+// REPLAY/DEMO 画面（リプレイする対象かデモの地点を選ぶ。screen_mode == MODE_REPLAYSELECT 時）を描画する。
+// 1ページ 20 行（12px ピッチ）。先頭に固定項目（OFF / DEMO の地点 / リプレイの設定）、
 // 続けて SD 上の飛行 CSV、最後に Return が並ぶ。項目モデルは mysd.cpp の
 // replay_menu_item() が管理しており、ボタン処理側と共有している。
 // cursor: 現在のカーソル位置（通し番号）。マゼンタで表示する。
 void draw_replayselect(int page, int cursor) {
   int pagecount = replay_menu_page_count();
+  const bool demo = is_demo_active();
 
   // --- ヘッダー ---
+  // ★ 内蔵フォント ×2 は 12px/文字。右上の丸（x=222〜）まで 18 文字なので、
+  //   "REPLAY/DEMO 10/12"（17 文字）までは入る。読み込み中はページ数を出さない。
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);  // +10px（sddetail と同じオフセット）
   if (!loading_replaylist)
-    header_footer.printf("REPLAY  %d/%d", page + 1, pagecount);
+    header_footer.printf("REPLAY/DEMO %d/%d", page + 1, pagecount);
   else
-    header_footer.printf("REPLAY  loading...");
-  // 状態ドット。設定メニューの REPLAY 行と同じ意味（緑＝通常 GNSS、赤＝再生中）。
-  header_footer.fillCircle(228, 18, 6, getReplayMode() ? COLOR_RED : COLOR_GREEN);
+    header_footer.print("REPLAY/DEMO");
+  // 状態ドット。設定メニューの REPLAY/DEMO 行と同じ意味（緑＝通常 GNSS、赤＝再生中かデモ中）。
+  header_footer.fillCircle(228, 18, 6, (getReplayMode() || demo) ? COLOR_RED : COLOR_GREEN);
   header_footer.pushSprite(0, -10);
 
   // --- リスト本体 ---
@@ -4364,6 +4348,9 @@ void draw_replayselect(int page, int cursor) {
         col = COLOR_BLUE;               // 操作項目はファイル名と区別する
       } else if (getReplayMode() && replay_filename_is(label)) {
         col = COLOR_GREEN;              // 現在再生中のファイル
+      } else if (type == RITEM_DEMO && demo &&
+                 replay_menu_demo_site(index) == (int)get_demo_site()) {
+        col = COLOR_GREEN;              // 現在デモ中の地点
       }
 
       backscreen.setTextColor(col, COLOR_WHITE);
@@ -4404,6 +4391,10 @@ void draw_replayselect(int page, int cursor) {
     header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
     // この画面を開いている間は再生を一時停止しているので PAUSED と表示する
     header_footer.printf("PAUSED x%d: %s", get_replay_speed(), get_replay_filename());
+  } else if (demo) {
+    // デモはこの画面を開いていても止まらない（止めるのはリプレイだけ。replay_set_paused）。
+    header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
+    header_footer.printf("NOW: DEMO %s", get_demo_site_name(get_demo_site()));
   } else {
     header_footer.setTextColor(COLOR_GREEN, COLOR_WHITE);
     header_footer.print("NOW: normal GNSS");
@@ -4623,8 +4614,9 @@ uint16_t cpu_temp_status_color(float cpu_temp) {
 void draw_setting_mode(int selectedLine, int cursorLine) {
   // 行間 16px。項目数 × separation が backscreen の高さ (BACKSCREEN_SIZE=240) を超えると
   // 最終行（Save & Exit）が表示されなくなるため、項目を増やす場合はここも調整すること。
-  // 現在の有効項目は 14。
-  //   14 x 16 = 224px < 240px。18px のままだと 252px となり Save & Exit が切れる。
+  // 現在の有効項目は 15（2026-11-05: AUTO Brightness を足し、REPLAY と DEMO を 1 行にまとめた）。
+  //   15 x 16 = 240px でちょうど満杯。**これ以上は 1 行も足せない**（足すなら行間を詰める）。
+  //   src/button.cpp の static_assert が 16 行目を足した時点でビルドを止める。
   const int separation = 16;
   tft.loadFont(AA_FONT_SMALL);
   // 背景色に COLOR_WHITE を指定して、前回のタイトルを上書き消去しながら描く。
@@ -4675,7 +4667,12 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     if (cursorLine == i) {
       col = (selectedLine == i) ? COLOR_RED : COLOR_MAGENTA;
     }
-    backscreen.setCursor(10,i * separation);
+    const std::string label = menu_settings[i].getLabel(selectedLine == i);
+    // Save & Exit だけは中央寄せ（設定の行と見分けやすくするため）。他は左寄せ x=10。
+    int lx = 10;
+    if (menu_settings[i].id == SETTING_EXIT)
+      lx = (SCREEN_WIDTH - backscreen.textWidth(label.c_str())) / 2;
+    backscreen.setCursor(lx, i * separation);
     backscreen.setTextColor(col,COLOR_WHITE);
 
     if (menu_settings[i].iconColor != nullptr) {
@@ -4690,7 +4687,7 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
         backscreen.fillCircle(SCREEN_WIDTH - 7, iy, 5, (uint16_t)c);
     }
 
-    backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
+    backscreen.print(label.c_str());
   }
   backscreen.pushSprite(0,30);
 
@@ -4765,6 +4762,31 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
   header_footer.setCursor(145, 18);
   header_footer.printf("FreeHeap %d%% ",rp2040.getFreeHeap()*100/rp2040.getTotalHeap());
   #endif
+
+  // ---- 照度センサー（VEML7700）と、いまの明るさの決まり（3 行目）----
+  // 例: "VEML 123lx  BL 35% AUTO"。決まりの名前は backlight_mode_label()（backlight.h）。
+  // ★ 内蔵フォント 6px/文字で、いちばん長い "VEML 9999lx  BL 100% SW BRIGHT SAVER2" が 224px。
+  //   右端の丸（x=228〜）にかかるので、文言を足すときは数え直すこと。
+  //   照度は明るい所で 120000 lx まで出る（backlight.cpp の VEML_CONF_LO）ので、1 万以上は
+  //   "VEML 21klx" と k で出して桁を増やさない（"VEML 121klx" でも 11 文字）。
+  // ★ フッターは画面の下 40px しか見えない（50px のスプライトを y=280 に置いている）。
+  //   この行（y=30..37）と丸（y=29..39）が最後に入る位置。
+  header_footer.setCursor(2, 30);
+  {
+    const bool  als = backlight_als_ok();
+    const float lux = backlight_get_lux();
+    header_footer.setTextColor(als ? COLOR_GRAY : COLOR_RED);
+    if (!als)              header_footer.print("VEML NG");
+    else if (lux < 0.0f)   header_footer.print("VEML --lx");
+    else if (lux < 10.0f)  header_footer.printf("VEML %.1flx", lux);
+    else if (lux < 9999.5f) header_footer.printf("VEML %.0flx", lux);
+    else                   header_footer.printf("VEML %.0fklx", lux / 1000.0f);
+    header_footer.setTextColor(COLOR_GRAY);
+    const BacklightSaver sv = backlight_get_saver();
+    header_footer.printf("  BL %d%% %s%s", backlight_get_duty_pct(), backlight_mode_label(),
+                         (sv == BL_SAVER_CRIT) ? " SAVER2" : (sv == BL_SAVER_LOW) ? " SAVER" : "");
+    header_footer.fillCircle(SCREEN_WIDTH-7, 34, 5, als ? COLOR_GREEN : COLOR_RED);
+  }
 
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.pushSprite(0,SCREEN_HEIGHT-40);

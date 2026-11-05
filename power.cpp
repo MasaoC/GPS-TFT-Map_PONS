@@ -59,6 +59,9 @@ static bool     s_fault       = false;
 static uint32_t s_cond_since  = 0;     // 異常の条件が成り立ち始めた時刻（0 = 成り立っていない）
 static uint32_t s_last_alert  = 0;
 static uint32_t s_last_sample = 0;
+// USB 物理通電開始時刻 [ms]（SW OFF/ON でも維持。0 = USB なし）。
+// ★ power_tick() で更新するので、それより前（ここ）で宣言する。
+static uint32_t s_usb_connected_ms = 0;
 static float    s_volt        = 0.0f;  // VBUS（生の平均。ピーク追跡は通さない）
 static float    s_batt_v      = 0.0f;  // GPIO40（BATPWR）の生の平均。SW OFF なら SW4 が GND に落とすので 0V
 static bool     s_swoff       = false; // SW OFF のまま USB（CHARGE_SW_OFF_HOLD_MS 続いて確定）
@@ -530,6 +533,14 @@ void power_tick() {
   if (now - s_last_sample < POWER_SAMPLE_MS) return;
   s_last_sample = now;
   sample();
+
+  // USB 物理通電時間の追跡（SW OFF/ON でも USB が給電されている限り保持する）
+  if (usb_power_present()) {
+    if (s_usb_connected_ms == 0) s_usb_connected_ms = now ? now : 1;
+  } else {
+    s_usb_connected_ms = 0;
+  }
+
   sw_off_tick(now);
   charge_hot_tick(now);
   overdischarge_tick(now);
@@ -586,8 +597,13 @@ static uint32_t s_chg_popup_snooze_since = 0;  // 充電ポップアップをス
 
 float power_estimated_cell_voltage() {
   const float v = get_input_voltage();
-  if (!usb_power_present() || power_sw_off_on_usb()) {
-    s_chg_full_latched = false;
+  if (!usb_power_present()) {
+    s_chg_full_latched  = false;
+    s_chg_full_since_ms = 0;
+    return v;
+  }
+  if (power_sw_off_on_usb()) {
+    // SW OFF 中は電池経路が切り離されているため実測電圧（0V近辺）を返す（満充電ラッチは破棄しない）
     return v;
   }
 
@@ -651,10 +667,10 @@ bool power_charging_full_cutoff_confirmed() {
   return (millis() - s_chg_full_since_ms) >= 1200000UL; // 満充電到達から 20 分経過
 }
 
-// USB 通電（充電開始）からの経過時間 [秒]
+// USB 通電からの経過時間 [秒]（SW OFF/ON でも USB が給電されている限り継続カウント）
 uint32_t power_charging_elapsed_sec() {
-  if (!usb_power_present() || power_sw_off_on_usb() || s_chg_start_ms == 0) return 0;
-  return (millis() - s_chg_start_ms) / 1000UL;
+  if (!usb_power_present() || s_usb_connected_ms == 0) return 0;
+  return (millis() - s_usb_connected_ms) / 1000UL;
 }
 
 // GNSS バックアップ電池（MS621FE 5.5mAh）の充電状態目安
@@ -725,7 +741,7 @@ static void charge_log_tick(uint32_t now) {
     s_unplug_pending = false; // 抜去待ち中の再接続はキャンセル
     if (!s_chg_active) {
       s_chg_active           = true;
-      s_chg_start_ms         = now ? now : 1;
+      if (s_chg_start_ms == 0) s_chg_start_ms = now ? now : 1;
       s_last_periodic_log_ms = now;
       s_cv_logged            = false;
       s_full_logged          = false;
@@ -779,25 +795,27 @@ static void charge_log_tick(uint32_t now) {
     } else {
       // 充電状態から抜けた（USB 抜去、または SW OFF）
       s_chg_active = false;
-      s_chg_full_latched = false;
-      // 5秒以上充電していた場合のみ抜去過渡測定に入る（ノイズやチャタリング防止）
-      if (!power_sw_off_on_usb() && now - s_chg_start_ms >= 5000UL) {
-        s_unplug_pending = true;
-        s_unplug_ms      = now;
-      } else {
-        s_chg_start_ms   = 0;
+      // USB 物理抜去時のみ満充電ラッチ解除と抜去過渡測定に入る（SW OFF のみなら状態を保持）
+      if (!usb_power_present()) {
+        s_chg_full_latched = false;
+        if (s_chg_start_ms != 0 && now - s_chg_start_ms >= 5000UL) {
+          s_unplug_pending = true;
+          s_unplug_ms      = now;
+        } else {
+          s_chg_start_ms   = 0;
+        }
       }
     }
   }
 
   // C) USB 抜去直後の実測 IR ドロップ測定（抜去後 750ms で過渡現象が落ち着いた瞬間にサンプリング）
-  if (s_unplug_pending && !power_sw_off_on_usb()) {
+  if (s_unplug_pending && !usb_power_present()) {
     if (now - s_unplug_ms >= 750UL) {
       s_unplug_pending = false;
       const float post_v = s_batt_v; // 抜去後の実測電池電圧（本体負荷接続時）
       const int   post_pct = battery_percent(post_v);
       const int   drop_mv = (int)lroundf((s_last_chg_raw_v - post_v) * 1000.0f);
-      const uint32_t elap_m = (s_unplug_ms - s_chg_start_ms) / 60000UL;
+      const uint32_t elap_m = (s_chg_start_ms != 0 && s_unplug_ms >= s_chg_start_ms) ? ((s_unplug_ms - s_chg_start_ms) / 60000UL) : 0UL;
       s_chg_start_ms = 0;
       enqueueTask(createLogSdfTask("CHG UNPLUG: chg=%.2fV(%d%%) post=%.2fV(%d%%) dV=%dmV t=%lum",
                                    s_last_chg_raw_v, s_last_chg_pct, post_v, post_pct, drop_mv, (unsigned long)elap_m));

@@ -34,8 +34,8 @@ const char vm_data_source_date[] = "2026-08-16";
 const uint32_t vm_blob_size = 1321024;
 const uint16_t vm_lod_tiles[VM_LOD_COUNT] = { 112, 83, 257, 85 };
 const uint32_t vm_lod_bytes[VM_LOD_COUNT] = { 362656, 410280, 514758, 33330 };
-const uint32_t vm_class_points[VM_CLASS_COUNT] = { 52864, 39244, 0, 88495, 55529, 48892 };
-const char* const vm_class_names[VM_CLASS_COUNT] = { "LANDMASS", "WATER", "URBAN", "MOTORWAY", "TRUNK", "RAIL" };
+const uint32_t vm_class_points[VM_CLASS_COUNT] = { 52864, 39244, 0, 88495, 55529, 48892, 0, 0 };
+const char* const vm_class_names[VM_CLASS_COUNT] = { "LANDMASS", "WATER", "PARK", "MOTORWAY", "TRUNK", "RAIL", "BUILDING", "STREET" };
 
 const vm_tile vm_tiles[] = {
   { 335000000, 1353750000, 0, 3858, 0, 0 },

@@ -46,11 +46,11 @@ except ImportError:
     sys.exit("shapely が必要です:  pip install shapely")
 
 # ===== vectormap.h の enum vm_class と一致させること =====
-# VM_URBAN は形式上の予約枠。市街地は収録しない（フラッシュを食う割に
-# 「幹線と湖面が分かればよい」という用途に寄与しないため）。
-VM_LANDMASS, VM_WATER, VM_URBAN, VM_MOTORWAY, VM_TRUNK, VM_RAIL = range(6)
-CLASS_NAME = ["LANDMASS", "WATER", "URBAN", "MOTORWAY", "TRUNK", "RAIL"]
-IS_AREA = lambda c: c <= VM_URBAN
+# 既存の軽量版データ（0..5）と番号がずれないよう、旧 VM_URBAN(2) を VM_PARK に割り当て、
+# VM_BUILDING(6), VM_STREET(7) を末尾に追加している。
+VM_LANDMASS, VM_WATER, VM_PARK, VM_MOTORWAY, VM_TRUNK, VM_RAIL, VM_BUILDING, VM_STREET = range(8)
+CLASS_NAME = ["LANDMASS", "WATER", "PARK", "MOTORWAY", "TRUNK", "RAIL", "BUILDING", "STREET"]
+IS_AREA = lambda c: c in (VM_LANDMASS, VM_WATER, VM_PARK, VM_BUILDING)
 
 # ===== 飛行エリア =====
 # 高ズーム(LOD0/1)はここに挙げたエリアだけを収録する。全国を高精細で持つのは
@@ -137,14 +137,19 @@ LODS = [
 #   それを見て詰めること（実機の MAPLIST 画面でも同じ内訳が見られる）。
 def _lods_hires():
     return [
-        # 最大ズーム（scale 200 = 画面幅 1.2km）専用。ここだけ精度を上げる。
+        # 最大ズーム（scale 200 = 画面幅 1.2km）専用。ここだけ精度を上げ、
+        # さらに街の輪郭が分かる地物（公園・大学敷地 VM_PARK、大型建物 VM_BUILDING、
+        # 県道・主要街路 VM_STREET）を追加する。
         # unit_e7=50 は 0.55m 刻み。tile_e7 / unit_e7 = 12500 で int16 に収まる。
         dict(lod=0, min_scale=100.0, unit_e7=50, tile_e7=625_000,
              tol_scale=200.0, cull_scale=200.0,
              bboxes=list(SITES.values()), sea_bg=True, land_hires=True,
-             classes=[VM_LANDMASS, VM_WATER, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
+             classes=[VM_LANDMASS, VM_PARK, VM_WATER, VM_BUILDING,
+                      VM_STREET, VM_MOTORWAY, VM_TRUNK, VM_RAIL],
              min_area_px=8.0, min_len_px=1.0,
-             desc="飛行エリア・最大ズーム専用"),
+             # 建物は 30m×30m（6px 角 = 900m^2）以上を残す
+             min_area_px_by_class={VM_BUILDING: 6.0, VM_PARK: 8.0},
+             desc="飛行エリア・最大ズーム専用（公園・大型建物・街路あり）"),
         # 以下は軽量版と同じ段を 1 つずつ後ろへずらしたもの。
         dict(lod=1, min_scale=26.0, unit_e7=100, tile_e7=1_250_000, tol_scale=52.32994872,
              bboxes=[(a - 0.10, b - 0.12, c + 0.10, d + 0.12) for (a, b, c, d) in SITES.values()],
@@ -175,16 +180,32 @@ def _lods_hires():
 # Overpass のタグ条件（クラス → クエリ断片）
 OVERPASS_FILTERS = {
     VM_WATER:    ['way["natural"="water"]', 'relation["natural"="water"]'],
+    VM_PARK:     [
+        'way["leisure"~"^(park|stadium|pitch|golf_course|sports_centre|nature_reserve|garden)$"]',
+        'relation["leisure"~"^(park|stadium|pitch|golf_course|sports_centre|nature_reserve|garden)$"]',
+        'way["amenity"~"^(university|college|school|hospital)$"]',
+        'relation["amenity"~"^(university|college|school|hospital)$"]',
+        'way["landuse"~"^(recreation_ground|village_green)$"]',
+        'relation["landuse"~"^(recreation_ground|village_green)$"]',
+    ],
     VM_MOTORWAY: ['way["highway"~"^(motorway|motorway_link)$"]'],
     VM_TRUNK:    ['way["highway"~"^(trunk|primary)$"]'],
     VM_RAIL:     ['way["railway"="rail"]["service"!~"."]'],
+    VM_BUILDING: [
+        'way["building"~"^(university|college|school|hospital|commercial|industrial|retail|public|civic|train_station|transportation|stadium|grandstand|hangar|warehouse|supermarket|manufacture|government|office|hotel|museum|temple|shrine)$"]',
+        'relation["building"~"^(university|college|school|hospital|commercial|industrial|retail|public|civic|train_station|transportation|stadium|grandstand|hangar|warehouse|supermarket|manufacture|government|office|hotel|museum|temple|shrine)$"]',
+        'way["building"](if:length()>180)',
+        'relation["building"](if:length()>180)',
+        'way["aeroway"~"^(apron|terminal|hangar|helipad)$"]',
+    ],
+    VM_STREET:   ['way["highway"~"^(secondary|secondary_link|tertiary|tertiary_link)$"]'],
 }
 
 # 公開 Overpass は混雑すると 504/429 を返す。複数ミラーを順に試す。
+# ※ overpass.osm.ch はスイス領域専用サーバで日本域は HTTP 200 のまま空配列を返すため入れないこと。
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
 # Overpass は requests の既定 User-Agent（python-requests/...）を 406 で弾くため、
@@ -388,6 +409,13 @@ def fetch_all_from_pbf(pbf_path, classes, cache_path=None):
         raw = pickle.loads(Path(cache_path).read_bytes())
         if set(raw.keys()) >= set(classes):
             return {c: [shapely_wkb.loads(b) for b in raw[c]] for c in classes}
+        if not pbf_path or not Path(pbf_path).exists():
+            # pbf が既に削除されている場合は、走査キャッシュにあるクラスだけ返し、
+            # 追加クラス（LOD0 の PARK/BUILDING/STREET 等）は Overpass キャッシュへフォールバックする
+            avail = [c for c in classes if c in raw]
+            missing = [CLASS_NAME[c] for c in classes if c not in raw]
+            print(f"    pbf 未指定のため走査キャッシュ分のみ使用（残りは Overpass 取得: {', '.join(missing)}）")
+            return {c: [shapely_wkb.loads(b) for b in raw[c]] for c in avail}
         print("    キャッシュのクラス構成が違うため再走査します")
 
     if not pbf_path or not Path(pbf_path).exists():
@@ -763,7 +791,7 @@ def build_lod(spec, land_shp, land_shp_hires, cache_dir, max_pts, stats, pbf_cac
             geoms = []
             for bb in bboxes:
                 geoms += fetch_landmass_shp(shp, bb, cache_dir, spec.get("land_hires", False))
-        elif pbf_cache is not None:
+        elif pbf_cache is not None and cls in pbf_cache:
             # pbf は全国分を 1 回で読んであるので、この LOD の範囲で切り出すだけ
             areas = [box(b[1], b[0], b[3], b[2]) for b in bboxes]
             geoms = [g for g in pbf_cache.get(cls, [])
@@ -777,7 +805,9 @@ def build_lod(spec, land_shp, land_shp_hires, cache_dir, max_pts, stats, pbf_cac
         if not IS_AREA(cls):
             geoms = merge_lines(geoms)   # 足切りの前に連結する（way 分割の影響を消す）
         n_merged = len(geoms)
-        geoms = drop_tiny(geoms, IS_AREA(cls), min_area_deg2, min_len_deg)
+        cls_min_area_px = spec.get("min_area_px_by_class", {}).get(cls, spec["min_area_px"])
+        cls_min_area_deg2 = ((cls_min_area_px / cull_scale) ** 2) / km2_per_deg2
+        geoms = drop_tiny(geoms, IS_AREA(cls), cls_min_area_deg2, min_len_deg)
         geoms = simplify_geoms(geoms, tol_deg, IS_AREA(cls))
         n_after = sum(count_points(g) for g in geoms)
         print(f"    {n_raw} 個 → 連結 {n_merged} 個 → 足切り後 {len(geoms)} 個 / 点 {n_before} → {n_after}")
@@ -922,11 +952,12 @@ def emit_header(out_path, all_tiles, source_date, args, stats, variant="light"):
 
 
 def main():
+    script_dir = Path(__file__).resolve().parent
     ap = argparse.ArgumentParser(description="OSM から vectormap_data.cpp を生成する")
     ap.add_argument("--variant", choices=["light", "hires"], default="light",
                     help="light  = 既定の軽量版（FLASH 2MB でも入る。書き込みが速い）\n"
                          "hires = 16MB 版。settings.h の VECTORMAP_HIRES を有効にしたときだけ焼かれる")
-    ap.add_argument("--out", default="../../src/flashdata/vectormap_data.cpp",
+    ap.add_argument("--out", default=str(script_dir / "../../src/flashdata/vectormap_data.cpp"),
                     help="出力先。配列の「定義」なので .cpp にすること（.h だと\n"
                          "どこからも include されずリンクエラーになる）")
     ap.add_argument("--lods", default="0,1,2,3", help="生成する LOD（カンマ区切り）")
@@ -938,9 +969,9 @@ def main():
     ap.add_argument("--pbf", default=None,
                     help="Geofabrik の .osm.pbf。指定すると Overpass ではなくこちらを使う"
                          "（API 負荷なし・再現性あり。推奨）")
-    ap.add_argument("--pbf-scan-cache", default="./pbf_scan.pickle",
+    ap.add_argument("--pbf-scan-cache", default=str(script_dir / "pbf_scan.pickle"),
                     help="pbf 走査結果のキャッシュ先。閾値だけ変えて作り直すとき再走査を省ける")
-    ap.add_argument("--cache", default="./cache", help="Overpass 応答のキャッシュ先")
+    ap.add_argument("--cache", default=str(script_dir / "cache"), help="Overpass 応答のキャッシュ先")
     ap.add_argument("--max-pts", type=int, default=2048,
                     help="1 レコードの最大点数（vectormap.cpp の VM_MAX_PTS と揃える）")
     ap.add_argument("--source-date", default=None,
@@ -953,7 +984,7 @@ def main():
     if args.variant == "hires":
         LODS = _lods_hires()
         if args.out == ap.get_default("out"):
-            args.out = "../../src/flashdata/vectormap_data_hires.cpp"
+            args.out = str(script_dir / "../../src/flashdata/vectormap_data_hires.cpp")
         if args.lods == ap.get_default("lods"):
             args.lods = "0,1,2,3,4"     # 段が 1 つ増える
 

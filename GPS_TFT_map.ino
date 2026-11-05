@@ -28,6 +28,7 @@
 #include "airdata.h"
 #include "attitude.h"
 #include "backlight.h" // v7.1 のバックライト（輝度スイッチ・照度センサー）
+#include "bootwatch.h" // 起動の見張り（起動中に固まったら再起動し、止まった段階を log.txt に残す）
 #include "display_tft.h"
 #include "gnss.h"
 #include "hardware/adc.h"
@@ -72,8 +73,7 @@ int replay_list_page = 0;   // リプレイ選択画面で現在表示・読み�
 // IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_*
 // と対応。
 int imu_cursor = 0;
-int imu2_cursor = 0; // IMU/ESKF ページ2/3 のカーソル位置（IMU の生値）
-int imu3_cursor = 0; // IMU/ESKF ページ3/3 のカーソル位置（ESKF の調整）
+int imu2_cursor = 0; // IMU/ESKF ページ2/2 のカーソル位置（IMU の生値と ESKF の状態。行は戻る / Exit）
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
 double scalelist[6]; // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;        // 現在のマップスケール [pixels/km]
@@ -436,7 +436,11 @@ static void run_overdischarge_warning_loop(bool from_loop) {
 //   の制約）。
 //   2. GNSS は TFT 初期化後に setup する（バッファオーバーフロー防止のため）。
 void setup(void) {
+  // ★ bootwatch_stage() は起動の見張りの目印（bootwatch.h）。"BOOT PONS" までに止まると、
+  //   Core1 の見張りか watchdog が再起動し、最後の目印を log.txt に残す。
+  bootwatch_stage(BW_STAGE_SETUP);
   Serial.begin(38400);
+  bootwatch_stage(BW_STAGE_SERIAL);
 #ifndef RELEASE
   // デバッグ時はシリアルモニタが繋がるまで待機（RELEASE では即開始）
   while (!Serial) {
@@ -452,16 +456,21 @@ void setup(void) {
   pinMode(BATTERY_PIN, INPUT);
   pinMode(SD_DETECT, INPUT_PULLUP); // SDカード検出ピン（挿入時 LOW）
   analogReadResolution(12);         // 12bit = 0〜4095
+  bootwatch_stage(BW_STAGE_PINS);
   power_setup();
-  // v7.1 はバックライトを PWM で点けるまで消灯している。setup_tft()
-  // より前に呼ぶこと （後ろだと起動画面が見えない）。照度センサーは i2c0
-  // の後（下の backlight_als_setup）。
+  bootwatch_stage(BW_STAGE_POWER);
+  // v7.1 のバックライトは、ここで PWM を設定するまでは GPIO のリセット時の
+  // プルダウンでほぼ最大に点いている（backlight.cpp の ■ ハード）。setup_tft()
+  // より前に呼んで、起動画面から輝度スイッチどおりの明るさにする。照度センサーは
+  // i2c0 の後（下の backlight_als_setup）。
   backlight_setup();
+  bootwatch_stage(BW_STAGE_BACKLIGHT);
 
   // setup switch
   pinMode(sw_push.getPin(), INPUT_PULLUP); // This must be after setup tft for
                                            // some reason of library TFT_eSPI.
   setup_tft();
+  bootwatch_stage(BW_STAGE_TFT);
   // ★
   // **ここでタイトルを出しておく。**これが無いと起動画面が始まるまで画面が真っ白になる。
   //   白のままの区間は imu_setup()（SCH16T のリセット〜起動）と
@@ -518,6 +527,8 @@ void setup(void) {
   enqueueTask(createLogSdfTask("BOOT PONS %s build %lu board=%s imu=%s%s",
                                BUILDVERSION, (unsigned long)BUILDDATE,
                                VERSION_TEXT, imu_sensor_name(), build_rel));
+  // 起動の見張りの watchdog を外し、前回が途中で止まっていたらログに出す（bootwatch.h）。
+  bootwatch_boot_done_core0();
 
   // 両センサーの初期化完了後にセンサー組み合わせをログ出力する
   if (!get_imu_ok() && !get_airdata_ok()) {
@@ -647,12 +658,14 @@ void setup1(void) {
   // 接続まで待つため、その後ろに置くと窓が極端に長くなる。
   mutex_init(
       &taskQueueMutex); // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
+  bootwatch_stage1(BW_STAGE1_SETUP1); // 起動の見張りの目印（bootwatch.h）
   // 過放電ラッチを本体フラッシュ（EEPROM）から読み込む。
   // ★ 下の while(!Serial)
   // より前に置くこと（デバッグビルドの電池単体起動で止まらないようにするため）。
   // ★ ここでは log.txt へ何も積まない（setup() の "BOOT PONS ..." を必ず 1
   // 行目に保つため）。
   power_latch_init_core1();
+  bootwatch_stage1(BW_STAGE1_LATCH);
 
   Serial.begin(38400);
 #ifndef RELEASE
@@ -662,7 +675,9 @@ void setup1(void) {
 #endif
 
   init_destinations(); // 目的地リストを SD から読み込む
+  bootwatch_stage1(BW_STAGE1_DEST);
   setup_sound();       // スピーカー・アンプ・PWM を初期化
+  bootwatch_stage1(BW_STAGE1_SOUND);
 
   //====core1_separate_stack = true
   // の時、Serial.printがないとSDが動かない。詳細不明だが、消すな！
@@ -679,7 +694,14 @@ void setup1(void) {
   // 回目で外れることがある）。
   // 回数を絞っているのは接触不良時の長時間ブロック防止。それでも失敗したら
   // try_sd_recovery() が10秒ごとにリトライ。
+  // ★ その前に Core0 の tft.begin() が PIO を取り終えるのを待つ（理由は display_tft.h の
+  //   tft_pio_ready）。Core0 は setup() の冒頭から数 ms でここを通る。上限を置くのは、
+  //   Core0 が手前で止まっても SD だけは使えるようにするため。
+  // ★ 待ちが切れたら、SD を準備したあとで Core0 が止まったままかを確かめ、止まっていれば
+  //   log.txt に止まった場所を書いて再起動する（起動の見張り。bootwatch.h）。
+  bootwatch_wait_core0(&tft_pio_ready, 1000);
   setup_sd(SD_BOOT_TRY_COUNT);
+  bootwatch_report_core1(&tft_pio_ready);
   // 起動音（opening.wav）は startup_demo_tft() 内でエンキューする（重複防止）
 }
 
@@ -1407,10 +1429,11 @@ static void periodic_log_tick() {
         snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
       else
         strlcpy(jst_str, "--:--", sizeof(jst_str));
-      char pst[40], bst[32];
+      // bst は最長 " bl=100% lux=120794 bright saver2 dim"（37 文字）
+      char pst[40], bst[40];
       power_format_status(pst, sizeof(pst));
       backlight_format_status(
-          bst, sizeof(bst)); // " bl=35% lux=12"（自動調光の調整用）
+          bst, sizeof(bst)); // " bl=35% lux=12 eco"（自動調光の調整用）
       enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
                                    get_input_voltage(), pst, bst,
                                    analogReadTemp(), jst_str));
@@ -2333,12 +2356,10 @@ void shortPressCallback() {
     // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
     // 誤操作で意図しない値が焼き付かないよう 2 段階にしてある。
-    if (detail_page % 3 == 0)
+    if (detail_page % IMU_PAGE_COUNT == 0)
       imu_cursor = (imu_cursor + 1) % IMU_MENU_COUNT;
-    else if (detail_page % 3 == 1)
-      imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
     else
-      imu3_cursor = (imu3_cursor + 1) % IMU3_MENU_COUNT;
+      imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
     redraw_screen = true;
   } else if (screen_mode == MODE_MAPLIST || screen_mode == MODE_GNSSDETAIL ||
              screen_mode == MODE_VARIODETAIL) {
@@ -2349,41 +2370,26 @@ void shortPressCallback() {
 // IMU / ESKF 画面のカーソル位置に応じた実行処理（長押しから呼ばれる）。
 // 設定画面と同じく「短押し=カーソル移動 / 長押し=実行」の操作感に揃えてある。
 // この画面を出るのは Exit 項目からのみ（長押しで戻る動作は持たせていない）。
+// Exit はページ1にも 2/2 にもあり、どちらも imu_exit() を通す（動きを食い違わせない）。
+static void imu_exit() {
+  enqueueTask(createSaveSettingTask());
+  screen_mode = MODE_MAP;
+  enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+}
+
 static void imu_execute() {
   redraw_screen = true;
 
-  if (detail_page % 3 == 1) { // ページ2/3: IMU の生値
+  if (detail_page % IMU_PAGE_COUNT == 1) { // ページ2/2: 見るだけ（行は戻る / Exit）
     switch (imu2_cursor) {
-    case IMU2_MENU_NEXTPAGE:
-      detail_page = 2;
-      imu3_cursor = 0;
-      enqueueTask(createPlayMultiToneTask(1568, 80, 1));
-      break;
     case IMU2_MENU_BACK:
       detail_page = 0;
       imu2_cursor = 0;
       enqueueTask(createPlayMultiToneTask(1568, 80, 1));
       break;
-    }
-    return;
-  }
-
-  if (detail_page % 3 == 2) { // ページ3/3: ESKF の調整メニュー
-    switch (imu3_cursor) {
-    case IMU3_MENU_AUTOROLL:
-      attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
-      enqueueTask(createSaveSettingTask());
-      enqueueTask(createPlayMultiToneTask(1568, 60, 1));
-      break;
-    case IMU3_MENU_WIND:
-      attitude_set_wind_enabled(!attitude_get_wind_enabled());
-      enqueueTask(createSaveSettingTask());
-      enqueueTask(createPlayMultiToneTask(1568, 60, 1));
-      break;
-    case IMU3_MENU_BACK:
-      detail_page = 0;
-      imu3_cursor = 0;
-      enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+    case IMU2_MENU_EXIT:
+      imu2_cursor = 0;
+      imu_exit();
       break;
     }
     return;
@@ -2430,15 +2436,26 @@ static void imu_execute() {
     enqueueTask(createPlayMultiToneTask(1568, 60, 1));
     break;
 
+  case IMU_MENU_AUTOROLL: // 直進中のロール自動トリム（2026-11-05 に 3/3 から移した）
+    attitude_set_roll_trim_enabled(!attitude_get_roll_trim_enabled());
+    enqueueTask(createSaveSettingTask());
+    enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+    break;
+
+  case IMU_MENU_WIND: // 風推定（同上）
+    attitude_set_wind_enabled(!attitude_get_wind_enabled());
+    enqueueTask(createSaveSettingTask());
+    enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+    break;
+
   case IMU_MENU_NEXTPAGE:
     detail_page = 1;
+    imu2_cursor = 0;
     enqueueTask(createPlayMultiToneTask(1568, 80, 1));
     break;
 
   case IMU_MENU_EXIT:
-    enqueueTask(createSaveSettingTask());
-    screen_mode = MODE_MAP;
-    enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+    imu_exit();
     break;
   }
 }
@@ -2489,7 +2506,23 @@ static void startReplay(const char *filename) {
   exit_setting(); // 設定を保存して地図画面へ
 }
 
-// リプレイ選択画面での長押し（決定）を処理する。
+// 指定した地点でデモ飛行を始め、地図画面へ戻る（REPLAY/DEMO 画面の DEMO の行から）。
+// 2026-11-05 までは設定画面の DEMO の行のトグルで地点を回し、値変更モードを抜けた時点で始めていた。
+static void startDemo(demo_site_t site) {
+  // デモとリプレイは同時使用不可 → リプレイを無効化（RITEM_OFF と同じ止め方）。
+  // ★ 再生していないときは set_replaymode(false) を呼ばない。日時を無効にする副作用がある
+  //   （gnss.cpp の set_replaymode。実 GNSS の次の NAV-PVT まで日時が --- になる）。
+  if (getReplayMode()) {
+    set_replaymode(false);
+    set_replay_filename("");
+  }
+  set_demo_site(site);  // 仮想機体を地点の中心へ置き、位置履歴を消す
+  reset_degpersecond(); // 旋回角速度をリセット
+  selectedLine = -1;
+  exit_setting(); // 設定を保存して地図画面へ
+}
+
+// REPLAY/DEMO 画面での長押し（決定）を処理する。
 static void handleReplaySelect() {
   char label[40];
   int fsize = 0;
@@ -2498,12 +2531,16 @@ static void handleReplaySelect() {
 
   switch (type) {
   case RITEM_OFF:
-    // リプレイを解除して通常の GNSS に戻す
+    // リプレイもデモも解除して通常の GNSS に戻す
     set_replaymode(false);
     set_replay_filename("");
+    set_demo_off();
     latlon_manager.reset();
     reset_degpersecond();
     backToSettingFromReplay();
+    break;
+  case RITEM_DEMO:
+    startDemo((demo_site_t)replay_menu_demo_site(replay_cursor));
     break;
   case RITEM_FLIGHTONLY:
     // 静止区間をスキップするかを切り替える。画面はそのまま（続けて再生対象を選べる）
@@ -2518,7 +2555,7 @@ static void handleReplaySelect() {
     // カーソルとページを先頭へ戻してから取り直す
     // （戻さないと、前のフォルダの件数を前提にした位置を指したままになる）。
     toggle_replay_from_received();
-    replay_cursor = 3; // SOURCE 行に留まる（続けて切り替えられる）
+    replay_cursor = REPLAY_IDX_SOURCE; // SOURCE 行に留まる（続けて切り替えられる）
     replay_list_page = 0;
     loading_replaylist = true;
     enqueueTask(createBrowseReplayTask(0));

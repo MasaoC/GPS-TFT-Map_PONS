@@ -6,7 +6,7 @@
 //           設定画面の全メニュー項目（目的地・音量・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/05
 // ============================================================
 // Handle button updates
 #include "button.h"
@@ -15,6 +15,7 @@
 #include "../attitude.h"
 #include "../imu.h"      // get_imu_ok(): IMU 非搭載機の判定
 #include "../link.h"     // PONS Link（機体⇄ボート無線）
+#include "../backlight.h" // AUTO Brightness（Eco / Bright）
 
 
 // 実体は GPS_TFT_map.ino で volatile 定義。宣言側も volatile を付ける
@@ -28,7 +29,6 @@ extern int detail_page;
 extern int replay_cursor;      // リプレイ選択画面のカーソル位置（通し番号）
 extern int replay_list_page;   // リプレイ選択画面の表示中ページ
 extern volatile int scaleindex;  // 現在のマップスケール（scalelist のインデックス）
-void reset_degpersecond();
 void next_scaleindex();          // マップスケールを次の段階へ（GPS_TFT_map.ino）
 float scale_screen_km(int index);  // 画面横幅が何 km か（GPS_TFT_map.ino）
 
@@ -419,52 +419,48 @@ Setting menu_settings[] = {
   },
 
   // ----------------------------------------------------------
-  // [8] デモモード (DEMOBIWA)
-  //   ・Toggle: デモ地点を 1 つ進める（OFF → BIWAKO → SHIRAHAMA → KASAOKA
-  //             → FUJIGAWA → TOKYO → OSAKA → OFF）。地点ごとに仮想機体をその中心へ置き、
-  //             位置履歴と旋回角速度をリセットする。
-  //   ・各地点の地図表示を実機で確認する用途にも使える。
-  //   ・Exit  : デモがオンになったらリプレイを無効にして設定を閉じる（両立しない）
-  //   ・アイコン色: デモがオフなら緑（通常飛行中）、オンなら赤
+  // [8] 画面の明るさの曲線 (BRIGHTNESS)
+  //   ・Toggle: Eco ↔ Bright。輝度スイッチ Low（照度で自動）のときの照度→点灯率の曲線を選ぶ
+  //             （backlight.cpp の auto_duty。値は settings.h の BL_AUTO_* / BL_ECO_*）。
+  //             Eco は 1000 lx で 50%・20000 lx で 70%、Bright は 1000 lx 以上で 100%。
+  //             切り替えた瞬間に効く（照度へゆっくり寄せる時定数を待たない）。
+  //   ・輝度スイッチ High のときは効かない（いつも 100%）。
+  //   ・アイコン色: なし。どちらも正しい設定で、本番に向く・向かないが無いため。
   // ----------------------------------------------------------
-  { SETTING_DEMOBIWA,
+  { SETTING_BRIGHTNESS,
     [](bool selected) -> std::string {
-      char buff[32];  // temporary buffer
-      sprintf(buff, selected ? " DEMO: %s" : "DEMO: %s", get_demo_site_name(get_demo_site()));
-      return std::string(buff);  // return as std::string
+      const char* m = (backlight_get_auto_mode() == BL_AUTO_BRIGHT) ? "Bright" : "Eco";
+      char buff[32];
+      snprintf(buff, sizeof(buff), selected ? " AUTO Brightness: %s" : "AUTO Brightness: %s", m);
+      return std::string(buff);
     },
     nullptr,
     []() {
-      next_demo_site();             // 地点を 1 つ進める（内部で位置履歴もリセット）
-      reset_degpersecond();         // 旋回角速度をリセット
-    },[](){
-      if(is_demo_active()){
-        set_replaymode(false);  // デモとリプレイは同時使用不可 → リプレイを無効化
-        exit_setting();
-      }
+      backlight_set_auto_mode(backlight_get_auto_mode() == BL_AUTO_BRIGHT ? BL_AUTO_ECO : BL_AUTO_BRIGHT);
     },
-    [](){
-      if(!is_demo_active())
-        return COLOR_GREEN;
-      else
-        return COLOR_RED;
-    }
+    nullptr,
+    nullptr
   },
 
   // ----------------------------------------------------------
-  // [9] フライトリプレイモード (REPLAY)
-  //   ・Enter : リプレイ選択画面へ遷移し、Core1 へファイル一覧の取得を依頼する。
-  //             再生の開始／停止はすべて選択画面側で行う。
+  // [9] リプレイ／デモ (REPLAY)
+  //   ・Enter : REPLAY/DEMO 画面へ遷移し、Core1 へファイル一覧の取得を依頼する。
+  //             リプレイの開始／停止、デモの地点の選択（OFF / BIWAKO … OSAKA）はすべて
+  //             その画面で行う（GPS_TFT_map.ino の handleReplaySelect）。
   //   ・Toggle/Exit: なし
-  //   ・アイコン色: リプレイがオフなら緑（通常モード）、オンなら赤
+  //   ・アイコン色: リプレイもデモもオフなら緑（通常モード）、どちらかがオンなら赤
   // ----------------------------------------------------------
   { SETTING_REPLAY,
     [](bool selected) -> std::string {
       char buff[40];  // temporary buffer
-      // 再生中は対象ファイル名（パスを除いた部分）を表示する
-      const char* label = "OFF";
-      if (getReplayMode()) label = replay_filename_base();
-      snprintf(buff, sizeof(buff), selected ? " REPLAY: %s >" : "REPLAY: %s >", label);
+      // 再生中は対象ファイル名（パスを除いた部分）、デモ中は地点を出す。
+      // デモとリプレイは同時には使えない（どちらかを始めるともう片方は止まる）。
+      if (getReplayMode())
+        snprintf(buff, sizeof(buff), selected ? " REPLAY: %s >" : "REPLAY: %s >", replay_filename_base());
+      else if (is_demo_active())
+        snprintf(buff, sizeof(buff), selected ? " DEMO: %s >" : "DEMO: %s >", get_demo_site_name(get_demo_site()));
+      else
+        strlcpy(buff, selected ? " REPLAY/DEMO: OFF >" : "REPLAY/DEMO: OFF >", sizeof(buff));
       return std::string(buff);  // return as std::string
     },
     []() {
@@ -477,7 +473,7 @@ Setting menu_settings[] = {
     nullptr,
     nullptr,
     [](){
-      if(!getReplayMode())
+      if(!getReplayMode() && !is_demo_active())
         return COLOR_GREEN;
       else
         return COLOR_RED;
@@ -488,10 +484,11 @@ Setting menu_settings[] = {
   // [10] GNSS 詳細画面へ (GNSSDETAIL)
   //   ・Enter: GNSS 星座モードを有効化し、GNSS 詳細画面（衛星配置・SNR グラフ）へ遷移
   //   ・Toggle/Exit/アイコン色: なし
+  //   ・表示名に GPS を並べているのは初めて使う人向け（GNSS という言葉を知らなくても分かるように）。
   // ----------------------------------------------------------
   { SETTING_GNSSDETAIL,
     [](bool selected) -> std::string {
-      return "Show GNSS detail >";
+      return "GNSS/GPS detail >";
     },
     []() {
       DEBUG_P(20240801, "GNSS CONST MODE");
@@ -562,16 +559,17 @@ Setting menu_settings[] = {
 
   // ----------------------------------------------------------
   // [14] IMU / 姿勢 ESKF 詳細 (IMU_DETAIL)
-  //   ※ 機体ゼロ点の較正はこの画面内で短押しして実行する（設定メニューには置かない）
+  //   ※ 機体ゼロ点の較正はこの画面内の APPLY を長押しして実行する（設定メニューには置かない）
   //   ・Enter: IMU/ESKF 画面へ切り替え
   //   ・静止中のジャイロ実測値・推定バイアス・ESKF の姿勢を見る
-  //   ・アイコン色: バンク警告 ON・自動ロールトリム ON・トリム累積が小さい、の 3 つを
-  //     満たすとき緑。それ以外はオレンジ（IMU/ESKF 画面の右上と同じ意味）。
-  //     累積が大きい＝取り付けがずれていてバンク警報の基準が信用できない状態。
+  //   ・アイコン色: IMU/ESKF 画面の右上の丸と**同じ関数**（display_tft.cpp の imu_status_color）。
+  //     ESKF が収束・姿勢機能 ON・自動ロールトリム ON・トリム累積が小さい、の 4 つで緑。
+  //     要 APPLY は赤、IMU 無しは灰、それ以外はオレンジ。受信モードだけはここでハイフンにする。
+  //     ★ 条件をここに書き写さないこと（2026-11-05 まで READY が抜けていて、右上と食い違っていた）。
   // ----------------------------------------------------------
   { SETTING_IMU_DETAIL,
     [](bool selected) -> std::string {
-      return "IMU / ESKF >";
+      return "IMU / ESKF detail >";
     },
     []() {
       screen_mode = MODE_IMUDETAIL;
@@ -590,17 +588,7 @@ Setting menu_settings[] = {
       //   正しい設定なのに異常に見える（MENU_ICON_HYPHEN の説明は src/button.h）。
       //   ★ ミラー中の姿勢表示は送信機の値なので、この行とは別の話。
       if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
-      // IMU 非搭載機は姿勢機能そのものが無いのでグレー（緑＝準備OK にしない）
-      if (!get_imu_ok())
-        return COLOR_GRAY;
-      // 較正が無効（マウントから外された後 APPLY していない）は赤で最優先
-      if (attitude_needs_apply() && attitude_get_rpy_enabled())
-        return COLOR_RED;
-      if (attitude_get_rpy_enabled() && attitude_get_roll_trim_enabled() &&
-          fabsf(attitude_get_roll_trim_deg()) < ROLL_TRIM_WARN_DEG)
-        return COLOR_GREEN;
-      else
-        return COLOR_ORANGE;
+      return (int)imu_status_color();
     }
   },
 
@@ -617,15 +605,17 @@ Setting menu_settings[] = {
   //   やがて丸ごと無視されるようになり、本当の異常を隠す。
   // ★ 方針の問い（意図したモードになっているか）は別の手段が担っている:
   //   起動時の読み上げ `link_announce_mode()`（3 状態とも読む。CLAUDE.md）と、
-  //   この行のラベル（`Wireless: SENDER >` と出る）。**設定画面を開かなくても
+  //   この行のラベル（`Wireless detail: SENDER >` と出る）。**設定画面を開かなくても
   //   気づけるし、まだ直せるタイミングで鳴る**ので、そちらの方が instrument として良い。
   { SETTING_WIRELESS,
     [](bool selected) -> std::string {
       const char* m = "OFF";
       if (link_get_mode() == LINK_MODE_TX) m = "SENDER";
       else if (link_get_mode() == LINK_MODE_RX) m = "RECEIVER";
-      char buff[32];
-      snprintf(buff, sizeof(buff), selected ? " Wireless: %s >" : "Wireless: %s >", m);
+      // ★ 「detail」にそろえても**モードは消さない**（上の ★ の「方針の問い」を受け持つ表示の 1 つ）。
+      //   最長の "Wireless detail: RECEIVER >" で 192px（右端の丸は x=228〜）。
+      char buff[40];
+      snprintf(buff, sizeof(buff), selected ? " Wireless detail: %s >" : "Wireless detail: %s >", m);
       return std::string(buff);
     },
     []() {
@@ -676,6 +666,10 @@ Setting menu_settings[] = {
 
 
 const int setting_size = sizeof(menu_settings) / sizeof(menu_settings[0]);
+// 設定画面は行間 16px × 15 行 = 240px（backscreen の高さ）で満杯。16 行目は Save & Exit が画面から落ちる
+// （display_tft.cpp の draw_setting_mode）。足すなら行間を詰めるか、どれかを別の画面へまとめる。
+static_assert(sizeof(menu_settings) / sizeof(menu_settings[0]) <= 15,
+              "settings menu is full (15 rows x 16px = 240px); see draw_setting_mode()");
 
 
 

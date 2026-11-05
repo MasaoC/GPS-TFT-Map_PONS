@@ -7,7 +7,7 @@
 //           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
 //           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/11/05
 // ============================================================
 
 #ifndef GNSS_H
@@ -46,6 +46,9 @@
     int elevation = 0;
     int azimuth = 0;
     int SNR = 0;
+    // 仰角・方位が分かっているか。false の間 elevation / azimuth は意味の無い 0 で、
+    // 星座画面は図に描かずフッターに並べる（handle_navsat() のコメント）。
+    bool posKnown = false;
     int satelliteType = SATELLITE_TYPE_UNKNOWN;
     unsigned long lastReceived = 0;
   };
@@ -150,8 +153,8 @@
     DEMO_SITE_COUNT
   };
   demo_site_t get_demo_site();
+  // 地点を選ぶのは REPLAY/DEMO 画面（GPS_TFT_map.ino の startDemo）。
   void set_demo_site(demo_site_t site);
-  void next_demo_site();           // 設定画面で 1 段階進める（末尾で OFF に戻る）
   const char* get_demo_site_name(demo_site_t site);
   bool is_demo_active();           // いずれかの地点でデモ飛行中か
   void set_demo_off();

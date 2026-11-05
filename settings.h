@@ -1,7 +1,7 @@
 // ============================================================
 #pragma once
 // File    : settings.h
-// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
+// Project : PONS v7.1 (Pilot Oriented Navigation System for HPA)
 // Role    : プロジェクト全体の設定・定数・マクロ定義。
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261105
-#define BUILDVERSION "1.02"
+#define BUILDDATE 20261106
+#define BUILDVERSION "1.03"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -142,10 +142,24 @@
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
 #define SD_DETECT 10  //v7 8->10に変更
 // 起動時の SD.begin()（SDIO）の試行回数と間隔（GPS_TFT_map.ino の setup1()、mysd.cpp の setup_sd()）。
-// 電源投入直後はカードが応答せず 1 回目で外れ、10 秒後の再試行まで SD エラーになることがあった。
+// 起動直後に外れていたのは SdFat 2.3.0 の不具合だった（mysd.cpp の include 部）。回数は保険として残してある。
 // 全部失敗しても待ちは 200ms × 2 回だけ。復旧時の再試行（try_sd_recovery）は 1 回のまま。
 #define SD_BOOT_TRY_COUNT 3
 #define SD_BEGIN_RETRY_MS 200
+// 起動の見張りと水晶の立ち上がり待ち（bootwatch.cpp）。経緯は docs/hardware.md §2「起動時に固まる件」。
+//   BOOTWATCH_STUCK_MS       … Core1 の見張り: tft_pio_ready の待ち（1 秒）が切れたあと、Core0 の段階が
+//                              これだけ動かなければ「止まった」
+//   BOOTWATCH_AUTO_RESTART   … 1 なら Core1 の見張りが記録してから再起動する。0 なら止まったまま
+//   BOOTWATCH_MAX_RESTARTS   … 続けて再起動する上限（毎回止まる故障で再起動をくり返さないため）
+//   BOOTWATCH_WDT_MS         … 起動処理の最初〜 "BOOT PONS" の間だけ掛ける watchdog [ms]（0 = 掛けない。
+//                              RELEASE でないビルドも掛けない）。Core1 の見張り（約 1 秒の待ち＋SD＋
+//                              BOOTWATCH_STUCK_MS）より長くする
+//   BOOTWATCH_XOSC_SETTLE_MS … 水晶が STABLE になってから PLL を起こすまで待つ時間 [ms]。★ 0 にしないこと
+#define BOOTWATCH_STUCK_MS       1000UL
+#define BOOTWATCH_AUTO_RESTART   1
+#define BOOTWATCH_MAX_RESTARTS   2
+#define BOOTWATCH_WDT_MS         6000
+#define BOOTWATCH_XOSC_SETTLE_MS 50
 // ============================================================
 //  電源・バッテリー
 // ============================================================
@@ -202,9 +216,19 @@
 #define TFT_BL_DUTY_DIM     0.05f   // スイッチ Low で照度センサーが無いとき。実機で調整する
 // 照度による自動調光。照度の対数に比例させる（明るさの感じ方が対数なので）。
 // VEML7700 はケースカバー基板にあり、窓越しに測るので、値は実機で合わせる。
+// 曲線は 2 種類あり、設定画面の「AUTO Brightness」で選ぶ（SD の auto_brightness。輝度スイッチ Low のときだけ効く）。
+//   Bright … BL_AUTO_LUX_LOW で BL_AUTO_DUTY_MIN、BL_AUTO_LUX_HIGH 以上で最大（2026-11-05 まではこれだけだった）
+//   Eco    … BL_AUTO_LUX_LOW で BL_AUTO_DUTY_MIN、BL_ECO_LUX_MID で BL_ECO_DUTY_MID、BL_ECO_LUX_FULL 以上で最大。
+//            いまの値だと 10 lx 19% / 100 lx 34% / 1000 lx 50% / 20000 lx 70% / 50000 lx 100%。
+//            曇りの昼間（約 20000 lx）は 70% で読める（2026-11-05 の実機の感触）ので、そこを基準にした。
+//            ★ lx は**センサーの読み**（窓越し）。照度計の値とは合わないので、設定画面のフッター
+//              （VEML 〜lx）を見て合わせる。足りない日は輝度スイッチ High で常に最大になる。
 #define BL_AUTO_LUX_LOW     1.0f    // これ以下は BL_AUTO_DUTY_MIN（夜）
-#define BL_AUTO_LUX_HIGH    1000.0f // これ以上は最大（屋外）
+#define BL_AUTO_LUX_HIGH    1000.0f // Bright: これ以上は最大（屋外）
 #define BL_AUTO_DUTY_MIN    0.03f
+#define BL_ECO_LUX_MID      20000.0f // Eco: 曇りの昼間
+#define BL_ECO_DUTY_MID     0.70f
+#define BL_ECO_LUX_FULL     50000.0f // Eco: これ以上は最大（晴れ）
 #define BL_AUTO_TAU_MS      2000UL  // 照度への追従の時定数（手の影や機体の向きでちらつかせない）
 // ---- 待機中自動減光（Auto-Dimming、backlight.cpp）----
 // TF や本番の待機時間中（速度 < 0.3m/s かつ照度・機体静止）にバックライトを
@@ -213,11 +237,35 @@
 #define BL_DIM_TIMEOUT_MS            30000UL // 待機状態がこの時間続いたら減光へ移行 [ms]
 #define BL_DIM_SPEED_ENTER           0.30f   // 減光に入る対地速度上限 [m/s]（約 1.1 km/h）
 #define BL_DIM_SPEED_EXIT            0.60f   // 減光から復帰する対地速度下限 [m/s]（約 2.2 km/h）
-#define BL_DIM_LUX_CHANGE_EXIT_RATIO 0.30f   // 手を仰いだ時の照度相対変化率（30%）
-#define BL_DIM_LUX_CHANGE_EXIT_MIN   30.0f   // 手を仰いだ時の最小照度変化量 [lx]
+// 照度で「手が来た」とみる（手をかざす・あおぐ・人の影）。減光から戻す・減光に入るのを延ばす、の両方に使う
+// （backlight.cpp の lux_hand_feed）。次の 2 つのどちらかで。照度は上限なし（12 万 lx まで）で比べる。
+//   かざす … 直近 BL_DIM_LUX_WINDOW_MS の最大から BL_DIM_LUX_DROP_RATIO 以上下がった
+//   あおぐ … 直近の最大から BL_DIM_LUX_WAVE_DROP_RATIO 以上下がり、そこから BL_DIM_LUX_WINDOW_MS 以内に
+//            いちばん暗い読みから BL_DIM_LUX_WAVE_RISE_RATIO 以上明るくなった（下がって戻る＝手が通り過ぎた）
+//   どちらも変化量が BL_DIM_LUX_DELTA_MIN 以上のときだけ数える。
+// ★ 2026-11-05 までは「ゆっくり追う基準から 30% ずれたら」で、照度を 3775 lx で頭打ちにしていたため、
+//   20000 lx を超える本番の明るさでは手の影で 2640 lx 未満まで落とさないと戻らなかった。
+//   雲の影は数秒かけて変わるので 1 秒の窓ではまず引っかからない（引っかかっても 30 秒明るくなるだけ）。
+// ★ あおぐ方は「戻る」まで見るので、30% と浅くても雲の縁（下がったまま）には反応しない。
+//   反応するのは 1〜2 秒で通り過ぎる雲の切れ端くらい（シミュレーション。これも 30 秒明るくなるだけ）。
+#define BL_DIM_LUX_DROP_RATIO        0.50f   // かざす: 直近の最大からの低下率（50%）
+#define BL_DIM_LUX_WAVE_DROP_RATIO   0.30f   // あおぐ: 直近の最大からの低下率（30%）
+#define BL_DIM_LUX_WAVE_RISE_RATIO   0.30f   // あおぐ: いちばん暗い読みからの上昇率（30%）
+#define BL_DIM_LUX_DELTA_MIN         5.0f    // 変化量の下限 [lx]（暗い所の揺らぎを数えない）。
+                                             // 前の規則の 30 lx のままだと室内 40 lx で手の影（→12 lx）が効かない。
+                                             // 率の条件があるので 5 lx で揺らぎは拾わない（10 lx でも 170 カウント）。
+                                             // 1.3 lx 未満は減光しても明るさが変わらない（IDLE DIM）ので、そこは気にしない。
+#define BL_DIM_LUX_WINDOW_MS         1000UL  // 比べる期間 [ms]（直近の最大を取る範囲・下がってから戻るまでの猶予）
 // VEML7700 の 1 カウントあたりの照度（ゲイン ×1・積分 100ms）。データシートの版で
 // 0.0576〜0.0672 と違うが、上の閾値を実機で合わせるので、どちらでも困らない。
 #define VEML7700_LUX_PER_COUNT 0.0576f
+// 明るい所ではゲイン ×1/8・積分 25ms に切り替える（感度 1/32。約 120000 lx まで測れる）。
+// ×1・100ms は約 3775 lx で飽和するので、Eco の BL_ECO_LUX_MID（20000 lx）を見分けられない。
+//   VEML_RANGE_DOWN_RAW … ×1 でこのカウント以上になったら ×1/8 へ（約 2900 lx。飽和の手前）
+//   VEML_RANGE_UP_LUX   … ×1/8 でこの照度を下回ったら ×1 へ戻す（行き来しないよう間を空ける）
+#define VEML7700_LUX_PER_COUNT_LO (VEML7700_LUX_PER_COUNT * 32.0f)
+#define VEML_RANGE_DOWN_RAW       50000u
+#define VEML_RANGE_UP_LUX         1500.0f
 // ---- 電池電圧のピーク追跡（display_tft.cpp の get_input_voltage）----
 // 音声再生や TFT 書き込みで電圧は一瞬落ちる。あれは負荷の影響で電池そのものの
 // 電圧ではないので、**上がるときは即追従（ピーク）・下がるときはゆっくり**にする。
@@ -456,7 +504,7 @@
 //
 // ★ 有効にする前に tools/vectormap/README.md の手順でデータを生成すること。
 //   未生成のまま有効にすると #error で止まる（リンクエラーで悩まないように）。
-//#define VECTORMAP_HIRES
+#define VECTORMAP_HIRES
   
 // ============================================================
 //  SD カードとリプレイ再生
@@ -481,8 +529,9 @@
                                // ※ インデックス計算にビットマスクを使うので必ず 2 のべき乗にすること
                                // 高速再生(x20)では 2Hz データを毎秒40行消費するため余裕を持たせている
 #define REPLAY_LIST_ROWS  20   // リプレイ選択画面の1ページあたり表示行数（20行×12px = 240px）
-#define REPLAY_FIXED_COUNT 4   // 一覧の先頭に並ぶ固定項目数（常にこの数）
-                               // Replay OFF / PLAY FLIGHT ONLY / PLAY SPEED / SOURCE
+#define REPLAY_DEMO_ROWS  6    // REPLAY/DEMO 画面のデモ地点の行数（gnss.h の DEMO_SITE_COUNT - 1。OFF を除く）
+#define REPLAY_FIXED_COUNT (4 + REPLAY_DEMO_ROWS)  // 一覧の先頭に並ぶ固定項目数（常にこの数）
+                               // OFF / DEMO 地点 ×6 / PLAY FLIGHT ONLY / PLAY SPEED / SOURCE
 // 再生速度の選択肢。x1 → x2 → x_FAST の順に切り替わる（既定は x1）。
 // 高速側の倍率を変えたいときは REPLAY_SPEED_FAST だけ書き換えればよい。
 #define REPLAY_SPEED_FAST 20

@@ -18,6 +18,15 @@ enum BacklightSaver : uint8_t {
   BL_SAVER_CRIT = 2,  // 第 2 段階（BAT_CRIT_VOLTAGE 以下）: BL_SAVER_ON_MS 点灯 / BL_SAVER_CRIT_OFF_MS 消灯
 };
 
+// 輝度スイッチ Low のときの照度→点灯率の曲線（設定画面の「AUTO Brightness」。SD の auto_brightness）。
+// 値は settings.h の BL_AUTO_* / BL_ECO_*。
+enum BacklightAutoMode : uint8_t {
+  BL_AUTO_ECO    = 0,  // 控えめ（既定）。1000 lx で 50%、20000 lx で 70%
+  BL_AUTO_BRIGHT = 1,  // 1000 lx 以上で最大
+};
+BacklightAutoMode backlight_get_auto_mode();
+void backlight_set_auto_mode(BacklightAutoMode m);   // 次の backlight_tick() ですぐに効かせる
+
 void backlight_setup();      // setup_tft() より前に呼ぶ（PWM を設定するまで消灯しているため）
 void backlight_als_setup();  // airdata_wire_begin() の後に呼ぶ（VEML7700 は i2c0）
 void backlight_tick();       // loop() から毎回呼ぶ（内部で間引く）
@@ -35,5 +44,12 @@ void backlight_format_status(char* buf, size_t n);
 // 飛行 CSV 用。読めていないときは負の値（CSV では空欄）。
 float backlight_get_lux();       // いまの照度 [lx]。センサーが応答していないときは -1
 int   backlight_get_duty_pct();  // いまの点灯率 [%]
+
+// 画面用（起動画面の VEML 表示・設定画面のフッター）。
+bool  backlight_als_ok();        // VEML7700 が応答しているか
+// いまの点灯率をどの決まりで決めているか: "SW BRIGHT"（輝度スイッチ High）/ "IDLE DIM"（待機中の自動減光）/
+// "NO SENSOR"（照度センサーが一度も読めていない）/ "AUTO"（照度で自動）/ "LAST LUX"（読めなくなり最後の照度のまま）
+const char* backlight_mode_label();
+BacklightSaver backlight_get_saver();   // 電池低下の点滅の段階
 
 #endif

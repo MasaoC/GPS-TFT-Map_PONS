@@ -32,7 +32,11 @@ RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
 ## ビルド
 
 Arduino IDE で `GPS_TFT_map.ino` を開く。ボードは **Generic RP2350** / Flash **16MB (no FS)**。
-必要ライブラリは `TFT_eSPI` / `SdFat`。
+必要ライブラリは `TFT_eSPI` / `SdFat`。**SdFat は 2.3.1 以上**（2.3.0 は RP2350 で SDIO の
+PIO を確保し損ね、起動時の SD が `err=0x01` で落ちる。2026-11-05。古いと `mysd.cpp` の `#error` で止まる）。
+**2.3.1 は Library Manager に無い**（同梱の `pioasm.exe` で Arduino の登録を弾かれている）ので、
+GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `libraries/` の中に残さないこと。
+**ライブラリはスケッチに保存されない**ので、ボード設定と同じく別の PC では入れ直しを確かめる。
 
 **Flash Size は 16MB（no FS）。** 音声を FLASH へ焼いた 0.982 から所要が約 3.7MB に
 なり、2MB 指定では `region FLASH overflowed` でリンクが通らない。
@@ -186,6 +190,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （起動画面のアニメーション約 8 秒を挟むと窓が先に過ぎ、雑音を 1 つも取れずに
   NOT MEASURED になる）。読み上げ `link_announce_mode()` も末尾。
   起動音より先に喋らせないため。
+  `setup1()` が `setup_sd()` の前に `tft_pio_ready` を待つのも同じ種類。TFT（16bit パラレル）と
+  SD（SDIO）はどちらも PIO を使い、別々のコアで同時に確保すると片方が死ぬ（[display_tft.h](display_tft.h)）。
 - **ピンの割り当ては `settings.h` の冒頭（「基板」の節）に 1 つだけ置いてある。** ピンを足すときもそこへ。
   v7 と同じ GPIO が逆の意味になっているものが多い（41-44 は SPI1、M0/M1 は GPIO31）ので、
   v7 のコードや文書を持ち込むときは必ずそこと突き合わせる。
@@ -260,6 +266,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |
+| [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。noise-test ブランチと並びを同じに保つ |

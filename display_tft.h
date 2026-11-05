@@ -58,11 +58,12 @@
   // 設定画面のメニュー項目 ID（button.cpp の menu_settings[].id）。
   // 以前は地図画面の各テキストにも ID を振って差分更新していたが（ND_* / COUNTER）、
   // その仕組み（TextManager）ごと v0.947 で廃止したのでメニュー分だけ残っている。
+  // SETTING_REPLAY は REPLAY と DEMO をまとめた行（2026-11-05 に DEMO の行を統合して SETTING_DEMOBIWA は廃止）。
   enum text_id{
-    SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_DEMOBIWA,SETTING_REPLAY,
+    SETTING_SETDESTINATION,SETTING_DESTINATIONMODE,SETTING_REPLAY,
     SETTING_UPWARD,SETTING_GNSSDETAIL,SETTING_MAPDETAIL,SETTING_VOLUME,SETTING_VARIO_VOLUME,
     SETTING_EXIT,SETTING_SD_DETAIL,SETTING_VARIO_DETAIL,SETTING_SCALE,SETTING_IMU_DETAIL,
-    SETTING_WIRELESS
+    SETTING_WIRELESS,SETTING_BRIGHTNESS
   };
 
   #define COLOR_ORANGE TFT_ORANGE
@@ -110,6 +111,12 @@
   #define NM_FONT_LARGE Arial_Black56    // 大（ヘッダーの速度・真方位）
 
   extern TFT_eSPI tft;
+  // ★ tft.begin()（Core0 の setup_tft()）が PIO を確保し終えたら true。Core1 の setup1() は
+  //   これを待ってから setup_sd() する。16bit パラレルの TFT と SD の SDIO はどちらも PIO を使い、
+  //   起動直後の同じ数 ms に別々のコアで確保しに行く。TFT_eSPI は「空きを確認 → SM を取る → 載せる」
+  //   の間に割り込まれる前提が無く、SM が取れなくても確かめずに進むので、SdFat に先に PIO を
+  //   丸ごと取られると画面が死ぬ。順番を決めて競合そのものを無くしてある。
+  extern volatile bool tft_pio_ready;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite header_footer;  // ヘッダ／フッタ兼用（display_pages.cpp も使う）
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (VSI_W×240px, 16bit)
@@ -157,32 +164,34 @@ void draw_pcconnect();
 
 
 // IMU / ESKF 画面（ページ1）のメニュー項目。
-// display_tft.cpp の描画と GPS_TFT_map.ino の doublePressCallback() で共有する。
-// ページ1: 飛行前の点検手順どおりに「申告 → 較正 → 機能ON」と並べる。
+// display_tft.cpp の描画と GPS_TFT_map.ino の imu_execute() で共有する。
+// ページ1: 飛行前の点検手順どおりに「申告 → 較正 → 機能ON」と並べ、その下に
+//          姿勢機能の個別スイッチ（自動ロールトリム・風推定）を置く。
+//          ★ 操作する項目はぜんぶページ1。2/2 は見るだけ（行は「戻る」と「Exit」だけ）。
 #define IMU_MENU_SETPITCH 0
 #define IMU_MENU_SETROLL  1
 #define IMU_MENU_APPLY    2
 #define IMU_MENU_RPYFUNC  3   // Roll/Pitch/Yaw 機能のマスタースイッチ
-#define IMU_MENU_NEXTPAGE 4
-#define IMU_MENU_EXIT     5
-#define IMU_MENU_COUNT    6
+#define IMU_MENU_AUTOROLL 4   // 直進中のロール自動トリム
+#define IMU_MENU_WIND     5   // 風推定
+#define IMU_MENU_NEXTPAGE 6
+#define IMU_MENU_EXIT     7
+#define IMU_MENU_COUNT    8
 
-// IMU/ESKF 2/3 — IMU の生値だけ。ESKF の項目は 3/3。
-#define IMU2_MENU_NEXTPAGE 0
-#define IMU2_MENU_BACK     1
+// IMU/ESKF 2/2 — IMU の生値（上）と ESKF の状態（下）。見るだけ。
+// Exit はページ1の Exit と同じ（設定を保存して地図画面へ）。
+#define IMU2_MENU_BACK     0
+#define IMU2_MENU_EXIT     1
 #define IMU2_MENU_COUNT    2
-
-// IMU/ESKF 3/3 — ESKF の状態と調整
-#define IMU3_MENU_AUTOROLL 0
-#define IMU3_MENU_WIND     1
-#define IMU3_MENU_BACK     2
-#define IMU3_MENU_COUNT    3
-extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/3のカーソル位置
-extern int imu3_cursor;   // GPS_TFT_map.ino で定義。ページ3/3のカーソル位置
+#define IMU_PAGE_COUNT     2   // detail_page % IMU_PAGE_COUNT がページ番号
+extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/2のカーソル位置
 // 警告音を抑制しているか（充電中 かつ マウント外れ姿勢）。実体は GPS_TFT_map.ino。
 // ★ 判断は .ino に置く（CLAUDE.md: display_tft.cpp に判断や発報は置かない）。
 bool warn_muted_off_mount();
 void draw_imudetail(int page);
+// IMU / ESKF の状態の色（灰＝IMU 無し / 赤＝要 APPLY / 緑＝準備 OK / 橙＝それ以外）。
+// IMU 画面の右上の丸と、設定画面の IMU 行の丸の両方がこれを使う（条件はここだけ。display_tft.cpp）。
+uint16_t imu_status_color();
 
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
