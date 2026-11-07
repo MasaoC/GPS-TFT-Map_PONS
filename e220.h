@@ -5,7 +5,7 @@
 //           UART の叩き方・モード制御・レジスタ設定だけを持ち、
 //           テレメトリの意味は一切知らない（それは link.cpp の仕事）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //
 // ■ 配線（docs/pons_link.md §2）
@@ -102,7 +102,7 @@ bool e220_send(const uint8_t* payload, uint8_t n);
 
 // 受信バイトを取り込み、完全な 1 パケットが揃ったら true。
 // 毎ループ呼ぶこと。frame_len バイトのペイロードと RSSI 1 バイトを想定する。
-// frame_len は LINK_W2_LEN（32 バイトのフレーム。印 0xA2。lora_link/link_wire2.h）。それ以外は false。
+// frame_len は LINK_W2_LEN（32 バイトのフレーム。印 0xA4 の上位 6 ビット。lora_link/link_wire2.h）。それ以外は false。
 bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm);
 
 // 印は合ったが CRC の検証に落ちたフレームの累計。

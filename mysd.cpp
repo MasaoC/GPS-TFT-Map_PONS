@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/07
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -33,6 +33,7 @@
 #endif
 #include "src/sound.h"
 #include "attitude.h"
+#include "tas.h"       // 大きい枠の設定（header_tas）・飛行 CSV の tas_mps / hdr 列
 #include "link.h"
 #include "e220.h"      // E220_CH_MAX_ALL（settings.txt の CH の範囲）
 #include "backlight.h" // 飛行 CSV の lux / backlight 列
@@ -133,12 +134,20 @@ void setLinkRadioProf(const char* v) {
   if (p >= 0 && p < LINK_PROFILE_COUNT) link_radio_profile = (uint8_t)p;
 }
 
-// ★ グループ ID。**既定は 0 で、git に載る雛形も 0 のまま。**
+// ★ グループ。**既定は A で、git に載る雛形も A のまま。**
 //   実際の値は各機の SD カードにだけ置く（link_proto.h の設計方針）。
-void getLinkGroup(char* b, size_t n)     { snprintf(b, n, "%u", link_group); }
+// ★ A〜D の文字で書く（小文字も可）。2026-11-07 までは 0〜255 の数字だった。
+//   **数字を含めてそれ以外は A にして、log.txt に残す**（黙って既定へ戻すと、書いたつもりで
+//   効いていない状態になる。docs/pons_tas.md §5.2）。
+void getLinkGroup(char* b, size_t n)     { snprintf(b, n, "%c", link_group_letter(link_group)); }
 void setLinkGroup(const char* v) {
-  int g = atoi(v);
-  link_group = (g >= 0 && g <= LINK_GROUP_MAX) ? (uint8_t)g : LINK_GROUP_DEFAULT;
+  const char c = (v && v[0]) ? (char)toupper((unsigned char)v[0]) : '\0';
+  if (c >= 'A' && c <= (char)('A' + LINK_GROUP_MAX) && (v[1] == '\0' || isspace((unsigned char)v[1]))) {
+    link_group = (uint8_t)(c - 'A');
+  } else {
+    link_group = LINK_GROUP_DEFAULT;
+    log_sdf("SETTINGS link_group='%s' is not A-D, using %c", v ? v : "", link_group_letter(link_group));
+  }
 }
 
 // 輝度スイッチ Low のときの明るさの曲線（設定画面の AUTO Brightness）。ECO / BRIGHT。
@@ -168,6 +177,7 @@ SDSetting settings[] = {
   {"rpy_functions",   setRpyFunctions,   getRpyFunctions},
   {"auto_roll_trim",  setAutoRollTrim,   getAutoRollTrim},
   {"wind_estimate",   setWindEstimate,   getWindEstimate},
+  {"header_tas",      setHeaderTas,      getHeaderTas},
   {"roll_target",     setRollTarget,     getRollTarget},
   {"needs_apply",     setNeedsApply,     getNeedsApply},
   {"calib_date",      setCalibDate,      getCalibDate},
@@ -635,6 +645,12 @@ void getRpyFunctions(char* buffer, size_t bufferSize) {
 }
 
 // 風推定の有効/無効
+// ヘッダー右の大きい枠を推定 TAS にするか（0 = 平均ピッチ、1 = 推定 TAS。docs/pons_tas.md §4.1）
+void setHeaderTas(const char* value) { tas_setting_set(atoi(value) != 0); }
+void getHeaderTas(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%d", tas_setting_get() ? 1 : 0);
+}
+
 void setWindEstimate(const char* value) { attitude_set_wind_enabled(atoi(value) != 0); }
 void getWindEstimate(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%d", attitude_get_wind_enabled() ? 1 : 0);
@@ -788,7 +804,6 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
 
   // ★ 姿勢・風も残す。**機体の SD が死んだとき、ここが唯一の記録になる**
   //   （status の LINK_ST_SD_ERROR はまさにその状態を知らせるためにある）。
-  //   ESKF の開発でも使うので、単位と列名は imu_replaydata/ に合わせる。
   //   入っていない項目は書き出し側で空欄にするので、ここでは have をそのまま運ぶ。
   task.saveCsvArgs.have      = t->have;
   task.saveCsvArgs.roll      = t->roll_cdeg      * 0.01f;
@@ -799,6 +814,8 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   task.saveCsvArgs.yaw_acc95 = (float)t->yaw_acc95_deg;
   task.saveCsvArgs.wind_mps  = t->wind_dmps      * 0.1f;
   task.saveCsvArgs.wind_dir  = t->wind_dir_cdeg  * 0.01f;
+  task.saveCsvArgs.tas       = t->tas_dmps * 0.1f;
+  task.saveCsvArgs.hdr       = (uint8_t)tas_header();
   return task;
 }
 
@@ -828,6 +845,36 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   // 照度とバックライトは引数で回さず、ここ（Core0）で読む。呼び出し元は 1 か所だけ。
   task.saveCsvArgs.lux    = backlight_get_lux();
   task.saveCsvArgs.bl_pct = (int8_t)backlight_get_duty_pct();
+
+  // ★ 姿勢・風も飛行 CSV に直接書く（生 IMU ログ imuraw/ の導入に伴い、
+  //   5Hz の別ファイル imu_replaydata/ を廃して飛行 CSV 1 本に統合）。
+  //   未収束の間は have ビットを立てず、書き出し側で空欄にする。
+  uint16_t have = 0;
+  task.saveCsvArgs.roll = task.saveCsvArgs.pitch = task.saveCsvArgs.yaw = 0.0f;
+  task.saveCsvArgs.pitch_avg = task.saveCsvArgs.roll_trim = task.saveCsvArgs.yaw_acc95 = 0.0f;
+  task.saveCsvArgs.wind_mps = task.saveCsvArgs.wind_dir = 0.0f;
+  if (!link_mirror_active() && attitude_get_rpy_enabled() && attitude_ready()) {
+    attitude_get_euler(task.saveCsvArgs.roll, task.saveCsvArgs.pitch, task.saveCsvArgs.yaw);
+    task.saveCsvArgs.yaw_acc95 = attitude_get_yaw_acc95_deg();
+    task.saveCsvArgs.roll_trim = attitude_get_roll_trim_deg();
+    have |= RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_TRIM;
+    if (attitude_pitch_avg_valid()) {
+      task.saveCsvArgs.pitch_avg = attitude_get_pitch_avg_deg();
+      have |= RHAVE_ATT_AVG;
+    }
+    if (attitude_get_wind(task.saveCsvArgs.wind_mps, task.saveCsvArgs.wind_dir)) {
+      have |= RHAVE_ATT_WIND;
+    }
+  }
+  // 推定 TAS は大きい枠の設定にかかわらず書く（あとで Pavg の機体の TAS も見られるように）。
+  // hdr は大きい枠に出していたもの。リプレイはこの 2 列で当時の画面を出す（計算し直さない）。
+  task.saveCsvArgs.tas = 0.0f;
+  task.saveCsvArgs.hdr = (uint8_t)tas_header();
+  if (!link_mirror_active()) {
+    bool clamped;
+    if (tas_local(task.saveCsvArgs.tas, clamped)) have |= RHAVE_TAS;
+  }
+  task.saveCsvArgs.have = have;
   return task;
 }
 
@@ -841,6 +888,16 @@ Task createPlayMultiToneTask(int freq, int duration, int count,int priority,int 
   task.playMultiToneArgs.priority = priority;
   task.playMultiToneArgs.min_volume = min_volume;
   task.playMultiToneArgs.solo_play = solo_play;
+  return task;
+}
+
+Task createStopWavTask(int excl_group){
+  Task task;
+  task.type = TASK_STOP_WAV;
+  task.playWavArgs.wavfilename = nullptr;
+  task.playWavArgs.priority = 0;
+  task.playWavArgs.min_volume = 0;
+  task.playWavArgs.excl_group = excl_group;
   return task;
 }
 
@@ -1347,9 +1404,9 @@ void setup_sd(int trycount, bool load_settings){
     //   （link / ch / sf / grp）はここが正しくないと成立しない。
     //   「設定したつもりで入っていなかった」を後から突き止められるようにする。
     //   読めなかったときは既定値で走っているので、その旨も一緒に残す。
-    log_sdf("SETTINGS LOADED%s link=%u ch=%u sf=%u grp=%u",
+    log_sdf("SETTINGS LOADED%s link=%u ch=%u sf=%u grp=%c",
             ok ? "" : " (FAILED, defaults)",
-            link_mode_setting, link_radio_ch, link_radio_profile, link_group);
+            link_mode_setting, link_radio_ch, link_radio_profile, link_group_letter(link_group));
     // 対気速度モデルの実効値。風の推定はこの 4 つで決まり、機体ごとに違う。
     // 「SD に書いたつもりで効いていなかった」を後から突き止められるようにする。
     log_sdf("AIRSPEED MODEL v0=%.2f k=%.2f range %.2f..%.2f",
@@ -1414,26 +1471,14 @@ static uint32_t replay_leadin_pos[REPLAY_LEADIN_SLOTS];
 static uint32_t replay_leadin_abs[REPLAY_LEADIN_SLOTS];
 
 // CSV ヘッダで探す列名。並びは ReplayCol の enum と一致させること。
-// ★ 姿勢・風の列名は **imu_replaydata/ と received/ の両方**で使う。
-//   片方だけ変えると、受信ログをリプレイしたときに姿勢だけ読めなくなる。
-//   文字列の実体をここに 1 つだけ置き、下の 2 つの表から参照する。
-#define CN_TIME     "time"
-#define CN_ROLL     "roll"
-#define CN_PITCH    "pitch"
-#define CN_YAW      "yaw"
-#define CN_PAVG     "pitch_avg"
-#define CN_RTRIM    "roll_trim"
-#define CN_YAWACC   "yaw_acc95"
-#define CN_WSPD     "wind_mps"
-#define CN_WDIR     "wind_dir"
-
+// ★ 姿勢・風の列名は **data/（自機飛行 CSV）と received/（受信ログ）の両方**で共通。
 static const char* const replay_col_names[REPLAY_COL_COUNT] = {
   "latitude", "longitude", "gs", "truetrack", "gnss_altitude",
-  "kf_altitude", "kf_vspeed", "pressure", "date", CN_TIME,
+  "kf_altitude", "kf_vspeed", "pressure", "date", "time",
   "numsat", "voltage",
-  // 受信ログ received/ にだけある列。飛行 CSV には無いので -1 のままになる。
-  CN_ROLL, CN_PITCH, CN_YAW,
-  CN_PAVG, CN_RTRIM, CN_YAWACC, CN_WSPD, CN_WDIR
+  "roll", "pitch", "yaw",
+  "pitch_avg", "roll_trim", "yaw_acc95", "wind_mps", "wind_dir",
+  "tas_mps", "hdr"
 };
 
 // 旧バージョンの CSV 用の別名。同じ並びで、無い列は nullptr。
@@ -1442,7 +1487,8 @@ static const char* const replay_col_alias[REPLAY_COL_COUNT] = {
   nullptr, nullptr, nullptr, nullptr, "altitude",
   nullptr, nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr,
-  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr
 };
 
 // ===== 再生元フォルダ =====
@@ -1576,6 +1622,7 @@ bool replay_pop(ReplayRow* out) {
   out->yaw = src->yaw;               out->pitch_avg = src->pitch_avg;
   out->roll_trim = src->roll_trim;   out->yaw_acc95 = src->yaw_acc95;
   out->wind_mps = src->wind_mps;     out->wind_dir = src->wind_dir;
+  out->tas = src->tas;               out->hdr = src->hdr;
   replay_tail = (replay_tail + 1) & (REPLAY_BUF_SIZE - 1);
   return true;
 }
@@ -1608,14 +1655,10 @@ void cycle_replay_speed() {
   else                        replay_speed = 1;
 }
 
-// CSV のヘッダ行を列名で解釈し、col[] に「その列が何列目か」を入れる（無い列は -1）。
+// CSV のヘッダ行を列名で解釈し、replay_col[] に「その列が何列目か」を入れる（無い列は -1）。
 // 列名は大文字小文字を無視して照合し、未知の列や空の列名（2026大会データに存在）は無視する。
-// alias は旧バージョンの別名表。不要なら nullptr を渡す。
-// ★ 飛行 CSV（replay_col）と姿勢ログ（att_col）で同じ処理なので 1 つにまとめてある。
-static void parse_header_cols(const char* header,
-                              const char* const* names, const char* const* alias,
-                              int8_t* col, int count) {
-  for (int i = 0; i < count; i++) col[i] = -1;
+static void replay_parse_header(const char* header) {
+  for (int i = 0; i < REPLAY_COL_COUNT; i++) replay_col[i] = -1;
 
   int index = 0;
   const char* p = header;
@@ -1627,11 +1670,11 @@ static void parse_header_cols(const char* header,
     memcpy(token, p, len);
     token[len] = '\0';
 
-    for (int c = 0; c < count; c++) {
-      if (col[c] == -1 &&
-          (replay_name_match(token, names[c]) ||
-           (alias != nullptr && alias[c] != nullptr && replay_name_match(token, alias[c])))) {
-        col[c] = (int8_t)index;
+    for (int c = 0; c < REPLAY_COL_COUNT; c++) {
+      if (replay_col[c] == -1 &&
+          (replay_name_match(token, replay_col_names[c]) ||
+           (replay_col_alias[c] != nullptr && replay_name_match(token, replay_col_alias[c])))) {
+        replay_col[c] = (int8_t)index;
         break;
       }
     }
@@ -1640,183 +1683,11 @@ static void parse_header_cols(const char* header,
   }
 }
 
-static void replay_parse_header(const char* header) {
-  parse_header_cols(header, replay_col_names, replay_col_alias,
-                    replay_col, REPLAY_COL_COUNT);
-}
-
 // リプレイ再生をファイル先頭から開始（またはループ再生のため再開）する。
 // ファイルを開き直し、ヘッダから列マップを構築し、リングバッファを空にする。
-// ===== リプレイ時の姿勢（imu_replaydata / euler フォルダ）=====
-// 飛行 CSV には姿勢が入っていないので、同じ日の姿勢ログから拾って ReplayRow に載せる。
-// 探す順番:
-//   1. imu_replaydata/YYYYMMDD.txt … ESKF の結果（画面に出ていた値そのもの）
-//   2. euler/YYYYMMDD.txt          … 旧形式。BNO085 由来で 4 列しかない
-//   3. どちらも無ければ非表示
-// 旧形式では 平均・自動トリム・ヨー精度が存在しないので、それらは表示しない
-// （当時 ESKF が動いていなかったので、画面にも出ていなかった）。
-//
-// 列はヘッダ行の列名で解釈する。ヘッダが無い/読めない古いファイルのために、
-// 見つからなければ time,roll,pitch,yaw の固定順とみなすフォールバックを持つ。
-enum { ATTCOL_TIME = 0, ATTCOL_ROLL, ATTCOL_PITCH, ATTCOL_YAW,
-       ATTCOL_AVG, ATTCOL_TRIM, ATTCOL_YAWACC, ATTCOL_WSPD, ATTCOL_WDIR,
-       ATTCOL_COUNT };
-static const char* const att_col_names[ATTCOL_COUNT] = {
-  CN_TIME, CN_ROLL, CN_PITCH, CN_YAW, CN_PAVG, CN_RTRIM, CN_YAWACC,
-  CN_WSPD, CN_WDIR
-};
-
-static FsFile   replayAttFile;
-// ヘッダ未解析のまま replay_att_is_new_format() が真になると、旧形式なのに
-// 平均などを表示してしまう。0 初期化ではなく必ず -1 で始める。
-static int8_t   att_col[ATTCOL_COUNT] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
-static bool     replay_att_tried = false;   // 開こうと試みたか（毎行 open を叩かないため）
-static bool     replay_att_ok    = false;   // ファイルを開けたか
-static bool     replay_att_eof   = false;
-static uint32_t replay_att_ms    = 0;       // 保持中サンプルの時刻（0時からの ms）
-static float    replay_att_roll  = 0.0f;
-static float    replay_att_pitch = 0.0f;
-static float    replay_att_yaw   = 0.0f;
-static float    replay_att_avg   = 0.0f;
-static float    replay_att_trim  = 0.0f;
-static float    replay_att_yawacc = 0.0f;
-static bool     replay_att_has_avg = false;  // その行に 平均が入っていたか
-static float    replay_att_wspd  = 0.0f;
-static float    replay_att_wdir  = 0.0f;
-static bool     replay_att_has_wind = false; // その行に風の推定値が入っていたか
-
-// ヘッダ行から att_col[] を作る。1 列も一致しなければ旧形式の固定順とみなす。
-static void replay_att_parse_header(const char* header) {
-  parse_header_cols(header, att_col_names, nullptr, att_col, ATTCOL_COUNT);
-
-  // ヘッダが無いファイル（1 行目からデータ）への保険
-  if (att_col[ATTCOL_TIME] < 0 || att_col[ATTCOL_ROLL] < 0 || att_col[ATTCOL_PITCH] < 0) {
-    att_col[ATTCOL_TIME]  = 0;
-    att_col[ATTCOL_ROLL]  = 1;
-    att_col[ATTCOL_PITCH] = 2;
-    att_col[ATTCOL_YAW]   = 3;
-    att_col[ATTCOL_AVG]   = -1;
-    att_col[ATTCOL_TRIM]  = -1;
-    att_col[ATTCOL_YAWACC] = -1;
-    att_col[ATTCOL_WSPD]   = -1;
-    att_col[ATTCOL_WDIR]   = -1;
-  }
-}
-
-// ESKF の結果を持つ新形式か（ヨーを機首方位として表示してよいか）の判定に使う。
-// 旧 euler は BNO085 のヨーで、実測で真方位から -30〜-65 度ずれていたため表示しない。
-static bool replay_att_is_new_format() { return att_col[ATTCOL_YAWACC] >= 0; }
-
-// 目的時刻の手前までファイル位置を一気に飛ばす（位置での二分探索）。
-// 姿勢ログは 1 日分を追記し続けるので 5Hz なら 1 日 10MB を超える。飛行 CSV が
-// 午後から始まる場合、先頭から順に読むと Core1 が数秒ブロックして SD 書き込みと
-// WAV 再生を巻き添えにする。行長がほぼ一定なので位置で二分探索して近くまで跳ぶ。
-static void replay_att_fastseek(uint32_t tod_ms) {
-  uint32_t lo = 0, hi = (uint32_t)replayAttFile.fileSize();
-  char line[96];
-  char buf[24];
-  // 残り 4KB（約80行）まで詰めたら打ち切り、あとは通常の逐次読みに任せる
-  for (int it = 0; it < 24 && (hi - lo) > 4096; it++) {
-    uint32_t mid = lo + (hi - lo) / 2;
-    if (!replayAttFile.seekSet(mid)) break;
-    replayAttFile.fgets(line, sizeof(line));            // 行の途中に着地するので 1 行捨てる
-    if (replayAttFile.fgets(line, sizeof(line)) <= 0) { hi = mid; continue; }
-    if (!replay_get_field(line, att_col[ATTCOL_TIME], buf, sizeof(buf))) { hi = mid; continue; }
-    uint32_t ms; int h, m, sec, cs;
-    // 時刻が読めない行は前後関係の判断材料にならない。lo を進めると目的時刻を
-    // 通り越して行き過ぎるので、必ず狭める側（hi）に倒す。
-    if (!replay_parse_time(buf, &ms, &h, &m, &sec, &cs)) { hi = mid; continue; }
-    if (ms < tod_ms) lo = mid; else hi = mid;
-  }
-  replayAttFile.seekSet(lo);
-  if (lo > 0) replayAttFile.fgets(line, sizeof(line));  // 行頭とは限らないので 1 行捨てる
-}
-
-// その日の姿勢ログを開く。新形式 → 旧形式の順に探し、無ければ静かに諦める。
-// tod_ms は再生を始める時刻。ここまで一気に飛ばしてから逐次読みに入る。
-static void replay_att_open(int y, int mo, int d, uint32_t tod_ms) {
-  if (replay_att_tried) return;
-  replay_att_tried = true;
-  if (y < 2000 || mo < 1 || mo > 12 || d < 1 || d > 31) return;
-
-  char fname[32];
-  const char* dirs[2] = { IMU_REPLAYDATA_DIR, IMU_REPLAYDATA_LEGACY_DIR };
-  for (int k = 0; k < 2; k++) {
-    snprintf(fname, sizeof(fname), "%s/%04d%02d%02d.txt", dirs[k], y, mo, d);
-    if (!SD.exists(fname)) continue;
-    replayAttFile = SD.open(fname, FILE_READ);
-    if (!replayAttFile) continue;
-
-    // 1 行目 = ヘッダ。列名から列マップを作る（無ければ固定順にフォールバック）。
-    // 現状 67 文字だが、切り詰めると列が静かに欠ける（上の init_replay() 参照）ので余裕を取る。
-    char header[128];
-    if (replayAttFile.fgets(header, sizeof(header)) <= 0) {
-      replayAttFile.close();
-      continue;
-    }
-    replay_att_parse_header(header);
-    replay_att_ok = true;
-    replay_att_fastseek(tod_ms);
-    log_sdf("REPLAY att: %s%s", fname, replay_att_is_new_format() ? " (ESKF)" : " (legacy)");
-    return;
-  }
-}
-
-// CSV 行の時刻 tod_ms に追いつくまで姿勢ログを読み進める。
-// 姿勢ログは 5Hz・CSV は 2Hz なので通常は 2〜3 行進めるだけ。
-// PLAY FLIGHT ONLY の助走 seek で CSV 側が数秒巻き戻ることがあるが、
-// 1 日分を読み直すのは重すぎるので、その場合は最後のサンプルを保持し続ける
-// （CSV の時刻が追いつけば自動的に整合が戻る）。
-static bool replay_att_seek(uint32_t tod_ms) {
-  if (!replay_att_ok) return false;
-  char line[96];
-  char buf[24];
-  while (!replay_att_eof && replay_att_ms < tod_ms) {
-    if (replayAttFile.fgets(line, sizeof(line)) <= 0) { replay_att_eof = true; break; }
-    if (!replay_get_field(line, att_col[ATTCOL_TIME], buf, sizeof(buf))) continue;
-    uint32_t ms; int h, m, s2, cs;
-    if (!replay_parse_time(buf, &ms, &h, &m, &s2, &cs)) continue;   // ヘッダ行はここで弾かれる
-    replay_att_ms = ms;
-    if (replay_get_field(line, att_col[ATTCOL_ROLL],  buf, sizeof(buf))) replay_att_roll  = atof(buf);
-    if (replay_get_field(line, att_col[ATTCOL_PITCH], buf, sizeof(buf))) replay_att_pitch = atof(buf);
-    if (replay_get_field(line, att_col[ATTCOL_YAW],   buf, sizeof(buf))) replay_att_yaw   = atof(buf);
-    if (replay_get_field(line, att_col[ATTCOL_TRIM],  buf, sizeof(buf))) replay_att_trim  = atof(buf);
-    if (replay_get_field(line, att_col[ATTCOL_YAWACC],buf, sizeof(buf))) replay_att_yawacc = atof(buf);
-    // 平均は未収束の間は空欄で書かれている（replay_get_field は空欄で false）
-    replay_att_has_avg = replay_get_field(line, att_col[ATTCOL_AVG], buf, sizeof(buf));
-    if (replay_att_has_avg) replay_att_avg = atof(buf);
-    // 風も推定できていない区間は空欄なので、両方読めたときだけ有効
-    replay_att_has_wind = replay_get_field(line, att_col[ATTCOL_WSPD], buf, sizeof(buf));
-    if (replay_att_has_wind) {
-      replay_att_wspd = atof(buf);
-      replay_att_has_wind = replay_get_field(line, att_col[ATTCOL_WDIR], buf, sizeof(buf));
-      if (replay_att_has_wind) replay_att_wdir = atof(buf);
-    }
-  }
-  // 保持しているサンプルが再生時刻から離れすぎていたら「無い」と答える。
-  // これが無いと、姿勢ログが飛行 CSV より先に終わっている場合に最後のサンプルを
-  // 貼り付けたまま固まって見える（地図だけ動いて姿勢だけ止まる）。
-  // 飛行 CSV より後から始まっている場合も同様。
-  if (replay_att_ms == 0) return false;
-  const uint32_t age = (tod_ms > replay_att_ms) ? (tod_ms - replay_att_ms)
-                                                : (replay_att_ms - tod_ms);
-  return age <= REPLAY_ATT_MAX_AGE_MS;
-}
-
 void init_replay(){
   ASSERT_SD_CORE1("init_replay");
   if (replayFileStatic.isOpen()) replayFileStatic.close();
-
-  // 姿勢ログも先頭から読み直す（ループ再生・別ファイル選択の両方に対応）
-  if (replayAttFile.isOpen()) replayAttFile.close();
-  replay_att_tried = false;
-  replay_att_ok    = false;
-  replay_att_eof   = false;
-  replay_att_ms    = 0;
-  replay_att_has_avg = false;
-  replay_att_has_wind = false;
-  // 前のファイルの列マップを残さない（旧形式を新形式と誤判定するのを防ぐ）
-  for (int i = 0; i < ATTCOL_COUNT; i++) att_col[i] = -1;
 
   replay_head = 0;
   replay_tail = 0;
@@ -1830,8 +1701,8 @@ void init_replay(){
   replay_leadin_until_abs = 0;
   replay_init_seq++;   // Core0 側の再生時計を 0 に戻させる
 
-  // 飛行 CSV は 2 秒に 1 回しか flush していないため、リプレイに入って saveCSV() が
-  // 呼ばれなくなると、直前の実飛行データ最大 2 秒分が SdFat のバッファに残ったままになる。
+  // 飛行 CSV は 1.5 秒に 1 回しか flush していないため、リプレイに入って saveCSV() が
+  // 呼ばれなくなると、直前の実飛行データが SdFat のバッファに残ったままになる。
   // リプレイ中に電源が切られると失われるので、ここで確実に書き出しておく。
   // （ファイルは閉じない。リプレイ終了後は同じファイルに追記を続ける）
   if (csvFileStatic.isOpen()) csvFileStatic.flush();
@@ -1863,14 +1734,9 @@ void init_replay(){
   }
 
   // 1行目 = ヘッダ。列名から列マップを作る。
-  // ★ **received/ のヘッダは 208 文字ある。** ここを切り詰めると、切れた列は
+  // ★ **received/ のヘッダは 220 文字、data/ は 190 文字ある**（2026-11-07 に tas_mps,hdr を足したあと）。ここを切り詰めると、切れた列は
   //   「名前が壊れたトークン」または「存在しない列」になり、静かに -1 のまま残る。
-  //   実際 160 では末尾が "...,roll_trim,yaw_ac" で切れ、yaw_acc95 / wind_mps /
-  //   wind_dir が拾えず、**受信ログを再生してもヨーと風だけ出ない**という
-  //   気づきにくい壊れ方をしていた（列名解釈なのでエラーにもならない）。
   //   列を足すときはここも必ず見直すこと。
-  //     data/     : 101 文字
-  //     received/ : 208 文字（飛行 CSV + rssi,seq,age_ms + 姿勢 6 列 + 風 2 列 + 自機位置 3 列 + slot）
   char header[256];
   int n = replayFileStatic.fgets(header, sizeof(header));
   if (n <= 0) {
@@ -1913,7 +1779,7 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
   replay_leadin_abs[0] = run_start_abs;
   uint8_t head = 1, count = 1;
 
-  char line[200], buf[24];
+  char line[256], buf[24];
   uint32_t move_abs = 0;
   uint32_t last_abs = run_start_abs;
   bool found_move = false;
@@ -2002,7 +1868,7 @@ void load_replay() {
   if (replay_eof) return;
   if (!replayFileStatic.isOpen()) return;
 
-  char line[200];
+  char line[256];
 
   while (replay_free_slots() > 0) {
     uint32_t line_pos = (uint32_t)replayFileStatic.position();  // 静止区間の巻き戻しに使う
@@ -2100,14 +1966,10 @@ void load_replay() {
     row->pitch_avg = 0.0f; row->roll_trim = 0.0f; row->yaw_acc95 = 0.0f;
     row->wind_mps = 0.0f; row->wind_dir = 0.0f;
 
-    // ★ CSV 自身が姿勢を持っているならそれを使い、**外部の姿勢ログは見ない**。
-    //   received/ の再生でここを外部参照にすると、日付から引かれるのは
-    //   **ボート自身の imu_replaydata/** なので、機体の航跡にボートの
-    //   ロール・ピッチが黙って合成される。一番たちの悪い壊れ方になる。
     if (replay_col[RCOL_ROLL] >= 0) {
       float roll_v, pitch_v, yaw_v, acc_v, wspd_v, wdir_v;
       // roll と pitch が両方読めた行だけを「姿勢あり」とする。
-      // 送信側の ESKF が未収束だった区間は空欄で入っているので、そこは姿勢なし。
+      // ESKF が未収束だった区間は空欄で入っているので、そこは姿勢なし。
       if (replay_get_float(line, RCOL_ROLL,  &roll_v) &&
           replay_get_float(line, RCOL_PITCH, &pitch_v)) {
         row->roll  = roll_v;
@@ -2128,43 +1990,13 @@ void load_replay() {
         row->wind_dir = wdir_v;
         row->have |= RHAVE_ATT_WIND;
       }
-      // 内容を書き終えてから head を進める（下の外部参照パスと同じ理由）
-      replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
-      continue;
     }
 
-    // --- 姿勢（同じ日の姿勢ログがあれば）---
-    if (!replay_att_tried) {
-      int fy = yy, fmo = mo, fdd = dd;
-      if (!(row->have & RHAVE_DATE)) {
-        // 日付列を持たない v5 データ: ファイル名 "YYYY-MM-DD_HHMM.csv" から拾う
-        const char* base = strrchr(replay_filename, '/');
-        base = (base != nullptr) ? base + 1 : replay_filename;
-        if (sscanf(base, "%d-%d-%d", &fy, &fmo, &fdd) != 3) fy = 0;
-      }
-      replay_att_open(fy, fmo, fdd, tod_ms);
-    }
-    if (replay_att_seek(tod_ms)) {
-      row->roll  = replay_att_roll;
-      row->pitch = replay_att_pitch;
-      row->have |= RHAVE_ATT;
-      // 以下は新形式（ESKF の結果）にしか無い。旧 euler では表示しない。
-      if (replay_att_is_new_format()) {
-        row->yaw       = replay_att_yaw;
-        row->yaw_acc95 = replay_att_yawacc;
-        row->roll_trim = replay_att_trim;
-        row->have |= RHAVE_ATT_YAW | RHAVE_ATT_TRIM;
-        if (replay_att_has_avg) {
-          row->pitch_avg = replay_att_avg;
-          row->have |= RHAVE_ATT_AVG;
-        }
-        if (replay_att_has_wind) {
-          row->wind_mps = replay_att_wspd;
-          row->wind_dir = replay_att_wdir;
-          row->have |= RHAVE_ATT_WIND;
-        }
-      }
-    }
+    // --- 推定 TAS と大きい枠の中身（列の無い古い CSV は -1 のまま。tas.cpp が今までどおり出す）---
+    row->tas = 0.0f;
+    row->hdr = -1;
+    if (replay_get_float(line, RCOL_TAS, &v)) { row->tas = v; row->have |= RHAVE_TAS; }
+    if (replay_get_float(line, RCOL_HDR, &v) && v >= 0.0f && v < 100.0f) row->hdr = (int8_t)(v + 0.5f);
 
     // 内容を書き終えてから head を進める（Core0 が中途半端な行を読まないようにする）
     replay_head = (replay_head + 1) & (REPLAY_BUF_SIZE - 1);
@@ -2573,8 +2405,8 @@ void log_sdf(const char* format, ...){
 //  受信ログ（received/）
 //    自機のフライト CSV とは別ファイル・別ハンドル。
 //    received/ は「無線で得た情報」だけを置く場所なので自機 GNSS は混ぜない。
-//    列は自機 CSV と同じ並びにし、末尾に rssi/seq/age_ms と姿勢・風を足す。
-//    姿勢・風の列名は imu_replaydata/ と同じにしてあるので、
+//    列は自機 CSV と共通の 12 列＋姿勢・風 8 列を持ち、さらに rssi/seq/age_ms と
+//    own_lat/own_lon/dist_m/slot を記録する。
 //    **機体の SD が死んでもボート側のログで ESKF の解析ができる**。
 //    揃えてあるので既存のリプレイ機能と解析ツールがそのまま使える（docs/pons_link.md §5）。
 // ============================================================
@@ -2603,7 +2435,7 @@ static void csv_write_common(FsFile &f, const Task &tk) {
   f.print(a.kf_altitude, 2);   f.print(",");   // KF 推定高度 [m]（気圧基準）
   f.print(a.kf_vspeed, 2);     f.print(",");   // KF 推定上昇率 [m/s]
 
-  // 気圧: 受信ログでは回転枠 5 を受けるまで空欄（0.00hPa を防止）
+  // 気圧: 受信ログでは回転枠 6 を受けるまで空欄（0.00hPa を防止）
   if (!is_rx || (a.have & RHAVE_PRESS)) f.print(a.pressure, 2);
   f.print(",");
 
@@ -2622,6 +2454,43 @@ static void csv_write_common(FsFile &f, const Task &tk) {
   f.print(buf);                f.print(",");
   snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%02d", a.hour, a.minute, a.second, a.centisecond);
   f.print(buf);
+}
+
+// 飛行 CSV と received/ で共通の姿勢・風 8 列（roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir）を書く。
+// ★ 入っていない項目は **0 ではなく空欄**にする。
+//   0.00 と書くと「水平だった」「無風だった」と読めてしまい、あとから解析する人が区別できない。
+static void csv_write_attitude(FsFile &f, const Task &tk) {
+  const auto& a = tk.saveCsvArgs;
+  const bool is_rx = (tk.type == TASK_SAVE_RXCSV);
+  char line[96];
+  char att[36], avg[10], trim[10], wind[20];
+  if (a.have & RHAVE_ATT)      snprintf(att,  sizeof(att),  "%.2f,%.2f,%.2f", a.roll, a.pitch, a.yaw);
+  else                         snprintf(att,  sizeof(att),  ",,");
+  if (a.have & RHAVE_ATT_AVG)  snprintf(avg,  sizeof(avg),  "%.2f", a.pitch_avg);
+  else                         avg[0] = '\0';
+  if (a.have & RHAVE_ATT_TRIM) snprintf(trim, sizeof(trim), "%.2f", a.roll_trim);
+  else                         trim[0] = '\0';
+  // ヨー精度はヨーと同じ have ビットに載っている（受信ログは 1 度刻み、自機ログは 0.1 度刻み）
+  const bool has_yaw = (a.have & RHAVE_ATT_YAW) != 0;
+  if (a.have & RHAVE_ATT_WIND) snprintf(wind, sizeof(wind), "%.2f,%.1f", a.wind_mps, a.wind_dir);
+  else                         snprintf(wind, sizeof(wind), ",");
+  if (has_yaw) {
+    if (is_rx) snprintf(line, sizeof(line), "%s,%s,%s,%.0f,%s", att, avg, trim, a.yaw_acc95, wind);
+    else       snprintf(line, sizeof(line), "%s,%s,%s,%.1f,%s", att, avg, trim, a.yaw_acc95, wind);
+  } else {
+    snprintf(line, sizeof(line), "%s,%s,%s,,%s", att, avg, trim, wind);
+  }
+  f.print(line);
+}
+
+// 推定 TAS と大きい枠の中身の 2 列（",tas_mps,hdr"。先頭のカンマも書く）。
+// ★ 推定 TAS が無いときは 0 ではなく空欄（csv_write_attitude と同じ理由）。
+static void csv_write_tas(FsFile &f, const Task &tk) {
+  const auto& a = tk.saveCsvArgs;
+  char line[20];
+  if (a.have & RHAVE_TAS) snprintf(line, sizeof(line), ",%.1f,%u", a.tas, (unsigned)a.hdr);
+  else                    snprintf(line, sizeof(line), ",,%u", (unsigned)a.hdr);
+  f.print(line);
 }
 
 void saveRxCSV(const Task& tk) {
@@ -2651,7 +2520,7 @@ void saveRxCSV(const Task& tk) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
                       "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
                       "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
-                      "own_lat,own_lon,dist_m,slot");
+                      "own_lat,own_lon,dist_m,slot,tas_mps,hdr");
     rxHeaderWritten = true;
   }
   // 先頭 12 列は飛行 CSV と同じ並び（csv_write_common が唯一の書き手）。
@@ -2659,25 +2528,7 @@ void saveRxCSV(const Task& tk) {
   rxcsvFile.print(a.rssi);   rxcsvFile.print(",");
   rxcsvFile.print(a.seq);    rxcsvFile.print(",");
   rxcsvFile.print(a.age_ms); rxcsvFile.print(",");
-
-  // ★ 入っていない項目は **0 ではなく空欄**にする（imu_replaydata/ と同じ流儀）。
-  //   0.00 と書くと「水平だった」「無風だった」と読めてしまい、
-  //   あとから解析する人が区別できない。
-  char line[96];
-  char att[36], avg[10], trim[10], wind[20];
-  if (a.have & RHAVE_ATT)      snprintf(att,  sizeof(att),  "%.2f,%.2f,%.2f", a.roll, a.pitch, a.yaw);
-  else                         snprintf(att,  sizeof(att),  ",,");
-  if (a.have & RHAVE_ATT_AVG)  snprintf(avg,  sizeof(avg),  "%.2f", a.pitch_avg);
-  else                         avg[0] = '\0';
-  if (a.have & RHAVE_ATT_TRIM) snprintf(trim, sizeof(trim), "%.2f", a.roll_trim);
-  else                         trim[0] = '\0';
-  // ヨー精度はヨーと同じ have ビットに載っている
-  const bool has_yaw = (a.have & RHAVE_ATT_YAW) != 0;
-  if (a.have & RHAVE_ATT_WIND) snprintf(wind, sizeof(wind), "%.2f,%.1f", a.wind_mps, a.wind_dir);
-  else                         snprintf(wind, sizeof(wind), ",");
-  if (has_yaw) snprintf(line, sizeof(line), "%s,%s,%s,%.0f,%s", att, avg, trim, a.yaw_acc95, wind);
-  else         snprintf(line, sizeof(line), "%s,%s,%s,,%s",     att, avg, trim, wind);
-  rxcsvFile.print(line); rxcsvFile.print(",");
+  csv_write_attitude(rxcsvFile, tk); rxcsvFile.print(",");
 
   // ボート自身の位置と機体までの距離。無いものは 0 ではなく空欄で書く
   //（0.00 と書くと「原点にいた」「同じ場所だった」と読めてしまう）。
@@ -2692,7 +2543,9 @@ void saveRxCSV(const Task& tk) {
   // 回転枠の番号（2026-10-27〜。分からなければ空欄）
   if (a.slot != 0xFF) snprintf(own, sizeof(own), ",%u", a.slot);
   else                snprintf(own, sizeof(own), ",");
-  rxcsvFile.println(own);
+  rxcsvFile.print(own);
+  csv_write_tas(rxcsvFile, tk);
+  rxcsvFile.println();
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
   rxcsvFile.flush();
@@ -2717,6 +2570,7 @@ void saveCSV(const Task& tk) {
     fileminute = a.minute;
     filesecond = a.second;
   }
+  if (fileyear == 0) return;  // まだ時刻が取れていない
 
   // ルート直下は設定ファイル専用にしてあるので、飛行 CSV は data/ へ書く。
   char csv_filename[40];
@@ -2732,8 +2586,11 @@ void saveCSV(const Task& tk) {
 
   if (csvFileStatic) {
     if(!headerWritten){
-      // lux / backlight は飛行 CSV だけの列（received/ には無い）。共通部分の後ろに付ける。
-      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,voltage,numsat,date,time,lux,backlight");
+      // lux / backlight に加え、姿勢・風 8 列も飛行 CSV に直接統合して 1 ファイルで完結させる。
+      csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,"
+                            "pressure,voltage,numsat,date,time,lux,backlight,"
+                            "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
+                            "tas_mps,hdr");
       headerWritten = true;
     }
 
@@ -2743,14 +2600,16 @@ void saveCSV(const Task& tk) {
     if (tk.saveCsvArgs.lux >= 0.0f)  csvFileStatic.print(tk.saveCsvArgs.lux, 1);
     csvFileStatic.print(",");
     if (tk.saveCsvArgs.bl_pct >= 0)  csvFileStatic.print(tk.saveCsvArgs.bl_pct);
+    csvFileStatic.print(",");
+    csv_write_attitude(csvFileStatic, tk);
+    csv_write_tas(csvFileStatic, tk);
     csvFileStatic.println();
 
     // flush() は SD への物理書き込みを伴うため消費電力が大きい。
-    // 2秒に1回だけ flush し、それ以外は SdFat の内部バッファに留めることで消費電力を抑制する。
-    // 2Hz×2秒 = 4行×約100バイト ≈ 400バイト → 512バイトブロックバッファに収まるため安全。
-    // （voltage・numsat 列で約 9 バイト、lux・backlight 列で約 11 バイト増えたが、まだ余裕がある）
+    // 1.5秒に1回だけ flush し、それ以外は SdFat の内部バッファに留めることで消費電力を抑制する。
+    // 2Hz×1.5秒 = 3行×約140バイト ≈ 420バイト → 512バイトブロックバッファに収まるため安全。
     { static unsigned long last_flush_ms = 0;
-      if (millis() - last_flush_ms >= 2000) {
+      if (millis() - last_flush_ms >= 1500) {
         TIMING_START(csv_fl);
         csvFileStatic.flush();
         TIMING_END(ts_savecsv_flush, csv_fl);
@@ -2766,108 +2625,14 @@ void saveCSV(const Task& tk) {
   }
 }
 
-// ===== リプレイ用 ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz） =====
-// 目的は「そのとき画面に何が出ていたか」を後から再現すること。
-// 生データ（imuraw/*.bin）から ESKF を回し直す案もあったが、機上のフィルタは
-// シングルトンでリプレイ中に実機の姿勢推定を壊してしまうため、結果だけを残す方式にした。
-//
-// 列はヘッダ行の列名で解釈する（飛行 CSV と同じ方式）。後から列を足しても
-// 古いファイルが読めなくなることはない。
-//   time      HH:MM:SS.cc（JST）
-//   roll      ESKF ロール [度]（マウント補正・ゼロ点・自動トリム適用後＝画面の値）
-//   pitch     ESKF ピッチ [度]（同上）
-//   yaw       ESKF ヨー [度]（真方位）
-//   pitch_avg 平均ピッチ [度]。未収束のときは空欄
-//   roll_trim 自動ロールトリムの累積補正量 [度]
-//   yaw_acc95 ヨー精度の 95% 値 [度]。しきい値は再生時に判定するので生値で残す
-//   wind_mps  推定風速 [m/s]。推定できていない区間は空欄
-//   wind_dir  風が吹いていく方向の真方位 [度]。同上
-//
-// ESKF が未収束の間は行を書かない（行が無い＝当時も表示していない）。
-// 旧 euler/ フォルダ（BNO085 由来・4列）も再生時のフォールバックとして読める。
-// 50レコードごとに sync() してファイルサイズ・更新タイムスタンプをFATに反映する。
-static FsFile replayDataFileStatic;
-static char replayDataOpenedFilename[24] = "";  // 現在開いているファイル名
-static int replayDataWriteCount = 0;            // sync() タイミング管理カウンタ
-
-void save_imu_replaydata(int h, int m, int s, int cs,
-                         float roll, float pitch, float yaw,
-                         float pitch_avg, bool pitch_avg_valid,
-                         float roll_trim, float yaw_acc95,
-                         float wind_mps, float wind_dir, bool wind_valid,
-                         const char* filename, int year, int month, int day) {
-  if (webserial_connected) return;  // PC接続中はSD読み出し専用に固定
-  if (!good_sd()) return;
-
-  // ファイル名が変わった場合（日付変更等）は sync してから閉じて開き直す
-  if (replayDataFileStatic.isOpen() && strcmp(replayDataOpenedFilename, filename) != 0) {
-    replayDataFileStatic.sync();
-    replayDataFileStatic.close();
-    replayDataOpenedFilename[0] = '\0';
-    replayDataWriteCount = 0;
-  }
-
-  if (!replayDataFileStatic.isOpen()) {
-    // 保存先フォルダがなければ作成
-    if (!SD.exists(IMU_REPLAYDATA_DIR)) {
-      SD.mkdir(IMU_REPLAYDATA_DIR);
-    }
-    // 既存ファイルかどうか確認（ヘッダー書き込み判定用）
-    bool fileExisted = SD.exists(filename);
-
-    // 追記モードで開く
-    if (!replayDataFileStatic.open(filename, O_RDWR | O_CREAT | O_APPEND)) return;
-    strncpy(replayDataOpenedFilename, filename, sizeof(replayDataOpenedFilename) - 1);
-    replayDataOpenedFilename[sizeof(replayDataOpenedFilename) - 1] = '\0';
-
-    // GNSS 日時でファイルタイムスタンプを設定（作成・アクセス・更新の全3種）
-    replayDataFileStatic.timestamp(T_CREATE | T_ACCESS | T_WRITE, year, month, day, h, m, s);
-
-    // 新規ファイルのみヘッダー書き込み
-    if (!fileExisted) {
-      replayDataFileStatic.println(
-        "time,roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir");
-    }
-  }
-
-  // 平均が未収束の間は空欄にする（0.00 と書くと水平だったように見えてしまう）
-  char avgbuf[10];
-  if (pitch_avg_valid) snprintf(avgbuf, sizeof(avgbuf), "%.2f", pitch_avg);
-  else                 avgbuf[0] = '\0';
-
-  // 風も推定できていない区間は空欄にする（0.0 と書くと「無風」と読めてしまう）
-  char wbuf[20];
-  if (wind_valid) snprintf(wbuf, sizeof(wbuf), "%.2f,%.1f", wind_mps, wind_dir);
-  else            snprintf(wbuf, sizeof(wbuf), ",");
-
-  char line[96];
-  snprintf(line, sizeof(line), "%02d:%02d:%02d.%02d,%.2f,%.2f,%.2f,%s,%.2f,%.1f,%s",
-           h, m, s, cs, roll, pitch, yaw, avgbuf, roll_trim, yaw_acc95, wbuf);
-  replayDataFileStatic.println(line);
-
-  // 50レコードごと（約10秒@5Hz）に sync() → FATのファイルサイズ・タイムスタンプを更新
-  if (++replayDataWriteCount >= 50) {
-    replayDataFileStatic.timestamp(T_WRITE, year, month, day, h, m, s);  // 更新タイムスタンプを現在時刻に
-    replayDataFileStatic.sync();
-    replayDataWriteCount = 0;
-  }
-}
-
 // SD.begin() を 2 回目以降に呼ぶ直前に、旧ボリュームを指したままの静的 FsFile を破棄する。
 // カード抜き差しやバス異常の後に close() を呼ぶと旧 FAT セクタへ sync を試みて別カードを壊す恐れが
 // あるため、SdFat のムーブ代入（ポインタのクリアのみ・I/O なし）でメモリ上の開状態だけを外す。
 static void reset_open_files_before_reinit() {
-  logFileStatic        = FsFile();
-  csvFileStatic        = FsFile();
-  rxcsvFile            = FsFile();
-  replayDataFileStatic = FsFile();
-  replayFileStatic     = FsFile();
-  replayAttFile        = FsFile();
-  replayDataOpenedFilename[0] = '\0';
-  replayDataWriteCount = 0;
-  replay_att_tried     = false;
-  replay_att_ok        = false;
-  replay_att_eof       = false;
+  logFileStatic    = FsFile();
+  csvFileStatic    = FsFile();
+  rxcsvFile        = FsFile();
+  replayFileStatic = FsFile();
   imulog_on_sd_reinit();
 }
 
@@ -2887,36 +2652,6 @@ Task createFlushImuLogTask(int bufidx, const char* filename,
   t.imuLogArgs.second = second;
   strncpy(t.imuLogArgs.filename, filename, sizeof(t.imuLogArgs.filename) - 1);
   t.imuLogArgs.filename[sizeof(t.imuLogArgs.filename) - 1] = '\0';
-  return t;
-}
-
-Task createLogImuReplayTask(int h, int m, int s, int cs,
-                            float roll, float pitch, float yaw,
-                            float pitch_avg, bool pitch_avg_valid,
-                            float roll_trim, float yaw_acc95,
-                            float wind_mps, float wind_dir, bool wind_valid,
-                            const char* filename, int year, int month, int day) {
-  Task t;
-  t.type = TASK_LOG_IMUREPLAY;
-  t.imuReplayArgs.hour        = h;
-  t.imuReplayArgs.minute      = m;
-  t.imuReplayArgs.second      = s;
-  t.imuReplayArgs.centisecond = cs;
-  t.imuReplayArgs.year        = year;
-  t.imuReplayArgs.month       = month;
-  t.imuReplayArgs.day         = day;
-  t.imuReplayArgs.roll        = roll;
-  t.imuReplayArgs.pitch       = pitch;
-  t.imuReplayArgs.yaw         = yaw;
-  t.imuReplayArgs.pitch_avg   = pitch_avg;
-  t.imuReplayArgs.pitch_avg_valid = pitch_avg_valid;
-  t.imuReplayArgs.roll_trim   = roll_trim;
-  t.imuReplayArgs.yaw_acc95   = yaw_acc95;
-  t.imuReplayArgs.wind_mps    = wind_mps;
-  t.imuReplayArgs.wind_dir    = wind_dir;
-  t.imuReplayArgs.wind_valid  = wind_valid;
-  strncpy(t.imuReplayArgs.filename, filename, sizeof(t.imuReplayArgs.filename) - 1);
-  t.imuReplayArgs.filename[sizeof(t.imuReplayArgs.filename) - 1] = '\0';
   return t;
 }
 
@@ -2955,12 +2690,6 @@ static void webserial_prepare_sd() {
   if (rxcsvFile.isOpen()) {
     rxcsvFile.sync();
     rxcsvFile.close();
-  }
-  if (replayDataFileStatic.isOpen()) {
-    replayDataFileStatic.sync();
-    replayDataFileStatic.close();
-    replayDataOpenedFilename[0] = '\0';
-    replayDataWriteCount = 0;
   }
   if (logFileStatic.isOpen()) {
     logFileStatic.sync();
@@ -3050,7 +2779,6 @@ void serial_list_csv_files() {
 
   list_csv_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR);
   list_csv_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR);
-  list_csv_in_dir("/", "");
 
   Serial.println("PONS:LIST_END");
 }

@@ -8,7 +8,7 @@
 //           フライトログCSVへの定期保存トリガー、
 //           AssistNow Autonomous（衛星軌道の自己予測）の設定と状況の記録。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/05
+// Updated : 2026/11/07
 // ============================================================
 // 対象は u-blox SAM-M10Q 固定。Quectel LC86G 対応は v0.947 で削除済み（settings.h 参照）。
 #include <Arduino.h>
@@ -1411,6 +1411,11 @@ static float    replay_yaw_acc95 = 0.0f;
 static float    replay_wind_mps  = 0.0f;
 static float    replay_wind_dir  = 0.0f;
 static uint16_t replay_att_have  = 0;   // RHAVE_ATT* のビット
+// 推定 TAS と、大きい枠に何を出していたか（飛行 CSV の tas_mps / hdr 列。tas.h の TasHdr）。
+// ★ 記録された値をそのまま出す。いまの V0・K で計算し直さない（docs/pons_tas.md §6）。
+static float    replay_tas       = 0.0f;
+static bool     replay_tas_have  = false;
+static int8_t   replay_hdr       = -1;    // -1 = hdr 列が無い（古い CSV）
 
 // リプレイ中のロール・ピッチ。姿勢ログが無い日は false（表示しない）。
 bool get_replay_attitude(float &roll, float &pitch) {
@@ -1420,8 +1425,7 @@ bool get_replay_attitude(float &roll, float &pitch) {
   return true;
 }
 
-// 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true。
-// 旧 euler/ は BNO085 由来で、当時これらは画面に出ていなかったので再現もしない。
+// 以下はその列が CSV にあり、値が入っている行だけ true（姿勢の列の無い古い CSV では出さない）。
 bool get_replay_pitch_avg(float &avg) {
   if (!(replay_att_have & RHAVE_ATT_AVG)) return false;
   avg = replay_pitch_avg;
@@ -1436,6 +1440,16 @@ bool get_replay_wind(float &speed_mps, float &dir_to_deg) {
   if (!(replay_att_have & RHAVE_ATT_WIND)) return false;
   speed_mps  = replay_wind_mps;
   dir_to_deg = replay_wind_dir;
+  return true;
+}
+bool get_replay_tas(float &mps) {
+  if (!replay_tas_have) return false;
+  mps = replay_tas;
+  return true;
+}
+bool get_replay_hdr(int &hdr) {
+  if (replay_hdr < 0) return false;
+  hdr = replay_hdr;
   return true;
 }
 bool get_replay_yaw(float &yaw, float &acc95) {
@@ -1461,6 +1475,10 @@ static void apply_replay_row(const ReplayRow* row) {
     replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG |
                                     RHAVE_ATT_TRIM | RHAVE_ATT_WIND);
   }
+  // 推定 TAS と大きい枠の中身は姿勢の有無と別に毎行（姿勢が無い区間は hdr = 0 = 真方位で記録されている）
+  replay_tas      = row->tas;
+  replay_tas_have = (row->have & RHAVE_TAS) != 0;
+  replay_hdr      = row->hdr;
 
   // --- 位置 ---
   if (stored_latitude != row->lat || stored_longitude != row->lon)
@@ -1738,12 +1756,14 @@ void set_replaymode(bool replaymode){
   // 一瞬だけ表示してしまわないようにクリアする
   replay_last_valid = false;
   replay_att_have   = 0;      // 前のファイルの姿勢を残さない
+  replay_tas_have   = false;
+  replay_hdr        = -1;
 
   // ★重要: 再生で書き込まれた「過去の日時」を捨てる。
   // apply_replay_row() は CSV の日時を ubx_* にそのまま入れるため、リプレイを
   // 抜けた直後は日付が再生した飛行の日のままになる。屋内など GNSS フィックスが
   // 無い場所ではこれが更新されないので、get_jst_now() が過去の日付を返し続け、
-  // 各種ログ（imu_replaydata / imuraw / 飛行CSV）が「その日のファイル」へ
+  // 各種ログ（imuraw / 飛行CSV。当時は imu_replaydata も）が「その日のファイル」へ
   // 机の上の値を追記してしまう。実際に imu_replaydata/20260726.txt が
   // 実機で生成され、2026 大会のリプレイ再現を壊した。
   // 本物の NAV-PVT が届くまで日時は無効とする。

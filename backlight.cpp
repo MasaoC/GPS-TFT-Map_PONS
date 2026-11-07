@@ -19,7 +19,7 @@
 //
 // ■ 電池低下のとき（backlight_set_saver。判定は GPS_TFT_map.ino の batt_alarm_tick）
 //   第 1 段階（<=3.5V）は BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消す、
-//   第 2 段階（<=3.0V）は BL_SAVER_ON_MS 点けて BL_SAVER_CRIT_OFF_MS 消すをくり返す。
+//   第 2 段階（<=3.0V）は BL_SAVER_CRIT_ON_MS 点けて BL_SAVER_CRIT_OFF_MS 消すをくり返す。
 //   点いている間は上の明るさのまま。
 //   ★ 消している間も「本来の明るさ」（s_duty）は追い続ける。出力だけ 0 にする。
 //     s_duty まで 0 にすると、点いた瞬間から照度へゆっくり寄せ直す（BL_AUTO_TAU_MS）ので、
@@ -232,8 +232,10 @@ static void log_pwm_diag(const char* why) {
 // 点滅の消灯側にいるか。
 static bool saver_dark(uint32_t now) {
   if (s_saver == BL_SAVER_OFF) return false;
-  const uint32_t off_ms = (s_saver == BL_SAVER_CRIT) ? BL_SAVER_CRIT_OFF_MS : BL_SAVER_OFF_MS;
-  return (now - s_saver_t0) % (BL_SAVER_ON_MS + off_ms) >= BL_SAVER_ON_MS;
+  const bool crit = (s_saver == BL_SAVER_CRIT);
+  const uint32_t on_ms  = crit ? BL_SAVER_CRIT_ON_MS  : BL_SAVER_ON_MS;
+  const uint32_t off_ms = crit ? BL_SAVER_CRIT_OFF_MS : BL_SAVER_OFF_MS;
+  return (now - s_saver_t0) % (on_ms + off_ms) >= on_ms;
 }
 
 // 本来の点灯率を決め、点滅の消灯側なら出力だけ 0 にする（上の ■ 電池低下のとき）。

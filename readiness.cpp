@@ -5,11 +5,11 @@
 //           1 度だけ「準備完了」と読み上げる。そろっていなければ何が足りないかを
 //           設定画面の右上に出す（描画は display_tft.cpp の draw_setting_mode）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/07
 // ============================================================
 //
 // ■ なぜ
-//   飛ぶ前に見る項目（GNSS の精度・姿勢推定・較正・設定の赤丸・電池・SD・無線）は、
+//   飛ぶ前に見る項目（GNSS の精度・姿勢推定・較正・設定の赤の ×・電池・SD・無線）は、
 //   それぞれ別の画面と別の音にある。台の上でそれを 1 つずつ見て回らなくても済むように、
 //   全部そろったら声で知らせる。足りないものは設定画面の右上に短い名前で並べる。
 //
@@ -45,7 +45,7 @@ static uint16_t s_missing    = 0;
 bool     readiness_applicable() { return s_applicable; }
 uint16_t readiness_missing()    { return s_missing; }
 
-// 設定画面に赤丸があるか。IMU と無線の行は、この下で別の項目（ESKF・CALIB・LINK）として
+// 設定画面に赤の × があるか（色が COLOR_RED の行）。IMU と無線の行は、この下で別の項目（ESKF・CALIB・LINK）として
 // 見るので数えない（同じ理由を 2 つの名前で出さないため）。
 static bool any_setting_red() {
   for (int i = 0; i < setting_size; i++) {

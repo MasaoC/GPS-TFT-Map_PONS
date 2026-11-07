@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/03
+// Updated : 2026/11/07
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "display_tft.h"
 #include "attitude.h"
+#include "tas.h"         // ヘッダー右の大きい枠に何を出すか（平均ピッチ / 推定 TAS / 真方位）
 #include "link.h"
 #include "power.h"    // USB 判定・電源経路の異常・SW OFF のまま充電（電池表示と地図の注意）
 #include "readiness.h"  // 本番前チェック（設定画面の右上）
@@ -562,7 +563,7 @@ bool eskf_display_enabled() {
   // 表示系はすべてこの関数を通るので、ここ 1 か所で塞げる。
   if (!attitude_get_rpy_enabled()) return false;
   // リプレイ中は IMU 生データ（.bin）を再生しないので実機 ESKF の値は使えないが、
-  // 同じ日の姿勢ログ（imu_replaydata/ か旧 euler/）があれば当時の値を再現できる。
+  // 飛行 CSV（と受信ログ）に姿勢の列があれば当時の値を再現できる。
   if (getReplayMode()) {
     float r, p;
     return get_replay_attitude(r, p);
@@ -756,7 +757,7 @@ static float plane_icon_screen_deg(int ttrack) {
   return is_trackupmode() ? (y - (float)ttrack) : y;
 }
 
-// ヘッダー右の大きい枠が平均ピッチを出しているか（定義は draw_header の直前）。
+// ヘッダー右の大きい枠が真方位以外（平均ピッチか推定 TAS）を出しているか（定義は draw_header の直前）。
 static bool header_shows_pitch();
 
 // TRACKUP 専用の半径縮小量 [px]。画面中央上部に "TT xxx" を出すようになり、
@@ -1243,11 +1244,53 @@ float mapf(float x, float in_min, float in_max, float out_min, float out_max){
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-// 起動時のスプラッシュアニメーションを表示する。
-// 1. ロゴ BMP を SD から読み込んで表示。SD 状態を画面下部に表示。
-// 2. 琵琶湖マップをズームイン（遠→近）しながら PLA 位置に移動するアニメーション（約 40 フレーム）。
-// 3. 続いてズームアウト（近→遠）しながら日本地図へ引くアニメーション。
-// mapf() で中心座標とスケールを線形補間してスムーズなアニメーションを実現している。
+// ---- 起動アニメーションの時刻（opening.wav に合わせてある）----
+// 起動音を鳴らし始めてからの ms。opening.wav（3.93 秒）は 0〜1.7 秒がジングル、
+// 2.05〜2.80 秒が高くなっていくスイープ（ズームイン）、3.10〜3.90 秒が低くなっていくスイープ（ズームアウト）。
+// ★ アニメーションは**コマ数ではなく時刻で進める。** 1 コマの描画時間は地図データ（VECTORMAP_HIRES）・
+//   縮尺・ファームの変更で変わる。コマ数で進めていたときは描画が遅れたぶんだけ音とずれ、
+//   ズームインの最中に下がるスイープが鳴っていた。描画が遅いとコマが間引かれてカクつくだけで、音とはずれない。
+//   **opening.wav を差し替えたら、ここも測り直すこと。**
+static const uint32_t STARTUP_ZOOMIN_START_MS  = 2050;
+static const uint32_t STARTUP_ZOOMIN_END_MS    = 2800;
+static const uint32_t STARTUP_ZOOMOUT_START_MS = 3100;
+static const uint32_t STARTUP_ZOOMOUT_END_MS   = 3900;
+// 最後のコマを残す時間。OpenStreetMap の帰属表示（draw_version_backscreen が描いている）を
+// 読める時間だけ残す。OSMF の Attribution Guidelines はスプラッシュ画面での表示を認めているが、
+// 一瞬で消えると「easily readable」の要件を満たさない。
+static const uint32_t STARTUP_HOLD_MS          = 3500;
+
+// 起動画面の待ち。t0 から until_ms 経つまで、GNSS の FIFO を読み捨て（overflow 防止）、IMU を引き取る
+// （CLAUDE.md「IMU の読み出しを飢えさせない」。imu_update() の途絶判定は 1 秒）。
+static void startup_wait_until(uint32_t t0, uint32_t until_ms) {
+  while (millis() - t0 < until_ms) {
+    gnss_loop(7);
+    imu_service_if_due();
+    delay(10);
+  }
+}
+
+// 区間 [start_ms, end_ms]（t0 からの ms）の中で、いまが何割の位置か（0〜1）。
+static float startup_progress(uint32_t t0, uint32_t start_ms, uint32_t end_ms) {
+  const float p = (float)(int32_t)(millis() - t0 - start_ms) / (float)(end_ms - start_ms);
+  return constrain(p, 0.0f, 1.0f);
+}
+
+// 起動アニメーションの 1 コマ。描画中の IMU の引き取りは draw_vectormap() の中でやっている。
+static void draw_startup_frame(double lat, double lon, float scale) {
+  backscreen.fillScreen(COLOR_WHITE);
+  draw_startup_map(lat, lon, scale);
+  draw_pilon_takeshima_line(lat, lon, scale, 0);
+  draw_pilon_takeshima_marks(lat, lon, scale, 0);
+  draw_version_backscreen();
+  backscreen.pushSprite(0, 52);
+}
+
+// 起動時のスプラッシュアニメーション（startup_demo_tft()）。
+// 1. ロゴ（FLASH）と琵琶湖の地図を表示。自己診断を画面下部に表示。
+// 2. 琵琶湖マップをズームイン（遠→近）しながら PLA 位置に移動する。
+// 3. 続いてズームアウト（近→遠）しながら日本地図へ引く。
+// どちらもコマ数ではなく時刻で進め、opening.wav のスイープに合わせる（STARTUP_*_MS）。
 // 起動直後のタイトル。**setup_tft() の直後と startup_demo_tft() の頭の両方から呼ぶ。**
 // ★ ここを setup() の早い段階で出さないと、起動画面が始まるまで**画面が真っ白**になる。
 //   その間に何をしているかというと imu_setup()（SCH16T のリセット〜起動）と
@@ -1346,7 +1389,7 @@ static void draw_boot_diag(uint8_t phase) {
                link_get_radio_ch(), e220_profile_to_sf(link_get_radio_profile()));
     tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
     tft.setCursor(10, y2);
-    tft.printf("LINK GROUP: %u", link_get_group());
+    tft.printf("LINK GROUP: %c", link_group_letter(link_get_group()));
     line2_end = tft.getCursorX();
   } else {
     tft.setTextColor(COLOR_RED, COLOR_WHITE);
@@ -1395,6 +1438,7 @@ void startup_demo_tft() {
 
   // 起動音。ロゴも音声も FLASH に持っているので、SD からの読み込み依頼は不要。
   enqueueTask(createPlayWavTask("wav/opening.wav"));
+  const uint32_t t0 = millis();   // ★ 以下のアニメーションの時刻（STARTUP_*_MS）はすべてここから
 
   // ★ **SD 異常の警告ビープは起動音とは別に鳴らす。消さないこと。**
   //   0.982 まではこれが「SD が無いときの起動音の代替」だったので、
@@ -1418,19 +1462,14 @@ void startup_demo_tft() {
   int saved_upward_mode = upward_mode;
   upward_mode = MODE_NORTHUP;
 
-  backscreen.fillScreen(COLOR_WHITE);
-  draw_startup_map(center_lat, center_lon, 2.5);
-  draw_pilon_takeshima_line(center_lat, center_lon, 2.5, 0);
-  draw_pilon_takeshima_marks(center_lat, center_lon, 2.5, 0);
-  draw_version_backscreen();
-  backscreen.pushSprite(0,52);
+  draw_startup_frame(center_lat, center_lon, 2.5);
 
 
   // ★ ロゴは FLASH に持つようになった（logo_data.h）。
   //   以前は Core1 が SD の logo.bmp を読み終えるのを最大 1.9 秒待っていたが、
   //   もう待つ必要が無い。SD が読めない機体でもロゴが出るし、
   //   logo_sprite（240x52 = 24KB の RAM）も要らなくなった。
-  //   起動演出の尺は保ちたいので、待ち時間はそのまま消費する。
+  //   ロゴはジングルのあいだ出しておき、ズームインの始まり（STARTUP_ZOOMIN_START_MS）まで待つ。
   {
     // pushImage()（pushPixels 経由）は既定で色バイトを入れ替えて送る。
     // LOGO_DATA は素の RGB565 値（旧 SD 版の drawPixel と同じ並び）なので、
@@ -1439,72 +1478,38 @@ void startup_demo_tft() {
     tft.pushImage(0, 0, LOGO_W, LOGO_H, LOGO_DATA);
     tft.setSwapBytes(false);
     backscreen.pushSprite(0, 52);  // ロゴ下の琵琶湖地図を復元
-    const int wait_timeout_ms = 1900;
-    unsigned long wait_start = millis();
-    while (millis() - wait_start < wait_timeout_ms) {
-      gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
-      imu_service_if_due();  // ★ IMU も引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）
-                             //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
-      delay(10);
-    }
+    startup_wait_until(t0, STARTUP_ZOOMIN_START_MS);
   }
 
-  float zoomin_speedfactor = 1.0f;
-  int countermax = 40/zoomin_speedfactor;
-  float scalenow = 0;
-  for (int i = 0; i <= countermax; i++) {
-    backscreen.fillScreen(COLOR_WHITE);
-    scalenow = 2.5 + i * 0.25*zoomin_speedfactor;
-    draw_startup_map(mapf(i,0,countermax,center_lat,pla_lat), mapf(i,0,countermax,center_lon,pla_lon), scalenow);
-    draw_pilon_takeshima_line(mapf(i,0,countermax,center_lat,pla_lat), mapf(i,0,countermax,center_lon,pla_lon), scalenow, 0);
-    draw_pilon_takeshima_marks(mapf(i,0,countermax,center_lat,pla_lat), mapf(i,0,countermax,center_lon,pla_lon), scalenow, 0);
-    draw_version_backscreen();
-    backscreen.pushSprite(0,52);
+  // ズームイン: 琵琶湖全体（縮尺 2.5）からプラットホーム（12.5）へ寄る。
+  // 毎コマ「区間の何割まで来たか」から位置と縮尺を決めるので、描画が遅くても区間の終わりで必ず止まる。
+  for (;;) {
+    const float p = startup_progress(t0, STARTUP_ZOOMIN_START_MS, STARTUP_ZOOMIN_END_MS);
+    draw_startup_frame(mapf(p, 0, 1, center_lat, pla_lat), mapf(p, 0, 1, center_lon, pla_lon), 2.5f + 10.0f * p);
+    if (p >= 1.0f) break;   // 最後のコマは必ず p = 1（ズームアウトの出発点）を描いてから抜ける
   }
-  delay(10);
 
-  // ★ ここでフッターを後半ページへ切り替える。アニメーションの折り返し地点なので、
-  //   前半（ロゴ 1.9 秒 + ズームイン）と後半（ズームアウト + 帰属表示 3.5 秒）が
-  //   だいたい同じ長さになり、どちらも読む時間がある。
+  // ★ ここでフッターを後半ページへ切り替える。アニメーションの折り返し地点で、
+  //   前半（ロゴ＋ズームイン）は約 2.8 秒、後半（ズームアウト＋帰属表示）は約 4.6 秒。
+  //   前半ページは SD の初期化待ちのあいだも出ているので、どちらも読む時間がある。
   draw_boot_diag(1);      // 後半ページ: E220（無線）
+  startup_wait_until(t0, STARTUP_ZOOMOUT_START_MS);
 
-  float zoomout_speedfactor = 1.0f;
-  countermax = 40/zoomout_speedfactor;
-
-  for (int i = 0; i < countermax; i++) {
-    //scalenow *= 0.78;//for zoomout_speedfactor=2. 
-    scalenow *= 0.89;// for zoomout_speedfactor=1
-    if(scalenow < 0.08)
-      scalenow = 0.08;
-    else{
-      center_lat += 0.005*i;// for zoomout_speedfactor=1
-      //center_lat += 0.01*i;// for zoomout_speedfactor=2
-    }
-
-    backscreen.fillScreen(COLOR_WHITE);
-    {
-      draw_startup_map(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow);
-      draw_pilon_takeshima_line(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow, 0);
-      draw_pilon_takeshima_marks(mapf(i,0,countermax,pla_lat,center_lat), mapf(i,0,countermax,pla_lon,center_lon), scalenow, 0);
-    }
-    draw_version_backscreen();
-    backscreen.pushSprite(0,52);
+  // ズームアウト: プラットホームから日本全体へ引きながら北へ流す。
+  // コマ数で進めていたときの動き（40 コマ。1 コマごとに縮尺 ×0.89、中心の緯度をコマ番号 ×0.005 ずつ北へ足す）を
+  // 連続な式にしたもの。k がそのときのコマ番号（0〜39）にあたる。縮尺は最後のコマで 0.118。
+  const float out_lat0 = center_lat;
+  for (;;) {
+    const float p = startup_progress(t0, STARTUP_ZOOMOUT_START_MS, STARTUP_ZOOMOUT_END_MS);
+    const float k = 39.0f * p;
+    const float scale   = 12.5f * powf(0.89f, k + 1.0f);
+    const float lat_end = out_lat0 + 0.005f * k * (k + 1.0f) / 2.0f;
+    draw_startup_frame(mapf(k, 0, 40, pla_lat, lat_end), mapf(k, 0, 40, pla_lon, center_lon), scale);
+    if (p >= 1.0f) break;
   }
 
-  // OpenStreetMap の帰属表示（draw_version_backscreen が描いている）を
-  // 読める時間だけ残す。OSMF の Attribution Guidelines はスプラッシュ画面での
-  // 表示を認めているが、一瞬で消えると「easily readable」の要件を満たさない。
-  // 最終フレームは既に表示済みなので、そのまま 2 秒保持する。
-  {
-    const unsigned long hold_ms = 3500;
-    unsigned long t0 = millis();
-    while (millis() - t0 < hold_ms) {
-      gnss_loop(7);       // 待機中も GNSS FIFO を読み捨てて overflow 防止
-      imu_service_if_due();  // ★ IMU も引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）
-                             //   （imu_update() の途絶判定は 1 秒。CLAUDE.md 参照）
-      delay(10);
-    }
-  }
+  // 最後のコマ（帰属表示）を残す。ズームアウトが遅れて終わっても、ここから数える。
+  startup_wait_until(millis(), STARTUP_HOLD_MS);
 
   upward_mode = saved_upward_mode;  // TRACKUP/NORTHUP 設定を復元
 }
@@ -1762,7 +1767,7 @@ void draw_eskf_attitude() {
     //   値は原理的に当てにならない。以前はこのゲートが自機の経路にしか無く、
     //   **機体の画面が隠している風をボートの画面が出していた**（ミラー中）。
     //   リプレイも同じで、「その時に画面へ出ていた値を再現する」という
-    //   imu_replaydata/ の建て付けと食い違っていた。
+    //   リプレイの建て付けと食い違っていた。
     //   判定に使う yaw_acc95 は SD ログにもダウンリンクにも入っているので
     //   （eskf_display_yaw_acc() が 3 系統とも面倒を見る）、どの経路でも
     //   **当時と同じ条件を復元できる**。記録・送信そのものは止めない（後から解析したいため）。
@@ -2037,8 +2042,30 @@ void draw_eskf_debug() {
 extern int imu_cursor;   // GPS_TFT_map.ino で定義。ページ1のカーソル位置
 
 
-// タイトル右端の状態ドットが緑になる条件を 1 か所にまとめる。
-// 各メニュー行の丸もここを参照するので、条件と表示が食い違わない。
+// 状態マーク（設定画面の各行・各画面の右上・設定画面のフッター）。形は色から決める:
+//   緑 = 丸（OK）/ 青 = 丸（充電中。電池のマークだけが使う）/ 赤 = ×（NG）/
+//   グレー = ハイフン（対象外・OFF）/ それ以外（オレンジ・マゼンタなど）= 三角（途中・注意）
+// ★ 色だけでは見分けにくいので形でも分ける。細い枠線だけの形は小さいと見えないので、塗りか太線で描くこと。
+// ★ 判定は今までどおり「色を返す関数」（imu_status_color()・iconColor() など）の 1 か所。ここで条件を足さない。
+// r は丸の半径。×・三角・ハイフンも同じくらいの大きさに見えるように合わせてある。
+void draw_status_mark(TFT_eSprite &spr, int cx, int cy, int r, uint16_t col) {
+  if (col == COLOR_RED) {
+    const float a = r - 0.5f;                        // 中心から × の端まで
+    const float w = (r >= 5) ? 0.6f * r : 2.5f;      // 線の太さ（r=4 で 2.5px、5 で 3px、6 で 3.6px）
+    spr.drawWideLine(cx - a, cy - a, cx + a, cy + a, w, col);
+    spr.drawWideLine(cx + a, cy - a, cx - a, cy + a, w, col);
+  } else if (col == COLOR_GREEN || col == COLOR_BLUE) {
+    spr.fillCircle(cx, cy, r, col);
+  } else if (col == COLOR_GRAY) {
+    spr.fillRect(cx - r, cy - 1, 2 * r + 1, 3, col);  // 太さ 3px のハイフン
+  } else {
+    // 頂点を上にした塗りの三角。丸より細く見えるので、外接の箱を 1px ずつ広げてある。
+    spr.fillTriangle(cx, cy - r - 1, cx - r - 1, cy + r, cx + r + 1, cy + r, col);
+  }
+}
+
+// タイトル右端の状態マークが緑（丸）になる条件を 1 か所にまとめる。
+// 各メニュー行のマークもここを参照するので、条件と表示が食い違わない。
 //   緑になるのは次の 4 つを全て満たすとき（どれもページ1で見える）:
 //     1. ESKF が収束している（READY）        … ページ1の ESKF 行 / ページ2の READY 行
 //     2. Roll/Pitch/Yaw func が ON          … ページ1
@@ -2052,9 +2079,9 @@ static bool imu_ok_rpy()   { return attitude_get_rpy_enabled(); }
 static bool imu_ok_trim()  { return attitude_get_roll_trim_enabled(); }
 static bool imu_ok_rtrim() { return fabsf(attitude_get_roll_trim_deg()) < ROLL_TRIM_WARN_DEG; }
 
-// メニュー行の右端に状態の丸を描く（行の縦中央）。x は全行で揃える。
+// メニュー行の右端に状態マークを描く（行の縦中央）。x は全行で揃える。
 static void draw_imu_row_dot(int y, uint16_t col) {
-  backscreen.fillCircle(232, y + 7, 4, col);
+  draw_status_mark(backscreen, 232, y + 7, 4, col);
 }
 static uint16_t imu_row_col(bool ok) { return ok ? COLOR_GREEN : COLOR_ORANGE; }
 
@@ -2072,7 +2099,7 @@ uint16_t imu_status_color() {
 }
 
 static void draw_imu_status_dot() {
-  header_footer.fillCircle(228, 18, 6, imu_status_color());
+  draw_status_mark(header_footer, 228, 18, 6, imu_status_color());
 }
 
 static void draw_imu_page1() {
@@ -2158,17 +2185,18 @@ static void draw_imu_page1() {
                       (unsigned)(cd / 100 % 100), (unsigned)(cd % 100)); y += lh;
     backscreen.setCursor(2, y);
     backscreen.print("  APPLY again if remounted"); y += lh + 6;
-  } else {
-    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
-    backscreen.print("Note: Make sure actual aircraft"); y += lh;
-    backscreen.setCursor(2, y);
-    backscreen.print("  attitude matches SET attitude"); y += lh + 6;
   }
+  // ★ 2026-11-07 まで、どちらにも当たらないときは青の注意書き
+  //   「Note: Make sure actual aircraft attitude matches SET attitude」を 2 行出していた。
+  //   入口の案内（画像 3 枚）が同じことを言うようになったので削り、空いた行に
+  //   「Header: Pavg / TAS」を足した（docs/pons_tas.md §4.1）。
+  const bool warn_shown = (y > 50);   // 上の赤・橙の 2 行を出したか（出していなければ y はまだ 44）
 
   // ---- 操作メニュー ----
-  // 項目数 8（自動ロールトリム・風推定を 3/3 から移した）。行間 17 で最終行（stored offset）が
-  // y≈226 に収まる（backscreen は 240px）。項目を足すときは行間を詰めるか、上の注意書きを削る。
-  const int mh = 17;
+  // 項目数 9。行間 17 で、警告の 2 行が無いときの最終行（stored offset）は y≈201。
+  // 警告の 2 行を出しているときは行間を 16 に詰めて、最終行を y≈222 に収める（backscreen は 240px）。
+  // 項目を足すときはこの計算もやり直すこと。
+  const int mh = warn_shown ? 16 : 17;
   bool on_ground = eskf_calib_allowed();
   for (int i = 0; i < IMU_MENU_COUNT; i++) {
     bool sel = (imu_cursor == i);
@@ -2195,7 +2223,7 @@ static void draw_imu_page1() {
         else if (!on_ground) backscreen.print((getReplayMode() || is_demo_active())
                                               ? "APPLY  (hold still)" : "APPLY  (moving)");
         else                 backscreen.print("APPLY above=calibrate now");
-        // 較正が必要なときは赤丸。画面右上の赤丸だけでは「何をすれば消えるのか」が
+        // 較正が必要なときは赤の ×。画面右上の × だけでは「何をすれば消えるのか」が
         // 分からないので、対処すべき項目に同じ色の印を並べて対応付ける。
         if (attitude_needs_apply() && attitude_get_rpy_enabled())
           draw_imu_row_dot(y, COLOR_RED);
@@ -2216,6 +2244,10 @@ static void draw_imu_page1() {
       case IMU_MENU_WIND:
         backscreen.printf("Wind estimate: %s",
                           attitude_get_wind_enabled() ? "ON " : "OFF");
+        break;
+      case IMU_MENU_HEADER:
+        // ヘッダー右の大きい枠。TAS にすると案内（2 画面）を通る（GPS_TFT_map.ino の tas_guide_start）
+        backscreen.printf("Header: %s", tas_setting_get() ? "TAS (estimate)" : "Pavg");
         break;
       case IMU_MENU_NEXTPAGE:
         // ★ 丸は出さない。右上の丸が緑になる条件は全部このページの行に丸として出ているので、
@@ -2306,7 +2338,7 @@ static void draw_imu_page2() {
   backscreen.setCursor(2, y);
   backscreen.printf("%s   GNSS upd:%lu", ready ? "READY" : "INIT...",
                     (unsigned long)attitude_get_gnss_updates());
-  backscreen.fillCircle(232, y + 6, 4, imu_row_col(imu_ok_ready()));
+  draw_status_mark(backscreen, 232, y + 6, 4, imu_row_col(imu_ok_ready()));
   y += lh;
 
   float bg[3], ba[3];
@@ -2381,8 +2413,9 @@ void draw_wireless(int cursor) {
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);
   header_footer.print("WIRELESS LINK");
-  // 大会の推奨設定＝パイロット機が送信モード。右上の丸で一目で分かるようにする。
-  header_footer.fillCircle(SCREEN_WIDTH - 7, 9, 5,
+  // 大会の推奨設定＝パイロット機が送信モード。右上のマークで一目で分かるようにする。
+  // 位置は IMU・REPLAY の画面の右上と同じ（このヘッダは y=-10 に置くので、y=9 だと上半分が画面の外だった）。
+  draw_status_mark(header_footer, 228, 18, 6,
       (link_get_mode() == LINK_MODE_TX) ? COLOR_GREEN : COLOR_ORANGE);
   header_footer.pushSprite(0, -10);
 
@@ -2439,7 +2472,7 @@ void draw_wireless(int cursor) {
   //   電波の設定ではなくペイロードの中身。モジュールへの書き込みは要らない。
   backscreen.setTextColor(cursor == 3 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sGroup   : %u", cursor == 3 ? ">" : " ", link_get_group());
+  backscreen.printf("%sGroup   : %c", cursor == 3 ? ">" : " ", link_group_letter(link_get_group()));
   y += lh;
   // ★ 常設の注意書き。変更してから警告するより、変更する前に見えているほうが効く。
   //   この 3 つが 1 台でもずれると症状は「無信号」で、現場では距離や故障と区別が付かない。
@@ -2519,9 +2552,9 @@ void draw_wireless(int cursor) {
     } else if (link_other_group_seen()) {
       // ★ 電波は届いていて、グループ ID だけが食い違っている。
       //   これを「無信号」と同じ表示にしてはいけない。原因に辿り着けなくなる。
-      //   （SD が飛んで group が 0 に戻ったときに、まさにこれが出る）
+      //   （SD が飛んで group が既定の A に戻ったときに、まさにこれが出る）
       backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
-      backscreen.printf(" Signal  : GROUP %u FOUND", link_other_group_id());
+      backscreen.printf(" Signal  : GROUP %c FOUND", link_group_letter(link_other_group_id()));
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     } else {
       backscreen.print(" Signal  : searching...");
@@ -2641,8 +2674,8 @@ void draw_wireless(int cursor) {
       backscreen.printf(" Preflt  : DUP SENDER %ddBm", link_preflight_pons_rssi());
     } else if (pf & LINK_PFF_PONS_OTHER) {
       backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-      backscreen.printf(" Preflt  : PONS grp%u %ddBm",
-                        link_preflight_other_group(), link_preflight_pons_rssi());
+      backscreen.printf(" Preflt  : PONS grp%c %ddBm",
+                        link_group_letter(link_preflight_other_group()), link_preflight_pons_rssi());
     } else if (pf & LINK_PFF_BURST) {
       backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
       backscreen.print(" Preflt  : BUSY (bursts)");
@@ -2840,13 +2873,13 @@ static void draw_link_icons() {
 
   // 設定の一致確認（CH - SF - Group）。
   // 電波アイコン・アンテナアイコンのすぐ下、風矢印の上の空き領域（x=3, y=69..76）に
-  // 一番小さいデフォルトフォント（GLCD 8px）で表示（例: 3-9-0）。
+  // 一番小さいデフォルトフォント（GLCD 8px）で表示（例: 3-9-B）。
   // 役割アイコンのピクセル下端（y=66..67）および風矢印上端（y=78）と重ならない安全位置。
   char cfg_str[16];
-  snprintf(cfg_str, sizeof(cfg_str), "%u-%u-%u",
+  snprintf(cfg_str, sizeof(cfg_str), "%u-%u-%c",
            link_get_radio_ch(),
            e220_profile_to_sf(link_get_radio_profile()),
-           link_get_group());
+           link_group_letter(link_get_group()));
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
@@ -2943,7 +2976,7 @@ static void draw_link_preflight_box() {
     l1 = "ANOTHER SENDER";   l2 = "ON THIS CHANNEL !!";
   } else if (f & LINK_PFF_PONS_OTHER) {
     l1 = "OTHER PONS FOUND";
-    snprintf(buf, sizeof(buf), "group %u  - change CH", link_preflight_other_group());
+    snprintf(buf, sizeof(buf), "group %c  - change CH", link_group_letter(link_preflight_other_group()));
     l2 = buf;
   } else if (f & LINK_PFF_BURST) {
     l1 = "CHANNEL BUSY.";    l2 = "SOMETHING IS SENDING.";
@@ -3223,15 +3256,54 @@ static int truetrack_display_deg() {
   return ((int)lroundf(get_gnss_truetrack()) % 360 + 360) % 360;
 }
 
+// 推定 TAS を出しているときのラベルの行（地図の上端・右）。青い小箱「TAS」と、その左に小さい平均ピッチ。
+// ★ 平均ピッチは大きい枠の TAS の元の値なので、枠の真下に並べて 1 対 1 で対応させる
+//   （docs/pons_tas.md §4.3。地図左下の P 行は瞬時値のまま）。地上チェックでピッチがずれて
+//   鳴っている間は赤（平均ピッチを大きい枠に出しているときに数字を赤にするのと同じ条件）。
+// ★ 置けるのはこの行だけ。すぐ下（右端の y = 15〜50）は右旋回の角速度表示が使う。
+//   中央の「TT 123」にぶつかるなら、先頭の「P」を落として詰める（left_limit = TT の右端）。
+static void draw_tas_label_row(TasHdr h, int left_limit) {
+  const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
+  const int fh = backscreen.fontHeight();
+  const int bw = backscreen.textWidth("TAS") + 6;
+  const int bx = SCREEN_WIDTH - bw;
+  backscreen.fillRect(bx, 0, bw, fh + 1, box);
+  backscreen.setTextColor(COLOR_WHITE, box);
+  backscreen.drawString("TAS", bx + 3, 1);
+  float a;
+  if (tas_header_pitch_avg(a)) {
+    char buf[12];
+    if (fabsf(a) < 9.95f) snprintf(buf, sizeof(buf), "P%+.1f", a);
+    else                  snprintf(buf, sizeof(buf), "P%+.0f", a);
+    int w  = backscreen.textWidth(buf);
+    int px = bx - 3 - w;
+    if (px < left_limit + 3) {
+      memmove(buf, buf + 1, strlen(buf));   // 「P」を落とす
+      w  = backscreen.textWidth(buf);
+      px = bx - 3 - w;
+    }
+    const uint16_t col = attitude_implausible(a) ? COLOR_GRAY
+                       : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
+    backscreen.setTextColor(col, TFT_WHITE);
+    backscreen.drawString(buf, px, 1);
+  }
+  backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
+}
+
 void draw_gs_track(){
   backscreen.setTextWrap(false);
   // ヘッダー右の大きい枠が何を出しているかに合わせてラベルを変える。
   // 同じ位置に別の量が出るので、ラベル無しでは機体間で取り違える危険がある。
-  const bool hdr_pitch = header_shows_pitch();
+  // 推定 TAS のときのラベル（青い小箱）は、中央の TT の幅が分かってから下で描く。
+  const TasHdr hdr = tas_header();
+  const bool hdr_pitch = (hdr != HDR_TT);
+  const bool hdr_tas   = tas_hdr_is_tas(hdr);
   const char* hdr_label = hdr_pitch ? "Pavg" : "TT";
   const int   hdr_lx    = SCREEN_WIDTH - (hdr_pitch ? 52 : 40);
   // コース警報の点滅はトラック表示のときだけ（ピッチ表示中は無関係なので点滅させない）
-  if(trackwarning_until > millis() && !hdr_pitch){
+  if (hdr_tas) {
+    // draw_tas_label_row（下）
+  } else if(trackwarning_until > millis() && !hdr_pitch){
     backscreen.setTextColor(blink_1s()?COLOR_RED:COLOR_BLACK, TFT_WHITE);
     backscreen.drawString(hdr_label, hdr_lx, 1);
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -3247,6 +3319,7 @@ void draw_gs_track(){
   // NORTHUP でも出す（地図が回らないぶん数値の方位が要るため）。
   // 数値は NM_FONT_MEDIUM。ただし Arial_Black22 は数字と +-. しか持たないので、
   // ラベル "TT" は AA_FONT_SMALL のまま描いて数字だけ大きくする。
+  int tt_right = SCREEN_WIDTH / 2;   // 中央の「TT 123」の右端（推定 TAS のラベルがぶつからないように）
   if (hdr_pitch) {
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
     const int lw = backscreen.textWidth("TT");
@@ -3257,6 +3330,7 @@ void draw_gs_track(){
     const int nw = backscreen.textWidth(buf);
     const int nh = backscreen.fontHeight();
     const int x0 = (SCREEN_WIDTH - (lw + 4 + nw)) / 2;   // ラベル＋数値で中央寄せ
+    tt_right = x0 + lw + 4 + nw;
     backscreen.setCursor(x0 + lw + 4, 1);
     backscreen.print(buf);
     backscreen.loadFont(AA_FONT_SMALL);
@@ -3274,6 +3348,8 @@ void draw_gs_track(){
         backscreen.drawFastHLine(x0, 1 + nh / 2 - 2 + i, lw + 4 + nw, COLOR_RED);
     }
   }
+  if (hdr_tas) draw_tas_label_row(hdr, tt_right);
+
 
   // sAcc（速度精度）は GS のすぐ右。下に置くと旋回角速度(deg/s)の表示と重なるため。
   // 常時見るものではないので内蔵フォントの最小サイズ(8px)で控えめに出す。
@@ -3427,21 +3503,18 @@ void draw_degpersec(double degpersecond){
 }
 
 
-// ヘッダー右の大きい枠に平均ピッチを出すか（出さないときは従来どおり真方位）。
-// IMU 非搭載機・機能 OFF・平均がまだ溜まっていない間は真方位のまま。
+// ヘッダー右の大きい枠が真方位以外（平均ピッチか推定 TAS）を出しているか。
+// 出しているときは真方位が地図の中央上部へ移る。何を出すかは tas.cpp が決める
+// （設定・地上と飛行中・供給元。ここに条件を書き写さないこと）。
 static bool header_shows_pitch() {
-  // リプレイでは imu_replaydata に記録された平均ピッチを再現する
-  // （実機の平均ではなく当時の画面を出す。地図側の表示を廃止したのでここが唯一の出口）。
-  if (link_mirror_active()) { float a; return link_get_pitch_avg(a); }
-  if (getReplayMode()) { float a; return get_replay_pitch_avg(a); }
-  return get_imu_ok() && attitude_get_rpy_enabled() && attitude_pitch_avg_valid();
+  return tas_header() != HDR_TT;
 }
 
-// ヘッダーに出す平均ピッチの値。リプレイでは記録値。
+// ヘッダーに出す平均ピッチの値（ミラー中は送信機、リプレイでは記録値。tas.cpp が解決する）。
 static float header_pitch_value() {
-  if (link_mirror_active()) { float a = 0.0f; link_get_pitch_avg(a); return a; }
-  if (getReplayMode()) { float a = 0.0f; get_replay_pitch_avg(a); return a; }
-  return attitude_get_pitch_avg_deg();
+  float a = 0.0f;
+  tas_header_pitch_avg(a);
+  return a;
 }
 
 // ヘッダー右に平均ピッチを描く。
@@ -3477,6 +3550,85 @@ static void draw_header_pitch(int x, float deg, uint16_t col) {
     header_footer.printf("%d", f > 9 ? 9 : f);
   } else {
     header_footer.printf("%02d", (int)(a + 0.5f));
+  }
+}
+
+// ヘッダー右の大きい枠に推定 TAS を描く（C 案。docs/pons_tas.md §4.3）。
+// ★ 青は字の色ではなく**塗り**に使う。日なたで色が薄れても明暗の塊として残り、左の対地速度（白地に黒字）と
+//   形で見分けられる（色の見え方の個人差にも効く）。枠の左 25px（平均ピッチなら符号の場所）に白の縦書き
+//   「T A S」を置き、左の「m p s」と対にする。TAS には符号が付かないので、平均ピッチとも見分けられる。
+//   地上（HDR_TAS_GROUND）は数字を出したまま横線で消す（下の「地上の横線」）。上下限に張り付いたら
+//   （HDR_TAS_CLAMP）箱を灰色にする（推定ではなく端の値。灰色はいまも「ありえない値」の色）。
+//   幅は平均ピッチと同じ組み方: ラベル 25 + 数字 37 + 点 10 + 数字 37 = 109px。10m/s 以上は小数を落とす。
+static void draw_header_tas(int x, TasHdr h, float mps) {
+  const int LABEL_W = 25, DIGIT_W = 37, DOT_W = 10;
+  const int ytop = 3;
+  const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
+  header_footer.fillRect(x + 1, 0, SCREEN_WIDTH - x - 1, HEADERFOOTER_HEIGHT - 1, box);
+
+  // 縦書きの「T A S」。字の高さの中央を数字の高さの中央（ytop + 21）に合わせる。
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextColor(COLOR_WHITE, box);
+  {
+    static const char* const kLbl[3] = {"T", "A", "S"};
+    const int uh = header_footer.fontHeight() - 2;
+    const int y0 = ytop + 21 - (uh * 3) / 2;
+    for (int i = 0; i < 3; i++) {
+      const int w = header_footer.textWidth(kLbl[i]);
+      header_footer.setCursor(x + 1 + (LABEL_W - w) / 2, y0 + uh * i);
+      header_footer.print(kLbl[i]);
+    }
+  }
+  header_footer.loadFont(NM_FONT_LARGE);
+  header_footer.setTextColor(COLOR_WHITE, box, true);
+  x += LABEL_W;
+
+  long tenths = lroundf(mps * 10.0f);
+  if (tenths < 0) tenths = 0;
+  header_footer.setCursor(x, ytop);
+  if (tenths < 100) {
+    header_footer.printf("%ld", tenths / 10);
+    header_footer.fillRect(x + DIGIT_W + 2, ytop + 36, 6, 6, COLOR_WHITE);   // 小数点
+    header_footer.setCursor(x + DIGIT_W + DOT_W, ytop);
+    header_footer.printf("%ld", tenths % 10);
+  } else {
+    long whole = lroundf(mps);
+    if (whole > 99) whole = 99;
+    header_footer.printf("%02ld", whole);
+  }
+
+  // ---- 地上の横線（2026-11-07 に「-.-」から変えた）----
+  // 地上の推定 TAS は対気速度ではない（台の上で止まっていても平均ピッチから 7.3 のように出る）。
+  // ★ 数字は消さずに残す。地上でも本体を傾ければ動くので、推定が働いていることを確かめられる。
+  // ★ **白い線の上下に箱の色を 2px ずつ残す**（白 4px・縁 2px）。白だけだと白い数字の上で線が溶け、
+  //   黒だけだと青地の上で見えにくい。縁があると数字の上でも青地の上でも線として読める。
+  //   赤・橙にしないのは、この箱で赤は「較正のやり直しが必要」、橙は「GNSS 速度が止まっている」の取り消し線で、
+  //   地上はどちらでもない（いつもの状態）から。高さはその赤線（y = 22〜25）と同じで、両方成り立つときは
+  //   後から引く赤が勝つ（header_strike_if_invalid）。
+  //   縦書きの「T A S」にはかからないよう、ラベルの右から引く。
+  if (h == HDR_TAS_GROUND) {
+    const int lw = SCREEN_WIDTH - x - 1;
+    header_footer.fillRect(x, 20, lw, 8, box);
+    header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
+  }
+}
+
+// 大きい枠の数字（平均ピッチ・推定 TAS）を「読むな」と消す線。推定 TAS も平均ピッチの換算なので同じ条件。
+// ★ 較正のやり直しが必要な間は、この数字そのものが信用できない。数字の上に赤いバーを被せる。
+//   位置と太さは下の「GNSS 0 個で速度・方位が無効」の赤線と同じ流儀にしてある
+//   （同じ意味＝この値は無効、を同じ見た目で表す）。
+//   条件は地図上の赤字警告と同じ eskf_display_needs_apply() に揃えてある
+//   （リプレイ中は出さない / ミラー中は送信機の状態。この数字自身が
+//     ミラー中は送信機の値なので、取り消し線も送信機の状態で引く）。
+static void header_strike_if_invalid(int mtvx) {
+  if (eskf_display_needs_apply()) {
+    for (int i = 0; i < 4; i++)
+      header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
+  } else if (eskf_display_gnss_stale()) {
+    // ★ GNSS 速度が止まっている間は平均ピッチも不正確（元のピッチが不正確なので）。
+    //   **較正要の赤 4px より細い橙 2px** にして段を分ける。赤＝値が無効、
+    //   橙＝精度が落ちている。両方成立するときは赤が勝つ（else if）。
+    strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_ORANGE);
   }
 }
 
@@ -3519,7 +3671,13 @@ void draw_header() {
     }
     header_footer.loadFont(NM_FONT_LARGE);   // 方位の3桁表示へ戻す
   }
-  if (header_shows_pitch()) {
+  const TasHdr hdr = tas_header();
+  if (tas_hdr_is_tas(hdr)) {
+    // ---- 推定 TAS（青い箱。地上は数字に横線）----
+    // 平均ピッチはラベルの行（地図の上端）に小さく残す（draw_gs_track）。
+    draw_header_tas(mtvx, hdr, tas_header_value());
+    header_strike_if_invalid(mtvx);
+  } else if (hdr == HDR_PAVG) {
     // ---- 平均ピッチ ----
     // パイロットは対地進路を地図から読めるが、平均ピッチは他に得る手段が無い。
     // 一番目立つ枠はこちらに使う（パイロットからのフィードバックによる）。
@@ -3531,22 +3689,7 @@ void draw_header() {
                         : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
     header_footer.setTextColor(pcol, TFT_WHITE);
     draw_header_pitch(mtvx, pv, pcol);
-    // ★ 較正のやり直しが必要な間は、この数字そのものが信用できない。
-    //   数字の上に赤いバーを被せて「読むな」と示す。
-    //   位置と太さは下の「GNSS 0 個で速度・方位が無効」の赤線と同じ流儀にしてある
-    //   （同じ意味＝この値は無効、を同じ見た目で表す）。
-    //   条件は地図上の赤字警告と同じ eskf_display_needs_apply() に揃えてある
-    //   （リプレイ中は出さない / ミラー中は送信機の状態。この数字自身が
-    //     ミラー中は送信機の平均ピッチなので、取り消し線も送信機の状態で引く）。
-    if (eskf_display_needs_apply()) {
-      for (int i = 0; i < 4; i++)
-        header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
-    } else if (eskf_display_gnss_stale()) {
-      // ★ GNSS 速度が止まっている間は平均ピッチも不正確（元のピッチが不正確なので）。
-      //   **較正要の赤 4px より細い橙 2px** にして段を分ける。赤＝値が無効、
-      //   橙＝精度が落ちている。両方成立するときは赤が勝つ（else if）。
-      strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_ORANGE);
-    }
+    header_strike_if_invalid(mtvx);
   } else {
     // ---- 真方位 ----
     header_footer.setCursor(mtvx, 3);
@@ -4322,8 +4465,8 @@ void draw_replayselect(int page, int cursor) {
     header_footer.printf("REPLAY/DEMO %d/%d", page + 1, pagecount);
   else
     header_footer.print("REPLAY/DEMO");
-  // 状態ドット。設定メニューの REPLAY/DEMO 行と同じ意味（緑＝通常 GNSS、赤＝再生中かデモ中）。
-  header_footer.fillCircle(228, 18, 6, (getReplayMode() || demo) ? COLOR_RED : COLOR_GREEN);
+  // 状態マーク。設定メニューの REPLAY/DEMO 行と同じ意味（緑の丸＝通常 GNSS、赤の ×＝再生中かデモ中）。
+  draw_status_mark(header_footer, 228, 18, 6, (getReplayMode() || demo) ? COLOR_RED : COLOR_GREEN);
   header_footer.pushSprite(0, -10);
 
   // --- リスト本体 ---
@@ -4679,12 +4822,10 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
       const int c  = menu_settings[i].iconColor();
       const int iy = i * separation + 7;
       // ★ MENU_ICON_HYPHEN は「この機体では評価できない」。丸を出さずハイフンにする
-      //   （理由は src/button.h の定義のところ）。グレーは get_imu_ok()==false の
-      //   行が使っているのと同じ「対象外」の色。
-      if (c == MENU_ICON_HYPHEN)
-        backscreen.drawFastHLine(SCREEN_WIDTH - 12, iy, 10, COLOR_GRAY);
-      else
-        backscreen.fillCircle(SCREEN_WIDTH - 7, iy, 5, (uint16_t)c);
+      //   （理由は src/button.h の定義のところ）。グレー（get_imu_ok()==false の行や
+      //   無線 OFF の「対象外」）と同じ、太いグレーのハイフンで描く。
+      draw_status_mark(backscreen, SCREEN_WIDTH - 7, iy, 5,
+                       (c == MENU_ICON_HYPHEN) ? COLOR_GRAY : (uint16_t)c);
     }
 
     backscreen.print(label.c_str());
@@ -4739,8 +4880,8 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
                                    BAT_FULL_RUNTIME_MIN);
     header_footer.printf("Battery Time:Approx. %dh %dm (%.2fV)",battery_minutes/60,((int)(battery_minutes%60)/10)*10, input_voltage);
   }
-  // 電池残量の丸アイコン（メニュー項目と同じ x 位置・大きさで右寄せ）
-  header_footer.fillCircle(SCREEN_WIDTH-7, 9, 5, battery_status_color());
+  // 電池の状態マーク（メニュー項目と同じ x 位置・大きさで右寄せ）
+  draw_status_mark(header_footer, SCREEN_WIDTH-7, 9, 5, battery_status_color());
 
   header_footer.setCursor(2, 18);
   {
@@ -4754,8 +4895,8 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
       header_footer.setTextColor(sensor_temp >= CHARGE_HOT_C ? COLOR_RED : COLOR_GRAY);
       header_footer.printf("  Sensor %.1fC", sensor_temp);
     }
-    // CPU 温度の丸アイコン（電池の丸の真下）
-    header_footer.fillCircle(SCREEN_WIDTH-7, 22, 5, cpu_temp_status_color(cpu_temp));
+    // CPU 温度の状態マーク（電池のマークの真下）
+    draw_status_mark(header_footer, SCREEN_WIDTH-7, 22, 5, cpu_temp_status_color(cpu_temp));
   }
 
   #ifndef RELEASE
@@ -4785,7 +4926,7 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     const BacklightSaver sv = backlight_get_saver();
     header_footer.printf("  BL %d%% %s%s", backlight_get_duty_pct(), backlight_mode_label(),
                          (sv == BL_SAVER_CRIT) ? " SAVER2" : (sv == BL_SAVER_LOW) ? " SAVER" : "");
-    header_footer.fillCircle(SCREEN_WIDTH-7, 34, 5, als ? COLOR_GREEN : COLOR_RED);
+    draw_status_mark(header_footer, SCREEN_WIDTH-7, 34, 5, als ? COLOR_GREEN : COLOR_RED);
   }
 
   header_footer.loadFont(AA_FONT_SMALL);

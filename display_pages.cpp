@@ -1,11 +1,12 @@
 // ============================================================
 // File    : display_pages.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-// Role    : 地上で見る詳細画面の描画（VARIO 1-2 / GNSS DETAIL 1-3 / CH SCAN）。
+// Role    : 地上で見る詳細画面の描画（VARIO 1-2 / GNSS DETAIL 1-3 / CH SCAN /
+//           IMU/ESKF 画面の入口の案内画像）。
 //           display_tft.cpp から分けただけで、役割は同じ「描画だけ」。
 //           判断や発報は置かない（CLAUDE.md の約束）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/05
+// Updated : 2026/11/07
 // ============================================================
 //
 // ★ **スプライトとフォントは display_tft.cpp のものを借りている**
@@ -21,6 +22,7 @@
 #include "settings.h"
 #include "display_tft.h"
 #include "attitude.h"
+#include "tas.h"         // 推定 TAS の案内（曲線の画面）
 #include "link.h"
 #include "e220.h"
 #include "gnss.h"
@@ -33,7 +35,181 @@
 #include "imu.h"
 #include "imu_sensor.h"
 #include "src/vectormap.h"
+#include "src/flashdata/imu_guide_data.h"
+#include "src/flashdata/tas_guide_data.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
+
+
+// 全画面の案内画像を 1 枚出す（IMU の案内と推定 TAS の案内で共用）。
+// 画像は FLASH にある（メモリマップされているので pushImage にそのまま渡せる）。
+// スプライトは通さない（240x320 は backscreen より大きく、RAM に写す理由も無い）。
+// ★ 一度に送らず 40 行ずつに分け、合間に IMU を引き取る（CLAUDE.md「IMU の読み出しを
+//   飢えさせない」）。1 枚 150KB を FLASH から読んで送るので、まとめて送ると
+//   SCH16T の 4ms の読み出し間隔をまたぐ。
+static void push_guide_image(const uint16_t *img, int w, int h) {
+  const int STRIP = 40;
+  // 生成物は素の RGB565 値。pushImage() は既定で色バイトを入れ替えて送るので、
+  // ここだけ true にして戻す（起動画面のロゴと同じ。display_tft.cpp）。
+  tft.setSwapBytes(true);
+  for (int y = 0; y < h; y += STRIP) {
+    const int rows = (h - y < STRIP) ? h - y : STRIP;
+    tft.pushImage(0, y, w, rows, img + y * w);
+    imu_service_if_due();
+  }
+  tft.setSwapBytes(false);
+}
+
+// IMU / ESKF 画面の入口の案内（GPS_TFT_map.ino の imu_guide_*）。全画面の画像を 1 枚出すだけ。
+void draw_imu_guide(int page) {
+  if (page < 0 || page >= IMU_GUIDE_PAGES) return;
+  push_guide_image(IMU_GUIDE_DATA[page], IMU_GUIDE_W, IMU_GUIDE_H);
+}
+
+// 推定 TAS の案内 2/2: 対気速度モデル V(θ) = V0·√(K/(K+θ)) の曲線と、いまの点（docs/pons_tas.md §4.4）。
+// 横軸は平均ピッチ、縦軸は m/s。上下限（airspeed_min / max）で張り付く所は灰色。
+// 白抜きの丸がいまのピッチ（傾けるとすぐ動く）、青い丸が過去 10 秒の平均（大きい枠に出る値）。
+// ★ いまの係数（settings.txt の airspeed_*）で描くので、係数を確かめる画面にもなる。
+// ★ 自機の値だけを描く。地上で設定するときの画面なので、ミラー中でも受信機自身の IMU。
+//   日本語は描けない（本体に日本語フォントが無い）ので英字のラベルだけ。説明は 1/2 の画像と音声。
+static void draw_tas_curve() {
+  // ---- 見出し（IMU/ESKF 画面と同じ形）----
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("TAS estimate   2/2");
+  header_footer.pushSprite(0, -10);
+
+  // ---- 曲線 ----
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  const float XMIN = -6.0f, XMAX = 10.0f;            // 平均ピッチ [度]
+  const float vlo = attitude_get_airspeed_min(), vhi = attitude_get_airspeed_max();
+  float ymin = floorf(fminf(vlo, vhi)) - 1.0f;
+  float ymax = ceilf(fmaxf(vlo, vhi)) + 1.0f;
+  if (ymax - ymin < 2.0f) ymax = ymin + 2.0f;
+  const int X0 = 30, X1 = 232, Y0 = 16, Y1 = 172;    // 描く範囲（backscreen 内）
+  auto px = [&](float th) { return X0 + (int)lroundf((th - XMIN) / (XMAX - XMIN) * (X1 - X0)); };
+  auto py = [&](float v)  { return Y1 - (int)lroundf((v - ymin) / (ymax - ymin) * (Y1 - Y0)); };
+  auto clampth = [&](float th) { return th < XMIN ? XMIN : (th > XMAX ? XMAX : th); };
+
+  // 目盛り（2 度ごと・1 m/s ごと）
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  for (int th = (int)XMIN; th <= (int)XMAX; th += 2) {
+    const int x = px((float)th);
+    backscreen.drawFastVLine(x, Y0, Y1 - Y0, th == 0 ? COLOR_GRAY : TFT_LIGHTGREY);
+    char b[6];
+    snprintf(b, sizeof(b), th == 0 ? "0" : "%+d", th);
+    backscreen.setCursor(x - (int)strlen(b) * 3, Y1 + 4);
+    backscreen.print(b);
+  }
+  for (int v = (int)ceilf(ymin); v <= (int)floorf(ymax); v++) {
+    const int y = py((float)v);
+    backscreen.drawFastHLine(X0, y, X1 - X0, TFT_LIGHTGREY);
+    backscreen.setCursor(X0 - 16, y - 3);
+    backscreen.printf("%2d", v);
+  }
+  backscreen.setCursor(2, 2);
+  backscreen.print("m/s");
+  backscreen.setCursor((X0 + X1) / 2 - 30, Y1 + 14);
+  backscreen.print("Pavg [deg]");
+
+  // 上下限（点線）
+  const float lims[2] = {vlo, vhi};
+  const char* const limname[2] = {"min", "max"};
+  for (int k = 0; k < 2; k++) {
+    const int y = py(lims[k]);
+    for (int x = X0; x < X1; x += 6) backscreen.drawFastHLine(x, y, 3, COLOR_GRAY);
+    char b[12];
+    snprintf(b, sizeof(b), "%s %.1f", limname[k], lims[k]);
+    backscreen.setCursor(k == 0 ? X0 + 4 : X1 - (int)strlen(b) * 6 - 2, y + (k == 0 ? 3 : -10));
+    backscreen.print(b);
+  }
+
+  // 曲線。張り付いている所は灰色（推定ではなく端の値）
+  int prev_x = -1, prev_y = 0;
+  for (int x = X0; x <= X1; x++) {
+    const float th = XMIN + (float)(x - X0) * (XMAX - XMIN) / (float)(X1 - X0);
+    bool c = false;
+    const int y = py(attitude_airspeed_from_pitch(th, &c));
+    if (prev_x >= 0) {
+      const uint16_t col = c ? COLOR_GRAY : COLOR_BLUE;
+      backscreen.drawLine(prev_x, prev_y,     x, y,     col);
+      backscreen.drawLine(prev_x, prev_y + 1, x, y + 1, col);
+    }
+    prev_x = x; prev_y = y;
+  }
+
+  // いまのピッチ（白抜き）と過去 10 秒の平均（青い丸）
+  if (attitude_ready()) {
+    float r, p, yw;
+    attitude_get_euler(r, p, yw);
+    const float th = clampth(p);
+    const int cx = px(th), cy = py(attitude_airspeed_from_pitch(th));
+    backscreen.drawCircle(cx, cy, 5, COLOR_BLACK);
+    backscreen.drawCircle(cx, cy, 4, COLOR_BLACK);
+  }
+  float tas = 0.0f; bool tas_c = false;
+  const bool avg_ok = attitude_get_tas(tas, tas_c);
+  const float pavg = attitude_get_pitch_avg_deg();
+  if (avg_ok) {
+    const int cx = px(clampth(pavg)), cy = py(tas);
+    for (int y = cy; y < Y1; y += 4) backscreen.drawPixel(cx, y, COLOR_BLUE);   // 横軸へ
+    for (int x = X0; x < cx; x += 4) backscreen.drawPixel(x, cy, COLOR_BLUE);   // 縦軸へ
+    backscreen.fillCircle(cx, cy, 6, tas_c ? COLOR_GRAY : COLOR_BLUE);
+  }
+  // 凡例（右上）
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.drawCircle(150, 6, 4, COLOR_BLACK);
+  backscreen.setCursor(158, 3);  backscreen.print("now");
+  backscreen.fillCircle(186, 6, 4, COLOR_BLUE);
+  backscreen.setCursor(194, 3);  backscreen.print("10s avg");
+
+  // いまの値（大きい枠に出る値）
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  const int ly = 206;
+  backscreen.setCursor(4, ly);    backscreen.print("Pavg");
+  backscreen.setCursor(124, ly);  backscreen.print("TAS");
+  backscreen.setCursor(212, ly);  backscreen.print("m/s");
+  backscreen.loadFont(NM_FONT_MEDIUM);   // Arial_Black22: 数字と +-. だけ
+  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  char b[10];
+  if (avg_ok) snprintf(b, sizeof(b), "%+.1f", pavg); else snprintf(b, sizeof(b), "--");
+  backscreen.setCursor(44, ly - 4);  backscreen.print(b);
+  if (avg_ok) snprintf(b, sizeof(b), "%.1f", tas);  else snprintf(b, sizeof(b), "--");
+  backscreen.setTextColor(tas_c ? COLOR_GRAY : COLOR_BLUE, COLOR_WHITE);
+  backscreen.setCursor(158, ly - 4); backscreen.print(b);
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+
+  // ---- いまの係数と、抜け方 ----
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  header_footer.setCursor(4, 4);
+  header_footer.printf("V0 %.2f  K %.1f  min %.2f  max %.2f",
+                       attitude_get_airspeed_v0(), attitude_get_airspeed_k(), vlo, vhi);
+  header_footer.setCursor(4, 24);
+  header_footer.print("SD settings.txt");
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  const char* back = "Press: back >";
+  header_footer.setCursor(SCREEN_WIDTH - 4 - header_footer.textWidth(back), 20);
+  header_footer.print(back);
+  header_footer.unloadFont();
+  header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
+}
+
+// 推定 TAS の案内（GPS_TFT_map.ino の tas_guide_*）。0 = 説明の画像、1 = 曲線の画面。
+void draw_tas_guide(int page) {
+  if (page >= 0 && page < TAS_GUIDE_PAGES) {
+    push_guide_image(TAS_GUIDE_DATA[page], TAS_GUIDE_W, TAS_GUIDE_H);
+  } else if (page == TAS_GUIDE_PAGES) {
+    draw_tas_curve();
+  }
+}
 
 
 // スカイプロット（円形の衛星配置図）の中心と、地平線（仰角 0°）の円の半径。

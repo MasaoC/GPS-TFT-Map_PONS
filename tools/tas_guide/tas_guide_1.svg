@@ -1,0 +1,52 @@
+<svg width="240" height="320" viewBox="0 0 240 320" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',sans-serif" font-weight="700">
+  <!-- 推定 TAS の案内 1/2: 大きい枠の青い箱の意味。2/2 は曲線の画面（ファームが描く）。docs/pons_tas.md §4.4 -->
+  <rect width="240" height="320" fill="#FFFFFF"/>
+
+  <!-- 見出し帯（IMU の案内と同じ形） -->
+  <rect x="0" y="0" width="240" height="36" fill="#0000FF"/>
+  <text x="8" y="25" font-size="18" fill="#FFFFFF">推定 TAS の見方</text>
+  <text x="232" y="25" font-size="18" fill="#FFFFFF" text-anchor="end">1/2</text>
+
+  <!-- ヘッダーの見本: 左が対地速度（白地に黒字）、右が推定 TAS（青地に白字・縦書きの TAS） -->
+  <rect x="8" y="44" width="224" height="46" fill="#FFFFFF" stroke="#7B797B" stroke-width="2"/>
+  <text x="14" y="82" font-family="'Arial Black','Arial',sans-serif" font-weight="900" font-size="34" fill="#000000">7.2</text>
+  <text x="106" y="62" font-size="10" fill="#7B797B">m</text>
+  <text x="107" y="73" font-size="10" fill="#7B797B">p</text>
+  <text x="107" y="84" font-size="10" fill="#7B797B">s</text>
+  <rect x="118" y="45" width="113" height="44" fill="#0000FF"/>
+  <text x="128" y="61" font-size="10" fill="#FFFFFF" text-anchor="middle">T</text>
+  <text x="128" y="72" font-size="10" fill="#FFFFFF" text-anchor="middle">A</text>
+  <text x="128" y="83" font-size="10" fill="#FFFFFF" text-anchor="middle">S</text>
+  <text x="140" y="82" font-family="'Arial Black','Arial',sans-serif" font-weight="900" font-size="34" fill="#FFFFFF">6.5</text>
+
+  <!-- 地図の上端の行の見本: 小さい平均ピッチと青い小箱 TAS -->
+  <rect x="8" y="92" width="224" height="18" fill="#E7E7E7"/>
+  <text x="192" y="106" font-size="13" fill="#000000" text-anchor="end">P+1.5</text>
+  <rect x="196" y="93" width="35" height="16" fill="#0000FF"/>
+  <text x="213" y="106" font-size="12" fill="#FFFFFF" text-anchor="middle">TAS</text>
+
+  <!-- 見本の読み方 -->
+  <text x="12" y="132" font-size="16" fill="#000000"><tspan fill="#0000FF">青い箱</tspan> ＝ 推定の対気速度</text>
+  <text x="12" y="154" font-size="15" fill="#000000">P ＝ 平均ピッチ（過去10秒）</text>
+  <rect x="8" y="163" width="224" height="2" fill="#7B797B"/>
+
+  <!-- 本文 -->
+  <text x="12" y="184" font-size="14" fill="#000000">・ピッチから計算した推定値</text>
+  <text x="12" y="204" font-size="14" fill="#000000">・機首を上げると遅く出る</text>
+  <text x="12" y="224" font-size="14" fill="#000000">・増減は信用できる</text>
+  <text x="12" y="244" font-size="14" fill="#000000">・値は取付1°で約0.4m/sずれる</text>
+  <!-- 地上は数字に横線（本体と同じく、白い線の上下に箱の青を残す）。離陸して 10 秒で線が取れる -->
+  <text x="12" y="264" font-size="14" fill="#000000">・地上は</text>
+  <!-- 線の太さは数字の高さとの比を本体（数字 約 41px に白 4px ＋ 縁 2px×2）に合わせる -->
+  <rect x="70" y="248" width="40" height="20" fill="#0000FF"/>
+  <text x="90" y="265" font-family="'Arial Black','Arial',sans-serif" font-weight="900" font-size="16" fill="#FFFFFF" text-anchor="middle">7.0</text>
+  <rect x="70" y="257" width="40" height="4" fill="#0000FF"/>
+  <rect x="70" y="258" width="40" height="2" fill="#FFFFFF"/>
+  <text x="112" y="264" font-size="14" fill="#000000">（離陸10秒まで）</text>
+  <text x="12" y="284" font-size="14" fill="#000000">・<tspan fill="#7B797B">灰色の箱</tspan>は上下限に張り付き</text>
+
+  <!-- 下端の案内（IMU の案内と同じ形） -->
+  <rect x="0" y="292" width="240" height="2" fill="#7B797B"/>
+  <text x="213" y="314" font-size="16" fill="#000000" text-anchor="end">スイッチを押すと次へ</text>
+  <polygon points="225,301 235,308 225,315" fill="#000000"/>
+</svg>

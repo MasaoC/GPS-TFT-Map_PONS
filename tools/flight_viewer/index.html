@@ -745,8 +745,9 @@
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
     </div>
     <div class="header-actions">
-      <input type="file" id="file-input" accept=".csv,.txt" multiple style="display: none;">
-      <button onclick="document.getElementById('file-input').click()" title="飛行CSVファイルや自機姿勢ログ(imu_replaydata/*.txt)を開きます">📁 ログファイルを開く</button>
+      <input type="file" id="file-input" accept=".csv" style="display: none;">
+      <button onclick="document.getElementById('file-input').click()" title="飛行CSVファイル(data/*.csv, received/*.csv)を開きます">📁 CSVファイルを開く</button>
+      <button id="btn-save-csv" onclick="saveCurrentCSV()" disabled style="opacity: 0.5; cursor: not-allowed;" title="現在開いているCSVデータをファイルに保存します">💾 CSV保存</button>
       <button class="btn-primary" onclick="loadSampleFlight()">🚀 自機デモ読込</button>
       <button onclick="loadSampleRxFlight()" style="border-color: #ea580c; color: #ea580c; font-weight:bold;">📡 受信デモ読込</button>
       <button id="btn-webserial" onclick="connectWebSerial()" style="border-color: var(--accent-cyan);">⚡ PONSに接続 (USB)</button>
@@ -804,6 +805,7 @@
             <span style="color: #7c3aed;">Pitch: ---°</span>
             <span style="color: #d97706; font-weight:bold;">Est.Beta: --.-°</span>
             <span style="color: #64748b;">AvgP: ---°</span>
+            <span style="color: #475569;">RTrim: ---°</span>
           </div>
         </div>
       </div>
@@ -902,6 +904,8 @@
     // グローバル状態管理
     // ============================================================
     let flightData = [];       // パース済みデータ行配列
+    let currentCsvText = "";   // 現在開いているCSVテキストデータ
+    let currentCsvFilename = "flight_log.csv"; // 現在開いているCSVファイル名
     let isPlaying = false;
     let playbackSpeed = 1.0;
     let currentTimeSec = 0;    // ログ先頭からの相対秒 [0 .. duration]
@@ -965,14 +969,14 @@
     });
 
     function setupEventListeners() {
-      // ファイル選択（CSV または imu_replaydata/*.txt、同時選択可能）
+      // ファイル選択
       document.getElementById('file-input').addEventListener('change', (e) => {
-        if (e.target.files && e.target.files.length > 0) {
-          readFiles(e.target.files);
+        if (e.target.files.length > 0) {
+          readCSVFile(e.target.files[0]);
         }
       });
 
-      // ドラッグ＆ドロップ（CSV / TXT ドロップ対応）
+      // ドラッグ＆ドロップ
       const dropZone = document.getElementById('drop-zone');
       window.addEventListener('dragenter', (e) => { e.preventDefault(); dropZone.classList.add('active'); });
       dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
@@ -982,8 +986,8 @@
       dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         dropZone.classList.remove('active');
-        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-          readFiles(e.dataTransfer.files);
+        if (e.dataTransfer.files.length > 0) {
+          readCSVFile(e.dataTransfer.files[0]);
         }
       });
 
@@ -1130,110 +1134,38 @@
     }
 
     // ============================================================
-    // CSV / IMU 姿勢ログ パース処理
+    // CSV パース処理
     // ============================================================
-    function readFiles(files) {
-      if (!files || files.length === 0) return;
-      const fileArr = Array.from(files);
-      const csvFile = fileArr.find(f => f.name.toLowerCase().endsWith('.csv'));
-      const txtFile = fileArr.find(f => f.name.toLowerCase().endsWith('.txt'));
-
-      if (csvFile) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          parseCSVText(e.target.result, csvFile.name);
-          if (txtFile) {
-            const txtReader = new FileReader();
-            txtReader.onload = (te) => {
-              mergeImuReplayData(te.target.result, txtFile.name);
-            };
-            txtReader.readAsText(txtFile);
-          }
-        };
-        reader.readAsText(csvFile);
-      } else if (txtFile) {
-        // TXT のみ選択された場合: 既存の flightData に姿勢をマージ
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          mergeImuReplayData(e.target.result, txtFile.name);
-        };
-        reader.readAsText(txtFile);
-      }
-    }
-
     function readCSVFile(file) {
-      readFiles([file]);
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        parseCSVText(e.target.result, file.name);
+      };
+      reader.readAsText(file);
     }
 
-    // 自機姿勢ログ（imu_replaydata/*.txt）を既存のフライトデータに時刻照合でマージ
-    function mergeImuReplayData(text, filename = "姿勢ログ") {
-      if (!flightData || flightData.length === 0) {
-        alert("先に自機フライトCSVを読み込んでから、対応する imu_replaydata/*.txt を選択してください。");
+    function saveCurrentCSV() {
+      if (!currentCsvText || flightData.length === 0) {
+        alert("保存できるCSVデータがありません。先にCSVファイルを読み込んでください。");
         return;
       }
-      const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-      if (lines.length < 2) return;
-
-      const header = lines[0].split(',').map(h => h.trim().toLowerCase());
-      const col = {
-        time: header.indexOf('time'),
-        roll: header.indexOf('roll'),
-        pitch: header.indexOf('pitch'),
-        yaw: header.indexOf('yaw'),
-        pavg: header.indexOf('pitch_avg'),
-        rtrim: header.indexOf('roll_trim'),
-        wspd: header.indexOf('wind_mps'),
-        wdir: header.indexOf('wind_dir')
-      };
-
-      if (col.roll < 0 || col.pitch < 0) {
-        alert("imu_replaydata の形式と一致しませんでした。");
-        return;
+      // ファイル名の整形（パスが含まれる場合はファイル名部分のみ取得し、拡張子 .csv を保証）
+      let baseName = (currentCsvFilename || "flight_log.csv").split('/').pop().trim();
+      if (!baseName) baseName = "flight_log.csv";
+      if (!baseName.toLowerCase().endsWith('.csv')) {
+        baseName += ".csv";
       }
 
-      // 時刻 -> 姿勢レコードのインデックス作成
-      const imuRecords = [];
-      for (let i = 1; i < lines.length; i++) {
-        const p = lines[i].split(',').map(s => s.trim());
-        if (p.length < 3) continue;
-        const tSec = parseTimeToSeconds(p[col.time]);
-        const roll = p[col.roll] !== '' ? parseFloat(p[col.roll]) : null;
-        const pitch = p[col.pitch] !== '' ? parseFloat(p[col.pitch]) : null;
-        const yaw = col.yaw >= 0 && p[col.yaw] !== '' ? parseFloat(p[col.yaw]) : null;
-        const pavg = col.pavg >= 0 && p[col.pavg] !== '' ? parseFloat(p[col.pavg]) : null;
-        const rtrim = col.rtrim >= 0 && p[col.rtrim] !== '' ? parseFloat(p[col.rtrim]) : null;
-        const wspd = col.wspd >= 0 && p[col.wspd] !== '' ? parseFloat(p[col.wspd]) : null;
-        const wdir = col.wdir >= 0 && p[col.wdir] !== '' ? parseFloat(p[col.wdir]) : null;
-        imuRecords.push({ tSec, roll, pitch, yaw, pavg, rtrim, wspd, wdir });
-      }
-
-      if (imuRecords.length === 0) return;
-
-      // 既存の各 flightData レコードに対し、最近傍の IMU レコード（±1.0秒以内）を補間・バインド
-      let mergedCount = 0;
-      let imuIdx = 0;
-      for (let d of flightData) {
-        const targetSec = parseTimeToSeconds(d.timeStr);
-        while (imuIdx < imuRecords.length - 1 && imuRecords[imuIdx + 1].tSec <= targetSec) {
-          imuIdx++;
-        }
-        const best = imuRecords[imuIdx];
-        if (best && Math.abs(best.tSec - targetSec) <= 1.0) {
-          d.roll = best.roll;
-          d.pitch = best.pitch;
-          if (best.yaw !== null) d.yaw = best.yaw;
-          if (best.pavg !== null) d.pavg = best.pavg;
-          if (best.rtrim !== null) d.rtrim = best.rtrim;
-          if (best.wspd !== null) d.wspd = best.wspd;
-          if (best.wdir !== null) d.wdir = best.wdir;
-          mergedCount++;
-        }
-      }
-
-      estimateSideslipBeta(flightData);
-      updateUI(currentTimeSec);
-      console.log(`IMU姿勢マージ完了: ${mergedCount}/${flightData.length}点に姿勢を適用 (${filename})`);
-      alert(`✅ 自機姿勢データ (${filename}) を ${mergedCount} 点にマージしました。\n人工水平儀・風の三角形・Est.Beta が有効化されました。`);
+      const blob = new Blob([currentCsvText], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = baseName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     function parseCSVText(text, filename = "フライトログ") {
@@ -1298,11 +1230,13 @@
         const lon = parseFloat(parts[col.lon]);
         if (isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) continue;
 
-        // 時刻パース
+        // 時刻・日付パース（日跨ぎ対応）
         let timeStr = col.time >= 0 ? parts[col.time] : `00:00:${i}`;
+        let dateStr = col.date >= 0 ? parts[col.date] : "";
         let sec = parseTimeToSeconds(timeStr);
         if (t0_sec === null) t0_sec = sec;
-        const rel_sec = sec - t0_sec;
+        let rel_sec = sec - t0_sec;
+        if (rel_sec < -43200) rel_sec += 86400;
 
         const gs = (col.gs >= 0 && parts[col.gs] !== '') ? parseFloat(parts[col.gs]) : null;
         const tt = (col.tt >= 0 && parts[col.tt] !== '') ? parseFloat(parts[col.tt]) : null;
@@ -1318,6 +1252,7 @@
         const yaw = (col.yaw >= 0 && parts[col.yaw] !== '') ? parseFloat(parts[col.yaw]) : (tt !== null ? tt : null);
         const pavg = (col.pavg >= 0 && parts[col.pavg] !== '') ? parseFloat(parts[col.pavg]) : null;
         const rtrim = (col.rtrim >= 0 && parts[col.rtrim] !== '') ? parseFloat(parts[col.rtrim]) : null;
+        const yaw_acc95 = (col.yaw_acc95 >= 0 && parts[col.yaw_acc95] !== '') ? parseFloat(parts[col.yaw_acc95]) : null;
         const wspd = (col.wspd >= 0 && parts[col.wspd] !== '') ? parseFloat(parts[col.wspd]) : null;
         const wdir = (col.wdir >= 0 && parts[col.wdir] !== '') ? parseFloat(parts[col.wdir]) : null;
         const csvBeta = (col.beta >= 0 && parts[col.beta] !== '') ? parseFloat(parts[col.beta]) : null;
@@ -1338,10 +1273,10 @@
 
         flightData.push({
           t: rel_sec,
-          timeStr,
+          timeStr, dateStr,
           lat, lon, gs, tt,
           kf_alt, kf_vs, press,
-          roll, pitch, yaw, pavg, rtrim,
+          roll, pitch, yaw, pavg, rtrim, yaw_acc95,
           wspd, wdir,
           csvBeta, csvTas,
           estBeta: (csvBeta !== null && !isNaN(csvBeta)) ? csvBeta : null,
@@ -1355,6 +1290,16 @@
         return;
       }
 
+      // 現在開いているCSVテキストとファイル名を保持し、保存ボタンを有効化
+      currentCsvText = text;
+      currentCsvFilename = filename;
+      const saveBtn = document.getElementById('btn-save-csv');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.style.opacity = '1';
+        saveBtn.style.cursor = 'pointer';
+      }
+
       // 相対時刻でソート
       flightData.sort((a, b) => a.t - b.t);
       totalDurationSec = flightData[flightData.length - 1].t;
@@ -1363,9 +1308,17 @@
       estimateSideslipBeta(flightData);
 
       // 高度範囲の自動計算 (フライトデータに完全追従するオートスケール)
-      let alts = flightData.map(d => d.kf_alt);
-      let minA = Math.min(...alts);
-      let maxA = Math.max(...alts);
+      let minA = Infinity, maxA = -Infinity;
+      for (const d of flightData) {
+        if (d.kf_alt !== null && !isNaN(d.kf_alt)) {
+          if (d.kf_alt < minA) minA = d.kf_alt;
+          if (d.kf_alt > maxA) maxA = d.kf_alt;
+        }
+      }
+      if (!isFinite(minA) || !isFinite(maxA)) {
+        minA = 0;
+        maxA = 10;
+      }
       flightAltMin = Math.floor(minA - 1);
       flightAltMax = Math.ceil(maxA + 1);
       if (flightAltMax - flightAltMin < 6) {
@@ -1373,11 +1326,11 @@
       }
 
       // VSIの自動補完 (もしCSVにVSI列がなく全て0の場合、高度差分から算出)
-      let hasVsi = flightData.some(d => Math.abs(d.kf_vs) > 0.05);
+      let hasVsi = flightData.some(d => d.kf_vs !== null && Math.abs(d.kf_vs) > 0.05);
       if (!hasVsi && flightData.length > 1) {
         for (let i = 1; i < flightData.length; i++) {
           let dt = flightData[i].t - flightData[i - 1].t;
-          if (dt > 0.05) {
+          if (dt > 0.05 && flightData[i].kf_alt !== null && flightData[i - 1].kf_alt !== null) {
             flightData[i].kf_vs = (flightData[i].kf_alt - flightData[i - 1].kf_alt) / dt;
           }
         }
@@ -1435,7 +1388,7 @@
 
       // ヨー角の360°アンラップ
       const unwrappedYaw = [];
-      let prevY = records[0].yaw || 0;
+      let prevY = records[0].yaw ?? 0;
       unwrappedYaw.push(prevY);
       for (let i = 1; i < records.length; i++) {
         const yVal = records[i].yaw !== null ? records[i].yaw : prevY;
@@ -1470,9 +1423,9 @@
         const r_body = -thetaDot * Math.sin(phi) + psiDot * Math.cos(theta) * Math.cos(phi);
 
         // 推定TAS [m/s]
-        const wspd = r1.wspd || 0;
-        const wdir = r1.wdir || 0;
-        const yaw = r1.yaw || 0;
+        const wspd = r1.wspd ?? 0;
+        const wdir = r1.wdir ?? 0;
+        const yaw = r1.yaw ?? 0;
         let tas = (r1.csvTas !== null && r1.csvTas > 0) ? r1.csvTas :
                   Math.max(1.0, r1.gs - Math.cos((yaw - wdir) * Math.PI / 180) * wspd);
 
@@ -1505,7 +1458,7 @@
     // サンプルフライト生成 (琵琶湖 プラットホーム〜北旋回〜着水)
     // ============================================================
     function loadSampleFlight() {
-      const rows = ["time,latitude,longitude,gs,truetrack,gnss_altitude,kf_altitude,kf_vspeed,pressure,roll,pitch,yaw,pitch_avg,roll_trim,wind_mps,wind_dir,numsat,voltage,lux,backlight"];
+      const rows = ["latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,pressure,voltage,numsat,date,time,lux,backlight,roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir"];
       const baseLat = TARGETS.PLATFORM.lat;
       const baseLon = TARGETS.PLATFORM.lon;
       const N = 400; // 400サンプル (約200秒)
@@ -1578,7 +1531,7 @@
 
         const press = 1013.25 - curAlt * 0.12;
         const volt = (4.15 - (sec / N) * 0.3).toFixed(2);
-        rows.push(`${timeStr},${curLat.toFixed(6)},${curLon.toFixed(6)},${gs.toFixed(2)},${curYaw.toFixed(1)},${curAlt.toFixed(2)},${curAlt.toFixed(2)},${vs.toFixed(2)},${press.toFixed(2)},${roll.toFixed(1)},${pitch.toFixed(1)},${curYaw.toFixed(1)},0.2,-0.1,${wind_mps},${wind_dir},14,${volt},3200,80`);
+        rows.push(`${curLat.toFixed(6)},${curLon.toFixed(6)},${gs.toFixed(2)},${curYaw.toFixed(1)},${curAlt.toFixed(2)},${curAlt.toFixed(2)},${vs.toFixed(2)},${press.toFixed(2)},${volt},14,2026-07-26,${timeStr},3200.0,80,${roll.toFixed(2)},${pitch.toFixed(2)},${curYaw.toFixed(2)},0.20,-0.10,1.2,${wind_mps},${wind_dir}`);
       }
 
       parseCSVText(rows.join('\n'), "琵琶湖デモフライト_2026.csv");
@@ -1725,20 +1678,21 @@
         yaw: lerpAngle(d0.yaw, d1.yaw, frac),
         pavg: lerp(d0.pavg, d1.pavg, frac),
         rtrim: lerp(d0.rtrim, d1.rtrim, frac),
+        yaw_acc95: lerp(d0.yaw_acc95, d1.yaw_acc95, frac),
         wspd: lerp(d0.wspd, d1.wspd, frac),
         wdir: lerpAngle(d0.wdir, d1.wdir, frac),
         csvBeta: d0.csvBeta,
         csvTas: d0.csvTas,
         estBeta: lerp(d0.estBeta, d1.estBeta, frac),
-        volt: d0.volt,
+        volt: lerp(d0.volt, d1.volt, frac),
         sats: d0.sats,
         lux: d0.lux,
         backlight: d0.backlight,
         rssi: d0.rssi,
         age_ms: d0.age_ms,
-        own_lat: (d0.own_lat !== null && d1.own_lat !== null) ? lerp(d0.own_lat, d1.own_lat, frac) : (d0.own_lat || d1.own_lat),
-        own_lon: (d0.own_lon !== null && d1.own_lon !== null) ? lerp(d0.own_lon, d1.own_lon, frac) : (d0.own_lon || d1.own_lon),
-        dist_m: (d0.dist_m !== null && d1.dist_m !== null) ? lerp(d0.dist_m, d1.dist_m, frac) : (d0.dist_m || d1.dist_m)
+        own_lat: lerp(d0.own_lat, d1.own_lat, frac),
+        own_lon: lerp(d0.own_lon, d1.own_lon, frac),
+        dist_m: lerp(d0.dist_m, d1.dist_m, frac)
       };
     }
 
@@ -1850,7 +1804,7 @@
       if (mapInitialized && currentMarker) {
         currentMarker.setLatLng([data.lat, data.lon]);
         const el = document.getElementById('plane-marker');
-        if (el) el.style.transform = `rotate(${data.yaw}deg)`;
+        if (el) el.style.transform = `rotate(${data.yaw ?? 0}deg)`;
 
         // 受信ログ時の追尾ボートマーカー＆機体間リンク線
         if (isReceivedLog && boatMarker && linkPolyline) {
@@ -2017,10 +1971,12 @@
       ctx.restore();
 
       // HUDテキスト更新 (下部ステータスバー: データ欠損時は --- を表示)
-      const yawStr = (d.yaw !== null && !isNaN(d.yaw)) ? `${d.yaw.toFixed(0)}°` : "---°";
+      const yawAccStr = (d.yaw_acc95 !== null && !isNaN(d.yaw_acc95)) ? ` (±${d.yaw_acc95.toFixed(0)}°)` : "";
+      const yawStr = (d.yaw !== null && !isNaN(d.yaw)) ? `${d.yaw.toFixed(0)}°${yawAccStr}` : "---°";
       const tasStr = (tas !== null && !isNaN(tas)) ? `${tas.toFixed(1)}m/s` : "--.-m/s";
       const betaStr = (d.estBeta !== null && !isNaN(d.estBeta)) ? `${d.estBeta > 0 ? '+' : ''}${d.estBeta.toFixed(1)}°` : "--.-°";
-      const wspdStr = (d.wspd !== null && !isNaN(d.wspd)) ? `${d.wspd.toFixed(1)}m/s` : "--.-m/s";
+      const wdirStr = (d.wdir !== null && !isNaN(d.wdir)) ? ` (${d.wdir.toFixed(0)}°)` : "";
+      const wspdStr = (d.wspd !== null && !isNaN(d.wspd)) ? `${d.wspd.toFixed(1)}m/s${wdirStr}` : "--.-m/s";
       const ttStr = (d.tt !== null && !isNaN(d.tt)) ? `${d.tt.toFixed(0)}°` : "---°";
       const gsStr = (d.gs !== null && !isNaN(d.gs)) ? `${d.gs.toFixed(1)}m/s` : "--.-m/s";
 
@@ -2217,12 +2173,14 @@
       const pitchStr = (d.pitch !== null && !isNaN(d.pitch)) ? `${d.pitch > 0 ? '+' : ''}${d.pitch.toFixed(1)}°` : "---°";
       const betaStr = (d.estBeta !== null && !isNaN(d.estBeta)) ? `${d.estBeta > 0 ? '+' : ''}${d.estBeta.toFixed(1)}°` : "--.-°";
       const pavgStr = (d.pavg !== null && !isNaN(d.pavg)) ? `${d.pavg.toFixed(1)}°` : "---°";
+      const rtrimStr = (d.rtrim !== null && !isNaN(d.rtrim)) ? `${d.rtrim > 0 ? '+' : ''}${d.rtrim.toFixed(1)}°` : "---°";
 
       document.getElementById('hud-attitude-text').innerHTML = `
         <span style="color: #dc2626;">Roll: ${rollStr}</span>
         <span style="color: #7c3aed;">Pitch: ${pitchStr}</span>
         <span style="color: #d97706; font-weight:bold;">Est.Beta: ${betaStr}</span>
         <span style="color: #64748b;">AvgP: ${pavgStr}</span>
+        <span style="color: #475569;">RTrim: ${rtrimStr}</span>
       `;
     }
 
@@ -2825,13 +2783,12 @@
           }
         }
 
-        // CSVパース＆画面展開
-        document.getElementById('flight-title').textContent = `${currentDownloadFile} (PONSより転送${crcSuccess ? '・CRC正常' : ''})`;
-        parseCSVText(fileData);
-        closeSerialModal();
-
         // 余分な行があれば行バッファへ戻す
         lineBuffer = endPart.substring(crcMatch[0].length);
+
+        // CSVパース＆画面展開
+        parseCSVText(fileData, currentDownloadFile || "flight_log.csv");
+        closeSerialModal();
       } else {
         // 進捗表示の定期更新
         const now = performance.now();

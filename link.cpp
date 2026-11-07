@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //
 // ■ 設計の要点
@@ -23,6 +23,7 @@
 #include "gnss.h"
 #include "imu.h"
 #include "attitude.h"
+#include "tas.h"         // 推定 TAS と大きい枠の設定（送信機）
 #include "airdata.h"
 #include "display_tft.h"
 #include "mysd.h"
@@ -325,9 +326,9 @@ void link_setup() {
     //   症状は「送信しているつもりで違うチャンネルにいる」で画面には何も出ない。
     //   settings=0 が残っていればそれが起きたと断定できる。
     //   e220_alive() も一緒に残す。false なら以下の値は書けていない。
-    enqueueTask(createLogSdfTask("LINK SETUP link=%u ch=%u sf=%u grp=%u alive=%d settings=%d",
+    enqueueTask(createLogSdfTask("LINK SETUP link=%u ch=%u sf=%u grp=%c alive=%d settings=%d",
                                  link_mode_setting, link_radio_ch,
-                                 link_radio_profile, link_group,
+                                 link_radio_profile, link_group_letter(link_group),
                                  (int)e220_alive(), (int)settings_loaded));
 
     // ★ 読み上げと送信前チェックはここでは行わない。setup() の末尾で
@@ -576,8 +577,8 @@ uint16_t link_dest_id(int idx) {
 // 送信機の目的地を、受信機の目的地の番号に直したもの（下の LINK_DEST_* か、0 以上の番号）。
 #define LINK_DEST_UNSET   (-1)   // 送信機が未選択
 #define LINK_DEST_MISSING (-2)   // 受信機に無い（ID が一致するものが無い）
-#define LINK_DEST_UNKNOWN (-3)   // まだ分からない（回転枠 6・7 をまだ受けていない）
-// ★ **ID で探す。番号は「同じ番号なら速く済む」ための手掛かりにしか使わない。** 番号は回転枠 6、ID は 7 と
+#define LINK_DEST_UNKNOWN (-3)   // まだ分からない（回転枠 3・7 をまだ受けていない）
+// ★ **ID で探す。番号は「同じ番号なら速く済む」ための手掛かりにしか使わない。** 番号は回転枠 3、ID は 7 と
 //   別のフレームで来るので、送信機が目的地を変えた直後は 1 発だけ食い違う。ID を先に信じれば、
 //   どちらの順で届いても合わせ直しは 1 回で済む（知らせる音声が 2 回鳴らない）。
 static int link_sender_dest_local() {
@@ -657,7 +658,7 @@ static void link_sync_scale() {
     static uint8_t s_last_sender_scale = 0xFF;   // 0xFF = まだ送信機の値を見ていない
     if (!link_mirror_active()) { s_last_sender_scale = 0xFF; return; }
 
-    // ★ 縮尺は回転枠 5 で来る。受けるまでは 0 のままなので合わせない（0 に飛ばさない）。
+    // ★ 縮尺は回転枠 6 で来る。受けるまでは 0 のままなので合わせない（0 に飛ばさない）。
     if (!link_rx_slot_known(W2S_PRESS)) return;
     const uint8_t sender = s_rx.t.scale_index;
     // 受信開始直後（0xFF）とミラー再開も「送信機が動いた」側に入れる。
@@ -1583,7 +1584,7 @@ bool    link_other_group_seen() {
 }
 uint8_t link_other_group_id()    { return s_otherGroupId; }
 
-void    link_set_group(uint8_t g) { link_group = g; }
+void    link_set_group(uint8_t g) { link_group = (g <= LINK_GROUP_MAX) ? g : LINK_GROUP_DEFAULT; }
 uint8_t link_get_group()          { return link_group; }
 // ============================================================
 //  「設定を変えたまま伝え忘れ」対策
@@ -1609,8 +1610,8 @@ void link_warn_setting_changed() {
         link_group         == s_wlEntryGroup) return;
     // SD が無い機体でも必ず何か鳴る（link_alert の流儀）
     link_alert("wav/link_setting_changed.wav", 880, 200, 3);
-    enqueueTask(createLogSdfTask("LINK setting changed: ch=%u prof=%u group=%u",
-                                 link_radio_ch, link_radio_profile, link_group));
+    enqueueTask(createLogSdfTask("LINK setting changed: ch=%u prof=%u group=%c",
+                                 link_radio_ch, link_radio_profile, link_group_letter(link_group)));
 }
 
 uint8_t link_get_mode()          { return link_mode_setting; }
@@ -1679,6 +1680,14 @@ static void link_push_telemetry() {
             t.pitch_avg_cdeg = link_pack_i16(attitude_get_pitch_avg_deg(), 100.0f);
             have |= RHAVE_ATT_AVG;
         }
+        // 推定 TAS。大きい枠の設定（Pavg / TAS）にかかわらず、出せる限り毎回載せる
+        // （平均ピッチと同じく核に入っていて毎秒届く。docs/pons_tas.md §5.2）。
+        float tas; bool clamped = false;
+        if (tas_local(tas, clamped)) {
+            t.tas_dmps = link_pack_u8(tas, 10.0f);
+            if (clamped) t.tas_flags |= LINK_TAS_CLAMPED;
+            have |= RHAVE_TAS;
+        }
         float wspd, wdir;
         if (attitude_get_wind(wspd, wdir)) {
             t.wind_dmps     = link_pack_u8(wspd,   10.0f);
@@ -1706,6 +1715,9 @@ static void link_push_telemetry() {
     t.dest_id    = link_dest_id(currentdestination);   // 受信側は番号ではなくこれで探す
     t.nav_mode   = (uint8_t)destination_mode;
     t.scale_index = (uint8_t)scaleindex;   // 受信側はこれに合わせる（link_sync_scale）
+    // 大きい枠の設定。受信機（ボート）は自分の設定ではなくこれに従う。地上か飛行中かは送らない
+    // （ミラーした対地速度から受信機が計算する。tas.cpp）。
+    if (tas_setting_get()) t.tas_flags |= LINK_TAS_HDR;
 
     t.have = have;
 
@@ -1921,7 +1933,7 @@ uint16_t link_sender_status() { return link_is_receiving() ? s_rx.t.status : 0; 
 //   結果が違う、という一番たちの悪い壊れ方をするので、明示的に検出する。
 bool link_dest_mismatch() {
     if (!link_is_receiving()) return false;
-    // ★ 目的地は回転枠 6（番号）と 7（ID）、ナビモードは 7 で来る。受けるまでは 0 のままなので、
+    // ★ 目的地は回転枠 3（番号）と 7（ID）、ナビモードは 7 で来る。受けるまでは 0 のままなので、
     //   食い違いとは言わない（言うと link_sync_destination が目的地 0 へ書き換えてしまう）。
     // ★ 番号ではなく ID で比べる（link_sender_dest_local）。受信機に無い目的地はいつも「食い違い」。
     const int li = link_sender_dest_local();
@@ -1951,7 +1963,7 @@ double   link_get_truetrack()     {
 double   link_get_gnss_altitude() { return s_rx.t.gnss_alt_dm /  10.0; }
 int      link_get_numsat()        { return s_rx.t.numsat; }
 uint32_t link_get_hacc_mm()       {
-  if (!link_rx_slot_known(W2S_HACC)) return 0xFFFFFFFFu; // 枠6受信前は精度未知
+  if (!link_rx_slot_known(W2S_HACC)) return 0xFFFFFFFFu; // 回転枠 3 を受けるまでは精度未知
   return (uint32_t)s_rx.t.hacc_dm * 100u;
 }
 bool     link_get_fix_ok()        { return (s_rx.t.fixflags & 0x01) != 0; }
@@ -1977,6 +1989,16 @@ bool link_get_pitch_avg(float &avg) {
     if (!link_has_value(RHAVE_ATT_AVG)) return false;
     avg = s_rx.t.pitch_avg_cdeg * 0.01f;
     return true;
+}
+// 送信機の推定 TAS。**受信機の係数で計算し直さない**（受信機は送信機の V0・K を知らない）。
+bool link_get_tas(float &mps, bool &clamped) {
+    if (!link_has_value(RHAVE_TAS)) return false;
+    mps     = s_rx.t.tas_dmps * 0.1f;
+    clamped = (s_rx.t.tas_flags & LINK_TAS_CLAMPED) != 0;
+    return true;
+}
+bool link_sender_header_tas() {
+    return link_is_receiving() && (s_rx.t.tas_flags & LINK_TAS_HDR) != 0;
 }
 bool link_get_roll_trim(float &trim) {
     if (!link_has_value(RHAVE_ATT_TRIM)) return false;

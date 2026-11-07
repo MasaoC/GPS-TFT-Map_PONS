@@ -8,7 +8,7 @@
 //           リプレイ再生の共有データ構造(ReplayRow/ReplayCol)と
 //           選択画面の項目モデルもここで定義する。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/07
 // ============================================================
 
 #ifndef MYSD_H
@@ -26,12 +26,12 @@
       TASK_SAVE_CSV,
       TASK_PLAY_MULTITONE,
       TASK_PLAY_WAV,
+      TASK_STOP_WAV,      // 排他グループの音声を止める（案内の画面を抜けたとき。playWavArgs.excl_group）
       TASK_SAVE_SETTINGS,
       TASK_BROWSE_SD,
       TASK_BROWSE_REPLAY, // リプレイ選択画面用の CSV ファイル列挙
       TASK_LOAD_REPLAY,
       TASK_INIT_REPLAY,
-      TASK_LOG_IMUREPLAY,
       TASK_FLUSH_IMULOG,  // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
       TASK_SAVE_RXCSV,    // 無線で受信したテレメトリを received/ へ書き出す
       TASK_LATCH_BATT_OVERDISCHARGE, // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
@@ -58,11 +58,11 @@
         RCOL_LAT = 0, RCOL_LON, RCOL_GS, RCOL_TTRACK, RCOL_GNSSALT,
         RCOL_KFALT, RCOL_KFVS, RCOL_PRESS, RCOL_DATE, RCOL_TIME,
         RCOL_NUMSAT, RCOL_VOLT,
-        // ★ 姿勢・風。**飛行 CSV には存在しない**（別ファイル imu_replaydata/ にある）。
-        //   受信ログ received/ にだけ入っていて、列名は imu_replaydata/ と揃えてある。
-        //   無い列は -1 のままなので、飛行 CSV の再生は今までと 1 ミリも変わらない。
+        // ★ 姿勢・風。自機飛行 CSV（data/）および受信ログ（received/）の両方に入る。
         RCOL_ROLL, RCOL_PITCH, RCOL_YAW,
         RCOL_PAVG, RCOL_RTRIM, RCOL_YAWACC, RCOL_WSPD, RCOL_WDIR,
+        // 推定 TAS と大きい枠の中身（2026-11-07〜。docs/pons_tas.md §6）
+        RCOL_TAS, RCOL_HDR,
         REPLAY_COL_COUNT
     } ReplayCol;
 
@@ -81,6 +81,8 @@
         float    roll, pitch, yaw;
         float    pitch_avg, roll_trim, yaw_acc95;
         float    wind_mps, wind_dir;
+        float    tas;    // 推定 TAS [m/s]（RHAVE_TAS）
+        int8_t   hdr;    // 大きい枠の中身（tas.h の TasHdr）。-1 = 列が無い
         int      numsat;
         uint16_t have;   // RHAVE_* のビットマスク
         int      year, month, day, hour, minute, second, centisecond;
@@ -139,14 +141,6 @@
     bool browse_sd(int page);
     void log_sd(const char* text);
     void log_sdf(const char* format, ...);
-    // リプレイで画面を再現するための ESKF 結果ログ（imu_replaydata/YYYYMMDD.txt, 5Hz）。
-    // pitch_avg は 平均が溜まるまで無効。valid=false のときは空欄で書く。
-    void save_imu_replaydata(int h, int m, int s, int cs,
-                             float roll, float pitch, float yaw,
-                             float pitch_avg, bool pitch_avg_valid,
-                             float roll_trim, float yaw_acc95,
-                             float wind_mps, float wind_dir, bool wind_valid,
-                             const char* filename, int year, int month, int day);
 
     // Forward declarations of example getter/setter functions
     void setVolume(const char* value);
@@ -186,6 +180,8 @@
     // 風推定の有効/無効
     void setWindEstimate(const char* value);
     void getWindEstimate(char* buffer, size_t bufferSize);
+    void setHeaderTas(const char* value);    // ヘッダー右の大きい枠（0 = 平均ピッチ、1 = 推定 TAS）
+    void getHeaderTas(char* buffer, size_t bufferSize);
     // APPLY 時に申告するロール角
     void setRollTarget(const char* value);
     void getRollTarget(char* buffer, size_t bufferSize);
@@ -252,13 +248,16 @@
               int      rssi;      // 受信強度 [dBm]
               uint16_t seq;       // 送信側の連番。取りこぼしの解析に使う
               uint16_t age_ms;    // 受信から書き出しまでの経過
-              // ★ 姿勢・風。機体の SD が死んでもボート側に姿勢が残るようにする。
-              //   列名と「未収束は空欄」の流儀は imu_replaydata/ に合わせてあるので、
-              //   ESKF の解析ツールをそのまま流用できる。
+              // ★ 姿勢・風。自機飛行 CSV（data/）と受信ログ（received/）の両方で使う。
+              //   未収束の項目は have ビットを立てず、書き出し側で空欄にする。
               float    roll, pitch, yaw;
               float    pitch_avg, roll_trim, yaw_acc95;
               float    wind_mps, wind_dir;
-              uint16_t have;      // RHAVE_ATT* のどれが入っているか
+              // 推定 TAS（RHAVE_TAS）と、大きい枠に何を出していたか（tas.h の TasHdr）。
+              // 受信ログでは送信機の推定 TAS と、ボートの大きい枠に出していたもの。
+              float    tas;
+              uint8_t  hdr;
+              uint16_t have;      // RHAVE_ATT* / RHAVE_TAS のどれが入っているか
               // ★ 受信した瞬間の**ボート自身**の位置と、機体までの距離。
               //   これがあると飛行後に「距離 vs RSSI」がそのまま引ける。
               //   要求 200m の裏取り、SF を上げるべきかの判断、アンテナ位置の
@@ -284,16 +283,6 @@
               int min_volume;  // 最低保証ボリューム（0=制限なし）
               int excl_group;  // 排他グループ（settings.h の WAV_EXCL_*）。0=排他なし
           }playWavArgs;
-          struct {                           // For save_imu_replaydata
-              int hour, minute, second, centisecond;
-              int year, month, day;          // ファイルタイムスタンプ設定用
-              float roll, pitch, yaw;
-              float pitch_avg, roll_trim, yaw_acc95;
-              float wind_mps, wind_dir;
-              bool  pitch_avg_valid, wind_valid;
-              // "imu_replaydata/20260316.txt" = 27文字 + NUL。24 だと溢れるので 32。
-              char filename[32];
-          } imuReplayArgs;
           struct {                           // For imulog_write_buffer
               int  bufidx;                   // 書き出す二重バッファの索引（0 or 1）
               int  year, month, day, hour, minute, second;  // ファイルタイムスタンプ用
@@ -330,16 +319,13 @@
   Task createPlayMultiToneTask(int freq, int duration, int count,int priority=1,int min_volume=0,bool solo_play=false);
   Task createPlayWavTask(const char* filename,int priority=1,int min_volume=0,
                          int excl_group=WAV_EXCL_NONE);
+  // 排他グループ excl_group（WAV_EXCL_*）の音声を、再生中のものも待っているものも止める。
+  // 案内の画面を抜けたときに、そのページの読み上げを後に残さないため（TAS の案内）。
+  Task createStopWavTask(int excl_group);
   Task createBrowseSDTask(int page);
   Task createBrowseReplayTask(int start_index);
   Task createLoadReplayTask();
   Task createInitReplayTask();
-  Task createLogImuReplayTask(int h, int m, int s, int cs,
-                              float roll, float pitch, float yaw,
-                              float pitch_avg, bool pitch_avg_valid,
-                              float roll_trim, float yaw_acc95,
-                              float wind_mps, float wind_dir, bool wind_valid,
-                              const char* filename, int year, int month, int day);
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
   Task createLatchBattTask();

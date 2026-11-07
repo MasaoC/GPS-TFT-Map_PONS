@@ -15,7 +15,7 @@
 enum BacklightSaver : uint8_t {
   BL_SAVER_OFF  = 0,  // 常時点灯
   BL_SAVER_LOW  = 1,  // 第 1 段階（BAT_LOW_VOLTAGE 以下）: BL_SAVER_ON_MS 点灯 / BL_SAVER_OFF_MS 消灯
-  BL_SAVER_CRIT = 2,  // 第 2 段階（BAT_CRIT_VOLTAGE 以下）: BL_SAVER_ON_MS 点灯 / BL_SAVER_CRIT_OFF_MS 消灯
+  BL_SAVER_CRIT = 2,  // 第 2 段階（BAT_CRIT_VOLTAGE 以下）: BL_SAVER_CRIT_ON_MS 点灯 / BL_SAVER_CRIT_OFF_MS 消灯
 };
 
 // 輝度スイッチ Low のときの照度→点灯率の曲線（設定画面の「AUTO Brightness」。SD の auto_brightness）。

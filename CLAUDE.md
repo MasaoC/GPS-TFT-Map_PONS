@@ -59,6 +59,14 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
   [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) を作り直すこと。
   **忘れると古い音のまま黙って焼ける。** 生成物は git に入れてあるので、
   音を触らないなら実行は不要。
+- **案内の日本語の画像も本体 FLASH に焼いてある**（IMU/ESKF 画面の入口の 3 枚と、推定 TAS の案内の 1 枚）。
+  本体に日本語フォントは無いので、文字ごと画像にしている。原本は [tools/imu_guide/](tools/imu_guide/) と
+  [tools/tas_guide/](tools/tas_guide/) の SVG（別の AI に作らせるときの指示文は `tools/imu_guide/prompt.md`）。差し替えたら
+  `python3 tools/gen_guide_flash.py --render`（Chrome で等倍の PNG にしてから
+  `src/flashdata/imu_guide_data.cpp` / `tas_guide_data.cpp` を作る）。
+  **忘れると古い画像のまま黙って焼ける。** 1 画面ごとの音声は `.ino` の `IMU_GUIDE_WAV[]` / `TAS_GUIDE_WAV[]` と順番で 1 対 1
+  （TAS の案内の 2 画面目は曲線をファームが描く）。**TAS の案内の音声 2 本（`guide_tas_*.wav`）は Mac の読み上げ（Kyoko）で
+  作った仮のもの**（2026-11-07）。
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
@@ -68,6 +76,7 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 - どちらかが抜けていると `#warning NOT RELEASE!` が出る。これが唯一の保険。
 - `python3 tools/gen_wav_flash.py --check` — `wav/` と焼き込み済みの音声が
   CRC32 で一致するか。音声を差し替えて生成を忘れていると非 0 で落ちる。
+- `python3 tools/gen_guide_flash.py --check` — 案内画像の PNG と焼き込み済みの画像が一致するか。
 
 ### git の扱い（**指示があるまで触らない**）
 
@@ -169,11 +178,14 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   デモを止める理由は見えにくい: デモは `stored_*` を上書きしないので**CSV には
   残らない**のに、`link_push_telemetry()` は accessor 経由なので**仮想機体が電波に乗る**。
   一覧は [docs/pons_link.md](docs/pons_link.md) §5。
-- **電波に載るのは `LinkTelem`（65 バイト）ではなく 32 バイトのフレーム**
+- **電波に載るのは `LinkTelem`（67 バイト）ではなく 32 バイトのフレーム**
   （[lora_link/link_wire2.h](lora_link/link_wire2.h)。2026-10-27〜、どの CH でも）。`LinkTelem` はメモリの上の形で、
-  送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは無い**ので、65 バイトの古い版とは通じない（3 台そろえる）。
-  並びを変えたら `LINK_W2_MAGIC` も変え、PONSv7 / PONSv7.1 / debug/v7-noise-test で並びを同じに保つ
-  （目的地の ID は PONSv7 / v7.1 だけ。noise-test は 0 ＝「送っていない」を送るので混ぜても通じる）。
+  送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは印だけ**なので、並びの違う版とは通じない（3 台そろえる）。
+  並びを変えたら `LINK_W2_MAGIC` も変え、PONSv7 / PONSv7.1 で並びを同じに保つ
+  （debug/v7-noise-test は 2026-11-07 にこの約束から外した。古い `0xA2` のままで、印で弾くので誤読はしない）。
+  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（2026-11-07〜、`0xA4`）。印は必ず
+  `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
+  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（`0xA8` …）。
   ゆっくりした項目は 8 発に分けた回転枠で運ぶので、**have ビットの無い目的地・ナビモード・縮尺は
   `link_rx_slot_known()` を見てから使う**（受け始めは 0 のままで、使うと受信機が目的地 0・縮尺 0 に書き換えられる）。
   **目的地は番号ではなく `dest_id`（名前と座標の CRC16）で照合する**（`link_sender_dest_local()`）。番号で合わせると、
@@ -269,7 +281,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
-| [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。noise-test ブランチと並びを同じに保つ |
+| [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。PONSv7 と並びを同じに保つ |
+| [tas.cpp](tas.cpp) | 推定 TAS の表示の判断（2026-11-07）。ヘッダー右の大きい枠に何を出すか（真方位 / 平均ピッチ / 推定 TAS / 地上の横線つき TAS）を、設定・地上と飛行中・**表示の供給元 4 つ**から 1 か所で決める。描画は `tas_header()` を読むだけ。仕様は [docs/pons_tas.md](docs/pons_tas.md) |
 | [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
 | [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) | 焼き込んだ音声の実体。`tools/gen_wav_flash.py` の生成物。手で編集しない |

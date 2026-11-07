@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に応じた音程変化、
 //           アンプシャットダウン制御（省電力）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/07
 // ============================================================
 // Handle speaker, amplifier, PWM-audio signals.
 #include "../settings.h"
@@ -927,6 +927,38 @@ void playTone(int freq, int duration, int counter, int priority, int min_volume,
 }
 
 // SD 裏コマンド（batt_unlock.txt）で過放電ラッチが解除された直後に、
+// 排他グループ excl_group の音声を止める（再生中のものと pending の両方）。
+// ★ 汎用の「再生を止める」は持たない（警報まで止められると困る）。止められるのは、
+//   ひとつの画面の説明のように「その画面を離れたら意味が無くなる」排他グループだけ。
+void stop_wav_excl_group_core1(int excl_group) {
+    ASSERT_CORE1("stop_wav_excl_group_core1");
+    if (excl_group == WAV_EXCL_NONE) return;
+    drop_pending_excl_group(excl_group);
+    if (wav_playing && current_wav_excl == excl_group) {
+        current_wav_index     = -1;
+        s_wav_src             = nullptr;
+        current_wav_is_replay = false;
+        current_wav_excl      = WAV_EXCL_NONE;
+        wav_playing_priority  = 0;
+        bufferSwapRequest     = false;
+        bufferReady[0]        = false;
+        bufferReady[1]        = false;
+        stopPlayback();
+        // ★ 自然に鳴り終わったとき（loop_sound の endOfFile）と同じく、待っている音声を鳴らし直す。
+        //   案内の読み上げ（優先度 2）の最中に来た低い優先度の音声（battery_low.wav は優先度 1）は
+        //   pending に回っているので、ここで拾わないと次の音声が鳴り終わるまで取り残される。
+        //   トーンが積まれているときは loop_tone() がトーンの後で拾う（同時に鳴らさないため）。
+        if (toneBufHead == toneBufTail) {
+            int prio = 0, pminvol = 0, pexcl = WAV_EXCL_NONE;
+            const int pidx = pop_best_pending_wav(prio, pminvol, pexcl);
+            if (pidx >= 0) {
+                pending_replay_next = true;  // pending 由来の再生であることを伝える
+                startPlayWav(WAV_ENTRIES[pidx].name, prio, pminvol, pexcl);
+            }
+        }
+    }
+}
+
 // 再生中・待機中の過放電警告トーン（2637Hz solo_play p=4）と音声（batt_overdischarge.wav）を止める。
 // 止めないと、緑の解除完了画面の裏で「充電せずUSBを外し…」が最後まで鳴り続けてしまう。
 void stop_overdischarge_alert_core1() {

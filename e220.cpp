@@ -3,7 +3,7 @@
 // Project : PONS v7 — PONS Link
 // Role    : E220-900T22S(JP) の下位ドライバ実装
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 
 #include "e220.h"
@@ -622,9 +622,11 @@ uint16_t e220_airtime_ms(uint8_t profile) {
 //   候補が揃うのを待つと、次のフレームが来るまで（1 秒以上）止まる。後ろに正しいものがあるなら、
 //   手前の候補は残骸として捨ててよい（正しいかどうかは CRC で確かめるので、本物を捨てる心配は無い）。
 //   印が 1 バイトしか無いので、65 バイトの頃の "PL" より偶然に出やすい。
+//   2026-11-07 から印は 6 ビット（下位 2 ビットはグループ）で、ゴミの中に出る確率は 1/64
+//   （それまで 1/256）。ほかの LoRa の電波を受けたとき、壊れフレームの数はそのぶん増える。
 static uint16_t later_valid_frame(uint16_t from) {
     for (uint16_t j = from; j + LINK_W2_LEN + 1 <= s_rxLen; j++)
-        if (s_rx[j] == LINK_W2_MAGIC && link_w2_valid(s_rx + j)) return j;
+        if (link_w2_is_magic(s_rx[j]) && link_w2_valid(s_rx + j)) return j;
     return 0xFFFF;
 }
 
@@ -637,7 +639,9 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
     const uint16_t need = (uint16_t)frame_len + 1;   // ペイロード + RSSI
     uint16_t i = 0;
     while (i < s_rxLen) {
-        if (s_rx[i] != LINK_W2_MAGIC) { i++; continue; }
+        // ★ 印は下位 2 ビット（グループ）を落として比べる。== にすると別グループのフレームを
+        //   見つけられず、受信機が「無信号」になる（link_w2_is_magic）。
+        if (!link_w2_is_magic(s_rx[i])) { i++; continue; }
         if (i + need > s_rxLen) {
             // 揃うまで待つ。ただし後ろにもう正しいフレームがあれば、これは残骸
             const uint16_t j = later_valid_frame((uint16_t)(i + 1));
