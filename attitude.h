@@ -28,7 +28,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 
 #ifndef ATTITUDE_H
@@ -120,8 +120,17 @@ float attitude_get_yaw_acc95_deg();
 
 // ---- 平均ピッチ [度] ----
 // 瞬時値は周期 2〜6.7 秒の振動が主で std 1.23 度あるので、巡航のトリム状態はこちらで見る。
+// 過去 PITCH_AVG_SEC 秒の移動平均（2026-11-07 までは時定数 10 秒の一次遅れだった）。
 float attitude_get_pitch_avg_deg();
-bool  attitude_pitch_avg_valid();          // 平均が十分たまったか
+bool  attitude_pitch_avg_valid();          // 平均が PITCH_AVG_SEC 秒ぶん満ちたか
+
+// ---- 推定 TAS [m/s] ----
+// 平均ピッチを下の対気速度モデルで換算した値（docs/pons_tas.md）。平均が満ちていなければ false。
+// clamped: 上下限（airspeed_min / max）に張り付いた。推定ではなく端の値。
+// ★ 画面・無線・CSV は直接呼ばず tas.h を通す（地上と飛行中の切り替え・供給元の解決はそちら）。
+bool  attitude_get_tas(float &mps, bool &clamped);
+// 任意のピッチでの対気速度（TAS の案内の曲線を描くため。いまの係数で計算する）。
+float attitude_airspeed_from_pitch(float pitch_deg, bool *clamped = nullptr);
 
 // ---- 直進中のロール自動トリム ----
 // 直進中はロールが 0 のはずなので、ズレをゆっくり戻す（誤警報の連発を防ぐ）。
@@ -141,7 +150,7 @@ void  attitude_set_roll_trim_enabled(bool on);
 // ESKF から得た姿勢を「使う」機能を一括で ON/OFF する（既定 ON）。対象は
 //   表示 : 平均ピッチ / P / R / Rtrim / 風矢印 / ESKF ヨー / 自機アイコンの機首向き / 偏流点線
 //   警報 : バンク警報、地上ロール・ピッチチェック、マウント外れ検出
-//   処理 : 自動ロールトリム、風推定、imu_replaydata への記録
+//   処理 : 自動ロールトリム、風推定、飛行 CSV への姿勢の記録
 // OFF にすると見た目も動作も ESKF 導入前と同じになる。
 // ESKF の計算自体は止めない（診断ページの表示と、ON に戻したときの即応性のため）。
 // ★ PONS Link: 送信機が OFF なら姿勢を送らない。受信機はミラー中、**自分のこのスイッチを見ずに**

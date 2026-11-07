@@ -4,7 +4,7 @@
 // Role    : 生 IMU / GNSS 速度データの高レート バイナリロガー（実装）。
 //           形式・目的・レコード定義は imulog.h のコメントを参照。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/19
+// Updated : 2026/11/07
 // ============================================================
 
 #include "../settings.h"
@@ -251,11 +251,24 @@ static void imulog_write_boot_marker() {
     imuOpenCount++;
 }
 
+// ============================================================
+// imulog_flush_and_close(): 開いている生IMUログファイルを閉じてフラッシュする（Core1 専用）
+// ============================================================
+void imulog_flush_and_close() {
+    ASSERT_SD_CORE1("imulog_flush_and_close");
+    if (imuFileStatic) {
+        imuFileStatic.sync();
+        imuFileStatic.close();
+        imuOpenedFilename[0] = '\0';
+        imuFlushCount = 0;
+    }
+}
+
 
 // ============================================================
 // imulog_write_buffer(): バッファを SD へ書き出す（Core1 専用）
 // ============================================================
-// save_imu_replaydata() と同じ方針: ファイルは開きっぱなしにし、
+// 飛行 CSV と同じ方針: ファイルは開きっぱなしにし、
 // ファイル名が変わったときだけ開き直す。sync() は数バッファに 1 回。
 void imulog_write_buffer(int bufidx, const char* filename,
                          int year, int month, int day, int hour, int minute, int second) {

@@ -210,7 +210,7 @@ IMU/ESKF 画面の `Roll/Pitch/Yaw func` を OFF にすると、姿勢に関す�
   自機アイコンの機首向き回転 / 偏流角の点線
 * **警報（4 項目）**：バンク警報（4°・1 秒継続）/ 地上ロールチェック（SET ROLL から 3°・60 秒）/
   地上ピッチチェック（SET PITCH から 3°・60 秒）/ `REMOVED FROM MOUNT` と赤ステータス丸
-* **裏で走る処理（3 項目）**：自動ロールトリム / 風推定 / `imu_replaydata/` への 5Hz 記録
+* **裏で走る処理（3 項目）**：自動ロールトリム / 風推定 / 飛行 CSV への姿勢の記録
 
 ESKF の計算自体は止めません（3 ページ目の診断表示を生かすためと、ON に戻した瞬間から使えるようにするため）。
 
@@ -227,8 +227,8 @@ V(θ) = V0 * sqrt( K / (K + θ) )        既定: V0 = 7.0 m/s, K = 10 度
 
 近似曲線ではなく、定常飛行の釣り合いそのものです。揚力 = 重量 より
 `½ρV²S・CL = W` なので `V ∝ 1/sqrt(CL)`、CL が迎角に対して直線なら
-`CL(θ) ∝ (θ + K)` と書けます。**K は「揚力がゼロになるピッチまでの角度」**で、
-K = 10 は「ピッチ -10 度で揚力ゼロ」を意味します。
+`CL(θ) = a(θ + K)` と書けます。**K は「θ=0 の姿勢から揚力ゼロの姿勢までの角度」**（取付角 − 零揚力角）で、
+K = 10 は「ピッチ -10 度で揚力ゼロ」を意味します。揚力係数の大きさ（揚力傾斜 a）は比を取ると消え、V0 の側に入ります。
 0.969 までの区分線形（+5 度/5.8、0 度/7.0、-4 度/9.0 の 3 点）とは
 最大 0.17m/s しか違いませんが、当てはめた範囲の外でも形が崩れません。
 
@@ -238,7 +238,7 @@ K = 10 は「ピッチ -10 度で揚力ゼロ」を意味します。
 | キー | 意味 | 既定 | 受け付ける範囲 |
 |---|---|---|---|
 | `airspeed_v0` | V0：ピッチ 0 度での対気速度 [m/s] | 7.00 | 3〜20 |
-| `airspeed_k` | K：揚力がゼロになるピッチまでの角度 [度] | 10.00 | 3〜60 |
+| `airspeed_k` | K：θ=0 の姿勢から揚力ゼロの姿勢までの角度（取付角 − 零揚力角）[度] | 10.00 | 3〜60 |
 | `airspeed_min` | 推定の下限 [m/s] | 5.80 | 1〜20 |
 | `airspeed_max` | 推定の上限 [m/s] | 9.00 | 1〜25 |
 
@@ -251,6 +251,13 @@ K = 10 は「ピッチ -10 度で揚力ゼロ」を意味します。
 * 上下限は「この機体で起こり得ない対気速度を出さない」ための安全弁です。
   K を小さくしすぎると `K + θ` がゼロに近づいて発散しますが、そのときは上限で打ち切ります。
 
+* ピッチには**過去 10 秒の移動平均**（平均ピッチ `Pavg`）を使います（2026-11-07 までは時定数 10 秒の一次遅れで、
+  発進から 10 秒経っても地上の姿勢が 37% 残っていました）。
+* 同じ値を**推定 TAS**（対気速度）としてヘッダー右の大きい枠にも出せます（IMU/ESKF 画面 1 ページ目の
+  `Header: Pavg / TAS`。`settings.txt` の `header_tas:1`）。青い箱に白字・縦書きの `TAS`。地上は数字に白い横線が入り、
+  対地速度 3m/s 以上が 10 秒続くと線が取れます。上下限に張り付いたら灰色の箱。平均ピッチは地図の上端
+  （`TAS` の小箱の左）に小さく残ります。TAS にすると日本語の案内（画像と曲線の 2 画面・音声）が出ます。
+  仕組みと精度は **[docs/pons_tas.md](docs/pons_tas.md)**（増減は信用できるが、値は取り付け 1° で約 0.4m/s ずれる）。
 * **直進中しか更新しません。** 旋回中の人力飛行機は横滑りが大きく、横滑り角 beta があると
   風速の誤差が `対気速度 × sin(beta)` になります（beta=30 度なら 3.5m/s）。旋回中は直前の値を保持します。
 * 表示されるまでに**直進が累計 10 秒**必要です（`WIND_LPF_SEC`）。
@@ -394,16 +401,19 @@ SAM-M10Q が受信した軌道データ（エフェメリス。GPS で約 4 時�
 
 **2026-10-27 から、電波に載せるものを 32 バイトにしました**（以前は 65 バイト）。送信時間が約 6 割になり、
 送信機の電池が長持ちします（消費電流の表の値は 65 バイトの頃のもの）。**古い版の機体とは通じないので、
-3 台とも同じ版にしてください。** 受信を始めてから 8 発ほどは、風・電圧・日付などのゆっくりした項目が
+3 台とも同じ版にしてください。** 受信を始めてから 8 発ほどは、電圧・日付などのゆっくりした項目が
 順番に届くまで「無し」で出ます（32 バイトに収めるため、8 発に分けて運んでいます）。
+**2026-11-07 に並びを変えました（印 `0xA4`）。** 推定 TAS と平均ピッチを毎回、風を 4 秒に 1 回送ります。
+それより前の並び（`0xA2`）の機体とは通じません。並びは PONSv7 と PONSv7.1 で同じです（docs/pons_link.md）。
 
 設定項目は `link_mode`（OFF / TX / RX）、`link_radio_ch`、`link_radio_prof`、`link_group` の 4 つです。
 
-`link_group` は同じ会場に別チームの PONS がいても取り違えないための識別子で、**既定は 0**。
-CH と SF が偶然一致すると他チームの機体を受信してしまうため、**0 以外を各機の SD に設定してください**
-（3 台とも同じ値。値は SD の `settings.txt` にだけ書き、git には既定 0 しか入れていません）。
-グループ違いの電波を受けたときは「無信号」ではなく `GROUP n FOUND` と表示します。
-無信号と区別できないと、SD が飛んでグループが 0 に戻った事故に気づけないためです。
+`link_group` は同じ会場に別チームの PONS がいても取り違えないための識別子で、**A〜D の 4 つ・既定は A**
+（2026-11-07 から。それまでは 0〜255 の数字）。`settings.txt` には `link_group:B` のように文字で書きます
+（A〜D 以外は A になり、log.txt に残ります）。**ふだんは B〜D のどれかを各機の SD に設定してください**
+（3 台とも同じ値。値は SD の `settings.txt` にだけ書き、git には既定 A しか入れていません）。
+グループ違いの電波を受けたときは「無信号」ではなく `GROUP C FOUND` のように表示します。
+無信号と区別できないと、SD が飛んでグループが A に戻った事故に気づけないためです。
 
 CH / SF / Group のどれかを変えて設定画面を出ると、
 **「送信機と受信機の設定が一致していることを確認してください」**と音声で確認を促します。
@@ -507,7 +517,7 @@ E220-900T22S(JP) は技適取得済みで、免許は不要です。ふだんは
 NAV 画面でスイッチ長押しで入ります。**項目の一覧と操作手順は説明書を参照してください。**
 ここには、あとから理由を思い出せなくなる部分だけを残します。
 
-各行の右端の丸が設定状態を示します。
+各行の右端のマークが設定状態を示します（色と形の両方で見分けられるように、緑は丸・赤は ×・オレンジは三角・グレーはハイフン）。
 **緑**＝本番推奨設定、**赤**＝本番では不可（デモ/リプレイが有効など）、
 **オレンジ**＝本番でも許容だが既定から外れている。**本番前に赤が無いことを確認してください。**
 
@@ -856,7 +866,7 @@ JLCPCB の PCBA では実装されないため、**別途購入して手実装�
 
 基板が組み上がったら、Arduino IDE で `GPS_TFT_map.ino` を開いてビルド・書き込みします。
 ボードは **Generic RP2350** / Flash **16MB (no FS)** を選択してください。
-必要なライブラリは `TFT_eSPI` / `SdFat` / `Adafruit_BNO08x` です。
+必要なライブラリは `TFT_eSPI` / `SdFat` / `Adafruit_BNO08x` です。SdFat は **2.3.1 以上**が必要です（2.3.0 は RP2350 で起動時の SD 初期化に失敗します。2.3.1 は Library Manager に無いので GitHub から入れます）。
 
 * **`TFT_eSPI` は `User_Setup` を書き換えないと映りません。** サンプルは
   [TFT_eSPI/CopySetupFile_TFT_eSPI.h](TFT_eSPI/CopySetupFile_TFT_eSPI.h) にあります。
@@ -882,9 +892,8 @@ JLCPCB の PCBA では実装されないため、**別途購入して手実装�
 | ルート直下 | **設定ファイルだけ**（`settings.txt` / `mapdata.csv` / `destinations.csv` / `override_pilon_coordinate.csv`） |
 | `data/` | 自機の飛行 CSV。**過去大会のデータもここに置きます** |
 | `received/` | 無線で受け取った機体のログ（受信モードのときだけ） |
-| `imu_replaydata/` | 姿勢（ESKF）の記録 |
 | `imuraw/` | 生 IMU のバイナリ |
-| `euler/` | 0.93 以前の姿勢ログ（読み込みのみ） |
+| `euler/` / `imu_replaydata/` | 以前の姿勢ログ（いまは書かない・読まない。姿勢は飛行 CSV の列にある） |
 
 リプレイ対象は `data/` と `received/` です。
 
@@ -902,16 +911,17 @@ microSD カードスロットはバネ式です。取り出す時は指で押し
 
 * **`data/` の飛行 CSV**（例：`data/2026-03-26_1519.csv`）：2Hz
   ```
-  latitude, longitude, gs, TrueTrack, GNSS_Altitude, KF_Altitude, KF_Vspeed, pressure, voltage, numsat, date, time, lux, backlight
+  latitude, longitude, gs, TrueTrack, GNSS_Altitude, KF_Altitude, KF_Vspeed, pressure, voltage, numsat, date, time, lux, backlight,
+  roll, pitch, yaw, pitch_avg, roll_trim, yaw_acc95, wind_mps, wind_dir, tas_mps, hdr
   ```
   * `GNSS_Altitude` は GNSS のみ。`KF_*` は Kalman filter による推定（MS5611+BNO085+GNSS 融合）。
   * `lux`（照度 [lx]）と `backlight`（点灯率 [%]）は v7.1 の自動調光の検証用（0.993〜）。
     照度センサーが応答していないとき・v7 では空欄。
-* **`imu_replaydata/`**（例：`imu_replaydata/20260324.txt`）：5Hz。
-  ```
-  time, roll, pitch, yaw, pitch_avg, roll_trim, yaw_acc95, wind_mps, wind_dir
-  ```
-  * ESKF の結果＝**画面に出ていた値そのもの**。リプレイ時にこれを読んで、そのとき画面に何が出ていたかを再現します。
+  * `roll` 〜 `wind_dir` は ESKF の結果＝**画面に出ていた値そのもの**。リプレイはこれで当時の画面を再現します
+    （以前は 5Hz の `imu_replaydata/` に別に書いていたが、飛行 CSV に入れてやめた。列名は同じ）。未収束の間は空欄。
+  * `tas_mps` は推定 TAS（大きい枠の設定にかかわらず書く）、`hdr` は大きい枠に出していたもの
+    （0 = 真方位、1 = 平均ピッチ、2 = 推定 TAS、3 = 推定 TAS・上下限に張り付き、4 = 推定 TAS・地上（数字に横線））。
+    リプレイはこの 2 列で当時の画面を出す（いまの係数で計算し直さない）。
   * 列名で解釈するので、後から列を足しても古いファイルが読めなくなることはありません。
 * **`imuraw/`**（例：`imuraw/20260324.bin`）：生 IMU の 28 バイト固定長バイナリ。
   ジャイロ・加速度（各 50Hz）、GNSS 速度（2Hz）、気圧（約 4Hz）。PC 側の解析は `tools/imulog/` を参照。
@@ -925,13 +935,13 @@ microSD カードスロットはバネ式です。取り出す時は指で押し
   * **`seq` の飛び＝取りこぼし ではありません。** ファイルが切り替わった箇所でも飛びます。
     実際に捨てられた件数は `/log.txt` の 60 秒ごとの `dropped=` が正です。
 * **`euler/`**：**0.93 以前**の形式（`time, roll, pitch, yaw`、BNO085 由来）。現在は書き出しません。
-  過去のログをリプレイするために読み込みだけ対応しています（`imu_replaydata/` が無い日はこちらを探します）。
+  過去の形式で、いまは読み込みもしません（姿勢は飛行 CSV の列から読みます）。
 * **`received/`**（v7〜）：**受信モードのときだけ**、無線で受け取ったテレメトリを記録します。
   列は飛行 CSV と同じ並びで、末尾に `rssi, seq, age_ms`、姿勢・風、
-  そして `own_lat, own_lon, dist_m, slot` が付きます（`slot` はその行で受けた回転枠の番号 0〜7。
+  そして `own_lat, own_lon, dist_m, slot, tas_mps, hdr` が付きます（`slot` はその行で受けた回転枠の番号 0〜7。
   ゆっくりした項目はその枠の行で更新されます）。日付は 8 発に 1 回しか届かないので、
   受信を始めて日付が届くまで（最大 8 発）は書きません。
-  姿勢の列名は `imu_replaydata/` と同じにしてあるので、機体の SD が失われてもこちらで ESKF の解析ができます。
+  姿勢の列名は飛行 CSV と同じにしてあるので、機体の SD が失われてもこちらで ESKF の解析ができます。
   * **原則として自機の GNSS は混ぜません**（無線で得た情報だけを置く場所です）。
     唯一の例外が末尾の `own_lat / own_lon / dist_m` で、**受信した瞬間のボート自身の位置と
     機体までの距離**です。RSSI と距離が同じ行に揃っていないと「距離 vs RSSI」が引けず、
@@ -1081,7 +1091,7 @@ SD が無い・壊れている機体でも警報の音声が鳴るようにす�
 | 分類 | ファイル名 |
 |---|---|
 | ナビゲーション | `track.wav` / `course_left.wav` / `course_right.wav` / `destination_change.wav` / `destination_toofar.wav` / `fixed.wav` |
-| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_setting.wav`（IMU/ESKF 画面に入ったときの注意案内）/ `eskf_apply_done.wav`（較正完了）/ `eskf_calib_oldday.wav`（較正した日から日付をまたいだ。地上で起動ごとに 1 回）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
+| 姿勢（ESKF） | `bank_warning.wav`（バンク角警告）/ **`eskf_calib_required.wav`（較正のやり直しが必要。地上でのみ 120 秒ごと）** / `guide_eskf_pitch.wav`・`guide_eskf_roll.wav`・`guide_eskf_heading.wav`・`guide_eskf_apply.wav`（IMU/ESKF 画面の入口の案内。画像 3 枚と 1 枚ずつ）/ `guide_tas_1.wav`・`guide_tas_curve.wav`（推定 TAS の案内。仮の音声）/ `eskf_apply_done.wav`（較正完了）/ `eskf_calib_oldday.wav`（較正した日から日付をまたいだ。地上で起動ごとに 1 回）/ `roll_check.wav`・`pitch_check.wav`（待機中のロール・ピッチのズレ）/ `change_setroll_caution.wav`（SET ROLL を 0 以外にしたときの警告） |
 | 無線（PONS Link） | `sender_mode.wav` / `receiver_mode.wav` / `link_no_signal.wav` / `link_no_signal_repeat.wav`（無信号の継続時・120秒周期） / `link_no_module.wav` / `link_dup_sender.wav` / `link_override_dest.wav` / `link_setting_changed.wav` / `battery_low_sender.wav`（機体の電池低下を受信側で知らせる）/ `link_ch_busy.wav`・`wireless_busy.wav`・`link_ch_noisy.wav`（送信前チェック） |
 | その他 | `battery_low.wav` / `opening.wav` |
 | ネタ | `matane.wav` / `arigato.wav` / `baibai.wav` / `makenna.wav` / `tsuyoi.wav` |
@@ -1104,6 +1114,7 @@ SD が無い・壊れている機体でも警報の音声が鳴るようにす�
   （**ロゴを差し替えたら必ず回すこと**。焼き直さないと古いロゴのまま。`--check` で照合できる）
 * `tools/gen_link_icons.py`：PONS Link の電波アイコン（アンテナ本数・送信の弧）を生成
 * `tools/gen_wav_flash.py`：`wav/*.wav` を本体 FLASH 用の `src/flashdata/wav_data.cpp` へ変換
+* `tools/gen_guide_flash.py`：案内画像（IMU/ESKF 画面の入口 `tools/imu_guide/*.svg`、推定 TAS `tools/tas_guide/*.svg`）を本体 FLASH 用の `src/flashdata/*_guide_data.cpp` へ変換（`--render` で SVG を Chrome で等倍の PNG にする。`--check` で一致を検査）
   * `--check` で `wav/` と焼き込み済みデータを CRC32 照合（リリース前チェック用）
   * ソース中の `"wav/*.wav"` を全部突き合わせ、`wav/` に無い名前があればビルド前に止める
 * `tools/clean_wav8.py`：`wav/` の音声の無音トリム・ヒス除去・ラウドネス統一

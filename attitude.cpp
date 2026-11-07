@@ -5,7 +5,7 @@
 //           数式・座標系・マウント補正の説明は attitude.h を参照。
 //           PC 側の tools/imulog/eskf.py と対になっている。片方を直したら両方直すこと。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/03
+// Updated : 2026/11/07
 // ============================================================
 
 #include <Arduino.h>
@@ -119,8 +119,20 @@ static float    wind_fill_s_ = 0.0f;            // 平滑化がたまった秒�
 
 // ---- 平均ピッチ ----
 // 瞬時値は周期 2〜6.7 秒の振動が主で std 1.23 度あるので、巡航のトリム状態は平均で見る。
-static float pitch_avg_ = 0.0f;
-static float pitch_avg_fill_s_ = 0.0f;    // 平均がたまった時間 [s]
+// ★ **過去 PITCH_AVG_SEC 秒の移動平均**（2026-11-07〜）。それまでは時定数 10 秒の一次遅れで、
+//   古い値の重みが 0 にならず、発進から 10 秒経っても地上の姿勢が 37%、30 秒でも 5% 残っていた
+//   （台 −3.5° からだと推定 TAS が 10 秒で 0.5m/s 速く出る）。移動平均なら 10 秒で完全に抜ける。
+//   2025 年の対気速度センサーのログでも、一次遅れより当たりが良く遅れも短い（docs/pons_tas.md §2.4）。
+// 0.1 秒ごとの小計（ピッチ×時間と時間）を PITCH_AVG_NBIN 個の輪に貯め、満ちたら平均する。
+// IMU の 1 サンプルずつ貯めると 2500 個（10KB）要るので、小計にしてある。
+#define PITCH_AVG_BIN_S 0.1f
+static constexpr int PITCH_AVG_NBIN = (int)(PITCH_AVG_SEC / PITCH_AVG_BIN_S + 0.5f);
+static float pavg_bin_sum_[PITCH_AVG_NBIN];   // 小計: ∫ピッチ dt [度·s]
+static float pavg_bin_dt_[PITCH_AVG_NBIN];    // 小計: ∫dt [s]
+static int   pavg_head_  = 0;                 // 次に書く小計の位置
+static int   pavg_count_ = 0;                 // 埋まっている小計の数（PITCH_AVG_NBIN で頭打ち）
+static float pavg_cur_sum_ = 0.0f, pavg_cur_dt_ = 0.0f;   // いま貯めている小計
+static float pitch_avg_ = 0.0f;           // 満ちるまでは、それまでに貯まった分の平均
 
 // ---- 直進中のロール自動トリム ----
 // 直進中のロールは理論上 0。ズレをゆっくり戻して誤警報の連発を防ぐ。
@@ -148,7 +160,10 @@ static volatile float airspeed_max_ = AIRSPEED_MAX_MPS;
 //     V(θ) = V0 * sqrt( K / (K + θ) )
 // ピッチが上がるほど遅く、下がるほど速い。上下限でクランプし、
 // この機体で起こり得ない対気速度を出さないようにする。
-static float airspeed_from_pitch(float pitch_deg) {
+// clamped を渡すと、上下限に張り付いたか（推定ではなく端の値か）を返す。
+// 推定 TAS の表示で箱を灰色にするのに使う（docs/pons_tas.md §4.3）。
+static float airspeed_from_pitch(float pitch_deg, bool *clamped = nullptr) {
+    if (clamped) *clamped = false;
     // 入力が NaN／無限大なら設計点を返す。比較が全部 false になるので
     // 下のクランプでは捕まえられず、そのまま風の LPF を殺す（下記参照）。
     // ここを抜けた値は必ず有限なので、以降は d の符号だけ見ればよい。
@@ -161,12 +176,45 @@ static float airspeed_from_pitch(float pitch_deg) {
     //   電源を切るまで風が出なくなる。ここで打ち切る。
     //   物理的には「揚力がゼロになるピッチまで機首を下げた」状況で、
     //   そこまで下げれば対気速度は上限側に張り付く。
-    if (d <= 0.01f) return airspeed_max_;
+    if (d <= 0.01f) { if (clamped) *clamped = true; return airspeed_max_; }
     float v = airspeed_v0_ * sqrtf(k / d);
     // 上下限が逆に設定されていても NaN にはならない（max 側が残るだけ）。
-    if (v < airspeed_min_) v = airspeed_min_;
-    if (v > airspeed_max_) v = airspeed_max_;
+    if (v < airspeed_min_) { v = airspeed_min_; if (clamped) *clamped = true; }
+    if (v > airspeed_max_) { v = airspeed_max_; if (clamped) *clamped = true; }
     return v;
+}
+
+// ---- 平均ピッチ（過去 PITCH_AVG_SEC 秒の移動平均）----
+static void pitch_avg_reset() {
+    for (int i = 0; i < PITCH_AVG_NBIN; i++) { pavg_bin_sum_[i] = 0.0f; pavg_bin_dt_[i] = 0.0f; }
+    pavg_head_ = 0;
+    pavg_count_ = 0;
+    pavg_cur_sum_ = pavg_cur_dt_ = 0.0f;
+    pitch_avg_ = 0.0f;
+}
+
+// 平均が PITCH_AVG_SEC 秒ぶん満ちているか（満ちる前は発進直後と同じく地上の値しか無い）。
+static bool pitch_avg_full() { return pavg_count_ >= PITCH_AVG_NBIN; }
+
+// 1 サンプル足す。小計が 0.1 秒ぶん貯まったら輪へ移し、輪全体で平均し直す。
+// ★ 合計を足し引きで持ち回さず、毎回 PITCH_AVG_NBIN 個を足し直す（0.1 秒に 1 回なので軽い）。
+//   持ち回すと float の丸めが飛行中ずっと積もる。
+// ★ 時間で重みを付ける（小計は dt の和）。IMU の読み出しが一瞬空いて dt が伸びた回も、
+//   その長さぶんだけ効く。
+static void pitch_avg_push(float p, float dt) {
+    if (!(p > -1000.0f && p < 1000.0f) || !(dt > 0.0f)) return;   // NaN を輪に入れない
+    pavg_cur_sum_ += p * dt;
+    pavg_cur_dt_  += dt;
+    if (pavg_cur_dt_ < PITCH_AVG_BIN_S) return;
+    pavg_bin_sum_[pavg_head_] = pavg_cur_sum_;
+    pavg_bin_dt_[pavg_head_]  = pavg_cur_dt_;
+    pavg_head_ = (pavg_head_ + 1) % PITCH_AVG_NBIN;
+    if (pavg_count_ < PITCH_AVG_NBIN) pavg_count_++;
+    pavg_cur_sum_ = pavg_cur_dt_ = 0.0f;
+    // 満ちる前は 0 番から順に埋まっているので、先頭 pavg_count_ 個がそのまま有効
+    float s = 0.0f, t = 0.0f;
+    for (int i = 0; i < pavg_count_; i++) { s += pavg_bin_sum_[i]; t += pavg_bin_dt_[i]; }
+    if (t > 0.0f) pitch_avg_ = s / t;
 }
 
 // 前方宣言。attitude_on_gyro() が 平均ピッチとロール自動トリムの
@@ -394,8 +442,7 @@ void attitude_setup() {
     last_gyro_us_ = 0;
     last_gnss_vel_us_ = 0;
     gnss_vel_seen_ = false;
-    pitch_avg_ = 0.0f;
-    pitch_avg_fill_s_ = 0.0f;
+    pitch_avg_reset();
     // roll_trim_deg_ はここでは触らない。level_roll_off_ と同じく SD から復元する値で、
     // 設定の読み込み（Core1 の setup_sd）と この関数（Core0 の setup）は並行に走るため、
     // ここで 0 にすると復元済みの値を消してしまうことがある。
@@ -782,10 +829,8 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
                          (fabsf(r) > roll_limit || fabsf(p) > OFF_MOUNT_DEG);
         if (off_mount_now_) needs_apply_ = true;
 
-        // 30 秒の一次遅れで平均ピッチを作る
-        const float a = dt / (PITCH_AVG_SEC + dt);
-        pitch_avg_ += (p - pitch_avg_) * a;
-        if (pitch_avg_fill_s_ < PITCH_AVG_SEC * 2.0f) pitch_avg_fill_s_ += dt;
+        // 過去 PITCH_AVG_SEC 秒の移動平均で平均ピッチを作る（上の pavg_* の説明）
+        pitch_avg_push(p, dt);
 
         const float sp = sqrtf(v_[0]*v_[0] + v_[1]*v_[1]);
         // 直進しているか。ロール自動トリムと風推定で共用する。
@@ -811,7 +856,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         //   同飛行の 94% は直進だったので、捨てる情報はごくわずか。
         //   ※ ESKF のヨー推定自体は beta の影響を受けない（空力の仮定を含まないため）。
         if (rpy_enabled_ && wind_enabled_ && straight_flight &&
-            pitch_avg_fill_s_ >= PITCH_AVG_SEC) {
+            pitch_avg_full()) {
             const float va  = airspeed_from_pitch(pitch_avg_);
             // y は真方位（北=0・東=90）。ENU では E=sin, N=cos。
             const float ya  = y * (float)M_PI / 180.0f;
@@ -1221,7 +1266,19 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 }
 
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
-bool  attitude_pitch_avg_valid()   { return pitch_avg_fill_s_ >= PITCH_AVG_SEC; }
+bool  attitude_pitch_avg_valid()   { return pitch_avg_full(); }
+
+// 推定 TAS（平均ピッチを対気速度モデルで換算した値）。平均が満ちていなければ false。
+// ★ 姿勢機能が OFF・ESKF 未収束でも平均ピッチ自体は回っているので、出してよいかは
+//   呼び出し側（tas.cpp）が平均ピッチと同じ条件で決める。
+bool attitude_get_tas(float &mps, bool &clamped) {
+    if (!pitch_avg_full()) return false;
+    mps = airspeed_from_pitch(pitch_avg_, &clamped);
+    return true;
+}
+float attitude_airspeed_from_pitch(float pitch_deg, bool *clamped) {
+    return airspeed_from_pitch(pitch_deg, clamped);
+}
 // ============================================================
 //  SD の settings.txt から復元する角度の検証
 // ============================================================

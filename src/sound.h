@@ -6,7 +6,7 @@
 //           旋回角速度(degpersecond)に連動した音程更新の
 //           関数プロトタイプ宣言。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/06
+// Updated : 2026/11/07
 // ============================================================
 
 #ifndef SOUND_H
@@ -23,6 +23,9 @@
                     int excl_group = WAV_EXCL_NONE);
   void update_tone(float degpersecond);
   void playTone(int freq,int duration, int counter,int priority = 1, int min_volume = 0, bool solo_play = false);
+  // Core1 専用: 排他グループ excl_group（WAV_EXCL_*）の音声を、再生中のものも pending も止める。
+  // 案内の画面を抜けたときに、そのページの読み上げを後に残さないため（mysd の TASK_STOP_WAV）。
+  void stop_wav_excl_group_core1(int excl_group);
   // バリオメーター音更新（Core0 から毎ループ呼ぶ）。
   // mute: 充電中かつマウント外（運搬中）。警報と同じ条件を loop() から渡す
   //       （warn_muted_off_mount()。音の層から .ino を呼び返さないため引数にした）。

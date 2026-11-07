@@ -1,0 +1,56 @@
+<svg width="240" height="320" viewBox="0 0 240 320" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',sans-serif" font-weight="700">
+  <!-- IMU/ESKF 入口の案内 3/3: 本体の向き。作り方は tools/imu_guide/prompt.md -->
+  <rect width="240" height="320" fill="#FFFFFF"/>
+
+  <!-- 見出し帯 -->
+  <rect x="0" y="0" width="240" height="36" fill="#0000FF"/>
+  <text x="8" y="25" font-size="18" fill="#FFFFFF">APPLY の前に確認</text>
+  <text x="232" y="25" font-size="18" fill="#FFFFFF" text-anchor="end">3/3</text>
+
+  <!-- 項目名 -->
+  <text x="12" y="66" font-size="20" fill="#000000">本体の向き ＝ 進行方向</text>
+  <text x="12" y="92" font-size="18" fill="#FF0000">この向きは較正で直せない</text>
+
+  <!-- 2 つの図に共通の機体（真上から見た人力飛行機。機首が上）。原点は装置の中心 -->
+  <defs>
+    <g id="hpa">
+      <line x1="0" y1="-14" x2="0" y2="50" stroke="#000000" stroke-width="4"/>
+      <rect x="-50" y="7" width="100" height="6" fill="#000000"/>
+      <line x1="-15" y1="47" x2="15" y2="47" stroke="#000000" stroke-width="4"/>
+    </g>
+    <!-- 装置（横長の箱）と、装置の「前」を示す矢印 -->
+    <g id="unit">
+      <rect x="-8" y="-4" width="16" height="7" fill="#000000"/>
+      <line x1="0" y1="-4" x2="0" y2="-24" stroke="#000000" stroke-width="2"/>
+      <polygon points="0,-34 -6,-23 6,-23" fill="#000000"/>
+    </g>
+  </defs>
+
+  <!-- 左: 正しい（装置の前が機首と同じ向き） -->
+  <polyline points="13,112 19,118 30,105" fill="none" stroke="#007D00" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <use href="#hpa" x="62" y="136"/>
+  <use href="#unit" x="62" y="136"/>
+
+  <!-- 右: ずれている（装置が 25° 回っている。誇張） -->
+  <line x1="129" y1="105" x2="141" y2="117" stroke="#FF0000" stroke-width="4" stroke-linecap="round"/>
+  <line x1="141" y1="105" x2="129" y2="117" stroke="#FF0000" stroke-width="4" stroke-linecap="round"/>
+  <use href="#hpa" x="178" y="136"/>
+  <line x1="178" y1="122" x2="178" y2="102" stroke="#7B797B" stroke-width="2" stroke-dasharray="4 3"/>
+  <!-- 中心線と矢印の間の角度。装置にかからないよう、半径 10〜28 の帯の扇形を塗る -->
+  <path d="M 178 126 L 178 108 A 28 28 0 0 1 189.8 110.6 L 182.2 126.9 A 10 10 0 0 0 178 126 Z" fill="#FFB600"/>
+  <g transform="translate(178 136) rotate(25)">
+    <use href="#unit"/>
+  </g>
+
+  <!-- 本文 -->
+  <text x="120" y="214" font-size="19" fill="#000000" text-anchor="middle">まっすぐ向けて固定する</text>
+  <text x="120" y="238" font-size="16" fill="#000000" text-anchor="middle">ずれは横風と見分けがつかず</text>
+  <text x="120" y="258" font-size="16" fill="#000000" text-anchor="middle">風の推定が狂う</text>
+  <text x="120" y="282" font-size="15" fill="#7B797B" text-anchor="middle">3°のずれで約 0.4m/s</text>
+
+  <!-- 下端の案内（「へ」と三角形の間は 12px）。
+       「スイッチを押すと較正の画面へ」は 14 文字 = 224px で、三角形と並べると入らない -->
+  <rect x="0" y="292" width="240" height="2" fill="#7B797B"/>
+  <text x="213" y="314" font-size="16" fill="#000000" text-anchor="end">スイッチで較正の画面へ</text>
+  <polygon points="225,301 235,308 225,315" fill="#000000"/>
+</svg>

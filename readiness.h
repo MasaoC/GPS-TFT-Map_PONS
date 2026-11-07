@@ -5,7 +5,7 @@
 //           1 度だけ「準備完了」と読み上げる。そろっていなければ何が足りないかを
 //           設定画面の右上に出す（描画は display_tft.cpp の draw_setting_mode）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/11/07
 // ============================================================
 #ifndef READINESS_H
 #define READINESS_H
@@ -18,7 +18,7 @@
 #define RDY_ESKF   0x0004  // 姿勢推定がまだ収束していない
 #define RDY_CALIB  0x0008  // 較正のやり直しが必要（マウントから外された）。日付をまたいだだけでは立てない
 #define RDY_ATT    0x0010  // 地上で姿勢が申告値（SET ROLL / SET PITCH）からずれ続けている
-#define RDY_SET    0x0020  // 設定画面に赤丸がある（IMU と無線の行は ESKF・CALIB・LINK で見る）
+#define RDY_SET    0x0020  // 設定画面に赤の × がある（IMU と無線の行は ESKF・CALIB・LINK で見る）
 #define RDY_USB    0x0040  // USB がつながっている
 #define RDY_BATT   0x0080  // 電池残量が READY_BATT_MIN_PERCENT 未満・電源経路の異常
 #define RDY_SD     0x0100  // SD カードが使えない

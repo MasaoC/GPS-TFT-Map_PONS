@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261027
-#define BUILDVERSION "0.998v7"
+#define BUILDDATE 20261107
+#define BUILDVERSION "0.999v7"
 
 // ============================================================
 //  基板（初代 v7。BNO085 を i2c1 で実装）
@@ -273,6 +273,12 @@
 // ★ 「鳴らさない」指定ではない。割り込まれた側を救済しないだけで、優先度の判定は同じ。
 #define WAV_EXCL_NONE      0   // 排他なし（既定）。割り込まれたら従来どおり救済する
 #define WAV_EXCL_LINKMODE  1   // 無線モードの読み上げ（sender_mode / receiver_mode / link_off）
+// IMU/ESKF 画面の入口の案内（guide_eskf_pitch / roll / heading / apply）。
+// ページを送ると次の音声が前の音声を打ち切る（これが「スキップ」。前のページの説明は鳴り直さない）。
+#define WAV_EXCL_ESKF_GUIDE 3
+// 推定 TAS の案内（guide_tas_1 / guide_tas_curve）。ページを送ると前の音声が切れ、
+// 案内を抜けると TASK_STOP_WAV で止める（IMU の案内のように最後に流す 1 文が無いため）。
+#define WAV_EXCL_TAS_GUIDE  4
 
 #define SIN_VOLUME 0.15f  // Sin波の振幅倍率（0〜1.0f）。WAVと音量を合わせるため小さめにしてあるが、バリオが小さいと感じる場合は上げる。0.5fで±254、1.0fで±508（±512ヘッドルーム）。
 #define VARIO_VOL_SCALE 3
@@ -402,6 +408,7 @@
 #define MODE_IMUDETAIL 8     // IMU / 姿勢 ESKF の詳細画面
 #define MODE_WIRELESS 9      // PONS Link（機体⇄ボート無線）の設定画面
 #define MODE_CHSCAN 10       // 選べるチャンネルの雑音を調べて一覧にする画面（WIRELESS の Ch scan から）
+#define MODE_PCCONNECT 11    // PC接続・Web Serial データ転送画面
 
 // ============================================================
 //  内蔵ベクタ地図
@@ -1280,18 +1287,6 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define ROLL_TRIM_WARN_DEG      1.5f    // これ以上でオレンジ（ステータス丸も緑から外す）
 #define ROLL_TRIM_ALERT_DEG     3.0f    // これ以上で赤
 
-// ---- リプレイ用 ESKF 結果ログ ----
-// 「そのとき画面に何が出ていたか」を後から再現するためのログ。
-// 旧 euler/ は BNO085 由来だったが、ESKF 導入で役割が変わったので名前を変えた。
-// 旧ファイルは再生時のフォールバックとして読む（IMU_REPLAYDATA_LEGACY_DIR）。
-#define IMU_REPLAYDATA_DIR         "imu_replaydata"
-#define IMU_REPLAYDATA_LEGACY_DIR  "euler"
-#define IMU_REPLAYDATA_INTERVAL_MS  200UL   // 5Hz
-// 再生中、姿勢ログのサンプルと CSV 行の時刻がこれ以上離れたら「その時刻のデータは
-// 無い」とみなして非表示にする。姿勢ログが飛行 CSV より先に終わっている場合に、
-// 最後のサンプルを貼り付けたまま固まって見えるのを防ぐ。
-#define REPLAY_ATT_MAX_AGE_MS      2000UL
-
 // ---- 平均ピッチ ----
 // 瞬時ピッチは振動するため、巡航のトリム状態は平均で見る。
 //
@@ -1304,7 +1299,24 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 30 秒まで延ばしても分解能は 0.37→0.34 度しか改善しない。
 // 逆に長すぎると、周期 20〜100 秒の「本当のトリム変化」まで潰してしまう。
 // 試験飛行が短いこともあるため、有効になるまでの待ち時間が短い 10 秒を採る。
+// ★ **平均は過去 10 秒の移動平均**（attitude.cpp の pitch_avg_push。2026-11-07〜）。
+//   上の数字は移動平均の窓で測ったものだが、それまでの実装は時定数 10 秒の一次遅れで、
+//   古い値が残り続けた（発進 10 秒後も地上の姿勢が 37%）。推定 TAS を出すにあたって直した
+//   （docs/pons_tas.md §2.4）。
 #define PITCH_AVG_SEC          10.0f
+
+// ---- 推定 TAS（ヘッダー右の大きい枠。docs/pons_tas.md）----
+// TAS を選んでいても、地上では数字に横線を引いて消し、飛び出してから線を外す
+// （地上の TAS は意味が無い。台の上で止まっていても平均ピッチから 7.3 のように出てしまう）。
+// 数字は残す（傾ければ動くので、推定が働いていることを地上で確かめられる。2026-11-07 までは「-.-」だった）。
+// 対地速度が TAS_AIR_GS_MPS 以上で TAS_SWITCH_HOLD_MS 続いたら線を外し、
+// TAS_GND_GS_MPS 未満で同じだけ続いたら横線に戻す。判定は tas.cpp の tas_tick()。
+// ★ 10 秒は平均ピッチの窓（PITCH_AVG_SEC）と同じ。窓が飛行中の値だけになったところで線を外す
+//   （台の上を 3m/s 以上で走っている 1〜2 秒だけはまだ窓に入っている）。
+//   30 秒にしなかったのは、TF（試験飛行）の短い飛行で線が外れないうちに降りてしまうため（2026-11-07）。
+#define TAS_AIR_GS_MPS        3.0f
+#define TAS_GND_GS_MPS        2.0f
+#define TAS_SWITCH_HOLD_MS    10000UL
 
 // ヨー（機首方位）を信用してよい推定標準偏差 σ の上限 [度]。
 // ESKF のヨーは水平加速度がある間しか可観測にならず、等速直進が続くと σ が育つ。
@@ -1364,8 +1376,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ★ 区分線形をやめてこの形にした理由。**これは近似曲線ではなく式そのもの**。
 //   定常飛行では 揚力 = 重量 なので
 //       ½ρV²S・CL = W    →    V ∝ 1/sqrt(CL)
-//   CL が迎角に対して直線なら CL(θ) ∝ (θ + K) と書ける。K は
-//   **揚力がゼロになるピッチまでの角度**で、K=10 は「ピッチ -10 度で揚力ゼロ」の意味。
+//   CL が迎角に対して直線なら CL = a(α − α0L)、水平飛行では α = θ + i（i は θ = 0 の姿勢での
+//   主翼の迎角＝取付角）なので CL(θ) = a(θ + K)、**K = i − α0L**（取付角 − 零揚力角）と書ける。
+//   K は揚力係数ではなく**角度**で、「θ = 0 の姿勢から揚力ゼロの姿勢までの角度」。
+//   K=10 は「ピッチ -10 度で揚力ゼロ」の意味。揚力傾斜 a は比を取ると消え、V0 の側に入る。
+//   ★ θ = 0 は本体の 0（APPLY のあと平らな地面に置いた姿勢）。取付角 i もこの姿勢から測ること
+//   （docs/pons_tas.md §2.2・§3）。
 //   これを上へ代入しただけ。線形補間と違い、当てはめた範囲の外でも形が崩れない。
 //   従来の 3 点（-4度/9.0、0度/7.0、+5度/5.8）を K=10 の曲線は最大 0.17m/s で通る
 //   （各点を厳密に通す K は 10.1 と 11.0 で、両端から求めた値もほぼ一致する）。
@@ -1375,8 +1391,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   （`airspeed_v0` / `airspeed_k` / `airspeed_min` / `airspeed_max`。README 参照）。
 //   読み込んだ値は起動時に log.txt の AIRSPEED MODEL 行に残る。
 //   使うピッチは瞬時値ではなく平均（瞬時値は std 1.23 度の振動があるため）。
+//   同じ値を推定 TAS としてヘッダー右の大きい枠にも出せる（tas.cpp。docs/pons_tas.md）。
 #define AIRSPEED_V0_MPS        7.0f   // V0: 巡航ピッチ 0 度での対気速度 [m/s]
-#define AIRSPEED_CURVE_K_DEG  10.0f   // K : 揚力がゼロになるピッチまでの角度 [度]
+#define AIRSPEED_CURVE_K_DEG  10.0f   // K : θ=0 の姿勢から揚力ゼロの姿勢までの角度（取付角 − 零揚力角）[度]
 #define AIRSPEED_MIN_MPS       5.8f   // 推定の下限 [m/s]（この機体で起こり得ない値を出さない）
 #define AIRSPEED_MAX_MPS       9.0f   // 推定の上限 [m/s]
 

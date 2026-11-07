@@ -1,0 +1,35 @@
+<svg width="240" height="320" viewBox="0 0 240 320" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',sans-serif" font-weight="700">
+  <!-- IMU/ESKF 入口の案内 2/3: SET ROLL。作り方は tools/imu_guide/prompt.md -->
+  <rect width="240" height="320" fill="#FFFFFF"/>
+
+  <!-- 見出し帯 -->
+  <rect x="0" y="0" width="240" height="36" fill="#0000FF"/>
+  <text x="8" y="25" font-size="18" fill="#FFFFFF">APPLY の前に確認</text>
+  <text x="232" y="25" font-size="18" fill="#FFFFFF" text-anchor="end">2/3</text>
+
+  <!-- 項目名 -->
+  <text x="12" y="68" font-size="26" fill="#000000">SET ROLL</text>
+  <text x="12" y="96" font-size="22" fill="#000000">＝ 機体の左右の傾き</text>
+
+  <!-- 図: 正面から見た人力飛行機。主翼はまっすぐ水平で、すぐ下の水平線と平行 -->
+  <line x1="12" y1="150" x2="228" y2="150" stroke="#7B797B" stroke-width="2" stroke-dasharray="6 4"/>
+  <!-- T 尾翼（主翼の後ろに見える） -->
+  <line x1="120" y1="134" x2="120" y2="112" stroke="#000000" stroke-width="4"/>
+  <line x1="102" y1="112" x2="138" y2="112" stroke="#000000" stroke-width="4"/>
+  <!-- 主翼 -->
+  <rect x="12" y="134" width="216" height="6" fill="#000000"/>
+  <!-- パイロンと操縦席のフェアリング -->
+  <line x1="120" y1="140" x2="120" y2="154" stroke="#000000" stroke-width="4"/>
+  <ellipse cx="120" cy="170" rx="12" ry="16" fill="#FFFFFF" stroke="#000000" stroke-width="4"/>
+
+  <!-- 本文 -->
+  <text x="120" y="224" font-size="20" fill="#000000" text-anchor="middle">ふつうは 0°</text>
+  <text x="120" y="248" font-size="19" fill="#000000" text-anchor="middle">翼を水平にして較正する</text>
+  <text x="120" y="268" font-size="15" fill="#7B797B" text-anchor="middle">片翼を下げたまま較正する</text>
+  <text x="120" y="286" font-size="15" fill="#7B797B" text-anchor="middle">ときだけ、その角度を入れる</text>
+
+  <!-- 下端の案内（「へ」と三角形の間は 12px） -->
+  <rect x="0" y="292" width="240" height="2" fill="#7B797B"/>
+  <text x="213" y="314" font-size="16" fill="#000000" text-anchor="end">スイッチを押すと次へ</text>
+  <polygon points="225,301 235,308 225,315" fill="#000000"/>
+</svg>

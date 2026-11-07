@@ -1,11 +1,12 @@
 // ============================================================
 // File    : display_pages.cpp
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
-// Role    : 地上で見る詳細画面の描画（VARIO 1-2 / GNSS DETAIL 1-3 / CH SCAN）。
+// Role    : 地上で見る詳細画面の描画（VARIO 1-2 / GNSS DETAIL 1-3 / CH SCAN /
+//           IMU/ESKF 画面の入口の案内画像）。
 //           display_tft.cpp から分けただけで、役割は同じ「描画だけ」。
 //           判断や発報は置かない（CLAUDE.md の約束）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //
 // ★ **スプライトとフォントは display_tft.cpp のものを借りている**
@@ -21,6 +22,7 @@
 #include "settings.h"
 #include "display_tft.h"
 #include "attitude.h"
+#include "tas.h"         // 推定 TAS の案内（曲線の画面）
 #include "link.h"
 #include "e220.h"
 #include "gnss.h"
@@ -33,23 +35,218 @@
 #include "imu.h"
 #include "imu_sensor.h"
 #include "src/vectormap.h"
+#include "src/flashdata/imu_guide_data.h"
+#include "src/flashdata/tas_guide_data.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"
 
 
-// 衛星の方位角・仰角をスカイプロット（円形の衛星配置図）上の X 座標に変換する。
-// 仰角 0°（水平）→ 外周、90°（天頂）→ 中心。方位角が X/Y の方向を決める。
-static int skyplot_x(float azimuth, float elevation) {
-  const int shift_left = 10;
-  const int radius = SCREEN_WIDTH / 2 - shift_left;
-  return (SCREEN_WIDTH / 2) + (int)(cos(radians(azimuth)) * (radius) * (1 - elevation / 90.0)) - shift_left;
+// 全画面の案内画像を 1 枚出す（IMU の案内と推定 TAS の案内で共用）。
+// 画像は FLASH にある（メモリマップされているので pushImage にそのまま渡せる）。
+// スプライトは通さない（240x320 は backscreen より大きく、RAM に写す理由も無い）。
+// ★ 一度に送らず 40 行ずつに分け、合間に IMU を引き取る（CLAUDE.md「IMU の読み出しを
+//   飢えさせない」）。1 枚 150KB を FLASH から読んで送るので、まとめて送ると
+//   SCH16T の 4ms の読み出し間隔をまたぐ。
+static void push_guide_image(const uint16_t *img, int w, int h) {
+  const int STRIP = 40;
+  // 生成物は素の RGB565 値。pushImage() は既定で色バイトを入れ替えて送るので、
+  // ここだけ true にして戻す（起動画面のロゴと同じ。display_tft.cpp）。
+  tft.setSwapBytes(true);
+  for (int y = 0; y < h; y += STRIP) {
+    const int rows = (h - y < STRIP) ? h - y : STRIP;
+    tft.pushImage(0, y, w, rows, img + y * w);
+    imu_service_if_due();
+  }
+  tft.setSwapBytes(false);
 }
 
-// 衛星の方位角・仰角をスカイプロット上の Y 座標に変換する（skyplot_x の Y 版）。
+// IMU / ESKF 画面の入口の案内（GPS_TFT_map.ino の imu_guide_*）。全画面の画像を 1 枚出すだけ。
+void draw_imu_guide(int page) {
+  if (page < 0 || page >= IMU_GUIDE_PAGES) return;
+  push_guide_image(IMU_GUIDE_DATA[page], IMU_GUIDE_W, IMU_GUIDE_H);
+}
+
+// 推定 TAS の案内 2/2: 対気速度モデル V(θ) = V0·√(K/(K+θ)) の曲線と、いまの点（docs/pons_tas.md §4.4）。
+// 横軸は平均ピッチ、縦軸は m/s。上下限（airspeed_min / max）で張り付く所は灰色。
+// 白抜きの丸がいまのピッチ（傾けるとすぐ動く）、青い丸が過去 10 秒の平均（大きい枠に出る値）。
+// ★ いまの係数（settings.txt の airspeed_*）で描くので、係数を確かめる画面にもなる。
+// ★ 自機の値だけを描く。地上で設定するときの画面なので、ミラー中でも受信機自身の IMU。
+//   日本語は描けない（本体に日本語フォントが無い）ので英字のラベルだけ。説明は 1/2 の画像と音声。
+static void draw_tas_curve() {
+  // ---- 見出し（IMU/ESKF 画面と同じ形）----
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.setTextSize(2);
+  header_footer.setCursor(1, 11);
+  header_footer.print("TAS estimate   2/2");
+  header_footer.pushSprite(0, -10);
+
+  // ---- 曲線 ----
+  backscreen.fillScreen(COLOR_WHITE);
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  const float XMIN = -6.0f, XMAX = 10.0f;            // 平均ピッチ [度]
+  const float vlo = attitude_get_airspeed_min(), vhi = attitude_get_airspeed_max();
+  float ymin = floorf(fminf(vlo, vhi)) - 1.0f;
+  float ymax = ceilf(fmaxf(vlo, vhi)) + 1.0f;
+  if (ymax - ymin < 2.0f) ymax = ymin + 2.0f;
+  const int X0 = 30, X1 = 232, Y0 = 16, Y1 = 172;    // 描く範囲（backscreen 内）
+  auto px = [&](float th) { return X0 + (int)lroundf((th - XMIN) / (XMAX - XMIN) * (X1 - X0)); };
+  auto py = [&](float v)  { return Y1 - (int)lroundf((v - ymin) / (ymax - ymin) * (Y1 - Y0)); };
+  auto clampth = [&](float th) { return th < XMIN ? XMIN : (th > XMAX ? XMAX : th); };
+
+  // 目盛り（2 度ごと・1 m/s ごと）
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  for (int th = (int)XMIN; th <= (int)XMAX; th += 2) {
+    const int x = px((float)th);
+    backscreen.drawFastVLine(x, Y0, Y1 - Y0, th == 0 ? COLOR_GRAY : TFT_LIGHTGREY);
+    char b[6];
+    snprintf(b, sizeof(b), th == 0 ? "0" : "%+d", th);
+    backscreen.setCursor(x - (int)strlen(b) * 3, Y1 + 4);
+    backscreen.print(b);
+  }
+  for (int v = (int)ceilf(ymin); v <= (int)floorf(ymax); v++) {
+    const int y = py((float)v);
+    backscreen.drawFastHLine(X0, y, X1 - X0, TFT_LIGHTGREY);
+    backscreen.setCursor(X0 - 16, y - 3);
+    backscreen.printf("%2d", v);
+  }
+  backscreen.setCursor(2, 2);
+  backscreen.print("m/s");
+  backscreen.setCursor((X0 + X1) / 2 - 30, Y1 + 14);
+  backscreen.print("Pavg [deg]");
+
+  // 上下限（点線）
+  const float lims[2] = {vlo, vhi};
+  const char* const limname[2] = {"min", "max"};
+  for (int k = 0; k < 2; k++) {
+    const int y = py(lims[k]);
+    for (int x = X0; x < X1; x += 6) backscreen.drawFastHLine(x, y, 3, COLOR_GRAY);
+    char b[12];
+    snprintf(b, sizeof(b), "%s %.1f", limname[k], lims[k]);
+    backscreen.setCursor(k == 0 ? X0 + 4 : X1 - (int)strlen(b) * 6 - 2, y + (k == 0 ? 3 : -10));
+    backscreen.print(b);
+  }
+
+  // 曲線。張り付いている所は灰色（推定ではなく端の値）
+  int prev_x = -1, prev_y = 0;
+  for (int x = X0; x <= X1; x++) {
+    const float th = XMIN + (float)(x - X0) * (XMAX - XMIN) / (float)(X1 - X0);
+    bool c = false;
+    const int y = py(attitude_airspeed_from_pitch(th, &c));
+    if (prev_x >= 0) {
+      const uint16_t col = c ? COLOR_GRAY : COLOR_BLUE;
+      backscreen.drawLine(prev_x, prev_y,     x, y,     col);
+      backscreen.drawLine(prev_x, prev_y + 1, x, y + 1, col);
+    }
+    prev_x = x; prev_y = y;
+  }
+
+  // いまのピッチ（白抜き）と過去 10 秒の平均（青い丸）
+  if (attitude_ready()) {
+    float r, p, yw;
+    attitude_get_euler(r, p, yw);
+    const float th = clampth(p);
+    const int cx = px(th), cy = py(attitude_airspeed_from_pitch(th));
+    backscreen.drawCircle(cx, cy, 5, COLOR_BLACK);
+    backscreen.drawCircle(cx, cy, 4, COLOR_BLACK);
+  }
+  float tas = 0.0f; bool tas_c = false;
+  const bool avg_ok = attitude_get_tas(tas, tas_c);
+  const float pavg = attitude_get_pitch_avg_deg();
+  if (avg_ok) {
+    const int cx = px(clampth(pavg)), cy = py(tas);
+    for (int y = cy; y < Y1; y += 4) backscreen.drawPixel(cx, y, COLOR_BLUE);   // 横軸へ
+    for (int x = X0; x < cx; x += 4) backscreen.drawPixel(x, cy, COLOR_BLUE);   // 縦軸へ
+    backscreen.fillCircle(cx, cy, 6, tas_c ? COLOR_GRAY : COLOR_BLUE);
+  }
+  // 凡例（右上）
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.drawCircle(150, 6, 4, COLOR_BLACK);
+  backscreen.setCursor(158, 3);  backscreen.print("now");
+  backscreen.fillCircle(186, 6, 4, COLOR_BLUE);
+  backscreen.setCursor(194, 3);  backscreen.print("10s avg");
+
+  // いまの値（大きい枠に出る値）
+  backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  const int ly = 206;
+  backscreen.setCursor(4, ly);    backscreen.print("Pavg");
+  backscreen.setCursor(124, ly);  backscreen.print("TAS");
+  backscreen.setCursor(212, ly);  backscreen.print("m/s");
+  backscreen.loadFont(NM_FONT_MEDIUM);   // Arial_Black22: 数字と +-. だけ
+  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  char b[10];
+  if (avg_ok) snprintf(b, sizeof(b), "%+.1f", pavg); else snprintf(b, sizeof(b), "--");
+  backscreen.setCursor(44, ly - 4);  backscreen.print(b);
+  if (avg_ok) snprintf(b, sizeof(b), "%.1f", tas);  else snprintf(b, sizeof(b), "--");
+  backscreen.setTextColor(tas_c ? COLOR_GRAY : COLOR_BLUE, COLOR_WHITE);
+  backscreen.setCursor(158, ly - 4); backscreen.print(b);
+  backscreen.unloadFont();
+  backscreen.pushSprite(0, 40);
+
+  // ---- いまの係数と、抜け方 ----
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  header_footer.setCursor(4, 4);
+  header_footer.printf("V0 %.2f  K %.1f  min %.2f  max %.2f",
+                       attitude_get_airspeed_v0(), attitude_get_airspeed_k(), vlo, vhi);
+  header_footer.setCursor(4, 24);
+  header_footer.print("SD settings.txt");
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  const char* back = "Press: back >";
+  header_footer.setCursor(SCREEN_WIDTH - 4 - header_footer.textWidth(back), 20);
+  header_footer.print(back);
+  header_footer.unloadFont();
+  header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
+}
+
+// 推定 TAS の案内（GPS_TFT_map.ino の tas_guide_*）。0 = 説明の画像、1 = 曲線の画面。
+void draw_tas_guide(int page) {
+  if (page >= 0 && page < TAS_GUIDE_PAGES) {
+    push_guide_image(TAS_GUIDE_DATA[page], TAS_GUIDE_W, TAS_GUIDE_H);
+  } else if (page == TAS_GUIDE_PAGES) {
+    draw_tas_curve();
+  }
+}
+
+
+// スカイプロット（円形の衛星配置図）の中心と、地平線（仰角 0°）の円の半径。
+// 仰角 30° / 60° のリングも衛星の位置もこれで決める。
+// ★ 0.998v7 までは衛星だけ別の中心（10px 左）と半径（X 110 / Y 100）で描いていて、
+//   リングと位置が合っていなかった（仰角 30° の衛星が 30° のリングの内側に出る）。
+static const int SKY_CX = 120;
+static const int SKY_CY = 120;
+static const int SKY_R  = 118;
+
+// 仰角 → 中心からの距離。90°（天頂）→ 中心、0°（水平）→ 外周。
+// 地平線より下（負の仰角）も外周に置く（円の外へはみ出さない）。
+static float skyplot_r(float elevation) {
+  elevation = constrain(elevation, 0.0f, 90.0f);
+  return SKY_R * (1.0f - elevation / 90.0f);
+}
+
+// 方位は真北 0° から時計回り（UBX NAV-SAT の azim）。画面の上が N、右が E。
+// ★ 0.998v7 までは sin と cos が入れ替わっていて、北 0° の衛星が E の位置に、
+//   東 90° の衛星が N の位置に出ていた（北東–南西の線について鏡写し）。
+static int skyplot_x(float azimuth, float elevation) {
+  return SKY_CX + (int)lroundf(sinf(radians(azimuth)) * skyplot_r(elevation));
+}
 static int skyplot_y(float azimuth, float elevation) {
-  const int height = SCREEN_WIDTH;
-  const int radius = SCREEN_WIDTH / 2 - 20;
-  const int shift_down = 0;
-  return (height / 2) - (int)(sin(radians(azimuth)) * (radius) * (1 - elevation / 90.0)) + shift_down;
+  return SKY_CY - (int)lroundf(cosf(radians(azimuth)) * skyplot_r(elevation));
+}
+
+// 星座ごとの色（星座図・フッター・ヘッダーの凡例で同じ）。
+static uint16_t sat_color(int satelliteType) {
+  switch (satelliteType) {
+    case SATELLITE_TYPE_QZSS:    return COLOR_RED;
+    case SATELLITE_TYPE_GPS:     return COLOR_CYAN;
+    case SATELLITE_TYPE_GLONASS: return COLOR_GREEN;
+    case SATELLITE_TYPE_GALILEO: return COLOR_BLUE;
+    case SATELLITE_TYPE_BEIDOU:  return COLOR_ORANGE;
+    default:                     return COLOR_GRAY;
+  }
 }
 
 // VARIO 1/2: センサー接続状況 + VSI 全比較 + MS5611 + GNSS 垂直。
@@ -494,10 +691,74 @@ void draw_variodetail(int page) {
 }
 
 
+// 仰角・方位がまだ分からない衛星（posKnown == false）をフッターに並べる。
+// 星座図に描くと全部が同じ点に重なって読めないため（gnss.cpp の handle_navsat()）。
+// 位置が分かった衛星は次の描き直しで星座図へ移り、ここから消える。
+//   - 記号は星座図と同じ: 色＝星座、塗り＝信号あり、輪＝信号なし。番号は黒。
+//   - 信号のある衛星を先に並べる。入りきらない分は最後に "+N"（灰色）でまとめる。
+//   - 内蔵フォント（6×8px）で 2 行。y0 は 1 行目の上端（フッターの中の座標）。
+// ★ 抜けるときにフォントを AA_FONT_SMALL へ戻す（次の描き直しのヘッダーが使う）。
+static void draw_unplaced_sats(int y0) {
+  const int ROWS   = 2;
+  const int ROW_H  = 10;
+  const int LEFT   = 2;
+  const int RIGHT  = SCREEN_WIDTH - 2;
+  const int GAP    = 5;
+  const int PLUS_W = GAP + 6 * 3;   // 最終行の "+NN" の分（衛星は最大 64 なので 3 文字）
+
+  int total = 0;
+  for (int i = 0; i < MAX_SATELLITES; i++)
+    if (satellites[i].PRN != 0 && !satellites[i].posKnown) total++;
+  if (total == 0) return;
+
+  header_footer.unloadFont();
+  header_footer.setTextSize(1);
+  int x = LEFT, row = 0, drawn = 0;
+  bool full = false;
+  for (int pass = 0; pass < 2 && !full; pass++) {      // 0: 信号あり / 1: 信号なし
+    for (int i = 0; i < MAX_SATELLITES; i++) {
+      const SatelliteData &s = satellites[i];
+      if (s.PRN == 0 || s.posKnown) continue;
+      if ((s.SNR > 0) != (pass == 0)) continue;
+
+      const int digits = (s.PRN >= 100) ? 3 : (s.PRN >= 10) ? 2 : 1;
+      const int w = 8 + 6 * digits;                   // 記号 7px + 1px + 番号
+      // 入る行を探す。最終行では、まだ後ろが残るなら "+NN" の分も空けておく。
+      for (;;) {
+        const bool last_row = (row == ROWS - 1);
+        const int  need = w + ((last_row && drawn + 1 < total) ? PLUS_W : 0);
+        if (x + need <= RIGHT) break;
+        if (last_row) { full = true; break; }
+        row++;
+        x = LEFT;
+      }
+      if (full) break;
+
+      const int y = y0 + row * ROW_H;
+      const uint16_t color = sat_color(s.satelliteType);
+      if (s.SNR > 0) header_footer.fillCircle(x + 3, y + 3, 3, color);
+      else           header_footer.drawCircle(x + 3, y + 3, 3, color);
+      header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      header_footer.setCursor(x + 8, y);
+      header_footer.print(s.PRN);
+      x += w + GAP;
+      drawn++;
+    }
+  }
+  if (drawn < total) {
+    header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    header_footer.setCursor(x, y0 + row * ROW_H);
+    header_footer.printf("+%d", total - drawn);
+  }
+  header_footer.loadFont(AA_FONT_SMALL);
+}
+
 // GNSS DETAIL 1: スカイプロット（全衛星の方位・仰角を円形に描く）。
 //   - 衛星種別（GPS=シアン, GLONASS=緑, GALILEO=青, QZSS=赤, BeiDou=オレンジ）で色分け。
 //   - SNR=0 の衛星は小さい丸（追跡中だが信号が弱い）。
-//   - フッターに UTC 時刻と衛星数・フィックス状態。
+//   - 仰角・方位がまだ分からない衛星は図に描かず、フッターに並べる（draw_unplaced_sats）。
+//   - フッター 1 行目に UTC 時刻と衛星数・フィックス状態。
+//     ★ 日付はここから外した（並べる場所を空けるため）。日付は GNSS DETAIL 3 にある。
 // ★ 3 枚とも自分でヘッダ・本体・フッタを描く。共通なのは fillScreen() だけ。
 static void draw_gnss_page1() {
   // ヘッダー（凡例）: y を +10 してから pushSprite(0,-10) で push
@@ -506,30 +767,37 @@ static void draw_gnss_page1() {
   header_footer.setTextSize(2);
   header_footer.setCursor(1, 11);  // +10
   header_footer.println("GNSS DETAIL 1:CONSTELLATION");
-  header_footer.setTextColor(COLOR_CYAN,   COLOR_WHITE); header_footer.setCursor(0, 28); header_footer.print("GPS ");  // +10
-  header_footer.setTextColor(COLOR_GREEN,  COLOR_WHITE); header_footer.print("GLO ");
-  header_footer.setTextColor(COLOR_BLUE,   COLOR_WHITE); header_footer.print("GAL ");
-  header_footer.setTextColor(COLOR_RED,    COLOR_WHITE); header_footer.print("QZS ");
-  header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE); header_footer.print("BEI ");
+  header_footer.setTextColor(sat_color(SATELLITE_TYPE_GPS),     COLOR_WHITE); header_footer.setCursor(0, 28); header_footer.print("GPS ");  // +10
+  header_footer.setTextColor(sat_color(SATELLITE_TYPE_GLONASS), COLOR_WHITE); header_footer.print("GLO ");
+  header_footer.setTextColor(sat_color(SATELLITE_TYPE_GALILEO), COLOR_WHITE); header_footer.print("GAL ");
+  header_footer.setTextColor(sat_color(SATELLITE_TYPE_QZSS),    COLOR_WHITE); header_footer.print("QZS ");
+  header_footer.setTextColor(sat_color(SATELLITE_TYPE_BEIDOU),  COLOR_WHITE); header_footer.print("BEI ");
   header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に
 
-  // フッター（UTC・衛星数）
+  // フッター（見えるのは上の 40px）:
+  //   y=2  : UTC 時刻（左）と 衛星数・フィックス（右寄せ）。AA_FONT_SMALL。
+  //   y=20 / 30 : 位置の分からない衛星（draw_unplaced_sats）。
+  // ★ AA_FONT_SMALL は 1 行 16px。日付まで入れると 1 行目が 270px になって収まらない。
   header_footer.fillSprite(COLOR_WHITE);
-  header_footer.setCursor(23, 5);
+  header_footer.loadFont(AA_FONT_SMALL);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  GnssDate date = get_gnss_date();
   GnssTime time = get_gnss_time();
-  if (date.isValid() && time.isValid()) {
-    header_footer.printf("%d.%d.%d %02d:%02d:%02d UTC", date.year(), date.month(), date.day(), time.hour(), time.minute(), time.second());
-  }
-  header_footer.setCursor(23, 17);
-  header_footer.printf("%d sats, Fix=%s",get_gnss_numsat(),get_gnss_fix()?"yes":"no");
+  header_footer.setCursor(2, 2);
+  if (time.isValid())
+    header_footer.printf("%02d:%02d:%02d UTC", time.hour(), time.minute(), time.second());
+  else
+    header_footer.print("--:--:-- UTC");
+  char sats_str[24];
+  snprintf(sats_str, sizeof(sats_str), "%d sats, Fix=%s", get_gnss_numsat(), get_gnss_fix() ? "yes" : "no");
+  header_footer.setCursor(SCREEN_WIDTH - 2 - header_footer.textWidth(sats_str), 2);
+  header_footer.print(sats_str);
+  draw_unplaced_sats(20);
   header_footer.pushSprite(0,SCREEN_HEIGHT-40);
 
-  backscreen.fillSprite(COLOR_BLACK);                         // 暗い背景
-  backscreen.drawCircle(120, 120, 118, COLOR_GRAY);           // 外周円（地平線 0°）
-  backscreen.drawCircle(120, 120, 79, COLOR_BRIGHTGRAY);      // 仰角 30° リング
-  backscreen.drawCircle(120, 120, 39, COLOR_BRIGHTGRAY);      // 仰角 60° リング
+  backscreen.fillSprite(COLOR_BLACK);                                              // 暗い背景
+  backscreen.drawCircle(SKY_CX, SKY_CY, SKY_R, COLOR_GRAY);                        // 外周円（地平線 0°）
+  backscreen.drawCircle(SKY_CX, SKY_CY, (int)lroundf(skyplot_r(30)), COLOR_BRIGHTGRAY);  // 仰角 30° リング
+  backscreen.drawCircle(SKY_CX, SKY_CY, (int)lroundf(skyplot_r(60)), COLOR_BRIGHTGRAY);  // 仰角 60° リング
 
   // N/E/S/W ラベルを外周に描画（N は赤）
   backscreen.setTextSize(1);
@@ -541,6 +809,7 @@ static void draw_gnss_page1() {
 
   for (int i = 0; i < MAX_SATELLITES; i++) {
     if (satellites[i].PRN == 0) continue;  // Skip empty entries
+    if (!satellites[i].posKnown) continue; // 位置が分からない衛星はフッターに並べてある
     //if(satellites[i].SNR == 0) continue; //Skip unknown signal strength.
 
     // Calculate position on display based on azimuth and elevation
@@ -550,13 +819,7 @@ static void draw_gnss_page1() {
     int x = skyplot_x(azimuth, elevation);
     int y = skyplot_y(azimuth, elevation);
 
-    uint16_t color;
-    if (satellites[i].satelliteType == SATELLITE_TYPE_QZSS)        color = COLOR_RED;
-    else if (satellites[i].satelliteType == SATELLITE_TYPE_GPS)     color = COLOR_CYAN;
-    else if (satellites[i].satelliteType == SATELLITE_TYPE_GLONASS) color = COLOR_GREEN;
-    else if (satellites[i].satelliteType == SATELLITE_TYPE_GALILEO) color = COLOR_BLUE;
-    else if (satellites[i].satelliteType == SATELLITE_TYPE_BEIDOU)  color = COLOR_ORANGE;
-    else                                                             color = COLOR_GRAY;
+    const uint16_t color = sat_color(satellites[i].satelliteType);
 
     // SNR あり: 塗りつぶし円、SNR なし: 枠線のみ（信号未確認の衛星）
     if (satellites[i].SNR > 0) {

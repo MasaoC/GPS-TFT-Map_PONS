@@ -7,7 +7,7 @@
 //           リプレイモード切替、地点選択式デモ飛行(demo_site_t)の関数、
 //           およびリプレイ中にセンサ値を CSV の値へ差し替える関数も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/22
+// Updated : 2026/11/07
 // ============================================================
 
 #ifndef GNSS_H
@@ -46,6 +46,9 @@
     int elevation = 0;
     int azimuth = 0;
     int SNR = 0;
+    // 仰角・方位が分かっているか。false の間 elevation / azimuth は意味の無い 0 で、
+    // 星座画面は図に描かずフッターに並べる（handle_navsat() のコメント）。
+    bool posKnown = false;
     int satelliteType = SATELLITE_TYPE_UNKNOWN;
     unsigned long lastReceived = 0;
   };
@@ -154,14 +157,18 @@
   bool is_demo_active();           // いずれかの地点でデモ飛行中か
   void set_demo_off();
   bool getReplayMode();
-  // リプレイ中の姿勢 [度]（imu_replaydata/ または旧 euler/ の記録由来）。
+  // リプレイ中の姿勢 [度]（飛行 CSV・受信ログの roll / pitch / yaw … 列の記録由来）。
   // 実機の ESKF ではないので、表示側は getReplayMode() で参照先を切り替えること。
   bool get_replay_attitude(float &roll, float &pitch);
-  // 以下は ESKF の結果を持つ新形式（imu_replaydata/）のときだけ true を返す。
+  // 以下はその列が CSV にあり、値が入っている行だけ true を返す（姿勢の列の無い古い CSV では false）。
   bool get_replay_pitch_avg(float &avg);
   bool get_replay_roll_trim(float &trim);
   bool get_replay_yaw(float &yaw, float &acc95);
   bool get_replay_wind(float &speed_mps, float &dir_to_deg);
+  // 推定 TAS と大きい枠の中身（飛行 CSV の tas_mps / hdr 列。列の無い古い CSV では false）。
+  // 表示は直接読まず tas.h の tas_header() を通す。
+  bool get_replay_tas(float &mps);
+  bool get_replay_hdr(int &hdr);
   void set_replaymode(bool replaymode);
 
   uint32_t get_gnss_fix_millis();  // 最後にGNSS時刻を受信したときのmillis()（時刻推定用）

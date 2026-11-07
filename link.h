@@ -5,7 +5,7 @@
 //           UART1 で無線モジュール(E220-900T22S)と話し、送信テレメトリの組み立てと
 //           受信テレメトリの供給を行う。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //
 // 受信データの供給関数は、意図的に gnss.h のリプレイ用関数
@@ -125,6 +125,10 @@
   bool  link_get_attitude(float &roll, float &pitch);
   bool  link_get_yaw(float &yaw, float &acc95);
   bool  link_get_pitch_avg(float &avg);
+  // 送信機の推定 TAS（clamped = 上下限に張り付いている）と、送信機の大きい枠の設定が TAS か。
+  // 表示は直接読まず tas.h の tas_header() を通す。
+  bool  link_get_tas(float &mps, bool &clamped);
+  bool  link_sender_header_tas();
   bool  link_get_roll_trim(float &trim);
   bool  link_get_wind(float &speed_mps, float &dir_to_deg);
 

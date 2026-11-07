@@ -7,7 +7,7 @@
 //           リプレイ選択画面など全描画関数のプロトタイプ宣言。
 //           多角形塗りつぶし・線分クリップなど描画共通部品の宣言も含む。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 // ★ この先頭ガードが無いと、mysd.h 経由と直接 include の二重読み込みで
 //   関数プロトタイプの再宣言までは黙って通っていたが、enum の再定義は
@@ -110,6 +110,13 @@
   #define NM_FONT_LARGE Arial_Black56    // 大（ヘッダーの速度・真方位）
 
   extern TFT_eSPI tft;
+  // ★ tft.begin()（Core0 の setup_tft()）が PIO を確保し終えたら true。Core1 の setup1() は
+  //   これを待ってから setup_sd() する。16bit パラレルの TFT と SD の SDIO はどちらも PIO を使い、
+  //   起動直後の同じ数 ms に別々のコアで確保しに行く。TFT_eSPI は「空きを確認 → SM を取る → 載せる」
+  //   の間に割り込まれる前提が無く、SM が取れなくても確かめずに進むので、SdFat に先に PIO を
+  //   丸ごと取られると画面が死ぬ。順番を決めて競合そのものを無くしてある。
+  //   （SdFat 2.3.0 までは SD 側の PIO 確保が起動時に丸ごと失敗していたので、この競合は表に出なかった。）
+  extern volatile bool tft_pio_ready;
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite header_footer;  // ヘッダ／フッタ兼用（display_pages.cpp も使う）
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (VSI_W×240px, 16bit)
@@ -162,9 +169,11 @@ void draw_maplist_mode(int maplist_page);
 #define IMU_MENU_SETROLL  1
 #define IMU_MENU_APPLY    2
 #define IMU_MENU_RPYFUNC  3   // Roll/Pitch/Yaw 機能のマスタースイッチ
-#define IMU_MENU_NEXTPAGE 4
-#define IMU_MENU_EXIT     5
-#define IMU_MENU_COUNT    6
+// ★ v7 の 1 ページ目には自動ロールトリム・風推定が無い（3/3 にある）。v7.1 とは番号が違う。
+#define IMU_MENU_HEADER   4   // ヘッダー右の大きい枠: 平均ピッチ / 推定 TAS（docs/pons_tas.md §4.1）
+#define IMU_MENU_NEXTPAGE 5
+#define IMU_MENU_EXIT     6
+#define IMU_MENU_COUNT    7
 
 // ページ2: 調整用。日常の運用では触らない項目を置く。
 // IMU/ESKF 2/3 — BNO085 の生値と校正だけ。ESKF の項目は 3/3 へ移した。
@@ -184,6 +193,20 @@ extern int imu3_cursor;   // GPS_TFT_map.ino で定義。ページ3/3のカー�
 // ★ 判断は .ino に置く（CLAUDE.md: display_tft.cpp に判断や発報は置かない）。
 bool warn_muted_off_mount();
 void draw_imudetail(int page);
+// IMU / ESKF 画面の入口の案内（全画面の画像。page は 0〜IMU_GUIDE_PAGES-1）。
+// 実体は display_pages.cpp、画像は src/flashdata/imu_guide_data.h。
+// どの 1 枚を出すかと音声は GPS_TFT_map.ino の imu_guide_start() / imu_guide_next()。
+void draw_imu_guide(int page);
+// 推定 TAS の案内（大きい枠を TAS にしたときに通す 2 画面。docs/pons_tas.md §4.4）。
+// page 0 = 説明の画像（src/flashdata/tas_guide_data.h）、1 = 対気速度モデルの曲線（ファームが描く。
+// 本体を傾けると点と数字が動く）。どちらを出すかと音声は GPS_TFT_map.ino の tas_guide_*。
+void draw_tas_guide(int page);
+// IMU / ESKF の状態の色（灰＝IMU 無し / 赤＝要 APPLY / 緑＝準備 OK / 橙＝それ以外）。
+// IMU 画面の右上のマークと、設定画面の IMU 行のマークの両方がこれを使う（条件はここだけ。display_tft.cpp）。
+uint16_t imu_status_color();
+// 状態マーク。色から形を決める（緑・青＝丸 / 赤＝× / グレー＝ハイフン / それ以外＝三角）。r は丸の半径。
+// 状態を色で出すところは fillCircle ではなくこれを使う（形でも見分けられるように）。
+void draw_status_mark(TFT_eSprite &spr, int cx, int cy, int r, uint16_t col);
 
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
@@ -192,6 +215,8 @@ void draw_wireless(int cursor);
 extern int wireless_cursor;
 // 選べるチャンネルの雑音の一覧（display_pages.cpp）。WIRELESS 画面の Ch scan から入る。
 void draw_chscan();
+// PC接続・Web Serial データ転送画面（MODE_PCCONNECT）
+void draw_pcconnect();
 void push_backscreen();
 // 地図画面に ESKF のロール・ピッチを 1 行で描く（リプレイ中を除き常時表示）。
 // 背景は敷かず地図の上に直接重ねる。位置は左下の sAcc の 1 行上に固定。

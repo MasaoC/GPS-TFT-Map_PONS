@@ -1,15 +1,14 @@
 // ============================================================
 // File    : link_wire2.h
 // Project : PONS v7 — PONS Link
-// Role    : 電波に載せる 32 バイトのフレーム（形式 2）。LinkTelem（65 バイト）を詰めて送り、
+// Role    : 電波に載せる 32 バイトのフレーム。LinkTelem（67 バイト）を詰めて送り、
 //           受けたら LinkTelem に戻す。画面・ログ・リプレイは LinkTelem のまま何も変えない。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //
 // ★ **2026-10-27 から、電波に載せるのはどの CH でもこの 32 バイトだけ**（ローワーもアッパーも）。
-//   形式を見分ける仕掛けは無い。**65 バイトを送っていた古い版の機体とは通じない**ので、3 台ともそろえる。
-//   形は debug/v7-noise-test で先に試したものと同じ（印 0xA2）なので、試験ブランチの機体とも通じる。
+//   形式を見分ける仕掛けは印だけ。**並びの違う機体とは通じない**ので、3 台ともそろえる。
 //
 // ★ なぜ 32 バイトにするのか（docs/pons_link.md §2「電波に載せる 32 バイトのフレーム」）
 //   ・送信時間が 65 バイトの約 6 割になる。送信電流もそのぶん減り、同じ送信時間なら SF を 1 段上げられる
@@ -18,21 +17,32 @@
 //     休止（送信時間の 10 倍）も 3 回入って 1Hz で送れない。32 バイトなら 1 パケットに収まる。
 //
 // ★ 作り
-//   ・毎回送る「核」（位置・速度・方位・高度・昇降・姿勢・状態）と、3 バイトの「回転枠」。
+//   ・毎回送る「核」（位置・速度・方位・高度・昇降・姿勢・平均ピッチ・推定 TAS・状態）と、3 バイトの「回転枠」。
 //     回転枠の中身は seq を LINK_W2_SLOTS で割った余りで決まり、ゆっくりした項目
-//     （日付・平均ピッチ・風・電圧・気圧・目的地など）を順番に運ぶ（8 発ごと）。
+//     （日付・風・電圧・気圧・目的地など）を順番に運ぶ（8 発で一周。風だけは 2 回載る）。
 //   ・受信側は回転枠の値を覚えておき、LinkTelem を組み立て直す（LinkW2Rx）。
 //     回転枠の項目は、その枠を受けるまで have ビットを立てない（分からない値を出さない）。
 //     have ビットの無い項目（目的地・目的地の ID・ナビモード・縮尺・水平精度）は link_w2_slot_seen() で確かめる。
+//   ・核の「無い」は**その項目の使わない値**で表す（フラグのバイトは持たない）。
+//     時刻 0xFFFF / 真方位 0xFFF（対地速度ごと無し）/ 高度 0x8000 / 昇降 -128 / ロール 0x800（ロール・ピッチとも無し）/
+//     ヨー 0xFFF / 平均ピッチ -512 / 推定 TAS 0。送る側は値をその手前で頭打ちにする。
 //
 // ★ 細かさは表示より細かく取ってある（位置は 1e-7 度のまま。角度 0.1°、速度 0.025m/s、
-//   昇降 0.05m/s、時刻 0.1 秒）。値の範囲を超えたら端に丸める（昇降 ±6.35m/s、速度 102m/s まで）。
+//   昇降 0.05m/s、時刻 0.1 秒、推定 TAS 0.1m/s）。値の範囲を超えたら端に丸める
+//   （昇降 ±6.35m/s、速度 102m/s、平均ピッチ ±51.1°、推定 TAS 25.5m/s まで）。
 //
 // ★ 形を変えたら LINK_W2_MAGIC を変えること（古い機体が新しい形を誤読しないように）。
-//   PONSv7 / PONSv7.1 / debug/v7-noise-test の並び（バイトの位置）は同じに保つ。
-//   目的地の ID（回転枠 7 の上 16 ビット）は 2026-10-27 に PONSv7 / v7.1 だけ足した。noise-test の機体は
-//   そこに 0（＝送っていない）を送るので、混ぜても受信側が番号で合わせるだけで通じる。
-//   受信ログ（received/）は LinkTelem から書く。末尾の slot 列で、どの回転枠が入っていたか
+//   **印は上位 6 ビットで見る**（下位 2 ビットはグループ）ので、変えるときは 4 つ飛ばし（0xA4 → 0xA8 …）。
+//   並び（バイトの位置）は PONSv7 と PONSv7.1 で同じに保つ。
+//   debug/v7-noise-test は 2026-11-07 にこの約束から外した（古い 0xA2 を出し続けるが、印で弾くので誤読はしない）。
+//
+// ★ 並びの履歴
+//   0xA2（2026-10-27〜11-07）: 印 1 バイト・グループ 1 バイト・フラグ 1 バイト・姿勢 5 バイト。
+//     平均ピッチと風は回転枠で 8 発に 1 回。
+//   0xA4（2026-11-07〜）: グループを印の下位 2 ビットへ（A〜D）、フラグを「無し」の値に置き換えて
+//     空いた 2 バイトで、推定 TAS（核）と平均ピッチ（姿勢を 6 バイトに）を毎回送る。風は 4 発に 1 回。
+//     docs/pons_tas.md §5.2。
+//   受信ログ（received/）は LinkTelem から書く。末尾近くの slot 列で、どの回転枠が入っていたか
 //   （＝その行で更新されたゆっくりした項目）が分かる。
 //
 #ifndef LINK_WIRE2_H
@@ -43,47 +53,58 @@
 #include "link_proto.h"
 
 #define LINK_W2_LEN        32
-#define LINK_W2_MAGIC      0xA2   // 形式 2 の印（以前の 65 バイトは 'P'＝0x50 で始まる）
+#define LINK_W2_MAGIC      0xA4   // 印（上位 6 ビット）。下位 2 ビットはグループ。以前の 65 バイトは 'P'＝0x50 で始まる
+#define LINK_W2_MAGIC_MASK 0xFC
 #define LINK_W2_SLOTS      8      // 回転枠の数。**256 の約数にすること**（seq の 8 ビットが一周しても続くように）
+static_assert((LINK_W2_MAGIC & ~LINK_W2_MAGIC_MASK) == 0, "印の下位 2 ビットはグループ用に空けておく");
+// 古い並びの印（0xA2）と、65 バイト時代の先頭（'P'）を誤読しないこと
+static_assert((0xA2 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "古い並び 0xA2 と印が区別できない");
+static_assert((0x50 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "65 バイト時代の先頭と印が区別できない");
 
 // ---- 位置（バイト） ----
-#define W2_MAGIC   0
+#define W2_MAGIC   0    // 1B: 印 6 ビット | グループ 2 ビット（下位）
 #define W2_SEQ     1
-#define W2_GROUP   2
-#define W2_STATUS  3    // 2B
-#define W2_FLAGS   5
-#define W2_TOD     6    // 2B: その時の中の 0.1 秒（0..35999）。0xFFFF = 時刻なし
-#define W2_LAT     8    // 4B: 1e-7 度
-#define W2_LON     12   // 4B
-#define W2_GSTRK   16   // 3B: 対地速度 12bit（0.025m/s）| 真方位 12bit（0.1°）
-#define W2_KFALT   19   // 2B: 0.1m
-#define W2_KFVS    21   // 1B: 0.05m/s（符号付き）
-#define W2_ATT     22   // 5B: ロール 12bit | ピッチ 12bit（0.1°、符号付き）| ヨー 12bit（0.1°、0..3599）
+#define W2_STATUS  2    // 2B: LINK_ST_* ＋ 最上位ビットに FIXOK（W2_ST_FIXOK）
+#define W2_TAS     4    // 1B: 推定 TAS 0.1m/s（1..255）。0 = 無し
+#define W2_TOD     5    // 2B: その時の中の 0.1 秒（0..35999）。0xFFFF = 時刻なし
+#define W2_LAT     7    // 4B: 1e-7 度
+#define W2_LON     11   // 4B
+#define W2_GSTRK   15   // 3B: 対地速度 12bit（0.025m/s）| 真方位 12bit（0.1°。0xFFF = 両方無し）
+#define W2_KFALT   18   // 2B: 0.1m。0x8000 = 無し
+#define W2_KFVS    20   // 1B: 0.05m/s（符号付き）。-128 = 無し
+#define W2_ATT     21   // 6B: ロール 12bit | ピッチ 12bit（0.1°、符号付き。ロール 0x800 = 両方無し）|
+                        //     ヨー 12bit（0.1°、0..3599。0xFFF = 無し）| 平均ピッチ 10bit（0.1°、符号付き。-512 = 無し）|
+                        //     推定 TAS が上下限に張り付いている 1bit | 送信機の大きい枠の設定が TAS 1bit
 #define W2_SLOT    27   // 3B: 回転枠
 #define W2_CRC     30   // 2B: 0..29 の CRC16-CCITT
-static_assert(W2_CRC + 2 == LINK_W2_LEN, "形式 2 の並びが 32 バイトに合っていない");
+static_assert(W2_CRC + 2 == LINK_W2_LEN, "並びが 32 バイトに合っていない");
 
-// 核のフラグ（W2_FLAGS）
-#define W2F_FIXOK  0x01   // gnssFixOK
-#define W2F_GS     0x02   // 対地速度・真方位（RHAVE_GS | RHAVE_TTRACK）
-#define W2F_KFALT  0x04
-#define W2F_KFVS   0x08
-#define W2F_ATT    0x10   // ロール・ピッチ（RHAVE_ATT）
-#define W2F_YAW    0x20   // ヨー（RHAVE_ATT_YAW。精度は回転枠 1）
-#define W2F_TOD    0x40   // 時刻が有効
+// 状態の最上位ビットは電波の上でだけ FIXOK に使う（LinkTelem では fixflags の bit0）。
+// ★ LINK_ST_* にこのビットを割り当てないこと（link_proto.h）。
+#define W2_ST_FIXOK  0x8000
+static_assert((LINK_ST_ALL & W2_ST_FIXOK) == 0, "LINK_ST_* が FIXOK のビットとぶつかっている");
+
+// 「無し」の値
+#define W2_TRK_NONE   0xFFF
+#define W2_ROLL_NONE  0x800
+#define W2_YAW_NONE   0xFFF
+#define W2_PAVG_NONE  (-512)
+#define W2_ALT_NONE   0x8000
+#define W2_VS_NONE    (-128)
+#define W2_NUMSAT_NONE 63
 
 // 回転枠の番号
 #define W2S_DATE     0   // 年(7) 月(4) 日(5) 時(5) 有効(1)
-#define W2S_PAVG     1   // 平均ピッチ 12bit(0.1°) | ヨー精度 8bit | 平均ピッチ有効(1) | ヨー精度有効(1)
-#define W2S_TRIMW    2   // ロールトリム 12bit(0.01°) | 風速 8bit(0.1m/s) | トリム有効(1) | 風有効(1)
-#define W2S_WDIR     3   // 風向 12bit(0.1°) | 衛星数 6bit | 衛星数有効(1) | 風有効(1)
+#define W2S_WIND     1   // 風速 8bit(0.1m/s) | 風向 12bit(0.1°) | 風有効(1)
+#define W2S_TRIM     2   // ロールトリム 12bit(0.01°) | ヨー精度 8bit | トリム有効(1) | ヨー精度有効(1)
+#define W2S_HACC     3   // 水平精度 10bit(0.1m。1023 で頭打ち) | 衛星数 6bit(63 = 無し) | 目的地 8bit(符号付き)
 #define W2S_ALTV     4   // GNSS 高度 16bit(0.1m。INT16_MIN = 無し) | 電圧 8bit(link_pack_volt。0 = 無し)
-#define W2S_PRESS    5   // 気圧 16bit(0.1hPa。0 = 無し) | 地図の縮尺 8bit
-#define W2S_HACC     6   // 水平精度 16bit(0.1m) | 目的地 8bit(符号付き)
-#define W2S_NAV      7   // ナビモード 8bit | 目的地の ID 16bit（0 = 送っていない。2026-10-27〜）
+#define W2S_WIND2    5   // 風（W2S_WIND と同じ。1 周に 2 回載せて 4 発に 1 回にする）
+#define W2S_PRESS    6   // 気圧 16bit(0.1hPa。0 = 無し) | 地図の縮尺 8bit
+#define W2S_NAV      7   // ナビモード 8bit | 目的地の ID 16bit（0 = 送っていない）
 
 // 回転枠で運ぶ have ビット（受けるまで立てない）
-#define W2_SLOT_HAVE (RHAVE_DATE | RHAVE_ATT_AVG | RHAVE_ATT_TRIM | RHAVE_ATT_WIND | \
+#define W2_SLOT_HAVE (RHAVE_DATE | RHAVE_ATT_TRIM | RHAVE_ATT_WIND | \
                       RHAVE_NUMSAT | RHAVE_GNSSALT | RHAVE_VOLT | RHAVE_PRESS)
 
 // ---- 小さな道具 ----
@@ -100,6 +121,9 @@ static inline int32_t  w2_sext(uint32_t v, int bits) { const uint32_t m = 1u << 
 static inline int32_t  w2_divr(int32_t a, int32_t b) { return (a >= 0) ? (a + b / 2) / b : -((-a + b / 2) / b); }
 
 static inline uint8_t link_w2_slot_of(uint8_t seq8) { return (uint8_t)(seq8 % LINK_W2_SLOTS); }
+// その 1 バイトが印か（グループの 2 ビットを落として比べる）。
+// ★ **バイトごと == で比べないこと。** 別グループの電波が「無信号」に見えてしまう（下の link_w2_valid）。
+static inline bool link_w2_is_magic(uint8_t b) { return (b & LINK_W2_MAGIC_MASK) == LINK_W2_MAGIC; }
 
 // ============================================================
 //  送信側: LinkTelem → 32 バイト
@@ -107,42 +131,46 @@ static inline uint8_t link_w2_slot_of(uint8_t seq8) { return (uint8_t)(seq8 % LI
 static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
     memset(out, 0, LINK_W2_LEN);
     const uint8_t seq8 = (uint8_t)t->seq;
-    out[W2_MAGIC] = LINK_W2_MAGIC;
+    out[W2_MAGIC] = (uint8_t)(LINK_W2_MAGIC | (t->group & 0x03));
     out[W2_SEQ]   = seq8;
-    out[W2_GROUP] = t->group;
-    w2_put16(out + W2_STATUS, t->status);
+    uint16_t st = (uint16_t)(t->status & ~W2_ST_FIXOK);
+    if (t->fixflags & 0x01) st |= W2_ST_FIXOK;
+    w2_put16(out + W2_STATUS, st);
 
-    uint8_t f = 0;
-    if (t->fixflags & 0x01)                         f |= W2F_FIXOK;
-    if ((t->have & (RHAVE_GS | RHAVE_TTRACK)) == (RHAVE_GS | RHAVE_TTRACK)) f |= W2F_GS;
-    if (t->have & RHAVE_KFALT)                      f |= W2F_KFALT;
-    if (t->have & RHAVE_KFVS)                       f |= W2F_KFVS;
-    if (t->have & RHAVE_ATT)                        f |= W2F_ATT;
-    if (t->have & RHAVE_ATT_YAW)                    f |= W2F_YAW;
+    // 推定 TAS。0 は「無し」なので、有るときは 0.1m/s 以上に上げる
+    out[W2_TAS] = (t->have & RHAVE_TAS) ? (uint8_t)(t->tas_dmps ? t->tas_dmps : 1) : 0;
+
     // 時刻は年か時分秒のどれかが入っていれば有効とみなす（LinkTelem は時刻だけの have ビットを持たない）
-    const bool tod_ok = (t->hour < 24 && t->minute < 60 && t->second < 60);
-    if (tod_ok && (t->year != 0 || t->hour || t->minute || t->second)) f |= W2F_TOD;
-    out[W2_FLAGS] = f;
-
-    const uint16_t tod = (f & W2F_TOD)
+    const bool tod_ok = (t->hour < 24 && t->minute < 60 && t->second < 60) &&
+                        (t->year != 0 || t->hour || t->minute || t->second);
+    const uint16_t tod = tod_ok
         ? (uint16_t)((t->minute * 60 + t->second) * 10 + t->centi / 10) : 0xFFFF;
     w2_put16(out + W2_TOD, tod);
 
     w2_put32(out + W2_LAT, (uint32_t)t->lat_1e7);
     w2_put32(out + W2_LON, (uint32_t)t->lon_1e7);
 
-    const uint32_t gs12  = (uint32_t)w2_clampi(w2_divr(t->gs_cms * 2, 5), 0, 4095);    // 0.01 → 0.025 m/s
-    const uint32_t trk12 = (uint32_t)(w2_divr(t->track_cdeg, 10) % 3600);              // 0.01 → 0.1°
+    const bool gs_ok = (t->have & (RHAVE_GS | RHAVE_TTRACK)) == (RHAVE_GS | RHAVE_TTRACK);
+    const uint32_t gs12  = gs_ok ? (uint32_t)w2_clampi(w2_divr(t->gs_cms * 2, 5), 0, 4095) : 0;   // 0.01 → 0.025 m/s
+    const uint32_t trk12 = gs_ok ? (uint32_t)(w2_divr(t->track_cdeg, 10) % 3600) : W2_TRK_NONE;  // 0.01 → 0.1°
     w2_put24(out + W2_GSTRK, gs12 | (trk12 << 12));
 
-    w2_put16(out + W2_KFALT, (uint16_t)t->kf_alt_dm);
-    out[W2_KFVS] = (uint8_t)(int8_t)w2_clampi(w2_divr(t->kf_vs_cms, 5), -127, 127);   // 0.01 → 0.05 m/s
+    w2_put16(out + W2_KFALT, (t->have & RHAVE_KFALT)
+             ? (uint16_t)w2_clampi(t->kf_alt_dm, -32767, 32767) : (uint16_t)W2_ALT_NONE);
+    out[W2_KFVS] = (uint8_t)(int8_t)((t->have & RHAVE_KFVS)
+             ? w2_clampi(w2_divr(t->kf_vs_cms, 5), -127, 127) : W2_VS_NONE);   // 0.01 → 0.05 m/s
 
-    const uint32_t r12 = (uint32_t)w2_clampi(w2_divr(t->roll_cdeg,  10), -2047, 2047) & 0xFFF;
-    const uint32_t p12 = (uint32_t)w2_clampi(w2_divr(t->pitch_cdeg, 10), -2047, 2047) & 0xFFF;
-    const uint32_t y12 = (uint32_t)(((w2_divr(t->yaw_cdeg, 10) % 3600) + 3600) % 3600);
-    const uint64_t att = (uint64_t)r12 | ((uint64_t)p12 << 12) | ((uint64_t)y12 << 24);
-    for (int i = 0; i < 5; i++) out[W2_ATT + i] = (uint8_t)(att >> (8 * i));
+    const bool att_ok = (t->have & RHAVE_ATT) != 0;
+    const uint32_t r12 = att_ok ? ((uint32_t)w2_clampi(w2_divr(t->roll_cdeg,  10), -2047, 2047) & 0xFFF) : W2_ROLL_NONE;
+    const uint32_t p12 = att_ok ? ((uint32_t)w2_clampi(w2_divr(t->pitch_cdeg, 10), -2047, 2047) & 0xFFF) : 0;
+    const uint32_t y12 = (t->have & RHAVE_ATT_YAW)
+                       ? (uint32_t)(((w2_divr(t->yaw_cdeg, 10) % 3600) + 3600) % 3600) : W2_YAW_NONE;
+    const uint32_t pa10 = (uint32_t)((t->have & RHAVE_ATT_AVG)
+                       ? w2_clampi(w2_divr(t->pitch_avg_cdeg, 10), -511, 511) : W2_PAVG_NONE) & 0x3FF;
+    const uint64_t att = (uint64_t)r12 | ((uint64_t)p12 << 12) | ((uint64_t)y12 << 24) | ((uint64_t)pa10 << 36)
+                       | ((uint64_t)((t->tas_flags & LINK_TAS_CLAMPED) ? 1 : 0) << 46)
+                       | ((uint64_t)((t->tas_flags & LINK_TAS_HDR)     ? 1 : 0) << 47);
+    for (int i = 0; i < 6; i++) out[W2_ATT + i] = (uint8_t)(att >> (8 * i));
 
     uint32_t s = 0;
     switch (link_w2_slot_of(seq8)) {
@@ -151,23 +179,24 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
         if (ok) s = (uint32_t)(t->year - 2000) | ((uint32_t)(t->month & 0xF) << 7) |
                     ((uint32_t)(t->day & 0x1F) << 11) | ((uint32_t)(t->hour & 0x1F) << 16) | (1u << 21);
         break; }
-    case W2S_PAVG: {
-        const uint32_t pa = (uint32_t)w2_clampi(w2_divr(t->pitch_avg_cdeg, 10), -2047, 2047) & 0xFFF;
-        s = pa | ((uint32_t)t->yaw_acc95_deg << 12);
-        if (t->have & RHAVE_ATT_AVG) s |= 1u << 20;
-        if (t->have & RHAVE_ATT_YAW) s |= 1u << 21;
+    case W2S_WIND:
+    case W2S_WIND2: {
+        if (t->have & RHAVE_ATT_WIND) {
+            const uint32_t wd = (uint32_t)(w2_divr(t->wind_dir_cdeg, 10) % 3600);
+            s = (uint32_t)t->wind_dmps | (wd << 8) | (1u << 20);
+        }
         break; }
-    case W2S_TRIMW: {
+    case W2S_TRIM: {
         const uint32_t tr = (uint32_t)w2_clampi(t->roll_trim_cdeg, -2047, 2047) & 0xFFF;
-        s = tr | ((uint32_t)t->wind_dmps << 12);
+        s = tr | ((uint32_t)t->yaw_acc95_deg << 12);
         if (t->have & RHAVE_ATT_TRIM) s |= 1u << 20;
-        if (t->have & RHAVE_ATT_WIND) s |= 1u << 21;
+        if (t->have & RHAVE_ATT_YAW)  s |= 1u << 21;
         break; }
-    case W2S_WDIR: {
-        const uint32_t wd = (uint32_t)(w2_divr(t->wind_dir_cdeg, 10) % 3600);
-        s = wd | ((uint32_t)(t->numsat > 63 ? 63 : t->numsat) << 12);
-        if (t->have & RHAVE_NUMSAT)   s |= 1u << 18;
-        if (t->have & RHAVE_ATT_WIND) s |= 1u << 19;
+    case W2S_HACC: {
+        const uint32_t ha = (t->hacc_dm > 1023) ? 1023u : t->hacc_dm;
+        const uint32_t ns = (t->have & RHAVE_NUMSAT)
+                          ? (uint32_t)(t->numsat >= W2_NUMSAT_NONE ? W2_NUMSAT_NONE - 1 : t->numsat) : W2_NUMSAT_NONE;
+        s = ha | (ns << 10) | ((uint32_t)(uint8_t)t->dest_index << 16);
         break; }
     case W2S_ALTV: {
         const uint16_t alt = (t->have & RHAVE_GNSSALT) ? (uint16_t)w2_clampi(t->gnss_alt_dm, -32767, 32767)
@@ -179,12 +208,8 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
         const uint16_t pr = (t->have & RHAVE_PRESS) ? (t->press_dpa ? t->press_dpa : 1) : 0;
         s = pr | ((uint32_t)t->scale_index << 16);
         break; }
-    case W2S_HACC:
-        s = t->hacc_dm | ((uint32_t)(uint8_t)t->dest_index << 16);
-        break;
     case W2S_NAV:
-        // ★ 目的地の ID は以前「予備（0）」だった 16 ビット。0 は「送っていない」に取ってあるので、
-        //   ID を送らない古い機体と混ざっても受信側は番号で合わせるだけ（LINK_W2_MAGIC は変えない）。
+        // 目的地の ID の 0 は「送っていない」。受信側は番号で合わせる。
         s = t->nav_mode | ((uint32_t)t->dest_id << 8);
         break;
     }
@@ -195,14 +220,14 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
 // ============================================================
 //  受信側
 // ============================================================
-// 形式 2 として正しいか（印と CRC）。
+// 形式として正しいか（印と CRC）。
 // ★ **グループ ID はここで見ない。** ここで弾くと「電波は来ているがグループが違う」状態を無信号と
-//   区別できなくなり、SD が飛んで group が 0 に戻った事故に気づけなくなる。突き合わせは link.cpp
-//   が別に行う（docs/pons_link.md §1）。
+//   区別できなくなり、SD が飛んで group が既定に戻った事故に気づけなくなる。突き合わせは link.cpp
+//   が別に行う（docs/pons_link.md §1）。印もグループの 2 ビットを落として比べる（link_w2_is_magic）。
 static inline bool link_w2_valid(const uint8_t* p) {
-    return p[W2_MAGIC] == LINK_W2_MAGIC && w2_get16(p + W2_CRC) == link_crc16(p, W2_CRC);
+    return link_w2_is_magic(p[W2_MAGIC]) && w2_get16(p + W2_CRC) == link_crc16(p, W2_CRC);
 }
-static inline uint8_t link_w2_group(const uint8_t* p) { return p[W2_GROUP]; }
+static inline uint8_t link_w2_group(const uint8_t* p) { return (uint8_t)(p[W2_MAGIC] & 0x03); }
 static inline uint8_t link_w2_slot(const uint8_t* p)  { return link_w2_slot_of(p[W2_SEQ]); }
 
 // 受信側の組み立ての状態。回転枠で受けた値と、16 ビットの seq・時の繰り上がりを覚える。
@@ -212,7 +237,7 @@ struct LinkW2Rx {
     // 受けたことのある回転枠（1 << 枠の番号）。have ビットを持たない項目（縮尺・目的地・ナビモード・
     // 水平精度）は、受けるまで 0 のままなので、使う側がこれで確かめる（link_w2_slot_seen）。
     uint8_t   slot_seen;
-    bool      yawacc_known; // ヨー精度（回転枠 1）を受けたか。受けるまでヨーは出さない
+    bool      yawacc_known; // ヨー精度（回転枠 2）を受けたか。受けるまでヨーは出さない
     bool      hour_known;
     uint8_t   hour;
     uint16_t  prev_tod;
@@ -272,14 +297,16 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
 
     t.magic0 = 'P'; t.magic1 = 'L'; t.ver = LINK_PROTO_VER; t.type = LINK_TYPE_TELEM;
     t.seq    = st->seq16;
-    t.group  = p[W2_GROUP];
-    t.status = w2_get16(p + W2_STATUS);
+    t.group  = link_w2_group(p);
+    const uint16_t st16 = w2_get16(p + W2_STATUS);
+    t.status   = (uint16_t)(st16 & ~W2_ST_FIXOK);
+    t.fixflags = (st16 & W2_ST_FIXOK) ? 0x01 : 0x00;
 
-    const uint8_t f = p[W2_FLAGS];
-    t.fixflags = (f & W2F_FIXOK) ? 0x01 : 0x00;
+    const uint8_t tas = p[W2_TAS];
+    t.tas_dmps = tas;
 
     const uint16_t tod = w2_get16(p + W2_TOD);
-    if ((f & W2F_TOD) && tod < 36000) {
+    if (tod < 36000) {
         // 時は回転枠 0 から。その間に時刻が大きく戻ったら次の時へ繰り上げる
         if (st->hour_known && st->prev_tod != 0xFFFF && tod + 18000 < st->prev_tod)
             st->hour = (uint8_t)((st->hour + 1) % 24);
@@ -295,19 +322,39 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     t.lat_1e7 = (int32_t)w2_get32(p + W2_LAT);
     t.lon_1e7 = (int32_t)w2_get32(p + W2_LON);
     const uint32_t gt = w2_get24(p + W2_GSTRK);
-    t.gs_cms     = (uint16_t)(((gt & 0xFFF) * 5) / 2);
-    t.track_cdeg = (uint16_t)(((gt >> 12) & 0xFFF) * 10);
-    t.kf_alt_dm  = (int16_t)w2_get16(p + W2_KFALT);
-    t.kf_vs_cms  = (int16_t)((int8_t)p[W2_KFVS] * 5);
+    const uint32_t trk = (gt >> 12) & 0xFFF;
+    const bool gs_ok = (trk != W2_TRK_NONE);
+    if (gs_ok) {
+        t.gs_cms     = (uint16_t)(((gt & 0xFFF) * 5) / 2);
+        t.track_cdeg = (uint16_t)(trk * 10);
+    }
+    const uint16_t alt = w2_get16(p + W2_KFALT);
+    if (alt != W2_ALT_NONE) t.kf_alt_dm = (int16_t)alt;
+    const int8_t vs = (int8_t)p[W2_KFVS];
+    if (vs != W2_VS_NONE) t.kf_vs_cms = (int16_t)(vs * 5);
+
     uint64_t att = 0;
-    for (int i = 0; i < 5; i++) att |= (uint64_t)p[W2_ATT + i] << (8 * i);
-    t.roll_cdeg  = (int16_t)(w2_sext((uint32_t)(att & 0xFFF), 12) * 10);
-    t.pitch_cdeg = (int16_t)(w2_sext((uint32_t)((att >> 12) & 0xFFF), 12) * 10);
+    for (int i = 0; i < 6; i++) att |= (uint64_t)p[W2_ATT + i] << (8 * i);
+    const uint32_t r12 = (uint32_t)(att & 0xFFF);
+    const bool att_ok = (r12 != W2_ROLL_NONE);
+    if (att_ok) {
+        t.roll_cdeg  = (int16_t)(w2_sext(r12, 12) * 10);
+        t.pitch_cdeg = (int16_t)(w2_sext((uint32_t)((att >> 12) & 0xFFF), 12) * 10);
+    }
     // ★ ヨーは ±180° に戻す。LinkTelem の yaw_cdeg は int16（0.01°）なので 327.67° までしか入らず、
     //   0〜359.9° のまま戻すと 350° が 35000 で溢れて化ける。
-    int32_t y = (int32_t)((att >> 24) & 0xFFF);
-    if (y > 1800) y -= 3600;
-    t.yaw_cdeg   = (int16_t)(y * 10);
+    const uint32_t y12 = (uint32_t)((att >> 24) & 0xFFF);
+    const bool yaw_ok = (y12 != W2_YAW_NONE);
+    if (yaw_ok) {
+        int32_t y = (int32_t)y12;
+        if (y > 1800) y -= 3600;
+        t.yaw_cdeg = (int16_t)(y * 10);
+    }
+    const int32_t pa = w2_sext((uint32_t)((att >> 36) & 0x3FF), 10);
+    const bool pavg_ok = (pa != W2_PAVG_NONE);
+    if (pavg_ok) t.pitch_avg_cdeg = (int16_t)(pa * 10);
+    t.tas_flags = (uint8_t)((((att >> 46) & 1) ? LINK_TAS_CLAMPED : 0) |
+                            (((att >> 47) & 1) ? LINK_TAS_HDR     : 0));
 
     // ---- 回転枠 ----
     const uint32_t s = w2_get24(p + W2_SLOT);
@@ -323,29 +370,32 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
             st->slot_have |= RHAVE_DATE;
         } else st->slot_have &= (uint16_t)~RHAVE_DATE;
         break;
-    case W2S_PAVG:
-        t.pitch_avg_cdeg = (int16_t)(w2_sext(s & 0xFFF, 12) * 10);
+    case W2S_WIND:
+    case W2S_WIND2:
+        if (s & (1u << 20)) {
+            t.wind_dmps     = (uint8_t)(s & 0xFF);
+            t.wind_dir_cdeg = (uint16_t)(((s >> 8) & 0xFFF) * 10);
+            st->slot_have |= RHAVE_ATT_WIND;
+        } else st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;
+        break;
+    case W2S_TRIM:
+        t.roll_trim_cdeg = (int16_t)w2_sext(s & 0xFFF, 12);
         t.yaw_acc95_deg  = (uint8_t)((s >> 12) & 0xFF);
-        if (s & (1u << 20)) st->slot_have |= RHAVE_ATT_AVG; else st->slot_have &= (uint16_t)~RHAVE_ATT_AVG;
+        if (s & (1u << 20)) st->slot_have |= RHAVE_ATT_TRIM; else st->slot_have &= (uint16_t)~RHAVE_ATT_TRIM;
         st->yawacc_known = (s & (1u << 21)) != 0;
         break;
-    case W2S_TRIMW:
-        t.roll_trim_cdeg = (int16_t)w2_sext(s & 0xFFF, 12);
-        t.wind_dmps      = (uint8_t)((s >> 12) & 0xFF);
-        if (s & (1u << 20)) st->slot_have |= RHAVE_ATT_TRIM; else st->slot_have &= (uint16_t)~RHAVE_ATT_TRIM;
-        if (s & (1u << 21)) st->slot_have |= RHAVE_ATT_WIND; else st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;
-        break;
-    case W2S_WDIR:
-        t.wind_dir_cdeg = (uint16_t)((s & 0xFFF) * 10);
-        t.numsat        = (uint8_t)((s >> 12) & 0x3F);
-        if (s & (1u << 18)) st->slot_have |= RHAVE_NUMSAT; else st->slot_have &= (uint16_t)~RHAVE_NUMSAT;
-        if (!(s & (1u << 19))) st->slot_have &= (uint16_t)~RHAVE_ATT_WIND;   // 風が切れたら速度の枠を待たない
-        break;
+    case W2S_HACC: {
+        t.hacc_dm    = (uint16_t)(s & 0x3FF);
+        const uint8_t ns = (uint8_t)((s >> 10) & 0x3F);
+        if (ns != W2_NUMSAT_NONE) { t.numsat = ns; st->slot_have |= RHAVE_NUMSAT; }
+        else                      st->slot_have &= (uint16_t)~RHAVE_NUMSAT;
+        t.dest_index = (int8_t)((s >> 16) & 0xFF);
+        break; }
     case W2S_ALTV: {
-        const uint16_t alt = (uint16_t)(s & 0xFFFF);
-        const uint8_t  v   = (uint8_t)((s >> 16) & 0xFF);
-        if (alt != 0x8000) { t.gnss_alt_dm = (int16_t)alt; st->slot_have |= RHAVE_GNSSALT; }
-        else               st->slot_have &= (uint16_t)~RHAVE_GNSSALT;
+        const uint16_t galt = (uint16_t)(s & 0xFFFF);
+        const uint8_t  v    = (uint8_t)((s >> 16) & 0xFF);
+        if (galt != 0x8000) { t.gnss_alt_dm = (int16_t)galt; st->slot_have |= RHAVE_GNSSALT; }
+        else                st->slot_have &= (uint16_t)~RHAVE_GNSSALT;
         if (v) { t.volt_cv = v; st->slot_have |= RHAVE_VOLT; } else st->slot_have &= (uint16_t)~RHAVE_VOLT;
         break; }
     case W2S_PRESS: {
@@ -353,25 +403,23 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         if (pr) { t.press_dpa = pr; st->slot_have |= RHAVE_PRESS; } else st->slot_have &= (uint16_t)~RHAVE_PRESS;
         t.scale_index = (uint8_t)((s >> 16) & 0xFF);
         break; }
-    case W2S_HACC:
-        t.hacc_dm    = (uint16_t)(s & 0xFFFF);
-        t.dest_index = (int8_t)((s >> 16) & 0xFF);
-        break;
     case W2S_NAV:
         t.nav_mode = (uint8_t)(s & 0xFF);
         t.dest_id  = (uint16_t)((s >> 8) & 0xFFFF);
         break;
     }
 
-    // ---- have ビット: 核のフラグ ＋ 回転枠で分かっている分 ----
+    // ---- have ビット: 核の「無し」でない項目 ＋ 回転枠で分かっている分 ----
     uint16_t have = st->slot_have;
-    if (f & W2F_GS)    have |= RHAVE_GS | RHAVE_TTRACK;
-    if (f & W2F_KFALT) have |= RHAVE_KFALT;
-    if (f & W2F_KFVS)  have |= RHAVE_KFVS;
-    if (f & W2F_ATT)   have |= RHAVE_ATT;
-    // ★ ヨーは精度（回転枠 1）が分かるまで出さない。精度 0 のまま出すと「とても確か」に見え、
+    if (gs_ok)                  have |= RHAVE_GS | RHAVE_TTRACK;
+    if (alt != W2_ALT_NONE)     have |= RHAVE_KFALT;
+    if (vs != W2_VS_NONE)       have |= RHAVE_KFVS;
+    if (att_ok)                 have |= RHAVE_ATT;
+    if (pavg_ok)                have |= RHAVE_ATT_AVG;
+    if (tas != 0)               have |= RHAVE_TAS;
+    // ★ ヨーは精度（回転枠 2）が分かるまで出さない。精度 0 のまま出すと「とても確か」に見え、
     //   ヨーの信頼度で絞っている風や機首の表示がそのまま出てしまう。
-    if ((f & W2F_YAW) && st->yawacc_known) have |= RHAVE_ATT_YAW;
+    if (yaw_ok && st->yawacc_known) have |= RHAVE_ATT_YAW;
     t.have = have;
 }
 

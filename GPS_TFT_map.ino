@@ -7,7 +7,7 @@
 //           地図背景はフラッシュ内蔵のベクタ地図（vectormap.cpp）を使う。
 //           SDカード上のBMPタイル方式は廃止済み。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/27
+// Updated : 2026/11/07
 // ============================================================
 //
 // ■ src/ に置いてあるもの
@@ -41,7 +41,12 @@
 #include "readiness.h"  // 本番前チェック（そろったら「準備完了」）
 #include "src/imulog.h"
 #include "attitude.h"
+#include "tas.h"         // 推定 TAS: 地上と飛行中の判定（tas_tick）・大きい枠の設定
+#include "src/flashdata/imu_guide_data.h" // IMU_GUIDE_PAGES（IMU/ESKF 画面の入口の案内）
+#include "src/flashdata/tas_guide_data.h" // TAS_GUIDE_PAGES（推定 TAS の案内の画像）
 #include "src/vectormap.h"
+#include "src/flashdata/imu_guide_data.h" // IMU_GUIDE_PAGES（IMU/ESKF 画面の入口の案内）
+#include "src/flashdata/tas_guide_data.h" // TAS_GUIDE_PAGES（推定 TAS の案内の画像）
 
 // we need to do bool core1_separate_stack = true; to avoid stack running out.
 // (Likely due to drawWideLine from TFT-eSPI consuming alot of stack.)
@@ -70,6 +75,14 @@ int replay_list_page = 0;    // リプレイ選択画面で現在表示・読み
 int imu_cursor = 0;
 int imu2_cursor = 0;   // IMU/ESKF ページ2/3 のカーソル位置（BNO085 と校正）
 int imu3_cursor = 0;   // IMU/ESKF ページ3/3 のカーソル位置（ESKF の調整）
+// IMU/ESKF 画面の入口の案内（画像 IMU_GUIDE_PAGES 枚）の何枚目を出しているか。-1 = 出していない。
+// 設定画面から入るたびに 0 から通る（imu_guide_start）。押すたびに次の 1 枚へ進み、
+// 最後の次でページ1（較正の画面）へ移る（imu_guide_next）。
+int imu_guide_page = -1;
+// 推定 TAS の案内（docs/pons_tas.md §4.4）の何画面目を出しているか。-1 = 出していない。
+// IMU/ESKF 画面 1 ページ目で「Header」を TAS にしたときだけ 0 から通る（tas_guide_start）。
+// 0 = 説明の画像、1 = 対気速度モデルの曲線（ファームが描く）。最後の次でページ1へ戻る。
+int tas_guide_page = -1;
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
 double scalelist[6];         // 選択可能なスケール値リスト（ズームレベルに対応）
 double scale;                // 現在のマップスケール [pixels/km]
@@ -145,6 +158,9 @@ void shortPressCallback();
 void longPressCallback();
 void doublePressCallback();
 static void imu_execute();
+static void imu_guide_next();
+static void tas_guide_start();
+static void tas_guide_next();
 void next_scaleindex();
 // 設定画面のラベル用に、現在のスケールで画面横幅(240px)が何 km に相当するかを返す。
 // 以前は Google タイルのズーム番号(zoom5〜13)を表示していたが、ベクタ地図に移行して
@@ -412,6 +428,15 @@ void setup1(void) {
   // Without this call, Core1 might attempt to initialize the SD card before its runtime environment is fully ready, especially with a separate stack.
   //====
 
+  // ★ その前に Core0 の tft.begin() が PIO を取り終えるのを待つ（理由は display_tft.h の
+  //   tft_pio_ready）。Core0 は setup() の冒頭から数 ms でここを通る。上限を置くのは、
+  //   Core0 が手前で止まっても SD だけは使えるようにするため。
+  {
+    const unsigned long t = millis();
+    while (!tft_pio_ready && millis() - t < 1000) {
+      delay(1);
+    }
+  }
   setup_sd(1);  // 起動時も1回のみ。接触不良時の長時間ブロック防止。失敗後は try_sd_recovery() が10秒ごとにリトライ。
   // 起動音（opening.wav）は startup_demo_tft() 内でエンキューする（重複防止）
 }
@@ -890,58 +915,16 @@ static void eskf_apply_tick() {
   }
 }
 
-// 飛行ログのうち Core0 が組むもの（リプレイ用 ESKF 結果 と 生 IMU ログ）。
+// 飛行ログのうち Core0 が組むもの（生 IMU ログ）。
+// ※ ESKF の姿勢・風（旧 imu_replaydata/YYYYMMDD.txt, 5Hz）は飛行 CSV（data/*.csv, 2Hz）に
+//    直接統合したため、ここでの別ファイル書き出しは廃止した。
 // ★ JST はここで自分で求める。**loop() から引き回さないこと** — 引き回すと
 //   ログを足すたびに loop() の引数が増える。get_jst_now() は四則演算だけで、
 //   2 回呼んでも誤差は 1 センチ秒（単調性のガードが吸収する）。
 static void flightlog_tick() {
   int jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs;
-  const bool jst_valid = get_jst_now(jst_year, jst_month, jst_day,
-                                     log_h, log_m, log_s, log_cs);
-  // ---- リプレイ用 ESKF 結果ログ（画面の再現に使う）----
-  // ESKF が未収束の間は書かない。行が無い＝そのとき画面にも出ていなかった、を意味する。
-  // 契機は BNO085 のレポート到着ではなく固定周期にする。ESKF の出力は連続なので、
-  // レポートの到着ゆらぎで間隔がばらつくと再生が不均一になるため。
-  // 保険として実測の GNSS フィックスも要求する。日時が再生由来のまま残っていると
-  // 過去の日付のファイルへ机の上の値を書き込んでしまうため（set_replaymode() 参照）。
-  static uint32_t last_replaydata_ms = 0;
-  // ミラー中も記録しない（受信した機体の日時のファイルに、自機の姿勢を書いてしまう）
-  if (!getReplayMode() && !link_mirror_active() &&
-      jst_valid && get_gnss_fixok() && attitude_ready() &&
-      attitude_get_rpy_enabled() &&
-      (millis() - last_replaydata_ms) >= IMU_REPLAYDATA_INTERVAL_MS) {
-
-    // モノトニック保証: GNSS パケット間の処理遅延の揺れでタイムスタンプが
-    // 逆転することがあるため、前回より小さい場合はこの読み取りをスキップする。
-    static int32_t prev_jst_cs = -1;
-    int32_t this_jst_cs = (int32_t)log_h * 360000L + log_m * 6000 + log_s * 100 + log_cs;
-    if (prev_jst_cs < 0 || this_jst_cs > prev_jst_cs) {
-      prev_jst_cs = this_jst_cs;
-      last_replaydata_ms = millis();
-
-      char rd_fname[32];   // "imu_replaydata/20260316.txt" = 27文字
-      snprintf(rd_fname, sizeof(rd_fname), "%s/%04d%02d%02d.txt",
-               IMU_REPLAYDATA_DIR, jst_year, jst_month, jst_day);
-
-      // 画面に出ているのと同じ値を残す（マウント補正・ゼロ点・自動トリム適用後）
-      float a_roll, a_pitch, a_yaw;
-      attitude_get_euler(a_roll, a_pitch, a_yaw);
-
-      // 風は推定できていない区間があるので、有効フラグ付きで渡す（無効なら空欄で書かれる）
-      float a_wspd = 0.0f, a_wdir = 0.0f;
-      const bool a_wind_ok = attitude_get_wind(a_wspd, a_wdir);
-
-      enqueueTask(createLogImuReplayTask(log_h, log_m, log_s, log_cs,
-                                         a_roll, a_pitch, a_yaw,
-                                         attitude_get_pitch_avg_deg(),
-                                         attitude_pitch_avg_valid(),
-                                         attitude_get_roll_trim_deg(),
-                                         attitude_get_yaw_acc95_deg(),
-                                         a_wspd, a_wdir, a_wind_ok,
-                                         rd_fname,
-                                         jst_year, jst_month, jst_day));
-    }
-  }
+  const bool jst_valid =
+      get_jst_now(jst_year, jst_month, jst_day, log_h, log_m, log_s, log_cs);
 
   // ---- 生 IMU ログ: 満杯になったバッファを Core1 へ引き渡す ----
   // imulog_take_pending() が 0/1 を返したら、そのバッファは「Core1 へ引き渡し済み」に
@@ -1098,8 +1081,11 @@ static void draw_current_screen(bool new_gnss_info) {
     if (redraw_screen)
       draw_maplist_mode(detail_page);
   } else if (screen_mode == MODE_IMUDETAIL) {
-    if (redraw_screen)
-      draw_imudetail(detail_page);
+    if (redraw_screen) {
+      if (imu_guide_page >= 0)      draw_imu_guide(imu_guide_page);   // 入口の案内
+      else if (tas_guide_page >= 0) draw_tas_guide(tas_guide_page);   // 推定 TAS の案内
+      else                          draw_imudetail(detail_page);
+    }
   } else if (screen_mode == MODE_WIRELESS) {
     if (redraw_screen)
       draw_wireless(wireless_cursor);
@@ -1107,6 +1093,9 @@ static void draw_current_screen(bool new_gnss_info) {
     // チャンネル調査の一覧。進み具合は 1.05 秒の強制再描画で更新する
     if (redraw_screen)
       draw_chscan();
+  } else if (screen_mode == MODE_PCCONNECT) {
+    if (redraw_screen)
+      draw_pcconnect();
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -1364,6 +1353,153 @@ static void setting_timeout_tick() {
   }
 }
 
+// ===== Web Serial コマンド受信・処理（Core0） =====
+static char serial_cmd_buf[128];
+static size_t serial_cmd_len = 0;
+static int prev_screen_mode = MODE_MAP;
+static uint32_t last_serial_rx_ms = 0;
+
+static void handle_serial_command(const char *raw_cmd) {
+  last_serial_rx_ms = millis();
+  // 前後の空白をトリム
+  while (*raw_cmd == ' ')
+    raw_cmd++;
+  if (*raw_cmd == '\0')
+    return;
+
+  char cmd[128];
+  strlcpy(cmd, raw_cmd, sizeof(cmd));
+  int clen = strlen(cmd);
+  while (clen > 0 && (cmd[clen - 1] == ' ' || cmd[clen - 1] == '\r' ||
+                      cmd[clen - 1] == '\n')) {
+    cmd[--clen] = '\0';
+  }
+
+  if (strcmp(cmd, "PONS:CONNECT") == 0) {
+    webserial_connected = true;
+    webserial_cancel_requested = false;
+    prev_screen_mode = screen_mode;
+    screen_mode = MODE_PCCONNECT;
+    redraw_screen = true;
+    enqueueTask(createLogSdTask("PC CONNECTED (WEB SERIAL ACTIVE)"));
+    Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION,
+                  (unsigned long)BUILDDATE);
+  } else if (strcmp(cmd, "PONS:PING") == 0) {
+    // GET タスク待機中または実行中はデータストリームに PONG
+    // が混ざるのを防ぐため応答を抑止
+    if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:PONG");
+    }
+  } else if (strcmp(cmd, "PONS:LIST") == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    // 多重実行防止
+    if (isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST)) {
+      return;
+    }
+    enqueueTask(createSerialListTask());
+  } else if (strncmp(cmd, "PONS:GET,", 9) == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    // 転送中なら BUSY を返す
+    if (isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:ERROR,BUSY");
+      return;
+    }
+    const char *filename = cmd + 9;
+    while (*filename == ' ')
+      filename++;
+    if (*filename == '\0') {
+      Serial.println("PONS:ERROR,INVALID_FILENAME");
+      return;
+    }
+    enqueueTask(createSerialGetTask(filename));
+  } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
+    webserial_cancel_requested = true;
+    // 転送タスク実行中でなければ即座に応答（転送中なら Core1
+    // がファイルを閉じた直後に出す）
+    if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:CANCEL_OK");
+    }
+  } else if (strcmp(cmd, "PONS:DISCONNECT") == 0) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    Serial.println("PONS:BYE");
+    enqueueTask(createLogSdTask("PC DISCONNECTED (BYE) -> RESUME MAP"));
+    if (screen_mode == MODE_PCCONNECT) {
+      screen_mode =
+          (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+      redraw_screen = true;
+    }
+  } else {
+#ifndef RELEASE
+    // PONS コマンド以外は GNSS へ中継（デバッグ用）
+    for (size_t i = 0; cmd[i] != '\0'; i++) {
+      GNSS_SERIAL.write(cmd[i]);
+    }
+    GNSS_SERIAL.write('\r');
+    GNSS_SERIAL.write('\n');
+#endif
+  }
+}
+
+static void serial_command_service() {
+  // USB ケーブル抜去監視: 給電が断たれたら通常画面へ安全自動復帰
+  if ((webserial_connected || screen_mode == MODE_PCCONNECT) &&
+      !usb_power_present()) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    enqueueTask(
+        createLogSdTask("USB DISCONNECTED (CABLE REMOVED) -> RESUME MAP"));
+    if (screen_mode == MODE_PCCONNECT) {
+      screen_mode =
+          (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+      redraw_screen = true;
+    }
+    return;
+  }
+
+  // 転送タスク実行中・待機中は無通信タイマーを更新し続け、転送中の誤切断を防止
+  if (isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST) ||
+      isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+    last_serial_rx_ms = millis();
+  }
+
+  // 無通信フェイルセーフ: PC接続モードのまま 60
+  // 秒間無通信なら自動で通常航法へ復帰
+  if (screen_mode == MODE_PCCONNECT &&
+      (millis() - last_serial_rx_ms >= 60000UL)) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    enqueueTask(createLogSdTask("PC TIMEOUT (60s IDLE) -> RESUME MAP"));
+    screen_mode =
+        (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    redraw_screen = true;
+    return;
+  }
+
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (serial_cmd_len > 0) {
+        serial_cmd_buf[serial_cmd_len] = '\0';
+        handle_serial_command(serial_cmd_buf);
+        serial_cmd_len = 0;
+      }
+    } else {
+      if (serial_cmd_len < sizeof(serial_cmd_buf) - 1) {
+        serial_cmd_buf[serial_cmd_len++] = c;
+      } else {
+        serial_cmd_len = 0; // 溢れたらリセット
+      }
+    }
+  }
+}
+
 // Core0 のメインループ。以下の処理を毎ループ実行する:
 //   1. ボタン状態の読み取り
 //   2. GNSS データの受信・解析（gnss_loop は描画中にも分散して呼ぶ）
@@ -1382,15 +1518,15 @@ void loop() {
   // 地図画面以外（設定画面・リプレイ選択画面・各詳細画面）を開いている間は
   // リプレイを一時停止する。戻ってきたら続きから再生される。
   replay_set_paused(screen_mode != MODE_MAP);
-  // 生 IMU ログを止めるのはリプレイ中だけ
-  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない）。
+  // 生 IMU ログを止めるのはリプレイ中およびPC接続（Web Serial）中だけ
+  //（Euler ログと同じ理由: 再生日時のファイルを実センサ値で汚さない / PC接続中はSDを読み出し専用に保護）。
   //
   // ※ GNSS 日時の有効性では止めないこと。
   //   以前は日時未確定でも止めていたが、それだと屋内など測位できない場所で
   //   IMU の生ログが一切取れず（wrote=0）、ベンチでの検証ができなかった。
   //   日時が無いときは下でファイル名を imuraw/nofix.bin にフォールバックする。
   //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
-  imulog_set_paused(getReplayMode());
+  imulog_set_paused(getReplayMode() || webserial_connected);
   gnss_loop(0);  // ループ先頭で GNSS データを受信
   loop_userled();  // USERLED フラッシュ制御（0衛星・SDエラー時）
 
@@ -1425,6 +1561,9 @@ void loop() {
 
   ground_check_tick();
 
+  // 推定 TAS: 地上と飛行中の切り替え（大きい枠の数字の横線。判定は tas.cpp）
+  tas_tick();
+
   // 本番前チェック。上の地上チェックの発報状態（ground_*_warn_active）を読むので、その後に置く。
   readiness_tick();
 
@@ -1445,12 +1584,8 @@ void loop() {
   }
 
 
-#ifndef RELEASE
-  // デバッグ時: PC シリアルから GNSS モジュールへコマンドを転送可能
-  if (Serial.available()) {
-    GNSS_SERIAL.write(Serial.read());
-  }
-#endif
+  // Web Serial コマンド受信サービス（PONS:CONNECT / LIST / GET / CANCEL / DISCONNECT）
+  serial_command_service();
 
   // GNSS 更新や BMP ロードがなくても、一定間隔で強制再描画する
   // （時刻表示など時間経過で変わる表示の更新保証）
@@ -1459,12 +1594,18 @@ void loop() {
   // この間隔がそのまま表示の更新レートになる。地図画面と同じ 1050ms だと
   // 約 0.95Hz しか出ないので、この画面だけ短い間隔を使う。
   {
+    // IMU/ESKF の入口の案内は動かない画像なので、200ms ごとに 150KB を送り直さない
+    // （上に重なった表示を消すための保険として、地図と同じ間隔だけ描き直す）。
+    // 推定 TAS の案内も、画像（0 枚目）は同じ。曲線の画面（1）は本体を傾けると点が動くので短い間隔。
     unsigned long fresh_interval =
-        (screen_mode == MODE_VARIODETAIL || screen_mode == MODE_IMUDETAIL)
-        ? SCREEN_FRESH_INTERVAL_DETAIL
-        : SCREEN_FRESH_INTERVAL;
-    // ★ ミラー中の地図だけは、受信中のフレームに重ならない時間に限る（link_draw_window_ok）。
-    //   フレームを 1 つ落とすと、1.05 秒後の強制再描画がちょうど次のフレームの受信に重なる。
+        (screen_mode == MODE_VARIODETAIL ||
+         (screen_mode == MODE_IMUDETAIL && imu_guide_page < 0 && tas_guide_page != 0))
+            ? SCREEN_FRESH_INTERVAL_DETAIL
+            : SCREEN_FRESH_INTERVAL;
+    // ★
+    // ミラー中の地図だけは、受信中のフレームに重ならない時間に限る（link_draw_window_ok）。
+    //   フレームを 1 つ落とすと、1.05
+    //   秒後の強制再描画がちょうど次のフレームの受信に重なる。
     //   間隔を延ばしても重なる位相は残るので、間隔ではなく時刻（窓）で避ける。
     if (millis() - screen_update_time > fresh_interval &&
         (screen_mode != MODE_MAP || link_draw_window_ok())) {
@@ -1538,6 +1679,9 @@ void loop1() {
       case TASK_PLAY_WAV:
         startPlayWav(currentTask.playWavArgs.wavfilename, currentTask.playWavArgs.priority, currentTask.playWavArgs.min_volume, currentTask.playWavArgs.excl_group);
         break;
+      case TASK_STOP_WAV:
+        stop_wav_excl_group_core1(currentTask.playWavArgs.excl_group);
+        break;
       case TASK_PLAY_MULTITONE:
         playTone(currentTask.playMultiToneArgs.freq, currentTask.playMultiToneArgs.duration, currentTask.playMultiToneArgs.counter, currentTask.playMultiToneArgs.priority, currentTask.playMultiToneArgs.min_volume, currentTask.playMultiToneArgs.solo_play);
         break;
@@ -1569,26 +1713,6 @@ void loop1() {
       case TASK_SAVE_RXCSV:
         saveRxCSV(currentTask);
         break;
-      case TASK_LOG_IMUREPLAY:
-        save_imu_replaydata(currentTask.imuReplayArgs.hour,
-                            currentTask.imuReplayArgs.minute,
-                            currentTask.imuReplayArgs.second,
-                            currentTask.imuReplayArgs.centisecond,
-                            currentTask.imuReplayArgs.roll,
-                            currentTask.imuReplayArgs.pitch,
-                            currentTask.imuReplayArgs.yaw,
-                            currentTask.imuReplayArgs.pitch_avg,
-                            currentTask.imuReplayArgs.pitch_avg_valid,
-                            currentTask.imuReplayArgs.roll_trim,
-                            currentTask.imuReplayArgs.yaw_acc95,
-                            currentTask.imuReplayArgs.wind_mps,
-                            currentTask.imuReplayArgs.wind_dir,
-                            currentTask.imuReplayArgs.wind_valid,
-                            currentTask.imuReplayArgs.filename,
-                            currentTask.imuReplayArgs.year,
-                            currentTask.imuReplayArgs.month,
-                            currentTask.imuReplayArgs.day);
-        break;
       case TASK_FLUSH_IMULOG:
         // 生 IMU ログの二重バッファ片側を SD へ書き出す（約 4KB / 0.45 秒分）。
         // 書き出し後にバッファを解放するので、この処理が滞ると Core0 側で記録が捨てられる。
@@ -1600,6 +1724,12 @@ void loop1() {
                             currentTask.imuLogArgs.hour,
                             currentTask.imuLogArgs.minute,
                             currentTask.imuLogArgs.second);
+        break;
+      case TASK_SERIAL_LIST:
+        serial_list_csv_files();
+        break;
+      case TASK_SERIAL_GET:
+        serial_send_csv_file(currentTask.serialGetArgs.filename);
         break;
     }
     clearCurrentTask();  // mutex 内で TASK_NONE にする（Core0 の isTaskRunning() と整合させるため）
@@ -1643,6 +1773,18 @@ void shortPressCallback() {
   last_user_input_ms = millis();
   redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
+
+  // PC接続モード中: プッシュスイッチ短押しで手動切断して通常画面へ安全復帰
+  if (screen_mode == MODE_PCCONNECT) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    Serial.println("PONS:BYE");
+    enqueueTask(createPlayMultiToneTask(1046, 80, 1));
+    enqueueTask(createLogSdTask("PC DISCONNECTED (BUTTON) -> RESUME MAP"));
+    screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    redraw_screen = true;
+    return;
+  }
 
   // MAP モードでは短押しは何もしない（スケール変更はダブルクリックへ移した）。
   // 何も起きないのに音だけ鳴ると紛らわしいので、音も鳴らさずに抜ける。
@@ -1688,10 +1830,13 @@ void shortPressCallback() {
     wireless_cursor = (wireless_cursor + 1) % WIRELESS_MENU_COUNT;
     redraw_screen = true;
   } else if (screen_mode == MODE_IMUDETAIL) {
-    // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行はダブルクリック。
+    // IMU / ESKF 画面: 短押しはカーソル移動のみ。実行は長押し。
     // 較正は「今の姿勢を何度として記録するか」を選んでから行うので、
     // 誤操作で意図しない値が焼き付かないよう 2 段階にしてある。
-    if      (detail_page % 3 == 0) imu_cursor  = (imu_cursor  + 1) % IMU_MENU_COUNT;
+    // 入口の案内を出している間は、押すと次の 1 枚へ（imu_guide_next / tas_guide_next）。
+    if      (imu_guide_page >= 0)     imu_guide_next();
+    else if (tas_guide_page >= 0)     tas_guide_next();
+    else if (detail_page % 3 == 0) imu_cursor  = (imu_cursor  + 1) % IMU_MENU_COUNT;
     else if (detail_page % 3 == 1) imu2_cursor = (imu2_cursor + 1) % IMU2_MENU_COUNT;
     else                           imu3_cursor = (imu3_cursor + 1) % IMU3_MENU_COUNT;
     redraw_screen = true;
@@ -1703,6 +1848,101 @@ void shortPressCallback() {
 // IMU / ESKF 画面のカーソル位置に応じた実行処理（長押しから呼ばれる）。
 // 設定画面と同じく「短押し=カーソル移動 / 長押し=実行」の操作感に揃えてある。
 // この画面を出るのは Exit 項目からのみ（長押しで戻る動作は持たせていない）。
+// ページ1の Exit。設定を保存して地図へ戻る。
+static void imu_exit() {
+  enqueueTask(createSaveSettingTask());
+  screen_mode = MODE_MAP;
+  enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+}
+
+// ---- IMU/ESKF 画面の入口の案内 ----
+// 較正の画面（ページ1）へ行く前に、画像で 1 項目ずつ見せる（SET PITCH / SET ROLL / 本体の向き）。
+// 画像の原本は tools/imu_guide/、焼き込みは tools/gen_guide_flash.py。
+// 1 枚ごとにその項目を読み上げる。音声は同じ排他グループ（WAV_EXCL_ESKF_GUIDE）なので、
+// ページを送ると次の音声が前の音声を打ち切る（pending にも残らない。docs/pons_sound.md §3）。
+// ★ 汎用の「再生を止める」は無い。最後の 1 文（guide_eskf_apply.wav）を較正の画面に
+//   着いたときに流すので、3 枚目の音声もそこで打ち切られ、案内の音が後に残ることは無い。
+// ★ 画像と音声は順番で 1 対 1。並べ替えるときは画像も一緒に並べ替える。
+static const char *const IMU_GUIDE_WAV[] = {
+  "wav/guide_eskf_pitch.wav",    // 1/3 SET PITCH   「セットピッチが現在の地面の傾斜角と…」
+  "wav/guide_eskf_roll.wav",     // 2/3 SET ROLL    「セットロールが現在の機体の角度と…」
+  "wav/guide_eskf_heading.wav",  // 3/3 本体の向き  「本体の向きが進行方向に向いていて…」
+};
+static_assert(sizeof(IMU_GUIDE_WAV) / sizeof(IMU_GUIDE_WAV[0]) == IMU_GUIDE_PAGES,
+              "IMU_GUIDE_WAV[] must have one voice per guide image (IMU_GUIDE_PAGES)");
+
+// 優先度 3 = コース警告と同等。誤った較正は警告機能そのものを壊すため（従来の案内と同じ）。
+static void imu_guide_say(const char *wav) {
+  enqueueTask(createPlayWavTask(wav, 3, 0, WAV_EXCL_ESKF_GUIDE));
+}
+
+// 設定画面の「IMU / ESKF detail >」から入ったときに呼ぶ（src/button.cpp）。
+void imu_guide_start() {
+  imu_guide_page = 0;
+  tas_guide_page = -1;
+  imu_guide_say(IMU_GUIDE_WAV[0]);
+  redraw_screen = true;
+}
+
+// 短押し・長押しのどちらでも次の 1 枚へ（設定画面の癖で長押ししても止まって見えないように）。
+// ★ 案内を飛ばす操作は付けない。「較正の画面へ行く前に必ず一度通る」ための画面。
+static void imu_guide_next() {
+  imu_guide_page++;
+  if (imu_guide_page < IMU_GUIDE_PAGES) {
+    imu_guide_say(IMU_GUIDE_WAV[imu_guide_page]);
+  } else {
+    imu_guide_page = -1;
+    detail_page = 0;
+    imu_cursor = 0;
+    // 案内は全画面の画像。ページ1はヘッダを pushSprite(0, -10) で y=0〜39 に置くなど、
+    // 塗らない所があるので、先に白で消しておく（消さないと案内の切れ端が残る）。
+    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+    imu_guide_say("wav/guide_eskf_apply.wav");   // 「…確認してから、校正を実行。APPLYしてください。」
+  }
+  redraw_screen = true;
+}
+
+// ---- 推定 TAS の案内（docs/pons_tas.md §4.4）----
+// 大きい枠を TAS にしたときだけ通す 2 画面。1 画面ごとに読み上げる（画面と音声は順番で 1 対 1）。
+// 画像の原本は tools/tas_guide/、焼き込みは tools/gen_guide_flash.py。曲線の画面はファームが描く
+// （display_pages.cpp の draw_tas_guide。本体を傾けると点と数字が動く）。
+// ★ 起動のたびには出さない。IMU/ESKF 画面の入口の案内にも足さない（2026-11-07 決定）。
+// ★ 抜けたら読み上げを止める（TASK_STOP_WAV）。IMU の案内のように最後に流す 1 文が無いので、
+//   止めないと曲線の画面の説明がページ1に戻ってからも鳴り続ける。
+#define TAS_GUIDE_SCREENS 2
+static const char *const TAS_GUIDE_WAV[TAS_GUIDE_SCREENS] = {
+  "wav/guide_tas_1.wav",       // 1/2 説明の画像  「青い箱は、ピッチから計算した、推定の対気速度です…地上では数字に横線が入り…」
+  "wav/guide_tas_curve.wav",   // 2/2 曲線の画面  「ピッチと対気速度の関係です…」
+};
+static_assert(TAS_GUIDE_PAGES + 1 == TAS_GUIDE_SCREENS,
+              "TAS の案内は画像 TAS_GUIDE_PAGES 枚＋曲線の画面 1 つ（TAS_GUIDE_WAV[] と数を合わせる）");
+
+// 優先度 2。誤った較正のように警告機能を壊す話ではないので、IMU の案内（3）より下げる。
+static void tas_guide_say(const char *wav) {
+  enqueueTask(createPlayWavTask(wav, 2, 0, WAV_EXCL_TAS_GUIDE));
+}
+
+static void tas_guide_start() {
+  tas_guide_page = 0;
+  tas_guide_say(TAS_GUIDE_WAV[0]);
+  redraw_screen = true;
+}
+
+// 短押し・長押しのどちらでも次の画面へ（IMU の案内と同じ操作）。
+static void tas_guide_next() {
+  tas_guide_page++;
+  if (tas_guide_page < TAS_GUIDE_SCREENS) {
+    tas_guide_say(TAS_GUIDE_WAV[tas_guide_page]);
+  } else {
+    tas_guide_page = -1;
+    enqueueTask(createStopWavTask(WAV_EXCL_TAS_GUIDE));
+    // 案内は全画面。ページ1は塗らない所があるので先に白で消す（imu_guide_next と同じ理由）。
+    tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+    enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+  }
+  redraw_screen = true;
+}
+
 static void imu_execute() {
   redraw_screen = true;
 
@@ -1810,10 +2050,18 @@ static void imu_execute() {
       enqueueTask(createPlayMultiToneTask(1568, 80, 1));
       break;
 
-    case IMU_MENU_EXIT:
+    case IMU_MENU_HEADER: { // ヘッダー右の大きい枠: 平均ピッチ ⇔ 推定 TAS（docs/pons_tas.md §4.1）
+      const bool to_tas = !tas_setting_get();
+      tas_setting_set(to_tas);
       enqueueTask(createSaveSettingTask());
-      screen_mode = MODE_MAP;
-      enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+      // TAS にしたときだけ仕組みの案内を通す。Pavg に戻すときは合図だけ。
+      if (to_tas) tas_guide_start();
+      else        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
+      break;
+    }
+
+    case IMU_MENU_EXIT:
+      imu_exit();
       break;
   }
 }
@@ -1914,6 +2162,17 @@ void longPressCallback() {
   last_user_input_ms = millis();
   redraw_screen = true;
 
+  // PC接続モード中: プッシュスイッチ長押しでも手動切断して通常画面へ安全復帰
+  if (screen_mode == MODE_PCCONNECT) {
+    webserial_connected = false;
+    webserial_cancel_requested = true;
+    Serial.println("PONS:BYE");
+    enqueueTask(createLogSdTask("PC DISCONNECTED (BUTTON LONG) -> RESUME MAP"));
+    screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    redraw_screen = true;
+    return;
+  }
+
   // リプレイ選択画面での長押し = 「決定」。
   // 下の汎用パス（設定画面以外 → 設定画面へ戻る）より先に処理しないと項目を選べない。
   if (screen_mode == MODE_REPLAYSELECT) {
@@ -1997,7 +2256,9 @@ void longPressCallback() {
   }
 
   if (screen_mode == MODE_IMUDETAIL) {
-    imu_execute();
+    if (imu_guide_page >= 0)      imu_guide_next();   // 入口の案内: 長押しも「次へ」
+    else if (tas_guide_page >= 0) tas_guide_next();   // 推定 TAS の案内も同じ
+    else                          imu_execute();
     return;
   }
 

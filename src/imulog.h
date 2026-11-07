@@ -163,6 +163,9 @@ void imulog_release_pending(int bufidx);
 void imulog_write_buffer(int bufidx, const char* filename,
                          int year, int month, int day, int hour, int minute, int second);
 
+// ---- Core1: 開いている生IMUログファイルを閉じてフラッシュする（PC接続時など）----
+void imulog_flush_and_close();
+
 // ---- 診断 ----
 uint32_t imulog_get_dropped();     // バッファ枯渇で捨てたレコード数（累計）
 uint32_t imulog_get_written();     // SD へ書いたレコード数（累計）

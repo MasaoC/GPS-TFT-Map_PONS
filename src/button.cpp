@@ -6,7 +6,7 @@
 //           設定画面の全メニュー項目（目的地・音量・デモ地点など）の
 //           ラベル生成・値変更コールバック定義。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/19
+// Updated : 2026/11/07
 // ============================================================
 // Handle button updates
 #include "button.h"
@@ -567,9 +567,10 @@ Setting menu_settings[] = {
       detail_page = 0;
       extern int imu_cursor;
       imu_cursor = 0;
-      // 較正の注意点（ロールが 0 であること・飛行中に実行しないこと）を音声で案内する。
-      // 優先度 3 = コース警告と同等。誤った較正は警告機能そのものを壊すため。
-      enqueueTask(createPlayWavTask("wav/guide_eskf_setting.wav", 3));
+      // 較正の画面の前に、必ず入口の案内（画像 3 枚と読み上げ）を通す。
+      // 中身と音声の扱いは GPS_TFT_map.ino の imu_guide_start() / imu_guide_next()。
+      extern void imu_guide_start();
+      imu_guide_start();
     },
     nullptr,
     nullptr,
