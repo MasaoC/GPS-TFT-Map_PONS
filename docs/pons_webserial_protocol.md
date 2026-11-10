@@ -109,6 +109,18 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 * **PONS ➔ PC**: `PONS:BYE`
 * PONSは安全に通常の航法画面（`MODE_MAP`）と各種ロギングへ復帰する。
 
+### (6) GNSS の航法データベースの机の上の試験 (DBD)（2026-11-09〜）
+* **PC ➔ PONS**: `PONS:DBD,SAVE` / `PONS:DBD,COLD` / `PONS:DBD,COLDONLY` / `PONS:DBD,HOT` / `PONS:DBD,STATUS`
+* **PONS ➔ PC**: `PONS:DBD,OK,<コマンド>` / `PONS:DBD,ERROR,<理由>`（`BUSY` / `NO_FIX` / `NO_GNSS_ID` / `NO_TIME` / `REPLAY` / `UNKNOWN` / `DISABLED`）/
+  `PONS:DBD,STATUS,state=...,file=...,auto=on|off`
+* `PONS:CONNECT` は要らない（Arduino IDE のシリアルモニタから打てる）。SD を読み出し専用にする PC 接続モードとは別物。
+* `COLD` は GNSS をコールドスタートさせ（UBX-CFG-RST navBbrMask=0xFFFF、GNSS だけの再起動）、SD の `gnss_dbd.bin` を戻す。
+  `COLDONLY` は戻さない比べ用、`HOT` はホットスタート、`SAVE` はいま吸い出して書く。結果（測位までの秒数など）は
+  `log.txt` の `GNSS DBD TEST ...` に出る。仕組みは `gnss_dbd.cpp` の冒頭と docs/pons_ttff_assist_plan.md §3。
+* `COLD` / `COLDONLY` / `HOT` を 1 回でも打つと、**再起動するまで自動の吸い出しはしない**（`auto=off`）。`COLDONLY` で消した
+  GNSS の薄いデータベースで SD のファイルを上書きして、次の `COLD` の比べ物にならなくなるのを防ぐため。`SAVE` は効く。
+* リプレイ中と、抜けた直後（本物の NAV-PVT が届くまで）は `STATUS` 以外を `ERROR,REPLAY` で断る（fix と日時が再生した CSV の値のため）。
+
 ---
 
 ## 5. PONS本体側の実装構造（ファームウェア組み込み済み）

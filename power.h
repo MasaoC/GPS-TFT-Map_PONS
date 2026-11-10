@@ -5,7 +5,7 @@
 //           高温での充電の警告、過放電（3.0V 未満）の本体フラッシュ記録と次回起動ロック。
 //           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/29
+// Updated : 2026/11/10
 // ============================================================
 #ifndef POWER_H
 #define POWER_H
@@ -114,8 +114,8 @@ int   power_charging_percent();          // 充電中残量 [%] (0〜100)
 int   power_charging_remaining_min();    // 満充電までの推定残り時間 [分] (0=FULL)
 int   power_charging_remaining_90_min(); // 90%確実完了までの残り時間 [分] (0=FULL)
 bool  power_charging_full_cutoff_confirmed(); // 満充電到達後、90%確実消灯目安（+20分）を達成したか
-uint32_t power_charging_elapsed_sec();   // USB 通電（充電開始）からの経過時間 [秒]
-const char* power_rtc_backup_status_str(); // GNSS バックアップ電池(MS621FE)の充電状態目安
+uint32_t power_charging_elapsed_sec();   // USB 通電（充電開始）からの経過時間 [秒]（2026-11-10 から画面では使っていない）
+const char* power_rtc_backup_status_str(); // 充電ポップアップの 2 行目 "Fast GPS if OFF < 1.5 days"（BT1 の残り。rtc_backup.cpp）
 bool  power_charge_popup_active();       // 充電ポップアップを地図画面に表示すべきか
 void  power_charge_popup_snooze();       // ボタン操作時にポップアップを一時非表示にする
 

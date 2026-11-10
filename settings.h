@@ -121,6 +121,28 @@
 // log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
 #define GNSS_ANA_LOG_INTERVAL_MS  600000UL
 
+// ---- GNSS の航法データベースを SD に置く（gnss_dbd.cpp。2026-11-09〜。docs/pons_ttff_assist_plan.md §3）----
+// 時計の電池（BT1）が切れて起動すると、GNSS は軌道も時刻も失ってコールドスタートになる（小さいアンテナでは数分〜10 分以上）。
+// 通電中に GNSS のデータベース（UBX-MGA-DBD。エフェメリス・予測軌道など）を SD へ写しておき、BT1 が切れていた起動で
+// GNSS へ戻す。効くのは前回の保存から約 3 日以内（予測軌道の寿命）。BT1 が生きている起動では何もしない。
+// 1 = 使う / 0 = 使わない（保存も復元も、GNSS への ACKAIDING の設定もしない。RAM も取らない）。
+#define GNSS_DBD_ENABLE            1
+#define GNSS_DBD_FILE              "gnss_dbd.bin"   // SD のルート（本体が書く。消してもよい＝次に保存するまで戻さないだけ）
+#define GNSS_DBD_TMP_FILE          "gnss_dbd.tmp"   // 書いている途中のファイル（書き終えたら上の名前に替える）
+// 吸い出しを入れる RAM [B]（65535 まで）。足りなければ log.txt に "too big" と全体の大きさが出るので、それより大きくする。
+#define GNSS_DBD_BUF_BYTES         24576
+#define GNSS_DBD_FIRST_SAVE_MS     900000UL    // 起動後最初の fix からこれだけ経ってから 1 回目を吸い出す（予測軌道の計算が進むのを待つ）
+#define GNSS_DBD_SAVE_INTERVAL_MS  1800000UL   // 2 回目からの間隔（失敗したときも次はこれだけ待つ）
+// 吸い出しは GNSS の UART を数秒埋めて NAV-PVT を遅らせるので、止まっているときだけやる:
+// 自機の対地速度が READY_STILL_MPS 以下でこれだけ続いたとき（飛行中・走行中はやらない）。
+#define GNSS_DBD_STILL_MS          30000UL
+#define GNSS_DBD_DUMP_TIMEOUT_MS   20000UL     // 吸い出しの終わりの返事（MGA-ACK）を待つ上限（24KB でも 38400bps で約 7 秒）
+#define GNSS_DBD_ACK_TIMEOUT_MS    1000UL      // 戻すとき、1 通ごとの返事（MGA-ACK）を待つ上限
+#define GNSS_DBD_PACE_MS           50UL        // 返事が 3 回続けて来なければ、待つのをやめてこの間隔で送る
+#define GNSS_DBD_RESTORE_WINDOW_MS 1800000UL   // 戻した起動で「時刻がわかったら入れ直す」のを待つ上限（fix したらそこで終わり）
+#define GNSS_DBD_MAX_AGE_H         720         // 入れ直すのはこれより新しいファイルだけ [h]（30 日。アルマナックの寿命）
+#define GNSS_DBD_LOAD_WAIT_MS      20000UL     // 起動後、SD の読み込みと GNSS の固有 ID（SEC-UNIQID）を待つ上限
+
 // ---- 本番前チェック（readiness.cpp）----
 // 飛ぶ前に確かめる項目がそろったら、地上で止まっているときに 1 度だけ「準備完了」と読み上げる。
 // そろっていなければ、何が足りないかを設定画面の右上に出す。項目は readiness.h の RDY_*。
@@ -435,6 +457,12 @@
 // 3 分にしてあるのは、設定を眺めながら考え込む程度では抜けず、
 // かつ離陸前の点検から離陸までの間には確実に戻る長さだから。
 #define SETTING_IDLE_TIMEOUT_MS (3UL * 60UL * 1000UL)
+// 地図以外の画面（設定・IMU/ESKF・GNSS 詳細・VARIO・WIRELESS・REPLAY/DEMO など）を出したまま
+// 動き出したら地図へ戻す（GPS_TFT_map.ino の screen_moving_exit_tick。2026-11-08〜）。
+// 自機の GNSS の対地速度がこれ以上でこの時間続いたら戻す。発進の助走で数秒、離陸後は 7m/s 前後。
+// ★ 受信モード（ボート）と PC 接続の画面は対象外。ボートは WIRELESS 画面を見ながら機体を追うことがある。
+#define SCREEN_MOVING_EXIT_GS_MPS   3.0f
+#define SCREEN_MOVING_EXIT_HOLD_MS  5000UL
 
 
 // ---- MS5611（i2c0）の失敗検出と復旧 ----
@@ -1652,12 +1680,19 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 
 // ---- 地図に重ねる通知ボックスの縦位置（display_tft.cpp の begin_notice_box）----
 // ★ **同時に出るものを重ねないこと。** 括弧内が実際に占める範囲。
-//   同時に出うる組: GNSS 断線 ＋ 警報ミュート ＋（無信号 または 送信前チェック）。
+//   同時に出うる組: GNSS 断線 ＋ 警報ミュート ＋（無信号 または 送信前チェック）、
+//                  充電ポップアップ ＋ 警報ミュート ＋（無信号 または 送信前チェック）。
 //   排他な組: 無信号（受信モード）と送信前チェック（送信モード）→ 同じ段を使う。
-//            送信機 2 台（ミラー中のみ）と警報ミュート（ミラー中は出ない）。
+//            送信機 2 台（ミラー中のみ）と警報ミュート・充電ポップアップ（ミラー中は出ない）。
+//            充電ポップアップと GNSS 断線（ポップアップは GNSS が生きているときだけ）。
+// ★ 警報ミュートは「充電中かつマウント外れ」なので、**充電ポップアップとほぼ必ず同時に出る**。
+//   2026-11-07 まで 104..143 に置いていて、ポップアップ（82..145）に丸ごと隠れていた。
+//   いまはポップアップの上（40..79）に置き、GNSS 断線の箱（44..99）が出ているときだけ元の段へ下ろす
+//   （そのときポップアップは出ない）。40 より上は GS・TT のラベルの行（y = 0〜16）。
 #define NOTICE_Y_GNSS_LOST    44   // 高さ 56 → 44..99 （GNSS モジュールの断線）
 #define NOTICE_Y_DUP_SENDER   96   // 高さ 44 → 96..139（送信機が 2 台）
-#define NOTICE_Y_WARN_MUTE   104   // 高さ 40 → 104..143（警報ミュート中）
+#define NOTICE_Y_WARN_MUTE    40   // 高さ 40 → 40..79 （警報ミュート中。充電ポップアップの上）
+#define NOTICE_Y_WARN_MUTE_LOW 104 // 高さ 40 → 104..143（同。GNSS 断線の箱が出ている間だけ）
 #define NOTICE_Y_LINK_STATE  148   // 高さ 44 → 148..191（無信号 / 送信前チェック）
 #define NOTICE_Y_PWR_FAULT   190   // 高さ 40 → 190..229（電源経路の異常。2px だけ上と接する）
 // SW OFF のまま充電している注意と、高温での充電の警告も電源経路の異常と同じ段。
@@ -1666,10 +1701,26 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define NOTICE_Y_CHG_SW_OFF  NOTICE_Y_PWR_FAULT
 #define NOTICE_Y_CHG_HOT     NOTICE_Y_PWR_FAULT
 // 充電ポップアップ（USB 接続・地上静止中のメイン画面通知）
-// 3行表示（残量/残り時間/90%確実目安、通電経過時間/RTCバックアップ目安、LED確認）
+// 3行表示（残量/残り時間/90%確実目安、GNSS の速い測位がもつ時間（BT1 の残り）、LED確認）
 #define NOTICE_Y_CHG_POPUP   82
 #define CHG_POPUP_BOX_H      64
 #define CHG_POPUP_SNOOZE_MS  15000UL  // 操作時にポップアップを一時非表示にする時間 [ms]
+// ---- GNSS のバックアップ電池（BT1 = MS621FE）が「あと何時間もつか」の推定（rtc_backup.cpp。2026-11-08〜）----
+// 通電した時間で満充電へ近づけ、電源を切っていた時間をそのまま引く。起動時の GNSS の時計の生死で引き戻す。
+// 値は README の BT1 の表（Seiko の充電カーブと u-blox のバックアップ電流 28µA からの見積もり）に合わせた。
+#define RTC_BACKUP_FULL_H        192.0f   // 満充電でもつ時間 [h]（約 8 日。5.5mAh ÷ 28µA ≒ 196h）
+#define RTC_BACKUP_TAU_H          21.0f   // 充電の時定数 [h]（1 時間で約 9h ぶん、12 時間で約 84h ぶん）
+#define RTC_BACKUP_ALIVE_MIN_H     0.5f   // 起動時に時計が生きていたときの下限 [h]（生きていても空に近いことがある）
+#define RTC_BACKUP_SAVE_MS      300000UL  // SD に書き直す間隔（切る直前のこの時間ぶんは記録に入らない＝安全側）
+#define RTC_BACKUP_LOAD_WAIT_MS  20000UL  // 起動後、SD の記録と時刻を待つ上限
+#define RTC_BACKUP_CHECK_MARGIN_H  1.0f   // 「空のはずなのに残っていた」とログに残す余裕 [h]（記録が最大 5 分古いぶん。空から 5 分の充電で約 0.8h）
+#define RTC_BACKUP_FILE         "rtc_backup.txt"   // SD のルート（本体が書く。消してもよい＝安全側から始め直す）
+// ★ GNSS の状態の箱（Scanning / Weak GNSS Signal、高さ 40）だけは段を決めず、**ほかの箱が空けている段を探して置く**
+//   （display_tft.cpp の draw_nomapdata と notice_reserve。2026-11-08〜）。既定は自機アイコンの下
+//   （NORTHUP 145 / TRACKUP 192）で、塞がっていれば 192 → 148 → 104 → 82 → 40 の順に探す。
+//   決まった段にすると、充電ポップアップ・警報ミュート・無信号・SW OFF のどれかと必ず重なるため。
+//   新しい箱を足すときは begin_notice_box() を通すこと（範囲が自動で押さえられる）。
+//   点滅する箱は、消えている相でも notice_reserve() で押さえる（GNSS の状態の箱が行き来しないように）。
 // ※ GNSS 断線（44..99）と送信機 2 台（96..139）は 4px だけ接する。両方出るのは
 //   「受信機の GNSS が抜けていて、かつ送信機が 2 台」のときで、後から描く側が
 //   相手の下枠を 4px 消すだけ。文字は隠れないのでそのままにしてある。
@@ -1681,6 +1732,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   （VSI の右辺で踏んだのと同じ罠）。1000ms なら 2Hz 再描画で 1 相 2 回描かれる。
 #define LINK_FRAME_STALE_MS   3000UL  // これより古い＝切れかけ／無信号 → 点滅へ
 #define LINK_FRAME_BLINK_MS   1000UL  // 点滅の半周期
+
+// ---- フッターの「0sats」の点滅（display_tft.cpp の draw_footer）----
+// 衛星が 0 個のときだけ、赤地に白字と白地に赤字を交互に出す（2026-11-07〜。1〜4 個は赤地に白字のまま）。
+// 半周期は上の LINK_FRAME_BLINK_MS と同じ理由で 1000ms（再描画は 2Hz か 1050ms ごと）。
+#define FOOTER_SATS0_BLINK_MS 1000UL
 
 // ---- ミラー中の描画の窓（link.cpp の link_draw_window_ok）----
 // 受信機は、送信機のフレームを受けている最中に TFT を描かない。16bit バスが動くと E220 の

@@ -36,7 +36,10 @@
       TASK_SAVE_RXCSV,    // 無線で受信したテレメトリを received/ へ書き出す
       TASK_LATCH_BATT_OVERDISCHARGE, // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
       TASK_SERIAL_LIST,   // Web Serial: SD 内の CSV ファイル一覧をシリアル出力
-      TASK_SERIAL_GET     // Web Serial: 指定 CSV ファイルをシリアルへストリーミング送出
+      TASK_SERIAL_GET,    // Web Serial: 指定 CSV ファイルをシリアルへストリーミング送出
+      TASK_SAVE_RTCBK,    // GNSS のバックアップ電池の推定（rtc_backup.cpp）を SD の rtc_backup.txt へ書く
+      TASK_SAVE_DBD,      // GNSS の航法データベース（gnss_dbd.cpp が RAM にためたもの）を SD の GNSS_DBD_FILE へ書く
+      TASK_LOAD_DBD       // 同じファイルを RAM へ読み直す（机の上の試験 PONS:DBD,COLD。起動時は setup1() から直接）
   } TaskType;
 
 
@@ -288,6 +291,10 @@
               int  year, month, day, hour, minute, second;  // ファイルタイムスタンプ用
               char filename[24];             // "imuraw/20260316.bin" = 19文字
           } imuLogArgs;
+          struct {                           // For TASK_SAVE_RTCBK
+              float    hours;                // あと何時間もつか（推定）
+              uint32_t utc;                  // その値の時刻（UTC、1970 年からの秒）
+          } rtcBkArgs;
           struct {                           // For TASK_SERIAL_GET
               char filename[64];             // 送信対象ファイル名（相対パス含む）
           } serialGetArgs;
@@ -329,6 +336,17 @@
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
   Task createLatchBattTask();
+  Task createSaveRtcBackupTask(float hours, uint32_t utc);
+  // GNSS のバックアップ電池の推定の記録（SD の RTC_BACKUP_FILE。Core1 専用）。
+  // load は起動時の setup_sd() の直後に 1 回。読めなくても rtc_backup_set_loaded_core1(false, ...) を必ず呼ぶ。
+  void rtc_backup_load_sd();
+  void rtc_backup_save_sd(float hours, uint32_t utc);
+  // GNSS の航法データベース（SD の GNSS_DBD_FILE。Core1 専用。中身の受け渡しは gnss_dbd.h の *_core1）。
+  // load は起動時の setup_sd() の直後に 1 回と、試験の TASK_LOAD_DBD。読めなくても gnss_dbd_loaded_core1(false, ...) を必ず呼ぶ。
+  Task createSaveDbdTask();
+  Task createLoadDbdTask();
+  void gnss_dbd_load_sd();
+  void gnss_dbd_save_sd();
   Task createSerialListTask();
   Task createSerialGetTask(const char* filename);
   void serial_list_csv_files();

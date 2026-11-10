@@ -20,9 +20,20 @@
 pip install shapely osmium fiona pyproj requests
 ```
 
-入力データを 2 つ落とす（合計 3GB 強）。
+### ★ 元データとキャッシュはスケッチのフォルダの外に置く
+
+置き場所は **Arduino フォルダ直下の `pons_vectormap_data/`**（本体のリポジトリの 1 つ上。
+どの worktree から動かしても同じ所。スクリプトが起動時に表示する。環境変数 `PONS_VECTORMAP_DATA` で変えられる）。
+`--cache` と `--pbf-scan-cache` の既定もそこを指す。
+
+**リポジトリの中（この `tools/vectormap/`）に置かないこと。** Arduino はビルドのたびにスケッチのフォルダを
+丸ごとビルド先へコピーし（`.json` も含む）、Overpass の応答（1.4GB）があると 1 回のビルドで 1.4GB 写される。
+2026-11-07 にこれでディスクが溢れた。
+
+入力データを 2 つ、`pons_vectormap_data/` に落とす（合計 3GB 強）。
 
 ```sh
+cd ../../../pons_vectormap_data   # 本体のリポジトリから見た場所（worktree からは場所が違うので、表示されたパスへ）
 # 1. OSM の日本抽出（道路・鉄道・水面）。日付を固定すること（latest だと結果が変わる）
 curl -O https://download.geofabrik.de/asia/japan-260816.osm.pbf
 
@@ -40,9 +51,9 @@ LOD の閾値や収録範囲を変えて作り直すのに元データは要ら�
 
 | キャッシュ | 中身 | 元データ |
 |---|---|---|
-| `pbf_scan.pickle`（137MB） | 水面・高速・幹線・鉄道の全国分 | `japan-*.osm.pbf`（2.5GB）|
-| `cache/land_*.pickle` | 海岸線を bbox で切り出したもの | land polygons shp（1.3GB / 23MB）|
-| `cache/c*_*.json` | Overpass の応答（`--pbf` を使うなら不要）| — |
+| `pons_vectormap_data/pbf_scan.pickle`（137MB） | 水面・高速・幹線・鉄道の全国分 | `japan-*.osm.pbf`（2.5GB）|
+| `pons_vectormap_data/cache/land_*.pickle` | 海岸線を bbox で切り出したもの | land polygons shp（1.3GB / 23MB）|
+| `pons_vectormap_data/cache/c*_*.json` | Overpass の応答（`--pbf` を使うなら不要）| — |
 
 `--pbf` を省いても `pbf_scan.pickle` があればそちらを使う。
 海岸線も同様に、キャッシュがあれば `--land-shp*` の指定は要らない。

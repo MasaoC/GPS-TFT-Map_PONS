@@ -32,6 +32,7 @@
 #include "bootwatch.h" // 起動の見張り（起動中に固まったら再起動し、止まった段階を log.txt に残す）
 #include "display_tft.h"
 #include "gnss.h"
+#include "gnss_dbd.h"  // GNSS の航法データベース（USB シリアルの PONS:DBD,... と、デバッグ中継の前の書き切り）
 #include "hardware/adc.h"
 #include "imu.h"
 #include "imu_sensor.h" // imu_sensor_name()
@@ -642,7 +643,7 @@ void setup(void) {
       startup_voltage = get_input_voltage();
       delay(1);
     }
-    char pst[40];
+    char pst[56];
     power_format_status(pst, sizeof(pst));
     enqueueTask(
         createLogSdfTask("SETUP DONE Battery: %.2fV %s", startup_voltage, pst));
@@ -715,6 +716,8 @@ void setup1(void) {
   //   log.txt に止まった場所を書いて再起動する（起動の見張り。bootwatch.h）。
   bootwatch_wait_core0(&tft_pio_ready, 1000);
   setup_sd(SD_BOOT_TRY_COUNT);
+  rtc_backup_load_sd();   // GNSS のバックアップ電池の推定の記録（SD が無くても「無し」を渡す。rtc_backup.cpp）
+  gnss_dbd_load_sd();     // GNSS の航法データベース（BT1 が切れていた起動で戻す。SD が無くても「無し」を渡す。gnss_dbd.cpp）
   bootwatch_report_core1(&tft_pio_ready);
   // 起動音（opening.wav）は startup_demo_tft() 内でエンキューする（重複防止）
 }
@@ -1404,7 +1407,7 @@ static void periodic_log_tick() {
       else
         strlcpy(jst_str, "--:--", sizeof(jst_str));
       // bst は最長 " bl=100% lux=120794 bright saver2 dim"（37 文字）
-      char pst[40], bst[40];
+      char pst[56], bst[40];   // pst は最長 "usb=1 vbus=4.95V sw=off hot od bk=192.0h"
       power_format_status(pst, sizeof(pst));
       backlight_format_status(
           bst, sizeof(bst)); // " bl=35% lux=12 eco"（自動調光の調整用）
@@ -1681,7 +1684,8 @@ static void draw_current_screen(bool new_gnss_info) {
 
       draw_gs_track(); // ヘッダーに速度・コースなどのテキストを描画
       draw_map_footer();
-      draw_nomapdata();
+      // GNSS の状態の箱（Scanning / Weak GNSS Signal）は push_backscreen() の最後で描く
+      // （ほかの通知の箱と重ならない段を探すため。display_tft.cpp の draw_nomapdata）。
       gnss_loop(6);      // 描画の合間に GNSS データを受信
       push_backscreen(); // バックスクリーンを TFT に一括転送（VSI合成済み）
       draw_footer();     // フッターは TFT に直接描画（バックスクリーン外）
@@ -1790,6 +1794,61 @@ static void setting_timeout_tick() {
   }
 }
 
+// 地図以外の画面を出したまま動き出したら地図へ戻す（2026-11-08〜）。
+// ★ 上の放置タイムアウトは設定画面だけで、しかも 3 分かかる。IMU/ESKF・GNSS 詳細・VARIO・WIRELESS の
+//   画面を出したまま発進すると、**地図が見えないまま飛ぶ**ことになっていた（警報は鳴るが場所が分からない）。
+// ★ 速度は自機の GNSS（gnss_get_own_fix）で見る。デモ・リプレイの仮の速度では戻さない。
+// ★ 受信モードと PC 接続の画面は対象外（settings.h の SCREEN_MOVING_EXIT_*）。
+// ★ 各画面の「戻る」と同じ後始末をしてから、放置タイムアウトと同じ経路（設定を保存）で地図へ戻す。
+//   音も放置タイムアウトと同じ降下ペア（勝手に閉じた、の合図）。
+static void screen_moving_exit_tick() {
+  static uint32_t s_since = 0;
+  double lat, lon, gs = 0.0, trk;
+  const bool applies = screen_mode != MODE_MAP && screen_mode != MODE_PCCONNECT &&
+                       link_get_mode() != LINK_MODE_RX;
+  const bool moving = applies && get_gnss_connection() &&
+                      gnss_get_own_fix(lat, lon, gs, trk) && gs >= SCREEN_MOVING_EXIT_GS_MPS;
+  if (!moving) { s_since = 0; return; }
+  const uint32_t now = millis();
+  if (s_since == 0) { s_since = now ? now : 1; return; }
+  if (now - s_since < SCREEN_MOVING_EXIT_HOLD_MS) return;
+  s_since = 0;
+
+  const int from = screen_mode;
+  switch (from) {
+  case MODE_SETTING:
+    // 値変更モードのままなら確定の処理を通す（放置タイムアウトと同じ理由）
+    if (selectedLine != -1 && menu_settings[cursorLine].CallbackExit != nullptr)
+      menu_settings[cursorLine].CallbackExit();
+    break;
+  case MODE_IMUDETAIL:
+    // 案内の読み上げを地図の上に残さない
+    if (imu_guide_page >= 0) enqueueTask(createStopWavTask(WAV_EXCL_ESKF_GUIDE));
+    if (tas_guide_page >= 0) enqueueTask(createStopWavTask(WAV_EXCL_TAS_GUIDE));
+    imu_guide_page = -1;
+    tas_guide_page = -1;
+    break;
+  case MODE_GNSSDETAIL:
+    gnss_getposition_mode();   // 衛星の一覧のために上げていた出力を戻す（長押しで戻るときと同じ）
+    break;
+  case MODE_WIRELESS:
+    link_warn_setting_changed();   // CH / SF / Group を触っていたら知らせる（「戻る」と同じ）
+    break;
+  case MODE_CHSCAN:
+    link_chscan_stop();            // 元の設定へ戻す
+    break;
+  default:
+    break;
+  }
+  selectedLine = -1;
+  exit_setting(false);   // 設定を保存して MODE_MAP へ（別れの音声は鳴らさない）
+  enqueueTask(createPlayMultiToneTask(659, 100, 1, 2)); // ミ
+  enqueueTask(createPlayMultiToneTask(523, 100, 1, 2)); // ド
+  enqueueTask(createLogSdfTask("SCREEN %d -> MAP (moving %.1fm/s for %lus)", from, gs,
+                               (unsigned long)(SCREEN_MOVING_EXIT_HOLD_MS / 1000UL)));
+  redraw_screen = true;
+}
+
 // ===== Web Serial コマンド受信・処理（Core0） =====
 static char serial_cmd_buf[128];
 static size_t serial_cmd_len = 0;
@@ -1872,9 +1931,14 @@ static void handle_serial_command(const char *raw_cmd) {
           (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
       redraw_screen = true;
     }
+  } else if (strncmp(cmd, "PONS:DBD,", 9) == 0) {
+    // GNSS の航法データベースの机の上の試験（SAVE / COLD / COLDONLY / HOT / STATUS。gnss_dbd.cpp の
+    // gnss_dbd_command）。PONS:CONNECT は要らない（Arduino IDE のシリアルモニタから打てるように）。
+    gnss_dbd_command(cmd + 9);
   } else {
 #ifndef RELEASE
     // PONS コマンド以外は GNSS へ中継（デバッグ用）
+    gnss_dbd_finish_tx(); // 航法データベースのフレームを書きかけていたら先に書き切る
     for (size_t i = 0; cmd[i] != '\0'; i++) {
       GNSS_SERIAL.write(cmd[i]);
     }
@@ -2073,6 +2137,7 @@ void loop() {
   nav_alarm_tick(new_gnss_info);
 
   setting_timeout_tick();
+  screen_moving_exit_tick();   // 地図以外の画面を出したまま動き出したら地図へ
 
   draw_current_screen(new_gnss_info);
 
@@ -2204,6 +2269,15 @@ void loop1() {
       break;
     case TASK_SERIAL_LIST:
       serial_list_csv_files();
+      break;
+    case TASK_SAVE_RTCBK:
+      rtc_backup_save_sd(currentTask.rtcBkArgs.hours, currentTask.rtcBkArgs.utc);
+      break;
+    case TASK_SAVE_DBD:
+      gnss_dbd_save_sd();
+      break;
+    case TASK_LOAD_DBD:
+      gnss_dbd_load_sd();
       break;
     case TASK_SERIAL_GET:
       serial_send_csv_file(currentTask.serialGetArgs.filename);
@@ -2713,13 +2787,11 @@ void longPressCallback() {
             // を飛ばす（link_next_radio_profile）。
       link_set_radio_profile(link_next_radio_profile(link_get_radio_profile()));
       break;
-    case 3: // グループ ID。電波の設定ではないのでモジュールへの書き込みは不要
+    case 3: // グループ（A〜D）。電波の設定ではないのでモジュールへの書き込みは不要
             // （ペイロードの中身なので即座に反映される）。
-            // ★ 長押し 1 回で +1。**普段は SD の settings.txt
-            // で決めるもの**で、
-            //   ここは「現地で確認する」「0
-            //   に戻ってしまったのを戻す」ための手段。 そのため小さい値（1〜20
-            //   程度）を割り当てておくと復旧が速い。
+            // ★ 長押し 1 回で A→B→C→D→A。**普段は SD の settings.txt で決めるもの**で、
+            //   ここは「現地で確認する」「既定の A に戻ってしまったのを戻す」ための手段。
+            //   4 つしか無いので、どのグループにも 3 回以内で届く。
       link_set_group((uint8_t)((link_get_group() + 1) % (LINK_GROUP_MAX + 1)));
       break;
     case 4: // 送信前チェックを手で走らせ直す。

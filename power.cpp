@@ -5,7 +5,7 @@
 //           高温での充電の警告、過放電（3.0V 未満）の本体フラッシュ記録と充電禁止ロック。
 //           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/03
+// Updated : 2026/11/10
 // ============================================================
 //
 // ■ 何を見張るか（docs/pons_power.md）
@@ -49,6 +49,7 @@
 #include "link.h"         // link_mirror_active()
 #include "airdata.h"      // get_airdata_temperature()（高温での充電）
 #include "lora_link/link_proto.h"  // link_crc16()
+#include "rtc_backup.h"   // GNSS のバックアップ電池の推定（power_tick から回す・充電ポップアップの 2 行目）
 #include <EEPROM.h>
 #include <stddef.h>
 #include <string.h>
@@ -94,6 +95,7 @@ static uint32_t        s_od_last_usb_alert = 0;     // 完全ロック中に最�
 static bool            s_od_batt_announced = false; // 電池単体の警告画面で 1 回目を鳴らしたか
 
 static void charge_log_tick(uint32_t now);
+static void charge_full_tick(uint32_t now);
 
 // ADC の生の平均を電圧にする。ピーク追跡（get_input_voltage）は高い値を
 // 数秒保持するので、ここでは使わない。
@@ -320,8 +322,10 @@ float power_charge_hot_temp()   { return s_hot_temp; }
 void power_format_status(char* buf, size_t n) {
   const char* hot = s_hot ? " hot" : "";
   const char* od  = power_overdischarge_latched() ? " od" : "";
-  snprintf(buf, n, "usb=%d vbus=%.2fV%s%s%s", usb_power_present() ? 1 : 0, s_volt,
-           power_sw_off_on_usb() ? " sw=off" : "", hot, od);
+  char bk[16] = "";
+  if (rtc_backup_known()) snprintf(bk, sizeof(bk), " bk=%.1fh", rtc_backup_hours());
+  snprintf(buf, n, "usb=%d vbus=%.2fV%s%s%s%s", usb_power_present() ? 1 : 0, s_volt,
+           power_sw_off_on_usb() ? " sw=off" : "", hot, od, bk);
 }
 
 void power_setup() {
@@ -542,6 +546,8 @@ void power_tick() {
   }
 
   sw_off_tick(now);
+  charge_full_tick(now);   // 満充電ラッチ（下のゲッターは読むだけ）。charge_log_tick より先に
+  rtc_backup_tick();       // GNSS のバックアップ電池の推定（rtc_backup.cpp）
   charge_hot_tick(now);
   overdischarge_tick(now);
   charge_log_tick(now);
@@ -595,43 +601,42 @@ static uint32_t s_chg_start_ms           = 0;  // USB 充電開始時刻 [ms]
 static uint32_t s_chg_full_since_ms      = 0;  // 満充電ラッチ到達時刻 [ms]
 static uint32_t s_chg_popup_snooze_since = 0;  // 充電ポップアップをスヌーズした時刻 [ms]
 
-float power_estimated_cell_voltage() {
-  const float v = get_input_voltage();
+// 満充電ラッチを決める（power_tick() から 250ms ごと）。
+// ★ 2026-11-08 まではこの判定を power_estimated_cell_voltage() の中でしていて、**描画から呼ばれたときに
+//   ラッチが立ったり落ちたりしていた**（CLAUDE.md「描画に判断を混ぜない」）。フッターが描くたびに
+//   呼ぶので実害は出ていなかったが、描画の頻度や画面によって判定が遅れうるのでここへ移した。
+//   下のゲッターは読むだけ。
+// ★ ラッチの値: BATPWR が 4.190V（推定セル電圧 2V − 4.20V = 4.180V）に達したら満充電、
+//   再充電しきい値 4.05V を下回ったら解除。USB を抜いたら消す。SW OFF の間は電池が切り離されていて
+//   電圧が読めないので、そのまま保つ。
+static void charge_full_tick(uint32_t now) {
   if (!usb_power_present()) {
     s_chg_full_latched  = false;
     s_chg_full_since_ms = 0;
-    return v;
+    return;
   }
-  if (power_sw_off_on_usb()) {
-    // SW OFF 中は電池経路が切り離されているため実測電圧（0V近辺）を返す（満充電ラッチは破棄しない）
-    return v;
-  }
-
-  // 満充電ラッチの判定と維持
+  if (power_sw_off_on_usb()) return;
+  const float v = get_input_voltage();
   if (s_chg_full_latched) {
     if (v < 4.05f) {
-      s_chg_full_latched  = false; // 再充電しきい値(4.05V)を下回ったら解除
+      s_chg_full_latched  = false;
       s_chg_full_since_ms = 0;
-    } else {
-      return 4.20f;
     }
   } else if (v >= 4.190f) {
     s_chg_full_latched = true;
-    if (s_chg_full_since_ms == 0) s_chg_full_since_ms = millis() ? millis() : 1;
-    return 4.20f;
+    if (s_chg_full_since_ms == 0) s_chg_full_since_ms = now ? now : 1;
   }
+}
 
-  if (v < 4.125f) {
-    return v - 0.075f;
-  } else {
-    const float est = 2.0f * v - 4.20f;
-    if (est >= 4.180f) {
-      s_chg_full_latched = true;
-      if (s_chg_full_since_ms == 0) s_chg_full_since_ms = millis() ? millis() : 1;
-      return 4.20f;
-    }
-    return (est > 4.20f) ? 4.20f : est;
-  }
+float power_estimated_cell_voltage() {
+  const float v = get_input_voltage();
+  if (!usb_power_present()) return v;
+  // SW OFF 中は電池経路が切り離されているため実測電圧（0V近辺）を返す
+  if (power_sw_off_on_usb()) return v;
+  if (s_chg_full_latched) return 4.20f;
+  if (v < 4.125f) return v - 0.075f;
+  const float est = 2.0f * v - 4.20f;   // CV モード（上の ■ の 2)）
+  return (est > 4.20f) ? 4.20f : est;
 }
 
 int power_charging_percent() {
@@ -673,32 +678,14 @@ uint32_t power_charging_elapsed_sec() {
   return (millis() - s_usb_connected_ms) / 1000UL;
 }
 
-// GNSS バックアップ電池（MS621FE 5.5mAh）の充電状態目安
-// MS621FE は本体 3.3V レールから給電されているため、USB 接続中だけでなく
-// 電池動作中（フライト中など）も電源 SW が入っている間は全く同じようにトリクル充電される。
-// そのため、評価には USB 接続時間だけでなく本体の累積通電時間（millis()）を用いる。
-// （例: 電池で 2 時間飛行した後に USB を挿した場合、即座に Ready と判定される）
-//
-// ★ 起動時 RTC 生存（Hot/Warm スタート）と 4 段階安全評価:
-// SAM-M10Q の RTC 保持最低動作電圧は 1.65V（満充電 3.0V）。
-// 10日間放置などで 1.8V（残量数%・あと数時間で切れる瀕死状態）でも起動直後の RTC 時計は保持されている。
-// そのため「時計が生きていたから」と過大評価せず、安全側に倒して「数時間分（当日のみ）しかない（Few-h）」として
-// 初期化（通電 15分相当の下駄 900s を付与）し、通電とともに 1-2d, Ready へ昇格させる。
-// 一方、起動時に RTC が死んでいた（コールドスタート）場合は Low（15分未満）からスタートする。
+// GNSS のバックアップ電池（BT1 = MS621FE）が「あと何時間もつか」の推定（充電ポップアップの 2 行目 "Fast GPS if OFF < 1.5 days"）。
+// 推定は rtc_backup.cpp（通電した時間で足し、電源を切っていた時間で引く。起動時の時計の生死で引き戻す）。
+// ★ 2026-11-08 までは今回の通電時間だけで "Low / Few-h / 1-2d / Ready" を出していたが、
+//   README の BT1 の表（3 時間で約 1 日、満充電でも約 8 日）より楽観的だった（2 時間で「数週間」）。
 const char* power_rtc_backup_status_str() {
-  const uint32_t powered_sec = millis() / 1000UL;
-  const uint32_t base_sec    = gnss_rtc_alive_on_boot() ? 900UL : 0UL;
-  const uint32_t eff_sec     = powered_sec + base_sec;
-
-  if (eff_sec < 900UL) {
-    return "Low";        // 15分未満（時計喪失コールドスタート、ほぼ空）
-  } else if (eff_sec < 3600UL) {
-    return "Few-h";      // 15分〜1時間（または時計生存初期値：数時間分・当日保持）
-  } else if (eff_sec < 7200UL) {
-    return "1-2d";       // 1〜2時間通電（1〜2日保持可能）
-  } else {
-    return "Ready";      // 2時間以上通電（満充電・数週間保持）
-  }
+  static char buf[32];   // 1 行まるごと（最長 26 文字）
+  rtc_backup_format(buf, sizeof(buf));
+  return buf;
 }
 
 // ボタン操作時に充電ポップアップを一時非表示（スヌーズ）にする

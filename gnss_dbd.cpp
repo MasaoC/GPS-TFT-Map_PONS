@@ -1,0 +1,960 @@
+// ============================================================
+// File    : gnss_dbd.cpp
+// Project : PONS v7 (Pilot Oriented Navigation System for HPA)
+// Role    : GNSS の航法データベース（UBX-MGA-DBD）を SD に写しておき、時計の電池（BT1）が切れていた起動で
+//           GNSS へ戻す（2026-11-09〜）。コールドスタートを縮めるため。無線は使わない。
+//           v7 と v7.1 で同じ中身。計画と根拠は docs/pons_ttff_assist_plan.md §3。
+// Author  : MasaoC (@masao_mobile)
+// Updated : 2026/11/09
+// ============================================================
+//
+// ■ 何をするか
+//   - 吸い出し（保存）: 起動後最初の fix から GNSS_DBD_FIRST_SAVE_MS 後、その後は GNSS_DBD_SAVE_INTERVAL_MS ごとに、
+//     UBX-MGA-DBD のポールを送り、返ってくる MGA-DBD のフレームを RAM（s_buf）にためる。最後に来る MGA-ACK が
+//     「吐き出した数」を言うので、受けた数と合ったときだけ Core1 が SD の GNSS_DBD_FILE に書く。
+//   - 戻す（復元）: 起動直後の NAV-PVT で時計が死んでいた（BT1 が切れていた）ときだけ、SD のフレームを
+//     1 通ずつ GNSS へ書く。1 通ごとに MGA-ACK を待つ（gnss.cpp の設定 ⑩ CFG-NAVSPG-ACKAIDING）。
+//     BT1 が生きていれば GNSS の BBR に新しいものがあるので触らない。
+//   - 入れ直し: 時刻を知らない GNSS は「時刻が無いので使えない」（MGA-ACK の infoCode=1）と断ることがある
+//     （Interface Description §3.13.1。Integration Manual §3.11.4 も、戻すときは時刻を入れるよう勧めている）。
+//     断られた分があれば、GNSS が衛星から時刻を読んだところで 1 回だけ全部を入れ直す。時刻は 1 衛星の
+//     1 語から読めるので、衛星ごとのエフェメリスよりずっと先にわかる（計画書 §3.4）。
+//   - 効くのは、前回の吸い出しから予測軌道の寿命（約 3 日）以内の起動。それより古いとアルマナックだけ。
+//
+// ■ 守ること
+//   - 吸い出しは GNSS の UART（38400bps）を数秒埋め、その間 NAV-PVT が遅れる。**止まっているときだけ**やる
+//     （自機の対地速度が READY_STILL_MPS 以下で GNSS_DBD_STILL_MS 続いた。飛行中・走行中はやらない）。
+//   - 送るのは少しずつ（UART の送信 FIFO が空いた分だけ。Core0 を待たせない）。送りかけのフレームがあるときに
+//     ほかのコマンドを GNSS へ書くと両方壊れるので、書く側は先に gnss_dbd_finish_tx() を呼ぶ。
+//   - DBD の中身はファームウェアごとに違い、作った受信機へだけ戻す前提（Interface Description §3.13.4）。
+//     ファイルには GNSS チップの固有 ID（SEC-UNIQID）と本体の固有 ID を入れ、違えば戻さない。
+//   - SD は Core1 だけ（mysd.cpp の gnss_dbd_save_sd / gnss_dbd_load_sd）。RAM の s_buf は持ち主を状態で決め、
+//     Core1 が使っている間（起動時の読み込み・書き込み・試験の読み直し）は Core0 は触らない。
+//   - リプレイ中は GNSS の UART を読み捨てるので、吸い出しと戻しは打ち切る。
+//
+// ■ log.txt（あとで効き目を確かめるため）
+//   GNSS DBD file: 52 msgs 7340 bytes, saved 2026-11-09 03:12Z      起動時に SD から読んだ結果（Core1）
+//   GNSS ID: ... / GNSS VER: ...                                     GNSS チップの固有 ID と版（ROM SPG 5.10 か）
+//   GNSS DBD RESTORE boot: sent 52 ok 40 notime 12 other 0 noack 0 (3.1s after boot)
+//   GNSS DBD: GNSS time known 14.2s after boot (file age 30.5h)
+//   GNSS DBD RESTORE resend: sent 52 ok 52 ...
+//   GNSS ORB (after restore): eph 0/12 alm 0/30 ana 0/25 ...         NAV-ORB のまとめ（使える/期限不明）
+//   GNSS FIXED ... 35.2s after boot rtc=lost dbd=40/52 resend=52/52 time=14.2s   （gnss.cpp の TTFF の行）
+//   GNSS DBD SAVE (auto): 52 msgs 7340 bytes, dump 2310ms, ANA data 25 SVs
+//   GNSS DBD TEST cold+dbd: fix 35.2s after reset ...               机の上の試験（USB シリアル PONS:DBD,...）
+//   ── 通信がうまくいっているか（あとで定数を直す材料。2026-11-09〜）──
+//   GNSS DBD IO (restore boot|save auto|...): 4.1s, NAV-PVT gap max 620ms, rx peak 812B, ckerr 0, ovf 0, txwait max 0ms, ack avg 38ms max 95ms late 0 odd 0
+//       吸い出し・戻しの 1 回ごと。航法の更新が待たされた最大・受信 FIFO のたまり・バイトの欠け・返事の遅れ（io_log の説明）
+//   GNSS DBD RESTORE ...: other 2 (code 5x2) ...                     断られた理由の内訳（infoCode 別）
+//   GNSS DBD SAVE: due 30 min ago but waiting (moving or no fix)     時間なのに吸い出せない理由（30 分ごと）
+//   GNSS ID: no answer to SEC-UNIQID ... / GNSS VER: no answer ...    ポールに返事が無い（このとき DBD は動かない）
+//   GNSS DBD file: ... (read 12ms) / GNSS DBD SAVE ...: sd 85ms      Core1 が SD を読み書きした時間
+#include "gnss_dbd.h"
+#include "settings.h"
+#include "gnss.h"
+#include "mysd.h"   // enqueueTask・createLogSdfTask・create*DbdTask・taskQueueMutex
+#include "imu.h"    // imu_service_if_due()（gnss_dbd_finish_tx の待ちの間）
+
+#if GNSS_DBD_ENABLE
+static_assert(GNSS_DBD_BUF_BYTES <= 65535, "link_crc16 は 16 ビットの長さまで");
+static uint8_t s_buf[GNSS_DBD_BUF_BYTES];
+#else
+static uint8_t s_buf[1];
+#endif
+
+// ============================================================
+//  Core1 とやりとりする状態（taskQueueMutex で守る）
+// ============================================================
+enum : uint8_t { LD_BUSY = 0, LD_OK, LD_NG };
+static volatile uint8_t s_ld = LD_BUSY;   // 起動時は Core1 の setup1() が読むので「読み中」から始める
+static GnssDbdHead      s_file;           // 読んだファイルの頭（LD_OK のとき）
+static const char*      s_ld_why = "";
+
+enum : uint8_t { SV_IDLE = 0, SV_PENDING, SV_OK, SV_NG };
+static volatile uint8_t s_sv = SV_IDLE;
+static GnssDbdHead      s_save_head;      // Core0 が用意する（本体 ID と CRC は Core1 が足す）
+static const char*      s_sv_why = "";
+static uint32_t         s_sv_ms = 0;      // Core1 が SD に書くのにかかった時間 [ms]
+
+static uint8_t load_state() {
+  mutex_enter_blocking(&taskQueueMutex);
+  const uint8_t v = s_ld;
+  mutex_exit(&taskQueueMutex);
+  return v;
+}
+
+uint8_t* gnss_dbd_buffer_core1() { return s_buf; }
+
+bool gnss_dbd_head_for_save_core1(GnssDbdHead* h) {
+  mutex_enter_blocking(&taskQueueMutex);
+  const bool ok = (s_sv == SV_PENDING);
+  if (ok) *h = s_save_head;
+  mutex_exit(&taskQueueMutex);
+  return ok;
+}
+
+void gnss_dbd_saved_core1(bool ok, const char* why, uint32_t ms) {
+  mutex_enter_blocking(&taskQueueMutex);
+  s_sv     = ok ? SV_OK : SV_NG;
+  s_sv_why = why ? why : "";
+  s_sv_ms  = ms;
+  mutex_exit(&taskQueueMutex);
+}
+
+void gnss_dbd_loaded_core1(bool ok, const GnssDbdHead* h, const char* why) {
+  mutex_enter_blocking(&taskQueueMutex);
+  if (ok && h) s_file = *h;
+  s_ld     = (ok && h) ? LD_OK : LD_NG;
+  s_ld_why = why ? why : "";
+  mutex_exit(&taskQueueMutex);
+}
+
+// UBX の Fletcher-8（class から payload の終わりまで）
+static void ubx_ck(const uint8_t* d, uint32_t n, uint8_t& a, uint8_t& b) {
+  a = 0; b = 0;
+  for (uint32_t i = 0; i < n; i++) { a += d[i]; b += a; }
+}
+
+bool gnss_dbd_frames_ok(const uint8_t* b, uint32_t bytes, uint16_t count) {
+  uint32_t off = 0;
+  uint16_t n = 0;
+  while (off < bytes) {
+    if (off + 8 > bytes) return false;
+    const uint8_t* f = b + off;
+    if (f[0] != 0xB5 || f[1] != 0x62 || f[2] != 0x13 || f[3] != 0x80) return false;
+    const uint32_t len = (uint32_t)f[4] | ((uint32_t)f[5] << 8);
+    if (off + 8 + len > bytes) return false;
+    uint8_t ca, cb;
+    ubx_ck(f + 2, 4 + len, ca, cb);
+    if (f[6 + len] != ca || f[7 + len] != cb) return false;
+    off += 8 + len;
+    n++;
+  }
+  return n == count;
+}
+
+#if GNSS_DBD_ENABLE
+
+// ============================================================
+//  Core0 の状態
+// ============================================================
+enum DbdState : uint8_t {
+  ST_BOOT = 0,   // 起動直後: 最初の NAV-PVT（時計の生死）・SD の読み込み・GNSS の固有 ID を待つ
+  ST_SEND,       // 戻している（フレームを 1 通ずつ書き、返事を待つ）
+  ST_WAIT,       // 送り終えた。GNSS が時刻を知ったら、断られた分を入れ直す（fix するか窓が終わるまで）
+  ST_IDLE,       // 何もしていない（RAM は空き。吸い出しの条件を見る）
+  ST_DUMP,       // 吸い出し中（MGA-DBD を受けて RAM にためる）
+  ST_SAVING,     // Core1 が SD に書いている
+  ST_TEST_LOAD,  // 試験: Core1 が SD から読み直すのを待つ
+};
+static DbdState s_st = ST_BOOT;
+static const char* st_name(DbdState s) {
+  switch (s) {
+    case ST_BOOT: return "boot"; case ST_SEND: return "send"; case ST_WAIT: return "wait";
+    case ST_IDLE: return "idle"; case ST_DUMP: return "dump"; case ST_SAVING: return "saving";
+    case ST_TEST_LOAD: return "test-load";
+  }
+  return "?";
+}
+
+// ---- 1 回の「コールドからの立ち上がり」（起動時に時計が死んでいた・試験でリセットした）----
+// GNSS が時刻を知った時刻と、試験なら fix までの時間を測る。戻しの入れ直しもこれを見る。
+enum EpKind : uint8_t { EP_NONE = 0, EP_BOOT, EP_TEST_DBD, EP_TEST_COLD, EP_TEST_HOT };
+static EpKind   s_ep       = EP_NONE;
+static uint32_t s_ep_t0    = 0;      // 始めた millis()（起動なら 0）
+static bool     s_ep_nofix = false;  // 始めてから「fix していない」を見たか（リセット直前の fix を数えないため）
+static uint32_t s_ep_tk_ms = 0;      // GNSS が時刻を知った millis()（0 = まだ）
+static float    s_tk_after_s = -1.0f;   // そのときの経過秒（fix のログ用。-1 = まだ）
+static const char* s_ep_end = "";    // 終わった理由（"fix" / "window end" / "no reset"。戻しを途中でやめた行に出す）
+static const char* ep_name(EpKind k) {
+  switch (k) {
+    case EP_BOOT: return "boot"; case EP_TEST_DBD: return "cold+dbd";
+    case EP_TEST_COLD: return "cold"; case EP_TEST_HOT: return "hot"; default: return "-";
+  }
+}
+
+// ---- 戻し ----
+struct RsCount { uint16_t sent, ok, notime, other, noack; uint16_t code_n[8]; };   // code_n = other の infoCode 別の数
+static RsCount  s_rc[2];               // [0] = 1 回目、[1] = 入れ直し
+static uint8_t  s_rs_pass = 0;         // 0 = 戻していない、1 = 1 回目、2 = 入れ直し（済み・不要を含む）
+static uint32_t s_rs_off = 0;          // 次に書くフレームの位置
+static uint32_t s_rs_bytes = 0;
+static bool     s_rs_waiting = false;  // 書いたフレームの返事を待っている
+static uint32_t s_rs_ack_ms = 0;
+static uint8_t  s_rs_noack_run = 0;    // 続けて返事が来なかった数（3 回で待つのをやめて GNSS_DBD_PACE_MS 間隔にする）
+static uint32_t s_rs_frame_off = 0;    // 返事を待っているフレームの位置（返事の照らし合わせ用）
+static const char* s_rs_skip = nullptr;   // 戻さなかった理由（fix のログ用）
+
+// ---- 通信がうまくいっているかの記録（吸い出し・戻しの 1 回ごとに "GNSS DBD IO" の 1 行）----
+// あとで定数（返事の待ち時間・RAM・吸い出しの条件）を直すための材料。どれも吸い出し・戻しの間だけ数える。
+struct IoStat {
+  bool     on;
+  uint32_t t0;            // 始めた millis()
+  uint32_t pvt_last;      // 最後に NAV-PVT を受けた millis()
+  uint32_t pvt_gap_max;   // NAV-PVT の間隔の最大 [ms]（ふだん 500。航法がどれだけ待たされたか）
+  uint32_t ck0, ovf0;     // 始めたときの UBX のチェックサム誤り・受信 FIFO あふれの数（gnss.cpp）
+  uint32_t txwait_max;    // ほかのコマンドが送りかけのフレームを待った最大 [ms]（gnss_dbd_finish_tx）
+  uint32_t tx_done_ms;    // いまのフレームを書き終えた millis()（返事の遅れを測る起点。0 = まだ）
+  uint32_t ack_sum, ack_max;
+  uint16_t ack_n;         // 書き終えてから MGA-ACK が来るまでの遅れ [ms]
+  uint16_t late_acks;     // 待つのをやめたあとに来た MGA-ACK（GNSS_DBD_ACK_TIMEOUT_MS が短すぎる印）
+  uint16_t odd_acks;      // DBD 以外への MGA-ACK（来ないはず）
+};
+static IoStat s_io;
+static uint32_t s_io_close_at = 0;   // 吸い出しのあと、この時刻まで NAV-PVT の途切れを測ってから 1 行にする（0 = 予定なし）
+static char     s_io_what[24];
+
+// ---- 送信（RAM の s_tx_pos..s_tx_end を UART の FIFO が空いた分だけ書く）----
+static uint32_t s_tx_pos = 0, s_tx_end = 0;
+static inline bool tx_busy() { return s_tx_pos < s_tx_end; }
+static void pump_tx() {
+  if (s_tx_pos >= s_tx_end) return;
+  while (s_tx_pos < s_tx_end && GNSS_SERIAL.availableForWrite() > 0) GNSS_SERIAL.write(s_buf[s_tx_pos++]);
+  if (s_tx_pos >= s_tx_end) s_io.tx_done_ms = millis();   // 書き終えた（返事の遅れはここから測る）
+}
+
+// ---- GNSS チップの固有 ID ----
+static uint8_t  s_gid[6];
+static bool     s_gid_ok = false;
+static uint32_t s_gid_poll_ms = 0;
+static uint8_t  s_gid_polls = 0;
+
+// ---- 吸い出し ----
+static uint32_t s_dp_len = 0, s_dp_total = 0, s_dp_t0 = 0, s_dp_utc = 0, s_dp_ms = 0;
+static uint16_t s_dp_count = 0;
+static bool     s_dp_over = false;
+static const char* s_dp_why = "";
+static uint32_t s_dp_last_ms = 0;      // 最後に吸い出しを始めた millis()（0 = まだ）
+
+// ---- fix と「止まっている」 ----
+static uint32_t s_first_fix_ms = 0;
+static uint32_t s_still_since  = 0;
+// リプレイを抜けた直後は、位置と fix が再生した CSV の最後の行のまま残る（gnss.cpp は日時だけ無効にする）。
+// 本物の NAV-PVT が 1 つ届くまで fix・止まっているか・時刻を見ない。見ると偽の fix で、試験の TTFF や
+// 戻しの窓を終わらせてしまう。NAV-PVT はリプレイ中は gnss_dbd_on_ubx() まで来ないので、来たら本物。
+static bool     s_after_replay = false;
+
+// ---- 机の上の試験（PONS:DBD,COLD / COLDONLY / HOT）をしたら、再起動するまで自動の吸い出しを止める ----
+// COLDONLY で GNSS のデータベースを消したあと、fix して 30 秒止まると、薄い（予測軌道の無い）DBD で
+// SD のファイルを上書きしてしまい、次の COLD の比べ物にならなくなるため。手動の PONS:DBD,SAVE は効く。
+static bool     s_auto_off = false;
+
+// ---- NAV-ORB のポール（戻した直後に、GNSS が何を持っているかを 1 行残す）----
+static const char* s_orb_tag = nullptr;
+static uint32_t s_orb_at = 0;
+static bool     s_orb_sent = false;
+
+// ---- 版のポール（返事が来なかったことを 1 回だけ残す）----
+static bool     s_ver_ok = false;
+static uint32_t s_ver_poll_ms = 0;
+static bool     s_ver_fail_logged = false;
+static bool     s_gid_fail_logged = false;
+
+// ---- 吸い出しを待っている理由（時間が来ているのに始められないとき、GNSS_DBD_SAVE_INTERVAL_MS ごとに残す）----
+static uint32_t s_due_since = 0;
+static uint32_t s_wait_log_ms = 0;
+
+
+// ============================================================
+//  小物
+// ============================================================
+// 1970-01-01 からの日数（rtc_backup.cpp と同じ。Howard Hinnant の days_from_civil）
+static int32_t days_from_civil(int y, unsigned m, unsigned d) {
+  y -= (m <= 2);
+  const int32_t era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + (int32_t)doe - 719468;
+}
+
+// GNSS が日付まで含めた時刻を知っているか（NAV-PVT の validDate / validTime と年）。
+// ★ リプレイ中は ubx_* に CSV の日時が入るので呼ばない（gnss_dbd_tick() はリプレイ中すぐ戻る）。
+static bool gnss_time_known() {
+  const GnssDate d = get_gnss_date();
+  const GnssTime t = get_gnss_time();
+  return d.isValid() && t.isValid() && d.year() >= 2026;
+}
+static uint32_t utc_now() {
+  const GnssDate d = get_gnss_date();
+  const GnssTime t = get_gnss_time();
+  return (uint32_t)days_from_civil(d.year(), d.month(), d.day()) * 86400UL +
+         (uint32_t)t.hour() * 3600UL + (uint32_t)t.minute() * 60UL + t.second();
+}
+static float file_age_h() {
+  const uint32_t u = utc_now();
+  return (u > s_file.utc) ? (float)(u - s_file.utc) / 3600.0f : 0.0f;
+}
+static float since_s(uint32_t now, uint32_t t0) { return (now - t0) / 1000.0f; }
+
+static void io_log(const char* what, uint32_t now);
+static void io_begin(uint32_t now) {
+  if (s_io.on && s_io_close_at != 0) { io_log(s_io_what, now); }   // 前の吸い出しの行を先に出す
+  s_io_close_at = 0;
+  memset(&s_io, 0, sizeof(s_io));
+  s_io.on       = true;
+  s_io.t0       = now;
+  s_io.pvt_last = now;
+  s_io.ck0      = gnss_ubx_ck_errors();
+  s_io.ovf0     = gnss_rx_overflows();
+  (void)gnss_rx_backlog_peak_take();   // ここから数え直す
+}
+
+// 例: "GNSS DBD IO (restore boot): 4.1s, NAV-PVT gap max 620ms, rx peak 812B, ckerr 0, ovf 0, txwait max 0ms, ack avg 38ms max 95ms late 0 odd 0"
+//   NAV-PVT gap max : 航法の更新がいちばん待たされた時間（ふだん 500ms。吸い出しで延びる量）
+//   rx peak         : 受信 FIFO（GNSS_SERIAL_FIFO_SIZE）のたまりの最大。4096 に近ければあふれかけ
+//   ckerr / ovf     : UBX のチェックサム誤り・FIFO あふれ（0 でなければバイトが欠けている）
+//   ack             : 戻すとき、1 通書き終えてから返事までの遅れ。late は待つのをやめたあとに来た返事の数
+static void io_log(const char* what, uint32_t now) {
+  if (!s_io.on) return;
+  s_io.on = false;
+  s_io_close_at = 0;
+  uint32_t gap = s_io.pvt_gap_max;
+  if (now - s_io.pvt_last > gap) gap = now - s_io.pvt_last;   // 終わる時点で途切れていた分
+  char ack[80] = "";
+  if (s_io.ack_n || s_io.late_acks || s_io.odd_acks)
+    snprintf(ack, sizeof(ack), ", ack avg %lums max %lums late %u odd %u",
+             (unsigned long)(s_io.ack_n ? s_io.ack_sum / s_io.ack_n : 0), (unsigned long)s_io.ack_max,
+             s_io.late_acks, s_io.odd_acks);
+  enqueueTask(createLogSdfTask("GNSS DBD IO (%s): %.1fs, NAV-PVT gap max %lums, rx peak %dB, ckerr %lu, ovf %lu, txwait max %lums%s",
+                               what, since_s(now, s_io.t0), (unsigned long)gap, gnss_rx_backlog_peak_take(),
+                               (unsigned long)(gnss_ubx_ck_errors() - s_io.ck0),
+                               (unsigned long)(gnss_rx_overflows() - s_io.ovf0),
+                               (unsigned long)s_io.txwait_max, ack));
+}
+
+static void orb_request(const char* tag, uint32_t delay_ms) {
+  s_orb_tag  = tag;
+  s_orb_at   = millis() + delay_ms;
+  s_orb_sent = false;
+}
+
+static void start_episode(EpKind k, uint32_t now) {
+  s_ep = k; s_ep_t0 = now; s_ep_nofix = (k == EP_BOOT); s_ep_tk_ms = 0; s_tk_after_s = -1.0f; s_ep_end = "";
+}
+static void end_episode(const char* why) { s_ep = EP_NONE; s_ep_end = why; }
+
+static void start_restore(uint8_t pass) {
+  s_rs_pass = pass;
+  s_rs_off = 0;
+  s_rs_bytes = s_file.bytes;
+  s_rs_waiting = false;
+  s_rs_noack_run = 0;
+  memset(&s_rc[pass - 1], 0, sizeof(RsCount));
+  s_st = ST_SEND;
+  io_begin(millis());
+}
+
+static const char* restore_name() {
+  return (s_rs_pass == 2) ? "resend" : ((s_ep == EP_BOOT) ? "boot" : "test");
+}
+
+static void restore_done(uint32_t now) {
+  const RsCount& c = s_rc[s_rs_pass - 1];
+  const char* what = restore_name();
+  // other の内訳（infoCode 別。2 版違い・3 大きさ違い・4 しまえない・5 まだ受け取れない・6 知らない種類）
+  char codes[48] = "";
+  for (int k = 0, n = 0; k < 8; k++) {
+    if (c.code_n[k] == 0) continue;
+    n += snprintf(codes + n, sizeof(codes) - n, "%s%dx%u", n ? " " : " (code ", k, c.code_n[k]);
+    if (n >= (int)sizeof(codes) - 2) break;
+  }
+  if (codes[0]) strlcat(codes, ")", sizeof(codes));
+  enqueueTask(createLogSdfTask("GNSS DBD RESTORE %s: sent %u ok %u notime %u other %u%s noack %u (%.1fs after %s)",
+                               what, c.sent, c.ok, c.notime, c.other, codes, c.noack,
+                               since_s(now, s_ep_t0), s_ep == EP_BOOT ? "boot" : "reset"));
+  char io[24];
+  snprintf(io, sizeof(io), "restore %s", what);
+  io_log(io, now);
+  orb_request(s_rs_pass == 2 ? "after resend" : "after restore", 2000);
+  s_st = ST_WAIT;
+}
+
+// 吸い出し・戻しの途中で打ち切る（GNSS のポートを開き直す・リプレイに入った）。
+static void abort_op(const char* why) {
+  if (s_st == ST_SEND) {
+    s_tx_end = s_tx_pos;   // 書きかけは捨てる（GNSS には壊れたフレームとして捨てられる）
+    enqueueTask(createLogSdfTask("GNSS DBD RESTORE %s: aborted (%s) after %u sent",
+                                 restore_name(), why, s_rc[s_rs_pass - 1].sent));
+    io_log("restore aborted", millis());
+    s_st = ST_IDLE;
+  } else if (s_st == ST_DUMP) {
+    enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): aborted (%s) after %u msgs", s_dp_why, why, s_dp_count));
+    io_log("save aborted", millis());
+    s_st = ST_IDLE;
+  }
+}
+
+static void skip_restore(const char* why) {
+  s_rs_skip = why;
+  enqueueTask(createLogSdfTask("GNSS DBD: not restored (rtc lost, %s)", why));
+  s_st = ST_IDLE;
+}
+
+static void start_dump(const char* why, uint32_t now) {
+  s_dp_len = 0; s_dp_total = 0; s_dp_count = 0; s_dp_over = false;
+  s_dp_t0 = now; s_dp_utc = utc_now(); s_dp_why = why;
+  s_dp_last_ms = now ? now : 1;
+  s_due_since = 0;
+  s_st = ST_DUMP;
+  io_begin(now);
+  gnss_ubx_send(0x13, 0x80, nullptr, 0);   // UBX-MGA-DBD のポール（ペイロード無し）
+}
+
+static void dump_end(uint32_t n) {
+  const uint32_t now = millis();
+  s_dp_ms = now - s_dp_t0;
+  s_st = ST_IDLE;
+  // "GNSS DBD IO" の行は 2 秒後に出す。吸い出しの後ろに並んでいた NAV-PVT が届く（あるいは落ちていた）分まで測るため。
+  snprintf(s_io_what, sizeof(s_io_what), "save %s", s_dp_why);
+  s_io_close_at = now + 2000;
+  if (s_io_close_at == 0) s_io_close_at = 1;
+  if (s_dp_over) {
+    enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): too big, %u msgs %lu bytes > GNSS_DBD_BUF_BYTES %u (not saved)",
+                                 s_dp_why, s_dp_count, (unsigned long)s_dp_total, (unsigned)GNSS_DBD_BUF_BYTES));
+    return;
+  }
+  if (n != s_dp_count || n == 0) {
+    enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): got %u msgs but GNSS says %lu (not saved)",
+                                 s_dp_why, s_dp_count, (unsigned long)n));
+    return;
+  }
+  GnssDbdHead h;
+  memset(&h, 0, sizeof(h));
+  memcpy(h.magic, GNSS_DBD_MAGIC, 8);
+  h.utc   = s_dp_utc;
+  h.count = s_dp_count;
+  h.bytes = s_dp_len;
+  memcpy(h.gnss_id, s_gid, 6);
+  mutex_enter_blocking(&taskQueueMutex);
+  s_save_head = h;
+  s_sv = SV_PENDING;
+  mutex_exit(&taskQueueMutex);
+  if (enqueueTask(createSaveDbdTask())) {
+    s_st = ST_SAVING;
+  } else {
+    mutex_enter_blocking(&taskQueueMutex);
+    s_sv = SV_IDLE;
+    mutex_exit(&taskQueueMutex);
+    enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): task queue full (not saved)", s_dp_why));
+  }
+}
+
+// ============================================================
+//  受けた UBX
+// ============================================================
+static void on_dbd_frame(const uint8_t* p, uint16_t len) {
+  if (s_st != ST_DUMP) return;
+  const uint32_t flen = 8u + len;
+  s_dp_total += flen;
+  if (s_dp_count < 0xFFFF) s_dp_count++;
+  if (s_dp_over || s_dp_len + flen > GNSS_DBD_BUF_BYTES) { s_dp_over = true; return; }
+  uint8_t* d = s_buf + s_dp_len;
+  d[0] = 0xB5; d[1] = 0x62; d[2] = 0x13; d[3] = 0x80;
+  d[4] = (uint8_t)(len & 0xFF); d[5] = (uint8_t)(len >> 8);
+  memcpy(d + 6, p, len);
+  uint8_t ca, cb;
+  ubx_ck(d + 2, 4u + len, ca, cb);
+  d[6 + len] = ca; d[7 + len] = cb;
+  s_dp_len += flen;
+}
+
+static void on_mga_ack(const uint8_t* p) {
+  if (p[3] != 0x80) { if (s_io.on && s_io.odd_acks < 0xFFFF) s_io.odd_acks++; return; }   // MGA-DBD についての返事だけ
+  if (s_st == ST_DUMP) {      // 吸い出しの終わり。msgPayloadStart に吐き出した数（U4）
+    dump_end((uint32_t)p[4] | ((uint32_t)p[5] << 8) | ((uint32_t)p[6] << 16) | ((uint32_t)p[7] << 24));
+    return;
+  }
+  // 返事の msgPayloadStart（p[4..7]）は、返事の元のフレームのペイロードの先頭 4 バイト。いま待っているフレームと
+  // 違えば、待つのをやめた前のフレームへの遅れた返事なので、いまのフレームの返事として数えない
+  // （中身が同じフレームどうしは見分けられないが、そのときは数え方が 1 つずれるだけ）。
+  const bool mine = s_st == ST_SEND && s_rs_waiting && s_rs_frame_off + 10 <= s_rs_bytes &&
+                    memcmp(p + 4, s_buf + s_rs_frame_off + 6, 4) == 0;
+  if (mine) {
+    RsCount& c = s_rc[s_rs_pass - 1];
+    if (p[0] == 1)       c.ok++;         // 使った
+    else if (p[2] == 1)  c.notime++;     // 時刻を知らないので使えない
+    else { c.other++; c.code_n[p[2] < 8 ? p[2] : 7]++; }
+    s_rs_waiting = false;
+    s_rs_noack_run = 0;
+    if (s_io.tx_done_ms != 0) {          // 書き終えてから返事までの遅れ
+      const uint32_t lat = millis() - s_io.tx_done_ms;
+      s_io.ack_sum += lat;
+      if (lat > s_io.ack_max) s_io.ack_max = lat;
+      if (s_io.ack_n < 0xFFFF) s_io.ack_n++;
+    }
+  } else if (s_io.on && s_io.late_acks < 0xFFFF) {
+    s_io.late_acks++;                    // 待つのをやめたあとに来た（noack に数えたフレームの返事）
+  }
+}
+
+static void on_uniqid(const uint8_t* p) {
+  memcpy(s_gid, p + 4, 6);
+  if (!s_gid_ok) {
+    s_gid_ok = true;
+    enqueueTask(createLogSdfTask("GNSS ID: %02X%02X%02X%02X%02X%02X (%.1fs after boot, poll %u)",
+                                 s_gid[0], s_gid[1], s_gid[2], s_gid[3], s_gid[4], s_gid[5],
+                                 millis() / 1000.0f, s_gid_polls));
+  }
+}
+
+// MON-VER: 版を 1 回だけ残す（ROM SPG 5.10 かの確認。拡張の文字列のうち FWVER / PROTVER / MOD）
+static void on_monver(const uint8_t* p, uint16_t len) {
+  s_ver_ok = true;
+  static bool logged = false;
+  if (logged) return;
+  logged = true;
+  char sw[31], hw[11], ext[3][31];
+  memcpy(sw, p, 30); sw[30] = 0;
+  memcpy(hw, p + 30, 10); hw[10] = 0;
+  for (int k = 0; k < 3; k++) ext[k][0] = 0;
+  static const char* const keys[3] = { "FWVER=", "PROTVER=", "MOD=" };
+  for (uint16_t off = 40; off + 30 <= len; off += 30) {
+    char s[31];
+    memcpy(s, p + off, 30); s[30] = 0;
+    for (int k = 0; k < 3; k++) if (strncmp(s, keys[k], strlen(keys[k])) == 0) strlcpy(ext[k], s, sizeof(ext[k]));
+  }
+  enqueueTask(createLogSdfTask("GNSS VER: %s (hw %s) %s %s %s", sw, hw, ext[0], ext[1], ext[2]));
+}
+
+// NAV-ORB: 衛星ごとのエフェメリス・アルマナック・予測軌道（ANA）が「使えるか」を数えて 1 行にする。
+//   使える = 残り期間が 1 以上（期限が分かっている）。期限不明 = 31（時刻を知らないときなど）。
+static void on_orb(const uint8_t* p, uint16_t len) {
+  if (!s_orb_tag || !s_orb_sent) return;
+  uint16_t n = p[5];
+  if (8u + n * 6u > len) n = (len - 8) / 6;
+  uint16_t eu = 0, ex = 0, au = 0, ax = 0, nu = 0, nx = 0, nmax = 0;
+  for (uint16_t i = 0; i < n; i++) {
+    const uint8_t* s = p + 8 + i * 6;
+    const uint8_t eph = s[3], alm = s[4], oth = s[5];
+    if (eph >> 5) { const uint8_t u = eph & 0x1F; if (u == 31) ex++; else if (u > 0) eu++; }
+    if (alm >> 5) { const uint8_t u = alm & 0x1F; if (u == 31) ax++; else if (u > 0) au++; }
+    if ((oth >> 5) == 2) {
+      const uint8_t u = oth & 0x1F;
+      if (u == 31) nx++;
+      else if (u > 0) { nu++; if (u < 30 && u > nmax) nmax = u; }
+    }
+  }
+  enqueueTask(createLogSdfTask("GNSS ORB (%s): eph %u/%u alm %u/%u ana %u/%u (usable/age unknown, ana up to %ud) of %u SVs",
+                               s_orb_tag, eu, ex, au, ax, nu, nx, nmax, n));
+  s_orb_tag = nullptr;
+}
+
+#endif // GNSS_DBD_ENABLE
+
+void gnss_dbd_on_ubx(uint8_t cls, uint8_t id, const uint8_t* p, uint16_t len) {
+#if GNSS_DBD_ENABLE
+  if (cls == 0x01 && id == 0x07) {                  // NAV-PVT の間隔（吸い出し・戻しが航法をどれだけ待たせたか）
+    s_after_replay = false;                         // 本物の NAV-PVT が来た（リプレイ中はここまで来ない）
+    if (s_io.on) {
+      const uint32_t now = millis();
+      if (now - s_io.pvt_last > s_io.pvt_gap_max) s_io.pvt_gap_max = now - s_io.pvt_last;
+      s_io.pvt_last = now;
+    }
+    return;
+  }
+  if (cls == 0x13 && id == 0x80)                    on_dbd_frame(p, len);
+  else if (cls == 0x13 && id == 0x60 && len >= 8)   on_mga_ack(p);
+  else if (cls == 0x27 && id == 0x03 && len >= 10)  on_uniqid(p);
+  else if (cls == 0x0A && id == 0x04 && len >= 40)  on_monver(p, len);
+  else if (cls == 0x01 && id == 0x34 && len >= 8)   on_orb(p, len);
+#else
+  (void)cls; (void)id; (void)p; (void)len;
+#endif
+}
+
+void gnss_dbd_finish_tx() {
+#if GNSS_DBD_ENABLE
+  if (s_tx_pos >= s_tx_end) return;
+  const uint32_t t0 = millis();
+  while (s_tx_pos < s_tx_end) {
+    if (GNSS_SERIAL.availableForWrite() > 0) {
+      GNSS_SERIAL.write(s_buf[s_tx_pos++]);
+    } else if (millis() - t0 > 200) {
+      // ふだんは 1 通（最大 172 バイト）で約 45ms。UART が止まっていたら残りを捨てて Core0 を返す
+      // （GNSS には壊れたフレームとして捨てられ、そのフレームは noack に数えられる）。
+      enqueueTask(createLogSdfTask("GNSS DBD: UART stuck, dropped %lu bytes", (unsigned long)(s_tx_end - s_tx_pos)));
+      s_tx_end = s_tx_pos;
+    } else {
+      imu_service_if_due();
+    }
+  }
+  const uint32_t now = millis();
+  s_io.tx_done_ms = now;
+  if (s_io.on && now - t0 > s_io.txwait_max) s_io.txwait_max = now - t0;
+#endif
+}
+
+void gnss_dbd_on_setup() {
+#if GNSS_DBD_ENABLE
+  abort_op("GNSS setup");
+#endif
+}
+
+void gnss_dbd_after_setup() {
+#if GNSS_DBD_ENABLE
+  gnss_ubx_send(0x27, 0x03, nullptr, 0);   // UBX-SEC-UNIQID のポール
+  gnss_ubx_send(0x0A, 0x04, nullptr, 0);   // UBX-MON-VER のポール
+  s_ver_poll_ms = millis();
+  if (s_ver_poll_ms == 0) s_ver_poll_ms = 1;
+  s_gid_poll_ms = millis();
+  if (s_gid_poll_ms == 0) s_gid_poll_ms = 1;
+  s_gid_polls = 1;
+#endif
+}
+
+void gnss_dbd_fix_tag(char* buf, size_t n) {
+  const char* rtc = !gnss_rtc_boot_checked() ? "?" : (gnss_rtc_alive_on_boot() ? "alive" : "lost");
+#if GNSS_DBD_ENABLE
+  if (!gnss_rtc_boot_checked() || gnss_rtc_alive_on_boot()) { snprintf(buf, n, "rtc=%s", rtc); return; }
+  if (s_rs_pass == 0) { snprintf(buf, n, "rtc=lost dbd=none(%s)", s_rs_skip ? s_rs_skip : "not yet"); return; }
+  char rs[24] = "";
+  if (s_rs_pass == 2 && s_rc[1].sent > 0) snprintf(rs, sizeof(rs), " resend=%u/%u", s_rc[1].ok, s_rc[1].sent);
+  // GNSS が時刻を知った時刻。まだ見ていなければ、この fix の NAV-PVT で初めて知った（NAV-PVT は 0.5 秒ごとで、
+  // その間に gnss_dbd_tick() が回るので、それより前に知っていれば見ている）。
+  char tk[20];
+  if (s_tk_after_s >= 0.0f) snprintf(tk, sizeof(tk), "%.1fs", s_tk_after_s);
+  else                      snprintf(tk, sizeof(tk), "at-fix");
+  snprintf(buf, n, "rtc=lost dbd=%u/%u%s time=%s", s_rc[0].ok, s_rc[0].sent, rs, tk);
+#else
+  snprintf(buf, n, "rtc=%s", rtc);
+#endif
+}
+
+// ============================================================
+//  見回り（gnss_loop() から毎回）
+// ============================================================
+#if GNSS_DBD_ENABLE
+static void episode_tick(uint32_t now, bool fix) {
+  if (s_ep == EP_NONE) return;
+  if (!s_ep_nofix) {   // リセットが効いて fix が落ちたのを見てから数える（直前の fix を数えない）
+    if (!fix) {
+      s_ep_nofix = true;
+    } else {
+      if (now - s_ep_t0 > 5000) {
+        enqueueTask(createLogSdfTask("GNSS DBD TEST %s: fix did not drop in 5s (reset not applied?)", ep_name(s_ep)));
+        end_episode("no reset");
+      }
+      return;
+    }
+  }
+  if (s_ep_tk_ms == 0 && gnss_time_known()) {
+    s_ep_tk_ms   = now ? now : 1;
+    s_tk_after_s = since_s(now, s_ep_t0);
+    char age[32] = "";
+    if (load_state() == LD_OK) snprintf(age, sizeof(age), " (file age %.1fh)", file_age_h());
+    enqueueTask(createLogSdfTask("GNSS DBD: GNSS time known %.1fs after %s%s",
+                                 s_tk_after_s, s_ep == EP_BOOT ? "boot" : "reset", age));
+  }
+  if (fix) {
+    if (s_ep != EP_BOOT) {
+      char tk[16];
+      if (s_tk_after_s >= 0.0f) snprintf(tk, sizeof(tk), "%.1fs", s_tk_after_s); else snprintf(tk, sizeof(tk), "at-fix");
+      char rs[40] = "";
+      if (s_ep == EP_TEST_DBD && s_rs_pass > 0)
+        snprintf(rs, sizeof(rs), " dbd=%u/%u resend=%u/%u", s_rc[0].ok, s_rc[0].sent, s_rc[1].ok, s_rc[1].sent);
+      enqueueTask(createLogSdfTask("GNSS DBD TEST %s: fix %.1fs after reset (sats %d, time %s%s)",
+                                   ep_name(s_ep), since_s(now, s_ep_t0), get_gsa_numsat(), tk, rs));
+    }
+    end_episode("fix");
+    return;
+  }
+  if (now - s_ep_t0 >= GNSS_DBD_RESTORE_WINDOW_MS) {
+    enqueueTask(createLogSdfTask("GNSS DBD %s: no fix %lu min after %s", ep_name(s_ep),
+                                 (unsigned long)((now - s_ep_t0) / 60000UL), s_ep == EP_BOOT ? "boot" : "reset"));
+    end_episode("window end");
+  }
+}
+
+static void send_tick(uint32_t now) {
+  if (tx_busy()) return;                       // まだ書いている
+  if (s_ep == EP_NONE) {                       // fix した（窓が終わった・試験のリセットが効かなかった）。残りは送らない
+    enqueueTask(createLogSdfTask("GNSS DBD RESTORE %s: stopped at %s (%u of %u sent)", restore_name(),
+                                 s_ep_end, s_rc[s_rs_pass - 1].sent, s_file.count));
+    io_log("restore stopped", now);
+    s_st = ST_IDLE;
+    return;
+  }
+  if (s_rs_waiting) {
+    const uint32_t lim = (s_rs_noack_run >= 3) ? GNSS_DBD_PACE_MS : GNSS_DBD_ACK_TIMEOUT_MS;
+    if (now - s_rs_ack_ms < lim) return;
+    s_rc[s_rs_pass - 1].noack++;
+    if (s_rs_noack_run < 255) s_rs_noack_run++;
+    s_rs_waiting = false;
+  }
+  if (s_rs_off >= s_rs_bytes) { restore_done(now); return; }
+  const uint8_t* f = s_buf + s_rs_off;
+  const uint32_t flen = 8u + ((uint32_t)f[4] | ((uint32_t)f[5] << 8));
+  if (s_rs_off + 8 > s_rs_bytes || f[0] != 0xB5 || f[1] != 0x62 || s_rs_off + flen > s_rs_bytes) {
+    enqueueTask(createLogSdfTask("GNSS DBD RESTORE: broken frame at %lu", (unsigned long)s_rs_off));   // 読み込みで確かめてあるので来ないはず
+    restore_done(now);
+    return;
+  }
+  s_tx_pos = s_rs_off;
+  s_tx_end = s_rs_off + flen;
+  s_rs_frame_off = s_rs_off;
+  s_rs_off += flen;
+  s_rc[s_rs_pass - 1].sent++;
+  s_rs_waiting = true;
+  s_rs_ack_ms  = now;
+  pump_tx();
+}
+
+static void wait_tick() {
+  if (s_ep == EP_NONE) { s_st = ST_IDLE; return; }   // fix した・窓が終わった
+  if (s_rs_pass != 1 || s_ep_tk_ms == 0) return;
+  const RsCount& c = s_rc[0];
+  if (c.ok >= c.sent) { s_rs_pass = 2; return; }      // 全部使われていた。入れ直しは要らない
+  const float age = file_age_h();
+  if (age > GNSS_DBD_MAX_AGE_H) {
+    enqueueTask(createLogSdfTask("GNSS DBD: not resent (file %.0fh old > %d)", age, (int)GNSS_DBD_MAX_AGE_H));
+    s_rs_pass = 2;
+    return;
+  }
+  start_restore(2);
+}
+
+// 吸い出してよいか。nullptr = よい、DUMP_NOT_DUE = まだその時間ではない、それ以外 = 時間は来ているが足りないもの。
+static const char* const DUMP_NOT_DUE = "not due";
+static const char* dump_block(uint32_t now) {
+  if (s_auto_off) return DUMP_NOT_DUE;                            // 机の上の試験をした（再起動まで。上の s_auto_off）
+  if (s_ep != EP_NONE) return DUMP_NOT_DUE;                       // まだ最初の fix の前（戻している最中を含む）
+  if (s_first_fix_ms == 0 || now - s_first_fix_ms < GNSS_DBD_FIRST_SAVE_MS) return DUMP_NOT_DUE;
+  if (s_dp_last_ms != 0 && now - s_dp_last_ms < GNSS_DBD_SAVE_INTERVAL_MS) return DUMP_NOT_DUE;
+  if (tx_busy())                    return "sending";
+  if (s_still_since == 0)           return "moving or no fix";
+  if (now - s_still_since < GNSS_DBD_STILL_MS) return "just stopped";
+  if (get_gnss_ana_busy())          return "ANA busy";
+  if (!s_gid_ok)                    return "no GNSS id";
+  if (!gnss_time_known())           return "no time";
+  if (load_state() == LD_BUSY)      return "SD read";             // 起動時の読み込みが RAM を使い終えていない
+  return nullptr;
+}
+
+static void saving_tick() {
+  mutex_enter_blocking(&taskQueueMutex);
+  const uint8_t sv = s_sv;
+  const char* why = s_sv_why;
+  if (sv == SV_OK || sv == SV_NG) s_sv = SV_IDLE;
+  mutex_exit(&taskQueueMutex);
+  if (sv == SV_OK) {
+    // SD のファイルが替わったので、頭を覚え直す（STATUS と試験の "file age" が新しいほうを指すように）。
+    // s_buf の中身も書いたフレームのままなので、LD_OK の「RAM にファイルの中身がある」とも食い違わない。
+    mutex_enter_blocking(&taskQueueMutex);
+    s_file   = s_save_head;
+    s_ld     = LD_OK;
+    s_ld_why = "";
+    mutex_exit(&taskQueueMutex);
+    enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): %u msgs %lu bytes, dump %lums, sd %lums, ANA data %d SVs",
+                                 s_dp_why, s_dp_count, (unsigned long)s_dp_len, (unsigned long)s_dp_ms,
+                                 (unsigned long)s_sv_ms, get_gnss_ana_data_svs()));
+    s_st = ST_IDLE;
+  } else if (sv == SV_NG) {
+    enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): not written (%s)", s_dp_why, why));
+    s_st = ST_IDLE;
+  }
+}
+
+static bool file_matches_gnss(const char*& why) {
+  if (!s_gid_ok)                                { why = "no GNSS id"; return false; }
+  if (memcmp(s_file.gnss_id, s_gid, 6) != 0)   { why = "file from another GNSS"; return false; }
+  return true;
+}
+#endif // GNSS_DBD_ENABLE
+
+void gnss_dbd_tick() {
+#if GNSS_DBD_ENABLE
+  const uint32_t now = millis();
+  if (getReplayMode()) {   // GNSS の UART を読み捨てているので返事が来ない
+    abort_op("replay");
+    if (s_io.on && s_io_close_at != 0) io_log(s_io_what, now);   // 吸い出しの後ろの行は待たずに出す（再生中は NAV-PVT を見ない）
+    s_still_since  = 0;
+    s_after_replay = true;
+    return;
+  }
+  pump_tx();
+  if (s_io.on && s_io_close_at != 0 && (int32_t)(now - s_io_close_at) >= 0) io_log(s_io_what, now);
+
+  // GNSS の固有 ID が来なければポールし直す（5 秒ごと、合わせて 4 回まで）
+  if (!s_gid_ok && s_gid_poll_ms != 0 && s_gid_polls < 4 && now - s_gid_poll_ms >= 5000) {
+    gnss_ubx_send(0x27, 0x03, nullptr, 0);
+    s_gid_poll_ms = now ? now : 1;
+    s_gid_polls++;
+  }
+  if (!s_gid_ok && !s_gid_fail_logged && s_gid_polls >= 4 && now - s_gid_poll_ms >= 5000) {
+    s_gid_fail_logged = true;
+    enqueueTask(createLogSdfTask("GNSS ID: no answer to SEC-UNIQID after %u polls (DBD neither restored nor saved)", s_gid_polls));
+  }
+  if (!s_ver_ok && !s_ver_fail_logged && s_ver_poll_ms != 0 && now - s_ver_poll_ms >= 10000) {
+    s_ver_fail_logged = true;
+    enqueueTask(createLogSdfTask("GNSS VER: no answer to MON-VER"));
+  }
+  // NAV-ORB のポール
+  if (s_orb_tag) {
+    if (!s_orb_sent && (int32_t)(now - s_orb_at) >= 0 && !tx_busy()) {
+      gnss_ubx_send(0x01, 0x34, nullptr, 0);
+      s_orb_sent = true;
+      s_orb_at   = now;
+    } else if (s_orb_sent && now - s_orb_at > 3000) {
+      enqueueTask(createLogSdfTask("GNSS ORB (%s): no answer", s_orb_tag));
+      s_orb_tag = nullptr;
+    }
+  }
+
+  if (s_after_replay) {   // リプレイを抜けた直後。本物の NAV-PVT を待つ（上の s_after_replay）
+    if (s_st == ST_SAVING) saving_tick();
+    return;
+  }
+
+  double lat, lon, gs, trk;
+  const bool fix = gnss_get_own_fix(lat, lon, gs, trk);
+  if (fix && s_first_fix_ms == 0) s_first_fix_ms = now ? now : 1;
+  if (fix && gs <= READY_STILL_MPS) { if (s_still_since == 0) s_still_since = now ? now : 1; }
+  else s_still_since = 0;
+
+  episode_tick(now, fix);
+
+  switch (s_st) {
+    case ST_BOOT: {
+      if (!gnss_rtc_boot_checked()) return;              // 最初の NAV-PVT を待つ
+      if (gnss_rtc_alive_on_boot()) {                    // BT1 が生きていた。BBR のほうが新しい
+        enqueueTask(createLogSdfTask("GNSS DBD: not restored (rtc alive at boot)"));
+        s_st = ST_IDLE;
+        return;
+      }
+      static bool ep_started = false;
+      if (!ep_started) { ep_started = true; start_episode(EP_BOOT, 0); return; }
+      if (s_ep == EP_NONE) { skip_restore("fixed before restore"); return; }   // 待っている間に fix した
+      const uint8_t ld = load_state();
+      const bool waiting = now < GNSS_DBD_LOAD_WAIT_MS;
+      if (ld == LD_BUSY && waiting) return;              // SD の読み込みを待つ
+      if (ld != LD_OK) { skip_restore(ld == LD_BUSY ? "SD read timeout" : s_ld_why); return; }
+      if (!s_gid_ok && waiting) return;                  // GNSS の固有 ID を待つ
+      const char* why = nullptr;
+      if (!file_matches_gnss(why)) { skip_restore(why); return; }
+      start_restore(1);
+      return;
+    }
+    case ST_SEND:   send_tick(now); return;
+    case ST_WAIT:   wait_tick(); return;
+    case ST_IDLE: {
+      const char* why = dump_block(now);
+      if (why == nullptr) { start_dump("auto", now); return; }
+      if (why == DUMP_NOT_DUE) { s_due_since = 0; return; }
+      // 時間は来ているのに始められない。GNSS_DBD_SAVE_INTERVAL_MS ごとに理由を残す（動き続けるボートなど）
+      if (s_due_since == 0) { s_due_since = now ? now : 1; s_wait_log_ms = s_due_since; }
+      if (now - s_wait_log_ms >= GNSS_DBD_SAVE_INTERVAL_MS) {
+        s_wait_log_ms = now;
+        enqueueTask(createLogSdfTask("GNSS DBD SAVE: due %lu min ago but waiting (%s)",
+                                     (unsigned long)((now - s_due_since) / 60000UL), why));
+      }
+      return;
+    }
+    case ST_DUMP:
+      if (now - s_dp_t0 > GNSS_DBD_DUMP_TIMEOUT_MS) {
+        enqueueTask(createLogSdfTask("GNSS DBD SAVE (%s): no end mark in %lus (%u msgs, not saved)",
+                                     s_dp_why, (unsigned long)(GNSS_DBD_DUMP_TIMEOUT_MS / 1000), s_dp_count));
+        io_log("save timeout", now);
+        s_st = ST_IDLE;
+      }
+      return;
+    case ST_SAVING: saving_tick(); return;
+    case ST_TEST_LOAD: {
+      if (s_ep == EP_NONE) {                             // リセットが効かなかった（fix が 5 秒落ちなかった）
+        enqueueTask(createLogSdfTask("GNSS DBD TEST: not restored (%s)", s_ep_end));
+        s_st = ST_IDLE;                                  // Core1 がまだ読んでいても、吸い出しと試験は LD_BUSY を見て待つ
+        return;
+      }
+      // GNSS が立ち上がり直す（fix が落ちる）のを待つ。立ち上がる前に書いた分は捨てられるため。
+      if (now - s_ep_t0 < 1000 || !s_ep_nofix) return;
+      const uint8_t ld = load_state();
+      if (ld == LD_BUSY) {
+        if (now - s_ep_t0 > GNSS_DBD_LOAD_WAIT_MS) { enqueueTask(createLogSdfTask("GNSS DBD TEST: SD read timeout")); s_st = ST_IDLE; }
+        return;
+      }
+      const char* why = (ld != LD_OK) ? s_ld_why : nullptr;
+      if (!why) file_matches_gnss(why);
+      if (why) {
+        s_rs_skip = why;
+        enqueueTask(createLogSdfTask("GNSS DBD TEST: not restored (%s)", why));
+        s_st = ST_IDLE;
+        return;
+      }
+      start_restore(1);
+      return;
+    }
+  }
+#endif
+}
+
+// ============================================================
+//  机の上の試験（USB シリアルの PONS:DBD,<arg>。GPS_TFT_map.ino の handle_serial_command）
+// ============================================================
+//   SAVE      いま吸い出して SD に書く（fix していれば、時間・止まっているかの条件は見ない）
+//   COLD      GNSS をコールドスタートさせ（CFG-RST navBbrMask=0xFFFF。BT1 が切れたのと同じ）、SD の DBD を戻す
+//   COLDONLY  コールドスタートだけ（比べるための素の値）
+//   HOT       ホットスタート（navBbrMask=0x0000）
+//   STATUS    状態を USB シリアルに出す
+//   結果は log.txt の "GNSS DBD TEST <種類>: fix 35.2s after reset ..." と "GNSS DBD: GNSS time known ..."。
+//   リセットは GNSS だけの再起動（resetMode=0x02）なので、設定（38400bps・UBX）は消えない。
+//   COLD / COLDONLY / HOT を 1 回でも打つと、再起動するまで自動の吸い出しはしない（s_auto_off。SAVE は効く）。
+//   リプレイ中と抜けた直後（本物の NAV-PVT が来るまで）は STATUS 以外を ERROR,REPLAY で断る。
+void gnss_dbd_command(const char* arg) {
+#if !GNSS_DBD_ENABLE
+  (void)arg;
+  Serial.println("PONS:DBD,ERROR,DISABLED");
+#else
+  const uint32_t now = millis();
+  if (strcmp(arg, "STATUS") == 0) {
+    const uint8_t ld = load_state();
+    Serial.printf("PONS:DBD,STATUS,state=%s,ep=%s,file=%s", st_name(s_st), ep_name(s_ep),
+                  ld == LD_OK ? "ok" : (ld == LD_BUSY ? "reading" : s_ld_why));
+    if (ld == LD_OK) Serial.printf(",msgs=%u,bytes=%lu", s_file.count, (unsigned long)s_file.bytes);
+    if (ld == LD_OK && gnss_time_known()) Serial.printf(",age=%.1fh", file_age_h());
+    Serial.printf(",gnss_id=%s,restore=%u/%u,resend=%u/%u,last_dump=%s,auto=%s\r\n", s_gid_ok ? "ok" : "none",
+                  s_rc[0].ok, s_rc[0].sent, s_rc[1].ok, s_rc[1].sent, s_dp_last_ms ? s_dp_why : "none",
+                  s_auto_off ? "off" : "on");
+    return;
+  }
+  // リプレイ中と抜けた直後は、fix と日時が再生した CSV の値なので受けない（SAVE の時刻・試験の TTFF が狂う）
+  if (getReplayMode() || s_after_replay) { Serial.println("PONS:DBD,ERROR,REPLAY"); return; }
+  const bool busy = (s_st != ST_IDLE) || tx_busy() || load_state() == LD_BUSY;
+  if (strcmp(arg, "SAVE") == 0) {
+    double a, b, gs, t;
+    const char* ng = nullptr;
+    if (busy)                                  ng = "BUSY";
+    else if (!gnss_get_own_fix(a, b, gs, t))   ng = "NO_FIX";
+    else if (!s_gid_ok)                        ng = "NO_GNSS_ID";
+    else if (!gnss_time_known())               ng = "NO_TIME";
+    if (ng) { Serial.printf("PONS:DBD,ERROR,%s\r\n", ng); return; }
+    start_dump("manual", now);
+    Serial.println("PONS:DBD,OK,SAVE");
+    return;
+  }
+  EpKind k = EP_NONE;
+  if (strcmp(arg, "COLD") == 0)          k = EP_TEST_DBD;
+  else if (strcmp(arg, "COLDONLY") == 0) k = EP_TEST_COLD;
+  else if (strcmp(arg, "HOT") == 0)      k = EP_TEST_HOT;
+  if (k == EP_NONE) { Serial.println("PONS:DBD,ERROR,UNKNOWN (SAVE / COLD / COLDONLY / HOT / STATUS)"); return; }
+  if (busy) { Serial.println("PONS:DBD,ERROR,BUSY"); return; }
+
+  const uint16_t mask = (k == EP_TEST_HOT) ? 0x0000 : 0xFFFF;
+  const uint8_t rst[4] = { (uint8_t)(mask & 0xFF), (uint8_t)(mask >> 8), 0x02, 0x00 };  // resetMode 0x02 = GNSS だけ
+  gnss_ubx_send(0x06, 0x04, rst, sizeof(rst));   // UBX-CFG-RST（返事は来ない）
+  start_episode(k, now ? now : 1);
+  s_rs_pass = 0;
+  s_rs_skip = nullptr;
+  memset(s_rc, 0, sizeof(s_rc));
+  enqueueTask(createLogSdfTask("GNSS DBD TEST %s: GNSS reset sent%s", ep_name(k),
+                               s_auto_off ? "" : " (auto save off until reboot)"));
+  s_auto_off = true;   // 再起動まで自動の吸い出しをしない（上の s_auto_off）
+  if (k == EP_TEST_DBD) {   // SD から読み直す（起動時に読んだものは、時計が生きていれば手放している）
+    mutex_enter_blocking(&taskQueueMutex);
+    s_ld = LD_BUSY;
+    mutex_exit(&taskQueueMutex);
+    if (enqueueTask(createLoadDbdTask())) s_st = ST_TEST_LOAD;
+    else gnss_dbd_loaded_core1(false, nullptr, "task queue full");
+  }
+  Serial.printf("PONS:DBD,OK,%s\r\n", arg);
+#endif
+}

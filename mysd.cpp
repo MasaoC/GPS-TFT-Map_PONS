@@ -39,6 +39,9 @@
 #include "backlight.h" // 飛行 CSV の lux / backlight 列
 #include "power.h"     // 過放電ラッチの裏コマンド解除（setup_sd）
 #include "src/imulog.h" // SD 再初期化時の生 IMU ログハンドル破棄
+#include "rtc_backup.h"   // GNSS のバックアップ電池の推定の記録（rtc_backup_load_sd / save_sd）
+#include "gnss_dbd.h"     // GNSS の航法データベースの記録（gnss_dbd_load_sd / save_sd）
+#include "pico/unique_id.h"  // 記録に本体の固有 ID を入れる（SD を別の機体へ差し替えたときに読まない）
 
 #define MAX_SETTING_LENGTH 32
 #define MAX_LINE_LENGTH (MAX_SETTING_LENGTH * 2 + 2) // ID:value ペア + 区切り文字・改行のバッファサイズ
@@ -2663,6 +2666,195 @@ Task createLatchBattTask() {
 }
 
 // ===== Web Serial 通信連携タスク生成 =====
+
+// ===== GNSS のバックアップ電池の推定の記録（SD の RTC_BACKUP_FILE）=====
+// 1 行だけのテキスト: "PONSRTC1,<本体の固有 ID>,<UTC 秒>,<あと何時間 ×100>,<CRC16>"
+//   例: PONSRTC1,E6614103E7452D2F,1794201600,1834,3A7C
+// ★ 本体の固有 ID を入れるのは、SD を別の機体へ差し替えたときにその機体の値を読まないため。
+// ★ CRC は書いている途中で電源が切れた（O_TRUNC のあと空・途中まで）ときに読まないため。
+//   読めなければ rtc_backup.cpp は「記録なし」として安全側から始める。
+Task createSaveRtcBackupTask(float hours, uint32_t utc) {
+  Task t;
+  t.type = TASK_SAVE_RTCBK;
+  t.rtcBkArgs.hours = hours;
+  t.rtcBkArgs.utc   = utc;
+  return t;
+}
+
+static void rtc_backup_body(char* buf, size_t n, float hours, uint32_t utc) {
+  char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+  pico_get_unique_board_id_string(id, sizeof(id));
+  snprintf(buf, n, "PONSRTC1,%s,%lu,%ld", id, (unsigned long)utc, lroundf(hours * 100.0f));
+}
+
+void rtc_backup_save_sd(float hours, uint32_t utc) {
+  ASSERT_SD_CORE1("rtc_backup_save_sd");
+  if (webserial_connected) return;   // PC 接続中は SD を読み出し専用に保つ
+  if (!good_sd()) return;
+  char body[80], line[96];
+  rtc_backup_body(body, sizeof(body), hours, utc);
+  snprintf(line, sizeof(line), "%s,%04X", body,
+           (unsigned)link_crc16((const uint8_t*)body, (uint16_t)strlen(body)));
+  FsFile f;
+  if (!f.open(RTC_BACKUP_FILE, O_WRONLY | O_CREAT | O_TRUNC)) return;
+  f.println(line);
+  f.close();
+}
+
+void rtc_backup_load_sd() {
+  ASSERT_SD_CORE1("rtc_backup_load_sd");
+  bool ok = false; float hours = 0.0f; unsigned long utc = 0;
+  FsFile f;
+  if (good_sd() && f.open(RTC_BACKUP_FILE, O_RDONLY)) {
+    char line[96] = {0};
+    const int n = f.fgets(line, sizeof(line));
+    f.close();
+    char* comma = (n > 0) ? strrchr(line, ',') : nullptr;
+    if (comma) {
+      *comma = '\0';
+      const unsigned crc = (unsigned)strtoul(comma + 1, nullptr, 16);
+      char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+      pico_get_unique_board_id_string(id, sizeof(id));
+      char fid[40] = {0}; long h100 = 0;
+      if (crc == link_crc16((const uint8_t*)line, (uint16_t)strlen(line)) &&
+          sscanf(line, "PONSRTC1,%39[^,],%lu,%ld", fid, &utc, &h100) == 3 &&
+          strcmp(fid, id) == 0 && h100 >= 0) {
+        ok = true;
+        hours = h100 / 100.0f;
+      }
+    }
+  }
+  rtc_backup_set_loaded_core1(ok, hours, (uint32_t)utc);
+  log_sdf("RTC BACKUP record: %s", ok ? "loaded" : "none (no file / other unit / broken)");
+}
+
+// ===== GNSS の航法データベース（SD の GNSS_DBD_FILE。gnss_dbd.cpp）=====
+// 中身: 64 バイトの頭（GnssDbdHead）＋ UBX-MGA-DBD のフレームを受けた順に並べたもの。
+// ★ 書くときは一時ファイル（GNSS_DBD_TMP_FILE）に書き切ってから名前を替える。書いている途中で電源が切れても
+//   前の版が残る。古い版を消してから名前を替えるまでの間に切れたら、読むときに一時ファイルのほうを使う
+//   （CRC で確かめるので、書きかけの一時ファイルは使われない）。
+// ★ 本体の固有 ID を入れて、別の機体の SD なら読まない（DBD は作った受信機へだけ戻す前提）。
+//   GNSS チップの固有 ID の照合は Core0（gnss_dbd.cpp。GNSS から聞くため）。
+Task createSaveDbdTask() {
+  Task t;
+  t.type = TASK_SAVE_DBD;
+  return t;
+}
+Task createLoadDbdTask() {
+  Task t;
+  t.type = TASK_LOAD_DBD;
+  return t;
+}
+
+#if GNSS_DBD_ENABLE
+static const char* dbd_read_file(const char* path, GnssDbdHead* h) {
+  if (!good_sd()) return "no SD";
+  FsFile f;
+  if (!f.open(path, O_RDONLY)) return "no file";
+  uint8_t* buf = gnss_dbd_buffer_core1();
+  char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+  pico_get_unique_board_id_string(id, sizeof(id));
+  const char* why = nullptr;
+  if (f.read(h, sizeof(*h)) != (int)sizeof(*h)) {
+    why = "short header";
+  } else {
+    h->board_id[sizeof(h->board_id) - 1] = '\0';
+    if (memcmp(h->magic, GNSS_DBD_MAGIC, 8) != 0)                                     why = "not a DBD file";
+    else if (h->head_crc != link_crc16((const uint8_t*)h, offsetof(GnssDbdHead, head_crc))) why = "header CRC";
+    else if (strcmp(h->board_id, id) != 0)                                            why = "other unit";
+    else if (h->bytes == 0 || h->bytes > GNSS_DBD_BUF_BYTES || h->count == 0)        why = "bad size";
+  }
+  if (!why) {
+    for (uint32_t off = 0; off < h->bytes && !why; ) {
+      const uint32_t n = (h->bytes - off > 2048) ? 2048 : (h->bytes - off);
+      if (f.read(buf + off, n) != (int)n) why = "short data";
+      off += n;
+      loop_sound();   // 音を途切れさせない
+    }
+  }
+  f.close();
+  if (!why && h->data_crc != link_crc16(buf, (uint16_t)h->bytes)) why = "data CRC";
+  if (!why && !gnss_dbd_frames_ok(buf, h->bytes, h->count))       why = "bad frames";
+  return why;
+}
+#endif
+
+void gnss_dbd_load_sd() {
+  ASSERT_SD_CORE1("gnss_dbd_load_sd");
+#if GNSS_DBD_ENABLE
+  const uint32_t t0 = millis();
+  GnssDbdHead h;
+  memset(&h, 0, sizeof(h));
+  const char* why = dbd_read_file(GNSS_DBD_FILE, &h);
+  if (why && strcmp(why, "no SD") != 0) {   // 名前を替える前に切れていたら一時ファイルが残っている
+    GnssDbdHead h2;
+    memset(&h2, 0, sizeof(h2));
+    if (dbd_read_file(GNSS_DBD_TMP_FILE, &h2) == nullptr) {
+      h = h2; why = nullptr;
+      // 一時ファイルを本体の名前にしておく。このままだと次の書き込みが一時ファイルを O_TRUNC で空にした瞬間、
+      // ちゃんとしたものが SD に 1 つも無くなる（そこで電源が切れたら失う）。PC 接続中は SD に書かない。
+      if (!webserial_connected) {
+        if (SD.exists(GNSS_DBD_FILE)) SD.remove(GNSS_DBD_FILE);
+        SD.rename(GNSS_DBD_TMP_FILE, GNSS_DBD_FILE);
+      }
+    }
+  }
+  gnss_dbd_loaded_core1(why == nullptr, &h, why ? why : "");
+  const unsigned long ms = (unsigned long)(millis() - t0);   // 起動時の Core1 を止めた時間（音の途切れの手がかり）
+  if (why) {
+    log_sdf("GNSS DBD file: none (%s, %lums)", why, ms);
+  } else {
+    const uint32_t days = h.utc / 86400UL, sod = h.utc % 86400UL;
+    // 1970-01-01 からの日数 → 年月日（Howard Hinnant の civil_from_days）
+    const int32_t z = (int32_t)days + 719468;
+    const int32_t era = z / 146097;
+    const uint32_t doe = (uint32_t)(z - era * 146097);
+    const uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const uint32_t mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    const int y = (int)yoe + era * 400 + (m <= 2);
+    log_sdf("GNSS DBD file: %u msgs %lu bytes, saved %04d-%02u-%02u %02lu:%02luZ (read %lums)",
+            h.count, (unsigned long)h.bytes, y, m, d,
+            (unsigned long)(sod / 3600), (unsigned long)((sod / 60) % 60), ms);
+  }
+#else
+  gnss_dbd_loaded_core1(false, nullptr, "disabled");
+#endif
+}
+
+void gnss_dbd_save_sd() {
+  ASSERT_SD_CORE1("gnss_dbd_save_sd");
+#if GNSS_DBD_ENABLE
+  const uint32_t t0 = millis();
+  GnssDbdHead h;
+  if (!gnss_dbd_head_for_save_core1(&h)) return;   // 頼まれていない
+  if (webserial_connected) { gnss_dbd_saved_core1(false, "PC connected", 0); return; }   // PC 接続中は SD を読み出し専用に保つ
+  if (!good_sd())          { gnss_dbd_saved_core1(false, "no SD", 0); return; }
+  const uint8_t* buf = gnss_dbd_buffer_core1();
+  char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+  pico_get_unique_board_id_string(id, sizeof(id));
+  strlcpy(h.board_id, id, sizeof(h.board_id));
+  h.data_crc = link_crc16(buf, (uint16_t)h.bytes);
+  h.head_crc = link_crc16((const uint8_t*)&h, offsetof(GnssDbdHead, head_crc));
+
+  FsFile f;
+  if (!f.open(GNSS_DBD_TMP_FILE, O_WRONLY | O_CREAT | O_TRUNC)) { gnss_dbd_saved_core1(false, "open", millis() - t0); return; }
+  bool ok = (f.write(&h, sizeof(h)) == sizeof(h));
+  for (uint32_t off = 0; ok && off < h.bytes; ) {
+    const uint32_t n = (h.bytes - off > 2048) ? 2048 : (h.bytes - off);
+    ok = (f.write(buf + off, n) == n);
+    off += n;
+    loop_sound();   // 音を途切れさせない
+  }
+  ok = f.close() && ok;
+  if (!ok) { SD.remove(GNSS_DBD_TMP_FILE); gnss_dbd_saved_core1(false, "write", millis() - t0); return; }
+  if (SD.exists(GNSS_DBD_FILE) && !SD.remove(GNSS_DBD_FILE)) { gnss_dbd_saved_core1(false, "remove old", millis() - t0); return; }
+  if (!SD.rename(GNSS_DBD_TMP_FILE, GNSS_DBD_FILE))           { gnss_dbd_saved_core1(false, "rename", millis() - t0); return; }
+  gnss_dbd_saved_core1(true, "", millis() - t0);
+#endif
+}
 
 Task createSerialListTask() {
   Task t;

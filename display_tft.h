@@ -148,7 +148,10 @@ bool is_northupmode();
 
 
 void draw_compass(float truetrack, uint16_t col);
-void draw_nomapdata();
+void draw_nomapdata();   // GNSS の状態の箱（push_backscreen() の最後から呼ぶ。空いている段を探して置く）
+// 最後に送った地図に通知の箱（警告・注意・充電ポップアップ・GNSS の状態）が出ていたか。
+// 地図を描いていない画面では false。自動減光（backlight.cpp）が見る。
+bool map_notice_shown();
 
 
 //mode draws

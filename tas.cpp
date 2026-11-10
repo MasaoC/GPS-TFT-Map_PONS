@@ -58,7 +58,9 @@ void tas_tick() {
   if (src == SRC_REPLAY) return;   // リプレイは記録された hdr をそのまま出す
   // ★ GNSS が無いあいだは数えない（対地速度 0 を「止まった」と読まない）。
   //   飛行中に測位が切れても地上の横線に戻さず、いまの状態を保つ。
-  if (get_gnss_numsat() == 0) { s_runOn = false; return; }
+  //   衛星数が分からないとき（ミラーを始めた直後で回転枠 3 をまだ受けていない）も同じ。
+  const int ns = get_gnss_numsat();
+  if (ns == 0 || ns == GNSS_NUMSAT_UNKNOWN) { s_runOn = false; return; }
 
   const float gs = (float)get_gnss_mps();
   // いまの状態から抜ける条件が成り立っているか

@@ -4,7 +4,7 @@
 // Role    : v7.1 の TFT バックライト。輝度スイッチと照度センサー（VEML7700）で
 //           PWM の点灯率を決める。電池低下のときは 2 段階で点滅させて電池をもたせる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/05
+// Updated : 2026/11/08
 // ============================================================
 //
 // ■ 決め方（値は settings.h の TFT_BL_* / BL_AUTO_* / BL_DIM_*。括弧は設定画面の表示名 = backlight_mode_label）
@@ -40,6 +40,7 @@
 #include "attitude.h"   // attitude_is_static()
 #include "power.h"     // usb_power_present(), power_sw_off_on_usb(), power_fault_active(), power_charge_hot_active(), power_overdischarge_latched()
 #include "link.h"      // link_mirror_active()
+#include "display_tft.h"  // map_notice_shown()（地図に通知の箱が出ている間は減光しない）
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"                 // 診断（log_pwm_diag）でピンを読む
@@ -451,6 +452,19 @@ static void dim_tick(uint32_t now) {
       update_duty(1.0f);
       return;
     }
+  }
+
+  // 2') 地図に通知の箱（GNSS 断線・無信号・送信前チェック・Scanning / Weak GNSS Signal など）が出ている間は
+  //     減光しない。減光中に出たらすぐ戻す（2026-11-08）。それまでは暗いまま箱が出て、音でしか気づけなかった。
+  //     判定は描画側の「いま箱を出したか」（display_tft.cpp の map_notice_shown）を読むだけで、条件を書き写さない。
+  if (map_notice_shown()) {
+    if (s_dimmed) {
+      s_dimmed = false;
+      enqueueTask(createLogSdTask("BACKLIGHT: wake (notice on map)"));
+      update_duty(1.0f);
+    }
+    s_dim_wait_t0 = now ? now : 1;
+    return;
   }
 
   // 3) システム前提条件（実機フライト待機中、USBなし、重大安全警告なし）

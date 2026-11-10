@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/10
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -386,11 +386,49 @@ extern unsigned long trackwarning_until;
 
 
 
+// ---- 地図に重ねる通知の箱が、いまのフレームで使っている縦の範囲 ----
+// ★ 箱は 1 フレームのうちに描く順番が決まっている（地図の上のコース警告 → push_backscreen() の通知 →
+//   最後に GNSS の状態の箱）。最後の GNSS の状態の箱（Scanning / Weak GNSS Signal）だけは、
+//   **空いている段を探して置く**（draw_nomapdata）。同時に出うる通知が多く、決まった段では
+//   どこかと必ず重なるため（2026-11-08。NORTHUP の 145.. は無信号・送信前チェック 148..、
+//   TRACKUP の 192.. は SW OFF・高温・電源の異常 190.. と重なっていた）。
+// ★ 点滅で消えている相のあいだも範囲は押さえる（notice_reserve を点滅の判定より先に呼ぶ）。
+//   押さえないと、GNSS の状態の箱が 1 秒ごとに段を行き来する。
+// ★ 一覧は push_backscreen() の最後（TFT へ送った直後）に空にする。
+// 地図に通知の箱が出ていたかは map_notice_shown() で読める（自動減光が見る。backlight.cpp）。
+#define NOTICE_RES_MAX 10
+static int16_t  s_res_y0[NOTICE_RES_MAX], s_res_y1[NOTICE_RES_MAX];
+static uint8_t  s_res_n          = 0;
+static uint8_t  s_notice_last_n  = 0;   // 最後に送った地図に出ていた箱の数
+static uint32_t s_notice_last_ms = 0;   // その地図を送った時刻
+
+static void notice_reserve(int y, int h) {
+  if (s_res_n >= NOTICE_RES_MAX) return;
+  s_res_y0[s_res_n] = (int16_t)y;
+  s_res_y1[s_res_n] = (int16_t)(y + h);
+  s_res_n++;
+}
+
+static bool notice_free(int y, int h) {
+  for (uint8_t i = 0; i < s_res_n; i++)
+    if (y < s_res_y1[i] && y + h > s_res_y0[i]) return false;
+  return true;
+}
+
+// 地図に通知の箱（警告・注意・充電ポップアップ・GNSS の状態）が出ているか。
+// ★ 地図を描いていない画面では古くなるので false にする（地図は 2Hz か 1050ms ごとに描き直す）。
+bool map_notice_shown() {
+  if (s_notice_last_n == 0) return false;
+  return millis() - s_notice_last_ms < 2UL * SCREEN_FRESH_INTERVAL + 500UL;
+}
+
 // コース逸脱警告ボックスを backscreen に描画する。
 // 1 秒おきに点滅（blink_1s）し、
 // steer_angle の符号で "Turn RIGHT" / "Turn LEFT" を切り替える。
 // 呼び出しはメインの draw ループから angle_diff > 15° のときに行われる。
 void draw_course_warning(float steer_angle){
+  // 点滅で消えている相も押さえる（GNSS の状態の箱がこの段を避けるように。notice_reserve の ★）
+  notice_reserve(is_trackupmode() ? (get_self_cy() + 12) : 175, 25);
   if(blink_1s()){
     // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
     int box_y = is_trackupmode() ? (get_self_cy() + 12) : 175;  // TRACKUP=192, NORTHUP=175
@@ -2900,6 +2938,7 @@ static bool banner_visible() { return (millis() / 1000) % 3 != 2; }
 // ★ 二重枠にしているのは、地図の線の上でも枠として読めるようにするため。
 // ★ 縦位置は settings.h の NOTICE_Y_*（同時に出ても重ならないよう並べてある）。
 static void begin_notice_box(int x, int y, int w, int h, uint16_t col) {
+  notice_reserve(y, h);
   backscreen.fillRect(x, y, w, h, COLOR_WHITE);
   backscreen.drawRect(x,     y,     w,     h,     col);
   backscreen.drawRect(x + 1, y + 1, w - 2, h - 2, col);
@@ -2927,6 +2966,7 @@ static void draw_notice_2lines(int y, uint16_t col, const char *l1, const char *
 //   返すのはミラー中だけ）。縦位置は settings.h の NOTICE_Y_* に並べてある。
 //   この段は送信前チェックと共用（受信モードと送信モードは排他）。
 static void draw_link_nosignal_box() {
+  notice_reserve(NOTICE_Y_LINK_STATE, 44);   // 点滅で消えている相も押さえる（上の notice_reserve の ★）
   if (!banner_visible()) return;
   draw_notice_2lines(NOTICE_Y_LINK_STATE, COLOR_RED, "RECEIVER MODE.", "NO SIGNAL.");
 }
@@ -3041,6 +3081,7 @@ static void draw_link_overlay() {
     //   一番たちの悪い壊れ方なので、地図上に出して気づけるようにする。
     else if (link_dest_mismatch()) {
       const int bx = 10, by = 200, bw = SCREEN_WIDTH - 20, bh = 22;
+      notice_reserve(by, bh);
       backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
       backscreen.drawRect(bx, by, bw, bh, COLOR_ORANGE);
       backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
@@ -3064,9 +3105,14 @@ static void draw_link_overlay() {
 //   ★ 音（gnss_conn_tick の下降 2 音）とログは止めない。自機の GNSS が死んだことを
 //     飛行中に知る手段がほかに無く、ボート自身の位置と received/ の own_lat/own_lon が
 //     止まるため。無信号へ落ちればこの箱も復活する（そのときは自機表示に戻るので）。
+// GNSS 断線の箱を出すか。警報ミュートの段の位置もこれで決める（同じ条件を 2 か所に書かない）。
+static bool gnss_disconnect_warning_shown() {
+  if (get_gnss_connection() || getReplayMode() || is_demo_active()) return false;
+  return !link_mirror_active();
+}
+
 static void draw_gnss_disconnect_warning() {
-  if (get_gnss_connection() || getReplayMode() || is_demo_active()) return;
-  if (link_mirror_active()) return;
+  if (!gnss_disconnect_warning_shown()) return;
   const int bx = 5, by = NOTICE_Y_GNSS_LOST, bw = SCREEN_WIDTH - 10, bh = 56;
   begin_notice_box(bx, by, bw, bh, COLOR_MAGENTA);
   backscreen.setTextSize(1);
@@ -3100,8 +3146,11 @@ static void draw_gnss_disconnect_warning() {
 // ★ 点滅させる（banner_visible）。情報表示なので地図を隠し続けない。
 static void draw_warn_mute_banner() {
   if (!warn_muted_off_mount()) return;
+  // 充電ポップアップの上。GNSS 断線の箱（44..99）と重なるときだけ元の段へ下ろす（settings.h の NOTICE_Y_WARN_MUTE）
+  const int by = gnss_disconnect_warning_shown() ? NOTICE_Y_WARN_MUTE_LOW : NOTICE_Y_WARN_MUTE;
+  const int bx = 5, bw = SCREEN_WIDTH - 10, bh = 40;
+  notice_reserve(by, bh);   // 点滅で消えている相も押さえる
   if (!banner_visible()) return;
-  const int bx = 5, by = NOTICE_Y_WARN_MUTE, bw = SCREEN_WIDTH - 10, bh = 40;
   begin_notice_box(bx, by, bw, bh, COLOR_RED);
   // フォントを明示する。ここはフレームの最後（push_backscreen）で走るので、
   // 直前の描画が unloadFont() 済みだと内蔵フォントで描かれてしまう。
@@ -3154,8 +3203,9 @@ static void draw_charge_hot_notice() {
 // ★ 白地なので COLOR_ORANGE は使わない（明るいオレンジはほぼ見えない）。
 static void draw_sw_off_notice() {
   if (!power_sw_off_notice_active()) return;
-  if (!banner_visible()) return;
   const int bx = 5, by = NOTICE_Y_CHG_SW_OFF, bw = SCREEN_WIDTH - 10, bh = 40;
+  notice_reserve(by, bh);   // 点滅で消えている相も押さえる
+  if (!banner_visible()) return;
   begin_notice_box(bx, by, bw, bh, COLOR_DARKORANGE);
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setCursor(12, by + 5);
@@ -3166,8 +3216,15 @@ static void draw_sw_off_notice() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// 充電の残り時間 [分] を「46m」「1h00」の形にする（充電ポップアップの 1 行目）。
+static void fmt_charge_min(char* buf, size_t n, int m) {
+  if (m < 0) m = 0;
+  if (m < 60) snprintf(buf, n, "%dm", m);
+  else        snprintf(buf, n, "%dh%02d", m / 60, m % 60);
+}
+
 // USB 充電中かつ地上静止中の充電ポップアップ（充電ダッシュボード）
-// メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、USB通電時間、RTCバックアップ目安を表示
+// メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、GNSS の速い測位がもつ時間（BT1 の残り）を表示
 static void draw_charge_popup() {
   if (screen_mode != MODE_MAP) return;
   if (!get_gnss_connection()) return; // GNSS 断線警告を最優先
@@ -3192,17 +3249,28 @@ static void draw_charge_popup() {
       snprintf(l1, sizeof(l1), "CHG: FULL (Main 100%%)");
     }
   } else {
-    snprintf(l1, sizeof(l1), "CHG %d%%  Rem:%dm (~%dm)", pct, rem_m, rem_90_m);
+    // 例: "CHG 71%  1h00 (max 1h33)"。括弧の中は 90% の確かさで終わっている時刻までの残り。
+    // ★ 2026-11-08 までは "CHG 5%  Rem:172m (~238m)"（212px）で、箱の内側（217px）に 5px しか余りが無かった。
+    //   いまの形の最長は "CHG 71%  1h00 (max 1h33)" の 201px。はみ出すときは括弧を落とす（下）。
+    char r[12], r90[12];
+    fmt_charge_min(r, sizeof(r), rem_m);
+    fmt_charge_min(r90, sizeof(r90), rem_90_m);
+    snprintf(l1, sizeof(l1), "CHG %d%%  %s (max %s)", pct, r, r90);
   }
 
-  // 2行目: USB 通電経過時間 と GNSS バックアップ電池(RTC)状態
-  const uint32_t elap_s = power_charging_elapsed_sec();
-  const uint32_t elap_h = elap_s / 3600UL;
-  const uint32_t elap_m = (elap_s % 3600UL) / 60UL;
-  char l2[40];
-  snprintf(l2, sizeof(l2), "USB: %luh%02lum  RTC: %s", (unsigned long)elap_h, (unsigned long)elap_m, power_rtc_backup_status_str());
+  // 2行目: GNSS のバックアップ電池（BT1）の残りを、何が起きるかの文で出す（rtc_backup_format）。
+  //   例: "Fast GPS if OFF < 1.5 days" … いま切っても 1.5 日以内に入れ直せば GPS がすぐ位置を出す。
+  // ★ 2026-11-10 までは "USB: 1h23m  RTC: ~1.5d" で、初めての人には RTC も d も何のことか分からなかった。
+  //   文にすると USB の通電時間と並べる幅が無いので、通電時間は外した（BT1 の推定は 11/08 から通電時間を使っていない）。
+  const char* l2 = power_rtc_backup_status_str();
 
   backscreen.loadFont(AA_FONT_SMALL);
+  // 箱の内側（二重枠の内側）に収まらないときは括弧の中を落とす。数字の桁が増えても枠を突き抜けない。
+  if (!is_full && backscreen.textWidth(l1) > bw - 8 - 3) {
+    char r[12];
+    fmt_charge_min(r, sizeof(r), rem_m);
+    snprintf(l1, sizeof(l1), "CHG %d%%  %s", pct, r);
+  }
   backscreen.setTextColor(box_col, COLOR_WHITE);
   backscreen.setCursor(bx + 8, by + 5);
   backscreen.print(l1);
@@ -3242,7 +3310,12 @@ void push_backscreen(){
   draw_charge_hot_notice();        // 電源経路の異常と同じ段（同時には出ない）
   draw_sw_off_notice();            // 同じ段（上の 2 つが出ている間は出ない）
   draw_charge_popup();             // USB 充電・地上静止時の充電ダッシュボードポップアップ
+  draw_nomapdata();                // GNSS の状態の箱。**最後に**描き、上の箱と重ならない段を探して置く
   backscreen.pushSprite(0, 50);
+  // 通知の箱の一覧を閉じる（map_notice_shown() 用に数だけ残す）。次のフレームは空から数える。
+  s_notice_last_n  = s_res_n;
+  s_notice_last_ms = millis();
+  s_res_n = 0;
   TIMING_END(ts_push_backscreen, push_bs);
 }
 
@@ -3580,7 +3653,10 @@ static void draw_header_tas(int x, TasHdr h, float mps) {
     }
   }
   header_footer.loadFont(NM_FONT_LARGE);
-  header_footer.setTextColor(COLOR_WHITE, box, true);
+  // ★ 背景を塗る指定（第 3 引数 true）にしないこと。箱はもう塗ってあるので要らないうえ、
+  //   header_footer はフッターと共用で、TFT_eSPI の setTextColor(色) は 1 引数だと「背景を塗る」を戻さない。
+  //   2026-11-07 に true にしていたら、フッターの文字（TC・km・10K INTO・目的地名）が全部ベタ塗りの箱になった。
+  header_footer.setTextColor(COLOR_WHITE, box);
   x += LABEL_W;
 
   long tenths = lroundf(mps * 10.0f);
@@ -3611,6 +3687,7 @@ static void draw_header_tas(int x, TasHdr h, float mps) {
     header_footer.fillRect(x, 20, lw, 8, box);
     header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
   }
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);   // 文字の色を既定へ戻す（上の ★）
 }
 
 // 大きい枠の数字（平均ピッチ・推定 TAS）を「読むな」と消す線。推定 TAS も平均ピッチの換算なので同じ条件。
@@ -3797,6 +3874,10 @@ static int draw_batt_part(int x, const char* s, uint16_t col, bool low) {
 // 右端: SD カード状態（緑=正常、赤=エラー）。
 //HEIGHT: 30px. The footer.
 void draw_footer(){
+  // ★ 先に 2 引数で色を決め直して「背景を塗る」の指定を消す。header_footer はヘッダーと共用で、
+  //   この下は 1 引数の setTextColor(色) で描いている。1 引数は TFT_eSPI の「背景を塗る」を戻さないので、
+  //   ヘッダーで true にしたまま来ると、文字が全部その色のベタ塗りの箱になる（2026-11-07 に推定 TAS で起きた）。
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.drawFastHLine(0,0,240,COLOR_BLACK);
@@ -3984,16 +4065,29 @@ void draw_footer(){
     }
   }
   // ====GNSS====
-  if (get_gnss_numsat() < 5) {
-    header_footer.setTextColor(COLOR_WHITE,COLOR_RED);
-    header_footer.fillRect(SCREEN_WIDTH-101,1, 44,15, COLOR_RED);
-  } else if (get_gnss_numsat() < 10) {
-    header_footer.setTextColor(COLOR_DARKORANGE);
-  }else{
-    header_footer.setTextColor(COLOR_GREEN);
+  // 0 個は赤地に白字と白地に赤字を交互に（FOOTER_SATS0_BLINK_MS）。1〜4 個は赤地に白字、9 個までは橙、10 個から緑。
+  // 分からないとき（リプレイで列が無い・ミラー中に回転枠 3 をまだ受けていない）は灰色の「--sats」。
+  {
+    const int ns = get_gnss_numsat();
+    const int sx = SCREEN_WIDTH - 101, sw = 44, sh = 15;
+    const bool red_box = (ns == 0) ? ((millis() / FOOTER_SATS0_BLINK_MS) % 2 == 0)
+                                   : (ns < 5);
+    if (ns == GNSS_NUMSAT_UNKNOWN) {
+      header_footer.setTextColor(COLOR_GRAY);
+    } else if (red_box) {
+      header_footer.fillRect(sx, 1, sw, sh, COLOR_RED);
+      header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
+    } else if (ns == 0) {
+      header_footer.setTextColor(COLOR_RED, COLOR_WHITE);   // 0 個の白地の相
+    } else if (ns < 10) {
+      header_footer.setTextColor(COLOR_DARKORANGE);
+    } else {
+      header_footer.setTextColor(COLOR_GREEN);
+    }
+    header_footer.setCursor(sx + 1, 1);
+    if (ns == GNSS_NUMSAT_UNKNOWN) header_footer.print("--sats");
+    else                           header_footer.printf("%dsats", ns);
   }
-  header_footer.setCursor(SCREEN_WIDTH-100,1);
-  header_footer.printf("%dsats", get_gnss_numsat());
 
   
 
@@ -4309,56 +4403,55 @@ void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, floa
 
 
 
-// GNSS 状態に応じたステータスメッセージを backscreen に表示する（地図データなし時のみ呼ばれる）。
+// GNSS 状態に応じたステータスの箱を backscreen に表示する（push_backscreen() の最後から呼ぶ）。
 // 優先順位:
 //   1. GNSS モジュール未接続 → 以降のフィックス表示はせず終了。
 //      警告自体は draw_gnss_disconnect_warning()（push_backscreen() 内）が最上位レイヤーで描く。
 //   2. GNSS 未フィックス → "Scanning GNSS..." + ドットアニメーション。
-//   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示。
+//   3. 衛星数 = 0 → "Weak GNSS Signal" + スキャン中表示（数が分からないとき＝GNSS_NUMSAT_UNKNOWN は出さない）。
+// ★ 位置は自機アイコンの下（TRACKUP は尾翼の下 192、NORTHUP は 145）。そこがほかの通知の箱と重なるときは、
+//   空いている段を上から探して置く（notice_free。2026-11-08 までは位置が固定で、無信号・送信前チェック・
+//   SW OFF・高温・電源の異常の箱と重なって半分隠れていた）。どこも空いていなければ既定の位置に描く。
+// ★ 2026-11-08 までは .ino が地図を描く途中で呼んでいた。ほかの箱より後に描かないと空きが分からないので、
+//   push_backscreen() の最後へ移した。
 void draw_nomapdata() {
+  if (!get_gnss_connection() && !getReplayMode() && !is_demo_active()) return;  // 未接続の警告は別の箱
 
-  if (get_gnss_connection()) {
-    //"GNSS Module connected."
-  } else {
-    if (!getReplayMode() && !is_demo_active()) {  // リプレイ中・デモ中は NO GNSS 警告を表示しない
-      return;
+  const bool scanning = !get_gnss_fix();
+  const bool weak     = !scanning && get_gnss_numsat() == 0 && !is_demo_active();
+  if (!scanning && !weak) return;
+
+  const int bx = 5, bw = SCREEN_WIDTH - 5 * 2, bh = 30 + 5 * 2;
+  int box_y = is_trackupmode() ? (get_self_cy() + 12) : 145;
+  if (!notice_free(box_y, bh)) {
+    static const int16_t kAlt[] = {192, 148, 104, 82, 40};   // 下から順に、自機アイコンにかかりにくい段
+    for (int16_t y : kAlt) {
+      if (notice_free(y, bh)) { box_y = y; break; }
     }
   }
+  notice_reserve(box_y, bh);
 
-  // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
-  int box_y  = is_trackupmode() ? (get_self_cy() + 12) : 145;  // TRACKUP=192, NORTHUP=145
-  int text_y1 = is_trackupmode() ? (box_y + 5)  : 150;          // TRACKUP=197, NORTHUP=150
-  int text_y2 = is_trackupmode() ? (box_y + 20) : 165;          // TRACKUP=212, NORTHUP=165
-
-  if (!get_gnss_fix()) {
-    backscreen.fillRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
-    backscreen.drawRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
-    backscreen.drawRect(6, box_y+1, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
-    backscreen.setCursor(42, text_y1);
-    backscreen.setTextColor(COLOR_ORANGE);
-    backscreen.loadFont(AA_FONT_SMALL);
+  backscreen.fillRect(bx, box_y, bw, bh, COLOR_WHITE);
+  backscreen.drawRect(bx, box_y, bw, bh, COLOR_RED);
+  backscreen.drawRect(bx + 1, box_y + 1, bw - 2, bh - 2, COLOR_RED);
+  backscreen.setTextSize(1);
+  backscreen.loadFont(AA_FONT_SMALL);   // 前に描いた箱が unloadFont() していることがあるので自分で読む
+  const int dotCount = (millis() / 900) % 10;
+  char text[28];
+  if (scanning) {
+    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    backscreen.setCursor(42, box_y + 5);
     backscreen.print("Scanning GNSS Signal");
-    char text[28];
-    int dotCount = (millis() / 900) % 10;
-    // Safely create the string with snprintf
     snprintf(text, sizeof(text), "Stand by for fix%.*s", dotCount, "..........");
-    backscreen.setCursor(45, text_y2);
-    backscreen.print(text);
-  }
-  else if (get_gnss_numsat() == 0 && !is_demo_active()) {
-    backscreen.fillRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_WHITE);
-    backscreen.drawRect(5, box_y, SCREEN_WIDTH-5*2, 30+5*2, COLOR_RED);
-    backscreen.drawRect(6, box_y+1, SCREEN_WIDTH-5*2-2, 30+5*2-2, COLOR_RED);
-    backscreen.setCursor(56, text_y1);
-    backscreen.setTextColor(COLOR_RED);
+  } else {
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    backscreen.setCursor(56, box_y + 5);
     backscreen.print("Weak GNSS Signal");
-    char text[28];
-    int dotCount = (millis() / 900) % 10;
-    // Safely create the string with snprintf
     snprintf(text, sizeof(text), "Scanning signal%.*s", dotCount, "..........");
-    backscreen.setCursor(45, text_y2);
-    backscreen.print(text);
   }
+  backscreen.setCursor(45, box_y + 20);
+  backscreen.print(text);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);   // 地図用の色へ戻す（このファイルの約束）
 }
 
 unsigned long lastdrawn_sddetail = 0;
