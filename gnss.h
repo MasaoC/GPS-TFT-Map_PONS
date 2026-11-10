@@ -73,6 +73,13 @@
   unsigned long get_gnss_nmea_time(int i);
   void gnss_setup();
   void gnss_loop(int id);
+  // UBX のフレームを 1 つ GNSS へ書く（チェックサムは付ける）。航法データベース（gnss_dbd.cpp）のポールと試験用。
+  // 書きかけの DBD のフレームがあれば先に書き切る（gnss_dbd_finish_tx）。
+  void gnss_ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len);
+  // 受信がうまくいっているかの数（gnss_dbd.cpp の "GNSS DBD IO" の行が前後の差を出す）。
+  uint32_t gnss_ubx_ck_errors();    // チェックサムが合わなかった UBX フレームの数（起動から）
+  uint32_t gnss_rx_overflows();     // 受信 FIFO があふれた回数（起動から）
+  int      gnss_rx_backlog_peak_take();   // gnss_loop() に入った時点の FIFO のたまりの最大 [B]。取ると 0 に戻る
   void try_enque_savecsv();
   
   bool gnss_new_location_arrived();
@@ -87,7 +94,14 @@
   //   まだ 1 バイトも来ていない間に発報する**（PONS Link の GNSS 断線ビットで踏んだ）。
   bool gnss_ever_connected();
   bool get_gnss_cfg_ok();  // 起動時 UBX 設定コマンドが全部 ACK されたか（起動画面の進捗表示用）
+  // 起動直後の NAV-PVT に有効な日時が入っていたか（GNSS のバックアップ電池 BT1 が時計を保っていた）。
+  bool gnss_rtc_alive_on_boot();
+  bool gnss_rtc_boot_checked();   // 起動後最初の NAV-PVT を見て、上の判定が決まったか
+  // 捕捉衛星数。分からないときは GNSS_NUMSAT_UNKNOWN（リプレイで CSV に列が無い・ミラー中に回転枠 3 をまだ受けていない）。
+  // ★ 0 は「衛星が 0 個」という本物の値。不明を 0 で返すと、受信を始めた直後の受信機が
+  //   機体は測位しているのに 0sats（赤の点滅・GS の赤線・Weak GNSS Signal）を出す（2026-11-07 に直した）。
   int get_gnss_numsat();
+  #define GNSS_NUMSAT_UNKNOWN 99
   double get_gnss_mps();
   double get_gnss_truetrack();
   uint32_t get_gnss_baudrate();  // GNSS シリアルの現在ボーレート

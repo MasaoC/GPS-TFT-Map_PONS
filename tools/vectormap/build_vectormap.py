@@ -30,6 +30,7 @@
 # 依存: shapely（--pbf は osmium、--land-shp は fiona/pyproj、Overpass は requests）
 # ============================================================
 import argparse
+import subprocess
 import hashlib
 import json
 import math
@@ -921,12 +922,34 @@ def emit_header(out_path, all_tiles, source_date, args, stats, variant="light"):
     return len(entries), len(blob)
 
 
+def default_data_dir(script_dir):
+    """地図の元データとキャッシュ（数 GB）を置くフォルダ。
+
+    ★ **スケッチのフォルダ（リポジトリ）の外に置く**（2026-11-07〜）。Arduino はビルドのたびに
+      スケッチのフォルダを丸ごとビルド先へコピーし（.json も含む）、中に Overpass の応答（1.4GB）が
+      あると、ビルド 1 回ごとに 1.4GB 写されてディスクを食っていた。
+    環境変数 PONS_VECTORMAP_DATA があればそこ。無ければ、どの worktree から動かしても同じ場所に
+    なるよう、本体のリポジトリ（.git のある所）の 1 つ上の pons_vectormap_data/。
+    """
+    env = os.environ.get("PONS_VECTORMAP_DATA")
+    if env:
+        return Path(env).expanduser().resolve()
+    try:
+        common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                cwd=str(script_dir), capture_output=True, text=True, check=True).stdout.strip()
+        return Path(common).resolve().parent.parent / "pons_vectormap_data"
+    except Exception:
+        return script_dir.parent.parent.parent / "pons_vectormap_data"
+
+
 def main():
+    script_dir = Path(__file__).resolve().parent
+    data_dir = default_data_dir(script_dir)
     ap = argparse.ArgumentParser(description="OSM から vectormap_data.cpp を生成する")
     ap.add_argument("--variant", choices=["light", "hires"], default="light",
                     help="light  = 既定の軽量版（FLASH 2MB でも入る。書き込みが速い）\n"
                          "hires = 16MB 版。settings.h の VECTORMAP_HIRES を有効にしたときだけ焼かれる")
-    ap.add_argument("--out", default="../../src/flashdata/vectormap_data.cpp",
+    ap.add_argument("--out", default=str(script_dir / "../../src/flashdata/vectormap_data.cpp"),
                     help="出力先。配列の「定義」なので .cpp にすること（.h だと\n"
                          "どこからも include されずリンクエラーになる）")
     ap.add_argument("--lods", default="0,1,2,3", help="生成する LOD（カンマ区切り）")
@@ -938,14 +961,15 @@ def main():
     ap.add_argument("--pbf", default=None,
                     help="Geofabrik の .osm.pbf。指定すると Overpass ではなくこちらを使う"
                          "（API 負荷なし・再現性あり。推奨）")
-    ap.add_argument("--pbf-scan-cache", default="./pbf_scan.pickle",
+    ap.add_argument("--pbf-scan-cache", default=str(data_dir / "pbf_scan.pickle"),
                     help="pbf 走査結果のキャッシュ先。閾値だけ変えて作り直すとき再走査を省ける")
-    ap.add_argument("--cache", default="./cache", help="Overpass 応答のキャッシュ先")
+    ap.add_argument("--cache", default=str(data_dir / "cache"), help="Overpass 応答のキャッシュ先（既定はスケッチの外。default_data_dir）")
     ap.add_argument("--max-pts", type=int, default=2048,
                     help="1 レコードの最大点数（vectormap.cpp の VM_MAX_PTS と揃える）")
     ap.add_argument("--source-date", default=None,
                     help="元データの日付。再現性のため記録する（既定: 本日）")
     args = ap.parse_args()
+    print(f"地図の元データとキャッシュの置き場所: {data_dir}（環境変数 PONS_VECTORMAP_DATA で変えられる）")
 
     # 16MB 版は段数が違う（4 → 5）。src/vectormap.h の VM_LOD_COUNT も
     # VECTORMAP_HIRES で 5 になるので、両者が食い違わないようにすること。
@@ -953,7 +977,7 @@ def main():
     if args.variant == "hires":
         LODS = _lods_hires()
         if args.out == ap.get_default("out"):
-            args.out = "../../src/flashdata/vectormap_data_hires.cpp"
+            args.out = str(script_dir / "../../src/flashdata/vectormap_data_hires.cpp")
         if args.lods == ap.get_default("lods"):
             args.lods = "0,1,2,3,4"     # 段が 1 つ増える
 

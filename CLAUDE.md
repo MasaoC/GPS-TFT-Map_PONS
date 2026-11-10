@@ -56,6 +56,10 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
   `imu.cpp` / `settings.h` を見ること。`IMU_BUS_SPI` はもう無い。
 - `VECTORMAP_HIRES` は先に `tools/vectormap/build_vectormap.py --variant hires` で
   データ生成が要る（未生成なら `#error` で止まる）。
+- **地図の元データとキャッシュ（数 GB）はスケッチのフォルダの外**、Arduino フォルダ直下の `pons_vectormap_data/` に置く
+  （`build_vectormap.py` の既定。2026-11-07〜）。**Arduino はビルドのたびにスケッチのフォルダを丸ごと（`.json` も）
+  ビルド先へコピーする**ので、`tools/` の中に Overpass の応答（1.4GB）を置くと、ビルド 1 回ごとに 1.4GB 写されて
+  ディスクが溢れる（実際に起きた）。`tools/` に大きな `.json` / `.md` / ソースの拡張子のファイルを置かないこと。
 - **音声は本体 FLASH に焼いてある。** 原本は [wav/](wav/)（SD ではない。0.982 で移した）。
   差し替えたら `python3 tools/gen_wav_flash.py` で
   [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) を作り直すこと。
@@ -186,8 +190,11 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   **目的地は番号ではなく `dest_id`（名前と座標の CRC16）で照合する**（`link_sender_dest_local()`）。番号で合わせると、
   3 台の destinations.csv やパイロンの上書きが違うとき**黙って別の場所**に合う。`dest_id` の 0 は「送っていない」。
   アッパーバンド（CH15 / 21 / 27）は休止の決まりに合わせて送る間隔を延ばし、SF11 は使わない（docs/pons_link.md §2）。
-- **PONS Link は下り一方向で、上りの通信路そのものを持たない。**
-  大会レギュレーション上の要件なので、この非対称性を壊さない。
+- **PONS Link はいまは下り一方向（ボートから機体へ送るものは無い）。大会のルールは「上りの通信路で操縦しない
+  （ラジコン禁止）」で、上りの通信そのものは禁止されていない**（2026-11-08 訂正。以前ここに「上りの通信路を持たないのが
+  レギュレーション上の要件」と書いていたのは誤り）。上りを足すとき（構想中の GNSS の TTFF のアシストなど）も、
+  **機体の操作・設定・表示・航法を上りから変えられる経路は作らない**こと、**下りのテレメトリ（PONS の本来の役割）に
+  影響させない**こと。
 - **`.ino` の初期化順のコメントは消さない。** `core1_separate_stack` /
   `mutex_init` の位置 / `setup1()` 内の `Serial.println("")` は、
   どれも消すと動かなくなる理由が書いてある。
@@ -231,6 +238,11 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （落とすと最初の 1 バイトが化け、画面が「Module NO RESPONSE」になる）/
   **状態レジスタは Strict Mode でしか読めない**（`0x09` bit6 は不揮発。ver.1 互換の
   `C0 C1 C2 C3 00 02` は**使ってはいけない** — 返事が無く、代わりに**電波が出る**）。
+- **GNSS の UART へ書く前に `gnss_dbd_finish_tx()` を呼ぶ。** SD に置いた航法データベース（gnss_dbd.cpp）は、
+  Core0 を待たせないようにフレームを UART の送信 FIFO が空いた分だけ少しずつ書いている。書きかけのところへ別のコマンドを
+  書くと、**両方とも GNSS に黙って捨てられる**。gnss.cpp の `ubx_send_packet()`（`gnss_ubx_send()`）と NAV-SAT のレート切替、
+  .ino のデバッグ中継は呼んである。GNSS へ書く口を足すときはここを通すこと。
+  また吸い出しは UART を数秒埋めて NAV-PVT を遅らせるので、**止まっているときだけ**にしてある（`GNSS_DBD_STILL_MS`）。外さないこと。
 - **GNSS へ BBR 層で書いた設定は、BT1 が生きている限りファームを書き替えても残る。**
   いま BBR に書いているのは `CFG-ANA-USE_ANA`（AssistNow Autonomous）だけ。やめるときは
   送るのをやめるのではなく「無効」を書き込むこと（`GNSS_USE_ANA` を 0 にしても OFF を送るのはそのため）。
@@ -294,6 +306,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告 |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
+| [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1）。**v7 と v7.1 で同じファイル** |
+| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS`。SD の読み書きは mysd.cpp・Core1。**v7 と v7.1 で同じファイル** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。PONSv7.1 と並びを同じに保つ |
 | [tas.cpp](tas.cpp) | 推定 TAS の表示の判断（2026-11-07）。ヘッダー右の大きい枠に何を出すか（真方位 / 平均ピッチ / 推定 TAS / 地上の横線つき TAS）を、設定・地上と飛行中・**表示の供給元 4 つ**から 1 か所で決める。描画は `tas_header()` を読むだけ。仕様は [docs/pons_tas.md](docs/pons_tas.md) |
