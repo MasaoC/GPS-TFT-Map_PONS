@@ -13,7 +13,7 @@
 #include "../mysd.h"
 #include "../gnss.h"
 #include "../attitude.h"
-#include "../imu.h"      // get_imu_ok(): IMU 非搭載機の判定
+#include "../imu.h"      // IMU の状態
 #include "../link.h"     // PONS Link（機体⇄ボート無線）
 #include "../backlight.h" // AUTO Brightness（Eco / Bright）
 

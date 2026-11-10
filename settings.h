@@ -804,6 +804,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   （実機 2026-10-14 で踏んだ。CRC では検出できない）。ドライバは ASIC_ID が
 //   0x0000/0xFFFF 以外になるまで待つ。実測はコールド 1ms / 再初期化 0ms。
 #define SCH16T_READY_TIMEOUT_MS  1000
+// 上の待ちのうち、**CRC の合うフレームが 1 つも来ない**ならこの時間で見切る [ms]（2026-11-10〜）。
+// 居るチップはリセット直後から CRC の合うフレーム（データは 0）を返す（tools/sch16t_test/README.md の実測）。
+// 合わないのは居ない・MISO が来ないとき。見切らないと、飛行中に黙った SCH16T の 60 秒ごとの復旧
+// （try_recovery）が毎回 1000ms まで回り、**Core0 が 1 分ごとに約 1 秒止まっていた**（地図・警報・気圧・無線）。
+// 起動時に FPC が外れているときも、2 回の試行がそれぞれ約 1 秒短くなる。
+#define SCH16T_READY_NOFRAME_MS    50
 // 生ログ（src/imulog.h）へ落とすときの間引き。**1 = 全サンプル。**
 // ★★ **読み出しレートをそのまま記録すると SD の予算を超える。**
 //   250Hz でジャイロと加速度の 2 本を押すと 500 レコード/秒 = 14kB/s で、
@@ -856,9 +862,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //           ＋ GNSS 2 ＋ 気圧 4）× 28B ≒ 3.7kB/s（30 分飛行で約 6.6MB）。
 #define IMULOG_DEFAULT_ENABLED  true  // ビルド時固定（実行時・SD からの切替手段は無い）
 
-// ジャイロのサンプル周期 [Hz]。attitude.cpp がサンプル間隔の初期値と、測った間隔の
-// 妥当性の範囲（0.2〜5 倍）に使う。SCH16T では 250Hz（4ms）。
-// 250Hz に合わせることで、許容範囲は 0.8ms〜20ms となり、ジッターに対する十分なマージンを確保。
+// ジャイロのサンプル周期 [Hz]。SCH16T では 250Hz（4ms）。1 サンプルあたりのゲイン
+// （ESKF_RELEVEL_GAIN）とゼロ点学習のサンプル数（ESKF_BIAS_LEARN_SAMPLES）の換算に使う。
+// ★ ESKF の伝播の dt には使わない。dt は実際のサンプル間隔（attitude.cpp の「サンプル間隔」）。
 #define IMU_RATE_GYRO_HZ    250
 
 // 読み出し周期 [µs]。4ms（250Hz）。

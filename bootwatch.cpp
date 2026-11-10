@@ -374,7 +374,7 @@ void bootwatch_report_core1(volatile bool* ready) {
           (unsigned)stage, stage_name(stage), (unsigned long)stuck,
           irq ? "alive" : "dead", faulted ? "yes" : "none");
   if (faulted) {
-    // log_sd() は「<秒>:」を含めて 128 バイトで切るので 2 行に分ける。
+    // 2 行に分けてある（log_sd() が 128 バイトで切っていたころの名残。いまは本文 256 バイトまで入る）。
     const BwFault& f = s_fault[0];
     log_sdf("BOOT WATCH fault: core=%lu pc=0x%08lx lr=0x%08lx xpsr=0x%08lx exc=0x%08lx",
             (unsigned long)f.core, (unsigned long)f.pc, (unsigned long)f.lr,

@@ -1194,7 +1194,8 @@
         wspd: header.indexOf('wind_mps'),
         wdir: header.indexOf('wind_dir'),
         beta: header.indexOf('beta_air') >= 0 ? header.indexOf('beta_air') : (header.indexOf('beta') >= 0 ? header.indexOf('beta') : (header.indexOf('est_beta') >= 0 ? header.indexOf('est_beta') : -1)),
-        tas: header.indexOf('tas') >= 0 ? header.indexOf('tas') : -1,
+        // ファームの列名は tas_mps（mysd.cpp）。header は配列なので indexOf は完全一致で、'tas' では見つからない。
+        tas: header.indexOf('tas_mps') >= 0 ? header.indexOf('tas_mps') : header.indexOf('tas'),
         time: header.indexOf('time'),
         date: header.indexOf('date'),
         volt: header.indexOf('voltage'),
@@ -1302,6 +1303,10 @@
 
       // 相対時刻でソート
       flightData.sort((a, b) => a.t - b.t);
+      // ★ 先頭を 0 にそろえる。時刻は 1 行目からの差なので、1 行目より前の時刻の行があると t が負になり、
+      //   シークバーと長さ（最後の t）がその分ずれていた。
+      const tMin = flightData[0].t;
+      if (tMin !== 0) for (const d of flightData) d.t -= tMin;
       totalDurationSec = flightData[flightData.length - 1].t;
 
       // 横滑り角 (Est.Beta) の自動推定
@@ -1338,14 +1343,16 @@
 
       // 離陸・着水の自動検出 (G/S > 3.0 m/s の区間)
       let firstFlyIdx = flightData.findIndex(d => d.gs > 3.0);
-      let lastFlyIdx = flightData.findLastIndex ? flightData.findLastIndex(d => d.gs > 2.0) : flightData.length - 1;
+      // findLastIndex が無いブラウザでも同じ結果にする（以前は代わりに最後の行を使い、着水がいつもファイルの終わりだった）
+      let lastFlyIdx = -1;
+      for (let k = flightData.length - 1; k >= 0; k--) { if (flightData[k].gs > 2.0) { lastFlyIdx = k; break; } }
       takeoffSec = firstFlyIdx >= 0 ? flightData[firstFlyIdx].t : 0;
       landSec = lastFlyIdx >= 0 ? flightData[lastFlyIdx].t : totalDurationSec;
 
       const typeTag = isReceivedLog
         ? '<span class="badge" style="background:#ea580c; margin-left:8px;">📡 ボート受信ログ (LoRa)</span>'
         : '<span class="badge" style="background:#0284c7; margin-left:8px;">✈️ 自機フライトログ</span>';
-      document.getElementById('flight-title').innerHTML = `${filename} <span style="font-size:0.85rem; font-weight:normal; color:var(--text-sub);">(${formatTime(totalDurationSec)})</span> ${typeTag}`;
+      document.getElementById('flight-title').innerHTML = `${escapeHtml(filename)} <span style="font-size:0.85rem; font-weight:normal; color:var(--text-sub);">(${formatTime(totalDurationSec)})</span> ${typeTag}`;
       const flightOnly = document.getElementById('check-flight-only')?.checked;
       currentTimeSec = flightOnly ? (takeoffSec > 0 ? takeoffSec : getFirstFlightTime()) : 0;
 
@@ -2565,8 +2572,12 @@
 
     async function connectWebSerial() {
       if (serialPort && serialPort.readable) {
-        // すでに接続中ならモーダルを開く
+        // すでに接続中ならモーダルを開く。
+        // ★ PING はモーダルが開いている間だけ送る（startSerialPing）ので、閉じて 60 秒経つと本体は
+        //   PC 接続の画面を抜けて地図へ戻っている（リプレイを見ている間は本体を通常に戻す、意図した作り）。
+        //   一覧を取り直し、本体が戻っていれば PONS:ERROR,NOT_CONNECTED → 自動で CONNECT し直す（handleSerialLine）。
         openSerialModal();
+        if (!isDataStreaming) requestFileList();
         return;
       }
 
@@ -2644,7 +2655,8 @@
         badge.textContent = '接続完了';
         text.textContent = 'PONS本体と通信確立中 (SD保護モード有効)';
         verText.textContent = `${info.board || 'PONS v7.1'} (FW: ${info.version || '--'}, Build: ${info.build || '--'})`;
-        headerBtn.textContent = '🔌 PONS切断';
+        // ★ 押すと転送のダイアログを開く（切断はダイアログの中の「🔌 切断」）。「切断」と書くと押しても切れない。
+        headerBtn.textContent = '🔌 PONS接続中 (ファイル一覧)';
         headerBtn.style.borderColor = 'var(--accent-red)';
       } else if (state === 'connecting') {
         badge.style.background = '#fef3c7';
@@ -2686,16 +2698,27 @@
         const sizeKb = Math.round(item.size / 1024) + ' KB';
         return `
           <tr>
-            <td style="font-family:var(--font-mono); font-weight:bold;">${item.path}</td>
+            <td style="font-family:var(--font-mono); font-weight:bold;">${escapeHtml(item.path)}</td>
             <td>${typeBadge}</td>
             <td style="font-family:var(--font-mono);">${sizeKb}</td>
             <td style="font-family:var(--font-mono); font-size:0.8rem; color:#64748b;">${item.date}</td>
             <td>
-              <button class="btn-download" onclick="downloadPonsFile('${item.path}', ${item.size})">開く</button>
+              <button class="btn-download" onclick="downloadPonsFileIdx(${idx})">開く</button>
             </td>
           </tr>
         `;
       }).join('');
+    }
+
+    // HTML に文字列を埋め込むときのエスケープ（ファイル名に < & ' などが入っていても壊れないように）
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    // 一覧の「開く」。★ パスを onclick の文字列に埋め込まない（FAT のファイル名には ' が使え、埋め込むと JavaScript が壊れる）
+    function downloadPonsFileIdx(idx) {
+      const it = ponsFileList[idx];
+      if (it) downloadPonsFile(it.path, it.size);
     }
 
     async function downloadPonsFile(filename, size) {
@@ -2755,6 +2778,24 @@
       // バッファ末尾付近（直前に追加された可能性がある領域）のみを走査（終わりの印は必ず末尾に来るため高速走査）
       const searchStart = Math.max(0, dataBuffer.length - 256);
       const endIdx = dataBuffer.indexOf("PONS:DATA_END,", searchStart);
+
+      // ★ 本体が転送の途中でやめた（PONS:CANCEL_OK / PONS:ERROR,...）。ストリーミング中は全部 dataBuffer に入るので、
+      //   ここで拾わないと isDataStreaming が戻らず、以降のダウンロードと PING が止まったままになる。
+      if (endIdx === -1) {
+        const idxs = [dataBuffer.indexOf("PONS:CANCEL_OK", searchStart),
+                      dataBuffer.indexOf("PONS:ERROR,", searchStart)].filter(i => i !== -1);
+        if (idxs.length > 0) {
+          const rest = dataBuffer.substring(Math.min(...idxs));
+          const nl = rest.indexOf('\n');
+          if (nl === -1) return;   // 行がまだ揃っていない
+          isDataStreaming = false;
+          dataBuffer = "";
+          document.getElementById('serial-progress-box').style.display = 'none';
+          lineBuffer = rest.substring(nl + 1);
+          handleSerialLine(rest.substring(0, nl).replace(/\r$/, '').trim());
+          return;
+        }
+      }
 
       if (endIdx !== -1) {
         const endPart = dataBuffer.substring(endIdx);

@@ -235,7 +235,9 @@ data['Baro_Alt'] = _baro
 # 琵琶湖面(B.S.L.)基準に直すため、T.P.での湖面標高を引く。
 # 値は settings.h の ELEVATION_GEOID_OFFSET_M と同じものを使う
 BSL_OFFSET_M = 84.371
-_gnss_raw = data['Altitude'].to_numpy()
+# 列名は v0.923 以前が Altitude、それ以降が GNSS_Altitude（ファームのリプレイも両方を受け付ける）
+_gnss_col = 'GNSS_Altitude' if 'GNSS_Altitude' in data.columns else 'Altitude'
+_gnss_raw = data[_gnss_col].to_numpy()
 data['GNSS_Alt'] = _gnss_raw - BSL_OFFSET_M
 print(f"生の高度の基準: 気圧{_p_ref:.2f}hPa(着水時)、GNSSはB.S.L.({BSL_OFFSET_M:.3f}m)基準")
 
@@ -371,14 +373,18 @@ betada['time_seconds'] = betada['time'].apply(lambda x: time_to_seconds(x, start
 # システムログ(log.txt)の解析 --------------------------------
 # 各行は「起動後秒数:メッセージ」形式。GPS TIME行(UTC)を+9時間でJSTに変換し、
 # 起動後秒数→動画基準の秒数へ対応付ける。
-# ファイル先頭に再起動前のログが残っていることがあるため、"0:SD INIT"を見たら読み直す
+# ファイル先頭に再起動前のログが残っていることがあるため、起動直後の"N:SD INIT"を見たら読み直す
 log_volt_rows = []   # (起動後秒数, 電圧V, CPU温度C)
 log_acc_rows = []    # (起動後秒数, hAcc, vAcc, sAcc, sats)
 log_anchor_sec = None    # GPS TIME行の起動後秒数
 log_anchor_jst = None    # その時点のJST時刻(0時からの秒数)
 with open(LOG_FILENAME) as f:
     for line in f:
-        if line.startswith('0:SD INIT'):
+        # 起動して SD を開いた行（SD の初期化に 1 秒以上かかると "1:SD INIT" になる）。
+        # ★ 秒数は見ること。ファームは飛行中に SD を掴み直したとき（try_sd_recovery）も SD INIT を書くので、
+        #   それで読み直すと途中までのデータを捨ててしまう。起動直後（10 秒未満）だけを再起動とみなす。
+        m_sd = re.match(r'(\d+):SD INIT', line)
+        if m_sd and int(m_sd.group(1)) < 10:
             log_volt_rows.clear()
             log_acc_rows.clear()
             log_anchor_sec = None
@@ -689,8 +695,9 @@ fig.text(0.02, 0.040, f"Alt datum:  GNSS = B.S.L. {BSL_OFFSET_M:.2f}m (T.P.)    
 # Function to convert seconds back to time string
 # 秒は小数点2桁まで表示する(フレーム間隔0.25秒に対応)
 def seconds_to_time(seconds, start_time_str):
-    start_h, start_m, start_s = map(int, start_time_str.split(':'))
-    total_seconds = seconds + (start_h * 3600 + start_m * 60 + start_s)
+    start_h, start_m, start_s = start_time_str.split(':')
+    # 秒は小数でもよい（time_to_seconds と同じ読み方）
+    total_seconds = seconds + (int(start_h) * 3600 + int(start_m) * 60 + float(start_s))
     h = int(total_seconds // 3600)
     m = int((total_seconds % 3600) // 60)
     s = total_seconds % 60

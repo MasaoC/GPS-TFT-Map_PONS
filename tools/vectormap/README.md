@@ -53,7 +53,7 @@ LOD の閾値や収録範囲を変えて作り直すのに元データは要ら�
 |---|---|---|
 | `pons_vectormap_data/pbf_scan.pickle`（137MB） | 水面・高速・幹線・鉄道の全国分 | `japan-*.osm.pbf`（2.5GB）|
 | `pons_vectormap_data/cache/land_*.pickle` | 海岸線を bbox で切り出したもの | land polygons shp（1.3GB / 23MB）|
-| `pons_vectormap_data/cache/c*_*.json` | Overpass の応答（`--pbf` を使うなら不要）| — |
+| `pons_vectormap_data/cache/c*_*.json` | Overpass の応答。**公園・建物・街路は `--pbf` を使ってもここから取る**（pbf の走査で取るのは水面・高速・幹線・鉄道だけ。2026-11-10 まではこの 3 つが黙って 0 件になっていた）| — |
 
 `--pbf` を省いても `pbf_scan.pickle` があればそちらを使う。
 海岸線も同様に、キャッシュがあれば `--land-shp*` の指定は要らない。
@@ -113,6 +113,9 @@ python3 build_vectormap.py --variant hires \
 
 pbf の走査に 10〜15 分かかるが、結果は `pbf_scan.pickle` にキャッシュされるので、
 しきい値や収録範囲だけ変えて作り直すときは数分で終わる。
+
+★ `--lods` で一部の LOD だけ作ると、**ほかの LOD は空のまま `--out` に書く**（その縮尺では地図が出ない）。
+試作で本番の `vectormap_data.cpp` を上書きしたときに気づけるよう、足りない LOD を警告として出す。本番用は全 LOD で作ること。
 
 `--pbf` を省くと Overpass API から取得する（追加インストールが少なくて済むが、
 広い範囲では時間がかかり公開サーバへの負荷も大きい。小範囲の試作向け）。

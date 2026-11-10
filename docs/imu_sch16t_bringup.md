@@ -74,9 +74,9 @@ R1（EXTRESN のプルアップ）は実装する。詳細は
 | 出る行 | 意味 |
 |---|---|
 | `[IMU] SCH16T-K01 ready. chip responded in N ms` | **成功。** N が実際の立ち上がり時間 |
-| `[IMU] SCH16T: ASIC_ID unreadable (check J6 wiring / SPI1 pins)` | 配線か SPI1 のピン |
+| `[IMU] SCH16T: ASIC_ID unreadable (check J6 wiring / SPI1 pins)` | 配線か SPI1 のピン。CRC の合うフレームが 50ms 来なければ居ないと見切る（`SCH16T_READY_NOFRAME_MS`。2026-11-10〜。それまでは毎回 1 秒待っていた） |
 | `[IMU] SCH16T COMP_ID 0x.... != K01 0x0023`（log.txt） | 別品種。感度が違うので使わない |
-| `[IMU] SCH16T verify NG dyn=.. filt=.. STAT_SUM=0x....`（log.txt） | 設定が入っていない |
+| `[IMU] SCH16T verify NG crc=.. dyn=.. filt=.. STAT_SUM=0x....`（log.txt） | 設定が入っていない。`crc=0` は確認の読み出しが化けた（2026-11-10 に CRC の確認を足した） |
 | `[IMU] SCH16T init retry` | 1 回目が失敗して 2 回目を試した |
 | `[IMU] SCH16T pins are UNSET — check settings.h` | `settings.h` の `SCH16T_PIN_*` が UNSET になっている |
 
@@ -107,11 +107,14 @@ Pico 2 + `tools/sch16t_test` で `z` → `t` → `i` → `r` を通せば、
 `Accel raw`）を読み、違っていたら差し替える（2026-11-03 に測って、v7 と同じ向きだった。§4）。違ったままだと**ロールとピッチが入れ替わったり
 符号が逆になったりする**。差し替えたら `tools/imulog/decode_imulog.py` の `MOUNT_Q` も同じ値にする（PC 側の解析が同じ変換を使うため）。
 
-★★ **ESKF のサンプル間隔と時定数を確かめる。** SCH16T はジャイロを 250Hz（4ms）で渡すが、
-`attitude.cpp` の間隔推定の範囲と ESKF の「1 サンプルあたり」のゲイン（`ESKF_RELEVEL_GAIN` など）は
-50Hz（`IMU_RATE_GYRO_HZ`）を前提にしている。4ms は間隔推定の範囲（0.2〜5 倍＝4〜100ms）の
-**下限ちょうど**で、外れると間隔は初期値の 20ms のままになり、回転を 5 倍に積分する恐れがある。
+★★ **ESKF のサンプル間隔と時定数を確かめる。** SCH16T はジャイロを 250Hz（4ms）で渡す。
+ESKF の伝播の dt は**直前のサンプルとの実際の時間差**（2026-11-10〜。0 以下と 0.5 秒超の途絶明けは伝播しない。
+`tools/imulog/eskf.py` と同じ）で、「1 サンプルあたり」のゲイン（`ESKF_RELEVEL_GAIN` など）は
+`IMU_RATE_GYRO_HZ` = 250 で換算してある。それまでは BNO085 のまとめ届き向けの 64 サンプルの平均間隔を使っていて、
+Core0 が止まった直後の回転を約 4.6ms ぶんしか積まず、続く 0.25 秒へ薄めていた。
 机の上で本体を 90 度回して ESKF の角度が 90 度動くか、静止中の再水平化が 1 秒前後で効くかを見る。
+60 秒ログの `gapmax=` が数十 ms あるときは、その間の回転を最後のサンプルの角速度で埋めているので、
+旋回に入る瞬間に姿勢が遅れないかも見る。
 
 ### ★★ 250Hz が本当に出るか — ここが Step 3 の本題
 

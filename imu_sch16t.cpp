@@ -210,14 +210,19 @@ static uint16_t build_filt(uint8_t sel) {
 // 戻り値: 待った時間 [ms]。-1 = タイムアウト。
 static int32_t wait_chip_ready(uint32_t timeout_ms) {
     const uint32_t t0 = millis();
+    bool any_frame = false;     // CRC の合うフレームが 1 つでも来たか（= チップは SPI の上に居る）
     for (;;) {
         const uint64_t f = reg_read(REG_ASIC_ID);
         const uint16_t v = frame_data_u16(f);
-        // ★ 待っている間の CRC/CE 不一致は**当然**なので健全性カウンタへ入れない。
+        // ★ 待っている間の CRC/CE 不一致は健全性カウンタへ入れない（居ないチップを数えても意味が無い）。
         const uint32_t crc0 = s_crc_err, ce0 = s_ce_err;
         const bool ok = frame_integrity_ok(f);
         s_crc_err = crc0; s_ce_err = ce0;
+        if (ok) any_frame = true;
         if (ok && v != 0x0000 && v != 0xFFFF) return (int32_t)(millis() - t0);
+        // ★ 居ないチップは早く見切る（settings.h の SCH16T_READY_NOFRAME_MS）。居るチップの NVM 待ちは
+        //   CRC の合うフレームが来ているので、ここでは切らずに timeout_ms まで待つ。
+        if (!any_frame && millis() - t0 >= SCH16T_READY_NOFRAME_MS) return -1;
         if (millis() - t0 >= timeout_ms) return -1;
         delay(2);
     }
@@ -228,13 +233,18 @@ static int32_t wait_chip_ready(uint32_t timeout_ms) {
 //   リセット値 0x200C。実機で確認済み）を潰す。データシートが
 //   "This option is not supported by Murata" と書いている側の設定になる。
 //   **PX4 のドライバはこれを踏んでいる**ので、あちらを参考にするときは注意。
+// ★ 読んだフレームの CRC を確かめてから書き戻す。化けた値を元にすると、化けたビットを書き込み、
+//   読み返しも同じ値なので「通った」ことになる（2026-11-10 まで確かめていなかった）。
 static bool set_dry(bool enable) {
-    const uint16_t before = frame_data_u16(reg_read(REG_CTRL_USER_IF));
+    const uint64_t fb = reg_read(REG_CTRL_USER_IF);
+    if (!frame_integrity_ok(fb)) return false;
+    const uint16_t before = frame_data_u16(fb);
     uint16_t v = before;
     if (enable) v |= BIT_DRY_DRV_EN; else v &= (uint16_t)~BIT_DRY_DRV_EN;
     v &= (uint16_t)~BIT_DRY_POL_LOW;      // high active
     reg_write(REG_CTRL_USER_IF, v);
-    return frame_data_u16(reg_read(REG_CTRL_USER_IF)) == v;
+    const uint64_t fa = reg_read(REG_CTRL_USER_IF);
+    return frame_integrity_ok(fa) && frame_data_u16(fa) == v;
 }
 
 // 初期化シーケンス（データシート §5.2 と Murata の C コード例に合わせた形）。
@@ -312,21 +322,28 @@ static bool sch_init() {
     // ★ **DYN は「書いた値」ではなく「読み返したビット」で確かめる。**
     //   スケーリングに使う SCH16T_LSB_PER_* が、いま本当にチップに入っている
     //   レンジ設定と対応しているかを見る唯一の経路。
-    const uint16_t cr = frame_data_u16(reg_read(REG_CTRL_RATE));
-    const uint16_t ca = frame_data_u16(reg_read(REG_CTRL_ACC12));
+    // ★ どの読み出しも CRC を確かめる（MISO が High に張り付くと STAT_SUM が 0xFFFF＝正常に見える）。
+    const uint64_t fcr = reg_read(REG_CTRL_RATE);
+    const uint64_t fca = reg_read(REG_CTRL_ACC12);
+    const uint64_t ffi = reg_read(REG_CTRL_FILT_RATE);
+    const uint64_t fsu = reg_read(REG_STAT_SUM);
+    const bool frames_ok = frame_integrity_ok(fcr) & frame_integrity_ok(fca) &
+                           frame_integrity_ok(ffi) & frame_integrity_ok(fsu);   // 短絡させない（数えるため）
+    const uint16_t cr = frame_data_u16(fcr);
+    const uint16_t ca = frame_data_u16(fca);
     const bool dyn_ok = (((cr >> 12) & 7) == (SCH16T_RATE_DYN_SEL & 7)) &&
                         (((cr >>  9) & 7) == (SCH16T_RATE_DYN_SEL & 7)) &&
                         (((ca >> 12) & 7) == (SCH16T_ACC12_DYN_SEL & 7)) &&
                         (((ca >>  9) & 7) == (SCH16T_ACC12_DYN_SEL & 7));
-    const uint16_t filt = frame_data_u16(reg_read(REG_CTRL_FILT_RATE));
+    const uint16_t filt = frame_data_u16(ffi);
     const bool filt_ok = (filt == build_filt(SCH16T_FILT_SEL));
-    const uint16_t sum = frame_data_u16(reg_read(REG_STAT_SUM));
+    const uint16_t sum = frame_data_u16(fsu);
     const bool stat_ok = (sum == 0xFFFF);
     if (!stat_ok) s_stat_bad++;
 
-    if (!(dyn_ok && filt_ok && stat_ok)) {
-        enqueueTask(createLogSdfTask("[IMU] SCH16T verify NG dyn=%d filt=%d STAT_SUM=0x%04X",
-                                     (int)dyn_ok, (int)filt_ok, (unsigned)sum));
+    if (!(frames_ok && dyn_ok && filt_ok && stat_ok)) {
+        enqueueTask(createLogSdfTask("[IMU] SCH16T verify NG crc=%d dyn=%d filt=%d STAT_SUM=0x%04X",
+                                     (int)frames_ok, (int)dyn_ok, (int)filt_ok, (unsigned)sum));
         DEBUGW_PLN(20261014, "[IMU] SCH16T init verify failed (detail in log.txt)");
         return false;
     }
@@ -403,10 +420,14 @@ static bool read_sample() {
     static uint8_t log_skip = 0;
     const bool do_log = (++log_skip >= SCH16T_IMULOG_DECIM);
     if (do_log) log_skip = 0;
+    // ★ **加速度を先に渡す。** ESKF の伝播はジャイロの到着で回り、そのとき手元の加速度（accel_last_）を使う。
+    //   ジャイロを先に渡すと同じ時刻に読んだ加速度ではなく **1 サンプル前（4ms 前）** の加速度で伝播し、
+    //   起動して最初のサンプルは静止の積算から漏れ、復旧直後の 1 サンプルは途絶える前の加速度を使っていた
+    //   （2026-11-10 まで）。tools/imulog/eskf.py と tools/attitude_test も同じサンプルの組で回している。
     if (do_log) imulog_push(IMULOG_ID_GYRO,  t_us, 0, gx, gy, gz);
-    imu_feed_gyro(g, t_us);
     if (do_log) imulog_push(IMULOG_ID_ACCEL, t_us, 0, ax, ay, az);
     imu_feed_accel(a);
+    imu_feed_gyro(g, t_us);
 
     s_gyro_cnt++;
     s_accel_cnt++;
@@ -428,6 +449,11 @@ static void try_recovery() {
     if (sch_init()) {
         s_present = true;
         s_last_sample_ms = millis();
+        // ★ 読み出しの間隔とレートの計測も起点から取り直す。途絶えている間は止まっていたので、残すと
+        //   最初の 1 回が途絶えていた時間（1 分以上）を gapmax= に入れ、レートも ~0Hz と出た（2026-11-10 まで）。
+        s_poll_last_us = 0;                    // 0 = 次の 1 回は間隔を数えない（imu_drv_service_if_due）
+        s_hz_last_ms   = (uint32_t)millis();
+        s_gyro_cnt = s_accel_cnt = 0;
         imu_feed_reset();        // 溜めた比力を捨てる（途絶前の古いサンプルを混ぜない）
         enqueueTask(createLogSdTask("[IMU] SCH16T recovery OK"));
         DEBUGW_PLN(20261014, "[IMU] SCH16T recovery OK");

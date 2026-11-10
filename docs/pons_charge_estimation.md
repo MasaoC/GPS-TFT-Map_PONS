@@ -283,8 +283,8 @@ int power_charging_remaining_min() {
 | :--- | :--- | :--- |
 | **`CHG START`** | USB 接続（SW ON）時 | `120:CHG START: vbus=5.02V raw=3.85V cell=3.78V soc=47% rem=101m T=26.4C`<br>充電開始時の VBUS 電圧、ADC 電圧、逆算セル電圧、残量 %、残り時間、基板温度 |
 | **`CHG [XXm]`** | 充電中 60 秒ごと | `180:CHG [1m]: raw=3.87V cell=3.80V soc=50% rem=96m CC T=28.1C`<br>1 分ごとの電圧上昇、推定残量推移、モード（CC/CV/FULL）、温度 |
-| **`CHG CV ENTER`**| $V_{BATPWR} \ge 4.125\text{V}$ 到達 | `3240:CHG CV ENTER: raw=4.125V cell=4.05V soc=81% rem=45m t=52m T=36.2C`<br>CV モード突入の瞬間。ここから残り時間が 45 分カウントダウンになる |
-| **`CHG FULL`** | $SoC \ge 100\%$ 到達 | `8640:CHG FULL: raw=4.20V cell=4.20V t=142m T=29.1C`<br>満充電（FULL）判定の到達時刻とトータル所要時間 |
+| **`CHG CV ENTER`**| $V_{BATPWR} \ge 4.125\text{V}$ 到達（1 回の充電で 1 回。USB を挿したまま SW を OFF→ON しても出し直さない） | `3240:CHG CV ENTER: raw=4.125V cell=4.05V soc=81% rem=45m t=52m T=36.2C`<br>CV モード突入の瞬間。ここから残り時間が 45 分カウントダウンになる |
+| **`CHG FULL`** | $SoC \ge 100\%$ 到達（同上） | `8640:CHG FULL: raw=4.20V cell=4.20V t=142m T=29.1C`<br>満充電（FULL）判定の到達時刻とトータル所要時間 |
 | **`CHG UNPLUG`** | **USB 抜去直後（約 750ms 後）** | `2700:CHG UNPLUG: chg=4.05V(72%) post=3.97V(71%) dV=80mV t=43m`<br>**最も重要な検証データ**。充電中の $V_{BATPWR}$ から抜去後の実測電池電圧への段差（実測 IR ドロップ $dV$）を記録 |
 
 ### 7.2 検証とパラメータ調整の手順

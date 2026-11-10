@@ -14,7 +14,7 @@
 
 // 足りない項目（ビット）。並びは設定画面に出す順。判定値は settings.h の READY_*。
 #define RDY_GNSS   0x0001  // 自機の 3D fix・gnssFixOK・hAcc ≤ READY_HACC_MAX_M
-#define RDY_IMU    0x0002  // IMU は載っているのに応答しない
+#define RDY_IMU    0x0002  // IMU が見つからない・応答しない（v7.1 は SCH16T を必ずつなぐ）
 #define RDY_ESKF   0x0004  // 姿勢推定がまだ収束していない
 #define RDY_CALIB  0x0008  // 較正のやり直しが必要（マウントから外された）。日付をまたいだだけでは立てない
 #define RDY_ATT    0x0010  // 地上で姿勢が申告値（SET ROLL / SET PITCH）からずれ続けている

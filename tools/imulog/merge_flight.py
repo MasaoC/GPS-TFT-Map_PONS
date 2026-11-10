@@ -67,6 +67,9 @@ def load_flight_csvs(csvdir):
             continue
         if "latitude" not in d.columns or "time" not in d.columns:
             continue        # 飛行 CSV ではない（merged.csv 等を読み飛ばす）
+        # v0.923 以前の CSV は GNSS 高度の列名が Altitude（ファームのリプレイも両方を受け付ける）
+        if "GNSS_Altitude" not in d.columns and "Altitude" in d.columns:
+            d = d.rename(columns={"Altitude": "GNSS_Altitude"})
         tt = d["time"].astype(str).str.strip()
         parts = tt.str.split(":", expand=True)
         if parts.shape[1] < 3:
@@ -155,8 +158,9 @@ def main():
         e = e.copy()
         e["jst"] = to_jst(e["t"].to_numpy()) % 86400.0
 
-        # 出力レートまで間引く
-        step = max(1, int(round((len(e) / (e["ts"].max() - e["ts"].min())) / args.hz)))
+        # 出力レートまで間引く（長さ 0 のセッションは割れないので間引かない）
+        span = float(e["ts"].max() - e["ts"].min())
+        step = max(1, int(round((len(e) / span) / args.hz))) if span > 0 else 1
         e = e.iloc[::step].reset_index(drop=True)
 
         # GNSS 由来の運動量
@@ -166,10 +170,11 @@ def main():
                               on="t", direction="nearest", tolerance=1.0)
 
         # 飛行 CSV（緯度経度など）を JST で結合
+        # ★ 古い CSV には無い列がある（KF_* や pressure）。ある列だけ結合する（決め打ちだと KeyError）
+        want = ["jst", "latitude", "longitude", "gs", "TrueTrack",
+                "GNSS_Altitude", "KF_Altitude", "KF_Vspeed", "pressure", "csv_file"]
         e = pd.merge_asof(e.sort_values("jst"),
-                          csv[["jst", "latitude", "longitude", "gs", "TrueTrack",
-                               "GNSS_Altitude", "KF_Altitude", "KF_Vspeed",
-                               "pressure", "csv_file"]].sort_values("jst"),
+                          csv[[c for c in want if c in csv.columns]].sort_values("jst"),
                           on="jst", direction="nearest", tolerance=1.0)
 
         matched = int(e["latitude"].notna().sum())

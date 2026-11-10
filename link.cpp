@@ -1565,6 +1565,7 @@ void link_set_radio_ch(uint8_t ch) {
     s_txPeriodEstMs = link_tx_period_ms();
     link_w2_rx_reset(&s_w2rx);
     s_haveLastSeq = false;
+    s_otherGroup  = false;   // 別グループを見たのは前の CH の話
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();
     link_preflight_start();
@@ -1573,6 +1574,10 @@ void link_set_radio_profile(uint8_t p) {
     if (!link_radio_profile_allowed(link_radio_ch, p) || p == link_radio_profile) return;
     link_radio_profile = p;
     s_txPeriodEstMs = link_tx_period_ms();   // アッパーでは SF で送る間隔が変わる
+    // SF が変われば別のリンク。CH を変えたときと同じく 32 バイトの組み立てをやり直す（2026-11-10 まで抜けていた）
+    link_w2_rx_reset(&s_w2rx);
+    s_haveLastSeq = false;
+    s_otherGroup  = false;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();
     link_preflight_start();
@@ -1584,7 +1589,18 @@ bool    link_other_group_seen() {
 }
 uint8_t link_other_group_id()    { return s_otherGroupId; }
 
-void    link_set_group(uint8_t g) { link_group = (g <= LINK_GROUP_MAX) ? g : LINK_GROUP_DEFAULT; }
+// ★ グループが変わったら 32 バイトの組み立て（回転枠の値・seq の続き）をやり直す。やり直さないと、新しい
+//   グループのフレームが前のグループの目的地 ID・縮尺・日付などの上に積まれ、最大 7 発のあいだ混ざる
+//   （目的地を前のグループの送信機に合わせ直してしまうこともある）。「別のグループを見た」も前の設定の話なので消す
+//   （残すと合わせたあとも 10 秒 "GROUP x FOUND" が出る）。2026-11-10 まで抜けていた。
+void    link_set_group(uint8_t g) {
+    const uint8_t ng = (g <= LINK_GROUP_MAX) ? g : LINK_GROUP_DEFAULT;
+    if (ng == link_group) return;
+    link_group = ng;
+    link_w2_rx_reset(&s_w2rx);
+    s_haveLastSeq = false;
+    s_otherGroup  = false;
+}
 uint8_t link_get_group()          { return link_group; }
 // ============================================================
 //  「設定を変えたまま伝え忘れ」対策
@@ -1650,12 +1666,19 @@ static void link_push_telemetry() {
     t.gnss_alt_dm = link_pack_i16((float)get_gnss_altitude(), 10.0f);
     have |= RHAVE_GNSSALT;
 
-    t.kf_alt_dm = link_pack_i16(get_imu_altitude_msl(),  10.0f);
-    t.kf_vs_cms = link_pack_i16(get_imu_vspeed(),      100.0f);
-    have |= RHAVE_KFALT | RHAVE_KFVS;
+    // ★ 気圧が無いあいだ（飛行中に MS5611 が途絶えた）は高度・V/S・気圧を**載せない**。
+    //   KF は IMU の加速度だけで漂い、気圧は最後の値で凍るので、載せるとボートで漂った V/S が鳴る。
+    //   V/S は**機体の画面と音に使っている値**（vario_vspeed_mps()）を載せる。1.04 までは
+    //   get_imu_vspeed()（KF）で、IMU が途絶えた機体は画面が MS5611 単独の V/S なのに
+    //   ボートには KF の V/S が出ていた（受信機のデッドバンドは LINK_ST_IMU_ERROR で既に合わせてある）。
+    if (vario_source_ok()) {
+        t.kf_alt_dm = link_pack_i16(get_imu_altitude_msl(),  10.0f);
+        t.kf_vs_cms = link_pack_i16(vario_vspeed_mps(),    100.0f);
+        have |= RHAVE_KFALT | RHAVE_KFVS;
 
-    t.press_dpa = link_pack_u16(get_airdata_pressure(), 10.0f, 65535);
-    have |= RHAVE_PRESS;
+        t.press_dpa = link_pack_u16(get_airdata_pressure(), 10.0f, 65535);
+        have |= RHAVE_PRESS;
+    }
 
     // ★ Roll/Pitch/Yaw func（姿勢機能のマスタースイッチ）が OFF なら、姿勢まわりは**送らない**
     //   （2026-10-27）。OFF の機体の画面には姿勢が出ていないので、受信機もそれを再現する

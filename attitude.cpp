@@ -222,18 +222,16 @@ static volatile bool  trim_event_ = false;      // ログ用: 補正が入った
 static volatile float trim_event_applied_ = 0.0f;
 
 // ============================================================
-// サンプル周期の推定
+// サンプル間隔
 // ============================================================
-// IMU のサンプルは一定周期で届くはずだが、Core0 が地図描画で
-// 64ms 止まるとその間のサンプルがバーストで届き、受信時刻の差分は
-// 「0, 0, 64ms」のように歪む。そのまま dt に使うと、まとめて届いた回転が
-// ごっそり抜け落ちる（PC 側でも同じ問題に当たり、等間隔復元で解決した）。
-// ここでは直近 DT_WIN サンプルの経過時間を頭数で割って周期を推定する。
-#define DT_WIN 64
-static uint32_t dt_ring_[DT_WIN];
-static uint8_t  dt_idx_ = 0;
-static uint16_t dt_count_ = 0;
-static float    dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
+// ★ **dt は「直前のサンプルとの実際の時間差」**（attitude_on_gyro。tools/imulog/eskf.py と同じ）。
+//   SCH16T は FIFO を持たず、こちらが 1 回読むと 1 サンプル（imu_sch16t.cpp）。Core0 が 40ms 止まれば
+//   その次のサンプルは 40ms 後に 1 つだけ来るので、40ms ぶん積分するのが正しい。
+//   1.04 までは BNO085 のまとめ届き（受信時刻の差が「0, 0, 64ms」になる）に合わせた 64 サンプルの
+//   平均間隔を使っていて、止まった直後の回転を約 4.6ms ぶんしか積まず、残りを続く 0.25 秒へ薄めていた
+//   （旋回に入る瞬間などで姿勢が遅れる）。まとめ届きのあるチップへ戻すときは考え直すこと。
+// 0 以下（リセット後の最初の 1 サンプル）と ESKF_IMU_TIMEOUT_US 超（途絶明け）は伝播しない
+// （eskf.py の predict の `dt <= 0 or dt > 0.5` と同じ）。
 
 // ============================================================
 // 静止判定
@@ -427,9 +425,6 @@ void attitude_setup() {
     good_gsp_us_ = 0;
     ground_relevels_ = 0;
     ground_now_ = false;
-    dt_count_ = 0;
-    dt_idx_ = 0;
-    dt_est_ = 1.0f / IMU_RATE_GYRO_HZ;
     gnss_updates_ = 0;
     gyro_seen_ = false;
     last_gyro_us_ = 0;
@@ -628,20 +623,11 @@ static void update_static(const float g[3], uint32_t t_us) {
 }
 
 void attitude_on_gyro(const float g[3], uint32_t t_us) {
+    // ---- サンプル間隔（上の「サンプル間隔」の説明）----
+    // reset 後の最初の 1 サンプルは前が無いので 0（伝播しない）
+    const float dt_meas = gyro_seen_ ? (float)(uint32_t)(t_us - last_gyro_us_) * 1e-6f : 0.0f;
     last_gyro_us_ = t_us;
     gyro_seen_ = true;
-
-    // ---- サンプル周期の推定（バースト配信に耐えるため窓平均で求める）----
-    dt_ring_[dt_idx_] = t_us;
-    uint8_t oldest = (uint8_t)((dt_idx_ + 1) % DT_WIN);
-    if (dt_count_ >= DT_WIN) {
-        uint32_t span = t_us - dt_ring_[oldest];
-        float d = (float)span * 1e-6f / (float)(DT_WIN - 1);
-        if (d > 0.2f / IMU_RATE_GYRO_HZ && d < 5.0f / IMU_RATE_GYRO_HZ) dt_est_ = d;
-    } else {
-        dt_count_++;
-    }
-    dt_idx_ = oldest;
 
     update_static(g, t_us);
 
@@ -704,7 +690,15 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         ground_now_ = ground;
     }
 
-    const float dt = dt_est_;
+    // 前が無い・途絶明けは伝播しない（上の「サンプル間隔」の説明）
+    if (dt_meas <= 0.0f) return;
+    if (dt_meas > (float)ESKF_IMU_TIMEOUT_US * 1e-6f) {
+        // 途絶明けは平均ピッチの窓を空ける。途絶える前の値（復旧は 1 分ごとなので 1 分以上前）を
+        // 新しい値と 10 秒混ぜないため。風はゆっくりしか変わらないので LPF は残す。
+        pitch_avg_reset();
+        return;
+    }
+    const float dt = dt_meas;
     float w[3], f[3];
     for (int i = 0; i < 3; i++) {
         w[i] = g[i] - bg_[i];
@@ -758,6 +752,30 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             for (int k = 0; k < N_ERR; k++) s += T1_[i][k] * Phi_[j][k];
             P_[i][j] = s;
         }
+    // ★ **+Q は重力観測（level_update）より前に足す。** 予測（Phi P Phi^T + Q）を済ませてから観測を入れる
+    //   教科書の順で、tools/imulog/eskf.py（predict の中で + Q → update_level）と同じ。
+    //   2026-11-10 まではこの関数の末尾で足していて、重力観測が Q を足す前の P で入っていた。
+    const float qg  = ESKF_SIGMA_G  * ESKF_SIGMA_G  * dt;
+    const float qa  = ESKF_SIGMA_A  * ESKF_SIGMA_A  * dt;
+    const float qbg = ESKF_SIGMA_BG * ESKF_SIGMA_BG * dt;
+    const float qba = ESKF_SIGMA_BA * ESKF_SIGMA_BA * dt;
+    for (int i = 0; i < 3; i++) {
+        P_[i][i]       += qg;
+        P_[3 + i][3 + i] += qa;
+        P_[6 + i][6 + i] += qbg;
+        P_[9 + i][9 + i] += qba;
+    }
+
+    // ★ ヨーの分散だけ頭打ちにする（理由は settings.h の ESKF_YAW_SIGMA_MAX_DEG）。
+    //   ロール・ピッチは重力で常に観測されるので育たない。ヨーだけが
+    //   観測の入らない状態で伸び続けるので、ここで止める。
+    //   **縮む側は触らない。**観測が入れば通常どおり小さくなる。
+    {
+        const float ymax = ESKF_YAW_SIGMA_MAX_DEG * (float)M_PI / 180.0f;
+        const float yvar_max = ymax * ymax;
+        if (P_[2][2] > yvar_max) P_[2][2] = yvar_max;
+    }
+
     // ---- ワールド系のヨーレート（旋回しているか）----
     // ボディ角速度を回して Z 成分を取る。自動ロールトリム・風推定・重力観測のゲートで共用。
     // ★★ **重力観測のゲートより前で更新すること。** 後ろに置くとゲートが
@@ -920,26 +938,6 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         }
     }
 
-    const float qg  = ESKF_SIGMA_G  * ESKF_SIGMA_G  * dt;
-    const float qa  = ESKF_SIGMA_A  * ESKF_SIGMA_A  * dt;
-    const float qbg = ESKF_SIGMA_BG * ESKF_SIGMA_BG * dt;
-    const float qba = ESKF_SIGMA_BA * ESKF_SIGMA_BA * dt;
-    for (int i = 0; i < 3; i++) {
-        P_[i][i]       += qg;
-        P_[3 + i][3 + i] += qa;
-        P_[6 + i][6 + i] += qbg;
-        P_[9 + i][9 + i] += qba;
-    }
-
-    // ★ ヨーの分散だけ頭打ちにする（理由は settings.h の ESKF_YAW_SIGMA_MAX_DEG）。
-    //   ロール・ピッチは重力で常に観測されるので育たない。ヨーだけが
-    //   観測の入らない状態で伸び続けるので、ここで止める。
-    //   **縮む側は触らない。**観測が入れば通常どおり小さくなる。
-    {
-        const float ymax = ESKF_YAW_SIGMA_MAX_DEG * (float)M_PI / 180.0f;
-        const float yvar_max = ymax * ymax;
-        if (P_[2][2] > yvar_max) P_[2][2] = yvar_max;
-    }
 }
 
 
@@ -1111,6 +1109,13 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         // GNSS 観測で速く引き戻せるようにする。
         // （2026-08-18 の session 2 は屋内起動→走行中に記録開始で静止区間が無く、
         //   初期姿勢誤差がジャイロバイアスに吸われて 5.9deg/s に固着した）
+        // ★ **本当に動き出したときだけ**（信用できる測位で ESKF_YAW_INIT_MIN_SPEED_MPS 以上）。
+        //   1.04 までは門が無く、ファームを書いた直後のように GNSS が既に fix している起動では、
+        //   止まっていても 2 秒の静止平均より先にここが走り、1 サンプルの比力で水平化していた。
+        //   sAcc の悪い測位（屋内の偽の速度）の速度も v_ に入っていた。止まっているなら静止初期化を待つ
+        //   （tools/imulog/eskf.py も静止区間があればそちらを使い、無いときだけ先頭で水平化する）。
+        if (sAcc > ESKF_SACC_MAX) return;
+        if (sqrtf(z[0]*z[0] + z[1]*z[1]) < ESKF_YAW_INIT_MIN_SPEED_MPS) return;
         if (!accel_valid_) return;
         if (!init_level(accel_last_, ESKF_INIT_ATT_SIGMA_MOVING_DEG)) return;
         v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
@@ -1257,13 +1262,18 @@ void attitude_get_euler(float &roll, float &pitch, float &yaw) {
 }
 
 float attitude_get_pitch_avg_deg() { return pitch_avg_; }
-bool  attitude_pitch_avg_valid()   { return pitch_avg_full(); }
+// ★ **IMU が途絶えたら（attitude_ready() が落ちたら）平均ピッチ・推定 TAS・風は「無し」。**
+//   途絶えると attitude_on_gyro() が呼ばれず、平均の窓も風の LPF も満ちたまま凍る。
+//   1.04 までここは窓だけを見ていて、自機の画面（get_imu_ok() で消える）とは別に、
+//   無線（link_push_telemetry）と飛行 CSV の TAS に途絶える直前の値を送り・書き続けていた。
+//   判定をここに置くのは、呼び出し側（無線・CSV・tas.cpp・画面）がそれぞれ条件を書き写さないため。
+bool  attitude_pitch_avg_valid()   { return attitude_ready() && pitch_avg_full(); }
 
-// 推定 TAS（平均ピッチを対気速度モデルで換算した値）。平均が満ちていなければ false。
-// ★ 姿勢機能が OFF・ESKF 未収束でも平均ピッチ自体は回っているので、出してよいかは
+// 推定 TAS（平均ピッチを対気速度モデルで換算した値）。平均が満ちていない・IMU が途絶えたら false。
+// ★ 姿勢機能が OFF でも平均ピッチ自体は回っているので、出してよいかは
 //   呼び出し側（tas.cpp）が平均ピッチと同じ条件で決める。
 bool attitude_get_tas(float &mps, bool &clamped) {
-    if (!pitch_avg_full()) return false;
+    if (!attitude_pitch_avg_valid()) return false;
     mps = airspeed_from_pitch(pitch_avg_, &clamped);
     return true;
 }
@@ -1312,7 +1322,8 @@ void  attitude_finish_settings_load() {
 }
 
 bool attitude_get_wind(float &speed_mps, float &dir_to_deg) {
-    if (!wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;
+    // IMU が途絶えたら出さない（理由は attitude_pitch_avg_valid()）
+    if (!attitude_ready() || !wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;
     speed_mps = sqrtf(wind_e_*wind_e_ + wind_n_*wind_n_);
     // 「風が吹いていく方向」の真方位（北=0、東=90）
     dir_to_deg = atan2f(wind_e_, wind_n_) * 180.0f / (float)M_PI;
@@ -1400,8 +1411,17 @@ void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg) {
     float r, p, y;
     euler_from_state(r, p, y);      // オフセット適用前の生の値を基準にする
     // 表示は (生の値 - オフセット) なので、target になるように差を取る
+    const float dpitch = (p - target_pitch_deg) - level_pitch_off_;   // ピッチのオフセットの変わった分
     level_roll_off_  = r - target_roll_deg;      // ロールも申告値になるようにする
     level_pitch_off_ = p - target_pitch_deg;     // ピッチは申告値になるようにする
+    // ★ 平均ピッチの窓（過去 10 秒）は**前のオフセットで引いた値**。変わった分だけずらして新しい基準にそろえる
+    //   （平均は線形なので、窓を捨てて 10 秒待つより正確で、表示も途切れない）。2026-11-10 までずらしておらず、
+    //   APPLY のあと 10 秒間、平均ピッチと推定 TAS に較正前の値が混ざっていた。
+    if (pavg_count_ > 0 || pavg_cur_dt_ > 0.0f) {
+        for (int i = 0; i < PITCH_AVG_NBIN; i++) pavg_bin_sum_[i] -= dpitch * pavg_bin_dt_[i];
+        pavg_cur_sum_ -= dpitch * pavg_cur_dt_;
+        if (pavg_count_ > 0) pitch_avg_ -= dpitch;
+    }
     needs_apply_ = false;                        // 較正したので警告を解除
     // 日付は一旦「不明」にする。正しい値は呼び出し側（.ino）が直後に入れる。
     // ここで古い日付を残すと、測位できていない場所で APPLY し直したときに

@@ -367,13 +367,22 @@ static void restore_done(uint32_t now) {
   snprintf(io, sizeof(io), "restore %s", what);
   io_log(io, now);
   orb_request(s_rs_pass == 2 ? "after resend" : "after restore", 2000);
-  s_st = ST_WAIT;
+  // 入れ直しまで済んだら RAM はもう要らない。ST_WAIT に残すと、屋内のように fix しない場所では
+  // 窓（GNSS_DBD_RESTORE_WINDOW_MS = 30 分）が終わるまで PONS:DBD の試験がぜんぶ BUSY になる。
+  // TTFF の計測は s_ep（episode_tick）が続けるので、ここで抜けても変わらない。
+  s_st = (s_rs_pass == 2) ? ST_IDLE : ST_WAIT;
 }
 
 // 吸い出し・戻しの途中で打ち切る（GNSS のポートを開き直す・リプレイに入った）。
+// ★ ST_WAIT（入れ直し待ち）と ST_TEST_LOAD（試験の読み込み待ち）は打ち切らない。どちらも GNSS へ
+//   書いていない状態で、リプレイを抜けた・掴み直したあとも入れ直し・試験として意味がある。
 static void abort_op(const char* why) {
   if (s_st == ST_SEND) {
-    s_tx_end = s_tx_pos;   // 書きかけは捨てる（GNSS には壊れたフレームとして捨てられる）
+    // ★ **書きかけのフレームは捨てずに書き切る**（gnss_dbd.h の約束。最大約 45ms・200ms で打ち切り）。
+    //   途中で切ると、GNSS は次に届いたコマンドの頭を MGA-DBD の残りとして食い、チェックサムが合わずに
+    //   **そのコマンドごと黙って捨てる**（掴み直しなら最初の設定コマンド）。2026-11-10 までは切っていた。
+    //   ここはポートを閉じる前（gnss_setup_impl() の頭）とリプレイ中（送信は生きている）なので書ける。
+    gnss_dbd_finish_tx();
     enqueueTask(createLogSdfTask("GNSS DBD RESTORE %s: aborted (%s) after %u sent",
                                  restore_name(), why, s_rc[s_rs_pass - 1].sent));
     io_log("restore aborted", millis());
@@ -704,11 +713,13 @@ static void wait_tick() {
   if (s_ep == EP_NONE) { s_st = ST_IDLE; return; }   // fix した・窓が終わった
   if (s_rs_pass != 1 || s_ep_tk_ms == 0) return;
   const RsCount& c = s_rc[0];
-  if (c.ok >= c.sent) { s_rs_pass = 2; return; }      // 全部使われていた。入れ直しは要らない
+  // 入れ直しが要らないと決まったら抜ける（理由は restore_done()）
+  if (c.ok >= c.sent) { s_rs_pass = 2; s_st = ST_IDLE; return; }   // 全部使われていた。入れ直しは要らない
   const float age = file_age_h();
   if (age > GNSS_DBD_MAX_AGE_H) {
     enqueueTask(createLogSdfTask("GNSS DBD: not resent (file %.0fh old > %d)", age, (int)GNSS_DBD_MAX_AGE_H));
     s_rs_pass = 2;
+    s_st = ST_IDLE;
     return;
   }
   start_restore(2);
@@ -936,7 +947,12 @@ void gnss_dbd_command(const char* arg) {
   else if (strcmp(arg, "COLDONLY") == 0) k = EP_TEST_COLD;
   else if (strcmp(arg, "HOT") == 0)      k = EP_TEST_HOT;
   if (k == EP_NONE) { Serial.println("PONS:DBD,ERROR,UNKNOWN (SAVE / COLD / COLDONLY / HOT / STATUS)"); return; }
-  if (busy) { Serial.println("PONS:DBD,ERROR,BUSY"); return; }
+  // ★ 入れ直し待ち（ST_WAIT）は試験で上書きしてよい。GNSS をリセットして数え直すので待っていた入れ直しは
+  //   意味を失い、COLD は SD から読み直す。屋内で COLD を打って時刻が読めないと、ここで断ると
+  //   窓が終わるまで 30 分、次の試験ができなかった。送りかけのフレームと SD の読み込みは待つ（busy の残り）。
+  const bool test_busy = (s_st != ST_IDLE && s_st != ST_WAIT) || tx_busy() || load_state() == LD_BUSY;
+  if (test_busy) { Serial.println("PONS:DBD,ERROR,BUSY"); return; }
+  if (s_st == ST_WAIT) s_st = ST_IDLE;
 
   const uint16_t mask = (k == EP_TEST_HOT) ? 0x0000 : 0xFFFF;
   const uint8_t rst[4] = { (uint8_t)(mask & 0xFF), (uint8_t)(mask >> 8), 0x02, 0x00 };  // resetMode 0x02 = GNSS だけ
@@ -952,8 +968,10 @@ void gnss_dbd_command(const char* arg) {
     mutex_enter_blocking(&taskQueueMutex);
     s_ld = LD_BUSY;
     mutex_exit(&taskQueueMutex);
-    if (enqueueTask(createLoadDbdTask())) s_st = ST_TEST_LOAD;
-    else gnss_dbd_loaded_core1(false, nullptr, "task queue full");
+    // キューが満杯なら読み込みは失敗扱い。それでも ST_TEST_LOAD を通して "not restored (task queue full)" を残す
+    // （2026-11-10 まで ST_IDLE のままで、戻していないのに "TEST cold+dbd: fix ..." だけが出ていた）。
+    if (!enqueueTask(createLoadDbdTask())) gnss_dbd_loaded_core1(false, nullptr, "task queue full");
+    s_st = ST_TEST_LOAD;
   }
   Serial.printf("PONS:DBD,OK,%s\r\n", arg);
 #endif

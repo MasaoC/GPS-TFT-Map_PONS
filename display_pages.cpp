@@ -74,8 +74,7 @@ void draw_imu_guide(int page) {
 static void draw_tas_curve() {
   // ---- 見出し（IMU/ESKF 画面と同じ形）----
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);
   header_footer.print("TAS estimate   2/2");
   header_footer.pushSprite(0, -10);
@@ -186,6 +185,7 @@ static void draw_tas_curve() {
 
   // ---- いまの係数と、抜け方 ----
   header_footer.fillScreen(COLOR_WHITE);
+  header_footer.unloadFont();      // 係数の行は内蔵フォントの最小サイズ（AA_FONT_SMALL では 240px に入らない）
   header_footer.setTextSize(1);
   header_footer.setTextColor(COLOR_GRAY, COLOR_WHITE);
   header_footer.setCursor(4, 4);
@@ -198,7 +198,7 @@ static void draw_tas_curve() {
   const char* back = "Press: back >";
   header_footer.setCursor(SCREEN_WIDTH - 4 - header_footer.textWidth(back), 20);
   header_footer.print(back);
-  header_footer.unloadFont();
+  // ★ AA_FONT_SMALL のまま抜ける（ここで unloadFont() すると次の画面の見出しが内蔵フォントになる。display_tft.h）
   header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }
 
@@ -371,11 +371,17 @@ static void draw_vario_page1() {
     // 起動時の気圧（これを 0m 基準に使用）と起動地のISA絶対高度
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.printf("GND:%.1fhPa ISA:%.1fm", get_airdata_ground_pressure(), get_airdata_ground_altitude());
+    // 起動時の基準は受信機自身のもの（ミラーされない）なので、ミラー中は (RX) を付ける（上の Pres と同じ）
+    backscreen.printf(_mirror ? "GND(RX):%.1fhPa ISA:%.1fm" : "GND:%.1fhPa ISA:%.1fm",
+                      get_airdata_ground_pressure(), get_airdata_ground_altitude());
     y += line_height;
 
     // GNSS MSL 高度と KF MSL 高度（gnss_kf_offset 確定後は GNSS に収束）
-    bool _msl_ready = get_imu_gnss_offset_ready();
+    // ★ ミラー中の KF 高度は**機体の** MSL なので、受信機自身のオフセットが決まったかでは判断しない
+    //   （受信機が屋根の下で fix していないと、機体の高度に "(-)" が付いていた。2026-11-10 まで）。
+    //   機体のオフセットは電波に載っていないので、機体の fix と KF 高度が届いているかで代える。
+    bool _msl_ready = _mirror ? (link_get_fix_ok() && link_has_value(RHAVE_KFALT))
+                              : get_imu_gnss_offset_ready();
     float _kf_msl   = get_imu_altitude_msl();
     float _gnss_msl = get_gnss_altitude();
     backscreen.setCursor(2, y);
@@ -609,8 +615,7 @@ static void draw_vario_page2() {
 void draw_variodetail(int page) {
   // ---- ヘッダー: GNSS DETAIL と同様に 10px 上ずらし ----
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
 
   const char* page_titles[] = {
     "VARIO 1:STATUS+VSI",
@@ -713,8 +718,7 @@ static void draw_unplaced_sats(int y0) {
 static void draw_gnss_page1() {
   // ヘッダー（凡例）: y を +10 してから pushSprite(0,-10) で push
   // → ヘッダー底辺が screen y=39 になり backscreen(y=40) との重複10px が解消する
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);  // +10
   header_footer.println("GNSS DETAIL 1:CONSTELLATION");
   header_footer.setTextColor(sat_color(SATELLITE_TYPE_GPS),     COLOR_WHITE); header_footer.setCursor(0, 28); header_footer.print("GPS ");  // +10
@@ -738,7 +742,16 @@ static void draw_gnss_page1() {
   else
     header_footer.print("--:--:-- UTC");
   char sats_str[24];
-  snprintf(sats_str, sizeof(sats_str), "%d sats, Fix=%s", get_gnss_numsat(), get_gnss_fix() ? "yes" : "no");
+  // ★ ミラー中は**受信機自身**の衛星数と fix を出す（"RX:" を付ける）。このページのスカイプロットと時刻は
+  //   受信機自身のもので、衛星数と fix だけミラーを通すと機体の値になり、出どころが混ざっていた
+  //   （2026-11-10 まで）。機体の衛星数と fix は地図・GNSS DETAIL 3 に出ている。
+  if (link_mirror_active()) {
+    double la, lo, gs, tr;
+    snprintf(sats_str, sizeof(sats_str), "RX:%d sats Fix=%s", get_gsa_numsat(),
+             gnss_get_own_fix(la, lo, gs, tr) ? "yes" : "no");
+  } else {
+    snprintf(sats_str, sizeof(sats_str), "%d sats, Fix=%s", get_gnss_numsat(), get_gnss_fix() ? "yes" : "no");
+  }
   header_footer.setCursor(SCREEN_WIDTH - 2 - header_footer.textWidth(sats_str), 2);
   header_footer.print(sats_str);
   draw_unplaced_sats(20);
@@ -794,8 +807,7 @@ static void draw_gnss_page1() {
 //   1 秒以内に受信したものは黒、古いものは灰色（鮮度の視覚化）。
 static void draw_gnss_page2() {
   tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 1);
   header_footer.println("GNSS DETAIL 2: UBX frames");
   header_footer.pushSprite(0,0);
@@ -807,7 +819,8 @@ static void draw_gnss_page2() {
   for (int i = 0; i < MAX_LAST_NMEA; i++) {
     posy += 18;
     tft.setCursor(1, posy);
-    if(get_gnss_nmea_time(i) < millis()-1000){
+    // 引き算して比べる（millis()-1000 は起動直後の 1 秒と millis の一周で回り込む）
+    if((uint32_t)(millis() - get_gnss_nmea_time(i)) > 1000){
       tft.setTextColor(COLOR_GRAY);
     }else{
       tft.setTextColor(COLOR_BLACK);
@@ -825,8 +838,7 @@ static void draw_gnss_page3() {
 
   // ヘッダー
   header_footer.fillSprite(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 1);
   header_footer.println("GNSS DETAIL 3: GSA INFO");
   header_footer.pushSprite(0, 0);
@@ -1045,8 +1057,7 @@ void draw_gnssdetail(int page) {
 // ============================================================
 void draw_chscan() {
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);
   header_footer.print("CH SCAN");
   header_footer.pushSprite(0, -10);

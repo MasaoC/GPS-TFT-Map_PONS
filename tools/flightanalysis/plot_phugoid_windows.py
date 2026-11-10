@@ -140,8 +140,6 @@ def phase_score(x, y, offset_deg=0.0):
 # データ読み込み ---------------------------------------------
 t0, t1 = (time_to_daysec(x) for x in FLIGHT_2026)
 d = pd.read_csv(find_log(CSV_2026))
-# v0.924 以降の CSV は GNSS 高度の列名が GNSS_Altitude。旧ログの Altitude と両対応にする
-d = d.rename(columns={'GNSS_Altitude': 'Altitude'})
 d['t'] = d['time'].apply(time_to_daysec)
 d = d[(d['t'] >= t0) & (d['t'] <= t1) & (d['gs'] > GS_MIN)]
 eu = pd.read_csv(find_log(EULER_2026))
@@ -151,7 +149,12 @@ TAS = float(pd.read_csv(find_log(BETADA_2026))['tas'].mean())
 
 # 共通グリッドに揃える(位相の比較は同じ時刻で行う必要がある)
 tg = np.arange(d['t'].min(), d['t'].max(), 1 / FS)
-alt = np.interp(tg, d['t'].to_numpy(), d['Altitude'].to_numpy())
+# ★ 高度は**気圧から**出す（plot_pitch_altitude.py と同じ国際標準大気の式。区間の終わりの気圧を 0 m）。
+#   2026-11-10 まで GNSS_Altitude（GPS 高度。旧ログの列名は Altitude）を微分して「気圧高度の V/S」と
+#   呼んでいた。気圧が読めていない行（0）は使わない。
+_pm = d['pressure'].to_numpy() > 300.0
+_pres = np.interp(tg, d['t'].to_numpy()[_pm], d['pressure'].to_numpy()[_pm])
+alt = 44330.0 * (1.0 - (_pres / _pres[-1]) ** (1.0 / 5.255))
 vs = np.gradient(alt, tg)     # KFを通さないV/S。KF出力はIMUと人工的に相関するため
 gs = np.interp(tg, d['t'].to_numpy(), d['gs'].to_numpy())
 pitch = np.interp(tg, eu['t'].to_numpy(), eu['pitch'].to_numpy())

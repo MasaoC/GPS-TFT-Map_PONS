@@ -477,7 +477,7 @@ static void sw_off_tick(uint32_t now) {
     return;
   }
   if (!s_swoff) {
-    if (s_swoff_since == 0) { s_swoff_since = now; return; }
+    if (s_swoff_since == 0) { s_swoff_since = now ? now : 1; return; }   // 0 は「まだ」の印
     if (now - s_swoff_since < CHARGE_SW_OFF_HOLD_MS) return;
     s_swoff = true;
     enqueueTask(createLogSdTask("CHARGE: SW OFF on USB (battery cut off by Q3, will not charge fully)"));
@@ -510,7 +510,7 @@ static void charge_hot_tick(uint32_t now) {
   s_hot_temp = t;
   if (!s_hot) {
     if (t < CHARGE_HOT_C) { s_hot_since = 0; return; }
-    if (s_hot_since == 0) { s_hot_since = now; return; }
+    if (s_hot_since == 0) { s_hot_since = now ? now : 1; return; }       // 0 は「まだ」の印
     if (now - s_hot_since < CHARGE_HOT_HOLD_MS) return;
     s_hot = true;
     s_hot_alert = 0;
@@ -556,7 +556,7 @@ void power_tick() {
     if (now < POWER_FAULT_ARM_MS || !fault_condition()) {
       s_cond_since = 0;
     } else if (s_cond_since == 0) {
-      s_cond_since = now;
+      s_cond_since = now ? now : 1;   // 0 は「まだ」の印
     } else if (now - s_cond_since >= POWER_FAULT_HOLD_MS) {
       s_fault = true;
       s_last_alert = 0;
@@ -728,10 +728,15 @@ static void charge_log_tick(uint32_t now) {
     s_unplug_pending = false; // 抜去待ち中の再接続はキャンセル
     if (!s_chg_active) {
       s_chg_active           = true;
-      if (s_chg_start_ms == 0) s_chg_start_ms = now ? now : 1;
+      // ★ CV 突入・満充電を「記録済み」にした印は**新しい充電（USB を挿し直した）のときだけ**捨てる。
+      //   USB を挿したまま SW を OFF→ON したときは通電時間を引き継ぐ（s_chg_start_ms を残す）ので、
+      //   印も残さないと同じ充電の中で CHG CV ENTER / CHG FULL がもう一度出ていた（2026-11-10 まで）。
+      if (s_chg_start_ms == 0) {
+        s_chg_start_ms = now ? now : 1;
+        s_cv_logged    = false;
+        s_full_logged  = false;
+      }
       s_last_periodic_log_ms = now;
-      s_cv_logged            = false;
-      s_full_logged          = false;
       const float raw_v   = s_batt_v;
       const float cell_v  = power_estimated_cell_voltage();
       const int   pct     = power_charging_percent();

@@ -41,6 +41,8 @@ const char* imu_sensor_name();
 //   a[3] : センサー軸の比力 [m/s²]。**重力を含んだまま**
 //          （重力を引いた値を渡すと ESKF の伝播と水平化の両方が壊れる）
 //   t_us : そのサンプルを受け取った時刻 [µs]（time_us_32()）。
+// ★ **同じ時刻に読んだ組は imu_feed_accel() を先に呼ぶ。** ESKF はジャイロの到着で伝播し、
+//   そのとき手元にある加速度を使う。逆にすると 1 サンプル前の加速度で回る（2026-11-10 に直した）。
 void imu_feed_gyro(const float g[3], uint32_t t_us);
 void imu_feed_accel(const float a[3]);
 

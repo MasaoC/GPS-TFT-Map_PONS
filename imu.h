@@ -83,7 +83,7 @@ bool get_imu_alive();
 //   `get_imu_alive()` / `get_imu_ok()` で分岐していて、いつ食い違っても
 //   おかしくなかった（CLAUDE.md の「線は出ているのに鳴らない」）。
 bool  vario_source_ok();         // V/S を出せる状態か（false なら VSI のバーを描かない）
-float vario_vspeed_mps();        // 表示・音に使う V/S [m/s]（供給元はここが決める）
+float vario_vspeed_mps();        // 表示・音・無線に使う V/S [m/s]（供給元はここが決める。出せなければ 0）
 float vario_deadband_mps();      // デッドバンド [m/s]（KF 融合中は狭い）
 
 // ---- 推定値ゲッター ----

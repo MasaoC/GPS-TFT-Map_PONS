@@ -42,12 +42,13 @@ def csv_to_kml(input_folder):
                     coords=[(row['longitude'], row['latitude'])],
                     description=f"{row['date']} {row['time']}"
                 )
-                point.timestamp.when = f"{row['date']}T{row['time']}Z"
+                # 飛行 CSV の date / time は JST。'Z'（UTC）を付けると Google Earth の時刻が 9 時間ずれる
+                point.timestamp.when = f"{row['date']}T{row['time']}+09:00"
                 point.style.iconstyle.color = path_color
 
             # Add a gx:Track element for the path
             track = kml.newgxtrack(name=csv_file)
-            track.newwhen([f"{row['date']}T{row['time']}Z" for _, row in df.iterrows()])
+            track.newwhen([f"{row['date']}T{row['time']}+09:00" for _, row in df.iterrows()])   # JST（上と同じ）
             track.newgxcoord([(row['longitude'], row['latitude'], 0) for _, row in df.iterrows()])
             track.style.linestyle.color = path_color
             track.style.linestyle.width = 2

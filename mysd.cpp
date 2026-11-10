@@ -330,23 +330,26 @@ bool loadSettings() {
 //   「読めなかった」と「丸めた」を区別して log.txt へ書く。
 //
 // 戻り値: その値を採用してよいか（false = 既定値のまま残す）
+// ★ ここからの設定の読み取り（setter）は Core1 の loadSettings() からしか呼ばれないので、ログは log_sdf() で
+//   直接書く。キュー（TASK_QUEUE_SIZE = 40）へ積むと、読み込みの間は Core1 が消費しないので、壊れた行が多いと溢れ、
+//   起動時に Core0 が積んだ音まで捨てられていた（2026-11-10 まで。setLinkGroup() は前から直接書いていた）。
 static bool read_setting_int(const char* id, const char* value, int lo, int hi, int* out) {
   char* end = nullptr;
   const long v = strtol(value, &end, 10);
   if (end == value) {                               // 数字が 1 文字も無い
-    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    log_sdf("ERR %s(%s) not a number", id, value);
     return false;
   }
   // 末尾の空白は許す。CR/LF は loadSettings() が行の区切りとして落としているが、
   // ここだけ見ても正しく動くようにしておく（保険）。
   while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
   if (*end != '\0') {                               // 数字のあとにゴミが付いている
-    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    log_sdf("ERR %s(%s) not a number", id, value);
     return false;
   }
   if (v < lo || v > hi) {
     *out = (int)(v < lo ? lo : hi);
-    enqueueTask(createLogSdfTask("ERR %s(%s) range %d..%d -> %d", id, value, lo, hi, *out));
+    log_sdf("ERR %s(%s) range %d..%d -> %d", id, value, lo, hi, *out);
     return true;                                    // 丸めた値は使う（捨てるより素直）
   }
   *out = (int)v;
@@ -369,13 +372,13 @@ static bool read_setting_float(const char* id, const char* value, float lo, floa
     else if (v > 1e30 || v < -1e30) bad = true;     // ±inf / 桁あふれ
   }
   if (bad) {
-    enqueueTask(createLogSdfTask("ERR %s(%s) not a number", id, value));
+    log_sdf("ERR %s(%s) not a number", id, value);
     return false;
   }
   if (v < lo || v > hi) {
     *out = (float)(v < lo ? lo : hi);
-    enqueueTask(createLogSdfTask("ERR %s(%s) range %.2f..%.2f -> %.2f",
-                                 id, value, (double)lo, (double)hi, (double)*out));
+    log_sdf("ERR %s(%s) range %.2f..%.2f -> %.2f",
+            id, value, (double)lo, (double)hi, (double)*out);
     return true;
   }
   *out = (float)v;
@@ -451,7 +454,7 @@ void setDestination(const char* value) {
   }
   DEBUGW_P(20250508,"ERR DEST:");
   DEBUGW_PLN(20250508,value);
-  enqueueTask(createLogSdfTask("ERR setDestination(%s)",value));
+  log_sdf("ERR setDestination(%s)",value);
 }
 
 
@@ -469,7 +472,7 @@ void setScaleIndex(const char* value) {
   }else{
     DEBUGW_P(20250508,"ERR scale index:");
     DEBUGW_PLN(20250508,indexofsetting);
-    enqueueTask(createLogSdfTask("ERR scale index(%s)",value));
+    log_sdf("ERR scale index(%s)",value);
   }
 }
 
@@ -1066,9 +1069,12 @@ void process_mapcsv_line(String line) {
     return;
   }
 
+  // ★ 経度のあとのカンマは**最後の頂点でも**要る（無いのは最後の緯度のあとだけ）。2026-11-10 までは最後の
+  //   頂点で確かめておらず、欠けていると index が 0 に戻って**行頭のポリゴン名を緯度として読み**、緯度 0 の
+  //   頂点（地図に赤道まで伸びる線）ができた。途中で切れた行（"...,lon3," で終わる）の空の緯度も 0 になるので弾く。
   for (int i = 0; i < size; i++) {
     commaIndex = line.indexOf(',', index);
-    if (commaIndex == -1 && i < size - 1) {
+    if (commaIndex == -1 || commaIndex == index) {
       delete[] cords;
       return;
     }
@@ -1079,7 +1085,13 @@ void process_mapcsv_line(String line) {
       delete[] cords;
       return;
     }
-    cords[i][1] = line.substring(index, commaIndex).toDouble();
+    String lat = (commaIndex == -1) ? line.substring(index) : line.substring(index, commaIndex);
+    lat.trim();
+    if (lat.length() == 0) {
+      delete[] cords;
+      return;
+    }
+    cords[i][1] = lat.toDouble();
     index = commaIndex + 1;
   }
 
@@ -1410,6 +1422,15 @@ void setup_sd(int trycount, bool load_settings){
     log_sdf("SETTINGS LOADED%s link=%u ch=%u sf=%u grp=%c",
             ok ? "" : " (FAILED, defaults)",
             link_mode_setting, link_radio_ch, link_radio_profile, link_group_letter(link_group));
+    // ★ 下限と上限が逆（または同じ）なら両方を既定へ戻す。行は別々に読まれるので 1 本ずつは確かめられない。
+    //   逆のままだと推定 TAS がいつも上限に張り付いた灰色の箱になる（2026-11-10 まで素通りしていた）。
+    if (!(attitude_get_airspeed_min() < attitude_get_airspeed_max())) {
+      log_sdf("ERR airspeed_min %.2f >= airspeed_max %.2f -> defaults %.2f..%.2f",
+              attitude_get_airspeed_min(), attitude_get_airspeed_max(),
+              (double)AIRSPEED_MIN_MPS, (double)AIRSPEED_MAX_MPS);
+      attitude_set_airspeed_min(AIRSPEED_MIN_MPS);
+      attitude_set_airspeed_max(AIRSPEED_MAX_MPS);
+    }
     // 対気速度モデルの実効値。風の推定はこの 4 つで決まり、機体ごとに違う。
     // 「SD に書いたつもりで効いていなかった」を後から突き止められるようにする。
     log_sdf("AIRSPEED MODEL v0=%.2f k=%.2f range %.2f..%.2f",
@@ -1429,8 +1450,9 @@ void setup_sd(int trycount, bool load_settings){
 // 役割分担:
 //   Core1 (このファイル) … ファイルを開きっぱなしにして行を読み、パースしてリングに積むだけ
 //   Core0 (gnss.cpp)      … リングから「再生時刻に達した行」を取り出して stored_* に反映する
-// 単一 producer / 単一 consumer のリングなので mutex は不要。
+// 単一 producer / 単一 consumer のリングなので積むほうに mutex は不要。
 // （スロットへ書き込んでから head を進める順序を必ず守ること）
+// ★ 例外は init_replay() の巻き戻し（消費側の tail も書く）。そこと replay_pop() だけ taskQueueMutex で守る。
 // ============================================================
 
 // ===== リプレイ再生用変数 =====
@@ -1605,8 +1627,14 @@ uint32_t replay_peek_t_ms() {
 }
 
 // Core0 から呼ぶ: 先頭の行を取り出す。取り出せたら true。
+// ★ **taskQueueMutex の中で取り出す。** ふだんは単一 producer / 単一 consumer で排他は要らないが、
+//   init_replay()（Core1）だけは消費側の replay_tail も 0 に戻す。ここが tail を読んでから書くまでの間に
+//   それが割り込むと、古い tail + 1 が残って head = 0 との差が「未消費の行」に見え、
+//   前のファイルの行を 10 行以上まとめて取り出す（大きい t_ms の行で再生が止まって見える）。
+//   ファイルを切り替えた瞬間だけの狭い窓だが、守るのは数十バイトのコピーだけなので軽い。
 bool replay_pop(ReplayRow* out) {
-  if (replay_head == replay_tail) return false;
+  mutex_enter_blocking(&taskQueueMutex);
+  if (replay_head == replay_tail) { mutex_exit(&taskQueueMutex); return false; }
   // volatile 配列からのコピー（構造体代入は volatile 不可なのでメンバ単位でコピーする）
   volatile ReplayRow* src = &replay_rows[replay_tail];
   out->lat = src->lat;               out->lon = src->lon;
@@ -1627,6 +1655,7 @@ bool replay_pop(ReplayRow* out) {
   out->wind_mps = src->wind_mps;     out->wind_dir = src->wind_dir;
   out->tas = src->tas;               out->hdr = src->hdr;
   replay_tail = (replay_tail + 1) & (REPLAY_BUF_SIZE - 1);
+  mutex_exit(&taskQueueMutex);
   return true;
 }
 
@@ -1692,8 +1721,11 @@ void init_replay(){
   ASSERT_SD_CORE1("init_replay");
   if (replayFileStatic.isOpen()) replayFileStatic.close();
 
+  // ★ 消費側（Core0）の tail も戻すので、replay_pop() と同じ taskQueueMutex の中で（理由は replay_pop）
+  mutex_enter_blocking(&taskQueueMutex);
   replay_head = 0;
   replay_tail = 0;
+  mutex_exit(&taskQueueMutex);
   replay_eof = false;
   replay_file_bad = REPLAY_BAD_NONE;
   replay_t0_valid = false;
@@ -2200,8 +2232,10 @@ extern volatile bool loading_sddetail;  // 実体は display_tft.cpp（volatile�
 // - 処理完了後に loading_sddetail=false をセットし、表示側に完了を通知する。
 bool browse_sd(int page) {
     // Input validation
+    // ★ 早く抜けるときも loading_sddetail を落とす（画面が "loading..." のまま戻らなくなる。2026-11-10 まで）
     if (page < 0) {
         DEBUGW_PLN(20250508,"Invalid page number");
+        loading_sddetail = false;
         return false;
     }
 
@@ -2217,6 +2251,8 @@ bool browse_sd(int page) {
         DEBUGW_PLN(20250508,"Failed to open root directory");
 
         if (root) root.close();
+        max_page = 0;
+        loading_sddetail = false;   // 一覧は上で空にしてあるので、空の 1 ページとして出す
         return false;
     }
 
@@ -2286,7 +2322,15 @@ bool browse_sd(int page) {
 // setup_sd() 内で SdFile::dateTimeCallback(dateTime) として登録しておくと、
 // ファイル作成・更新時にこの関数が呼ばれて FAT タイムスタンプが書き込まれる。
 // fileyear 等は saveCSV() 内で GNSS 時刻が最初に取得された瞬間に初期化される。
+// ★ 日時が決まる前（GNSS の時刻が来る前・受信機で自機の CSV をまだ書いていない）は 2020-01-01 00:00 を返す
+//   （生 IMU ログの nofix ファイルと同じ固定値）。2026-11-10 までは 0 年 0 月 0 日をそのまま FAT_DATE に通しており、
+//   1980 年より前は表せないので回り込んだ日付（2092 年など）が log.txt や received/*.csv に付いていた。
 void dateTime(uint16_t* date, uint16_t* time) {
+ if (fileyear < 1980) {
+   *date = FAT_DATE(2020, 1, 1);
+   *time = FAT_TIME(0, 0, 0);
+   return;
+ }
  // return date using FAT_DATE macro to format fields
  *date = FAT_DATE(fileyear, filemonth, fileday);
  // return time using FAT_TIME macro to format fields
@@ -2370,10 +2414,10 @@ void log_sd(const char* text){
     return;
   }
 
-  // 128 バイト。先頭に "<起動秒>:" を付けるため、稼働時間が延びるほど
-  // 本文に使える長さが減る点に注意（起動から 10 万秒で 7 文字消費）。
-  // 100 だったころは 60 秒ごとのセンサーレート行の末尾が実際に切れていた。
-  char logtext[128];   // array to hold the result.
+  // 本文 256 バイト（log_sdf() とキューの logSdfArgs と同じ）＋ 先頭の "<起動秒>:"（最大 11 文字）。
+  // ★ 2026-11-10 までは 128 バイトで、log_sdf() で 256 バイトまで組み立てた行の後ろが切れていた
+  //   （SD INIT の失敗の内訳は最大 160 文字）。100 だったころは 60 秒ごとのセンサーレート行も切れていた。
+  char logtext[256 + 16];   // array to hold the result.
   snprintf(logtext, sizeof(logtext), "%d:%s",(int)(millis()/1000),text);
   logFileStatic.println(logtext);
   logFileStatic.flush();  // close() の代わりに flush() でデータを確定する

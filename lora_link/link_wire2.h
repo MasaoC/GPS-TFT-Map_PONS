@@ -259,6 +259,15 @@ static inline bool link_w2_slot_seen(const LinkW2Rx* st, uint8_t slot) {
     return (st->slot_seen & (1u << slot)) != 0;
 }
 
+// 日付を 1 日進める（時の繰り上がりで 23 → 0 になったとき。日付は回転枠 0 でしか来ないため）。
+static inline void link_w2_next_day(LinkTelem& t) {
+    static const uint8_t kDim[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (t.year == 0 || t.month < 1 || t.month > 12 || t.day < 1) return;   // まだ日付を受けていない
+    uint8_t md = kDim[t.month - 1];
+    if (t.month == 2 && (t.year % 4 == 0 && (t.year % 100 != 0 || t.year % 400 == 0))) md = 29;
+    if (++t.day > md) { t.day = 1; if (++t.month > 12) { t.month = 1; t.year++; } }
+}
+
 // 1 フレームを組み立て状態へ反映し、st->acc を「いま分かっている LinkTelem」にする。
 // per_ms = 送信機が送る間隔 [ms]（受信機での推定値。ローワーで約 1000）。
 // ★ 呼ぶのは**自分と同じグループのフレームだけ**（別グループの値を混ぜない）。
@@ -308,8 +317,12 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     const uint16_t tod = w2_get16(p + W2_TOD);
     if (tod < 36000) {
         // 時は回転枠 0 から。その間に時刻が大きく戻ったら次の時へ繰り上げる
-        if (st->hour_known && st->prev_tod != 0xFFFF && tod + 18000 < st->prev_tod)
+        if (st->hour_known && st->prev_tod != 0xFFFF && tod + 18000 < st->prev_tod) {
+            // ★ 0 時をまたいだら日付も進める（JST）。進めないと、次の回転枠 0（最大 8 発後）まで
+            //   受信ログが「前日の 00:xx」＝丸 1 日戻った時刻になっていた（2026-11-10 まで）。
+            if (st->hour == 23 && (st->slot_have & RHAVE_DATE)) link_w2_next_day(t);
             st->hour = (uint8_t)((st->hour + 1) % 24);
+        }
         st->prev_tod = tod;
         t.minute = (uint8_t)(tod / 600);
         t.second = (uint8_t)((tod / 10) % 60);

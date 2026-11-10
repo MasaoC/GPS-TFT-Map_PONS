@@ -72,7 +72,7 @@ for index, row in df.iterrows():
             KML.range(range),
             KML.altitudeMode("relativeToGround"),
             GX.timeStamp(
-                KML.when(f"{date}T{time}Z")
+                KML.when(f"{date}T{time}+09:00")   # 飛行 CSV の時刻は JST（'Z' だと 9 時間ずれる）
             )
         )
     )

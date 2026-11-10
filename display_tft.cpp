@@ -59,6 +59,13 @@ TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
 TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240px, 16bit, 2,400 Byte)
 
+// 詳細画面の見出しのフォント（理由は display_tft.h）
+void header_font_detail() {
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextSize(1);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 // 1 秒ごとに反転する点滅の位相。**周期をここ 1 か所に持つ**（画面のあちこちで
 // 同じ点滅を手書きしていたので、速さを変えたいときに揃わなくなる）。
 // ★ 地図の再描画は最長 1050ms 間隔なので、これより速い点滅は**サンプルが追いつかず
@@ -662,6 +669,21 @@ static bool eskf_display_gnss_stale() {
   return !attitude_gnss_vel_fresh();
 }
 
+// 「いま画面に出している対地速度・真方位」が無効か（ヘッダーと地図中央上部の TT の赤線。2 か所で同じ判定）。
+// ★ **供給元ごとに答える**（上の eskf_display_gnss_stale() と同じ考え方）。
+//   2026-11-10 までは衛星数 0 だけを見ていて、**GNSS の断線（衛星数は最後の値のまま残る）や
+//   fix していないとき（衛星 1〜3 個）に、凍った・当てにならない GS と方位に線が引かれなかった**。
+//   ・実機 … 断線・fix なし・衛星 0
+//   ・ミラー … 送信機の GNSS 断線（LINK_ST_GNSS_LOST）・送信機の fix なし・衛星 0（自機の GNSS は見ない）
+//   ・デモ … 衛星 0 だけ（見せるための画面）／リプレイ … 衛星 0 だけ（記録の再現。fix の列は無い）
+static bool gnss_speed_track_invalid() {
+  if (get_gnss_numsat() == 0) return true;
+  if (is_demo_active() || getReplayMode()) return false;
+  if (link_mirror_active())
+    return (link_sender_status() & LINK_ST_GNSS_LOST) != 0 || !link_get_fix_ok();
+  return !get_gnss_connection() || !get_gnss_fix();
+}
+
 // 取り消し線。**値は残したまま「信頼性が落ちている」ことだけを示す**ための線。
 //   y_mid … 線を引く高さ（文字の縦中央）
 // ★ 消さずに線を引くのは、参考情報としては読めるようにしておきたいため。
@@ -704,7 +726,18 @@ bool eskf_calib_allowed() {
 // 95%値としきい値の比較にヒステリシスを掛ける共通処理。
 // held: 直前の判定結果（呼び出し側が保持する）。
 // 入るときは limit、出るときは limit + ESKF_YAW_TRUST_HYST_DEG で判定する。
-static bool yaw_acc_ok_hyst(float acc95, float limit, bool &held) {
+// src: 直前に判定したときの表示の供給元（呼び出し側が保持する）。
+// ★ 供給元（実センサー / ミラー / リプレイ / デモ）が替わったら held を捨てる。別の機体・別の記録の
+//   「直前の判定」をヒステリシスに持ち越さないため（2026-11-10 まで持ち越していた。影響はヒステリシスの幅の中だけ）。
+static int yaw_display_source() {
+  if (is_demo_active())     return 3;
+  if (link_mirror_active()) return 1;
+  if (getReplayMode())      return 2;
+  return 0;
+}
+static bool yaw_acc_ok_hyst(float acc95, float limit, bool &held, int &src) {
+  const int now_src = yaw_display_source();
+  if (now_src != src) { held = false; src = now_src; }
   held = held ? (acc95 < limit + ESKF_YAW_TRUST_HYST_DEG)
               : (acc95 < limit);
   return held;
@@ -714,18 +747,20 @@ bool eskf_yaw_reliable() {
   // リプレイは記録された 95% 値で当時と同じ判定を再現する。しきい値は現在の設定を
   // 使うので、後からしきい値を変えて過去フライトを見直すこともできる。
   static bool held = false;
+  static int  src  = -1;
   float acc95;
   if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) { held = false; return false; }
-  return yaw_acc_ok_hyst(acc95, ESKF_YAW_TRUST_95_DEG, held);
+  return yaw_acc_ok_hyst(acc95, ESKF_YAW_TRUST_95_DEG, held, src);
 }
 
 // ヨーが「著しく信頼できる」か（95%値 < ESKF_YAW_DRIFT_95_DEG）。
 // 偏流角を示す点線を出してよいかの判定に使う。eskf_yaw_reliable() より厳しい。
 static bool eskf_yaw_high_confidence() {
   static bool held = false;
+  static int  src  = -1;
   float acc95;
   if (!eskf_display_enabled() || !eskf_display_yaw_acc(acc95)) { held = false; return false; }
-  return yaw_acc_ok_hyst(acc95, ESKF_YAW_DRIFT_95_DEG, held);
+  return yaw_acc_ok_hyst(acc95, ESKF_YAW_DRIFT_95_DEG, held, src);
 }
 
 // 自機アイコンの色。ESKF のヨーで機首を向けているときは黒、
@@ -1220,9 +1255,10 @@ void draw_FlashMaps(double center_lat, double center_lon, float scale, float up)
   for (int i = 0; i < flashmap_count; i++) {
     const mapdata* mp = flashmaps[i];
     if (mp->size <= 1) continue;
-    // 現在地から離れた地図は描かない（extramaps と同じ 1 度四方の判定）
-    if (!check_within_latlon(1, 1, mp->cords[0][1], get_gnss_lat(),
-                             mp->cords[0][0], get_gnss_lon())) continue;
+    // 描く中心から離れた地図は描かない（extramaps と同じ 1 度四方の判定）。
+    // 中心は引数で見る（いまの呼び出し元は現在地を渡すので同じ値だが、別の中心で描くと食い違う）
+    if (!check_within_latlon(1, 1, mp->cords[0][1], center_lat,
+                             mp->cords[0][0], center_lon)) continue;
     draw_map(up, center_lat, center_lon, scale, mp, mapdata_color(mp->name));
   }
 }
@@ -1234,7 +1270,7 @@ void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up)
     }
     double lon1 = extramaps[i].cords[0][0];
     double lat1 = extramaps[i].cords[0][1];
-    if (check_within_latlon(1, 1, lat1, get_gnss_lat(), lon1, get_gnss_lon())) {
+    if (check_within_latlon(1, 1, lat1, center_lat, lon1, center_lon)) {   // 中心は引数（draw_FlashMaps と同じ）
       int col = mapdata_color(extramaps[i].name);
       draw_map(up, center_lat, center_lon, scale, &extramaps[i], col);
         }
@@ -2127,8 +2163,10 @@ static uint16_t imu_row_col(bool ok) { return ok ? COLOR_GREEN : COLOR_ORANGE; }
 // ★ 条件を呼び出し側に書き写さないこと。2026-11-05 まで設定画面の行は 1（READY）を見ておらず、
 //   コメントでは「右上と同じ意味」なのに ESKF が収束する前から緑になっていた。
 uint16_t imu_status_color() {
-  // IMU 非搭載機。姿勢機能そのものが無いので緑（＝準備OK）にはしない。
-  if (!get_imu_ok()) return COLOR_GRAY;
+  // IMU が見つからない・黙った。★ v7.1 は SCH16T を必ずつなぐので赤（readiness.cpp の RDY_IMU と同じ考え）。
+  //   1.04 までは「非搭載機」として灰色にしていたが、get_imu_ok() は通信が 1 秒途絶えると false に
+  //   変わるので、黙った IMU まで灰色（＝対象外）に見えていた。
+  if (!get_imu_alive()) return COLOR_RED;
   // マウントから外されたあと APPLY していない＝較正が無効。これだけは赤にする。
   // 姿勢の基準そのものが失われている状態で、他の設定の良し悪しより深刻なため。
   if (attitude_needs_apply() && attitude_get_rpy_enabled()) return COLOR_RED;
@@ -2142,8 +2180,7 @@ static void draw_imu_status_dot() {
 
 static void draw_imu_page1() {
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);
   header_footer.print("IMU / ESKF  1/2");
   draw_imu_status_dot();
@@ -2319,8 +2356,7 @@ static void draw_imu_page1() {
 //   行は画面を移るもの（戻る / Exit）だけ。
 static void draw_imu_page2() {
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);
   header_footer.print("IMU / ESKF  2/2");
   draw_imu_status_dot();
@@ -2447,8 +2483,7 @@ int wireless_cursor = 0;
 
 void draw_wireless(int cursor) {
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);
   header_footer.print("WIRELESS LINK");
   // 大会の推奨設定＝パイロット機が送信モード。右上のマークで一目で分かるようにする。
@@ -2947,7 +2982,9 @@ static void begin_notice_box(int x, int y, int w, int h, uint16_t col) {
 
 // 地図の中央寄りに出す **2 行のポップアップ**（無信号 / 送信機 2 台 / 送信前チェック）。
 // 枠の大きさも文字の位置も 3 つで共通なので、違うのは縦位置と文言だけにしてある。
-// ★ フォントは呼び出し元に残さず必ず戻す（戻し忘れると以降の描画が内蔵フォントになる）。
+// ★ フォントは地図用（AA_FONT_SMALL）のまま抜ける（draw_gnss_disconnect_warning() と同じ約束）。
+//   いまは後に描く箱がどれも自分で読み直すので見た目は変わらないが、unloadFont() で抜けると
+//   後から足した描画が内蔵フォントになる。
 static void draw_notice_2lines(int y, uint16_t col, const char *l1, const char *l2) {
   const int bx = 10, bw = SCREEN_WIDTH - 20, bh = 44;
   begin_notice_box(bx, y, bw, bh, col);
@@ -2955,7 +2992,7 @@ static void draw_notice_2lines(int y, uint16_t col, const char *l1, const char *
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setCursor(bx + 10, y +  8);  backscreen.print(l1);
   backscreen.setCursor(bx + 10, y + 24);  backscreen.print(l2);
-  backscreen.unloadFont();
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
 // 電波が途切れている間、消せないポップアップを出す（docs/pons_link.md §5）。
@@ -3416,7 +3453,7 @@ void draw_gs_track(){
     //   対地速度の側までしか伸びていない。**0.983 までこの TT だけ
     //   線が引かれず、GNSS が死んでいても方位が生きて見えていた。**
     //   太さ 4px はヘッダーの赤線と揃える（同じ意味＝この値は無効）。
-    if (get_gnss_numsat() == 0) {
+    if (gnss_speed_track_invalid()) {
       for (int i = 0; i < 4; i++)
         backscreen.drawFastHLine(x0, 1 + nh / 2 - 2 + i, lw + 4 + nw, COLOR_RED);
     }
@@ -3613,16 +3650,19 @@ static void draw_header_pitch(int x, float deg, uint16_t col) {
   x += SIGN_W;
 
   header_footer.setCursor(x, ytop);
-  if (a < 10.0f) {
-    const int i = (int)a, f = (int)((a - i) * 10.0f + 0.5f);
-    header_footer.printf("%d", i);
+  // ★ **10 倍して丸めてから桁を分ける**（draw_header_tas() と同じ）。2026-11-10 までは整数部を切り捨てて
+  //   から小数を丸め、繰り上がりを 9 で止めていたので、x.95〜x.99 がすべて x.9 になっていた
+  //   （3.97 → 3.9、9.96 → 9.9。正しくは 4.0・10）。
+  const long tenths = lroundf(a * 10.0f);
+  if (tenths < 100) {
+    header_footer.printf("%d", (int)(tenths / 10));
     x += DIGIT_W;
     header_footer.fillRect(x + 2, ytop + 36, 6, 6, col);   // 小数点
     x += DOT_W;
     header_footer.setCursor(x, ytop);
-    header_footer.printf("%d", f > 9 ? 9 : f);
+    header_footer.printf("%d", (int)(tenths % 10));
   } else {
-    header_footer.printf("%02d", (int)(a + 0.5f));
+    header_footer.printf("%02d", (int)lroundf(a));
   }
 }
 
@@ -3787,11 +3827,11 @@ void draw_header() {
 
   header_footer.drawFastHLine(0,49,240,COLOR_BLACK);
 
-  if(get_gnss_numsat() == 0){
+  if(gnss_speed_track_invalid()){
     // この赤線は「GNSS が無いので値が無効」を示すもの。対地速度と真方位は無効になるが、
     // 平均ピッチは GNSS が無くても（ESKF が生きていれば）意味を持つので線を引かない。
     // ★ ピッチを出しているときは真方位が地図の中央上部へ移る。そちらの赤線は
-    //   draw_gs_track() 側にある。条件（numsat==0）を変えるなら両方直すこと。
+    //   draw_gs_track() 側にある。判定は gnss_speed_track_invalid() の 1 か所（両方が同じものを見る）。
     const int len = header_shows_pitch() ? (mtvx - 5 - 2) : (SCREEN_WIDTH - 10);
     for(int i = 0; i < 4; i++)
       header_footer.drawFastHLine(5, 22+i, len, COLOR_RED);
@@ -4469,8 +4509,7 @@ bool sd_detail_loading_displayed = false;
 void draw_sddetail(int page) {
   lastdrawn_sddetail = millis();
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);  // +10px（variodetail と同じオフセット）
   if(max_page >= 0 && !loading_sddetail)
     header_footer.printf("SD DETAIL  %d/%d",page%(max_page+1)+1,max_page+1);
@@ -4551,8 +4590,7 @@ void draw_replayselect(int page, int cursor) {
   // ★ 内蔵フォント ×2 は 12px/文字。右上の丸（x=222〜）まで 18 文字なので、
   //   "REPLAY/DEMO 10/12"（17 文字）までは入る。読み込み中はページ数を出さない。
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);  // +10px（sddetail と同じオフセット）
   if (!loading_replaylist)
     header_footer.printf("REPLAY/DEMO %d/%d", page + 1, pagecount);
@@ -4650,6 +4688,7 @@ void draw_replayselect(int page, int cursor) {
 // backscreen(240px) を y=40 に貼るので、10px/行で 24 行が上限。
 // 以前は 30 行想定で、SD 地図が増えると下がはみ出して切れていた。
 #define MAPLIST_ROWS 24
+#define MAPLIST_COURSE_ROWS 6   // ページ 0 のコース座標（"COURSE ..." の見出し + PLA/NPIL/SPIL/1KM/TAKE）
 
 // ページ 0 の先頭に出す OSM 内訳が何行になるかを返す。
 // 実際の描画（下の draw_maplist_mode）と同じ数え方をすること。
@@ -4668,14 +4707,17 @@ void draw_maplist_mode(int maplist_page) {
   mapdata** mapdatas = flashmaps;   // navdata.cpp の共有配列（draw_FlashMaps と同じもの）
   int sizeof_mapflash = flashmap_count;
 
-  const int osm_rows = maplist_osm_rows();
-  int pagetotal = 1 + (osm_rows + sizeof_mapflash + mapdata_count) / MAPLIST_ROWS;
+  // ページ 0 の固定の行（OSM の内訳・コース座標・フラッシュ地図）。SD 地図はその後ろから詰める。
+  // ★ コース座標の 6 行も数えること。1.04 まで抜けていて、ページ 0 の SD 地図が 6 行ぶん画面の下へ
+  //   はみ出し、2 ページ目はその 6 件を飛ばして始まっていた。
+  const int page0_rows = maplist_osm_rows() + MAPLIST_COURSE_ROWS + sizeof_mapflash;
+  int pagetotal = (page0_rows + mapdata_count + MAPLIST_ROWS - 1) / MAPLIST_ROWS;
+  if (pagetotal < 1) pagetotal = 1;
   int pagenow = maplist_page % pagetotal;
 
   // ヘッダー: スプライト経由で描画（tft 直接描画によるちかちかを防ぐ）
   header_footer.fillScreen(COLOR_WHITE);
-  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  header_footer.setTextSize(2);
+  header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);  // +10px（variodetail と同じオフセット）
   header_footer.printf("MAPLIST FLSH:%d/SD:%d (%d/%d)", sizeof_mapflash, mapdata_count, pagenow + 1, pagetotal);
   header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に合わせる
@@ -4737,6 +4779,8 @@ void draw_maplist_mode(int maplist_page) {
         { "1KM ", pilon_1km_lat,   pilon_1km_lon   },
         { "TAKE", takeshima_lat_v, takeshima_lon_v },
       };
+      static_assert(sizeof(pts)/sizeof(pts[0]) + 1 == MAPLIST_COURSE_ROWS,
+                    "MAPLIST_COURSE_ROWS は見出し 1 行 + pts[] の点の数");
       for (unsigned i = 0; i < sizeof(pts)/sizeof(pts[0]); i++) {
         backscreen.printf(" %s %10.6f,%11.6f", pts[i].n, pts[i].la, pts[i].lo);
         posy += 10; backscreen.setCursor(1, posy);
@@ -4758,10 +4802,10 @@ void draw_maplist_mode(int maplist_page) {
   int sd_start_index = 0;
   int sd_rows = MAPLIST_ROWS;
   if (pagenow > 0) {
-    sd_start_index = MAPLIST_ROWS * pagenow - sizeof_mapflash - osm_rows;
+    sd_start_index = MAPLIST_ROWS * pagenow - page0_rows;
     if (sd_start_index < 0) sd_start_index = 0;
   } else {
-    sd_rows = MAPLIST_ROWS - sizeof_mapflash - osm_rows;  // ページ 0 は OSM 内訳とフラッシュ地図の分だけ枠が減る
+    sd_rows = MAPLIST_ROWS - page0_rows;  // ページ 0 は OSM 内訳・コース座標・フラッシュ地図の分だけ枠が減る
     if (sd_rows < 0) sd_rows = 0;
   }
   int sd_end_index = sd_start_index + sd_rows;
@@ -4940,7 +4984,9 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     // 電池単体で起動時の過放電警告をボタンで抜けた後の設定画面表示（フライト中の初発では出さない）。
     // 自機の電池に対する安全警告なので、リプレイ中でも実測の get_input_voltage() を出す。
     header_footer.setTextColor(COLOR_RED);
-    header_footer.printf("Battery: OVER-DISCHARGED (%.2fV)", get_input_voltage());
+    // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（0V になる。CLAUDE.md・power.h）
+    if (power_sw_off_on_usb()) header_footer.print("Battery: OVER-DISCHARGED (SW OFF)");
+    else header_footer.printf("Battery: OVER-DISCHARGED (%.2fV)", get_input_voltage());
   } else if (power_charge_hot_active()) {
     header_footer.setTextColor(COLOR_RED);
     header_footer.printf("Battery: TOO HOT TO CHARGE (%.0fC)", power_charge_hot_temp());

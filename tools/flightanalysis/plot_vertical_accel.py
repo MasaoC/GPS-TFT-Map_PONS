@@ -92,6 +92,8 @@
 
 import os
 import numpy as np
+# NumPy 2.0 で np.trapz は np.trapezoid に改名された（trapz は非推奨）。どちらの版でも動くように
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
 import pandas as pd
 from scipy.signal import welch, savgol_filter
 import matplotlib.pyplot as plt
@@ -380,7 +382,7 @@ f_pt, P_pt = welch(a_pitch - a_pitch.mean(), FE, nperseg=512)
 
 def band(P, f, lo, hi):
     m = (f >= lo) & (f < hi)
-    return float(np.trapz(P[m], f[m])) if m.sum() > 1 else 0.0
+    return float(_trapz(P[m], f[m])) if m.sum() > 1 else 0.0
 
 
 print('  KF由来 a_z の帯域別分散 [(m/s²)²]: ' + '  '.join(

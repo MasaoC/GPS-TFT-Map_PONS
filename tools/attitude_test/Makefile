@@ -6,7 +6,7 @@ DEPS = ../../attitude.cpp ../../attitude.h ../../settings.h
 all: test yaw_test dead_test
 	@echo "--- 協調旋回（旋回中のバンク復元）---" && ./test
 	@echo "" && echo "--- 水平化・航跡ヨー・待機中の維持（GRV なし）---" && ./yaw_test
-	@echo "" && echo "--- BNO085 断線・未接続（安全側に倒れるか）---" && ./dead_test
+	@echo "" && echo "--- SCH16T 断線・未接続（安全側に倒れるか）---" && ./dead_test
 
 test: main.cpp $(DEPS)
 	g++ $(CXXFLAGS) -o test main.cpp $(COMMON)

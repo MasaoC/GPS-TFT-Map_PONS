@@ -22,6 +22,8 @@
 # 出力: spectrogram_pitch_vspeed.png
 
 import numpy as np
+# NumPy 2.0 で np.trapz は np.trapezoid に改名された（trapz は非推奨）。どちらの版でも動くように
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
 import pandas as pd
 from scipy.signal import spectrogram, savgol_filter
 import matplotlib.pyplot as plt
@@ -114,7 +116,7 @@ for name, (tg, vg, fs, unit, min_period) in signals.items():
         if lo < min_period:
             continue
         m = (f >= 1.0 / hi) & (f <= 1.0 / lo)
-        bands[(lo, hi)] = np.sqrt(np.trapz(sxx[m], f[m], axis=0)) if m.sum() >= 2 else None
+        bands[(lo, hi)] = np.sqrt(_trapz(sxx[m], f[m], axis=0)) if m.sum() >= 2 else None
     spec[name] = (t_abs, f, sxx, bands, unit)
     print(f"\n{name}: 窓{SEGMENT_SEC:.0f}秒 / {HOP_SEC:.0f}秒ずつ移動 → {len(t_abs)}列, "
           f"周期{1 / f.max():.1f}〜{1 / f.min():.0f}秒")

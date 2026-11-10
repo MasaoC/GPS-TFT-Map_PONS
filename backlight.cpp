@@ -219,7 +219,7 @@ static void log_pwm_diag(const char* why) {
     n++;
   }
   const unsigned long low_x10 = n ? (unsigned long)((uint64_t)lows * 1000u / n) : 0;
-  // ★ 2 行に分ける。log_sd() は「<秒>:」を含めて 128 バイトで切る。
+  // ★ 2 行に分けてある（log_sd() が 128 バイトで切っていたころの名残。いまは本文 256 バイトまで入る）。
   enqueueTask(createLogSdfTask(
       "BL DIAG %s: sw=%d duty=%d%% out=%d%% pin_low=%lu.%lu%% n=%lu top=%lu cc=0x%08lx",
       why, s_sw_bright ? 1 : 0, (int)lroundf(s_duty * 100.0f), (int)lroundf(s_out * 100.0f),
@@ -391,13 +391,15 @@ static float choose_target(bool sw, const char** why) {
   const char* w;
   float t;
   if (sw)                { w = "SW BRIGHT"; t = TFT_BL_DUTY_BRIGHT; }  // スイッチ High は何があっても常時最大（緊急バイパス）
+  // ★ センサー無しは減光より先に見る。どちらも TFT_BL_DUTY_DIM で点灯率は同じだが、減光を先に見ると
+  //   30 秒止まったところで表示が "IDLE DIM" に変わり、センサーが読めていないことが文字から消えた（2026-11-10 まで）。
+  else if (s_lux < 0.0f) { w = "NO SENSOR"; t = TFT_BL_DUTY_DIM; }     // センサー無し
   else if (s_dimmed) {
     // 待機中自動減光（5%）。★ 暗い所（約 1.2〜1.3 lx 未満）では自動調光の方が暗いので、そちらを超えない。
     //   超えると「減光」に入った瞬間に明るくなる。
     w = "IDLE DIM";
-    t = (s_lux >= 0.0f) ? min(TFT_BL_DUTY_DIM, auto_duty(s_lux)) : TFT_BL_DUTY_DIM;
+    t = min(TFT_BL_DUTY_DIM, auto_duty(s_lux));
   }
-  else if (s_lux < 0.0f) { w = "NO SENSOR"; t = TFT_BL_DUTY_DIM; }     // センサー無し
   else                   { w = s_als_ok ? "AUTO" : "LAST LUX"; t = auto_duty(s_lux); }  // 通常自動調光（読めなくなったら最後の照度）
   if (why) *why = w;
   return t;

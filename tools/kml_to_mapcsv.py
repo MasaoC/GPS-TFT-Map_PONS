@@ -17,13 +17,18 @@ def parse_kml(kml_file):
     map_data = []
 
     for placemark in placemarks:
-        name = placemark.find('.//kml:name', namespaces=ns).text.strip()
-        coords_text = placemark.find('.//kml:coordinates', namespaces=ns).text.strip()
-        coords_pairs = coords_text.split()
+        name_el = placemark.find('.//kml:name', namespaces=ns)
+        coords_el = placemark.find('.//kml:coordinates', namespaces=ns)
+        if coords_el is None or not (coords_el.text or '').strip():
+            continue   # 座標の無い Placemark（フォルダの説明など）は飛ばす
+        name = (name_el.text or '').strip() if name_el is not None else 'noname'
+        coords_pairs = coords_el.text.strip().split()
 
         coordinates = []
         for pair in coords_pairs:
-            lon, lat, _ = map(float, pair.split(','))
+            # KML の座標は "lon,lat" か "lon,lat,alt"。高さの無い 2 要素でも読む（3 要素決め打ちだと ValueError）
+            parts = pair.split(',')
+            lon, lat = float(parts[0]), float(parts[1])
             coordinates.append((lon, lat))
 
         map_data.append((name, coordinates))

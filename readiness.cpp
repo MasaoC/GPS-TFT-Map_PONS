@@ -67,10 +67,17 @@ static uint16_t evaluate() {
       get_gnss_hacc_mm() > (uint32_t)(READY_HACC_MAX_M * 1000.0f))
     m |= RDY_GNSS;
 
-  // IMU と姿勢。IMU を載せていない機体（GNSS ナビだけの機体）は対象外。
-  // 姿勢の機能を設定で OFF にしているときも対象外（使わないと決めたもので止めない）。
-  if (get_imu_ok()) {
-    if (!get_imu_alive()) m |= RDY_IMU;
+  // IMU と姿勢。
+  // ★ **v7.1 は SCH16T を必ずつなぐ**（J6 の FPC。2026-11-10 に決めた）。起動時に見つからない
+  //   （FPC の挿し忘れ・初期化の失敗）のも、あとで黙ったのも IMU の欠け。
+  //   1.04 までは get_imu_ok() で「載っていない機体」を対象外にしていたが、get_imu_ok() は通信が
+  //   1 秒途絶えると false に変わるので、**黙った IMU も「載っていない」になって READY と言っていた**
+  //   （RDY_IMU は事実上鳴らなかった）。
+  // 黙っているあいだの ESKF・較正・姿勢は IMU が原因なので並べない。
+  // 姿勢の機能を設定で OFF にしているときは姿勢の項目だけ対象外（使わないと決めたもので止めない）。
+  if (!get_imu_alive()) {
+    m |= RDY_IMU;
+  } else {
     if (attitude_get_rpy_enabled()) {
       if (!attitude_ready()) m |= RDY_ESKF;
       // ★ 「較正した日から日付をまたいでいる」（attitude_calib_date_stale）は**入れないこと。**

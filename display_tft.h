@@ -50,8 +50,9 @@
     // cord_tft は latLonToXY() が返す **backscreen（240x240）内の座標**なので、
     // 判定も backscreen の大きさで行う。以前は SCREEN_HEIGHT(320) と比べていたため、
     // y が 240〜320 の点を「画面内」と判定してから TFT_eSPI 側で捨てていた。
+    // 画素は 0〜BACKSCREEN_SIZE-1。BACKSCREEN_SIZE ちょうど（240）は画面の外（2026-11-10 まで中と判定していた）。
     bool isOutsideTft(){
-      return x < 0 || x > BACKSCREEN_SIZE || y < 0 || y > BACKSCREEN_SIZE;
+      return x < 0 || x >= BACKSCREEN_SIZE || y < 0 || y >= BACKSCREEN_SIZE;
     }
   };
 
@@ -120,6 +121,13 @@
   extern TFT_eSprite backscreen;  // マップ描画用 (240×240px, 16bit)
   extern TFT_eSprite header_footer;  // ヘッダ／フッタ兼用（display_pages.cpp も使う）
   extern TFT_eSprite vsi_sprite;  // VSIインジケーター (VSI_W×240px, 16bit)
+
+  // 詳細画面の見出しのフォント（AA_FONT_SMALL・黒字白背景）を header_footer に入れる。
+  // ★ 見出しの前に必ず呼ぶこと。1.04 までは setTextSize(2) だけで、字形は**前の画面が header_footer に
+  //   残したフォント**で決まっていた。ふだんは設定画面が残す AA_FONT_SMALL だったが、TAS の曲線の画面だけ
+  //   unloadFont() で抜けていて、その画面と次の画面の最初の 1 フレームが内蔵フォント ×2 の大きな字になった
+  //   （MAPLIST や GNSS DETAIL 1 の見出しは 27 文字あり、×2 では 20 文字で切れる）。
+  void header_font_detail();
 
 #endif
 

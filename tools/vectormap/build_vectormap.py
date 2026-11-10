@@ -398,7 +398,14 @@ def fetch_all_from_pbf(pbf_path, classes, cache_path=None):
     """pbf を 1 回走査して、必要な全クラスのジオメトリをまとめて取り出す。
 
     クラスごとに開き直すと 2.3GB を何度も読むことになるため、1 回で全部集める。
+    返すのは PBF_TAGS にあるクラスだけ。それ以外（公園・建物・街路）は呼び出し側（build_lod）が
+    Overpass で取る。
     """
+    # ★ **PBF_TAGS に無いクラスは扱わない。** 以前は全クラスの空リストを作って返していたので、
+    #   build_lod() が「pbf にある」とみなして Overpass に落とさず、公園・建物・街路が黙って 0 件になった。
+    #   しかもその空リストが走査キャッシュに書かれ、次からもずっと 0 件だった（古いキャッシュに残った
+    #   空のクラスも、ここで絞るので読まれない）。
+    classes = [c for c in classes if c in PBF_TAGS]
     # 走査は 2.5GB で 10 分以上かかるため、結果を WKB でキャッシュする。
     # ★ キャッシュ読み出しは osmium の import より**前**に置く。
     #   pbf 本体を消したあとでもキャッシュだけで作り直せるようにするため
@@ -1038,6 +1045,14 @@ def main():
             continue
         all_tiles[spec["lod"]] = build_lod(spec, args.land_shp, args.land_shp_hires,
                                            cache_dir, args.max_pts, stats, pbf_cache)
+
+    # ★ 指定しなかった LOD は**空のまま書く**（その縮尺では地図が何も出ない）。--lods 0 などの試作で
+    #   本番の vectormap_data.cpp を上書きしやすいので、はっきり知らせる（2026-11-10〜）。
+    missing = [spec["lod"] for spec in LODS if spec["lod"] not in want]
+    if missing:
+        print(f"\n★★ 警告: LOD {', '.join(map(str, missing))} を作っていません。{args.out} のこれらの LOD は空になり、"
+              f"その縮尺では地図が出ません。本番用は全 LOD（--lods {','.join(str(sp['lod']) for sp in LODS)}）で作ること。",
+              file=sys.stderr)
 
     n_tiles, n_bytes = emit_header(args.out, all_tiles, source_date, args, stats, args.variant)
 

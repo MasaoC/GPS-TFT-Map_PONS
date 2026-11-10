@@ -121,7 +121,7 @@ float attitude_get_yaw_acc95_deg();
 // 瞬時値は周期 2〜6.7 秒の振動が主で std 1.23 度あるので、巡航のトリム状態はこちらで見る。
 // 過去 PITCH_AVG_SEC 秒の移動平均（2026-11-07 までは時定数 10 秒の一次遅れだった）。
 float attitude_get_pitch_avg_deg();
-bool  attitude_pitch_avg_valid();          // 平均が PITCH_AVG_SEC 秒ぶん満ちたか
+bool  attitude_pitch_avg_valid();          // 平均が PITCH_AVG_SEC 秒ぶん満ちたか（IMU が途絶えたら false）
 
 // ---- 推定 TAS [m/s] ----
 // 平均ピッチを下の対気速度モデルで換算した値（docs/pons_tas.md）。平均が満ちていなければ false。
@@ -164,7 +164,7 @@ void  attitude_set_rpy_enabled(bool on);
 // ESKF のヨーが信頼できるときにしか意味を持たない。判定は呼び出し側で行うこと。
 //   speed_mps  : 風速 [m/s]
 //   dir_to_deg : 風が吹いていく方向の真方位 [度]（北=0、東=90）
-// 30 秒の平滑化が溜まる前・地上・OFF のときは false。
+// 30 秒の平滑化が溜まる前・地上・OFF・IMU が途絶えたときは false。
 bool  attitude_get_wind(float &speed_mps, float &dir_to_deg);
 bool  attitude_get_wind_enabled();
 void  attitude_set_wind_enabled(bool on);
