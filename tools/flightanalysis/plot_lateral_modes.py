@@ -58,6 +58,8 @@
 # 出力: lateral_modes.png
 
 import numpy as np
+# NumPy 2.0 で np.trapz は np.trapezoid に改名された（trapz は非推奨）。どちらの版でも動くように
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
 import pandas as pd
 from scipy.signal import welch, butter, filtfilt, coherence
 from scipy.optimize import curve_fit
@@ -223,7 +225,7 @@ def psd(r, segs):
 
 def band_power(f, P, lo, hi):
     m = (f >= 1 / hi) & (f <= 1 / lo)
-    return float(np.trapz(P[m], f[m])) if m.sum() > 1 else np.nan
+    return float(_trapz(P[m], f[m])) if m.sum() > 1 else np.nan
 
 
 def half_life(T, zeta):

@@ -108,13 +108,16 @@ void init_destinations(){
   //   ポインタを差し替えるだけなら、Core0 は新旧どちらを読んでも必ず有効な領域を指す。
   //
   //   ※ 書く順番も意味がある。
-  //     1. currentdestination を 0 に寄せる（0 番は必ず存在する）
+  //     1. currentdestination を内蔵の番号（0〜3。作り直しても必ず存在する）に寄せる
   //     2. 各要素を詰める
   //     3. **最後に** destinations_count を公開する
   //     こうすれば Core0 が見る (count, 配列) の組み合わせが常に成立する。
   //     2 の最中に読まれると「新しい名前＋古い座標」が 1 フレームだけ混ざり得るが、
   //     どちらも有効なメモリなので壊れない（起動あたり数マイクロ秒の窓）。
-  currentdestination = 0;
+  // ★ 内蔵の番号（0〜3）を選んでいたら残す。起動時に SD を掴めず飛行中に掴み直したとき、パイロンの
+  //   上書きで作り直すここを通る。0 に戻すと、**パイロットが選んだ目的地が黙って PLATHOME に変わった**
+  //   （2026-11-10 まで）。起動時（-1）と範囲外だけ 0 にする。下の作り直しが終わったら数でも確かめる。
+  if (currentdestination < 0 || currentdestination >= 4) currentdestination = 0;
   int n = 0;
   // PLATHOME: 出発地（プラットフォーム）の緯度経度
   extradestinations[n].id = current_id++;
@@ -146,6 +149,7 @@ void init_destinations(){
   extradestinations[n].size = 1;
   extradestinations[n].cords = new double[][2]{ {SHINURA_LAT, SHINURA_LON} };
   n++;*/
+  if (currentdestination >= n) currentdestination = 0;   // 内蔵の数を変えたときの保険
   destinations_count = n;   // ★ 最後に公開する（上のコメント参照）
 }
 

@@ -355,7 +355,9 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
 // PAM8302 アンプの電源を制御する（省電力対策）。
 // 再生中だけ HIGH にし、それ以外では LOW にしてアンプをシャットダウンする。
 // PIN_AMP_SD は SD（シャットダウン）ピンに相当。
+static volatile bool s_amp_on = false;   // いまアンプを入れているか（Core1 の安全弁が見る）
 void setAmplifierState(bool enable) {
+    s_amp_on = enable;
     digitalWrite(PIN_AMP_SD, enable ? HIGH : LOW);
     DEBUG_P(20250424,"Amplifier ");
     DEBUG_P(20250424,enable ? "enabled" : "disabled");
@@ -581,12 +583,31 @@ void startPlayWav(const char* filename, int priority, int min_volume, int excl_g
         //   古い優先度（例えば fixed.wav の 4）に負けて pending へ回され、
         //   鳴り出しが数秒遅れる。最低音量を入れた目的そのものを損なう。
         wav_playing_priority = priority;
-        if(sound_volume == 0 && min_volume == 0){ return; }  // volume=0 かつ override なし ならアンプ ON しない（ポップノイズ防止）
+        if(sound_volume == 0 && min_volume == 0){
+            // volume=0 かつ override なし ならアンプ ON しない（ポップノイズ防止）。
+            // ★ 割り込んだ前の WAV（最低音量つき）が入れていたアンプは、無音で再生する間は切る
+            //   （バリオ・トーンが使っていなければ。2026-11-10 まで入ったまま残った）。
+            if (!vario_mode && !sin_playing && !tone_in_gap) setAmplifierState(false);
+            return;
+        }
         setAmplifierState(true);   // アンプを ON にする
         DEBUG_P(20250424,"Playback started");
     } else {
         DEBUG_P(20250424,"Failed to load initial audio data");
     }
+}
+
+// 鳴っているものが無くなったら pending の WAV を再開する（WAV の末尾で止まったときと同じ手順）。
+// トーンが残っていれば loop_tone() に任せる（同時に鳴らさないため）。
+// ★ 末尾以外で止める経路（アンダーランの打ち切り・過放電の警報の停止）でも呼ぶこと。2026-11-10 まで
+//   呼んでおらず、待っていた音声が次に何か鳴るまで黙っていた。
+static void resume_pending_if_idle() {
+    if (wav_playing || toneBufHead != toneBufTail) return;
+    int prio = 0, pminvol = 0, pexcl = WAV_EXCL_NONE;
+    const int pidx = pop_best_pending_wav(prio, pminvol, pexcl);
+    if (pidx < 0) return;
+    pending_replay_next = true;  // pending 由来の再生であることを伝える
+    startPlayWav(WAV_ENTRIES[pidx].name, prio, pminvol, pexcl);
 }
 
 // 再生を停止し、アンプをシャットダウンする。
@@ -685,6 +706,7 @@ void __not_in_flash_func(loop_sound)(){
                 current_wav_excl      = WAV_EXCL_NONE;
                 stopPlayback();
                 DEBUGW_PLN(20250508,"Buffer underrun timeout, playback aborted");
+                resume_pending_if_idle();
             } else {
                 bufferSwapRequest = true;  // 次ループで再判定させる
             }
@@ -1095,6 +1117,15 @@ void loop_tone() {
             last_amp_guard_ms = now_ms;
             setAmplifierState(true);
         }
+        // ★ 鳴らしている WAV・トーンがあるのにアンプが切れている（Core0 の update_vario() の停止エッジと
+        //   すれ違った）。警報が無音のまま終わらないよう戻す。音量 0 で鳴らしている WAV は
+        //   startPlayWav() がわざとアンプを入れていないので触らない。
+        static unsigned long last_amp_fix_ms = 0;
+        const bool wav_audible = wav_playing && (sound_volume > 0 || wav_override_volume > 0);
+        if (!s_amp_on && (wav_audible || sin_playing) && now_ms - last_amp_fix_ms >= 100UL) {
+            last_amp_fix_ms = now_ms;
+            setAmplifierState(true);
+        }
     }
 }
 
@@ -1199,12 +1230,15 @@ void update_vario(bool mute) {
         }
     } else {
         if (prev_vario) {
-            // バリオ停止エッジ: アンプ OFF（WAV/Sinトーン未使用時のみ）
+            // バリオ停止エッジ: アンプ OFF（WAV/Sinトーン未使用時のみ。トーンの音と音の間も含む）
             vario_mode = false;
-            if (!wav_playing && !sin_playing) {
+            if (!wav_playing && !sin_playing && !tone_in_gap) {
                 pwm_set_gpio_level(PIN_PWMTONE, 512);
                 delay(3);
-                setAmplifierState(false);
+                // ★ **待った後にもう一度確かめる。** この 3ms の間に Core1 が警報の WAV やトーンを始めて
+                //   アンプを入れていると、ここで切った WAV は最後まで無音になる（2026-11-10 まで確かめずに切っていた）。
+                //   確かめてから切るまでの僅かな隙は Core1 の安全弁（loop_tone() の末尾）が拾う。
+                if (!wav_playing && !sin_playing && !tone_in_gap) setAmplifierState(false);
             }
         }
     }

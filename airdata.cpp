@@ -202,6 +202,21 @@ static bool ms5611_read_adc_result(uint32_t &val) {
     return true;
 }
 
+// ADC の生値として有り得るか。
+// ★ **0 は「変換していない」の印**（データシート: 変換の前に ADC Read を打つと 0 が返る）。チップが
+//   黙ってリセットしたときや、変換コマンドが届いていなかったときに出る。0xFFFFFF は全ビット High で、
+//   ふつうの気圧・温度では出ない。どちらも I2C の失敗として数える（2026-11-10〜）。
+//   通すと気圧が負になり、pow() が NaN を返す。**起動して最初の 1 回で踏むと基準高度（ground_alt_abs）が
+//   NaN で固まり、再起動するまで高度もバリオも出なかった。**
+static bool ms5611_adc_plausible(uint32_t v) {
+    return v != 0 && v != 0xFFFFFFu;
+}
+
+// 気圧として有り得る範囲 [hPa]。人力機の飛ぶ高さ（海面〜数百 m）より十分広く取る。
+// 外れたら（NaN もここで落ちる）そのサイクルは捨てて I2C の失敗として数える。
+static const float MS5611_P_MIN_HPA = 300.0f;
+static const float MS5611_P_MAX_HPA = 1100.0f;
+
 // D1・D2 の生値からキャリブレーション補正済みの気温・気圧を計算する（データシート 4.9 章）。
 //
 // 変数名の意味（データシートに準拠）:
@@ -362,8 +377,15 @@ bool ms5611_init() {
 
 // D1_raw と last_D2_raw から補正計算・高度計算・ウィンドウ処理を実行する。
 // WAIT_D2 完了時に呼ばれる（D1→D2 の毎サイクル完了時）。
-static bool ms5611_process_data() {
-    ms5611_calculate(D1_raw, last_D2_raw, last_temperature, last_pressure);
+// valid: 気圧として有り得る値だったか（false のときは何も更新していない。呼び出し側が失敗として数える）。
+static bool ms5611_process_data(bool &valid) {
+    float t, p;
+    ms5611_calculate(D1_raw, last_D2_raw, t, p);
+    // ★ 有り得ない気圧は使わない（基準高度・last_pressure・窓のどれにも入れない。理由は上の MS5611_P_*）。
+    valid = (p >= MS5611_P_MIN_HPA && p <= MS5611_P_MAX_HPA);   // NaN は比較が false なので落ちる
+    if (!valid) return false;
+    last_temperature = t;
+    last_pressure    = p;
     float raw_alt_abs = pressure_to_altitude(last_pressure);
 
     // 起動時の高度をグランドレベル（0m）として記録
@@ -377,7 +399,7 @@ static bool ms5611_process_data() {
     float raw_alt = raw_alt_abs - ground_alt_abs;  // 起動地点からの相対高度 [m]
 
     // トリム平均によるオーバーサンプリング:
-    // VSPEED_WINDOW_MS 分のサンプルをバッファに蓄積し、挿入ソート後に上下15%を棄却して
+    // VSPEED_WINDOW_MS 分のサンプルをバッファに蓄積し、挿入ソート後に上下 2 つずつ（約 10 サンプルの 20%。上の定義）を棄却して
     // トリム平均を求める。プロペラ干渉（~4.5Hz）による周期的外れ値を除去する。
     if (win_start == 0) win_start = millis();
     // 異常値（NaN・Inf・範囲外）はバッファに追加しない
@@ -429,7 +451,9 @@ static bool ms5611_process_data() {
         win_start         = win_now_ms;
         return true;   // ウィンドウ完了（VSI 再描画のトリガー）
     } else {
-        last_altitude = raw_alt;    // ウィンドウ未完了時は瞬時値
+        // ウィンドウ未完了時は瞬時値（VARIO DETAIL の表示用。KF へは窓が閉じたときのトリム平均だけが入る）。
+        // ★ 範囲外・NaN の瞬時値は入れない（窓と同じ判定）。
+        if (raw_alt_valid) last_altitude = raw_alt;
         return false;  // ウィンドウ未完了、last_vspeed 未更新
     }
 }
@@ -508,7 +532,7 @@ bool airdata_update() {
             // 変換時間が経過するまで待機
             if (millis() - convert_start < OSR_DELAY_MS) return false;
             // D1 を読み取り、続けて D2（温度）変換を開始
-            if (!ms5611_read_adc_result(D1_raw)) {
+            if (!ms5611_read_adc_result(D1_raw) || !ms5611_adc_plausible(D1_raw)) {
                 ms5611_note_failure();
                 return false;
             }
@@ -523,13 +547,19 @@ bool airdata_update() {
         case MS5611_WAIT_D2: {
             // 変換時間が経過するまで待機
             if (millis() - convert_start < OSR_DELAY_MS) return false;
-            if (!ms5611_read_adc_result(last_D2_raw)) {
+            if (!ms5611_read_adc_result(last_D2_raw) || !ms5611_adc_plausible(last_D2_raw)) {
                 ms5611_note_failure();
                 return false;
             }
             ms5611_state = MS5611_IDLE;
+            bool valid = false;
+            const bool done = ms5611_process_data(valid);
+            if (!valid) {                   // 有り得ない気圧（PROM が化けた等）。続けば lost → 復旧で PROM を読み直す
+                ms5611_note_failure();
+                return false;
+            }
             ms5611_fail_count = 0;          // 1 サイクル通ったので失敗の連続は切れた
-            return ms5611_process_data();
+            return done;
         }
     }
     return false;

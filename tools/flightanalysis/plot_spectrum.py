@@ -21,6 +21,8 @@
 # 出力: spectrum_pitch_vspeed.png
 
 import numpy as np
+# NumPy 2.0 で np.trapz は np.trapezoid に改名された（trapz は非推奨）。どちらの版でも動くように
+_trapz = getattr(np, 'trapezoid', None) or np.trapz
 import pandas as pd
 from scipy.signal import welch, savgol_filter
 import matplotlib.pyplot as plt
@@ -105,7 +107,7 @@ def band_rms(f, p, lo_period, hi_period):
     m = (f >= 1.0 / hi_period) & (f <= 1.0 / lo_period)
     if m.sum() < 2:
         return np.nan
-    return float(np.sqrt(np.trapz(p[m], f[m])))
+    return float(np.sqrt(_trapz(p[m], f[m])))
 
 
 results = {}

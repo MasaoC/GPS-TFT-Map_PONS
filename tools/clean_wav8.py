@@ -26,6 +26,7 @@ import wave
 import numpy as np
 import argparse
 import os
+import tempfile
 
 # ---- 調整パラメータ -----------------------------------------
 GATE_LSB     = 2.5    # ノイズゲートのしきい値 [LSB]。無音部の RMS は約 0.7 なので約 3.5 倍
@@ -165,10 +166,14 @@ def main():
         out = process(d, sr)
         dst = os.path.join(args.outdir, os.path.basename(path)) if args.outdir else path
         if args.dry_run:
-            tmp = '/tmp/_clean8_probe.wav'
-            save_u8(tmp, out, sr)
-            after = measure(tmp)
-            os.remove(tmp)
+            # 一時ファイルは OS の一時フォルダへ（'/tmp' 決め打ちは Windows に無い）
+            fd, tmp = tempfile.mkstemp(suffix='.wav', prefix='_clean8_probe_')
+            os.close(fd)
+            try:
+                save_u8(tmp, out, sr)
+                after = measure(tmp)
+            finally:
+                os.remove(tmp)
         else:
             save_u8(dst, out, sr)
             after = measure(dst)

@@ -11,7 +11,10 @@
 #include <cmath>
 
 static void feed_static(int n, uint32_t t0, uint32_t step) {
-    float g0[3]={0,0,0}, a0[3]={0,0,9.80665f};
+    // ★ 水平に置いた比力（機体の上向き g）をセンサー座標で。main.cpp / yaw_test.cpp の
+    //   body_to_sensor({0,0,g}) と同じ {-g,0,0}。2026-11-10 までは {0,0,g}（機首が真上／真下）で、
+    //   ロールが定まらない特異点に置いていたため、「断線後にロールが回されない」の確認がほとんど効いていなかった。
+    float g0[3]={0,0,0}, a0[3]={-9.80665f,0,0};
     for (int i=0;i<n;i++){
         test_set_us(t0 + i*step);
         attitude_on_accel(a0);

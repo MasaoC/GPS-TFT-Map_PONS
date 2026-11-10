@@ -235,6 +235,8 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
       s_rtc_alive_on_boot = true;
     }
   }
+  // 時刻も範囲を確かめる（日付と同じ考え方。sec は閏秒の 60 まで）。範囲外は「時刻なし」として扱う
+  if (ubx_time_valid && (p[8] > 23 || p[9] > 59 || p[10] > 60)) ubx_time_valid = false;
   if (ubx_time_valid) {
     ubx_hour  = p[8];
     ubx_min   = p[9];
@@ -1552,7 +1554,9 @@ unsigned long last_demo_gnss_update = 0;
 //   低速（停止近く）→ 最大 15 秒間隔（静止中に大量の点が積まれるのを防ぐ）
 //   高速（約 20m/s）→ 最小 1 秒間隔
 void add_latlon_track(float lat,float lon){
-  int tracklog_interval = constrain(50000/(1.0+stored_gs/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
+  // ★ 速度は accessor（get_gnss_mps()）で読む。stored_gs だとミラー中は**ボート自身の速度**になり、
+  //   止まっているボートでは飛んでいる機体の航跡がいつも 15 秒おきに間引かれる。
+  int tracklog_interval = constrain(50000/(1.0+get_gnss_mps()/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
   if(is_demo_active()){
     tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
   }
@@ -1627,12 +1631,18 @@ bool gnss_new_location_arrived(){
   //   受信モードは「CSV の代わりに電波からリプレイする」実装なので、
   //   apply_replay_row() と同じくここで刻みを作るのが筋。
   //   ★ 航跡をここで足すのは try_enque_savecsv() が自機の ubx_* 待ちだから
-  //     （あちらはボート自身の CSV を書く役）。二重登録は add_latlon_track() の
-  //     間隔制限が防ぐ。
+  //     （あちらはボート自身の CSV を書く役）。ミラー中はあちらでは足さない。
+  //   ★ 位置を進めるのは**送信機が fix しているフレームだけ**（自機の NAV-PVT で
+  //     ubx_pos_valid を見るのと同じ）。起動してまだ一度も fix していない送信機は
+  //     (0, 0) を送ってくるので、通すと Auto10km が「10km 以上離れた」と復路へ切り替えて
+  //     SD に保存し、「100km 以上離れています」も鳴り、航跡に (0, 0) が積まれる。
+  //     方位の刻み（newcourse_arrived）は自機と同じく fix と無関係に立てる。
   if (link_mirror_active() && link_take_new_frame()) {
-    new_location_arrived = true;
+    if (link_get_fix_ok()) {
+      new_location_arrived = true;
+      add_latlon_track(get_gnss_lat(), get_gnss_lon());
+    }
     newcourse_arrived    = true;
-    add_latlon_track(get_gnss_lat(), get_gnss_lon());
     // MAX G/S も機体の値（下の UBX 経路参照）。sAcc は電波に載っていないので、
     // 機体の gnssFixOK と GNSS の断線（LINK_ST_GNSS_LOST）で判断する。
     feed_maxgs((float)get_gnss_mps(),
@@ -1681,6 +1691,15 @@ void set_replaymode(bool replaymode){
   ubx_time_valid = false;
   ubx_pvt_valid  = false;
   ubx_gnssFixOK  = false;   // 書き込み側の保険（get_gnss_fixok()）も一緒に落とす
+  // 位置と速度も同じ。apply_replay_row() が fix あり・CSV の速度を入れているので、
+  // 抜けたら本物の NAV-PVT が来るまで「fix なし・止まっている」にしておく。
+  // GNSS が生きていれば 0.5 秒で上書きされるが、黙っている GNSS だと
+  // 再生した飛行の fix と速度が残り、update_moving()（power.cpp）が「動いている」と見続ける。
+  if (was_replay && !replaymode) {
+    ubx_pos_valid  = false;
+    stored_fixtype = 0;
+    stored_gs      = 0;
+  }
 }
 // GNSS モジュールからの Serial データを受信・解析するメインループ処理。
 // 描画の途中でも複数回呼ばれることで、GNSS データの取りこぼしを防ぐ（id は呼び出し箇所識別子）。
@@ -1862,7 +1881,11 @@ void gnss_loop(int id) {
   if (ubx_pvt_updated) {
     ubx_pvt_updated = false;
     last_gnss_time = millis();
-    if (!is_demo_active()) {
+    // ★ ミラー中は自機（ボート）の NAV-PVT で刻みを立てない。刻みは電波のフレームが作る
+    //   （gnss_new_location_arrived()）。立てると 1Hz で変わる機体の方位を
+    //   ボートの 2Hz ＋ 電波の 1Hz で旋回角速度の窓へ押し込み、窓の長さがばらついて
+    //   旋回音が揺れる。位置のほうも、送信機が fix していないフレームを止めた意味が無くなる。
+    if (!is_demo_active() && !link_mirror_active()) {
       if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
     }
@@ -1930,7 +1953,10 @@ void try_enque_savecsv(){
 
   // 位置・日時が全て揃っていて、前回保存から 400ms 以上経過した時のみ保存（2Hz GNSS に合わせて調整）
   if(all_valid && millis() - last_gnss_save_time > 400){
-    if(!is_demo_active()){ //デモは別の場所で登録済み。
+    // デモとミラーは別の場所（gnss_new_location_arrived()）で登録済み。
+    // ★ ミラー中にここで足すと、ボートの fix で**機体の位置**（accessor が差し替える）を積むことになり、
+    //   送信機が fix していないときの (0, 0) も入ってしまう。
+    if(!is_demo_active() && !link_mirror_active()){
       add_latlon_track(get_gnss_lat(),get_gnss_lon());
     }
 

@@ -27,7 +27,7 @@
 //     F = [[1, dt,  0],
 //          [0,  1, -dt],
 //          [0,  0,   1]]
-//     B = [dt²/2, dt, 0]^T
+//     B = [0, dt, 0]^T   （前進オイラー。位置の ½·a·dt² の項は入れていない。下の kf_predict() のコメント）
 //     x_pred = F*x + B*a_k
 //     P_pred = F*P*F^T + Q   (Q = diag([0, q_vel, q_bias]))
 //
@@ -236,7 +236,10 @@ static float compute_earth_z_accel(float ax, float ay, float az,
 //
 // 状態遷移: x_pred = F*x + B*a_k
 //   F = [[1, dt, 0], [0, 1, -dt], [0, 0, 1]]
-//   B = [dt²/2, dt, 0]^T
+//   B = [0, dt, 0]^T
+// ★ 位置の更新は前進オイラー（z += v·dt）で、½·(a−b)·dt² の項は**入れていない**（2026-11-10 までコメントだけ
+//   dt²/2 と書いてあった）。30ms では 1m/s² でも 0.45mm と表示に効かず、このバリオはこの式で調整してある
+//   （settings.h の IMU_KF_PREDICT_INTERVAL_US）。足すなら F の [0][2] にも −dt²/2 を入れて、調整をやり直すこと。
 //
 // 共分散伝搬: P_pred = F*P*F^T + Q
 //   Q = diag(0, q_vel_eff, kf_q_bias)
@@ -578,23 +581,39 @@ float get_imu_vspeed() {
 //   送信機の MS5611 が死んでいる場合は電波から判別できないが、そのとき送信機の
 //   KF は初期化されず V/S は 0 のままなので、バーも音も出ない（結果は一致する）。
 
+// ★ **リプレイ中は CSV の KF_Vspeed だけを見る**（ミラー中と同じく、自機のセンサーの有無で分岐しない）。
+//   2026-11-10 まで再生の分岐が無く、机の上で自機の IMU が無いと再生中のバリオが CSV ではなく
+//   **自機の気圧 V/S（≒0）**になり、自機の MS5611 が無いと再生中の VSI バーが消えていた。
+//   KF_Vspeed 列の無い古い CSV では V/S を出さない（自機の値を「再生した飛行の V/S」として出さない）。
+
 // V/S を出せる状態か。気圧が無いと KF が初期化されないので V/S は出ない。
+// ★ **飛行中に MS5611 が途絶えたときもここで落ちる。** KF は IMU の加速度だけで predict を続けて
+//   漂う（気圧の観測が無いので加速度のゼロ点ずれを積分する）ので、出してはいけない。
+//   音（update_vario）・VSI・無線はどれも vario_vspeed_mps() を通すので、そこで 0 にしてある。
 bool vario_source_ok() {
   if (link_mirror_active()) return link_has_value(RHAVE_KFVS);
+  if (getReplayMode())      return replay_has_value(RHAVE_KFVS);
   return get_airdata_ok();
 }
 
-// 表示・音に使う V/S。IMU が途絶していれば MS5611 単独の上昇率へ落とす。
+// 表示・音・無線に使う V/S。IMU が途絶していれば MS5611 単独の上昇率へ落とす。
+// 出せないとき（vario_source_ok() が false）は 0（音は止まり、VSI は vario_source_ok() で消える）。
+// ★ 2026-11-10 までは音がこの判定を見ておらず、飛行中に MS5611 が途絶えると、VSI は消えるのに
+//   漂った KF の V/S でバリオが鳴り続けていた。
 float vario_vspeed_mps() {
+  if (!vario_source_ok())   return 0.0f;
   if (link_mirror_active()) return get_imu_vspeed();   // = link_get_kf_vspeed()
+  if (getReplayMode())      return get_imu_vspeed();   // = replay_get_kf_vspeed()
   return get_imu_alive() ? get_imu_vspeed() : get_airdata_vspeed();
 }
 
 // デッドバンド。KF 融合中（IMU 生存 + MS5611 接続）は精度が高いので狭くする。
+// リプレイ中は CSV の KF_Vspeed を鳴らすので KF 側（記録した機体の IMU が死んでいたかは CSV に無い）。
 float vario_deadband_mps() {
   if (link_mirror_active())
     return (link_sender_status() & LINK_ST_IMU_ERROR) ? VARIO_DEADBAND_BARO_MPS
                                                       : VARIO_DEADBAND_KF_MPS;
+  if (getReplayMode()) return VARIO_DEADBAND_KF_MPS;
   return (get_imu_alive() && get_airdata_ok()) ? VARIO_DEADBAND_KF_MPS
                                                : VARIO_DEADBAND_BARO_MPS;
 }

@@ -751,6 +751,13 @@ bool e220_wake_ready() {
     return true;
 }
 
+// ★★ **この関数の直後に UART へ書かないこと。** ここは切替の 2ms 後に AUX を 1 回見るだけなので、
+//   セルフチェックが**始まる前**の High（E220_WAKE_SETTLE_MS のコメント）を見落とし得る。
+//   いまの呼び出し元は、直後に mode 3 へ潜る（link_probe_module）・受信を待つ（link_apply_power_state）・
+//   500ms 待ってから雑音を測る（link_watch_module）だけで、書き込みは来ない（2026-11-10 に確かめた）。
+//   電波を出す e220_send() は link_tx_tick() が e220_wake_ready() を通してから呼ぶ
+//   （e220_send() の中の `if (s_asleep) e220_wake();` は保険で、いまは通らない）。
+//   起床の直後に書き込む経路を足すときは e220_wake_begin() / e220_wake_ready() を通すこと。
 void e220_wake() {
     s_waking = false;      // ブロッキング版が呼ばれたら非同期の途中状態は捨てる
     s_wakeSawLow = false;

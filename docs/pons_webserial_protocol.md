@@ -63,6 +63,8 @@
   PONS: PONS:READY,Version 7,0.996,20261103
   ```
 
+* PC 接続の画面のまま `PONS:CONNECT` をもう一度受けても、戻り先（接続前の画面）は上書きしない（2026-11-10〜。ビューアのページを読み直したとき）。
+
 ### (2) ファイル一覧要求 (LIST)
 SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フォルダ、およびルートディレクトリ）を走査して一覧を返す。
 * **PC ➔ PONS**: `PONS:LIST`
@@ -139,7 +141,8 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
    - `PONS:CONNECT` を受信すると、動作モードを `MODE_PCCONNECT` に切り替え、TFT液晶に「USB SERIAL LINK ACTIVE / SD Protected」の専用画面を表示。
    - コマンドを受信すると、Core1 へのタスク（`TASK_SERIAL_LIST`, `TASK_SERIAL_GET`）としてエンキュー。
 2. **Core1 の役割**:
-   - `MODE_PCCONNECT` 移行時に、オープン中だったすべてのログ（飛行CSV、受信CSV、姿勢ログ、生IMUログ）を直ちに `flush()` / `sync()` & `close()` して追記を一時停止。
+   - 開いているログ（飛行CSV、受信CSV、生IMUログ、log.txt）は、`LIST` / `GET` の処理の頭（`webserial_prepare_sd()`）で `sync()` & `close()` する。
+     生IMUログは `PONS:CONNECT` を受けた次の周回から積むのを止め（`imulog_set_paused()`）、書き出し待ちのバッファも捨てる。
    - SDカードを「完全読み出し専用」に固定。
    - `serial_list_csv_files()`：`data/` ディレクトリ、`received/` ディレクトリ（PONS Link 受信ログ）、およびルートディレクトリを自動走査し、ファイル一覧（名前・バイト数・更新日時）を出力。
    - `serial_send_csv_file()`：指定されたファイルを 512B チャンクで安全に読み出し、CRC32 を算出しながら `Serial.write()` へストリーミング送出。

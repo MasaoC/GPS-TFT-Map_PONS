@@ -241,6 +241,11 @@ class AttitudeESKF:
         Q[9:12, 9:12] = np.eye(3) * (self.sba ** 2) * dt
 
         self.P = Phi @ self.P @ Phi.T + Q
+        # ヨーの分散だけ頭打ちにする（機上 attitude_on_gyro() と同じ。settings.h の ESKF_YAW_SIGMA_MAX_DEG = 180）。
+        # 2026-11-10 まで無く、ヨーの観測が無い区間で機上より大きく育っていた。縮む側は触らない。
+        yvar_max = np.deg2rad(180.0) ** 2
+        if self.P[2, 2] > yvar_max:
+            self.P[2, 2] = yvar_max
 
     # ---------------- 観測（GNSS 速度）----------------
     def update_velocity(self, v_enu, sacc):
@@ -538,11 +543,13 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 bias_sum[:] = 0.0
                 bias_n = 0
             ground_flags[k] = ground
+            # ★ ヨーレートを作る回転は**伝播する前**の姿勢（機上 attitude_on_gyro() は伝播の前に作った R を使う）。
+            #   2026-11-10 までは predict の後の f.q で作っていて、1 サンプルぶん機上と違っていた。
+            R_ = quat_to_R(f.q)
             f.predict(w[i], acc[i], dt)
             # ---- ワールド系ヨーレートの持続成分（機上 yaw_rate_lp_ と同じ式）----
             wz_dps = 0.0
             if dt > 0.0:
-                R_ = quat_to_R(f.q)
                 wz = float(R_[2] @ (np.asarray(w[i], float) - f.bg))
                 wz_dps = np.degrees(wz)
                 yaw_rate_lp += (wz_dps - yaw_rate_lp) * (dt / (2.0 + dt))

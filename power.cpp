@@ -116,7 +116,7 @@ static void charge_hot_tick(uint32_t now) {
   s_hot_temp = t;
   if (!s_hot) {
     if (t < CHARGE_HOT_C) { s_hot_since = 0; return; }
-    if (s_hot_since == 0) { s_hot_since = now; return; }
+    if (s_hot_since == 0) { s_hot_since = now ? now : 1; return; }       // 0 は「まだ」の印
     if (now - s_hot_since < CHARGE_HOT_HOLD_MS) return;
     s_hot = true;
     s_hot_alert = 0;
@@ -203,7 +203,7 @@ void power_tick() {
     if (now < POWER_FAULT_ARM_MS || !fault_condition()) {
       s_cond_since = 0;
     } else if (s_cond_since == 0) {
-      s_cond_since = now;
+      s_cond_since = now ? now : 1;   // 0 は「まだ」の印
     } else if (now - s_cond_since >= POWER_FAULT_HOLD_MS) {
       s_fault = true;
       s_last_alert = 0;

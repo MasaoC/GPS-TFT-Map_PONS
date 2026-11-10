@@ -1386,7 +1386,11 @@ static void screen_moving_exit_tick() {
     break;
   case MODE_IMUDETAIL:
     // 案内の読み上げを地図の上に残さない
-    if (imu_guide_page >= 0) enqueueTask(createStopWavTask(WAV_EXCL_ESKF_GUIDE));
+    // ★ IMU の案内は**案内を抜けたあとも止める**。最後の 1 文（guide_eskf_apply.wav。約 10 秒の
+    //   「…APPLY してください」）は較正の画面に着いてから流すので、imu_guide_page はもう -1。
+    //   ページで見ると止まらず、地図の上で「APPLY してください」と言い続けた（2026-11-10 まで）。
+    //   排他グループで止めるので、案内の音声が鳴っていなければ何も起きない。
+    enqueueTask(createStopWavTask(WAV_EXCL_ESKF_GUIDE));
     if (tas_guide_page >= 0) enqueueTask(createStopWavTask(WAV_EXCL_TAS_GUIDE));
     imu_guide_page = -1;
     tas_guide_page = -1;
@@ -1437,7 +1441,9 @@ static void handle_serial_command(const char *raw_cmd) {
   if (strcmp(cmd, "PONS:CONNECT") == 0) {
     webserial_connected = true;
     webserial_cancel_requested = false;
-    prev_screen_mode = screen_mode;
+    // ★ PC 接続のまま CONNECT をもう一度受けたとき（ビューアのページを読み直した等）に、戻り先を
+    //   MODE_PCCONNECT で上書きしない（上書きすると抜けたときに元の画面ではなく地図へ戻る）。
+    if (screen_mode != MODE_PCCONNECT) prev_screen_mode = screen_mode;
     screen_mode = MODE_PCCONNECT;
     redraw_screen = true;
     enqueueTask(createLogSdTask("PC CONNECTED (WEB SERIAL ACTIVE)"));
@@ -1930,6 +1936,9 @@ void shortPressCallback() {
 // この画面を出るのは Exit 項目からのみ（長押しで戻る動作は持たせていない）。
 // ページ1の Exit。設定を保存して地図へ戻る。
 static void imu_exit() {
+  // 案内の最後の 1 文（guide_eskf_apply.wav）が鳴っていたら止める（地図の上で「APPLY してください」と言わない。
+  // screen_moving_exit_tick() と同じ理由）
+  enqueueTask(createStopWavTask(WAV_EXCL_ESKF_GUIDE));
   enqueueTask(createSaveSettingTask());
   screen_mode = MODE_MAP;
   enqueueTask(createPlayMultiToneTask(1568, 80, 1));
@@ -2607,8 +2616,11 @@ void update_course_warning(float degpersecond) {
     return;
   }
 
-  //移動していない時,GNSSロスト時は発動しない。
-  if (get_gnss_mps() < 2 || get_gnss_numsat() == 0) {
+  // 移動していない時,GNSSロスト時は発動しない。
+  // ★ fix も見る（get_gnss_fix() はミラー・デモ・リプレイの供給元ごとに答える）。fix が無くても NAV-PVT は
+  //   来るので、ここは毎回呼ばれる。衛星数と速度だけでは、衛星 1〜3 個で fix していないときの速度の
+  //   ばらつきで積算が進み得た（2026-11-10 まで）。
+  if (!get_gnss_fix() || get_gnss_mps() < 2 || get_gnss_numsat() == 0) {
     course_warning_index = 0;
   }
   //正しい方向に変化している時はindexを減らす。

@@ -352,7 +352,9 @@ def report(df, parts):
         chk = "-"
         if len(gn) >= 2:
             d_us = gn["t"].iloc[-1] - gn["t"].iloc[0]
-            d_gps = (gn["s_us"].iloc[-1] - gn["s_us"].iloc[0]) / 1000.0
+            # iTOW は GPS 週の中の ms。週の切り替わり（土曜 08:59:42 JST ごろ）をまたぐと差が負になるので、
+            # 1 週（604800000ms）で割った余りを取る（取らないと時刻の検算が NG と誤判定する）
+            d_gps = ((gn["s_us"].iloc[-1] - gn["s_us"].iloc[0]) % 604800000) / 1000.0
             if abs(d_gps - d_us) > 5.0:
                 chk = "NG"
                 warn.append((sess, d_us, d_gps))
