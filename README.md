@@ -13,12 +13,14 @@
 >   追加後は KiCad の ERC/DRC で確認してから基板を発注してください。
 > * ご不安な場合は masaochiguchi@gmail.com までご連絡ください。
 
-# GPS(GNSS)-TFT-map_PONS=Pilot Oriented Navigation System v7
-<img width="1312" height="368" alt="ponsv6image" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
-<img width="240" height="52" alt="logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
+# PONS — 鳥人間コンテスト向け 人力飛行機用 GPS/GNSS ナビ（航法装置）v7
+<img width="1312" height="368" alt="PONS の実機（v6）。白い 3D プリントケースの 2.8 インチ TFT に、琵琶湖の地図・対地速度・方位・目的地までの距離を表示している / PONS GNSS navigation display for human-powered aircraft showing a Lake Biwa map" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
+<img width="240" height="52" alt="PONS ロゴ / PONS logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
 
-人力飛行機のパイロットが使いやすいことを目標とした航法装置です。琵琶湖の鳥人間コンテストに特化しています。
-GPS/GNSS navigation for human-powered aircraft, specialized for the Japan International Birdman Rally at Lake Biwa, Japan.
+**PONS（Pilot Oriented Navigation System）**は、人力飛行機のパイロットが使いやすいことを目標とした航法装置です。琵琶湖の鳥人間コンテストに特化しています。
+鳥人間チームの電装（パイロット用の計器・GPS ナビ）として、地図・対地速度・方位・姿勢・昇降計（バリオ）・風向風速を 1 つの画面と音声で伝えます。
+基板（KiCad）・ファームウェア（Arduino）・3D プリントケースのデータをオープンソースで公開しています。
+GPS/GNSS navigation for human-powered aircraft, specialized for the Japan International Birdman Rally at Lake Biwa, Japan. → [English summary](#english-summary)
 
  * **現在開いている「v7」は2027、2028年向けに開発設計中のブランチで、正常に動作しない可能性があります。**
  * **このブランチ（`PONSv7`）は BNO085 を搭載した初代 v7 基板用です。**
@@ -88,6 +90,7 @@ SD に残るログを `tools/` の解析にかけると、機体特性の分析�
 - [ツール (tools/)](#ツール-tools)
 - [着水（水没）後の処理](#着水水没後の処理)
 - [開発者向け](#開発者向け) / [ライセンス](#ライセンス)
+- [English summary](#english-summary)
 
 ---
 
@@ -97,7 +100,7 @@ SD に残るログを `tools/` の解析にかけると、機体特性の分析�
 * 大阪大学 albatross にて使用実績あり
   （2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 / 2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。2025 年大会優勝。
   * **v7 はまだ大会で使っていません。** v7 基板は実機で動いており、無線（PONS Link）も v7 で送受信を確認済みです。
-* 最新のソフトウェアバージョンは **0.998v7**（Build 20261027）。
+* 最新のソフトウェアバージョンは **0.999v7**（Build 20261107）。
 * 3D プリントケースおよび基板データ（KiCad）あり。ケースは PLA_LW が軽量でおすすめです。
   **v7 用ケースは作成中**で、現状 `case_3Dmodel/` には v6 用のデータしか入っていません。
 * PONS for HPA = Pilot Oriented Navigation System for Human-powered aircraft。
@@ -1211,6 +1214,33 @@ SD が無い・壊れている機体でも警報の音声が鳴るようにす�
 4. DIP スイッチは内部で錆が発生し接触不良になる恐れがあるため交換推奨。
    GNSS バックアップのリチウム二次ボタン電池は腐食するので、交換を推奨。
 5. バッテリーは基板部分をクリーンナップして保護しなおし。異常な電圧値の履歴がなければ再利用可。
+
+## English summary
+
+**PONS (Pilot Oriented Navigation System)** is an open-source GPS/GNSS navigation display for pilots of
+human-powered aircraft (HPA), built for the Japan International Birdman Rally at Lake Biwa, Japan.
+The board design (KiCad), the firmware (Arduino on RP2350) and the analysis tools are all in this repository.
+Most of the documentation is in Japanese.
+
+* **This branch (`PONSv7`) is for the original v7 board with a BNO085 IMU.** The newer v7.1 board
+  (Murata SCH16T-K01 IMU) is on the default branch [`PONSv7.1`](https://github.com/MasaoC/GPS-TFT-Map_PONS/tree/PONSv7.1).
+* **Flight record**: used by the Osaka University "albatross" team on the chase boat (2024–2026) and on board
+  the aircraft (2025, 2026). The team won the 2025 rally. v3–v6 are flight-proven; v7 has not flown in a rally yet.
+* **Voice guidance**: the pilot does not need to watch the screen. Course-deviation and track-change alerts
+  and a bank-angle warning are spoken (in Japanese).
+* **Auto 10 km mode**: switches from outbound to inbound guidance at the 10 km turnaround by itself.
+* **Attitude estimation (ESKF)**: fuses the BNO085's raw gyro and accelerometer with GNSS track and ground speed.
+  The magnetometer is not used.
+* **Wind and estimated true airspeed** without an airspeed sensor, from the averaged pitch angle and GNSS ground speed.
+* **Variometer**: a Kalman filter fusing vertical acceleration (BNO085) and an MS5611 barometer.
+* **PONS Link**: 920 MHz LoRa telemetry (E220-900T22S(JP)) that mirrors the pilot's screen on the chase boat.
+  350 m measured range.
+* **Hardware**: RP2350B, u-blox SAM-M10Q, 2.8-inch 1000-nit TFT, built-in OpenStreetMap vector map,
+  microSD logging at 2 Hz. 59 × 81 × 20 mm.
+* **Tools**: a browser-based Flight Viewer (WebSerial), Google Earth KML export and flight analysis scripts
+  (phugoid period, load factor).
+
+Contact: masaochiguchi@gmail.com (X: masao_mobile)
 
 ## 開発者向け
 
