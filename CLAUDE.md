@@ -298,7 +298,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1）。**v7 と v7.1 で同じファイル** |
-| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS`。SD の読み書きは mysd.cpp・Core1。**v7 と v7.1 で同じファイル** |
+| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。**外から GNSS へ時刻を入れる口 `gnss_dbd_give_time()` もここ**（2026-11-10。PC の `PONS:TIME`。LoRa の時刻もここへ渡すだけにして、入れる条件を呼び出し側に書かない）。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS / COLD,TIME / COLDONLY,TIME`。SD の読み書きは mysd.cpp・Core1。**v7 と v7.1 で同じファイル** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。PONSv7 と並びを同じに保つ |
 | [tas.cpp](tas.cpp) | 推定 TAS の表示の判断（2026-11-07）。ヘッダー右の大きい枠に何を出すか（真方位 / 平均ピッチ / 推定 TAS / 地上の横線つき TAS）を、設定・地上と飛行中・**表示の供給元 4 つ**から 1 か所で決める。描画は `tas_header()` を読むだけ。仕様は [docs/pons_tas.md](docs/pons_tas.md) |
@@ -309,7 +309,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - GNSS の TTFF を SD の DBD と LoRa の助け合いで縮める計画: [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)
-  （段階 1 の SD の DBD は 2026-11-09 に実装・実機未確認。無線の助け合いは計画のみ）
+  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10 に実装・実機未確認。無線の助け合いは計画のみ）
 - 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.1）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
 - 充電中のバッテリー残量(%)・残り時間推定 仕様書: [docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)
 - SCH16T の実機立ち上げ: [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md)

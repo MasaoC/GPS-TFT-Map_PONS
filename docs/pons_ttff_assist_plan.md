@@ -1,6 +1,8 @@
 # GNSS の TTFF を LoRa で助け合う — 計画
 
 > **段階 1（SD の DBD。§3）は 2026-11-09 に実装した**（v7・v7.1。`gnss_dbd.cpp`。**実機ではまだ確かめていない**。§3.5）。
+> **PC から時刻を入れる口（§3.6）は 2026-11-10 に実装した**（USB シリアルの `PONS:TIME`。Flight Viewer が接続のたびに送る。実機未確認）。
+> LoRa でもらう時刻も同じ口（`gnss_dbd_give_time()`）に渡す作り。
 > 無線の助け合い（§4）は計画のみ。段階 0（§7）と段階 1 の実機の結果を見てから決める。
 > v7（BNO085）と v7.1（SCH16T）の両方が対象。無線の並びは両方で同じに保つ（CLAUDE.md）。
 > 文書はいまこのブランチ（PONSv7.1）にだけある。
@@ -14,6 +16,7 @@
 - 2 つの手を組み合わせる。
   1. **SD に GNSS の航法データベース（DBD）を置いておき、起動したら GNSS へ戻す**（無線を使わない）。
   2. **fix している仲間（機体・ボート）から LoRa で時刻と位置をもらい、GNSS へ入れる**（UBX-MGA-INI）。
+     PC につないでいれば、PC の時刻も同じように入れる（§3.6。2026-11-10〜）。
 - 予測軌道（AssistNow Autonomous。以下 ANA）を使うには、GNSS が**大まかな絶対時刻**を知っている必要がある
   （§2.2）。BT1 が切れると時刻も消える。ただし時刻は 1 衛星から読めるので、エフェメリスよりずっと早く手に入る。
   **1 は単独でも、GNSS が時刻を読んだところから効く見込み**（§3.4。DBD が新しいときだけ）。2 があれば最初から効く。
@@ -134,7 +137,8 @@
 ### 3.3 いつ戻すか
 - **起動時に時計が死んでいたときだけ**（`gnss_rtc_alive_on_boot()` が false）。生きていれば BBR のほうが新しいので触らない。
 - 順番は次のとおり。
-  1. 仲間の時刻（§4）が先に入っていれば、MGA-INI-TIME_UTC → MGA-INI-POS_LLH → DBD の順に入れる。
+  1. PC の時刻（§3.6）か仲間の時刻（§4）が先に入っていれば、MGA-INI-TIME_UTC → MGA-INI-POS_LLH → DBD の順に入れる
+     （いまは時刻だけ。位置はまだ）。
   2. まだなら、DBD をすぐ入れて、ACK を数える。
   3. `infoCode`=1（時刻を知らない）で断られたぶんは RAM に残しておき、時刻がわかったら 1 回だけ入れ直す。
      時刻がわかるのは、仲間から時刻が来たとき、または GNSS が自分で衛星から時刻を読んだとき。
@@ -223,6 +227,49 @@
    - `txwait max`: 画面の切り替えなどが送りかけのフレームを待った時間。
    - ほかに `GNSS DBD SAVE: due ... waiting (理由)`（30 分ごと）、`GNSS ID: no answer ...` / `GNSS VER: no answer ...`、
      `other N (code 5xN)`（断られた理由の内訳）、`GNSS DBD file: ... (read Nms)` / `SAVE ...: sd Nms`（SD の時間）。
+
+### 3.6 外から時刻を入れる（2026-11-10。PC の `PONS:TIME`。LoRa も同じ口に渡す）
+- **なぜ**: §3.4 のとおり、時刻を知らない GNSS は戻した DBD のうち時刻の要るもの（実機で `notime`）を断り、
+  GNSS が衛星から時刻を読むまで入れ直しを待つ。電波が弱いとその待ちが長い。時刻が先にあれば最初から全部受け取られ、
+  予測軌道（ANA）もすぐ使える（Integration Manual §3.11.4 も、BBR が無いときは MGA-INI-TIME_UTC を入れるよう勧めている）。
+- **入口は 1 つ**: `gnss_dbd_give_time(utc_ms, at_ms, src)`（`gnss_dbd.h`）。`utc_ms` は UNIX 時刻 [ms]、`at_ms` はその時刻だった
+  `millis()`、`src` は `GNSS_TIME_SRC_PC` / `GNSS_TIME_SRC_LORA` / `GNSS_TIME_SRC_SELF`（試験）。
+  **いつ入れるか・入れ直すか・ログは中（`time_block()` の 1 か所）で決める。** 出どころを足すときは渡すだけにする。
+  - いまの呼び出し元は USB シリアルの `PONS:TIME,<UNIX 時刻 ms>`（`.ino` → `gnss_dbd_time_command()`）だけ。
+    Flight Viewer が `PONS:READY` を受けるたびに `Date.now()` を送る（docs/pons_webserial_protocol.md）。
+  - **LoRa を足すとき**は、受けた側の確かめ（§4.6 の 1.）を済ませてから `GNSS_TIME_SRC_LORA` で渡す。`at_ms` は受けた
+    `millis()` から電波に乗っていた時間（`e220_airtime_ms()`）と、送る側がフレームを作ってから送るまでの遅れを引いた値にする。
+    2 秒ごとに呼んでよい（入れないときはすぐ戻り、ログも覚え始めの 1 回だけ）。精度は `GNSS_TIME_ACC_LORA_MS`（2 秒）。
+- **入れる条件**（`time_block()`）:
+  - 起動後最初の NAV-PVT を見て、GNSS が時刻を知らない（NAV-PVT に日時が無い）とき。知っていれば入れない（`NOT_NEEDED`）。
+    GNSS の時刻のほうが正確なので、BT1 が生きている起動では何もしない。
+  - 起動直後で時計の生死がまだ分からない・GNSS がつながっていないときは覚えておき（`LATER`）、入れられるようになったら入れる。
+    覚えた時刻は、入れるときにその時点まで進め、本体の時計のずれ（100ppm）を精度に足す。
+  - 受け取られたら（MGA-ACK type=1）、この GNSS には入れない（`ALREADY`）。断られた・返事が無いときは 60 秒あけて 3 回まで
+    （`GAVE_UP`）。GNSS を掴み直したら（GNSS だけのリセット）数え直す。
+  - 机の上の試験（`COLD` / `COLDONLY` / `HOT`）の間は入れない（`TEST`）。リプレイ中・抜けた直後も入れない（`REPLAY`）。
+- **入れ方**: UBX-MGA-INI-TIME_UTC（24B）。`ref.source`=0（受け取った瞬間）、`leapSecs`=−128（知らない）、`trustedSource`=0、
+  精度は `GNSS_TIME_ACC_PC_MS`（2 秒）。書き終わるまでの約 8ms を足す。DBD のフレームを書きかけていたら先に書き切る。
+- **入れ直し**: 時刻が受け取られたら、それを「GNSS が時刻を知った」として、断られていた DBD をすぐ入れ直す（NAV-PVT に日時が
+  出るのを待たない）。ログは `GNSS DBD: GNSS time given (pc) 1.7s after boot`、fix の行は `time=1.7s(pc)`。
+- **PC の時計があてになるか**: 伝えた精度より外れていると、GNSS の性能はかえってかなり落ちる（Interface Description §3.13.9.3）。
+  最初の fix で、入れた時刻が本当はどれだけずれていたかを `GNSS TIME (pc): given time was +0.08s off at 1st fix (told acc 2.0s)` に残す
+  （NAV-PVT が測位の瞬間より遅れて届くぶん、少し + に出る）。精度より大きければ ` ** more than acc **`。
+- **机の上の試験**: `PONS:DBD,COLD,TIME`（§7 の「DBD ＋ INI」）と `PONS:DBD,COLDONLY,TIME`（「INI だけ」）。リセット前に本体が覚えた時刻
+  （最後の NAV-PVT の時刻と、それを受けた `millis()`）を、PC・LoRa から来た時刻の代わりに同じ口・同じ精度で入れる。
+  `COLD,TIME` は、GNSS が立ち上がり直したら時刻を入れてから DBD を戻す（5 秒入れられなければ時刻なしで戻す）。
+- **PC 上の試験**（ハーネス）: 最初の NAV-PVT より前に来た（覚えて、戻す前に入れる → 断られない）・戻している途中に来た（残りは使われ、
+  断られた分はすぐ入れ直す）・受け取られたが NAV-PVT にまだ出ない・時計が生きている（入れない）・ありえない時刻・形の違い・
+  断られ続ける（60 秒ごとに 3 回）・返事が無い・リプレイ・`COLD,TIME` / `COLDONLY,TIME` / 素の `COLD` の最中の `PONS:TIME`、を確かめた。
+  前からある試験の結果は変わらない。
+
+**実機で確かめること**（log.txt）
+1. `GNSS TIME (pc): gave ... -> accepted`（`refused code N` なら GNSS が受け付けていない。`no answer` なら返事の設定）。
+2. `PONS:DBD,COLD,TIME` と `PONS:DBD,COLD` を同じ場所で交互に。`TEST cold+dbd+time: fix XXs ... dbd=A/B` の `notime` が 0 になるか、
+   fix がどれだけ早いか。`COLDONLY,TIME` と `COLDONLY` も（時刻だけでどれだけ効くか）。
+3. PC につないで BT1 が切れた起動（屋内でよい）: `GNSS TIME (pc)` → `GNSS DBD: GNSS time given (pc)` → `RESTORE resend` が続くか。
+   そのまま外へ持ち出して `GNSS FIXED ... time=...(pc)` の秒数。
+4. `given time was ... off`: PC の時計のずれ。2 秒に近い・超えるなら `GNSS_TIME_ACC_PC_MS` を見直す。
 
 ---
 
@@ -314,7 +361,8 @@
    - 時刻: 受けた時刻の差と UTC の差が 2 秒以内で合う。
    - 位置: 1km 以内。
    - 送り主: 精度（hAcc が小さい）と衛星数（例 5 以上）が足りている。年が 2026 以上。
-2. MGA-INI-TIME_UTC を入れる（`ref`=0、`leapSecs`=−128、`tAccS`=2）。
+2. 時刻は `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` に渡す（§3.6。2026-11-10 に口だけ用意した）。中で MGA-INI-TIME_UTC
+   （`ref`=0、`leapSecs`=−128、精度 `GNSS_TIME_ACC_LORA_MS`＝2 秒）を入れ、断られていた DBD を入れ直す。入れるかどうかもそちら。
 3. MGA-INI-POS_LLH を入れる（`posAcc`=1km、つまり 100000cm）。350m 以内の仲間の位置なので、1km あれば外れない。
 4. まだなら DBD を入れる（§3.3）。
 
@@ -343,6 +391,12 @@
 - `GNSS ID: ...` / `GNSS VER: ...`（GNSS チップの固有 ID と版）
 - 試験: `GNSS DBD TEST cold+dbd|cold|hot: fix XXs after reset (sats N, time YYs dbd=A/B resend=C/D)`
 
+外から時刻を入れたときの行（2026-11-10。§3.6）:
+- `GNSS TIME (pc|lora|self): gave 2026-11-10 03:12:45.12Z acc 2.0s -> accepted|refused code N|no answer (ack 35ms, try 1, 12.3s after boot)`
+- `GNSS TIME (pc): kept for later (理由)` / `GNSS TIME (pc): NOT_NEEDED (pc says ...)`（`PONS:TIME` の返事が SENT / LATER 以外のとき）
+- `GNSS DBD: GNSS time given (pc) 1.7s after boot (file age ...)`（衛星から読んだときは `known`）、fix の行の `time=1.7s(pc)`
+- `GNSS TIME (pc): given time was +0.08s off at 1st fix (told acc 2.0s)`
+
 無線の段階で足す行（計画）:
 - 仲間から入れたとき: `GNSS ASSIST: ini from aircraft|boat id=XXXX dt=...`
 - 提供・要求を送った回数は、60 秒ログに足す。
@@ -353,7 +407,7 @@
 | 段階 | 中身 | 状態 |
 |---|---|---|
 | **0** | **測る**（ユーザーが後でやる。時間がかかる） | 未 |
-| **1** | **SD の DBD**（§3）。ボートが機体のテレメトリから時刻をもらう（新しい送信なし）。ログ（§6） | SD の DBD とログは実装（2026-11-09、実機未確認）。テレメトリから時刻をもらうのは未 |
+| **1** | **SD の DBD**（§3）。ボートが機体のテレメトリから時刻をもらう（新しい送信なし）。ログ（§6） | SD の DBD とログは実装（2026-11-09、実機未確認）。外から時刻を入れる口と PC の `PONS:TIME` も実装（2026-11-10、実機未確認。§3.6）。テレメトリから時刻をもらうのは未（もらえたら `GNSS_TIME_SRC_LORA` で渡すだけ） |
 | **2** | ビーコン（§4.2〜4.6）。機体の受け付ける窓・要求・提供・かぶり対策 | 未 |
 | **3** | 文書（pons_link.md に上りの節、README、`settings.txt` の `link_assist`） | 未 |
 
@@ -377,7 +431,8 @@
     - DBD の数と大きさ、吸い出しにかかる時間
   - 場所は、空が開けたところと、窓ぎわ・車内のような悪いところの 2 つ。アンテナは同じものを使う。
   - 試験用のシリアルコマンドは段階 1 と一緒に作った（USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS`。
-    結果は log.txt の `GNSS DBD TEST ...`）。「INI だけ」「DBD＋INI」は無線の段階で足す。ANA 無効のコールドは、
+    結果は log.txt の `GNSS DBD TEST ...`）。「INI だけ」「DBD＋INI」は `COLDONLY,TIME` / `COLD,TIME`（2026-11-10〜。いまは時刻だけで、
+    位置は入れない）。ANA 無効のコールドは、
     `GNSS_USE_ANA` を 0 にしたファームで `COLDONLY`。
 
 段階 0 の結果で決めることは次の 3 つ。
@@ -395,6 +450,7 @@
 - ボートは今まで送信したことが無い。RX 役のまま送るときの E220 の動きを実機で確かめる
   （AUX の手順、受信バッファを捨てない＝pons_link.md §6.8）
 - `settings.txt` のキー名（仮に `link_assist:ON/OFF`）
+- 位置（MGA-INI-POS_LLH）を入れる口。LoRa の段階で `gnss_dbd_give_time()` の隣に足す（PC は位置を持っていないので、いまは要らない）
 
 ---
 

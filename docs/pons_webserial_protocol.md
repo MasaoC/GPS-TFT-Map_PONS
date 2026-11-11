@@ -2,7 +2,7 @@
 
 - **文書バージョン**: 1.0
 - **対象基板**: PONS v7 / v7.1 (RP2350B)
-- **更新日**: 2026-10-30
+- **更新日**: 2026-11-10
 
 ---
 
@@ -112,9 +112,10 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 * PONSは安全に通常の航法画面（`MODE_MAP`）と各種ロギングへ復帰する。
 
 ### (6) GNSS の航法データベースの机の上の試験 (DBD)（2026-11-09〜）
-* **PC ➔ PONS**: `PONS:DBD,SAVE` / `PONS:DBD,COLD` / `PONS:DBD,COLDONLY` / `PONS:DBD,HOT` / `PONS:DBD,STATUS`
+* **PC ➔ PONS**: `PONS:DBD,SAVE` / `PONS:DBD,COLD` / `PONS:DBD,COLDONLY` / `PONS:DBD,HOT` / `PONS:DBD,STATUS` /
+  `PONS:DBD,COLD,TIME` / `PONS:DBD,COLDONLY,TIME`（2026-11-10〜）
 * **PONS ➔ PC**: `PONS:DBD,OK,<コマンド>` / `PONS:DBD,ERROR,<理由>`（`BUSY` / `NO_FIX` / `NO_GNSS_ID` / `NO_TIME` / `REPLAY` / `UNKNOWN` / `DISABLED`）/
-  `PONS:DBD,STATUS,state=...,file=...,auto=on|off`
+  `PONS:DBD,STATUS,state=...,file=...,auto=on|off,time=none|<pc|lora|self>/<kept|wait|ok|refused|noack>(入れた回数)`
 * `PONS:CONNECT` は要らない（Arduino IDE のシリアルモニタから打てる）。SD を読み出し専用にする PC 接続モードとは別物。
 * `COLD` は GNSS をコールドスタートさせ（UBX-CFG-RST navBbrMask=0xFFFF、GNSS だけの再起動）、SD の `gnss_dbd.bin` を戻す。
   `COLDONLY` は戻さない比べ用、`HOT` はホットスタート、`SAVE` はいま吸い出して書く。結果（測位までの秒数など）は
@@ -122,6 +123,28 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 * `COLD` / `COLDONLY` / `HOT` を 1 回でも打つと、**再起動するまで自動の吸い出しはしない**（`auto=off`）。`COLDONLY` で消した
   GNSS の薄いデータベースで SD のファイルを上書きして、次の `COLD` の比べ物にならなくなるのを防ぐため。`SAVE` は効く。
 * リプレイ中と、抜けた直後（本物の NAV-PVT が届くまで）は `STATUS` 以外を `ERROR,REPLAY` で断る（fix と日時が再生した CSV の値のため）。
+* `COLD,TIME` / `COLDONLY,TIME` は `COLD` / `COLDONLY` と同じだが、リセットのあと（`COLD` は DBD より先に）、リセット前に本体が
+  覚えた時刻を、PC や LoRa から来た時刻の代わりに入れる（下の (7) と同じ口・同じ精度）。GNSS が時刻を知っていないと `ERROR,NO_TIME`。
+  時刻を入れたときに TTFF がどれだけ縮むかを、同じ場所で `COLD` と比べるためのもの。
+  `,TIME` の無い試験の間は、PC から時刻が来ても入れない（`PONS:TIME` は `ERROR,TEST`。比べる素の値を汚さない）。
+
+### (7) PC の時刻を GNSS へ入れる (TIME)（2026-11-10〜）
+* **PC ➔ PONS**: `PONS:TIME,<UNIX 時刻 ms>`（UTC。例 `PONS:TIME,1794193200500`。JavaScript の `Date.now()`）
+* **PONS ➔ PC**: `PONS:TIME,OK,<SENT|LATER|NOT_NEEDED|ALREADY>` / `PONS:TIME,ERROR,<理由>`
+  （`BAD_FORMAT` / `BAD_TIME` / `GAVE_UP` / `TEST` / `REPLAY` / `DISABLED`）
+  - `SENT` GNSS へ入れた / `LATER` まだ入れられない（起動直後で時計の生死が分からない・GNSS がつながっていない・入れ直しの間隔待ち）
+    ので覚えておき、入れられるようになったら入れる / `NOT_NEEDED` GNSS は時刻を知っている（ふだんはこれ）/ `ALREADY` もう入れて受け取られた
+  - `BAD_TIME` ビルドした日より前か 2100 年以降（PC の時計が戻っている）/ `GAVE_UP` 3 回入れて受け取られなかった（GNSS がリセットするまで入れない）
+* **GNSS が時刻を知らない（時計の電池 BT1 が切れていた）ときだけ**、本体が UBX-MGA-INI-TIME_UTC で GNSS へ入れる
+  （精度は 2 秒と伝える。`settings.h` の `GNSS_TIME_ACC_PC_MS`）。SD から戻した航法データベースが「時刻が無いので使えない」と
+  断られずに済み、断られていた分はすぐ入れ直す。仕組みは `gnss_dbd.cpp` の冒頭と docs/pons_ttff_assist_plan.md §3.6。
+* `PONS:CONNECT` は要らない（シリアルモニタからも打てる）。PC 接続の画面のあいだも GNSS は動いている。屋内では fix しないが、
+  入れた時刻と受け取られたデータベースは GNSS に残り、つないでいる間は BT1 も充電されるので、電源を切ってもしばらく持つ。
+* Flight Viewer は `PONS:READY` を受けるたびに送る（`PONS:LIST` より前。返事は見ない）。
+* **PC の時計がずれていると、GNSS の性能はかえって落ちる**（伝えた精度より外れたとき）。最初の fix で、入れた時刻が本当は
+  どれだけずれていたかを `log.txt` の `GNSS TIME (pc): given time was +0.08s off at 1st fix (told acc 2.0s)` に残す
+  （NAV-PVT の届く遅れのぶん少し + に出る。精度より大きいと ` ** more than acc **`）。ほかの結果も `GNSS TIME (pc): ...` の行。
+* LoRa で仲間の機体・ボートからもらう時刻（計画のみ）も、本体の中では同じ口（`gnss_dbd_give_time()`）を通る。
 
 ---
 
@@ -150,6 +173,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 Web Serial API 対応ブラウザ（Google Chrome / Microsoft Edge など）で開くだけで、インストール不要・完全ローカル動作で以下の機能を利用できます。
 
 - **ワンクリック接続 & ログ吸い出し**: USB 接続した PONS から自機ログ（`data/`）および受信ログ（`received/`）を一覧取得・高速ダウンロード。
+- **PC の時刻を本体へ**（2026-11-10〜）: 接続のたびに `PONS:TIME` を送る。本体の GNSS が時刻を知らないとき（BT1 が切れていた）だけ使われる（上の (7)）。
 - **自機ログ / 受信ログ 自動判別**: CSV ヘッダーから種別を自動判定し、機体・追尾ボート双方のアイコン・航跡・テレメトリを同時に再生。
 - **航法・姿勢・横滑り計器**:
   - 風の三角形（対気速度・風向風速・対地速度）

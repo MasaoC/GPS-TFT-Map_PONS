@@ -142,6 +142,15 @@
 #define GNSS_DBD_RESTORE_WINDOW_MS 1800000UL   // 戻した起動で「時刻がわかったら入れ直す」のを待つ上限（fix したらそこで終わり）
 #define GNSS_DBD_MAX_AGE_H         720         // 入れ直すのはこれより新しいファイルだけ [h]（30 日。アルマナックの寿命）
 #define GNSS_DBD_LOAD_WAIT_MS      20000UL     // 起動後、SD の読み込みと GNSS の固有 ID（SEC-UNIQID）を待つ上限
+// ---- 外から GNSS へ時刻を入れる（gnss_dbd.cpp の gnss_dbd_give_time。2026-11-10〜。計画書 §3.6）----
+// GNSS が時刻を知らない（BT1 が切れていた）ときだけ、PC（PONS:TIME）や、のちに LoRa の仲間からもらった時刻を入れる。
+// GNSS には「この精度で合っている」と一緒に伝える。**書いた精度より外れていると性能がかなり落ちる**（Interface Description
+// §3.13.9.3）ので控えめに書く。通信で送る時刻は受け取りの遅れが読めず粗い（Integration Manual §3.9.2）が、秒の単位で足りる。
+#define GNSS_TIME_ACC_PC_MS     2000UL   // PC の時計（ネットで合わせてある前提。USB の遅れは数十 ms）。試験の COLD,TIME もこの値
+#define GNSS_TIME_ACC_LORA_MS   2000UL   // 仲間の GNSS の時刻＋電波の遅れ（計画書 §4.6 の tAccS=2。まだ使っていない）
+#define GNSS_TIME_DRIFT_PPM     100      // 受けてから入れるまでに本体の時計がずれる分（RP2350 の水晶。精度に足す）
+#define GNSS_TIME_RETRY_MS      60000UL  // 受け取られなかった（断られた・返事が無い）とき、入れ直すまで空ける時間
+#define GNSS_TIME_MAX_TRIES     3        // 入れる回数の上限（GNSS がリセットしたら数え直す）
 
 // ---- 本番前チェック（readiness.cpp）----
 // 飛ぶ前に確かめる項目がそろったら、地上で止まっているときに 1 度だけ「準備完了」と読み上げる。

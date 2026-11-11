@@ -106,9 +106,14 @@ SAM-M10Q が自律予測した数日先までの衛星軌道をバックアッ�
 効くのは前回の保存から約 3 日以内。保存は止まっているときだけ（飛行中はしない）。
 `log.txt` の `GNSS FIXED ... after boot rtc=lost dbd=40/52 resend=52/52 time=14.2s` で、戻した結果と測位までの秒数がわかります。
 吸い出し・戻しの 1 回ごとに `GNSS DBD IO (...)` の行で通信の様子（位置の更新が待たされた最大・受信 FIFO のたまり・バイトの欠け・返事の遅れ）を残します。
-机の上では USB シリアルの `PONS:DBD,COLD`（コールドにして戻す）/ `COLDONLY` / `HOT` / `SAVE` / `STATUS` で試せます
+**PC につないでいれば、PC の時刻も GNSS へ入れます**（2026-11-10〜、まだ実機で確かめていない）。Flight Viewer が接続のたびに
+`PONS:TIME,<UNIX 時刻 ms>` を送り、GNSS が時刻を知らない（BT1 が切れていた）ときだけ本体が GNSS へ入れます。戻したデータベースが
+「時刻が無いので使えない」と断られずに済みます。結果は `log.txt` の `GNSS TIME (pc): ...`（PC の時計のずれも最初の fix で残す）。
+LoRa で仲間から時刻をもらう計画も、同じ口（`gnss_dbd_give_time()`）に渡す作りです。
+机の上では USB シリアルの `PONS:DBD,COLD`（コールドにして戻す）/ `COLDONLY` / `HOT` / `SAVE` / `STATUS` と、
+`COLD,TIME` / `COLDONLY,TIME`（リセット前に本体が覚えた時刻を、PC の時刻の代わりに入れる）で試せます
 （`COLD` / `COLDONLY` / `HOT` を打つと、再起動するまで自動の吸い出しは止まります。`SAVE` は効きます）。
-計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §3。
+計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §3（時刻は §3.6）。
 
 ### 4. PONS Link（機体⇄ボート テレメトリ無線）
 * 送信機（機体）から受信機（ボート）へ、**32 バイト固定フレーム**（印 `0xA4`。2026-11-07〜）を送信（下り一方向）。

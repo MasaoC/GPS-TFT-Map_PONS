@@ -1941,6 +1941,11 @@ static void handle_serial_command(const char *raw_cmd) {
     // GNSS の航法データベースの机の上の試験（SAVE / COLD / COLDONLY / HOT / STATUS。gnss_dbd.cpp の
     // gnss_dbd_command）。PONS:CONNECT は要らない（Arduino IDE のシリアルモニタから打てるように）。
     gnss_dbd_command(cmd + 9);
+  } else if (strncmp(cmd, "PONS:TIME,", 10) == 0) {
+    // PC の時刻（UNIX 時刻 ms）。GNSS が時刻を知らない（BT1 が切れていた）ときだけ GNSS へ入れる
+    // （gnss_dbd.cpp の gnss_dbd_give_time。Flight Viewer が接続のたびに送る）。PONS:CONNECT は要らない。
+    // 受けた瞬間は関数の頭で取った last_serial_rx_ms（行を読み終えた直後）。
+    gnss_dbd_time_command(cmd + 10, last_serial_rx_ms);
   } else {
 #ifndef RELEASE
     // PONS コマンド以外は GNSS へ中継（デバッグ用）
@@ -2887,9 +2892,12 @@ void longPressCallback() {
   }
 }
 
-// 旋回角速度をリセットする。GNSS 受信開始時や停止時などに呼ぶ。
-// サンプル配列を現在の真方位と現在時刻で埋めることで、急激な deg/s
-// の跳ね上がりを防ぐ。
+// 旋回角速度をリセットする。リプレイ・デモの開始と解除のときに呼ぶ。
+// 窓を空にして、次の方位から NUM_SAMPLES 個たまるまで deg/s は 0（非表示）にする。
+// ★ 以前は窓を「いまの真方位と時刻」で埋めていたが、切り替えた直後の
+//   get_gnss_truetrack() はまだ前の供給元の値（リプレイを始めた直後は実機の、
+//   リプレイを抜けた直後は再生していた飛行の方位）なので、新しい供給元の最初の
+//   方位との差が窓に入り、約 1.5 秒のあいだ deg/s が跳ねていた（2026-11-11 まで）。
 //
 // ※ **画面を切り替えたときには意図して呼んでいない。** 窓は 4 サンプルなので、
 //   更新が数秒途切れたあとは窓がその空白をまたぎ、経過時間が過大になって deg/s
@@ -2897,12 +2905,7 @@ void longPressCallback() {
 //   小さく出る側＝「旋回していない」と見える側なので、コース警報が早く鳴ることは
 //   あっても鳴らなくなることはない。安全側に外れるため直していない。
 void reset_degpersecond() {
-  float track = get_gnss_truetrack();
-  uint32_t now = millis();
-  for (int i = 0; i < NUM_SAMPLES; i++) {
-    truetrack_samples[i] = track;
-    truetrack_sample_times[i] = now;
-  }
+  sampleIndex = 0;
   degpersecond = 0;
 }
 
@@ -2915,8 +2918,21 @@ void reset_degpersecond() {
 //   4. 配列を1つずらして古いサンプルを捨てる
 //   ※ 360度またぎ（例: 359→1度）を -180〜+180 に正規化して計算する
 //   ※ 時間正規化により GNSS レート（1Hz / 2Hz）に依存しない
+//   ※ 時刻は get_gnss_course_ms()（リプレイ中は CSV の時刻）。**millis() に戻さないこと。**
+//     x2 / x20 の再生で deg/s が 2 倍 / 20 倍に出る（2 deg/s 超で鳴る旋回音も、緑・青の色や
+//     3 / 4 deg/s の強調も、コース警報の「修正中」の判定も、同じ値を見ているので一緒にずれる）。
+//     x20 では 1 回の loop() で数行まとめて進むので、窓に入るのは最後の行だけになり、
+//     窓が実飛行の数秒ぶんに伸びる（値は正しく、なめらかになるだけ）。
 void update_degpersecond(float true_track) {
-  uint32_t now = millis();
+  uint32_t now = get_gnss_course_ms();
+  // 時刻が進んでいない・戻ったら窓を捨てて数え直す。戻るのはリプレイがファイルの
+  // 先頭へ戻ったとき（放っておくと経過時間が uint32_t で桁あふれし、末尾から先頭への
+  // 方位の飛びも窓に入る）。進まないのは、リプレイを始めた loop() で実 GNSS の刻みが
+  // 1 回残っていて、まだ行の無い時刻 0 で実機の方位が窓に入ったとき（先頭の行も 0）。
+  if (sampleIndex > 0 &&
+      (int32_t)(now - truetrack_sample_times[sampleIndex - 1]) <= 0) {
+    reset_degpersecond();
+  }
   truetrack_samples[sampleIndex] = true_track;
   truetrack_sample_times[sampleIndex] = now;
 
@@ -3127,10 +3143,15 @@ void check_destination_toofar() {
 //   - index が 900 に達したら音声警告を発報し、30秒のクールダウンに入る
 //   - 低速・GNSS ロスト時は発動しない（誤警告防止）
 //   - 設定画面等からの復帰時に dt が過大になった場合はスキップ（誤発報防止）
+//   - dt は飛行の時間で数える（get_gnss_course_ms()。リプレイ中は CSV の時刻）。
+//     millis() で数えていたころは、x20 の再生だと警報が飛行の時間で 20 倍遅れて鳴った
+//     （15° のズレで 60 秒のところが 20 分。2026-11-11 まで）。
+//     **発報後の 30 秒の休みは実時間（millis()）のまま。** 音が重なって積み上がらないための
+//     休みなので、x20 で飛行の 30 秒（実時間 1.5 秒）にすると、4 音＋音声が鳴り終わる前に次が積まれる。
 void update_course_warning(float degpersecond) {
   // GNSS レート非依存のため、前回呼び出しからの経過時間 dt[秒] を計算する
   static uint32_t last_course_warning_update_ms = 0;
-  uint32_t now = millis();
+  uint32_t now = get_gnss_course_ms();
   float dt = 0;
   if (last_course_warning_update_ms != 0) {
     dt = (now - last_course_warning_update_ms) / 1000.0f;
@@ -3138,7 +3159,13 @@ void update_course_warning(float degpersecond) {
   last_course_warning_update_ms = now;
   // 初回呼び出し or 設定画面/リプレイ切替等で長いギャップが発生した場合は
   // 次回から改めて積算するためスキップ（巨大 dt による誤発報防止）
-  if (dt <= 0 || dt > 3.0f) {
+  // ★ リプレイでは上限を倍率で広げる。x20 では 1 回の loop() で飛行の時間が 20 倍進むので、
+  //   描画で loop() が 150ms 延びただけで 3 秒を超え、毎回スキップして積算しなくなる。
+  //   リプレイには「止まっていた間」が無い（一時停止中は時刻が進まず、ファイルの先頭へ戻ると
+  //   時刻が戻って dt が桁あふれ＝巨大になる）ので、広げても誤発報にはならない。
+  const float max_dt =
+      3.0f * (getReplayMode() ? (float)get_replay_speed() : 1.0f);
+  if (dt <= 0 || dt > max_dt) {
     return;
   }
 

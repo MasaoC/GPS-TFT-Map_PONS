@@ -862,6 +862,9 @@ static uint32_t replay_virtual_ms = 0;   // 再生開始からの仮想経過時
 static uint32_t replay_last_tick  = 0;   // 前回積算したときの millis()
 static uint32_t replay_seen_seq   = 0;   // 確認済みの replay_init_seq
 static bool     replay_paused     = false;
+// 最後に反映した方位の行の再生時刻（CSV の時刻。行の t_ms）[ms]。旋回角速度の窓の時刻に使う
+// （get_gnss_course_ms()）。millis() で数えると x2 / x20 で deg/s が 2 倍 / 20 倍に出る。
+static uint32_t replay_course_t_ms = 0;
 
 // 再生の一時停止／再開。設定画面など地図以外を表示している間は停止させる。
 // 一時停止中は仮想時刻を進めないだけなので、再開すると続きから再生される。
@@ -1550,6 +1553,7 @@ static void apply_replay_row(const ReplayRow* row) {
   }
   if (row->have & RHAVE_TTRACK) {
     if (!is_demo_active()) newcourse_arrived = true;
+    replay_course_t_ms = row->t_ms;
     stored_truetrack = row->ttrack;
     if (stored_truetrack < 0 || stored_truetrack > 360)
       stored_truetrack = 0;
@@ -1799,6 +1803,17 @@ void set_new_location_off(){
 
 bool getReplayMode(){
   return replaymode_gnssoff;
+}
+
+// 方位（newcourse_arrived）を測った時刻 [ms]。旋回角速度（.ino の update_degpersecond）の窓の時刻。
+// ★ リプレイ中は CSV の行の時刻を返す。millis() は実時間なので、x2 / x20 では同じ方位の変化を
+//   1/2・1/20 の時間で割って deg/s が 2 倍・20 倍に出ていた（表示も旋回音も。2026-11-11 まで）。
+//   再生の倍率・一時停止・PLAY FLIGHT ONLY の飛ばしは t_ms に織り込み済み。
+//   ファイルの末尾から先頭へ戻ると値が小さくなる（窓の側で捨てる）。
+// それ以外（実 GNSS・ミラー・デモ）は受け取った時刻 millis()。
+uint32_t get_gnss_course_ms(){
+  if (replaymode_gnssoff) return replay_course_t_ms;
+  return millis();
 }
 
 void set_replaymode(bool replaymode){

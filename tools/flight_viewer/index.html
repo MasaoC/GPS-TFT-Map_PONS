@@ -2927,6 +2927,10 @@
           build: parts[3] || '--'
         });
         startSerialPing();
+        // PC の時刻を渡す（本体の GNSS が時刻を知らない＝時計の電池 BT1 が切れていたときだけ、本体が GNSS へ入れて
+        // 測位を早める。知っていれば本体は何もしない。返事 PONS:TIME,... は見ない。docs/pons_webserial_protocol.md の (7)）。
+        // ★ 一覧より先に送る（一覧の途中に返事の行が混ざらないように）。Date.now() は UTC の UNIX 時刻 [ms]。
+        sendSerialLine("PONS:TIME," + Date.now());
         // 接続直後にファイル一覧を自動取得
         requestFileList();
       } else if (line.startsWith("PONS:PONG")) {
