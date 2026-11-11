@@ -1,14 +1,18 @@
-# GPS(GNSS)-TFT-map_PONS = Pilot Oriented Navigation System v7.1
-<img width="1312" height="368" alt="ponsv6image" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
-<img width="240" height="52" alt="logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
+# PONS — 鳥人間コンテスト向け 人力飛行機用 GPS/GNSS ナビ（航法装置）v7.1
+<img width="1312" height="368" alt="PONS の実機（v6）。白い 3D プリントケースの 2.8 インチ TFT に、琵琶湖の地図・対地速度・方位・目的地までの距離を表示している / PONS GNSS navigation display for human-powered aircraft showing a Lake Biwa map" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
+<img width="240" height="52" alt="PONS ロゴ / PONS logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
 
-人力飛行機のパイロットが使いやすいことを目標とした航法装置です。琵琶湖の鳥人間コンテストに特化しています。  
-GPS/GNSS navigation for human-powered aircraft, specialized for the Japan International Birdman Rally at Lake Biwa, Japan.
+**PONS（Pilot Oriented Navigation System）**は、人力飛行機のパイロットが使いやすいことを目標とした航法装置です。琵琶湖の鳥人間コンテストに特化しています。  
+鳥人間チームの電装（パイロット用の計器・GPS ナビ）として、地図・対地速度・方位・姿勢・昇降計（バリオ）・風向風速を 1 つの画面と音声で伝えます。
+基板（KiCad）・ファームウェア（Arduino）・3D プリントケースのデータをオープンソースで公開しています。  
+GPS/GNSS navigation for human-powered aircraft, specialized for the Japan International Birdman Rally at Lake Biwa, Japan. → [English summary](#english-summary)
 
+* **使用実績**：大阪大学 albatross（2024 追走ボート: v3 / 2025 追走ボート: v4 / 2025 機体搭載「白夜」: v5 /
+  2026 追走ボート: v6 / 2026 機体搭載「陽還」: v6β）。**2025 年大会優勝。**
 * **本ブランチ（`PONSv7.1`）は 2027・2028 年大会向け v7.1 基板専用です。**  
   姿勢センサーを Murata SCH16T-K01（外付け FPC）とし、電源回路の安全対策（Q3/Q4/F1/U10）を施した最新設計です。  
   BNO085 搭載の初代 v7 基板用は [`PONSv7`](https://github.com/MasaoC/GPS-TFT-Map_PONS/tree/PONSv7) ブランチを参照してください。
-* **v3〜v6 ブランチが実際にフライト利用した実績のある安定版です。**
+* **v3〜v6 ブランチが実際にフライト利用した実績のある安定版です。** v7 / v7.1 はまだ大会で使っていません。
 
 ---
 
@@ -320,6 +324,33 @@ NAV 画面でスイッチ長押しで入ります。
 2. バッテリー端子および TFT フレキを取り外し、基板を無水エタノールで洗浄。
 3. シリカゲルを入れた密封袋で数日間徹底乾燥（湿度 20% 以下推奨）。
 4. GNSS バックアップ電池（MS621FE）およびスライドスイッチは腐食しやすいため点検・交換を推奨。
+
+---
+
+## English summary
+
+**PONS (Pilot Oriented Navigation System)** is an open-source GPS/GNSS navigation display for pilots of
+human-powered aircraft (HPA), built for the Japan International Birdman Rally at Lake Biwa, Japan.
+The board design (KiCad), the firmware (Arduino on RP2350) and the analysis tools are all in this repository.
+Most of the documentation is in Japanese.
+
+* **Flight record**: used by the Osaka University "albatross" team on the chase boat (2024–2026) and on board
+  the aircraft (2025, 2026). The team won the 2025 rally. v3–v6 are flight-proven;
+  this branch (v7.1, for the 2027–2028 rallies) has not flown yet.
+* **Voice guidance**: the pilot does not need to watch the screen. Course-deviation and track-change alerts
+  and a bank-angle warning are spoken (in Japanese).
+* **Auto 10 km mode**: switches from outbound to inbound guidance at the 10 km turnaround by itself.
+* **Attitude estimation (ESKF)**: fuses a Murata SCH16T-K01 IMU with GNSS track and ground speed. No magnetometer.
+* **Wind and estimated true airspeed** without an airspeed sensor, from the averaged pitch angle and GNSS ground speed.
+* **Variometer**: a Kalman filter fusing vertical acceleration and an MS5611 barometer.
+* **PONS Link**: 920 MHz LoRa telemetry (E220-900T22S(JP)) that mirrors the pilot's screen on the chase boat.
+  350 m measured range.
+* **Hardware**: RP2350B, u-blox SAM-M10Q, 2.8-inch 1000-nit TFT, built-in OpenStreetMap vector map,
+  microSD logging at 2 Hz. 59 × 81 × 20 mm, about 62 g with the case.
+* **Tools**: a browser-based Flight Viewer (WebSerial), Google Earth KML export and flight analysis scripts
+  (phugoid period, load factor).
+
+Contact: masaochiguchi@gmail.com (X: masao_mobile)
 
 ---
 
