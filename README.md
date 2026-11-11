@@ -349,12 +349,20 @@ BT1 が切れると、予測軌道も時計も消えてコールドスタート�
 | `PONS:DBD,COLD` | GNSS をコールドスタートさせ（BT1 が切れたのと同じ）、SD のデータベースを戻す。測位までの秒数が出る |
 | `PONS:DBD,COLDONLY` | コールドスタートだけ（比べるための素の値） |
 | `PONS:DBD,HOT` | ホットスタート |
+| `PONS:DBD,COLD,TIME` / `PONS:DBD,COLDONLY,TIME` | `COLD` / `COLDONLY` と同じだが、リセット前に本体が覚えた時刻を、PC の時刻の代わりに入れる（時刻でどれだけ縮むかを比べる。2026-11-10〜） |
 | `PONS:DBD,STATUS` | 状態を USB シリアルに出す |
+| `PONS:TIME,<UNIX 時刻 ms>` | PC の時刻。GNSS が時刻を知らない（BT1 が切れていた）ときだけ GNSS へ入れる。Flight Viewer が接続のたびに送る（2026-11-10〜） |
 
 `COLD` / `COLDONLY` / `HOT` を打つと、再起動するまで自動の吸い出しは止まる（`COLDONLY` で消した GNSS の薄いデータで
 SD のファイルを上書きしないため。`SAVE` は効く）。リプレイ中と抜けた直後は `STATUS` 以外を断る。
 入れ直しを待っている間（GNSS が時刻を知るまで）も試験は打てる（試験で上書きする。2026-11-10〜。それまでは
 屋内で `COLD` を打って時刻が読めないと、窓の 30 分が終わるまで `ERROR,BUSY` だった）。
+
+**PC につないでいれば、PC の時刻も GNSS へ入れます**（2026-11-10〜、まだ実機で確かめていない）。BT1 が切れた起動では、
+戻したデータベースのうち時刻の要るものが断られ、GNSS が衛星から時刻を読むまで待つことになります。先に時刻があれば
+最初から全部受け取られます。結果は `log.txt` の `GNSS TIME (pc): gave ... -> accepted` と、最初の fix での
+`GNSS TIME (pc): given time was +0.08s off ...`（PC の時計のずれ。伝えた精度 2 秒を超えると GNSS の性能がかえって落ちる）。
+LoRa で仲間から時刻をもらう計画（v7.1 の docs/pons_ttff_assist_plan.md §4）も、同じ口（`gnss_dbd_give_time()`）に渡す作りです。
 
 注意：
 

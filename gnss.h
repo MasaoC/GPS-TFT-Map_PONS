@@ -171,6 +171,9 @@
   bool is_demo_active();           // いずれかの地点でデモ飛行中か
   void set_demo_off();
   bool getReplayMode();
+  // 方位を測った時刻 [ms]。リプレイ中は CSV の行の時刻（再生の仮想時刻）、それ以外は millis()。
+  // 旋回角速度の窓はこれで数える（millis() だと再生倍率の分だけ deg/s が大きく出る）。
+  uint32_t get_gnss_course_ms();
   // リプレイ中の姿勢 [度]（飛行 CSV・受信ログの roll / pitch / yaw … 列の記録由来）。
   // 実機の ESKF ではないので、表示側は getReplayMode() で参照先を切り替えること。
   bool get_replay_attitude(float &roll, float &pitch);

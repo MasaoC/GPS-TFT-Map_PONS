@@ -2,9 +2,10 @@
 // File    : gnss_dbd.h
 // Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 // Role    : GNSS の航法データベース（UBX-MGA-DBD）を SD に写しておき、時計の電池（BT1）が切れていた起動で
-//           GNSS へ戻す（2026-11-09〜）。v7 と v7.1 で同じ中身。仕組みは gnss_dbd.cpp の冒頭。
+//           GNSS へ戻す（2026-11-09〜）。外から来た時刻（PC。のちに LoRa）を GNSS へ入れる口もここ（2026-11-10〜）。
+//           v7 と v7.1 で同じ中身。仕組みは gnss_dbd.cpp の冒頭。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/09
+// Updated : 2026/11/10
 // ============================================================
 #ifndef GNSS_DBD_H
 #define GNSS_DBD_H
@@ -41,8 +42,37 @@ void gnss_dbd_after_setup(); // gnss_setup_impl() で設定を送り終えたあ
 void gnss_dbd_finish_tx();
 // 起動後最初の fix のログ（"GNSS FIXED ... after boot"）に添える文字列。例 "rtc=lost dbd=40/52 resend=52/52 time=12.3s"
 void gnss_dbd_fix_tag(char* buf, size_t n);
-// USB シリアルの "PONS:DBD,<arg>"（机の上の試験。SAVE / COLD / COLDONLY / HOT / STATUS）
+// USB シリアルの "PONS:DBD,<arg>"（机の上の試験。SAVE / COLD / COLDONLY / HOT / STATUS、COLD,TIME / COLDONLY,TIME）
 void gnss_dbd_command(const char* arg);
+
+// ---- 外から GNSS へ時刻を入れる（2026-11-10〜。docs/pons_ttff_assist_plan.md §3.6）----
+// BT1 が切れて GNSS が時刻を知らない間に、ほかから来た時刻を UBX-MGA-INI-TIME_UTC で入れる。戻した DBD が
+// 「時刻が無いので使えない」と断られずに済み（断られていた分はすぐ入れ直す）、予測軌道（ANA）もすぐ使える。
+// 入れるのは GNSS が時刻を知らないときだけ（知っていれば GNSS の時刻のほうが正確）。判断はぜんぶ gnss_dbd.cpp の中。
+// ★ **時刻の出どころを足すときも、ここへ渡すだけにする**（GNSS へ書く・いつ入れるか・入れ直しの判断を呼び出し側に書かない）。
+//   いまの入口は USB シリアルの PONS:TIME（PC。Flight Viewer が接続のたびに送る）。LoRa で仲間からもらう時刻
+//   （計画書 §4）も、受けた側の確かめ（§4.6 の 1.）を済ませてから GNSS_TIME_SRC_LORA で渡す。
+enum GnssTimeSrc : uint8_t {
+  GNSS_TIME_SRC_PC   = 0,   // USB シリアルの PONS:TIME
+  GNSS_TIME_SRC_LORA = 1,   // 仲間の機体・ボート（計画のみ。まだ呼ぶところは無い）
+  GNSS_TIME_SRC_SELF = 2,   // 机の上の試験（COLD,TIME。リセット前に本体が覚えた時刻を、外から来た時刻の代わりに入れる）
+};
+// utc_ms: UTC（1970-01-01 からのミリ秒。うるう秒は数えない＝UNIX 時刻。JavaScript の Date.now() と同じ）
+// at_ms : その時刻だった millis()（受けた瞬間。無線なら電波に乗っていた時間を引いた値）
+// 返り値（文字列リテラル。PONS:TIME の返事にそのまま使う）:
+//   "SENT"        GNSS へ入れた（結果は log.txt の "GNSS TIME (pc): ... -> accepted|refused|no answer"）
+//   "LATER"       まだ入れられない（起動直後で時計の生死が分からない・GNSS がつながっていない など）。
+//                 覚えておいて、入れられるようになったら入れる
+//   "NOT_NEEDED"  GNSS は時刻を知っている
+//   "ALREADY"     この GNSS には入れて受け取られた（NAV-PVT に時刻が出るのを待っている）
+//   "GAVE_UP"     GNSS_TIME_MAX_TRIES 回入れて受け取られなかった（GNSS がリセットするまで入れない）
+//   "BAD_TIME"    ありえない時刻（ビルドした日より前・2100 年以降）
+//   "REPLAY"      リプレイ中・抜けた直後
+//   "TEST"        机の上の試験（COLD / COLDONLY / HOT）の最中。比べる素の値を汚さない
+//   "DISABLED"    GNSS_DBD_ENABLE が 0
+const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src);
+// USB シリアルの "PONS:TIME,<UNIX 時刻 ms>"。rx_ms は行を受けた millis()。返事は "PONS:TIME,OK,SENT" など
+void gnss_dbd_time_command(const char* arg, uint32_t rx_ms);
 
 // ---- Core1（mysd.cpp の gnss_dbd_save_sd / gnss_dbd_load_sd から）----
 uint8_t* gnss_dbd_buffer_core1();                          // RAM（GNSS_DBD_BUF_BYTES）。Core0 が手放している間だけ触る
