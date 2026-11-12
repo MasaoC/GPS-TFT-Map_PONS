@@ -18,11 +18,17 @@
 //   LPF2(13Hz) + DEC5(737.5Hz、実測 721.5Hz)、読み出し 250Hz（最小推奨 150Hz）。
 //   選定理由は settings.h のコメントと docs/imu_sch16t_plan.md §5 の (2)。
 //
+// ■ 読み出しはタイマー割り込み（SCH16T_READ_IN_IRQ。2026-11-11〜）
+//   Core0 のハードウェアアラームが 4ms ごとに SPI1 を読み、生のフレームをリングバッファへ積む（imu_alarm_cb）。
+//   検査・換算・推定への受け渡しはスレッド側（drain_ring。imu_drv_poll と imu_drv_service_if_due から）。
+//   それまでは loop() で取りに行っていたので、地図の描き直しで Core0 が止まる間（2Hz ごとに 70〜90ms）のサンプルが抜けていた。
+//   理由・優先度（最低にする）・SPI1 の取り合いの約束は settings.h の SCH16T_READ_IN_IRQ のコメント。
+//
 // ★ **本体基板では起動と机上確認（Step 2〜3）まで済み**（2026-11-03）。
 //   docs/imu_sch16t_bringup.md の Step 4〜5 を通すまで飛ばさないこと。
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/03
+// Updated : 2026/11/11
 // ============================================================
 
 #include <Arduino.h>
@@ -30,6 +36,13 @@
 
 
 #include <SPI.h>
+#if SCH16T_READ_IN_IRQ
+#include "hardware/spi.h"
+#include "hardware/timer.h"
+#include "hardware/irq.h"
+#include "hardware/gpio.h"
+#include "hardware/sync.h"
+#endif
 #include "imu.h"
 #include "imu_sensor.h"
 #include "mysd.h"         // enqueueTask / createLogSdTask
@@ -84,6 +97,7 @@ static uint32_t s_recover_last_ms = 0;
 // レート計測（60 秒ログの raw GYR / ACC）
 static uint32_t s_hz_last_ms = 0;
 static uint16_t s_gyro_cnt = 0, s_accel_cnt = 0;
+static uint32_t s_taken = 0;        // 推定へ渡したサンプルの通し数（imu_drv_poll が「この回に受け取ったか」を見る）
 static float    s_gyro_hz = 0.0f, s_accel_hz = 0.0f;
 
 // 健全性カウンタ。いまは 60 秒ログではなくシリアルと SD ログへ出している
@@ -358,61 +372,43 @@ static bool sch_init() {
 // ============================================================
 //  サンプルの引き取り
 // ============================================================
-// デシメーション出力（*_2）を 1 サンプル読む。
-// ★ **先頭に捨てフレームが 1 つ必要**（アウトオブフレーム）。全部で 8 フレーム。
-//   各応答は「1 つ前に要求したレジスタ」の値なので、要求を 1 つずらして並べる。
+// デシメーション出力（*_2）を 1 サンプルずつ読む。
 // ★ **温度は毎回読まない**（間隔は settings.h の SCH16T_TEMP_EVERY）。
 //   1 サンプルあたりのフレーム数が 8 → 7 に減る。
 // ★ s_temp_c はいま**書くだけで誰も読んでいない**。画面と 60 秒ログへ出すのは
 //   docs/imu_sch16t_plan.md §2.7 の作業で、そのときの受け皿として置いてある。
 static float s_temp_c = 0.0f;      // 最後に読めたダイ温度 [℃]
 
-static bool read_sample() {
-    static uint8_t temp_skip = 0;
-    const bool do_temp = (++temp_skip >= SCH16T_TEMP_EVERY);
-    if (do_temp) temp_skip = 0;
-
-    // ★ **先頭の捨てフレームを「前回の続き」で省いてはいけない。** アウトオブフレームの
-    //   パイプラインを呼び出しをまたいで繋げば 6 フレームで済むが、描画で 40ms 空いた
-    //   あとに**40ms 前の値を新しい値として受け取る**ことになる（静かに壊れる形）。
-    //   毎回捨てフレームから始める。
-    req_read(REG_RATE_X2);                       // 捨てフレーム
-    const uint64_t fgx = req_read(REG_RATE_Y2);  // → RATE_X2
-    const uint64_t fgy = req_read(REG_RATE_Z2);  // → RATE_Y2
-    const uint64_t fgz = req_read(REG_ACC_X2);   // → RATE_Z2
-    const uint64_t fax = req_read(REG_ACC_Y2);   // → ACC_X2
-    const uint64_t fay = req_read(REG_ACC_Z2);   // → ACC_Y2
-    // 最後の 1 本は ACC_Z2 の値を回収するための要求。アドレスは「次に読みたいもの」で、
-    // 温度を読む回だけ TEMP にして、もう 1 フレーム足してその値を取る。
-    const uint64_t faz = req_read(do_temp ? REG_TEMP : REG_ACC_Z2);   // → ACC_Z2
-    if (do_temp) {
-        const uint64_t ft = req_read(REG_TEMP);  // → TEMP
+// 読んだフレーム（RATE_X2 Y2 Z2 ACC_X2 Y2 Z2 の 6 本と、温度を読んだ回はその 1 本）を検査して推定へ渡す。
+// ポーリングでも割り込みでも同じここを通る。t_us はそのサンプルを読み終えた時刻。
+// ★ 健全性カウンタ（frame_sample_ok が数える）を触るのはスレッド側のここだけにしてある。
+static bool take_sample(const uint64_t fr[6], const uint64_t *ft, uint32_t t_us) {
+    if (ft) {
         // ★ 温度は 16bit 幅で 20bit フィールドの**上位に詰まっている**ので >>4。
-        if (frame_sample_ok(ft)) s_temp_c = (frame_data_i20(ft) >> 4) / SCH16T_LSB_PER_DEGC;
+        if (frame_sample_ok(*ft)) s_temp_c = (frame_data_i20(*ft) >> 4) / SCH16T_LSB_PER_DEGC;
     }
 
     // ★ **`&&` で繋いではいけない。** frame_sample_ok() は健全性カウンタを増やす
     //   副作用があるので、短絡すると 1 本目で落ちた時点で残りが数えられない。
     bool ok = true;
-    ok &= frame_sample_ok(fgx); ok &= frame_sample_ok(fgy); ok &= frame_sample_ok(fgz);
-    ok &= frame_sample_ok(fax); ok &= frame_sample_ok(fay); ok &= frame_sample_ok(faz);
+    for (int i = 0; i < 6; i++) ok &= frame_sample_ok(fr[i]);
     if (!ok) return false;
-
-    const uint32_t t_us = time_us_32();
 
     // ジャイロ [LSB] → [rad/s]。
     // ★ **バイアスを引かずに渡す。** ESKF が自分で推定する（imu_sensor.h の約束）。
-    const float gx = frame_data_i20(fgx) / SCH16T_LSB_PER_DPS * (float)DEG_TO_RAD;
-    const float gy = frame_data_i20(fgy) / SCH16T_LSB_PER_DPS * (float)DEG_TO_RAD;
-    const float gz = frame_data_i20(fgz) / SCH16T_LSB_PER_DPS * (float)DEG_TO_RAD;
+    const float gx = frame_data_i20(fr[0]) / SCH16T_LSB_PER_DPS * (float)DEG_TO_RAD;
+    const float gy = frame_data_i20(fr[1]) / SCH16T_LSB_PER_DPS * (float)DEG_TO_RAD;
+    const float gz = frame_data_i20(fr[2]) / SCH16T_LSB_PER_DPS * (float)DEG_TO_RAD;
     // 加速度 [LSB] → [m/s²]。★ **重力を含んだままの比力を渡す。**
-    const float ax = frame_data_i20(fax) / SCH16T_LSB_PER_MPS2;
-    const float ay = frame_data_i20(fay) / SCH16T_LSB_PER_MPS2;
-    const float az = frame_data_i20(faz) / SCH16T_LSB_PER_MPS2;
+    const float ax = frame_data_i20(fr[3]) / SCH16T_LSB_PER_MPS2;
+    const float ay = frame_data_i20(fr[4]) / SCH16T_LSB_PER_MPS2;
+    const float az = frame_data_i20(fr[5]) / SCH16T_LSB_PER_MPS2;
 
     // ★ 生ログの s_us には**受信時刻**を入れる。SCH16T はサンプルに
     //   タイムスタンプを付けない。acc（申告精度）も無いので 0 固定。decode_imulog.py はどちらも
     //   「チップ固有」として扱うので、ID は GYRO/ACCEL をそのまま使ってよい。
+    // ★ 割り込みで読んでいるときは、t_us は**読んだ時刻**（推定へ渡した時刻ではない）。
+    //   decode_imulog.py は s_us（= t_us）で読み出しの空きを測れる。
     const float g[3] = { gx, gy, gz };
     const float a[3] = { ax, ay, az };
     // ★ **feed は毎サンプル、ログは間引く**（SCH16T_IMULOG_DECIM。理由は settings.h）。
@@ -431,10 +427,169 @@ static bool read_sample() {
 
     s_gyro_cnt++;
     s_accel_cnt++;
+    s_taken++;
     s_last_sample_ms = millis();
     s_ever_alive = true;
     return true;
 }
+
+// ポーリングで 1 サンプル読む（SCH16T_READ_IN_IRQ = 0 のとき）。
+// ★ **先頭に捨てフレームが 1 つ必要**（アウトオブフレーム）。全部で 7 フレーム（温度の回は 8）。
+//   各応答は「1 つ前に要求したレジスタ」の値なので、要求を 1 つずらして並べる。
+// ★ **先頭の捨てフレームを「前回の続き」で省いてはいけない。** アウトオブフレームの
+//   パイプラインを呼び出しをまたいで繋げば 6 フレームで済むが、描画で 40ms 空いた
+//   あとに**40ms 前の値を新しい値として受け取る**ことになる（静かに壊れる形）。
+//   毎回捨てフレームから始める。割り込み版（imu_alarm_cb）も同じ並び。
+static bool read_sample() {
+    static uint8_t temp_skip = 0;
+    const bool do_temp = (++temp_skip >= SCH16T_TEMP_EVERY);
+    if (do_temp) temp_skip = 0;
+
+    uint64_t fr[6], ft = 0;
+    req_read(REG_RATE_X2);                    // 捨てフレーム
+    fr[0] = req_read(REG_RATE_Y2);            // → RATE_X2
+    fr[1] = req_read(REG_RATE_Z2);            // → RATE_Y2
+    fr[2] = req_read(REG_ACC_X2);             // → RATE_Z2
+    fr[3] = req_read(REG_ACC_Y2);             // → ACC_X2
+    fr[4] = req_read(REG_ACC_Z2);             // → ACC_Y2
+    // 最後の 1 本は ACC_Z2 の値を回収するための要求。アドレスは「次に読みたいもの」で、
+    // 温度を読む回だけ TEMP にして、もう 1 フレーム足してその値を取る。
+    fr[5] = req_read(do_temp ? REG_TEMP : REG_ACC_Z2);   // → ACC_Z2
+    if (do_temp) ft = req_read(REG_TEMP);     // → TEMP
+    return take_sample(fr, do_temp ? &ft : nullptr, time_us_32());
+}
+
+#if SCH16T_READ_IN_IRQ
+// ============================================================
+//  タイマー割り込みでの読み出し（settings.h の SCH16T_READ_IN_IRQ）
+// ============================================================
+// 割り込みが読んだ 1 サンプルぶんの生のフレーム。検査と換算はスレッド側（take_sample）。
+typedef struct {
+    uint64_t f[6];       // RATE_X2 Y2 Z2 ACC_X2 Y2 Z2
+    uint64_t ft;         // TEMP（has_temp のときだけ意味がある）
+    uint32_t t_us;       // 読み終えた時刻（time_us_32）
+    uint8_t  has_temp;
+} RawSample;
+static RawSample s_ring[SCH16T_RING_LEN];
+static volatile uint16_t s_ring_head = 0;     // 割り込みが次に書く位置
+static volatile uint16_t s_ring_tail = 0;     // スレッドが次に読む位置
+static volatile uint32_t s_ring_ovf  = 0;     // 一杯で読まなかった回数（起動処理の間の分は数えない）
+static int      s_alarm   = -1;               // 使っているハードウェアアラーム。-1 = まだ取っていない
+static volatile bool s_irq_on = false;
+static absolute_time_t s_irq_next;            // 次に読む時刻（割り込みの中だけで進める）
+static volatile uint32_t s_irq_last_us = 0;   // 最後に読んだ時刻。0 = 次の 1 回は間隔を数えない
+static volatile uint32_t s_irq_gap_max_us = 0;   // 読み出しの間隔の最長（60 秒ログの gapmax=）
+static uint32_t s_drain_lat_max_us = 0;       // 読んでから推定へ渡すまでの最長（60 秒ログの drain=）。スレッド側だけ
+static uint64_t s_req[REG_TEMP + 1];          // 要求フレーム（CRC 込み）を先に作っておく。割り込みで計算しない
+
+// 割り込みの中の 1 フレーム送受信。xfer48() と同じ形を pico-sdk で直に書く
+// （Arduino の SPI1 は beginTransaction などで状態を持つので、割り込みからは呼ばない）。
+// ★ SPI の設定（5MHz・モード 0・8bit）は sch_init() の SPI1.beginTransaction() が入れたものをそのまま使う。
+static inline uint64_t xfer48_irq(uint64_t frame) {
+    uint8_t tx[6], rx[6];
+    for (int i = 0; i < 6; i++) tx[i] = (uint8_t)(frame >> (8 * (5 - i)));
+    gpio_put(SCH16T_PIN_CS, 0);
+    busy_wait_us_32(1);                   // CS 立ち下がり → データ有効まで 40ns。余裕を取る
+    spi_write_read_blocking(spi1, tx, rx, 6);
+    gpio_put(SCH16T_PIN_CS, 1);
+    busy_wait_us_32(1);                   // CS の High 期間を必ず作る
+    uint64_t r = 0;
+    for (int i = 0; i < 6; i++) r = (r << 8) | rx[i];
+    return r;
+}
+
+// 4ms ごとのアラーム（Core0・優先度は最低）。7〜8 フレームで約 0.3ms。
+static void imu_alarm_cb(uint alarm_num) {
+    if (!s_irq_on) return;
+    // ★ 次の目標を先に積む（読み出しの時間に引きずられて周期がずれないように）。
+    //   ほかの割り込みに長く割り込まれて目標を過ぎていたら、いまから数え直す（追いつこうとして連打しない）。
+    s_irq_next = delayed_by_us(s_irq_next, IMU_POLL_INTERVAL_US);
+    if (absolute_time_diff_us(get_absolute_time(), s_irq_next) < 200)
+        s_irq_next = delayed_by_us(get_absolute_time(), IMU_POLL_INTERVAL_US);
+    while (hardware_alarm_set_target(alarm_num, s_irq_next))   // true = もう過ぎていた
+        s_irq_next = delayed_by_us(get_absolute_time(), IMU_POLL_INTERVAL_US);
+
+    const uint16_t head = s_ring_head;
+    const uint16_t next = (uint16_t)((head + 1) % SCH16T_RING_LEN);
+    if (next == s_ring_tail) {            // 一杯。スレッドが受け取りに来ていない
+        s_ring_ovf++;
+        return;
+    }
+
+    static uint8_t temp_skip = 0;
+    const bool do_temp = (++temp_skip >= SCH16T_TEMP_EVERY);
+    if (do_temp) temp_skip = 0;
+
+    RawSample &r = s_ring[head];
+    (void)xfer48_irq(s_req[REG_RATE_X2]);                    // 捨てフレーム（read_sample と同じ並び）
+    r.f[0] = xfer48_irq(s_req[REG_RATE_Y2]);                 // → RATE_X2
+    r.f[1] = xfer48_irq(s_req[REG_RATE_Z2]);                 // → RATE_Y2
+    r.f[2] = xfer48_irq(s_req[REG_ACC_X2]);                  // → RATE_Z2
+    r.f[3] = xfer48_irq(s_req[REG_ACC_Y2]);                  // → ACC_X2
+    r.f[4] = xfer48_irq(s_req[REG_ACC_Z2]);                  // → ACC_Y2
+    r.f[5] = xfer48_irq(s_req[do_temp ? REG_TEMP : REG_ACC_Z2]);   // → ACC_Z2
+    r.ft = do_temp ? xfer48_irq(s_req[REG_TEMP]) : 0;        // → TEMP
+    r.has_temp = do_temp ? 1 : 0;
+    const uint32_t t_us = time_us_32();
+    r.t_us = t_us;
+
+    // ★ 実際に読めた間隔の最長（60 秒ログの gapmax=）。割り込みなので、ふだんは 4ms ちょうど。
+    //   伸びていたら、割り込みが長く止められていた（フラッシュの書き込み・リングが一杯）。
+    if (s_irq_last_us) {
+        const uint32_t gap = t_us - s_irq_last_us;
+        if (gap > s_irq_gap_max_us) s_irq_gap_max_us = gap;
+    }
+    s_irq_last_us = t_us;
+
+    __compiler_memory_barrier();          // 中身を書き終えてから head を進める
+    s_ring_head = next;
+}
+
+// 割り込みを止める。★ スレッド側（Core0）から呼ぶ。同じコアなので、戻った時点で割り込みの途中ということは無い。
+static void irq_stop() {
+    s_irq_on = false;
+    if (s_alarm >= 0) hardware_alarm_cancel((uint)s_alarm);
+}
+
+// 割り込みを始める（sch_init() が通ったあと）。取れるアラームが無い・Core0 でないときは false（ポーリングに戻る）。
+static bool irq_start() {
+    if (get_core_num() != 0) return false;            // 推定も SPI1 の初期化も Core0。割り込みも Core0 で回す
+    if (s_alarm < 0) {
+        s_alarm = hardware_alarm_claim_unused(false);
+        if (s_alarm < 0) return false;
+        hardware_alarm_set_callback((uint)s_alarm, imu_alarm_cb);   // この呼び出しで Core0 の割り込みになる
+        irq_set_priority(hardware_alarm_get_irq_num((uint)s_alarm), PICO_LOWEST_IRQ_PRIORITY);
+        for (unsigned a = 0; a <= REG_TEMP; a++) s_req[a] = build_read_frame((uint8_t)a);
+    }
+    s_ring_head = s_ring_tail = 0;        // 割り込みは止まっているので素直に戻してよい
+    s_irq_last_us = 0;
+    s_irq_on = true;
+    s_irq_next = delayed_by_us(get_absolute_time(), IMU_POLL_INTERVAL_US);
+    while (hardware_alarm_set_target((uint)s_alarm, s_irq_next))
+        s_irq_next = delayed_by_us(get_absolute_time(), IMU_POLL_INTERVAL_US);
+    return true;
+}
+
+// 溜まったサンプルを古い順に推定へ渡す。★ スレッド側（Core0）から呼ぶ。
+// 推定の中から imu_service_if_due() が呼ばれても入れ子にしない。
+static void drain_ring() {
+    static bool s_draining = false;
+    if (s_draining) return;
+    s_draining = true;
+    for (;;) {
+        const uint16_t tail = s_ring_tail;
+        if (tail == s_ring_head) break;
+        __compiler_memory_barrier();      // head を見てから中身を読む
+        const RawSample &r = s_ring[tail];
+        const uint32_t lat = time_us_32() - r.t_us;
+        if (lat > s_drain_lat_max_us) s_drain_lat_max_us = lat;
+        (void)take_sample(r.f, r.has_temp ? &r.ft : nullptr, r.t_us);
+        __compiler_memory_barrier();      // 読み終えてから tail を進める（割り込みが上書きしてよいのはその後）
+        s_ring_tail = (uint16_t)((tail + 1) % SCH16T_RING_LEN);
+    }
+    s_draining = false;
+}
+#endif  // SCH16T_READ_IN_IRQ
 
 // 復旧。★ 1 分のレート制限（IMU_RECOVERY_INTERVAL_MS）。
 static void try_recovery() {
@@ -446,6 +601,9 @@ static void try_recovery() {
     DEBUGW_PLN(20261014, "[IMU] SCH16T recovery attempt");
     // ★ SPI は I2C と違ってバスが固まらない（クロックはこちらが出す）ので、
     //   バスの復旧処理は要らない。リセットから入れ直すだけ。
+#if SCH16T_READ_IN_IRQ
+    irq_stop();                  // ★ sch_init() はスレッド側で SPI1 を使う。割り込みと取り合わない
+#endif
     if (sch_init()) {
         s_present = true;
         s_last_sample_ms = millis();
@@ -455,6 +613,9 @@ static void try_recovery() {
         s_hz_last_ms   = (uint32_t)millis();
         s_gyro_cnt = s_accel_cnt = 0;
         imu_feed_reset();        // 溜めた比力を捨てる（途絶前の古いサンプルを混ぜない）
+#if SCH16T_READ_IN_IRQ
+        if (!irq_start()) enqueueTask(createLogSdTask("[IMU] SCH16T timer IRQ unavailable, polling"));
+#endif
         enqueueTask(createLogSdTask("[IMU] SCH16T recovery OK"));
         DEBUGW_PLN(20261014, "[IMU] SCH16T recovery OK");
     } else {
@@ -509,6 +670,16 @@ void imu_drv_setup() {
         s_ever_alive = true;
         s_last_sample_ms = millis();
         s_hz_last_ms = (uint32_t)millis();
+#if SCH16T_READ_IN_IRQ
+        // ★ ここから割り込みで読み始める。setup() の残り（起動画面など）の間も読み、
+        //   imu_service_if_due() が呼ばれたときに推定へ渡す（受け取りが遅れた分は ovf に数えない。imu_drv_poll）。
+        if (irq_start()) {
+            enqueueTask(createLogSdfTask("[IMU] SCH16T read by timer IRQ (alarm %d, %uus, ring %u)",
+                                         s_alarm, (unsigned)IMU_POLL_INTERVAL_US, (unsigned)SCH16T_RING_LEN));
+        } else {
+            enqueueTask(createLogSdTask("[IMU] SCH16T timer IRQ unavailable, polling"));
+        }
+#endif
     }
 }
 
@@ -530,7 +701,11 @@ ImuDrvState imu_drv_poll() {
     if (s_present && s_last_sample_ms > 0 && millis() - s_last_sample_ms > 1000UL) {
         DEBUGW_PLN(20261014, "[IMU] SCH16T comm timeout, marking unavailable");
         enqueueTask(createLogSdTask("[IMU] SCH16T comm timeout"));
+        // 途絶時は s_present を落として復帰（try_recovery）を試行する（readiness 側でも NOT READY を正しく判定）
         s_present = false;
+#if SCH16T_READ_IN_IRQ
+        irq_stop();              // 黙ったチップを読み続けない（復旧が通ったら try_recovery が始め直す）
+#endif
     }
 
     if (!s_present) {
@@ -538,10 +713,28 @@ ImuDrvState imu_drv_poll() {
         return IMU_DRV_DEAD;      // 恒速モデルへの縮退は呼び出し側（imu.cpp）が行う
     }
 
-    const uint32_t now_us = time_us_32();
-    if (now_us - s_poll_last_us < IMU_POLL_INTERVAL_US) return IMU_DRV_WAIT;
-
-    imu_drv_service_if_due();
+#if SCH16T_READ_IN_IRQ
+    const bool irq_mode = s_irq_on;
+#else
+    const bool irq_mode = false;
+#endif
+    if (irq_mode) {
+#if SCH16T_READ_IN_IRQ
+        // ★ 起動処理（setup()）の間に受け取りが遅れて一杯になった分は数えない。loop() に入ってからの分だけ。
+        static bool s_first_poll = true;
+        if (s_first_poll) {
+            s_first_poll = false;
+            drain_ring();
+            s_ring_ovf = 0;
+            s_drain_lat_max_us = 0;
+        }
+        drain_ring();
+#endif
+    } else {
+        const uint32_t now_us = time_us_32();
+        if (now_us - s_poll_last_us < IMU_POLL_INTERVAL_US) return IMU_DRV_WAIT;
+        imu_drv_service_if_due();
+    }
 
     // ---- 1 秒ごとにレートを計算（60 秒ログの raw GYR / ACC）----
     {
@@ -563,11 +756,23 @@ ImuDrvState imu_drv_poll() {
         }
     }
 
+    // 割り込みのときは、前の回から 1 つも受け取っていなかったら WAIT（predict へ進んでも新しい比力が無い）。
+    // ★ 「この回に受け取ったか」で見ないこと。描画の途中の imu_service_if_due() が先に受け取っていると、
+    //   直後のここは 0 件になり、バリオの predict が 1 周遅れる。
+    static uint32_t s_taken_seen = 0;
+    if (irq_mode) {
+        if (s_taken == s_taken_seen) return IMU_DRV_WAIT;
+        s_taken_seen = s_taken;
+    }
     return IMU_DRV_SERVICED;
 }
 
 void imu_drv_service_if_due() {
     if (!s_present) return;
+#if SCH16T_READ_IN_IRQ
+    // 割り込みで読んでいるときは、溜まった分を推定へ渡すだけ（読みには行かない）
+    if (s_irq_on) { drain_ring(); return; }
+#endif
     const uint32_t now_us = time_us_32();
     if ((uint32_t)(now_us - s_poll_last_us) < IMU_POLL_INTERVAL_US) return;
     // ★ **実際に引き取れた間隔**の最長を記録する（60 秒ログの gapmax=）。
@@ -598,10 +803,50 @@ float get_imu_accel_hz() { return s_accel_hz; }
 // ★ 健全性（CRC エラー・CE・飽和・STAT_SUM の故障ビット）はいまシリアルと SD ログへ
 //   出している。**画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業。**
 
-// Core0 が止まった最長時間 [µs]。★ **読むたびに 0 へ戻す約束**。
+// 読み出しの間隔の最長 [µs]（60 秒ログの gapmax=）。★ **読むたびに 0 へ戻す約束**。
+//   割り込みで読んでいるときは割り込みの間隔（ふだん 4ms ちょうど）、ポーリングのときは Core0 が止まった最長時間。
 uint32_t get_imu_poll_gap_max_us() {
+#if SCH16T_READ_IN_IRQ
+    if (s_irq_on) {
+        const uint32_t save = save_and_disable_interrupts();   // 割り込みが書く値なので、読みと 0 戻しの間を守る
+        const uint32_t v = s_irq_gap_max_us;
+        s_irq_gap_max_us = 0;
+        restore_interrupts(save);
+        return v;
+    }
+#endif
     const uint32_t v = s_poll_gap_max_us;
     s_poll_gap_max_us = 0;
     return v;
+}
+
+// 読んでから推定へ渡すまでの最長 [µs]（60 秒ログの drain=）。★ 読むたびに 0 へ戻す。
+// 割り込みで読んでいるときだけ意味がある（= Core0 が受け取りに来られなかった最長時間。地図の描き直しなど）。
+uint32_t get_imu_drain_max_us() {
+#if SCH16T_READ_IN_IRQ
+    const uint32_t v = s_drain_lat_max_us;
+    s_drain_lat_max_us = 0;
+    return v;
+#else
+    return 0;
+#endif
+}
+
+// リングが一杯で読まなかった回数（起動してから。60 秒ログの ovf=）。ポーリングのときは 0。
+uint32_t get_imu_ring_ovf() {
+#if SCH16T_READ_IN_IRQ
+    return s_ring_ovf;
+#else
+    return 0;
+#endif
+}
+
+// 割り込みで読んでいるか（60 秒ログの行の形を決める）。
+bool imu_read_in_irq() {
+#if SCH16T_READ_IN_IRQ
+    return s_irq_on;
+#else
+    return false;
+#endif
 }
 

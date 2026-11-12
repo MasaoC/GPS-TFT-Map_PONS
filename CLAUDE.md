@@ -106,7 +106,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 ```
 
 **`attitude.cpp` と `tools/imulog/eskf.py` は同じ数式の二重実装。
-片方を直したらもう片方も必ず合わせる。**
+片方を直したらもう片方も必ず合わせる。** バリオの KF（`imu.cpp`）と `tools/imulog/vario.py` も同じ関係
+（2026-11-11〜。予測の周期・Q・観測・`KF_ACC_GUARD_*` のガード。合わせていない点は vario.py の頭に書いてある）。
 
 ---
 
@@ -196,7 +197,8 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
   SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（`0xA8` …）。
   ゆっくりした項目は 8 発に分けた回転枠で運ぶので、**have ビットの無い目的地・ナビモード・縮尺は
-  `link_rx_slot_known()` を見てから使う**（受け始めは 0 のままで、使うと受信機が目的地 0・縮尺 0 に書き換えられる）。
+  `link_rx_slot_known()` を見てから使う**（受け始めは 0 のままで、使うと受信機が目的地 0 に書き換えられる。
+  縮尺は 2026-11-12 から受信機が合わせなくなり、設定画面に送信機の縮尺を添えるだけだが、そこに 0 ＝最も広い縮尺と嘘が出る）。
   **目的地は番号ではなく `dest_id`（名前と座標の CRC16）で照合する**（`link_sender_dest_local()`）。番号で合わせると、
   3 台の destinations.csv やパイロンの上書きが違うとき**黙って別の場所**に合う。`dest_id` の 0 は「送っていない」。
   アッパーバンド（CH15 / 21 / 27）は休止の決まりに合わせて送る間隔を延ばし、SF11 は使わない（docs/pons_link.md §2）。
@@ -250,21 +252,32 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 - **log.txt の `grf` 行（GNSS の受信状態の 1 分まとめ。`gnss_log_rf_minute()`）は、debug/v7-noise-test と
   PONSv7.1 で同じ並び・同じ数え方に保つ。** v7 と v7.1 の基板の GNSS の受け方を比べるための行なので、
   片方だけ変えると比べられなくなる（2026-11-04〜）。
+- **log.txt の毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG [..m]:`）と `BOOT PONS` / `GNSS TIME:` / `GNSS FIXED` の形を変えたら、
+  Flight Viewer の log.txt の表示（`tools/flight_viewer/index.html` の `logScanLine` / `LOG_CATS`）も合わせる。**
+  ビューアは正規表現で拾っているので、読めなくなった値は**グラフと起動のまとめから黙って消える**（2026-11-11〜）。
+  v7 の機体も v7.1 のリポジトリのビューアで見るので、両ブランチの行の形をそろえておく。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
   `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
   `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。
   Low が来ないまま `LINK_TX_TXSTART_MS` 経ったら**モジュールに捨てられた**ので
   `noRf` を数える（60 秒ログ `LINK TX: ... noRf=`）。
   **`Sent` は「UART へ書けた回数」でしかない。** 電波が出た証明にはならない。
-- **IMU の読み出しを飢えさせない。** SCH16T は**こちらから 250Hz で取りに行く**方式で、
+- **IMU の読み出しを飢えさせない。** SCH16T は**こちらから 250Hz で取りに行く**方式で（FIFO が無い）、
   読み出しが空くとその間のサンプルが抜ける。LPF2 の最小推奨 150Hz を下回ると阻止域のノイズが
   折り返す（settings.h の `IMU_POLL_INTERVAL_US`）。
-  **長いブロッキング処理の中では `imu_service_if_due()` を呼ぶこと**
-  （地図描画・E220 の AUX 待ち・ボーレート切替・起動画面の各待ちに入れてある）。
-  60 秒ログの `gapmax=` が実測値。ここが数十 ms に伸びたら疑う。
-  **さらに 1 秒空くと「通信途絶」と誤判定して、生きているチップをリセットしに行く**
+  **2026-11-11 から読み出しは Core0 のタイマー割り込み**（`SCH16T_READ_IN_IRQ`）で、`loop()` が止まっても抜けない。
+  `imu_service_if_due()` は「溜まった分を推定へ渡す」になったが、**長いブロッキング処理の中では引き続き呼ぶこと**
+  （地図描画のレコードごと・航跡の点ごと・面の塗りの 16 行ごと・E220 の AUX 待ち・ボーレート切替・起動画面の各待ちに入れてある）。
+  渡すのが遅れると推定が遅れ、512ms を超えるとリングが一杯で読めなくなる（60 秒ログの `ovf=`）。`0` にしたときのポーリングでは今までどおり抜ける。
+  60 秒ログの `gapmax=` が読み出しの間隔（割り込みならふだん 4ms）、`drain=` が Core0 が受け取りに来られなかった最長時間。
+  描き直しのどこで時間がかかっているかは `redraw` 行（GPS_TFT_map.ino の `redraw_prof_*`）。
+  **さらに 1 秒受け取らないと「通信途絶」と誤判定して、生きているチップをリセットしに行く**
   （v7 で実際に起き、復旧に失敗してそのまま死んだ）。`imu_drv_poll()` の冒頭に
   ガード（呼び出し間隔が空いた回の判定は見送る）を入れてあるが、ガードに頼らず待ちループ側でも呼ぶこと。
+- **IMU の割り込みの優先度は最低のまま。SPI1 をスレッド側から触るときは割り込みを止める。**
+  音声の 16kHz のタイマー割り込みも Core0 で走っていて（既定のアラームプールは起動時に Core0 で作られる）、
+  同じか上の優先度にすると 1 回 0.3ms ずつ音声を待たせて 250Hz のうなりになる。SPI1 は SCH16T 専用で、
+  スレッド側で使うのは `sch_init()`（起動と復旧）だけ。`try_recovery()` が `irq_stop()` してから呼んでいる。
 - **生ログ（`src/imulog.h`）の レコード ID を再利用しない。** 退避済みの過去ログは
   id だけでレコードを解釈するので、止めた ID に別の意味を割り当てると
   **古いログが静かに誤デコードされる**（値はもっともらしく出る）。
@@ -290,7 +303,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [display_pages.cpp](display_pages.cpp) | 地上で見る詳細画面（VARIO / GNSS DETAIL）。スプライトは display_tft.cpp のものを借りる |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
-| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・サンプル引き取り。**本体基板では起動と机上確認まで（Step 2〜3）**で、まだ飛ばしていないので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
+| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・サンプル引き取り（2026-11-11〜 タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す）。**本体基板では起動と机上確認まで（Step 2〜3）**で、まだ飛ばしていないので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
@@ -306,6 +319,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
 | [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) | 焼き込んだ音声の実体。`tools/gen_wav_flash.py` の生成物。手で編集しない |
 
+- **やること・後回しにしていること（v7・v7.1 両方）: [docs/pons_todo.md](docs/pons_todo.md)**。済んだら行を消す
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - GNSS の TTFF を SD の DBD と LoRa の助け合いで縮める計画: [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)

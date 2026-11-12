@@ -5,7 +5,7 @@
 //           高温での充電の警告、過放電（3.0V 未満）の本体フラッシュ記録と充電禁止ロック。
 //           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/10
+// Updated : 2026/11/11
 // ============================================================
 //
 // ■ 何を見張るか（docs/pons_power.md）
@@ -582,13 +582,18 @@ void power_tick() {
 // ============================================================
 //  USB 充電中の残量(%)・残り時間推定（docs/pons_charge_estimation.md）
 // ============================================================
-// 完全ステートレス物理モデル ＋ 満充電ラッチ:
+// 完全ステートレス物理モデル ＋ 満充電ラッチ（定数は settings.h の CHG_*）:
 // 1) ロードシェアリング（Q2+D3）により、USB 給電中は本体負荷電流が電池経路に流れない。
-// 2) ADC 測定点 BATPWR は F1(~0.25Ω) と Q3/Q4/保護回路(~0.25Ω) の中間点にある。
-//    - CC モード (< 4.125V): 下流 IR ドロップ (~75mV) を減算してセル開放電圧を逆算。
-//    - CV モード (>= 4.125V): 電流減衰により BATPWR は 4.125V〜4.200V へ上昇。
+// 2) ADC 測定点 BATPWR は F1 と Q3/Q4/保護回路の中間点にある。
+//    - CC モード (< CHG_CV_START_V = 4.088V): 下流の IR ドロップ（CHG_CC_DROP_V = 112mV）を引いてセル開放電圧を逆算。
+//    - CV モード (>= 4.088V): 電流減衰により BATPWR は 4.088V〜4.200V へ上昇。
 //      上流・下流が対称抵抗のため BATPWR = (4.20V + V_cell) / 2 となり、
-//      V_cell = 2 * BATPWR - 4.20V で完全連続（4.125V で 4.05V、4.200V で 4.20V）に推計。
+//      V_cell = 2 * BATPWR - 4.20V で完全連続（4.088V で 3.976V、4.200V で 4.20V）に推計。
+//    ★ 2026-11-11 までは回路からの見積もり（75mV・4.125V）だった。実機の CHG UNPLUG で測り直した（settings.h）。
+// 2') 残量 % は、セル開放電圧から CHG_LOAD_DROP_V（電池だけで動くときの本体の電流ぶん、30mV）を引いてから
+//    battery_percent() にかける。電池のときの % は BATPWR（負荷のかかった電圧）をそのまま換算しているので、
+//    こうしないと USB を抜いた瞬間に % が下がる（2026-11-11 まで 8〜10% 下がっていた。TODO の「USB を抜くと約 7% 下がる」）。
+//    満充電ラッチで 100% を出したあとに抜くと、負荷のぶんで 95% 前後になるのは残る（FULL は FULL と出すため）。
 // 3) 満充電ラッチ（課題5対策）:
 //    MCP73831 の充電終止（約23mA）では BATPWR（測定点）が約 4.194V に達し、その後充電電流が
 //    ゼロになってセル電圧は 4.15〜4.18V へ自然緩和する。充電停止後も CV 式を当て続けると
@@ -633,27 +638,34 @@ float power_estimated_cell_voltage() {
   if (!usb_power_present()) return v;
   // SW OFF 中は電池経路が切り離されているため実測電圧（0V近辺）を返す
   if (power_sw_off_on_usb()) return v;
-  if (s_chg_full_latched) return 4.20f;
-  if (v < 4.125f) return v - 0.075f;
-  const float est = 2.0f * v - 4.20f;   // CV モード（上の ■ の 2)）
-  return (est > 4.20f) ? 4.20f : est;
+  if (s_chg_full_latched) return CHG_REG_V;
+  if (v < CHG_CV_START_V) return v - CHG_CC_DROP_V;
+  const float est = 2.0f * v - CHG_REG_V;   // CV モード（上の ■ の 2)）
+  return (est > CHG_REG_V) ? CHG_REG_V : est;
 }
 
+// 充電中の残量 %。「いま USB を抜いたら出る %」に合わせる（上の ■ の 2')）。
 int power_charging_percent() {
   if (s_chg_full_latched) return 100;
-  return battery_percent(power_estimated_cell_voltage());
+  return battery_percent(power_estimated_cell_voltage() - CHG_LOAD_DROP_V);
+}
+
+// CV に入るときの残量 %（約 68%）。power_charging_percent() と同じ換算。
+static int charge_cv_start_percent() {
+  return battery_percent(CHG_CV_START_V - CHG_CC_DROP_V - CHG_LOAD_DROP_V);
 }
 
 int power_charging_remaining_min() {
   if (s_chg_full_latched) return 0;
   const int pct = power_charging_percent();
   if (pct >= 100) return 0;
-  if (pct < 80) {
-    // CC フェーズ: 80% (CV突入) までの時間 (303mA充電で約1.7分/%) ＋ CV 所要時間 (約45分)
-    return (int)((80 - pct) * 1.7f + 45.0f);
+  const int cv_pct = charge_cv_start_percent();
+  if (pct < cv_pct) {
+    // CC フェーズ: CV に入るまで（303mA 充電で約 1.7 分/%）＋ CV の所要時間（約 45 分）
+    return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
   } else {
-    // CV フェーズ: 残り 20% 分を 45分かけて指数減衰
-    return (int)((100 - pct) * 2.25f);
+    // CV フェーズ: CV に入ってから 100% までを 45 分で（CV に入った瞬間は CC の式とどちらも 45 分）
+    return (int)((100 - pct) * CHG_CV_MIN / (float)(100 - cv_pct));
   }
 }
 
@@ -708,7 +720,7 @@ bool power_charge_popup_active() {
 // 後から log.txt を確認して以下の物理特性を検証・チューニングできるように記録する:
 //  1) 開始/途中挿し時の電圧・残量・推定残り時間（CHG START）
 //  2) 60 秒ごとの推移（電圧上昇カーブ、温度と熱ダレの関係、残り時間カウントダウン）
-//  3) CV モード突入点（4.125V）の到達タイミング（CHG CV ENTER）
+//  3) CV モード突入点（CHG_CV_START_V = 4.088V）の到達タイミング（CHG CV ENTER）
 //  4) 満充電（FULL）判定の到達タイミング（CHG FULL）
 //  5) USB 抜去時の IR ドロップ測定値（充電中電圧 - 抜去後開放電圧 = 実測 ΔV）（CHG UNPLUG）
 static void charge_log_tick(uint32_t now) {
@@ -760,8 +772,8 @@ static void charge_log_tick(uint32_t now) {
       const int   rem_m  = power_charging_remaining_min();
       const float temp   = get_airdata_ok() ? get_airdata_temperature() : 0.0f;
 
-      // 1) CV 突入イベント（4.125V 到達）
-      if (!s_cv_logged && raw_v >= 4.125f) {
+      // 1) CV 突入イベント（CHG_CV_START_V 到達）
+      if (!s_cv_logged && raw_v >= CHG_CV_START_V) {
         s_cv_logged = true;
         const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
         enqueueTask(createLogSdfTask("CHG CV ENTER: raw=%.2fV cell=%.2fV soc=%d%% rem=%dm t=%lum T=%.1fC",
@@ -780,7 +792,7 @@ static void charge_log_tick(uint32_t now) {
       if (now - s_last_periodic_log_ms >= 60000UL) {
         s_last_periodic_log_ms = now;
         const uint32_t elap_m = (now - s_chg_start_ms) / 60000UL;
-        const char* mode = (pct >= 100 || s_chg_full_latched) ? "FULL" : (raw_v >= 4.125f ? "CV" : "CC");
+        const char* mode = (pct >= 100 || s_chg_full_latched) ? "FULL" : (raw_v >= CHG_CV_START_V ? "CV" : "CC");
         enqueueTask(createLogSdfTask("CHG [%lum]: raw=%.2fV cell=%.2fV soc=%d%% rem=%dm %s T=%.1fC",
                                      (unsigned long)elap_m, raw_v, cell_v, pct, rem_m, mode, temp));
       }

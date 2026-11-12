@@ -254,7 +254,8 @@ static inline void link_w2_rx_reset(LinkW2Rx* st) { memset(st, 0, sizeof(*st)); 
 
 // その回転枠を（途切れてから）受けたか。have ビットの無い項目を使う前に見ること。
 // ★ 受けるまで 0 のままの目的地・ナビモード・縮尺をそのまま使うと、受信機が
-//   「送信機は目的地 0・縮尺 0」と思い込んで、自分の設定を書き換えてしまう（link_sync_*）。
+//   「送信機は目的地 0・縮尺 0」と思い込んで、自分の設定を書き換えてしまう（link_sync_destination）、
+//   設定画面に送信機の縮尺を嘘で出す（link_get_sender_scale_index）。
 static inline bool link_w2_slot_seen(const LinkW2Rx* st, uint8_t slot) {
     return (st->slot_seen & (1u << slot)) != 0;
 }
@@ -329,6 +330,7 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         t.centi  = (uint8_t)((tod % 10) * 10);
         if (st->hour_known) t.hour = st->hour;   // 分からない間は前の値のまま（受け始めは 0。日付も無い）
     } else {
+        // ※ tod == 0xFFFF（時刻無効）時は 00:00:00 に飛ばさず直前の時刻・日付を保持する設計
         st->prev_tod = 0xFFFF;
     }
 

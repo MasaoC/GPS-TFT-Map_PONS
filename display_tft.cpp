@@ -11,7 +11,7 @@
 //             ここが持つ。VARIO / GNSS DETAIL の詳細画面は 0.990 で
 //             display_pages.cpp へ分けた（あちらは借りて描く）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/10
+// Updated : 2026/11/11
 // ============================================================
 // Updates TFT display using TFT-eSPI library.
 
@@ -1180,6 +1180,10 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   cord_tft prev = p0;
   Coordinate prevc = c0;
   for (int i = 0; i < sizetrack-1; i++) {
+    // ★ 1 点ごとに IMU を引き取る（2026-11-11〜。CLAUDE.md「IMU の読み出しを飢えさせない」）。
+    //   航跡は最大 MAX_TRACK_CORDS（500）点で、1 点ごとに座標変換と太さ 2 の線を引くので、
+    //   地図と同じく描き直しの間 Core0 を止める側にいる。周期内なら時刻を見て戻るだけなので軽い。
+    imu_service_if_due();
     Coordinate c1 = latlon_manager.getData(i+1);
     if(c1.latitude == 0 && c1.longitude == 0){
       DEBUGW_PLN(20250510,"ERR lat lon 0");
@@ -1783,6 +1787,7 @@ void draw_eskf_attitude() {
   //   画面に出しているのは機体の姿勢なので関係が無い。しかも return しているため、
   //   **受信機自身の ESKF が READY になるまでミラーした姿勢ブロックが丸ごと
   //   出なくなる**（P / R / Y95 / 風 / Rtrim の全部）。
+  // ※ デモ中も姿勢（ロール・ピッチ）は実機 IMU 値を使用する仕様のため、未収束時の "ESKF Not ready" 表示は意図通り。
   if (!getReplayMode() && !link_mirror_active() && get_imu_ok() && !attitude_ready()) {
     backscreen.setTextWrap(false);
     backscreen.loadFont(AA_FONT_SMALL);
@@ -3517,7 +3522,7 @@ float get_input_voltage(){
   last_call_ms = now;
 
   // ★ USB を抜いた直後は、下がる側もすぐ追う（BATTERY_UNPLUG_FOLLOW_MS の間）。
-  //   充電中の BATPWR は充電電流のぶんセル電圧より高く（約 75mV。docs/pons_charge_estimation.md）、
+  //   充電中の BATPWR は充電電流のぶんセル電圧より高く（実測で約 112mV。settings.h の CHG_CC_DROP_V）、
   //   そのピークを 3 秒保持＋時定数 20 秒で下げていたので、抜いた瞬間に残量が 52% → 71% へ跳ね、
   //   30 秒かけて戻っていた。下の「200 カウント」の判定は SW OFF 用で、この段差（数十カウント）は拾えない。
   //   上がる側は追わない（負荷で一瞬下がった値が、そのまま表示に出ないように）。
@@ -3670,7 +3675,7 @@ static void draw_header_pitch(int x, float deg, uint16_t col) {
 // ★ 青は字の色ではなく**塗り**に使う。日なたで色が薄れても明暗の塊として残り、左の対地速度（白地に黒字）と
 //   形で見分けられる（色の見え方の個人差にも効く）。枠の左 25px（平均ピッチなら符号の場所）に白の縦書き
 //   「T A S」を置き、左の「m p s」と対にする。TAS には符号が付かないので、平均ピッチとも見分けられる。
-//   地上（HDR_TAS_GROUND）は数字を出したまま横線で消す（下の「地上の横線」）。上下限に張り付いたら
+//   地上（HDR_TAS_GROUND）は数字を出したまま横線で消し、「GROUND」の札を載せる（header_strike()）。上下限に張り付いたら
 //   （HDR_TAS_CLAMP）箱を灰色にする（推定ではなく端の値。灰色はいまも「ありえない値」の色）。
 //   幅は平均ピッチと同じ組み方: ラベル 25 + 数字 37 + 点 10 + 数字 37 = 109px。10m/s 以上は小数を落とす。
 static void draw_header_tas(int x, TasHdr h, float mps) {
@@ -3713,39 +3718,86 @@ static void draw_header_tas(int x, TasHdr h, float mps) {
     header_footer.printf("%02ld", whole);
   }
 
-  // ---- 地上の横線（2026-11-07 に「-.-」から変えた）----
-  // 地上の推定 TAS は対気速度ではない（台の上で止まっていても平均ピッチから 7.3 のように出る）。
-  // ★ 数字は消さずに残す。地上でも本体を傾ければ動くので、推定が働いていることを確かめられる。
-  // ★ **白い線の上下に箱の色を 2px ずつ残す**（白 4px・縁 2px）。白だけだと白い数字の上で線が溶け、
-  //   黒だけだと青地の上で見えにくい。縁があると数字の上でも青地の上でも線として読める。
-  //   赤・橙にしないのは、この箱で赤は「較正のやり直しが必要」、橙は「GNSS 速度が止まっている」の取り消し線で、
-  //   地上はどちらでもない（いつもの状態）から。高さはその赤線（y = 22〜25）と同じで、両方成り立つときは
-  //   後から引く赤が勝つ（header_strike_if_invalid）。
-  //   縦書きの「T A S」にはかからないよう、ラベルの右から引く。
-  if (h == HDR_TAS_GROUND) {
-    const int lw = SCREEN_WIDTH - x - 1;
-    header_footer.fillRect(x, 20, lw, 8, box);
-    header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
-  }
+  // 地上の横線は header_strike()（較正・GNSS の線と 1 つにまとめて、どれを出すかを決める）。
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);   // 文字の色を既定へ戻す（上の ★）
 }
 
-// 大きい枠の数字（平均ピッチ・推定 TAS）を「読むな」と消す線。推定 TAS も平均ピッチの換算なので同じ条件。
-// ★ 較正のやり直しが必要な間は、この数字そのものが信用できない。数字の上に赤いバーを被せる。
-//   位置と太さは下の「GNSS 0 個で速度・方位が無効」の赤線と同じ流儀にしてある
-//   （同じ意味＝この値は無効、を同じ見た目で表す）。
-//   条件は地図上の赤字警告と同じ eskf_display_needs_apply() に揃えてある
-//   （リプレイ中は出さない / ミラー中は送信機の状態。この数字自身が
-//     ミラー中は送信機の値なので、取り消し線も送信機の状態で引く）。
-static void header_strike_if_invalid(int mtvx) {
-  if (eskf_display_needs_apply()) {
-    for (int i = 0; i < 4; i++)
-      header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
-  } else if (eskf_display_gnss_stale()) {
-    // ★ GNSS 速度が止まっている間は平均ピッチも不正確（元のピッチが不正確なので）。
-    //   **較正要の赤 4px より細い橙 2px** にして段を分ける。赤＝値が無効、
-    //   橙＝精度が落ちている。両方成立するときは赤が勝つ（else if）。
-    strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_ORANGE);
+// 大きい枠の数字（平均ピッチ・推定 TAS）に引く横線の種類。**1 つだけ選ぶ**（強い順に並べてある）。
+//   CALIB   … 赤 4px「CALIBRATE」。較正のやり直しが必要（数字そのものが信用できない）
+//   NO_GNSS … 橙 2px「NO GNSS」。GNSS 速度が止まっている（元のピッチが不正確なので平均ピッチも不正確）
+//   GROUND  … 白 4px「GROUND」。推定 TAS を選んでいて地上（対気速度ではない。毎回の、正常な状態）
+// ★ 2026-11-11 までは地上の白線の上に赤・橙を重ねて引いていて、地上で GNSS を待っている間は
+//   白と橙の混ざった線になっていた。札は 1 枚しか載らないので、どれか 1 つにする。
+//   地上より GNSS を先にするのは、Pavg の箱（地上の線が無い）と同じ札になるようにするため。
+// 条件は地図上の赤字警告・P / R 行の橙の線と同じ関数（供給元 3 系統を見る。リプレイ中は赤も橙も出さない /
+// ミラー中は送信機の状態。この数字自身がミラー中は送信機の値なので、取り消し線も送信機の状態で引く）。
+enum HdrStrike : uint8_t { HSTRIKE_NONE, HSTRIKE_GROUND, HSTRIKE_NO_GNSS, HSTRIKE_CALIB };
+static HdrStrike header_strike_kind(TasHdr h) {
+  if (eskf_display_needs_apply()) return HSTRIKE_CALIB;
+  if (eskf_display_gnss_stale())  return HSTRIKE_NO_GNSS;
+  if (h == HDR_TAS_GROUND)        return HSTRIKE_GROUND;
+  return HSTRIKE_NONE;
+}
+
+// 横線の上に載せる理由の札（2026-11-11）。
+// ★ 線だけでは、利用者に**なぜ消されているのか**が分からなかった（白・橙・赤の 3 種類があり、
+//   色の意味は説明書にしか無い）。本体に日本語のフォントは無いので英語の 1 語にする
+//   （GNSS・CALIB は本番前チェックの項目名と同じ言葉）。
+// ★ 札は数字の真ん中を隠す。それでも載せるのは、線が出るのはほとんど地上（白）か、地上で較正し直すとき（赤）で、
+//   数字を読む必要が無いから。飛行中に出るのは GNSS を失ったとき（橙）くらいで、そのときの数字は参考でしかない。
+// 置き場所は数字の範囲 [l, r) の中央。高さは線（y = 22〜25）と中心をそろえる。範囲より広い札は右端にそろえ、
+// 左へは 3px まではみ出してよい（大きい枠の、縦書きの「T A S」・平均ピッチの符号と数字の間のすき間）。
+// 一番長い「CALIBRATE」は札の幅 87px（x = 153〜239）。平均ピッチの符号・「T A S」（x ≦ 151）にはかからない。
+// 対地速度の赤線（draw_header() の下）にも同じ札を載せる。
+static void header_strike_tag(int l, int r, const char* word, uint16_t fill, uint16_t ink, uint16_t edge) {
+  header_footer.loadFont(AA_FONT_SMALL);
+  const int w = header_footer.textWidth(word) + 6, h = 16, y = 16;
+  int x = (l + r - w) / 2;
+  if (x + w > r) x = r - w;
+  if (x < l - 3) x = l - 3;
+  // 縁。白い札は白い数字に溶けるので、箱の色で 2px 囲って切り離す（地上の白線の縁と同じ考え方）
+  if (edge != fill) header_footer.fillRect(x - 2, y - 2, w + 4, h + 4, edge);
+  header_footer.fillRect(x, y, w, h, fill);
+  header_footer.setTextColor(ink, fill);
+  header_footer.setCursor(x + 3, y + 1);   // 大文字（高さ 11px）が y = 18〜28、線の中心とそろう
+  header_footer.print(word);
+  header_footer.loadFont(NM_FONT_LARGE);
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);   // draw_header_tas() の ★ と同じ（背景を塗る指定にしない）
+}
+
+// 大きい枠の数字（平均ピッチ・推定 TAS）を「読むな」と消す線と、その理由の札。推定 TAS も平均ピッチの換算なので同じ条件。
+static void header_strike(int mtvx, TasHdr h) {
+  switch (header_strike_kind(h)) {
+    case HSTRIKE_CALIB:
+      // ★ 位置と太さは下の「GNSS が無くて速度・方位が無効」の赤線と同じ流儀
+      //   （同じ意味＝この値は無効、を同じ見た目で表す）。
+      for (int i = 0; i < 4; i++)
+        header_footer.drawFastHLine(mtvx + 2, 22 + i, 111 - 4, COLOR_RED);
+      header_strike_tag(mtvx + 25, SCREEN_WIDTH, "CALIBRATE", COLOR_RED, COLOR_WHITE, COLOR_RED);
+      break;
+    case HSTRIKE_NO_GNSS:
+      // ★ **較正要の赤 4px より細い橙 2px** にして段を分ける。赤＝値が無効、橙＝精度が落ちている。
+      strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_ORANGE);
+      header_strike_tag(mtvx + 25, SCREEN_WIDTH, "NO GNSS", COLOR_ORANGE, COLOR_BLACK, COLOR_ORANGE);
+      break;
+    case HSTRIKE_GROUND: {
+      // ---- 地上の横線（2026-11-07 に「-.-」から変えた）----
+      // 地上の推定 TAS は対気速度ではない（台の上で止まっていても平均ピッチから 7.3 のように出る）。
+      // ★ 数字は消さずに残す。地上でも本体を傾ければ動くので、推定が働いていることを確かめられる
+      //   （札が真ん中を隠すが、上と下は見えるので動くのは分かる）。
+      // ★ **白い線の上下に箱の色を 2px ずつ残す**（白 4px・縁 2px）。白だけだと白い数字の上で線が溶け、
+      //   黒だけだと青地の上で見えにくい。縁があると数字の上でも青地の上でも線として読める。
+      //   赤・橙にしないのは、この箱で赤は「較正のやり直しが必要」、橙は「GNSS 速度が止まっている」の線で、
+      //   地上はどちらでもない（いつもの状態）から。
+      //   縦書きの「T A S」にはかからないよう、ラベルの右から引く。地上の箱はいつも青（灰色の箱は飛行中だけ）。
+      const int x = mtvx + 25, lw = SCREEN_WIDTH - x - 1;
+      header_footer.fillRect(x, 20, lw, 8, COLOR_BLUE);
+      header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
+      header_strike_tag(mtvx + 25, SCREEN_WIDTH, "GROUND", COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
+      break;
+    }
+    default:
+      break;
   }
 }
 
@@ -3790,10 +3842,10 @@ void draw_header() {
   }
   const TasHdr hdr = tas_header();
   if (tas_hdr_is_tas(hdr)) {
-    // ---- 推定 TAS（青い箱。地上は数字に横線）----
+    // ---- 推定 TAS（青い箱。地上は数字に横線と「GROUND」の札）----
     // 平均ピッチはラベルの行（地図の上端）に小さく残す（draw_gs_track）。
     draw_header_tas(mtvx, hdr, tas_header_value());
-    header_strike_if_invalid(mtvx);
+    header_strike(mtvx, hdr);
   } else if (hdr == HDR_PAVG) {
     // ---- 平均ピッチ ----
     // パイロットは対地進路を地図から読めるが、平均ピッチは他に得る手段が無い。
@@ -3806,7 +3858,7 @@ void draw_header() {
                         : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
     header_footer.setTextColor(pcol, TFT_WHITE);
     draw_header_pitch(mtvx, pv, pcol);
-    header_strike_if_invalid(mtvx);
+    header_strike(mtvx, hdr);
   } else {
     // ---- 真方位 ----
     header_footer.setCursor(mtvx, 3);
@@ -3835,6 +3887,11 @@ void draw_header() {
     const int len = header_shows_pitch() ? (mtvx - 5 - 2) : (SCREEN_WIDTH - 10);
     for(int i = 0; i < 4; i++)
       header_footer.drawFastHLine(5, 22+i, len, COLOR_RED);
+    // 理由の札（2026-11-11。大きい枠の札と同じ header_strike_tag()）。置くのは対地速度の数字の上だけ。
+    //   真方位をヘッダーに出しているときは線が右端まで伸びるが、1 本の線なので札は 1 枚で足りる。
+    //   言葉は大きい枠の橙と同じ「NO GNSS」（理由は同じで、色が重さを表す。赤＝値が無効・橙＝精度が落ちている）。
+    //   GNSS の断線・fix していない・衛星 0 をまとめて言う（fix 待ちで衛星が 3 個見えていても、使えないことに変わりはない）。
+    header_strike_tag(5, mtvx - 7, "NO GNSS", COLOR_RED, COLOR_WHITE, COLOR_RED);
   }
 
   // ★ 受信モードの明示（docs/pons_link.md §5 / 7.2）。
@@ -4326,6 +4383,9 @@ bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
   // ポリゴンが画面の一部にしか無い場合に全 240 行を回らないよう y_min..y_max に限定する。
   int aet_n = 0;
   for (int y = y_min; y < y_max; y++) {
+    // ★ 大きな面（公園・湖・建物の多い区画）は 1 枚で数 ms かかるので、16 行ごとに IMU を引き取る
+    //   （2026-11-11〜。src/vectormap.cpp のレコードごとの呼び出しと同じ理由）。周期内なら即戻る。
+    if (((y - y_min) & 15) == 0) imu_service_if_due();
     // この行から始まる辺を AET に追加
     for (int e = s_et[y]; e != -1; e = s_edges[e].next) {
       if (aet_n < (int)(sizeof(s_aet_buf) / sizeof(s_aet_buf[0]))) s_aet_buf[aet_n++] = (int16_t)e;
@@ -4966,6 +5026,15 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     }
 
     backscreen.print(label.c_str());
+
+    // 行の後ろに添える注記（受信モードの Map scale の行の送信機の縮尺 " (S: 18km)" など）。
+    // ラベルの続きに、注記の色で描く。何を出すか・何色かは src/button.cpp の menu_setting_note()。
+    char note[20];
+    int  note_col = COLOR_BLACK;
+    if (menu_setting_note(menu_settings[i].id, note, sizeof note, &note_col)) {
+      backscreen.setTextColor((uint16_t)note_col, COLOR_WHITE);
+      backscreen.print(note);
+    }
   }
   backscreen.pushSprite(0,30);
 

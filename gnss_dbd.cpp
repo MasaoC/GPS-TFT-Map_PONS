@@ -1035,6 +1035,7 @@ void gnss_dbd_tick() {
       if (!ep_started) { ep_started = true; start_episode(EP_BOOT, 0); return; }
       if (s_ep == EP_NONE) { skip_restore("fixed before restore"); return; }   // 待っている間に fix した
       const uint8_t ld = load_state();
+      // ※ GNSS_DBD_LOAD_WAIT_MS(20000ms) は SEC-UNIQID ポール再送（初回即時、その後約7/12/17秒）を完全にカバーする
       const bool waiting = now < GNSS_DBD_LOAD_WAIT_MS;
       if (ld == LD_BUSY && waiting) return;              // SD の読み込みを待つ
       if (ld != LD_OK) { skip_restore(ld == LD_BUSY ? "SD read timeout" : s_ld_why); return; }

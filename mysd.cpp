@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/11
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -444,7 +444,7 @@ void getNavigationMode(char* buffer, size_t bufferSize) {
 }
 
 // 目的地: 名前で extradestinations を線形探索して currentdestination インデックスを設定する。
-// 見つからない場合はエラーログを残す。
+// 見つからない場合はエラーログを残す（名前一致でのみ代入されるため負値や範囲外値は混入しない）。
 void setDestination(const char* value) {
   for(int i = 0; i < destinations_count; i++){
     if(strcmp(extradestinations[i].name,value) == 0){
@@ -576,6 +576,7 @@ void setRollTrim(const char* value) {
 // AUTO10K の折返しフェーズ。飛行中に再起動しても復路のナビ方位が 180 度逆に
 // ならないよう保存する（距離だけでは往路と復路を区別できないため）。
 // 保存されるのは実飛行の遷移だけで、リプレイ再生中の遷移は書き込まれない。
+// ※ "INTO" 以外はすべて AUTO10K_AWAY に正規化されるため範囲外値は混入しない。
 void setAuto10kStatus(const char* value) {
   restore_auto10k_status(strcmp(value, "INTO") == 0 ? AUTO10K_INTO : AUTO10K_AWAY);
 }
@@ -2101,6 +2102,7 @@ bool browse_replay_files(int start_index) {
     if (!entry) break;
 
     char name[32];
+    // ※ SdFat 2.3.1 の getName() は失敗時やバッファ不足時に name[0] = '\0' を設定して 0 を返す
     entry.getName(name, sizeof(name));
     bool isdir = entry.isDirectory();
     uint32_t fsize = isdir ? 0 : entry.size();
@@ -2733,7 +2735,9 @@ static void rtc_backup_body(char* buf, size_t n, float hours, uint32_t utc) {
 
 void rtc_backup_save_sd(float hours, uint32_t utc) {
   ASSERT_SD_CORE1("rtc_backup_save_sd");
-  if (webserial_connected) return;   // PC 接続中は SD を読み出し専用に保つ
+  // PC 接続中は SD を読み出し専用に保つ。★ 呼ぶ側（rtc_backup_tick()）は PC 接続中はキューに入れずに待つので、
+  // ここで戻るのはキューに入れてから接続された回だけ（その回は次の RTC_BACKUP_SAVE_MS まで書かれない）。
+  if (webserial_connected) return;
   if (!good_sd()) return;
   char body[80], line[96];
   rtc_backup_body(body, sizeof(body), hours, utc);
@@ -2906,9 +2910,10 @@ Task createSerialListTask() {
   return t;
 }
 
-Task createSerialGetTask(const char* filename) {
+Task createSerialGetTask(const char* filename, uint32_t tail) {
   Task t;
   t.type = TASK_SERIAL_GET;
+  t.serialGetArgs.tail = tail;
   if (filename) {
     strlcpy(t.serialGetArgs.filename, filename, sizeof(t.serialGetArgs.filename));
   } else {
@@ -2946,6 +2951,13 @@ static uint32_t calc_crc32_step(uint32_t crc, const uint8_t* data, size_t len) {
   return crc;
 }
 
+// 一覧の 1 行 "PONS:FILE,<パス>,<バイト数>,<更新日時>" を出す（Core1専用）
+static void print_file_entry(const char* path, uint32_t fsize, uint16_t pdate, uint16_t ptime) {
+  Serial.printf("PONS:FILE,%s,%lu,%04d-%02d-%02d %02d:%02d:%02d\r\n",
+                path, (unsigned long)fsize, FS_YEAR(pdate), FS_MONTH(pdate), FS_DAY(pdate),
+                FS_HOUR(ptime), FS_MINUTE(ptime), FS_SECOND(ptime));
+}
+
 // 指定ディレクトリ内の CSV ファイルを列挙してシリアル出力する（Core1専用）
 static void list_csv_in_dir(const char* dirpath, const char* prefix) {
   FsFile dir = SD.open(dirpath);
@@ -2980,22 +2992,13 @@ static void list_csv_in_dir(const char* dirpath, const char* prefix) {
     if (len < 4) continue;
     if (strcasecmp(name + len - 4, ".csv") != 0) continue;
 
-    int yr = FS_YEAR(pdate);
-    int mo = FS_MONTH(pdate);
-    int dy = FS_DAY(pdate);
-    int hr = FS_HOUR(ptime);
-    int mn = FS_MINUTE(ptime);
-    int sc = FS_SECOND(ptime);
-
     char fullpath[96];
     if (prefix && prefix[0] != '\0') {
       snprintf(fullpath, sizeof(fullpath), "%s/%s", prefix, name);
     } else {
       strlcpy(fullpath, name, sizeof(fullpath));
     }
-
-    Serial.printf("PONS:FILE,%s,%lu,%04d-%02d-%02d %02d:%02d:%02d\r\n",
-                  fullpath, (unsigned long)fsize, yr, mo, dy, hr, mn, sc);
+    print_file_entry(fullpath, fsize, pdate, ptime);
 
     loop_sound();
     yield();
@@ -3016,11 +3019,26 @@ void serial_list_csv_files() {
   list_csv_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR);
   list_csv_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR);
 
+  // ルートの log.txt も出す（2026-11-11〜。Flight Viewer が種別「ログ」で開き、起動ごとに分けてグラフにする）。
+  // ★ 消されずに伸び続ける（数 MB になる）ので、ビューアはふつう末尾だけを PONS:GETTAIL で取る。
+  //   開いている書き込みのハンドルは上の webserial_prepare_sd() が閉じてある。
+  if (!(webserial_cancel_requested || !webserial_connected || !usb_power_present())) {
+    FsFile lf = SD.open(LOGFILE_NAME, O_RDONLY);
+    if (lf && !lf.isDirectory()) {
+      uint16_t pdate = 0, ptime = 0;
+      lf.getModifyDateTime(&pdate, &ptime);
+      print_file_entry(LOGFILE_NAME, lf.size(), pdate, ptime);
+    }
+    if (lf) lf.close();
+  }
+
   Serial.println("PONS:LIST_END");
 }
 
 // 指定された CSV ファイルをストリーミング送出（Core1専用）
-void serial_send_csv_file(const char* filename) {
+// tail が 0 でなく、ファイルがそれより大きければ、末尾の tail バイトだけ送る（PONS:GETTAIL。伸び続ける log.txt 用）。
+// そのときは最初の改行の次から送り（行の途中から始めない）、DATA_START の 3 つめに送り始めた位置を付ける。
+void serial_send_csv_file(const char* filename, uint32_t tail) {
   ASSERT_SD_CORE1("serial_send_csv_file");
   if (!good_sd()) {
     Serial.println("PONS:ERROR,SD_NOT_READY");
@@ -3039,8 +3057,21 @@ void serial_send_csv_file(const char* filename) {
     return;
   }
 
-  uint32_t total_size = file.size();
-  Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
+  const uint32_t file_size = file.size();
+  uint32_t from = 0;
+  if (tail > 0 && tail < file_size) {
+    from = file_size - tail;
+    file.seekSet(from);
+    // 行の頭まで進める（1KB 以内に改行が無ければ、そこから送る）
+    uint8_t c;
+    for (uint32_t k = 0; k < 1024 && file.read(&c, 1) == 1; k++) {
+      if (c == '\n') { from = file.curPosition(); break; }
+    }
+    file.seekSet(from);
+  }
+  uint32_t total_size = file_size - from;
+  if (from > 0) Serial.printf("PONS:DATA_START,%s,%lu,%lu\r\n", filename, (unsigned long)total_size, (unsigned long)from);
+  else          Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
 
   webserial_cancel_requested = false;
   uint8_t buf[512];

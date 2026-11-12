@@ -104,6 +104,10 @@ int main() {
            bg[0]*180/M_PI, bg[1]*180/M_PI, bg[2]*180/M_PI);
     printf("GNSS 観測回数: %u\n", (unsigned)attitude_get_gnss_updates());
     bool ok = fabsf(body_roll - (float)(phi*180/M_PI)) < 1.5f;
+    // 20 度の協調旋回で「大きくずれた傾きの置き直し」（ESKF_BIGTILT_*）が働いてはいけない
+    // （比力は 20 度傾くが |f| = g/cos20 で条件から外れる。働くとバンクを壊してヨーも捨てる）。
+    printf("大きな傾きの置き直し: %u 回（0 が正しい）\n", (unsigned)attitude_get_bigtilt_relevels());
+    ok &= attitude_get_bigtilt_relevels() == 0;
     printf("\n結果: %s\n", ok ? "PASS — C++ 版も真のバンクを復元した" : "FAIL");
     return ok?0:1;
 }

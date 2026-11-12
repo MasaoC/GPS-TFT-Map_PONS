@@ -82,6 +82,7 @@ uint32_t imulog_get_written() { return imulog_written; }
 // 詰められない場合は捨てて imulog_dropped を増やすだけで、決してブロックしない。
 void imulog_push(uint8_t id, uint32_t s_us, uint8_t acc,
                  float v0, float v1, float v2, float v3) {
+    // ※ PC接続（WebSerial）モードやリプレイ時は imulog_set_paused(true) で即座にバッファ破棄＆push 停止される
     if (!imulog_enabled || imulog_paused) return;
 
     // 連番は「捨てた場合も消費する」こと。

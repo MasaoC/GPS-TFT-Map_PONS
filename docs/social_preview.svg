@@ -1,0 +1,357 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+  <defs>
+    <!-- Main Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070D19"/>
+      <stop offset="55%" stop-color="#0C182D"/>
+      <stop offset="100%" stop-color="#091324"/>
+    </linearGradient>
+
+    <!-- Subtle Glow Behind Device -->
+    <radialGradient id="deviceGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1E64FF" stop-opacity="0.34"/>
+      <stop offset="60%" stop-color="#00B4D8" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#091324" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Top Accent Bar Gradient -->
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0052FF"/>
+      <stop offset="50%" stop-color="#00B4D8"/>
+      <stop offset="100%" stop-color="#2EC4B6"/>
+    </linearGradient>
+
+    <!-- Card Background Gradient -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#13233F" stop-opacity="0.94"/>
+      <stop offset="100%" stop-color="#0D192E" stop-opacity="0.94"/>
+    </linearGradient>
+
+    <!-- Device Case Gradient -->
+    <linearGradient id="caseGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2B3548"/>
+      <stop offset="100%" stop-color="#18202C"/>
+    </linearGradient>
+
+    <!-- Clip for PONS 240x320 Screen (scaled 1.48x -> 355x474) -->
+    <clipPath id="screenClip">
+      <rect x="858" y="88" width="356" height="474" rx="4"/>
+    </clipPath>
+
+    <!-- Clip for Map Area inside Screen -->
+    <clipPath id="mapClip">
+      <rect x="858" y="156" width="356" height="354"/>
+    </clipPath>
+  </defs>
+
+  <!-- 1. Background -->
+  <rect width="1280" height="640" fill="url(#bgGrad)"/>
+
+  <!-- Technical Grid Lines -->
+  <g stroke="#1C3154" stroke-width="1" opacity="0.35">
+    <line x1="0" y1="80" x2="1280" y2="80"/>
+    <line x1="0" y1="160" x2="1280" y2="160"/>
+    <line x1="0" y1="240" x2="1280" y2="240"/>
+    <line x1="0" y1="320" x2="1280" y2="320"/>
+    <line x1="0" y1="400" x2="1280" y2="400"/>
+    <line x1="0" y1="480" x2="1280" y2="480"/>
+    <line x1="0" y1="560" x2="1280" y2="560"/>
+    <line x1="160" y1="0" x2="160" y2="640"/>
+    <line x1="320" y1="0" x2="320" y2="640"/>
+    <line x1="480" y1="0" x2="480" y2="640"/>
+    <line x1="640" y1="0" x2="640" y2="640"/>
+    <line x1="800" y1="0" x2="800" y2="640"/>
+    <line x1="960" y1="0" x2="960" y2="640"/>
+    <line x1="1120" y1="0" x2="1120" y2="640"/>
+  </g>
+
+  <!-- Subtle Compass Rose Watermark in Background -->
+  <g transform="translate(760, 320)" opacity="0.06" stroke="#64B5F6" fill="none">
+    <circle r="260" stroke-width="2"/>
+    <circle r="220" stroke-width="1" stroke-dasharray="6,6"/>
+    <circle r="150" stroke-width="1"/>
+    <line x1="-280" y1="0" x2="280" y2="0" stroke-width="1.5"/>
+    <line x1="0" y1="-280" x2="0" y2="280" stroke-width="1.5"/>
+    <line x1="-198" y1="-198" x2="198" y2="198" stroke-width="1"/>
+    <line x1="198" y1="-198" x2="-198" y2="198" stroke-width="1"/>
+  </g>
+
+  <!-- Glow behind PONS Device -->
+  <circle cx="1036" cy="325" r="295" fill="url(#deviceGlow)"/>
+
+  <!-- Top Accent Bar -->
+  <rect x="0" y="0" width="1280" height="6" fill="url(#accentGrad)"/>
+
+  <!-- ===================================================== -->
+  <!-- LEFT COLUMN: BRANDING, HEADLINE, FEATURES, SPECS      -->
+  <!-- ===================================================== -->
+
+  <!-- PONS Compass Diamond Icon + Logo Wordmark -->
+  <g transform="translate(56, 44)">
+    <!-- Diamond Compass Emblem (matches official PONS logo) -->
+    <g transform="translate(42, 42)">
+      <rect x="-31" y="-31" width="62" height="62" rx="7" transform="rotate(45)" fill="#0D1E3A" stroke="#38BDF8" stroke-width="3"/>
+      <rect x="-25" y="-25" width="50" height="50" rx="4" transform="rotate(45)" fill="none" stroke="#94A3B8" stroke-width="1.2"/>
+      <!-- Corner dots -->
+      <circle cx="0" cy="-35" r="1.8" fill="#94A3B8"/>
+      <circle cx="0" cy="35" r="1.8" fill="#94A3B8"/>
+      <circle cx="-35" cy="0" r="1.8" fill="#94A3B8"/>
+      <circle cx="35" cy="0" r="1.8" fill="#94A3B8"/>
+      <!-- Diagonal hairlines -->
+      <line x1="-16" y1="-16" x2="16" y2="16" stroke="#64748B" stroke-width="1.5"/>
+      <line x1="16" y1="-16" x2="-16" y2="16" stroke="#64748B" stroke-width="1.5"/>
+      <!-- Main N-S / E-W cross needles -->
+      <polygon points="0,-32 4,-5 0,0 -4,-5" fill="#38BDF8"/>
+      <polygon points="0,32 4,5 0,0 -4,5" fill="#E2E8F0"/>
+      <polygon points="-32,0 -5,-4 0,0 -5,4" fill="#E2E8F0"/>
+      <polygon points="32,0 5,-4 0,0 5,4" fill="#E2E8F0"/>
+      <circle cx="0" cy="0" r="4" fill="#0A1120" stroke="#38BDF8" stroke-width="2"/>
+    </g>
+
+    <!-- PONS Wordmark with Compass Star inside 'O' (matches tools/logo.jpeg) -->
+    <text x="100" y="65" font-family="'Helvetica Neue','Arial',sans-serif" font-weight="800" font-size="68" letter-spacing="5" fill="#FFFFFF">PONS</text>
+    <!-- 4-point Compass Star centered inside the 'O' of PONS -->
+    <g transform="translate(180.5, 40.5)">
+      <polygon points="0,-13 2.6,-2.6 13,0 2.6,2.6 0,13 -2.6,2.6 -13,0 -2.6,-2.6" fill="#38BDF8"/>
+      <circle cx="0" cy="0" r="2.2" fill="#0A1120"/>
+    </g>
+
+    <!-- v7.1 Badge -->
+    <rect x="336" y="18" width="96" height="44" rx="10" fill="#0052FF" stroke="#60A5FA" stroke-width="1.5"/>
+    <text x="384" y="48" font-family="'Helvetica Neue','Arial',sans-serif" font-weight="800" font-size="26" fill="#FFFFFF" text-anchor="middle">v7.1</text>
+
+    <!-- Category Tag -->
+    <rect x="446" y="22" width="314" height="36" rx="18" fill="#112646" stroke="#254C82" stroke-width="1.5"/>
+    <text x="603" y="45" font-size="14" font-weight="700" fill="#7DD3FC" text-anchor="middle" letter-spacing="0.5">OPEN-SOURCE HPA AVIONICS</text>
+  </g>
+
+  <!-- Subtitle & Headline -->
+  <text x="58" y="162" font-family="'Helvetica Neue','Arial',sans-serif" font-weight="700" font-size="23" fill="#38BDF8" letter-spacing="0.8">Pilot Oriented Navigation System for Human-Powered Aircraft</text>
+  <text x="58" y="202" font-size="27" font-weight="800" fill="#F8FAFC">人力飛行機・鳥人間コンテスト特化型 航法＆テレメトリ計器</text>
+
+  <!-- 2x2 Feature Cards Grid -->
+  <!-- Card 1: 250Hz On-board ESKF -->
+  <g transform="translate(56, 230)">
+    <rect width="362" height="140" rx="12" fill="url(#cardGrad)" stroke="#1E3A5F" stroke-width="1.5"/>
+    <rect x="0" y="18" width="4" height="104" rx="2" fill="#0066FF"/>
+    <rect x="18" y="16" width="84" height="24" rx="5" fill="#0B2E59"/>
+    <text x="60" y="33" font-family="'Menlo','Consolas',monospace" font-size="12" font-weight="700" fill="#38BDF8" text-anchor="middle">250Hz ESKF</text>
+    <text x="112" y="34" font-size="18" font-weight="800" fill="#FFFFFF">機上姿勢・風・TAS推定</text>
+    <text x="18" y="64" font-size="13.5" font-weight="600" fill="#CBD5E1">Murata SCH16T-K01 (SPI) + SAM-M10Q</text>
+    <text x="18" y="88" font-size="13" font-weight="500" fill="#94A3B8">・旋回中も正確なバンク角と真方位を推定</text>
+    <text x="18" y="109" font-size="13" font-weight="500" fill="#94A3B8">・10秒移動平均ピッチから対気速度(TAS)と</text>
+    <text x="18" y="128" font-size="13" font-weight="500" fill="#94A3B8">　風向・風速ベクトルを機上で実時間算出</text>
+  </g>
+
+  <!-- Card 2: PONS Link LoRa Telemetry -->
+  <g transform="translate(434, 230)">
+    <rect width="362" height="140" rx="12" fill="url(#cardGrad)" stroke="#1E3A5F" stroke-width="1.5"/>
+    <rect x="0" y="18" width="4" height="104" rx="2" fill="#00B4D8"/>
+    <rect x="18" y="16" width="84" height="24" rx="5" fill="#093547"/>
+    <text x="60" y="33" font-family="'Menlo','Consolas',monospace" font-size="12" font-weight="700" fill="#22D3EE" text-anchor="middle">920MHz LoRa</text>
+    <text x="112" y="34" font-size="18" font-weight="800" fill="#FFFFFF">PONS Link 無線ミラー</text>
+    <text x="18" y="64" font-size="13.5" font-weight="600" fill="#CBD5E1">機体 ⇄ ボート 1Hz 32B 固定フレーム通信</text>
+    <text x="18" y="88" font-size="13" font-weight="500" fill="#94A3B8">・機体の地図・姿勢・TAS・風・V/S・警報音を</text>
+    <text x="18" y="109" font-size="13" font-weight="500" fill="#94A3B8">　ボート上の受信機へそのまま完全再現</text>
+    <text x="18" y="128" font-size="13" font-weight="500" fill="#94A3B8">・技適取得済 E220-900T22S / 事前CH点検搭載</text>
+  </g>
+
+  <!-- Card 3: Sunlight TFT & Voice Alerts -->
+  <g transform="translate(56, 386)">
+    <rect width="362" height="140" rx="12" fill="url(#cardGrad)" stroke="#1E3A5F" stroke-width="1.5"/>
+    <rect x="0" y="18" width="4" height="104" rx="2" fill="#F59E0B"/>
+    <rect x="18" y="16" width="84" height="24" rx="5" fill="#3B280C"/>
+    <text x="60" y="33" font-family="'Menlo','Consolas',monospace" font-size="12" font-weight="700" fill="#FBBF24" text-anchor="middle">1000 nits</text>
+    <text x="112" y="34" font-size="18" font-weight="800" fill="#FFFFFF">直射日光対応 ＆ 音声誘導</text>
+    <text x="18" y="64" font-size="13.5" font-weight="600" fill="#CBD5E1">画面を注視せず耳だけで飛べるパイロット設計</text>
+    <text x="18" y="88" font-size="13" font-weight="500" fill="#94A3B8">・Auto 10km モード（離脱・折返し自動判定）</text>
+    <text x="18" y="109" font-size="13" font-weight="500" fill="#94A3B8">・コース逸脱・過バンク・目的地変更を音声警報</text>
+    <text x="18" y="128" font-size="13" font-weight="500" fill="#94A3B8">・VEML7700 自動調光 ＆ 内蔵OSMベクタ地図</text>
+  </g>
+
+  <!-- Card 4: KF Vario & Flight Analysis Suite -->
+  <g transform="translate(434, 386)">
+    <rect width="362" height="140" rx="12" fill="url(#cardGrad)" stroke="#1E3A5F" stroke-width="1.5"/>
+    <rect x="0" y="18" width="4" height="104" rx="2" fill="#10B981"/>
+    <rect x="18" y="16" width="84" height="24" rx="5" fill="#09382C"/>
+    <text x="60" y="33" font-family="'Menlo','Consolas',monospace" font-size="12" font-weight="700" fill="#34D399" text-anchor="middle">KF VARIO</text>
+    <text x="112" y="34" font-size="18" font-weight="800" fill="#FFFFFF">融合バリオ ＆ 解析ツール</text>
+    <text x="18" y="64" font-size="13.5" font-weight="600" fill="#CBD5E1">飛んでいる間の「道具」＋ 飛んだ後の「計測器」</text>
+    <text x="18" y="88" font-size="13" font-weight="500" fill="#94A3B8">・鉛直加速度＋MS5611気圧＋GNSS融合バリオ</text>
+    <text x="18" y="109" font-size="13" font-weight="500" fill="#94A3B8">・WebSerial ブラウザ Flight Viewer &amp; リプレイ</text>
+    <text x="18" y="128" font-size="13" font-weight="500" fill="#94A3B8">・フゴイド周期・横モード・構造荷重解析群</text>
+  </g>
+
+  <!-- Bottom Specs Bar (Evenly Spaced 5 Columns) -->
+  <g transform="translate(56, 544)">
+    <rect width="740" height="46" rx="10" fill="#0B1526" stroke="#1E3A5F" stroke-width="1.5"/>
+    <text x="88" y="28" font-size="13" font-weight="600" fill="#94A3B8" text-anchor="middle"><tspan font-family="'Menlo','Consolas',monospace" font-weight="700" fill="#7DD3FC">RP2354B</tspan> Dual-M33</text>
+    <line x1="176" y1="12" x2="176" y2="34" stroke="#1E3A5F" stroke-width="1.5"/>
+    <text x="256" y="28" font-size="13" font-weight="600" fill="#94A3B8" text-anchor="middle"><tspan font-family="'Menlo','Consolas',monospace" font-weight="700" fill="#7DD3FC">62g</tspan> 59×81×20mm</text>
+    <line x1="338" y1="12" x2="338" y2="34" stroke="#1E3A5F" stroke-width="1.5"/>
+    <text x="424" y="28" font-size="13" font-weight="600" fill="#94A3B8" text-anchor="middle"><tspan font-family="'Menlo','Consolas',monospace" font-weight="700" fill="#7DD3FC">MGA-DBD</tspan> Fast TTFF</text>
+    <line x1="510" y1="12" x2="510" y2="34" stroke="#1E3A5F" stroke-width="1.5"/>
+    <text x="588" y="28" font-size="13" font-weight="600" fill="#94A3B8" text-anchor="middle"><tspan font-family="'Menlo','Consolas',monospace" font-weight="700" fill="#7DD3FC">16MB</tspan> + microSD</text>
+    <line x1="664" y1="12" x2="664" y2="34" stroke="#1E3A5F" stroke-width="1.5"/>
+    <text x="702" y="28" font-family="'Menlo','Consolas',monospace" font-size="13" font-weight="700" fill="#34D399" text-anchor="middle">KiCad</text>
+  </g>
+
+  <!-- ===================================================== -->
+  <!-- RIGHT COLUMN: AUTHENTIC PONS v7.1 DEVICE & MAP SCREEN -->
+  <!-- ===================================================== -->
+
+  <!-- Side Push Switch Button -->
+  <rect x="1226" y="162" width="9" height="44" rx="3" fill="#38BDF8" stroke="#0284C7" stroke-width="1.5"/>
+
+  <!-- Device Outer Case (384 x 536) -->
+  <rect x="844" y="54" width="384" height="536" rx="22" fill="url(#caseGrad)" stroke="#475569" stroke-width="2.5"/>
+  <rect x="852" y="62" width="368" height="520" rx="16" fill="#0F172A" stroke="#1E293B" stroke-width="1.5"/>
+
+  <!-- Top Bezel Status LED & VEML7700 ALS Sensor Window -->
+  <circle cx="880" cy="75" r="4" fill="#1E293B" stroke="#64748B" stroke-width="1.2"/>
+  <text x="1036" y="79" font-family="'Helvetica Neue','Arial',sans-serif" font-size="11" font-weight="700" fill="#64748B" text-anchor="middle" letter-spacing="2">PONS v7.1 — NHD 1000cd/m²</text>
+  <circle cx="1192" cy="75" r="3.5" fill="#22C55E"/>
+
+  <!-- ===================================================== -->
+  <!-- PONS 240x320 TFT SCREEN (Scaled to 356x474 at 858,88) -->
+  <!-- ===================================================== -->
+  <g clip-path="url(#screenClip)">
+    <!-- Screen Base White -->
+    <rect x="858" y="88" width="356" height="474" fill="#FFFFFF"/>
+
+    <!-- 1. TOP HEADER (y=88..156, height=68px) -->
+    <!-- Left Box: Ground Speed 7.4 mps -->
+    <rect x="858" y="88" width="192" height="68" fill="#FFFFFF"/>
+    <text x="868" y="144" font-family="'Arial Black','Helvetica Neue',sans-serif" font-weight="900" font-size="54" fill="#000000">7.4</text>
+    <text x="1014" y="110" font-size="14" font-weight="800" fill="#555555" text-anchor="middle">m</text>
+    <text x="1014" y="127" font-size="14" font-weight="800" fill="#555555" text-anchor="middle">p</text>
+    <text x="1014" y="144" font-size="14" font-weight="800" fill="#555555" text-anchor="middle">s</text>
+
+    <!-- Right Box: Estimated TAS 6.8 (Blue Box with vertical TAS) -->
+    <rect x="1050" y="88" width="164" height="68" fill="#0000FF"/>
+    <text x="1068" y="110" font-size="14" font-weight="800" fill="#FFFFFF" text-anchor="middle">T</text>
+    <text x="1068" y="128" font-size="14" font-weight="800" fill="#FFFFFF" text-anchor="middle">A</text>
+    <text x="1068" y="146" font-size="14" font-weight="800" fill="#FFFFFF" text-anchor="middle">S</text>
+    <text x="1088" y="144" font-family="'Arial Black','Helvetica Neue',sans-serif" font-weight="900" font-size="54" fill="#FFFFFF">6.8</text>
+
+    <!-- Header Divider Line -->
+    <line x1="858" y1="156" x2="1214" y2="156" stroke="#000000" stroke-width="2"/>
+
+    <!-- 2. MAP AREA (y=156..510, 356x354) -->
+    <g clip-path="url(#mapClip)">
+      <!-- Lake Biwa Water Fill -->
+      <rect x="858" y="156" width="356" height="354" fill="#CBE7FF"/>
+
+      <!-- East Shore (Hikone / Matsubara Platform Landmass) -->
+      <polygon points="1138,156 1214,156 1214,510 1048,510 1072,465 1106,422 1122,390 1116,366 1136,334 1146,282 1130,230 1142,190" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+
+      <!-- West Shore (Takashima / Hira Mountains Landmass) -->
+      <polygon points="858,156 932,156 920,210 906,265 888,320 880,390 866,455 858,510" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+
+      <!-- Chikubu Island (North Turnpoint area, positioned clearly below top bar) -->
+      <ellipse cx="984" cy="214" rx="15" ry="11" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+      <text x="1005" y="218" font-size="11.5" font-weight="800" fill="#334155">竹生島</text>
+
+      <!-- Takeshima Island -->
+      <ellipse cx="1058" cy="346" rx="7" ry="5" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5"/>
+
+      <!-- 10km Auto Turn Circle Arc (dashed) -->
+      <circle cx="1118" cy="396" r="188" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="6,6"/>
+
+      <!-- Course Line: Platform (1118,396) -> N-TURN (968,228) -->
+      <line x1="1118" y1="396" x2="968" y2="228" stroke="#FF0055" stroke-width="3.5" stroke-dasharray="8,5"/>
+
+      <!-- Platform Marker -->
+      <circle cx="1118" cy="396" r="6" fill="#FF0000" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="1129" y="400" font-size="11" font-weight="800" fill="#000000">PLATHOME</text>
+
+      <!-- Target Turnpoint Marker -->
+      <circle cx="968" cy="228" r="6.5" fill="#0000FF" stroke="#FFFFFF" stroke-width="2"/>
+
+      <!-- Past Flight Track Breadcrumbs -->
+      <g fill="#008800">
+        <circle cx="1106" cy="382" r="2.5"/>
+        <circle cx="1094" cy="368" r="2.5"/>
+        <circle cx="1082" cy="354" r="2.5"/>
+        <circle cx="1070" cy="340" r="2.5"/>
+        <circle cx="1058" cy="326" r="2.5"/>
+        <circle cx="1046" cy="312" r="2.5"/>
+      </g>
+
+      <!-- Current Aircraft Position at Center (1036, 300) -->
+      <!-- True Track Line (Green) & ESKF Heading Crab Dotted Line -->
+      <line x1="1036" y1="300" x2="968" y2="228" stroke="#00AA00" stroke-width="2.5"/>
+      <line x1="1036" y1="300" x2="990" y2="216" stroke="#000000" stroke-width="2" stroke-dasharray="3,4"/>
+
+      <!-- HPA Aircraft Icon (rotated toward heading -32 deg) -->
+      <g transform="translate(1036, 300) rotate(-32)">
+        <line x1="-34" y1="0" x2="34" y2="0" stroke="#000000" stroke-width="5" stroke-linecap="round"/>
+        <line x1="0" y1="-16" x2="0" y2="20" stroke="#000000" stroke-width="4" stroke-linecap="round"/>
+        <line x1="-10" y1="18" x2="10" y2="18" stroke="#000000" stroke-width="3.5" stroke-linecap="round"/>
+        <circle cx="0" cy="-2" r="3.5" fill="#FF0000"/>
+      </g>
+
+      <!-- Wind Vector Arrow (Top-Left of Map area) -->
+      <g transform="translate(920, 262)">
+        <circle cx="0" cy="0" r="25" fill="#FFFFFF" fill-opacity="0.85" stroke="#0284C7" stroke-width="1.5"/>
+        <line x1="-8" y1="-15" x2="6" y2="11" stroke="#0052FF" stroke-width="3.5"/>
+        <polygon points="8,15 0,8 9,4" fill="#0052FF"/>
+        <text x="0" y="38" font-size="12" font-weight="800" fill="#003594" text-anchor="middle">1.8m/s</text>
+      </g>
+
+      <!-- Map Top Sub-Row Labels (GS, TT 325, P+1.2, TAS badge) -->
+      <rect x="858" y="157" width="356" height="24" fill="#FFFFFF" fill-opacity="0.88"/>
+      <text x="876" y="174" font-size="15" font-weight="800" fill="#000000">GS</text>
+      <text x="998" y="174" font-size="15" font-weight="800" fill="#000000" text-anchor="middle">TT 325°</text>
+      <text x="1158" y="174" font-size="15" font-weight="800" fill="#000000" text-anchor="end">P+1.2</text>
+      <rect x="1164" y="159" width="44" height="20" fill="#0000FF"/>
+      <text x="1186" y="174" font-size="14" font-weight="800" fill="#FFFFFF" text-anchor="middle">TAS</text>
+
+      <!-- VSI Bar along Left Edge of Map (x=858..870) -->
+      <rect x="858" y="182" width="12" height="326" fill="#E2E8F0" stroke="#64748B" stroke-width="1"/>
+      <line x1="858" y1="345" x2="872" y2="345" stroke="#000000" stroke-width="2"/>
+      <rect x="859" y="290" width="10" height="55" fill="#00AA00"/>
+
+      <!-- Bottom-Left ESKF Attitude & Vario Overlay Box -->
+      <g transform="translate(878, 394)">
+        <rect x="-4" y="-4" width="142" height="112" rx="4" fill="#FFFFFF" fill-opacity="0.88" stroke="#94A3B8" stroke-width="1"/>
+        <text x="4" y="22" font-size="15" font-weight="800" fill="#000000">P</text>
+        <text x="22" y="26" font-family="'Arial Black','Helvetica Neue',sans-serif" font-size="26" font-weight="900" fill="#000000">+1.2°</text>
+        <text x="4" y="48" font-size="15" font-weight="800" fill="#000000">R -3.5°</text>
+        <text x="78" y="48" font-size="14" font-weight="800" fill="#007D00">Y±4°</text>
+        <text x="4" y="70" font-size="15" font-weight="800" fill="#0052FF">W 1.8m/s</text>
+        <text x="4" y="96" font-family="'Arial Black','Helvetica Neue',sans-serif" font-size="20" font-weight="900" fill="#000000">16.4m</text>
+        <text x="78" y="96" font-size="15" font-weight="800" fill="#007D00">+0.4</text>
+      </g>
+
+      <!-- Bottom-Right Scale Bar -->
+      <g transform="translate(1136, 484)">
+        <rect x="-8" y="-14" width="76" height="22" rx="3" fill="#FFFFFF" fill-opacity="0.88"/>
+        <line x1="0" y1="2" x2="58" y2="2" stroke="#000000" stroke-width="2.5"/>
+        <line x1="0" y1="-3" x2="0" y2="5" stroke="#000000" stroke-width="2"/>
+        <line x1="58" y1="-3" x2="58" y2="5" stroke="#000000" stroke-width="2"/>
+        <text x="29" y="-2" font-size="12" font-weight="800" fill="#000000" text-anchor="middle">2km</text>
+      </g>
+    </g>
+
+    <!-- 3. BOTTOM FOOTER (y=510..562, height=52px — matches display_tft.cpp draw_footer) -->
+    <rect x="858" y="510" width="356" height="52" fill="#FFFFFF"/>
+    <line x1="858" y1="510" x2="1214" y2="510" stroke="#000000" stroke-width="2"/>
+
+    <!-- Footer Row 1: Link icon/status, Distance, Sats, Battery % -->
+    <rect x="864" y="515" width="52" height="18" rx="2" fill="#007D00"/>
+    <text x="890" y="529" font-size="12" font-weight="800" fill="#FFFFFF" text-anchor="middle">TX:A0</text>
+    <text x="942" y="529" font-size="16" font-weight="800" fill="#000000">10.4km</text>
+    <text x="1064" y="529" font-size="15" font-weight="800" fill="#007D00">18sats</text>
+    <text x="1206" y="529" font-size="16" font-weight="800" fill="#007D00" text-anchor="end">88%</text>
+
+    <!-- Footer Row 2: 10K INTO (Blue) / Destination (Magenta) / SD (Green Box) -->
+    <text x="864" y="553" font-size="15" font-weight="800" fill="#0000FF">10K INTO</text>
+    <text x="968" y="553" font-size="15" font-weight="800" fill="#CC00AA">PLATHOME</text>
+    <rect x="1178" y="537" width="32" height="20" fill="#007D00"/>
+    <text x="1194" y="552" font-size="13" font-weight="800" fill="#FFFFFF" text-anchor="middle">SD</text>
+  </g>
+
+  <!-- Crisp Screen Border Frame -->
+  <rect x="858" y="88" width="356" height="474" rx="4" fill="none" stroke="#334155" stroke-width="2"/>
+</svg>

@@ -41,8 +41,7 @@
 extern bool ground_roll_warn_active;
 extern bool ground_pitch_warn_active;
 extern bool ground_calib_warn_active;
-extern volatile int scaleindex;    // 地図の縮尺（scalelist の添字）
-void set_scaleindex(int idx);      // 縮尺を合わせる（範囲外は無視される）
+extern volatile int scaleindex;    // 地図の縮尺（scalelist の添字）。送信機が載せる
 
 // 受信が途切れてから自機表示へ移るまで（docs/pons_link.md §5）。
 // ★ RSSI10_WIN_MS と同じ値にしてあること。受信中なら 10 秒窓に必ず 1 発は入る、
@@ -192,8 +191,9 @@ static bool link_recv_telem(LinkTelem* t, int16_t* rssi, bool merge_own, uint8_t
 }
 
 // 回転枠で運ぶ項目（have ビットの無い目的地・ナビモード・縮尺）がもう分かっているか。
-// ★ 受け始めた直後（と長く途切れた後）は 0 のまま。そのまま使うと、受信機が「送信機は目的地 0・
-//   縮尺 0」と思い込んで自分の設定を書き換えてしまう（link_sync_destination / link_sync_scale）。
+// ★ 受け始めた直後（と長く途切れた後）は 0 のまま。そのまま使うと、受信機が「送信機は目的地 0」と
+//   思い込んで自分の設定を書き換えてしまう（link_sync_destination）。縮尺は設定画面に
+//   「送信機は最も広い縮尺」と嘘を出す（link_get_sender_scale_index）。
 static bool link_rx_slot_known(uint8_t slot) {
     return link_w2_slot_seen(&s_w2rx, slot);
 }
@@ -641,44 +641,17 @@ static void link_sync_destination() {
                                  li, (int)s_rx.t.nav_mode, (int)s_rx.t.dest_index, (unsigned)s_rx.t.dest_id));
 }
 
-// 地図の縮尺を送信機に合わせる（0.988）。
-// ★ 受信機の目的は「パイロットに出ている画面の再現」なので、縮尺が違うと同じ地図に
-//   見えない。送信機が誤った縮尺のまま飛んでいることにも気づける。
-// ★ RAM 上の上書きだけ（SD には書かない）。違ったときだけ合わせる。
-// ★ **ミラー中はボート側の拡大率操作（ダブルクリック）が効かなくなる。**
-//   意図どおり（送信機に合わせるのが主旨）。変えたいときは受信を切る。
-//
-// ★★ **「送信機が回した」と「ボート側で変えたのを引き戻した」を区別して鳴らす**（0.991）。
-//   前者で鳴らすと**送信機が拡大率を回すたびに鳴って騒がしい**（0.988 で音声に
-//   しなかった理由はこれ。画面を見れば分かる変化でもある）。
-//   後者は**自分の操作が無視された**ことなので、黙っていると
-//   「一瞬変わって戻る＝ボタンかソフトが壊れている」と思わせる。トーンだけ鳴らす。
-//   区別の方法: 送信機から来た値が前回と同じなのに自分と違う ＝ こちらで変えた。
-static void link_sync_scale() {
-    static uint8_t s_last_sender_scale = 0xFF;   // 0xFF = まだ送信機の値を見ていない
-    if (!link_mirror_active()) { s_last_sender_scale = 0xFF; return; }
-
-    // ★ 縮尺は回転枠 6 で来る。受けるまでは 0 のままなので合わせない（0 に飛ばさない）。
-    if (!link_rx_slot_known(W2S_PRESS)) return;
-    const uint8_t sender = s_rx.t.scale_index;
-    // 受信開始直後（0xFF）とミラー再開も「送信機が動いた」側に入れる。
-    // あれは**最初の位置合わせ**で、却下ではないので鳴らさない。
-    const bool sender_moved = (sender != s_last_sender_scale);
-    s_last_sender_scale = sender;
-    if ((int)sender == scaleindex) return;
-
-    // ★ **引き戻しが実際に効いたときだけ鳴らす。** set_scaleindex() は範囲外を
-    //   無視するので、呼ぶ前に鳴らすと、送信機が壊れた値を送り続ける間
-    //   link_loop() のたびに鳴り続ける。
-    const int before = scaleindex;
-    set_scaleindex((int)sender);               // 範囲外なら無視される
-    if (!sender_moved && scaleindex != before) {
-        // 低い 2 連 = 操作を却下した。★ 優先度 3（コース警告と同等）にしないこと。
-        //   UI の「できません」が本物の警告を押しのけるのは順序が逆。
-        enqueueTask(createPlayMultiToneTask(262, 100, 2, 2));
-        enqueueTask(createLogSdfTask("LINK: scale override (local %d -> sender %d)",
-                                     before, (int)sender));
-    }
+// 送信機の地図の縮尺（scalelist の添字）。受信中で、縮尺の載る回転枠 6 を受けたあとだけ true。
+// ★★ **受信機の縮尺は送信機に合わせない**（2026-11-12〜）。0.988〜1.05 は合わせていて
+//   （link_sync_scale）、ボートで変えると低音 2 連で引き戻していたが、ボートでは機体と違う縮尺で
+//   見たい場面が出てきた（全体を広く見る・機体の近くを拡大する）。受信機の縮尺はボートの操作どおりにし、
+//   送信機の縮尺は設定画面の Map scale の行に「(S: 18km)」と添えて出す（src/button.cpp）。
+//   「送信機が誤った縮尺のまま飛んでいる」に気づく役目は、その色（標準の縮尺かどうか）が引き継ぐ。
+// ★ 縮尺は回転枠 6 で来る。受けるまでは 0 のままなので false（0 = 最も広い縮尺と出さない）。
+bool link_get_sender_scale_index(int &idx) {
+    if (!link_mirror_active() || !link_rx_slot_known(W2S_PRESS)) return false;
+    idx = (int)s_rx.t.scale_index;
+    return true;
 }
 
 // 送信機側の異常（SD／IMU）。飛ぶ前に気づきたい項目。
@@ -1440,7 +1413,7 @@ void link_loop() {
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
-    link_sync_scale();          // 目的地と同じ「送信側に合わせる」組
+    // 縮尺は合わせない（2026-11-12〜。link_get_sender_scale_index の説明）
     // ★ 下の 3 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
     //   「送信機の電池が減っている」「地上チェックに引っかかっている」
     //   「自分のモジュールが応答しない」は、画面に出している数字とは無関係に
@@ -1737,7 +1710,7 @@ static void link_push_telemetry() {
     t.dest_index = (int8_t)currentdestination;
     t.dest_id    = link_dest_id(currentdestination);   // 受信側は番号ではなくこれで探す
     t.nav_mode   = (uint8_t)destination_mode;
-    t.scale_index = (uint8_t)scaleindex;   // 受信側はこれに合わせる（link_sync_scale）
+    t.scale_index = (uint8_t)scaleindex;   // 受信側は設定画面に添えて出すだけ（合わせない）
     // 大きい枠の設定。受信機（ボート）は自分の設定ではなくこれに従う。地上か飛行中かは送らない
     // （ミラーした対地速度から受信機が計算する。tas.cpp）。
     if (tas_setting_get()) t.tas_flags |= LINK_TAS_HDR;

@@ -4,7 +4,7 @@
 // Role    : GNSS のバックアップ電池（BT1 = MS621FE）が「あと何時間もつか」の推定（2026-11-08〜）。
 //           v7 と v7.1 で同じ中身（どちらも BT1 は 3.3V から D5 を通して充電し、電圧を測る線は無い）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/10
+// Updated : 2026/11/11
 // ============================================================
 //
 // ■ 何をするか
@@ -179,9 +179,16 @@ void rtc_backup_tick() {
   s_h = charge(s_h, (now - s_last_ms) / 3600000.0f);
   s_last_ms = now;
 
-  if (s_utc_ok && (s_last_save_ms == 0 || now - s_last_save_ms >= RTC_BACKUP_SAVE_MS)) {
-    s_last_save_ms = now ? now : 1;
-    enqueueTask(createSaveRtcBackupTask(s_h, s_utc0 + now / 1000UL));
+  // ★ PC 接続中は書きに行かずに待つ。mysd.cpp の rtc_backup_save_sd() は PC 接続中は何もせずに戻る
+  //   （SD を読み出し専用に保つため）ので、ここで「書いた」ことにすると次は RTC_BACKUP_SAVE_MS 後になる。
+  //   2026-11-11 まではそうなっていて、PC の時刻（PONS:TIME）で時刻が取れた起動では最初の 1 回が必ず
+  //   PC 接続中に当たって捨てられ、PC を抜いて 5 分以内に切ると記録が残らなかった
+  //   （実機の log.txt で次の起動が `RTC BACKUP record: none`）。待っておけば PC を抜いた直後に書く。
+  //   キューが満杯で捨てられたときも書いたことにしない（次の周回でもう一度。power_tick() の周期）。
+  if (s_utc_ok && !webserial_connected &&
+      (s_last_save_ms == 0 || now - s_last_save_ms >= RTC_BACKUP_SAVE_MS)) {
+    if (enqueueTask(createSaveRtcBackupTask(s_h, s_utc0 + now / 1000UL)))
+      s_last_save_ms = now ? now : 1;
   }
 }
 

@@ -5,7 +5,7 @@
 //           高温での充電の警告、過放電（3.0V 未満）の本体フラッシュ記録と次回起動ロック。
 //           v7.1 では「SW を OFF にしたまま USB で充電している」の検出と読み上げも。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/10
+// Updated : 2026/11/11
 // ============================================================
 #ifndef POWER_H
 #define POWER_H
@@ -109,8 +109,8 @@ float power_charge_hot_temp();   // 判定に使っている温度 [°C]
 // 完全ステートレス物理モデル:
 // BATPWR の測定ノード（F1 と Q3/Q4 の中間点）の物理特性に基づき、真の開放電圧と残量を推定する。
 // ★ タイマーや状態変数は一切使わず、瞬時電圧から純粋関数で計算するため、途中挿しや再起動でも即座に正しい値を返す。
-float power_estimated_cell_voltage();    // 推定セル開放電圧 [V] (CC: V-75mV / CV: 2V-4.20V)
-int   power_charging_percent();          // 充電中残量 [%] (0〜100)
+float power_estimated_cell_voltage();    // 推定セル開放電圧 [V] (CC: V-112mV / CV: 2V-4.20V。settings.h の CHG_*)
+int   power_charging_percent();          // 充電中残量 [%] (0〜100)。「いま USB を抜いたら出る %」（開放電圧から本体の電流ぶん 30mV を引いて換算）
 int   power_charging_remaining_min();    // 満充電までの推定残り時間 [分] (0=FULL)
 int   power_charging_remaining_90_min(); // 90%確実完了までの残り時間 [分] (0=FULL)
 bool  power_charging_full_cutoff_confirmed(); // 満充電到達後、90%確実消灯目安（+20分）を達成したか

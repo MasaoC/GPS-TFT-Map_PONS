@@ -29,7 +29,7 @@
 //   誤差回転はワールド系（global error）で定義: R_true = (I + [dtheta]x) R_nominal
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/11
 // ============================================================
 
 #ifndef ATTITUDE_H
@@ -198,6 +198,16 @@ uint32_t attitude_get_level_updates();
 // ヨーが決まった後に、地上での再水平化に入った回数（settings.h の ESKF_GROUND_*）。
 // 飛行中に増えていたら、地上の判定が飛行中に誤って成立している。
 uint32_t attitude_get_ground_relevels();
+// 動いているときに、60 度以上ずれた傾きを比力で置き直した回数（settings.h の ESKF_BIGTILT_*）。
+// 飛行中に増えていたら、姿勢の推定が壊れていたか、条件が誤って成立している。
+uint32_t attitude_get_bigtilt_relevels();
+// 置き直した瞬間に一度だけ true を返す（ログ記録用）。err_deg に置き直す前の食い違い [度]、
+// yaw_kept に方位を保ったか（ヨーが決まっていなかったときは false）。
+// ★ 方位は捨てずに保ち、GNSS が戻ったら航跡と比べる（下の attitude_take_bigtilt_yaw_check）。
+bool attitude_take_bigtilt_event(float &err_deg, bool &yaw_kept);
+// 置き直したあと、保った方位を GNSS 航跡と比べた瞬間に一度だけ true を返す（ログ記録用）。
+// diff_deg に 航跡 − 方位 [度]、reset に航跡で入れ直したか（ESKF_BIGTILT_YAW_CHECK_DEG を超えていた）。
+bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset);
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう

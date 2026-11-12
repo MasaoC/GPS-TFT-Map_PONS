@@ -805,6 +805,7 @@ static void draw_gnss_page1() {
 
 // GNSS DETAIL 2: 最新 MAX_LAST_NMEA 件の UBX フレームラベル。
 //   1 秒以内に受信したものは黒、古いものは灰色（鮮度の視覚化）。
+// ※ ミラー中も含め、表示内容は受信機（親機）自身の GNSS 受信フレームで統一されている。
 static void draw_gnss_page2() {
   tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）

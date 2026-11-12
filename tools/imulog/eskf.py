@@ -114,7 +114,8 @@ def level_quat_from_accel(a):
 def level_toward_gravity(q, a, gain):
     """測った比力 a（センサー軸）へ姿勢を寄せる。機上 level_toward_gravity と同じ。
 
-    gain=1 で一発、gain<1 で相補フィルタ。**回転軸は必ず水平になるのでヨーは動かない。**
+    gain=1 で一発、gain<1 で相補フィルタ。**回転軸は必ず水平になる**ので、ずれが小さいときはヨーにほとんど触らない。
+    ★ ずれが大きいと方位（出力のヨー）は振れる（11/11 のトンネルで 42.7 → 110.5 度）。方位を保つなら後で set_heading()。
     """
     q = np.asarray(q, dtype=float)
     n = np.linalg.norm(a)
@@ -332,7 +333,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                level_sigma=0.5, level_yawrate_dps=1.0,
                level_yawrate_inst_dps=3.0,
                level_accmag_tol=0.5, level_longacc=0.2,
-               level_rate_dps=10.0, level_rate_quiet=0.5, use_ground=True):
+               level_rate_dps=10.0, level_rate_quiet=0.5, use_ground=True,
+               use_bigtilt=True, events=None):
     """decode_imulog.split() の結果に ESKF を適用して姿勢時系列を返す。
 
     セッション（起動）ごとに独立して処理し、フィルタも都度初期化する。
@@ -351,6 +353,13 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     use_ground: ヨーが決まった後も、地上で止まっているときは重力へ寄せるか
       （機上 attitude_on_gyro の「地上での維持」と ESKF_GROUND_*）。
       ★ 既定 True は機上に合わせてある。効果を見たいときだけ False にする。
+
+    use_bigtilt: 動いているときに 60 度以上ずれた傾きを比力で置き直すか（機上 ESKF_BIGTILT_*。2026-11-11〜）。
+      方位は保ち、GNSS が戻ったら航跡と比べる（2026-11-12〜）。
+      ★ 既定 True は機上に合わせてある。効果を見たいときだけ False にする。
+    events: リストを渡すと、出来事を (session, t, 種類, 値) で足す（検証用）。
+      'relevel' … 置き直した（値 = 置き直す前の食い違い [deg]）
+      'yaw_kept' / 'yaw_reset' … 保った方位を航跡と比べた（値 = 航跡 − 方位 [deg]。reset は航跡で入れ直した）
 
     use_gnss: False にすると速度観測を一切入れない（純粋なジャイロ/加速度の積分）。
       GNSS 援用の効果を見るための比較用。観測が無いと姿勢を引き戻すものが何も無いので、
@@ -487,6 +496,12 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         good_gsp = None          # 信用できる最後の測位の対地速度（機上 good_gsp_）
         good_gsp_t = None
         ground_flags = np.zeros(n_out, dtype=bool)
+        # ---- 動いているときの大きな傾きの置き直し（機上 bt_*。settings.h の ESKF_BIGTILT_*）----
+        bt_acc_lp = None         # 比力の低域（時定数 0.5 秒）
+        bt_rate_lp = 0.0         # |ω| の低域 [deg/s]（時定数 0.25 秒）
+        bt_since = None          # 条件がそろい始めた時刻
+        yaw_suspect = False      # 置き直したあと、保った方位を航跡でまだ確かめていない（機上 yaw_suspect_）
+        yaw_check_arm = 0
 
         def learn_bias(wi, dt_i):
             # 機上 learn_gyro_bias() と同じ（時定数 5.0 秒 / ESKF_BIAS_LEARN_MAX_RADS）
@@ -568,6 +583,49 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 if ok:
                     f.update_level(acc[i], level_sigma)
                     level_last_t = ts[i]
+            # ---- 動いているときの、大きくずれた傾きの置き直し（機上 attitude_on_gyro の同名ブロックと同じ）----
+            # ★ 低域は毎サンプル更新する。地上での維持・待機中の維持が働いている間は見ない。
+            if use_bigtilt and dt > 0.0:
+                if bt_acc_lp is None:
+                    bt_acc_lp = np.asarray(acc[i], float).copy()
+                else:
+                    bt_acc_lp += (np.asarray(acc[i], float) - bt_acc_lp) * (dt / (0.5 + dt))   # ESKF_BIGTILT_ACC_TAU_S
+                wn_dps = np.degrees(np.linalg.norm(np.asarray(w[i], float) - f.bg))
+                bt_rate_lp += (wn_dps - bt_rate_lp) * (dt / (0.25 + dt))                      # ESKF_BIGTILT_RATE_TAU_S
+                maintained = ground or ((not yaw_set) and static_flags is not None and static_flags[i])
+                bad = False
+                err_deg = 0.0
+                if (not maintained) and bt_rate_lp < 10.0:                                    # ESKF_BIGTILT_MAX_RATE_DPS
+                    fb = bt_acc_lp - f.ba
+                    fn = float(np.linalg.norm(fb))
+                    if fn > 1.0 and abs(fn - 9.80665) <= level_accmag_tol:                     # ESKF_LEVEL_ACCMAG_TOL_MPS2
+                        c = float(quat_to_R(f.q)[2] @ fb) / fn
+                        err_deg = float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
+                        bad = err_deg >= 60.0                                                  # ESKF_BIGTILT_MIN_DEG
+                if not bad:
+                    bt_since = None
+                elif bt_since is None:
+                    bt_since = ts[i]
+                elif ts[i] - bt_since >= 2.0:                                                  # ESKF_BIGTILT_HOLD_US
+                    # 機上 relevel_big_tilt(): 比力で水平化し、**方位は保つ**（最短の回転で振れた分を戻す）。
+                    # 方位の不確かさを広げ、GNSS が戻ったら航跡と比べる（yaw_suspect）。理由は settings.h の ESKF_BIGTILT_*。
+                    from decode_imulog import mount_correct_quat
+                    _, _, h0 = mount_correct_quat(*f.q)
+                    f.q = level_toward_gravity(f.q, bt_acc_lp, 1.0)
+                    f.P[0:2, :] = 0.0
+                    f.P[:, 0:2] = 0.0
+                    f.P[0, 0] = f.P[1, 1] = np.deg2rad(30.0) ** 2                              # ESKF_INIT_ATT_SIGMA_MOVING_DEG
+                    if yaw_set:
+                        f.q = set_heading(f.q, float(np.atleast_1d(h0)[0]))
+                        old = f.P[2, 2]
+                        f.P[2, :] = 0.0
+                        f.P[:, 2] = 0.0
+                        f.P[2, 2] = max(old, np.deg2rad(15.0) ** 2)                            # ESKF_BIGTILT_YAW_SIGMA_DEG
+                        yaw_suspect = True
+                        yaw_check_arm = 0
+                    bt_since = None
+                    if events is not None:
+                        events.append((sess, float(ts[i]), "relevel", err_deg))
             while gi < len(g_ts) and g_ts[gi] <= ts[i]:
                 # 前後加速度の持続成分（対地速度の変化率）
                 gsp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
@@ -596,6 +654,30 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                             f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
                             f.v = g_enu[gi].copy()
                             yaw_set = True
+                elif yaw_suspect:
+                    # 機上 attitude_on_gnss_velocity の同名ブロック: 保った方位を航跡で確かめてから観測に入れる
+                    sp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
+                    if sp < 3.0:                                 # ESKF_YAW_INIT_MIN_SPEED_MPS
+                        yaw_check_arm = 0
+                    else:
+                        yaw_check_arm += 1
+                        if yaw_check_arm >= 2:                   # ESKF_YAW_INIT_ARM_FIXES
+                            from decode_imulog import mount_correct_quat
+                            trk = np.degrees(np.arctan2(g_enu[gi][0], g_enu[gi][1])) % 360.0
+                            _, _, hh = mount_correct_quat(*f.q)
+                            d = (trk - float(np.atleast_1d(hh)[0]) + 180.0) % 360.0 - 180.0
+                            if abs(d) > 45.0:                    # ESKF_BIGTILT_YAW_CHECK_DEG
+                                f.q = set_heading(f.q, trk)
+                                f.P[2, :] = 0.0
+                                f.P[:, 2] = 0.0
+                                f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
+                                f.v = g_enu[gi].copy()
+                            else:
+                                # 保った方位をそのまま使い、この測位から観測に入れる（v を置き換えない。機上と同じ）
+                                f.update_velocity(g_enu[gi], g_sacc[gi])
+                            yaw_suspect = False
+                            if events is not None:
+                                events.append((sess, float(ts[i]), "yaw_reset" if abs(d) > 45.0 else "yaw_kept", float(d)))
                 elif cutoff is None or g_ts[gi] <= cutoff:
                     f.update_velocity(g_enu[gi], g_sacc[gi])
                 gi += 1

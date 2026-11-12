@@ -71,7 +71,8 @@ float degpersecond = 0;                  // 算出された旋回角速度 [deg/
 
 // --- 画面モード・スケール管理 ---
 int screen_mode = MODE_MAP; // 現在の画面モード（MODE_MAP / MODE_SETTING など）
-int detail_page = 0;        // サブ画面（GNSSDetail / SDDetail）のページ番号
+// サブ画面（GNSSDetail / SDDetail 等）のページ番号（常に 0 以上の正値。インクリメントと 0/1 のみで負値にはならない）
+int detail_page = 0;
 int replay_cursor = 0;      // リプレイ選択画面のカーソル位置（項目の通し番号）
 int replay_list_page = 0;   // リプレイ選択画面で現在表示・読み込み済みのページ
 // IMU/ESKF 画面（ページ1）のカーソル位置。display_tft.cpp の IMU_MENU_*
@@ -444,6 +445,20 @@ static void run_overdischarge_warning_loop(bool from_loop) {
   redraw_screen = true;
 }
 
+// コンパイルした日時（__DATE__ "Nov 12 2026" と __TIME__ "15:41:40"）を "2026-11-12 15:41:40" にする。
+// ★ この .ino の中に置くこと（理由は setup() の BOOT PONS の行のコメント）。
+static void format_compile_time(char *buf, size_t n) {
+  static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  const char *d = __DATE__;   // "Mmm dd yyyy"（日が 1 桁なら "Nov  2 2026"）
+  int mon = 0;
+  for (int i = 0; i < 12; i++) {
+    if (strncmp(d, months + i * 3, 3) == 0) { mon = i + 1; break; }
+  }
+  const int day = atoi(d + 4);
+  const int year = atoi(d + 7);
+  snprintf(buf, n, "%04d-%02d-%02d %s", year, mon, day, __TIME__);
+}
+
 //===============SET UP CORE0=================
 // Core0 の初期化処理。
 // 初期化順の注意:
@@ -539,9 +554,16 @@ void setup(void) {
 #else
   const char *build_rel = " [NOT RELEASE]";
 #endif
-  enqueueTask(createLogSdfTask("BOOT PONS %s build %lu board=%s imu=%s%s",
+  // ★ 末尾にコンパイルした日時（ビルドした PC の時計）を付ける（2026-11-12〜）。BUILDDATE / BUILDVERSION は手で上げるので、
+  //   上げずに焼き直すとログからビルドを区別できなかった（11/11〜12 に中身の違う 1.05 が何本も "build 20261111" で焼かれた）。
+  //   ★ __DATE__ / __TIME__ は**この .ino に置くこと。** Arduino は .ino から作るファイルをビルドのたびにコンパイルし直すが、
+  //     ほかの .cpp は中身が変わったときしかコンパイルしないので、そちらに置くと古い日時が残る（2026-11-12 に arduino-cli で確認）。
+  //   ★ 行の形は Flight Viewer が読んでいる（tools/flight_viewer の logScanLine。末尾の compiled も拾う）。
+  char compiled[24];
+  format_compile_time(compiled, sizeof(compiled));
+  enqueueTask(createLogSdfTask("BOOT PONS %s build %lu board=%s imu=%s%s compiled %s",
                                BUILDVERSION, (unsigned long)BUILDDATE,
-                               VERSION_TEXT, imu_sensor_name(), build_rel));
+                               VERSION_TEXT, imu_sensor_name(), build_rel, compiled));
   // 起動の見張りの watchdog を外し、前回が途中で止まっていたらログに出す（bootwatch.h）。
   bootwatch_boot_done_core0();
 
@@ -1383,6 +1405,37 @@ static void flightlog_tick() {
   }
 }
 
+// ---- 地図の描き直しの内訳（60 秒ログの `redraw` 行。2026-11-11〜）----
+// どこで時間がかかっているかを実機で見るため。1 分ごとに、各段の最長 [ms] と描き直しの回数を残す。
+//   hdr   … draw_header()（TFT へ直接）
+//   map   … draw_vectormap()（内蔵のベクタ地図。背景の塗りつぶし込み）
+//   poly  … draw_FlashMaps() / draw_ExtraMaps()（ポリゴン地図の注記）
+//   track … draw_track()（過去の航跡。最大 MAX_TRACK_CORDS 点）
+//   ovl   … 航跡のあと push の前まで（目的地の線・アイコン・オーバーレイ・ESKF の表示など）
+//   push  … push_backscreen() と draw_footer()（TFT への転送）
+//   max   … 描き直し 1 回の全体の最長
+// ★ 計るのは time_us_32() を数回読むだけなので RELEASE でも残す（TIMING_* は RELEASE で消える）。
+// ★ 割り込みで IMU を読んでいる間（約 0.3ms/4ms）も含んだ時間。
+enum { RP_HDR, RP_MAP, RP_POLY, RP_TRACK, RP_OVL, RP_PUSH, RP_N };
+static uint32_t s_rp_max_us[RP_N];
+static uint32_t s_rp_total_max_us = 0;
+static uint32_t s_rp_count = 0;
+static inline void redraw_prof_add(int k, uint32_t us) {
+  if (us > s_rp_max_us[k]) s_rp_max_us[k] = us;
+}
+static void redraw_prof_log() {
+  if (s_rp_count == 0) return;   // 地図以外の画面などで描き直していない
+  enqueueTask(createLogSdfTask(
+      "redraw n=%lu max=%lums hdr=%lu map=%lu poly=%lu track=%lu ovl=%lu push=%lu",
+      (unsigned long)s_rp_count, (unsigned long)(s_rp_total_max_us / 1000),
+      (unsigned long)(s_rp_max_us[RP_HDR] / 1000), (unsigned long)(s_rp_max_us[RP_MAP] / 1000),
+      (unsigned long)(s_rp_max_us[RP_POLY] / 1000), (unsigned long)(s_rp_max_us[RP_TRACK] / 1000),
+      (unsigned long)(s_rp_max_us[RP_OVL] / 1000), (unsigned long)(s_rp_max_us[RP_PUSH] / 1000)));
+  for (int k = 0; k < RP_N; k++) s_rp_max_us[k] = 0;
+  s_rp_total_max_us = 0;
+  s_rp_count = 0;
+}
+
 // 60 秒ごとのシステムログ（電圧・時刻・センサーのレート）。
 // JST は flightlog_tick() と同じ理由でここで求める。
 static void periodic_log_tick() {
@@ -1430,9 +1483,20 @@ static void periodic_log_tick() {
       //   が消えた）。
       enqueueTask(createLogSdfTask("rate MS5611=%.1f Hz (%s: no fusion)",
                                    get_airdata_win_hz(), imu_sensor_name()));
-      enqueueTask(
-          createLogSdfTask("imu gapmax=%lums",
-                           (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
+      // 割り込みで読んでいるとき（settings.h の SCH16T_READ_IN_IRQ）は、gapmax= が割り込みの間隔（ふだん 4ms）、
+      // drain= が読んでから推定へ渡すまでの最長（＝ Core0 が描画などで止まっていた最長時間）、ovf= がリングが
+      // 一杯で読めなかった回数（loop() に入ってから）。★ 行頭の "imu gapmax=" は Flight Viewer が読んでいる。
+      if (imu_read_in_irq()) {
+        enqueueTask(createLogSdfTask("imu gapmax=%lums drain=%lums ovf=%lu",
+                                     (unsigned long)(get_imu_poll_gap_max_us() / 1000),
+                                     (unsigned long)(get_imu_drain_max_us() / 1000),
+                                     (unsigned long)get_imu_ring_ovf()));
+      } else {
+        enqueueTask(
+            createLogSdfTask("imu gapmax=%lums",
+                             (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
+      }
+      redraw_prof_log();   // 地図の描き直しの内訳（どこで時間がかかっているか）
       enqueueTask(createLogSdfTask(
           "raw GYR=%.1f ACC=%.1f Hz stale=%lu drop=%lu wrote=%lu",
           get_imu_gyro_hz(), get_imu_accel_hz(),
@@ -1453,13 +1517,15 @@ static void periodic_log_tick() {
         // gnd:
         // ヨーが決まった後に、地上での再水平化に入った回数（ESKF_GROUND_*）。
         //   飛行中に増えていたら、地上の判定が飛行中に誤って成立している。
+        // big: 動いているときに 60 度以上ずれた傾きを比力で置き直した回数（ESKF_BIGTILT_*）。
         enqueueTask(createLogSdfTask(
-            "eskf ready=%d yawsig=%.1f yawsrc=%d gobs=%lu gnd=%lu lvl R%+.1f "
+            "eskf ready=%d yawsig=%.1f yawsrc=%d gobs=%lu gnd=%lu big=%lu lvl R%+.1f "
             "P%+.1f",
             (int)attitude_ready(), attitude_get_yaw_sigma_deg(),
             (int)attitude_get_yaw_source(),
             (unsigned long)attitude_get_level_updates(),
-            (unsigned long)attitude_get_ground_relevels(), lvr, lvp));
+            (unsigned long)attitude_get_ground_relevels(),
+            (unsigned long)attitude_get_bigtilt_relevels(), lvr, lvp));
       }
     }
   }
@@ -1537,6 +1603,8 @@ static void draw_current_screen(bool new_gnss_info) {
     // 通常は毎秒 2 回程度この描画ブロックが実行される。
     if (redraw_screen) {
       TIMING_START(redraw);
+      const uint32_t rp_t0 = time_us_32();   // 描き直しの内訳（redraw_prof_*）
+      uint32_t rp_t = rp_t0;
 #ifndef RELEASE
       c0_is_redrawing = true;
 #endif
@@ -1559,7 +1627,9 @@ static void draw_current_screen(bool new_gnss_info) {
 
       nav_update();  // 真方位コース(TC)・目的地距離(dist)を最新 GNSS
                      // 位置で再計算
+      rp_t = time_us_32();
       draw_header(); // ヘッダー（速度・衛星数など）を TFT に直接描画
+      redraw_prof_add(RP_HDR, time_us_32() - rp_t);
 
       // 描画はすべてバックスクリーンに対して行い、最後に push_backscreen() で
       // 一括転送することでちらつきを防ぐ。
@@ -1570,21 +1640,28 @@ static void draw_current_screen(bool new_gnss_info) {
       // へ直接描画する。 回転は latLonToXY
       // と同じ座標変換に吸収されるため、TRACKUP でも画面四隅まで埋まる。 SD
       // カードは不要で、位置が動いても I/O は発生しない。
+      rp_t = time_us_32();
       draw_vectormap(new_lat, new_long, scale, drawupward_direction);
+      redraw_prof_add(RP_MAP, time_us_32() - rp_t);
 
       // ---- レイヤー 2: ポリゴン地図（滑走路・基準線などの注記）----
       // 内蔵（フラッシュ）と SD の mapdata.csv 由来の両方を描く。
       // 内蔵は SD
       // が抜けていても必ず表示されるので、飛行に必須の注記はそちらに置く。
+      rp_t = time_us_32();
       if (scale > SCALE_SMALL_GMAP) {
         draw_FlashMaps(new_lat, new_long, scale, drawupward_direction);
         draw_ExtraMaps(new_lat, new_long, scale, drawupward_direction);
       }
+      redraw_prof_add(RP_POLY, time_us_32() - rp_t);
 
       gnss_loop(4); // 描画の合間に GNSS データを受信（取りこぼし防止）
 
       // ---- レイヤー 3: 飛行軌跡 ----
+      rp_t = time_us_32();
       draw_track(new_lat, new_long, scale, drawupward_direction);
+      redraw_prof_add(RP_TRACK, time_us_32() - rp_t);
+      rp_t = time_us_32();   // ここから push の前までが ovl
 
       // ---- レイヤー 3.5: パイロンへの基準線・コース円 ----
       // マゼンタラインより先に描画して、重なったときは基準線が隠れるようにする。
@@ -1687,8 +1764,16 @@ static void draw_current_screen(bool new_gnss_info) {
       // GNSS の状態の箱（Scanning / Weak GNSS Signal）は push_backscreen() の最後で描く
       // （ほかの通知の箱と重ならない段を探すため。display_tft.cpp の draw_nomapdata）。
       gnss_loop(6);      // 描画の合間に GNSS データを受信
+      redraw_prof_add(RP_OVL, time_us_32() - rp_t);
+      rp_t = time_us_32();
       push_backscreen(); // バックスクリーンを TFT に一括転送（VSI合成済み）
       draw_footer();     // フッターは TFT に直接描画（バックスクリーン外）
+      redraw_prof_add(RP_PUSH, time_us_32() - rp_t);
+      {
+        const uint32_t all = time_us_32() - rp_t0;
+        if (all > s_rp_total_max_us) s_rp_total_max_us = all;
+        s_rp_count++;
+      }
 #ifndef RELEASE
       c0_is_redrawing = false;
 #endif
@@ -1742,6 +1827,7 @@ static void kalman_feed_tick() {
   //   受信した「機体」の高度なので、これを自機のカルマンに入れると
   //   気圧基準と _gnss_kf_offset
   //   が壊れ、リプレイと同様に受信をやめた後まで残る。
+  // ※ デモ中（is_demo_active()）は水平位置・速度のみ疑似生成し高度は実機 GNSS 値を使うため、!is_demo_active() による除外は不要。
   if (!getReplayMode() && !link_mirror_active() && get_gnss_fixok() &&
       get_gnss_fixtype() >= 3) {
     imu_kalman_gnss_update((float)get_gnss_altitude(),
@@ -1920,6 +2006,30 @@ static void handle_serial_command(const char *raw_cmd) {
       return;
     }
     enqueueTask(createSerialGetTask(filename));
+  } else if (strncmp(cmd, "PONS:GETTAIL,", 13) == 0) {
+    // 末尾だけ送る: "PONS:GETTAIL,<バイト数>,<パス>"（2026-11-11〜）。伸び続ける log.txt を、最新の分だけ速く取るため。
+    // ★ バイト数を先に置く（FAT のファイル名には , が使えるので、パスは行の最後まで）。
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:ERROR,BUSY");
+      return;
+    }
+    const char *p = cmd + 13;
+    uint32_t tail = 0;
+    int digits = 0;
+    while (*p >= '0' && *p <= '9' && digits < 10) {
+      tail = tail * 10 + (uint32_t)(*p - '0');
+      p++;
+      digits++;
+    }
+    if (digits == 0 || *p != ',' || p[1] == '\0') {
+      Serial.println("PONS:ERROR,INVALID_FILENAME");
+      return;
+    }
+    enqueueTask(createSerialGetTask(p + 1, tail));
   } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
     webserial_cancel_requested = true;
     // 転送タスク実行中でなければ即座に応答（転送中なら Core1
@@ -2088,6 +2198,26 @@ void loop() {
   readiness_tick();
 
   eskf_apply_tick();
+
+  // ---- 大きくずれた傾きを比力で置き直したらログに残す（settings.h の ESKF_BIGTILT_*）----
+  // ★ 方位は保つ（heading kept）。GNSS が戻って動き出したら航跡と比べ、その結果も残す（yaw check）。
+  {
+    float err_deg;
+    bool yaw_kept;
+    if (attitude_take_bigtilt_event(err_deg, yaw_kept)) {
+      const float gs = (float)get_gnss_mps();
+      enqueueTask(createLogSdfTask("ESKF RELEVEL: tilt off %.0f deg for %.1fs (gs=%.1f %s) -> leveled from accel, %s",
+                                   err_deg, ESKF_BIGTILT_HOLD_US * 1e-6f, gs,
+                                   get_gnss_fix() ? "fix" : "nofix",
+                                   yaw_kept ? "heading kept" : "yaw was not set"));
+    }
+    float diff_deg;
+    bool reset;
+    if (attitude_take_bigtilt_yaw_check(diff_deg, reset)) {
+      enqueueTask(createLogSdfTask("ESKF RELEVEL yaw check: track %+.0f deg off heading -> %s",
+                                   diff_deg, reset ? "reset from track" : "heading kept"));
+    }
+  }
 
   // ---- 直進中のロール自動トリムが入ったらログに残す ----
   // 事後検証できるよう、1 回の補正量と累積量を記録する。
@@ -2291,7 +2421,7 @@ void loop1() {
       gnss_dbd_load_sd();
       break;
     case TASK_SERIAL_GET:
-      serial_send_csv_file(currentTask.serialGetArgs.filename);
+      serial_send_csv_file(currentTask.serialGetArgs.filename, currentTask.serialGetArgs.tail);
       break;
     }
     clearCurrentTask(); // mutex 内で TASK_NONE にする（Core0 の isTaskRunning()
@@ -2311,17 +2441,12 @@ void next_scaleindex() {
   scale = scalelist[scaleindex];
 }
 
-// 指定の縮尺へ切り替える（範囲外は無視）。PONS Link の受信側が
-// **送信機の縮尺に合わせる**ために使う（link.cpp）。
-// ★ scaleindex と scale は必ず対で更新すること（上と同じ）。
-void set_scaleindex(int idx) {
-  if (idx < 0 || idx >= (int)(sizeof(scalelist) / sizeof(scalelist[0])))
-    return;
-  scaleindex = idx;
-  scale = scalelist[scaleindex];
-}
+// ★ 指定の縮尺へ切り替える set_scaleindex() は 2026-11-12 に消した。PONS Link の受信機が
+//   送信機の縮尺に合わせるためだけのもので、受信機は合わせなくなった（link.cpp の
+//   link_get_sender_scale_index）。縮尺を外から変える口を足すなら、scaleindex と scale を対で更新すること。
 
 // 画面横幅 240px が何 km に相当するかを返す（設定画面のスケール表示用）。
+// 範囲外の添字（壊れた値・縮尺の段数が違う機体から届いた値）は 0。
 float scale_screen_km(int index) {
   if (index < 0 || index >= (int)(sizeof(scalelist) / sizeof(scalelist[0])))
     return 0;

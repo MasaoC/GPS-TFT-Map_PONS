@@ -168,6 +168,9 @@
   bool     link_dest_mismatch();
   bool     link_dest_missing();       // 送信機の目的地が受信機に無い（ID が一致するものが無い）
   uint16_t link_dest_id(int idx);     // 目的地の ID（名前と座標の CRC16。0 = 未選択）
+  // 送信機の地図の縮尺（scalelist の添字）。受信中で値が届いているときだけ true。
+  // ★ 受信機の縮尺は**合わせない**（2026-11-12〜）。設定画面の Map scale の行に添えて出すだけ。
+  bool     link_get_sender_scale_index(int &idx);
 
   // ============================================================
   //  送信前チェック（プリフライト）

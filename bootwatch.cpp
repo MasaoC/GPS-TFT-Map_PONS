@@ -354,6 +354,12 @@ void bootwatch_report_core1(volatile bool* ready) {
 
   // 待ちが切れたあとも、Core0 が遅いだけかもしれない。段階が BOOTWATCH_STUCK_MS 動かないか、
   // 準備ができるまで待つ（上限 5 秒）。
+  // ※ watchdog（BOOTWATCH_WDT_MS = 6 秒。RELEASE のときだけ、起動処理の最初から数える）との関係:
+  //   - Core0 が固まったとき（段階が BOOTWATCH_STUCK_MS = 1 秒動かない）は、上の待ち 1 秒＋SD の準備＋1 秒なので、
+  //     ふつうは watchdog より先にここで記録して再起動する。
+  //   - Core0 が遅いだけで段階が進み続けているときは下の上限 5 秒まで待つので、watchdog が先に切れることがある。
+  //     そのときここでは何も残らないが、次の起動で "BOOT WATCH: restarted by WATCHDOG timeout" と
+  //     止まった段階（"last boot core0 stage ..."）が残るので、記録は失われない。
   const uint32_t t0 = millis();
   for (;;) {
     if (*ready) {

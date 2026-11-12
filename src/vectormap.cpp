@@ -5,7 +5,7 @@
 //           TRACKUP の回転は latLonToXY と同じ座標変換に吸収され、
 //           BMP 方式で欠けていた画面四隅まで隙間なく塗れる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/09/23
+// Updated : 2026/11/11
 //
 // 地図データのライセンス: Map data (c) OpenStreetMap contributors, ODbL 1.0
 // ============================================================
@@ -326,8 +326,14 @@ void draw_vectormap(double center_lat, double center_lon, float scale,
 
       const uint8_t *p = vm_blob + t->blob_off;
       const uint8_t *end = p + t->blob_len;
-      while (p < end)
+      while (p < end) {
         p = vm_draw_record(p, t, lod, &proj, cls);
+        // ★ レコード 1 本ごとにも呼ぶ（2026-11-11〜）。タイル単位だけだと、道路・建物の多いタイル 1 枚を
+        //   描く間は 1 回も呼ばれず、11/11 の生ログでは GNSS の更新（2Hz）ごとに 70〜90ms 止まっていた
+        //   （1.03 で公園・建物・街路を足してから倍になった）。周期内なら時刻を見て戻るだけなので軽い。
+        //   タイマー割り込みで読んでいるとき（SCH16T_READ_IN_IRQ）は、溜まった分を推定へ渡すだけ。
+        imu_service_if_due();
+      }
     }
   }
 }

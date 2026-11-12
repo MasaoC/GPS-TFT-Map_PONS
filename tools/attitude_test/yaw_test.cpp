@@ -280,6 +280,10 @@ int main() {
     //   G2: 水平な軸まわりに速く回している間は重力観測を入れない
     //   G3: ヨーが決まった後でも、地上で止まれば 60 度を超える傾きの誤差から戻る
     //   G4: GNSS が「動いている」と言っている間は G3 が働かない（飛行中の誤作動の防止）
+    //   G5: 動いている間（GNSS 断・振動あり）でも、60 度を超える傾きの誤差から比力で戻る（ESKF_BIGTILT_*。2026-11-11）。
+    //       方位は保ち、ひっくり返った推定で 180 度逆を保っていたら、GNSS が戻ったときに航跡で入れ直す
+    //   G6: 誤差が 60 度未満なら G5 は働かない。回している間も働かない
+    //   G7: 保った方位が合っていれば、横滑りで 10 度ずれた航跡では上書きしない（ヨーを捨てない。2026-11-12）
     {
         float a_lv[3]; static_accel_for_bank(0.0, a_lv);   // 機体水平
         // 上方向と比力のなす角 [deg]（0 が正しい）
@@ -392,6 +396,118 @@ int main() {
         printf("   静止 10 秒・GNSS 8m/s: %u 回（0 が正しい）  GNSS 0.3m/s へ変わったら %u 回（1 が正しい）\n",
                (unsigned)(h1 - h0), (unsigned)(h2 - h1));
         ok &= (h1 - h0) == 0 && (h2 - h1) == 1;
+
+        // ---- G5) 動いている間でも、大きくずれた傾きから比力で戻る ----
+        // 2026-11-11 16:09 の車載試験の再現: トンネル（GNSS なし）の中で本体を大きく動かされ、
+        // ロールが約 95 度ずれたまま 35 秒戻らなかった。止まっていないので地上での維持は働かない。
+        // ここでは走行中の振動の代わりに、ジャイロへ 4deg/s の揺れ（静止判定は外れるが 10deg/s 未満）と、
+        // 比力へ ±0.8 m/s² の揺れ（瞬時の |f| は g ± 0.5 を外れることがある）を足す。
+        attitude_setup();
+        t = 0;
+        feed((int)(4 * fs), dt, t, a_lv, gz);
+        set_yaw_good();
+        const uint32_t b0 = attitude_get_bigtilt_relevels();
+        feed((int)(2 * fs), dt, t, a_lv, wv3);           // 60deg/s で 2 秒 → 傾きの推定が 120 度狂う
+        const float e5_before = up_err_deg(a_lv);
+        const uint32_t b1 = attitude_get_bigtilt_relevels();   // 回している間は働かない（G6 の一部）
+        const uint32_t gr0 = attitude_get_ground_relevels();
+        float e5_at_1s = 0.0f;
+        for (int i = 0; i < (int)(6 * fs); i++) {        // 揺れながら 6 秒。GNSS は来ない（トンネル）
+            const double ph = 2.0 * M_PI * 7.0 * i / fs; // 7Hz の揺れ
+            const double wb[3] = { 4.0 * M_PI / 180.0 * sin(ph), 4.0 * M_PI / 180.0 * cos(ph), 0.0 };
+            float wv[3]; body_to_sensor(wb, wv);
+            float av[3];
+            for (int k = 0; k < 3; k++) av[k] = a_lv[k];
+            av[0] += (float)(0.8 * sin(ph * 1.3));
+            feed(1, dt, t, av, wv);
+            if (i == (int)(1 * fs)) e5_at_1s = up_err_deg(a_lv);
+        }
+        const float e5_after = up_err_deg(a_lv);
+        const uint32_t b2 = attitude_get_bigtilt_relevels();
+        float evd = 0.0f;
+        bool kept5 = false;
+        const bool ev = attitude_take_bigtilt_event(evd, kept5);
+        float r5, p5, h5; attitude_get_euler_raw(r5, p5, h5);
+        printf("\nG5) 走行中（GNSS なし・振動あり）に傾きの推定が 120 度狂った状態から（ピッチの軸で回ってひっくり返った推定）\n");
+        printf("   上方向の誤差 %.1f → 1 秒後 %.1f（まだ戻さない）→ 6 秒後 %.2f deg（5 未満が正しい）\n",
+               e5_before, e5_at_1s, e5_after);
+        printf("   置き直し %u 回（1 が正しい）  回している間 %u 回（0 が正しい）  地上の再水平化 %u 回（0 が正しい）\n",
+               (unsigned)(b2 - b1), (unsigned)(b1 - b0), (unsigned)(attitude_get_ground_relevels() - gr0));
+        printf("   ログ用の印 %d・食い違い %.0f deg  方位を保った=%d  yaw_ready=%d（1 と 1 が正しい）  保った方位 %.0f deg（ひっくり返ったので 180）\n",
+               (int)ev, evd, (int)kept5, (int)attitude_yaw_ready(), h5);
+        ok &= e5_before > 100.0f && e5_at_1s > 60.0f && e5_after < 5.0f;
+        ok &= (b2 - b1) == 1 && (b1 - b0) == 0 && attitude_get_ground_relevels() == gr0;
+        ok &= ev && evd > 60.0f && kept5 && attitude_yaw_ready();
+        ok &= fabsf(fabsf(h5 - 180.0f)) < 5.0f;
+        // GNSS が戻ったら（真方位 0 度へ 8m/s）航跡と比べ、180 度食い違っているので入れ直す
+        const uint32_t gu5 = attitude_get_gnss_updates();
+        set_yaw_good();
+        float dd5 = 0.0f; bool reset5 = false;
+        const bool chk5 = attitude_take_bigtilt_yaw_check(dd5, reset5);
+        attitude_get_euler_raw(r5, p5, h5);
+        const float h5e = fabsf(h5 > 180.0f ? h5 - 360.0f : h5);
+        printf("   GNSS が戻って航跡と比べた: 印 %d・差 %+.0f deg・入れ直し %d（1・±180・1 が正しい）  方位 %.1f deg（0 が正しい）  上方向の誤差 %.2f deg\n",
+               (int)chk5, dd5, (int)reset5, h5, up_err_deg(a_lv));
+        printf("   比べる前の速度観測 %u 回（0 が正しい＝比べ終わるまで入れない）\n",
+               (unsigned)(attitude_get_gnss_updates() - gu5));
+        ok &= chk5 && reset5 && fabsf(dd5) > 170.0f && h5e < 3.0f && up_err_deg(a_lv) < 5.0f;
+        ok &= attitude_get_gnss_updates() == gu5;
+
+        // ---- G6) 誤差が 60 度未満なら働かない ----
+        // 30deg/s で 1.5 秒（45 度）だけ狂わせ、同じ揺れで 6 秒。重力観測で戻るのは許す（そちらの仕事）。
+        attitude_setup();
+        t = 0;
+        feed((int)(4 * fs), dt, t, a_lv, gz);
+        set_yaw_good();
+        const double wb6[3] = { 0.0, 30.0 * M_PI / 180.0, 0.0 };
+        float wv6[3]; body_to_sensor(wb6, wv6);
+        feed((int)(1.5 * fs), dt, t, a_lv, wv6);
+        const float e6 = up_err_deg(a_lv);
+        const uint32_t c0 = attitude_get_bigtilt_relevels();
+        for (int i = 0; i < (int)(6 * fs); i++) {
+            const double ph = 2.0 * M_PI * 7.0 * i / fs;
+            const double wb[3] = { 4.0 * M_PI / 180.0 * sin(ph), 4.0 * M_PI / 180.0 * cos(ph), 0.0 };
+            float wv[3]; body_to_sensor(wb, wv);
+            feed(1, dt, t, a_lv, wv);
+        }
+        printf("\nG6) 誤差 %.1f deg（60 未満）では置き直さない: %u 回（0 が正しい）  yaw_ready=%d（1 が正しい）\n",
+               e6, (unsigned)(attitude_get_bigtilt_relevels() - c0), (int)attitude_yaw_ready());
+        ok &= e6 > 40.0f && e6 < 55.0f;
+        ok &= attitude_get_bigtilt_relevels() == c0 && attitude_yaw_ready();
+
+        // ---- G7) 保った方位が合っていれば、横滑りでずれた航跡では上書きしない ----
+        // 真の機首は 0 度。ロールの軸で 50deg/s × 2 秒（100 度）狂わせ、GNSS なし・揺れで置き直させる。
+        // そのあと GNSS が戻るが、航跡は 10 度（飛行中の横滑りの代わり）。方位は 0 度のまま残ること。
+        attitude_setup();
+        t = 0;
+        feed((int)(4 * fs), dt, t, a_lv, gz);
+        set_yaw_good();                                  // 真方位 0 度
+        const double wb7[3] = { 50.0 * M_PI / 180.0, 0.0, 0.0 };
+        float wv7[3]; body_to_sensor(wb7, wv7);
+        feed((int)(2 * fs), dt, t, a_lv, wv7);
+        for (int i = 0; i < (int)(6 * fs); i++) {
+            const double ph = 2.0 * M_PI * 7.0 * i / fs;
+            const double wb[3] = { 4.0 * M_PI / 180.0 * sin(ph), 4.0 * M_PI / 180.0 * cos(ph), 0.0 };
+            float wv[3]; body_to_sensor(wb, wv);
+            feed(1, dt, t, a_lv, wv);
+        }
+        float evd7 = 0.0f; bool kept7 = false;
+        const bool ev7 = attitude_take_bigtilt_event(evd7, kept7);
+        const double trk7 = 10.0 * M_PI / 180.0;
+        for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES + 2; i++) {
+            feed((int)(0.5 * fs), dt, t, a_lv, gz);
+            attitude_on_gnss_velocity((float)(8.0 * cos(trk7)), (float)(8.0 * sin(trk7)), 0.0f, 0.08f);
+        }
+        float dd7 = 0.0f; bool reset7 = true;
+        const bool chk7 = attitude_take_bigtilt_yaw_check(dd7, reset7);
+        float r7, p7, h7; attitude_get_euler_raw(r7, p7, h7);
+        const float h7e = fabsf(h7 > 180.0f ? h7 - 360.0f : h7);
+        printf("\nG7) 方位 0 度でロールが 100 度狂ったのを置き直し、GNSS は横滑りで 10 度の航跡\n");
+        printf("   置き直し %d・方位を保った %d（1・1 が正しい）  航跡と比べた %d・差 %+.1f deg・入れ直し %d（1・+10・0 が正しい）\n",
+               (int)ev7, (int)kept7, (int)chk7, dd7, (int)reset7);
+        printf("   方位 %.1f deg（0 のまま＝航跡の 10 で上書きしないのが正しい）  上方向の誤差 %.2f deg\n", h7, up_err_deg(a_lv));
+        ok &= ev7 && kept7 && chk7 && !reset7 && fabsf(dd7 - 10.0f) < 3.0f;
+        ok &= h7e < 3.0f && up_err_deg(a_lv) < 5.0f;
     }
     printf("\n結果: %s\n", ok ? "PASS — 水平化・航跡ヨー・待機中の維持・上方向の常時提供・重力観測・発散の再発防止がすべて正しい"
                              : "FAIL");

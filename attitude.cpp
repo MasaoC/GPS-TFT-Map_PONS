@@ -5,7 +5,7 @@
 //           数式・座標系・マウント補正の説明は attitude.h を参照。
 //           PC 側の tools/imulog/eskf.py と対になっている。片方を直したら両方直すこと。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/11
 // ============================================================
 
 #include <Arduino.h>
@@ -68,6 +68,21 @@ static uint32_t good_gsp_us_   = 0;
 // ヨーが決まった後に、地上での再水平化に入った回数（60 秒ログの gnd=）。
 static volatile uint32_t ground_relevels_ = 0;
 static bool     ground_now_    = false;
+// 動いているときの、大きくずれた傾きの置き直し（settings.h の ESKF_BIGTILT_*）。
+static float    bt_acc_lp_[3]  = {0.0f, 0.0f, 0.0f};   // 比力の低域（車の振動で |f| が揺れるのを均す）
+static bool     bt_acc_lp_valid_ = false;
+static float    bt_rate_lp_    = 0.0f;   // |ω| の低域 [deg/s]
+static uint32_t bt_since_us_   = 0;      // 条件がそろい始めた時刻。0 = そろっていない
+static volatile uint32_t bigtilt_relevels_ = 0;
+static volatile bool  bigtilt_event_     = false;   // 置き直した（呼び出し側がログに残す）
+static volatile float bigtilt_event_deg_ = 0.0f;    // そのときの食い違い [度]
+static volatile bool  bigtilt_event_yaw_kept_ = false;   // 方位を保ったか（ヨーが決まっていなかったら false）
+// 置き直したあと、保った方位を GNSS 航跡でまだ確かめていない（ESKF_BIGTILT_YAW_CHECK_DEG）。
+// true の間は GNSS 速度を観測に入れない（attitude_on_gnss_velocity）。
+static bool     yaw_suspect_   = false;
+static uint8_t  yaw_check_arm_ = 0;
+static volatile uint8_t yaw_check_event_ = 0;      // 0 = なし / 1 = 保った / 2 = 航跡で入れ直した（呼び出し側がログに残す）
+static volatile float   yaw_check_diff_  = 0.0f;   // そのときの 航跡 − 方位 [度]
 
 // ---- 機体ゼロ点（マウント基準）のオフセット [度] ----
 static float level_roll_off_ = 0.0f;
@@ -333,10 +348,13 @@ static void rotate_world_z(float q[4], float d_rad) {
 //   gain = 1.0 … 一発で合わせる（初期化用）
 //   gain < 1.0 … 相補フィルタとしてゆっくり寄せる（静止中の維持用）
 //
-// ★ **回転軸は必ず水平になるのでヨーは動かない。**
+// ★ **回転軸は必ず水平になる。**
 //   姿勢が正しければ「a をワールドへ回したもの」は +Z になる。ずれていれば
 //   その gw を +Z へ運ぶ回転が補正量で、軸 = gw × ẑ = (gw_y, -gw_x, 0)。
-//   Z 成分が構造的に 0 なので、ヨーには一切触らない。
+//   Z 成分が構造的に 0 なので、ずれが小さいときはヨーにほとんど触らない。
+// ★★ **ずれが大きいと方位（出力のヨー＝機首の水平の向き）は振れる。** 水平な軸でも、機首が大きく傾いた姿勢を
+//   回せば機首の水平の向きは変わる（2026-11-11 のトンネルの再現で、76 度の置き直しで 42.7 → 110.5 度）。
+//   方位を保ちたいときは回したあとで rotate_world_z() で戻すこと（relevel_big_tilt がそうしている）。
 //
 // 戻り値 false = 加速度が小さすぎて方向が決まらない（何もしていない）。
 static bool level_toward_gravity(const float a[3], float gain) {
@@ -425,6 +443,14 @@ void attitude_setup() {
     good_gsp_us_ = 0;
     ground_relevels_ = 0;
     ground_now_ = false;
+    bt_acc_lp_valid_ = false;
+    bt_rate_lp_ = 0.0f;
+    bt_since_us_ = 0;
+    bigtilt_relevels_ = 0;
+    bigtilt_event_ = false;
+    yaw_suspect_ = false;
+    yaw_check_arm_ = 0;
+    yaw_check_event_ = 0;
     gnss_updates_ = 0;
     gyro_seen_ = false;
     last_gyro_us_ = 0;
@@ -527,6 +553,45 @@ static void init_yaw_from_track(float track_deg, float yaw_sigma_deg) {
     yaw_src_ = ATT_YAW_SRC_GNSS;
 }
 
+// 動いているときに、大きくずれた傾きを比力で置き直す（settings.h の ESKF_BIGTILT_*）。
+//   a       : 比力の低域（センサー座標。重力込み）
+//   err_deg : 置き直す前の食い違い [度]（ログ用）
+// ★★ **ヨーは捨てない。方位（機首の水平の向き）を保ったまま、ロール・ピッチだけを合わせる。**
+//   level_toward_gravity() は最短の回転なので、傾きが大きくずれていると方位まで振れる（11/11 のトンネルで 68 度）。
+//   回したあとで方位だけ元へ戻す（rotate_world_z はロール・ピッチを動かさない）。
+//   方位の不確かさは ESKF_BIGTILT_YAW_SIGMA_DEG まで広げ、GNSS が戻ったら航跡と比べる（yaw_suspect_）。理由は settings.h。
+// ★ 平均ピッチの窓と、自動ロールトリムの溜めかけは捨てる（ずれていた間の値を混ぜない）。
+static void relevel_big_tilt(const float a[3], float err_deg) {
+    float r0, p0, h0;
+    euler_from_state(r0, p0, h0);               // 置き直す前の方位
+    level_toward_gravity(a, 1.0f);
+    reset_tilt_covariance(ESKF_INIT_ATT_SIGMA_MOVING_DEG);
+    bigtilt_event_yaw_kept_ = yaw_set_;
+    if (yaw_set_) {
+        float r1, p1, h1;
+        euler_from_state(r1, p1, h1);
+        float d = h0 - h1;                      // 戻す量（init_yaw_from_track と同じ向きの約束）
+        while (d >  180.0f) d -= 360.0f;
+        while (d < -180.0f) d += 360.0f;
+        rotate_world_z(q_, -d * (float)M_PI / 180.0f);
+        // 方位の不確かさを広げ、ほかの状態との相関は落とす（傾きを大きく直したので意味を失った）
+        const float old = P_[2][2];
+        const float ys = ESKF_BIGTILT_YAW_SIGMA_DEG * (float)M_PI / 180.0f;
+        for (int i = 0; i < N_ERR; i++) { P_[2][i] = 0.0f; P_[i][2] = 0.0f; }
+        P_[2][2] = (old > ys * ys) ? old : ys * ys;
+        yaw_suspect_   = true;                  // GNSS が戻ったら航跡と比べる
+        yaw_check_arm_ = 0;
+    }
+    pitch_avg_reset();
+    trim_roll_sum_  = 0.0f;
+    trim_time_s_    = 0.0f;
+    trim_run_count_ = 0;
+    trim_run_sum_   = 0.0f;
+    bigtilt_relevels_++;
+    bigtilt_event_deg_ = err_deg;
+    bigtilt_event_     = true;
+}
+
 // 静止中にジャイロのゼロ点を測って bg_ に入れる。
 // 引数は**生の**ジャイロ（bg_ を引く前）。目的と注意は settings.h の
 // ESKF_BIAS_LEARN_SAMPLES のコメント参照。
@@ -600,6 +665,7 @@ bool attitude_get_up_sensor(float u[3]) {
 
 // 静止判定を更新する。ジャイロが小さく、かつ加速度の大きさが重力に近いこと。
 // 加速度も見るのは、等速直進でもジャイロは小さくなるため。
+// ※ 静止判定はゼロ点バイアス学習の前提条件なので、バイアス除去後ではなく生ジャイロ値を見る（循環参照防止。eskf.py と同一）。
 static void update_static(const float g[3], uint32_t t_us) {
     float wn = sqrtf(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
     float an = accel_valid_
@@ -815,6 +881,49 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         }
     }
 #endif
+
+    // ---- 動いているときの、大きくずれた傾きの置き直し ----
+    // ★ 根拠と数値は settings.h の ESKF_BIGTILT_* のコメント。要点だけ:
+    //   ジャイロが静かで |f| ≒ g なのに、比力の向きと推定の上向きが 60 度以上食い違い続けたら、推定のほうが壊れている。
+    //   重力観測は 60 度以上ずれていると入れないので（level_update）、動いている間はほかに戻す手段が無い。
+    // ★ 低域は毎サンプル更新する（判定しない回も）。条件がそろってから均し始めると、直前の動きを引きずる。
+    {
+        if (!bt_acc_lp_valid_) {
+            for (int i = 0; i < 3; i++) bt_acc_lp_[i] = accel_last_[i];
+            bt_acc_lp_valid_ = true;
+        } else {
+            const float ka = dt / (ESKF_BIGTILT_ACC_TAU_S + dt);
+            for (int i = 0; i < 3; i++) bt_acc_lp_[i] += (accel_last_[i] - bt_acc_lp_[i]) * ka;
+        }
+        const float wn_dps = sqrtf(w[0]*w[0] + w[1]*w[1] + w[2]*w[2]) * 180.0f / (float)M_PI;
+        bt_rate_lp_ += (wn_dps - bt_rate_lp_) * (dt / (ESKF_BIGTILT_RATE_TAU_S + dt));
+
+        // 地上での維持・待機中の維持が働いている間は見ない（そちらが寄せる。G3 はヨーを捨てないことを見ている）
+        const bool maintained = ground_now_ || (!yaw_set_ && static_now_);
+        bool bad = false;
+        float err_deg = 0.0f;
+        if (!maintained && bt_rate_lp_ < ESKF_BIGTILT_MAX_RATE_DPS) {
+            const float fb[3] = { bt_acc_lp_[0] - ba_[0], bt_acc_lp_[1] - ba_[1], bt_acc_lp_[2] - ba_[2] };
+            const float fn = sqrtf(fb[0]*fb[0] + fb[1]*fb[1] + fb[2]*fb[2]);
+            if (fn > 1.0f && fabsf(fn - GRAVITY) <= ESKF_LEVEL_ACCMAG_TOL_MPS2) {
+                float Rn[3][3];
+                quat_to_R(q_, Rn);
+                float c = (Rn[2][0]*fb[0] + Rn[2][1]*fb[1] + Rn[2][2]*fb[2]) / fn;   // 推定の上向きとのなす角の cos
+                if (c > 1.0f) c = 1.0f;
+                if (c < -1.0f) c = -1.0f;
+                err_deg = acosf(c) * 180.0f / (float)M_PI;
+                bad = (err_deg >= ESKF_BIGTILT_MIN_DEG);
+            }
+        }
+        if (!bad) {
+            bt_since_us_ = 0;
+        } else if (bt_since_us_ == 0) {
+            bt_since_us_ = t_us ? t_us : 1;
+        } else if ((uint32_t)(t_us - bt_since_us_) >= ESKF_BIGTILT_HOLD_US) {
+            relevel_big_tilt(bt_acc_lp_, err_deg);
+            bt_since_us_ = 0;
+        }
+    }
 
     // ---- 平均ピッチと直進中のロール自動トリムを更新 ----
     // ここは公称状態が更新された後に呼ぶ（共分散の計算とは独立）。
@@ -1150,6 +1259,37 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         return;                     // この回は観測として使わない（速度は直接入れた）
     }
 
+    // ---- 大きな傾きを置き直したあとは、保った方位を航跡で確かめてから観測に入れる ----
+    // ★ 理由と数値は settings.h の ESKF_BIGTILT_YAW_CHECK_DEG。ずれた方位のまま速度観測を入れると、
+    //   フィルタはロール・ピッチを回して合わせに行く（上の yaw_set_ の説明と同じ）。確かめ終わるまでは入れない。
+    //   止まっている間は方位が航跡から分からないので待つ。
+    if (yaw_suspect_) {
+        if (sAcc > ESKF_SACC_MAX) return;
+        const float sp = sqrtf(z[0]*z[0] + z[1]*z[1]);
+        if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) { yaw_check_arm_ = 0; return; }
+        if (++yaw_check_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;   // 単発の化けで判断しない
+        float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
+        if (trk < 0.0f) trk += 360.0f;
+        float r, p, y;
+        euler_from_state(r, p, y);
+        float d = trk - y;
+        while (d >  180.0f) d -= 360.0f;
+        while (d < -180.0f) d += 360.0f;
+        yaw_suspect_   = false;
+        yaw_check_diff_ = d;
+        if (fabsf(d) > ESKF_BIGTILT_YAW_CHECK_DEG) {
+            // 方位を保ったのが外れていた（ひっくり返った推定など）。航跡で入れ直し、速度も GNSS の値にする（ヨーを入れたときと同じ）
+            init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
+            v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+            yaw_check_event_ = 2;
+            return;                 // この回は観測として使わない（速度は直接入れた）
+        }
+        // 保った方位をそのまま使い（航跡では上書きしない）、この測位から観測に入れる。
+        // ★ ここで v_ を GNSS の値に置き換えないこと。置き換えると速度の残差が無くなり、方位が直るのが遅れる
+        //   （11/11 の再現で、トンネルを出た直後のずれが +3.6 度 → −10 度に悪化した）。
+        yaw_check_event_ = 1;
+    }
+
     // 観測ノイズ。sAcc をそのまま使うが、極端に小さいと過信するので下限を置く。
     float r = sAcc;
     if (r < ESKF_SACC_MIN) r = ESKF_SACC_MIN;
@@ -1396,6 +1536,21 @@ uint32_t attitude_get_gnss_updates()     { return gnss_updates_; }
 bool     attitude_gnss_vel_fresh()       { return gnss_vel_fresh(); }
 uint32_t attitude_get_level_updates()    { return level_updates_; }
 uint32_t attitude_get_ground_relevels()  { return ground_relevels_; }
+uint32_t attitude_get_bigtilt_relevels() { return bigtilt_relevels_; }
+bool attitude_take_bigtilt_event(float &err_deg, bool &yaw_kept) {
+    if (!bigtilt_event_) return false;
+    bigtilt_event_ = false;
+    err_deg = bigtilt_event_deg_;
+    yaw_kept = bigtilt_event_yaw_kept_;
+    return true;
+}
+bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset) {
+    if (yaw_check_event_ == 0) return false;
+    reset = (yaw_check_event_ == 2);
+    diff_deg = yaw_check_diff_;
+    yaw_check_event_ = 0;
+    return true;
+}
 
 float attitude_get_static_secs() {
     if (!static_now_) return 0.0f;

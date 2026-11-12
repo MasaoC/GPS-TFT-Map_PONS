@@ -1,7 +1,7 @@
 # 充電中のバッテリー残量(%)・残り時間推定 仕様書
 
 > 対象ブランチ: **`PONSv7.1`**（RP2350B + 外付け SCH16T + 自作電源回路）  
-> 作成日: 2026-10-29（ハードウェア・電気特性レビュー反映版）  
+> 作成日: 2026-10-29（ハードウェア・電気特性レビュー反映版）。2026-11-11 に実機の log.txt で定数を測り直した（§4・§7.3）  
 > 関連ドキュメント: [docs/pons_power.md](pons_power.md) / [settings.h](../settings.h)
 
 ---
@@ -50,6 +50,8 @@ flowchart LR
 ## 3. プロの視点による 4 つの落とし穴（見落としやすい物理現象）と対策
 
 ### 落とし穴 ①: ADC 測定ノードにおける CV モード突入電圧と電流減衰（BATPWR の挙動）
+> ★ この節の 75mV・4.125V・81% は回路からの見積もり。実機では CC の差が 112mV、CV に入るのは BATPWR 4.088V だった（§7.3）。考え方（中点電位で CC と CV が段差なくつながる）はそのまま使っている。
+
 - **物理現象**:
   - MCP73831 は自身のピン 3（$V_{U5}$）を監視して 4.20V を調定する（ケルビン接続ではない）。
   - 303mA 充電時、上流の F1（約 $0.25\Omega$）で約 $75\text{mV}$ の電圧降下が起きる。
@@ -99,84 +101,100 @@ flowchart LR
 
 ## 4. 適切かつシンプルな推奨アルゴリズム（決定版: 完全ステートレス物理モデル）
 
-Flash へのアクセスはもちろん、タイマーや状態変数（`t_cv_start` 等）の保存すら一切不要な **「完全ステートレス（純粋関数）物理モデル」** を採用する（実コード量は 25 行程度）。
+Flash へのアクセスはもちろん、タイマーや状態変数（`t_cv_start` 等）の保存すら一切不要な **「完全ステートレス（純粋関数）物理モデル」** を採用する。
+定数は [settings.h](../settings.h) の `CHG_*` に 1 か所だけ置き、実装は [power.cpp](../power.cpp)。
+
+> ★ **2026-11-11 に実機の測定で定数を変えた**（§7.3）。それまでは回路からの見積もり（CC の差 75mV・CV は 4.125V から）で、
+> **USB を抜くと % が 8〜10% 下がっていた**。あわせて、**充電中の % を「いま USB を抜いたら出る %」に合わせる**ようにした
+> （§4.2。電池のときの % は負荷のかかった電圧をそのまま換算しているため）。
 
 ```mermaid
 flowchart TD
-    A["USB 接続中 (SW ON)"] --> B{"V_BATPWR < 4.125V ?"}
-    B -->|"Yes (CC フェーズ: 0%〜約81%)"| C["V_cell = V_BATPWR - 0.075V"]
-    C --> C1["SoC = battery_percent(V_cell)"]
-    C --> C2["残り時間 = (80 - SoC) × 1.7分 + 45分"]
-    
-    B -->|"No (CV フェーズ: 約81%〜100%)"| D["V_cell = min(2 × V_BATPWR - 4.20V, 4.20V)"]
-    D --> D1["SoC = battery_percent(V_cell)"]
-    D --> D2["残り時間 = (100 - SoC) × 2.25分"]
-    
-    C1 --> E{"SoC >= 100% ?"}
-    D1 --> E
+    A["USB 接続中 (SW ON)"] --> B{"V_BATPWR < 4.088V ?"}
+    B -->|"Yes (CC フェーズ: 0%〜約68%)"| C["V_cell = V_BATPWR - 0.112V"]
+    B -->|"No (CV フェーズ: 約68%〜)"| D["V_cell = min(2 × V_BATPWR - 4.20V, 4.20V)"]
+    C --> P["SoC = battery_percent(V_cell - 0.030V)"]
+    D --> P
+    P --> R["残り時間: CC = (68 - SoC) × 1.7分 + 45分 / CV = (100 - SoC) × 45分 ÷ 32"]
+    P --> E{"BATPWR >= 4.190V ?（満充電ラッチ）"}
     E -->|"Yes"| F["【満充電】 FULL (100%) / 残り 0分"]
 ```
 
+| 定数（settings.h） | 値 | 意味 |
+|---|---|---|
+| `CHG_REG_V` | 4.20V | 充電 IC（MCP73831）の調定電圧 |
+| `CHG_CC_DROP_V` | 0.112V | CC 中の BATPWR − セルの開放電圧（充電電流 × 下流の抵抗）。見積もりは 75mV だった |
+| `CHG_LOAD_DROP_V` | 0.030V | 電池だけで動くときのセルの開放電圧 − BATPWR（本体の電流 × 下流の抵抗） |
+| `CHG_CV_START_V` | 4.088V | CV に入る BATPWR（`CHG_REG_V − CHG_CC_DROP_V`。上流と下流の抵抗を等しいとみなす） |
+| `CHG_CC_MIN_PER_PCT` | 1.7 分 | CC 中、残量が 1% 進む時間（303mA・約 850mAh） |
+| `CHG_CV_MIN` | 45 分 | CV に入ってから満充電まで（見積もり。実機の `CHG FULL` はまだ無い） |
+
 ### 4.1 セル開放電圧（$V_{cell}$）の物理的逆算式
-`BATPWR` の測定値から、以下の完全連続な数式で真の電池セル電圧 $V_{cell}$ を推計する：
+`BATPWR` の測定値から、以下の連続な数式でセルの開放電圧 $V_{cell}$ を推計する（`power_estimated_cell_voltage()`。log.txt の `cell=`）：
 
 $$
 V_{cell} = 
 \begin{cases}
-V_{BATPWR} - 0.075\text{V} & (V_{BATPWR} < 4.125\text{V} \quad \text{【CC フェーズ】}) \\
-2 \times V_{BATPWR} - 4.200\text{V} & (V_{BATPWR} \ge 4.125\text{V} \quad \text{【CV フェーズ】})
+V_{BATPWR} - 0.112\text{V} & (V_{BATPWR} < 4.088\text{V} \quad \text{【CC フェーズ】}) \\
+2 \times V_{BATPWR} - 4.200\text{V} & (V_{BATPWR} \ge 4.088\text{V} \quad \text{【CV フェーズ】})
 \end{cases}
 $$
 
-> [!NOTE] 境界値（4.125V）における完全な数学的・物理的一致
-> - CC 側から接近: $4.125\text{V} - 0.075\text{V} = \mathbf{4.050\text{V}}$
-> - CV 側から接近: $2 \times 4.125\text{V} - 4.200\text{V} = 8.250\text{V} - 4.200\text{V} = \mathbf{4.050\text{V}}$
-> 
-> 境界において **1mV の段差もなく滑らかに一致** する。このため、モード切替時の画面チラつきや数値のジャンプが物理的に発生しない。
+> [!NOTE] 境界値（4.088V）での一致
+> - CC 側から: $4.088\text{V} - 0.112\text{V} = \mathbf{3.976\text{V}}$
+> - CV 側から: $2 \times 4.088\text{V} - 4.200\text{V} = \mathbf{3.976\text{V}}$
+>
+> `CHG_CV_START_V` を `CHG_REG_V − CHG_CC_DROP_V` と決めているので、`CHG_CC_DROP_V` を変えても境界で段差は出ない。
 
-### 4.2 残量 % の算出
-推計した $V_{cell}$ を、放電時と全く同一の既存関数 [`battery_percent(V_cell)`](file:///Users/masaochiguchi/Documents/Arduino/GPS_TFT_map-PONSv7.1/GPS_TFT_map/display_tft.cpp#L4566) に渡すだけ。
-- $V_{cell} = 3.40\text{V} \to 0\%$
-- $V_{cell} = 3.80\text{V} \to 50\%$
-- $V_{cell} = 4.05\text{V} \to 81\%$（CV 突入点）
-- $V_{cell} = 4.20\text{V} \to 100\%$（満充電）
+### 4.2 残量 % の算出（「いま USB を抜いたら出る %」）
+電池だけで動いているときの % は、`BATPWR`（本体の電流で $V_{cell}$ より少し下がった電圧）をそのまま
+[`battery_percent()`](../display_tft.cpp)（3.40V → 0%、4.20V → 100% の直線）にかけている。
+充電中も同じ換算にそろえるため、**$V_{cell}$ から `CHG_LOAD_DROP_V`（30mV）を引いてから** `battery_percent()` に渡す（`power_charging_percent()`）。
+
+$$SoC = \text{battery\_percent}(V_{cell} - 0.030\text{V})$$
+
+- CV に入るとき（$V_{cell}$ = 3.976V）: 68%
+- 満充電ラッチの直前（BATPWR 4.190V、$V_{cell}$ = 4.18V）: 93% → ラッチで 100%（FULL）
+- ★ **満充電（FULL、100%）のあとに抜くと、負荷のぶんで 95% 前後に下がるのは残る**（FULL は FULL と出すため。充電途中の段差は無くなった）。
 
 ### 4.3 満充電までの残り時間（推定分）
-- **SoC < 80%（CC フェーズ）**:
-  満充電（約 850mAh）のうち、80% までは 303mA（約 1.7分/%）で直線的に進み、残りの CV 期間は約 45 分要する：
-  $$\text{残り時間 [分]} = (80 - SoC) \times 1.7\text{分} + 45\text{分}$$
-- **SoC $\ge$ 80%（CV フェーズ）**:
-  CV 期間（残り 20% 分）を 45 分かけて指数減衰しながら進む：
-  $$\text{残り時間 [分]} = (100 - SoC) \times 2.25\text{分}$$
-  （※ $SoC = 80\%$ のとき、どちらの式でも **ぴったり 45 分** となり連続性が保たれる）
+CV に入るときの % を $SoC_{cv}$（= 68%）とする（定数から計算するので、定数を変えても境目で連続）。
+- **CC フェーズ**（$SoC < SoC_{cv}$）: CV に入るまで 1.7 分/%、そのあと CV の 45 分
+  $$\text{残り時間 [分]} = (SoC_{cv} - SoC) \times 1.7\text{分} + 45\text{分}$$
+- **CV フェーズ**: CV に入ってから 100% までを 45 分で
+  $$\text{残り時間 [分]} = (100 - SoC) \times \frac{45\text{分}}{100 - SoC_{cv}}$$
+  （$SoC = SoC_{cv}$ のとき、どちらの式でも **ぴったり 45 分**）
+- 2026-11-11 までは CV の境目を 80% に固定していた。% の目盛りが下がったので、境目も定数から出すようにした。
+  CC の途中の残り時間は前より数分短く出る（CV に入る点が前より低い電圧になったため）。
 
-### 4.4 ソフトウェア実装例（power.cpp）
+### 4.4 ソフトウェア実装（power.cpp）
 ```cpp
-// 推定セル電圧 [V]（完全ステートレス）
 float power_estimated_cell_voltage() {
-  float v = get_input_voltage();
-  if (!usb_power_present() || power_sw_off_on_usb()) return v;
-  if (v < 4.125f) {
-    return v - 0.075f;                       // CC フェーズ (下流 IR ドロップ 75mV 減算)
-  } else {
-    return min(2.0f * v - 4.20f, 4.20f);     // CV フェーズ (上流・下流の対称抵抗分圧)
-  }
+  const float v = get_input_voltage();
+  if (!usb_power_present()) return v;
+  if (power_sw_off_on_usb()) return v;          // SW OFF 中は電池経路が切り離されている
+  if (s_chg_full_latched) return CHG_REG_V;
+  if (v < CHG_CV_START_V) return v - CHG_CC_DROP_V;   // CC
+  const float est = 2.0f * v - CHG_REG_V;              // CV（中点電位）
+  return (est > CHG_REG_V) ? CHG_REG_V : est;
 }
 
-// 充電中の残量 % (0〜100)
 int power_charging_percent() {
-  return battery_percent(power_estimated_cell_voltage());
+  if (s_chg_full_latched) return 100;
+  return battery_percent(power_estimated_cell_voltage() - CHG_LOAD_DROP_V);
 }
 
-// 満充電までの残り時間 [分]
+static int charge_cv_start_percent() {
+  return battery_percent(CHG_CV_START_V - CHG_CC_DROP_V - CHG_LOAD_DROP_V);   // 68%
+}
+
 int power_charging_remaining_min() {
-  int pct = power_charging_percent();
+  if (s_chg_full_latched) return 0;
+  const int pct = power_charging_percent();
   if (pct >= 100) return 0;
-  if (pct < 80) {
-    return (int)((80 - pct) * 1.7f + 45.0f);
-  } else {
-    return (int)((100 - pct) * 2.25f);
-  }
+  const int cv_pct = charge_cv_start_percent();
+  if (pct < cv_pct) return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
+  return (int)((100 - pct) * CHG_CV_MIN / (float)(100 - cv_pct));
 }
 ```
 
@@ -260,8 +278,8 @@ int power_charging_remaining_min() {
 ## 6. まとめ（エンジニア視点での評価）
 
 1. **回路の見落としを完全解消**:
-   - F1 が ADC の手前にあり、ADC が中間点（IR ドロップは $165\text{mV}$ ではなく **$75\text{mV}$**）である事実を正確に反映。
-   - CV モード中も電流減衰に伴って `BATPWR` が 4.125V から 4.200V まで上昇する物理対称性（中点電位）を発見し、タイマー不要の完全ステートレスモデル（数式 1 行）を確立。
+   - F1 が ADC の手前にあり、ADC が中間点（IR ドロップは $165\text{mV}$ ではなく、見積もり $75\text{mV}$・実測 **$112\text{mV}$**（§7.3））である事実を反映。
+   - CV モード中も電流減衰に伴って `BATPWR` が 4.088V から 4.200V まで上昇する物理対称性（中点電位）を発見し、タイマー不要の完全ステートレスモデル（数式 1 行）を確立。
    - 途中から USB を挿した時や充電中のマイコン再起動でも、残量 % や残り時間が決して巻き戻らない堅牢性を確保。
 2. **極限までシンプル（KISS）**:
    - Flash 書き換えをゼロにし、マイコン停止リスク・Flash 摩耗を完全排除。
@@ -283,19 +301,48 @@ int power_charging_remaining_min() {
 | :--- | :--- | :--- |
 | **`CHG START`** | USB 接続（SW ON）時 | `120:CHG START: vbus=5.02V raw=3.85V cell=3.78V soc=47% rem=101m T=26.4C`<br>充電開始時の VBUS 電圧、ADC 電圧、逆算セル電圧、残量 %、残り時間、基板温度 |
 | **`CHG [XXm]`** | 充電中 60 秒ごと | `180:CHG [1m]: raw=3.87V cell=3.80V soc=50% rem=96m CC T=28.1C`<br>1 分ごとの電圧上昇、推定残量推移、モード（CC/CV/FULL）、温度 |
-| **`CHG CV ENTER`**| $V_{BATPWR} \ge 4.125\text{V}$ 到達（1 回の充電で 1 回。USB を挿したまま SW を OFF→ON しても出し直さない） | `3240:CHG CV ENTER: raw=4.125V cell=4.05V soc=81% rem=45m t=52m T=36.2C`<br>CV モード突入の瞬間。ここから残り時間が 45 分カウントダウンになる |
+| **`CHG CV ENTER`**| $V_{BATPWR} \ge 4.088\text{V}$（`CHG_CV_START_V`。2026-11-10 までは 4.125V）到達（1 回の充電で 1 回。USB を挿したまま SW を OFF→ON しても出し直さない） | `3240:CHG CV ENTER: raw=4.125V cell=4.05V soc=81% rem=45m t=52m T=36.2C`<br>CV モード突入の瞬間。ここから残り時間が 45 分カウントダウンになる |
 | **`CHG FULL`** | $SoC \ge 100\%$ 到達（同上） | `8640:CHG FULL: raw=4.20V cell=4.20V t=142m T=29.1C`<br>満充電（FULL）判定の到達時刻とトータル所要時間 |
 | **`CHG UNPLUG`** | **USB 抜去直後（約 750ms 後）** | `2700:CHG UNPLUG: chg=4.05V(72%) post=3.97V(71%) dV=80mV t=43m`<br>**最も重要な検証データ**。充電中の $V_{BATPWR}$ から抜去後の実測電池電圧への段差（実測 IR ドロップ $dV$）を記録 |
 
 ### 7.2 検証とパラメータ調整の手順
 
-1. **実測 IR ドロップ（$dV$）の検証**:
-   - `CHG UNPLUG` の `dV=XXmV` を確認する。
-   - **判定基準**:
-     - $dV$ が $70\sim 85\text{mV}$ であれば、モデルの仮定値（$75\text{mV}$ / $0.075\text{f}$）と極めて良好に一致している。
-     - もし経年劣化した LiPo 電池や接触抵抗の高いコネクタで $dV$ が $120\sim 140\text{mV}$ など有意に大きい場合は、[`power.cpp`](../power.cpp) の `v - 0.075f` を実測値（例: `0.110f`）に変更することで精度をジャストフィットできる。
-2. **CV 突入電圧（$4.125\text{V}$）の検証**:
-   - 60 秒ログの $V_{BATPWR}$ の上昇ペースを確認する。
-   - 電圧上昇率 $dV/dt$ が急激に鈍化し始めた点が `4.12V〜4.13V` であれば、F1（ヒューズ）の定数も完全に正当化される。
+1. **USB を抜いたときの段差の検証（いちばん大事）**:
+   - `CHG UNPLUG` の `chg=…V(XX%)` と `post=…V(YY%)` の **% が同じなら合っている**（chg の % は「抜いたら出る %」の予想）。
+   - ずれが CC（4.09V 未満）でそろって出るなら `CHG_CC_DROP_V` と `CHG_LOAD_DROP_V` の和を、
+     CV（4.09V 以上）だけで出るなら `CHG_LOAD_DROP_V` を直す。CC の段差 `dV` ＝ 和（いまは 142mV）、
+     CV の段差 ＝ $(4.20 - V_{BATPWR}) + $ `CHG_LOAD_DROP_V`。
+   - `CHG_LOAD_DROP_V` は本体の電流で変わる（バックライトの明るさなど）。測った 19 件は bl=30〜45% のとき。
+2. **CV 突入電圧の検証**:
+   - `CHG_CV_START_V` は `CHG_REG_V − CHG_CC_DROP_V` で決まる（上流と下流の抵抗を等しいとみなした）。
+     `CHG UNPLUG` の段差が小さくなり始める電圧（いまは 4.09V 付近）が、実際に CV に入る点。
 3. **熱ダレ（Thermal Foldback）の確認**:
    - `T=XX.XC`（基板温度）が夏場などに $40\sim 45^\circ\text{C}$ を超えている場合、MCP73831 の電流制限により上昇ペースが落ちる。温度ログと $dV/dt$ を照合することで、充電が遅い原因が「電池の異常」か「熱保護」かを即座に切り分けられる。
+   - 起動した時点で USB がつながっていたときの `CHG START` は `T=0.0C` になる（気圧センサーの温度がまだ無い。ログだけの話）。
+
+### 7.3 2026-11-11 の測り直し（v7.1 実機・log.txt の CHG UNPLUG 19 件、2026-11-04〜11）
+
+抜く前の電圧（chg）と抜いて 750ms 後の電圧（post）、そのときの % の比べ。**旧** は 75mV・4.125V の式、**新** はいまの式。
+
+| chg (V) | post (V) | 段差 (mV) | post の % | 旧の % | 新の % |
+|---|---|---|---|---|---|
+| 3.80 | 3.67 | 135 | 33 | 40 | 32 |
+| 3.85 | 3.71 | 139 | 38 | 46 | 38 |
+| 3.89 | 3.74 | 147 | 42 | 51 | 43 |
+| 4.01 | 3.87〜3.88 | 136 | 59 | 66 | 58 |
+| 4.04 | 3.89 | 148〜152 | 60 | 70 | 62 |
+| 4.05 | 3.91 | 144 | 63 | 71 | 63 |
+| 4.06 | 3.92 | 135 | 65 | 73 | 64 |
+| 4.10 | 3.98 | 125 | 72 | 78 | 71 |
+| 4.11 | 3.99 | 118〜123 | 73〜74 | 79 | 73 |
+| 4.12 | 4.00 | 123 | 74 | 80 | 76 |
+| 4.13 | 4.03〜4.04 | 87〜100 | 78〜80 | 82 | 78 |
+| 4.16 | 4.08 | 76 | 85 | 90 | 86 |
+
+- 旧の式は平均 +5.9%（最大 +10%）高く出ていた。新の式は 18 件が ±2% に収まった。
+- 外れた 1 件（chg 4.11V → post 4.05V、段差 52mV、`t=0m`）は挿してすぐ抜いた回で、抜いた後のほうが高かったので除いた。
+- 段差は CC では電圧によらず 135〜152mV でほぼ一定、4.10V あたりから小さくなる。CC の一定部分を
+  「充電電流のぶん（112mV）＋本体の電流のぶん（30mV）」に分け、CV の段差 $(4.20 - V_{BATPWR}) + 30\text{mV}$ が
+  4.10〜4.16V の点に合うように分け方を決めた。
+- 当初の見積もり（F1 で 75mV）より充電電流のぶんが大きいのは、F1（PTC）の抵抗が 0.25Ω より大きいか、
+  経路の抵抗（コネクタ・保護 FET）が見積もりより大きいため。どちらかは測っていない。

@@ -11,6 +11,8 @@
 //     戻り値（DEAD / WAIT / SERVICED）で Kalman predict へ進むかを決める
 //   - サンプル到着時 → predict（状態を比力で時間更新）
 //   - 気圧高度到着時 → update（get_airdata_altitude() で観測修正）
+//   - 鉛直加速度がありえない値のあいだ（姿勢が壊れたときなど）は加速度を使わず、気圧だけで predict し、
+//     加速度バイアスも学ばない（acc_guard_step / kf_predict_baro_only。settings.h の KF_ACC_GUARD_*。2026-11-11〜）
 //
 // ■ 座標系
 //   imu_feed_accel() が受け取るのはセンサー軸の比力（重力込み）。
@@ -37,7 +39,7 @@
 //     P = (I - K*H)*P  （+ 対称化処理）
 //
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/10/23
+// Updated : 2026/11/11
 // ============================================================
 
 #include <Arduino.h>
@@ -234,6 +236,89 @@ static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
     float q_vel_eff = kf_q_vel + KF_HORIZ_ACCEL_GAIN * horiz_accel_m_s2 * horiz_accel_m_s2;
     kf_P[1][1] += q_vel_eff;
     kf_P[2][2] += kf_q_bias;
+}
+
+// ============================================================
+// 加速度を使わない予測（鉛直加速度が信用できないあいだ。settings.h の KF_ACC_GUARD_*）
+// ============================================================
+// 恒速モデルで、**バイアスは止める**（速度にも効かせない）。
+//   F = [[1, dt, 0], [0, 1, 0], [0, 0, 1]]、Q = diag(0, q_vel, 0)
+// ★ 入るときに acc_guard_step() がバイアスと高度・速度の相関（P[0][2] / P[1][2]）を 0 にしてある。この F では
+//   相関が育たないので、気圧と GNSS の観測のゲイン K[2] も 0 のまま＝**バイアスは観測でも動かない**。
+// ★ IMU が居ないときの恒速モデル（imu_update の IMU_DRV_DEAD）は kf_predict(0, dt) で、こちらとは別。
+static void kf_predict_baro_only(float dt) {
+    kf_x[0] += kf_x[1] * dt;
+    float A[3][3];
+    for (int j = 0; j < 3; j++) {
+        A[0][j] = kf_P[0][j] + dt * kf_P[1][j];       // F[0] = [1, dt, 0]
+        A[1][j] = kf_P[1][j];                           // F[1] = [0, 1, 0]
+        A[2][j] = kf_P[2][j];                           // F[2] = [0, 0, 1]
+    }
+    for (int i = 0; i < 3; i++) {
+        kf_P[i][0] = A[i][0] + dt * A[i][1];
+        kf_P[i][1] = A[i][1];
+        kf_P[i][2] = A[i][2];
+    }
+    kf_P[1][1] += kf_q_vel;
+}
+
+// ============================================================
+// 鉛直加速度が信用できるか（settings.h の KF_ACC_GUARD_*）
+// ============================================================
+// predict の 1 回ごと（30ms）に呼ぶ。false = 加速度を使わず気圧だけで回す。
+// ★ 姿勢が壊れると鉛直加速度が偽の値になり、V/S とバイアスを引きずる（2026-11-11 のトンネル）。理由は settings.h。
+static bool     s_guard_on      = false;
+static float    s_guard_lp      = 0.0f;     // 鉛直加速度の 1 秒の低域 [m/s²]
+static uint8_t  s_guard_fast_n  = 0;        // |a| が速い条件を超えた回の連続数
+static uint32_t s_guard_calm_us = 0;        // 戻る条件がそろい始めた時刻。0 = そろっていない
+static uint32_t s_guard_on_ms   = 0;        // 入った時刻（ログ用）
+static uint32_t s_guard_log_ms  = 0;        // 入ったことを最後にログへ書いた時刻（10 秒に 1 回まで）
+static uint16_t s_guard_quiet_n = 0;        // ログを省いた回数
+static bool     s_guard_logged  = false;    // 今回入ったことをログへ書いたか（戻ったときも書く）
+
+static bool acc_guard_step(float a_k, float dt) {
+    s_guard_lp += (a_k - s_guard_lp) * (dt / (KF_ACC_GUARD_TAU_S + dt));
+    const bool fast_hit = fabsf(a_k) > KF_ACC_GUARD_FAST_MPS2;
+    if (fast_hit) { if (s_guard_fast_n < 255) s_guard_fast_n++; }
+    else            s_guard_fast_n = 0;
+
+    if (!s_guard_on) {
+        if (s_guard_fast_n >= KF_ACC_GUARD_FAST_STEPS || fabsf(s_guard_lp) > KF_ACC_GUARD_SLOW_MPS2) {
+            s_guard_on      = true;
+            s_guard_calm_us = 0;
+            s_guard_on_ms   = millis();
+            // バイアスを観測から切り離す（kf_predict_baro_only のコメント）
+            kf_P[0][2] = kf_P[2][0] = 0.0f;
+            kf_P[1][2] = kf_P[2][1] = 0.0f;
+            // 持ち直している間などは出入りを繰り返すので、ログは 10 秒に 1 回まで（省いた回数を次に書く）
+            const uint32_t now_ms = millis();
+            if (s_guard_log_ms == 0 || now_ms - s_guard_log_ms >= 10000UL) {
+                s_guard_log_ms = now_ms ? now_ms : 1;
+                s_guard_logged = true;
+                enqueueTask(createLogSdfTask("VARIO: IMU accel ignored (a=%+.1f lp=%+.1f m/s2, bias %+.2f kept) -> baro only, +%u",
+                                             a_k, s_guard_lp, kf_x[2], (unsigned)s_guard_quiet_n));
+                s_guard_quiet_n = 0;
+            } else {
+                s_guard_logged = false;
+                if (s_guard_quiet_n < 0xFFFF) s_guard_quiet_n++;
+            }
+        }
+    } else {
+        const bool calm = (fabsf(s_guard_lp) < KF_ACC_GUARD_CLEAR_MPS2) && !fast_hit;
+        const uint32_t now_us = time_us_32();
+        if (!calm) {
+            s_guard_calm_us = 0;
+        } else if (s_guard_calm_us == 0) {
+            s_guard_calm_us = now_us ? now_us : 1;
+        } else if ((uint32_t)(now_us - s_guard_calm_us) >= KF_ACC_GUARD_CLEAR_US) {
+            s_guard_on = false;
+            s_guard_calm_us = 0;
+            if (s_guard_logged)
+                enqueueTask(createLogSdfTask("VARIO: IMU accel back after %.1fs",
+                                             (millis() - s_guard_on_ms) * 0.001f));
+        }
+    }
+    return !s_guard_on;
 }
 
 
@@ -729,7 +814,10 @@ void imu_update() {
     if (dt <= 0.0f || dt > 0.5f) return;
 
     // Kalman 予測ステップを実行（水平加速度を渡して Q_vel を動的増幅）
-    kf_predict(a_k, dt, horiz_accel);
+    // ★ 鉛直加速度がありえない値のあいだは加速度を使わず、バイアスも学ばない（settings.h の KF_ACC_GUARD_*）。
+    //   判定は使わない間も毎回 a_k で続ける（戻る条件を見るため）。
+    if (acc_guard_step(a_k, dt)) kf_predict(a_k, dt, horiz_accel);
+    else                         kf_predict_baro_only(dt);
 
     // 出力を更新（display 側から参照される volatile 変数）
     _imu_az           = a_k;

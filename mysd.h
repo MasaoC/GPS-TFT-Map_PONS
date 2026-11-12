@@ -297,6 +297,7 @@
           } rtcBkArgs;
           struct {                           // For TASK_SERIAL_GET
               char filename[64];             // 送信対象ファイル名（相対パス含む）
+              uint32_t tail;                 // 0 = 全部。それ以外は末尾のこのバイト数だけ（行の頭から。PONS:GETTAIL）
           } serialGetArgs;
       };
   } Task;
@@ -348,9 +349,9 @@
   void gnss_dbd_load_sd();
   void gnss_dbd_save_sd();
   Task createSerialListTask();
-  Task createSerialGetTask(const char* filename);
+  Task createSerialGetTask(const char* filename, uint32_t tail = 0);   // tail: 末尾だけ送る [B]（0 = 全部）
   void serial_list_csv_files();
-  void serial_send_csv_file(const char* filename);
+  void serial_send_csv_file(const char* filename, uint32_t tail = 0);
 
   // Web Serial 通信状態フラグ（Core0 / Core1 共有）
   extern volatile bool webserial_connected;
