@@ -564,7 +564,7 @@ bool e220_send(const uint8_t* payload, uint8_t n) {
     //   （docs/pons_link.md §2）。上位は 32 バイトのフレームで送るが、どこかの経路で 65 バイトを
     //   送ってしまうのをここで最後に塞ぐ。s_ch は write_config() が書いたチャンネル。
     if (s_ch > E220_CH_MAX && n > E220_UPPER_MAX_PAYLOAD) return false;
-    if (s_asleep) e220_wake();
+    if (s_asleep) e220_wake();   // 保険（送信は link_tx_tick() が e220_wake_ready() を通してから呼ぶ）
 
     // ★ **通常(Fixed-block)送信モード**なので、ペイロードの前に
     //   宛先アドレス 2 バイト + 宛先チャンネル 1 バイトを付ける（6.6 / 図 24）。
@@ -711,7 +711,7 @@ void e220_sleep() {
 }
 
 // ---- ノンブロッキング起床 ----
-// ★ 分ける理由: e220_wake() の wait_aux_idle(50) は **毎秒** Core0 を止める。
+// ★ 分ける理由: e220_wake() は起きるまで（最大 50ms）Core0 を止めるので、毎秒の送信で使うと **毎秒** 止まる。
 //   テレメトリは 1Hz なので、待たずに次の周回で見に行けば止める必要が無い。
 // ★ s_asleep は **AUX が High になるまで落とさない**。落としてしまうと
 //   e220_send() が「起きている」と判断して、セルフチェック中に書き込み、
@@ -751,27 +751,36 @@ bool e220_wake_ready() {
     return true;
 }
 
-// ★★ **この関数の直後に UART へ書かないこと。** ここは切替の 2ms 後に AUX を 1 回見るだけなので、
-//   セルフチェックが**始まる前**の High（E220_WAKE_SETTLE_MS のコメント）を見落とし得る。
-//   いまの呼び出し元は、直後に mode 3 へ潜る（link_probe_module）・受信を待つ（link_apply_power_state）・
-//   500ms 待ってから雑音を測る（link_watch_module）だけで、書き込みは来ない（2026-11-10 に確かめた）。
-//   電波を出す e220_send() は link_tx_tick() が e220_wake_ready() を通してから呼ぶ
-//   （e220_send() の中の `if (s_asleep) e220_wake();` は保険で、いまは通らない）。
-//   起床の直後に書き込む経路を足すときは e220_wake_begin() / e220_wake_ready() を通すこと。
+// ブロッキング版の起床。戻ったら、すぐ UART へ書いても mode 3 へ潜ってもよい。
+// ★ **起きたかの判定は e220_wake_ready() と同じものを使う**（2026-11-11〜。BUG-59。v7.1 と同じ直し）。
+//   データシート 5.4 の 4 番と図 36: 復帰直後はセルフチェック中で AUX が Low、終わると High。
+//   ただし切替の直後は、セルフチェックが**始まる前**で AUX がまだ High のことがある
+//   （E220_WAKE_SETTLE_MS のコメント）。以前は「切替の 2ms 後から AUX が High になるまで待つ」だけで、
+//   その High を「起きた」と見誤り得た（直後の書き込みは黙って捨てられ、mode 3 への切替は
+//   セルフチェック中に入る）。いまは Low を見てから High に戻るか、Low を見ないまま
+//   E220_WAKE_SETTLE_MS（20ms）経つまで待つ。
+// ★ Core0 が止まるのは最大 E220_WAKE_BLOCK_MAX_MS。その間も BNO085 を引き取る（wait_aux_idle と同じ）。
+//   毎秒の送信はこれを使わず、e220_wake_begin() / e220_wake_ready() で待たずに起こす（link_tx_tick）。
+// ★ 打ち切っても起きた扱いにする（以前と同じ。AUX が Low に張り付いたモジュールで固まらないように）。
+#define E220_WAKE_BLOCK_MAX_MS 50
 void e220_wake() {
-    s_waking = false;      // ブロッキング版が呼ばれたら非同期の途中状態は捨てる
-    s_wakeSawLow = false;
-    if (!s_asleep) return;
-    digitalWrite(E220_MODE_PIN, MODE_NORMAL);
-    delay(2);          // 切替は 1ms（データシート 5.3）
-    // ★ **ここで AUX の立ち上がりを待つ。** データシート 5.4 の 4 番と図 36:
-    //   「電源投入時や Config/Deep sleep モードからの復帰時、初期化が完了すると
-    //     AUX ピンが High レベルになります」
-    //   復帰直後はセルフチェック中で AUX が Low。待たずに書くと、
-    //   その書き込みが取りこぼされる。実機で `AUX stuck LOW (10ms timeout)` が
-    //   起床直後の送信で毎回出ていたのはこれ。
-    wait_aux_idle(50);
-    s_asleep = false;
+    if (!s_asleep) { s_waking = false; s_wakeSawLow = false; return; }
+    // ノンブロッキングの起床の途中で呼ばれたら、その続きとして待つ（ピンは e220_wake_begin() で
+    // mode 0 にしてあり、s_wakeMs はそのときの時刻なので、数え直さなくてよい）。
+    if (!s_waking) e220_wake_begin();
+    const uint32_t t0 = millis();
+    while (!e220_wake_ready()) {
+        imu_service_if_due();
+        if (millis() - t0 > E220_WAKE_BLOCK_MAX_MS) {
+            E220_DBG("E220 wake: not ready in %ums (sawLow=%d)",
+                     (unsigned)E220_WAKE_BLOCK_MAX_MS, (int)s_wakeSawLow);
+            s_asleep     = false;
+            s_waking     = false;
+            s_wakeSawLow = false;
+            return;
+        }
+    }
+    delay(2);   // モード切替は AUX が High になってから 2ms 後が安全（5.3。wait_aux_idle と同じ）
 }
 
 // 生存確認。**mode 3 へ潜ってレジスタを 1 バイト読む。**電波は出さない。

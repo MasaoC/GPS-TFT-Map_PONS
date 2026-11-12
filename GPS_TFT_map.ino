@@ -1483,6 +1483,30 @@ static void handle_serial_command(const char *raw_cmd) {
       return;
     }
     enqueueTask(createSerialGetTask(filename));
+  } else if (strncmp(cmd, "PONS:GETTAIL,", 13) == 0) {
+    // 末尾だけ送る: "PONS:GETTAIL,<バイト数>,<パス>"（2026-11-11〜）。伸び続ける log.txt を、最新の分だけ速く取るため。
+    // ★ バイト数を先に置く（FAT のファイル名には , が使えるので、パスは行の最後まで）。
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+      Serial.println("PONS:ERROR,BUSY");
+      return;
+    }
+    const char *p = cmd + 13;
+    uint32_t tail = 0;
+    int digits = 0;
+    while (*p >= '0' && *p <= '9' && digits < 10) {
+      tail = tail * 10 + (uint32_t)(*p - '0');
+      p++;
+      digits++;
+    }
+    if (digits == 0 || *p != ',' || p[1] == '\0') {
+      Serial.println("PONS:ERROR,INVALID_FILENAME");
+      return;
+    }
+    enqueueTask(createSerialGetTask(p + 1, tail));
   } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
     webserial_cancel_requested = true;
     // 転送タスク実行中でなければ即座に応答（転送中なら Core1
@@ -1805,7 +1829,7 @@ void loop1() {
         serial_list_csv_files();
         break;
       case TASK_SERIAL_GET:
-        serial_send_csv_file(currentTask.serialGetArgs.filename);
+        serial_send_csv_file(currentTask.serialGetArgs.filename, currentTask.serialGetArgs.tail);
         break;
       case TASK_SAVE_RTCBK:
         rtc_backup_save_sd(currentTask.rtcBkArgs.hours, currentTask.rtcBkArgs.utc);

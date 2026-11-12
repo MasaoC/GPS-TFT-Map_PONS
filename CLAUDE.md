@@ -242,6 +242,10 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   （落とすと最初の 1 バイトが化け、画面が「Module NO RESPONSE」になる）/
   **状態レジスタは Strict Mode でしか読めない**（`0x09` bit6 は不揮発。ver.1 互換の
   `C0 C1 C2 C3 00 02` は**使ってはいけない** — 返事が無く、代わりに**電波が出る**）。
+- **log.txt の毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG [..m]:`）と `BOOT PONS` / `GNSS TIME:` / `GNSS FIXED` の形を変えたら、
+  Flight Viewer の log.txt の表示（`tools/flight_viewer/index.html` の `logScanLine` / `LOG_CATS`）も合わせる。**
+  ビューアは正規表現で拾っているので、読めなくなった値は**グラフと起動のまとめから黙って消える**（2026-11-11〜）。
+  v7 の機体も v7.1 のリポジトリのビューアで見るので、両ブランチの行の形をそろえておく。
 - **GNSS の UART へ書く前に `gnss_dbd_finish_tx()` を呼ぶ。** SD に置いた航法データベース（gnss_dbd.cpp）は、
   Core0 を待たせないようにフレームを UART の送信 FIFO が空いた分だけ少しずつ書いている。書きかけのところへ別のコマンドを
   書くと、**両方とも GNSS に黙って捨てられる**。gnss.cpp の `ubx_send_packet()`（`gnss_ubx_send()`）と NAV-SAT のレート切替、

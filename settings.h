@@ -6,7 +6,7 @@
 //           デバッグフラグ、GNSS/TFT種別選択、ハードウェアピン番号、
 //           画面モード定数、バッテリー計算式など全設定の司令塔。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/11
 // ============================================================
 //====== 設定画面 =======
 #include <stdint.h>  // uint32_t 等の整数型定義（DEBUG_STACK マクロで使用）
@@ -21,7 +21,7 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261107
+#define BUILDDATE 20261111
 #define BUILDVERSION "0.999v7"
 
 // ============================================================
