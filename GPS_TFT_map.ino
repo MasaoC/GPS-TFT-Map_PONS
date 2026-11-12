@@ -1799,6 +1799,7 @@ static void setting_timeout_tick() {
 //   画面を出したまま発進すると、**地図が見えないまま飛ぶ**ことになっていた（警報は鳴るが場所が分からない）。
 // ★ 速度は自機の GNSS（gnss_get_own_fix）で見る。デモ・リプレイの仮の速度では戻さない。
 // ★ 受信モードと PC 接続の画面は対象外（settings.h の SCREEN_MOVING_EXIT_*）。
+// ★ ボタン操作中は戻さない。最後の操作から SCREEN_MOVING_EXIT_IDLE_MS たってから計時する（2026-11-12〜）。
 // ★ 各画面の「戻る」と同じ後始末をしてから、放置タイムアウトと同じ経路（設定を保存）で地図へ戻す。
 //   音も放置タイムアウトと同じ降下ペア（勝手に閉じた、の合図）。
 static void screen_moving_exit_tick() {
@@ -1808,7 +1809,9 @@ static void screen_moving_exit_tick() {
                        link_get_mode() != LINK_MODE_RX;
   const bool moving = applies && get_gnss_connection() &&
                       gnss_get_own_fix(lat, lon, gs, trk) && gs >= SCREEN_MOVING_EXIT_GS_MPS;
-  if (!moving) { s_since = 0; return; }
+  // ★ ボタン操作中は戻さない（SCREEN_MOVING_EXIT_IDLE_MS）。操作があれば HOLD の計時もやり直す。
+  const bool idle = millis() - last_user_input_ms >= SCREEN_MOVING_EXIT_IDLE_MS;
+  if (!moving || !idle) { s_since = 0; return; }
   const uint32_t now = millis();
   if (s_since == 0) { s_since = now ? now : 1; return; }
   if (now - s_since < SCREEN_MOVING_EXIT_HOLD_MS) return;

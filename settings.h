@@ -472,6 +472,10 @@
 // ★ 受信モード（ボート）と PC 接続の画面は対象外。ボートは WIRELESS 画面を見ながら機体を追うことがある。
 #define SCREEN_MOVING_EXIT_GS_MPS   3.0f
 #define SCREEN_MOVING_EXIT_HOLD_MS  5000UL
+// 動いていても、最後のボタン操作からこの時間たつまでは戻さない（2026-11-12〜）。
+// それまでは操作中でも 5 秒で戻され、運搬中（送信モードで車・台車）に設定を触れなかった。
+// 値変更モードの途中なら確定されて閉じていた。操作をやめれば最短 IDLE + HOLD で戻る。
+#define SCREEN_MOVING_EXIT_IDLE_MS  10000UL
 
 
 // ---- MS5611（i2c0）の失敗検出と復旧 ----
