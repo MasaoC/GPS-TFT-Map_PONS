@@ -190,8 +190,9 @@ void imu_feed_accel(const float a[3]) {
         //   「センサーは生きているのに V/S だけ 0 で固まる」になる。
         //   2026-10-01 に実機で発覚（0.983 で attitude_get_up_sensor() が
         //   水平化前に false を返す作りにしたのが原因）。
-        //   ここは加速度ゼロ＝恒速モデルとして回す。IMU なし時の
-        //   kf_predict(0.0f, dt) と同じ縮退で、気圧ベースのバリオになる。
+        //   ここは加速度ゼロ＝恒速モデルとして回す（predict に 0 を渡す）。気圧ベースのバリオになる。
+        //   （IMU が途絶えたときの IMU_DRV_DEAD は 2026-11-13〜 kf_predict_baro_only。こちらは水平化前の
+        //    ごく短い間だけなので変えていない）
         _acc_vsum += 0.0f;
         _acc_hsum += 0.0f;
     }
@@ -285,7 +286,8 @@ static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
 //   F = [[1, dt, 0], [0, 1, 0], [0, 0, 1]]、Q = diag(0, q_vel, 0)
 // ★ 入るときに acc_guard_step() がバイアスと高度・速度の相関（P[0][2] / P[1][2]）を 0 にしてある。この F では
 //   相関が育たないので、気圧と GNSS の観測のゲイン K[2] も 0 のまま＝**バイアスは観測でも動かない**。
-// ★ IMU が居ないときの恒速モデル（imu_update の IMU_DRV_DEAD）は kf_predict(0, dt) で、こちらとは別。
+// ★ IMU が居ない・途絶えたとき（imu_update の IMU_DRV_DEAD）もこれで回す（2026-11-13〜。それまでは kf_predict(0, dt)。BUG-65）。
+//   入るときに相関を 0 にするのはそちらも同じ（imu_update の s_kf_dead）。
 static void kf_predict_baro_only(float dt) {
     kf_x[0] += kf_x[1] * dt;
     float A[3][3];
@@ -752,6 +754,8 @@ void get_imu_raw_accel(float a[3]) { for (int i=0;i<3;i++) a[i] = _raw_accel[i];
 // 新着ROTATION_VECTORフラグ: trueを返し同時にクリア（Euler角ログのトリガー用）
 // Kalman パラメーターの動的変更（設定画面からのチューニング用）
 void imu_set_kf_params(float q_vel, float q_bias, float R) {
+    // 0 以下・NaN・inf は入れない（KF が壊れる）。範囲とログは読む側（mysd.cpp の read_setting_float）。NaN は比較が全部 false
+    if (!(q_vel > 0.0f && q_vel < 1e30f) || !(q_bias > 0.0f && q_bias < 1e30f) || !(R > 0.0f && R < 1e30f)) return;
     kf_q_vel  = q_vel;
     kf_q_bias = q_bias;
     kf_R      = R;
@@ -787,12 +791,26 @@ bool get_imu_alive() { return imu_drv_alive(); }
 //     IMU_DRV_DEAD     … センサーが居ない／途絶中 → 恒速モデルで伝播して返る
 //     IMU_DRV_WAIT     … 生きているがポーリング周期前 → 何もせず返る
 //     IMU_DRV_SERVICED … 引き取った → 下の predict へ進む
+// IMU_DRV_DEAD の回しかたに入っているか（入るときに 1 回だけ相関を 0 にするため）
+static bool s_kf_dead = false;
+
 void imu_update() {
     const ImuDrvState st = imu_drv_poll();
 
     if (st == IMU_DRV_DEAD) {
-        // IMU なし: KF 初期化済みなら恒速モデル（a_k=0）で共分散を伝播させる。
+        // IMU なし・途絶中: KF 初期化済みなら恒速モデルで共分散を伝播させる（気圧だけのバリオ）。
         // これにより気圧の観測（KF_GNSS_VEL_ENABLED = 1 なら GNSS 速度も）が有効に機能するようになる。
+        // ★ **kf_predict(0, dt) ではなく kf_predict_baro_only(dt)**（2026-11-13〜。BUG-65。v7.1 と同じ直し）。
+        //   kf_predict(0, dt) は速度を「0 − バイアス」で動かすので、学んだ加速度バイアスが偽の加速度として毎回入り、
+        //   バイアスの状態が気圧の上下を加速度として拾ってしまう（11/13 の v7.1 のエレベーターの気圧で流すと ±0.1 m/s² 振れた）。
+        //   IMU が戻ると、そのずれたバイアスで V/S が流れる。バイアスは止めて、途絶える前の値を戻ったときに使う。
+        //   止まっているときの V/S の揺れも 0.049 → 0.013 m/s に減る（遅れは 2.5 → 2.8 秒。気圧だけなのはどちらも同じ）。
+        //   KF_ACC_GUARD のときと同じ式。入るときにバイアスと高度・速度の相関を 0 にする（kf_predict_baro_only のコメント）。
+        if (!s_kf_dead) {
+            s_kf_dead = true;
+            kf_P[0][2] = kf_P[2][0] = 0.0f;
+            kf_P[1][2] = kf_P[2][1] = 0.0f;
+        }
         if (kf_initialized) {
             static uint32_t _fallback_predict_us = 0;
             uint32_t _now_us = time_us_32();
@@ -801,7 +819,7 @@ void imu_update() {
                 kf_last_predict_us = _now_us;
                 _fallback_predict_us = _now_us;
                 if (dt > 0.0f && dt < 0.5f) {
-                    kf_predict(0.0f, dt);  // 加速度ゼロ = 恒速モデル
+                    kf_predict_baro_only(dt);  // 恒速モデル（バイアスは止める）
                     _imu_altitude = kf_x[0];
                     _imu_vspeed   = kf_x[1];
                 }
@@ -809,6 +827,7 @@ void imu_update() {
         }
         return;
     }
+    s_kf_dead = false;   // 戻った。次に途絶えたらまた相関を 0 にする
     if (st == IMU_DRV_WAIT) return;
 
     // ---- Kalman predict ステップ ----

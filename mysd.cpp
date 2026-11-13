@@ -384,7 +384,8 @@ static bool read_setting_float(const char* id, const char* value, float lo, floa
   }
   if (v < lo || v > hi) {
     *out = (float)(v < lo ? lo : hi);
-    log_sdf("ERR %s(%s) range %.2f..%.2f -> %.2f",
+    // %g: KF の係数（0.0005 など）が %.2f だと 0.00 に見えるため（2026-11-13〜）
+    log_sdf("ERR %s(%s) range %g..%g -> %g",
             id, value, (double)lo, (double)hi, (double)*out);
     return true;
   }
@@ -497,9 +498,13 @@ void setUpwardMode(const char* value) {
 }
 
 // Kalman フィルター係数: 速度プロセスノイズ（デフォルト KF_Q_VEL）
+// ★ 3 つとも read_setting_float() を通す（2026-11-13〜。BUG-66。v7.1 と同じ直し）。それまでは atof() で、"inf" が v > 0 を
+//   通って KF を壊し、読めない値・桁外れの値もログに残らなかった。範囲は「明らかにあり得ない値を弾く」だけの広さ
+//   （既定 KF_Q_VEL 0.02 / KF_Q_BIAS 0.0005 / KF_R 12）。
 void setKfQVel(const char* value) {
-  float v = atof(value);
-  if (v > 0.0f) imu_set_kf_params(v, get_imu_kf_q_bias(), get_imu_kf_R());
+  float v;
+  if (read_setting_float("kf_q_vel", value, 1e-5f, 100.0f, &v))
+    imu_set_kf_params(v, get_imu_kf_q_bias(), get_imu_kf_R());
 }
 void getKfQVel(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_q_vel());
@@ -507,8 +512,9 @@ void getKfQVel(char* buffer, size_t bufferSize) {
 
 // Kalman フィルター係数: バイアスプロセスノイズ（デフォルト KF_Q_BIAS）
 void setKfQBias(const char* value) {
-  float v = atof(value);
-  if (v > 0.0f) imu_set_kf_params(get_imu_kf_q_vel(), v, get_imu_kf_R());
+  float v;
+  if (read_setting_float("kf_q_bias", value, 1e-8f, 1.0f, &v))
+    imu_set_kf_params(get_imu_kf_q_vel(), v, get_imu_kf_R());
 }
 void getKfQBias(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_q_bias());
@@ -516,8 +522,9 @@ void getKfQBias(char* buffer, size_t bufferSize) {
 
 // Kalman フィルター係数: 気圧高度観測ノイズ [m²]（デフォルト KF_R）
 void setKfR(const char* value) {
-  float v = atof(value);
-  if (v > 0.0f) imu_set_kf_params(get_imu_kf_q_vel(), get_imu_kf_q_bias(), v);
+  float v;
+  if (read_setting_float("kf_R", value, 1e-3f, 1e4f, &v))
+    imu_set_kf_params(get_imu_kf_q_vel(), get_imu_kf_q_bias(), v);
 }
 void getKfR(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_R());

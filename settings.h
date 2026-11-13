@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261111
-#define BUILDVERSION "0.999v7"
+#define BUILDDATE 20261113
+#define BUILDVERSION "1.00v7"
 
 // ============================================================
 //  基板（初代 v7。BNO085 を i2c1 で実装）
