@@ -12,8 +12,8 @@
 >   衝突したら受け取る側の基板に合わせる。
 > - **無線（PONS Link）は v7 の機体とも混ぜて使う。** プロトコル（`lora_link/link_proto.h`）と
 >   飛行 CSV の列は両ブランチでそろえておくこと。
-> - **SCH16T は本体基板で起動と机上確認まで済み（2026-11-03）。まだ飛ばしていない**（`#warning "... DO NOT FLY."`）。
->   [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) の Step 3 の残り〜5。
+> - **SCH16T は本体基板で起動と机上確認（Step 3）まで済み（2026-11-13）。まだ飛ばしていない**（`#warning "... DO NOT FLY."`）。
+>   残りは [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) の Step 4〜5。
 >   マウント回転（`IMU_MOUNT_Q*`）は v7.1 で測り直して **v7 と同じ向き**だったので据え置き。
 >   **ESKF のゲインとサンプル間隔は 250Hz（4ms）に適合済み**（`tools/attitude_test` で検証済み）。ブリングアップ時は SCH16T の実機データで確認する。
 >   **ESKF の dt は直前のサンプルとの実際の時間差**（2026-11-10〜。SCH16T は 1 回読むと 1 サンプルで、まとめて届かない）。
@@ -196,17 +196,23 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
   **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（2026-11-07〜、`0xA4`）。印は必ず
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
   SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（`0xA8` …）。
+  **GNSS の時刻の助け合いのビーコン（印 `0x58`。[lora_link/link_beacon.h](lora_link/link_beacon.h)。2026-11-13〜）も同じ 32 バイト**で、
+  e220.cpp の切り出しは両方を拾う（`link_frame_is_magic` / `link_frame_valid`）。テレメトリの印を変えるときはビーコンの印とぶつけないこと
+  （`static_assert` で止まる）。ビーコンは `link_recv_telem()` が `link_assist.cpp` へ渡し、**受信の数・seq・ミラー・NO SIGNAL・
+  DUP SENDER・GROUP X FOUND・送信前チェック・チャンネル調査には混ぜない**。
   ゆっくりした項目は 8 発に分けた回転枠で運ぶので、**have ビットの無い目的地・ナビモード・縮尺は
   `link_rx_slot_known()` を見てから使う**（受け始めは 0 のままで、使うと受信機が目的地 0 に書き換えられる。
   縮尺は 2026-11-12 から受信機が合わせなくなり、設定画面に送信機の縮尺を添えるだけだが、そこに 0 ＝最も広い縮尺と嘘が出る）。
   **目的地は番号ではなく `dest_id`（名前と座標の CRC16）で照合する**（`link_sender_dest_local()`）。番号で合わせると、
   3 台の destinations.csv やパイロンの上書きが違うとき**黙って別の場所**に合う。`dest_id` の 0 は「送っていない」。
   アッパーバンド（CH15 / 21 / 27）は休止の決まりに合わせて送る間隔を延ばし、SF11 は使わない（docs/pons_link.md §2）。
-- **PONS Link はいまは下り一方向（ボートから機体へ送るものは無い）。大会のルールは「上りの通信路で操縦しない
-  （ラジコン禁止）」で、上りの通信そのものは禁止されていない**（2026-11-08 訂正。以前ここに「上りの通信路を持たないのが
-  レギュレーション上の要件」と書いていたのは誤り）。上りを足すとき（構想中の GNSS の TTFF のアシストなど）も、
-  **機体の操作・設定・表示・航法を上りから変えられる経路は作らない**こと、**下りのテレメトリ（PONS の本来の役割）に
-  影響させない**こと。
+- **PONS Link のテレメトリは下り一方向。上りは GNSS の時刻の助け合いのビーコンだけ**（2026-11-13〜。`link_assist.cpp`）。
+  大会のルールは「上りの通信路で操縦しない（ラジコン禁止）」で、上りの通信そのものは禁止されていない（2026-11-08 訂正。
+  以前ここに「上りの通信路を持たないのがレギュレーション上の要件」と書いていたのは誤り）。上りで機体が変えるのは
+  **「GNSS へ時刻を 1 回入れる」ことだけ**（`gnss_dbd_give_time()`）。上りを足すときも、**機体の操作・設定・表示・航法を
+  上りから変えられる経路は作らない**こと、**下りのテレメトリ（PONS の本来の役割）に影響させない**こと
+  （機体の 1Hz の送信はタイミングも中身も変えず、status に `LINK_ST_TIME_WANTED` を立てるだけ）。
+  **別のグループの時刻は使わない**。テレメトリの回転枠 0 の日付と時は **UTC**（飛行 CSV は JST に直して書くが、電波は UTC）。
 - **`.ino` の初期化順のコメントは消さない。** `core1_separate_stack` /
   `mutex_init` の位置 / `setup1()` 内の `Serial.println("")` は、
   どれも消すと動かなくなる理由が書いてある。
@@ -243,6 +249,9 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 - **GNSS へ BBR 層で書いた設定は、BT1 が生きている限りファームを書き替えても残る。**
   いま BBR に書いているのは `CFG-ANA-USE_ANA`（AssistNow Autonomous）だけ。やめるときは
   送るのをやめるのではなく「無効」を書き込むこと（`GNSS_USE_ANA` を 0 にしても OFF を送るのはそのため）。
+  **起動時の ANA は、最初の NAV-PVT で BT1 の生死が分かってから送る**（`gnss_ana_boot_tick()`。2026-11-13〜）。BT1 が切れていた
+  起動（コールドスタート）だけ切るためで（SPG 5.10 はコールドスタートのあと ANA が有効だと QZSS を使わない）、
+  `gnss_setup_impl()` の ⑦ で起動時に「有効」を送るように戻すと、**コールドの起動で黙って QZSS を失う**。
   ほかの設定（ボーレート・出力・Airborne）は RAM にだけ書いていて、電源を切れば工場出荷に戻る前提で
   `gnss_setup()` が組んである（毎回 9600 で開いて 38400 へ切り替える）。BBR へ移すならそこも見直す。
   **本体が動いたまま GNSS だけがリセットしても同じく工場出荷に戻る**（NMEA だけで UBX を出さない）。
@@ -306,6 +315,7 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ（0.991 で実装）。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・サンプル引き取り（2026-11-11〜 タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す）。**本体基板では起動と机上確認まで（Step 2〜3）**で、まだ飛ばしていないので `#warning` で「飛ばすな」が出る。手順は [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
+| [link_assist.cpp](link_assist.cpp) | GNSS の時刻の助け合い（LoRa。2026-11-13〜、**実機未確認**）。GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が**精度つきで**時刻を渡す（fix の前の RTC の時刻も。精度は NAV-PVT の tAcc で、テレメトリは status の `LINK_ST_TIME_COARSE` / `BAD`、ビーコンは `BC_TACC`。ビーコンは [lora_link/link_beacon.h](lora_link/link_beacon.h)、印 `0x58`）。機体は窓の間だけ送信の合間も mode 0 で聞く。受けた時刻は 2 発で確かめて `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` へ渡すだけ。定数は `settings.h` の `LINK_ASSIST_*`、`settings.txt` の `link_assist`。**v7 と v7.1 で同じファイル**。計画と決めごとは [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §4 |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
@@ -319,11 +329,12 @@ cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
 | [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) | 焼き込んだ音声の実体。`tools/gen_wav_flash.py` の生成物。手で編集しない |
 
-- **やること・後回しにしていること（v7・v7.1 両方）: [docs/pons_todo.md](docs/pons_todo.md)**。済んだら行を消す
+- **やること・後回しにしていること（v7・v7.1 両方）: [docs/pons_todo.md](docs/pons_todo.md)**。済んだら行を消す。
+  1 項目 1〜2 行に保ち、経緯や数字は [docs/pons_todo_notes.md](docs/pons_todo_notes.md) へ
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - GNSS の TTFF を SD の DBD と LoRa の助け合いで縮める計画: [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)
-  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10 に実装・実機未確認。無線の助け合いは計画のみ）
+  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10、無線の時刻の助け合いは 2026-11-13 に実装・どれも実機未確認）
 - 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.1）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
 - 充電中のバッテリー残量(%)・残り時間推定 仕様書: [docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)
 - SCH16T の実機立ち上げ: [docs/imu_sch16t_bringup.md](docs/imu_sch16t_bringup.md)

@@ -115,9 +115,11 @@
 #define IMULOG_DIR            "imuraw"
 #define IMULOG_NOFIX_REQUEST  IMULOG_DIR "/nofix.bin"
 
-// 1 レコード 28 バイト。146 レコード = 4088 バイトを 1 バッファとする
-// （SD の 4KB 境界に収まる最大数。約 0.45 秒分）。
-#define IMULOG_RECS_PER_BUF 146
+// 1 レコード 28 バイト。584 レコード = 16352 バイトを 1 バッファとする（16KB に収まる最大数）。
+// 2026-11-13 に 146 → 584（settings.h の SCH16T_IMULOG_DECIM を 1 にしたため。約 506 レコード/秒で約 1.15 秒分）。
+// 小さいと、Core0 が描き直しで受け渡しに来られない間・Core1 が詰まっている間に反対側も一杯になり、捨てる。
+// RAM は 2 枚で約 32KB。ファイルの形はレコードの並びだけなので、この数を変えても PC 側は変わらない。
+#define IMULOG_RECS_PER_BUF 584
 #define IMULOG_BUF_BYTES    (IMULOG_RECS_PER_BUF * 28)
 
 typedef struct __attribute__((packed)) {

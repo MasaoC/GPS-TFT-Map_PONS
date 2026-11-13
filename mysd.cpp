@@ -35,6 +35,7 @@
 #include "attitude.h"
 #include "tas.h"       // 大きい枠の設定（header_tas）・飛行 CSV の tas_mps / hdr 列
 #include "link.h"
+#include "link_assist.h"  // settings.txt の link_assist（GNSS の時刻の助け合い）
 #include "e220.h"      // E220_CH_MAX_ALL（settings.txt の CH の範囲）
 #include "backlight.h" // 飛行 CSV の lux / backlight 列
 #include "power.h"     // 過放電ラッチの裏コマンド解除（setup_sd）
@@ -153,6 +154,16 @@ void setLinkGroup(const char* v) {
   }
 }
 
+// GNSS の時刻の助け合い（LoRa。link_assist.cpp。2026-11-13〜）。ON / OFF。既定 ON。
+// ★ OFF にすると、機体の聞く窓・ボートの提供と要求・テレメトリからの時刻を全部止める（計画書 §1.2）。
+//   知らない値は ON に倒し、log.txt に残す（書いたつもりで効いていない、に気づけるように）。
+void getLinkAssist(char* b, size_t n) { strlcpy(b, link_assist_setting ? "ON" : "OFF", n); }
+void setLinkAssist(const char* v) {
+  if (v && !strncasecmp(v, "OFF", 3))     link_assist_setting = 0;
+  else if (v && !strncasecmp(v, "ON", 2)) link_assist_setting = 1;
+  else { link_assist_setting = 1; log_sdf("SETTINGS link_assist='%s' is not ON/OFF, using ON", v ? v : ""); }
+}
+
 // 輝度スイッチ Low のときの明るさの曲線（設定画面の AUTO Brightness）。ECO / BRIGHT。
 // ★ 知らない値は ECO に倒す（backlight_set_auto_mode）。項目が無い古い settings.txt も既定の ECO のまま。
 void getAutoBrightness(char* b, size_t n) {
@@ -193,7 +204,8 @@ SDSetting settings[] = {
   {"link_mode",       setLinkMode,       getLinkMode},
   {"link_radio_ch",   setLinkRadioCh,    getLinkRadioCh},
   {"link_radio_prof", setLinkRadioProf,  getLinkRadioProf},
-  {"link_group",      setLinkGroup,      getLinkGroup}
+  {"link_group",      setLinkGroup,      getLinkGroup},
+  {"link_assist",     setLinkAssist,     getLinkAssist}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -377,7 +389,8 @@ static bool read_setting_float(const char* id, const char* value, float lo, floa
   }
   if (v < lo || v > hi) {
     *out = (float)(v < lo ? lo : hi);
-    log_sdf("ERR %s(%s) range %.2f..%.2f -> %.2f",
+    // %g: KF の係数（0.0005 など）が %.2f だと 0.00 に見えるため（2026-11-13〜）
+    log_sdf("ERR %s(%s) range %g..%g -> %g",
             id, value, (double)lo, (double)hi, (double)*out);
     return true;
   }
@@ -490,9 +503,13 @@ void setUpwardMode(const char* value) {
 }
 
 // Kalman フィルター係数: 速度プロセスノイズ（デフォルト KF_Q_VEL）
+// ★ 3 つとも read_setting_float() を通す（2026-11-13〜。BUG-66）。それまでは atof() で、"inf" が v > 0 を通って
+//   KF を壊し、読めない値・桁外れの値もログに残らなかった。範囲は「明らかにあり得ない値を弾く」だけの広さ
+//   （既定 KF_Q_VEL 0.02 / KF_Q_BIAS 0.0005 / KF_R 12。調整で振った範囲は Q_VEL 0.002〜2・R 1〜50）。
 void setKfQVel(const char* value) {
-  float v = atof(value);
-  if (v > 0.0f) imu_set_kf_params(v, get_imu_kf_q_bias(), get_imu_kf_R());
+  float v;
+  if (read_setting_float("kf_q_vel", value, 1e-5f, 100.0f, &v))
+    imu_set_kf_params(v, get_imu_kf_q_bias(), get_imu_kf_R());
 }
 void getKfQVel(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_q_vel());
@@ -500,8 +517,9 @@ void getKfQVel(char* buffer, size_t bufferSize) {
 
 // Kalman フィルター係数: バイアスプロセスノイズ（デフォルト KF_Q_BIAS）
 void setKfQBias(const char* value) {
-  float v = atof(value);
-  if (v > 0.0f) imu_set_kf_params(get_imu_kf_q_vel(), v, get_imu_kf_R());
+  float v;
+  if (read_setting_float("kf_q_bias", value, 1e-8f, 1.0f, &v))
+    imu_set_kf_params(get_imu_kf_q_vel(), v, get_imu_kf_R());
 }
 void getKfQBias(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_q_bias());
@@ -509,8 +527,9 @@ void getKfQBias(char* buffer, size_t bufferSize) {
 
 // Kalman フィルター係数: 気圧高度観測ノイズ [m²]（デフォルト KF_R）
 void setKfR(const char* value) {
-  float v = atof(value);
-  if (v > 0.0f) imu_set_kf_params(get_imu_kf_q_vel(), get_imu_kf_q_bias(), v);
+  float v;
+  if (read_setting_float("kf_R", value, 1e-3f, 1e4f, &v))
+    imu_set_kf_params(get_imu_kf_q_vel(), get_imu_kf_q_bias(), v);
 }
 void getKfR(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.6g", get_imu_kf_R());
@@ -782,8 +801,15 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   // 送信機が SW OFF のまま USB で動いていると電圧は載ってこない → 空欄（csv_write_common）
   task.saveCsvArgs.voltage       = (t->have & RHAVE_VOLT) ? link_unpack_volt(t->volt_cv) : NAN;
   task.saveCsvArgs.numsat        = t->numsat;
-  task.saveCsvArgs.year   = t->year;   task.saveCsvArgs.month  = t->month;
-  task.saveCsvArgs.day    = t->day;    task.saveCsvArgs.hour   = t->hour;
+  // 電波の回転枠 0 の日付と時は GNSS の UTC そのまま（link.cpp の link_push_telemetry）。
+  // 飛行 CSV（data/）やリプレイ（apply_replay_row() が JST→UTC に戻す）と同じ JST に揃えてから書く。
+  // まだ回転枠 0 を受けていない間（year == 0）は 0 のまま残し、saveRxCSV() 側で書かずに待つ。
+  int y = t->year, mo = t->month, d = t->day, h = t->hour;
+  if (y != 0 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h < 24) {
+    utcToJst(&y, &mo, &d, &h);
+  }
+  task.saveCsvArgs.year   = y;   task.saveCsvArgs.month  = mo;
+  task.saveCsvArgs.day    = d;   task.saveCsvArgs.hour   = h;
   task.saveCsvArgs.minute = t->minute; task.saveCsvArgs.second = t->second;
   task.saveCsvArgs.centisecond = t->centi;
   // ボート自身の位置と機体までの距離。測位できていなければ空欄で書く。

@@ -343,9 +343,21 @@ static_assert(sizeof(LinkTelem) == 67, "LinkTelem が 67 バイトでなくな�
 // 受信機の電池表示を "s5V" にするためのもので、**故障ではない**（WIRELESS 画面の
 // Sender 行も赤にしない）。受信側では作れない（送信機の SW の状態は電波に乗らない）。
 #define LINK_ST_USB_SW_OFF   0x0200
+// 送信機の GNSS が時刻を知らず、仲間から時刻をもらおうと聞いている（2026-11-13〜。GNSS の時刻の助け合い。
+// link_assist.cpp・docs/pons_ttff_assist_plan.md §4）。fix しているボートはこれを見て時刻の提供ビーコンを送る。
+// **故障ではない**（WIRELESS 画面の Sender 行も赤にしない）。時刻を受け取ったら（または 30 分で）下りる。
+#define LINK_ST_TIME_WANTED  0x0400
+// 送信機の時刻の確からしさ（2026-11-13〜。GNSS の時刻の助け合い）。送信機の GNSS の NAV-PVT tAcc から立てる。
+// fix の前でも、GNSS の時計（RTC。BT1 が生きているとき）の時刻は載っている。受信機（ボート）はこれを見て、
+// 時刻を自分の GNSS へ入れるか・どれだけの精度と伝えるかを決める（link_w2_utc_ms）。
+// ★ **よいとき（1 秒以内）は 0。** 古い受信機の WIRELESS 画面を赤くしない・古い送信機（0 を送る）と同じ扱いにするため。
+#define LINK_ST_TIME_COARSE  0x0800   // 時刻の精度が 1〜4 秒（LINK_ASSIST_TACC_FINE_MS〜LINK_ASSIST_TACC_MAX_MS）
+#define LINK_ST_TIME_BAD     0x1000   // 時刻の精度が 4 秒より悪い・分からない（tAcc は 4.29 秒で頭打ち。受信機は使わない）
 // 定義済みのビット全部。★ **0x8000 は使わないこと。** 32 バイトのフレームの上では状態の最上位ビットを
 // FIXOK に使っている（link_wire2.h の W2_ST_FIXOK。ビルドで止める）。
-#define LINK_ST_ALL          0x03FF
+#define LINK_ST_ALL          0x1FFF
+// 故障ではないビット（知らせるだけ）。WIRELESS 画面の Sender 行の赤／OK の判定から外す。
+#define LINK_ST_NOT_FAULT    (LINK_ST_USB_SW_OFF | LINK_ST_TIME_WANTED | LINK_ST_TIME_COARSE | LINK_ST_TIME_BAD)
 
 // ============================================================
 //  数値の詰め方

@@ -208,6 +208,10 @@ bool attitude_take_bigtilt_event(float &err_deg, bool &yaw_kept);
 // 置き直したあと、保った方位を GNSS 航跡と比べた瞬間に一度だけ true を返す（ログ記録用）。
 // diff_deg に 航跡 − 方位 [度]、reset に航跡で入れ直したか（ESKF_BIGTILT_YAW_CHECK_DEG を超えていた）。
 bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset);
+// IMU が途絶えて戻ったのを扱った瞬間に一度だけ true を返す（ログ記録用。2026-11-13〜。BUG-62）。
+// gap_s に途絶えていた秒数、yaw_kept に方位を保ったか（ヨーが決まっていなかったときは false）。
+// 方位を保ったときは、GNSS が戻ったら航跡と比べ、その結果は attitude_take_bigtilt_yaw_check で出る。
+bool attitude_take_imu_gap_event(float &gap_s, bool &yaw_kept);
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう

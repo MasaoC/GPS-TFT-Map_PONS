@@ -115,6 +115,10 @@
   //   受信モードでは get_gnss_*() が機体の値に置き換わるので、
   //   ボート自身を地図に出すにはこちらを使う。fix が無ければ false。
   bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track);
+  // 自機の GNSS の fix と高度（ミラー・デモの差し替えを通さない。リプレイ中は呼ぶ側が除く）。link_assist.cpp が使う
+  bool   gnss_own_fixok();
+  double gnss_own_altitude();
+  uint32_t gnss_own_tacc_ns();   // 自機の GNSS の時刻の精度 [ns]（NAV-PVT tAcc。fix の前でも RTC の時刻なら入る）
 
   double get_gnss_lat();
   double get_gnss_lon();
@@ -135,6 +139,7 @@
   bool get_gnss_ana_busy();       // 予測を計算中か（この間は GNSS の消費電流が増える）
   int  get_gnss_ana_data_svs();   // 予測データを持っている衛星数
   int  get_gnss_ana_orbit_svs();  // いま予測軌道を使っている衛星数
+  bool get_gnss_ana_off_cold();   // この起動はコールドスタート（BT1 が切れていた）なので ANA を切った（2026-11-13〜）
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
   bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 

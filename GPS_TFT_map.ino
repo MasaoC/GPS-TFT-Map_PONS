@@ -1832,11 +1832,15 @@ static void kalman_feed_tick() {
       get_gnss_fixtype() >= 3) {
     imu_kalman_gnss_update((float)get_gnss_altitude(),
                            get_gnss_vacc_mm() / 1000.0f);
-    // GNSS 垂直速度を KF 速度観測として追加（vAcc ゲート、sAcc で R 計算）
-    // IMU の有無によらず動作し、加減速中や IMU なし時のバリオ精度を補完する。
+#if KF_GNSS_VEL_ENABLED
+    // GNSS 垂直速度を KF 速度観測として追加（sAcc でゲートと R を決める）
     imu_kalman_gnss_vel_update(get_gnss_veld_mps(),
                                get_gnss_vacc_mm() / 1000.0f,
                                get_gnss_sacc_mmps() / 1000.0f);
+#endif
+    // ★ 2026-11-12〜 GNSS の上下の速度は V/S に入れない（settings.h の KF_GNSS_VEL_ENABLED）。
+    //   反射で荒れても sAcc が小さいままで、それでいて気圧より強く V/S を引っ張っていた。
+    //   上の imu_kalman_gnss_update()（GNSS の高度で気圧の基準をゆっくり直す。絶対高度用）は残してある。
   }
 }
 
@@ -2216,6 +2220,12 @@ void loop() {
     if (attitude_take_bigtilt_yaw_check(diff_deg, reset)) {
       enqueueTask(createLogSdfTask("ESKF RELEVEL yaw check: track %+.0f deg off heading -> %s",
                                    diff_deg, reset ? "reset from track" : "heading kept"));
+    }
+    // IMU が途絶えて戻った（BUG-62。2026-11-13〜）。傾き・方位の不確かさを広げ、方位は上の yaw check で確かめ直す
+    float gap_s;
+    if (attitude_take_imu_gap_event(gap_s, yaw_kept)) {
+      enqueueTask(createLogSdfTask("ESKF IMU GAP: %.1fs -> tilt/heading uncertainty widened, velocity from next GNSS, %s",
+                                   gap_s, yaw_kept ? "heading kept (check vs track)" : "yaw was not set"));
     }
   }
 

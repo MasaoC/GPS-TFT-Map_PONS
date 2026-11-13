@@ -54,7 +54,7 @@ void gnss_dbd_command(const char* arg);
 //   （計画書 §4）も、受けた側の確かめ（§4.6 の 1.）を済ませてから GNSS_TIME_SRC_LORA で渡す。
 enum GnssTimeSrc : uint8_t {
   GNSS_TIME_SRC_PC   = 0,   // USB シリアルの PONS:TIME
-  GNSS_TIME_SRC_LORA = 1,   // 仲間の機体・ボート（計画のみ。まだ呼ぶところは無い）
+  GNSS_TIME_SRC_LORA = 1,   // 仲間の機体・ボート（link_assist.cpp。2026-11-13〜）
   GNSS_TIME_SRC_SELF = 2,   // 机の上の試験（COLD,TIME。リセット前に本体が覚えた時刻を、外から来た時刻の代わりに入れる）
 };
 // utc_ms: UTC（1970-01-01 からのミリ秒。うるう秒は数えない＝UNIX 時刻。JavaScript の Date.now() と同じ）
@@ -66,13 +66,22 @@ enum GnssTimeSrc : uint8_t {
 //   "NOT_NEEDED"  GNSS は時刻を知っている
 //   "ALREADY"     この GNSS には入れて受け取られた（NAV-PVT に時刻が出るのを待っている）
 //   "GAVE_UP"     GNSS_TIME_MAX_TRIES 回入れて受け取られなかった（GNSS がリセットするまで入れない）
-//   "BAD_TIME"    ありえない時刻（ビルドした日より前・2100 年以降）
+//   "BAD_TIME"    ありえない時刻（ビルドした日より前・2100 年以降・SD の DBD を吸い出した時刻より前）
 //   "REPLAY"      リプレイ中・抜けた直後
 //   "TEST"        机の上の試験（COLD / COLDONLY / HOT）の最中。比べる素の値を汚さない
 //   "DISABLED"    GNSS_DBD_ENABLE が 0
-const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src);
+// acc_ms: GNSS へ伝える精度 [ms]。0 なら出どころの既定（GNSS_TIME_ACC_PC_MS / GNSS_TIME_ACC_LORA_MS）。
+//         LoRa で fix の前の時刻（送り主の GNSS の時計＝RTC）を渡すとき、送り主の精度に合わせて広げる（2026-11-13〜）
+const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src, uint32_t acc_ms = 0);
 // USB シリアルの "PONS:TIME,<UNIX 時刻 ms>"。rx_ms は行を受けた millis()。返事は "PONS:TIME,OK,SENT" など
 void gnss_dbd_time_command(const char* arg, uint32_t rx_ms);
+// いま外から時刻をもらう値打ちがあるか（2026-11-13〜。LoRa の助け合い（link_assist.cpp）が、聞く窓・要求を
+// 開けておくかに使う）。判断は gnss_dbd_give_time() と同じ time_block() から出すので、食い違わない。
+//   GNSS_TIME_WANT_UNKNOWN  まだ分からない（起動後最初の NAV-PVT の前。リプレイ中・抜けた直後）
+//   GNSS_TIME_WANT_YES      ほしい（GNSS が時刻を知らず、入れて受け取られてもいない）
+//   GNSS_TIME_WANT_NO       要らない（GNSS が知っている・入れて受け取られた・上限まで入れた・机の上の試験中・無効）
+enum GnssTimeWant : uint8_t { GNSS_TIME_WANT_UNKNOWN = 0, GNSS_TIME_WANT_YES, GNSS_TIME_WANT_NO };
+GnssTimeWant gnss_dbd_time_want();
 
 // ---- Core1（mysd.cpp の gnss_dbd_save_sd / gnss_dbd_load_sd から）----
 uint8_t* gnss_dbd_buffer_core1();                          // RAM（GNSS_DBD_BUF_BYTES）。Core0 が手放している間だけ触る

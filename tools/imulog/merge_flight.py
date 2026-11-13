@@ -133,7 +133,7 @@ def main():
     ap.add_argument("--csvdir", default=".", help="飛行 CSV のあるディレクトリ")
     ap.add_argument("-o", "--out", default="merged.csv")
     ap.add_argument("--hz", type=float, default=10.0,
-                    help="出力レート [Hz]（既定 10。生ログは約 62.5Hz）")
+                    help="出力レート [Hz]（既定 10。生ログは 250Hz、2026-11-13 より前は約 62.5Hz）")
     ap.add_argument("--sacc-max", type=float, default=1.0,
                     help="運動量の算出に使う GNSS の sAcc 上限 [m/s]")
     args = ap.parse_args()

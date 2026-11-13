@@ -595,12 +595,16 @@ void power_tick() {
 //    こうしないと USB を抜いた瞬間に % が下がる（2026-11-11 まで 8〜10% 下がっていた。TODO の「USB を抜くと約 7% 下がる」）。
 //    満充電ラッチで 100% を出したあとに抜くと、負荷のぶんで 95% 前後になるのは残る（FULL は FULL と出すため）。
 // 3) 満充電ラッチ（課題5対策）:
-//    MCP73831 の充電終止（約23mA）では BATPWR（測定点）が約 4.194V に達し、その後充電電流が
-//    ゼロになってセル電圧は 4.15〜4.18V へ自然緩和する。充電停止後も CV 式を当て続けると
-//    ずれが倍に膨らんで 90% 前後に急落してしまうため、BATPWR が 4.190V（推定セル電圧 4.180V、終止直前）
-//    に達したら USB を抜くまで FULL（100%、残り0分）をラッチ保持する（4.05V 再充電しきい値割れで解除）。
+//    MCP73831 の充電終止後に充電電流がゼロになるとセル電圧は 4.15〜4.19V へ自然緩和し、
+//    CV 式を当て続けると 90% 前後に落ちて見えるため、一度満充電と確定したら USB を抜くまで
+//    FULL（100%、残り0分）をラッチ保持する（CHG_RECHARGE_V = 4.05V 割れで解除）。
+//    ★ 2026-11-13 まではピーク追跡値（get_input_voltage()）>= 4.190V で即ラッチしていたが、
+//      実機では V_REG 公差（4.168〜4.232V）等で 4.21V まで上がる個体があり、4.19V 到達時点で
+//      まだ充電中（抜くと 91〜92%、赤 LED 点灯中）なのに 40〜50 分早く FULL になっていた。
+//      そのため生平均 s_batt_v の平滑値を用い、CV 終盤（CHG_FULL_MIN_V 以上）で上昇停止（飽和）
+//      またはピークからの終止折り返し（自然緩和）を検出してからラッチする。
 //    ※ 充電完了後に USB を挿したまま本体を再起動した場合は RAM のラッチが消えるため、
-//       緩和したセル電圧（4.15〜4.18V）に基づき「CHG 90〜96%」前後が表示される限界はある。
+//       緩和したセル電圧に基づき「CHG 90〜96%」前後が表示される限界はある。
 static bool     s_chg_full_latched       = false;
 static uint32_t s_chg_start_ms           = 0;  // USB 充電開始時刻 [ms]
 static uint32_t s_chg_full_since_ms      = 0;  // 満充電ラッチ到達時刻 [ms]
@@ -608,26 +612,94 @@ static uint32_t s_chg_popup_snooze_since = 0;  // 充電ポップアップをス
 
 // 満充電ラッチを決める（power_tick() から 250ms ごと）。
 // ★ 2026-11-08 まではこの判定を power_estimated_cell_voltage() の中でしていて、**描画から呼ばれたときに
-//   ラッチが立ったり落ちたりしていた**（CLAUDE.md「描画に判断を混ぜない」）。フッターが描くたびに
-//   呼ぶので実害は出ていなかったが、描画の頻度や画面によって判定が遅れうるのでここへ移した。
-//   下のゲッターは読むだけ。
-// ★ ラッチの値: BATPWR が 4.190V（推定セル電圧 2V − 4.20V = 4.180V）に達したら満充電、
-//   再充電しきい値 4.05V を下回ったら解除。USB を抜いたら消す。SW OFF の間は電池が切り離されていて
-//   電圧が読めないので、そのまま保つ。
+//   ラッチが立ったり落ちたりしていた**（CLAUDE.md「描画に判断を混ぜない」）。下のゲッターは読むだけ。
+// ★ USB を抜いたら消す。SW OFF の間は電池が切り離されていて電圧が読めないので、ラッチ自体は保つ。
 static void charge_full_tick(uint32_t now) {
+  static bool     s_was_charging      = false;
+  static uint32_t s_last_tick_ms      = 0;
+  static uint32_t s_chg_enter_ms      = 0;     // 平滑フィルタの立ち上げ開始時刻 [ms]
+  static float    s_chg_lp            = 0.0f;  // s_batt_v の平滑値（ピーク追跡は使わない）
+  static float    s_chg_peak_v        = 0.0f;  // ウォームアップ後の最高平滑電圧 [V]
+  static float    s_chg_ref_v         = 0.0f;  // 飽和タイマー基準電圧 [V]
+  static uint32_t s_chg_ref_ms        = 0;     // 最後に CHG_FULL_PEAK_STEP_V 以上上がった時刻
+  static uint32_t s_chg_drop_since_ms = 0;     // ピークから CHG_FULL_DROP_V 以上下がり始めた時刻
+
+  auto reset_watch = [&]() {
+    s_chg_peak_v        = 0.0f;
+    s_chg_ref_v         = 0.0f;
+    s_chg_ref_ms        = 0;
+    s_chg_drop_since_ms = 0;
+  };
+
+  const uint32_t dt = (s_last_tick_ms == 0) ? POWER_SAMPLE_MS : (now - s_last_tick_ms);
+  s_last_tick_ms = now;
+
   if (!usb_power_present()) {
     s_chg_full_latched  = false;
     s_chg_full_since_ms = 0;
+    s_was_charging      = false;
+    s_chg_enter_ms      = 0;
+    s_chg_lp            = 0.0f;
+    reset_watch();
     return;
   }
-  if (power_sw_off_on_usb()) return;
-  const float v = get_input_voltage();
+  if (power_sw_off_on_usb()) {
+    // SW OFF 中は s_batt_v が 0V になるため、ラッチは保持しつつ SW ON 復帰時にフィルタをやり直す
+    s_was_charging = false;
+    return;
+  }
+
+  if (!s_was_charging) {
+    s_was_charging = true;
+    s_chg_enter_ms = now ? now : 1;
+    s_chg_lp       = s_batt_v;
+    reset_watch();
+  } else {
+    float k = (float)dt / (float)CHG_FULL_LP_TAU_MS;
+    if (k > 1.0f) k = 1.0f;
+    s_chg_lp += (s_batt_v - s_chg_lp) * k;
+  }
+
   if (s_chg_full_latched) {
-    if (v < 4.05f) {
+    if (s_chg_lp < CHG_RECHARGE_V) {
       s_chg_full_latched  = false;
       s_chg_full_since_ms = 0;
+      reset_watch();
     }
-  } else if (v >= 4.190f) {
+    return;
+  }
+
+  // 接続／SW ON 直後の単発ノイズが偽ピークにならないよう、平滑フィルタが落ち着くまで待つ
+  if (now - s_chg_enter_ms < CHG_FULL_WARMUP_MS) return;
+
+  if (s_chg_lp < CHG_FULL_MIN_V && s_chg_peak_v < CHG_FULL_DROP_MIN_V) {
+    reset_watch();
+    return;
+  }
+
+  if (s_chg_lp > s_chg_peak_v) s_chg_peak_v = s_chg_lp;
+
+  if (s_chg_lp >= CHG_FULL_MIN_V &&
+      (s_chg_ref_ms == 0 || s_chg_lp >= s_chg_ref_v + CHG_FULL_PEAK_STEP_V)) {
+    s_chg_ref_v  = s_chg_lp;
+    s_chg_ref_ms = now ? now : 1;
+  }
+
+  // 1) 飽和（上昇停止）: CHG_FULL_MIN_V 以上で一定時間 CHG_FULL_PEAK_STEP_V 以上の増加がない
+  const bool plateau_full = (s_chg_lp >= CHG_FULL_MIN_V) &&
+                            (s_chg_ref_ms != 0) &&
+                            (now - s_chg_ref_ms >= CHG_FULL_PLATEAU_MS);
+
+  // 2) 終止後の折り返し（自然緩和）: ピークから CHG_FULL_DROP_V 以上下がった状態が続く
+  bool drop_full = false;
+  if (s_chg_peak_v >= CHG_FULL_DROP_MIN_V && s_chg_lp <= s_chg_peak_v - CHG_FULL_DROP_V) {
+    if (s_chg_drop_since_ms == 0) s_chg_drop_since_ms = now ? now : 1;
+    else if (now - s_chg_drop_since_ms >= CHG_FULL_DROP_HOLD_MS) drop_full = true;
+  } else {
+    s_chg_drop_since_ms = 0;
+  }
+
+  if (plateau_full || drop_full) {
     s_chg_full_latched = true;
     if (s_chg_full_since_ms == 0) s_chg_full_since_ms = now ? now : 1;
   }
@@ -661,10 +733,10 @@ int power_charging_remaining_min() {
   if (pct >= 100) return 0;
   const int cv_pct = charge_cv_start_percent();
   if (pct < cv_pct) {
-    // CC フェーズ: CV に入るまで（303mA 充電で約 1.7 分/%）＋ CV の所要時間（約 45 分）
+    // CC フェーズ: CV に入るまで（303mA 充電で約 1.7 分/%）＋ CV の所要時間（CHG_CV_MIN）
     return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
   } else {
-    // CV フェーズ: CV に入ってから 100% までを 45 分で（CV に入った瞬間は CC の式とどちらも 45 分）
+    // CV フェーズ: CV に入ってから 100% までを CHG_CV_MIN で（CV に入った瞬間は CC の式と連続）
     return (int)((100 - pct) * CHG_CV_MIN / (float)(100 - cv_pct));
   }
 }
@@ -690,7 +762,7 @@ uint32_t power_charging_elapsed_sec() {
   return (millis() - s_usb_connected_ms) / 1000UL;
 }
 
-// GNSS のバックアップ電池（BT1 = MS621FE）が「あと何時間もつか」の推定（充電ポップアップの 2 行目 "Fast GPS if OFF < 1.5 days"）。
+// GNSS のバックアップ電池（BT1 = MS621FE）が「あと何時間もつか」の推定（充電ポップアップの 2 行目 "Fast GPS if OFF < 36 hours" 等）。
 // 推定は rtc_backup.cpp（通電した時間で足し、電源を切っていた時間で引く。起動時の時計の生死で引き戻す）。
 // ★ 2026-11-08 までは今回の通電時間だけで "Low / Few-h / 1-2d / Ready" を出していたが、
 //   README の BT1 の表（3 時間で約 1 日、満充電でも約 8 日）より楽観的だった（2 時間で「数週間」）。

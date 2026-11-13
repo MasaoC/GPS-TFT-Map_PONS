@@ -295,6 +295,9 @@ static void draw_vario_page1() {
   y += line_height; 
 
   // 動作モード（GNSS VSI 融合状況を含む）
+  // ★ 2026-11-12〜 GNSS の上下の速度は KF に入れていない（settings.h の KF_GNSS_VEL_ENABLED）。
+  //   GNSS の高度で気圧の基準を直す処理は残っているが、それは V/S の材料ではないので「+GNSS」とは書かない。
+  const bool _gnss_in_kf = (KF_GNSS_VEL_ENABLED != 0) && _gnss3d;
   backscreen.setCursor(2, y);
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   if (_mirror) {
@@ -304,9 +307,9 @@ static void draw_vario_page1() {
     backscreen.printf("KF: sender (IMU %s)",
       (link_sender_status() & LINK_ST_IMU_ERROR) ? "NG" : "OK");
   }
-  else if (get_imu_ok() && get_airdata_ok() && _gnss3d) backscreen.print("KF: Baro+IMU+GNSS");
+  else if (get_imu_ok() && get_airdata_ok() && _gnss_in_kf) backscreen.print("KF: Baro+IMU+GNSS");
   else if (get_imu_ok() && get_airdata_ok())              backscreen.print("KF: Baro+IMU");
-  else if (get_airdata_ok() && _gnss3d)                   backscreen.print("KF: Baro+GNSS");
+  else if (get_airdata_ok() && _gnss_in_kf)              backscreen.print("KF: Baro+GNSS");
   else if (get_airdata_ok())                              backscreen.print("KF: Baro only");
   else if (get_imu_ok())                                  backscreen.printf("Mode: %s only", imu_sensor_name());
   else                                                     backscreen.print("Mode: No sensors");
@@ -336,15 +339,23 @@ static void draw_vario_page1() {
     //   機体の GNSS 昇降率に見える。gnss_acc_unknown() のコメント参照。
     float _gnss_vsi = get_gnss_veld_mps();
     float _sacc_now = get_gnss_sacc_mmps() / 1000.0f;
-    bool  _gate_ok  = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
     backscreen.setCursor(2, y);
+#if KF_GNSS_VEL_ENABLED
+    bool  _gate_ok  = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
     backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
                           : _gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
     if (gnss_acc_unknown()) backscreen.print("GNSS:  --     (not on link)");
     else backscreen.printf("GNSS:%+.2fm/s %s", _gnss_vsi, _gate_ok ? "[KF]" : "[--]");
+#else
+    // 比べるために数字だけ出す（KF には入っていない）
+    (void)_sacc_now;
+    backscreen.setTextColor(gnss_acc_unknown() || !_gnss3d ? COLOR_GRAY : COLOR_BLACK, COLOR_WHITE);
+    if (gnss_acc_unknown()) backscreen.print("GNSS:  --     (not on link)");
+    else backscreen.printf("GNSS:%+.2fm/s (not in KF)", _gnss_vsi);
+#endif
     y += line_height;
 
-    // KF VSI（IMU なし時も Baro+GNSS KF から出力）
+    // KF VSI（IMU なし時は気圧だけの KF から出力。KF_GNSS_VEL_ENABLED = 1 なら GNSS 速度も）
     float kf_vsi = get_imu_vspeed();
     backscreen.setCursor(2, y);
     backscreen.setTextColor((kf_vsi > 0.1f) ? COLOR_GREEN : (kf_vsi < -0.1f) ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
@@ -427,6 +438,7 @@ static void draw_vario_page1() {
     backscreen.setCursor(2, y);
     backscreen.printf("R_vel: --      Alt:%.1fm(MSL)", gnss_alt);
   } else {
+#if KF_GNSS_VEL_ENABLED
     backscreen.setTextColor(_sacc_ok ? (sacc_mps > GNSS_VSI_SACC_MAX_MPS * 0.7f ? COLOR_ORANGE : COLOR_BLACK)
                                      : COLOR_RED, COLOR_WHITE);
     backscreen.printf("sAcc:%.3fm/s(<%.1f)%s  vAcc:%.2fm",
@@ -435,6 +447,16 @@ static void draw_vario_page1() {
     backscreen.setCursor(2, y);
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
     backscreen.printf("R_vel:%.4fm2  Alt:%.1fm(MSL)", r_vel, gnss_alt);
+#else
+    // velD は KF に入れていないので、sAcc のゲートと R_vel は出さない（vAcc は高度の補正が使う）
+    (void)r_vel; (void)_sacc_ok;
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    backscreen.printf("sAcc:%.3fm/s  vAcc:%.2fm", sacc_mps, vacc_m);
+    y += line_height;
+    backscreen.setCursor(2, y);
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    backscreen.printf("Alt:%.1fm(MSL)", gnss_alt);
+#endif
   }
   y += line_height;
 
@@ -545,6 +567,14 @@ static void draw_vario_page2() {
   backscreen.print(_mirror2 ? "-- GNSS VSI Fusion (RX) --" : "-- GNSS VSI Fusion --");
   y += line_height;
 
+#if !KF_GNSS_VEL_ENABLED
+  // ★ 2026-11-12〜 GNSS の上下の速度は KF に入れていない（settings.h の KF_GNSS_VEL_ENABLED）。
+  //   ゲートや R_vel を出すと効いているように読めるので、切ってあることだけ出す。
+  backscreen.setCursor(2, y);
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.print("Off: GNSS velD not used for V/S");
+  y += line_height;
+#else
   backscreen.setCursor(2, y);
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   backscreen.printf("sAcc gate:<%.1fm/s  R_scale:%.1f", GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_R_SCALE);
@@ -583,10 +613,12 @@ static void draw_vario_page2() {
     else           backscreen.printf("Gate:FAIL sAcc%.3f>=%.1f", _sacc_mps, GNSS_VSI_SACC_MAX_MPS);
   }
   y += line_height;
+#endif
 
   backscreen.setCursor(2, y);
   // ★ ミラー中は自機 KF に GNSS が入っていないので false。上の Gate と揃える。
-  bool _gnss3d_kf = !link_mirror_active() &&
+  //   KF_GNSS_VEL_ENABLED = 0 のあいだは常に false（GNSS の速度を入れていない）。
+  bool _gnss3d_kf = (KF_GNSS_VEL_ENABLED != 0) && !link_mirror_active() &&
                     get_gnss_fixok() && get_gnss_fixtype() >= 3;
   if (get_imu_ok() && get_airdata_ok() && _gnss3d_kf) {
     backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
@@ -1026,6 +1058,7 @@ static void draw_gnss_page3() {
   tft.print("ANA:");
   const int ana = get_gnss_ana_state();
   if (!GNSS_USE_ANA)  { tft.print("OFF"); }
+  else if (get_gnss_ana_off_cold()) { tft.print("OFF(cold)"); }   // BT1 が切れていた起動は切る（QZSS のため。gnss.cpp）
   else if (ana < 0)   { tft.print("--"); }
   else if (ana == 0)  { tft.setTextColor(COLOR_RED, COLOR_WHITE);   tft.print("NG"); }
   else                { tft.setTextColor(COLOR_GREEN, COLOR_WHITE); tft.print("ON"); }

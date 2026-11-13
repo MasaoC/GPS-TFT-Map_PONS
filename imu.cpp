@@ -77,8 +77,10 @@ static bool     _accel_valid = false;
 // Kalman フィルター 内部状態
 // ============================================================
 
-// 鮮度不足で predict をスキップした回数（診断用。正常時は 0 のまま）。
+// 加速度が古くなって predict を止めた回数（診断用。正常時は 0 のまま。60 秒ログの stale=）。
 // ★ predict 側の計数なのでチップ非依存。0.986 の分割でここへ置いた。
+// ★ 2026-11-13〜 **止まった区間ごとに 1 回**数える（acc_stale_gate）。それまでは見るたびに数えていたが、
+//   割り込みで読んでいる v7.1 では一度も数えられていなかった（BUG-60）。
 static volatile uint32_t _acc_stale_skips = 0;
 
 // 状態ベクトル x = [z, z_dot, b]
@@ -173,8 +175,9 @@ void imu_feed_accel(const float a[3]) {
         //   「センサーは生きているのに V/S だけ 0 で固まる」になる。
         //   2026-10-01 に実機で発覚（0.983 で attitude_get_up_sensor() が
         //   水平化前に false を返す作りにしたのが原因）。
-        //   ここは加速度ゼロ＝恒速モデルとして回す。IMU なし時の
-        //   kf_predict(0.0f, dt) と同じ縮退で、気圧ベースのバリオになる。
+        //   ここは加速度ゼロ＝恒速モデルとして回す（predict に 0 を渡す）。気圧ベースのバリオになる。
+        //   （IMU が途絶えたときの IMU_DRV_DEAD は 2026-11-13〜 kf_predict_baro_only。こちらは水平化前の
+        //    ごく短い間だけなので変えていない）
         _acc_vsum += 0.0f;
         _acc_hsum += 0.0f;
     }
@@ -245,7 +248,8 @@ static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
 //   F = [[1, dt, 0], [0, 1, 0], [0, 0, 1]]、Q = diag(0, q_vel, 0)
 // ★ 入るときに acc_guard_step() がバイアスと高度・速度の相関（P[0][2] / P[1][2]）を 0 にしてある。この F では
 //   相関が育たないので、気圧と GNSS の観測のゲイン K[2] も 0 のまま＝**バイアスは観測でも動かない**。
-// ★ IMU が居ないときの恒速モデル（imu_update の IMU_DRV_DEAD）は kf_predict(0, dt) で、こちらとは別。
+// ★ IMU が居ない・途絶えたとき（imu_update の IMU_DRV_DEAD）もこれで回す（2026-11-13〜。それまでは kf_predict(0, dt)。BUG-65）。
+//   入るときに相関を 0 にするのはそちらも同じ（kf_dead_enter）。
 static void kf_predict_baro_only(float dt) {
     kf_x[0] += kf_x[1] * dt;
     float A[3][3];
@@ -501,6 +505,9 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
 //
 // IMU の有無によらず動作する（kf_initialized のみチェック）。
 //
+// ★ **2026-11-12〜 呼ばれていない**（settings.h の KF_GNSS_VEL_ENABLED = 0。理由もそこ）。
+//   戻すときのために残してある。tools/imulog/vario.py も同じ切り替えを持つ。
+//
 //   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
 //   vacc_m    : 垂直位置精度 [m]  — 本関数では使用しない（呼び出し元の互換性維持のため残す）
 //   sacc_mps  : 速度精度 [m/s]   — ゲート判定と観測ノイズ R の算出に使用
@@ -673,7 +680,7 @@ float get_imu_vspeed_raw() {
         // センサーあり: I2C エラー等で 1 秒以上データが途絶えた場合は 0 を返す（誤鳴動防止）
         if (!imu_drv_alive()) return 0.0f;
     } else {
-        // センサーなし: 気圧 + GNSS 速度による KF 出力を使用。未初期化なら 0 を返す。
+        // センサーなし: 気圧による KF 出力を使用（KF_GNSS_VEL_ENABLED = 1 なら GNSS 速度も）。未初期化なら 0 を返す。
         if (!kf_initialized) return 0.0f;
     }
     return _imu_vspeed;
@@ -706,6 +713,8 @@ void get_imu_raw_accel(float a[3]) { for (int i=0;i<3;i++) a[i] = _raw_accel[i];
 
 // Kalman パラメーターの動的変更（設定画面からのチューニング用）
 void imu_set_kf_params(float q_vel, float q_bias, float R) {
+    // 0 以下・NaN・inf は入れない（KF が壊れる）。範囲とログは読む側（mysd.cpp の read_setting_float）。NaN は比較が全部 false
+    if (!(q_vel > 0.0f && q_vel < 1e30f) || !(q_bias > 0.0f && q_bias < 1e30f) || !(R > 0.0f && R < 1e30f)) return;
     kf_q_vel  = q_vel;
     kf_q_bias = q_bias;
     kf_R      = R;
@@ -742,12 +751,53 @@ bool get_imu_alive() { return imu_drv_alive(); }
 //     IMU_DRV_DEAD     … センサーが居ない／途絶中 → 恒速モデルで伝播して返る
 //     IMU_DRV_WAIT     … 生きているがポーリング周期前 → 何もせず返る
 //     IMU_DRV_SERVICED … 引き取った → 下の predict へ進む
+// ---- 安全網: 古い加速度では predict しない ----
+// 通信途絶や Core0 の長いブロックからの復帰で、巨大な dt を積分しないためのゲート。
+// 正常時は 4ms 周期なので 150ms を超えることはなく、このゲートは発火しない。
+// 発火時は predict を止めるだけで、出力は imu_kalman_baro_update() が
+// 気圧更新のたびに更新し続けるため、気圧ベースのバリオに劣化するだけで済む。
+// 古いあいだは predict の時刻を進め続け、溜めた分を捨てる（戻った最初の predict が空白をまたがないように）。
+// 戻り値: 古かったか（true なら predict しない）
+// ★ 「古い」は**最後に受け取った時刻**で見る（_acc_last_us。サンプルを読んだ時刻ではない）。割り込みで読んでいると、
+//   描画で受け取りが遅れても読んだサンプルはリングに残っていて、戻ったときにまとめて届く。
+//   それは空白ではないので捨ててはいけない（読んだ時刻で見ると 150ms 超の遅れで捨ててしまう）。
+static bool acc_stale_gate() {
+    static bool s_stale = false;
+    const uint32_t now_us = time_us_32();
+    if ((uint32_t)(now_us - _acc_last_us) <= IMU_ACC_MAX_AGE_US) {
+        s_stale = false;
+        return false;
+    }
+    if (!s_stale) {                     // 止まった区間ごとに 1 回数える
+        s_stale = true;
+        _acc_stale_skips++;
+    }
+    kf_last_predict_us = now_us;        // 復帰時に巨大な dt で積分しないよう進めておく
+    _acc_vsum = _acc_hsum = 0.0f;       // 溜まった古い分は捨てる
+    _acc_cnt  = 0;
+    return true;
+}
+
+// IMU_DRV_DEAD の回しかたに入っているか（入るときに 1 回だけ相関を 0 にするため）
+static bool s_kf_dead = false;
+
 void imu_update() {
     const ImuDrvState st = imu_drv_poll();
 
     if (st == IMU_DRV_DEAD) {
-        // IMU なし: KF 初期化済みなら恒速モデル（a_k=0）で共分散を伝播させる。
-        // これにより気圧・GNSS 速度観測が有効に機能するようになる。
+        // IMU なし・途絶中: KF 初期化済みなら恒速モデルで共分散を伝播させる（気圧だけのバリオ）。
+        // これにより気圧の観測（KF_GNSS_VEL_ENABLED = 1 なら GNSS 速度も）が有効に機能するようになる。
+        // ★ **kf_predict(0, dt) ではなく kf_predict_baro_only(dt)**（2026-11-13〜。BUG-65）。
+        //   kf_predict(0, dt) は速度を「0 − バイアス」で動かすので、学んだ加速度バイアスが偽の加速度として毎回入り、
+        //   バイアスの状態が気圧の上下を加速度として拾ってしまう（11/13 のエレベーターの気圧で流すと ±0.1 m/s² 振れた）。
+        //   IMU が戻ると、そのずれたバイアスで V/S が流れる。バイアスは止めて、途絶える前の値を戻ったときに使う。
+        //   止まっているときの V/S の揺れも 0.049 → 0.013 m/s に減る（遅れは 2.5 → 2.8 秒。気圧だけなのはどちらも同じ）。
+        //   KF_ACC_GUARD のときと同じ式。入るときにバイアスと高度・速度の相関を 0 にする（kf_predict_baro_only のコメント）。
+        if (!s_kf_dead) {
+            s_kf_dead = true;
+            kf_P[0][2] = kf_P[2][0] = 0.0f;
+            kf_P[1][2] = kf_P[2][1] = 0.0f;
+        }
         if (kf_initialized) {
             static uint32_t _fallback_predict_us = 0;
             uint32_t _now_us = time_us_32();
@@ -756,7 +806,7 @@ void imu_update() {
                 kf_last_predict_us = _now_us;
                 _fallback_predict_us = _now_us;
                 if (dt > 0.0f && dt < 0.5f) {
-                    kf_predict(0.0f, dt);  // 加速度ゼロ = 恒速モデル
+                    kf_predict_baro_only(dt);  // 恒速モデル（バイアスは止める）
                     _imu_altitude = kf_x[0];
                     _imu_vspeed   = kf_x[1];
                 }
@@ -764,7 +814,14 @@ void imu_update() {
         }
         return;
     }
-    if (st == IMU_DRV_WAIT) return;
+    s_kf_dead = false;   // 戻った。次に途絶えたらまた相関を 0 にする
+    if (st == IMU_DRV_WAIT) {
+        // ★ 割り込みで読んでいるときは、サンプルが止まると毎回ここで返るので、以前は下の鮮度の安全網まで
+        //   一度も来なかった（BUG-60。2026-11-13 まで）。止まったまま IMU_ACC_MAX_AGE_US を過ぎたら、ここでも同じ処理をする。
+        //   しないと、戻った最初の predict が空白（最大 0.5 秒）をまたいだ dt を、戻ってから届いた数サンプルの平均で積分する。
+        if (_accel_valid && kf_initialized) (void)acc_stale_gate();
+        return;
+    }
 
     // ---- Kalman predict ステップ ----
     // 加速度が足し込まれていて、かつ Kalman が初期化済みのときのみ実行。
@@ -777,18 +834,8 @@ void imu_update() {
         return;
     }
 
-    // ---- 安全網: 古い加速度サンプルでは predict しない ----
-    // 通信途絶や Core0 の長いブロックからの復帰で、巨大な dt を積分しないためのゲート。
-    // 正常時は 4ms 周期なので 150ms を超えることはなく、このゲートは発火しない。
-    // 発火時は predict を止めるだけで、出力は imu_kalman_baro_update() が
-    // 気圧更新のたびに更新し続けるため、気圧ベースのバリオに劣化するだけで済む。
-    if ((uint32_t)(time_us_32() - _acc_last_us) > IMU_ACC_MAX_AGE_US) {
-        _acc_stale_skips++;
-        kf_last_predict_us = time_us_32();  // 復帰時に巨大な dt で積分しないよう進めておく
-        _acc_vsum = _acc_hsum = 0.0f;       // 溜まった古い分は捨てる
-        _acc_cnt  = 0;
-        return;
-    }
+    // ---- 安全網: 古い加速度サンプルでは predict しない（acc_stale_gate のコメント）----
+    if (acc_stale_gate()) return;
 
     // ---- predict はポーリング周期ではなく専用周期（30ms）で回す ----
     // kf_predict() は Q を dt でスケールせず「1 ステップあたり」で加算するため

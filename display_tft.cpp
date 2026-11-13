@@ -2687,8 +2687,9 @@ void draw_wireless(int cursor) {
     // 送信機の健康状態。受信側からは知りようがないので電波で運んでいる。
     // 飛ぶ前に気づきたい項目だけを載せてある（link_proto.h の status 設計）。
     const uint16_t st = link_sender_status();
-    // ★ LINK_ST_USB_SW_OFF（SW OFF のまま USB）は故障ではないので、赤／OK の判定から外す。
-    const uint16_t fault = st & (uint16_t)~LINK_ST_USB_SW_OFF;
+    // ★ LINK_ST_USB_SW_OFF（SW OFF のまま USB）と LINK_ST_TIME_WANTED（時刻をもらおうと聞いている）は
+    //   故障ではないので、赤／OK の判定から外す（LINK_ST_NOT_FAULT）。
+    const uint16_t fault = st & (uint16_t)~LINK_ST_NOT_FAULT;
     if (link_is_receiving()) {
       backscreen.setTextColor(fault ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
       backscreen.setCursor(2, y);
@@ -2705,6 +2706,10 @@ void draw_wireless(int cursor) {
       if (st & LINK_ST_USB_SW_OFF) {
         backscreen.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
         backscreen.print(" 5V");
+      }
+      if (st & LINK_ST_TIME_WANTED) {     // 送信機が GNSS の時刻をもらおうと聞いている（link_assist.cpp）
+        backscreen.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
+        backscreen.print(" TIME?");
       }
       y += lh;
       if (link_dest_mismatch()) {
@@ -3301,7 +3306,7 @@ static void draw_charge_popup() {
   }
 
   // 2行目: GNSS のバックアップ電池（BT1）の残りを、何が起きるかの文で出す（rtc_backup_format）。
-  //   例: "Fast GPS if OFF < 1.5 days" … いま切っても 1.5 日以内に入れ直せば GPS がすぐ位置を出す。
+  //   例: "Fast GPS if OFF < 36 hours" … いま切っても 36 時間以内に入れ直せば GPS がすぐ位置を出す（72 時間以上は days）。
   // ★ 2026-11-10 までは "USB: 1h23m  RTC: ~1.5d" で、初めての人には RTC も d も何のことか分からなかった。
   //   文にすると USB の通電時間と並べる幅が無いので、通電時間は外した（BT1 の推定は 11/08 から通電時間を使っていない）。
   const char* l2 = power_rtc_backup_status_str();

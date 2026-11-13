@@ -77,12 +77,18 @@ static volatile uint32_t bigtilt_relevels_ = 0;
 static volatile bool  bigtilt_event_     = false;   // 置き直した（呼び出し側がログに残す）
 static volatile float bigtilt_event_deg_ = 0.0f;    // そのときの食い違い [度]
 static volatile bool  bigtilt_event_yaw_kept_ = false;   // 方位を保ったか（ヨーが決まっていなかったら false）
-// 置き直したあと、保った方位を GNSS 航跡でまだ確かめていない（ESKF_BIGTILT_YAW_CHECK_DEG）。
-// true の間は GNSS 速度を観測に入れない（attitude_on_gnss_velocity）。
+// 置き直したあと（IMU の途絶明けも。imu_gap_recover）、保った方位を GNSS 航跡でまだ確かめていない（ESKF_BIGTILT_YAW_CHECK_DEG）。
+// true の間は GNSS 速度を観測に入れない（attitude_on_gnss_velocity）。2026-11-13〜 止まっているときだけは入れる（BUG-64）。
 static bool     yaw_suspect_   = false;
 static uint8_t  yaw_check_arm_ = 0;
 static volatile uint8_t yaw_check_event_ = 0;      // 0 = なし / 1 = 保った / 2 = 航跡で入れ直した（呼び出し側がログに残す）
 static volatile float   yaw_check_diff_  = 0.0f;   // そのときの 航跡 − 方位 [度]
+// IMU が途絶えて戻ったとき（imu_gap_recover。BUG-62。2026-11-13〜）。
+// true の間は、次の信用できる測位で速度を GNSS の値に入れ直す（attitude_on_gnss_velocity）。
+static bool     v_stale_ = false;
+static volatile bool  imu_gap_event_          = false;   // 途絶明けを扱った（呼び出し側がログに残す）
+static volatile float imu_gap_event_s_        = 0.0f;    // 途絶えていた秒数
+static volatile bool  imu_gap_event_yaw_kept_ = false;   // 方位を保ったか（ヨーが決まっていなかったら false）
 
 // ---- 機体ゼロ点（マウント基準）のオフセット [度] ----
 static float level_roll_off_ = 0.0f;
@@ -451,6 +457,8 @@ void attitude_setup() {
     yaw_suspect_ = false;
     yaw_check_arm_ = 0;
     yaw_check_event_ = 0;
+    v_stale_ = false;
+    imu_gap_event_ = false;
     gnss_updates_ = 0;
     gyro_seen_ = false;
     last_gyro_us_ = 0;
@@ -590,6 +598,42 @@ static void relevel_big_tilt(const float a[3], float err_deg) {
     bigtilt_relevels_++;
     bigtilt_event_deg_ = err_deg;
     bigtilt_event_     = true;
+}
+
+// IMU が途絶えて戻ったとき（ジャイロの間隔が ESKF_IMU_TIMEOUT_US を超えた。2026-11-13〜。BUG-62）。
+//   gap_s : 途絶えていた秒数（ログ用）
+// ★ 途絶えていた間（SCH16T の復旧は 1 分ごとなので、ふつう 1 分以上）は伝播も観測も止まっていたので、
+//   姿勢・速度は途絶える前のまま、不確かさも狭いまま。その間に旋回していると方位がずれたまま速度の観測を入れ、
+//   フィルタはロール・ピッチを回して合わせに行く（attitude_on_gnss_velocity の yaw_set_ の説明と同じ理屈）。
+//   2026-11-13 まで、途絶明けは平均ピッチの窓を空けるだけだった。
+// ★ **大きな傾きの置き直し（relevel_big_tilt）と同じ扱いにする**（ユーザーの判断）:
+//   ・傾きの不確かさを ESKF_INIT_ATT_SIGMA_MOVING_DEG へ広げる。重力の観測と速度の観測で引き戻す
+//     （60 度以上狂っていたら BIGTILT が比力で置き直す）。**姿勢そのもの（q_）は動かさない**。
+//     その場の比力で置き直すと、飛行中は振動・加速度のぶん傾く
+//   ・方位は保ち、不確かさを ESKF_BIGTILT_YAW_SIGMA_DEG へ広げて、GNSS が 3 m/s 以上で航跡と比べる（yaw_suspect_）。
+//     45 度を超えて食い違っていたら航跡で入れ直す。航跡でいきなり入れ直さないのは、飛行中は横滑りのぶんずれるため
+//   ・速度は次の信用できる測位で GNSS の値に入れ直す（v_stale_）。途絶えた間に変わった分を姿勢のせいにしないため
+//   ・自動ロールトリムの溜めかけと、BIGTILT の判定の途中の状態は捨てる（平均ピッチの窓は呼び出し側が空ける）
+static void imu_gap_recover(float gap_s) {
+    reset_tilt_covariance(ESKF_INIT_ATT_SIGMA_MOVING_DEG);
+    imu_gap_event_yaw_kept_ = yaw_set_;
+    if (yaw_set_) {
+        const float old = P_[2][2];
+        const float ys = ESKF_BIGTILT_YAW_SIGMA_DEG * (float)M_PI / 180.0f;
+        for (int i = 0; i < N_ERR; i++) { P_[2][i] = 0.0f; P_[i][2] = 0.0f; }
+        P_[2][2] = (old > ys * ys) ? old : ys * ys;
+        yaw_suspect_   = true;                  // GNSS が戻ったら航跡と比べる
+        yaw_check_arm_ = 0;
+    }
+    v_stale_ = true;
+    bt_since_us_     = 0;
+    bt_acc_lp_valid_ = false;
+    trim_roll_sum_  = 0.0f;
+    trim_time_s_    = 0.0f;
+    trim_run_count_ = 0;
+    trim_run_sum_   = 0.0f;
+    imu_gap_event_s_ = gap_s;
+    imu_gap_event_   = true;
 }
 
 // 静止中にジャイロのゼロ点を測って bg_ に入れる。
@@ -762,6 +806,8 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         // 途絶明けは平均ピッチの窓を空ける。途絶える前の値（復旧は 1 分ごとなので 1 分以上前）を
         // 新しい値と 10 秒混ぜないため。風はゆっくりしか変わらないので LPF は残す。
         pitch_avg_reset();
+        // 姿勢・速度の不確かさを広げ、方位は航跡で確かめ直す（BUG-62。imu_gap_recover のコメント）
+        imu_gap_recover(dt_meas);
         return;
     }
     const float dt = dt_meas;
@@ -985,8 +1031,12 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             wind_e_ += (we - wind_e_) * aw;
             wind_n_ += (wn - wind_n_) * aw;
             if (wind_fill_s_ < WIND_LPF_SEC) wind_fill_s_ += dt;
-        } else if (!rpy_enabled_ || !wind_enabled_ || sp <= WIND_MIN_SPEED_MPS) {
-            // 地上・OFF のときだけ捨てる。旋回中は「保持」であって破棄ではない。
+        } else if (!rpy_enabled_ || !wind_enabled_ || (gnss_vel_fresh() && sp <= WIND_MIN_SPEED_MPS)) {
+            // 地上・OFF のときだけ捨てる。旋回中と GNSS 断中は「保持」であって破棄ではない。
+            // ★ 遅いかどうかは **GNSS の速度の観測が生きているときだけ** sp で見る（2026-11-13〜。BUG-63）。
+            //   断中の sp は加速度の積分で漂うので、飛んでいても 2 m/s を割ると保持していた風を捨てていた
+            //   （画面では断中の風はオレンジの × 付きで残す作り。eskf_display_gnss_stale）。
+            //   逆に断中に漂って 2 m/s を超えても、それで「飛んでいる」とはみなさない（更新は上の straight_flight が鮮度を見ている）。
             wind_fill_s_ = 0.0f;
             wind_e_ = wind_n_ = 0.0f;
         }
@@ -1231,6 +1281,20 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         return;
     }
 
+    // ---- IMU の途絶明け: 速度を GNSS の値で入れ直す（imu_gap_recover。BUG-62。2026-11-13〜）----
+    // 途絶えた間に変わった速度を、残差として姿勢・バイアスのせいにしないため。速度の分散は測位の精度にし、
+    // ほかとの相関は落とす（入れ直したので意味を失った）。この回は観測として使わない（ヨーを入れたときと同じ）。
+    if (v_stale_) {
+        if (sAcc > ESKF_SACC_MAX) return;
+        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+        const float rv = (sAcc < ESKF_SACC_MIN) ? ESKF_SACC_MIN : sAcc;
+        for (int k = 3; k < 6; k++)
+            for (int i = 0; i < N_ERR; i++) { P_[k][i] = 0.0f; P_[i][k] = 0.0f; }
+        for (int k = 3; k < 6; k++) P_[k][k] = rv * rv;
+        v_stale_ = false;
+        return;
+    }
+
     // ---- ヨーが未設定なら、先に GNSS 航跡から入れる ----
     // ★ **ヨーが未知のまま速度観測を入れてはいけない。**
     //   観測は H = [0 I 0 0] の速度のみで、姿勢へは d(dv)/dt = -[Rf]x dtheta
@@ -1266,28 +1330,37 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
     if (yaw_suspect_) {
         if (sAcc > ESKF_SACC_MAX) return;
         const float sp = sqrtf(z[0]*z[0] + z[1]*z[1]);
-        if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) { yaw_check_arm_ = 0; return; }
-        if (++yaw_check_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;   // 単発の化けで判断しない
-        float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
-        if (trk < 0.0f) trk += 360.0f;
-        float r, p, y;
-        euler_from_state(r, p, y);
-        float d = trk - y;
-        while (d >  180.0f) d -= 360.0f;
-        while (d < -180.0f) d += 360.0f;
-        yaw_suspect_   = false;
-        yaw_check_diff_ = d;
-        if (fabsf(d) > ESKF_BIGTILT_YAW_CHECK_DEG) {
-            // 方位を保ったのが外れていた（ひっくり返った推定など）。航跡で入れ直し、速度も GNSS の値にする（ヨーを入れたときと同じ）
-            init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
-            v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
-            yaw_check_event_ = 2;
-            return;                 // この回は観測として使わない（速度は直接入れた）
+        if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) {
+            yaw_check_arm_ = 0;
+            // ★ **止まっているとき（ESKF_GROUND_MAX_GS_MPS 未満）は、確かめは待つが速度の観測は入れる**
+            //   （2026-11-13〜。BUG-64。ユーザーの判断）。止まっていれば比力は重力だけで真上を向いているので、
+            //   方位のずれは速度に効かない（d(dv)/dt = −[Rf]× dθ で Rf が真上なら、真上まわりの dθ は 0 を出す）。
+            //   入れないと v_ が加速度の積分で漂い、gnss_vel_fresh() が切れて風と姿勢に × が付いたままになっていた。
+            //   1〜3 m/s（走り出し・加速中）は方位のずれがロール・ピッチへ回るので、今までどおり入れない。
+            if (sp >= ESKF_GROUND_MAX_GS_MPS) return;
+        } else {
+            if (++yaw_check_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;   // 単発の化けで判断しない
+            float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
+            if (trk < 0.0f) trk += 360.0f;
+            float r, p, y;
+            euler_from_state(r, p, y);
+            float d = trk - y;
+            while (d >  180.0f) d -= 360.0f;
+            while (d < -180.0f) d += 360.0f;
+            yaw_suspect_   = false;
+            yaw_check_diff_ = d;
+            if (fabsf(d) > ESKF_BIGTILT_YAW_CHECK_DEG) {
+                // 方位を保ったのが外れていた（ひっくり返った推定など）。航跡で入れ直し、速度も GNSS の値にする（ヨーを入れたときと同じ）
+                init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
+                v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+                yaw_check_event_ = 2;
+                return;                 // この回は観測として使わない（速度は直接入れた）
+            }
+            // 保った方位をそのまま使い（航跡では上書きしない）、この測位から観測に入れる。
+            // ★ ここで v_ を GNSS の値に置き換えないこと。置き換えると速度の残差が無くなり、方位が直るのが遅れる
+            //   （11/11 の再現で、トンネルを出た直後のずれが +3.6 度 → −10 度に悪化した）。
+            yaw_check_event_ = 1;
         }
-        // 保った方位をそのまま使い（航跡では上書きしない）、この測位から観測に入れる。
-        // ★ ここで v_ を GNSS の値に置き換えないこと。置き換えると速度の残差が無くなり、方位が直るのが遅れる
-        //   （11/11 の再現で、トンネルを出た直後のずれが +3.6 度 → −10 度に悪化した）。
-        yaw_check_event_ = 1;
     }
 
     // 観測ノイズ。sAcc をそのまま使うが、極端に小さいと過信するので下限を置く。
@@ -1544,6 +1617,13 @@ bool attitude_take_bigtilt_event(float &err_deg, bool &yaw_kept) {
     yaw_kept = bigtilt_event_yaw_kept_;
     return true;
 }
+bool attitude_take_imu_gap_event(float &gap_s, bool &yaw_kept) {
+    if (!imu_gap_event_) return false;
+    imu_gap_event_ = false;
+    gap_s    = imu_gap_event_s_;
+    yaw_kept = imu_gap_event_yaw_kept_;
+    return true;
+}
 bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset) {
     if (yaw_check_event_ == 0) return false;
     reset = (yaw_check_event_ == 2);
@@ -1625,14 +1705,16 @@ void attitude_set_level_offset(float roll_deg, float pitch_deg) {
 // ---- 対気速度モデルの係数（既定は settings.h、SD の settings.txt から上書き可）----
 // 値の検査は read_setting_float()（mysd.cpp）側で行い、範囲外はクランプして
 // log.txt に残す。ここでは「壊れた値で 0 除算・NaN を作らない」最低限だけ守る。
+// ★ `< 1e30f` で inf も弾く（2026-11-13〜。BUG-66 の関連。NaN は比較が全部 false なので > 0 で落ちる）。
+static bool airspeed_param_ok(float v) { return v > 0.0f && v < 1e30f; }
 float attitude_get_airspeed_v0()  { return airspeed_v0_; }
-void  attitude_set_airspeed_v0(float mps)  { if (mps > 0.0f) airspeed_v0_  = mps; }
+void  attitude_set_airspeed_v0(float mps)  { if (airspeed_param_ok(mps)) airspeed_v0_  = mps; }
 float attitude_get_airspeed_k()   { return airspeed_k_; }
-void  attitude_set_airspeed_k(float deg)   { if (deg > 0.0f) airspeed_k_   = deg; }
+void  attitude_set_airspeed_k(float deg)   { if (airspeed_param_ok(deg)) airspeed_k_   = deg; }
 float attitude_get_airspeed_min() { return airspeed_min_; }
-void  attitude_set_airspeed_min(float mps) { if (mps > 0.0f) airspeed_min_ = mps; }
+void  attitude_set_airspeed_min(float mps) { if (airspeed_param_ok(mps)) airspeed_min_ = mps; }
 float attitude_get_airspeed_max() { return airspeed_max_; }
-void  attitude_set_airspeed_max(float mps) { if (mps > 0.0f) airspeed_max_ = mps; }
+void  attitude_set_airspeed_max(float mps) { if (airspeed_param_ok(mps)) airspeed_max_ = mps; }
 
 // ---- 較正した日 ----
 uint32_t attitude_get_calib_date() { return calib_date_; }

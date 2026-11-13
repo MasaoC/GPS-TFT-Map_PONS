@@ -100,8 +100,9 @@ static uint16_t s_gyro_cnt = 0, s_accel_cnt = 0;
 static uint32_t s_taken = 0;        // 推定へ渡したサンプルの通し数（imu_drv_poll が「この回に受け取ったか」を見る）
 static float    s_gyro_hz = 0.0f, s_accel_hz = 0.0f;
 
-// 健全性カウンタ。いまは 60 秒ログではなくシリアルと SD ログへ出している
-//   （画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業）。
+// 健全性カウンタ。★ **いまは数えるだけで、どこへも出していない**（シリアルにも SD ログにも。2026-11-13 に確かめた。
+//   それまでのコメントは「シリアルと SD ログへ出している」と書いていた）。
+//   画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業（docs/pons_todo.md で保留中）。
 static uint32_t s_crc_err = 0;      // CRC 不一致
 static uint32_t s_ce_err  = 0;      // CE（コマンドエラー）
 static uint32_t s_sat_err = 0;      // S=10（飽和）。データ自体は使える
@@ -800,8 +801,8 @@ bool imu_drv_alive() {
 float get_imu_gyro_hz()  { return s_gyro_hz; }
 float get_imu_accel_hz() { return s_accel_hz; }
 
-// ★ 健全性（CRC エラー・CE・飽和・STAT_SUM の故障ビット）はいまシリアルと SD ログへ
-//   出している。**画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業。**
+// ★ 健全性（CRC エラー・CE・飽和・STAT_SUM の故障ビット）は**いまは数えるだけでどこへも出していない**
+//   （上の s_crc_err の宣言のコメント）。**画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業。**
 
 // 読み出しの間隔の最長 [µs]（60 秒ログの gapmax=）。★ **読むたびに 0 へ戻す約束**。
 //   割り込みで読んでいるときは割り込みの間隔（ふだん 4ms ちょうど）、ポーリングのときは Core0 が止まった最長時間。

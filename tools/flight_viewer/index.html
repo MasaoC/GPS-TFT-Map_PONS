@@ -248,11 +248,16 @@
       min-height: 0;
       width: 100%;
       background: #f8fafc;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
     .gauge-body canvas {
-      width: 100%;
       height: 100%;
+      max-width: 100%;
+      aspect-ratio: 1 / 1;
       display: block;
+      margin: 0 auto;
     }
     .gauge-footer {
       padding: 4px 6px;
@@ -1120,6 +1125,8 @@
     let linkPolyline = null;
     let mapInitialized = false;
     let isReceivedLog = false;
+    let currentPlaneTransformYaw = null;     // CSS transform用連続ヨー角 (360度跨ぎ時の逆回転防止)
+    let currentBoatTransformHeading = null;  // CSS transform用連続ボート方位角
 
     // パイロン等の固定目標 (PONS公式 navdata.h より)
     const TARGETS = {
@@ -1137,6 +1144,10 @@
       initMap();
       setupEventListeners();
       window.addEventListener('resize', handleResize);
+      if (window.ResizeObserver) {
+        const ro = new ResizeObserver(() => handleResize());
+        document.querySelectorAll('.gauge-card, .chart-panel').forEach(el => ro.observe(el));
+      }
       handleResize();
       // 初期アニメーションループ開始
       requestAnimationFrame(animationLoop);
@@ -1169,6 +1180,8 @@
       const slider = document.getElementById('seek-slider');
       slider.addEventListener('input', () => {
         if (totalDurationSec > 0) {
+          currentPlaneTransformYaw = null;
+          currentBoatTransformHeading = null;
           currentTimeSec = (slider.value / 1000) * totalDurationSec;
           updateUI(currentTimeSec);
         }
@@ -1534,6 +1547,8 @@
       currentTimeSec = flightOnly ? (takeoffSec > 0 ? takeoffSec : getFirstFlightTime()) : 0;
 
       // 地図の航跡更新
+      currentPlaneTransformYaw = null;
+      currentBoatTransformHeading = null;
       updateMapTrajectory();
 
       // UI初期更新
@@ -1988,7 +2003,17 @@
       if (mapInitialized && currentMarker) {
         currentMarker.setLatLng([data.lat, data.lon]);
         const el = document.getElementById('plane-marker');
-        if (el) el.style.transform = `rotate(${data.yaw ?? 0}deg)`;
+        if (el) {
+          const targetYaw = (data.yaw !== null && !isNaN(data.yaw)) ? data.yaw : 0;
+          if (currentPlaneTransformYaw === null) {
+            currentPlaneTransformYaw = targetYaw;
+          } else {
+            // 0/360度跨ぎ時に350度回転せず最短角(-180〜+180度)で滑らかに回転
+            const diff = ((targetYaw - currentPlaneTransformYaw) % 360 + 540) % 360 - 180;
+            currentPlaneTransformYaw += diff;
+          }
+          el.style.transform = `rotate(${currentPlaneTransformYaw}deg)`;
+        }
 
         // 受信ログ時の追尾ボートマーカー＆機体間リンク線
         if (isReceivedLog && boatMarker && linkPolyline) {
@@ -2001,7 +2026,13 @@
               const dLat = (data.lat - data.own_lat) * 111000;
               const dLon = (data.lon - data.own_lon) * 111000 * Math.cos(data.lat * Math.PI / 180);
               const boatHeading = (Math.atan2(dLon, dLat) * 180 / Math.PI + 360) % 360;
-              boatEl.style.transform = `rotate(${boatHeading}deg)`;
+              if (currentBoatTransformHeading === null) {
+                currentBoatTransformHeading = boatHeading;
+              } else {
+                const diff = ((boatHeading - currentBoatTransformHeading) % 360 + 540) % 360 - 180;
+                currentBoatTransformHeading += diff;
+              }
+              boatEl.style.transform = `rotate(${currentBoatTransformHeading}deg)`;
             }
 
             if (!map.hasLayer(linkPolyline)) linkPolyline.addTo(map);
@@ -2041,6 +2072,13 @@
     // ============================================================
     function drawVectorTriangle(d, tas) {
       const canvas = document.getElementById('canvas-vector');
+      // 表示サイズと内部解像度を完全一致させ、楕円歪みを防止
+      const rect = canvas.getBoundingClientRect();
+      const sz = Math.round(Math.min(rect.width, rect.height) || canvas.clientHeight || canvas.clientWidth);
+      if (sz > 0 && (canvas.width !== sz || canvas.height !== sz)) {
+        canvas.width = sz;
+        canvas.height = sz;
+      }
       const ctx = canvas.getContext('2d');
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
@@ -2067,15 +2105,15 @@
       ctx.stroke();
       ctx.restore();
 
-      // 機体アイコン (士 型)
+      // 機体アイコン (士 型) - 矢印と重なっても視認性を損なわないグレー
       ctx.save();
       ctx.translate(cx, cy);
       const yawAngle = d.yaw !== null ? d.yaw : 0;
       ctx.rotate((yawAngle * Math.PI) / 180);
 
-      ctx.fillStyle = "#0f172a";
-      ctx.strokeStyle = "#000000";
-      ctx.lineWidth = 1.5;
+      ctx.fillStyle = "#94a3b8";
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 1.0;
 
       // 胴体
       ctx.fillRect(-2, -22, 4, 34);
@@ -2152,8 +2190,6 @@
         drawArrow(ctx, cx, cy, (d.wspd !== null && d.wspd > 0) ? ttTargetX : ttDirectX, (d.wspd !== null && d.wspd > 0) ? ttTargetY : ttDirectY, "#0f172a", 4.0);
       }
 
-      ctx.restore();
-
       // HUDテキスト更新 (下部ステータスバー: データ欠損時は --- を表示)
       const yawAccStr = (d.yaw_acc95 !== null && !isNaN(d.yaw_acc95)) ? ` (±${d.yaw_acc95.toFixed(0)}°)` : "";
       const yawStr = (d.yaw !== null && !isNaN(d.yaw)) ? `${d.yaw.toFixed(0)}°${yawAccStr}` : "---°";
@@ -2200,6 +2236,13 @@
     // ============================================================
     function drawArtificialHorizon(d) {
       const canvas = document.getElementById('canvas-horizon');
+      // 表示サイズと内部解像度を完全一致させ、楕円歪みを防止
+      const rect = canvas.getBoundingClientRect();
+      const sz = Math.round(Math.min(rect.width, rect.height) || canvas.clientHeight || canvas.clientWidth);
+      if (sz > 0 && (canvas.width !== sz || canvas.height !== sz)) {
+        canvas.width = sz;
+        canvas.height = sz;
+      }
       const ctx = canvas.getContext('2d');
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
@@ -2683,12 +2726,28 @@
     }
 
     function handleResize() {
-      // 計器およびチャート用 Canvas の解像度フィット
-      ['canvas-vector', 'canvas-horizon', 'canvas-chart-speed', 'canvas-chart-rp', 'canvas-chart-alt'].forEach(id => {
+      // 計器用 Canvas (正方形 1:1 解像度フィットで楕円化を恒久防止)
+      ['canvas-vector', 'canvas-horizon'].forEach(id => {
+        const c = document.getElementById(id);
+        if (c) {
+          const rect = c.getBoundingClientRect();
+          const sz = Math.round(Math.min(rect.width, rect.height) || c.clientHeight || c.clientWidth || 100);
+          if (sz > 0 && (c.width !== sz || c.height !== sz)) {
+            c.width = sz;
+            c.height = sz;
+          }
+        }
+      });
+      // チャート用 Canvas の解像度フィット
+      ['canvas-chart-speed', 'canvas-chart-rp', 'canvas-chart-alt'].forEach(id => {
         const c = document.getElementById(id);
         if (c && c.parentElement) {
-          c.width = c.parentElement.clientWidth;
-          c.height = c.parentElement.clientHeight;
+          const w = c.parentElement.clientWidth;
+          const h = c.parentElement.clientHeight;
+          if (w > 0 && h > 0 && (c.width !== w || c.height !== h)) {
+            c.width = w;
+            c.height = h;
+          }
         }
       });
       if (flightData.length > 0) updateUI(currentTimeSec);

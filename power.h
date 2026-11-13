@@ -115,7 +115,7 @@ int   power_charging_remaining_min();    // 満充電までの推定残り時間
 int   power_charging_remaining_90_min(); // 90%確実完了までの残り時間 [分] (0=FULL)
 bool  power_charging_full_cutoff_confirmed(); // 満充電到達後、90%確実消灯目安（+20分）を達成したか
 uint32_t power_charging_elapsed_sec();   // USB 通電（充電開始）からの経過時間 [秒]（2026-11-10 から画面では使っていない）
-const char* power_rtc_backup_status_str(); // 充電ポップアップの 2 行目 "Fast GPS if OFF < 1.5 days"（BT1 の残り。rtc_backup.cpp）
+const char* power_rtc_backup_status_str(); // 充電ポップアップの 2 行目 "Fast GPS if OFF < 36 hours" 等（BT1 の残り。rtc_backup.cpp）
 bool  power_charge_popup_active();       // 充電ポップアップを地図画面に表示すべきか
 void  power_charge_popup_snooze();       // ボタン操作時にポップアップを一時非表示にする
 

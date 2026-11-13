@@ -278,8 +278,8 @@ static uint32_t s_wait_log_ms = 0;
 // ---- 外から来た時刻（gnss_dbd_give_time。PC の PONS:TIME、のちに LoRa、試験の COLD,TIME）----
 // 受けた時刻はいちばん新しいものを 1 つ覚えておき（s_gt）、入れてよくなったら time_tick() が入れる。
 // 入れたら返事（MGA-ACK、msgId 0x40）を待つ。GNSS がリセットしたら（gnss_dbd_on_setup・試験）数え直す。
-struct GivenTime { bool on; uint64_t utc_ms; uint32_t at_ms; uint8_t src; };
-static GivenTime s_gt = { false, 0, 0, 0 };
+struct GivenTime { bool on; uint64_t utc_ms; uint32_t at_ms; uint8_t src; uint32_t acc_ms; };   // acc_ms 0 = 出どころの既定
+static GivenTime s_gt = { false, 0, 0, 0, 0 };
 enum : uint8_t { TI_NONE = 0, TI_WAIT, TI_OK, TI_NG, TI_NOACK };
 static uint8_t  s_ti = TI_NONE;      // 最後に入れた時刻の返事
 static uint8_t  s_ti_tries = 0;      // この GNSS に入れた回数（GNSS_TIME_MAX_TRIES まで）
@@ -578,7 +578,8 @@ static void give_time_now() {
   const uint64_t t_now = s_gt.utc_ms + el;
   // GNSS は受け取り終えた瞬間の時刻として使う（ref.source=0）。32 バイトを 38400bps で書き終えるまで約 8ms。
   const uint64_t t = t_now + 8;
-  const uint32_t acc = src_acc_ms(s_gt.src) + (uint32_t)((uint64_t)el * GNSS_TIME_DRIFT_PPM / 1000000ULL);
+  const uint32_t acc = (s_gt.acc_ms ? s_gt.acc_ms : src_acc_ms(s_gt.src))
+                     + (uint32_t)((uint64_t)el * GNSS_TIME_DRIFT_PPM / 1000000ULL);
   int y; unsigned mo, d;
   civil_from_days((int32_t)(t / 86400000ULL), y, mo, d);
   const uint32_t ms  = (uint32_t)(t % 86400000ULL);
@@ -1200,7 +1201,7 @@ void gnss_dbd_command(const char* arg) {
   s_ep_time = with_time;
   // GNSS をリセットするので、外から入れた時刻も数え直す。素の試験では覚えていた時刻も捨てる（あとで入れない）。
   s_ti = TI_NONE; s_ti_tries = 0; s_ti_utc = 0; s_ti_checked = false;
-  if (with_time) s_gt = { true, self_utc, self_at, (uint8_t)GNSS_TIME_SRC_SELF };
+  if (with_time) s_gt = { true, self_utc, self_at, (uint8_t)GNSS_TIME_SRC_SELF, 0 };
   else           s_gt.on = false;
   s_rs_pass = 0;
   s_rs_skip = nullptr;
@@ -1225,13 +1226,16 @@ void gnss_dbd_command(const char* arg) {
 //  外から GNSS へ時刻を入れる口（gnss_dbd.h の説明）
 // ============================================================
 // ★ 出どころ（PC・LoRa・…）を足すときもここへ渡すだけ。いつ入れるか・入れ直すかは time_block() が決める。
-const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src) {
+const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src, uint32_t acc_ms) {
 #if !GNSS_DBD_ENABLE
-  (void)utc_ms; (void)at_ms; (void)src;
+  (void)utc_ms; (void)at_ms; (void)src; (void)acc_ms;
   return "DISABLED";
 #else
   if (getReplayMode() || s_after_replay) return "REPLAY";   // 日時と fix が再生した CSV の値なので比べられない
   if (!time_plausible(utc_ms)) return "BAD_TIME";
+  // SD の DBD を吸い出した時刻（GNSS が衛星から解いた UTC）より前の時刻はありえない（2026-11-13〜。時計が戻った PC・
+  // 壊れた無線の時刻を弾く）。1 分の余裕は、吸い出した時刻が秒で丸めてあるぶん。
+  if (load_state() == LD_OK && s_file.utc != 0 && utc_ms / 1000ULL + 60ULL < (uint64_t)s_file.utc) return "BAD_TIME";
   const uint32_t now = millis();
   const char* b = time_block(now);
   if (b == TB_TEST)    return "TEST";
@@ -1240,11 +1244,28 @@ const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src)
   if (b == TB_GAVE_UP) return "GAVE_UP";
   // いちばん新しい時刻を覚える（入れ直すときも、これをその時点まで進めて使う）
   const bool was_on = s_gt.on;
-  s_gt = { true, utc_ms, at_ms, (uint8_t)src };
+  s_gt = { true, utc_ms, at_ms, (uint8_t)src, acc_ms };
   if (b == nullptr) { give_time_now(); return "SENT"; }
   // 入れられるようになったら time_tick() が入れる。ログは覚え始めたときだけ（LoRa は 2 秒ごとに来るため）
   if (!was_on) enqueueTask(createLogSdfTask("GNSS TIME (%s): kept for later (%s)", src_name(src), b));
   return "LATER";
+#endif
+}
+
+// いま外から時刻をもらう値打ちがあるか（gnss_dbd.h の説明）。LoRa の助け合い（link_assist.cpp）が、機体の聞く窓・
+// ボートの要求を開けておくかに使う。★ 判断は time_block() から出す（入れる側の判断と食い違わないように）。
+GnssTimeWant gnss_dbd_time_want() {
+#if !GNSS_DBD_ENABLE
+  return GNSS_TIME_WANT_NO;
+#else
+  // リプレイ中・抜けた直後は、日時が再生した CSV の値なので分からない（窓は閉じずに待つ）
+  if (getReplayMode() || s_after_replay) return GNSS_TIME_WANT_UNKNOWN;
+  if (s_ep != EP_NONE && s_ep != EP_BOOT) return GNSS_TIME_WANT_NO;   // 机の上の試験（時刻つきの試験は自分の時刻を入れる）
+  if (!gnss_rtc_boot_checked()) return GNSS_TIME_WANT_UNKNOWN;
+  const char* b = time_block(millis());
+  if (b == TB_KNOWN || b == TB_GIVEN || b == TB_GAVE_UP || b == TB_TEST) return GNSS_TIME_WANT_NO;
+  // それ以外（入れられる・返事待ち・入れ直し待ち・GNSS が黙っている）は、まだほしい
+  return GNSS_TIME_WANT_YES;
 #endif
 }
 

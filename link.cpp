@@ -30,6 +30,8 @@
 #include "navdata.h"
 #include "e220.h"        // 下位ドライバ（UART・モード制御・レジスタ）
 #include "lora_link/link_wire2.h"   // 電波に載せる 32 バイトのフレーム
+#include "lora_link/link_beacon.h"  // GNSS の時刻の助け合いのビーコン（同じ 32 バイト。印だけが違う）
+#include "link_assist.h"            // GNSS の時刻の助け合い（2026-11-13〜）
 #include "power.h"       // 電源経路の異常・SW OFF のまま USB（送信機の電源の状態をビットで運ぶ）
 
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
@@ -172,11 +174,20 @@ static bool link_chscan_holds_radio();// 実体は下（チャンネル調査が
 //   分かれば足りる。回転枠の値を混ぜない）。
 static LinkW2Rx s_w2rx;
 static uint8_t  s_lastSlot = 0xFF;   // 最後に受けた自グループのフレームの回転枠の番号（received/ の slot 列）
+static uint8_t  s_lastRaw[LINK_W2_LEN];   // 最後に受けたテレメトリの電波の 32 バイト（GNSS の時刻の助け合いが時刻を読む）
 
 // 1 フレーム受けて LinkTelem にする。slot には回転枠の番号を返す（要らなければ nullptr）。
+// ★ ビーコン（GNSS の時刻の助け合い。印 0x58。2026-11-13〜）はここで link_assist.cpp へ渡し、テレメトリとしては返さない。
+//   受信の数・RSSI・seq・ミラー・NO SIGNAL・DUP SENDER・GROUP X FOUND・送信前チェック・チャンネル調査の数には混ぜない。
+//   チャンネル調査の間は別の CH を聞いているので、渡さずに捨てる。
 static bool link_recv_telem(LinkTelem* t, int16_t* rssi, bool merge_own, uint8_t* slot) {
     uint8_t buf[LINK_W2_LEN];
-    if (!e220_recv(buf, (uint8_t)LINK_W2_LEN, rssi)) return false;
+    for (;;) {
+        if (!e220_recv(buf, (uint8_t)LINK_W2_LEN, rssi)) return false;
+        if (!link_bc_is_magic(buf[0])) break;
+        if (!link_chscan_running()) lassist_on_beacon(buf, *rssi);
+    }
+    memcpy(s_lastRaw, buf, sizeof(s_lastRaw));
     if (slot) *slot = link_w2_slot(buf);
     if (merge_own && link_w2_group(buf) == link_group) {
         link_w2_decode(buf, &s_w2rx, millis(), s_txPeriodEstMs);
@@ -199,6 +210,17 @@ static bool link_rx_slot_known(uint8_t slot) {
 }
 
 static void link_poll_radio() {
+    // ★ 送信機は、GNSS の時刻の助け合いの窓の間だけ聞く（送信の合間も mode 0。lassist_keep_awake）。
+    //   拾うのは提供ビーコンだけ（link_recv_telem が link_assist.cpp へ渡す）。テレメトリ（別の送信機）は捨てる。
+    //   送信前チェックの間は、あちらが自分で読む。
+    if (link_mode_setting == LINK_MODE_TX) {
+        if (lassist_keep_awake() && link_preflight_state() != LINK_PF_RUNNING) {
+            LinkTelem t;
+            int16_t   rssi = 0;
+            while (link_recv_telem(&t, &rssi, false, nullptr)) {}
+        }
+        return;
+    }
     if (link_mode_setting != LINK_MODE_RX) return;
 
     LinkTelem t;
@@ -224,6 +246,8 @@ static void link_poll_radio() {
         if (prev_rx_ms > 0) s_rxIntervalMs = s_rxMs - prev_rx_ms;
         s_rxNewFrame = true;         // ミラー中の「新しい位置が来た」の合図
         s_drawFrame  = true;         // 同じ合図の描画用（link_take_draw_frame）
+        // GNSS の時刻の助け合い: 機体の時刻（自分の GNSS が時刻を知らないとき）・「時刻がほしい」のビット・枠の基準
+        lassist_on_telem(s_lastRaw, &s_w2rx, rssi);
 
         // 受信ログ（docs/pons_link.md §5）。received/ は無線で得た情報だけを置く。
         enqueueTask(createSaveRxCsvTask(&s_rx.t, s_rx.rssi, s_rx.age_ms, s_lastSlot));
@@ -530,7 +554,8 @@ static void link_probe_module() {
         }
     }
 
-    if (tx) e220_sleep();              // 送信機は送信の合間は寝かせる
+    // 送信機は送信の合間は寝かせる。ただし GNSS の時刻の助け合いの窓の間は起こしたまま（提供ビーコンを聞く）
+    if (tx && !lassist_keep_awake()) e220_sleep();
 }
 
 // 無線モジュールが応答しない＝設定の照合が通らない、または問い合わせに返事が無い。
@@ -1073,8 +1098,18 @@ static void link_preflight_tick() {
 //   受信待機 8.2mA なので平均 +1.6mA 程度。TFT と RP2350 の消費に対しては誤差。
 // （LinkTxState と s_txState/s_txStateMs は link_probe_module から参照できるようファイル上部へ配置）
 
+// GNSS の時刻の助け合いの窓のために、送ったあと寝かせずにおいたか（窓が閉じたら寝かせる）
+static bool s_assistAwake = false;
+
 static void link_tx_tick() {
-    if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; return; }
+    if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; s_assistAwake = false; return; }
+
+    // ★ 窓が閉じた（時刻を受け取った・30 分・リプレイ など）。送信の合間なら、いつもどおり寝かせる。
+    //   点検中は点検が起こしているので触らない（終わったら点検が寝かせる）。
+    if (s_assistAwake && !lassist_keep_awake() && s_txState == LTX_IDLE && s_pfState != LINK_PF_RUNNING) {
+        e220_sleep();
+        s_assistAwake = false;
+    }
 
     // ★★ **リプレイ中とデモ中は送信しない**（判定は link_rf_suppressed()）。
     //   apply_replay_row()（gnss.cpp）は stored_latitude / stored_fixtype など
@@ -1149,7 +1184,10 @@ static void link_tx_tick() {
               if (left) { left--;
                   enqueueTask(createLogSdfTask("LINK TX: air %lums (prof=%u)",
                                                (unsigned long)el, link_radio_profile)); } }
-            e220_sleep();
+            // ★ GNSS の時刻の助け合いの窓の間は寝かせない（送信の合間に提供ビーコンを聞く。link_assist.cpp）。
+            //   次の送信は LTX_IDLE → e220_wake_begin() だが、起きていれば e220_wake_ready() がすぐ通るので、そのまま送れる。
+            if (lassist_keep_awake()) s_assistAwake = true;
+            else                      e220_sleep();
             s_txState = LTX_IDLE;
             return;
         }
@@ -1408,6 +1446,7 @@ void link_loop() {
         return;
     }
     link_poll_radio();
+    lassist_loop();             // GNSS の時刻の助け合い（窓・提供・要求。link_assist.cpp）
     link_watch_mirror_transition();
     link_watch_no_signal_repeat();
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
@@ -1738,6 +1777,11 @@ static void link_push_telemetry() {
     if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
     if (power_fault_active())                          st |= LINK_ST_PWR_FAULT;
     if (!batt_ok)                                      st |= LINK_ST_USB_SW_OFF;   // 受信機は "s5V"
+    // GNSS が時刻を知らず、仲間の提供ビーコンを聞いている（link_assist.cpp）。fix しているボートがこれを見て時刻を送る
+    if (lassist_time_wanted())                         st |= LINK_ST_TIME_WANTED;
+    // 時刻の確からしさ（NAV-PVT の tAcc。1〜10 秒なら COARSE、それより悪ければ BAD、よければ 0）。fix の前の RTC の時刻を
+    // ボートが使うときに、GNSS へ伝える精度を決める（link_w2_utc_ms・link_assist.cpp）
+    st |= lassist_time_status_bits();
     t.status = st;
 
     // ★ ヘッダとペイロードを 1 回の write() にまとめるのは e220_send() の責任。

@@ -194,20 +194,16 @@ void rtc_backup_tick() {
 
 // 充電ポップアップの 2 行目。「いま電源を切っても、この時間より前に入れ直せば GPS がすぐ位置を出す」を文で出す。
 // ★ 2026-11-10 までは "RTC: ~1.5d" で、初めての人には何の時間なのか分からなかった（RTC も d も略語）。
-//   箱の内側は 217px（AA_FONT_SMALL）。最長は "Fast GPS if OFF < 23 hours" の 192px。
-// ★ 安全側に切り捨てる。2 時間未満はまとめて "< 1 hour"（前の "<1h"。時計が死んだ起動から充電して最初の 10 分ほどだけ）。
+//   箱の内側は 217px（AA_FONT_SMALL）。最長は "Fast GPS if OFF < 23 hours"〜"71 hours" 付近の約 192px。
+// ★ 安全側に切り捨てる。2 時間未満はまとめて "< 1 hour"（時計が死んだ起動から充電して最初の 10 分ほどだけ）。
+//   72 時間未満（2〜71 時間）は hours 表記、72 時間以上（3 日以上）は days 表記にする。
 void rtc_backup_format(char* buf, size_t n) {
   if (!s_known) { snprintf(buf, n, "Fast GPS: checking..."); return; }
   const float h = s_h;
   if (h < 2.0f) {
     snprintf(buf, n, "Fast GPS if OFF < 1 hour");
-  } else if (h < 24.0f) {
-    snprintf(buf, n, "Fast GPS if OFF < %d hours", (int)h);
   } else if (h < 72.0f) {
-    const int hd = (int)(h / 12.0f);   // 半日の数（2〜5）。3 日未満は 0.5 日刻み
-    if (hd == 2)          snprintf(buf, n, "Fast GPS if OFF < 1 day");
-    else if (hd % 2 == 0) snprintf(buf, n, "Fast GPS if OFF < %d days", hd / 2);
-    else                  snprintf(buf, n, "Fast GPS if OFF < %d.5 days", hd / 2);
+    snprintf(buf, n, "Fast GPS if OFF < %d hours", (int)h);
   } else {
     snprintf(buf, n, "Fast GPS if OFF < %d days", (int)(h / 24.0f));
   }

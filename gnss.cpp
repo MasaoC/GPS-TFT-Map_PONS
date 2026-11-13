@@ -150,6 +150,22 @@ static uint8_t  eph_orbit_svs  = 0;      // いま放送暦を使っている衛
 // fix の瞬間に手元にある値は**まだ 1 度も届いていない（0 のまま）**ことがあるため。
 static bool     ana_fix_report_pending = false;
 
+// この起動で ANA をどうしたか（2026-11-13〜。BT1 が切れていた起動＝コールドスタートのときだけ切る）。
+// SPG 5.10 は「コールドスタートのあと、ANA が有効だと QZSS を航法に使わない」（SPG 5.30 のリリースノート
+// UBXDOC-304424225-20393 §5 の "SPG 5.10 limitation"。回避策は ANA を無効にすること）。
+// 起動時は BT1 の生死が最初の NAV-PVT まで分からないので、そのあと gnss_ana_boot_tick() が送る。
+enum { ANA_MODE_UNDECIDED = 0, ANA_MODE_ON, ANA_MODE_OFF_COLD, ANA_MODE_OFF_SETTING };
+static uint8_t  s_ana_mode        = ANA_MODE_UNDECIDED;
+static uint32_t s_ana_ack_wait_ms = 0;   // gnss_ana_boot_tick() が送って返事を待っている間、送った millis()（0=待っていない）
+static const char* ana_mode_str() {
+  switch (s_ana_mode) {
+    case ANA_MODE_ON:          return "on";
+    case ANA_MODE_OFF_COLD:    return "off(cold)";
+    case ANA_MODE_OFF_SETTING: return "off(setting)";
+    default:                   return "?";
+  }
+}
+
 // UBX ハンドラーから参照するため前方宣言
 void removeStaleSatellites();
 
@@ -200,6 +216,9 @@ static float    ubx_veln_mps     = 0.0f;  // 北向き速度（NAV-PVT velN byte
 static float    ubx_vele_mps     = 0.0f;  // 東向き速度（NAV-PVT velE bytes 52-55、m/s）
 static uint32_t ubx_itow_ms      = 0;     // GPS 週内時刻（NAV-PVT iTOW bytes 0-3、ms）
 static bool     ubx_gnssFixOK    = false; // NAV-PVT flags bit0: gnssFixOK（GNSS フィックスが有効かつ品質 OK）
+// 時刻の精度の見積もり（NAV-PVT tAcc bytes 12-15、ns）。fix の前でも、GNSS の時計（RTC。BT1 が生きているとき）から
+// 時刻が出ていればその確からしさが入る。GNSS の時刻の助け合い（link_assist.cpp）が、時刻を仲間へ渡すときに添える（2026-11-13〜）
+static uint32_t ubx_tacc_ns      = 0xFFFFFFFFUL;
 static bool     s_rtc_alive_on_boot = false; // 起動直後に GNSS 内部 RTC が生きていたか（MS621FE 生存判定）
 static bool     s_rtc_boot_checked  = false;
 
@@ -215,6 +234,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   uint8_t valid  = p[11];
   ubx_date_valid = (valid & 0x01) != 0;
   ubx_time_valid = (valid & 0x02) != 0;
+  ubx_tacc_ns    = (uint32_t)p[12] | ((uint32_t)p[13] << 8) | ((uint32_t)p[14] << 16) | ((uint32_t)p[15] << 24);
   if (ubx_date_valid) {
     ubx_year  = (uint16_t)(p[4] | (p[5] << 8));
     ubx_month = p[6];
@@ -369,6 +389,8 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
   for (int i = 0; i < GSA_MAX_PRN; i++) gsa_prns[i] = 0;
   // 軌道の出どころ（AssistNow Autonomous の効き具合）を数え直す
   uint8_t n_ana_data = 0, n_ana_orbit = 0, n_eph_orbit = 0, n_alm_orbit = 0;
+  // 測位に使っている衛星を GNSS の種類ごとに数える（QZSS が使われているかを log.txt で見るため。2026-11-13〜）
+  uint8_t u_gps = 0, u_gal = 0, u_bds = 0, u_qzss = 0, u_glo = 0, seen_qzss = 0;
   const unsigned long now = millis();
   bool seen[MAX_SATELLITES] = {};
 
@@ -390,6 +412,18 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     if (orbitSource == 4)    n_ana_orbit++;
     if (orbitSource == 1)    n_eph_orbit++;
     if (orbitSource == 2)    n_alm_orbit++;
+
+    if (svUsed) {
+      switch (gnssId) {
+        case 0: u_gps++;  break;
+        case 2: u_gal++;  break;
+        case 3: u_bds++;  break;
+        case 5: u_qzss++; break;
+        case 6: u_glo++;  break;
+        default: break;   // SBAS（1）などは数えない
+      }
+    }
+    if (gnssId == 5 && cno > 0) seen_qzss++;   // 受かっている（C/N0 が 0 でない）QZSS
 
     // gnssId → satelliteType 変換
     int satType;
@@ -473,8 +507,31 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
     // fix から最大 10 秒後の値なので、放送暦に切り替わり始めた衛星も混ざりうる。
     ana_fix_report_pending = false;
     // ALM はアルマナックで軌道を出している衛星（測位には使えない。どこを探すかの手がかり）。
-    enqueueTask(createLogSdfTask("GNSS ORBIT after 1st fix: ANA=%d EPH=%d ALM=%d (ANA data %d SVs)",
-      n_ana_orbit, n_eph_orbit, n_alm_orbit, n_ana_data));
+    // 後ろの used は測位に使っている衛星の数（G=GPS E=Galileo B=BeiDou Q=QZSS R=GLONASS）と、この起動の ANA（2026-11-13〜）。
+    enqueueTask(createLogSdfTask("GNSS ORBIT after 1st fix: ANA=%d EPH=%d ALM=%d (ANA data %d SVs) "
+      "used G%u E%u B%u Q%u R%u (QZSS seen %u) ana=%s",
+      n_ana_orbit, n_eph_orbit, n_alm_orbit, n_ana_data,
+      u_gps, u_gal, u_bds, u_qzss, u_glo, seen_qzss, ana_mode_str()));
+  }
+  // QZSS を航法に使っているか（2026-11-13〜）。SPG 5.10 はコールドスタートのあと ANA が有効だと QZSS を使わないので、
+  // コールドのときは ANA を切った（gnss_ana_boot_tick）。本当に使われるようになったかを log.txt で確かめるための 2 種類の行:
+  //   ・起動して最初に QZSS を使った時点（1 回だけ。NAV-SAT は普段 10 秒に 1 回なので 10 秒刻み）
+  //   ・GNSS_SVS_LOG_INTERVAL_MS ごとの使用衛星数（`QZSS seen` が 1 以上なのに Q0 が続けば、受かっているのに使っていない）
+  {
+    static bool qzss_first_logged = false;
+    if (!qzss_first_logged && u_qzss > 0) {
+      qzss_first_logged = true;
+      enqueueTask(createLogSdfTask("GNSS QZSS first used %.1fs after boot (Q%u of %u seen, ana=%s)",
+        now / 1000.0f, u_qzss, seen_qzss, ana_mode_str()));
+    }
+    static unsigned long svs_window_ms = 0;
+    if (svs_window_ms == 0) {
+      svs_window_ms = now ? now : 1;   // 最初の窓は NAV-SAT の受信開始から数える
+    } else if (now - svs_window_ms >= GNSS_SVS_LOG_INTERVAL_MS) {
+      svs_window_ms = now;
+      enqueueTask(createLogSdfTask("GNSS SVS used G%u E%u B%u Q%u R%u (QZSS seen %u) ana=%s",
+        u_gps, u_gal, u_bds, u_qzss, u_glo, seen_qzss, ana_mode_str()));
+    }
   }
   ubx_sat_updated = true;
 }
@@ -656,6 +713,21 @@ void gnss_ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len
   ubx_send_packet(cls, id, payload, len);
 }
 
+// CFG-ANA-USE_ANA を RAM と BBR に書く（gnss_setup_impl の ⑦ の UBLOX_CFG_ANA_ON / OFF と同じ中身）。返事は待たない。
+static void ana_send_valset(bool on) {
+  const uint8_t valset[9] = { 0x00, 0x03, 0x00, 0x00, 0x01, 0x00, 0x23, 0x10, (uint8_t)(on ? 0x01 : 0x00) };
+  ubx_send_packet(0x06, 0x8A, valset, sizeof(valset));
+}
+// gnss_ana_boot_tick() が送った CFG-ANA の結果を 1 行残す（ACK / NAK を受けたとき、返事が来なかったとき）
+static void ana_boot_log(const char* result) {
+  if (s_ana_mode == ANA_MODE_ON) {
+    enqueueTask(createLogSdfTask("GNSS ANA on for this boot (rtc alive on boot): %s", result));
+  } else {
+    enqueueTask(createLogSdfTask("GNSS ANA off for this boot (rtc lost on boot = cold start; "
+                                 "SPG 5.10 does not use QZSS after a cold start with ANA): %s", result));
+  }
+}
+
 // MON-RF 出力設定 (rate: 何秒に 1 回か。1=1Hz、0=停止。航法の周期ではなく秒で数える)
 void gnss_enable_mon_rf(uint8_t rate) {
   // ① CFG-VALSET (Protocol 27+)
@@ -807,6 +879,12 @@ static void process_ubx(uint8_t b) {
         }
       } else if (ubx_cls == 0x05) {
         // ACK-ACK (01) / ACK-NAK (00)
+        // 起動時に gnss_ana_boot_tick() が送った CFG-VALSET（06 8A）の返事。ほかに起動後に VALSET を送る口は無い
+        // （NAV-SAT のレート切替は CFG-MSG = 06 01）。
+        if (s_ana_ack_wait_ms != 0 && used_len >= 2 && ubx_buf[0] == 0x06 && ubx_buf[1] == 0x8A) {
+          s_ana_ack_wait_ms = 0;
+          ana_boot_log(ubx_msgid == 0x01 ? "ack" : "NAK");
+        }
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] "); Serial.print((ubx_msgid==0x01)?"ACK-ACK":"ACK-NAK");
         Serial.print(" for cls="); Serial.print((used_len>=1?ubx_buf[0]:0), HEX);
@@ -1006,10 +1084,18 @@ int  get_gnss_ana_state()      { return ana_state; }
 bool get_gnss_ana_busy()       { return ana_busy; }
 int  get_gnss_ana_data_svs()   { return ana_data_svs; }
 int  get_gnss_ana_orbit_svs()  { return ana_orbit_svs; }
+bool get_gnss_ana_off_cold()    { return s_ana_mode == ANA_MODE_OFF_COLD; }
 bool get_gnss_fixok() {
   if (link_mirror_active()) return link_get_fix_ok();
   return ubx_gnssFixOK;                                    // gnssFixOK フラグ
 }
+// 自機の GNSS の fix と高度（ミラー・デモの差し替えを通さない生の値）。GNSS の時刻の助け合い（link_assist.cpp。
+// 2026-11-13〜）が、自分の時刻を仲間へ渡してよいかに使う。受信機はミラー中 get_gnss_fixok() が機体の値になるため。
+// ★ リプレイ中は ubx_* / stored_* が CSV の値なので、呼ぶ側が除く（link_rf_suppressed()）。
+bool   gnss_own_fixok()    { return ubx_gnssFixOK; }
+double gnss_own_altitude() { return stored_gnss_altitude; }
+// 自機の GNSS の時刻の精度 [ns]（NAV-PVT tAcc。まだ NAV-PVT が来ていなければ 0xFFFFFFFF）。リプレイ中は呼ぶ側が除く
+uint32_t gnss_own_tacc_ns() { return ubx_tacc_ns; }
 
 // GSV（Satellites in View）NMEA 文を手動パースして satellites[] 配列に衛星情報を格納する。
 
@@ -1132,6 +1218,7 @@ static void gnss_setup_impl(bool send_config) {
       // ログが唯一の手掛かりになる（特に Airborne<1g）。
       uint8_t cfg_ng = 0;
       bool prt_ack = false, prt_nak = false;
+      bool ana_sent = false, ana_on = false;   // ⑦ で CFG-ANA を送ったか・どちらを送ったか
 
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] setup start");
@@ -1276,20 +1363,31 @@ static void gnss_setup_impl(bool send_config) {
         #endif
       }
 
-      // ⑦ CFG-ANA-USE_ANA: AssistNow Autonomous の有効・無効（settings.h の GNSS_USE_ANA）
-      // ★ 0 のときも「無効」を書き込む。BBR に残った以前の「有効」を消すため。
-      {
+      // ⑦ CFG-ANA-USE_ANA: AssistNow Autonomous の有効・無効
+      //   GNSS_USE_ANA = 0 → いつも「無効」。★ 0 のときも「無効」を書き込む。BBR に残った以前の「有効」を消すため。
+      //   GNSS_USE_ANA = 1 → BT1 が切れていた起動（コールドスタート）だけ「無効」、ほかは「有効」（2026-11-13〜。s_ana_mode のコメント）。
+      //     起動時はまだ BT1 の生死が分からない（最初の NAV-PVT はこの関数の ACK 待ちが読み捨てる）ので、ここでは送らず
+      //     gnss_ana_boot_tick() に任せる。送り直し（gnss_ubx_watchdog）のときは決まっているので、同じ方をここで送る。
+      if (!GNSS_USE_ANA) {
+        s_ana_mode = ANA_MODE_OFF_SETTING;
+        ana_sent = true;  ana_on = false;
+      } else if (s_ana_mode == ANA_MODE_ON || s_ana_mode == ANA_MODE_OFF_COLD) {
+        ana_sent = true;  ana_on = (s_ana_mode == ANA_MODE_ON);
+        if (s_ana_ack_wait_ms != 0) {   // 起動時に送った分の返事は、下の ACK 待ちが読み捨てる
+          s_ana_ack_wait_ms = 0;
+          ana_boot_log("answer lost (GNSS set up again)");
+        }
+      }
+      if (ana_sent) {
         const unsigned char cmd_on[]  = UBLOX_CFG_ANA_ON;
         const unsigned char cmd_off[] = UBLOX_CFG_ANA_OFF;
-        const unsigned char* cmd = GNSS_USE_ANA ? cmd_on : cmd_off;
+        const unsigned char* cmd = ana_on ? cmd_on : cmd_off;
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd_on); i++) GNSS_SERIAL.write(cmd[i]);
-      }
-      {
         bool got_ack = ubxWaitAck(600);
         if (!got_ack) cfg_ng |= GNSS_CFGNG_ANA;
         #ifdef DEBUG_GBX_NMEA
-        Serial.print("[UBX] CFG-ANA-USE_ANA="); Serial.print(GNSS_USE_ANA);
+        Serial.print("[UBX] CFG-ANA-USE_ANA="); Serial.print(ana_on ? 1 : 0);
         Serial.print(": "); Serial.println(got_ack ? "ACK OK" : "no ACK");
         #endif
       }
@@ -1343,7 +1441,8 @@ static void gnss_setup_impl(bool send_config) {
       {
         gnss_cfg_ok = ((cfg_ng & GNSS_CFGNG_ESSENTIAL) == 0);
         const char* prt = prt_nak ? "NAK" : (prt_ack ? "ack" : "none");
-        const char* ana = GNSS_USE_ANA ? "ANA" : "ANAoff";
+        // ANAlater = 起動時で、BT1 の生死が分かってから gnss_ana_boot_tick() が送る（結果は `GNSS ANA on/off for this boot` の行）
+        const char* ana = !ana_sent ? "ANAlater" : (ana_on ? "ANA" : (GNSS_USE_ANA ? "ANAoff(cold)" : "ANAoff"));
         if (cfg_ng == 0) {
           enqueueTask(createLogSdfTask("GNSS CFG OK 2Hz/PVT/SAT/DOP/Air1g/%s%s (prt=%s)", ana,
             GNSS_DBD_ENABLE ? "/AckAid" : "", prt));
@@ -1354,7 +1453,7 @@ static void gnss_setup_impl(bool send_config) {
             (cfg_ng & GNSS_CFGNG_SAT)  ? " NAVSAT"     : "",
             (cfg_ng & GNSS_CFGNG_DOP)  ? " NAVDOP"     : "",
             (cfg_ng & GNSS_CFGNG_NAV5) ? " AIRBORNE1G" : "",
-            (cfg_ng & GNSS_CFGNG_ANA)  ? (GNSS_USE_ANA ? " ANA" : " ANAOFF") : "",
+            (cfg_ng & GNSS_CFGNG_ANA)  ? (ana_on ? " ANA" : " ANAOFF") : "",
             (cfg_ng & GNSS_CFGNG_AOPS) ? " AOPSTATUS"  : "",
             (cfg_ng & GNSS_CFGNG_ACKAID) ? " ACKAIDING" : "",
             prt));
@@ -1905,6 +2004,26 @@ static void gnss_ubx_watchdog() {
   }
 }
 
+// 起動時の CFG-ANA-USE_ANA（2026-11-13〜。s_ana_mode のコメント）。gnss_setup_impl の ⑦ は起動時には送らないので、
+// 最初の NAV-PVT（handle_navpvt が s_rtc_boot_checked を立てる）のあとにここで 1 回だけ送る。
+//   BT1 が生きていた → 「有効」（RAM と BBR）。
+//   BT1 が切れていた（コールドスタート）→ 「無効」（RAM と BBR）。この起動の間は予測を作らないので、BBR に「無効」が残って
+//     次の起動で「有効」になるのが最初の NAV-PVT のあと（約 1 秒）まで遅れても、失う予測は無い。
+// 結果は log.txt の `GNSS ANA on/off for this boot ...: ack`（ACK は process_ubx が受ける）。
+static void gnss_ana_boot_tick() {
+  if (s_ana_ack_wait_ms != 0 && millis() - s_ana_ack_wait_ms > 2000) {
+    s_ana_ack_wait_ms = 0;
+    ana_boot_log("no answer");
+  }
+  if (s_ana_mode != ANA_MODE_UNDECIDED || !s_rtc_boot_checked) return;
+  if (replaymode_gnssoff) return;   // リプレイ中は GNSS の返事を読み捨てている。抜けてから送る
+  if (!GNSS_USE_ANA) { s_ana_mode = ANA_MODE_OFF_SETTING; return; }   // ⑦ が「無効」を送り済み
+  s_ana_mode = s_rtc_alive_on_boot ? ANA_MODE_ON : ANA_MODE_OFF_COLD;
+  ana_send_valset(s_ana_mode == ANA_MODE_ON);
+  const uint32_t t = millis();
+  s_ana_ack_wait_ms = t ? t : 1;
+}
+
 void gnss_loop(int id) {
 
   // UBX が途絶えたら GNSS を掴み直す・設定を送り直す（gnss_ubx_watchdog）。
@@ -1961,6 +2080,9 @@ void gnss_loop(int id) {
       gnss_last_byte_ms = millis();
     }
   }
+
+  // 起動時の ANA の有効・無効（BT1 の生死が分かってから 1 回だけ送る）。航法データベースを戻し始めるより先に送る。
+  gnss_ana_boot_tick();
 
   // 航法データベース（SD に置いて BT1 が切れていた起動で戻す）の見回り。送るのも少しずつで待たない。
   // リプレイ中は中で打ち切って戻る（返事を読み捨てているため）。

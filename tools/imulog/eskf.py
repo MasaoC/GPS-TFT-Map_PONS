@@ -374,7 +374,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     sacc_max: GNSS 速度を採用する sAcc の上限 [m/s]。
       フィックスが悪いと u-blox は数百 m/s の速度解を返すことがあり、
       そのまま観測に入れるとフィルタが壊れる（実ログで最大 248m/s を確認）。
-      なお機上のバリオ KF は settings.h の GNSS_VSI_SACC_MAX_MPS=0.3 を使っている。
+      なお機上のバリオ KF は 2026-11-12 から GNSS の速度を使っていない（settings.h の KF_GNSS_VEL_ENABLED = 0。
+      それまでは GNSS_VSI_SACC_MAX_MPS = 1.0 で切っていた）。
 
     戻り値の列:
       session            : 起動ごとの通し番号
@@ -502,6 +503,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         bt_since = None          # 条件がそろい始めた時刻
         yaw_suspect = False      # 置き直したあと、保った方位を航跡でまだ確かめていない（機上 yaw_suspect_）
         yaw_check_arm = 0
+        v_stale = False          # IMU の途絶明け。次の測位で速度を入れ直す（機上 v_stale_。BUG-62）
 
         def learn_bias(wi, dt_i):
             # 機上 learn_gyro_bias() と同じ（時定数 5.0 秒 / ESKF_BIAS_LEARN_MAX_RADS）
@@ -553,6 +555,25 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             ground_flags[k] = ground
             # ★ ヨーレートを作る回転は**伝播する前**の姿勢（機上 attitude_on_gyro() は伝播の前に作った R を使う）。
             #   2026-11-10 までは predict の後の f.q で作っていて、1 サンプルぶん機上と違っていた。
+            # ---- IMU の途絶明け（機上 attitude_on_gyro → imu_gap_recover。2026-11-13〜。BUG-62）----
+            # 大きな傾きの置き直しと同じ扱い: 傾きと方位の不確かさを広げ、方位は保って航跡で確かめ直し、速度は次の測位で入れ直す。
+            # 姿勢そのものは動かさない。機上はこのサンプルで return するが、ここは下へ続ける（predict は dt > 0.5 で何もしない。前からの差）
+            if dt > 0.5:                                                   # ESKF_IMU_TIMEOUT_US
+                f.P[0:2, :] = 0.0
+                f.P[:, 0:2] = 0.0
+                f.P[0, 0] = f.P[1, 1] = np.deg2rad(30.0) ** 2              # ESKF_INIT_ATT_SIGMA_MOVING_DEG
+                if yaw_set:
+                    old = f.P[2, 2]
+                    f.P[2, :] = 0.0
+                    f.P[:, 2] = 0.0
+                    f.P[2, 2] = max(old, np.deg2rad(15.0) ** 2)            # ESKF_BIGTILT_YAW_SIGMA_DEG
+                    yaw_suspect = True
+                    yaw_check_arm = 0
+                v_stale = True
+                bt_since = None
+                bt_acc_lp = None
+                if events is not None:
+                    events.append((sess, float(ts[i]), "imu_gap", float(dt)))
             R_ = quat_to_R(f.q)
             f.predict(w[i], acc[i], dt)
             # ---- ワールド系ヨーレートの持続成分（機上 yaw_rate_lp_ と同じ式）----
@@ -640,7 +661,16 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 #   （生ログに 3D フィックスかどうかが残っていないため。0.983 からの既知の差）。
                 good_gsp, good_gsp_t = gsp, g_ts[gi]
                 # ★ 機上も sAcc の悪い測位ではヨーを入れない（2026-10-27）。ここは振り落とし済み。
-                if not yaw_set:
+                if v_stale:
+                    # 機上 attitude_on_gnss_velocity の v_stale_: 途絶明けは速度を GNSS の値に入れ直す（観測には使わない）
+                    if cutoff is None or g_ts[gi] <= cutoff:
+                        f.v = g_enu[gi].copy()
+                        f.P[3:6, :] = 0.0
+                        f.P[:, 3:6] = 0.0
+                        rv = max(float(g_sacc[gi]), 0.05)                  # ESKF_SACC_MIN
+                        f.P[3, 3] = f.P[4, 4] = f.P[5, 5] = rv * rv
+                        v_stale = False
+                elif not yaw_set:
                     sp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
                     if sp < 3.0:                                 # ESKF_YAW_INIT_MIN_SPEED_MPS
                         yaw_arm = 0
@@ -659,6 +689,10 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                     sp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
                     if sp < 3.0:                                 # ESKF_YAW_INIT_MIN_SPEED_MPS
                         yaw_check_arm = 0
+                        # 機上と同じ: 止まっているとき（ESKF_GROUND_MAX_GS_MPS 未満）は確かめを待ったまま速度の観測は入れる
+                        # （止まっていれば方位のずれは速度に効かない。2026-11-13〜。BUG-64）
+                        if sp < 1.0 and (cutoff is None or g_ts[gi] <= cutoff):
+                            f.update_velocity(g_enu[gi], g_sacc[gi])
                     else:
                         yaw_check_arm += 1
                         if yaw_check_arm >= 2:                   # ESKF_YAW_INIT_ARM_FIXES
