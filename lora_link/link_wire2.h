@@ -254,7 +254,8 @@ static inline void link_w2_rx_reset(LinkW2Rx* st) { memset(st, 0, sizeof(*st)); 
 
 // その回転枠を（途切れてから）受けたか。have ビットの無い項目を使う前に見ること。
 // ★ 受けるまで 0 のままの目的地・ナビモード・縮尺をそのまま使うと、受信機が
-//   「送信機は目的地 0・縮尺 0」と思い込んで、自分の設定を書き換えてしまう（link_sync_*）。
+//   「送信機は目的地 0・縮尺 0」と思い込んで、自分の設定を書き換えてしまう（link_sync_destination）、
+//   設定画面に送信機の縮尺を嘘で出す（link_get_sender_scale_index）。
 static inline bool link_w2_slot_seen(const LinkW2Rx* st, uint8_t slot) {
     return (st->slot_seen & (1u << slot)) != 0;
 }
@@ -318,8 +319,8 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     if (tod < 36000) {
         // 時は回転枠 0 から。その間に時刻が大きく戻ったら次の時へ繰り上げる
         if (st->hour_known && st->prev_tod != 0xFFFF && tod + 18000 < st->prev_tod) {
-            // ★ 0 時をまたいだら日付も進める（JST）。進めないと、次の回転枠 0（最大 8 発後）まで
-            //   受信ログが「前日の 00:xx」＝丸 1 日戻った時刻になっていた（2026-11-10 まで）。
+            // ★ 0 時をまたいだら日付も進める（UTC。送信機は GNSS の UTC の日時をそのまま載せている）。進めないと、
+            //   次の回転枠 0（最大 8 発後）まで受信ログが「前日の 00:xx」＝丸 1 日戻った時刻になっていた（2026-11-10 まで）。
             if (st->hour == 23 && (st->slot_have & RHAVE_DATE)) link_w2_next_day(t);
             st->hour = (uint8_t)((st->hour + 1) % 24);
         }
@@ -329,6 +330,7 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         t.centi  = (uint8_t)((tod % 10) * 10);
         if (st->hour_known) t.hour = st->hour;   // 分からない間は前の値のまま（受け始めは 0。日付も無い）
     } else {
+        // ※ tod == 0xFFFF（時刻無効）時は 00:00:00 に飛ばさず直前の時刻・日付を保持する設計
         st->prev_tod = 0xFFFF;
     }
 
@@ -434,6 +436,47 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     //   ヨーの信頼度で絞っている風や機首の表示がそのまま出てしまう。
     if (yaw_ok && st->yawacc_known) have |= RHAVE_ATT_YAW;
     t.have = have;
+}
+
+// 1970-01-01 からの日数（gnss_dbd.cpp・rtc_backup.cpp と同じ。Howard Hinnant の days_from_civil）
+static inline int32_t w2_days_from_civil(int y, unsigned m, unsigned d) {
+    y -= (m <= 2);
+    const int32_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int32_t)doe - 719468;
+}
+
+// いま受けた 1 フレーム（p。link_w2_decode() を通したあと）の時刻を UTC の UNIX 時刻 [ms] にする。
+// GNSS の時刻の助け合い（link_assist.cpp）が、ボートの GNSS へ入れるために使う（計画書 §4.1）。
+// ★ 送信機は回転枠 0 に **GNSS の UTC の日付と時** をそのまま載せている（link.cpp の link_push_telemetry。
+//   飛行 CSV は JST に直して書くが、電波は UTC）。ここでも UTC のまま扱う。
+// ★ **送信機の fix は条件にしない**（2026-11-13〜）。fix の前でも、GNSS の時計（RTC）から時刻が出ていれば使う。
+//   確からしさは送信機が status で知らせる（LINK_ST_TIME_COARSE / LINK_ST_TIME_BAD。NAV-PVT の tAcc から）。
+//   止まった時刻（送信機の GNSS が黙った）は、受ける側の 2 発の確かめ（link_assist.cpp の consider_time）で弾く。
+// 戻り値: LINK_W2_TIME_NONE  使えない
+//          LINK_W2_TIME_FINE  精度 1 秒以内（古い送信機はビットを立てないので、こちらになる）
+//          LINK_W2_TIME_COARSE 精度 1〜4 秒
+// 使えないとき:
+//   ・このフレームの時刻が「無し」（0xFFFF）。decode は直前の時刻を残すので、残った古い値を使わない
+//   ・時と日付がまだ分からない（回転枠 0 を受ける前、長い途切れのあと）。受け始めは時が 0 のままで、
+//     そのまま使うと何時間もずれた時刻を GNSS に入れてしまう（何もしないより悪い）
+//   ・送信機が「時刻の精度が悪い・分からない」と言っている（LINK_ST_TIME_BAD）
+#define LINK_W2_TIME_NONE    0
+#define LINK_W2_TIME_FINE    1
+#define LINK_W2_TIME_COARSE  2
+static inline uint8_t link_w2_utc_ms(const uint8_t* p, const LinkW2Rx* st, uint64_t* utc_ms) {
+    const uint16_t tod = w2_get16(p + W2_TOD);
+    if (tod >= 36000) return LINK_W2_TIME_NONE;
+    const uint16_t sb = w2_get16(p + W2_STATUS);
+    if (sb & LINK_ST_TIME_BAD) return LINK_W2_TIME_NONE;
+    if (!st->hour_known || !(st->slot_have & RHAVE_DATE)) return LINK_W2_TIME_NONE;
+    const LinkTelem& t = st->acc;
+    if (t.year < 2020 || t.month < 1 || t.month > 12 || t.day < 1 || t.day > 31 || st->hour > 23) return LINK_W2_TIME_NONE;
+    const int64_t days = w2_days_from_civil(t.year, t.month, t.day);
+    *utc_ms = (uint64_t)((days * 86400LL + (int64_t)st->hour * 3600LL) * 1000LL) + (uint64_t)tod * 100ULL;
+    return (sb & LINK_ST_TIME_COARSE) ? LINK_W2_TIME_COARSE : LINK_W2_TIME_FINE;
 }
 
 #endif // LINK_WIRE2_H

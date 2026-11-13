@@ -115,6 +115,10 @@
   //   受信モードでは get_gnss_*() が機体の値に置き換わるので、
   //   ボート自身を地図に出すにはこちらを使う。fix が無ければ false。
   bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track);
+  // 自機の GNSS の fix と高度（ミラー・デモの差し替えを通さない。リプレイ中は呼ぶ側が除く）。link_assist.cpp が使う
+  bool   gnss_own_fixok();
+  double gnss_own_altitude();
+  uint32_t gnss_own_tacc_ns();   // 自機の GNSS の時刻の精度 [ns]（NAV-PVT tAcc。fix の前でも RTC の時刻なら入る）
 
   double get_gnss_lat();
   double get_gnss_lon();
@@ -135,6 +139,7 @@
   bool get_gnss_ana_busy();       // 予測を計算中か（この間は GNSS の消費電流が増える）
   int  get_gnss_ana_data_svs();   // 予測データを持っている衛星数
   int  get_gnss_ana_orbit_svs();  // いま予測軌道を使っている衛星数
+  bool get_gnss_ana_off_cold();   // この起動はコールドスタート（BT1 が切れていた）なので ANA を切った（2026-11-13〜）
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
   bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 
@@ -189,5 +194,24 @@
   void set_replaymode(bool replaymode);
 
   uint32_t get_gnss_fix_millis();  // 最後にGNSS時刻を受信したときのmillis()（時刻推定用）
+
+  // ---- UBX-MON-RF (0x0A 0x38) 関連（debug/v7-noise-test から移した）----
+  struct GnssMonRf {
+    bool     valid;          // 一度でも受信できたか
+    uint8_t  jamInd;         // CW干渉・妨害インジケータ (0..255, 0=なし)
+    uint16_t agcCnt;         // AGCカウント値 (0..8191)
+    uint16_t noisePerMS;     // 雑音レベル
+    int8_t   ofsI;           // I成分 DCオフセット
+    uint8_t  magI;           // I成分 振幅
+    int8_t   ofsQ;           // Q成分 DCオフセット
+    uint8_t  magQ;           // Q成分 振幅
+    uint8_t  jammingState;   // 0=unknown, 1=OK, 2=warning, 3=critical
+    uint32_t lastReceivedMs; // 受信時刻 (millis)
+    uint32_t count;          // 受信フレーム数
+  };
+  GnssMonRf get_gnss_mon_rf();
+  void      gnss_enable_mon_rf(uint8_t rate = 1);
+  // 1 分ぶんの受信状態を log.txt の `grf` 行にする（60 秒ログから呼ぶ。debug/v7-noise-test と同じ行）
+  void      gnss_log_rf_minute();
 
 #endif

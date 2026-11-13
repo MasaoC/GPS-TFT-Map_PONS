@@ -504,24 +504,28 @@ void draw_hacc_circle(double scale, uint32_t hacc_mm) {
     backscreen.drawFastVLine(cx + 1, shortening, cy - shortening - 5, COLOR_BLACK);
   }
 
+  const bool acc_unknown = (hacc_mm == 0xFFFFFFFFu);
+
   // 誤差半径: [mm] → [m] → [km] → ピクセル（四捨五入で正確な円サイズに）
-  float accuracy_m = hacc_mm / 1000.0f;
-  int r = (int)roundf((accuracy_m / 1000.0f) * (float)scale);
+  float accuracy_m = acc_unknown ? 0.0f : (hacc_mm / 1000.0f);
+  int r = acc_unknown ? 0 : (int)roundf((accuracy_m / 1000.0f) * (float)scale);
 
   // 中心位置を示す小さい塗りつぶし青円
   backscreen.fillCircle(cx, cy, HDOP_CENTER_DOT_RADIUS, COLOR_BLUE);
 
   // 円半径がバックスクリーン半分を超えると画面外にはみ出して青い点だけに見えるため、
-  // 大きすぎる場合もテキスト表示にフォールバックする。
+  // 大きすぎる場合もテキスト表示にフォールバックする（精度未知時もテキスト表示）。
   const int MAX_CIRCLE_R = BACKSCREEN_SIZE / 2;  // 120px
 
-  if (r >= HDOP_MIN_CIRCLE_RADIUS && r <= MAX_CIRCLE_R) {
+  if (!acc_unknown && r >= HDOP_MIN_CIRCLE_RADIUS && r <= MAX_CIRCLE_R) {
     // 不確かさ範囲を示す輪郭青円
     backscreen.drawCircle(cx, cy, r, COLOR_BLUE);
   } else {
-    // 円が小さすぎ／大きすぎる場合: 精度数値をテキストで表示（例: "Acc:8m" / "Acc:1.2km"）
+    // 円が小さすぎ／大きすぎる場合、または精度未知の場合: 精度数値をテキストで表示（例: "Acc:8m" / "Acc:1.2km" / "Acc:--"）
     char buf[16];
-    if (accuracy_m < 1000.0f)
+    if (acc_unknown)
+      snprintf(buf, sizeof(buf), "Acc:--");
+    else if (accuracy_m < 1000.0f)
       snprintf(buf, sizeof(buf), "Acc:%.0fm", accuracy_m);
     else
       snprintf(buf, sizeof(buf), "Acc:%.1fkm", accuracy_m / 1000.0f);
@@ -1175,6 +1179,10 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
   cord_tft prev = p0;
   Coordinate prevc = c0;
   for (int i = 0; i < sizetrack-1; i++) {
+    // ★ 1 点ごとに IMU を引き取る（2026-11-11〜。CLAUDE.md「IMU の読み出しを飢えさせない」）。
+    //   航跡は最大 MAX_TRACK_CORDS（500）点で、1 点ごとに座標変換と太さ 2 の線を引くので、
+    //   地図と同じく描き直しの間 Core0 を止める側にいる。周期内なら時刻を見て戻るだけなので軽い。
+    imu_service_if_due();
     Coordinate c1 = latlon_manager.getData(i+1);
     if(c1.latitude == 0 && c1.longitude == 0){
       DEBUGW_PLN(20250510,"ERR lat lon 0");
@@ -1762,6 +1770,7 @@ void draw_eskf_attitude() {
   //   画面に出しているのは機体の姿勢なので関係が無い。しかも return しているため、
   //   **受信機自身の ESKF が READY になるまでミラーした姿勢ブロックが丸ごと
   //   出なくなる**（P / R / Y95 / 風 / Rtrim の全部）。
+  // ※ デモ中も姿勢（ロール・ピッチ）は実機 IMU 値を使用する仕様のため、未収束時の "ESKF Not ready" 表示は意図通り。
   if (!getReplayMode() && !link_mirror_active() && get_imu_ok() && !attitude_ready()) {
     backscreen.setTextWrap(false);
     backscreen.loadFont(AA_FONT_SMALL);
@@ -2798,8 +2807,9 @@ void draw_wireless(int cursor) {
     // 送信機の健康状態。受信側からは知りようがないので電波で運んでいる。
     // 飛ぶ前に気づきたい項目だけを載せてある（link_proto.h の status 設計）。
     const uint16_t st = link_sender_status();
-    // ★ LINK_ST_USB_SW_OFF（SW OFF のまま USB）は故障ではないので、赤／OK の判定から外す。
-    const uint16_t fault = st & (uint16_t)~LINK_ST_USB_SW_OFF;
+    // ★ LINK_ST_USB_SW_OFF（SW OFF のまま USB）と LINK_ST_TIME_WANTED（時刻をもらおうと聞いている）は
+    //   故障ではないので、赤／OK の判定から外す（LINK_ST_NOT_FAULT）。
+    const uint16_t fault = st & (uint16_t)~LINK_ST_NOT_FAULT;
     if (link_is_receiving()) {
       backscreen.setTextColor(fault ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
       backscreen.setCursor(2, y);
@@ -2816,6 +2826,10 @@ void draw_wireless(int cursor) {
       if (st & LINK_ST_USB_SW_OFF) {
         backscreen.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
         backscreen.print(" 5V");
+      }
+      if (st & LINK_ST_TIME_WANTED) {     // 送信機が GNSS の時刻をもらおうと聞いている（link_assist.cpp）
+        backscreen.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
+        backscreen.print(" TIME?");
       }
       y += lh;
       if (link_dest_mismatch()) {
@@ -4378,6 +4392,9 @@ bool fill_polygon_evenodd(const int16_t* xs, const int16_t* ys,
   // ポリゴンが画面の一部にしか無い場合に全 240 行を回らないよう y_min..y_max に限定する。
   int aet_n = 0;
   for (int y = y_min; y < y_max; y++) {
+    // ★ 大きな面（公園・湖・建物の多い区画）は 1 枚で数 ms かかるので、16 行ごとに IMU を引き取る
+    //   （2026-11-11〜。src/vectormap.cpp のレコードごとの呼び出しと同じ理由）。周期内なら即戻る。
+    if (((y - y_min) & 15) == 0) imu_service_if_due();
     // この行から始まる辺を AET に追加
     for (int e = s_et[y]; e != -1; e = s_edges[e].next) {
       if (aet_n < (int)(sizeof(s_aet_buf) / sizeof(s_aet_buf[0]))) s_aet_buf[aet_n++] = (int16_t)e;
@@ -4999,6 +5016,15 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     }
 
     backscreen.print(menu_settings[i].getLabel(selectedLine == i).c_str());
+
+    // 行の後ろに添える注記（受信モードの Map scale の行の送信機の縮尺 " (S: 18km)" など）。
+    // ラベルの続きに、注記の色で描く。何を出すか・何色かは src/button.cpp の menu_setting_note()。
+    char note[20];
+    int  note_col = COLOR_BLACK;
+    if (menu_setting_note(menu_settings[i].id, note, sizeof note, &note_col)) {
+      backscreen.setTextColor((uint16_t)note_col, COLOR_WHITE);
+      backscreen.print(note);
+    }
   }
   backscreen.pushSprite(0,30);
 

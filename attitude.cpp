@@ -613,6 +613,7 @@ bool attitude_get_up_sensor(float u[3]) {
 
 // 静止判定を更新する。ジャイロが小さく、かつ加速度の大きさが重力に近いこと。
 // 加速度も見るのは、等速直進でもジャイロは小さくなるため。
+// ※ 静止判定はゼロ点バイアス学習の前提条件なので、バイアス除去後ではなく生ジャイロ値を見る（循環参照防止。eskf.py と同一）。
 static void update_static(const float g[3], uint32_t t_us) {
     float wn = sqrtf(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
     float an = accel_valid_

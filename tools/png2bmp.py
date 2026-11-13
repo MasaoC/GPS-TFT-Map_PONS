@@ -34,6 +34,7 @@ def convert_png_bmp(inputfilename, outputfilename):
 
     def save_bmp_rgb565(image, output_filename):
         # Convert image to RGB565 format and flip it vertically
+        # Note: Image.FLIP_TOP_BOTTOM is maintained for backward compatibility in Pillow 10+
         rgb565_data = convert_to_rgb565(image.transpose(Image.FLIP_TOP_BOTTOM))
         
         height, width = rgb565_data.shape

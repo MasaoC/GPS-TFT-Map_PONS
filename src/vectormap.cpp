@@ -260,7 +260,12 @@ void draw_vectormap(double center_lat, double center_lon, float scale, float up)
 
       const uint8_t* p = vm_blob + t->blob_off;
       const uint8_t* end = p + t->blob_len;
-      while (p < end) p = vm_draw_record(p, t, lod, &proj, cls);
+      while (p < end) {
+        p = vm_draw_record(p, t, lod, &proj, cls);
+        // ★ レコード 1 本ごとにも呼ぶ（2026-11-11〜）。タイル単位だけだと、道路・建物の多いタイル 1 枚を
+        //   描く間は 1 回も呼ばれず、描画完了まで数十 ms 止まることがあった。周期内なら時刻を見て戻るだけなので軽い。
+        imu_service_if_due();
+      }
     }
   }
 }

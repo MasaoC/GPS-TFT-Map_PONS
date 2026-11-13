@@ -82,6 +82,7 @@ uint32_t imulog_get_written() { return imulog_written; }
 // 詰められない場合は捨てて imulog_dropped を増やすだけで、決してブロックしない。
 void imulog_push(uint8_t id, uint32_t s_us, uint8_t acc,
                  float v0, float v1, float v2, float v3) {
+    // ※ PC接続（WebSerial）モードやリプレイ時は imulog_set_paused(true) で即座にバッファ破棄＆push 停止される
     if (!imulog_enabled || imulog_paused) return;
 
     // 連番は「捨てた場合も消費する」こと。
@@ -252,11 +253,26 @@ static void imulog_write_boot_marker() {
 }
 
 // ============================================================
+// imulog_on_sd_reinit(): SD 再マウント前の静的ハンドル破棄（Core1 専用）
+// ============================================================
+// setup_sd() が 2 回目以降に SD.begin() を呼ぶ直前に呼ばれる。
+// カード抜き差しやバス異常の後に close() を呼ぶと壊れた旧ボリュームへ sync を試みて
+// 失敗・再汚染するため、SdFat の FsFile 代入（ポインタのクリアのみ・I/O なし）で破棄する。
+// 差し替えたカードで nofix 番号も取り直すよう imuNofixName も空に戻す。
+void imulog_on_sd_reinit() {
+    ASSERT_SD_CORE1("imulog_on_sd_reinit");
+    imuFileStatic = FsFile();
+    imuOpenedFilename[0] = '\0';
+    imuFlushCount = 0;
+    imuNofixName[0] = '\0';
+}
+
+// ============================================================
 // imulog_flush_and_close(): 開いている生IMUログファイルを閉じてフラッシュする（Core1 専用）
 // ============================================================
 void imulog_flush_and_close() {
     ASSERT_SD_CORE1("imulog_flush_and_close");
-    if (imuFileStatic) {
+    if (imuFileStatic.isOpen()) {
         imuFileStatic.sync();
         imuFileStatic.close();
         imuOpenedFilename[0] = '\0';

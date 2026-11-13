@@ -40,6 +40,7 @@
 #include "attitude.h"
 #include "tas.h"       // 大きい枠の設定（header_tas）・飛行 CSV の tas_mps / hdr 列
 #include "link.h"
+#include "link_assist.h"  // settings.txt の link_assist（GNSS の時刻の助け合い）
 #include "e220.h"      // E220_CH_MAX_ALL（settings.txt の CH の範囲）
 #include "power.h"     // usb_power_present()
 #include "src/imulog.h" // imulog_flush_and_close()
@@ -158,6 +159,16 @@ void setLinkGroup(const char* v) {
   }
 }
 
+// GNSS の時刻の助け合い（LoRa。link_assist.cpp。2026-11-13〜）。ON / OFF。既定 ON。
+// ★ OFF にすると、機体の聞く窓・ボートの提供と要求・テレメトリからの時刻を全部止める（計画書 §1.2）。
+//   知らない値は ON に倒し、log.txt に残す（書いたつもりで効いていない、に気づけるように）。
+void getLinkAssist(char* b, size_t n) { strlcpy(b, link_assist_setting ? "ON" : "OFF", n); }
+void setLinkAssist(const char* v) {
+  if (v && !strncasecmp(v, "OFF", 3))     link_assist_setting = 0;
+  else if (v && !strncasecmp(v, "ON", 2)) link_assist_setting = 1;
+  else { link_assist_setting = 1; log_sdf("SETTINGS link_assist='%s' is not ON/OFF, using ON", v ? v : ""); }
+}
+
 SDSetting settings[] = {
   {"volume",          setVolume,         getVolume},
   {"vario_volume",    setVarioVolume,    getVarioVolume},
@@ -188,7 +199,8 @@ SDSetting settings[] = {
   {"link_mode",       setLinkMode,       getLinkMode},
   {"link_radio_ch",   setLinkRadioCh,    getLinkRadioCh},
   {"link_radio_prof", setLinkRadioProf,  getLinkRadioProf},
-  {"link_group",      setLinkGroup,      getLinkGroup}
+  {"link_group",      setLinkGroup,      getLinkGroup},
+  {"link_assist",     setLinkAssist,     getLinkAssist}
 };
 const int numSettings = sizeof(settings) / sizeof(settings[0]);
 extern volatile int sound_volume;
@@ -439,7 +451,7 @@ void getNavigationMode(char* buffer, size_t bufferSize) {
 }
 
 // 目的地: 名前で extradestinations を線形探索して currentdestination インデックスを設定する。
-// 見つからない場合はエラーログを残す。
+// 見つからない場合はエラーログを残す（名前一致でのみ代入されるため負値や範囲外値は混入しない）。
 void setDestination(const char* value) {
   for(int i = 0; i < destinations_count; i++){
     if(strcmp(extradestinations[i].name,value) == 0){
@@ -571,6 +583,7 @@ void setRollTrim(const char* value) {
 // AUTO10K の折返しフェーズ。飛行中に再起動しても復路のナビ方位が 180 度逆に
 // ならないよう保存する（距離だけでは往路と復路を区別できないため）。
 // 保存されるのは実飛行の遷移だけで、リプレイ再生中の遷移は書き込まれない。
+// ※ "INTO" 以外はすべて AUTO10K_AWAY に正規化されるため範囲外値は混入しない。
 void setAuto10kStatus(const char* value) {
   restore_auto10k_status(strcmp(value, "INTO") == 0 ? AUTO10K_INTO : AUTO10K_AWAY);
 }
@@ -776,8 +789,15 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   // 送信機が SW OFF のまま USB で動いていると電圧は載ってこない → 空欄（csv_write_common）
   task.saveCsvArgs.voltage       = (t->have & RHAVE_VOLT) ? link_unpack_volt(t->volt_cv) : NAN;
   task.saveCsvArgs.numsat        = t->numsat;
-  task.saveCsvArgs.year   = t->year;   task.saveCsvArgs.month  = t->month;
-  task.saveCsvArgs.day    = t->day;    task.saveCsvArgs.hour   = t->hour;
+  // 電波の回転枠 0 の日付と時は GNSS の UTC そのまま（link.cpp の link_push_telemetry）。
+  // 飛行 CSV（data/）やリプレイ（apply_replay_row() が JST→UTC に戻す）と同じ JST に揃えてから書く。
+  // まだ回転枠 0 を受けていない間（year == 0）は 0 のまま残し、saveRxCSV() 側で書かずに待つ。
+  int y = t->year, mo = t->month, d = t->day, h = t->hour;
+  if (y != 0 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h < 24) {
+    utcToJst(&y, &mo, &d, &h);
+  }
+  task.saveCsvArgs.year   = y;   task.saveCsvArgs.month  = mo;
+  task.saveCsvArgs.day    = d;   task.saveCsvArgs.hour   = h;
   task.saveCsvArgs.minute = t->minute; task.saveCsvArgs.second = t->second;
   task.saveCsvArgs.centisecond = t->centi;
   // ボート自身の位置と機体までの距離。測位できていなければ空欄で書く。
@@ -1264,17 +1284,39 @@ volatile bool settings_loaded = false;
 bool get_sd_use_spi()    { return sd_use_spi; }
 int  get_sd_setup_count(){ return sd_setup_count; }
 
+static void reset_open_files_before_reinit();
+
 void setup_sd(int trycount, bool load_settings){
   ASSERT_SD_CORE1("setup_sd");
   sd_setup_count++;
   sdInitialized = false;
+  // 前回の成功から SD.begin(SDIO) が失敗した回数と、失敗ごとの時刻・エラーコード・所要時間。
+  // 失敗中は log.txt に書けないので、次に成功したときの SD INIT 行にまとめて出して消す。
+  // 呼び出しをまたいで持ち越すのは、起動時に全部外れて try_sd_recovery() で復帰した場合も
+  // 起動時の失敗の中身を残すため。入りきらない分は捨てる（先頭の失敗ほど大事）。
+  static int  sdio_try_failed = 0;
+  static char sdio_fail_desc[160] = "";
+  if (sd_setup_count > 1) {
+    reset_open_files_before_reinit();
+  }
 
   // --- SDIO 試行（SPI モード中はスキップ）---
   if (!sd_use_spi) {
     for (int i = 0; i < trycount; i++) {  // trycount 回だけ試行
+      const uint32_t t0 = millis();
       sdInitialized = SD.begin(SdioConfig(RP_CLK_GPIO, RP_CMD_GPIO, RP_DAT0_GPIO));
       if (sdInitialized) break;
-      delay(100);
+      // 失敗の中身を覚えておき、成功したときの SD INIT 行に並べる（失敗中は log.txt に書けないため）。
+      // err=0 ならカードの初期化は通っていて、FAT ボリュームのマウントで落ちている。
+      // err=0x01（CMD0）で 300ms かかっていたら、カードではなく PIO が動いていない。
+      int n = (int)strlen(sdio_fail_desc);
+      if (n < (int)sizeof(sdio_fail_desc) - 1) {
+        snprintf(sdio_fail_desc + n, sizeof(sdio_fail_desc) - n, " [@%lums err=0x%02X data=0x%lX %lums]",
+                 (unsigned long)t0, (unsigned)SD.sdErrorCode(), (unsigned long)SD.sdErrorData(),
+                 (unsigned long)(millis() - t0));
+      }
+      sdio_try_failed++;
+      if (i + 1 < trycount) delay(SD_BEGIN_RETRY_MS);  // 最後の失敗のあとは待たない
     }
   }
 
@@ -1309,7 +1351,11 @@ void setup_sd(int trycount, bool load_settings){
 
   sdError = false;
   SdFile::dateTimeCallback(dateTime);
-  log_sd(sd_use_spi ? "SD INIT SPI" : "SD INIT");
+  // 行頭の "SD INIT" は tools/createmovie_csv2mp4.py が前方一致で読むので変えないこと。
+  // fails は前回の成功から SDIO が失敗した回数。[@起動からの ms err=SdFat のエラーコード data=… 所要 ms]。
+  log_sdf(sd_use_spi ? "SD INIT SPI (fails=%d%s)" : "SD INIT (fails=%d%s)", sdio_try_failed, sdio_fail_desc);
+  sdio_try_failed   = 0;
+  sdio_fail_desc[0] = '\0';
   init_mapdata();
 
   // ★ 目的地とパイロン座標の構築は「最初に SD を掴めた 1 回だけ」。
@@ -2040,6 +2086,7 @@ bool browse_replay_files(int start_index) {
     if (!entry) break;
 
     char name[32];
+    // ※ SdFat 2.3.1 の getName() は失敗時やバッファ不足時に name[0] = '\0' を設定して 0 を返す
     entry.getName(name, sizeof(name));
     bool isdir = entry.isDirectory();
     uint32_t fsize = isdir ? 0 : entry.size();
@@ -2670,6 +2717,17 @@ void rtc_backup_load_sd() {
   }
   rtc_backup_set_loaded_core1(ok, hours, (uint32_t)utc);
   log_sdf("RTC BACKUP record: %s", ok ? "loaded" : "none (no file / other unit / broken)");
+}
+
+// SD.begin() を 2 回目以降に呼ぶ直前に、旧ボリュームを指したままの静的 FsFile を破棄する。
+// カード抜き差しやバス異常の後に close() を呼ぶと旧 FAT セクタへ sync を試みて別カードを壊す恐れが
+// あるため、SdFat のムーブ代入（ポインタのクリアのみ・I/O なし）でメモリ上の開状態だけを外す。
+static void reset_open_files_before_reinit() {
+  logFileStatic    = FsFile();
+  csvFileStatic    = FsFile();
+  rxcsvFile        = FsFile();
+  replayFileStatic = FsFile();
+  imulog_on_sd_reinit();
 }
 
 // ===== GNSS の航法データベース（SD の GNSS_DBD_FILE。gnss_dbd.cpp）=====

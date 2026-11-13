@@ -96,6 +96,9 @@
 // リセットし、工場出荷の NMEA だけに戻った）とみて設定を一式送り直す（gnss.cpp の gnss_ubx_watchdog）。
 // NAV-PVT は 0.5 秒ごとなので 10 秒は 20 回ぶんの欠け。描画で Core0 が止まっても FIFO に溜まるので誤発火しない。
 #define GNSS_UBX_LOST_RECONFIG_MS 10000UL
+// 1 を入れると、MON-RF が届くたび（1 秒に 1 回）に log.txt へ `GRF:` の生の行を出す（gnss.cpp の rf_minute_add）。
+// 1 分まとめの `grf` 行はいつも出る。生の行は 1 時間で約 3600 行・約 250KB 増えるので、比べる試験のときだけ 1 にする。
+#define GNSS_RF_LOG_RAW 0
 // 断線している間、警報トーンを繰り返す間隔 [ms]。
 // ★ 1 回きりにしない。**聞き逃したら二度と鳴らない**のは航法が止まる故障には合わない。
 // ★ 最低保証音量（min_volume）は付けない。あれは電池警告専用で
@@ -106,15 +109,29 @@
 // GNSS が不安定な所では fix が付いたり外れたりを繰り返し、毎秒のように連発してうるさかった。
 // ログ（GNSS FIX acquired）は毎回残す。
 #define GNSS_FIXED_VOICE_GAP_MS 10000UL
-// GNSS の AssistNow Autonomous（受信した軌道から GNSS 自身が数日先まで軌道を予測する機能）。
-// 1 = 使う / 0 = 使わない。効けば前日と同じ時間帯の起動が 23〜28 秒 → 3〜4 秒になる。
-// 条件（BT1 が生きている・3 日以内・同じ時間帯）は README の「GNSS の起動を速くする」。
+// GNSS の AssistNow Autonomous（受信した軌道から GNSS 自身が数日先まで軌道を予測する機能。以下 ANA）。
+// 1 = 使う / 0 = 使わない。効けば、BT1 が生きていて最後の受信から 4 時間〜約 3 日の起動が速くなる
+// （その間はエフェメリスが切れていて、無ければ読み直すぶん 30 秒前後かかる）。条件は README の「GNSS の起動を速くする」。
+// ★ 1 でも、BT1 が切れていた起動（コールドスタート）だけはその起動の間 ANA を切る（2026-11-13〜、ユーザーの判断。gnss.cpp の s_ana_mode）。
+//   SAM-M10Q は ROM SPG 5.10（log.txt の `GNSS VER:`）で、SPG 5.30 のリリースノート（UBXDOC-304424225-20393 §5）に
+//   "After a coldstart QZSS satellites will not be used for navigation if AssistNow Autonomous is enabled." とある
+//   （回避策は ANA を無効にすること。5.30 で直ったが、SAM-M10Q は外付けフラッシュが無いので上げられない）。
+//   コールドの起動は ANA のデータも無い（BBR ごと消えている）ので、切って失うのは SD の DBD に入っていた予測の分だけ。
+//   その代わり、その起動の間は予測を作らないので、次の起動（BT1 は充電されて生きている）は 4 時間を過ぎると予測が無い。
+//   BT1 の生死は最初の NAV-PVT まで分からないので、起動時の ANA の設定はそのあとに送る（gnss_ana_boot_tick）。
+//   本当に QZSS が使われるようになったかは log.txt の `GNSS QZSS first used ...` / `GNSS SVS used ... Q2 ...` で確かめる（未確認）。
+// ★ 2026-11-13 に一度 0 にしたが、同じ日に戻した。原文を読むと条件はコールドスタートだけで、BT1 が生きている普段の起動には当たらないため。
+//   11/12 に取り出した log.txt では、ANA が主だった起動が 11.9 秒・9.3 秒・262 秒で、262 秒は BT1 が生きていた（空かアンテナの問題らしい）。
 // ★ 0 にしても「使わない」を GNSS へ**書き込む**。この設定は BT1 で保たれる BBR にも
 //   書くので、送るのをやめるだけだと以前のファームが書いた「使う」が残り続ける。
 #define GNSS_USE_ANA              1
 // AssistNow Autonomous の状況（予測データのある衛星数・計算していた時間）を
 // log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
+// GNSS_USE_ANA = 0 のときは NAV-AOPSTATUS を出させないので、この行は出ない。
 #define GNSS_ANA_LOG_INTERVAL_MS  600000UL
+// 測位に使っている衛星の数を GNSS の種類ごとに log.txt に残す間隔 [ms]（`GNSS SVS used G8 E5 B6 Q2 R0 (QZSS seen 3) ana=on`。
+// 2026-11-13〜）。コールドの起動で ANA を切ったあと QZSS が使われているかを見るためのもの。NAV-SAT は普段 10 秒に 1 回。
+#define GNSS_SVS_LOG_INTERVAL_MS  600000UL
 
 // ---- GNSS の航法データベースを SD に置く（gnss_dbd.cpp。2026-11-09〜。docs/pons_ttff_assist_plan.md §3）----
 // 時計の電池（BT1）が切れて起動すると、GNSS は軌道も時刻も失ってコールドスタートになる（小さいアンテナでは数分〜10 分以上）。
@@ -164,6 +181,7 @@
 #define RP_DAT0_GPIO 4 // Set to DAT0 GPIO. DAT1..3 must be consecutively connected. DAT1=5, DAT2=6, DAT3=7
 #define SD_CS_SPI_PIN 7 // SPI フォールバック時の CS ピン（DAT3 = GPIO7）
 #define SD_DETECT 10  //v7 8->10に変更
+#define SD_BEGIN_RETRY_MS 200  // SD.begin() を複数回試すときの間隔 [ms]
 // ---- BNO085 のホストバス — **i2c1 固定** ----
 // imu_update() は Core0 から呼ぶ。
 //
@@ -892,6 +910,31 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define KF_HORIZ_ACCEL_GAIN  0.01f
 
 // ============================================================
+// 鉛直加速度が信用できないあいだは気圧だけで回す（imu.cpp の acc_guard_step。2026-11-11〜）
+// ============================================================
+// ★ 姿勢（ESKF の上向き）が壊れると、比力を上向きへ射影して重力を引いた鉛直加速度がそのまま偽の値になる。
+//   2026-11-11 16:09 の車載試験（トンネルの中で本体を大きく動かされた）では −7.5 m/s² が約 50 秒続き、
+//   V/S が −3〜−5 m/s（気圧だけなら 0〜+1 m/s）、さらに KF の加速度バイアスが −4 m/s² まで引きずられて、
+//   姿勢が直った直後に V/S が +3 m/s へ跳ねて 15 秒かけて戻った。
+//   そこで鉛直加速度がありえない値のあいだは、加速度を使わずに気圧だけで回し（KF_GNSS_VEL_ENABLED = 1 なら GNSS の velD も）、
+//   **加速度バイアスは学ばない**（止める直前の値のまま。相関を切ってから回すので観測でも動かない）。
+// 入る条件（どちらか）:
+//   ・30ms 平均の |a| が KF_ACC_GUARD_FAST_MPS2 を超える回が KF_ACC_GUARD_FAST_STEPS 回続く
+//     （11/11 のふだんの走行では段差で一瞬 4〜6 m/s² 出るが、4 を超えて続いたのは最長 2 回＝60ms）
+//   ・1 秒の低域（KF_ACC_GUARD_TAU_S）の |a| が KF_ACC_GUARD_SLOW_MPS2 を超える
+//     （ふだんの走行で最大 0.4〜0.6、止まって 0.8。傾きの誤差が 40 度を超えるとこちらで入る）
+// 戻る条件: 低域の |a| が KF_ACC_GUARD_CLEAR_MPS2 未満で、速い条件も出ていない状態が KF_ACC_GUARD_CLEAR_US 続く。
+// ★ 誤って入っても害は小さい（数秒、気圧ベースのバリオになるだけ）ので、しきい値は人力機の機動から十分離せばよい。
+// ★ 入った・戻ったは log.txt に `VARIO: IMU accel ignored ... +N` / `VARIO: IMU accel back ...` で残す（入るほうは 10 秒に 1 回まで。
+//   +N はその前の行から省いた回数）。
+#define KF_ACC_GUARD_FAST_MPS2   4.0f
+#define KF_ACC_GUARD_FAST_STEPS  4
+#define KF_ACC_GUARD_SLOW_MPS2   2.0f
+#define KF_ACC_GUARD_TAU_S       1.0f
+#define KF_ACC_GUARD_CLEAR_MPS2  0.5f
+#define KF_ACC_GUARD_CLEAR_US    2000000UL
+
+// ============================================================
 // GNSS高度補正パラメーター（imu_kalman_gnss_update で使用）
 // ============================================================
 // GNSS高度は気圧高度より誤差が大きいが、長期ドリフトのない絶対基準として使える。
@@ -913,7 +956,25 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define GNSS_OFFSET_UPDATE_RATE 0.005f // MSL絶対基準の長期収束ゲイン
 //
 // ============================================================
-// GNSS VSI Kalman 速度観測パラメーター（imu_kalman_gnss_vel_update で使用）
+// GNSS の上下の速度（velD）をバリオ KF に入れるか（2026-11-12〜 0 = 入れない）
+// ============================================================
+// 0: GPS_TFT_map.ino が imu_kalman_gnss_vel_update() を呼ばない。V/S は加速度と気圧だけで作る。
+// 1: 以前どおり velD を速度の観測として入れる（下の GNSS_VSI_* で重みを決める）。
+// ★ 外した理由（2026-11-12、ユーザーの判断）:
+//   ・GNSS の上下は、反射（マルチパス）で荒れても sAcc が小さいままで、重みを自動で落とせない（下の R_SCALE のコメント）。
+//     飛行では「GNSS の高さ・上下は V/S に使い物にならない」という経験がずっとあった。
+//   ・それでも重みは大きいままだった。11/06・11/11・11/12 の車載の生ログを tools/imulog/vario.py（v7.1）で流すと、
+//     velD を入れたときの V/S は走行中 velD と RMS 0.08 m/s で重なり（入れないと 0.24）、数秒より長い動きは
+//     ほぼ velD で決まっていた。気圧（KF_R = 12）よりずっと強い。
+//   ・外したときの代わり: 止まっているときの V/S の揺れが場合によって増える（11/06 の 52 分: 標準偏差 0.03 → 0.05 m/s、
+//     デッドバンド ±0.25 を超える時間 0 → 1.2%。11/12 14:11 の 4 分: 0.08 → 0.13、1.6 → 3.8%。ほかの日はほぼ同じ）。
+// ★ GNSS の高度で気圧の基準を直す処理（imu_kalman_gnss_update。絶対高度・KF MSL 高度に使う）は**外していない**。
+//   これは 1 秒に最大 GNSS_MAX_DELTA_M しか動かさず、V/S にはデッドバンドの 1/5 しか出ない。どうするかは保留。
+// ★ 戻すなら 1 にするだけ。倍率（GNSS_VSI_R_SCALE）で弱めて残すのはやめる（効いているつもりの観測が残る）。
+#define KF_GNSS_VEL_ENABLED    0
+
+// ============================================================
+// GNSS VSI Kalman 速度観測パラメーター（imu_kalman_gnss_vel_update で使用。KF_GNSS_VEL_ENABLED = 1 のときだけ）
 // ============================================================
 // GNSS velD（上昇正）を KF の速度観測（H=[0,1,0]）として取り込む。
 // 観測ノイズ R_vel は sAcc²（速度精度の二乗）× R_SCALE を使用。
@@ -930,9 +991,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   建物のそばでは反射（マルチパス）で velD が実際より荒れるのに、sAcc は小さいまま
 //   なので**ハードゲートも R も効かない**（V/S が暴れる主犯）。重みそのものを 1/4 に
 //   落として気圧・IMU 主体へ寄せてある。
-//   ★ **本当は GNSS を VSI から外したいが一旦保留。** 外すなら倍率を更に上げるのでは
-//     なく、GPS_TFT_map.ino の imu_kalman_gnss_vel_update() の呼び出しを止める方で
-//     判断する（倍率で殺すと「効いているつもりの観測」が残って読み手を惑わす）。
+//   ★ **2026-11-12 に外した（上の KF_GNSS_VEL_ENABLED = 0）。** 倍率は上げず、呼び出しを止める方にした
+//     （倍率で殺すと「効いているつもりの観測」が残って読み手を惑わす）。
 //   ★ 下の数値は倍率に連動する。**定数を変えたら作り直すこと**
 //     （0.991 まで 16 倍時代の値が残っていた）。
 //
@@ -1510,9 +1570,15 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   落ち着いておらず、実機では早すぎる問い合わせが必ず失敗していた
 //   （AUX が High でも数百 ms 効かない）。2 回目以降は LINK_PF_SAMPLE_MS 間隔。
 #define LINK_PF_FIRST_SAMPLE_MS  500
-// 雑音の**中央値**がこれを超えたら「定常的にうるさい」とみなす。
-// 実測の環境雑音は BW500kHz で約 -104dBm（docs/pons_link.md §8）なので 4dB の余裕。
-#define LINK_PF_NOISE_WARN_DBM  (-100)
+// 雑音の**中央値**がこれを超えたら「定常的にうるさい」とみなす（地図に警告・「チャンネルを変えて」の音声）。
+// ★ 「到達距離が要求の 200m を割りそうか」で決めてある（2026-11-12 に −100 から変えた）。
+//   湖畔の実測は環境雑音 −104dBm（BW500kHz）で約 350m（SF7。docs/pons_link.md §8）。アンテナ高 1m どうしなら約 40m より先は
+//   地面反射で距離の 4 乗で弱くなるので、雑音が ΔN 上がると届く距離は 10^(−ΔN/40) 倍。200m までは 40·log10(350/200) ≈ 10dB
+//   ＝ −104 + 10 ≈ −95dBm。いまの SF8 は SF7 より受信感度が良いので、さらに余裕がある。
+//   以前の −100（湖畔の値に余裕 4dB）では、室内の送信前チェックで頻繁に NOISY になり、
+//   CHSCAN では全 CH が −98〜−100 で、チャンネルを変えても直らない警告になっていた。
+// ★ 屋外の実測値が分かったらここを見直す（docs/pons_todo.md §4.5）。
+#define LINK_PF_NOISE_WARN_DBM  (-95)
 // 雑音の**最大値 - 中央値**がこれを超えたら「断続的に誰かが出ている」とみなす。
 // 別 SF や他方式の送信はデコードできないので、この差でしか気づけない。
 #define LINK_PF_BURST_DB           8
@@ -1691,6 +1757,62 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // アッパーで選べる SF の上限（radio_profile。3 = SF10）。SF11 は送信時間の計算値 358ms が 400ms の
 // 上限に近いので、アッパーでは最初から選べない（link_radio_profile_allowed）。
 #define LINK_UPPER_PROF_MAX      3
+
+// ---- GNSS の時刻の助け合い（link_assist.cpp。2026-11-13〜。docs/pons_ttff_assist_plan.md §4）----
+// BT1 が切れて GNSS が時刻を知らない機体・ボートへ、fix している仲間が LoRa で時刻を渡す。時刻だけを GNSS へ入れる
+// （gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)。入れるかどうかの判断はそちら）。
+// ★ 上り（ボート → 機体）で変えられるのは「GNSS へ時刻を 1 回入れる」ことだけ。機体の操作・設定・表示・航法は変えない
+//   （大会のルールと CLAUDE.md）。機体の 1Hz のテレメトリは、タイミングも中身も変えない（status の 1 ビットを足すだけ）。
+// ★ settings.txt の link_assist:OFF で、聞く窓・要求・提供・テレメトリからの時刻を全部止められる（この定数は丸ごと外す用）。
+#define LINK_ASSIST_ENABLE            1
+// 機体が聞く窓・ボートが要求を送る時間の上限 [ms]（安全網。ふつうは時刻を受け取った時点で閉じる）。
+// 受信待機は 8.2mA なので 30 分で約 4mAh（電池 850mAh の約 0.5%）。
+#define LINK_ASSIST_WINDOW_MAX_MS     (30UL * 60UL * 1000UL)
+// 困っているボートが要求を送り始めるまで聞く時間 [ms]。機体のテレメトリか提供が聞こえれば、要求は送らない。
+#define LINK_ASSIST_REQ_WAIT_MS       10000UL
+// 要求を送る間隔 [ms]。直前のこの時間に同じグループの別のボートの要求が聞こえていたら、自分は送らない（要求は 1 台ぶんで足りる）。
+#define LINK_ASSIST_REQ_INTERVAL_MS   10000UL
+// 「頼まれている」とみなす時間 [ms]。機体の LINK_ST_TIME_WANTED か要求ビーコンを、直前のこの時間に聞いていれば提供する。
+#define LINK_ASSIST_ASK_HOLD_MS       15000UL
+// 提供の間隔の下限 [ms]。ローワーは機体の 2 周期に 1 回。アッパーは自分の休止（送信時間の 10 倍）が明けてから。
+#define LINK_ASSIST_OFFER_MIN_MS      2000UL
+// 休む決まり: 直前の「提供の間隔 × これ」の間に別のボートの提供が聞こえていたら、自分は送らない。
+// こうすると落ち着いたあとは 1 台だけが送る。そのボートが止まったら、この時間で休んでいたほうが引き継ぐ。
+#define LINK_ASSIST_YIELD_OFFERS      3
+// 提供・要求を送る枠（機体のテレメトリを受けた時刻 t0 からの位置）。計算は link_assist.cpp の lassist_slots()。
+//   最初の枠は t0 ＋ これ。受信機は受けた直後に地図を描く（LINK_DRAW_BUDGET_MS）ので、その後ろにする。
+#define LINK_ASSIST_SLOT_FIRST_MS     300UL
+//   枠の間の余裕 [ms]（ほかのボートが受けて気づくまで）。枠の幅は「自分が塞がる時間（送信時間の約 1.5 倍）＋ これ」。
+#define LINK_ASSIST_SLOT_SEP_MS       60UL
+//   機体の次の送信の手前に空ける時間 [ms]（周期の揺れ）
+#define LINK_ASSIST_SLOT_GUARD_MS     50UL
+//   枠の数の上限
+#define LINK_ASSIST_SLOTS_MAX         3
+//   枠の時刻をこれより過ぎていたら、その回は送らない [ms]（描画などでループが遅れたとき、ずれた時刻に送らない）
+#define LINK_ASSIST_SLOT_LATE_MS      40UL
+// 受けた時刻の確かめ: この間隔以上離れた 2 発で、UTC の差と受けた millis() の差が LINK_ASSIST_PAIR_TOL_MS 以内で合うこと。
+// 止まった時刻（送信機の GNSS が黙った）は、2 秒離れた 2 発で 2 秒食い違うので弾ける。
+#define LINK_ASSIST_PAIR_MIN_MS       1500UL
+#define LINK_ASSIST_PAIR_TOL_MS       700UL
+#define LINK_ASSIST_PAIR_MAX_MS       60000UL   // これより古い 1 発目は捨てて数え直す
+// 時刻の出どころが聞こえているとみなす時間 [ms]（困っているボートが要求を控える）
+#define LINK_ASSIST_SRC_HEARD_MS      10000UL
+// 機体のテレメトリの時刻が、受けた時点で平均どれだけ古いか [ms]。送信機は 1 秒ごとに「最後の NAV-PVT（2Hz）の時刻」を
+// 詰めるので、古さは 0〜0.5 秒＋ NAV-PVT が届くまで（数十 ms）。平均を足して、GNSS に入れる時刻のずれを 0 の前後にそろえる
+// （PC の試験台で、足さないと −0.06〜−0.56 秒、足すと ±0.25 秒）。提供ビーコンは送る瞬間の時刻なので足さない。
+#define LINK_ASSIST_TELEM_AGE_MS      300
+// 時刻の精度（送り主の GNSS の NAV-PVT tAcc）の区切り [ms]。**fix の前の時刻（GNSS の時計＝RTC から）も、この精度で共有する**
+// （2026-11-13。ユーザー「RTC の時刻も共有すべき」）。
+//   ・FINE 以内 → GNSS へ GNSS_TIME_ACC_LORA_MS（2 秒）と伝えて入れる
+//   ・MAX 以内  → 精度を広げて伝える（テレメトリは MAX ＋ MARGIN、ビーコンは送り主の精度 ＋ MARGIN）
+//   ・それより悪い・分からない → 使わない（書いた精度より外れると GNSS の性能がかえって落ちる。計画書 §2.3）
+// RTC の 32kHz の水晶は ±20ppm 程度なので、BT1 で 1 日もたせると最悪 1.7 秒、1 週間なら 12 秒ずれうる
+// （受信中に GNSS が合わせ込むので実際はもっと小さいはず。実際の値は log.txt の LINK ASSIST: own time tAcc で見る）。
+// ★ NAV-PVT の tAcc は 32 ビットの ns なので **4.29 秒までしか表せない**（それ以上は頭打ち）。だから MAX は 4 秒にする。
+//   頭打ち（4.29 秒）の時刻は「どれだけずれているか分からない」として使わない。
+#define LINK_ASSIST_TACC_FINE_MS      1000UL
+#define LINK_ASSIST_TACC_MAX_MS       4000UL
+#define LINK_ASSIST_TACC_MARGIN_MS    1000UL   // 送り主の精度に足す（電波・テレメトリの古さ・本体の時計の分）
 
 // ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
 // 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。

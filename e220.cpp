@@ -12,6 +12,7 @@
 #include "imu.h"    // imu_service_if_due（待っている間に BNO085 を飢えさせない）
 #include "lora_link/link_proto.h"
 #include "lora_link/link_wire2.h"   // 電波に載せる 32 バイトのフレーム（印と CRC の検査）
+#include "lora_link/link_beacon.h"  // GNSS の時刻の助け合いのビーコン（同じ 32 バイト。印だけが違う）
 
 #define E220_SERIAL       Serial2      // RP2350 UART1 = GPIO8(TX)/GPIO9(RX)
 
@@ -624,9 +625,11 @@ uint16_t e220_airtime_ms(uint8_t profile) {
 //   印が 1 バイトしか無いので、65 バイトの頃の "PL" より偶然に出やすい。
 //   2026-11-07 から印は 6 ビット（下位 2 ビットはグループ）で、ゴミの中に出る確率は 1/64
 //   （それまで 1/256）。ほかの LoRa の電波を受けたとき、壊れフレームの数はそのぶん増える。
+// ★ テレメトリ（印 0xA4）とビーコン（印 0x58。lora_link/link_beacon.h）のどちらも 32 バイトなので、
+//   同じ切り出しで両方を拾う（link_frame_is_magic / link_frame_valid）。見分けて振り分けるのは link.cpp。
 static uint16_t later_valid_frame(uint16_t from) {
     for (uint16_t j = from; j + LINK_W2_LEN + 1 <= s_rxLen; j++)
-        if (link_w2_is_magic(s_rx[j]) && link_w2_valid(s_rx + j)) return j;
+        if (link_frame_is_magic(s_rx[j]) && link_frame_valid(s_rx + j)) return j;
     return 0xFFFF;
 }
 
@@ -641,7 +644,8 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
     while (i < s_rxLen) {
         // ★ 印は下位 2 ビット（グループ）を落として比べる。== にすると別グループのフレームを
         //   見つけられず、受信機が「無信号」になる（link_w2_is_magic）。
-        if (!link_w2_is_magic(s_rx[i])) { i++; continue; }
+        // ★ ビーコン（GNSS の時刻の助け合い。2026-11-13〜）も同じ 32 バイトなので、ここで一緒に拾う。
+        if (!link_frame_is_magic(s_rx[i])) { i++; continue; }
         if (i + need > s_rxLen) {
             // 揃うまで待つ。ただし後ろにもう正しいフレームがあれば、これは残骸
             const uint16_t j = later_valid_frame((uint16_t)(i + 1));
@@ -651,7 +655,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
             i = 0;
             continue;
         }
-        if (!link_w2_valid(s_rx + i)) {
+        if (!link_frame_valid(s_rx + i)) {
             // ★ 印は合ったのに検証に落ちた＝**電波は届いたが化けている**。
             //   「そもそも来ていない」と区別できると、現場の対処がまるで変わる:
             //     壊れフレームが多い → 信号は届いている。SNR 不足。

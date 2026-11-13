@@ -32,6 +32,11 @@
   extern Setting menu_settings[];
   extern const int setting_size;
 
+  // 行 id の後ろに、ラベルと別の色で添える注記（先頭の空白込み）。添えるものが無ければ false。
+  // 例: 受信モードの Map scale の行の " (S: 18km)"（送信機の縮尺。色は送信機が標準の縮尺か）。
+  // ★ 色の判断はここ（button.cpp）で、draw_setting_mode() は描くだけ。
+  bool menu_setting_note(int id, char* buf, size_t n, int* color);
+
   // 設定を保存して設定画面を閉じ、地図画面へ戻る。
   // ★ farewell=false で**別れの音声を鳴らさない**。放置タイムアウトで閉じるとき用で、
   //   「操作していないのに声が鳴る」のを避けるため（呼び出し側が代わりに短いトーンを鳴らす）。
@@ -42,6 +47,7 @@
   public:
       Button(int p, void (*shortPressCb)() = NULL, void (*longPressCb)() = NULL, void (*doublePressCb)() = NULL);
       void read();
+      void reset(); // モーダル画面終了時にボタン状態を現在のピンレベルへ同期・初期化する
       int getPin(); // Method to get the pin number
 
   private:

@@ -32,6 +32,20 @@ void reset_degpersecond();
 void next_scaleindex();          // マップスケールを次の段階へ（GPS_TFT_map.ino）
 float scale_screen_km(int index);  // 画面横幅が何 km か（GPS_TFT_map.ino）
 
+// 標準の縮尺（画面幅 約 18km）か。設定画面の Map scale の丸と、受信モードで添える
+// 送信機の縮尺「(S: 18km)」の色が**同じ基準**を見る（片方だけ変えると食い違う）。
+static bool scale_is_standard(int idx) {
+  return idx == 3;  // SCALE_LARGE_GMAP（通常使用）
+}
+
+// 縮尺の添字を画面幅の距離の文字列にする（"18km" / "4.6km"）。範囲外は "?"。
+static void format_scale_km(char* buf, size_t n, int idx) {
+  const float km = scale_screen_km(idx);
+  if (km <= 0.0f)       snprintf(buf, n, "?");
+  else if (km >= 10.0f) snprintf(buf, n, "%dkm", (int)(km + 0.5f));
+  else                  snprintf(buf, n, "%.1fkm", km);
+}
+
 const unsigned long debounceTime = 5;       // チャタリング除去のための待機時間 [ms]
 const unsigned long longPressDuration = 1000; // 長押しと判定するまでの時間 [ms]
 const unsigned long doubleClickDuration = 500; // 前の短押しからこの時間内に短押しでダブルクリック [ms]
@@ -92,6 +106,18 @@ void Button::read() {
             longPressHandled = true;
         }
     }
+}
+
+// モーダル画面（過放電警告など）から通常ループへ戻る際にボタン状態を初期化する。
+// 遷移前の押下状態や直前の短押し時刻が残っていると、復帰直後の read() で
+// 意図しない短押し・長押し・ダブルクリックが誤発火するのを防ぐ。
+void Button::reset() {
+    const bool cur = digitalRead(pin);
+    switchState        = cur;
+    lastSwitchState    = cur;
+    pressTime          = millis() - (longPressDuration + 100UL);
+    lastShortPressTime = 0;
+    longPressHandled   = true;
 }
 
 // Method to get the pin number
@@ -382,16 +408,17 @@ Setting menu_settings[] = {
   //             （広域 → … → 最大拡大 → 広域 とループ）
   //   ・表示は画面横幅の実距離。ベクタ地図に移行して Google タイルのズーム番号との
   //     対応が無くなったため、pilot にとって意味のある距離表示にしてある。
-  //   ・アイコン色: scaleindex==3 なら緑（通常使用する拡大率）、それ以外は赤
+  //   ・アイコン色: 標準の縮尺（scaleindex==3）なら緑（通常使用する拡大率）、それ以外は赤
+  //   ・受信モード: 行の後ろに送信機の縮尺を「(S: 18km)」と添え、**送信機が**標準の縮尺かで
+  //     緑／赤にする（menu_setting_note）。受信機の縮尺は送信機に合わせない（2026-11-12〜。
+  //     ボートでは機体と違う縮尺で見たい場面がある）ので、受信機自身の丸はハイフン。
   // ----------------------------------------------------------
   { SETTING_SCALE,
     [](bool selected) -> std::string {
+      char km[12];
+      format_scale_km(km, sizeof(km), scaleindex);
       char buff[32];  // temporary buffer
-      float km = scale_screen_km(scaleindex);
-      if (km >= 10.0f)
-        sprintf(buff, selected ? " Map scale: %dkm" : "Map scale: %dkm", (int)(km + 0.5f));
-      else
-        sprintf(buff, selected ? " Map scale: %.1fkm" : "Map scale: %.1fkm", km);
+      snprintf(buff, sizeof(buff), selected ? " Map scale: %s" : "Map scale: %s", km);
       return std::string(buff);  // return as std::string
     },
     nullptr,
@@ -400,7 +427,12 @@ Setting menu_settings[] = {
     },
     nullptr,
     [](){
-      if(scaleindex == 3)  // SCALE_LARGE_GMAP（通常使用）
+      // ★ 受信モード（ボート／ピット）では判定しない。緑の基準「標準の縮尺」は**パイロットが
+      //   飛ぶときの縮尺**の話で、ボートでは広く見ても寄って見ても正しい。それでも赤を出すと
+      //   正しい設定なのに異常に見える（MENU_ICON_HYPHEN の説明は src/button.h）。
+      //   送信機の縮尺の良し悪しは、行の後ろの「(S: ..)」の色で出す。
+      if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
+      if (scale_is_standard(scaleindex))
         return COLOR_GREEN;
       else
         return COLOR_RED;
@@ -666,6 +698,31 @@ Setting menu_settings[] = {
 
 
 const int setting_size = sizeof(menu_settings) / sizeof(menu_settings[0]);
+
+// 設定画面の行の後ろに、ラベルと別の色で添える注記（src/button.h）。
+// いまは受信モードの Map scale の行の「(S: 18km)」（送信機の縮尺）だけ。
+//   緑 = 送信機が標準の縮尺（設定画面の Map scale の丸と同じ基準 scale_is_standard）
+//   赤 = 標準でない（パイロットが違う縮尺のまま飛ぼうとしている）。範囲外の値も標準ではないので赤
+//   灰 = まだ分からない（受信していない・縮尺の載る回転枠をまだ受けていない）。"(S: --)"
+// ★ リプレイ中・デモ中は無線を「OFF 扱い」にする（link.h）ので出さない。
+// ★ 幅: 最長の " Map scale: 1174km (S: 1174km)"（選ばれた行の頭の空白込み）が 217px で、
+//   x=10 から描いて 227px。右端の丸は x=228〜なのでぎりぎり入る（2026-11-12 にフォントの送り幅で測った）。
+//   文言を足すなら数え直すこと。
+bool menu_setting_note(int id, char* buf, size_t n, int* color) {
+  if (id != SETTING_SCALE) return false;
+  if (link_get_mode() != LINK_MODE_RX || !link_live_ui_ok()) return false;
+  int idx = 0;
+  if (!link_get_sender_scale_index(idx)) {
+    snprintf(buf, n, " (S: --)");
+    *color = COLOR_GRAY;
+    return true;
+  }
+  char km[12];
+  format_scale_km(km, sizeof(km), idx);
+  snprintf(buf, n, " (S: %s)", km);
+  *color = scale_is_standard(idx) ? COLOR_GREEN : COLOR_RED;
+  return true;
+}
 
 
 

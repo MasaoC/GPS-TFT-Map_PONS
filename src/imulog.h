@@ -163,7 +163,12 @@ void imulog_release_pending(int bufidx);
 void imulog_write_buffer(int bufidx, const char* filename,
                          int year, int month, int day, int hour, int minute, int second);
 
-// ---- Core1: 開いている生IMUログファイルを閉じてフラッシュする（PC接続時など）----
+// ---- Core1: SD 再初期化（setup_sd 2 回目以降）の前に開いているハンドルを破棄する ----
+// SD.begin() でボリュームを再マウントする前に、旧ボリュームを指したままの静的 FsFile を
+// メモリ上でリセットする（カード差し替え後に旧 FAT クラスタへ書き込むのを防ぐ）。
+void imulog_on_sd_reinit();
+
+// ---- Core1: PC 接続（WebSerial）移行時に生 IMU ログをフラッシュして安全に閉じる ----
 void imulog_flush_and_close();
 
 // ---- 診断 ----

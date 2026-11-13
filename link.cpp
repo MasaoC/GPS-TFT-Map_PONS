@@ -30,6 +30,8 @@
 #include "navdata.h"
 #include "e220.h"        // 下位ドライバ（UART・モード制御・レジスタ）
 #include "lora_link/link_wire2.h"   // 電波に載せる 32 バイトのフレーム
+#include "lora_link/link_beacon.h"  // GNSS の時刻の助け合いのビーコン（同じ 32 バイト。印だけが違う）
+#include "link_assist.h"            // GNSS の時刻の助け合い（2026-11-13〜）
 #include "power.h"       // 電源経路の異常・SW OFF のまま USB（送信機の電源の状態をビットで運ぶ）
 
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
@@ -41,8 +43,7 @@
 extern bool ground_roll_warn_active;
 extern bool ground_pitch_warn_active;
 extern bool ground_calib_warn_active;
-extern volatile int scaleindex;    // 地図の縮尺（scalelist の添字）
-void set_scaleindex(int idx);      // 縮尺を合わせる（範囲外は無視される）
+extern volatile int scaleindex;    // 地図の縮尺（scalelist の添字）。送信機が載せる
 
 // 受信が途切れてから自機表示へ移るまで（docs/pons_link.md §5）。
 // ★ RSSI10_WIN_MS と同じ値にしてあること。受信中なら 10 秒窓に必ず 1 発は入る、
@@ -173,11 +174,20 @@ static bool link_chscan_holds_radio();// 実体は下（チャンネル調査が
 //   分かれば足りる。回転枠の値を混ぜない）。
 static LinkW2Rx s_w2rx;
 static uint8_t  s_lastSlot = 0xFF;   // 最後に受けた自グループのフレームの回転枠の番号（received/ の slot 列）
+static uint8_t  s_lastRaw[LINK_W2_LEN];   // 最後に受けたテレメトリの電波の 32 バイト（GNSS の時刻の助け合いが時刻を読む）
 
 // 1 フレーム受けて LinkTelem にする。slot には回転枠の番号を返す（要らなければ nullptr）。
+// ★ ビーコン（GNSS の時刻の助け合い。印 0x58。2026-11-13〜）はここで link_assist.cpp へ渡し、テレメトリとしては返さない。
+//   受信の数・RSSI・seq・ミラー・NO SIGNAL・DUP SENDER・GROUP X FOUND・送信前チェック・チャンネル調査の数には混ぜない。
+//   チャンネル調査の間は別の CH を聞いているので、渡さずに捨てる。
 static bool link_recv_telem(LinkTelem* t, int16_t* rssi, bool merge_own, uint8_t* slot) {
     uint8_t buf[LINK_W2_LEN];
-    if (!e220_recv(buf, (uint8_t)LINK_W2_LEN, rssi)) return false;
+    for (;;) {
+        if (!e220_recv(buf, (uint8_t)LINK_W2_LEN, rssi)) return false;
+        if (!link_bc_is_magic(buf[0])) break;
+        if (!link_chscan_running()) lassist_on_beacon(buf, *rssi);
+    }
+    memcpy(s_lastRaw, buf, sizeof(s_lastRaw));
     if (slot) *slot = link_w2_slot(buf);
     if (merge_own && link_w2_group(buf) == link_group) {
         link_w2_decode(buf, &s_w2rx, millis(), s_txPeriodEstMs);
@@ -192,13 +202,25 @@ static bool link_recv_telem(LinkTelem* t, int16_t* rssi, bool merge_own, uint8_t
 }
 
 // 回転枠で運ぶ項目（have ビットの無い目的地・ナビモード・縮尺）がもう分かっているか。
-// ★ 受け始めた直後（と長く途切れた後）は 0 のまま。そのまま使うと、受信機が「送信機は目的地 0・
-//   縮尺 0」と思い込んで自分の設定を書き換えてしまう（link_sync_destination / link_sync_scale）。
+// ★ 受け始めた直後（と長く途切れた後）は 0 のまま。そのまま使うと、受信機が「送信機は目的地 0」と
+//   思い込んで自分の設定を書き換えてしまう（link_sync_destination）。縮尺は設定画面に
+//   「送信機は最も広い縮尺」と嘘を出す（link_get_sender_scale_index）。
 static bool link_rx_slot_known(uint8_t slot) {
     return link_w2_slot_seen(&s_w2rx, slot);
 }
 
 static void link_poll_radio() {
+    // ★ 送信機は、GNSS の時刻の助け合いの窓の間だけ聞く（送信の合間も mode 0。lassist_keep_awake）。
+    //   拾うのは提供ビーコンだけ（link_recv_telem が link_assist.cpp へ渡す）。テレメトリ（別の送信機）は捨てる。
+    //   送信前チェックの間は、あちらが自分で読む。
+    if (link_mode_setting == LINK_MODE_TX) {
+        if (lassist_keep_awake() && link_preflight_state() != LINK_PF_RUNNING) {
+            LinkTelem t;
+            int16_t   rssi = 0;
+            while (link_recv_telem(&t, &rssi, false, nullptr)) {}
+        }
+        return;
+    }
     if (link_mode_setting != LINK_MODE_RX) return;
 
     LinkTelem t;
@@ -224,6 +246,8 @@ static void link_poll_radio() {
         if (prev_rx_ms > 0) s_rxIntervalMs = s_rxMs - prev_rx_ms;
         s_rxNewFrame = true;         // ミラー中の「新しい位置が来た」の合図
         s_drawFrame  = true;         // 同じ合図の描画用（link_take_draw_frame）
+        // GNSS の時刻の助け合い: 機体の時刻（自分の GNSS が時刻を知らないとき）・「時刻がほしい」のビット・枠の基準
+        lassist_on_telem(s_lastRaw, &s_w2rx, rssi);
 
         // 受信ログ（docs/pons_link.md §5）。received/ は無線で得た情報だけを置く。
         enqueueTask(createSaveRxCsvTask(&s_rx.t, s_rx.rssi, s_rx.age_ms, s_lastSlot));
@@ -530,7 +554,8 @@ static void link_probe_module() {
         }
     }
 
-    if (tx) e220_sleep();              // 送信機は送信の合間は寝かせる
+    // 送信機は送信の合間は寝かせる。ただし GNSS の時刻の助け合いの窓の間は起こしたまま（提供ビーコンを聞く）
+    if (tx && !lassist_keep_awake()) e220_sleep();
 }
 
 // 無線モジュールが応答しない＝設定の照合が通らない、または問い合わせに返事が無い。
@@ -647,38 +672,16 @@ static void link_sync_destination() {
 // ★ RAM 上の上書きだけ（SD には書かない）。違ったときだけ合わせる。
 // ★ **ミラー中はボート側の拡大率操作（ダブルクリック）が効かなくなる。**
 //   意図どおり（送信機に合わせるのが主旨）。変えたいときは受信を切る。
-//
-// ★★ **「送信機が回した」と「ボート側で変えたのを引き戻した」を区別して鳴らす**（0.991）。
-//   前者で鳴らすと**送信機が拡大率を回すたびに鳴って騒がしい**（0.988 で音声に
-//   しなかった理由はこれ。画面を見れば分かる変化でもある）。
-//   後者は**自分の操作が無視された**ことなので、黙っていると
-//   「一瞬変わって戻る＝ボタンかソフトが壊れている」と思わせる。トーンだけ鳴らす。
-//   区別の方法: 送信機から来た値が前回と同じなのに自分と違う ＝ こちらで変えた。
-static void link_sync_scale() {
-    static uint8_t s_last_sender_scale = 0xFF;   // 0xFF = まだ送信機の値を見ていない
-    if (!link_mirror_active()) { s_last_sender_scale = 0xFF; return; }
-
-    // ★ 縮尺は回転枠 6 で来る。受けるまでは 0 のままなので合わせない（0 に飛ばさない）。
-    if (!link_rx_slot_known(W2S_PRESS)) return;
-    const uint8_t sender = s_rx.t.scale_index;
-    // 受信開始直後（0xFF）とミラー再開も「送信機が動いた」側に入れる。
-    // あれは**最初の位置合わせ**で、却下ではないので鳴らさない。
-    const bool sender_moved = (sender != s_last_sender_scale);
-    s_last_sender_scale = sender;
-    if ((int)sender == scaleindex) return;
-
-    // ★ **引き戻しが実際に効いたときだけ鳴らす。** set_scaleindex() は範囲外を
-    //   無視するので、呼ぶ前に鳴らすと、送信機が壊れた値を送り続ける間
-    //   link_loop() のたびに鳴り続ける。
-    const int before = scaleindex;
-    set_scaleindex((int)sender);               // 範囲外なら無視される
-    if (!sender_moved && scaleindex != before) {
-        // 低い 2 連 = 操作を却下した。★ 優先度 3（コース警告と同等）にしないこと。
-        //   UI の「できません」が本物の警告を押しのけるのは順序が逆。
-        enqueueTask(createPlayMultiToneTask(262, 100, 2, 2));
-        enqueueTask(createLogSdfTask("LINK: scale override (local %d -> sender %d)",
-                                     before, (int)sender));
-    }
+// ★★ **受信機の縮尺は送信機に合わせない**（2026-11-12〜）。0.988〜0.999 は合わせていて
+//   （link_sync_scale）、ボートで変えると低音 2 連で引き戻していたが、ボートでは機体と違う縮尺で
+//   見たい場面が出てきた（全体を広く見る・機体の近くを拡大する）。受信機の縮尺はボートの操作どおりにし、
+//   送信機の縮尺は設定画面の Map scale の行に「(S: 18km)」と添えて出す（src/button.cpp）。
+//   「送信機が誤った縮尺のまま飛んでいる」に気づく役目は、その色（標準の縮尺かどうか）が引き継ぐ。
+// ★ 縮尺は回転枠 6 で来る。受けるまでは 0 のままなので false（0 = 最も広い縮尺と出さない）。
+bool link_get_sender_scale_index(int &idx) {
+    if (!link_mirror_active() || !link_rx_slot_known(W2S_PRESS)) return false;
+    idx = (int)s_rx.t.scale_index;
+    return true;
 }
 
 // 送信機側の異常（SD／IMU）。飛ぶ前に気づきたい項目。
@@ -1096,8 +1099,18 @@ static void link_preflight_tick() {
 //   受信待機 8.2mA なので平均 +1.6mA 程度。TFT と RP2350 の消費に対しては誤差。
 // （LinkTxState と s_txState/s_txStateMs は link_probe_module から参照できるようファイル上部へ配置）
 
+// GNSS の時刻の助け合いの窓のために、送ったあと寝かせずにおいたか（窓が閉じたら寝かせる）
+static bool s_assistAwake = false;
+
 static void link_tx_tick() {
-    if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; return; }
+    if (link_mode_setting != LINK_MODE_TX) { s_txState = LTX_IDLE; s_assistAwake = false; return; }
+
+    // ★ 窓が閉じた（時刻を受け取った・30 分・リプレイ など）。送信の合間なら、いつもどおり寝かせる。
+    //   点検中は点検が起こしているので触らない（終わったら点検が寝かせる）。
+    if (s_assistAwake && !lassist_keep_awake() && s_txState == LTX_IDLE && s_pfState != LINK_PF_RUNNING) {
+        e220_sleep();
+        s_assistAwake = false;
+    }
 
     // ★★ **リプレイ中とデモ中は送信しない**（判定は link_rf_suppressed()）。
     //   apply_replay_row()（gnss.cpp）は stored_latitude / stored_fixtype など
@@ -1172,7 +1185,10 @@ static void link_tx_tick() {
               if (left) { left--;
                   enqueueTask(createLogSdfTask("LINK TX: air %lums (prof=%u)",
                                                (unsigned long)el, link_radio_profile)); } }
-            e220_sleep();
+            // ★ GNSS の時刻の助け合いの窓の間は寝かせない（送信の合間に提供ビーコンを聞く。link_assist.cpp）。
+            //   次の送信は LTX_IDLE → e220_wake_begin() だが、起きていれば e220_wake_ready() がすぐ通るので、そのまま送れる。
+            if (lassist_keep_awake()) s_assistAwake = true;
+            else                      e220_sleep();
             s_txState = LTX_IDLE;
             return;
         }
@@ -1425,12 +1441,13 @@ void link_loop() {
         return;
     }
     link_poll_radio();
+    lassist_loop();             // GNSS の時刻の助け合い（窓・提供・要求。link_assist.cpp）
     link_watch_mirror_transition();
     link_watch_no_signal_repeat();
     link_probe_module();        // ★ watch_module より先。判断の材料をここで更新する
     link_watch_module();
     link_sync_destination();
-    link_sync_scale();          // 目的地と同じ「送信側に合わせる」組
+    // 縮尺は合わせない（2026-11-12〜。link_get_sender_scale_index の説明）
     // ★ 下の 3 つと link_watch_module() は **リプレイ中・デモ中も鳴らす**。
     //   「送信機の電池が減っている」「地上チェックに引っかかっている」
     //   「自分のモジュールが応答しない」は、画面に出している数字とは無関係に
@@ -1722,7 +1739,7 @@ static void link_push_telemetry() {
     t.dest_index = (int8_t)currentdestination;
     t.dest_id    = link_dest_id(currentdestination);   // 受信側は番号ではなくこれで探す
     t.nav_mode   = (uint8_t)destination_mode;
-    t.scale_index = (uint8_t)scaleindex;   // 受信側はこれに合わせる（link_sync_scale）
+    t.scale_index = (uint8_t)scaleindex;   // 受信側は設定画面に添えて出すだけ（合わせない）
     // 大きい枠の設定。受信機（ボート）は自分の設定ではなくこれに従う。地上か飛行中かは送らない
     // （ミラーした対地速度から受信機が計算する。tas.cpp）。
     if (tas_setting_get()) t.tas_flags |= LINK_TAS_HDR;
@@ -1748,6 +1765,11 @@ static void link_push_telemetry() {
     //   立ち**、受信機が電源投入ごとに誤報する。
     if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
     if (power_fault_active())                          st |= LINK_ST_PWR_FAULT;
+    // GNSS が時刻を知らず、仲間の提供ビーコンを聞いている（link_assist.cpp）。fix しているボートがこれを見て時刻を送る
+    if (lassist_time_wanted())                         st |= LINK_ST_TIME_WANTED;
+    // 時刻の確からしさ（NAV-PVT の tAcc。1〜10 秒なら COARSE、それより悪ければ BAD、よければ 0）。fix の前の RTC の時刻を
+    // ボートが使うときに、GNSS へ伝える精度を決める（link_w2_utc_ms・link_assist.cpp）
+    st |= lassist_time_status_bits();
     t.status = st;
 
     // ★ ヘッダとペイロードを 1 回の write() にまとめるのは e220_send() の責任。

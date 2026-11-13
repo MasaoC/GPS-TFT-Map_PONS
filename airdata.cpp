@@ -590,7 +590,7 @@ float get_airdata_ground_pressure(){ return ground_pressure; }
 float get_airdata_ground_altitude(){ return ground_alt_abs; }
 // 最新の鉛直速度 [m/s] を返す（トリム平均差分。初回ウィンドウ完了まで 0）
 // I2C エラー等で 2 秒以上更新が途絶えた場合は 0 を返す（バリオ誤鳴動防止）。
-// 2 秒 = VSPEED_WINDOW_MS(500ms) の 4 倍。正常時は 500ms ごとに更新されるため十分な余裕。
+// 2 秒 = VSPEED_WINDOW_MS(250ms) の 8 倍。正常時は 250ms ごとに更新されるため十分な余裕。
 float get_airdata_vspeed() {
     if (last_vspeed_update_ms == 0 ||
         millis() - last_vspeed_update_ms > 2000UL) return 0.0f;

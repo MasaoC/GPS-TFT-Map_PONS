@@ -757,7 +757,7 @@ da_air = wrap180(track - psi_air)
 
 wind_speed = np.hypot(wn, we)
 # 風が吹いてくる方位。360°をまたぐと最大最小が意味をなさないので、
-# 表示・保存用には連続値に展開したものを使う
+# 表示・保存用には連続値に展開したものを使う（気象通例の「吹いてくる」向きで一貫）
 wind_dir_unwrap = np.degrees(np.unwrap(np.arctan2(we, wn))) + 180.0
 wind_dir = wind_dir_unwrap % 360.0
 

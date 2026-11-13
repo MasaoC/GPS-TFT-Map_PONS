@@ -368,7 +368,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     sacc_max: GNSS 速度を採用する sAcc の上限 [m/s]。
       フィックスが悪いと u-blox は数百 m/s の速度解を返すことがあり、
       そのまま観測に入れるとフィルタが壊れる（実ログで最大 248m/s を確認）。
-      なお機上のバリオ KF は settings.h の GNSS_VSI_SACC_MAX_MPS=0.3 を使っている。
+      なお機上のバリオ KF は 2026-11-12 から GNSS の速度を使っていない（settings.h の KF_GNSS_VEL_ENABLED = 0。
+      それまでは GNSS_VSI_SACC_MAX_MPS = 1.0 で切っていた）。
 
     戻り値の列:
       session            : 起動ごとの通し番号
