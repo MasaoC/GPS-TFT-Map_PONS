@@ -373,6 +373,7 @@
   bool dequeueTask(Task *task);
 
   bool good_sd();
+  void sd_note_write_error();   // 開いたファイルへの書き込みが失敗した → SD の異常にする（Core1。BUG-119）
   bool isTaskRunning(int taskType);
   bool isTaskInQueue(int taskType);
   void clearCurrentTask();  // Core1 がタスク完了時に呼ぶ（currentTask.type = TASK_NONE）

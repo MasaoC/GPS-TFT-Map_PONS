@@ -193,9 +193,9 @@ Button sw_push(SW_PUSH, shortPressCallback, longPressCallback,
 // 条件ごとの LED 動作:
 //   永続点灯 (userled_forced_on): タスクキュー溢れなどの致命エラー → 消灯しない
 //   2 回点滅: SD エラー   → 1 秒に 2 回、各 20ms
-//   1 回点滅: 衛星 0      → 1 秒に 1 回、20ms
+//   1 回点滅: fix なし    → 1 秒に 1 回、20ms（2026-11-14 までは「衛星 0」。画面の Scanning GNSS Signal と同じ判定）
 //   正常時:   消灯
-// **両方成立したら SD を優先する。** 衛星 0 は屋内なら普通に起きるうえ、直れば
+// **両方成立したら SD を優先する。** fix なしは屋内なら普通に起きるうえ、直れば
 // 何も失われない。SD エラーは「飛行が一切記録されていない」ことを意味し、
 // 後から取り返せないので、そちらを見せる。
 // （画面ヘッダーには sats バッジと SD バッジの両方が出ている。LED はそれを
@@ -230,15 +230,15 @@ void loop_userled() {
 
   const bool sd_ng =
       !good_sd(); // Core0 から呼ぶと状態を読むだけ（復旧は Core1 側）
-  const bool no_sat = (get_gnss_numsat() == 0);
+  const bool no_fix = gnss_shown_no_fix();   // 画面の Scanning GNSS Signal の箱と同じ判定（gnss.cpp）
 
-  if (!sd_ng && !no_sat) {
+  if (!sd_ng && !no_fix) {
     digitalWrite(USERLED_PIN, LOW);
     led_on =
         false; // 消したことを状態にも反映する（次にエラーへ落ちたとき点け直せるように）
     // 打ち残しも捨てる。残したまま同じ周期内でエラーへ戻ると、GAP
     // を過ぎている分
-    // **2 発目だけが即座に出て**、衛星 0（1 回点滅）が SD 異常（2
+    // **2 発目だけが即座に出て**、fix なし（1 回点滅）が SD 異常（2
     // 回点滅）に見える。
     pulses_left = 0;
     return;
@@ -693,6 +693,7 @@ void setup1(void) {
   // setup() 内で enqueueTask() を 呼ぶので、mutex_init が遅れると未初期化の
   // mutex を掴む危険がある。 特に下の while(!Serial) は USB
   // 接続まで待つため、その後ろに置くと窓が極端に長くなる。
+  // 意図して直さない（2026-11-14 の監査）: BOOT PONS より先に VEML7700・IMU・MS5611・SD INIT の行が出ることがある（Flight Viewer は SD INIT からも分けて読める）
   mutex_init(
       &taskQueueMutex); // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
   bootwatch_stage1(BW_STAGE1_SETUP1); // 起動の見張りの目印（bootwatch.h）
@@ -1277,7 +1278,7 @@ static void ground_check_tick() {
     {
       static bool calib_day_warned = false;
       const uint32_t today_jst = get_gnss_jst_yyyymmdd();
-      if (!calib_day_warned && !attitude_needs_apply() &&
+      if (!calib_day_warned && !getReplayMode() && !attitude_needs_apply() &&   // リプレイの日付で比べない（BUG-110）
           attitude_calib_date_stale(today_jst)) {
         calib_day_warned = true;
         // 先に 2 音鳴らしてから WAV を積む（APPLY 成功音と同じ作り）。
@@ -1324,7 +1325,8 @@ static void eskf_apply_tick() {
     // より先に呼ぶ。保存は Core1 が後から実行するので
     //   どちらの順でも実害は無いが、「保存する値を全部そろえてから保存を頼む」
     //   という読み方ができるようにしておく。
-    attitude_set_calib_date(get_gnss_jst_yyyymmdd());
+    // ★ リプレイ中は 0（不明）。CSV の過去の日付が settings.txt に残り、次の本物の日に「別の日の較正」と誤って言う（BUG-110）
+    attitude_set_calib_date(getReplayMode() ? 0 : get_gnss_jst_yyyymmdd());
     enqueueTask(createSaveSettingTask()); // 次回起動でも効くよう保存
     // 成功トーン（上がり 2 音）。SD に eskf_apply_done.wav が無くても、
     // 較正が実行されたことが分かるようにする。WAV の直前に鳴らす。
@@ -1343,7 +1345,9 @@ static void eskf_apply_tick() {
       attitude_get_level_offset(lvr, lvp);
       GnssDate d = get_gnss_date();
       GnssTime t = get_gnss_time();
-      if (d.isValid() && t.isValid())
+      if (getReplayMode())   // CSV の過去の日時は出さない（BUG-110）
+        enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at ---- (replay)", lvr, lvp));
+      else if (d.isValid() && t.isValid())
         enqueueTask(createLogSdfTask("ESKF APPLY done R%+.2f P%+.2f at "
                                      "%04d-%02d-%02d %02d:%02d:%02d UTC",
                                      lvr, lvp, d.year(), d.month(), d.day(),
@@ -1455,7 +1459,8 @@ static void periodic_log_tick() {
       //   （get_jst_now() は millis()
       //   の経過ぶんも足してあり、日跨ぎも処理済み。）
       char jst_str[8];
-      if (jst_valid)
+      // ★ リプレイ中は CSV の過去の時刻（倍速で進む）になるので出さない（2026-11-14、BUG-110）
+      if (jst_valid && !getReplayMode())
         snprintf(jst_str, sizeof(jst_str), "%02d:%02d", log_h, log_m);
       else
         strlcpy(jst_str, "--:--", sizeof(jst_str));
@@ -1481,8 +1486,15 @@ static void periodic_log_tick() {
       // ※ 行を分けること。log_sd() は logtext[128] に "<起動秒>:" を前置するため、
       //   1 行にまとめると稼働時間が延びるほど末尾が切り詰められる（実際 wrote=
       //   が消えた）。
-      enqueueTask(createLogSdfTask("rate MS5611=%.1f Hz (%s: no fusion)",
-                                   get_airdata_win_hz(), imu_sensor_name()));
+      // spk= rf= fb=: 気圧のサンプルを捨てた数（この 60 秒。settings.h の BARO_SPIKE_REJECT_M。2026-11-13〜）。
+      //   rf= は無線が動いていた間（無線 ON ならふつう毎分数百）、spk= は外れ値、fb= は残りが少なく全部で平均した窓（ふつう 0）。
+      {
+        uint32_t spk, rfc, fb;
+        airdata_take_reject_counts(spk, rfc, fb);
+        enqueueTask(createLogSdfTask("rate MS5611=%.1f Hz (%s: no fusion) spk=%lu rf=%lu fb=%lu",
+                                     get_airdata_win_hz(), imu_sensor_name(),
+                                     (unsigned long)spk, (unsigned long)rfc, (unsigned long)fb));
+      }
       // 割り込みで読んでいるとき（settings.h の SCH16T_READ_IN_IRQ）は、gapmax= が割り込みの間隔（ふだん 4ms）、
       // drain= が読んでから推定へ渡すまでの最長（＝ Core0 が描画などで止まっていた最長時間）、ovf= がリングが
       // 一杯で読めなかった回数（loop() に入ってから）。★ 行頭の "imu gapmax=" は Flight Viewer が読んでいる。
@@ -1935,6 +1947,10 @@ static void screen_moving_exit_tick() {
     break;
   }
   selectedLine = -1;
+  // ★ 画面を消してから戻り、読み込み中の表示の印も下ろす（ほかの画面の切り替えと同じ。2026-11-14、BUG-122）
+  sd_detail_loading_displayed = false;
+  replay_loading_displayed    = false;
+  tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
   exit_setting(false);   // 設定を保存して MODE_MAP へ（別れの音声は鳴らさない）
   enqueueTask(createPlayMultiToneTask(659, 100, 1, 2)); // ミ
   enqueueTask(createPlayMultiToneTask(523, 100, 1, 2)); // ド
@@ -1945,9 +1961,55 @@ static void screen_moving_exit_tick() {
 
 // ===== Web Serial コマンド受信・処理（Core0） =====
 static char serial_cmd_buf[128];
+static bool serial_cmd_overflow = false;   // 長すぎる行を読み捨て中（改行まで。BUG-93）
 static size_t serial_cmd_len = 0;
 static int prev_screen_mode = MODE_MAP;
 static uint32_t last_serial_rx_ms = 0;
+
+// ---- ファイル転送（TASK_SERIAL_GET）の間は Core0 から USB シリアルへ書かない（2026-11-13、BUG-76）----
+// ★ 転送は Core1 が DATA_START 〜 DATA_END（または CANCEL_OK）を流していて、PC はその間のバイトを全部ファイルの中身として
+//   受け取り CRC を取る。Core0 が 1 行でも書くと中身に混ざって CRC が合わなくなるか、行の途中に入って終わりの印を見失う。
+//   PONS:PING の返事だけは以前から止めていたが、BUSY・BYE・READY・DBD・TIME は止めていなかった。
+//   ・READY / BYE / BUSY は転送が終わってから出す（serial_flush_deferred_replies()）。Core1 は転送の終わりに
+//     DATA_END か CANCEL_OK を行の頭に出すので、そのあとなら PC は 1 行として読める。
+//     BUSY は、ビューアで取り消した直後に別のファイルを押したとき（本体はまだ前の転送の後始末中）に返る。
+//   ・DBD / TIME は転送中は受けない（机の上の試験用。ビューアは TIME を READY の直後、一覧より先に送る）。
+static bool s_ready_pending = false;
+static bool s_bye_pending   = false;
+static bool s_busy_pending  = false;
+// ★ 一覧（TASK_SERIAL_LIST）も含める（2026-11-14、BUG-92）。Core1 が PONS:FILE 〜 LIST_END を流している間に
+//   Core0 が READY / BYE / PONG / CANCEL_OK を書くと、一覧の行の間（行の途中のこともある）に混ざっていた。
+static bool s_cancel_ok_pending = false;   // 一覧の最中に CANCEL を受けた（一覧のあとで CANCEL_OK を返す）
+static bool serial_xfer_active() {
+  return isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET) ||
+         isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST);
+}
+static void serial_send_ready_now() {
+  Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION, (unsigned long)BUILDDATE);
+}
+// PONS:BYE を出す。転送中なら、Core1 が転送をやめて CANCEL_OK を出したあとに出す。
+static void webserial_say_bye() {
+  if (serial_xfer_active()) { s_bye_pending = true; s_ready_pending = s_busy_pending = false; return; }
+  Serial.println("PONS:BYE");
+}
+// PC 接続の画面から元の画面へ戻す（2026-11-13、BUG-85）。抜け道は 5 つ（PONS:DISCONNECT・USB を抜いた・60 秒無通信・短押し・長押し）。
+// ★ 画面を白で消してから戻る（ほかの画面の切り替えと同じ）。PC 接続の画面は青いヘッダー・下端の "WEB SERIAL MODE" を描くが、
+//   設定画面はタイトルの右と本体しか塗らないので、左上の青と下の帯が残って "SETTINGS" が読めなかった。
+// ★ 操作した時刻も今にする。ボタン以外で抜けたとき、設定画面から PC をつないで 3 分以上たっていると、戻った直後に
+//   設定画面の放置タイムアウト（setting_timeout_tick）が働いて、すぐ地図へ閉じていた。
+static void pcconnect_leave_screen() {
+  screen_mode = (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+  tft.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_WHITE);
+  last_user_input_ms = millis();
+  redraw_screen = true;
+}
+static void serial_flush_deferred_replies() {
+  if (!(s_ready_pending || s_bye_pending || s_busy_pending || s_cancel_ok_pending) || serial_xfer_active()) return;
+  if (s_cancel_ok_pending) { s_cancel_ok_pending = false; Serial.println("PONS:CANCEL_OK"); }
+  if (s_busy_pending)  { s_busy_pending = false; Serial.println("PONS:ERROR,BUSY"); }
+  if (s_bye_pending)   { s_bye_pending = false; Serial.println("PONS:BYE"); }
+  if (s_ready_pending) { s_ready_pending = false; serial_send_ready_now(); }
+}
 
 static void handle_serial_command(const char *raw_cmd) {
   last_serial_rx_ms = millis();
@@ -1974,12 +2036,19 @@ static void handle_serial_command(const char *raw_cmd) {
     screen_mode = MODE_PCCONNECT;
     redraw_screen = true;
     enqueueTask(createLogSdTask("PC CONNECTED (WEB SERIAL ACTIVE)"));
-    Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION,
-                  (unsigned long)BUILDDATE);
+    // ★ 前の接続の転送が残っていたら（ビューアのページを読み直した等）、やめさせてから READY を出す（BUG-76）。
+    //   READY を先に出すと、残りの転送の中に混ざって新しいビューアが READY を見つけられない。
+    if (serial_xfer_active()) {
+      webserial_cancel_requested = true;
+      s_bye_pending   = s_busy_pending = false;
+      s_ready_pending = true;            // serial_flush_deferred_replies() が転送の終わったあとに出す
+    } else {
+      serial_send_ready_now();
+    }
   } else if (strcmp(cmd, "PONS:PING") == 0) {
     // GET タスク待機中または実行中はデータストリームに PONG
     // が混ざるのを防ぐため応答を抑止
-    if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) {
+    if (!serial_xfer_active()) {   // 一覧の最中も（BUG-92）
       Serial.println("PONS:PONG");
     }
   } else if (strcmp(cmd, "PONS:LIST") == 0) {
@@ -1991,25 +2060,27 @@ static void handle_serial_command(const char *raw_cmd) {
     if (isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST)) {
       return;
     }
-    enqueueTask(createSerialListTask());
+    // ★ 中断の印は Core0 が入れる前に下ろす（PONS:GET と同じ。2026-11-14、BUG-92）。以前は Core1 が一覧の頭で下ろしていて、
+    //   待っている間に来た CANCEL・再接続（CONNECT）を消していた。転送が残っているときは、その転送への中断を消さないよう触らない。
+    if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) webserial_cancel_requested = false;
+    if (!enqueueTask(createSerialListTask())) s_busy_pending = true;   // キューが満杯: 返事が無いと PC が待ち続ける（BUG-93）
   } else if (strncmp(cmd, "PONS:GET,", 9) == 0) {
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
       return;
     }
-    // 転送中なら BUSY を返す
-    if (isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
-      Serial.println("PONS:ERROR,BUSY");
-      return;
-    }
+    // 転送中なら受けない。★ BUSY は転送が終わってから返す（すぐ出すと転送の中身に混ざる。BUG-76。serial_xfer_active() のコメント）
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
     const char *filename = cmd + 9;
     while (*filename == ' ')
       filename++;
-    if (*filename == '\0') {
+    // ★ タスクに入るパスの長さを超えたら断る（黙って切り詰めると別のファイルを開きに行く。2026-11-14、BUG-93）
+    if (*filename == '\0' || strlen(filename) >= sizeof(((Task*)nullptr)->serialGetArgs.filename)) {
       Serial.println("PONS:ERROR,INVALID_FILENAME");
       return;
     }
-    enqueueTask(createSerialGetTask(filename));
+    webserial_cancel_requested = false;   // ★ 入れる前に下ろす。Core1 は始める前にこれを見る（待っている間の CANCEL を拾う。BUG-76）
+    if (!enqueueTask(createSerialGetTask(filename))) s_busy_pending = true;   // キューが満杯（BUG-93）
   } else if (strncmp(cmd, "PONS:GETTAIL,", 13) == 0) {
     // 末尾だけ送る: "PONS:GETTAIL,<バイト数>,<パス>"（2026-11-11〜）。伸び続ける log.txt を、最新の分だけ速く取るため。
     // ★ バイト数を先に置く（FAT のファイル名には , が使えるので、パスは行の最後まで）。
@@ -2017,40 +2088,44 @@ static void handle_serial_command(const char *raw_cmd) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
       return;
     }
-    if (isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
-      Serial.println("PONS:ERROR,BUSY");
-      return;
-    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }   // PONS:GET と同じ（BUG-76）
     const char *p = cmd + 13;
     uint32_t tail = 0;
     int digits = 0;
-    while (*p >= '0' && *p <= '9' && digits < 10) {
+    // ★ 9 桁まで（約 1GB）。10 桁を通すと uint32_t があふれ、0（＝全部）に化けて log.txt を丸ごと送っていた（BUG-93）
+    while (*p >= '0' && *p <= '9' && digits < 9) {
       tail = tail * 10 + (uint32_t)(*p - '0');
       p++;
       digits++;
     }
-    if (digits == 0 || *p != ',' || p[1] == '\0') {
+    if (digits == 0 || *p != ',' || p[1] == '\0' ||
+        strlen(p + 1) >= sizeof(((Task*)nullptr)->serialGetArgs.filename)) {
       Serial.println("PONS:ERROR,INVALID_FILENAME");
       return;
     }
-    enqueueTask(createSerialGetTask(p + 1, tail));
+    webserial_cancel_requested = false;   // PONS:GET と同じ
+    if (!enqueueTask(createSerialGetTask(p + 1, tail))) s_busy_pending = true;   // キューが満杯（BUG-93）
   } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
     webserial_cancel_requested = true;
     // 転送タスク実行中でなければ即座に応答（転送中なら Core1
-    // がファイルを閉じた直後に出す）
+    // がファイルを閉じた直後に出す）。★ 一覧の最中なら一覧のあとで返す（BUG-92）
     if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) {
-      Serial.println("PONS:CANCEL_OK");
+      if (serial_xfer_active()) s_cancel_ok_pending = true;
+      else                      Serial.println("PONS:CANCEL_OK");
     }
   } else if (strcmp(cmd, "PONS:DISCONNECT") == 0) {
     webserial_connected = false;
     webserial_cancel_requested = true;
-    Serial.println("PONS:BYE");
+    webserial_say_bye();   // 転送中なら転送をやめたあと（BUG-76）
     enqueueTask(createLogSdTask("PC DISCONNECTED (BYE) -> RESUME MAP"));
     if (screen_mode == MODE_PCCONNECT) {
-      screen_mode =
-          (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+      pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
       redraw_screen = true;
     }
+  } else if (serial_xfer_active() &&
+             (strncmp(cmd, "PONS:DBD,", 9) == 0 || strncmp(cmd, "PONS:TIME,", 10) == 0)) {
+    // 転送中は受けない（返事が転送の中身に混ざる。BUG-76）。ビューアは PONS:TIME を READY の直後、一覧より先に送る
+    return;
   } else if (strncmp(cmd, "PONS:DBD,", 9) == 0) {
     // GNSS の航法データベースの机の上の試験（SAVE / COLD / COLDONLY / HOT / STATUS。gnss_dbd.cpp の
     // gnss_dbd_command）。PONS:CONNECT は要らない（Arduino IDE のシリアルモニタから打てるように）。
@@ -2079,11 +2154,11 @@ static void serial_command_service() {
       !usb_power_present()) {
     webserial_connected = false;
     webserial_cancel_requested = true;
+    s_ready_pending = s_bye_pending = s_busy_pending = s_cancel_ok_pending = false;   // 相手がいないので、回しておいた返事は捨てる（次の接続に古い BYE を出さない）
     enqueueTask(
         createLogSdTask("USB DISCONNECTED (CABLE REMOVED) -> RESUME MAP"));
     if (screen_mode == MODE_PCCONNECT) {
-      screen_mode =
-          (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+      pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
       redraw_screen = true;
     }
     return;
@@ -2102,25 +2177,32 @@ static void serial_command_service() {
     webserial_connected = false;
     webserial_cancel_requested = true;
     enqueueTask(createLogSdTask("PC TIMEOUT (60s IDLE) -> RESUME MAP"));
-    screen_mode =
-        (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
     redraw_screen = true;
     return;
   }
 
+  serial_flush_deferred_replies();   // 転送のあとに回した READY / BYE（BUG-76）
+
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\r' || c == '\n') {
-      if (serial_cmd_len > 0) {
+      if (serial_cmd_overflow) {
+        serial_cmd_overflow = false;   // 長すぎた行はここまで捨てる
+        serial_cmd_len = 0;
+      } else if (serial_cmd_len > 0) {
         serial_cmd_buf[serial_cmd_len] = '\0';
         handle_serial_command(serial_cmd_buf);
         serial_cmd_len = 0;
       }
-    } else {
+    } else if (!serial_cmd_overflow) {
       if (serial_cmd_len < sizeof(serial_cmd_buf) - 1) {
         serial_cmd_buf[serial_cmd_len++] = c;
       } else {
-        serial_cmd_len = 0; // 溢れたらリセット
+        // ★ 溢れたら改行まで読み捨てる（2026-11-14、BUG-93）。以前は長さを 0 に戻すだけで、行の後半が別のコマンドとして
+        //   読まれていた（RELEASE でないビルドでは PONS: の無い断片が GNSS へ中継される）
+        serial_cmd_len = 0;
+        serial_cmd_overflow = true;
       }
     }
   }
@@ -2159,7 +2241,7 @@ void loop() {
   //   レコードはすべてホスト時刻 t_us を持つので、日付が無くても解析はできる。
   imulog_set_paused(getReplayMode() || webserial_connected);
   gnss_loop(0);   // ループ先頭で GNSS データを受信
-  loop_userled(); // USERLED フラッシュ制御（0衛星・SDエラー時）
+  loop_userled(); // USERLED フラッシュ制御（fix なし・SD エラー時）
 
   gnss_conn_tick();
 
@@ -2473,12 +2555,14 @@ float scale_screen_km(int index) {
 void shortPressCallback() {
   backlight_notify_activity();
   last_user_input_ms = millis();
-  redraw_screen = true;
   DEBUG_PLN(20240801, "short press");
 
   // MAP モードでは短押しは何もしない（スケール変更はダブルクリックへ移した）。
   // 充電ポップアップが表示されている場合は、短押しで 15
   // 秒間スヌーズ（一時非表示）にして地図を確認できるようにする。
+  // ★ 地図では描き直さない（2026-11-14、BUG-88）。以前は先頭で無条件に redraw_screen を立てていて、何もしない短押しと
+  //   ダブルクリックの 1 打目のたびに地図を丸ごと（約 200ms）描き直していた。受信のミラー中は link_draw_window_ok() を
+  //   通らずに描くので、電波を受ける時刻に TFT の雑音が重なる。
   if (screen_mode == MODE_MAP) {
     if (power_charge_popup_active()) {
       power_charge_popup_snooze();
@@ -2486,15 +2570,15 @@ void shortPressCallback() {
     }
     return;
   }
+  redraw_screen = true;
 
   // PC接続モード中: プッシュスイッチで手動切断して通常画面へ復帰
   if (screen_mode == MODE_PCCONNECT) {
     webserial_connected = false;
     webserial_cancel_requested = true;
-    Serial.println("PONS:BYE");
+    webserial_say_bye();   // 転送中なら転送をやめたあと（BUG-76）
     enqueueTask(createLogSdTask("PC DISCONNECTED (BUTTON) -> RESUME MAP"));
-    screen_mode =
-        (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
     redraw_screen = true;
     return;
   }
@@ -2526,6 +2610,9 @@ void shortPressCallback() {
       enqueueTask(
           createBrowseSDTask(detail_page % (max_page + 1))); // ページをループ
   } else if (screen_mode == MODE_REPLAYSELECT) {
+    // ★ Core1 が一覧を読み直している間は動かさない（2026-11-14、BUG-90）。件数と replayfiles[] が書き換え途中で、
+    //   カーソルが早く折り返したり、書きかけの名前を指したりする
+    if (loading_replaylist) return;
     // カーソルを次の項目へ（末尾まで行ったら先頭に戻る）
     int total = replay_menu_total_items();
     replay_cursor = (replay_cursor + 1) % total;
@@ -2535,8 +2622,8 @@ void shortPressCallback() {
       // に取り直してもらう
       replay_list_page = newpage;
       loading_replaylist = true;
-      enqueueTask(
-          createBrowseReplayTask(replay_menu_file_start_for_page(newpage)));
+      if (!enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(newpage))))
+        loading_replaylist = false;   // 積めなかったら読み込み中のままにしない（操作を受けなくなる）
     }
   } else if (screen_mode == MODE_WIRELESS) {
     // 無線画面:
@@ -2821,21 +2908,32 @@ static void startDemo(demo_site_t site) {
 
 // REPLAY/DEMO 画面での長押し（決定）を処理する。
 static void handleReplaySelect() {
+  // ★ Core1 が一覧を読み直している間は決定しない（短押しと同じ。2026-11-14、BUG-90）。書きかけのファイル名で再生を始めない
+  if (loading_replaylist) return;
   char label[40];
   int fsize = 0;
   ReplayItemType type = replay_menu_item(replay_cursor, replay_list_page, label,
                                          sizeof(label), &fsize);
 
   switch (type) {
-  case RITEM_OFF:
-    // リプレイもデモも解除して通常の GNSS に戻す
-    set_replaymode(false);
-    set_replay_filename("");
+  case RITEM_OFF: {
+    // リプレイもデモも解除して通常の GNSS に戻す。
+    // ★ 再生していないときは set_replaymode(false) を呼ばない（startDemo() と同じ。2026-11-14、BUG-91）。日時を無効にし
+    //   最高速を消す副作用がある。どちらも動いていなければ航跡も消さない（実際の飛行の航跡）。
+    const bool was_replay = getReplayMode();
+    const bool was_demo   = is_demo_active();
+    if (was_replay) {
+      set_replaymode(false);
+      set_replay_filename("");
+    }
     set_demo_off();
-    latlon_manager.reset();
-    reset_degpersecond();
+    if (was_replay || was_demo) {
+      latlon_manager.reset();
+      reset_degpersecond();
+    }
     backToSettingFromReplay();
     break;
+  }
   case RITEM_DEMO:
     startDemo((demo_site_t)replay_menu_demo_site(replay_cursor));
     break;
@@ -2855,7 +2953,7 @@ static void handleReplaySelect() {
     replay_cursor = REPLAY_IDX_SOURCE; // SOURCE 行に留まる（続けて切り替えられる）
     replay_list_page = 0;
     loading_replaylist = true;
-    enqueueTask(createBrowseReplayTask(0));
+    if (!enqueueTask(createBrowseReplayTask(0))) loading_replaylist = false;
     break;
   case RITEM_FILE: {
     // label はファイル名のみ。受信ログは received/ の下にあるので前置する。
@@ -2887,10 +2985,9 @@ void longPressCallback() {
   if (screen_mode == MODE_PCCONNECT) {
     webserial_connected = false;
     webserial_cancel_requested = true;
-    Serial.println("PONS:BYE");
+    webserial_say_bye();   // 転送中なら転送をやめたあと（BUG-76）
     enqueueTask(createLogSdTask("PC DISCONNECTED (BUTTON LONG) -> RESUME MAP"));
-    screen_mode =
-        (prev_screen_mode != MODE_PCCONNECT) ? prev_screen_mode : MODE_MAP;
+    pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
     redraw_screen = true;
     return;
   }
@@ -3113,8 +3210,11 @@ void update_degpersecond(float true_track) {
 //   これを見て折り返し後に東向きへ変わる。抜けるときの復帰は
 //   `auto10k_restore_flight_phase()`（gnss.cpp の set_demo_site /
 //   set_replaymode）。
+// ★ 受信のミラー中も同じ（2026-11-14、BUG-112）。位置は送信機のもので、目的地とナビモードも送信機に合わせた
+//   RAM だけの上書き（link.cpp の link_sync_destination）。保存すると受信機の settings.txt に送信機のフェーズと
+//   目的地・ナビモードが焼かれる。ミラーが切れても表示のフェーズは戻さない（合わせた目的地が残るのと同じ扱い）。
 static void apply_auto10k_status(int st) {
-  if (getReplayMode() || is_demo_active()) {
+  if (getReplayMode() || is_demo_active() || link_mirror_active()) {
     auto10k_status = st;
     return;
   }
@@ -3138,7 +3238,10 @@ static void nav_alarm_tick(bool new_gnss_info) {
   // なので、地図画面以外ではフラグが立ちっぱなしになる。毎ループ Haversine を
   // 回さないよう、pla_centerline_bearing_rad() と同じく入力の変化で判定する。
   static double last_nav_lat = NAN, last_nav_lon = NAN;
-  if (new_gnss_info) {
+  // ★ fix が無いときは位置で判断しない（2026-11-14、BUG-113）。地図以外の画面では new_gnss_info が立ったまま残るので、
+  //   ミラー中に送信機が fix していない (0, 0) を受けると、Auto10km が復路へ切り替わって保存し、「100km 以上離れて
+  //   います」も鳴っていた。get_gnss_fix() はミラー・デモ・リプレイの供給元ごとに答える。
+  if (new_gnss_info && get_gnss_fix()) {
     const double nav_lat = get_gnss_lat();
     const double nav_lon = get_gnss_lon();
     if (nav_lat != last_nav_lat || nav_lon != last_nav_lon) {
@@ -3233,7 +3336,10 @@ static void nav_alarm_tick(bool new_gnss_info) {
     // ※ 以前は (magc - 8) と書いていたが、magc は真方位に +8 した値だったので
     //   -8 はそれを打ち消していただけ。つまり計算は元から真方位同士で、
     //   真方位へ統一しても操縦指示の挙動は変わらない。
-    steer_angle = truec - ttrack;
+    // ★ 目的地が無い（未選択・0 件・受信機に無い送信機の目的地＝LINK_DEST_MISSING）ときは 0。truec は nav_update() が
+    //   更新しないので、起動時の 0 か前の目的地の値が残っていて、それでコース逸脱を積算し警報を鳴らしていた（2026-11-14、BUG-111）
+    const bool dest_ok = currentdestination >= 0 && currentdestination < destinations_count;
+    steer_angle = dest_ok ? truec - ttrack : 0.0f;
     if (steer_angle < -180) {
       steer_angle += 360;
     } else if (steer_angle > 180) {
@@ -3308,7 +3414,9 @@ void update_course_warning(float degpersecond) {
   // ★ fix も見る（get_gnss_fix() はミラー・デモ・リプレイの供給元ごとに答える）。fix が無くても NAV-PVT は
   //   来るので、ここは毎回呼ばれる。衛星数と速度だけでは、衛星 1〜3 個で fix していないときの速度の
   //   ばらつきで積算が進み得た（2026-11-10 まで）。
-  if (!get_gnss_fix() || get_gnss_mps() < 2 || get_gnss_numsat() == 0) {
+  // ★ 目的地が無いときも積算しない（steer_angle は 0 にしてあるが、明示しておく。BUG-111）
+  if (!get_gnss_fix() || get_gnss_mps() < 2 || get_gnss_numsat() == 0 ||
+      currentdestination < 0 || currentdestination >= destinations_count) {
     course_warning_index = 0;
   }
   // 正しい方向に変化している時はindexを減らす。

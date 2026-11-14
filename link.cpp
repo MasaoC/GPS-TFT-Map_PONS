@@ -534,6 +534,7 @@ static void link_probe_module() {
     //   数えられ、健全なモジュールを「死んでいる」と誤判定していた。
     //   ping は mode 3 へ約 20ms 潜る。上の early return で
     //   「受信できているとき」と「送信直後」は既に除いてあるので実害は無い。
+    // 意図して直さない（2026-11-14 の監査）: 時刻の助け合いの窓の間も生存確認で約 20ms 潜る（ビーコンを 1 発落としうるが時刻は 2 発で確かめ、提供も続く。止めると故障の表示が遅れる）
     if (tx) e220_wake();               // 寝ていると潜る意味が変わるので起こしておく
     const bool responds = e220_ping();
 
@@ -644,9 +645,12 @@ static void link_sync_destination() {
     if (!link_mirror_active()) { s_missingAlerted = 0; return; }
     if (!link_dest_mismatch()) return;
     const int li = link_sender_dest_local();
+    // ★ ナビモードは 0〜2（DMODE_*）だけ受ける（2026-11-14、BUG-114）。範囲外（並びの違う版・将来の値）を入れると、
+    //   誘導線とフッターのモード表示が消え、設定画面のラベルが未初期化の文字列を読んでいた
+    const bool nav_ok = s_rx.t.nav_mode <= DMODE_AUTO10K;
     if (li == LINK_DEST_MISSING) {
         currentdestination = -1;
-        destination_mode   = s_rx.t.nav_mode;
+        if (nav_ok) destination_mode = s_rx.t.nav_mode;
         const uint16_t key = s_rx.t.dest_id ? s_rx.t.dest_id : 0xFFFF;   // ID を送らない機体の番号違いも 1 回
         if (s_missingAlerted != key) {
             s_missingAlerted = key;
@@ -660,7 +664,7 @@ static void link_sync_destination() {
     if (li < 0) return;   // 送信側が未選択なら表示で知らせるに留める
     s_missingAlerted = 0;
     currentdestination = li;
-    destination_mode   = s_rx.t.nav_mode;
+    if (nav_ok) destination_mode = s_rx.t.nav_mode;
     link_alert("wav/link_override_dest.wav", 494, 200, 3);
     enqueueTask(createLogSdfTask("LINK: dest/nav overridden to sender (%d/%d, sender idx=%d id=%04X)",
                                  li, (int)s_rx.t.nav_mode, (int)s_rx.t.dest_index, (unsigned)s_rx.t.dest_id));
@@ -1560,6 +1564,7 @@ uint32_t link_tx_period_ms() {
 // ★ reconfigure のあとは必ず link_apply_power_state() を通す（理由は同関数のコメント）。
 //   TX のときは直後の link_preflight_start() が改めて起こすので、
 //   「寝かせる → 起こす」の往復になるが、どちらもピン 1 本の書き換えで済む。
+// 意図して直さない（2026-11-14 の監査）: link_assist の内部状態はここでは消さない（残る値は数秒で切れ、時刻そのものはチャンネルによらず同じ UTC）
 void link_set_radio_ch(uint8_t ch) {
     // 選べる CH（0/3/6/9/12 と、アッパーの 15/21/27。link_proto.h）以外は受け付けない
     if (!link_radio_ch_valid(ch) || ch == link_radio_ch) return;
@@ -1665,7 +1670,10 @@ static void link_push_telemetry() {
 
     GnssDate d = get_gnss_date();
     GnssTime tm = get_gnss_time();
-    if (d.isValid()) { t.year = d.year(); t.month = d.month(); t.day = d.day(); have |= RHAVE_DATE; }
+    // ★ 日付は時刻も有効なときだけ載せる（2026-11-13、BUG-84）。link_w2_encode() は年が入っていれば時分秒が 0 でも
+    //   時刻ありとみなすので、日付だけ有効だと 00:00:00.0 UTC を送り、受信機（時刻の助け合い）が本物の時刻として使っていた。
+    //   時刻の無い日付は受信機でも使い道が無い。
+    if (d.isValid() && tm.isValid()) { t.year = d.year(); t.month = d.month(); t.day = d.day(); have |= RHAVE_DATE; }
     if (tm.isValid()) { t.hour = tm.hour(); t.minute = tm.minute();
                         t.second = tm.second(); t.centi = tm.centisecond(); }
 
@@ -1822,6 +1830,7 @@ bool     link_take_draw_frame(){ const bool n = s_drawFrame; s_drawFrame = false
 // 前回受けた時刻から送信周期ごとに次のフレームが来るとみなし（落ちた分も同じ刻みで数える）、
 // 「受け終わった直後」から「次の受信が始まる LINK_DRAW_BUDGET_MS + LINK_DRAW_MARGIN_MS 手前」
 // までを窓にする。描き始めから最後の転送までの時間を見込んで手前で締め切る。
+// 意図して直さない（2026-11-14 の監査）: 時刻の助け合いのビーコンを待つ時間と重なっても描く。描画の雑音で受けられなかった実測は無い
 bool link_draw_window_ok() {
     if (!link_mirror_active()) return true;
     const uint32_t T  = s_txPeriodEstMs;

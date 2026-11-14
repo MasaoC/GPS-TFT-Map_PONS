@@ -98,6 +98,13 @@ extern const float
 // が陸地ポリゴン（VM_LANDMASS）を持つか。真なら背景を海色で塗ってから陸を重ねる。
 // 偽の LOD（琵琶湖周辺の高精細）では背景は白のまま、水面だけを塗る。
 extern const bool vm_lod_sea_background[VM_LOD_COUNT];
+// LOD ごとの収録範囲（2026-11-14〜。BUG-115）。{ 緯度の下端, 経度の下端, 緯度の上端, 経度の上端 }（1e-7 度）。
+// LOD lod の範囲は vm_cover_e7[vm_lod_cover_first[lod]] から vm_lod_cover_n[lod] 個。
+extern const uint16_t vm_cover_count;
+extern const int32_t vm_cover_e7[][4];
+extern const uint16_t vm_lod_cover_first[VM_LOD_COUNT];
+extern const uint16_t vm_lod_cover_n[VM_LOD_COUNT];
+extern const char *const vm_cover_name[];   // 範囲の名前（飛行エリアの名前。地域・全国は空）
 extern const uint32_t vm_blob_size;                    // vm_blob の総バイト数
 extern const uint16_t vm_lod_tiles[VM_LOD_COUNT];      // LOD 別のタイル数
 extern const uint32_t vm_lod_bytes[VM_LOD_COUNT];      // LOD 別のバイト数
@@ -111,6 +118,10 @@ extern const char vm_data_source_date[]; // 元データのスナップショッ
 // 吸収されるため、TRACKUP でも画面四隅まで隙間なく描ける。
 void draw_vectormap(double center_lat, double center_lon, float scale,
                     float up);
+// 地図一覧（MAPLIST）の先頭の 2 ページの絵（2026-11-14〜）。backscreen に、いちばん粗い地図と各 LOD の収録範囲の枠を描く。
+//   zoom=false … 日本全体。zoom=true … 飛行エリア（最大ズームの範囲）に寄せ、枠に番号（vm_cover_name の順）を振る。
+// 赤＝最大ズームの範囲、橙＝その周りの中精細の範囲、青＝地域の範囲（全国の範囲は描かない）。
+void draw_vectormap_coverage(bool zoom);
 
 // scale から使用する LOD を返す（デバッグ表示用）。
 int vm_select_lod(float scale);

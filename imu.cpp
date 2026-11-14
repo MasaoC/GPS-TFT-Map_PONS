@@ -336,6 +336,27 @@ static bool acc_guard_step(float a_k, float dt) {
 // カルマンゲイン: K = P*H^T / (H*P*H^T + R) = P[:,0] / (P[0][0] + R)
 // 状態更新:       x = x + K * v
 // 共分散更新:     P = (I - K*H) * P  （K*H は rank-1 行列）
+// バリオの KF を起動したときの状態へ戻す（2026-11-14、BUG-118）。次の気圧の窓で気圧高度から入れ直す。
+// ★ MS5611 が途絶えて戻ったときに呼ぶ（airdata.cpp の airdata_try_recovery）。途絶えている間も KF は加速度だけで
+//   predict を続けて高度・速度が漂い、共分散も広がる。そのまま戻すと、最初の窓までの 250ms は漂った V/S が音と VSI に出て、
+//   最初の気圧の観測で大きな残差が速度とバイアスへ飛び込んでいた。
+//   入れ直すまで（kf_initialized が false の間）は predict せず、V/S は 0（音は鳴らない）。
+void imu_kalman_reinit() {
+    static const float P0[3][3] = {
+        { 100.0f,  0.0f,  0.0f },   // 上の kf_P の初期値と同じ
+        {   0.0f,  1.0f,  0.0f },
+        {   0.0f,  0.0f,  0.1f }
+    };
+    for (int i = 0; i < 3; i++) {
+        kf_x[i] = 0.0f;
+        for (int j = 0; j < 3; j++) kf_P[i][j] = P0[i][j];
+    }
+    _acc_vsum = _acc_hsum = 0.0f;
+    _acc_cnt  = 0;
+    _imu_vspeed    = 0.0f;
+    kf_initialized = false;
+}
+
 void imu_kalman_baro_update(float z_baro_m) {
     // IMU の有無によらず気圧高度で KF を初期化・更新する。
     // IMU なし時は imu_update() の恒速 predict と組み合わせてバリオとして動作。

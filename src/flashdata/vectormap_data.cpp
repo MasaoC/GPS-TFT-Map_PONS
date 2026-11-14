@@ -27,6 +27,32 @@ const int32_t vm_lod_unit_e7[VM_LOD_COUNT] = { 100, 100, 500, 2000 };
 const int32_t vm_lod_tilesize_e7[VM_LOD_COUNT] = { 1250000, 2500000, 5000000, 20000000 };
 const float vm_lod_min_scale[VM_LOD_COUNT] = { 26.000000f, 6.500000f, 1.600000f, 0.000000f };
 const bool vm_lod_sea_background[VM_LOD_COUNT] = { true, true, true, true };
+// ---- 収録範囲 BEGIN（build_vectormap.py が書く。--cover-only で差し替える）----
+// { 緯度の下端, 経度の下端, 緯度の上端, 経度の上端 }（1e-7 度）。LOD ごとに vm_lod_cover_first から vm_lod_cover_n 個
+const uint16_t vm_cover_count = 16;
+const int32_t vm_cover_e7[][4] = {
+  { 349500000, 1358000000, 356000000, 1364000000 },
+  { 343500000, 1333000000, 346500000, 1337000000 },
+  { 335000000, 1351500000, 338000000, 1355500000 },
+  { 354500000, 1397000000, 358000000, 1401000000 },
+  { 350000000, 1384500000, 353000000, 1388000000 },
+  { 346500000, 1351500000, 349500000, 1357000000 },
+  { 345000000, 1364000000, 348000000, 1367000000 },
+  { 348000000, 1356200000, 357500000, 1365800000 },
+  { 342000000, 1331200000, 348000000, 1338800000 },
+  { 333500000, 1349700000, 339500000, 1357300000 },
+  { 353000000, 1395200000, 359500000, 1402800000 },
+  { 348500000, 1382700000, 354500000, 1389800000 },
+  { 345000000, 1349700000, 351000000, 1358800000 },
+  { 343500000, 1362200000, 349500000, 1368800000 },
+  { 300000000, 1280000000, 420000000, 1430000000 },
+  { 240000000, 1220000000, 465000000, 1465000000 },
+};
+const uint16_t vm_lod_cover_first[VM_LOD_COUNT] = { 0, 7, 14, 15 };
+const uint16_t vm_lod_cover_n[VM_LOD_COUNT] = { 7, 7, 1, 1 };
+// 範囲の名前（飛行エリアの名前。地域・全国は空）。地図一覧の画面の絵（draw_vectormap_coverage）が使う
+const char* const vm_cover_name[] = { "biwako", "kasaoka", "shirahama", "tokyobay", "fujikawa", "osaka", "karasu", "biwako", "kasaoka", "shirahama", "tokyobay", "fujikawa", "osaka", "karasu", "", "" };
+// ---- 収録範囲 END ----
 
 const char vm_data_attribution[] = "Map data (c) OpenStreetMap contributors (ODbL)";
 const char vm_data_source_date[] = "2026-08-16";

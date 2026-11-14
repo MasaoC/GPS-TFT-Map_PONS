@@ -35,6 +35,23 @@ static bool     s_waking     = false;
 static uint32_t s_wakeMs     = 0;
 static bool     s_wakeSawLow = false;  // 起床中に AUX の Low を一度でも観測したか
 
+// ---- 無線モジュールが動いていたか（気圧センサーの外れ値よけ。airdata.cpp。2026-11-13〜）----
+// ★ 無線 ON の起動で、送信と同じ位相の気圧サンプルが 20〜50% 外れていた（高い側へ 3〜4 m。docs/pons_todo_notes.md §3）。
+//   送信の電流か電波を MS5611 が拾っているらしい。airdata.cpp は 1 回の測定（D1 の変換を始めてから D2 を読むまで）の間に
+//   ここが「動いていた」と言ったら、そのサンプルを捨てる（settings.h の BARO_RF_BLANK_ENABLED）。
+// s_rfBusyMs は「動いている（はず）」の最後の時刻。送ったときは送信時間の見込みぶん**先の時刻**を入れておく
+// （描画で Core0 が止まって AUX の Low を見逃しても、送信の間に測ったサンプルを捨てられるように）。
+static bool     s_rfSetup    = false;   // e220_setup() を通ったか（AUX をプルアップしてあるので読んでよい）
+static bool     s_rfBusyEver = false;
+static uint32_t s_rfBusyMs   = 0;
+static uint16_t s_rfAirMs    = 0;       // いまの設定の 1 パケットの送信時間 [ms]（write_config で入れる）
+static bool     s_rfSendEver  = false;
+static uint32_t s_rfLastSendMs = 0;     // 最後に e220_send() で渡した時刻 [ms]
+static void rf_busy_until(uint32_t until_ms) {
+    if (!s_rfBusyEver || (int32_t)(until_ms - s_rfBusyMs) > 0) s_rfBusyMs = until_ms;
+    s_rfBusyEver = true;
+}
+
 // ---- 実行中の生存確認 ----
 // ★ s_alive だけでは「起動後に死んだ」を検出できない。書いているのは
 //   write_config() だけなので、更新されるのは e220_setup() と e220_reconfigure()
@@ -380,6 +397,7 @@ static uint8_t v_reg1_cache = 0, v_reg3_cache = 0;
 
 static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
     const uint8_t sf = e220_profile_to_sf(profile);
+    s_rfAirMs = e220_airtime_ms(profile);          // 気圧のサンプルを捨てる見込みの長さ（e220_rf_active_since）
 
     uint8_t v[6];
     v[0] = 0x00;                                   // 00H ADDH
@@ -477,6 +495,21 @@ static void enter_config_mode() {
     cfg_wait_ms(E220_CFG_SETTLE_MS);
 }
 
+// mode 3 から mode 0（起きた状態）へ戻る。**ボーレートは先に set_baud(LINK_UART_BAUD) で戻しておくこと。**
+// ★ 起きたかは e220_wake() と同じ判定で待つ（2026-11-13、BUG-77）。set_mode(MODE_NORMAL) は「切替の 2ms 後に
+//   AUX が High か」しか見ないので、セルフチェックが**始まる前**の High を「起きた」と見誤り得る（BUG-59 と同じ穴。
+//   E220_WAKE_SETTLE_MS のコメント）。直後に送ると黙って捨てられる。
+// ★ 最後に受信バッファを捨てる。set_baud() の end()/begin() で TX ピンが浮いたときのゴミや、mode 3 の返事の
+//   残りかすを受信の組み立てに混ぜないため。mode 3 の間は受信していないので、消えて困るものは無い。
+static void back_to_normal_mode() {
+    wait_aux_idle(200);                // 切替は AUX が High のときしか効かない（5.3）
+    s_asleep     = true;               // ピンは mode 3。e220_wake() に「寝ている」から起こさせる
+    s_waking     = false;
+    s_wakeSawLow = false;
+    e220_wake();
+    flush_input();
+}
+
 void e220_setup(uint8_t ch, uint8_t profile) {
     // AUX は E220 の push-pull 出力なので本来プルアップは不要。
     // ★ ただし **モジュール未実装・断線だと入力が浮いて Low に見えることがあり、
@@ -484,6 +517,7 @@ void e220_setup(uint8_t ch, uint8_t profile) {
     //   居ないときは High（アイドル）に見えて素通りする。
     //   モジュールが居れば push-pull が勝つので動作には影響しない。
     pinMode(E220_AUX_PIN, INPUT_PULLUP);
+    s_rfSetup = true;
     pinMode(E220_MODE_PIN, OUTPUT);
     digitalWrite(E220_MODE_PIN, MODE_CONFIG);  // 起動直後は寝かせておく
 
@@ -541,11 +575,7 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     }
 
     set_baud(LINK_UART_BAUD);          // 通常運用へ戻す
-    set_mode(MODE_NORMAL);
-    s_asleep = false;
-    // mode 3 でのやり取りの残りかすが受信の組み立てに混ざらないよう、
-    // ここで捨てる。まだ受信していないので消えて困るものは無い。
-    flush_input();
+    back_to_normal_mode();             // 起きるのを待って、mode 3 の残りかすを捨てる
 
     return s_alive;
 }
@@ -595,7 +625,31 @@ bool e220_send(const uint8_t* payload, uint8_t n) {
     buf[2] = s_ch;          // 宛先チャンネル
     memcpy(buf + 3, payload, (size_t)n);
     E220_SERIAL.write(buf, (size_t)(3 + n));
+    // 送信の見込み: UART で渡す時間（115200bps で 35 バイト約 3ms）＋ 送信時間 ＋ 余裕。実際の終わりは AUX の High で分かるが、
+    // そこを見逃しても困らないよう先に入れておく（e220_rf_active_since）
+    s_rfLastSendMs = millis();
+    s_rfSendEver   = true;
+    rf_busy_until(s_rfLastSendMs + (uint32_t)s_rfAirMs + 20UL);
     return true;
+}
+
+bool e220_rf_active_since(uint32_t since_ms) {
+    if (!s_rfSetup) return false;
+    const uint32_t now = millis();
+    // AUX が Low ＝ 送信中・受けたものを出している・起きる途中のセルフチェック・休止。
+    // ★ **「動いている」と数えるのは、送った直後（送信時間 + E220_RF_AUX_TAIL_MS）と起きる途中だけ**。
+    //   アッパーバンドでは送信のあと「送信時間の 10 倍」の休止のあいだも AUX が Low のまま（電波は出ていない。SF9 で約 1.2 秒）。
+    //   それも数えると気圧のサンプルがほとんど捨てられ、窓の延長から「全部で平均」に落ちて外れ値が漏れた
+    //   （測った外れ方をまねたシミュレーションで、アッパー SF8〜10 の跳ね 3〜9 回 → 0 回。2026-11-13）。
+    //   受信機が受けたものを出している Low（数 ms）も数えない（受信では外れ値は見ていない）。
+    if (digitalRead(E220_AUX_PIN) == LOW) {
+        // 意図して直さない（2026-11-14 の監査）: SF10・11 で AUX の Low が送信時間 + E220_RF_AUX_TAIL_MS を越えるかは未実測（SF8 は送信時間 + 79ms）。測ってから決める
+        const bool after_send = s_rfSendEver &&
+            (uint32_t)(now - s_rfLastSendMs) < (uint32_t)s_rfAirMs + (uint32_t)E220_RF_AUX_TAIL_MS;
+        if (after_send || s_waking) rf_busy_until(now);
+    }
+    if (!s_rfBusyEver) return false;
+    return (int32_t)(s_rfBusyMs + (uint32_t)E220_RF_GUARD_MS - since_ms) >= 0;
 }
 
 // ============================================================
@@ -694,9 +748,18 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
 // ============================================================
 
 void e220_sleep() {
+    const bool was_waking = s_waking;
     s_waking = false;      // 起床の途中で寝かされたら、その途中状態は捨てる
     s_wakeSawLow = false;
-    if (s_asleep) return;
+    if (s_asleep) {
+        // ★ 起床の途中（e220_wake_begin() でピンはもう mode 0）に寝かされたら、ピンも mode 3 へ戻す（2026-11-13、BUG-74）。
+        //   s_asleep は起床が済むまで true のままなので、以前はここで素通りし、**ソフトは「寝ている」のに
+        //   モジュールは mode 0（約 8mA・受信し続ける）**のまま残っていた（OFF への切替・リプレイ・起床の打ち切りのあと、
+        //   次に起こすまで）。起床中はまだ何も書いていないので flush() は要らない。AUX が Low（セルフチェック中）なら
+        //   切替はモジュールが自分で先送りする（下と同じ）。
+        if (was_waking) digitalWrite(E220_MODE_PIN, MODE_CONFIG);
+        return;
+    }
 
     // ★★ ここで flush() が要る。
     //   write() は「最後のバイトがハード FIFO に入った」時点で返るので、
@@ -725,6 +788,7 @@ void e220_wake_begin() {
     digitalWrite(E220_MODE_PIN, MODE_NORMAL);
     s_wakeMs = millis();
     s_waking = true;
+    rf_busy_until(s_wakeMs + 10UL);   // 起きる途中（セルフチェック。AUX の Low は e220_rf_active_since でも見る）
 }
 
 bool e220_wake_ready() {
@@ -803,7 +867,8 @@ bool e220_ping() {
     uint8_t rb = 0;
     const bool ok = reg_xfer(0xC1, 0x00, 1, nullptr, &rb);
     set_baud(LINK_UART_BAUD);
-    if (!was_asleep) set_mode(MODE_NORMAL);
+    // 起きていたなら起きた状態へ戻す（BUG-77。待ちと受信バッファの片付けは back_to_normal_mode()）
+    if (!was_asleep) back_to_normal_mode();
     // ★ 化けた返事でも「生きている」。s_lastXferHeard は reg_xfer が立てる。
     if (!ok && !s_lastXferHeard) note_no_response();
     return ok;

@@ -657,17 +657,34 @@ static bool ground_warn_shown(bool pitch) {
 //   「ミラー中に自機の状態を混ぜない」）。
 // ★ リプレイ中は false。記録済みの値に「いまの鮮度」は関係ない
 //   （当時は出ていた値なので、取り消すと当時の画面の再現でなくなる）。
-static bool eskf_display_gnss_stale() {
-  // ★ デモ中は引かない（0.992 の判断）。デモが差し替えるのは GNSS 値とヨー精度だけで
+// GNSS の速度の状態（表示用。供給元ごとに答える）。2026-11-13 に「YAW ALIGN」を分けた。
+//   EGS_NO_GNSS   … 橙「NO GNSS」。GNSS の速度が来ていない（ロール・ピッチの錨が無い）
+//   EGS_YAW_ALIGN … 黄「YAW ALIGN」。GNSS は来ているが、向き（ヨー）が決まっていない・確かめ待ちで、速度を使えていない。
+//                   磁気センサーが無いので、向きは 3m/s 以上で動くまで決まらない。**故障ではない**（止まっている間は
+//                   重力で水平を取っているのでロール・ピッチは正しい）。以前は橙「NO GNSS」と出ていて、準備完了の
+//                   読み上げと食い違い、不具合に見えた
+// ★ ミラー中は送信機の状態。送信機の内部の状態は電波に載らないので、送信機の GNSS 断・fix と、送信機のヨー精度
+//   （向きが決まっていないと 180°）で見る。以前は向き待ちの機体が「NO GNSS」なのに、受信機は「GROUND」だった。
+// ★ リプレイ中は「NO GNSS」は出さない（記録の再現に「いまの鮮度」は関係ない）。「YAW ALIGN」は記録したヨー精度から再現する。
+enum EskfGnssState : uint8_t { EGS_OK, EGS_NO_GNSS, EGS_YAW_ALIGN };
+static EskfGnssState eskf_display_gnss_state() {
+  // ★ デモ中は出さない（0.992 の判断）。デモが差し替えるのは GNSS 値とヨー精度だけで
   //   姿勢と風は実センサーのままなので、屋内では**実際に錨が無い**。それでも線を
-  //   引かないのは、デモが「見せるための画面」だから。原則どおりに引きたくなったら
-  //   ここを消すだけで戻る。
-  if (is_demo_active()) return false;
-  if (link_mirror_active())
-    return (link_sender_status() & LINK_ST_GNSS_LOST) != 0 || !link_get_fix_ok();
-  if (getReplayMode()) return false;
-  return !attitude_gnss_vel_fresh();
+  //   引かないのは、デモが「見せるための画面」だから。
+  if (is_demo_active()) return EGS_OK;
+  float acc95 = 0.0f;
+  const bool acc_says_aligning = eskf_display_yaw_acc(acc95) && acc95 >= ESKF_YAW_ALIGN_ACC95_DEG;
+  if (link_mirror_active()) {
+    if ((link_sender_status() & LINK_ST_GNSS_LOST) != 0 || !link_get_fix_ok()) return EGS_NO_GNSS;
+    return acc_says_aligning ? EGS_YAW_ALIGN : EGS_OK;
+  }
+  if (getReplayMode()) return acc_says_aligning ? EGS_YAW_ALIGN : EGS_OK;
+  if (attitude_gnss_vel_fresh()) return EGS_OK;
+  if (!attitude_gnss_good_fresh()) return EGS_NO_GNSS;            // GNSS そのものが来ていない
+  return attitude_yaw_aligning() ? EGS_YAW_ALIGN : EGS_NO_GNSS;   // 来ているのに使えていない理由が向きか
 }
+// 「NO GNSS」（橙）か。風の × もこれ。向き待ち（YAW ALIGN）は含めない
+static bool eskf_display_gnss_stale() { return eskf_display_gnss_state() == EGS_NO_GNSS; }
 
 // 「いま画面に出している対地速度・真方位」が無効か（ヘッダーと地図中央上部の TT の赤線。2 か所で同じ判定）。
 // ★ **供給元ごとに答える**（上の eskf_display_gnss_stale() と同じ考え方）。
@@ -702,7 +719,11 @@ static void strike_through(TFT_eSprite &spr, int x, int y_mid, int w, uint16_t c
 //   いつも緑で、機体の測位が荒れていても気づけない）。出さずに「--」にする。
 //   accessor 側で 0 を返させてはいけない。受信機の GNSS 詳細画面で自機の
 //   測位品質を見たい場面があり、そこまで潰れてしまう。
-bool gnss_acc_unknown() { return link_mirror_active(); }
+// ★ リプレイ中も（2026-11-14、BUG-109）。飛行 CSV に sAcc / vAcc / DOP の列は無く、出ていたのは机の上の実機の値（または 0）で、
+//   隣の GS は再生した値なので、再生した飛行の測位品質に読まれた。
+bool gnss_acc_unknown() { return link_mirror_active() || getReplayMode(); }
+// 「--」の理由（受信のミラーは電波に載っていない、リプレイは CSV に無い）
+const char* gnss_acc_unknown_note() { return link_mirror_active() ? "(not on link)" : "(not in log)"; }
 
 // ESKF のヨー（真方位）を表示・アイコン回転に使ってよいかを判定する。
 // ヨーは水平加速度がある間しか可観測にならず、等速直進が続くと際限なく漂うため、
@@ -1267,6 +1288,7 @@ void draw_FlashMaps(double center_lat, double center_lon, float scale, float up)
   }
 }
 
+// 意図して直さない（2026-11-14 の監査）: SD のポリゴンは先頭の頂点で ±1° の粗いカリングだけ（ポリゴンごとの bbox は持たない。50 個までで負荷は小さい）
 void draw_ExtraMaps(double center_lat, double center_lon, float scale, float up) {
   for (int i = 0; i < mapdata_count; i++) {
     if (extramaps[i].size <= 1) {
@@ -1774,6 +1796,10 @@ static void draw_ground_ok_range(int y, bool pitch) {
                                        pitch ? ground_pitch_ok_hi : ground_roll_ok_hi);
 }
 
+// 較正のやり直しの警告を描く位置（draw_eskf_attitude() が決め、push_backscreen() が描いて -1 に戻す。BUG-87）
+static int  s_eskf_warn_y    = -1;
+static bool s_eskf_warn_boat = false;
+
 void draw_eskf_attitude() {
   // 機能そのものが OFF なら何も出さない（ESKF 導入前と同じ見た目に戻す）。
   // ★ ミラー中は自機のスイッチを見ない（送信機の姿勢を出す。下の eskf_display_enabled() が判断する）。
@@ -1865,9 +1891,17 @@ void draw_eskf_attitude() {
 
     // σ はフォント(NotoSansBold15)に無いので "Y95" と書く。意味は 95% 値（=2σ）。
     if (has_acc) {
-      backscreen.setTextColor(COLOR_GRAY);
+      char ybuf[16];
+      snprintf(ybuf, sizeof(ybuf), "Y95%%%.0f\xC2\xB0", acc95);
+      // 向き待ち（YAW ALIGN）の間は黄色の地で強調する（ヘッダーの札・P / R の線と同じ色。2026-11-13）
+      if (eskf_display_gnss_state() == EGS_YAW_ALIGN) {
+        backscreen.fillRect(ESKF_LABEL_X - 1, yacc95 - 1, backscreen.textWidth(ybuf) + 2, fh_s + 1, COLOR_YELLOW);
+        backscreen.setTextColor(COLOR_BLACK, COLOR_YELLOW);
+      } else {
+        backscreen.setTextColor(COLOR_GRAY);
+      }
       backscreen.setCursor(ESKF_LABEL_X, yacc95);
-      backscreen.printf("Y95%%%.0f\xC2\xB0", acc95);
+      backscreen.print(ybuf);
     }
 
     int yblock_top = yacc95;
@@ -1941,14 +1975,11 @@ void draw_eskf_attitude() {
       const bool boat_hint = !link_mirror_active();
       int yw = yblock_top - ESKF_ROW_GAP - fh_s;
       if (boat_hint) yw -= fh_s + ESKF_ROW_GAP;
-      backscreen.setTextColor(COLOR_RED);
-      backscreen.setCursor(ESKF_LABEL_X, yw);
-      backscreen.print("ESKF CALIBRATION REQUIRED!");
-      if (boat_hint) {
-        backscreen.setCursor(ESKF_LABEL_X, yw + fh_s + ESKF_ROW_GAP);
-        backscreen.print("OR TURN OFF ESKF ON BOAT");
-      }
-      backscreen.setTextColor(COLOR_BLACK);
+      // ★ ここでは描かず、位置だけ覚えて push_backscreen() の無線のアイコンより後に描く（2026-11-13、BUG-87）。
+      //   風の矢印が出ているとこの 2 行は y≈44〜77 に来て、地図の左上の無線のアイコン（x=3〜56, y=40〜76。後から描く）と
+      //   重なり、赤い字が橙・緑の絵に潰されていた。
+      s_eskf_warn_y    = yw;
+      s_eskf_warn_boat = boat_hint;
     }
   }
 
@@ -1969,9 +2000,11 @@ void draw_eskf_attitude() {
   // ★ GNSS 速度が止まると**ロール・ピッチの錨が無くなる**（比力から遠心力と
   //   加減速分を差し引けないので、旋回中はロールを過小評価し加減速中はピッチがずれる。
   //   それを直すのが GNSS 速度援用の ESKF そのもの）。値は残して線だけ引く。
-  if (eskf_display_gnss_stale())
+  // 向き待ち（YAW ALIGN）は黄色の線（GNSS は来ていて、動き出せば数秒で直る。故障の橙と分ける）
+  const EskfGnssState gst = eskf_display_gnss_state();
+  if (gst != EGS_OK)
     strike_through(backscreen, ESKF_LABEL_X, ypit + fh_s / 2,
-                   ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, COLOR_ORANGE);
+                   ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
 
   // ---- 最下段: R ----
   backscreen.setTextColor(COLOR_GRAY);
@@ -1986,9 +2019,9 @@ void draw_eskf_attitude() {
   backscreen.setCursor(ESKF_VALUE_RIGHT_X - backscreen.textWidth(rbuf), yroll);
   backscreen.print(rbuf);
   if (groll) draw_ground_ok_range(yroll, false);
-  if (eskf_display_gnss_stale())      // P 行と同じ理由
+  if (gst != EGS_OK)      // P 行と同じ理由・同じ色
     strike_through(backscreen, ESKF_LABEL_X, yroll + fh_s / 2,
-                   ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, COLOR_ORANGE);
+                   ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
   backscreen.setTextColor(COLOR_BLACK);
 
   // ---- R の下: 自動ロールトリムの累積補正量（内蔵フォント 8px = 最小）----
@@ -2183,6 +2216,7 @@ static void draw_imu_status_dot() {
   draw_status_mark(header_footer, 228, 18, 6, imu_status_color());
 }
 
+// 意図して直さない（2026-11-14 の監査）: 下端（y=280〜）は消さない（page2 も）。入口の案内 draw_imu_guide() が全面を描いてから来る
 static void draw_imu_page1() {
   header_footer.fillScreen(COLOR_WHITE);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
@@ -2857,6 +2891,7 @@ static void draw_link_icons() {
 
   // ★ 地図左上は draw_gs_track() が使っている。GS の数値は NM_FONT_MEDIUM で
   //   y=1..32 あたりまで占めるので、その下に逃がす（重ねると数値が読めなくなる）。
+  // 意図して直さない（2026-11-14 の監査）: 左旋回の draw_degpersec()（y=15..49）と下 10px 重なるのは承知（透過で描くので旋回率の数字は読める。見た目だけ）
   const int x = 3, y = 40;
 
   // 無線アイコン。**受信と送信で絵そのものを変える**（docs/pons_link.md §5）。
@@ -3158,6 +3193,7 @@ static bool gnss_disconnect_warning_shown() {
   return !link_mirror_active();
 }
 
+// 意図して直さない（2026-11-14 の監査）: 文字の Y（50/66/82）は直書き。NOTICE_Y_GNSS_LOST を変えるときは合わせる
 static void draw_gnss_disconnect_warning() {
   if (!gnss_disconnect_warning_shown()) return;
   const int bx = 5, by = NOTICE_Y_GNSS_LOST, bw = SCREEN_WIDTH - 10, bh = 56;
@@ -3274,14 +3310,17 @@ static void fmt_charge_min(char* buf, size_t n, int m) {
 // メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、GNSS の速い測位がもつ時間（BT1 の残り）を表示
 static void draw_charge_popup() {
   if (screen_mode != MODE_MAP) return;
-  if (!get_gnss_connection()) return; // GNSS 断線警告を最優先
+  // GNSS 断線の箱を最優先（同じ段に重ねない）。★ 判定は箱そのものの条件を使う。ミラー中は自機の GNSS が抜けても
+  //   断線の箱は出ないので、以前の `!get_gnss_connection()` ではポップアップだけが理由なく消えていた
+  if (gnss_disconnect_warning_shown()) return;
   if (!power_charge_popup_active()) return;
 
   const int bx = 6, by = NOTICE_Y_CHG_POPUP, bw = SCREEN_WIDTH - 12, bh = CHG_POPUP_BOX_H;
   const int pct = power_charging_percent();
   const int rem_m = power_charging_remaining_min();
   const int rem_90_m = power_charging_remaining_90_min();
-  const bool is_full = (pct >= 100 || rem_m == 0);
+  // ★ FULL は満充電ラッチ（pct が 100 になる）だけで決める。ヘッダー・設定画面のフッターと同じ（BUG-80）
+  const bool is_full = (pct >= 100);
   const bool cutoff_confirmed = power_charging_full_cutoff_confirmed();
   const uint16_t box_col = is_full ? COLOR_GREEN : COLOR_BLUE;
 
@@ -3344,6 +3383,28 @@ static void draw_charge_popup() {
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }
 
+// 較正のやり直しの警告（draw_eskf_attitude() の ★ を参照）。無線のアイコンより上に、白い地を敷いて描く。
+static void draw_eskf_calib_warning() {
+  if (s_eskf_warn_y < 0) return;
+  const int yw = s_eskf_warn_y;
+  s_eskf_warn_y = -1;   // 次のフレームは draw_eskf_attitude() が決め直す
+  backscreen.loadFont(AA_FONT_SMALL);
+  const int fh = backscreen.fontHeight();
+  const char* l1 = "ESKF CALIBRATION REQUIRED!";
+  const char* l2 = "OR TURN OFF ESKF ON BOAT";
+  backscreen.fillRect(ESKF_LABEL_X - 1, yw - 1, backscreen.textWidth(l1) + 2, fh + 1, COLOR_WHITE);
+  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+  backscreen.setCursor(ESKF_LABEL_X, yw);
+  backscreen.print(l1);
+  if (s_eskf_warn_boat) {
+    const int y2 = yw + fh + ESKF_ROW_GAP;
+    backscreen.fillRect(ESKF_LABEL_X - 1, y2 - 1, backscreen.textWidth(l2) + 2, fh + 1, COLOR_WHITE);
+    backscreen.setCursor(ESKF_LABEL_X, y2);
+    backscreen.print(l2);
+  }
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
 void push_backscreen(){
   TIMING_START(push_bs);
   if (vario_volume > 0 && !vario_inhibit) {
@@ -3351,6 +3412,7 @@ void push_backscreen(){
     vsi_sprite.pushToSprite(&backscreen, VSI_X, 0);  // Sprite→Sprite 合成
   }
   draw_link_overlay();
+  draw_eskf_calib_warning();       // 無線のアイコンより上（BUG-87）。下の通知の箱よりは下
   draw_gnss_disconnect_warning();  // 最上位レイヤー。上の draw_link_overlay() より後に描く
   draw_warn_mute_banner();         // 同じく最上位。GNSS 警告の下に並ぶ
   draw_power_fault_warning();      // 一番上。地図の下端に出す
@@ -3382,6 +3444,7 @@ static int truetrack_display_deg() {
 //   鳴っている間は赤（平均ピッチを大きい枠に出しているときに数字を赤にするのと同じ条件）。
 // ★ 置けるのはこの行だけ。すぐ下（右端の y = 15〜50）は右旋回の角速度表示が使う。
 //   中央の「TT 123」にぶつかるなら、先頭の「P」を落として詰める（left_limit = TT の右端）。
+// 意図して直さない（2026-11-14 の監査）: 右旋回の draw_degpersec() の枠（y=15〜）と 1〜2px 重なりうる（見た目だけ）
 static void draw_tas_label_row(TasHdr h, int left_limit) {
   const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
   const int fh = backscreen.fontHeight();
@@ -3729,17 +3792,21 @@ static void draw_header_tas(int x, TasHdr h, float mps) {
 
 // 大きい枠の数字（平均ピッチ・推定 TAS）に引く横線の種類。**1 つだけ選ぶ**（強い順に並べてある）。
 //   CALIB   … 赤 4px「CALIBRATE」。較正のやり直しが必要（数字そのものが信用できない）
-//   NO_GNSS … 橙 2px「NO GNSS」。GNSS 速度が止まっている（元のピッチが不正確なので平均ピッチも不正確）
-//   GROUND  … 白 4px「GROUND」。推定 TAS を選んでいて地上（対気速度ではない。毎回の、正常な状態）
+//   NO_GNSS … 橙 2px「NO GNSS」。GNSS 速度が来ていない（元のピッチが不正確なので平均ピッチも不正確）
+//   YAW_ALIGN … 黄 2px「YAW ALIGN」。GNSS は来ているが向きが決まっていない（動き出せば直る。2026-11-13〜）
+//   GROUND  … 白 4px「GROUND」。推定 TAS を選んでいて地上（対気速度ではない。毎回の、正常な状態）。
+//             札は対地速度 3m/s 以上ですぐ外し、線は 10 秒続いてから外す（tas_leaving_ground()。2026-11-14〜）
 // ★ 2026-11-11 までは地上の白線の上に赤・橙を重ねて引いていて、地上で GNSS を待っている間は
 //   白と橙の混ざった線になっていた。札は 1 枚しか載らないので、どれか 1 つにする。
 //   地上より GNSS を先にするのは、Pavg の箱（地上の線が無い）と同じ札になるようにするため。
 // 条件は地図上の赤字警告・P / R 行の橙の線と同じ関数（供給元 3 系統を見る。リプレイ中は赤も橙も出さない /
 // ミラー中は送信機の状態。この数字自身がミラー中は送信機の値なので、取り消し線も送信機の状態で引く）。
-enum HdrStrike : uint8_t { HSTRIKE_NONE, HSTRIKE_GROUND, HSTRIKE_NO_GNSS, HSTRIKE_CALIB };
+enum HdrStrike : uint8_t { HSTRIKE_NONE, HSTRIKE_GROUND, HSTRIKE_YAW_ALIGN, HSTRIKE_NO_GNSS, HSTRIKE_CALIB };
 static HdrStrike header_strike_kind(TasHdr h) {
   if (eskf_display_needs_apply()) return HSTRIKE_CALIB;
-  if (eskf_display_gnss_stale())  return HSTRIKE_NO_GNSS;
+  const EskfGnssState g = eskf_display_gnss_state();
+  if (g == EGS_NO_GNSS)           return HSTRIKE_NO_GNSS;
+  if (g == EGS_YAW_ALIGN)         return HSTRIKE_YAW_ALIGN;   // 地上より先（向き待ちを知らせる。機体と受信機で同じ札）
   if (h == HDR_TAS_GROUND)        return HSTRIKE_GROUND;
   return HSTRIKE_NONE;
 }
@@ -3785,6 +3852,11 @@ static void header_strike(int mtvx, TasHdr h) {
       strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_ORANGE);
       header_strike_tag(mtvx + 25, SCREEN_WIDTH, "NO GNSS", COLOR_ORANGE, COLOR_BLACK, COLOR_ORANGE);
       break;
+    case HSTRIKE_YAW_ALIGN:
+      // 向き待ち（2026-11-13）。黄の 2px と黄の札。故障ではないので橙・赤と分ける。黒い縁で白い数字・白地からも切り離す
+      strike_through(header_footer, mtvx + 2, 23, 111 - 4, COLOR_YELLOW);
+      header_strike_tag(mtvx + 25, SCREEN_WIDTH, "YAW ALIGN", COLOR_YELLOW, COLOR_BLACK, COLOR_BLACK);
+      break;
     case HSTRIKE_GROUND: {
       // ---- 地上の横線（2026-11-07 に「-.-」から変えた）----
       // 地上の推定 TAS は対気速度ではない（台の上で止まっていても平均ピッチから 7.3 のように出る）。
@@ -3798,7 +3870,10 @@ static void header_strike(int mtvx, TasHdr h) {
       const int x = mtvx + 25, lw = SCREEN_WIDTH - x - 1;
       header_footer.fillRect(x, 20, lw, 8, COLOR_BLUE);
       header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
-      header_strike_tag(mtvx + 25, SCREEN_WIDTH, "GROUND", COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
+      // ★ 札は動き出したらすぐ外す（2026-11-14〜）。線は 10 秒続いてから（tas_tick()）。
+      //   札が 10 秒残ると、飛んでいるのに「いつ消えるのか」と気になる。
+      if (!tas_leaving_ground())
+        header_strike_tag(mtvx + 25, SCREEN_WIDTH, "GROUND", COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
       break;
     }
     default:
@@ -3933,8 +4008,15 @@ void draw_map_footer(){
   backscreen.setTextColor(COLOR_BLACK);
 
   if (time.isValid()) {
+    // ★ 最後の NAV-PVT からの経過を足して進める（GNSS が黙った・NAV-PVT が止まったとき、最後の時刻で止まらないように）。
+    //   リプレイ中・デモ中は足さない（再生の一時停止や倍速では、本体の時計の経過が画面の時刻と関係ない）。
+    uint32_t sec = (uint32_t)time.hour() * 3600UL + time.minute() * 60UL + time.second();
+    if (!getReplayMode() && !is_demo_active())
+      sec += (uint32_t)((time.centisecond() * 10UL + (millis() - get_gnss_fix_millis())) / 1000UL);
+    sec = (sec + 9UL * 3600UL) % 86400UL;   // JST
     backscreen.setCursor(1, BACKSCREEN_SIZE-9);
-    backscreen.printf("%02d:%02d:%02dJST", (time.hour()+9)%24, time.minute(), time.second());
+    backscreen.printf("%02lu:%02lu:%02luJST", (unsigned long)(sec / 3600UL), (unsigned long)(sec / 60UL % 60UL),
+                      (unsigned long)(sec % 60UL));
   }
 
   // 最大 G/S（JST 時刻のすぐ右）。
@@ -4520,9 +4602,12 @@ void draw_pilon_takeshima_marks(double mapcenter_lat, double mapcenter_lon, floa
 // ★ 2026-11-08 までは .ino が地図を描く途中で呼んでいた。ほかの箱より後に描かないと空きが分からないので、
 //   push_backscreen() の最後へ移した。
 void draw_nomapdata() {
-  if (!get_gnss_connection() && !getReplayMode() && !is_demo_active()) return;  // 未接続の警告は別の箱
-
-  const bool scanning = !get_gnss_fix();
+  // ★ **供給元ごとに答える**（gnss_speed_track_invalid() と同じ考え方。BUG-69）。ミラー中は機体の GNSS の状態だけを見る
+  //   （get_gnss_fix() と衛星数は機体の値に差し替わるが、接続は自機の値なので、以前は自機の GNSS が抜けていると
+  //   機体が未測位でも箱が出ず、機体の GNSS が抜けた（LINK_ST_GNSS_LOST）ときも見ていなかった）。
+  // 自機の GNSS が未接続（黙っている）ときの警告は別の箱
+  if (!link_mirror_active() && !get_gnss_connection() && !getReplayMode() && !is_demo_active()) return;
+  const bool scanning = gnss_shown_no_fix();   // ユーザー LED の点滅（loop_userled）と同じ判定（gnss.cpp）
   const bool weak     = !scanning && get_gnss_numsat() == 0 && !is_demo_active();
   if (!scanning && !weak) return;
 
@@ -4571,6 +4656,7 @@ bool sd_detail_loading_displayed = false;
 // loading_sddetail=true の間は "Stand by..." または "No SD card" を表示。
 // ファイルサイズは KB 単位で右端に表示する。
 // 描画完了後に sd_detail_loading_displayed フラグを更新する。
+// 意図して直さない（2026-11-14 の監査）: backscreen のフォント・色を頭で決め直していない（前の画面のまま入る。いま問題は出ていない）
 void draw_sddetail(int page) {
   lastdrawn_sddetail = millis();
   header_footer.fillScreen(COLOR_WHITE);
@@ -4729,7 +4815,13 @@ void draw_replayselect(int page, int cursor) {
   if (getReplayMode()) {
     header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
     // この画面を開いている間は再生を一時停止しているので PAUSED と表示する
-    header_footer.printf("PAUSED x%d: %s", get_replay_speed(), get_replay_filename());
+    // ★ ファイル名だけを出し、折り返さない（2026-11-14、BUG-123）。受信ログの "received/..." を付けると 240px を越えて
+    //   2 行目へ折り返し、フッターが崩れていた
+    const char* fn = get_replay_filename();
+    const char* slash = strrchr(fn, '/');
+    header_footer.setTextWrap(false);
+    header_footer.printf("PAUSED x%d: %s", get_replay_speed(), slash ? slash + 1 : fn);
+    header_footer.setTextWrap(true);   // header_footer はほかの画面と共用（既定に戻す）
   } else if (demo) {
     // デモはこの画面を開いていても止まらない（止めるのはリプレイだけ。replay_set_paused）。
     header_footer.setTextColor(COLOR_RED, COLOR_WHITE);
@@ -4767,6 +4859,35 @@ static int maplist_osm_rows() {
        + (cls + 2) / 3;               // クラスは 3 個ずつ 1 行
 }
 
+// 地図一覧の先頭の 2 ページ: 内蔵地図の収録範囲の絵（2026-11-14〜）。
+//   1 ページ目は日本全体、2 ページ目は飛行エリアに寄せて番号付き。絵は src/vectormap.cpp の draw_vectormap_coverage()。
+//   下端（y=280〜319）に色の意味と、番号とエリアの名前の対応を出す。
+#define MAPLIST_COVER_PAGES 2
+static void draw_maplist_coverage(bool zoom) {
+  draw_vectormap_coverage(zoom);
+  backscreen.loadFont(AA_FONT_SMALL);   // 地図用フォントに戻す（この関数の呼び出し側の約束）
+  backscreen.pushSprite(0, 40);
+
+  // 凡例（内蔵フォント 6x8。1 行 40 文字まで）
+  tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
+  tft.unloadFont();
+  tft.setTextSize(1);
+  int y = SCREEN_HEIGHT - 39;
+  tft.setCursor(1, y);
+  tft.setTextColor(COLOR_RED, COLOR_WHITE);    tft.print("RED:max zoom ");
+  tft.setTextColor(COLOR_ORANGE, COLOR_WHITE); tft.print("ORG:near ");
+  tft.setTextColor(COLOR_BLUE, COLOR_WHITE);   tft.print("BLUE:region");
+  tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  for (uint16_t k = 0; k < vm_lod_cover_n[0]; k++) {
+    if (k % 3 == 0) { y += 9; tft.setCursor(1, y); }
+    char item[16];
+    snprintf(item, sizeof(item), "%u %-10s", (unsigned)(k + 1), vm_cover_name[vm_lod_cover_first[0] + k]);
+    tft.print(item);
+    if (y > SCREEN_HEIGHT - 9) break;   // 入りきらない分は出さない（エリアが 12 を越えたとき）
+  }
+  tft.loadFont(AA_FONT_SMALL);
+}
+
 void draw_maplist_mode(int maplist_page) {
 
   mapdata** mapdatas = flashmaps;   // navdata.cpp の共有配列（draw_FlashMaps と同じもの）
@@ -4776,16 +4897,27 @@ void draw_maplist_mode(int maplist_page) {
   // ★ コース座標の 6 行も数えること。1.04 まで抜けていて、ページ 0 の SD 地図が 6 行ぶん画面の下へ
   //   はみ出し、2 ページ目はその 6 件を飛ばして始まっていた。
   const int page0_rows = maplist_osm_rows() + MAPLIST_COURSE_ROWS + sizeof_mapflash;
-  int pagetotal = (page0_rows + mapdata_count + MAPLIST_ROWS - 1) / MAPLIST_ROWS;
-  if (pagetotal < 1) pagetotal = 1;
-  int pagenow = maplist_page % pagetotal;
+  int listpages = (page0_rows + mapdata_count + MAPLIST_ROWS - 1) / MAPLIST_ROWS;
+  if (listpages < 1) listpages = 1;
+  // ★ 先頭の MAPLIST_COVER_PAGES ページは、内蔵地図の収録範囲の絵（2026-11-14〜）。一覧のページはその後ろ
+  const int pagetotal = listpages + MAPLIST_COVER_PAGES;
+  const int pageshow  = maplist_page % pagetotal;   // 画面に出すページ（0 から）
+  int pagenow = pageshow - MAPLIST_COVER_PAGES;     // 一覧のページ（0 から。絵のページでは負）
 
   // ヘッダー: スプライト経由で描画（tft 直接描画によるちかちかを防ぐ）
   header_footer.fillScreen(COLOR_WHITE);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);  // +10px（variodetail と同じオフセット）
-  header_footer.printf("MAPLIST FLSH:%d/SD:%d (%d/%d)", sizeof_mapflash, mapdata_count, pagenow + 1, pagetotal);
+  if (pagenow < 0)
+    header_footer.printf("MAP COVERAGE %s (%d/%d)", pageshow == 0 ? "JAPAN" : "AREAS", pageshow + 1, pagetotal);
+  else
+    header_footer.printf("MAPLIST FLSH:%d/SD:%d (%d/%d)", sizeof_mapflash, mapdata_count, pageshow + 1, pagetotal);
   header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に合わせる
+
+  if (pagenow < 0) {
+    draw_maplist_coverage(pageshow == 1);
+    return;
+  }
 
   // コンテンツ: backscreen スプライト経由で描画
   backscreen.fillScreen(COLOR_WHITE);
@@ -4893,7 +5025,9 @@ void draw_maplist_mode(int maplist_page) {
 
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.pushSprite(0, 40);  // ヘッダー底辺(y=39)の直下から描画
-
+  // ★ 下端（y=280〜319）を消す（2026-11-13、BUG-86）。この画面は設定画面の "Map data detail >" から画面を消さずに入るので、
+  //   消さないと設定画面のフッター（FreeHeap / VEML / BL）が止まったまま残る（draw_wireless()・draw_chscan() と同じ）。
+  tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
 }
 
 

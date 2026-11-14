@@ -154,7 +154,8 @@ static bool     ana_fix_report_pending = false;
 // SPG 5.10 は「コールドスタートのあと、ANA が有効だと QZSS を航法に使わない」（SPG 5.30 のリリースノート
 // UBXDOC-304424225-20393 §5 の "SPG 5.10 limitation"。回避策は ANA を無効にすること）。
 // 起動時は BT1 の生死が最初の NAV-PVT まで分からないので、そのあと gnss_ana_boot_tick() が送る。
-enum { ANA_MODE_UNDECIDED = 0, ANA_MODE_ON, ANA_MODE_OFF_COLD, ANA_MODE_OFF_SETTING };
+// ANA_MODE_OFF_TEST は机の上のコールドスタートの試験（PONS:DBD,COLD / COLDONLY）で切ったとき（2026-11-14〜。gnss_ana_off_for_cold_test()）。
+enum { ANA_MODE_UNDECIDED = 0, ANA_MODE_ON, ANA_MODE_OFF_COLD, ANA_MODE_OFF_SETTING, ANA_MODE_OFF_TEST };
 static uint8_t  s_ana_mode        = ANA_MODE_UNDECIDED;
 static uint32_t s_ana_ack_wait_ms = 0;   // gnss_ana_boot_tick() が送って返事を待っている間、送った millis()（0=待っていない）
 static const char* ana_mode_str() {
@@ -162,6 +163,7 @@ static const char* ana_mode_str() {
     case ANA_MODE_ON:          return "on";
     case ANA_MODE_OFF_COLD:    return "off(cold)";
     case ANA_MODE_OFF_SETTING: return "off(setting)";
+    case ANA_MODE_OFF_TEST:    return "off(test)";
     default:                   return "?";
   }
 }
@@ -227,6 +229,69 @@ bool gnss_rtc_boot_checked()  { return s_rtc_boot_checked; }
 
 // UBX-NAV-PVT (class=0x01, id=0x07, payload=92 bytes) ハンドラー
 // 位置・速度・時刻・衛星数・フィックスタイプをすべて解析して内部変数を更新する。
+// ---- 自分の GNSS の時刻の飛びと、時刻を仲間へ渡してよいか（2026-11-14〜。gnss.h の gnss_own_time_trusted()）----
+// ★ 11/14、v7 の受信機（主基板 F）が LoRa で正しい時刻をもらったあと、fix しないまま 4〜15 分たって GNSS の時刻が
+//   約 +17 分飛んだ（2 回）。画面の時刻・log.txt がそのまま飛び、その時刻を仲間へ渡すおそれもあった。
+//   GNSS の中で何が起きたかはまだ分からないので、飛んだ前後の NAV-PVT の中身（valid・flags2・tAcc・fix・衛星数）を残す。
+// 前の NAV-PVT の時刻に本体の時計（millis）の経過を足した「あるべき時刻」と比べる。リプレイの間は NAV-PVT を読み捨てるので
+// ここも呼ばれない（ubx_* は CSV の値になるが、こちらは自分の変数で覚えているので、抜けたあとも比べられる）。
+static bool     s_tw_have       = false;   // 比べる元がある
+static int64_t  s_tw_utc_ms     = 0;       // 前の NAV-PVT の UTC [ms]（1970 年から）
+static uint32_t s_tw_ms         = 0;       // それを受けた millis()
+static uint8_t  s_tw_logs       = 0;
+static bool     s_tw_init       = false;
+static bool     s_time_trusted  = false;
+bool gnss_own_time_trusted() { return s_time_trusted; }
+
+static int64_t tw_days_from_civil(int y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return (int64_t)era * 146097 + (int64_t)doe - 719468;
+}
+
+static void own_time_watch(const uint8_t *p, uint8_t fixType, bool fixOK, uint8_t numSV) {
+  if (!s_tw_init) {   // 最初の NAV-PVT（s_rtc_alive_on_boot はこの前に決まっている）
+    s_tw_init = true;
+    if (s_rtc_alive_on_boot) s_time_trusted = true;
+  }
+  if (fixOK) s_time_trusted = true;
+  if (!ubx_date_valid || !ubx_time_valid) {
+    // 時刻が消えた（GNSS のリセット・コールドスタートの試験）。次の時刻は確かめ直すまで渡さない。
+    // 比べる元は残す（戻ってきた時刻が飛んでいれば残す）
+    if (s_tw_have && !fixOK) s_time_trusted = false;
+    return;
+  }
+  const uint32_t now  = gnss_fix_millis;   // この NAV-PVT を受けた時刻（handle_navpvt が入れた直後）
+  const int32_t  nano = (int32_t)((uint32_t)p[16] | ((uint32_t)p[17] << 8) | ((uint32_t)p[18] << 16) | ((uint32_t)p[19] << 24));
+  const int64_t  utc  = (tw_days_from_civil(ubx_year, ubx_month, ubx_day) * 86400LL
+                         + ubx_hour * 3600LL + ubx_min * 60LL + ubx_sec) * 1000LL + nano / 1000000;
+  if (s_tw_have) {
+    const int64_t expect = s_tw_utc_ms + (int64_t)(uint32_t)(now - s_tw_ms);
+    const int64_t diff   = utc - expect;
+    if (diff > GNSS_TIME_JUMP_MS || diff < -GNSS_TIME_JUMP_MS) {
+      if (!fixOK) s_time_trusted = false;
+      if (s_tw_logs < GNSS_TIME_JUMP_LOG_MAX) {
+        s_tw_logs++;
+        const uint32_t e = (uint32_t)(((expect % 86400000LL) + 86400000LL) % 86400000LL) / 1000UL;   // あるべき時刻の時分秒
+        enqueueTask(createLogSdfTask(
+            "GNSS TIME JUMP: %+.1fs expected %02lu:%02lu:%02luZ got %04u-%02u-%02u %02u:%02u:%02u.%02uZ "
+            "(valid=0x%02X flags2=0x%02X tAcc=%.3fs fixType=%u fixOK=%u sv=%u share=%s)",
+            (float)diff / 1000.0f, (unsigned long)(e / 3600UL), (unsigned long)(e / 60UL % 60UL), (unsigned long)(e % 60UL),
+            (unsigned)ubx_year, (unsigned)ubx_month, (unsigned)ubx_day, (unsigned)ubx_hour, (unsigned)ubx_min,
+            (unsigned)ubx_sec, (unsigned)ubx_cs, (unsigned)p[11], (unsigned)p[22],
+            ubx_tacc_ns == 0xFFFFFFFFUL ? -1.0f : ubx_tacc_ns / 1e9f, (unsigned)fixType, (unsigned)fixOK,
+            (unsigned)numSV, s_time_trusted ? "yes" : "no"));
+      }
+    }
+  }
+  s_tw_have   = true;
+  s_tw_utc_ms = utc;
+  s_tw_ms     = now;
+}
+
 static void handle_navpvt(const uint8_t *p, uint16_t len) {
   if (len < 84) return;
 
@@ -264,7 +329,9 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     ubx_sec   = p[10];
   }
   // nano (int32, ナノ秒) → センチ秒に変換
-  int32_t nano = (int32_t)(p[16] | (p[17]<<8) | (p[18]<<16) | (p[19]<<24));
+  // ★ uint32_t に揃えてから組む（int へ昇格した p[19] << 24 は符号ビットへ溢れうる）。
+  //   nano が負（秒の手前に丸めた）なら 0 にしている。測位は 0.5 秒刻みにそろうので、負になっても数 µs で、丸めの直しは要らない
+  int32_t nano = (int32_t)((uint32_t)p[16] | ((uint32_t)p[17] << 8) | ((uint32_t)p[18] << 16) | ((uint32_t)p[19] << 24));
   ubx_cs = (nano >= 0) ? (uint8_t)(nano / 10000000) : 0;
   // ubx_cs が確定した直後のファームウェア時刻を記録する。
   // ubx_pvt_updated ブロックで記録するより遅延が少なく、パケット間の揺れを抑えられる。
@@ -276,6 +343,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   uint8_t numSV     = p[23];
 
   // 位置（1e-7 度単位の int32）
+  // 意図して直さない（2026-11-14 の監査）: (p[n]<<24) の符号ビットへの溢れは GCC では期待どおりに動く（下の velN なども同じ）
   int32_t lon  = (int32_t)(p[24]|(p[25]<<8)|(p[26]<<16)|(p[27]<<24));
   int32_t lat  = (int32_t)(p[28]|(p[29]<<8)|(p[30]<<16)|(p[31]<<24));
   int32_t hMSL = (int32_t)(p[36]|(p[37]<<8)|(p[38]<<16)|(p[39]<<24));  // mm above MSL
@@ -284,6 +352,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   ubx_hacc_mm   = (uint32_t)(p[40]|(p[41]<<8)|(p[42]<<16)|((uint32_t)p[43]<<24));
   ubx_vacc_mm   = (uint32_t)(p[44]|(p[45]<<8)|(p[46]<<16)|((uint32_t)p[47]<<24));
   ubx_gnssFixOK = gnssFixOK;
+  own_time_watch(p, fixType, gnssFixOK, numSV);   // 時刻の飛びと、時刻を仲間へ渡してよいか（2026-11-14〜）
 
   // 速度（mm/s）・方向（1e-5 度）
   // velN (bytes 48-51) / velE (bytes 52-55): NED 水平速度。北・東が正。
@@ -329,7 +398,11 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
     //   stored_numsats への代入はこのブロックより後ろにあるので、ここで読むと
     //   **1 エポック前（= まだ no-fix だったとき）の値**が出る。fix 獲得の瞬間は
     //   ほぼ必ず 0 になり、ログが "fix=3 sats=0" という矛盾した見た目になっていた。
-    if (prev_fixtype <= 1 && new_fixtype >= 2) {
+    // ★ fix の始まりは gnssFixOK のあるエポックで数える（2026-11-14、BUG-100）。位置を使う判定（ubx_pos_valid）と同じ。
+    //   fixType が 2 以上でも gnssFixOK が 0 のエポックで数えると、起動 1 回きりの TTFF のログ（GNSS FIXED ... after boot）が
+    //   使えない fix で早く出ていた。gsa_fixtype（画面・ログの fix の種類）は GNSS の申告のまま残す。
+    const int ok_fixtype = gnssFixOK ? new_fixtype : 1;
+    if (prev_fixtype <= 1 && ok_fixtype >= 2) {
       // 起動後最初の fix だけ、起動からの秒数を添える。GNSS は本体と同じ +3V3 で
       // 電源が入るので、**電源を入れて起動したときはこれが TTFF**（AssistNow Autonomous が
       // 効けば数秒、効かなければ 20 秒台）。USB からの書き込み直後のように GNSS の電源が
@@ -349,7 +422,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
           new_fixtype, (int)numSV, ubx_hacc_mm / 1000.0f));
       }
     }
-    prev_fixtype  = new_fixtype;
+    prev_fixtype  = ok_fixtype;
     gsa_fixtype   = new_fixtype;
   }
 
@@ -379,6 +452,41 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
 // UBX-NAV-SAT (class=0x01, id=0x35) ハンドラー
 // 各衛星の gnssId, svId, cno, elev, azim を satellites[] 配列に格納する。
 // svUsed フラグが立っている衛星の PRN を gsa_prns[] に記録する。
+// QZSS の衛星ごとの状態を log.txt に出す（2026-11-14〜）。QZSS が受かっているのにどの GNSS 基板でも一度も測位に使われない
+// （GNSS DETAIL 1 ではフッターの赤の塗りつぶし＝仰角・方位が出ない）理由を見るためのもの。NAV-SAT の flags をそのまま出す:
+//   J<番号>:c<C/N0>,e<仰角。-- は GNSS が軌道を知らない>,q<qualityInd 0 無信号 1 探索 2 捕捉 3 使えない 4 符号 5〜7 符号と搬送波>,
+//   h<health 0 不明 1 健全 2 不健全>,o<orbitSource 0 なし 1 放送暦 2 アルマナック 3 Offline 4 ANA 5〜7 その他>,
+//   E<放送暦あり>A<アルマナックあり>,U<測位に使った>
+// 10 分ごとの `GNSS SVS used` と、最初の fix のあとの `GNSS ORBIT` のすぐ後に出す。1 行に入らなければ 2 行目へ
+// （1 機 1 行にしないのは、10 機ぶんを一度にタスクキューへ積むと溢れうるため）。
+struct QzssSv { uint8_t sv, cno; int8_t el; int16_t az; uint32_t flags; };
+static QzssSv  s_qz[12];
+static uint8_t s_qz_n = 0;
+static void qzss_detail_log(const char* when, const char* ana) {
+  if (s_qz_n == 0) {
+    enqueueTask(createLogSdfTask("GNSS QZSS (%s, ana=%s): none in NAV-SAT", when, ana));
+    return;
+  }
+  char line[230];
+  int n = snprintf(line, sizeof(line), "GNSS QZSS (%s, ana=%s):", when, ana);
+  for (uint8_t i = 0; i < s_qz_n; i++) {
+    const QzssSv& q = s_qz[i];
+    const bool pos = (q.el >= -90 && q.el <= 90) && !(q.el == 0 && q.az == 0);
+    char el[6];
+    if (pos) snprintf(el, sizeof(el), "%d", (int)q.el); else strcpy(el, "--");
+    char tok[48];
+    snprintf(tok, sizeof(tok), " J%u:c%u,e%s,q%lu,h%lu,o%lu,E%luA%lu,U%lu", (unsigned)q.sv, (unsigned)q.cno, el,
+             (unsigned long)(q.flags & 0x07), (unsigned long)((q.flags >> 4) & 0x03), (unsigned long)((q.flags >> 8) & 0x07),
+             (unsigned long)((q.flags >> 11) & 1), (unsigned long)((q.flags >> 12) & 1), (unsigned long)((q.flags >> 3) & 1));
+    if (n + (int)strlen(tok) >= (int)sizeof(line)) {   // 入らない → ここまでを出して続きの行へ
+      enqueueTask(createLogSdfTask("%s", line));
+      n = snprintf(line, sizeof(line), "GNSS QZSS (%s, cont):", when);
+    }
+    n += snprintf(line + n, sizeof(line) - n, "%s", tok);
+  }
+  enqueueTask(createLogSdfTask("%s", line));
+}
+
 static void handle_navsat(const uint8_t *p, uint16_t len) {
   if (len < 8) return;
   uint8_t numSvs = p[5];
@@ -393,6 +501,7 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
   uint8_t u_gps = 0, u_gal = 0, u_bds = 0, u_qzss = 0, u_glo = 0, seen_qzss = 0;
   const unsigned long now = millis();
   bool seen[MAX_SATELLITES] = {};
+  s_qz_n = 0;   // この NAV-SAT の QZSS（qzss_detail_log 用）
 
   for (int s = 0; s < numSvs; s++) {
     const uint8_t *sv = p + 8 + s * 12;
@@ -424,11 +533,13 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
       }
     }
     if (gnssId == 5 && cno > 0) seen_qzss++;   // 受かっている（C/N0 が 0 でない）QZSS
+    if (gnssId == 5 && s_qz_n < sizeof(s_qz) / sizeof(s_qz[0])) s_qz[s_qz_n++] = { svId, cno, elev, azim, flags };
 
     // gnssId → satelliteType 変換
     int satType;
     switch (gnssId) {
       case 0: satType = SATELLITE_TYPE_GPS;     break;
+      case 1: satType = SATELLITE_TYPE_SBAS;    break;   // 2026-11-14 まではグレー（種類不明）で出ていた
       case 2: satType = SATELLITE_TYPE_GALILEO; break;
       case 3: satType = SATELLITE_TYPE_BEIDOU;  break;
       case 5: satType = SATELLITE_TYPE_QZSS;    break;
@@ -512,6 +623,7 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
       "used G%u E%u B%u Q%u R%u (QZSS seen %u) ana=%s",
       n_ana_orbit, n_eph_orbit, n_alm_orbit, n_ana_data,
       u_gps, u_gal, u_bds, u_qzss, u_glo, seen_qzss, ana_mode_str()));
+    qzss_detail_log("1st fix", ana_mode_str());
   }
   // QZSS を航法に使っているか（2026-11-13〜）。SPG 5.10 はコールドスタートのあと ANA が有効だと QZSS を使わないので、
   // コールドのときは ANA を切った（gnss_ana_boot_tick）。本当に使われるようになったかを log.txt で確かめるための 2 種類の行:
@@ -531,6 +643,7 @@ static void handle_navsat(const uint8_t *p, uint16_t len) {
       svs_window_ms = now;
       enqueueTask(createLogSdfTask("GNSS SVS used G%u E%u B%u Q%u R%u (QZSS seen %u) ana=%s",
         u_gps, u_gal, u_bds, u_qzss, u_glo, seen_qzss, ana_mode_str()));
+      qzss_detail_log("10min", ana_mode_str());
     }
   }
   ubx_sat_updated = true;
@@ -613,6 +726,11 @@ struct GnssRfMinute {
   uint16_t fix_n;      // Fix していた数
 };
 static GnssRfMinute s_rfmin = {};
+// GNSS DETAIL 3 用の直近の値（gnss_rf_now()。2026-11-14〜）。s_rfmin は 1 分ごとに空にするので別に持つ。
+static uint64_t s_jam_bits  = 0;   // MON-RF ごとに 1 ビット（jamInd >= 50 なら 1）。新しいものが下位
+static uint8_t  s_jam_n     = 0;   // ためた数（60 まで）
+static float    s_rf_cno4   = 0.0f, s_rf_cnoall = 0.0f;
+static uint8_t  s_rf_trk    = 0;
 
 static void rf_minute_add() {
   const unsigned long now = millis();
@@ -637,6 +755,10 @@ static void rf_minute_add() {
     cnoall = (float)sa / k;
   }
   const bool fix = (stored_fixtype >= 1);
+
+  s_jam_bits = (s_jam_bits << 1) | (s_mon_rf.jamInd >= 50 ? 1ULL : 0ULL);
+  if (s_jam_n < 60) s_jam_n++;
+  s_rf_cno4 = cno4; s_rf_cnoall = cnoall; s_rf_trk = k;
 
   GnssRfMinute& m = s_rfmin;
   if (m.n == 0) { m.agc_min = 0xFFFF; m.agc_max = 0; }
@@ -687,6 +809,20 @@ GnssMonRf get_gnss_mon_rf() {
   return s_mon_rf;
 }
 
+GnssRfNow gnss_rf_now() {
+  GnssRfNow r = {};
+  r.valid  = s_mon_rf.valid && (millis() - s_mon_rf.lastReceivedMs) < 5000UL;
+  r.jam    = s_mon_rf.jamInd;
+  r.noise  = s_mon_rf.noisePerMS;
+  r.agc    = s_mon_rf.agcCnt;
+  r.n      = s_jam_n;
+  r.jam50  = (uint8_t)__builtin_popcountll(s_jam_bits & ((1ULL << s_jam_n) - 1ULL));   // s_jam_n は 60 まで
+  r.cno4   = s_rf_cno4;
+  r.cnoall = s_rf_cnoall;
+  r.trk    = s_rf_trk;
+  return r;
+}
+
 // UBX フレーム送信ヘルパー（Fletcher-8 チェックサム自動付加）
 // ★ 先に gnss_dbd_finish_tx()。航法データベースのフレームを書きかけていたら書き切る（割り込むと両方捨てられる）。
 static void ubx_send_packet(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len) {
@@ -722,10 +858,217 @@ static void ana_send_valset(bool on) {
 static void ana_boot_log(const char* result) {
   if (s_ana_mode == ANA_MODE_ON) {
     enqueueTask(createLogSdfTask("GNSS ANA on for this boot (rtc alive on boot): %s", result));
+  } else if (s_ana_mode == ANA_MODE_OFF_TEST) {
+    enqueueTask(createLogSdfTask("GNSS ANA off for this boot (cold-start test PONS:DBD; "
+                                 "SPG 5.10 does not use QZSS after a cold start with ANA): %s", result));
   } else {
     enqueueTask(createLogSdfTask("GNSS ANA off for this boot (rtc lost on boot = cold start; "
                                  "SPG 5.10 does not use QZSS after a cold start with ANA): %s", result));
   }
+}
+
+// --- 起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読んで log.txt に残し、決めた形に書き直す（2026-11-13〜）---
+// 2026-11-13 の log.txt で QZSS が 1 機も受かっていなかった（10 分ごとの `QZSS seen 0`）。BeiDou も使っていない（B0）。
+// SPG 5.10 の ANA の件（コールドスタートのあと ANA が有効だと QZSS を航法に使わない）は「受かっていても使わない」で、
+// 受かってすらいない（C/N0 が 0）のとは症状が違う。それまでファームは CFG-SIGNAL を書いておらず、工場出荷の値か、
+// 前に u-center などで BBR に書いた値（BT1 が生きている限り残る）のまま効いていた。
+// 手順（gnss_sig_tick()。log.txt の `GNSS SIGNAL ...`、-- は返事に無かった鍵）:
+//   ① RAM（いま効いている値）を読む
+//   ② 決めた形と違う鍵だけを RAM に書く（ほかの設定と同じく RAM だけ。電源を切れば戻り、毎回の起動でここが書き直す）。
+//      決めた形: QZSS（L1C/A）は入れる。BeiDou は settings.h の GNSS_BDS_B1I が 1 なら B1I にして、同時に有効にできない B1C と
+//      GLONASS を切る（2026-11-14〜）。0 なら工場出荷の B1C のまま、BeiDou が切られていれば入れるだけ。
+//      M10 は 1 通の VALSET の中身をまとめて検査するので、B1I・B1C・GLONASS は必ず同じ 1 通で書く（別々に送ると途中の形が
+//      「B1I と GLONASS が両方有効」になって断られる）。書いたら RAM を読み直して確かめる
+//   ③ BBR（BT1 で残る値。書いていなければ「無い」と断られる）と Default（工場出荷）を読む。①と比べてどこで切られていたかが分かる
+// ★ u-blox は CFG-SIGNAL を変えると GNSS 部を立ち上げ直す（測位をやり直す）。だから②は最初の NAV-PVT を待たずに始め、
+//   ANA の設定（gnss_ana_boot_tick）・航法データベースの戻し・外からの時刻入れ（gnss_dbd.cpp）は ② が済むまで待たせる
+//   （gnss_signal_cfg_settled()）。戻したデータや入れた時刻を立ち上げ直しで失わないため。切られていなければ何も書かない。
+struct GnssSigKey { uint32_t key; const char* name; };
+static const GnssSigKey GNSS_SIG_KEYS[] = {
+  // 衛星系ごとの入り切り（CFG-SIGNAL-*_ENA。M10 のどの版にもある）
+  { 0x1031001FUL, "GPS"  }, { 0x10310020UL, "SBAS" }, { 0x10310021UL, "GAL" },
+  { 0x10310022UL, "BDS"  }, { 0x10310024UL, "QZSS" }, { 0x10310025UL, "GLO" },
+  // 信号ごとの入り切り（GPS L1C/A・SBAS L1C/A・Galileo E1・BeiDou B1I / B1C・QZSS L1C/A / L1S・GLONASS L1）
+  { 0x10310001UL, "L1CA" }, { 0x10310005UL, "SBAS-L1" }, { 0x10310007UL, "E1" },
+  { 0x1031000DUL, "B1I"  }, { 0x1031000FUL, "B1C" },     { 0x10310012UL, "QZ-L1CA" },
+  { 0x10310014UL, "QZ-L1S" }, { 0x10310018UL, "GLO-L1" },
+};
+enum : uint8_t { SIGK_BDS = 3, SIGK_QZSS = 4, SIGK_GLO = 5, SIGK_B1I = 9, SIGK_B1C = 10, SIGK_QZ_L1CA = 11 };   // 上の並びの添字
+static const uint8_t  GNSS_SIG_NKEYS      = sizeof(GNSS_SIG_KEYS) / sizeof(GNSS_SIG_KEYS[0]);
+static const uint8_t  GNSS_SIG_NGROUP     = 6;      // 先頭のこの数が衛星系ごと。信号の鍵を知らない版に断られたら、これだけで聞き直す
+static const uint32_t GNSS_SIG_TIMEOUT_MS = 1500;   // 返事を待つ時間。来なければ "no answer" を残して次へ
+enum : uint8_t { SIG_RAM = 0, SIG_ENABLE, SIG_RAM_AFTER, SIG_BBR, SIG_DEFAULT, SIG_DONE };
+static uint8_t  s_sig_phase   = SIG_RAM;
+static bool     s_sig_short   = false;  // 断られたので衛星系の 6 個だけで聞き直している
+static uint32_t s_sig_wait_ms = 0;      // 送って返事を待っている間、送った millis()（0=待っていない）
+static uint8_t  s_sig_en_n    = 0;      // ② で書く鍵の数（0 = 書かなくてよい）
+static uint8_t  s_sig_en_idx[6];        // ② で書く鍵（GNSS_SIG_KEYS の添字）
+static uint8_t  s_sig_en_val[6];        // ② で書く値（0 / 1）
+static bool     s_sig_en_ack  = false;  // ② が ACK された
+
+bool gnss_signal_cfg_settled() { return s_sig_phase > SIG_ENABLE; }
+
+static uint8_t gnss_sig_layer() {
+  return (s_sig_phase == SIG_BBR) ? 1 : (s_sig_phase == SIG_DEFAULT) ? 7 : 0;   // CFG-VALGET の layer（0=RAM、1=BBR、7=Default）
+}
+static const char* gnss_sig_layer_name() {
+  switch (s_sig_phase) {
+    case SIG_RAM:       return "ram";
+    case SIG_RAM_AFTER: return "ram(after enable)";
+    case SIG_BBR:       return "bbr";
+    case SIG_DEFAULT:   return "default";
+    default:            return "?";
+  }
+}
+
+static void gnss_sig_mark_sent() {
+  const uint32_t t = millis();
+  s_sig_wait_ms = t ? t : 1;
+}
+
+static void gnss_sig_send_get() {
+  const uint8_t n = s_sig_short ? GNSS_SIG_NGROUP : GNSS_SIG_NKEYS;
+  uint8_t pl[4 + 4 * GNSS_SIG_NKEYS];
+  pl[0] = 0x00;                              // version 0 = 問い合わせ
+  pl[1] = gnss_sig_layer();
+  pl[2] = 0x00; pl[3] = 0x00;                // position（先頭から）
+  for (uint8_t i = 0; i < n; i++) {
+    const uint32_t k = GNSS_SIG_KEYS[i].key;
+    pl[4 + 4 * i + 0] = (uint8_t)(k);
+    pl[4 + 4 * i + 1] = (uint8_t)(k >> 8);
+    pl[4 + 4 * i + 2] = (uint8_t)(k >> 16);
+    pl[4 + 4 * i + 3] = (uint8_t)(k >> 24);
+  }
+  ubx_send_packet(0x06, 0x8B, pl, (uint16_t)(4 + 4 * n));
+  gnss_sig_mark_sent();
+}
+
+// ② CFG-VALSET（RAM だけ）で s_sig_en_idx の鍵に s_sig_en_val を書く（全部を 1 通で）
+static void gnss_sig_send_enable() {
+  uint8_t pl[4 + 5 * 6];
+  pl[0] = 0x00;                              // version 0
+  pl[1] = 0x01;                              // layers: RAM
+  pl[2] = 0x00; pl[3] = 0x00;
+  for (uint8_t i = 0; i < s_sig_en_n; i++) {
+    const uint32_t k = GNSS_SIG_KEYS[s_sig_en_idx[i]].key;
+    pl[4 + 5 * i + 0] = (uint8_t)(k);
+    pl[4 + 5 * i + 1] = (uint8_t)(k >> 8);
+    pl[4 + 5 * i + 2] = (uint8_t)(k >> 16);
+    pl[4 + 5 * i + 3] = (uint8_t)(k >> 24);
+    pl[4 + 5 * i + 4] = s_sig_en_val[i];
+  }
+  ubx_send_packet(0x06, 0x8A, pl, (uint16_t)(4 + 5 * s_sig_en_n));
+  gnss_sig_mark_sent();
+}
+
+static void gnss_sig_advance() {
+  s_sig_wait_ms = 0;
+  s_sig_short   = false;
+  switch (s_sig_phase) {
+    case SIG_RAM:    s_sig_phase = (s_sig_en_n > 0) ? SIG_ENABLE : SIG_BBR;   break;
+    case SIG_ENABLE: s_sig_phase = s_sig_en_ack ? SIG_RAM_AFTER : SIG_BBR;    break;
+    case SIG_DONE:   break;
+    default:         s_sig_phase++;                                          break;   // RAM_AFTER → BBR → DEFAULT → DONE
+  }
+}
+
+// ② の結果を 1 行（ACK / NAK / 返事なし）
+static void gnss_sig_enable_log(const char* result) {
+  char keys[64];
+  int n = 0;
+  keys[0] = '\0';
+  for (uint8_t i = 0; i < s_sig_en_n && n >= 0 && n < (int)sizeof(keys); i++) {
+    n += snprintf(keys + n, sizeof(keys) - n, " %s=%u", GNSS_SIG_KEYS[s_sig_en_idx[i]].name, (unsigned)s_sig_en_val[i]);
+  }
+  enqueueTask(createLogSdfTask("GNSS SIGNAL set (RAM):%s: %s", keys, result));
+}
+
+// CFG-VALGET（06 8B）の返事。payload: version(1) layer(1) position(2)、続いて [鍵 4 バイト + 値] の並び。
+// 値の長さは鍵の 28〜30 ビット（1=1 ビット（1 バイトで届く）、2=1、3=2、4=4、5=8 バイト）。
+// 意図して直さない（2026-11-14 の監査）: 応答のレイヤー（p[1]）は見ない。1 つずつ問い合わせて返事を待つので取り違えない
+static void handle_cfg_valget(const uint8_t *p, uint16_t len) {
+  if (s_sig_wait_ms == 0 || s_sig_phase == SIG_ENABLE || s_sig_phase >= SIG_DONE || len < 4) return;
+  int8_t val[GNSS_SIG_NKEYS];
+  for (uint8_t i = 0; i < GNSS_SIG_NKEYS; i++) val[i] = -1;
+  uint16_t idx = 4;
+  while (idx + 4 <= len) {
+    const uint32_t k = (uint32_t)p[idx] | ((uint32_t)p[idx + 1] << 8) |
+                       ((uint32_t)p[idx + 2] << 16) | ((uint32_t)p[idx + 3] << 24);
+    static const uint8_t SIZE_BYTES[8] = { 0, 1, 1, 2, 4, 8, 0, 0 };
+    const uint8_t vlen = SIZE_BYTES[(k >> 28) & 0x07];
+    if (vlen == 0 || idx + 4 + vlen > len) break;   // 知らない長さ・途中で切れている → そこまで
+    for (uint8_t i = 0; i < GNSS_SIG_NKEYS; i++) {
+      if (GNSS_SIG_KEYS[i].key == k) { val[i] = (int8_t)(p[idx + 4] & 0x01); break; }
+    }
+    idx += 4 + vlen;
+  }
+  char line[200];
+  int n = snprintf(line, sizeof(line), "GNSS SIGNAL %s:", gnss_sig_layer_name());
+  for (uint8_t i = 0; i < GNSS_SIG_NKEYS && n > 0 && n < (int)sizeof(line); i++) {
+    const char* sep = (i == GNSS_SIG_NGROUP) ? " |" : "";
+    if (val[i] < 0) n += snprintf(line + n, sizeof(line) - n, "%s %s=--", sep, GNSS_SIG_KEYS[i].name);
+    else            n += snprintf(line + n, sizeof(line) - n, "%s %s=%d", sep, GNSS_SIG_KEYS[i].name, (int)val[i]);
+  }
+  enqueueTask(createLogSdfTask("%s%s", line, s_sig_short ? " (group keys only)" : ""));
+  if (s_sig_phase == SIG_RAM) {
+    // ② 決めた形と違うと読めた鍵だけ書く（-- は分からないので触らない）
+    s_sig_en_n = 0;
+    auto want = [&](uint8_t k, uint8_t v) {
+      if (val[k] >= 0 && val[k] != (int8_t)v && s_sig_en_n < sizeof(s_sig_en_idx)) {
+        s_sig_en_idx[s_sig_en_n] = k;
+        s_sig_en_val[s_sig_en_n] = v;
+        s_sig_en_n++;
+      }
+    };
+    want(SIGK_BDS, 1);
+#if GNSS_BDS_B1I
+    // B1I・B1C が読めたときだけ切り替える（衛星系の 6 個だけで聞き直した版では信号の鍵が分からないので、工場出荷のまま）
+    if (val[SIGK_B1I] >= 0 && val[SIGK_B1C] >= 0) {
+      want(SIGK_B1I, 1);
+      want(SIGK_B1C, 0);
+      want(SIGK_GLO, 0);
+    }
+#else
+    if (val[SIGK_B1I] == 0 && val[SIGK_B1C] != 1) want(SIGK_B1I, 1);   // B1C が入っていれば足りるので B1I は書かない
+#endif
+    want(SIGK_QZSS, 1);
+    want(SIGK_QZ_L1CA, 1);
+  }
+  gnss_sig_advance();
+}
+
+// ACK-ACK / ACK-NAK のうち、起動時の CFG-SIGNAL の読み書きに対するもの。process_ubx の ACK の枝から呼ぶ。
+//   ② の CFG-VALSET（06 8A）: ACK で読み直しへ、NAK（組み合わせを受け付けなかった）ならそのまま ③ へ。
+//   CFG-VALGET（06 8B）の NAK: 信号の鍵を知らない版かもしれないので、まず衛星系の 6 個だけで聞き直す。
+//     それも断られたら、その層には 1 つも書かれていない（BBR ではふつう）か読めない。読めたときは返事（06 8B）が来るので ACK は見ない。
+static void gnss_sig_on_ack(bool ack, uint8_t cls, uint8_t id) {
+  if (s_sig_wait_ms == 0 || cls != 0x06) return;
+  if (s_sig_phase == SIG_ENABLE) {
+    if (id != 0x8A) return;
+    s_sig_en_ack = ack;
+    gnss_sig_enable_log(ack ? "ack" : "NAK");
+    gnss_sig_advance();
+    return;
+  }
+  if (id != 0x8B || ack) return;
+  if (!s_sig_short) {
+    s_sig_short   = true;
+    s_sig_wait_ms = 0;      // 次の gnss_sig_tick() で聞き直す
+    return;
+  }
+  enqueueTask(createLogSdfTask("GNSS SIGNAL %s: NAK (no CFG-SIGNAL keys in this layer)", gnss_sig_layer_name()));
+  gnss_sig_advance();
+}
+
+// GNSS が設定を失って送り直した（gnss_ubx_watchdog）ら、①〜③ をやり直す（工場出荷に戻っているので）
+static uint32_t s_sig_frames0 = 0;   // 読み直しを始めたときの ubx_frames（これより増えたら UBX が来ている。BUG-99）
+static void gnss_sig_restart() {
+  s_sig_frames0 = ubx_frames;
+  s_sig_phase   = SIG_RAM;
+  s_sig_short   = false;
+  s_sig_wait_ms = 0;
+  s_sig_en_n    = 0;
+  s_sig_en_ack  = false;
 }
 
 // MON-RF 出力設定 (rate: 何秒に 1 回か。1=1Hz、0=停止。航法の周期ではなく秒で数える)
@@ -753,7 +1096,8 @@ static void process_ubx(uint8_t b) {
       if (b == 0xB5) ubx_state = UBX_SYNC2;
       break;
     case UBX_SYNC2:
-      ubx_state = (b == 0x62) ? UBX_CLASS_ST : UBX_SYNC1;
+      // ★ 0xB5 が続いたら SYNC2 のまま（直前のゴミの 0xB5 のあとの本物の B5 62 を落とさない。2026-11-14、BUG-97）
+      ubx_state = (b == 0x62) ? UBX_CLASS_ST : (b == 0xB5 ? UBX_SYNC2 : UBX_SYNC1);
       break;
     case UBX_CLASS_ST:
       ubx_cls = b;
@@ -774,6 +1118,10 @@ static void process_ubx(uint8_t b) {
       ubx_paylen |= ((uint16_t)b << 8);
       ubx_cka_acc += b; ubx_ckb_acc += ubx_cka_acc;
       ubx_payidx = 0;
+      // ★ バッファより長いと言うフレームは化けた長さとみなして捨て、同期を探し直す（2026-11-14、BUG-97）。
+      //   以前はそのまま最大 65535 バイト（38400bps で約 17 秒）を読み捨てるまで次のフレームを拾えなかった。
+      //   本物でこれより長いフレームは使っていない（入れても切れて使えない）。
+      if (ubx_paylen > UBX_PAYLOAD_BUF_SIZE) { ubx_state = UBX_SYNC1; break; }
       ubx_state  = (ubx_paylen == 0) ? UBX_CKA_ST : UBX_PAYLOAD_ST;
       break;
     case UBX_PAYLOAD_ST:
@@ -835,19 +1183,24 @@ static void process_ubx(uint8_t b) {
           }
           #endif
         } else if (ubx_msgid == 0x35) {
-          // NAV-SAT: 衛星情報を解析
-          removeStaleSatellites();
-          handle_navsat(ubx_buf, used_len);
-          #ifdef DEBUG_GBX_NMEA
-          {
-            static unsigned long last_sat_dbg = 0;
-            if (millis() - last_sat_dbg > 10000) {
-              last_sat_dbg = millis();
-              Serial.print("[UBX] NAV-SAT numSvs="); Serial.println(ubx_buf[5]);
+          // NAV-SAT: 衛星情報を解析。★ 8 バイト未満（頭すら無い）なら衛星の表には触らない（BUG-73。下のログも
+          //   ubx_buf[5] を読む）。フレームの数え方（下の last_nmea_time・ubx_frames）は変えないので、ここで break しない
+          if (used_len >= 8) {
+            removeStaleSatellites();
+            handle_navsat(ubx_buf, used_len);
+            #ifdef DEBUG_GBX_NMEA
+            {
+              static unsigned long last_sat_dbg = 0;
+              if (millis() - last_sat_dbg > 10000) {
+                last_sat_dbg = millis();
+                Serial.print("[UBX] NAV-SAT numSvs="); Serial.println(ubx_buf[5]);
+              }
             }
+            #endif
+            snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR, "UBX-NAV-SAT svs=%d", ubx_buf[5]);
+          } else {
+            snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR, "UBX-NAV-SAT short len=%u", (unsigned)used_len);
           }
-          #endif
-          snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR, "UBX-NAV-SAT svs=%d", ubx_buf[5]);
         } else if (ubx_msgid == 0x04) {
           // NAV-DOP: 精度低下率を解析
           handle_navdop(ubx_buf, used_len);
@@ -879,12 +1232,16 @@ static void process_ubx(uint8_t b) {
         }
       } else if (ubx_cls == 0x05) {
         // ACK-ACK (01) / ACK-NAK (00)
-        // 起動時に gnss_ana_boot_tick() が送った CFG-VALSET（06 8A）の返事。ほかに起動後に VALSET を送る口は無い
+        // 起動時に gnss_ana_boot_tick() が送った CFG-VALSET（06 8A）の返事。起動後に VALSET を送る口はほかに
+        // gnss_sig_tick() の BeiDou・QZSS の有効化だけで、こちらが済んでから ANA を送るので重ならない
         // （NAV-SAT のレート切替は CFG-MSG = 06 01）。
         if (s_ana_ack_wait_ms != 0 && used_len >= 2 && ubx_buf[0] == 0x06 && ubx_buf[1] == 0x8A) {
           s_ana_ack_wait_ms = 0;
           ana_boot_log(ubx_msgid == 0x01 ? "ack" : "NAK");
         }
+        // 起動時に gnss_sig_tick() が送った CFG-SIGNAL の読み書き（VALGET 06 8B・VALSET 06 8A）。ANA の VALSET とは時刻が重ならない
+        // （ANA は gnss_signal_cfg_settled() を待ってから送る）
+        if (used_len >= 2) gnss_sig_on_ack(ubx_msgid == 0x01, ubx_buf[0], ubx_buf[1]);
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] "); Serial.print((ubx_msgid==0x01)?"ACK-ACK":"ACK-NAK");
         Serial.print(" for cls="); Serial.print((used_len>=1?ubx_buf[0]:0), HEX);
@@ -893,6 +1250,10 @@ static void process_ubx(uint8_t b) {
         snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR,
           "%s %02X%02X", (ubx_msgid==0x01)?"UBX-ACK-ACK":"UBX-ACK-NAK",
           (used_len>=1?ubx_buf[0]:0), (used_len>=2?ubx_buf[1]:0));
+      } else if (ubx_cls == 0x06 && ubx_msgid == 0x8B) {
+        // CFG-VALGET の返事（起動時に CFG-SIGNAL を読んだもの。gnss_sig_tick()）
+        handle_cfg_valget(ubx_buf, used_len);
+        snprintf(last_nmea[stored_nmea_index], NMEA_MAX_CHAR, "UBX-CFG-VALGET len=%d", ubx_paylen);
       } else if (ubx_cls == 0x0A) {
         // MON (Monitoring) クラス
         if (ubx_msgid == 0x38) {
@@ -927,6 +1288,11 @@ static void process_ubx(uint8_t b) {
 // --- リプレイモード ---
 // replaymode_gnssoff = true の時、実 GNSS の代わりに SD の飛行 CSV を再生する。
 bool replaymode_gnssoff = false;
+// 再生を始めてから、再生した日時を log.txt に残したか（再生のたびに 1 回。以前は起動から 1 回だけだった）
+static bool s_replay_time_logged = false;
+static bool     s_replay_wait_init = false;   // 選び直したファイルを Core1 が開くのを待っている（BUG-105）
+static uint32_t s_replay_wait_seq  = 0;       // そのときの replay_init_seq
+static uint32_t s_replay_rows_pass = 0;       // 今回の周回で再生した行の数（0 のまま末尾＝再生できるものが無い。BUG-104）
 
 // 最後に再生した CSV 行。imu.cpp / airdata.cpp のセンサ値オーバーライドから参照される。
 static ReplayRow replay_last_row;
@@ -1084,7 +1450,24 @@ int  get_gnss_ana_state()      { return ana_state; }
 bool get_gnss_ana_busy()       { return ana_busy; }
 int  get_gnss_ana_data_svs()   { return ana_data_svs; }
 int  get_gnss_ana_orbit_svs()  { return ana_orbit_svs; }
-bool get_gnss_ana_off_cold()    { return s_ana_mode == ANA_MODE_OFF_COLD; }
+bool get_gnss_ana_off_cold()    { return s_ana_mode == ANA_MODE_OFF_COLD || s_ana_mode == ANA_MODE_OFF_TEST; }
+
+// 机の上のコールドスタートの試験（gnss_dbd.cpp の PONS:DBD,COLD / COLDONLY）で、GNSS をリセットする前に呼ぶ（2026-11-14〜）。
+// 本物のコールドの起動（BT1 が切れていた。gnss_ana_boot_tick）と同じく、**その起動の間 ANA を切る**（RAM と BBR）。
+// それまでは試験でも ANA は有効のままで、SPG 5.10 の「ANA が有効だとコールドスタートのあと QZSS を使わない」に当たり、
+// 本物のコールドの起動と条件が違っていた。v7.1 の GNSS 基板 b（B386598FAF54）が QZSS を一度も追わない件を、
+// ANA を切ったコールドスタート（COLDONLY ならデータベースも戻さない）で抜けられるか試すのにも使う。
+// リセットは GNSS だけ（resetMode=0x02）なので RAM の設定は残る。次の普通の起動（時計が生きている）で ANA は有効に戻る。
+// 戻り値: いま切った（返事は ana_boot_log() が log.txt に残す）。設定で切ってある・すでに切ってあるときは false。
+bool gnss_ana_off_for_cold_test() {
+  if (!GNSS_USE_ANA || s_ana_mode == ANA_MODE_OFF_SETTING) return false;
+  if (s_ana_mode == ANA_MODE_OFF_COLD || s_ana_mode == ANA_MODE_OFF_TEST) return false;
+  s_ana_mode = ANA_MODE_OFF_TEST;   // まだ決めていない起動（最初の NAV-PVT の前）でも、gnss_ana_boot_tick は上書きしない
+  ana_send_valset(false);
+  const uint32_t t = millis();
+  s_ana_ack_wait_ms = t ? t : 1;
+  return true;
+}
 bool get_gnss_fixok() {
   if (link_mirror_active()) return link_get_fix_ok();
   return ubx_gnssFixOK;                                    // gnssFixOK フラグ
@@ -1136,27 +1519,42 @@ uint32_t get_gnss_baudrate() { return gnss_current_baudrate; }
 // 丸ごと読み飛ばすため、固定バッファに収まらない問題が起きない。
 // ★ 待ちの間も IMU を引き取る（CLAUDE.md「IMU の読み出しを飢えさせない」）。
 //   GNSS が居ないと 1 回 600ms 空振りし、起動時に 7 回続く。
-static bool ubxWaitAck(uint32_t timeout_ms) {
+// ★ ACK-ACK / ACK-NAK のペイロード（どのメッセージへの返事か）を、送ったものの (cls, id) と照らし合わせる（BUG-70）。
+//   違うものへの返事（遅れて来た前のコマンドの ACK、起動時に別に送った ANA の ACK など）は読み飛ばして待ち続ける。
+//   チェックサムも確かめる（化けたフレームを返事と取らない）。
+//   ただし同じ種類（CFG-MSG どうし・CFG-VALSET どうし）が続く手順では見分けられない。返事は数十 ms で来るので、
+//   待ち（300〜600ms）を越えて遅れることはまずない。
+static bool ubxWaitAck(uint32_t timeout_ms, uint8_t exp_cls, uint8_t exp_id) {
   unsigned long t0 = millis();
-  uint8_t  state = 0, cls = 0, id = 0;
+  uint8_t  state = 0, cls = 0, id = 0, ck_a = 0, ck_b = 0, rx_a = 0;
+  uint8_t  pl[2] = {0, 0};
   uint16_t paylen = 0, payidx = 0;
   while (millis() - t0 < timeout_ms) {
     imu_service_if_due();
     if (!GNSS_SERIAL.available()) continue;
     uint8_t b = GNSS_SERIAL.read();
+    // ★ 届いたバイトとして数える（2026-11-14、BUG-98）。設定の送り直し（gnss_setup_impl）の間は返事をここで読むので、
+    //   数えないと送り直しが長引いたとき get_gnss_connection() が切れ、偽の「GNSS connection LOST」が出ていた
+    gnss_last_byte_ms = millis();
+    if (state >= 2 && state <= 6) { ck_a += b; ck_b += ck_a; }   // Fletcher（cls から payload の終わりまで）
     switch (state) {
       case 0: state = (b == 0xB5) ? 1 : 0; break;
-      case 1: state = (b == 0x62) ? 2 : (b == 0xB5 ? 1 : 0); break;
+      case 1: state = (b == 0x62) ? 2 : (b == 0xB5 ? 1 : 0);
+              ck_a = ck_b = 0; break;
       case 2: cls = b;   state = 3; break;
       case 3: id  = b;   state = 4; break;
       case 4: paylen = b; state = 5; break;
-      case 5: paylen |= ((uint16_t)b << 8); payidx = 0;
+      case 5: paylen |= ((uint16_t)b << 8); payidx = 0; pl[0] = pl[1] = 0;
+              if (paylen > UBX_PAYLOAD_BUF_SIZE) { state = 0; break; }   // 化けた長さ（本体のパーサと同じ。BUG-97）
               state = (paylen > 0) ? 6 : 7; break;
-      case 6: if (++payidx >= paylen) state = 7; break;  // ペイロード読み飛ばし
-      case 7: state = 8; break;                           // ck_a
+      case 6: if (payidx < 2) pl[payidx] = b;
+              if (++payidx >= paylen) state = 7; break;  // ペイロード（先頭 2 バイトだけ覚えて読み飛ばし）
+      case 7: rx_a = b; state = 8; break;                 // ck_a
       case 8: state = 0;                                  // ck_b → フレーム完了
-              if (cls == 0x05 && id == 0x01) return true;   // ACK-ACK
-              if (cls == 0x05 && id == 0x00) return false;  // ACK-NAK
+              if (rx_a != ck_a || b != ck_b) break;      // 化けている
+              if (cls != 0x05 || paylen < 2 || pl[0] != exp_cls || pl[1] != exp_id) break;   // ほかへの返事
+              if (id == 0x01) return true;                // ACK-ACK
+              if (id == 0x00) return false;               // ACK-NAK
               break;
     }
   }
@@ -1201,6 +1599,7 @@ static const uint8_t GNSS_CFGNG_ESSENTIAL =
 //           奇数回 = 38400（CFG-PRT 設定済みのモジュールを掴み直す場合）
 static void gnss_setup_impl(bool send_config) {
   last_gnss_setup_time = millis();
+  ubx_state = UBX_SYNC1;   // 途中のフレームを持ち越さない（ポートを開き直すので続きは来ない。BUG-97）
   gnss_dbd_on_setup();   // 航法データベースの吸い出し・戻しの途中なら打ち切る（ポートを開き直すので返事が途切れる）
   DEBUG_P(20260307,"GNSS SETUP:setupcounter=");
   DEBUG_PLN(20260307,setupcounter);
@@ -1294,7 +1693,7 @@ static void gnss_setup_impl(bool send_config) {
       }
       {
         // NAV-PVT など既存パケットを読み飛ばしながら ACK を待つ
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x08);   // CFG-RATE
         if (!got_ack) cfg_ng |= GNSS_CFGNG_RATE;
         #ifdef DEBUG_GBX_NMEA
         if      (got_ack) Serial.println("[UBX] CFG-RATE 2Hz: ACK OK");
@@ -1310,7 +1709,7 @@ static void gnss_setup_impl(bool send_config) {
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x01);   // CFG-MSG
         if (!got_ack) cfg_ng |= GNSS_CFGNG_PVT;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVPVT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
@@ -1325,7 +1724,7 @@ static void gnss_setup_impl(bool send_config) {
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x01);   // CFG-MSG
         if (!got_ack) cfg_ng |= GNSS_CFGNG_SAT;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVSAT enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
@@ -1340,7 +1739,7 @@ static void gnss_setup_impl(bool send_config) {
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x01);   // CFG-MSG
         if (!got_ack) cfg_ng |= GNSS_CFGNG_DOP;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAVDOP enable: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
@@ -1356,7 +1755,7 @@ static void gnss_setup_impl(bool send_config) {
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
       {
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x24);   // CFG-NAV5
         if (!got_ack) cfg_ng |= GNSS_CFGNG_NAV5;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] CFG-NAV5 Airborne<1g: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
@@ -1384,7 +1783,7 @@ static void gnss_setup_impl(bool send_config) {
         const unsigned char* cmd = ana_on ? cmd_on : cmd_off;
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd_on); i++) GNSS_SERIAL.write(cmd[i]);
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x8A);   // CFG-VALSET
         if (!got_ack) cfg_ng |= GNSS_CFGNG_ANA;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] CFG-ANA-USE_ANA="); Serial.print(ana_on ? 1 : 0);
@@ -1396,7 +1795,7 @@ static void gnss_setup_impl(bool send_config) {
         { const unsigned char cmd[] = UBLOX_AOPSTATUS_1HZ;
           gnss_cfg_wait(50);
           for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
-        bool got_ack = ubxWaitAck(600);
+        bool got_ack = ubxWaitAck(600, 0x06, 0x8A);   // CFG-VALSET
         if (!got_ack) cfg_ng |= GNSS_CFGNG_AOPS;
         #ifdef DEBUG_GBX_NMEA
         Serial.print("[UBX] NAV-AOPSTATUS 1Hz: "); Serial.println(got_ack ? "ACK OK" : "no ACK");
@@ -1409,8 +1808,9 @@ static void gnss_setup_impl(bool send_config) {
       //   残りの ACK が後ろに残る。どちらか一方が通れば出力される（届いた数は `grf` の n= に出る）。
       gnss_enable_mon_rf(1);
       {
-        const bool ack1 = ubxWaitAck(300);
-        const bool ack2 = ubxWaitAck(300);
+        // 意図して直さない（2026-11-14 の監査）: ACK を 2 つ順に待つ。SAM-M10Q は両方に返事をするので取り違えない
+        const bool ack1 = ubxWaitAck(300, 0x06, 0x8A);   // CFG-VALSET
+        const bool ack2 = ubxWaitAck(300, 0x06, 0x01);   // CFG-MSG
         enqueueTask(createLogSdfTask("GNSS MON-RF 1Hz: VALSET=%s MSG=%s",
                                      ack1 ? "ack" : "no", ack2 ? "ack" : "no"));
       }
@@ -1423,7 +1823,7 @@ static void gnss_setup_impl(bool send_config) {
         const uint8_t valset[9] = { 0x00, 0x01, 0x00, 0x00, 0x25, 0x00, 0x11, 0x10, 0x01 };
         gnss_cfg_wait(50);
         ubx_send_packet(0x06, 0x8A, valset, sizeof(valset));
-        if (!ubxWaitAck(600)) cfg_ng |= GNSS_CFGNG_ACKAID;
+        if (!ubxWaitAck(600, 0x06, 0x8A)) cfg_ng |= GNSS_CFGNG_ACKAID;   // CFG-VALSET
       }
       #endif
 
@@ -1432,7 +1832,7 @@ static void gnss_setup_impl(bool send_config) {
         const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
         gnss_cfg_wait(50);
         for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]);
-        (void)ubxWaitAck(300);
+        (void)ubxWaitAck(300, 0x06, 0x01);   // CFG-MSG
       }
 
       // 設定結果を log.txt に 1 行だけ残す。
@@ -1507,6 +1907,10 @@ void reset_maxgs() {
 
 // 最大 G/S を更新する（NMEAパス・DEMOパス共通）。
 // GNSS 時刻が有効な場合は JST 時刻を記録し、無効な場合は 0:00 として速度値だけ更新する。
+// 5 分の最高速の窓の時計。★ リプレイ中は再生の時計（倍速・一時停止に合わせる。2026-11-14、BUG-108）。
+//   ループ再生で 0 に戻ったときは差が大きくなり、5 分を越えたとして今の速度から数え直す。
+static uint32_t maxgs_clock_ms() { return replaymode_gnssoff ? replay_virtual_ms : millis(); }
+
 static void update_maxgs(float gs) {
   int jst_h = 0, jst_m = 0;
   // UBX モード・リプレイモード共に ubx_hour/ubx_min を参照（両モードとも更新済み）
@@ -1525,13 +1929,13 @@ static void update_maxgs(float gs) {
     maxgs_5min             = gs;
     maxgs_5min_hour        = jst_h;
     maxgs_5min_min         = jst_m;
-    maxgs_5min_last_update = millis();
-  } else if (millis() - maxgs_5min_last_update > 5UL * 60 * 1000) {
+    maxgs_5min_last_update = maxgs_clock_ms();
+  } else if (maxgs_clock_ms() - maxgs_5min_last_update > 5UL * 60 * 1000) {
     // 5 分間更新がなければ現在の G/S にリセット
     maxgs_5min             = gs;
     maxgs_5min_hour        = jst_h;
     maxgs_5min_min         = jst_m;
-    maxgs_5min_last_update = millis();
+    maxgs_5min_last_update = maxgs_clock_ms();
   }
 }
 
@@ -1628,6 +2032,9 @@ static void apply_replay_row(const ReplayRow* row) {
     replay_wind_dir  = row->wind_dir;
     replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG |
                                     RHAVE_ATT_TRIM | RHAVE_ATT_WIND);
+  } else {
+    // ★ 姿勢が空欄の行（ESKF が未収束・止まっていた区間）では消す（2026-11-14、BUG-106）。残すと直前の姿勢と風が固まって出る
+    replay_att_have = 0;
   }
   // 推定 TAS と大きい枠の中身は姿勢の有無と別に毎行（姿勢が無い区間は hdr = 0 = 真方位で記録されている）
   replay_tas      = row->tas;
@@ -1687,9 +2094,8 @@ static void apply_replay_row(const ReplayRow* row) {
   try_enque_savecsv();
 
   // 初回のみ再生開始時刻を SD ログに残す
-  static bool first_time_logged_replay = false;
-  if (!first_time_logged_replay && (row->have & RHAVE_DATE)) {
-    first_time_logged_replay = true;
+  if (!s_replay_time_logged && (row->have & RHAVE_DATE)) {
+    s_replay_time_logged = true;
     enqueueTask(createLogSdfTask("GNSS TIME(REPLAY): %04d-%02d-%02d %02d:%02d:%02d JST",
       row->year, row->month, row->day, row->hour, row->minute, row->second));
   }
@@ -1729,6 +2135,7 @@ bool is_demo_active() {
 
 // 地点を切り替える。仮想機体をその地点の中心に置き直し、軌跡も消す
 // （前の地点の軌跡が地球の反対側に残っていると描画が破綻するため）。
+// 意図して直さない（2026-11-14 の監査）: デモの境目（15km の戻し・360° の折り返し・速度の戻し）は見送り（練習用で困っていない）
 void set_demo_site(demo_site_t site) {
   if (site >= DEMO_SITE_COUNT) site = DEMO_OFF;
   const bool was_demo = (demo_site != DEMO_OFF);
@@ -1915,8 +2322,17 @@ uint32_t get_gnss_course_ms(){
   return millis();
 }
 
+// リプレイを抜けた時刻（gnss_ubx_watchdog の UBX の途絶を、ここから数える。BUG-67）。0 = 抜けていない
+static uint32_t s_replay_exit_ms = 0;
 void set_replaymode(bool replaymode){
   const bool was_replay = replaymode_gnssoff;
+  // ★ 別のファイルへ切り替えたとき（was_replay のまま true）も、開始時刻のログを出し直す（BUG-105）
+  if (replaymode) s_replay_time_logged = false;
+  // ★ 新しいファイルを Core1 が開くまで、前のファイルの行を使わない（gnss_loop のリプレイの分岐。BUG-105）
+  if (replaymode) {
+    s_replay_wait_seq  = replay_init_seq;
+    s_replay_wait_init = true;
+  }
   replaymode_gnssoff = replaymode;
   // ★ 再生を始めるときに必ず落とす。Core1 の init_replay() も先頭で落とすが、
   //   あちらは非同期なので、Core0 が先に前回の true を読んで
@@ -1949,10 +2365,17 @@ void set_replaymode(bool replaymode){
   // 抜けたら本物の NAV-PVT が来るまで「fix なし・止まっている」にしておく。
   // GNSS が生きていれば 0.5 秒で上書きされるが、黙っている GNSS だと
   // 再生した飛行の fix と速度が残り、update_moving()（power.cpp）が「動いている」と見続ける。
+  // 意図して直さない（2026-11-14 の監査）: ファイルの切り替え（true→true）では stored_* と ubx_state を戻さない。欠けた列は再生前の値のまま（最初から再生したときと同じ扱い）
   if (was_replay && !replaymode) {
     ubx_pos_valid  = false;
     stored_fixtype = 0;
     stored_gs      = 0;
+    stored_numsats = 0;      // 再生した衛星数を残さない（GNSS が生きていれば次の NAV-PVT で入る）
+    // ★ リプレイ中も GNSS のバイトは読み捨てて「届いている」と記録するが、UBX の受信時刻（last_nmea_time）は
+    //   古いまま。抜けた直後に見張りが「バイトは来るのに UBX が 10 秒来ない」と誤って判断し、設定を一式
+    //   送り直していた（時刻を入れた回数なども消える）。UBX の途絶は抜けた時刻から数える（BUG-67）。
+    const uint32_t t = millis();
+    s_replay_exit_ms = t ? t : 1;
   }
 }
 // GNSS モジュールからの Serial データを受信・解析するメインループ処理。
@@ -1988,7 +2411,10 @@ static void gnss_ubx_watchdog() {
   if (GNSS_SERIAL.available() != 0) return;
   const uint32_t guard = 30000UL << (s_reconfig_streak < 3 ? s_reconfig_streak : 3);
   if (now - last_gnss_setup_time <= guard) return;
-  const uint32_t ubx_age     = now - get_gnss_nmea_time(0);
+  // UBX の途絶は、最後の UBX と、リプレイを抜けた時刻（BUG-67）の新しいほうから数える
+  uint32_t last_ubx = get_gnss_nmea_time(0);
+  if (s_replay_exit_ms != 0 && (int32_t)(s_replay_exit_ms - last_ubx) > 0) last_ubx = s_replay_exit_ms;
+  const uint32_t ubx_age     = now - last_ubx;
   const bool     bytes_alive = (now - gnss_last_byte_ms) < GNSS_CONN_TIMEOUT_MS;
   if (ubx_age > GNSS_UBX_LOST_RECONFIG_MS && bytes_alive) {
     if (s_reconfig_count  < 255) s_reconfig_count++;
@@ -1996,6 +2422,7 @@ static void gnss_ubx_watchdog() {
     enqueueTask(createLogSdfTask("GNSS RECONFIG #%u: no UBX for %lus but bytes arriving (GNSS reset?) -> resend config",
                                  (unsigned)s_reconfig_count, (unsigned long)(ubx_age / 1000)));
     gnss_setup_impl(true);
+    gnss_sig_restart();   // GNSS は工場出荷に戻っているので、衛星系の設定も読み直して入れ直す
     s_reconfig_ms     = millis();
     s_reconfig_frames = ubx_frames;
   } else if (ubx_age > 30000) {
@@ -2016,6 +2443,7 @@ static void gnss_ana_boot_tick() {
     ana_boot_log("no answer");
   }
   if (s_ana_mode != ANA_MODE_UNDECIDED || !s_rtc_boot_checked) return;
+  if (!gnss_signal_cfg_settled()) return;   // BeiDou・QZSS の有効化（gnss_sig_tick）が先。同じ VALSET の ACK を取り違えないため
   if (replaymode_gnssoff) return;   // リプレイ中は GNSS の返事を読み捨てている。抜けてから送る
   if (!GNSS_USE_ANA) { s_ana_mode = ANA_MODE_OFF_SETTING; return; }   // ⑦ が「無効」を送り済み
   s_ana_mode = s_rtc_alive_on_boot ? ANA_MODE_ON : ANA_MODE_OFF_COLD;
@@ -2024,13 +2452,34 @@ static void gnss_ana_boot_tick() {
   s_ana_ack_wait_ms = t ? t : 1;
 }
 
+// 起動時の CFG-SIGNAL の読み書き（上の GNSS_SIG_KEYS のコメントの ①〜③）。1 つ送っては返事を待つ。
+// GNSS が UBX を出し始めたら（＝ gnss_setup の設定とボーレートが通ったら）始める。最初の NAV-PVT は待たない。
+static void gnss_sig_tick() {
+  if (s_sig_phase >= SIG_DONE) return;
+  if (replaymode_gnssoff) return;   // リプレイ中は GNSS の返事を読み捨てている。抜けてから読む
+  if (s_sig_wait_ms != 0) {
+    if (millis() - s_sig_wait_ms > GNSS_SIG_TIMEOUT_MS) {
+      if (s_sig_phase == SIG_ENABLE) gnss_sig_enable_log("no answer");
+      else enqueueTask(createLogSdfTask("GNSS SIGNAL %s: no answer", gnss_sig_layer_name()));
+      gnss_sig_advance();
+    }
+    return;
+  }
+  // ★ 読み直しを始めてから UBX が来るのを待つ（2026-11-14、BUG-99）。以前は起動からの累計を見ていて、設定の送り直しの
+  //   直後（GNSS は工場出荷に戻って UBX を出していない）でも素通りし、返事の無い問い合わせ 3 回で SIG_DONE に入って、
+  //   そのあと UBX が戻っても衛星系の設定を入れ直さなかった
+  if (ubx_frames == s_sig_frames0) return;
+  if (s_sig_phase == SIG_ENABLE) gnss_sig_send_enable();
+  else                           gnss_sig_send_get();
+}
+
 void gnss_loop(int id) {
 
   // UBX が途絶えたら GNSS を掴み直す・設定を送り直す（gnss_ubx_watchdog）。
   // リプレイ中は実 GNSS のデータを読み捨てており last_nmea_time が更新されないため、
   // この見張りが 30 秒ごとに誤発火してしまう。gnss_setup() は合計数百 ms の
   // 待ちを含み Core0 を止めるので、リプレイ中は無効にする。
-  // （リプレイ終了後は last_nmea_time が古いままなので、必要なら一度だけ再初期化が走る）
+  // （リプレイを抜けた直後は last_nmea_time が古いままだが、見張りは抜けた時刻から数える。BUG-67）
   if (!replaymode_gnssoff) gnss_ubx_watchdog();
   const int rx_backlog = GNSS_SERIAL.available();
   if (rx_backlog > s_rx_backlog_peak) s_rx_backlog_peak = rx_backlog;
@@ -2083,6 +2532,8 @@ void gnss_loop(int id) {
 
   // 起動時の ANA の有効・無効（BT1 の生死が分かってから 1 回だけ送る）。航法データベースを戻し始めるより先に送る。
   gnss_ana_boot_tick();
+  // 起動時に衛星系の設定（CFG-SIGNAL）を読んで log.txt に残し、BeiDou・QZSS が切られていれば入れる
+  gnss_sig_tick();
 
   // 航法データベース（SD に置いて BT1 が切れていた起動で戻す）の見回り。送るのも少しずつで待たない。
   // リプレイ中は中で打ち切って戻る（返事を読み捨てているため）。
@@ -2115,6 +2566,13 @@ void gnss_loop(int id) {
       return;
     }
 
+    // ★ ファイルを選び直した直後は、Core1 が新しいファイルを開く（init_replay）まで何も反映しない（2026-11-14、BUG-105）。
+    //   それまでのリングバッファと EOF は前のファイルのもので、消したばかりの航跡・最高速に前のファイルの行が入っていた
+    if (s_replay_wait_init) {
+      if (replay_init_seq == s_replay_wait_seq) return;
+      s_replay_wait_init = false;
+    }
+
     // --- 再生時計の更新 ---
     uint32_t now = millis();
     if (replay_seen_seq != replay_init_seq) {
@@ -2122,6 +2580,7 @@ void gnss_loop(int id) {
       replay_seen_seq   = replay_init_seq;
       replay_virtual_ms = 0;
       replay_last_tick  = now;
+      s_replay_rows_pass = 0;
     }
     if (replay_paused) {
       replay_last_tick = now;   // 停止中は経過を積まない（再開時に飛ばないように基準だけ進める）
@@ -2135,6 +2594,21 @@ void gnss_loop(int id) {
     while (replay_available() && replay_peek_t_ms() <= elapsed) {
       if (!replay_pop(&row)) break;
       apply_replay_row(&row);
+      s_replay_rows_pass++;
+    }
+
+    // ★ 1 行も再生できないまま末尾に来た（データ行が無い・全部読めない・FLIGHT ONLY で全部止まっている）。
+    //   ループ再生に回すと開き直しと "REPLAY start" のログを際限なく繰り返すので、ここで解除する（2026-11-14、BUG-104）
+    if (replay_eof && !replay_available() && s_replay_rows_pass == 0 &&
+        replay_seen_seq == replay_init_seq &&
+        !isTaskInQueue(TASK_INIT_REPLAY) && !isTaskRunning(TASK_INIT_REPLAY)) {
+      set_replaymode(false);
+      set_replay_filename("");
+      enqueueTask(createPlayMultiToneTask(330, 200, 2, 3));
+      enqueueTask(createLogSdTask(get_replay_flight_only()
+                                  ? "REPLAY canceled: no rows to play (FLIGHT ONLY: never moving?)"
+                                  : "REPLAY canceled: no rows to play"));
+      return;
     }
 
     if (replay_eof && !replay_available()) {
@@ -2171,7 +2645,9 @@ void gnss_loop(int id) {
     //   機体の値は上のミラー分岐で入れている。
     // ★ 入れるのは 3D フィックス・gnssFixOK・sAcc が MAXGS_SACC_MAX_MPS 以下のエポックだけ
     //   （ESKF への速度観測と同じ考え方。理由は feed_maxgs）。
-    if (!link_mirror_active())
+    // ★ デモ中は実機の速度を入れない（2026-11-14、BUG-102）。入れると、画面の他の数字はデモなのに MAX G/S だけが
+    //   実機（机の上や車）の値になる。デモの速度は gnss_new_location_arrived() が update_maxgs() で入れている。
+    if (!is_demo_active() && !link_mirror_active())
       feed_maxgs(stored_gs, gsa_fixtype >= 3 && ubx_gnssFixOK &&
                             ubx_sacc_mmps * 1e-3f <= MAXGS_SACC_MAX_MPS);
 
@@ -2200,6 +2676,15 @@ void gnss_loop(int id) {
     ubx_sat_updated = false;
     // DOP ログは handle_navdop() 内で実施済みのため、ここでは satelite staleness のみ管理
   }
+  // ★ 30 秒受けていない衛星を 1 秒ごとに消す（2026-11-14、BUG-101）。以前は NAV-SAT の受信の中でしか呼んでおらず、
+  //   NAV-SAT が止まると GNSS DETAIL の空の図と衛星の一覧が古いまま固まっていた
+  {
+    static uint32_t s_sat_sweep_ms = 0;
+    if (millis() - s_sat_sweep_ms >= 1000) {
+      s_sat_sweep_ms = millis();
+      removeStaleSatellites();
+    }
+  }
 }
 
 
@@ -2219,7 +2704,9 @@ void try_enque_savecsv(){
     all_valid = false;
     stored_fixtype = 0;
   }
-  if (!ubx_date_valid) {
+  // ★ リプレイでは日付を求めない（2026-11-14、BUG-107）。date の列は省いてよい作り（replay_parse_header）なのに、
+  //   無い CSV では ubx_date_valid が立たず、航跡が 1 点も描かれなかった。リプレイ中は CSV に書かないので日付は使わない
+  if (!ubx_date_valid && !replaymode_gnssoff) {
     DEBUG_PLN(20250923,"Date: Not Available");
     all_valid = false;
   }
@@ -2280,6 +2767,9 @@ void try_enque_savecsv(){
 //   すべて機体の値に置き換わる。ボート自身を地図に出すにはここが要る。
 //   fix が無ければ false（このとき lat/lon には何も書かない）。
 bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track) {
+    // ★ リプレイ中は返さない（2026-11-14、BUG-103）。apply_replay_row() が CSV の位置と速度を ubx_pos_valid・stored_* に
+    //   入れるので、再生した飛行を自機の動きと取り違え、詳細画面から地図へ勝手に戻る・自動調光・充電の警告の抑止が働いていた
+    if (replaymode_gnssoff) return false;
     if (!ubx_pos_valid) return false;
     if (stored_latitude == 0 && stored_longitude == 0) return false;
     lat   = stored_latitude;
@@ -2400,6 +2890,15 @@ bool get_gnss_fix() {
     return true;
   }
   return false;
+}
+
+// gnss.h の説明。ミラー中は機体の fix と「機体の GNSS が抜けた」（LINK_ST_GNSS_LOST）を見る。自機は、GNSS が黙っている
+// （未接続。リプレイ・デモを除く）ときも fix なしとみなす（stored_fixtype は最後の値のまま残るため）。
+bool gnss_shown_no_fix() {
+  if (link_mirror_active())
+    return !link_get_fix_ok() || (link_sender_status() & LINK_ST_GNSS_LOST) != 0;
+  if (!getReplayMode() && !is_demo_active() && !get_gnss_connection()) return true;
+  return !get_gnss_fix();
 }
 
 double get_gnss_altitude() {

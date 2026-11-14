@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261113
-#define BUILDVERSION "1.06"
+#define BUILDDATE 20261114
+#define BUILDVERSION "1.07"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -127,6 +127,17 @@
 // ★ 0 にしても「使わない」を GNSS へ**書き込む**。この設定は BT1 で保たれる BBR にも
 //   書くので、送るのをやめるだけだと以前のファームが書いた「使う」が残り続ける。
 #define GNSS_USE_ANA              1
+// BeiDou を B1I で受けるか（2026-11-14〜、ユーザーの判断）。gnss.cpp の gnss_sig_tick() が起動のたびに RAM へ書く。
+// 1: BeiDou B1I ＝有効、B1C ＝無効、**GLONASS ＝無効**（GPS・Galileo・QZSS・SBAS はそのまま）。
+// 0: 工場出荷のまま（SPG 5.10 の SAM-M10Q は GPS＋Galileo＋GLONASS＋BeiDou B1C＋QZSS＋SBAS）。
+// ★ M10 では B1I は B1C とも GLONASS とも同時に有効にできない（MAX-M10S の Integration manual。だめな組み合わせは ACK-NAK で
+//   何も変わらない）ので、B1I にすると GLONASS を捨てる入れ替えになる。日本の上空には B1I だけを出す BeiDou の静止・傾斜軌道の
+//   衛星が多い。2026-11-13〜14 の log.txt では、B1C の BeiDou は 3 枚の GNSS 基板とも一度も使われず（B0）、GLONASS は 2〜6 機使っていた。
+//   初期の M10（ROM 5.00）の既定も GLONASS なしの GPS＋Galileo＋BeiDou B1I で、昔の PONS（M10Q）で BeiDou が出ていたのもこれ。
+// ★ 書き直すと GNSS が測位をやり直す（起動の最初の数秒だけ）。結果は log.txt の `GNSS SIGNAL set (RAM): ...: ack` と
+//   `GNSS SIGNAL ram(after enable): ...`、そのあとの `GNSS SVS used G.. E.. B.. Q.. R..`（B が増えて R が 0 になる）。
+//   PONSv7 / PONSv7.1 で同じ値にしておく。
+#define GNSS_BDS_B1I              1
 // AssistNow Autonomous の状況（予測データのある衛星数・計算していた時間）を
 // log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
 // GNSS_USE_ANA = 0 のときは NAV-AOPSTATUS を出させないので、この行は出ない。
@@ -170,7 +181,7 @@
 // 飛ぶ前に確かめる項目がそろったら、地上で止まっているときに 1 度だけ「準備完了」と読み上げる。
 // そろっていなければ、何が足りないかを設定画面の右上に出す。項目は readiness.h の RDY_*。
 #define READY_HACC_MAX_M        5.0f     // GNSS の水平精度。GNSS DETAIL 3 で緑になる値と同じ
-#define READY_BATT_MIN_PERCENT  50       // 電池残量 [%]（battery_percent。50% ≒ 3.8V）
+#define READY_BATT_MIN_PERCENT  50       // 電池残量 [%]（battery_percent。50% ≒ 3.78V。2026-11-13 に目盛りの上端を 4.15V にするまでは 3.8V）
 #define READY_STILL_MPS         1.0f     // 自機の対地速度がこれ以下なら「地上で止まっている」
 #define READY_HOLD_MS           5000UL   // そろった状態がこれだけ続いたら読み上げる（一瞬そろっただけでは言わない）
 #define READY_REARM_MS          60000UL  // 欠けた状態がこれだけ続いたら、もう一度読み上げられるようにする
@@ -209,6 +220,7 @@
 //  電源・バッテリー
 // ============================================================
 // BATPWR（ロードスイッチ Q3 の後ろ＝電池）を 51/151 で分圧して測る。
+// 意図して直さない（2026-11-14 の監査）: DEBUG_* マクロの文の形・TEMP の名前・この引数の括弧・BAT_* の並びは保守の話で見送り（いまの使い方で問題なし）
 #define BATTERY_MULTIPLYER(adr) (0.00238423334*adr) // 1/4096*3.3*(151/51)=0.00238423334
 // ---- 電源経路の異常（power.cpp）----
 // 2026-10-15、v7 の充電 IC（MCP73831）が電池につながったまま内部で壊れ、
@@ -354,8 +366,16 @@
 // USB を抜いた直後、この間は下がる側も即追従する。充電中に持ち上がっていた電圧（約 140mV。CHG_CC_DROP_V + CHG_LOAD_DROP_V）を
 // 保持したまま残量に換算すると、抜いた瞬間に 10% ほど跳ねて見えるため。
 #define BATTERY_UNPLUG_FOLLOW_MS 5000UL
-#define BAT_FULL_VOLTAGE 4.2 // 100% とみなす電圧。残量%と色分けの基準（display_tft.cpp の battery_*）
-#define BAT_HALF_VOLTAGE 3.8 // 50%未満 (4.2-3.4=0.8V の半分は0.4Vなので4.2-0.4=3.8Vが50%の目安)
+// 100% とみなす電圧。残量%と色分けの基準（display_tft.cpp の battery_*）。
+// ★ 2026-11-13 に 4.2 → 4.15（ユーザーの判断。PONSv7 も同じ値にそろえる）。電池のときの % は負荷のかかった BATPWR から出すので、
+//   満充電の電池でも USB を抜いた直後は 4.14〜4.16V（本体の電流で約 30mV 下がり、充電が止まって数分で少し緩む）しか読めず、
+//   4.2 のままだと 100% の FULL から抜いた瞬間に 92〜94% へ落ちていた（log.txt の CHG UNPLUG）。4.15 は抜いた直後に読める値。
+//   ★ 1.06 の新しい満充電の判定（CHG_FULL_*）で最後まで充電してから抜いた `CHG UNPLUG ... post=` はまだ見ていない。
+//     そこで 4.15 から大きくずれていたら直す。
+//   ★ 無線の受信機は送信機の電圧から % を自分の目盛りで出す（display_tft.cpp の s/r）ので、両ブランチで同じ値にしておくこと。
+//   ★ 充電中の残り時間の計算（power.cpp）はこの目盛りを使わない（CHG_REG_V を上端にした目盛りで合わせ込んである）。
+#define BAT_FULL_VOLTAGE 4.15
+#define BAT_HALF_VOLTAGE ((BAT_FULL_VOLTAGE + BAT_ZERO_VOLTAGE) / 2.0) // 50%未満の色（マゼンタ）の境。目盛りの真ん中（3.775V）
 #define BAT_LOW_VOLTAGE 3.5
 // 電池低下警告を繰り返す間隔 [ms]。自機（GPS_TFT_map.ino）と、
 // 受信機が知らせる送信機の電池（link.cpp）の両方がこれを見る。
@@ -420,7 +440,7 @@
 // ユーザーLED の点滅パターン [ms]。実体は GPS_TFT_map.ino の loop_userled()。
 // 1 周期 USERLED_BLINK_PERIOD_MS の中で USERLED_BLINK_PULSE_MS だけ点灯する。
 // SD 異常のときだけ USERLED_BLINK_GAP_MS 後にもう 1 発打って「2 回連続点滅」にし、
-// 衛星 0（1 回点滅）と目で区別できるようにしている。
+// fix なし（1 回点滅。2026-11-14 までは衛星 0）と目で区別できるようにしている。
 // GAP + PULSE は PERIOD より十分短いこと。超えると次の周期の開始が優先され、
 // **2 発目が一度も出ないまま 1 回点滅に見える**（＝衛星 0 と区別が付かなくなる）。
 #define USERLED_BLINK_PERIOD_MS 1000
@@ -537,6 +557,40 @@
 #define LINK_DUPSENDER_ALERT_MS 60000UL
 
 #define MS5611_FAIL_LIMIT            5      // 連続失敗がこの回数を超えたら ms5611_ok=false
+
+// ---- 気圧のサンプルの外れ値よけ（airdata.cpp の ms5611_process_data。2026-11-13〜、実機未確認）----
+// ★ 2026-11-13 の走行で、**無線 ON のとき気圧のサンプルが送信と同じ位相で 20〜50% 外れていた**（いつも気圧が低い側＝
+//   高度が高い側へ 3〜4 m。無線 OFF は 2%・約 1.9 m）。10 秒に 1 回ほど外れが長く続き、250ms の窓の上下 2 つずつを
+//   捨てても取り切れずに窓の平均が +3〜5 m 跳ね、**止まっていても V/S が +0.45 m/s になって鳴った**（走行中は +1.5〜1.9 m/s）。
+//   機体は飛行中ずっと送信するので、飛行でも起きる。詳しくは docs/pons_todo_notes.md §3。2 つの手を両方入れた（ユーザーの判断）:
+//   ①無線が動いていた間（E220 の AUX Low・送信の見込み時間）に測ったサンプルを捨てる（BARO_RF_BLANK_ENABLED）
+//   ②直前の窓の平均から BARO_SPIKE_REJECT_M より離れたサンプルを捨てる（原因によらず効く。充電中の外れ値にも）
+// ★ 窓に残るサンプルが BARO_WIN_MIN_OK より少ないとき: 無線のせいなら窓を延ばし（BARO_WIN_EXTEND_MAX）、それでも足りなければ
+//   捨てたものも含めて今までどおり平均する（本当に段差があったとき・AUX が Low に張り付いたときにバリオを止めないため。
+//   ②の段差なら 1〜2 窓＝0.5 秒遅れて追いつく。AUX の張り付きなら 0.75 秒ごとの窓で回り続け、fb= が毎分 80 前後になる）。
+// ★ 測った外れ方（送信の位相で 30%・+3.5 m、10 秒ごとに 60%・350ms）をまねた 40Hz のシミュレーションで、窓の平均が 0.7 m 以上
+//   跳ねた回数（2 分）: 今まで 18 回 → ①②と窓の延長で 0 回（最大 +0.23 m）。3 m/s の上昇の遅れ・ずれは 0.32 m 以内。
+//   ★ ①だけで延長なしにすると 6 回残った（長い送信で全部で平均に落ちるため）。生ログは窓ごとに 1 サンプルしか残さないので、
+//   実データでは確かめられない。**実機で 60 秒ログの spk= / rf= / fb= と、止まっているときのバリオで確かめる**。
+// ★ **SF を上げても使える**（同じシミュレーション＋ KF、止まっているときの V/S の揺れ。無線なしは 0.010 m/s）:
+//   ローワー SF7〜11 は使えるサンプル 88〜60%、窓の間隔は最大 0.64 秒、跳ね 0 回、V/S の揺れ 0.011〜0.013 m/s。
+//   アッパー SF8〜10（送る間隔 1.2〜3.5 秒、送信のあと 10 倍の休止の間も AUX が Low）は 87〜91%・最大 0.37 秒・0 回・0.011 m/s。
+//   ★ 最初の作りは休止の Low も「動いている」と数え、外れ値の判定も無線の間はしていなかったので、アッパーで全部で平均に落ちて
+//   跳ねが 3〜9 回・V/S が最大 0.24 m/s 出た。AUX は送った直後だけ見る（E220_RF_AUX_TAIL_MS）・印は両方付ける、で直した。
+// ★ 捨てた数は 60 秒ログの `rate MS5611=...` の後ろに出す（spk= ②・rf= ①・fb= 全部使った窓）。
+// ★ 1.5 m: 人力機の上下は速くても 3 m/s で、直前の窓の平均（約 0.375 秒前の中央）からは 1.1 m しか動かない。
+//   外れ値は 3〜4 m が中心（無線 OFF でも約 1.9 m）。
+#define BARO_RF_BLANK_ENABLED   1
+#define BARO_SPIKE_REJECT_M     1.5f
+#define BARO_WIN_MIN_OK         2
+// 無線のせいで BARO_WIN_MIN_OK に足りない窓は、閉じずにこの窓数ぶん（250ms × 3 = 750ms）まで延ばす。
+// 10 秒に 1 回ほどの長い送信（約 350ms）が窓をまるごと覆うため。延ばしても足りなければ上の「全部で平均」へ。
+#define BARO_WIN_EXTEND_MAX     3
+// 無線が止まってからも、このあいだは「動いていた」とみなす [ms]（e220.cpp の e220_rf_active_since）
+#define E220_RF_GUARD_MS        5
+// AUX の Low を「送信中」とみなすのは、送ってから「送信時間 + これ」まで [ms]。それより後の Low（アッパーバンドの 10 倍の休止・
+// 受信したものの出力）は数えない。実測の AUX の Low は SF8 で 149ms（送信時間 70ms ＋ 渡す時間・キャリアセンス・休止 50ms）。
+#define E220_RF_AUX_TAIL_MS     100
 #define MS5611_ERRLOG_INTERVAL_MS 5000UL    // I2C エラーログの最短間隔（毎ループ積まない）
 
 // 復旧の再試行間隔 [ms]。
@@ -550,6 +604,10 @@
 //     取りこぼさず、永久故障でも 2 分に 4 回の空振りで済む。
 //   ・短くしすぎるとバスが固着したときに Wire のタイムアウトを頻繁に踏む。
 #define MS5611_RECOVERY_INTERVAL_MS 30000UL
+// i2c0（MS5611・VEML7700）の 1 回の通信の時間切れ [ms]（2026-11-14〜）。切れたら Wire がバスを空けて開き直す
+// （airdata_wire_begin の setTimeout）。ふつうの通信は 3 バイトで 0.1ms 未満。既定の 1000ms のままだと、
+// バスが張り付いたとき Core0 が通信 1 回ごとに 1 秒止まっていた。
+#define I2C0_TIMEOUT_MS             10
 
 #define MAX_TRACK_CORDS 500
 // 航跡の隣り合う点がこれ以上離れていたら、その間に線を引かない [m]（点の記録は続ける）。
@@ -1011,7 +1069,13 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 
 #define KF_Q_VEL    0.02f   // 速度プロセスノイズ  (旧 0.05 → 1/2.5。VSIふらつきをさらに抑制)
 #define KF_Q_BIAS   0.0005f // バイアスプロセスノイズ (旧 0.005 → 1/10。上記コメント参照。効果は小さい)
-#define KF_R       12.0f    // 気圧高度観測ノイズ [m²] (旧 4.0 → 3倍。気圧ノイズのVSI影響を低減)
+// ★ 2026-11-13 に 12 → 20（ユーザーの判断。気圧を少し信じないようにする）。tools/imulog/vario.py の KF_R も同じ値に。
+//   11/13 のエレベーター（正解は加速度の積分）で正解との差 RMS 0.039 → 0.037 m/s（遅れ・行き過ぎは同じ）、
+//   11/13 の走行の無線の跳ね（窓の平均 +3〜5 m）での V/S +1.52 / +1.89 → +1.31 / +1.55 m/s。
+//   代わりに、鉛直加速度が 0.05 m/s² ずれた（姿勢 1° × 横加速度 3 m/s² ほど）ときに V/S が ±0.1 に戻るまで 3.3 → 4.9 秒。
+//   30 で 6.0 秒、50 で 15.5 秒なので 50 は上げすぎ。操縦席の気圧の揺れが目立つようなら 30 を考える（docs/pons_todo_notes.md §4.1）。
+// ★ **SD の settings.txt の kf_R が優先される**（保存するたびに今の値が書かれる）。既定を変えても、kf_R:12 が残っている本体では効かない。
+#define KF_R       20.0f    // 気圧高度観測ノイズ [m²] (旧 4.0 → 12 → 20。気圧ノイズのVSI影響を低減)
 
 // ============================================================
 // 水平加速度による速度プロセスノイズ動的増幅（imu.cpp kf_predict で使用）
@@ -1213,6 +1277,9 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   （tools/olddata/PONSv5_planelog_2025-07-26_1539.csv の 15:42:15〜19）。
 #define ESKF_YAW_INIT_MIN_SPEED_MPS  3.0f  // 水平対地速度がこれ以上でヨーを入れる
 #define ESKF_YAW_INIT_ARM_FIXES      2     // これだけ連続で満たしたら注入（単発の化け対策）
+// 表示の「YAW ALIGN」（向き待ち）とみなすヨー精度（95%）[度]。向きが決まっていないとき ESKF は 180°（上限）を返し、
+// 電波（1 度刻み）と記録にも 180 で載る。ミラー中・リプレイ中はこれで向き待ちを見分ける（display_tft.cpp）
+#define ESKF_YAW_ALIGN_ACC95_DEG     179.5f
 
 // 水平化直後（ヨー未知）の初期σ [度]。180 = 全く不明。
 // ★ ここを小さくしてはいけない。既存の eskf_yaw_reliable() が yaw_acc95 (=2σ) で
@@ -1586,6 +1653,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 数字は残す（傾ければ動くので、推定が働いていることを地上で確かめられる。2026-11-07 までは「-.-」だった）。
 // 対地速度が TAS_AIR_GS_MPS 以上で TAS_SWITCH_HOLD_MS 続いたら線を外し、
 // TAS_GND_GS_MPS 未満で同じだけ続いたら横線に戻す。判定は tas.cpp の tas_tick()。
+// ★ 「GROUND」の札だけは TAS_AIR_GS_MPS 以上になった時点で外す（2026-11-14〜。tas_leaving_ground()）。
+//   10 秒待つのは線だけ。札が残ると、飛んでいるのに「いつ消えるのか」と気になるため。
 // ★ 10 秒は平均ピッチの窓（PITCH_AVG_SEC）と同じ。窓が飛行中の値だけになったところで線を外す
 //   （台の上を 3m/s 以上で走っている 1〜2 秒だけはまだ窓に入っている）。
 //   30 秒にしなかったのは、TF（試験飛行）の短い飛行で線が外れないうちに降りてしまうため（2026-11-07）。
@@ -1988,6 +2057,13 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define LINK_ASSIST_TACC_FINE_MS      1000UL
 #define LINK_ASSIST_TACC_MAX_MS       4000UL
 #define LINK_ASSIST_TACC_MARGIN_MS    1000UL   // 送り主の精度に足す（電波・テレメトリの古さ・本体の時計の分）
+// 自分の GNSS の時刻の飛び（2026-11-14〜。gnss.cpp の own_time_watch()）。
+// 11/14、v7 の受信機が LoRa で時刻をもらったあと、fix しないまま GNSS の時刻が約 +17 分飛んだ（2 回。原因は GNSS の中で未確定）。
+// 前の NAV-PVT の時刻＋本体の時計の経過から GNSS_TIME_JUMP_MS 以上ずれたら log.txt に `GNSS TIME JUMP:` を残し、
+// fix していなければその時刻を「確かでない」にする（仲間へ渡さない。gnss_own_time_trusted()）。
+// 2 秒は、外から入れた時刻の精度（2 秒）を最初の fix で GNSS が直す分を、飛びと数えないため
+#define GNSS_TIME_JUMP_MS             2000
+#define GNSS_TIME_JUMP_LOG_MAX        20       // 1 起動で残す行の上限（飛びが続いても log.txt を埋めない）
 
 // ---- 受信モードで出す「ボート自身の位置」マーカー（display_tft.cpp）----
 // 機体マーカーより目立たせないこと。主役はあくまでミラーした機体の画面。

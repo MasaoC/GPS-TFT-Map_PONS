@@ -871,6 +871,73 @@ def build_lod(spec, land_shp, land_shp_hires, cache_dir, max_pts, stats, pbf_cac
     return tiles
 
 
+# ---- 収録範囲（2026-11-14〜。BUG-115）----
+# 各 LOD の bboxes をそのまま「この LOD のデータがある範囲」としてファームへ渡す（src/vectormap.cpp の vm_view_covered）。
+# ★ タイルは bboxes を覆う格子で切るが、陸地（海岸線）は bboxes の中でしか読んでいないので、格子のはみ出し部分は
+#   陸でも海の色になる。だから範囲は格子ではなく bboxes そのもの（内側）で渡す。
+# ファームは「画面がこの LOD の範囲の 1 つに丸ごと入っているか」で LOD を選ぶ。入っていなければ粗い LOD へ落とす。
+# それまでは「画面にタイルが 1 枚でもあるか」で選んでいて、飛行エリアの端では範囲の外の陸地が海の色で塗られていた。
+COVER_BEGIN = "// ---- 収録範囲 BEGIN（build_vectormap.py が書く。--cover-only で差し替える）----"
+COVER_END   = "// ---- 収録範囲 END ----"
+
+def cover_lines():
+    """収録範囲の表（C の行のリスト）。LOD の順に並べ、LOD ごとの先頭と個数を添える。"""
+    rects, names, first, count = [], [], [], []
+    for spec in LODS:
+        first.append(len(rects))
+        count.append(len(spec["bboxes"]))
+        # 飛行エリアごとの範囲（SITES から作った LOD）はエリア名を付ける。地域・全国の範囲は空（地図一覧の絵で色を分ける）
+        site_names = list(SITES.keys()) if len(spec["bboxes"]) == len(SITES) else [""] * len(spec["bboxes"])
+        for (a0, o0, a1, o1), nm in zip(spec["bboxes"], site_names):
+            rects.append((round(a0 * 1e7), round(o0 * 1e7), round(a1 * 1e7), round(o1 * 1e7)))
+            names.append(nm)
+    out = [COVER_BEGIN,
+           "// { 緯度の下端, 経度の下端, 緯度の上端, 経度の上端 }（1e-7 度）。LOD ごとに vm_lod_cover_first から vm_lod_cover_n 個",
+           f"const uint16_t vm_cover_count = {len(rects)};",
+           "const int32_t vm_cover_e7[][4] = {"]
+    out += [f"  {{ {a}, {b}, {c}, {d} }}," for (a, b, c, d) in rects]
+    out += ["};",
+            "const uint16_t vm_lod_cover_first[VM_LOD_COUNT] = { " + ", ".join(map(str, first)) + " };",
+            "const uint16_t vm_lod_cover_n[VM_LOD_COUNT] = { " + ", ".join(map(str, count)) + " };",
+            "// 範囲の名前（飛行エリアの名前。地域・全国は空）。地図一覧の画面の絵（draw_vectormap_coverage）が使う",
+            "const char* const vm_cover_name[] = { " + ", ".join(f'"{n}"' for n in names) + " };",
+            COVER_END]
+    return out
+
+def patch_cover_only(out_path):
+    """既存の vectormap_data*.cpp の収録範囲の表だけを差し替える（地物は作り直さない）。
+    元データ（数 GB の pbf・shp）が無くても、範囲の設定（LODS の bboxes）だけを入れ直せる。
+    ★ データを作ったときと LODS の bboxes が同じであること（違うと、範囲とタイルが食い違う）。
+      ここでは、どの LOD のタイルも自分の範囲の格子に入っているかだけを確かめる。"""
+    text = Path(out_path).read_text()
+    lines = text.split("\n")
+    if COVER_BEGIN in text:
+        b = lines.index(COVER_BEGIN); e = lines.index(COVER_END)
+        del lines[b:e + 1]
+        at = b
+    else:
+        at = next(i for i, l in enumerate(lines) if l.startswith("const bool vm_lod_sea_background")) + 1
+    lines[at:at] = cover_lines()
+    # 確かめ: タイルの原点が、その LOD の bboxes を覆う格子の中にあるか
+    import re
+    bad = 0
+    for l in lines:
+        m = re.match(r"\s*\{ (-?\d+), (-?\d+), \d+, \d+, (\d+), 0 \},$", l)
+        if not m:
+            continue
+        lat, lon, lod = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        spec = LODS[lod]; t = spec["tile_e7"]
+        ok = any(math.floor(a0 * 1e7 / t) * t <= lat < math.ceil(a1 * 1e7 / t) * t and
+                 math.floor(o0 * 1e7 / t) * t <= lon < math.ceil(o1 * 1e7 / t) * t
+                 for (a0, o0, a1, o1) in spec["bboxes"])
+        bad += 0 if ok else 1
+    Path(out_path).write_text("\n".join(lines))
+    print(f"収録範囲の表を書き込みました: {out_path}")
+    if bad:
+        print(f"★★ 警告: 範囲の外のタイルが {bad} 枚あります。データを作ったときと LODS の bboxes が違います。作り直してください。",
+              file=sys.stderr)
+        sys.exit(1)
+
 def emit_header(out_path, all_tiles, source_date, args, stats, variant="light"):
     """vectormap_data.cpp を書き出す。"""
     blob = bytearray()
@@ -927,6 +994,8 @@ def emit_header(out_path, all_tiles, source_date, args, stats, variant="light"):
       ", ".join(f'{float(l["min_scale"]):.6f}f' for l in LODS) + " };")
     w("const bool vm_lod_sea_background[VM_LOD_COUNT] = { " +
       ", ".join("true" if l["sea_bg"] else "false" for l in LODS) + " };")
+    for l in cover_lines():
+        w(l)
     w("")
     w(f'const char vm_data_attribution[] = "Map data (c) OpenStreetMap contributors (ODbL)";')
     w(f'const char vm_data_source_date[] = "{source_date}";')
@@ -1003,6 +1072,8 @@ def main():
     ap.add_argument("--cache", default=str(data_dir / "cache"), help="Overpass 応答のキャッシュ先（既定はスケッチの外。default_data_dir）")
     ap.add_argument("--max-pts", type=int, default=2048,
                     help="1 レコードの最大点数（vectormap.cpp の VM_MAX_PTS と揃える）")
+    ap.add_argument("--cover-only", action="store_true",
+                    help="地物は作り直さず、出力先の既存ファイルの収録範囲の表（LOD ごとの bboxes）だけを差し替える")
     ap.add_argument("--source-date", default=None,
                     help="元データの日付。再現性のため記録する（既定: 本日）")
     args = ap.parse_args()
@@ -1017,6 +1088,10 @@ def main():
             args.out = str(script_dir / "../../src/flashdata/vectormap_data_hires.cpp")
         if args.lods == ap.get_default("lods"):
             args.lods = "0,1,2,3,4"     # 段が 1 つ増える
+
+    if args.cover_only:
+        patch_cover_only(args.out)
+        return
 
     source_date = args.source_date or time.strftime("%Y-%m-%d")
     want = {int(x) for x in args.lods.split(",") if x.strip() != ""}

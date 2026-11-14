@@ -192,6 +192,8 @@ uint32_t attitude_get_gnss_updates();        // GNSS 観測を取り込んだ回
 //   自動ロールトリムと風推定が「飛行中の機能」であるのと同じ鮮度条件
 //   （attitude.cpp の gnss_vel_fresh）。表示側は取り消し線の判定に使う。
 bool     attitude_gnss_vel_fresh();
+bool     attitude_gnss_good_fresh();   // 信用できる GNSS の速度が直近に届いているか（観測に使ったかは問わない）
+bool     attitude_yaw_aligning();      // 向きが決まっていない・確かめ待ちか（表示の YAW ALIGN）
 // 重力観測（levelling update）を取り込んだ回数。ゲートが開いているかの確認に使う。
 // ★ GNSS 断中にロール・ピッチの錨になるのがこの観測。0 のままならゲートが閉じている。
 uint32_t attitude_get_level_updates();

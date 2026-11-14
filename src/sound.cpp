@@ -602,8 +602,10 @@ void startPlayWav(const char* filename, int priority, int min_volume, int excl_g
 // トーンが残っていれば loop_tone() に任せる（同時に鳴らさないため）。
 // ★ 末尾以外で止める経路（アンダーランの打ち切り・過放電の警報の停止）でも呼ぶこと。2026-11-10 まで
 //   呼んでおらず、待っていた音声が次に何か鳴るまで黙っていた。
+// ★ 鳴っている途中のトーン（出力中・回数の間の無音・WAV で一時停止中）も「鳴っている」に数える（2026-11-13）。
+//   以前は積まれたトーンしか見ず、トーンの最中に呼ばれると WAV を重ねて鳴らしていた。トーンが終われば loop_tone() が拾う。
 static void resume_pending_if_idle() {
-    if (wav_playing || toneBufHead != toneBufTail) return;
+    if (wav_playing || toneBufHead != toneBufTail || sin_playing || tone_in_gap || tone_paused) return;
     int prio = 0, pminvol = 0, pexcl = WAV_EXCL_NONE;
     const int pidx = pop_best_pending_wav(prio, pminvol, pexcl);
     if (pidx < 0) return;
@@ -1016,6 +1018,9 @@ void stop_overdischarge_alert_core1() {
         tone_override_volume  = 0;
         pwm_set_gpio_level(PIN_PWMTONE, 512);
         if (!vario_mode && !wav_playing) setAmplifierState(false);
+        // ★ トーンだけ鳴っていて音声がまだ始まっていなかったときも、待っていた音声を鳴らす（2026-11-13）。
+        //   トーンを途中で止めたので loop_tone() の「鳴り終わったら拾う」は通らない
+        resume_pending_if_idle();
     }
 
     if (wav_playing && od_idx >= 0 && current_wav_index == od_idx) {
@@ -1094,7 +1099,35 @@ static void startNextToneEntry() {
 //       - WAV priority > tone priority: WAV 割込み → トーン一時停止・WAV 後に再開
 //       - WAV priority ≤ tone priority: WAV を pending に退避 → トーン完了後に再生
 // ============================================================
+// 安全弁: vario_mode=true なのにアンプが OFF になっている可能性への対処、と、鳴らしているのにアンプが切れているときの戻し。
+// 500ms / 100ms ごとに確認し、必要なら setAmplifierState(true) で復帰させる。
+// update_vario()（Core0、100ms周期）と二重化して確実性を高める。
+// ★ loop_tone() の**頭で**呼ぶ（2026-11-14、BUG-94）。以前は末尾にあり、トーンの出力中・回数の間・一時停止中は
+//   loop_tone() がその前で return するので、Core0 の停止エッジとトーンの開始がすれ違ってアンプが切れると、
+//   そのトーンが鳴り終わるまで戻らず無音だった（update_vario() のコメントの「Core1 の安全弁が拾う」が効いていなかった）。
+static void amp_guard() {
+    {
+        static unsigned long last_amp_guard_ms = 0;
+        unsigned long now_ms = millis();
+        if (vario_mode && !wav_playing && !sin_playing &&
+            now_ms - last_amp_guard_ms >= 500UL) {
+            last_amp_guard_ms = now_ms;
+            setAmplifierState(true);
+        }
+        // ★ 鳴らしている WAV・トーンがあるのにアンプが切れている（Core0 の update_vario() の停止エッジと
+        //   すれ違った）。警報が無音のまま終わらないよう戻す。音量 0 で鳴らしている WAV は
+        //   startPlayWav() がわざとアンプを入れていないので触らない。
+        static unsigned long last_amp_fix_ms = 0;
+        const bool wav_audible = wav_playing && (sound_volume > 0 || wav_override_volume > 0);
+        if (!s_amp_on && (wav_audible || sin_playing) && now_ms - last_amp_fix_ms >= 100UL) {
+            last_amp_fix_ms = now_ms;
+            setAmplifierState(true);
+        }
+    }
+}
+
 void loop_tone() {
+    amp_guard();
     // 高優先 WAV の割り込み中（wav_playing=true）は solo_play トーンを待機させる
     // （sin_solo=false の通常トーンは WAV とミックス再生するためここでは止めない）
     if (wav_playing && sin_solo) {
@@ -1184,30 +1217,6 @@ void loop_tone() {
             startNextToneEntry();
         }
     }
-
-    // ============================================================
-    // 安全弁: vario_mode=true なのにアンプが OFF になっている可能性への対処。
-    // 500ms ごとに確認し、必要なら setAmplifierState(true) で復帰させる。
-    // update_vario()（Core0、100ms周期）と二重化して確実性を高める。
-    // ============================================================
-    {
-        static unsigned long last_amp_guard_ms = 0;
-        unsigned long now_ms = millis();
-        if (vario_mode && !wav_playing && !sin_playing &&
-            now_ms - last_amp_guard_ms >= 500UL) {
-            last_amp_guard_ms = now_ms;
-            setAmplifierState(true);
-        }
-        // ★ 鳴らしている WAV・トーンがあるのにアンプが切れている（Core0 の update_vario() の停止エッジと
-        //   すれ違った）。警報が無音のまま終わらないよう戻す。音量 0 で鳴らしている WAV は
-        //   startPlayWav() がわざとアンプを入れていないので触らない。
-        static unsigned long last_amp_fix_ms = 0;
-        const bool wav_audible = wav_playing && (sound_volume > 0 || wav_override_volume > 0);
-        if (!s_amp_on && (wav_audible || sin_playing) && now_ms - last_amp_fix_ms >= 100UL) {
-            last_amp_fix_ms = now_ms;
-            setAmplifierState(true);
-        }
-    }
 }
 
 
@@ -1292,6 +1301,7 @@ void update_vario(bool mute) {
                                       t * (100 - VARIO_DESCEND_VOL_MIN_PCT) + 0.5f);
         }
 
+        // 意図して直さない（2026-11-14 の監査）: vario_* の書き換えと 16kHz の割り込みは同じ Core0 で同時には走らない（起きても 1 サンプルの乱れ）。アンプのピンの書き合いは amp_guard() が戻す
         if (!prev_vario) {
             // バリオ開始エッジ: 位相/サイクルをリセットしてアンプ ON
             s_vario_phase_acc = 0;

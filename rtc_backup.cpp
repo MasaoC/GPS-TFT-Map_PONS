@@ -39,6 +39,7 @@
 #include "mysd.h"   // enqueueTask・createSaveRtcBackupTask・createLogSdfTask・taskQueueMutex
 #include "gnss.h"   // gnss_rtc_boot_checked()・gnss_rtc_alive_on_boot()・get_gnss_date()/time()・リプレイ／デモ中か
 #include <math.h>
+#include <string.h>
 
 // ---- SD から読んだ記録（Core1 が書き、Core0 が読む。taskQueueMutex で守る）----
 static bool     s_load_done = false;
@@ -57,14 +58,18 @@ void rtc_backup_set_loaded_core1(bool ok, float hours, uint32_t utc) {
 
 // ---- Core0 の状態 ----
 static bool     s_known        = false;
-static float    s_h            = 0.0f;
+// ★ double で持つ（2026-11-14）。float のまま 250ms ごとに 192h へ近づけると、1 回の増分が丸めの半分を下回る約 189.7h で
+//   止まっていた（float の 1 目盛りは 190h 付近で約 1.5e-5h、増分は約 7.6e-6h）
+static double   s_h            = 0.0;
 static uint32_t s_last_ms      = 0;
 static bool     s_utc_ok       = false;
 static uint32_t s_utc0         = 0;   // millis() == 0 に当たる UTC [s]（＝起動した時刻）
 static uint32_t s_last_save_ms = 0;
+// 時刻が来ないまま待ちを打ち切り、記録を使わずに決めた（"no time"）。あとで時刻が取れたら記録から決め直す（BUG-82）
+static bool     s_provisional  = false;
 
 bool  rtc_backup_known() { return s_known; }
-float rtc_backup_hours() { return s_h; }
+float rtc_backup_hours() { return (float)s_h; }
 
 // 1970-01-01 からの日数（グレゴリオ暦。Howard Hinnant の days_from_civil）
 static int32_t days_from_civil(int y, unsigned m, unsigned d) {
@@ -88,9 +93,9 @@ static void capture_utc(uint32_t now) {
   s_utc_ok = true;
 }
 
-static float charge(float h, float dt_h) {
-  if (dt_h <= 0.0f) return h;
-  return RTC_BACKUP_FULL_H - (RTC_BACKUP_FULL_H - h) * expf(-dt_h / RTC_BACKUP_TAU_H);
+static double charge(double h, double dt_h) {
+  if (dt_h <= 0.0) return h;
+  return (double)RTC_BACKUP_FULL_H - ((double)RTC_BACKUP_FULL_H - h) * exp(-dt_h / (double)RTC_BACKUP_TAU_H);
 }
 
 // 起動したときの H を決める（上の ■ 起動時の手がかり）。決められないうちは false。
@@ -103,6 +108,7 @@ static bool resolve_boot(uint32_t now, float& h0, const char*& why, float& gap_h
   mutex_enter_blocking(&taskQueueMutex);
   done = s_load_done; ok = s_file_ok; fh = s_file_h; futc = s_file_utc;
   mutex_exit(&taskQueueMutex);
+  // 意図して直さない（2026-11-14 の監査）: 20 秒は起動からの millis()。起動が長引いて超えても、仮決め（s_provisional）にしてあとで決め直す
   const bool waiting = now < RTC_BACKUP_LOAD_WAIT_MS;
   if (!done && waiting) return false;                   // SD の記録を待つ
   if (ok && !s_utc_ok && waiting) return false;         // 時刻を待つ（時計が生きていればすぐ入る）
@@ -168,12 +174,38 @@ void rtc_backup_tick() {
     s_h       = charge(h0, now / 3600000.0f);   // 起動してからいままでの通電ぶんを足す
     s_known   = true;
     s_last_ms = now;
+    // 仮に決めた: 時刻が来なかった（"no time"）か、SD の記録をまだ読み終えていなかった（"no record"）。あとで決め直す
+    s_provisional = (strcmp(why, "no time") == 0) || (strcmp(why, "no record") == 0);
     char off[16];
     if (gap_h >= 0.0f) snprintf(off, sizeof(off), "%.1fh", gap_h);
     else               snprintf(off, sizeof(off), "?");
     enqueueTask(createLogSdfTask("RTC BACKUP: boot %.1fh (%s, off %s) -> now %.1fh",
                                  h0, why, off, s_h));
     return;
+  }
+
+  // ★ "no time" で仮に決めたあと時刻が取れたら、記録から決め直す（2026-11-13、BUG-82）。
+  //   時計は生きていたのに起動から RTC_BACKUP_LOAD_WAIT_MS（20 秒）のうちに時刻が取れなかったとき（起動時のデモ・
+  //   日付だけ有効で時刻が無効、など）、以前は 0.5h に決めたまま、時刻が取れた時点で SD の記録をその値で上書きしていた。
+  //   書くのは時刻が取れてからなので（下）、この回で決め直せば記録は失われない。
+  //   SD の記録を 20 秒のうちに読み終えなかった（"no record"）ときも同じ（2026-11-14）。読み終えて記録が無ければそのまま。
+  if (s_provisional) {
+    bool done, ok; float fh; uint32_t futc;
+    mutex_enter_blocking(&taskQueueMutex);
+    done = s_load_done; ok = s_file_ok; fh = s_file_h; futc = s_file_utc;
+    mutex_exit(&taskQueueMutex);
+    if (done && !ok) s_provisional = false;          // 記録は無かった。いまの値のままでよい
+    else if (done && ok && s_utc_ok) {
+      s_provisional = false;
+      const float gap_h = (s_utc0 > futc) ? (float)(s_utc0 - futc) / 3600.0f : 0.0f;
+      float h0 = fh - gap_h;
+      if (h0 < RTC_BACKUP_ALIVE_MIN_H) h0 = RTC_BACKUP_ALIVE_MIN_H;
+      s_h       = charge(h0, now / 3600000.0f);
+      s_last_ms = now;
+      enqueueTask(createLogSdfTask("RTC BACKUP: boot %.1fh (record, time late, off %.1fh) -> now %.1fh",
+                                   h0, gap_h, s_h));
+      return;
+    }
   }
 
   s_h = charge(s_h, (now - s_last_ms) / 3600000.0f);
@@ -185,9 +217,10 @@ void rtc_backup_tick() {
   //   PC 接続中に当たって捨てられ、PC を抜いて 5 分以内に切ると記録が残らなかった
   //   （実機の log.txt で次の起動が `RTC BACKUP record: none`）。待っておけば PC を抜いた直後に書く。
   //   キューが満杯で捨てられたときも書いたことにしない（次の周回でもう一度。power_tick() の周期）。
-  if (s_utc_ok && !webserial_connected &&
+  // ★ 仮に決めている間は書かない（記録を読む前・時刻を待っている間に、仮の値で記録を上書きしない）
+  if (s_utc_ok && !webserial_connected && !s_provisional &&
       (s_last_save_ms == 0 || now - s_last_save_ms >= RTC_BACKUP_SAVE_MS)) {
-    if (enqueueTask(createSaveRtcBackupTask(s_h, s_utc0 + now / 1000UL)))
+    if (enqueueTask(createSaveRtcBackupTask((float)s_h, s_utc0 + now / 1000UL)))
       s_last_save_ms = now ? now : 1;
   }
 }
@@ -199,7 +232,7 @@ void rtc_backup_tick() {
 //   72 時間未満（2〜71 時間）は hours 表記、72 時間以上（3 日以上）は days 表記にする。
 void rtc_backup_format(char* buf, size_t n) {
   if (!s_known) { snprintf(buf, n, "Fast GPS: checking..."); return; }
-  const float h = s_h;
+  const float h = (float)s_h;
   if (h < 2.0f) {
     snprintf(buf, n, "Fast GPS if OFF < 1 hour");
   } else if (h < 72.0f) {

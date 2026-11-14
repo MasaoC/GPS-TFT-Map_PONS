@@ -56,6 +56,7 @@ def host_to_jst_fit(gnss_sess):
     return (lambda x: a * np.asarray(x, float) + b), float(np.sqrt((resid ** 2).mean())), len(t)
 
 
+# 意図して直さない（2026-11-14 の監査）: 日付なしの日内秒（jst）で突き合わせる。--csvdir は 1 日分に絞って使う
 def load_flight_csvs(csvdir):
     """飛行 CSV をすべて読み、JST 秒の列を付けて 1 つにまとめる。"""
     rows = []

@@ -704,6 +704,10 @@ ImuDrvState imu_drv_poll() {
         enqueueTask(createLogSdTask("[IMU] SCH16T comm timeout"));
         // 途絶時は s_present を落として復帰（try_recovery）を試行する（readiness 側でも NOT READY を正しく判定）
         s_present = false;
+        // ★ 受信レートも 0 にする（2026-11-14、BUG-116）。下の 1 秒ごとの計算は途絶の間は通らないので、
+        //   落とさないと 60 秒ログの raw GYR / ACC に途絶える前の 250Hz が出続けた
+        s_gyro_hz = s_accel_hz = 0.0f;
+        s_gyro_cnt = s_accel_cnt = 0;
 #if SCH16T_READ_IN_IRQ
         irq_stop();              // 黙ったチップを読み続けない（復旧が通ったら try_recovery が始め直す）
 #endif

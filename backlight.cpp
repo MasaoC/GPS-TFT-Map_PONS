@@ -257,7 +257,14 @@ static bool veml_write(uint8_t reg, uint16_t v) {
 static bool veml_read(uint8_t reg, uint16_t& v) {
   myWire.beginTransmission(VEML7700_ADDR);
   myWire.write(reg);
-  if (myWire.endTransmission(false) != 0) return false;   // 繰り返しスタートで読む
+  if (myWire.endTransmission(false) != 0) {               // 繰り返しスタートで読む
+    // ★ 失敗しても SDK は「次は繰り返しスタート」（restart_on_next）を残す（i2c_write_blocking_internal は中断しても
+    //   末尾で nostop を書く）。そのままだと**直後の MS5611 の通信に持ち越す**（veml_init() のコメントと同じ現象）。
+    //   中断ではハードウェアが STOP を出しているので、こちらも「次は普通のスタート」に戻しておく（2026-11-13、BUG-75。
+    //   J8 の接触不良などで運用中に読めなくなったとき）。0 バイトの書き込みは _probe() を通り、これを戻さない。
+    i2c0->restart_on_next = false;   // myWire は i2c0（airdata.cpp）
+    return false;
+  }
   if (myWire.requestFrom((uint8_t)VEML7700_ADDR, (uint8_t)2) != 2) return false;
   v  = myWire.read();
   v |= (uint16_t)myWire.read() << 8;
@@ -532,6 +539,7 @@ static void dim_tick(uint32_t now) {
   }
 
   // 飛行実績があった後は、GNSS が抜けても未測位を安易に静止とみなさない（フェイルセーフ）
+  // 意図して直さない（2026-11-14 の監査）: 一度飛んだあとは GNSS が無いと減光しない（着陸後に屋内へ入れても明るいまま）。飛行中に GNSS を失って暗くするほうを避ける
   const bool speed_still = fix ? (gs < BL_DIM_SPEED_ENTER) : (!s_ever_flown);
 
   // IMU 振動（静止しているか）。IMU 異常時・非稼働時は静止とみなさない

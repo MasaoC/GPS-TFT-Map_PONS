@@ -51,6 +51,7 @@ void imu_service_if_due();
 // MS5611 の高度が更新されたときに外部から呼ぶ。
 // airdata_update() が true を返したタイミングで get_airdata_altitude() を渡す。
 void imu_kalman_baro_update(float z_baro_m);
+void imu_kalman_reinit();   // バリオの KF を起動時の状態へ戻す（MS5611 が途絶えて戻ったとき。BUG-118）
 
 // ---- GNSS高度による気圧基準補正 ----
 // gnssFixOK && fixtype==3D のとき、メインループから約1秒ごとに呼ぶ。

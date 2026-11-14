@@ -321,7 +321,10 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         if (st->hour_known && st->prev_tod != 0xFFFF && tod + 18000 < st->prev_tod) {
             // ★ 0 時をまたいだら日付も進める（UTC。送信機は GNSS の UTC の日時をそのまま載せている）。進めないと、
             //   次の回転枠 0（最大 8 発後）まで受信ログが「前日の 00:xx」＝丸 1 日戻った時刻になっていた（2026-11-10 まで）。
-            if (st->hour == 23 && (st->slot_have & RHAVE_DATE)) link_w2_next_day(t);
+            // ★ 日付の have ビット（回転枠 0）は見ない。途切れ（LINK_W2_STALE_FRAMES）で have ビットは消えるが、時は 30 分まで
+            //   覚えているので、途切れ明けに 23 → 0 時をまたぐと日付だけ進まず、次の枠 0 まで前日になった（BUG-72）。
+            //   覚えている日付を進めておく（日付を一度も受けていなければ link_w2_next_day() が何もしない）。
+            if (st->hour == 23) link_w2_next_day(t);
             st->hour = (uint8_t)((st->hour + 1) % 24);
         }
         st->prev_tod = tod;
@@ -462,7 +465,7 @@ static inline int32_t w2_days_from_civil(int y, unsigned m, unsigned d) {
 //   ・このフレームの時刻が「無し」（0xFFFF）。decode は直前の時刻を残すので、残った古い値を使わない
 //   ・時と日付がまだ分からない（回転枠 0 を受ける前、長い途切れのあと）。受け始めは時が 0 のままで、
 //     そのまま使うと何時間もずれた時刻を GNSS に入れてしまう（何もしないより悪い）
-//   ・送信機が「時刻の精度が悪い・分からない」と言っている（LINK_ST_TIME_BAD）
+//   ・送信機が「時刻の精度が悪い・分からない」と言っている（LINK_ST_TIME_BAD）、GNSS が黙っている（LINK_ST_GNSS_LOST）
 #define LINK_W2_TIME_NONE    0
 #define LINK_W2_TIME_FINE    1
 #define LINK_W2_TIME_COARSE  2
@@ -470,7 +473,8 @@ static inline uint8_t link_w2_utc_ms(const uint8_t* p, const LinkW2Rx* st, uint6
     const uint16_t tod = w2_get16(p + W2_TOD);
     if (tod >= 36000) return LINK_W2_TIME_NONE;
     const uint16_t sb = w2_get16(p + W2_STATUS);
-    if (sb & LINK_ST_TIME_BAD) return LINK_W2_TIME_NONE;
+    // 送信機が「時刻が悪い」と言っている・GNSS が黙っている（古い送信機は BAD を立てないので、こちらでも見る。BUG-68）
+    if (sb & (LINK_ST_TIME_BAD | LINK_ST_GNSS_LOST)) return LINK_W2_TIME_NONE;
     if (!st->hour_known || !(st->slot_have & RHAVE_DATE)) return LINK_W2_TIME_NONE;
     const LinkTelem& t = st->acc;
     if (t.year < 2020 || t.month < 1 || t.month > 12 || t.day < 1 || t.day > 31 || st->hour > 23) return LINK_W2_TIME_NONE;

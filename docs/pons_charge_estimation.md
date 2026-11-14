@@ -148,25 +148,38 @@ $$
 
 ### 4.2 残量 % の算出（「いま USB を抜いたら出る %」）
 電池だけで動いているときの % は、`BATPWR`（本体の電流で $V_{cell}$ より少し下がった電圧）をそのまま
-[`battery_percent()`](../display_tft.cpp)（3.40V → 0%、4.20V → 100% の直線）にかけている。
+[`battery_percent()`](../display_tft.cpp)（3.40V → 0%、`BAT_FULL_VOLTAGE` = 4.15V → 100% の直線）にかけている。
 充電中も同じ換算にそろえるため、**$V_{cell}$ から `CHG_LOAD_DROP_V`（30mV）を引いてから** `battery_percent()` に渡す（`power_charging_percent()`）。
 
-$$SoC = \text{battery\_percent}(V_{cell} - 0.030\text{V})$$
+$$SoC = \min(99,\ \text{battery\_percent}(V_{cell} - 0.030\text{V}))\quad(\text{満充電ラッチで }100)$$
 
-- CV に入るとき（$V_{cell}$ = 3.976V）: 68%
-- 満充電ラッチの直前（BATPWR $\ge 4.20\text{V}$、$V_{cell}$ = 4.20V 上限）: 96% → ラッチで 100%（FULL）
-- ★ **満充電（FULL、100%）のあとに抜くと、負荷のぶんで 93〜95% 前後に下がるのは残る**（FULL は FULL と出すため。充電途中の段差は無くなった）。
+- CV に入るとき（$V_{cell}$ = 3.976V）: 72%
+- CV の終わりのほう（$V_{cell} \ge 4.18\text{V}$）で換算は 100% を越えるが、満充電ラッチまでは 99% で止める（100% と緑は FULL だけ）
+- ★ **2026-11-13 に目盛りの上端を 4.20V → 4.15V にした**（ユーザーの判断。PONSv7 も同じ値）。4.20V のときは、満充電（FULL、100%）のあとに抜くと
+  92〜94% に落ちていた（log.txt の `CHG UNPLUG ... post=4.14〜4.16V`）。電池のときの % は負荷のかかった BATPWR から出すので、
+  満充電の電池でも抜いた直後は 4.14〜4.16V しか読めず、上の 5〜7% は電池では一度も出なかった。
+  ただしこの 3 件は早すぎた古い満充電の判定のあとで、1.06 の判定で最後まで充電してから抜いた値はまだ見ていない（ずれていたら直す）。
+- 残り時間（§4.3）は表示の目盛りを使わず、上端を `CHG_REG_V`（4.20V）にしたそれまでの目盛り（`charge_progress_pct()`）で出す。
+  `CHG_CC_MIN_PER_PCT`・`CHG_CV_MIN` がその目盛りで合わせてあるため。下の 68% はその目盛りの値。
 
 ### 4.3 満充電までの残り時間（推定分）
 CV に入るときの % を $SoC_{cv}$（= 68%）とする（定数から計算するので、定数を変えても境目で連続）。
 - **CC フェーズ**（$SoC < SoC_{cv}$）: CV に入るまで 1.7 分/%、そのあと CV の 120 分
   $$\text{残り時間 [分]} = (SoC_{cv} - SoC) \times 1.7\text{分} + 120\text{分}$$
-- **CV フェーズ**: CV に入ってから 100% までを 120 分で
-  $$\text{残り時間 [分]} = (100 - SoC) \times \frac{120\text{分}}{100 - SoC_{cv}}$$
+- **CV フェーズ**: CV に入ってから上端 $SoC_{top}$（= 96%）までを 120 分で
+  $$\text{残り時間 [分]} = (SoC_{top} - SoC) \times \frac{120\text{分}}{SoC_{top} - SoC_{cv}}\quad(\text{満充電ラッチまでは }1\text{ 分より下げない})$$
   （$SoC = SoC_{cv}$ のとき、どちらの式でも **ぴったり 120 分**）
+- ★ この $SoC$ は残り時間用の目盛り（`charge_progress_pct()`、上端は `CHG_REG_V` = 4.20V）で、`CHG_LOAD_DROP_V` を引くので
+  推定セル電圧が上限の 4.20V でも 96% までしか上がらない。2026-11-13 まで 100% までで割っていて、届かない 4% ぶん（15 分）が残り、
+  ラッチまで `15m` のまま止まってから `FULL` へ飛んでいた（BUG-80）。上端で 0 になるように割り、ラッチの前は 1 分で止める。
+  充電ポップアップの `FULL` もラッチ（% が 100）だけで決める（以前は残り 0 分でも `FULL` にしていた）。
 - 2026-11-11 までは CV の境目を 80% に固定していた。% の目盛りが下がったので、境目も定数から出すようにした。
 - 2026-11-13 の実機ログで 83%（4.15V）→ 4.21V 到達が 77 分・終止（緩和開始）まで約 94 分かかったため、45 分の仮置きから 120 分へ改めた。
 - 満充電ラッチは 2026-11-13 まで「ピーク追跡電圧 $\ge 4.190\text{V}$」で即ラッチしていたが、実機では MCP73831 の $V_{REG}$ 公差等で 4.21V まで上がり 40〜50 分早く `FULL` になったため、`s_batt_v` の平滑値（`CHG_FULL_LP_TAU_MS` = 15 秒）を用い、4.170V 以上で上昇停止 20 分またはピークからの自然緩和（−12mV・2 分継続）でラッチするように改めた（[power.cpp](../power.cpp)）。
+- 同じ日に、平滑値が一度 4.170V に届いたら、下へ戻っても監視（20 分の計時）を消さないようにした（BUG-81）。それまでは
+  ピークが 4.180V に届かない個体（$V_{REG}$ が公差の下寄り、最小 4.168V）で、4.170V をまたいで揺れるたびに計時が 0 に戻り、
+  終止して緩和しても自然緩和の判定（ピーク 4.180V 以上が条件）が使えず、FULL にならなかった。上昇停止の 20 分は、
+  4.170V に届いたあと 4mV 以上上がらなければ、下がっていても数える。
 
 ### 4.4 ソフトウェア実装（power.cpp）
 ```cpp
@@ -182,20 +195,27 @@ float power_estimated_cell_voltage() {
 
 int power_charging_percent() {
   if (s_chg_full_latched) return 100;
-  return battery_percent(power_estimated_cell_voltage() - CHG_LOAD_DROP_V);
+  const int pct = battery_percent(power_estimated_cell_voltage() - CHG_LOAD_DROP_V);
+  return (pct > 99) ? 99 : pct;                  // ラッチまでは 99% で止める
 }
 
-static int charge_cv_start_percent() {
-  return battery_percent(CHG_CV_START_V - CHG_CC_DROP_V - CHG_LOAD_DROP_V);   // 68%
+// 残り時間用の目盛り（上端は CHG_REG_V。表示の % とは別。2026-11-13〜）
+static int charge_progress_pct(float cell_v) {
+  return constrain((int)((cell_v - CHG_LOAD_DROP_V - BAT_ZERO_VOLTAGE) /
+                         (CHG_REG_V - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
 }
+static int charge_progress_top()     { return charge_progress_pct(CHG_REG_V); }                        // 96%
+static int charge_cv_start_percent() { return charge_progress_pct(CHG_CV_START_V - CHG_CC_DROP_V); }  // 68%
 
 int power_charging_remaining_min() {
   if (s_chg_full_latched) return 0;
-  const int pct = power_charging_percent();
-  if (pct >= 100) return 0;
+  const int pct = charge_progress_pct(power_estimated_cell_voltage());
+  const int top = charge_progress_top();
+  if (pct >= top) return 1;                       // ラッチまでは 0（＝FULL）にしない
   const int cv_pct = charge_cv_start_percent();
   if (pct < cv_pct) return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
-  return (int)((100 - pct) * CHG_CV_MIN / (float)(100 - cv_pct));
+  const int rem = (int)((top - pct) * CHG_CV_MIN / (float)(top - cv_pct));
+  return rem < 1 ? 1 : rem;
 }
 ```
 
@@ -212,7 +232,7 @@ int power_charging_remaining_min() {
 - **通常時（放電中）**:
   `Battery Time: Approx. 2h 30m (3.85V)`
 - **USB 充電中（SW ON）**:
-  - 1行目: **`Charging: 72% (Approx. 45m to FULL)`**
+  - 1行目: **`Charging: 72% (45m to FULL)`**（60 分以上は `Charging: 40% (1h 20m to FULL)`、満充電は `Charging: FULL 100% (4.20V)`）
   - 2行目: **`Batt: 4.02V (Est. Cell 3.95V)`**
 - **USB 接続中（SW OFF）**:
   - 1行目: `Battery: SW OFF - turn ON to charge`

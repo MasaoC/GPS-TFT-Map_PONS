@@ -2156,8 +2156,10 @@
         ctx.lineWidth = 1.5;
         const arcR = Math.min(baseR * 0.65, tasVal * scale * 0.85);
         // Canvasの角度系 (右=0, 下=π/2)
+        // ★ 終わりは機首から β だけ回した角度にする（正規化した airBearingRad を使うと、0°/360° を跨いだときに
+        //   逆回りの約 350° の扇になる）
         const a0 = -Math.PI / 2 + yawRad;
-        const a1 = -Math.PI / 2 + airBearingRad;
+        const a1 = a0 + (beta * Math.PI) / 180;
         ctx.beginPath();
         ctx.moveTo(cx, cy);
         ctx.arc(cx, cy, arcR, Math.min(a0, a1), Math.max(a0, a1));
@@ -2765,6 +2767,16 @@
     let ponsFileList = [];
 
     let isDataStreaming = false;
+    // ★ 転送の状態は 3 つ（2026-11-13、BUG-79）。isDataStreaming は DATA_START から終わりの印まで（受けたバイトをファイルの中身として貯める）。
+    //   downloadPending は GET / GETTAIL を送ってから DATA_START が来るまで（本体の Core1 がファイルを開いて位置を合わせている間。
+    //   ここで中断を押しても以前は PONS:CANCEL を送らず、転送がそのまま続いた）。
+    //   cancelPending は PONS:CANCEL を送ってから本体の CANCEL_OK（またはエラー・DATA_END）が来るまで。この間も受けたバイトは
+    //   転送の残りとして捨てる。以前は CANCEL を送った瞬間に isDataStreaming を下ろしていて、USB に残っていた中身
+    //   （log.txt の行や遅れて来た DATA_START）がコマンドの行として読まれ、すぐ次のファイルを押すと本体の後始末とぶつかった。
+    let downloadPending = false;
+    let cancelPending = false;
+    let cancelWatchTimer = null;
+    let lastSerialRxMs = 0;            // 最後に何か受けた時刻（中断の後始末が終わらない古いファームの見切りに使う）
     let dataBuffer = "";
     let lineBuffer = "";
     let currentDownloadFile = "";
@@ -2818,7 +2830,7 @@
         //   PC 接続の画面を抜けて地図へ戻っている（リプレイを見ている間は本体を通常に戻す、意図した作り）。
         //   一覧を取り直し、本体が戻っていれば PONS:ERROR,NOT_CONNECTED → 自動で CONNECT し直す（handleSerialLine）。
         openSerialModal();
-        if (!isDataStreaming) requestFileList();
+        if (!downloadBusy()) requestFileList();
         return;
       }
 
@@ -2868,7 +2880,7 @@
       serialReadLoopActive = true;
       lineBuffer = "";
       dataBuffer = "";
-      isDataStreaming = false;
+      endDownloadUi();
       readSerialLoop();
 
       openSerialModal();
@@ -2934,14 +2946,14 @@
         return;
       }
       try {
-        if (isDataStreaming) {
+        if (isDataStreaming || downloadPending) {
           await sendSerialLine("PONS:CANCEL");
         }
         await sendSerialLine("PONS:DISCONNECT");
       } catch (e) {}
 
       serialReadLoopActive = false;
-      isDataStreaming = false;
+      endDownloadUi();
       if (serialReader) {
         try { await serialReader.cancel(); } catch (e) {}
       }
@@ -3008,7 +3020,7 @@
     }
 
     async function requestFileList() {
-      if (!serialWriter) return;
+      if (!serialWriter || downloadBusy()) return;   // 転送中に一覧を頼むと、一覧が転送のあとに遅れて届くだけなので頼まない
       ponsFileList = [];
       renderFileList();
       document.getElementById('serial-file-list').innerHTML = `<tr><td colspan="5" style="text-align:center; color:#64748b; padding:20px;">SDカードを走査中...</td></tr>`;
@@ -3079,7 +3091,7 @@
     function isLogPath(path) { return /(^|\/)log[^\/]*\.txt$/i.test(path || ''); }
 
     async function downloadPonsFile(filename, size, tail = 0) {
-      if (!serialWriter || isDataStreaming) return;
+      if (!serialWriter || downloadBusy()) return;
 
       currentDownloadFile = filename;
       currentDownloadKind = isLogPath(filename) ? 'log' : 'csv';
@@ -3103,14 +3115,40 @@
       document.getElementById('serial-progress-speed').textContent = '-- KB/s';
 
       // 末尾だけ: PONS:GETTAIL,<バイト数>,<パス>（2026-11-11〜。log.txt を一覧に出すファームは、どれもこれを知っている）
+      downloadPending = true;   // DATA_START が来るまで（BUG-79）
       await sendSerialLine(tail > 0 ? `PONS:GETTAIL,${tail},${filename}` : "PONS:GET," + filename);
     }
 
-    async function cancelPonsDownload() {
-      if (!isDataStreaming) return;
-      await sendSerialLine("PONS:CANCEL");
+    // 転送が動いているか（GET を送ってから終わりの印まで。中断の後始末を待っている間も含む）
+    function downloadBusy() { return isDataStreaming || downloadPending || cancelPending; }
+
+    // 転送の状態を全部下ろして、進み具合の箱を閉じる（終わり・中断・エラー・切断）
+    function endDownloadUi() {
       isDataStreaming = false;
+      downloadPending = false;
+      cancelPending = false;
+      if (cancelWatchTimer) { clearInterval(cancelWatchTimer); cancelWatchTimer = null; }
       document.getElementById('serial-progress-box').style.display = 'none';
+    }
+
+    // 中断（2026-11-13、BUG-79）。★ DATA_START の前でも送る（本体は待っている間の CANCEL も拾う）。
+    // ★ 状態は本体の CANCEL_OK（またはエラー・DATA_END）を受けるまで下ろさない。それまでに届くバイトは転送の残りとして捨てる。
+    async function cancelPonsDownload() {
+      if (!(isDataStreaming || downloadPending) || cancelPending) return;
+      cancelPending = true;
+      document.getElementById('serial-progress-filename').textContent = `中断しています: ${currentDownloadFile}`;
+      lastSerialRxMs = performance.now();
+      // 見切り: CANCEL_OK を返さない古いファーム（DATA_START の前の中断を知らない）でも固まらないように、
+      // 3 秒なにも届かなければ終わったことにする
+      cancelWatchTimer = setInterval(() => {
+        if (cancelPending && performance.now() - lastSerialRxMs > 3000) {
+          console.warn("PONS: CANCEL_OK が来ないので転送の終わりとみなす");
+          dataBuffer = "";
+          lineBuffer = "";
+          endDownloadUi();
+        }
+      }, 500);
+      try { await sendSerialLine("PONS:CANCEL"); } catch (e) { endDownloadUi(); }
     }
 
     let pingTimer = null;
@@ -3120,7 +3158,7 @@
       pingTimer = setInterval(async () => {
         const modal = document.getElementById('serial-modal');
         const isModalOpen = modal && modal.classList.contains('active');
-        if (serialPort && serialPort.writable && !isDataStreaming && isModalOpen) {
+        if (serialPort && serialPort.writable && !downloadBusy() && isModalOpen) {
           try {
             await sendSerialLine("PONS:PING");
           } catch (e) {
@@ -3156,9 +3194,8 @@
           const rest = dataBuffer.substring(Math.min(...idxs));
           const nl = rest.indexOf('\n');
           if (nl === -1) return;   // 行がまだ揃っていない
-          isDataStreaming = false;
           dataBuffer = "";
-          document.getElementById('serial-progress-box').style.display = 'none';
+          endDownloadUi();
           lineBuffer = rest.substring(nl + 1);
           handleSerialLine(rest.substring(0, nl).replace(/\r$/, '').trim());
           return;
@@ -3176,8 +3213,14 @@
         const fileData = rawWithNl.replace(/\r?\n$/, '');
         const expectedCrc = crcMatch[1].toUpperCase();
 
-        isDataStreaming = false;
-        document.getElementById('serial-progress-box').style.display = 'none';
+        // ★ 中断を送ったのに最後まで届いた（本体が CANCEL を読む前に送り終えた・古いファーム）。中身は使わずに捨てる（BUG-79）
+        if (cancelPending) {
+          lineBuffer = endPart.substring(crcMatch[0].length);
+          dataBuffer = "";
+          endDownloadUi();
+          return;
+        }
+        endDownloadUi();
 
         // CRC32 検証（ファイル本体データのみで計算）
         let crcSuccess = true;
@@ -3234,6 +3277,7 @@
               if (!value) continue;
 
               const chunkText = decoder.decode(value, { stream: true });
+              lastSerialRxMs = performance.now();
 
               if (isDataStreaming) {
                 // ファイルデータストリーミング受信中
@@ -3314,24 +3358,34 @@
         console.log("PONS PONG received");
       } else if (line.startsWith("PONS:FILE,")) {
         // PONS:FILE,<path>,<size>,<datetime>
+        // ★ 後ろから切る（FAT のファイル名には , が使える。日時とバイト数には , が入らない）
         const parts = line.split(',');
         if (parts.length >= 4) {
           ponsFileList.push({
-            path: parts[1],
-            size: parseInt(parts[2], 10) || 0,
-            date: parts[3]
+            path: parts.slice(1, parts.length - 2).join(','),
+            size: parseInt(parts[parts.length - 2], 10) || 0,
+            date: parts[parts.length - 1]
           });
         }
       } else if (line === "PONS:LIST_END") {
         renderFileList();
       } else if (line.startsWith("PONS:DATA_START,")) {
-        const parts = line.split(',');
-        currentDownloadFile = parts[1] || currentDownloadFile;
-        currentDownloadSize = parseInt(parts[2], 10) || currentDownloadSize;
-        currentDownloadFrom = parseInt(parts[3], 10) || 0;   // 末尾だけのとき、送り始めた位置
+        // PONS:DATA_START,<path>,<size>[,<from>]。★ パスに , が入りうるので、パスは送ったものを使い、数は後ろから読む。
+        // 末尾だけ（GETTAIL）のときだけ <from> が付く（mysd.cpp）。
+        const body = line.substring("PONS:DATA_START,".length);
+        let nums;
+        if (currentDownloadFile && body.startsWith(currentDownloadFile + ",")) {
+          nums = body.substring(currentDownloadFile.length + 1).split(',');
+        } else {
+          const parts = body.split(',');   // 送ったパスと違う（ないはず）: 以前どおり前から読む
+          currentDownloadFile = parts[0] || currentDownloadFile;
+          nums = parts.slice(1);
+        }
+        currentDownloadSize = parseInt(nums[0], 10) || currentDownloadSize;
+        currentDownloadFrom = parseInt(nums[1], 10) || 0;   // 末尾だけのとき、送り始めた位置
+        downloadPending = false;   // ここから先は readSerialLoop が isDataStreaming を立てて中身として受ける
       } else if (line === "PONS:CANCEL_OK") {
-        isDataStreaming = false;
-        document.getElementById('serial-progress-box').style.display = 'none';
+        endDownloadUi();
       } else if (line === "PONS:BYE") {
         updateSerialUIStatus('disconnected');
       } else if (line.startsWith("PONS:ERROR,")) {
@@ -3348,8 +3402,7 @@
         } else {
           alert("PONSエラー: " + errMsg);
         }
-        isDataStreaming = false;
-        document.getElementById('serial-progress-box').style.display = 'none';
+        endDownloadUi();
       }
     }
 

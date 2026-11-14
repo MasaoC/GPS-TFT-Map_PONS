@@ -33,6 +33,7 @@
     （get_airdata_altitude()）なので、効果はすでに入っている
   ・SD の設定で変えた KF の値は読まない（--q-vel / --q-bias / --r で渡す）
   ・IMU が途絶えたときの恒速モデル（IMU_DRV_DEAD）とリプレイ・ミラー中の差し替え
+  ・MS5611 が途絶えて戻ったときの KF の入れ直し（imu_kalman_reinit。2026-11-14〜）
 
 使い方:
     python3 vario.py imuraw/20261111.bin                      # セッションごとの概要とガードの出入り
@@ -56,7 +57,7 @@ GRAVITY = 9.80665
 IMU_KF_PREDICT_INTERVAL_S = 0.030     # IMU_KF_PREDICT_INTERVAL_US
 KF_Q_VEL = 0.02
 KF_Q_BIAS = 0.0005
-KF_R = 12.0
+KF_R = 20.0                           # 2026-11-13 に 12 → 20（settings.h の KF_R）。2026-11-13 より前のログを機上と比べるときは --r 12
 KF_HORIZ_ACCEL_GAIN = 0.01
 KF_GNSS_VEL_ENABLED = False           # settings.h の KF_GNSS_VEL_ENABLED（0 = GNSS の velD を V/S に入れない）
 GNSS_VSI_SACC_MAX_MPS = 1.0

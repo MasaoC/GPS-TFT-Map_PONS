@@ -136,6 +136,22 @@ SITES = {
 
 追加したら `gnss.cpp` の `DEMO_SITES` にも足すと、実機のデモ飛行で表示を確認できる。
 
+### 収録範囲の表（2026-11-14〜）
+
+生成した `.cpp` には、地物のほかに **LOD ごとの収録範囲（各 LOD の `bboxes`）の表** `vm_cover_e7` が入る。
+ファームは画面がその LOD の範囲の 1 つに丸ごと入っているときだけその LOD を使い、はみ出すときは粗い LOD へ落とす
+（`src/vectormap.cpp` の `vm_view_covered`）。範囲の外に掛かった所が海の色で塗られないようにするため。
+
+範囲（`SITES` や各 LOD の `bboxes`・マージン）だけを変えたいときも、**地物は範囲で切ってあるので作り直すこと**。
+範囲の表だけを今の `.cpp` へ入れ直すのは、地物を作ったときと範囲が同じときだけ:
+
+```sh
+python3 build_vectormap.py --cover-only                    # 軽量版
+python3 build_vectormap.py --variant hires --cover-only    # 16MB 版
+```
+
+`--cover-only` は、どの LOD のタイルも自分の範囲の格子に入っているかを確かめ、外れていたら警告して止まる。
+
 ## 容量を減らしたいとき
 
 効く順に:

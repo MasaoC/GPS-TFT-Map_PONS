@@ -35,6 +35,9 @@
   float get_airdata_temperature();       // 気温 [℃]
   float get_airdata_vspeed();            // 鉛直速度 [m/s]（トリム平均差分）
   float get_airdata_win_hz();            // 直前ウィンドウの更新レート [Hz]（診断用）
+  // 気圧のサンプルを捨てた数（前に読んでから。読むと 0 に戻す。2026-11-13〜。settings.h の BARO_SPIKE_REJECT_M）
+  //   spike: 直前の窓の平均から離れすぎ / rf: 無線が動いていた間 / fallback: 残りが少なく全部で平均した窓
+  void airdata_take_reject_counts(uint32_t &spike, uint32_t &rf, uint32_t &fallback);
 
   // 起動時グランドレベル情報（Vario 詳細画面の高度 KF セクションで使用）
   float get_airdata_ground_pressure();   // 起動時の気圧 [hPa]（"0m 基準" に使用した気圧）

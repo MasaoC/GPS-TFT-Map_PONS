@@ -42,6 +42,12 @@ bool tas_setting_get();
 // loop() の最上位から毎回呼ぶ。地上と飛行中の切り替え（settings.h の TAS_*）。
 void tas_tick();
 
+// 地上（HDR_TAS_GROUND）のまま、飛び出す側の条件（対地速度 TAS_AIR_GS_MPS 以上）が続いているか（2026-11-14〜）。
+// GROUND の札はこれが true になった時点で外す。線は今までどおり TAS_SWITCH_HOLD_MS 続いてから外す
+// （札が 10 秒残ると「いつ消えるのか」と気になるため。線は平均ピッチの窓が飛行中の値だけになるまで残す意味がある）。
+// リプレイ中は再生中の対地速度から決める（札は記録に無い）。
+bool tas_leaving_ground();
+
 // いま大きい枠に出すもの（供給元を解決済み）。描画・CSV の hdr 列・受信ログはこれを読む。
 TasHdr tas_header();
 // TAS の箱（HDR_TAS / HDR_TAS_CLAMP / HDR_TAS_GROUND）に出す推定 TAS [m/s]。

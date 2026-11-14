@@ -368,12 +368,18 @@ void bootwatch_report_core1(volatile bool* ready) {
       bootwatch_stage1(BW_STAGE1_DONE);
       return;
     }
-    if (millis() - s_core0_ms >= BOOTWATCH_STUCK_MS || millis() - t0 >= 5000) break;
+    // ★ Core0 の時刻を先に読んでから millis() を取り、符号付きで比べる（2026-11-14、BUG-96）。逆の順だと、millis() を取った
+    //   直後に Core0 が新しい時刻を書いたとき差が 0xFFFFFFFF 付近にあふれ、生きている Core0 を「固まった」として再起動していた
+    const uint32_t c0 = s_core0_ms;
+    const int32_t  since_c0 = (int32_t)(millis() - c0);
+    if (since_c0 >= (int32_t)BOOTWATCH_STUCK_MS || millis() - t0 >= 5000) break;
     delay(10);
   }
 
   const uint8_t  stage   = s_core0_stage;
-  const uint32_t stuck   = millis() - s_core0_ms;
+  const uint32_t c0_ms   = s_core0_ms;   // 上と同じく先に読む（BUG-96）
+  const int32_t  stuck_s = (int32_t)(millis() - c0_ms);
+  const uint32_t stuck   = stuck_s > 0 ? (uint32_t)stuck_s : 0;
   const bool     faulted = (s_fault[0].magic == BW_FAULT_MAGIC);
   const bool     irq     = core0_irq_alive();
   log_sdf("BOOT WATCH: core0 stuck at stage %u (%s) for %lums, irq=%s, fault=%s",
@@ -406,6 +412,7 @@ void bootwatch_report_core1(volatile bool* ready) {
 #endif
 }
 
+// 意図して直さない（2026-11-14 の監査）: 起動が終わったあとの Core1 の HardFault（s_fault[1]）は見ない。起きたことが無く、起きたら故障として諦める（見張りや再起動のコードが新しいバグを生むほうが怖い。ユーザーの判断）
 void bootwatch_boot_done_core0() {
 #if BOOTWATCH_WDT_MS
   watchdog_disable();

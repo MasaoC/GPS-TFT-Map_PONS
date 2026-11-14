@@ -330,17 +330,20 @@ void imulog_write_buffer(int bufidx, const char* filename,
             size_t bytes = (size_t)n * sizeof(ImuLogRec);
             if (imuFileStatic.write(imulog_buf[bufidx], bytes) == bytes) {
                 imulog_written += n;
+            } else {
+                sd_note_write_error();   // 書けない＝SD の異常（2026-11-14、BUG-119。mysd.cpp）
             }
             // 4 バッファごとに sync。v7.1（SCH16T・間引き 1 で約 506 レコード/秒、settings.h の SCH16T_IMULOG_DECIM）では
             // 1 バッファ 584 レコード ≒ 1.15 秒なので約 4.6 秒ごと。電源断で失うのは最大でこの分。
             if (++imuFlushCount >= 4) {
                 imuFileStatic.timestamp(T_WRITE, year, month, day, hour, minute, second);
-                imuFileStatic.sync();
+                if (!imuFileStatic.sync()) sd_note_write_error();   // BUG-119
                 imuFlushCount = 0;
             }
         }
     }
 
+    // 意図して直さない（2026-11-14 の監査）: PC をつなぐ直前に積まれた分は、つないだあとでも書く。転送も Core1 のタスクなので順に動き、ぶつからない
     // SD が使えない場合もバッファは必ず解放する（解放しないと Core0 が詰まる）
     imulog_fill[bufidx] = 0;
     imulog_busy[bufidx] = false;

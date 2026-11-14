@@ -593,7 +593,11 @@ void power_tick() {
 // 2') 残量 % は、セル開放電圧から CHG_LOAD_DROP_V（電池だけで動くときの本体の電流ぶん、30mV）を引いてから
 //    battery_percent() にかける。電池のときの % は BATPWR（負荷のかかった電圧）をそのまま換算しているので、
 //    こうしないと USB を抜いた瞬間に % が下がる（2026-11-11 まで 8〜10% 下がっていた。TODO の「USB を抜くと約 7% 下がる」）。
-//    満充電ラッチで 100% を出したあとに抜くと、負荷のぶんで 95% 前後になるのは残る（FULL は FULL と出すため）。
+//    満充電ラッチで 100% を出したあとに抜くと 92〜94% に落ちていたので、2026-11-13 に目盛りの上端（BAT_FULL_VOLTAGE）を
+//    4.2 → 4.15V にした（抜いた直後に電池で読める値）。そのぶん CV の終わりのほうでは推定のセル電圧が上端を越えるので、
+//    満充電ラッチの前は 99% で止める（100% と緑は FULL だけ）。
+//    残り時間は % ではなく下の charge_progress_pct()（CHG_REG_V を上端にした、それまでの目盛り）で出す。
+//    CHG_CC_MIN_PER_PCT・CHG_CV_MIN はその目盛りで実機に合わせてあるため。
 // 3) 満充電ラッチ（課題5対策）:
 //    MCP73831 の充電終止後に充電電流がゼロになるとセル電圧は 4.15〜4.19V へ自然緩和し、
 //    CV 式を当て続けると 90% 前後に落ちて見えるため、一度満充電と確定したら USB を抜くまで
@@ -672,7 +676,11 @@ static void charge_full_tick(uint32_t now) {
   // 接続／SW ON 直後の単発ノイズが偽ピークにならないよう、平滑フィルタが落ち着くまで待つ
   if (now - s_chg_enter_ms < CHG_FULL_WARMUP_MS) return;
 
-  if (s_chg_lp < CHG_FULL_MIN_V && s_chg_peak_v < CHG_FULL_DROP_MIN_V) {
+  // ★ 一度 CHG_FULL_MIN_V に届いたら、下へ戻っても監視を消さない（2026-11-13、BUG-81）。以前は「ピークが
+  //   CHG_FULL_DROP_MIN_V（4.180V）に届いていない」ときも消していて、V_REG が公差の下寄り（最小 4.168V）でピークが
+  //   4.170〜4.180V にとどまる個体は、平滑値が 4.170V をまたいで揺れるたびに 20 分の飽和の計時が 0 に戻り、
+  //   終止して緩和したあとも下の 2) が使えず、USB をつないでいる間ずっと FULL にならなかった。
+  if (s_chg_lp < CHG_FULL_MIN_V && s_chg_peak_v < CHG_FULL_MIN_V) {
     reset_watch();
     return;
   }
@@ -685,8 +693,10 @@ static void charge_full_tick(uint32_t now) {
     s_chg_ref_ms = now ? now : 1;
   }
 
-  // 1) 飽和（上昇停止）: CHG_FULL_MIN_V 以上で一定時間 CHG_FULL_PEAK_STEP_V 以上の増加がない
-  const bool plateau_full = (s_chg_lp >= CHG_FULL_MIN_V) &&
+  // 1) 飽和（上昇停止）: CHG_FULL_MIN_V に届いてから一定時間 CHG_FULL_PEAK_STEP_V 以上の増加がない。
+  //    ★ 判定のときに平滑値が CHG_FULL_MIN_V 以上であることは求めない（BUG-81）。終止して下がっているのも「上がっていない」で、
+  //      V_REG の低い個体は 2) を使えない（ピークが CHG_FULL_DROP_MIN_V に届かない）ので、こちらで拾う。
+  const bool plateau_full = (s_chg_peak_v >= CHG_FULL_MIN_V) &&
                             (s_chg_ref_ms != 0) &&
                             (now - s_chg_ref_ms >= CHG_FULL_PLATEAU_MS);
 
@@ -716,28 +726,48 @@ float power_estimated_cell_voltage() {
   return (est > CHG_REG_V) ? CHG_REG_V : est;
 }
 
-// 充電中の残量 %。「いま USB を抜いたら出る %」に合わせる（上の ■ の 2')）。
+// 充電中の残量 %。「いま USB を抜いたら出る %」に合わせる（上の ■ の 2')）。満充電ラッチの前は 99% まで。
 int power_charging_percent() {
   if (s_chg_full_latched) return 100;
-  return battery_percent(power_estimated_cell_voltage() - CHG_LOAD_DROP_V);
+  const int pct = battery_percent(power_estimated_cell_voltage() - CHG_LOAD_DROP_V);
+  return (pct > 99) ? 99 : pct;
 }
 
-// CV に入るときの残量 %（約 68%）。power_charging_percent() と同じ換算。
+// 残り時間の計算に使う進み具合 [%]。表示の % と同じ換算だが、上端は BAT_FULL_VOLTAGE ではなく CHG_REG_V（4.20V）。
+// ★ CHG_LOAD_DROP_V を引くので、推定セル電圧が上限の CHG_REG_V でも 96% までしか上がらない（charge_progress_top()）。
+// CHG_CC_MIN_PER_PCT・CHG_CV_MIN は 2026-11-13 まで表示と共通だったこの目盛りで実機に合わせてあるので、表示の目盛りを
+// 動かしても残り時間が変わらないよう分けた。
+static int charge_progress_pct(float cell_v) {
+  return constrain((int)((cell_v - CHG_LOAD_DROP_V - BAT_ZERO_VOLTAGE) /
+                         (CHG_REG_V - BAT_ZERO_VOLTAGE) * 100.0f), 0, 100);
+}
+
+// 推定セル電圧が上限（CHG_REG_V）のときの進み具合 [%]（約 96%）。CV の残り時間はここで 0 になるように割る。
+static int charge_progress_top() {
+  return charge_progress_pct(CHG_REG_V);
+}
+
+// CV に入るときの進み具合 [%]（約 68%）。charge_progress_pct() と同じ換算。
 static int charge_cv_start_percent() {
-  return battery_percent(CHG_CV_START_V - CHG_CC_DROP_V - CHG_LOAD_DROP_V);
+  return charge_progress_pct(CHG_CV_START_V - CHG_CC_DROP_V);
 }
 
 int power_charging_remaining_min() {
   if (s_chg_full_latched) return 0;
-  const int pct = power_charging_percent();
-  if (pct >= 100) return 0;
+  const int pct = charge_progress_pct(power_estimated_cell_voltage());
+  const int top = charge_progress_top();
+  // ★ 満充電ラッチ（charge_full_tick）が立つまでは 0 を返さない。0 は「FULL」と読まれる（充電ポップアップ）。
+  if (pct >= top) return 1;
   const int cv_pct = charge_cv_start_percent();
   if (pct < cv_pct) {
     // CC フェーズ: CV に入るまで（303mA 充電で約 1.7 分/%）＋ CV の所要時間（CHG_CV_MIN）
     return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
   } else {
-    // CV フェーズ: CV に入ってから 100% までを CHG_CV_MIN で（CV に入った瞬間は CC の式と連続）
-    return (int)((100 - pct) * CHG_CV_MIN / (float)(100 - cv_pct));
+    // CV フェーズ: CV に入ってから上端（約 96%）までを CHG_CV_MIN で（CV に入った瞬間は CC の式と連続）。
+    // ★ 2026-11-13 まで 100% までで割っていて、届かない 96〜100% のぶん（約 15 分）が最後に残り、
+    //   ラッチまで "15m" のまま止まってから FULL へ飛んでいた（BUG-80）。ラッチの前は 1 分より下げない。
+    const int rem = (int)((top - pct) * CHG_CV_MIN / (float)(top - cv_pct));
+    return rem < 1 ? 1 : rem;
   }
 }
 
@@ -757,6 +787,7 @@ bool power_charging_full_cutoff_confirmed() {
 }
 
 // USB 通電からの経過時間 [秒]（SW OFF/ON でも USB が給電されている限り継続カウント）
+// 意図して直さない（2026-11-14 の監査）: いまは呼び出し元が無い（残しておいて害なし）
 uint32_t power_charging_elapsed_sec() {
   if (!usb_power_present() || s_usb_connected_ms == 0) return 0;
   return (millis() - s_usb_connected_ms) / 1000UL;
@@ -799,6 +830,7 @@ static void charge_log_tick(uint32_t now) {
   static bool     s_chg_active            = false;
   static uint32_t s_last_periodic_log_ms  = 0;
   static bool     s_cv_logged             = false;
+  // 意図して直さない（2026-11-14 の監査）: 同じ USB 接続の中で再充電して 2 回目の満充電になっても CHG FULL は 1 回だけ（ログの話）
   static bool     s_full_logged           = false;
   static float    s_last_chg_raw_v        = 0.0f;
   static int      s_last_chg_pct          = 0;

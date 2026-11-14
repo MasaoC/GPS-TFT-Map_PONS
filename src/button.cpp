@@ -26,6 +26,7 @@ extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
 extern int detail_page;
+extern volatile bool loading_sddetail;   // 実体は display_tft.cpp（SD 詳細画面の一覧を Core1 が読んでいる間 true）
 extern int replay_cursor;      // リプレイ選択画面のカーソル位置（通し番号）
 extern int replay_list_page;   // リプレイ選択画面の表示中ページ
 extern volatile int scaleindex;  // 現在のマップスケール（scalelist のインデックス）
@@ -46,6 +47,7 @@ static void format_scale_km(char* buf, size_t n, int idx) {
   else                  snprintf(buf, n, "%.1fkm", km);
 }
 
+// 意図して直さない（2026-11-14 の監査）: 5ms ちょうどの押下は捨てる・両エッジで delay(5)。PC 接続から戻った直後のダブルクリックの持ち越し（縮尺が 1 段変わる）も見送り
 const unsigned long debounceTime = 5;       // チャタリング除去のための待機時間 [ms]
 const unsigned long longPressDuration = 1000; // 長押しと判定するまでの時間 [ms]
 const unsigned long doubleClickDuration = 500; // 前の短押しからこの時間内に短押しでダブルクリック [ms]
@@ -238,6 +240,8 @@ Setting menu_settings[] = {
   { SETTING_DESTINATIONMODE,
     [](bool selected) -> std::string {
       char buff[32];  // temporary buffer
+      // ★ 範囲外のときも文字列を入れる（未初期化のまま返さない。BUG-114）
+      strcpy(buff, selected ? " Navigation Mode: ?" : "Navigation Mode: ?");
       if(destination_mode == DMODE_FLYINTO)
         strcpy(buff, selected ? " Navigation Mode: Fly into" : "Navigation Mode: Fly into");
       else if(destination_mode == DMODE_FLYAWAY)
@@ -488,7 +492,8 @@ Setting menu_settings[] = {
       replay_cursor = 0;                // カーソルを先頭に戻す
       replay_list_page = 0;
       loading_replaylist = true;
-      enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(0)));
+      // 積めなかったら読み込み中のままにしない（この画面の操作を受けなくなる。BUG-90）
+      if (!enqueueTask(createBrowseReplayTask(replay_menu_file_start_for_page(0)))) loading_replaylist = false;
     },
     nullptr,
     nullptr,
@@ -531,6 +536,7 @@ Setting menu_settings[] = {
     },
     []() {
       DEBUG_P(20240801, "MAP DETAIL MODE");
+      // 意図して直さない（2026-11-14 の監査）: GNSS 詳細・地図一覧は前回のページから始まる（detail_page / maplist_page を戻さない）
       screen_mode = MODE_MAPLIST;   // 地図リスト画面に切り替え
     },
     nullptr,
@@ -551,7 +557,10 @@ Setting menu_settings[] = {
     []() {
       screen_mode = MODE_SDDETAIL;        // SD 詳細画面に切り替え
       detail_page = 0;                    // ページを先頭に戻す
-      enqueueTask(createBrowseSDTask(0)); // Core1: SD ファイル一覧の取得を依頼
+      // ★ 読み込み中の印を立ててから頼む（ページ送りと同じ。2026-11-14、BUG-89）。立てないと 2 回目からは、Core1 が
+      //   sdfiles[] を書き換えている最中に描いて前回の残りを出し、読み終わったときの描き直しも起きなかった
+      loading_sddetail = true;
+      if (!enqueueTask(createBrowseSDTask(0))) loading_sddetail = false; // Core1: SD ファイル一覧の取得を依頼
     },
     nullptr,
     nullptr,

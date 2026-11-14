@@ -109,8 +109,18 @@
   - QZSS が本当に使われるようになったかは log.txt で見る（まだ実機で確かめていない）: `GNSS ANA off for this boot (...): ack`、
     `GNSS QZSS first used Ns after boot (Qn of m seen, ana=off(cold))`、10 分ごとの `GNSS SVS used G.. E.. B.. Q.. R.. (QZSS seen n) ana=...`、
     `GNSS ORBIT after 1st fix: ... used G.. Q.. (QZSS seen n) ana=...`。
-  - 机の上の `PONS:DBD,COLD` / `COLDONLY` は GNSS だけをコールドにするので、ANA はその起動で決めたまま（BT1 が生きていた起動なら有効）。
-    本物のコールドの起動（ANA 無効）とは条件が違う。
+  - 机の上の `PONS:DBD,COLD` / `COLDONLY` は GNSS だけをコールドにする。2026-11-13 までは ANA がその起動で決めたまま（BT1 が生きていた起動なら有効）で、
+    本物のコールドの起動（ANA 無効）と条件が違った。**2026-11-14 から、リセットの前にその起動の間 ANA を切る**（`gnss_ana_off_for_cold_test()`）。
+  - **2026-11-13 の log.txt では、ANA が有効な普段の起動で QZSS がほとんど受かっていなかった**（屋外は車の中の 6 本だけで `QZSS seen` 0〜1、
+    同じ車の v7 は 6。BeiDou も B0。ほかの 17 本は屋内で当てにならない）。「受かっているのに使わない」（上の制限）ではなく追っていないので、GNSS の設定（CFG-SIGNAL）で切られている疑いがある。
+    → 同じ日に、起動時に CFG-SIGNAL を RAM・BBR・Default の 3 層で読んで log.txt に出し（`GNSS SIGNAL ...`）、BeiDou（B1I）・QZSS（L1C/A）が
+    0 なら RAM に 1 を書くようにした（gnss.cpp の `gnss_sig_tick()`。v7.1・v7 とも・実機未確認）。CFG-SIGNAL を変えると GNSS が測位をやり直すので、
+    ANA の設定・DBD の戻し・外からの時刻入れは `gnss_signal_cfg_settled()` を待つ。
+  - 読んでみると、3 枚の GNSS 基板とも設定は工場出荷のまま全部有効だった（BeiDou は B1C のみ）。QZSS が見えないのは基板 b（`B386598FAF54`。v7.1 で使い続ける）について行った。
+    **2026-11-14 から BeiDou を B1I にした**（`GNSS_BDS_B1I`。B1I は B1C・GLONASS と同時に有効にできないので GLONASS は使わない）。
+    保存した DBD に GLONASS の分が入っていても、戻すときに GNSS が使わないだけ（`other` に数えられうる）。
+  - **2026-11-14 に全ログを見直すと、QZSS はどの GNSS 基板でも一度も測位に使われていなかった**（受けているのは最大 6 機）。理由を見るため、
+    QZSS の衛星ごとの health・orbitSource・放送暦／アルマナックの有無・qualityInd を log.txt に出すようにした（`GNSS QZSS (...): J..`。読み方は TODO メモ §5）。
 
 ### 2.6 E220 まわり
 - M0/M1 は 1 本の GPIO（v7・v7.1 とも）。mode 0（受信待機 約 8.2mA）と mode 3（スリープ 約 2µA）しか無く、**WOR は使えない**。
@@ -328,6 +338,13 @@
   - 止まった時刻（送信機の GNSS が黙った）は、同じ送り主の 2 発の確かめで弾く（§4.6）。
   - 自分の時刻の精度は log.txt の `LINK ASSIST: own time tAcc 0.850s (no fix yet, rtc=alive)` と `(at first fix ...)` に出る。RTC の時刻が
     実際どれだけ確かかは、これを集めれば分かる。
+  - **確かめられていない時刻は渡さない**（2026-11-14〜。`gnss_own_time_trusted()`）。渡すのは BT1 が保っていた RTC の時刻と、この起動で fix したあとの時刻だけ。
+    外から入れた時刻（LoRa・PC）と、fix の前に GNSS が自分で読んだ時刻は、fix するまで渡さない（機体は status に `LINK_ST_TIME_BAD`、ボートは提供しない）。
+    fix していないときに時刻が飛んだ・消えたときも、次の fix まで渡さない。
+    **きっかけ**: 11/14、v7 の受信機（主基板 F）が機体のテレメトリから正しい時刻をもらったあと、fix しないまま 4〜15 分たって GNSS の時刻が
+    約 +17 分（985〜1023 秒）飛んだ（2 回。追っている衛星 5〜10 機・C/N0 15〜22・使っている衛星 0）。画面の時刻と log.txt が飛び、
+    その時刻を仲間へ渡していれば機体のコールドスタートを壊すところだった。GNSS の中で何が起きたかは未確定なので、
+    飛びを `GNSS TIME JUMP:` の行に残す（`GNSS_TIME_JUMP_MS` 2 秒以上。前後の valid・flags2・tAcc・fix・衛星数）。
 - テレメトリの時刻は「最後の NAV-PVT（2Hz）の時刻」なので、受けた時点で 0.06〜0.56 秒古い。平均の `LINK_ASSIST_TELEM_AGE_MS`（300ms）を足して
   ずれを ±0.25 秒にそろえる（試験台の値）。
 
@@ -483,7 +500,10 @@
   続いて gnss_dbd の `GNSS TIME (lora): gave ... -> accepted` と、最初の fix で `GNSS TIME (lora): given time was ... off`
 - `LINK ASSIST: time mismatch from ... (+2003ms over 2001ms), start over`（1 起動 5 行まで）
 - `LINK ASSIST: offering time (asked by aircraft|boat)` / `LINK ASSIST: stopped offering (not asked|no time|...), sent 6`（1 起動 20 行まで）
-- `LINK ASSIST: own time tAcc 0.850s (no fix yet|at first fix, rtc=alive|lost)`（自分の GNSS の時刻の精度。時刻が出た最初と、最初の fix）
+- `LINK ASSIST: own time tAcc 0.850s (no fix yet|at first fix, rtc=alive|lost, share=yes|no)`（自分の GNSS の時刻の精度。時刻が出た最初と、最初の fix。
+  `share` は仲間へ渡してよいか。`gnss_own_time_trusted()`）
+- `GNSS TIME JUMP: +1003.2s expected 01:58:57Z got 2026-11-14 02:15:40.50Z (valid=0x07 flags2=0x20 tAcc=2.000s fixType=0 fixOK=0 sv=0 share=no)`
+  （gnss.cpp。自分の GNSS の時刻が前の NAV-PVT＋本体の時計の経過から 2 秒以上ずれた。1 起動 20 行まで）
 - `LINK ASSIST: asking for time (nothing heard for 10s)`、`LINK ASSIST: no slot between sender frames (ch 6 sf 11), cannot send`
 - 1 分のまとめ（動きがあったときだけ）: `LINK ASSIST: 60s win=open offer tx 3 rx 0 req tx 0 rx 0 used 1 noRf 0 late 0 busy 0 othergrp 0`
   （`late` = 描画などで枠に遅れて送らなかった数、`busy` = AUX が Low で E220 に断られた数、`noRf` = 書いたのに送信が始まらなかった数）

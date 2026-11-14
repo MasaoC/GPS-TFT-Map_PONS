@@ -96,12 +96,13 @@ $$V(\theta) = V_0 \sqrt{\frac{K}{K + \theta}}$$
 * ピッチには**過去 10 秒の移動平均**（平均ピッチ `Pavg`）を使う（2026-11-07 までは時定数 10 秒の一次遅れだった）。
 * $\text{風ベクトル} = \text{対地速度ベクトル} - \text{対気速度ベクトル}$（対気速度の向き＝機首方位）により算出。
 * 同じ式の値を**推定 TAS** としてヘッダー右の大きい枠にも出せる（IMU/ESKF 画面 1 ページ目の `Header: Pavg / TAS`。`settings.txt` の `header_tas:1`）。
-  青い箱に白字・縦書きの `TAS`。地上は数字に白い横線と `GROUND` の札が入り、対地速度 3m/s 以上が 10 秒続くと線が取れる。上下限に張り付いたら灰色の箱。
-  較正のやり直しが要るときは赤い線と `CALIBRATE`、GNSS 速度が止まっているときは橙の線と `NO GNSS` の札（平均ピッチの箱も同じ）。
+  青い箱に白字・縦書きの `TAS`。地上は数字に白い横線と `GROUND` の札が入る。対地速度 3m/s 以上で札がすぐ消え、それが 10 秒続くと線も取れる。上下限に張り付いたら灰色の箱。
+  較正のやり直しが要るときは赤い線と `CALIBRATE`、GNSS の速度が来ていないときは橙の線と `NO GNSS` の札、GNSS は来ているが向きがまだ決まっていない（止まっている間。3m/s 以上で動けば決まる）ときは黄色の線と `YAW ALIGN` の札（平均ピッチの箱も同じ）。
   平均ピッチは地図の上端（`TAS` の小箱の左）に小さく残る。TAS にすると日本語の案内（画像と曲線の 2 画面・音声）が出る。
   仕組みと精度は **[docs/pons_tas.md](docs/pons_tas.md)**（増減は信用できるが、値は取り付け 1° で約 0.4m/s ずれる）。
 * 旋回中の横滑り角による誤差混入を防ぐため、直進が累計 10 秒以上継続した場合のみ更新。
 * `settings.txt` は本体が保存のたびに書き直します（書き込んだコメント行は消えるため、メモは別ファイルに残してください）。
+  書き直しは `settings.tmp` に書き切ってから入れ替えます（途中で電源が切れても設定が消えない。2026-11-14〜）。`settings.tmp` が残っていたら、次の起動で `settings.txt` に戻して読みます。
 
 ### 3. GNSS の起動を速くする（AssistNow Autonomous）
 GNSS の時計と受信した軌道データ（エフェメリス）をバックアップ電池（BT1、MS621FE）で保つので、最後に受信してから約 4 時間以内なら
@@ -112,6 +113,16 @@ BT1 で保つので、約 3 日以内なら速く測位します（データシ�
 コールドスタートのあと ANA が有効だと QZSS を航法に使わないためです（SPG 5.30 のリリースノートの既知の制限。5.30 で直ったが、SAM-M10Q は外付けフラッシュが無いので上げられない）。
 BT1 の生死は最初の NAV-PVT で分かるので、ANA の設定はそのあとに送ります。`log.txt` の `GNSS ANA on|off for this boot (...): ack` が結果、
 `GNSS QZSS first used 52.0s after boot (...)` と 10 分ごとの `GNSS SVS used G8 E5 B6 Q2 R0 (QZSS seen 3) ana=off(cold)` で QZSS を使っているかが分かります（まだ実機で確かめていない）。
+
+**起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読み、QZSS が切られていれば入れ、BeiDou を B1I にします**（2026-11-13〜、B1I は 2026-11-14〜、実機未確認）。
+SAM-M10Q（SPG 5.10）の工場出荷は BeiDou を B1C で受けますが、日本の上空に多い BeiDou の静止・傾斜軌道の衛星は B1I しか出しておらず、
+2026-11-13〜14 の記録では B1C の BeiDou を一度も使えていませんでした。M10 は B1I を B1C とも GLONASS とも同時に有効にできないので、
+**B1I にすると GLONASS は使わなくなります**（`settings.h` の `GNSS_BDS_B1I`。0 にすると工場出荷のまま）。
+2026-11-13 の `log.txt` で、ANA が有効な普段の起動では屋外（車の中）でも QZSS がほとんど受かっておらず（`QZSS seen` 0〜1）、BeiDou も使っていなかったためです（読んでみると設定は工場出荷のまま全部有効だった）。
+書くのは RAM だけで（電源を切れば戻り、起動のたびに書き直す）、入れ直すと GNSS が測位をやり直すので、ANA の設定・航法データベースの戻し・
+外からの時刻入れはそのあとにします。`log.txt` には `GNSS SIGNAL ram: GPS=1 SBAS=1 GAL=1 BDS=0 QZSS=0 GLO=1 | L1CA=1 ...`
+（いま効いている値）、書き直したときは `GNSS SIGNAL set (RAM): GLO=0 B1I=1 B1C=0: ack` と読み直した `GNSS SIGNAL ram(after enable): ...`、
+続いて `GNSS SIGNAL bbr: ...`（BT1 で残る値。書かれていなければ `NAK`）と `GNSS SIGNAL default: ...`（工場出荷）が出ます。
 
 バックアップ電池が切れた起動に備えて、通電中に GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` へ写しておき、
 起動時に時計が死んでいたときだけ GNSS へ戻します（2026-11-09〜、まだ実機で確かめていない。`gnss_dbd.cpp`）。
@@ -128,6 +139,9 @@ GNSS の時計（BT1 の RTC）の時刻をその精度（NAV-PVT の tAcc）つ
 机の上では USB シリアルの `PONS:DBD,COLD`（コールドにして戻す）/ `COLDONLY` / `HOT` / `SAVE` / `STATUS` と、
 `COLD,TIME` / `COLDONLY,TIME`（リセット前に本体が覚えた時刻を、PC の時刻の代わりに入れる）で試せます
 （`COLD` / `COLDONLY` / `HOT` を打つと、再起動するまで自動の吸い出しは止まります。`SAVE` は効きます）。
+`COLD` / `COLDONLY` は、本物のコールドの起動と同じく、その起動の間 ANA を切ってからリセットします（2026-11-14〜。`GNSS ANA off for this boot (cold-start test ...)`）。
+GNSS DETAIL 3 の下の 2 行（2026-11-14〜）は GNSS の受け方です: `RF jam:12 50+:3/60 noise:91 agc:4464`（`50+` は直近 60 秒で妨害の指標 jamInd が 50 以上だった秒数。
+6 以上で橙、18 以上で赤）と `C/N0 top4:30.8 mean:24.7 trk:14`（受信の強さと追尾している衛星の数）。log.txt の `grf` 行と同じ物差しです。
 計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §3（時刻は §3.6）。
 
 ### 4. PONS Link（機体⇄ボート テレメトリ無線）
@@ -302,6 +316,8 @@ NAV 画面でスイッチ長押しで入ります。
   SD カードのルート直下に配置。1 行に `名前,緯度,経度`（例: `KASAOKA03,34.495000,133.495000`）を記述。内蔵 4 件（PLATHOME / N_PILON / S_PILON / TAKESHIMA）の後ろに最大 100 件追加。
 * **パイロン座標上書き (`override_pilon_coordinate.csv`)**:
   大会直前に再ビルドなしでパイロン座標を上書き可能（`PLATHOME`, `N_PILON`, `S_PILON`, `PILON_1KM`, `TAKESHIMA`）。設定画面の `Map data detail >` で `COURSE SD OVERRIDE` と表示されていれば適用完了。
+* 設定画面の `Map data detail >` の最初の 2 ページは、内蔵地図の収録範囲の絵（2026-11-14〜）。1 ページ目は日本全体、2 ページ目は飛行エリアに寄せて番号付き。
+  赤＝最大ズームで持っている範囲、橙＝その周りの中精細、青＝地域。短押しで一覧のページへ進む。
 * **独自追加地図 (`mapdata.csv`)**:
   Google Earth の KML パスから `tools/kml_to_mapcsv.py` で生成。PATH 名の 1 文字目で線の色を指定可能（`r`=赤 / `o`=橙 / `g`=灰 / `m`=マゼンタ / `c`=シアン / `b`=青）。
 * **GNSS の受信状態（`log.txt` の `grf` 行。60 秒ごと）**:
@@ -335,7 +351,11 @@ NAV 画面でスイッチ長押しで入ります。
   * `tools/gen_wav_flash.py`: 音声 WAV を FLASH 焼き込み用 C++ データへ変換
   * `tools/gen_guide_flash.py`: 案内画像（IMU/ESKF 画面の入口 `tools/imu_guide/*.svg`、推定 TAS `tools/tas_guide/*.svg`）を FLASH 焼き込み用 C++ データへ変換（`--render` で SVG を Chrome で等倍の PNG にする。`--check` で一致を検査）
 * **単体テスト・検証**:
+  * `tools/check_release.py`: リリース前設定・FLASH アセット CRC・全ホスト単体テストの一括検査スクリプト
   * `tools/attitude_test/`: PC 上での 250Hz ESKF アルゴリズム検証スイート
+  * `tools/wire2_test/`: PONS Link Wire2（32B フレーム・8 回転枠・ビーコン）単体テスト
+  * `tools/vario_test/`: バリオ 3 状態 KF・鉛直加速度ガード・MS5611 復帰 reinit 単体テスト
+  * `tools/dbd_test/`: GNSS 航法データベース（MGA-DBD）保存・復元・時刻注入単体テスト
   * `tools/sch16t_test/`: Pico 2 を用いた SCH16T-K01 単独 SPI テスト用スケッチ
 
 ---

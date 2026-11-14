@@ -91,7 +91,8 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   - 終了通知: `PONS:DATA_END,<crc32>`
 * **エラー応答**:
   - `PONS:ERROR,FILE_NOT_FOUND` （ファイルが存在しない、またはディレクトリ）
-  - `PONS:ERROR,BUSY` （既に別のファイル転送タスクを実行中）
+  - `PONS:ERROR,BUSY` （既に別のファイル転送タスクを実行中）。★ 2026-11-13〜 **前の転送が終わってから**返す
+    （すぐ出すと前の転送の中身に混ざる。BUG-76）
   - `PONS:ERROR,SD_NOT_READY` （SDカード未装着または初期化エラー）
 * **例**:
   ```
@@ -118,15 +119,30 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   ```
 * **ビューアの受信の終わりの見分け**: 中断の印（`PONS:CANCEL_OK` / `PONS:ERROR,`）は**行の頭にあるときだけ**見る
   （2026-11-11〜。`log.txt` の中身に同じ文字列があっても、転送を止めたことにしない）。
+* **転送の間（GET を受けてから `DATA_END` / `CANCEL_OK` まで）は、本体は転送以外を 1 行も書かない**（2026-11-13〜。BUG-76）。
+  PC はその間のバイトを全部ファイルの中身として受けて CRC を取るため。
+  - `PONS:READY`（転送中に `CONNECT` し直したとき。前の転送をやめさせてから）・`PONS:BYE`・`PONS:ERROR,BUSY` は、
+    転送が終わってから出す。
+  - `PONS:PING` の返事は出さない（以前から）。`PONS:DBD` / `PONS:TIME` は転送中は受けない（返事も無い）。
+  - 例外: SD のタスクのキューが溢れたときの `ERR: task queue full`（異常時だけ）と、`RELEASE` でないビルドのデバッグ出力。
+* **一覧（`LIST` を受けてから `LIST_END` まで）の間も同じ**（2026-11-14〜。BUG-92）。`READY` / `BYE` / `BUSY` / `PONG` は
+  `LIST_END` のあとに出す。一覧の最中に来た `CANCEL` の `CANCEL_OK` も `LIST_END` のあと。
+* 本体の SD のタスクのキューが満杯で `LIST` / `GET` / `GETTAIL` を受けられなかったときは `PONS:ERROR,BUSY` を返す
+  （2026-11-14〜。BUG-93。以前は黙って捨て、PC が返事を待ち続けた）。パスが 63 バイトより長いときは `PONS:ERROR,INVALID_FILENAME`
+  （以前は黙って切り詰めた）。`GETTAIL` のバイト数は 9 桁まで。127 バイトより長い行は改行まで読み捨てる。
 
 ### (4) 転送キャンセル (CANCEL)
 転送中のファイル読み出しを中断する。
 * **PC ➔ PONS**: `PONS:CANCEL`
 * **PONS ➔ PC**: `PONS:CANCEL_OK`
+* `GET` がまだ始まる前（本体が別の SD の仕事をしていて待っている間）に来た `CANCEL` も効く（2026-11-13〜。BUG-76。
+  以前は始めるときにフラグを下ろしていたので、全部送っていた）。そのときは `DATA_START` を出さずに `CANCEL_OK` だけ返す。
 
 ### (5) 切断要求 (DISCONNECT)
 * **PC ➔ PONS**: `PONS:DISCONNECT`
 * **PONS ➔ PC**: `PONS:BYE`
+* 転送中に切断した（`DISCONNECT`・本体のボタン）ときは、転送をやめて行の頭に `PONS:CANCEL_OK` を出してから `PONS:BYE`
+  （2026-11-13〜。以前は `CANCEL_OK` を出さず、`BYE` が転送の途中に混ざっていた）。
 * PONSは安全に通常の航法画面（`MODE_MAP`）と各種ロギングへ復帰する。
 
 ### (6) GNSS の航法データベースの机の上の試験 (DBD)（2026-11-09〜）
@@ -138,6 +154,8 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 * `COLD` は GNSS をコールドスタートさせ（UBX-CFG-RST navBbrMask=0xFFFF、GNSS だけの再起動）、SD の `gnss_dbd.bin` を戻す。
   `COLDONLY` は戻さない比べ用、`HOT` はホットスタート、`SAVE` はいま吸い出して書く。結果（測位までの秒数など）は
   `log.txt` の `GNSS DBD TEST ...` に出る。仕組みは `gnss_dbd.cpp` の冒頭と docs/pons_ttff_assist_plan.md §3。
+* `COLD` / `COLDONLY` は、リセットの前に**その起動の間 ANA を切る**（2026-11-14〜。本物のコールドの起動と同じ条件。SPG 5.10 は ANA が有効だと
+  コールドスタートのあと QZSS を使わないため）。次の普通の起動で ANA は有効に戻る。
 * `COLD` / `COLDONLY` / `HOT` を 1 回でも打つと、**再起動するまで自動の吸い出しはしない**（`auto=off`）。`COLDONLY` で消した
   GNSS の薄いデータベースで SD のファイルを上書きして、次の `COLD` の比べ物にならなくなるのを防ぐため。`SAVE` は効く。
 * リプレイ中と、抜けた直後（本物の NAV-PVT が届くまで）は `STATUS` 以外を `ERROR,REPLAY` で断る（fix と日時が再生した CSV の値のため）。

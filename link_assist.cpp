@@ -158,6 +158,9 @@ static uint16_t own_tacc_ms() {
 static bool own_utc_ms_now(uint64_t* out, uint16_t* tacc) {
   if (link_rf_suppressed()) return false;           // リプレイ中は ubx_* が CSV の値
   if (!get_gnss_connection()) return false;
+  // ★ 確かめられていない時刻は渡さない（2026-11-14〜）。外から入れた時刻・fix の前に GNSS が自分で読んだ時刻は、fix するまで渡さない。
+  //   BT1 が保っていた RTC の時刻は渡す。11/14 に、LoRa でもらった時刻が fix の前に約 +17 分飛んだため（gnss.h の gnss_own_time_trusted()）
+  if (!gnss_own_time_trusted()) return false;
   const GnssDate d = get_gnss_date();
   const GnssTime t = get_gnss_time();
   if (!d.isValid() || !t.isValid() || d.year() < 2026) return false;
@@ -301,6 +304,7 @@ static const char* offer_block(uint32_t now) {
   const bool ac  = s_acWants && heard_within(s_askAcMs, now, LINK_ASSIST_ASK_HOLD_MS);
   const bool req = heard_within(s_askReqMs, now, LINK_ASSIST_ASK_HOLD_MS);
   if (!ac && !req)                       return "not asked";
+  if (!gnss_own_time_trusted())          return "time unconfirmed";   // 時刻はあるが、確かめられていない（own_utc_ms_now の ★）
   uint64_t u;
   if (!own_utc_ms_now(&u, nullptr))      return "no time";
   return nullptr;
@@ -356,6 +360,7 @@ static void plan_free(uint32_t now, uint8_t kind) {
 
 static void send_tick(uint32_t now) {
   // 送ったあと AUX が落ちたか（落ちないまま LINK_TX_TXSTART_MS ＝ モジュールに捨てられた）
+  // 意図して直さない（2026-11-14 の監査）: loop() ごとの見張りなので、長い描画をまたぐと短いビーコンでも noRf に数えうる（1 分のまとめの数がずれるだけ）
   if (s_auxWatch) {
     if (digitalRead(E220_AUX_PIN) == LOW) s_auxWatch = false;
     else if (now - s_auxWatchMs >= LINK_TX_TXSTART_MS) { s_auxWatch = false; s_cNoRf++; }
@@ -446,8 +451,9 @@ static void own_tacc_log_tick() {
     const uint32_t ns = gnss_own_tacc_ns();
     char rtc[8] = "?";
     if (gnss_rtc_boot_checked()) strlcpy(rtc, gnss_rtc_alive_on_boot() ? "alive" : "lost", sizeof(rtc));
-    enqueueTask(createLogSdfTask("LINK ASSIST: own time tAcc %.3fs (%s, rtc=%s)",
-                                 ns == 0xFFFFFFFFUL ? -1.0f : ns / 1e9f, fix ? "at first fix" : "no fix yet", rtc));
+    enqueueTask(createLogSdfTask("LINK ASSIST: own time tAcc %.3fs (%s, rtc=%s, share=%s)",
+                                 ns == 0xFFFFFFFFUL ? -1.0f : ns / 1e9f, fix ? "at first fix" : "no fix yet", rtc,
+                                 gnss_own_time_trusted() ? "yes" : "no"));
     logged_time = true;
     if (fix) logged_fix = true;
   }
@@ -506,6 +512,11 @@ uint16_t lassist_time_status_bits() {
   const GnssDate d = get_gnss_date();
   const GnssTime t = get_gnss_time();
   if (!d.isValid() || !t.isValid()) return 0;
+  // ★ GNSS が黙った・NAV-PVT が止まった（own_utc_ms_now と同じ 3 秒）ときは、有効のまま残った時刻が止まっているので
+  //   「悪い」と知らせる（BUG-68）。受信機は使わず、「時刻の出どころが聞こえている」ともみなさない（要求を控えない）。
+  if (!get_gnss_connection() || millis() - get_gnss_fix_millis() > 3000) return LINK_ST_TIME_BAD;
+  // 確かめられていない時刻（外から入れた・fix の前に GNSS が自分で読んだ・fix の前に飛んだ）は、ボートに使わせない（2026-11-14〜）
+  if (!gnss_own_time_trusted()) return LINK_ST_TIME_BAD;
   const uint16_t ta = own_tacc_ms();
   if (ta > LINK_ASSIST_TACC_MAX_MS)  return LINK_ST_TIME_BAD;
   if (ta > LINK_ASSIST_TACC_FINE_MS) return LINK_ST_TIME_COARSE;

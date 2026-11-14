@@ -79,6 +79,8 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
+`python3 tools/check_release.py` で以下（設定マクロ・FLASH アセット CRC・ホスト単体テスト 5 本）を一括検査できる。
+
 - `RELEASE` — 有効に。無効だと `setup()`（Core0）が `while(!Serial)` で待ち、実機が起動しない。
 - `RELEASE_GNSS` — GNSS シミュレーション（`DEBUG_GNSS_SIM_*`）が全部コメントアウト済みか。
 - `BUILDDATE` / `BUILDVERSION` — 更新する。README のバージョン記載も合わせる。
@@ -98,11 +100,15 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 
 ## テスト
 
-機上コードの自動テストは無い。**姿勢 ESKF だけ PC 上で検証できる。
-`attitude.cpp` を触ったら必ず走らせること。**
+以下の 4 モジュールは最小スタブで実機の `.cpp`/`.h` をそのまま PC 上でコンパイルして単体検証できる（`python3 tools/check_release.py` で一括実行＋`make clean` される）。該当モジュールを触ったら必ず走らせること。
 
 ```sh
-cd tools/attitude_test && make   # 協調旋回 / 水平化とヨー注入 / 重力観測 / IMU 断線時
+python3 tools/check_release.py       # リリース設定 + アセット CRC + 全ホストテスト一括実行
+cd tools/attitude_test && make       # 姿勢 ESKF（協調旋回 / 水平化とヨー注入 / 重力観測 / IMU 断線時）
+cd tools/wire2_test && make          # PONS Link Wire2（8 回転枠往復 / 境界値 / 日跨ぎ / ビーコン）
+cd tools/vario_test && make          # バリオ 3 状態 KF（上昇追従 / 加速度ガード / MS5611 復帰 reinit / 供給元）
+cd tools/dbd_test && make            # GNSS DBD（256B 境界フレーム検証 / コールド復元・再送 / 0 件保護 / 時刻注入）
+python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 ```
 
 **`attitude.cpp` と `tools/imulog/eskf.py` は同じ数式の二重実装。

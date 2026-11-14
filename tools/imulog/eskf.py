@@ -488,6 +488,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         # ★ ゲートはジャイロだけから作れるものを主にする。GNSS 断中に働かないと
         #   意味が無いため（重力観測はまさにその場面のためにある）。
         yaw_rate_lp = 0.0        # ワールド系ヨーレートの持続成分 [deg/s]（2 秒 LPF）
+        # 意図して直さない（2026-11-14 の監査）: --gnss-cutoff は速度の観測にだけ効く（longacc_lp・ヨーの初期化・再確認には効かない）
         longacc_lp = 0.0         # 前後加速度の持続成分 [m/s^2]（GNSS 由来・2 秒 LPF）
         last_gsp = None
         last_gsp_t = None

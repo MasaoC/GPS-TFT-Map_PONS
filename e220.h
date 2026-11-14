@@ -149,4 +149,9 @@ bool e220_read_noise(int16_t* noise_dbm, int16_t* last_rssi_dbm);
 // 1 フレーム = sizeof(LinkTelem) + RSSI 1 バイト。1Hz なら毎分 66×60 ≒ 3960 増える。
 uint32_t e220_rx_bytes();
 
+// 無線モジュールが since_ms（millis()）から今までの間に動いていた（送信・起床・受けたものの出力。AUX Low）か
+// （2026-11-13〜）。気圧センサーが送信のたびに外れた値を出すので、その間に測ったサンプルを捨てるのに使う（airdata.cpp）。
+// 送ったときは送信時間の見込みぶん先まで「動いている」とみなす。e220_setup() の前・モジュールが無いときは false。
+bool e220_rf_active_since(uint32_t since_ms);
+
 #endif // E220_H

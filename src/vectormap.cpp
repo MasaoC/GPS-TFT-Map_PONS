@@ -86,6 +86,9 @@ uint32_t vm_last_points = 0;
 //   f(lat)=ln(tan(pi/4+lat/2)),  f'=sec,  f''/f'=tan,  f'''/f'=tan^2+sec^2
 //   f(c+d)-f(c) ≒ d*sec(c) * (1 + d*(c2 + d*c3))
 // ホスト検証で、全 scale・日本全域の緯度において既存式との差は最大 0.19px。
+// 中心の画面 Y を固定する（地図一覧の絵 draw_vectormap_coverage の間だけ。-1 = 自機の位置の決まりどおり）
+static int vm_cy_override = -1;
+
 struct vm_proj {
   float cLat, cLon;
   float kx;     // 経度差 1 度あたりの px
@@ -109,7 +112,8 @@ static void vm_make_proj(vm_proj *p, double cLat, double cLon, float scale,
   const float a = up * DEG_TO_RAD;
   p->ca = cosf(a);
   p->sa = sinf(a);
-  p->cy = is_trackupmode() ? (BACKSCREEN_SIZE * 3 / 4) : (BACKSCREEN_SIZE / 2);
+  p->cy = (vm_cy_override >= 0) ? vm_cy_override
+          : is_trackupmode() ? (BACKSCREEN_SIZE * 3 / 4) : (BACKSCREEN_SIZE / 2);
 }
 
 // 緯度経度 → スクリーン座標。latLonToXY と同じ結果になる（誤差 < 0.2px）。
@@ -239,19 +243,17 @@ static const uint8_t *vm_draw_record(const uint8_t *p, const vm_tile *t,
   return next;
 }
 
-// 指定 LOD で表示範囲に掛かるタイルが 1 枚でもあるか。
-static bool vm_has_tiles(int lod, int32_t lat_min_e7, int32_t lat_max_e7,
-                         int32_t lon_min_e7, int32_t lon_max_e7) {
-  const int32_t tsize = vm_lod_tilesize_e7[lod];
-  for (uint16_t i = 0; i < vm_tile_count; i++) {
-    const vm_tile *t = &vm_tiles[i];
-    if (t->lod != lod)
-      continue;
-    if (t->org_lat_e7 > lat_max_e7 || t->org_lat_e7 + tsize < lat_min_e7)
-      continue;
-    if (t->org_lon_e7 > lon_max_e7 || t->org_lon_e7 + tsize < lon_min_e7)
-      continue;
-    return true;
+// 指定 LOD の収録範囲（地図データの vm_cover_e7）の 1 つに、表示範囲が丸ごと入っているか（2026-11-14〜。BUG-115）。
+// ★ 「表示範囲にタイルが 1 枚でもあるか」で選んでいたころは、飛行エリアの端が画面に入ると、範囲の外（データの無い所）の
+//   陸地が海の色で塗られていた（細かい LOD は飛行エリアの周りだけを持ち、背景は海の色で塗ってから陸を重ねるため）。
+//   範囲の中なら、タイルが無い所は本当に水面（陸の無い所）なので、海の色でよい。
+static bool vm_view_covered(int lod, int32_t lat_min_e7, int32_t lat_max_e7,
+                            int32_t lon_min_e7, int32_t lon_max_e7) {
+  const uint16_t first = vm_lod_cover_first[lod];
+  for (uint16_t k = 0; k < vm_lod_cover_n[lod]; k++) {
+    const int32_t *r = vm_cover_e7[first + k];
+    if (lat_min_e7 >= r[0] && lon_min_e7 >= r[1] && lat_max_e7 <= r[2] && lon_max_e7 <= r[3])
+      return true;
   }
   return false;
 }
@@ -281,13 +283,13 @@ void draw_vectormap(double center_lat, double center_lon, float scale,
   const int32_t lon_max_e7 = (int32_t)((center_lon + dlon) * 1e7);
 
   // ---- LOD の選択 ----
-  // LOD ごとに収録範囲が違う（高ズームほど狭い）ため、選んだ LOD にタイルが
-  // 無ければ、より広範囲を収録している粗い LOD へ落とす。
-  // これをやらないと、たとえば LOD2 の収録範囲（本州中西部）の外に出たときに
-  // 海色の背景だけが塗られて陸地が描かれず、画面全体が真っ青になる。
+  // LOD ごとに収録範囲が違う（高ズームほど狭い）ため、表示範囲が選んだ LOD の収録範囲に
+  // 丸ごと入っていなければ、より広範囲を収録している粗い LOD へ落とす（vm_view_covered）。
+  // これをやらないと、収録範囲の外に掛かった所が海色の背景のまま陸地が描かれない
+  // （範囲の外へ出れば画面全体が真っ青になる）。いちばん粗い LOD は範囲の外でもそれを使う。
   int lod = vm_select_lod(scale);
   while (lod < VM_LOD_COUNT - 1 &&
-         !vm_has_tiles(lod, lat_min_e7, lat_max_e7, lon_min_e7, lon_max_e7)) {
+         !vm_view_covered(lod, lat_min_e7, lat_max_e7, lon_min_e7, lon_max_e7)) {
     lod++;
   }
 
@@ -336,4 +338,61 @@ void draw_vectormap(double center_lat, double center_lon, float scale,
       }
     }
   }
+}
+
+// ---- 地図一覧の絵（収録範囲の枠。vectormap.h の説明）----
+void draw_vectormap_coverage(bool zoom) {
+  const int W = BACKSCREEN_SIZE;
+  // 表示の中心と縮尺 [px/km]。zoom は最大ズームの範囲（LOD 0）の全体に余白を足して収める。
+  double lat0 = 30.5, lat1 = 45.8, lon0 = 128.5, lon1 = 146.0;   // 日本全体（本州・四国・九州・北海道）
+  if (zoom && vm_lod_cover_n[0] > 0) {
+    lat0 = lon0 = 1e9; lat1 = lon1 = -1e9;
+    for (uint16_t k = 0; k < vm_lod_cover_n[0]; k++) {
+      const int32_t *r = vm_cover_e7[vm_lod_cover_first[0] + k];
+      lat0 = fmin(lat0, r[0] * 1e-7); lon0 = fmin(lon0, r[1] * 1e-7);
+      lat1 = fmax(lat1, r[2] * 1e-7); lon1 = fmax(lon1, r[3] * 1e-7);
+    }
+    const double mlat = (lat1 - lat0) * 0.15 + 0.2, mlon = (lon1 - lon0) * 0.15 + 0.2;
+    lat0 -= mlat; lat1 += mlat; lon0 -= mlon; lon1 += mlon;
+  }
+  const double clat = (lat0 + lat1) / 2.0, clon = (lon0 + lon1) / 2.0;
+  // vm_make_proj と同じ換算: 経度 1 度 = 111.321*scale px、緯度 1 度 ≒ 111.32/cos(緯度)*scale px
+  const double sec = 1.0 / cos(clat * DEG_TO_RAD);
+  const double s_lon = (W - 10) / ((lon1 - lon0) * 111.321);
+  const double s_lat = (W - 10) / ((lat1 - lat0) * 111.321 * sec);
+  const float scale = (float)fmin(s_lon, s_lat);
+
+  vm_cy_override = W / 2;
+  draw_vectormap(clat, clon, scale, 0.0f);   // いちばん粗い地図（縮尺で LOD が決まる）
+  vm_proj proj;
+  vm_make_proj(&proj, clat, clon, scale, 0.0f);
+  vm_cy_override = -1;
+
+  // 外側の範囲から順に重ねる（全国の範囲＝最後の LOD は描かない）。赤は 2px で上に。
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  for (int lod = VM_LOD_COUNT - 2; lod >= 0; lod--) {
+    for (uint16_t k = 0; k < vm_lod_cover_n[lod]; k++) {
+      const uint16_t idx = vm_lod_cover_first[lod] + k;
+      const int32_t *r = vm_cover_e7[idx];
+      const bool site = vm_cover_name[idx][0] != '\0';
+      const uint16_t col = (lod == 0) ? COLOR_RED : site ? COLOR_ORANGE : COLOR_BLUE;
+      int16_t x0, y0, x1, y1;
+      vm_project(&proj, r[2] * 1e-7f, r[1] * 1e-7f, &x0, &y0);   // 北西の角
+      vm_project(&proj, r[0] * 1e-7f, r[3] * 1e-7f, &x1, &y1);   // 南東の角
+      int w = x1 - x0, h = y1 - y0;
+      if (w < 3) { x0 -= (3 - w) / 2; w = 3; }   // 小さすぎて見えない枠は 3px にする
+      if (h < 3) { y0 -= (3 - h) / 2; h = 3; }
+      backscreen.drawRect(x0, y0, w, h, col);
+      if (lod == 0) {
+        backscreen.drawRect(x0 - 1, y0 - 1, w + 2, h + 2, col);
+        if (zoom) {   // 番号（下の凡例と同じ 1 から）。枠の左上の外側、上に置けないときは下
+          backscreen.setTextColor(COLOR_RED);
+          backscreen.setCursor(x0, (y0 >= 10) ? y0 - 10 : y0 + h + 2);
+          backscreen.print(k + 1);
+        }
+      }
+    }
+  }
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
 }

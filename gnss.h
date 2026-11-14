@@ -35,6 +35,7 @@
   #define SATELLITE_TYPE_GALILEO 3
   #define SATELLITE_TYPE_BEIDOU 4
   #define SATELLITE_TYPE_QZSS 5
+  #define SATELLITE_TYPE_SBAS 6   // 静止衛星の補強信号（2026-11-14〜。番号は PRN 120〜158。日本では MSAS 129・137＝みちびきの静止衛星、GAGAN 128 など）
   #define SATELLITE_TYPE_UNKNOWN 0
 
   #define MAX_LAST_NMEA 16
@@ -88,10 +89,17 @@
   void gnss_getposition_mode();
   void gnss_constellation_mode();
   bool get_gnss_fix();
+  // いま画面に出している位置の供給元（ミラー中は機体、デモ、リプレイ、自機）に fix が無いか（2026-11-14〜）。
+  // 地図の「Scanning GNSS Signal」の箱（display_tft.cpp の draw_nomapdata）とユーザー LED の点滅（.ino の loop_userled）が
+  // 同じ答えを出すためにここにまとめた。条件を呼び出し側に書き写さないこと
+  bool gnss_shown_no_fix();
   bool get_gnss_connection();
   // 起動時点で GNSS 内部 RTC が有効な日時を保持していたか（バックアップ電池 MS621FE の生存判定用）
   bool gnss_rtc_alive_on_boot();
   bool gnss_rtc_boot_checked();   // 起動後最初の NAV-PVT を見て、上の判定が決まったか
+  // 起動時の衛星系の設定（CFG-SIGNAL）の確認と書き直し（QZSS を入れる・GNSS_BDS_B1I なら BeiDou を B1I にして GLONASS を切る）が
+  // 済んだか（2026-11-13〜）。書き直すと GNSS が測位をやり直すので、ANA の設定・航法データベースの戻し・外からの時刻入れはこれを待つ
+  bool gnss_signal_cfg_settled();
   // 一度でも GNSS から受信したか（起動直後と「抜けた」の区別に使う）。
   // ★ これ無しで `!get_gnss_connection()` を警報の条件にすると、**起動直後の
   //   まだ 1 バイトも来ていない間に発報する**（PONS Link の GNSS 断線ビットで踏んだ）。
@@ -119,6 +127,13 @@
   bool   gnss_own_fixok();
   double gnss_own_altitude();
   uint32_t gnss_own_tacc_ns();   // 自機の GNSS の時刻の精度 [ns]（NAV-PVT tAcc。fix の前でも RTC の時刻なら入る）
+  // 自機の GNSS の時刻を仲間へ渡してよいか（2026-11-14〜）。true になるのは
+  //   ・起動時に GNSS の時計（RTC）が生きていた（BT1 が保っていた時刻）か、
+  //   ・この起動で fix した（fix で時刻が確かめられた）とき。
+  // 外から入れた時刻（LoRa・PC）や、fix の前に GNSS が自分で読んだ時刻は、fix するまで false。
+  // fix していないときに時刻が飛んだ（GNSS_TIME_JUMP_MS）・時刻が消えたときも false へ戻す（次の fix で true）。
+  // 11/14 に、LoRa でもらった時刻が fix の前に約 +17 分飛んだため（settings.h の GNSS_TIME_JUMP_MS）。link_assist.cpp が見る
+  bool gnss_own_time_trusted();
 
   double get_gnss_lat();
   double get_gnss_lon();
@@ -139,7 +154,8 @@
   bool get_gnss_ana_busy();       // 予測を計算中か（この間は GNSS の消費電流が増える）
   int  get_gnss_ana_data_svs();   // 予測データを持っている衛星数
   int  get_gnss_ana_orbit_svs();  // いま予測軌道を使っている衛星数
-  bool get_gnss_ana_off_cold();   // この起動はコールドスタート（BT1 が切れていた）なので ANA を切った（2026-11-13〜）
+  bool get_gnss_ana_off_cold();
+  bool gnss_ana_off_for_cold_test();  // PONS:DBD,COLD / COLDONLY の前に、その起動の間 ANA を切る（2026-11-14〜。gnss.cpp）   // この起動はコールドスタート（BT1 が切れていた）なので ANA を切った（2026-11-13〜）
   // NED 水平速度。姿勢 ESKF の速度観測用（旋回中の遠心加速度を分離するのに必要）。
   bool     get_gnss_fixok();   // NAV-PVT gnssFixOK フラグ（有効な GNSS フィックスか）
 
@@ -210,6 +226,20 @@
     uint32_t count;          // 受信フレーム数
   };
   GnssMonRf get_gnss_mon_rf();
+  // GNSS DETAIL 3 に出す直近の受信状態（2026-11-14〜）。log.txt の `grf` 行（1 分まとめ）と同じ物差しを、直近 60 秒で出す。
+  // 値はすべて自機の GNSS（ミラー中も送信機の値ではない）。リプレイ中は実 GNSS を読まないので valid が落ちる。
+  struct GnssRfNow {
+    bool     valid;   // MON-RF が 5 秒以内に届いているか
+    uint8_t  jam;     // いまの jamInd（CW 妨害の指標 0..255）
+    uint8_t  jam50;   // 直近 n 回（MON-RF は 1 秒に 1 回、最大 60）のうち jamInd >= 50 だった数（grf の jam50 と同じ物差し）
+    uint8_t  n;
+    uint16_t noise;   // noisePerMS
+    uint16_t agc;     // agcCnt
+    float    cno4;    // C/N0 上位 4 の平均 [dB-Hz]（12 秒以内に NAV-SAT に載った衛星）
+    float    cnoall;  // C/N0 全体の平均 [dB-Hz]
+    uint8_t  trk;     // 追尾している衛星（C/N0 > 0）の数
+  };
+  GnssRfNow gnss_rf_now();
   void      gnss_enable_mon_rf(uint8_t rate = 1);
   // 1 分ぶんの受信状態を log.txt の `grf` 行にする（60 秒ログから呼ぶ。debug/v7-noise-test と同じ行）
   void      gnss_log_rf_minute();

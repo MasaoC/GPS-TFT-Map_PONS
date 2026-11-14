@@ -543,6 +543,7 @@ static const char* time_block(uint32_t now) {
     if (!s_ep_nofix || now - s_ep_t0 < 1000) return "test reset";
   }
   if (!gnss_rtc_boot_checked())           return "before 1st NAV-PVT";   // 時計が生きているかまだ分からない
+  if (!gnss_signal_cfg_settled())         return "signal config";        // 衛星系の設定の入れ直し（GNSS が測位をやり直す）を待つ
   if (gnss_time_known())                  return TB_KNOWN;
   if (s_ti == TI_OK)                      return TB_GIVEN;
   if (s_ti == TI_WAIT)                    return "waiting answer";
@@ -830,11 +831,16 @@ void gnss_dbd_fix_tag(char* buf, size_t n) {
 static void episode_tick(uint32_t now, bool fix) {
   if (s_ep == EP_NONE) return;
   if (!s_ep_nofix) {   // リセットが効いて fix が落ちたのを見てから数える（直前の fix を数えない）
-    if (!fix) {
+    // ★ コールドの試験（COLD / COLDONLY）は、時刻も落ちたのを見る（BUG-71）。fix の無い状態で打つと「fix が落ちた」が
+    //   すぐ成り立ち、リセット前の NAV-PVT の古い時刻で「時刻が分かった（0 秒後）」と数え、time_block() も
+    //   「GNSS は時刻を知っている」と返していた。コールドのリセットは時計（RTC）も消すので、時刻は必ず一度落ちる。
+    const bool cold = (s_ep == EP_TEST_DBD || s_ep == EP_TEST_COLD);
+    if (!fix && (!cold || !gnss_time_known())) {
       s_ep_nofix = true;
     } else {
       if (now - s_ep_t0 > 5000) {
-        enqueueTask(createLogSdfTask("GNSS DBD TEST %s: fix did not drop in 5s (reset not applied?)", ep_name(s_ep)));
+        enqueueTask(createLogSdfTask("GNSS DBD TEST %s: %s did not drop in 5s (reset not applied?)",
+                                     ep_name(s_ep), fix ? "fix" : "time"));
         end_episode("no reset");
       }
       return;
@@ -1027,6 +1033,7 @@ void gnss_dbd_tick() {
   switch (s_st) {
     case ST_BOOT: {
       if (!gnss_rtc_boot_checked()) return;              // 最初の NAV-PVT を待つ
+      if (!gnss_signal_cfg_settled()) return;            // 衛星系の設定を入れ直すと GNSS が測位をやり直すので、戻すのはその後
       if (gnss_rtc_alive_on_boot()) {                    // BT1 が生きていた。BBR のほうが新しい
         enqueueTask(createLogSdfTask("GNSS DBD: not restored (rtc alive at boot)"));
         s_st = ST_IDLE;
@@ -1037,6 +1044,7 @@ void gnss_dbd_tick() {
       if (s_ep == EP_NONE) { skip_restore("fixed before restore"); return; }   // 待っている間に fix した
       const uint8_t ld = load_state();
       // ※ GNSS_DBD_LOAD_WAIT_MS(20000ms) は SEC-UNIQID ポール再送（初回即時、その後約7/12/17秒）を完全にカバーする
+      // 意図して直さない（2026-11-14 の監査）: 20 秒は起動からの millis()（ふつうの起動では待ちの間も gnss_loop が回るので足りる）
       const bool waiting = now < GNSS_DBD_LOAD_WAIT_MS;
       if (ld == LD_BUSY && waiting) return;              // SD の読み込みを待つ
       if (ld != LD_OK) { skip_restore(ld == LD_BUSY ? "SD read timeout" : s_ld_why); return; }
@@ -1107,6 +1115,8 @@ void gnss_dbd_tick() {
 //   SAVE      いま吸い出して SD に書く（fix していれば、時間・止まっているかの条件は見ない）
 //   COLD      GNSS をコールドスタートさせ（CFG-RST navBbrMask=0xFFFF。BT1 が切れたのと同じ）、SD の DBD を戻す
 //   COLDONLY  コールドスタートだけ（比べるための素の値）
+//             ★ COLD / COLDONLY は、リセットの前にその起動の間 ANA を切る（2026-11-14〜。本物のコールドの起動と同じ。
+//               gnss.cpp の gnss_ana_off_for_cold_test()）。log.txt の `GNSS ANA off for this boot (cold-start test ...)`
 //   HOT       ホットスタート（navBbrMask=0x0000）
 //   COLD,TIME / COLDONLY,TIME
 //             COLD / COLDONLY と同じだが、リセットのあと（COLD は DBD より先に）、リセット前に本体が覚えた時刻を
@@ -1195,6 +1205,8 @@ void gnss_dbd_command(const char* arg) {
   if (s_st == ST_WAIT) s_st = ST_IDLE;
 
   const uint16_t mask = (k == EP_TEST_HOT) ? 0x0000 : 0xFFFF;
+  // コールドの試験は、本物のコールドの起動と同じく ANA を切ってからリセットする（VALSET はリセットより先に UART に出るので先に効く）
+  if (k != EP_TEST_HOT) gnss_ana_off_for_cold_test();
   const uint8_t rst[4] = { (uint8_t)(mask & 0xFF), (uint8_t)(mask >> 8), 0x02, 0x00 };  // resetMode 0x02 = GNSS だけ
   gnss_ubx_send(0x06, 0x04, rst, sizeof(rst));   // UBX-CFG-RST（返事は来ない）
   start_episode(k, now ? now : 1);
@@ -1226,6 +1238,7 @@ void gnss_dbd_command(const char* arg) {
 //  外から GNSS へ時刻を入れる口（gnss_dbd.h の説明）
 // ============================================================
 // ★ 出どころ（PC・LoRa・…）を足すときもここへ渡すだけ。いつ入れるか・入れ直すかは time_block() が決める。
+// 意図して直さない（2026-11-14 の監査）: DBD の机の上の試験（COLD,TIME など）の最中に PC・LoRa の時刻が来ても拒まない。吸い出し（ST_DUMP）は GNSS が切れても 20 秒待つ。どちらも机の上だけ
 const char* gnss_dbd_give_time(uint64_t utc_ms, uint32_t at_ms, GnssTimeSrc src, uint32_t acc_ms) {
 #if !GNSS_DBD_ENABLE
   (void)utc_ms; (void)at_ms; (void)src; (void)acc_ms;

@@ -11,8 +11,10 @@
 #include <Wire.h>
 #include "airdata.h"
 #include "link.h"
+#include "e220.h"    // e220_rf_active_since（無線が動いていた間の気圧サンプルを捨てる。2026-11-13〜）
 #include "mysd.h"
 #include "gnss.h"    // replay_has_value / replay_get_pressure （リプレイ時の気圧差し替え）
+#include "imu.h"     // imu_kalman_reinit（MS5611 が戻ったときにバリオの KF を入れ直す）
 // MS5611 の I2C アドレス（SDO=VCC の場合は 0x76）
 #define MS5611_ADDR 0x77
 
@@ -30,6 +32,31 @@
 // i2c0 バスを使用（SDA=GPIO32, SCL=GPIO33）。
 // RP2350 の Wire ライブラリはデフォルトで i2c0 を使うが、ピン番号が異なるため明示的に指定。
 TwoWire myWire(i2c0, 32, 33);
+#define I2C0_SDA_PIN 32   // myWire の SDA / SCL（上の 2 つ。バスを空けるときに GPIO として叩く）
+#define I2C0_SCL_PIN 33
+
+// i2c0 のバスを空ける（2026-11-14）。相手が SDA を Low に握ったまま（転送の途中で止まった・電源の瞬断）なら、
+// SCL を最大 9 回叩いて相手にバイトを吐き切らせ、STOP を出す（Wire の時間切れのときの復旧と同じ手順）。
+// ★ 呼ぶのは myWire を止めている間（begin の前・end の後）だけ。戻り値: SDA が Low だったか（叩いたか）。
+static bool i2c0_bus_clear() {
+    pinMode(I2C0_SDA_PIN, INPUT_PULLUP);
+    pinMode(I2C0_SCL_PIN, INPUT_PULLUP);
+    if (digitalRead(I2C0_SDA_PIN) == HIGH) return false;
+    pinMode(I2C0_SCL_PIN, OUTPUT);
+    for (int i = 0; i < 9 && digitalRead(I2C0_SDA_PIN) == LOW; i++) {
+        digitalWrite(I2C0_SCL_PIN, LOW);  delayMicroseconds(5);
+        digitalWrite(I2C0_SCL_PIN, HIGH); delayMicroseconds(5);
+    }
+    if (digitalRead(I2C0_SDA_PIN) == HIGH) {   // 放した: STOP（SCL High のまま SDA を Low → High）
+        pinMode(I2C0_SDA_PIN, OUTPUT);
+        digitalWrite(I2C0_SDA_PIN, LOW);  delayMicroseconds(5);
+        digitalWrite(I2C0_SDA_PIN, HIGH); delayMicroseconds(5);
+    }
+    pinMode(I2C0_SDA_PIN, INPUT_PULLUP);
+    pinMode(I2C0_SCL_PIN, INPUT_PULLUP);
+    return true;
+}
+static bool s_boot_bus_cleared = false;   // 起動時にバスを空けた（ログは enqueueTask が使えるようになってから出す）
 
 // MS5611 の工場出荷時キャリブレーション係数（PROM から読み出し）
 // C[0]: 製造データ（未使用）, C[1]-C[6]: 温度・気圧補正用係数
@@ -67,8 +94,18 @@ static float last_altitude    = 0.0f;  // [m]（VSPEED_WINDOW_MS ウィンドウ
 // ※ 棄却率は固定 2 サンプルなので、窓のサンプル数で変わる。
 //   VSPEED_WINDOW_MS=250 では 250/24 ≒ 10 サンプルなので上下 20%。
 //   窓幅を変えたらこの数字も変わることに注意（以前は 500ms 前提のコメントが残っていた）。
-#define ALT_WIN_BUF_SIZE 32             // 24ms周期×250ms ≒ 10 サンプル、余裕込みで 32
+// ★ 2026-11-13〜 48: 無線のせいでサンプルが足りない窓は最大 BARO_WIN_EXTEND_MAX 窓ぶん（750ms ≒ 33 サンプル）延ばすため
+#define ALT_WIN_BUF_SIZE 48             // 24ms周期×250ms ≒ 10 サンプル。延ばした窓と余裕込みで 48
 static float alt_win_buf[ALT_WIN_BUF_SIZE]; // ウィンドウ内の高度サンプルバッファ
+// 各サンプルの印（2026-11-13〜。settings.h の BARO_SPIKE_REJECT_M / BARO_RF_BLANK_ENABLED）。**両方立つこともある**
+// （無線の間でも外れ値の判定は必ずする。全部で平均に落ちたときに、無線の間の外れ値だけは除けるように）。
+enum : uint8_t { BARO_SMP_OK = 0, BARO_SMP_SPIKE = 1, BARO_SMP_RF = 2 };
+static uint8_t alt_win_kind[ALT_WIN_BUF_SIZE];
+static uint32_t s_d1_start_ms = 0;          // いまのサンプルの D1（気圧）変換を始めた時刻 [ms]
+static float    s_last_raw_p  = 0.0f;       // 捨てたものも含めて最後のサンプルの気圧・気温（全部使った窓で使う）
+static float    s_last_raw_t  = 0.0f;
+static uint8_t  s_last_raw_kind = BARO_SMP_OK;   // そのサンプルの印（全部で平均に落ちた窓で、使った段のものか見る。BUG-78）
+static uint32_t s_cnt_spike = 0, s_cnt_rf = 0, s_cnt_fb = 0;   // 60 秒ログ用（読むと 0 に戻す）
 static int   alt_win_count = 0;             // バッファ内の有効サンプル数
 static float alt_win_prev  = 0.0f;          // 直前ウィンドウのトリム平均高度 [m]（GND相対）
 // 直前ウィンドウを閉じた時刻 [ms]。vspeed は「窓が隣り合っている」前提で
@@ -384,12 +421,22 @@ static bool ms5611_process_data(bool &valid) {
     // ★ 有り得ない気圧は使わない（基準高度・last_pressure・窓のどれにも入れない。理由は上の MS5611_P_*）。
     valid = (p >= MS5611_P_MIN_HPA && p <= MS5611_P_MAX_HPA);   // NaN は比較が false なので落ちる
     if (!valid) return false;
-    last_temperature = t;
-    last_pressure    = p;
-    float raw_alt_abs = pressure_to_altitude(last_pressure);
+
+    // ★ 無線が動いていた間に測ったサンプルか（2026-11-13〜。settings.h の BARO_RF_BLANK_ENABLED）。
+    //   D1 の変換を始めてから今（D2 を読んだ）までに E220 が動いていたら捨てる。
+#if BARO_RF_BLANK_ENABLED
+    const bool rf = e220_rf_active_since(s_d1_start_ms);
+#else
+    const bool rf = false;
+#endif
+    float raw_alt_abs = pressure_to_altitude(p);
 
     // 起動時の高度をグランドレベル（0m）として記録
+    // ★ 無線が動いていたサンプルでは決めない（基準が数 m ずれたまま固まる）。起動直後は無線をまだ使っていないので、ふつうは 1 回目で決まる。
     if (!ground_set) {
+        if (rf) return false;
+        last_temperature = t;
+        last_pressure    = p;
         ground_alt_abs  = raw_alt_abs;
         ground_pressure = last_pressure;   // 起動時気圧を保存
         ground_set = true;
@@ -397,6 +444,21 @@ static bool ms5611_process_data(bool &valid) {
             last_temperature, last_pressure, raw_alt_abs));
     }
     float raw_alt = raw_alt_abs - ground_alt_abs;  // 起動地点からの相対高度 [m]
+
+    // ★ サンプルの扱いを決める（2026-11-13〜。理由と数値は settings.h の BARO_SPIKE_REJECT_M）。
+    //   ・無線が動いていた → BARO_SMP_RF
+    //   ・直前の窓の平均から BARO_SPIKE_REJECT_M より離れている → BARO_SMP_SPIKE（外れ値はいつも高い側に 3〜4 m）
+    //   捨てたサンプルも窓のバッファには残しておく（窓に残るものが少なすぎたら、今までどおり全部で平均する）。
+    uint8_t kind = BARO_SMP_OK;
+    if (rf) kind |= BARO_SMP_RF;
+    if (alt_win_prev_valid && fabsf(raw_alt - alt_win_prev) > BARO_SPIKE_REJECT_M) kind |= BARO_SMP_SPIKE;
+    if (kind & BARO_SMP_RF)    s_cnt_rf++;
+    if (kind & BARO_SMP_SPIKE) s_cnt_spike++;
+    // 気圧・気温（CSV の pressure 列・無線・表示）は使ったサンプルの値だけにする。外れ値を出さない
+    if (kind == BARO_SMP_OK) { last_temperature = t; last_pressure = p; }
+    s_last_raw_p = p;
+    s_last_raw_t = t;
+    s_last_raw_kind = kind;
 
     // トリム平均によるオーバーサンプリング:
     // VSPEED_WINDOW_MS 分のサンプルをバッファに蓄積し、挿入ソート後に上下 2 つずつ（約 10 サンプルの 20%。上の定義）を棄却して
@@ -406,26 +468,72 @@ static bool ms5611_process_data(bool &valid) {
     // D1 がゴミ値のとき pressure_to_altitude() が極端な値や NaN を返すことがある
     bool raw_alt_valid = !isnan(raw_alt) && !isinf(raw_alt) && raw_alt > -200.0f && raw_alt < 6000.0f;
     if (alt_win_count < ALT_WIN_BUF_SIZE && raw_alt_valid) {
-        alt_win_buf[alt_win_count++] = raw_alt;
+        alt_win_buf[alt_win_count]  = raw_alt;
+        alt_win_kind[alt_win_count] = kind;
+        alt_win_count++;
     }
     if (millis() - win_start >= VSPEED_WINDOW_MS && alt_win_count > 0) {
+        // ---- 使うサンプルを選ぶ ----
+        // ふだんは BARO_SMP_OK だけ。
+        float sel[ALT_WIN_BUF_SIZE];
+        int n = 0, n_rf = 0;
+        for (int i = 0; i < alt_win_count; i++) {
+            if (alt_win_kind[i] == BARO_SMP_OK) sel[n++] = alt_win_buf[i];
+            if (alt_win_kind[i] & BARO_SMP_RF) n_rf++;
+        }
+        // ★ **無線のせいで足りないときは、窓を閉じずに延ばす**（最大 BARO_WIN_EXTEND_MAX 窓ぶん）。
+        //   10 秒に 1 回ほどの長い送信（約 350ms）は 250ms の窓をまるごと覆う。そこで「全部で平均」に落とすと、
+        //   捨てたかった外れ値ごと使ってしまう（測った外れ方をまねたシミュレーションで、跳ね 0 回 → 4 回に戻った）。
+        //   延ばせば送信の後のサンプルで平均できる（同じシミュレーションで跳ね 0 回・窓の間隔は最大 0.32 秒）。
+        if (n < BARO_WIN_MIN_OK && n_rf > 0 && alt_win_count < ALT_WIN_BUF_SIZE &&
+            millis() - win_start < (unsigned long)VSPEED_WINDOW_MS * BARO_WIN_EXTEND_MAX) {
+            return false;   // 窓はまだ閉じない（last_altitude の瞬時値も動かさない）
+        }
+        // それでも BARO_WIN_MIN_OK より少なければ、順に広げる（どれかで足りた窓は s_cnt_fb に数える）:
+        //   ①外れ値でないもの（無線の間のものも使う。AUX の Low の張り付き・延ばしても送信が終わらないとき）
+        //   ②無線の間でないもの（外れ値も使う。本当の段差。次の窓からは新しい高さが基準になる）
+        //   ③全部（バリオを止めない）
+        if (n < BARO_WIN_MIN_OK) {
+            uint8_t excl = BARO_SMP_SPIKE;     // この印の付いたサンプルを除く（① → ② → ③ の順に緩める）
+            n = 0;
+            for (int i = 0; i < alt_win_count; i++)
+                if (!(alt_win_kind[i] & BARO_SMP_SPIKE)) sel[n++] = alt_win_buf[i];
+            if (n < BARO_WIN_MIN_OK) {
+                excl = BARO_SMP_RF;
+                n = 0;
+                for (int i = 0; i < alt_win_count; i++)
+                    if (!(alt_win_kind[i] & BARO_SMP_RF)) sel[n++] = alt_win_buf[i];
+            }
+            if (n < BARO_WIN_MIN_OK) {
+                excl = 0;
+                n = 0;
+                for (int i = 0; i < alt_win_count; i++) sel[n++] = alt_win_buf[i];
+            }
+            s_cnt_fb++;
+            // 段差なら新しい値が正しい。★ ただし最後のサンプルがその段で除いたもの（たとえば①で外れ値）なら入れない
+            //   （2026-11-13、BUG-78。以前は無条件に入れていて、窓の最後が外れ値だと CSV・無線・表示の気圧に外れ値が出た）。
+            if (!(s_last_raw_kind & excl)) {
+                last_pressure    = s_last_raw_p;
+                last_temperature = s_last_raw_t;
+            }
+        }
         // 挿入ソート（最大32サンプルなので十分高速）
-        for (int i = 1; i < alt_win_count; i++) {
-            float key = alt_win_buf[i];
+        for (int i = 1; i < n; i++) {
+            float key = sel[i];
             int j = i - 1;
-            while (j >= 0 && alt_win_buf[j] > key) {
-                alt_win_buf[j + 1] = alt_win_buf[j];
+            while (j >= 0 && sel[j] > key) {
+                sel[j + 1] = sel[j];
                 j--;
             }
-            alt_win_buf[j + 1] = key;
+            sel[j + 1] = key;
         }
-        // 上下2つずつカット
-        int trim = 2;
+        // 上下を切る。★ 2026-11-13〜 捨てたぶん少ないことがあるので、数に合わせる（10 前後なら今までどおり 2 つずつ）
+        int trim = (n >= 8) ? 2 : (n >= 5) ? 1 : 0;
         int lo = trim;
-        int hi = alt_win_count - trim;  // exclusive
+        int hi = n - trim;  // exclusive
         float sum = 0.0f;
-        for (int i = lo; i < hi; i++) sum += alt_win_buf[i];
-        float avg_cur = (hi > lo) ? sum / (hi - lo) : alt_win_buf[alt_win_count / 2];
+        for (int i = lo; i < hi; i++) sum += sel[i];
+        float avg_cur = (hi > lo) ? sum / (hi - lo) : sel[n / 2];
         // vspeed 計算。
         // ★ **窓幅ではなく実経過時間で割ること。**
         //   以前は (差分 ÷ VSPEED_WINDOW_MS) 固定だったが、これは「窓が隣り合っている」
@@ -435,8 +543,11 @@ static bool ms5611_process_data(bool &valid) {
         // 1 窓目も差分を取れない（前の窓が無い）ので更新しない。
         const unsigned long win_now_ms = millis();
         const unsigned long win_dt_ms  = win_now_ms - alt_win_prev_ms;
+        // ★ 上限は「無線のせいで延ばした窓の最大（VSPEED_WINDOW_MS × BARO_WIN_EXTEND_MAX）」より 1 窓ぶん長くとる
+        //   （2026-11-13、BUG-83）。以前は同じ 750ms で、最大まで延ばした窓はサンプルの周期（約 24ms）のぶん必ず 750ms を
+        //   越えて閉じるので V/S を更新せず、送信が続くと 2 秒で get_airdata_vspeed() が 0 に落ちていた。
         if (alt_win_prev_valid && win_dt_ms > 0 &&
-            win_dt_ms <= (unsigned long)VSPEED_WINDOW_MS * 3UL) {
+            win_dt_ms <= (unsigned long)VSPEED_WINDOW_MS * (BARO_WIN_EXTEND_MAX + 1UL)) {
             last_vspeed = (avg_cur - alt_win_prev) * (1000.0f / (float)win_dt_ms);
             // ★ 実際に計算できたときだけ時刻を記録する。窓が飛んだ回に記録すると
             //   get_airdata_vspeed() の 2 秒ステイル判定が古い値を「新鮮」と誤認する。
@@ -446,16 +557,27 @@ static bool ms5611_process_data(bool &valid) {
         alt_win_prev      = avg_cur;
         alt_win_prev_ms   = win_now_ms;
         alt_win_prev_valid = true;
-        last_win_hz       = alt_win_count * 1000.0f / VSPEED_WINDOW_MS; // 総サンプルから算出した Hz
+        // 総サンプル（捨てたものも含む）÷ 窓の実際の長さ。★ 窓は無線のせいで最大 BARO_WIN_EXTEND_MAX 倍に延びるので、
+        //   VSPEED_WINDOW_MS で割ると延びた窓で最大 3 倍に出る（2026-11-13、BUG-78）
+        {
+            const unsigned long win_len_ms = win_now_ms - win_start;
+            last_win_hz = alt_win_count * 1000.0f / (float)(win_len_ms > 0 ? win_len_ms : VSPEED_WINDOW_MS);
+        }
         alt_win_count     = 0;
         win_start         = win_now_ms;
         return true;   // ウィンドウ完了（VSI 再描画のトリガー）
     } else {
         // ウィンドウ未完了時は瞬時値（VARIO DETAIL の表示用。KF へは窓が閉じたときのトリム平均だけが入る）。
-        // ★ 範囲外・NaN の瞬時値は入れない（窓と同じ判定）。
-        if (raw_alt_valid) last_altitude = raw_alt;
+        // ★ 範囲外・NaN の瞬時値は入れない（窓と同じ判定）。捨てたサンプルも出さない（2026-11-13〜）。
+        if (raw_alt_valid && kind == BARO_SMP_OK) last_altitude = raw_alt;
         return false;  // ウィンドウ未完了、last_vspeed 未更新
     }
+}
+
+// 気圧のサンプルを捨てた数（60 秒ログ。読むと 0 に戻す。settings.h の BARO_SPIKE_REJECT_M）
+void airdata_take_reject_counts(uint32_t &spike, uint32_t &rf, uint32_t &fallback) {
+    spike = s_cnt_spike; rf = s_cnt_rf; fallback = s_cnt_fb;
+    s_cnt_spike = s_cnt_rf = s_cnt_fb = 0;
 }
 
 // ステートマシン方式で MS5611 の計測サイクルを進める。
@@ -490,6 +612,17 @@ static void airdata_try_recovery() {
         now_ms - ms5611_recovery_ms < MS5611_RECOVERY_INTERVAL_MS) return;
     ms5611_recovery_ms = now_ms;
 
+    // ★ SDA が Low に張り付いていたらバスを空けてから探す（2026-11-14）。下の応答確認（0 バイトの書き込み）は Wire が
+    //   ソフトで叩くので時間切れにならず、Wire の自動の復旧（I2C0_TIMEOUT_MS の時間切れのとき）が働かない
+    //   （しかも SDA が Low のままだと ACK と読み違えて「応答あり」になる）。
+    if (digitalRead(I2C0_SDA_PIN) == LOW) {
+        myWire.end();
+        const bool cleared = i2c0_bus_clear();
+        myWire.begin();
+        enqueueTask(createLogSdfTask("I2C0 bus clear (SDA stuck low%s)",
+                                     cleared && digitalRead(I2C0_SDA_PIN) == HIGH ? ", released" : ", STILL LOW"));
+    }
+
     myWire.beginTransmission(MS5611_ADDR);
     if (myWire.endTransmission() != 0) return;   // まだ居ない。ログも出さない（毎回出ると溢れる）
 
@@ -507,6 +640,8 @@ static void airdata_try_recovery() {
     win_start          = now_ms;
     ms5611_state       = MS5611_IDLE;
     ms5611_fail_count  = 0;
+    // ★ バリオの KF も入れ直す（途絶えていた間に加速度だけで漂っている。BUG-118。imu_kalman_reinit のコメント）
+    imu_kalman_reinit();
     ms5611_ok          = true;
     enqueueTask(createLogSdTask("MS5611 recovered"));
     DEBUGW_PLN(20260917, "[MS5611] recovered");
@@ -522,6 +657,7 @@ bool airdata_update() {
             // D1（気圧）変換を開始し、次のステートへ
             if (ms5611_start_convert(CMD_CONVERT_D1)) {
                 convert_start = millis();
+                s_d1_start_ms = convert_start;   // このサンプルの測定の始まり（無線が動いていたかを見る起点）
                 ms5611_state  = MS5611_WAIT_D1;
             } else {
                 ms5611_note_failure();
@@ -607,7 +743,14 @@ float get_airdata_win_hz()      { return last_win_hz; }
 // airdata_setup()（MS5611）と backlight_als_setup()（VEML7700）の両方が使うバスであるため、
 // どちらよりも先に呼ぶ必要がある。GPS_TFT_map.ino の setup() 冒頭から呼ぶこと。
 void airdata_wire_begin() {
+    // ★ 先にバスを空けてから開く（2026-11-14）。電源が瞬断・リセットしたとき、相手が SDA を握ったままだと
+    //   最初の通信から固まる。
+    s_boot_bus_cleared = i2c0_bus_clear();
     myWire.begin();
+    // ★ 1 回の通信の時間切れを I2C0_TIMEOUT_MS にし、切れたらバスを空けて開き直させる（2026-11-14）。既定（Stream の
+    //   1000ms・復旧なし）のままだと、SDA / SCL が張り付いたとき Core0 が通信 1 回ごとに 1 秒止まっていた（地図・警報も止まる）。
+    //   開き直しても i2c0 の設定（400kHz）は Wire が覚えていて戻す。
+    myWire.setTimeout(I2C0_TIMEOUT_MS, true);
     // i2c0 は MS5611 と、ケースカバーの照度センサー VEML7700（0x10。backlight.cpp）。
     // どちらも 400kHz で動く。
     // ★ i2c0 にクロックストレッチをするデバイスを足さないこと。v6 までは IMU と共用して
@@ -622,6 +765,8 @@ void airdata_setup() {
     DEBUG_PLN(20260310, "MS5611 + RP2354B Start");
 
     i2c_scan();
+
+    if (s_boot_bus_cleared) enqueueTask(createLogSdTask("I2C0 bus clear at boot (SDA was stuck low)"));
 
     // I2C アドレスに応答があるか確認（接続チェック）
     myWire.beginTransmission(MS5611_ADDR);

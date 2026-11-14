@@ -245,6 +245,7 @@ static uint16_t sat_color(int satelliteType) {
     case SATELLITE_TYPE_GLONASS: return COLOR_GREEN;
     case SATELLITE_TYPE_GALILEO: return COLOR_BLUE;
     case SATELLITE_TYPE_BEIDOU:  return COLOR_ORANGE;
+    case SATELLITE_TYPE_SBAS:    return COLOR_MAGENTA;   // 補強信号（MSAS・GAGAN など）。測位の衛星ではない
     default:                     return COLOR_GRAY;
   }
 }
@@ -344,13 +345,13 @@ static void draw_vario_page1() {
     bool  _gate_ok  = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
     backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
                           : _gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
-    if (gnss_acc_unknown()) backscreen.print("GNSS:  --     (not on link)");
+    if (gnss_acc_unknown()) backscreen.printf("GNSS:  --     %s", gnss_acc_unknown_note());
     else backscreen.printf("GNSS:%+.2fm/s %s", _gnss_vsi, _gate_ok ? "[KF]" : "[--]");
 #else
     // 比べるために数字だけ出す（KF には入っていない）
     (void)_sacc_now;
     backscreen.setTextColor(gnss_acc_unknown() || !_gnss3d ? COLOR_GRAY : COLOR_BLACK, COLOR_WHITE);
-    if (gnss_acc_unknown()) backscreen.print("GNSS:  --     (not on link)");
+    if (gnss_acc_unknown()) backscreen.printf("GNSS:  --     %s", gnss_acc_unknown_note());
     else backscreen.printf("GNSS:%+.2fm/s (not in KF)", _gnss_vsi);
 #endif
     y += line_height;
@@ -433,7 +434,7 @@ static void draw_vario_page1() {
     // ★ Alt はミラーされているのに sAcc/vAcc は送られてこない。並べると
     //   受信機自身の値が機体の値として読まれる（gnss_acc_unknown() 参照）。
     backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-    backscreen.print("sAcc/vAcc: -- (not on link)");
+    backscreen.printf("sAcc/vAcc: -- %s", gnss_acc_unknown_note());
     y += line_height;
     backscreen.setCursor(2, y);
     backscreen.printf("R_vel: --      Alt:%.1fm(MSL)", gnss_alt);
@@ -758,6 +759,7 @@ static void draw_gnss_page1() {
   header_footer.setTextColor(sat_color(SATELLITE_TYPE_GALILEO), COLOR_WHITE); header_footer.print("GAL ");
   header_footer.setTextColor(sat_color(SATELLITE_TYPE_QZSS),    COLOR_WHITE); header_footer.print("QZS ");
   header_footer.setTextColor(sat_color(SATELLITE_TYPE_BEIDOU),  COLOR_WHITE); header_footer.print("BEI ");
+  header_footer.setTextColor(sat_color(SATELLITE_TYPE_SBAS),    COLOR_WHITE); header_footer.print("SBS ");
   header_footer.pushSprite(0, -10);  // 10px 上にずらして底辺を y=39 に
 
   // フッター（見えるのは上の 40px）:
@@ -838,6 +840,7 @@ static void draw_gnss_page1() {
 // GNSS DETAIL 2: 最新 MAX_LAST_NMEA 件の UBX フレームラベル。
 //   1 秒以内に受信したものは黒、古いものは灰色（鮮度の視覚化）。
 // ※ ミラー中も含め、表示内容は受信機（親機）自身の GNSS 受信フレームで統一されている。
+// 意図して直さない（2026-11-14 の監査）: 上を 50px のスプライトで消してから tft へ直接描くので 1Hz でちらつく（page3 も。地上の詳細画面だけ）
 static void draw_gnss_page2() {
   tft.fillRect(0, 20, 240, 320-20, COLOR_WHITE);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
@@ -900,6 +903,10 @@ static void draw_gnss_page3() {
   if (_mirror)           { const bool _ok = get_gnss_fixok();
                            fixstr = _ok ? "Fix" : "No Fix";
                            fixcolor = _ok ? COLOR_GREEN : COLOR_RED; }
+  // ★ リプレイ中は fix の種類が CSV に無い（出ていたのは机の上の実機の状態。BUG-109）。gnssFixOK の無い 2D/3D は
+  //   使えない fix なので No Fix と同じ扱い（位置を使う判定 ubx_pos_valid と同じ。BUG-100）
+  else if (getReplayMode()) { fixstr = "Replay"; fixcolor = COLOR_GRAY; }
+  else if (fixtype >= 2 && !get_gnss_fixok()) { fixstr = "No Fix"; fixcolor = COLOR_RED; }   // 文字数は 6 にそろえる（前の字が残る）
   else if (fixtype == 3) { fixstr = "3D Fix"; fixcolor = COLOR_GREEN; }
   else if (fixtype == 2) { fixstr = "2D Fix"; fixcolor = COLOR_ORANGE; }
   else                   { fixstr = "No Fix"; fixcolor = COLOR_RED; }
@@ -917,6 +924,7 @@ static void draw_gnss_page3() {
   tft.printf("Sats used: %d / total: %d", get_gsa_numsat(), get_gnss_numsat());
   y += 14;
 
+  // 意図して直さない（2026-11-14 の監査）: リプレイ中の hAcc・DOP は机の上の実機の値のまま（CSV に無い。fix の表示だけ Replay にしてある）
   // ---- DOP ----
   // DOP 値: 1未満=非常に良好(緑), 2未満=良好(黒), 5未満=やや悪い(オレンジ), 5以上=悪い(赤)
   auto dopColor = [](float d) -> uint16_t {
@@ -1041,7 +1049,7 @@ static void draw_gnss_page3() {
   tft.setCursor(1, y);
   tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
   tft.print("sAcc:");
-  if (gnss_acc_unknown()) { tft.print("-- (not on link)"); }
+  if (gnss_acc_unknown()) { tft.printf("-- %s", gnss_acc_unknown_note()); }
   else {
     tft.setTextColor(saccColor, COLOR_WHITE);
     tft.printf("%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
@@ -1067,6 +1075,38 @@ static void draw_gnss_page3() {
   if (get_gnss_ana_busy()) {
     tft.setTextColor(COLOR_ORANGE, COLOR_WHITE);
     tft.print("  calc");
+  }
+
+  // ---- 受信の状態（MON-RF と NAV-SAT。2026-11-14〜）----
+  // log.txt の 1 分ごとの `grf` 行と同じ物差しを、ログを取り出さずに現場で見るためのもの（gnss_rf_now()）。
+  //   jam  = いまの CW 妨害の指標（0..255）。50+ = 直近 60 秒で jam が 50 以上だった秒数（grf の jam50）。
+  //          6 秒（1 割）以上で橙、18 秒（3 割）以上で赤（GNSS 干渉試験で、焼けた主基板 C は 18〜71%、健全な主基板 F は 1.6〜12%）。
+  //   C/N0 = 受信の強さ。上位 4 の平均・全体の平均 [dB-Hz] と追尾している衛星の数（屋外で上位 30 前後・追尾 15〜20 なら良好）。
+  // ミラー中もこの 2 行は自機の GNSS の話（ページ先頭の "rest=RX unit" に含まれる）。
+  const GnssRfNow rf = gnss_rf_now();
+  y += 14;
+  tft.setCursor(1, y);
+  tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  tft.print("RF ");
+  if (!rf.valid) {
+    tft.print("--");
+  } else {
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.printf("jam:%u ", (unsigned)rf.jam);
+    tft.setTextColor(rf.jam50 >= 18 ? COLOR_RED : rf.jam50 >= 6 ? COLOR_ORANGE : COLOR_BLACK, COLOR_WHITE);
+    tft.printf("50+:%u/%u", (unsigned)rf.jam50, (unsigned)rf.n);
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.printf(" noise:%u agc:%u", (unsigned)rf.noise, (unsigned)rf.agc);
+  }
+  y += 12;
+  tft.setCursor(1, y);
+  tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  tft.print("C/N0 ");
+  if (!rf.valid || rf.trk == 0) {
+    tft.print("--");
+  } else {
+    tft.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    tft.printf("top4:%.1f mean:%.1f trk:%u", rf.cno4, rf.cnoall, (unsigned)rf.trk);
   }
 }
 

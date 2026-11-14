@@ -103,6 +103,7 @@
   // GNSS の精度表示を「分からない」にすべきか（ミラー中は hAcc 以外が載っていない）。
   // ★ display_pages.cpp の GNSS DETAIL からも参照するので公開してある。
   bool gnss_acc_unknown();
+  const char* gnss_acc_unknown_note();   // "(not on link)" / "(not in log)"
 
   // フォント定義: TFT_eSPI のカスタムフォント（実体は src/flashdata/font_data.h）。
   // ★ マクロなので、使う .cpp が font_data.h を include していること。

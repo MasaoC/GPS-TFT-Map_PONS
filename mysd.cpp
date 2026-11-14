@@ -219,26 +219,45 @@ extern int upward_mode;  // display_tft.cpp で定義。0=TRACKUP, 1=NORTHUP
 
 
 // 全設定を settings.txt に保存する。
-// 一度ファイルを削除してから新規書き込みすることで、
-// 古い項目が残らないようにしている。
+// 新しいファイルに書き切ってから入れ替えるので、古い項目は残らない。
+// ★ 2026-11-14 まで先に settings.txt を消してから書いていて、書いている途中で電源が切れる・SD が瞬断すると
+//   設定がまるごと消え、次の起動は既定値（無線 OFF・グループ A など）で走った。いまは SETTINGS_TMP_FILE に書き切って
+//   閉じてから入れ替える（gnss_dbd の保存と同じ）。消してから名前を変えるまでの隙に切れたときは、
+//   loadSettings() が残った SETTINGS_TMP_FILE を settings.txt に戻して読む。
+#define SETTINGS_FILE     "settings.txt"
+#define SETTINGS_TMP_FILE "settings.tmp"
 bool saveSettings() {
-  SD.remove("settings.txt"); // 古いファイルを消してから書き直す
-  FsFile file = SD.open("settings.txt", FILE_WRITE);
-  if (!file) {
-    DEBUGW_PLN(20250401,"Failed to open settings.txt for writing");
+  FsFile file;
+  if (!file.open(SETTINGS_TMP_FILE, O_WRONLY | O_CREAT | O_TRUNC)) {
+    DEBUGW_PLN(20250401,"Failed to open settings.tmp for writing");
     return false;
   }
 
   char value[MAX_SETTING_LENGTH];
+  bool ok = true;
   for (int i = 0; i < numSettings; i++) {
     settings[i].getter(value, MAX_SETTING_LENGTH);
-    file.print(settings[i].id);
-    file.print(":");
-    file.print(value);
-    file.print("\n");//
+    ok &= file.print(settings[i].id) > 0;
+    ok &= file.print(":") > 0;
+    file.print(value);   // 空の値もある（0 文字は失敗ではない）
+    ok &= file.print("\n") > 0;
   }
-
-  file.close();
+  ok &= !file.getWriteError();
+  ok &= file.close();
+  if (!ok) {
+    SD.remove(SETTINGS_TMP_FILE);   // 書きかけは使わない（settings.txt はそのまま）
+    log_sd("ERR settings save: write failed (settings.txt kept)");
+    return false;
+  }
+  if (SD.exists(SETTINGS_FILE) && !SD.remove(SETTINGS_FILE)) {
+    SD.remove(SETTINGS_TMP_FILE);
+    log_sd("ERR settings save: cannot remove old settings.txt");
+    return false;
+  }
+  if (!SD.rename(SETTINGS_TMP_FILE, SETTINGS_FILE)) {
+    log_sd("ERR settings save: rename failed (settings.tmp is kept and read at next boot)");
+    return false;
+  }
   DEBUG_PLN(20250401,"Settings saved to settings.txt");
   return true;
 }
@@ -248,7 +267,12 @@ bool saveSettings() {
 // ファイルを 1 文字ずつ読んで行を組み立て、"id:value" 形式でパースする。
 // ファイル末尾に改行がない場合も処理できるよう、ループ後に残余バッファをチェックする。
 bool loadSettings() {
-  FsFile file = SD.open("settings.txt", FILE_READ);
+  // 保存の途中（古いのを消して名前を変える前）で切れていたら、書き切った SETTINGS_TMP_FILE を戻す（saveSettings() の ★）
+  if (!SD.exists(SETTINGS_FILE) && SD.exists(SETTINGS_TMP_FILE)) {
+    const bool r = SD.rename(SETTINGS_TMP_FILE, SETTINGS_FILE);
+    log_sdf("settings.txt missing, restored from settings.tmp: %s", r ? "ok" : "FAILED");
+  }
+  FsFile file = SD.open(SETTINGS_FILE, FILE_READ);
   if (!file) {
     DEBUGW_PLN(20250401,"Failed to open settings.txt for reading");
     return false;
@@ -1229,6 +1253,7 @@ static bool apply_pilon_override(const char* name, double lat, double lon) {
   return true;
 }
 
+// 意図して直さない（2026-11-14 の監査）: 誤検出: 上書きは 1 行に緯度・経度の両方を書く形（name,lat,lon）で、片方だけの上書きは起きない
 void load_pilon_override(){
   FsFile f = SD.open("override_pilon_coordinate.csv");
   if (!f) return;
@@ -1435,6 +1460,7 @@ void setup_sd(int trycount, bool load_settings){
   //
   //   ファイルが無い場合も「読める状態で試した」ので完了扱いにする。既定値で正しく、
   //   復旧のたびに開き直す意味が無いため。
+  // 意図して直さない（2026-11-14 の監査）: SD の復旧で読むときは Core0 が動いているが、書く値はどれも範囲内の正しい値（scale の途中読みも化けない）。遅れて効くのは意図どおり
   if (load_settings || !settings_loaded) {
     const bool ok = loadSettings();
     if (!ok) {
@@ -1633,6 +1659,7 @@ static bool replay_parse_time(const char* s, uint32_t* ms, int* h, int* m, int* 
 }
 
 // "YYYY-MM-DD" を分解する。
+// 意図して直さない（2026-11-14 の監査）: CSV の日付・時刻・NaN の範囲の検査は最小限（壊れた CSV への耐性は見送り）
 static bool replay_parse_date(const char* s, int* y, int* mo, int* d) {
   return (sscanf(s, "%d-%d-%d", y, mo, d) == 3);
 }
@@ -1848,6 +1875,8 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
   int scanned = 0;
 
   while (scanned < REPLAY_SCAN_MAX) {
+    // 長い地上待機を読み飛ばす間も音を途切れさせない（最大 REPLAY_SCAN_MAX 行。再生を始めた直後の退場音と重なる。2026-11-14）
+    if ((scanned & 63) == 63) loop_sound();
     uint32_t pos = (uint32_t)replayFileStatic.position();
     int n = replayFileStatic.fgets(line, sizeof(line));
     if (n <= 0) {
@@ -1928,7 +1957,15 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
 void load_replay() {
   ASSERT_SD_CORE1("load_replay");
   if (replay_eof) return;
-  if (!replayFileStatic.isOpen()) return;
+  // ★ 開いていない（再生の途中で SD を掴み直して reset_open_files_before_reinit() が閉じた）なら、黙って戻らずに
+  //   末尾として知らせる（2026-11-14、BUG-121）。以前は EOF も異常も立てずに戻り、Core0 は残りを再生し切ったあと
+  //   新しい行も EOF も来ないまま地図が止まった。SD が使えれば Core0 のループ再生が先頭から開き直し、
+  //   使えなければ「SD が無い」で再生をやめる（gnss_loop の replay_file_bad）。
+  if (!replayFileStatic.isOpen()) {
+    if (!good_sd()) replay_file_bad = REPLAY_BAD_NOSD;
+    replay_eof = true;
+    return;
+  }
 
   char line[256];
 
@@ -1937,6 +1974,8 @@ void load_replay() {
     int n = replayFileStatic.fgets(line, sizeof(line));
     if (n <= 0) {
       // ファイル末尾。Core0 側が残りを再生し終えたら init_replay() でループ再生する。
+      // ★ 読めなかったのが SD の異常（抜けた）なら、末尾ではなく「SD が無い」で再生をやめる（BUG-121）
+      if (!good_sd()) replay_file_bad = REPLAY_BAD_NOSD;
       replay_eof = true;
       return;
     }
@@ -2382,6 +2421,23 @@ void dateTime(uint16_t* date, uint16_t* time) {
 // load_settings=false にすることで、復旧時に設定値（scaleindex 等）を上書きしない。
 static void try_sd_recovery() {
 
+  // ★ 動いている間にカードが抜かれたら SD の異常にする（2026-11-14、BUG-119）。SD_DETECT が 300ms 続けて
+  //   HIGH（未挿入）なら。以前は見ておらず、抜いても good_sd() が true のまま（ヘッダーの SD が緑・本番前チェックも
+  //   通る・送信機の status に SD の異常が立たない）で、挿し直しても掴み直さなかった。
+  //   一度でも LOW（挿入）を見てからに限る（検出スイッチが効いていない基板で、使えている SD を止めないため）。
+  {
+    static bool     s_sd_seen_in  = false;
+    static uint32_t s_sd_out_since = 0;
+    if (digitalRead(SD_DETECT) == LOW) {
+      s_sd_seen_in   = true;
+      s_sd_out_since = 0;
+    } else if (s_sd_seen_in) {
+      const uint32_t t = millis();
+      if (s_sd_out_since == 0) s_sd_out_since = t ? t : 1;
+      else if (t - s_sd_out_since >= 300 && sdInitialized && !sdError) sdError = true;
+    }
+  }
+
   // SD カードが物理的に挿入されていない場合はリトライしない
   if (digitalRead(SD_DETECT)){
     DEBUG_PLN(20250508,"SD card not detected. Skipping SD recovery.");
@@ -2405,6 +2461,14 @@ static void try_sd_recovery() {
 // SD カードが正常に使用できる状態かどうかを返す。
 // sdInitialized（初期化成功）かつ sdError（書き込みエラーなし）の両方が満たされているとき true。
 // sdError 中は try_sd_recovery() で回復を試み、10秒ごとにリトライする。
+// 開いたままのファイルへの書き込み・flush が失敗した（2026-11-14、BUG-119）。SD の異常として扱い、
+// try_sd_recovery() に 10 秒ごとに掴み直させる。以前は SD.open() の失敗しか数えておらず、開いたあとにカードが
+// 壊れた・抜けたときは good_sd() が true のまま、ヘッダーの SD も緑で、再起動するまで記録が戻らなかった。
+// （Core1 だけが呼ぶ。SD を触るのは Core1 だけ）
+void sd_note_write_error() {
+  sdError = true;
+}
+
 bool good_sd(){
 
   // SD リカバリ（setup_sd 再呼出し）は Core1 でのみ実行する。
@@ -2427,6 +2491,7 @@ static FsFile logFileStatic;  // セッション中開きっぱなし。SDエラ
 
 void log_sd(const char* text){
   ASSERT_SD_CORE1("log_sd");
+  // 意図して直さない（2026-11-14 の監査）: PC 接続中も log.txt に書く（つないだ・外したの記録）。転送（PONS:GET）も Core1 のタスクなので順に動き、書きかけを送ることはない（大きさが一覧より増えるだけ）
   if (!good_sd()) {
     if (logFileStatic.isOpen()) logFileStatic.close();  // SDエラー時はファイルをリセット
     return;
@@ -2448,7 +2513,8 @@ void log_sd(const char* text){
   char logtext[256 + 16];   // array to hold the result.
   snprintf(logtext, sizeof(logtext), "%d:%s",(int)(millis()/1000),text);
   logFileStatic.println(logtext);
-  logFileStatic.flush();  // close() の代わりに flush() でデータを確定する
+  // close() の代わりに flush() でデータを確定する。失敗したら SD の異常（BUG-119。sd_note_write_error）
+  if (!logFileStatic.sync() || logFileStatic.getWriteError()) sd_note_write_error();   // sync() = flush() の成否を返す版
 }
 
 
@@ -2572,7 +2638,10 @@ void saveRxCSV(const Task& tk) {
   ASSERT_SD_CORE1("saveRxCSV");
   if (webserial_connected) return;  // PC接続中はSD読み出し専用に固定
   const auto& a = tk.saveCsvArgs;
-  if (!good_sd()) return;
+  if (!good_sd()) {
+    if (rxcsvFile.isOpen()) rxcsvFile.close();   // saveCSV() と同じ（掴み直したあとに開き直す。BUG-119）
+    return;
+  }
 
   // ファイル名は最初に受信した時刻で固定する（自機 CSV と同じ流儀）。
   if (rxfileyear == 0 && a.year != 0) {
@@ -2589,7 +2658,7 @@ void saveRxCSV(const Task& tk) {
     if (!SD.exists(fn)) rxHeaderWritten = false;  // 別カードへ差し替えた場合も新規作成時はヘッダを書く
     rxcsvFile = SD.open(fn, FILE_WRITE);
   }
-  if (!rxcsvFile) return;
+  if (!rxcsvFile) { sd_note_write_error(); return; }   // 開けない＝SD の異常（saveCSV() と同じ。BUG-119）
 
   if (!rxHeaderWritten) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
@@ -2623,7 +2692,7 @@ void saveRxCSV(const Task& tk) {
   rxcsvFile.println();
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
-  rxcsvFile.flush();
+  if (!rxcsvFile.sync() || rxcsvFile.getWriteError()) sd_note_write_error();   // BUG-119（sync() = flush() の成否を返す版）
 }
 
 void saveCSV(const Task& tk) {
@@ -2686,12 +2755,14 @@ void saveCSV(const Task& tk) {
     { static unsigned long last_flush_ms = 0;
       if (millis() - last_flush_ms >= 1500) {
         TIMING_START(csv_fl);
-        csvFileStatic.flush();
+        if (!csvFileStatic.sync()) sd_note_write_error();   // 失敗したら SD の異常（BUG-119。sync() = flush() の成否を返す版）
         TIMING_END(ts_savecsv_flush, csv_fl);
         last_flush_ms = millis();
       }
     }
-    sdError = false; // Reset SD error flag after successful write
+    // ★ 書き込みに失敗していたら SD の異常にする（BUG-119）。以前はここで毎回 sdError を下ろしていた
+    //   （下ろすのは掴み直しの setup_sd() だけでよい。ここへ来るのは good_sd() が true のときだけ）
+    if (csvFileStatic.getWriteError()) sd_note_write_error();
   } else {
     if (!sdError) {
       sdError = true;
@@ -2843,6 +2914,7 @@ static const char* dbd_read_file(const char* path, GnssDbdHead* h) {
       const uint32_t n = (h->bytes - off > 2048) ? 2048 : (h->bytes - off);
       if (f.read(buf + off, n) != (int)n) why = "short data";
       off += n;
+      // 意図して直さない（2026-11-14 の監査）: 長い SD の処理の中では loop_tone() は回さない（トーンの間隔が延びるだけ。地上の処理）
       loop_sound();   // 音を途切れさせない
     }
   }
@@ -3040,7 +3112,8 @@ void serial_list_csv_files() {
     return;
   }
   webserial_prepare_sd();
-  webserial_cancel_requested = false;
+  // ★ 中断の印はここで下ろさない（2026-11-14、BUG-92）。Core0 が一覧を積む前に下ろしてある（PONS:GET と同じ）。
+  //   ここで下ろすと、待っている間に来た CANCEL や再接続（CONNECT）が消えて一覧を最後まで流していた。
 
   list_csv_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR);
   list_csv_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR);
@@ -3058,6 +3131,7 @@ void serial_list_csv_files() {
     if (lf) lf.close();
   }
 
+  // 意図して直さない（2026-11-14 の監査）: 中断・切断のあとも LIST_END は出す（ビューアが「走査中」から抜ける印で、害が無い）
   Serial.println("PONS:LIST_END");
 }
 
@@ -3072,6 +3146,12 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
   }
   if (!filename || filename[0] == '\0') {
     Serial.println("PONS:ERROR,INVALID_FILENAME");
+    return;
+  }
+  // ★ 待っている間に PONS:CANCEL・切断が来ていたら始めない（2026-11-13、BUG-76）。フラグは Core0 が GET を入れる前に下ろす。
+  //   以前は DATA_START を出したあとでフラグを下ろしていたので、待っている間の CANCEL を消して全部送っていた。
+  if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
+    if (usb_power_present()) Serial.println("PONS:CANCEL_OK");
     return;
   }
   webserial_prepare_sd();
@@ -3099,7 +3179,6 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
   if (from > 0) Serial.printf("PONS:DATA_START,%s,%lu,%lu\r\n", filename, (unsigned long)total_size, (unsigned long)from);
   else          Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
 
-  webserial_cancel_requested = false;
   uint8_t buf[512];
   uint32_t crc = 0xFFFFFFFF;
 
@@ -3107,7 +3186,9 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
     // 中断要求または USB ケーブル抜去・切断検知時は即座にファイルを閉じて抜ける
     if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
       file.close();
-      if (webserial_connected && usb_power_present()) {
+      // ★ 切断（PONS:DISCONNECT・ボタン）でやめたときも終わりの印を出す（BUG-76）。PC は行の頭の印で転送の終わりを知るので、
+      //   出さないと受信待ちのまま残る。PONS:BYE は Core0 がこのあとに出す（webserial_say_bye）。
+      if (usb_power_present()) {
         Serial.println("\r\nPONS:CANCEL_OK");
       }
       return;
@@ -3116,6 +3197,7 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
     if (n <= 0) break;
 
     crc = calc_crc32_step(crc, buf, (size_t)n);
+    // 意図して直さない（2026-11-14 の監査）: PC が受け取りを止めると USB のミューテックスで両コアが最大 1 秒止まりうる。USB をつないだ地上だけなので見送り
     Serial.write(buf, n);
 
     loop_sound();

@@ -40,6 +40,9 @@ static TasSrc   s_src      = SRC_SENSOR;
 static bool     s_airborne = false;
 static bool     s_runOn    = false;   // 切り替えの条件が続いているか
 static uint32_t s_runMs    = 0;       // 続き始めた時刻
+// 地上のまま、飛び出す側の条件（対地速度 TAS_AIR_GS_MPS 以上）が成り立っているか（2026-11-14〜）。
+// GROUND の札だけはこれで先に外す（線は TAS_SWITCH_HOLD_MS 待ってから外す）。tas_leaving_ground()
+static bool     s_leaving  = false;
 
 static TasSrc current_src() {
   if (link_mirror_active()) return SRC_MIRROR;
@@ -54,25 +57,31 @@ void tas_tick() {
     s_src = src;
     s_airborne = false;
     s_runOn = false;
+    s_leaving = false;
   }
-  if (src == SRC_REPLAY) return;   // リプレイは記録された hdr をそのまま出す
   // ★ GNSS が無いあいだは数えない（対地速度 0 を「止まった」と読まない）。
   //   飛行中に測位が切れても地上の横線に戻さず、いまの状態を保つ。
   //   衛星数が分からないとき（ミラーを始めた直後で回転枠 3 をまだ受けていない）も同じ。
   const int ns = get_gnss_numsat();
-  if (ns == 0 || ns == GNSS_NUMSAT_UNKNOWN) { s_runOn = false; return; }
+  const bool gs_ok = !(ns == 0 || ns == GNSS_NUMSAT_UNKNOWN);
+  const float gs = gs_ok ? (float)get_gnss_mps() : 0.0f;
+  // リプレイは記録された hdr をそのまま出すので、札を外すかだけを再生中の対地速度から決める
+  if (src == SRC_REPLAY) { s_leaving = gs_ok && gs >= TAS_AIR_GS_MPS; return; }
+  if (!gs_ok) { s_runOn = false; s_leaving = false; return; }
 
-  const float gs = (float)get_gnss_mps();
   // いまの状態から抜ける条件が成り立っているか
   const bool toward = s_airborne ? (gs < TAS_GND_GS_MPS) : (gs >= TAS_AIR_GS_MPS);
   const uint32_t now = millis();
-  if (!toward) { s_runOn = false; return; }
-  if (!s_runOn) { s_runOn = true; s_runMs = now; return; }
+  if (!toward) { s_runOn = false; s_leaving = false; return; }
+  if (!s_runOn) { s_runOn = true; s_runMs = now; s_leaving = !s_airborne; return; }
   if (now - s_runMs >= TAS_SWITCH_HOLD_MS) {
     s_airborne = !s_airborne;
     s_runOn = false;
   }
+  s_leaving = !s_airborne && s_runOn;
 }
+
+bool tas_leaving_ground() { return s_leaving; }
 
 // ============================================================
 //  大きい枠

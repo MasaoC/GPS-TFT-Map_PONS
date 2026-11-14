@@ -739,6 +739,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     last_gyro_us_ = t_us;
     gyro_seen_ = true;
 
+    // 意図して直さない（2026-11-14 の監査）: IMU の途絶明けに静止の判定（static_since_us_・acc_sum_）を区切らない。水平化前は静止中の引き戻し（時定数 1 秒）で数秒で直り、水平化後は今の加速度で寄せるので害が無い（直すなら eskf.py も合わせる）
     update_static(g, t_us);
 
     // 予約された APPLY を、要求から ESKF_APPLY_DELAY_US 経過してから実行する。
@@ -1607,6 +1608,12 @@ uint32_t attitude_get_gnss_updates()     { return gnss_updates_; }
 //   （しきい値が 2 か所になり、片方だけ直した日に「錨は切れているのに取り消し線が
 //     出ない」になる）。
 bool     attitude_gnss_vel_fresh()       { return gnss_vel_fresh(); }
+// 信用できる GNSS の速度（sAcc ≦ ESKF_SACC_MAX）が直近に届いているか（観測に使ったかどうかは問わない）。
+// 表示が「GNSS が無い」と「GNSS はあるが向きが決まっていないので使えていない」を分けるのに使う（2026-11-13）
+bool     attitude_gnss_good_fresh()      { return good_gnss_fresh(); }
+// 向き（ヨー）が決まっていない・確かめ待ちか。この間は GNSS の速度を観測に入れない（止まっているときを除く）。
+// 表示の「YAW ALIGN」（黄）に使う
+bool     attitude_yaw_aligning()         { return !yaw_set_ || yaw_suspect_; }
 uint32_t attitude_get_level_updates()    { return level_updates_; }
 uint32_t attitude_get_ground_relevels()  { return ground_relevels_; }
 uint32_t attitude_get_bigtilt_relevels() { return bigtilt_relevels_; }
