@@ -98,6 +98,9 @@
 - **ANA を有効にしていると、コールドスタートのあと QZSS を航法に使わない**（5.30 で直った）。
   原文（§5 の "SPG 5.10 limitation"）: "After a coldstart QZSS satellites will not be used for navigation if AssistNow Autonomous is enabled."
   回避策は ANA を無効にすること。日本では、空の悪い場所で頼りになる高仰角の衛星が減る。
+- **→ 2026-11-14 から、コールドスタートでも ANA を切らない（`GNSS_ANA_OFF_ON_COLD` = 0。ユーザーの判断）**。切ると SD の DBD の予測軌道（約 3 日）が
+  使われず、DBD の戻しが一番要る長い電源断のあとにほとんど効かない。しかも QZSS は ANA の有無にかかわらず、どの基板でも一度も使われていなかった。
+  以下は 1 にしたときの仕組み（2026-11-13〜14 の動き）。
 - **→ 2026-11-13 から、BT1 が切れていた起動（コールドスタート）だけ、その起動の間 ANA を切る**（v7.1・v7 とも。ユーザーの判断）。
   既定（`GNSS_USE_ANA` = 1）は有効のまま。条件はコールドスタートだけなので、BT1 が生きている普段の起動には当たらない。
   BT1 の生死は最初の NAV-PVT で分かるので、起動時の CFG-ANA はそのあとに送る（gnss.cpp の `gnss_ana_boot_tick()`）。
@@ -110,15 +113,16 @@
     `GNSS QZSS first used Ns after boot (Qn of m seen, ana=off(cold))`、10 分ごとの `GNSS SVS used G.. E.. B.. Q.. R.. (QZSS seen n) ana=...`、
     `GNSS ORBIT after 1st fix: ... used G.. Q.. (QZSS seen n) ana=...`。
   - 机の上の `PONS:DBD,COLD` / `COLDONLY` は GNSS だけをコールドにする。2026-11-13 までは ANA がその起動で決めたまま（BT1 が生きていた起動なら有効）で、
-    本物のコールドの起動（ANA 無効）と条件が違った。**2026-11-14 から、リセットの前にその起動の間 ANA を切る**（`gnss_ana_off_for_cold_test()`）。
+    本物のコールドの起動（ANA 無効）と条件が違った。2026-11-14 に、リセットの前にその起動の間 ANA を切るようにした（`gnss_ana_off_for_cold_test()`）が、
+    同じ日に ANA はコールドでも切らないと決めたので、いまは `GNSS_ANA_OFF_ON_COLD` = 1 のときだけ切る（どちらでも本物のコールドの起動と同じ条件）。
   - **2026-11-13 の log.txt では、ANA が有効な普段の起動で QZSS がほとんど受かっていなかった**（屋外は車の中の 6 本だけで `QZSS seen` 0〜1、
     同じ車の v7 は 6。BeiDou も B0。ほかの 17 本は屋内で当てにならない）。「受かっているのに使わない」（上の制限）ではなく追っていないので、GNSS の設定（CFG-SIGNAL）で切られている疑いがある。
-    → 同じ日に、起動時に CFG-SIGNAL を RAM・BBR・Default の 3 層で読んで log.txt に出し（`GNSS SIGNAL ...`）、BeiDou（B1I）・QZSS（L1C/A）が
-    0 なら RAM に 1 を書くようにした（gnss.cpp の `gnss_sig_tick()`。v7.1・v7 とも・実機未確認）。CFG-SIGNAL を変えると GNSS が測位をやり直すので、
+    → 同じ日に、起動時に CFG-SIGNAL を RAM・BBR・Default の 3 層で読んで log.txt に出し（`GNSS SIGNAL ...`）、BeiDou・QZSS（L1C/A）が
+    0 なら RAM に 1 を書くようにした（gnss.cpp の `gnss_sig_tick()`。v7.1・v7 とも）。CFG-SIGNAL を変えると GNSS が測位をやり直すので、
     ANA の設定・DBD の戻し・外からの時刻入れは `gnss_signal_cfg_settled()` を待つ。
   - 読んでみると、3 枚の GNSS 基板とも設定は工場出荷のまま全部有効だった（BeiDou は B1C のみ）。QZSS が見えないのは基板 b（`B386598FAF54`。v7.1 で使い続ける）について行った。
-    **2026-11-14 から BeiDou を B1I にした**（`GNSS_BDS_B1I`。B1I は B1C・GLONASS と同時に有効にできないので GLONASS は使わない）。
-    保存した DBD に GLONASS の分が入っていても、戻すときに GNSS が使わないだけ（`other` に数えられうる）。
+    BeiDou の B1I は 2026-11-14 に試したが使わない（`GNSS_BDS_B1I` = 0。B1C・GLONASS と同時に有効にできず、GLONASS を失い、
+    jam50 が上がって Galileo も悪くなった）。
   - **2026-11-14 に全ログを見直すと、QZSS はどの GNSS 基板でも一度も測位に使われていなかった**（受けているのは最大 6 機）。理由を見るため、
     QZSS の衛星ごとの health・orbitSource・放送暦／アルマナックの有無・qualityInd を log.txt に出すようにした（`GNSS QZSS (...): J..`。読み方は TODO メモ §5）。
 

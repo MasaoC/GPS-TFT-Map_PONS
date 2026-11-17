@@ -228,6 +228,9 @@ _ts_all = data['time_seconds'].to_numpy()
 _t_land_b = time_to_seconds(KF_ALT_LAND_TIME, starttime)
 # 着水時の気圧を基準にして、気圧から高度を計算する(国際標準大気の式)
 _p = data['pressure'].to_numpy()
+# ★ 気圧が読めていない行（0）は使わず、前後から補間する（plot_phugoid.py と同じ。2026-11-14）。0 のままだと +44330 m に跳ぶ
+_pm = _p > 300.0
+_p = np.interp(_ts_all, _ts_all[_pm], _p[_pm])
 _p_ref = float(np.interp(_t_land_b, _ts_all, _p))
 _baro = 44330.0 * (1.0 - (_p / _p_ref) ** (1.0 / 5.255)) + KF_ALT_LAND_TARGET
 data['Baro_Alt'] = _baro

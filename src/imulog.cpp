@@ -43,6 +43,8 @@ static volatile uint32_t imulog_written = 0;
 static FsFile imuFileStatic;
 static char   imuOpenedFilename[24] = "";
 static int    imuFlushCount = 0;
+static int    imuLastYear = 0, imuLastMonth = 0, imuLastDay = 0;
+static int    imuLastHour = 0, imuLastMinute = 0, imuLastSecond = 0;
 
 // ---- 起動識別（Core1 のみが触る）----
 // boot_id は起動ごとにランダムに振り直すだけの RAM 変数。フラッシュには保存しない。
@@ -253,6 +255,13 @@ static void imulog_write_boot_marker() {
 }
 
 
+static void imulog_apply_last_timestamp() {
+    if (imuLastYear >= 1980) {
+        imuFileStatic.timestamp(T_WRITE, imuLastYear, imuLastMonth, imuLastDay,
+                                imuLastHour, imuLastMinute, imuLastSecond);
+    }
+}
+
 // ============================================================
 // imulog_on_sd_reinit(): SD 再マウント前の静的ハンドル破棄（Core1 専用）
 // ============================================================
@@ -265,6 +274,7 @@ void imulog_on_sd_reinit() {
     imuFileStatic = FsFile();
     imuOpenedFilename[0] = '\0';
     imuFlushCount = 0;
+    imuLastYear = 0;
     imuNofixName[0] = '\0';
 }
 
@@ -274,10 +284,15 @@ void imulog_on_sd_reinit() {
 void imulog_flush_and_close() {
     ASSERT_SD_CORE1("imulog_flush_and_close");
     if (imuFileStatic.isOpen()) {
+        // 最後の 4 バッファ周期より後に書いた分があると sync()/close() が SdFat の
+        // dateTime()（saveCSV 未実行時は 2020-01-01 00:00:00）で更新日時を上書きするため、
+        // 閉じる前に直近バッファの時刻で明示的に更新日時を確定させる。
+        imulog_apply_last_timestamp();
         imuFileStatic.sync();
         imuFileStatic.close();
         imuOpenedFilename[0] = '\0';
         imuFlushCount = 0;
+        imuLastYear = 0;
     }
 }
 
@@ -303,10 +318,12 @@ void imulog_write_buffer(int bufidx, const char* filename,
 
         // ファイル名が変わった場合（測位できた・日付変更等）は sync してから閉じて開き直す
         if (imuFileStatic.isOpen() && strcmp(imuOpenedFilename, filename) != 0) {
+            imulog_apply_last_timestamp();
             imuFileStatic.sync();
             imuFileStatic.close();
             imuOpenedFilename[0] = '\0';
             imuFlushCount = 0;
+            imuLastYear = 0;
         }
 
         if (!imuFileStatic.isOpen()) {
@@ -327,6 +344,12 @@ void imulog_write_buffer(int bufidx, const char* filename,
         }
 
         if (imuFileStatic.isOpen()) {
+            imuLastYear   = year;
+            imuLastMonth  = month;
+            imuLastDay    = day;
+            imuLastHour   = hour;
+            imuLastMinute = minute;
+            imuLastSecond = second;
             size_t bytes = (size_t)n * sizeof(ImuLogRec);
             if (imuFileStatic.write(imulog_buf[bufidx], bytes) == bytes) {
                 imulog_written += n;

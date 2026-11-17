@@ -18,6 +18,9 @@
 >   **ESKF のゲインとサンプル間隔は 250Hz（4ms）に適合済み**（`tools/attitude_test` で検証済み）。ブリングアップ時は SCH16T の実機データで確認する。
 >   **ESKF の dt は直前のサンプルとの実際の時間差**（2026-11-10〜。SCH16T は 1 回読むと 1 サンプルで、まとめて届かない）。
 >   それまでの 64 サンプルの平均間隔は BNO085 のまとめ届き向けで、**PONSv7 では正しいので cherry-pick しないこと。**
+> - **このブランチは v7.1 と v7.2 の基板の両方に焼く**（2026-11-16〜）。違いは v7.2 の「電源を切っていても主電池で BT1 を充電する回路」だけで、
+>   ピンは同じ。焼く前に `settings.h` の `PONS_MAINBOARD_REV`（71 / 72）を基板に合わせる。変わるのは BT1 の見込みと基板名の表記
+>   （`VERSION_TEXT`）だけ。v7.1 の基板に 72 で焼くと BT1 の見込みが長く出すぎるので、迷ったら 71。
 > - **v7.1 は SCH16T を必ずつなぐ**（2026-11-10 決定）。起動時に見つからないのも、あとで黙ったのも IMU の欠け
 >   （本番前チェックの `IMU`・設定画面の赤の ×）。`get_imu_ok()` は通信が 1 秒途絶えると false に変わるので、
 >   「載っていない機体」の判定には使えない。これも v7.1 だけの決めごとなので PONSv7 へは持ち込まない。
@@ -104,7 +107,7 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 
 ```sh
 python3 tools/check_release.py       # リリース設定 + アセット CRC + 全ホストテスト一括実行
-cd tools/attitude_test && make       # 姿勢 ESKF（協調旋回 / 水平化とヨー注入 / 重力観測 / IMU 断線時）
+cd tools/attitude_test && make       # 姿勢 ESKF（協調旋回 / 水平化とヨー注入 / 重力観測 / IMU 断線時 / GNSS 速度の遅れの補償）
 cd tools/wire2_test && make          # PONS Link Wire2（8 回転枠往復 / 境界値 / 日跨ぎ / ビーコン）
 cd tools/vario_test && make          # バリオ 3 状態 KF（上昇追従 / 加速度ガード / MS5611 復帰 reinit / 供給元）
 cd tools/dbd_test && make            # GNSS DBD（256B 境界フレーム検証 / コールド復元・再送 / 0 件保護 / 時刻注入）
@@ -258,12 +261,25 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   **起動時の ANA は、最初の NAV-PVT で BT1 の生死が分かってから送る**（`gnss_ana_boot_tick()`。2026-11-13〜）。BT1 が切れていた
   起動（コールドスタート）だけ切るためで（SPG 5.10 はコールドスタートのあと ANA が有効だと QZSS を使わない）、
   `gnss_setup_impl()` の ⑦ で起動時に「有効」を送るように戻すと、**コールドの起動で黙って QZSS を失う**。
+  ★ 2026-11-14 から、コールドでも ANA を切らないのが既定（`settings.h` の `GNSS_ANA_OFF_ON_COLD` = 0。QZSS はどの基板でも ANA と関係なく
+  使われておらず、切ると SD の DBD の予測が効かないため）。上の約束は 1 に戻したときのためのもので、送る時刻（最初の NAV-PVT のあと）は 0 でも同じ。
   ほかの設定（ボーレート・出力・Airborne）は RAM にだけ書いていて、電源を切れば工場出荷に戻る前提で
   `gnss_setup()` が組んである（毎回 9600 で開いて 38400 へ切り替える）。BBR へ移すならそこも見直す。
   **本体が動いたまま GNSS だけがリセットしても同じく工場出荷に戻る**（NMEA だけで UBX を出さない）。
   こちらは NMEA を読まないので、`gnss_ubx_watchdog()` が「バイトは来るのに UBX が来ない」を見て設定を一式送り直す
   （2026-11-04〜。それまでは再起動するまで位置が戻らなかった）。設定を足すときは `gnss_setup_impl()` の
   `send_config` の側に足すこと（起動時と送り直しの両方で送られる）。
+- **GNSS は 4Hz で測位するが、4Hz で受けるのは姿勢 ESKF と生 IMU ログだけ**（2026-11-15〜。`settings.h` の `GNSS_NAV_RATE_HZ` = 4 /
+  `GNSS_APP_RATE_HZ` = 2。**実機未確認**）。位置・時刻・画面・飛行 CSV・航跡・無線・警報は今までどおり 2Hz の測位だけを見る
+  （gnss.cpp の `handle_navpvt()` の頭で ESKF と生ログへ渡し、`navpvt_app_epoch()` が 0.5 秒の区切りごとに最初の 1 回だけを下へ通す）。
+  **`handle_navpvt()` の頭の部分で `ubx_*` / `stored_*` を書かないこと**（時刻だけ 4Hz・位置は 2Hz のような食い違いになる）。
+  NAV-PVT を見る処理を足すときは、どちらのレートで見るのかを決めてから置く。GNSS へ頼む NAV-SAT / NAV-DOP / NAV-AOPSTATUS の
+  レートは「何回の測位に 1 回」なので、固定の数字で書かず `GNSS_EPOCHS_1HZ` / `GNSS_EPOCHS_01HZ` を使う。
+  `GNSS_NAV_RATE_HZ` を 2 にすれば 2026-11-14 までと同じ動きに戻る。v7（PONSv7）は 2Hz のまま。
+- **姿勢 ESKF の GNSS 速度の遅れの補償**（2026-11-15〜。`ESKF_GNSS_VEL_DELAY_MS`。**いまは −1 ＝補償しない**）。仕組みは入っていて
+  （attitude.cpp の `vhist_*`・gnss.cpp の `navpvt_age_us()`・eskf.py の `gnss_delay`・`tools/attitude_test/lag_test.cpp`）、
+  値は v7.1 の 250Hz の生ログを `tools/imulog/gnss_lag.py` に通して決める。**`v_` を観測で直す所を足したら `vhist_shift()`、
+  入れ直す所を足したら `vhist_clear()` を呼ぶこと**（忘れると次の観測が前の直しをもう一度残差として見る）。
 - **log.txt の `grf` 行（GNSS の受信状態の 1 分まとめ。`gnss_log_rf_minute()`）は、debug/v7-noise-test と
   PONSv7.1 で同じ並び・同じ数え方に保つ。** v7 と v7.1 の基板の GNSS の受け方を比べるための行なので、
   片方だけ変えると比べられなくなる（2026-11-04〜）。
@@ -326,7 +342,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
 | [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
-| [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1）。**v7 と v7.1 で同じファイル** |
+| [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。**v7.2 基板（`settings.h` の `PONS_MAINBOARD_REV` = 72、2026-11-16〜）は、電源を切っていても主電池が BT1 を保つ時間を足す**（PONSv7 へ持っていくと `PONS_MAINBOARD_REV` が無いので今までどおり）。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1）。**v7 と v7.1 で同じファイル** |
 | [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。**外から GNSS へ時刻を入れる口 `gnss_dbd_give_time()` もここ**（2026-11-10。PC の `PONS:TIME`。LoRa の時刻もここへ渡すだけにして、入れる条件を呼び出し側に書かない）。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS / COLD,TIME / COLDONLY,TIME`。SD の読み書きは mysd.cpp・Core1。**v7 と v7.1 で同じファイル** |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。PONSv7 と並びを同じに保つ |

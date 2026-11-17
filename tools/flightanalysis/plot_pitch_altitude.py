@@ -98,6 +98,10 @@ def lowpass(v, tau):
 
 # 着水時の気圧を基準にして気圧から高度を出す(国際標準大気の式)
 pres = csv['pressure'].to_numpy()
+# ★ 気圧が読めていない行（0。MS5611 の途絶など）は使わず、前後から補間する（plot_phugoid.py と同じ。2026-11-14）。
+#   0 のまま式に入れると、その行の高度が +44330 m に跳んでローパスとドリフトの補正が崩れる
+_pm = pres > 300.0
+pres = np.interp(ts, ts[_pm], pres[_pm])
 p_ref = float(np.interp(t1, ts, pres))
 baro = 44330.0 * (1.0 - (pres / p_ref) ** (1.0 / 5.255)) + ALT_LAND_TARGET
 kf = csv['KF_Altitude'].to_numpy()

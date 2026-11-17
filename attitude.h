@@ -94,7 +94,8 @@ void attitude_on_accel(const float a[3]);
 
 // ---- GNSS 速度観測（gnss.cpp の NAV-PVT 解析から呼ぶ）----
 // 引数は UBX 原義の NED（velD は下降正）。内部で ENU へ変換する。
-void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc);
+// age_us: 測位の瞬間からこの呼び出しまでの時間 [µs]。0 なら遅れを補償しない（settings.h の ESKF_GNSS_VEL_DELAY_MS）。
+void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, uint32_t age_us = 0);
 
 // ---- 出力 ----
 bool attitude_ready();                 // 初期化が完了して推定値が有効か

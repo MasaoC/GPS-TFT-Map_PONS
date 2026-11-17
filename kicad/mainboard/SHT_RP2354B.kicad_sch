@@ -6,8 +6,8 @@
 	(paper "A4")
 	(title_block
 		(title "PONS for HPA v7")
-		(date "2026-10-22")
-		(rev "7.1")
+		(date "2026-11-16")
+		(rev "7.2")
 		(comment 1 "GNSS, SD, Speaker, Lipo Charger")
 		(comment 2 "Good for outdoor use with high brightness")
 		(comment 3 "NHD-2.8-240320AF-CSXP-F (1000cd/m^2)")

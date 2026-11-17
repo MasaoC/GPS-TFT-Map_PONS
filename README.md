@@ -58,7 +58,7 @@ SD カードのログを付属ツール（`tools/`）で解析し、機体特性
 |---|---|
 | **外形寸法 / 重量** | W59 × H81 × D20 mm / 約 62g（ケース込） |
 | **ディスプレイ** | 2.8 インチ **1000 ニト** 高輝度 TFT（Newhaven NHD-2.8-240320AF-CSXP-F）。自動調光対応 |
-| **GNSS** | u-blox SAM-M10Q（2Hz、位置精度 1.5m、AssistNow Autonomous 対応、ファーム ROM SPG 5.10） |
+| **GNSS** | u-blox SAM-M10Q（位置の表示・記録は 2Hz、姿勢推定には 4Hz の速度を使う〔v7.1〕、位置精度 1.5m、AssistNow Autonomous 対応、ファーム ROM SPG 5.10） |
 | **気圧センサー** | MS5611（約 40Hz 計測・約 4Hz でバリオ KF へ融合、2Hz SD 記録） |
 | **モーションセンサー** | Murata **SCH16T-K01-10**（外付けフレキ、SPI1 250Hz ポーリング） |
 | **姿勢推定** | **機上 250Hz ESKF**（GNSS 航跡ヨー注入 ＋ 2Hz 重力観測レベリング） |
@@ -109,20 +109,25 @@ GNSS の時計と受信した軌道データ（エフェメリス）をバック
 **起動から数秒で測位** します（ホットスタート）。それより後でも、SAM-M10Q が自律予測した数日先までの衛星軌道（AssistNow Autonomous。ANA）を
 BT1 で保つので、約 3 日以内なら速く測位します（データシートは 2 日前のデータで 4 秒。通常のコールドスタートは 23 秒〜、小さいアンテナや悪い空では数分）。
 
+**2026-11-14 からは、BT1 が切れていた起動（コールドスタート）でも ANA を有効のままにしています**（`settings.h` の `GNSS_ANA_OFF_ON_COLD` = 0）。
+切ると SD の航法データベースに入った予測軌道が使われず、しかも QZSS は ANA の有無にかかわらずどの基板でも使われていなかったためです。
+以下は 1 にしたとき（2026-11-13〜14 の動き）の説明です。
 **BT1 が切れていた起動（コールドスタート）だけは、その起動の間 ANA を切ります**（2026-11-13〜）。この GNSS のファーム（ROM SPG 5.10。`log.txt` の `GNSS VER:`）は、
 コールドスタートのあと ANA が有効だと QZSS を航法に使わないためです（SPG 5.30 のリリースノートの既知の制限。5.30 で直ったが、SAM-M10Q は外付けフラッシュが無いので上げられない）。
 BT1 の生死は最初の NAV-PVT で分かるので、ANA の設定はそのあとに送ります。`log.txt` の `GNSS ANA on|off for this boot (...): ack` が結果、
 `GNSS QZSS first used 52.0s after boot (...)` と 10 分ごとの `GNSS SVS used G8 E5 B6 Q2 R0 (QZSS seen 3) ana=off(cold)` で QZSS を使っているかが分かります（まだ実機で確かめていない）。
 
-**起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読み、QZSS が切られていれば入れ、BeiDou を B1I にします**（2026-11-13〜、B1I は 2026-11-14〜、実機未確認）。
-SAM-M10Q（SPG 5.10）の工場出荷は BeiDou を B1C で受けますが、日本の上空に多い BeiDou の静止・傾斜軌道の衛星は B1I しか出しておらず、
-2026-11-13〜14 の記録では B1C の BeiDou を一度も使えていませんでした。M10 は B1I を B1C とも GLONASS とも同時に有効にできないので、
-**B1I にすると GLONASS は使わなくなります**（`settings.h` の `GNSS_BDS_B1I`。0 にすると工場出荷のまま）。
-2026-11-13 の `log.txt` で、ANA が有効な普段の起動では屋外（車の中）でも QZSS がほとんど受かっておらず（`QZSS seen` 0〜1）、BeiDou も使っていなかったためです（読んでみると設定は工場出荷のまま全部有効だった）。
-書くのは RAM だけで（電源を切れば戻り、起動のたびに書き直す）、入れ直すと GNSS が測位をやり直すので、ANA の設定・航法データベースの戻し・
-外からの時刻入れはそのあとにします。`log.txt` には `GNSS SIGNAL ram: GPS=1 SBAS=1 GAL=1 BDS=0 QZSS=0 GLO=1 | L1CA=1 ...`
-（いま効いている値）、書き直したときは `GNSS SIGNAL set (RAM): GLO=0 B1I=1 B1C=0: ack` と読み直した `GNSS SIGNAL ram(after enable): ...`、
+**起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読み、QZSS が切られていれば入れます**（2026-11-13〜）。
+読んでみると、どの GNSS 基板も工場出荷のまま全部有効（GPS・Galileo・GLONASS・BeiDou B1C・QZSS・SBAS）でした。
+**BeiDou は工場出荷の B1C のままにしています**（`settings.h` の `GNSS_BDS_B1I` = 0）。日本の上空に多い BeiDou の静止・傾斜軌道の衛星は B1I しか出していませんが、
+M10 は B1I を B1C とも GLONASS とも同時に有効にできず、2026-11-14 に試すと GLONASS を失ったうえ、B1I の帯域で妨害の指標（jam50）が上がり、
+Galileo も悪くなったためです。RAM に前の B1I が残っていれば工場出荷へ戻します。
+**QZSS は、どの GNSS 基板でも測位に使われていません**（2026-11-13〜14 の全ログ。理由は調べている途中で、下の `GNSS QZSS (...)` の行を見ている）。
+書くのは RAM だけで（電源を切れば戻り、起動のたびに書き直す）、書き直すと GNSS が測位をやり直すので、ANA の設定・航法データベースの戻し・
+外からの時刻入れはそのあとにします。`log.txt` には `GNSS SIGNAL ram: GPS=1 SBAS=1 GAL=1 BDS=1 QZSS=1 GLO=1 | L1CA=1 ...`
+（いま効いている値）、書き直したときは `GNSS SIGNAL set (RAM): ...: ack` と読み直した `GNSS SIGNAL ram(after enable): ...`、
 続いて `GNSS SIGNAL bbr: ...`（BT1 で残る値。書かれていなければ `NAK`）と `GNSS SIGNAL default: ...`（工場出荷）が出ます。
+QZSS の衛星ごとの状態は `GNSS QZSS (10min, ana=on): J2:c35,e--,q4,h1,o0,E0A0,U0 ...`（10 分ごとと最初の測位のあと。読み方は `docs/pons_todo_notes.md` §5）。
 
 バックアップ電池が切れた起動に備えて、通電中に GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` へ写しておき、
 起動時に時計が死んでいたときだけ GNSS へ戻します（2026-11-09〜、まだ実機で確かめていない。`gnss_dbd.cpp`）。
@@ -139,7 +144,7 @@ GNSS の時計（BT1 の RTC）の時刻をその精度（NAV-PVT の tAcc）つ
 机の上では USB シリアルの `PONS:DBD,COLD`（コールドにして戻す）/ `COLDONLY` / `HOT` / `SAVE` / `STATUS` と、
 `COLD,TIME` / `COLDONLY,TIME`（リセット前に本体が覚えた時刻を、PC の時刻の代わりに入れる）で試せます
 （`COLD` / `COLDONLY` / `HOT` を打つと、再起動するまで自動の吸い出しは止まります。`SAVE` は効きます）。
-`COLD` / `COLDONLY` は、本物のコールドの起動と同じく、その起動の間 ANA を切ってからリセットします（2026-11-14〜。`GNSS ANA off for this boot (cold-start test ...)`）。
+`COLD` / `COLDONLY` は、`GNSS_ANA_OFF_ON_COLD` = 1 のときだけ、本物のコールドの起動と同じくその起動の間 ANA を切ってからリセットします（2026-11-14〜、いまは 0 で切らない。`GNSS ANA off for this boot (cold-start test ...)`）。
 GNSS DETAIL 3 の下の 2 行（2026-11-14〜）は GNSS の受け方です: `RF jam:12 50+:3/60 noise:91 agc:4464`（`50+` は直近 60 秒で妨害の指標 jamInd が 50 以上だった秒数。
 6 以上で橙、18 以上で赤）と `C/N0 top4:30.8 mean:24.7 trk:14`（受信の強さと追尾している衛星の数）。log.txt の `grf` 行と同じ物差しです。
 計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §3（時刻は §3.6）。

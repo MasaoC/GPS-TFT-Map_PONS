@@ -248,14 +248,19 @@ class AttitudeESKF:
             self.P[2, 2] = yvar_max
 
     # ---------------- 観測（GNSS 速度）----------------
-    def update_velocity(self, v_enu, sacc):
-        """v_enu: ENU の速度観測 [m/s]、sacc: u-blox の速度精度推定 [m/s]。"""
+    def update_velocity(self, v_enu, sacc, v_pred=None):
+        """v_enu: ENU の速度観測 [m/s]、sacc: u-blox の速度精度推定 [m/s]。
+
+        v_pred: 観測と比べる推定速度。None ならいまの速度。GNSS の遅れを補償するときは
+          「測位の瞬間の推定速度」（速度の履歴から引いたもの）を渡す（機上 attitude_on_gnss_velocity の
+          age_us と vhist_。settings.h の ESKF_GNSS_VEL_DELAY_MS）。直しはいまの状態に入れる。
+        """
         H = np.zeros((3, 12))
         H[:, 3:6] = np.eye(3)
         r = max(float(sacc), 0.05)          # sAcc が極端に小さいと過信するので下限を置く
         Rm = np.eye(3) * (r ** 2)
 
-        y = np.asarray(v_enu, float) - self.v
+        y = np.asarray(v_enu, float) - (self.v if v_pred is None else np.asarray(v_pred, float))
         S = H @ self.P @ H.T + Rm
         K = self.P @ H.T @ np.linalg.inv(S)
         dx = K @ y
@@ -328,8 +333,40 @@ def _map_host_to_sensor_time(imu_df):
     return lambda x: np.asarray(x, dtype=float)
 
 
+GNSS_DELAY_DEFAULT = 0.150    # 機上 settings.h の ESKF_GNSS_VEL_DELAY_MS と同じにしておく（None = 補償しない）[s]
+
+
+def itow_host_time_causal(t, itow, bucket_s=15.0, jump_s=10.0):
+    """iTOW [s] を本体の時計の上へ写す（待たされなければ届いたはずの時刻）。**機上 gnss.cpp の gnss_pvt_age_ms() と同じ。**
+
+    届いた時刻 t − iTOW は描画などで数十〜数百 ms 揺れる。その最小値（＝待たされなかったときの値）を、
+    15 秒の箱 2 つ（いまの箱と 1 つ前の箱）で持つ。本体の時計のずれ（数十 ppm）は 30 秒で数 ms 以内。
+    最小値から jump_s 以上離れたら（iTOW の週またぎ・時刻の飛び）数え直す。
+    戻り値: (iTOW を写した時刻 m, 届きの遅れ t − m)
+    """
+    t = np.asarray(t, float)
+    off = t - np.asarray(itow, float)
+    m = np.empty(len(t))
+    cur = prev = None
+    b0 = None
+    for i in range(len(t)):
+        o = off[i]
+        ref = cur if prev is None else (prev if cur is None else min(cur, prev))
+        if ref is not None and abs(o - ref) > jump_s:
+            cur = prev = None
+            b0 = None
+        if b0 is None:
+            b0 = t[i]
+        elif t[i] - b0 >= bucket_s:
+            prev, cur, b0 = cur, None, t[i]
+        cur = o if cur is None else min(cur, o)
+        mn = cur if prev is None else min(cur, prev)
+        m[i] = t[i] - (o - mn)
+    return m, t - m
+
+
 def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
-               gnss_cutoff=None, use_level=True,
+               gnss_cutoff=None, use_level=True, gnss_delay=GNSS_DELAY_DEFAULT,
                level_sigma=0.5, level_yawrate_dps=1.0,
                level_yawrate_inst_dps=3.0,
                level_accmag_tol=0.5, level_longacc=0.2,
@@ -360,6 +397,10 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     events: リストを渡すと、出来事を (session, t, 種類, 値) で足す（検証用）。
       'relevel' … 置き直した（値 = 置き直す前の食い違い [deg]）
       'yaw_kept' / 'yaw_reset' … 保った方位を航跡と比べた（値 = 航跡 − 方位 [deg]。reset は航跡で入れ直した）
+
+    gnss_delay: GNSS 速度の遅れ [s]（機上 ESKF_GNSS_VEL_DELAY_MS）。None なら補償しない（届いた時点の速度と比べる）。
+      数字を渡すと、測位の瞬間（iTOW を本体の時計へ写した時刻 − gnss_delay）の推定速度を速度の履歴から引いて
+      観測と比べる。求め方は gnss_lag.py。
 
     use_gnss: False にすると速度観測を一切入れない（純粋なジャイロ/加速度の積分）。
       GNSS 援用の効果を見るための比較用。観測が無いと姿勢を引き戻すものが何も無いので、
@@ -416,11 +457,22 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         to_ts = _map_host_to_sensor_time(imu)
 
         g_ts = np.array([])
+        arm_fixes = 2
         if use_gnss and gnss_all is not None and not gnss_all.empty:
-            gn = gnss_all[(gnss_all["session"] == sess) &
-                          (gnss_all["sAcc"] <= sacc_max)].sort_values("t")
+            ga = gnss_all[gnss_all["session"] == sess].sort_values("t")
+            # 測位の時刻（機上は全部の NAV-PVT で最小値を追うので、sAcc で振り落とす前に作る）
+            ga_m, _ = itow_host_time_causal(ga["t"].to_numpy(), ga["ts"].to_numpy())
+            keep = (ga["sAcc"] <= sacc_max).to_numpy()
+            gn = ga[keep]
             if not gn.empty:
                 g_ts = to_ts(gn["t"].to_numpy())
+                g_m = to_ts(ga_m[keep])
+                # 方位を入れる・確かめるのに要る連続の測位の数 = 1 秒ぶん（機上 ESKF_YAW_INIT_ARM_FIXES = GNSS_NAV_RATE_HZ。
+                # 2Hz のログなら 2、4Hz のログなら 4）。生ログの iTOW の間隔から作る
+                d_itow = np.diff(ga["ts"].to_numpy())
+                d_itow = d_itow[(d_itow > 0.05) & (d_itow < 2.0)]
+                if len(d_itow):
+                    arm_fixes = max(2, int(round(1.0 / float(np.median(d_itow)))))
                 # GNSS は NED で記録してある。フィルタは ENU なので変換する。
                 g_enu = np.column_stack([gn["velE"].to_numpy(),
                                          gn["velN"].to_numpy(),
@@ -430,6 +482,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             print(f"warn: session {sess} に使える GNSS 速度が無い"
                   f"（sAcc<={sacc_max} で 0 件）。姿勢は漂う", flush=True)
 
+        if not len(g_ts):
+            arm_fixes = 2
         cutoff = (gnss_cutoff.get(sess) if isinstance(gnss_cutoff, dict)
                   else gnss_cutoff)
 
@@ -505,6 +559,30 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         yaw_suspect = False      # 置き直したあと、保った方位を航跡でまだ確かめていない（機上 yaw_suspect_）
         yaw_check_arm = 0
         v_stale = False          # IMU の途絶明け。次の測位で速度を入れ直す（機上 v_stale_。BUG-62）
+        # ---- GNSS の遅れの補償のための速度の履歴（機上 vhist_。約 1 秒ぶん）----
+        vh = np.zeros((len(ts), 3))      # vh[j] = サンプル j を処理し終えたときの速度（あとの直しも足し込む）
+        hist_from = i_start              # これより前の履歴は使えない（速度を入れ直した）
+
+        def hist_shift(dv, i_now):
+            # 観測で速度を直したぶんを履歴にも足す（履歴を「いまの推定で見た過去の速度」に保つ）
+            lo = max(hist_from, int(np.searchsorted(ts, ts[i_now] - 1.0)))
+            if lo < i_now:
+                vh[lo:i_now] += dv
+
+        def v_at(tq, i_now):
+            # 時刻 tq の推定速度。履歴より古ければいちばん古いもの、新しければいまの速度
+            lo = max(hist_from, int(np.searchsorted(ts, ts[i_now] - 1.0)))
+            if gnss_delay is None or lo >= i_now or tq >= ts[i_now]:
+                return f.v
+            tt = np.append(ts[lo:i_now], ts[i_now])
+            vv = np.vstack([vh[lo:i_now], f.v])
+            return np.array([np.interp(tq, tt, vv[:, c]) for c in range(3)])
+
+        def vel_update(gi_, i_now):
+            vb = f.v.copy()
+            vp = None if gnss_delay is None else v_at(g_m[gi_] - gnss_delay, i_now)
+            f.update_velocity(g_enu[gi_], g_sacc[gi_], vp)
+            hist_shift(f.v - vb, i_now)
 
         def learn_bias(wi, dt_i):
             # 機上 learn_gyro_bias() と同じ（時定数 5.0 秒 / ESKF_BIAS_LEARN_MAX_RADS）
@@ -603,7 +681,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 if ok and last_gsp is not None and (ts[i] - last_gsp_t) < 3.0:
                     ok = abs(longacc_lp) <= level_longacc
                 if ok:
+                    vb = f.v.copy()
                     f.update_level(acc[i], level_sigma)
+                    hist_shift(f.v - vb, i)
                     level_last_t = ts[i]
             # ---- 動いているときの、大きくずれた傾きの置き直し（機上 attitude_on_gyro の同名ブロックと同じ）----
             # ★ 低域は毎サンプル更新する。地上での維持・待機中の維持が働いている間は見ない。
@@ -665,7 +745,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 if v_stale:
                     # 機上 attitude_on_gnss_velocity の v_stale_: 途絶明けは速度を GNSS の値に入れ直す（観測には使わない）
                     if cutoff is None or g_ts[gi] <= cutoff:
-                        f.v = g_enu[gi].copy()
+                        f.v = g_enu[gi].copy(); hist_from = i
                         f.P[3:6, :] = 0.0
                         f.P[:, 3:6] = 0.0
                         rv = max(float(g_sacc[gi]), 0.05)                  # ESKF_SACC_MIN
@@ -677,13 +757,13 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                         yaw_arm = 0
                     else:
                         yaw_arm += 1
-                        if yaw_arm >= 2:                         # ESKF_YAW_INIT_ARM_FIXES
+                        if yaw_arm >= arm_fixes:                 # ESKF_YAW_INIT_ARM_FIXES
                             trk = np.degrees(np.arctan2(g_enu[gi][0], g_enu[gi][1])) % 360.0
                             f.q = set_heading(f.q, trk)
                             f.P[2, :] = 0.0
                             f.P[:, 2] = 0.0
                             f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
-                            f.v = g_enu[gi].copy()
+                            f.v = g_enu[gi].copy(); hist_from = i
                             yaw_set = True
                 elif yaw_suspect:
                     # 機上 attitude_on_gnss_velocity の同名ブロック: 保った方位を航跡で確かめてから観測に入れる
@@ -693,10 +773,10 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                         # 機上と同じ: 止まっているとき（ESKF_GROUND_MAX_GS_MPS 未満）は確かめを待ったまま速度の観測は入れる
                         # （止まっていれば方位のずれは速度に効かない。2026-11-13〜。BUG-64）
                         if sp < 1.0 and (cutoff is None or g_ts[gi] <= cutoff):
-                            f.update_velocity(g_enu[gi], g_sacc[gi])
+                            vel_update(gi, i)
                     else:
                         yaw_check_arm += 1
-                        if yaw_check_arm >= 2:                   # ESKF_YAW_INIT_ARM_FIXES
+                        if yaw_check_arm >= arm_fixes:           # ESKF_YAW_INIT_ARM_FIXES
                             from decode_imulog import mount_correct_quat
                             trk = np.degrees(np.arctan2(g_enu[gi][0], g_enu[gi][1])) % 360.0
                             _, _, hh = mount_correct_quat(*f.q)
@@ -706,16 +786,17 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                                 f.P[2, :] = 0.0
                                 f.P[:, 2] = 0.0
                                 f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
-                                f.v = g_enu[gi].copy()
+                                f.v = g_enu[gi].copy(); hist_from = i
                             else:
                                 # 保った方位をそのまま使い、この測位から観測に入れる（v を置き換えない。機上と同じ）
-                                f.update_velocity(g_enu[gi], g_sacc[gi])
+                                vel_update(gi, i)
                             yaw_suspect = False
                             if events is not None:
                                 events.append((sess, float(ts[i]), "yaw_reset" if abs(d) > 45.0 else "yaw_kept", float(d)))
                 elif cutoff is None or g_ts[gi] <= cutoff:
-                    f.update_velocity(g_enu[gi], g_sacc[gi])
+                    vel_update(gi, i)
                 gi += 1
+            vh[i] = f.v
             qs[k] = f.q
             ysig[k] = np.degrees(np.sqrt(max(f.P[2, 2], 0.0)))
         imu = imu.iloc[i_start:].reset_index(drop=True)

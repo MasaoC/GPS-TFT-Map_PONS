@@ -10,6 +10,23 @@
 #include "gnss_dbd.h"
 #include "settings.h"
 
+// 試験の日付はビルドした日（settings.h の BUILDDATE）にそろえる（2026-11-17〜）。
+// ★ gnss_dbd.cpp はビルドした日の前日より前の時刻を「ありえない」（BAD_TIME）として断るので、日付を固定で書くと
+//   BUILDDATE を上げたときにこの試験が落ちる（1.08 で BUILDDATE を 20261117 にして、2026-11-14 の固定の日付が断られた）。
+#define TEST_Y ((int)(BUILDDATE / 10000))
+#define TEST_M ((int)((BUILDDATE / 100) % 100))
+#define TEST_D ((int)(BUILDDATE % 100))
+static uint32_t test_day_utc(int hh, int mm, int ss) {   // ビルドした日の hh:mm:ss（UTC 秒）
+    int y = TEST_Y; const unsigned m = (unsigned)TEST_M, d = (unsigned)TEST_D;
+    y -= (m <= 2);
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int days = era * 146097 + (int)doe - 719468;
+    return (uint32_t)days * 86400UL + (uint32_t)(hh * 3600 + mm * 60 + ss);
+}
+
 uint32_t    g_test_ms = 1000;
 DummySerial Serial;
 DummyUart   Serial1;
@@ -104,7 +121,7 @@ static void test_boot_restore_and_resend() {
     GnssDbdHead h;
     memset(&h, 0, sizeof(h));
     memcpy(h.magic, GNSS_DBD_MAGIC, 8);
-    h.utc   = 1794620000UL; // 2026-11-14 01:33:20 UTC
+    h.utc   = test_day_utc(1, 33, 20); // ビルドした日の 01:33:20 UTC（2026-11-16 までは 2026-11-14 の固定値）
     h.count = 3;
     h.bytes = off;
     const uint8_t gid[6] = { 0xB3, 0x86, 0x59, 0x8F, 0xAF, 0x54 };
@@ -193,7 +210,7 @@ static void test_dump_and_zero_msg_guard() {
     // fix して時刻が分かった状態にする
     g_own_fix = true;
     g_own_gs  = 0.0;
-    g_gnss_date = { 2026, 11, 14, true };
+    g_gnss_date = { TEST_Y, TEST_M, TEST_D, true };
     g_gnss_time = { 2, 35, 0, 0, true };
     g_fix_millis = 4000;
     g_test_ms = 4000;
@@ -231,14 +248,14 @@ static void test_coldonly_bug71() {
     // BUG-71: PONS:DBD,COLDONLY を打った直後、fix が落ちていても NAV-PVT の日時がまだ残っている間は
     // 「時刻が分かった」と誤判定せず、また外部からの時刻注入も "TEST" で拒むこと。
     g_own_fix = false; // fix はまだ無いが gnss_time_known() は true（リセット前の NAV-PVT の残り）
-    g_gnss_date = { 2026, 11, 14, true };
+    g_gnss_date = { TEST_Y, TEST_M, TEST_D, true };
     g_gnss_time = { 2, 40, 0, 0, true };
     g_test_ms = 10000;
     gnss_dbd_command("COLDONLY");
     CHECK(strstr(Serial.last_out, "PONS:DBD,OK,COLDONLY") != nullptr, "COLDONLY accepted");
 
     // 試験中に PC から時刻が来ても "TEST" で拒むこと
-    const uint64_t valid_utc_ms = 1794624000000ULL;
+    const uint64_t valid_utc_ms = (uint64_t)test_day_utc(2, 40, 0) * 1000ULL;   // ビルドした日の 02:40:00 UTC
     CHECK(strcmp(gnss_dbd_give_time(valid_utc_ms, g_test_ms, GNSS_TIME_SRC_PC), "TEST") == 0,
           "give_time rejected with TEST during COLDONLY");
 
@@ -255,7 +272,7 @@ static void test_coldonly_bug71() {
     gnss_dbd_tick();
 
     // その後、衛星から時刻が読めたら初めて "GNSS time known" が出ること
-    g_gnss_date = { 2026, 11, 14, true };
+    g_gnss_date = { TEST_Y, TEST_M, TEST_D, true };
     g_gnss_time = { 2, 40, 15, 0, true };
     g_test_ms = 25000;
     gnss_dbd_tick();

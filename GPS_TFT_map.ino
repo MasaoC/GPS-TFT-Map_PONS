@@ -665,7 +665,7 @@ void setup(void) {
       startup_voltage = get_input_voltage();
       delay(1);
     }
-    char pst[56];
+    char pst[72];
     power_format_status(pst, sizeof(pst));
     enqueueTask(
         createLogSdfTask("SETUP DONE Battery: %.2fV %s", startup_voltage, pst));
@@ -1465,7 +1465,7 @@ static void periodic_log_tick() {
       else
         strlcpy(jst_str, "--:--", sizeof(jst_str));
       // bst は最長 " bl=100% lux=120794 bright saver2 dim"（37 文字）
-      char pst[56], bst[40];   // pst は最長 "usb=1 vbus=4.95V sw=off hot od bk=192.0h"
+      char pst[72], bst[40];   // pst は最長 "usb=1 vbus=4.95V sw=off hot od bk=192.0h aon=99999h fast=72h"（v7.2。61 文字）
       power_format_status(pst, sizeof(pst));
       backlight_format_status(
           bst, sizeof(bst)); // " bl=35% lux=12 eco"（自動調光の調整用）
@@ -1643,6 +1643,8 @@ static void draw_current_screen(bool new_gnss_info) {
       draw_header(); // ヘッダー（速度・衛星数など）を TFT に直接描画
       redraw_prof_add(RP_HDR, time_us_32() - rp_t);
 
+      gnss_loop(8); // 描画の合間に GNSS データを受信
+
       // 描画はすべてバックスクリーンに対して行い、最後に push_backscreen() で
       // 一括転送することでちらつきを防ぐ。
       // 背景のクリアは draw_vectormap() が行うので、ここでは何もしない。
@@ -1747,6 +1749,8 @@ static void draw_current_screen(bool new_gnss_info) {
             new_truetrack,
             steer_angle); // 精度良好、またはリプレイ/デモ: 飛行機マーカー
       }
+
+      gnss_loop(9); // オーバーレイ描画の合間に GNSS データを受信
 
       // コンパス(N/E/S/W)は自機マーカー・進行方向縦線より後に描いて上のレイヤーにする。
       draw_compass(drawupward_direction, COLOR_BLACK);
@@ -1914,6 +1918,10 @@ static void screen_moving_exit_tick() {
   const uint32_t now = millis();
   if (s_since == 0) { s_since = now ? now : 1; return; }
   if (now - s_since < SCREEN_MOVING_EXIT_HOLD_MS) return;
+  // ★ ボタンを操作している間は戻さない（2026-11-14）。以前は操作を見ておらず、車や船の上で設定画面・詳細画面を
+  //   触っていると、押した直後でも 5 秒走った時点で地図へ戻っていた。最後の操作から SCREEN_MOVING_EXIT_IDLE_MS
+  //   たってから戻す（画面を出したまま発進したときに地図へ戻す、という目的はそのまま）。
+  if (now - last_user_input_ms < SCREEN_MOVING_EXIT_IDLE_MS) return;
   s_since = 0;
 
   const int from = screen_mode;
@@ -2051,7 +2059,9 @@ static void handle_serial_command(const char *raw_cmd) {
     if (!serial_xfer_active()) {   // 一覧の最中も（BUG-92）
       Serial.println("PONS:PONG");
     }
-  } else if (strcmp(cmd, "PONS:LIST") == 0) {
+  } else if (strcmp(cmd, "PONS:LIST") == 0 || strcmp(cmd, "PONS:LIST,ALL") == 0) {
+    // "PONS:LIST,ALL"（2026-11-15〜）は全部のファイル（生 IMU ログなど。Flight Viewer の開発用のタブ）
+    const bool list_all = (cmd[9] == ',');
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
       return;
@@ -2063,7 +2073,7 @@ static void handle_serial_command(const char *raw_cmd) {
     // ★ 中断の印は Core0 が入れる前に下ろす（PONS:GET と同じ。2026-11-14、BUG-92）。以前は Core1 が一覧の頭で下ろしていて、
     //   待っている間に来た CANCEL・再接続（CONNECT）を消していた。転送が残っているときは、その転送への中断を消さないよう触らない。
     if (!isTaskInQueue(TASK_SERIAL_GET) && !isTaskRunning(TASK_SERIAL_GET)) webserial_cancel_requested = false;
-    if (!enqueueTask(createSerialListTask())) s_busy_pending = true;   // キューが満杯: 返事が無いと PC が待ち続ける（BUG-93）
+    if (!enqueueTask(createSerialListTask(list_all))) s_busy_pending = true;   // キューが満杯: 返事が無いと PC が待ち続ける（BUG-93）
   } else if (strncmp(cmd, "PONS:GET,", 9) == 0) {
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
@@ -2501,10 +2511,11 @@ void loop1() {
       power_latch_commit_core1();
       break;
     case TASK_SERIAL_LIST:
-      serial_list_csv_files();
+      serial_list_csv_files(currentTask.serialListArgs.all);
       break;
     case TASK_SAVE_RTCBK:
-      rtc_backup_save_sd(currentTask.rtcBkArgs.hours, currentTask.rtcBkArgs.utc);
+      rtc_backup_save_sd(currentTask.rtcBkArgs.hours, currentTask.rtcBkArgs.aon_h, currentTask.rtcBkArgs.utc,
+                         currentTask.rtcBkArgs.fix_utc);
       break;
     case TASK_SAVE_DBD:
       gnss_dbd_save_sd();

@@ -35,7 +35,7 @@
       TASK_FLUSH_IMULOG,  // 生 IMU ログの二重バッファ片側を Core1 で SD へ書き出す
       TASK_SAVE_RXCSV,    // 無線で受信したテレメトリを received/ へ書き出す
       TASK_LATCH_BATT_OVERDISCHARGE, // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
-      TASK_SERIAL_LIST,   // Web Serial: SD 内の CSV ファイル一覧をシリアル出力
+      TASK_SERIAL_LIST,   // Web Serial: SD 内のファイル一覧をシリアル出力（飛行 CSV と log.txt。PONS:LIST,ALL なら全部）
       TASK_SERIAL_GET,    // Web Serial: 指定 CSV ファイルをシリアルへストリーミング送出
       TASK_SAVE_RTCBK,    // GNSS のバックアップ電池の推定（rtc_backup.cpp）を SD の rtc_backup.txt へ書く
       TASK_SAVE_DBD,      // GNSS の航法データベース（gnss_dbd.cpp が RAM にためたもの）を SD の GNSS_DBD_FILE へ書く
@@ -292,13 +292,18 @@
               char filename[24];             // "imuraw/20260316.bin" = 19文字
           } imuLogArgs;
           struct {                           // For TASK_SAVE_RTCBK
-              float    hours;                // あと何時間もつか（推定）
+              float    hours;                // あと何時間もつか（推定。BT1 だけで）
+              float    aon_h;                // v7.2: いま切っても主電池で BT1 を保てる時間 [h]（v7.1 は 0。rtc_backup.cpp）
               uint32_t utc;                  // その値の時刻（UTC、1970 年からの秒）
+              uint32_t fix_utc;              // 最後に自機の GNSS が測位した時刻（UTC 秒。0 = 分からない）
           } rtcBkArgs;
           struct {                           // For TASK_SERIAL_GET
               char filename[64];             // 送信対象ファイル名（相対パス含む）
               uint32_t tail;                 // 0 = 全部。それ以外は末尾のこのバイト数だけ（行の頭から。PONS:GETTAIL）
           } serialGetArgs;
+          struct {                           // For TASK_SERIAL_LIST
+              bool all;                      // true = 全部のファイル（PONS:LIST,ALL）。false = 飛行 CSV と log.txt だけ
+          } serialListArgs;
       };
   } Task;
 
@@ -337,20 +342,20 @@
   Task createFlushImuLogTask(int bufidx, const char* filename,
                              int year, int month, int day, int hour, int minute, int second);
   Task createLatchBattTask();
-  Task createSaveRtcBackupTask(float hours, uint32_t utc);
+  Task createSaveRtcBackupTask(float hours, float aon_h, uint32_t utc, uint32_t fix_utc);
   // GNSS のバックアップ電池の推定の記録（SD の RTC_BACKUP_FILE。Core1 専用）。
   // load は起動時の setup_sd() の直後に 1 回。読めなくても rtc_backup_set_loaded_core1(false, ...) を必ず呼ぶ。
   void rtc_backup_load_sd();
-  void rtc_backup_save_sd(float hours, uint32_t utc);
+  void rtc_backup_save_sd(float hours, float aon_h, uint32_t utc, uint32_t fix_utc);
   // GNSS の航法データベース（SD の GNSS_DBD_FILE。Core1 専用。中身の受け渡しは gnss_dbd.h の *_core1）。
   // load は起動時の setup_sd() の直後に 1 回と、試験の TASK_LOAD_DBD。読めなくても gnss_dbd_loaded_core1(false, ...) を必ず呼ぶ。
   Task createSaveDbdTask();
   Task createLoadDbdTask();
   void gnss_dbd_load_sd();
   void gnss_dbd_save_sd();
-  Task createSerialListTask();
+  Task createSerialListTask(bool all = false);   // all: PONS:LIST,ALL（全部のファイル）
   Task createSerialGetTask(const char* filename, uint32_t tail = 0);   // tail: 末尾だけ送る [B]（0 = 全部）
-  void serial_list_csv_files();
+  void serial_list_csv_files(bool all = false);
   void serial_send_csv_file(const char* filename, uint32_t tail = 0);
 
   // Web Serial 通信状態フラグ（Core0 / Core1 共有）

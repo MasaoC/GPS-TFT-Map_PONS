@@ -11,6 +11,7 @@ def generate_random_color():
     r = lambda: random.randint(0, 255)
     return simplekml.Color.rgb(r(), r(), r())
 
+# 意図して直さない（2026-11-14 の監査）: 誤検出。高度の列（Altitude / GNSS_Altitude）は読まない（航跡は高度 0 で描く）
 def csv_to_kml(input_folder):
     kml = simplekml.Kml()
     # Iterate through all CSV files in the input folder

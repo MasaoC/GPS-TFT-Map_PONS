@@ -2,7 +2,7 @@
 
 - **文書バージョン**: 1.0
 - **対象基板**: PONS v7 / v7.1 (RP2350B)
-- **更新日**: 2026-11-11
+- **更新日**: 2026-11-15
 
 ---
 
@@ -82,8 +82,25 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   PONS: PONS:LIST_END
   ```
 
+* **全部のファイルの一覧 (LIST,ALL)**（2026-11-15〜。開発用）: `PONS:LIST,ALL`
+  - ルートと、その直下のフォルダ（1 段だけ）の**全部のファイル**を同じ `PONS:FILE,...` の行で返す（`imuraw/*.bin` の生 IMU ログ・
+    `settings.txt`・`gnss_dbd.bin`・`rtc_backup.txt` など。`data/`・`received/`・`log.txt` もこの中に出る）。隠しファイルと `.` で始まる名前は出さない。
+  - **これを知らないファーム（2026-11-15 より前）は何も返さない**（エラーも出ない）。Flight Viewer は 4 秒待って 1 行も来なければ
+    古いファームとして `PONS:LIST` を頼み直す。
+  - 取るのは下の `GET` のまま（`GET` はもとからどのパスでも中身をそのまま送る。バイナリも同じ）。パスは 63 バイトまで。
+  ```
+  PC:   PONS:LIST,ALL
+  PONS: PONS:FILE,settings.txt,912,2026-11-13 08:00:02
+  PONS: PONS:FILE,data/2026-11-13_0804.csv,1245020,2026-11-13 08:04:12
+  PONS: PONS:FILE,imuraw/20261113.bin,52428800,2026-11-13 09:10:00
+  PONS: PONS:FILE,log.txt,3008531,1980-01-01 00:00:00
+  PONS: PONS:LIST_END
+  ```
+
 ### (3) ファイル取得 (GET)
-指定したCSVファイルの中身をシリアルへストリーミング送信する。
+指定したファイルの中身をシリアルへストリーミング送信する（CSV でもバイナリでも、中身はそのまま）。
+**中身は `DATA_START` の `<size_bytes>` バイトちょうど**で、そのあとに `\r\n` と `PONS:DATA_END,<crc32>` の行が来る
+（Flight Viewer は 2026-11-15 からこの大きさで中身を切り出す。バイナリの中に `PONS:DATA_END,` と同じ並びがあっても終わりにしない）。
 * **PC ➔ PONS**: `PONS:GET,<filename>`
 * **PONS ➔ PC**:
   - 開始通知: `PONS:DATA_START,<filename>,<size_bytes>`
@@ -124,7 +141,11 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   - `PONS:READY`（転送中に `CONNECT` し直したとき。前の転送をやめさせてから）・`PONS:BYE`・`PONS:ERROR,BUSY` は、
     転送が終わってから出す。
   - `PONS:PING` の返事は出さない（以前から）。`PONS:DBD` / `PONS:TIME` は転送中は受けない（返事も無い）。
-  - 例外: SD のタスクのキューが溢れたときの `ERR: task queue full`（異常時だけ）と、`RELEASE` でないビルドのデバッグ出力。
+  - 例外: `RELEASE` でないビルドのデバッグ出力。
+  - SD のタスクのキューが溢れたときの `ERR: task queue full` も、転送と一覧の間は出さない（2026-11-15〜）。数百 MB の生 IMU ログは
+    送るのに何分もかかり、その間 Core1 はキューを消費しないので、毎分の `log.txt` の行だけで満杯になる。以前はこの 1 行が
+    ファイルの中身に混ざり、PC 側の CRC が合わなかった。捨てた数は送り終えたあと `log.txt` の `PC XFER: n tasks dropped` に残す
+    （その間の `log.txt` の行は失われる）。
 * **一覧（`LIST` を受けてから `LIST_END` まで）の間も同じ**（2026-11-14〜。BUG-92）。`READY` / `BYE` / `BUSY` / `PONG` は
   `LIST_END` のあとに出す。一覧の最中に来た `CANCEL` の `CANCEL_OK` も `LIST_END` のあと。
 * 本体の SD のタスクのキューが満杯で `LIST` / `GET` / `GETTAIL` を受けられなかったときは `PONS:ERROR,BUSY` を返す
@@ -215,6 +236,11 @@ Web Serial API 対応ブラウザ（Google Chrome / Microsoft Edge など）で�
   （それまでは開けないとコンソールに 1 行出すだけで、画面には何も出なかった）。`PONS:CONNECT` は 2 秒ごとに 6 回まで送り直す
   （USB を挿した直後で本体が起動中でも、起動し終わればつながる）。逆に、ビューアがポートを掴んでいる間は Arduino IDE から
   書き込めないことがあるので、書き込む前にビューアの「🔌 切断」を押す。
+- **生 IMU ログなどの取り出し（開発用のタブ）**（2026-11-15〜）: 一覧の上のタブ「IMU 生ログ」（`imuraw/`）・「その他」（ほかの全部）を
+  開くと `PONS:LIST,ALL` で一覧を取り、「💾 保存」で中身をそのまま PC に保存する（ブラウザのダウンロード。開かない）。
+  最初のタブ「フライト・記録」は今までどおりで、各行にも「💾 保存」（開かずに保存）がある。
+  受信は**バイトのまま**扱う（それまでは全部を文字列にしていて、バイナリは取れなかった）。CRC も受けたバイトで計算する。
+  保存した `imuraw/*.bin` は `tools/imulog/decode_imulog.py` で読む。
 - **log.txt の表示**（2026-11-11〜）: 一覧の `log.txt` を開くと（手元の log.txt を「CSV / log.txt を開く」やドロップで開いても）、
   起動ごとに分けて、日時・版・最初の測位・エラーと警告の数を並べ、毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG`）を
   グラフにする（電池・GNSS の C/N0 と衛星数・Fix の割合・CPU 温度・IMU の空き・BT1 の残り・充電の残量・明るさ・jamInd）。

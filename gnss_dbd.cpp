@@ -212,7 +212,7 @@ struct IoStat {
   bool     on;
   uint32_t t0;            // 始めた millis()
   uint32_t pvt_last;      // 最後に NAV-PVT を受けた millis()
-  uint32_t pvt_gap_max;   // NAV-PVT の間隔の最大 [ms]（ふだん 500。航法がどれだけ待たされたか）
+  uint32_t pvt_gap_max;   // NAV-PVT の間隔の最大 [ms]（ふだん 250。2026-11-14 までの 2Hz では 500。航法がどれだけ待たされたか）
   uint32_t ck0, ovf0;     // 始めたときの UBX のチェックサム誤り・受信 FIFO あふれの数（gnss.cpp）
   uint32_t txwait_max;    // ほかのコマンドが送りかけのフレームを待った最大 [ms]（gnss_dbd_finish_tx）
   uint32_t tx_done_ms;    // いまのフレームを書き終えた millis()（返事の遅れを測る起点。0 = まだ）
@@ -382,7 +382,7 @@ static void io_begin(uint32_t now) {
 }
 
 // 例: "GNSS DBD IO (restore boot): 4.1s, NAV-PVT gap max 620ms, rx peak 812B, ckerr 0, ovf 0, txwait max 0ms, ack avg 38ms max 95ms late 0 odd 0"
-//   NAV-PVT gap max : 航法の更新がいちばん待たされた時間（ふだん 500ms。吸い出しで延びる量）
+//   NAV-PVT gap max : 航法の更新がいちばん待たされた時間（ふだん 250ms〔4Hz。2026-11-14 までは 500ms〕。吸い出しで延びる量）
 //   rx peak         : 受信 FIFO（GNSS_SERIAL_FIFO_SIZE）のたまりの最大。4096 に近ければあふれかけ
 //   ckerr / ovf     : UBX のチェックサム誤り・FIFO あふれ（0 でなければバイトが欠けている）
 //   ack             : 戻すとき、1 通書き終えてから返事までの遅れ。late は待つのをやめたあとに来た返事の数
@@ -1115,7 +1115,8 @@ void gnss_dbd_tick() {
 //   SAVE      いま吸い出して SD に書く（fix していれば、時間・止まっているかの条件は見ない）
 //   COLD      GNSS をコールドスタートさせ（CFG-RST navBbrMask=0xFFFF。BT1 が切れたのと同じ）、SD の DBD を戻す
 //   COLDONLY  コールドスタートだけ（比べるための素の値）
-//             ★ COLD / COLDONLY は、リセットの前にその起動の間 ANA を切る（2026-11-14〜。本物のコールドの起動と同じ。
+//             ★ COLD / COLDONLY は、settings.h の GNSS_ANA_OFF_ON_COLD が 1 のとき、リセットの前にその起動の間 ANA を切る
+//               （2026-11-14〜。いまは 0 で切らない。どちらでも本物のコールドの起動と同じ。
 //               gnss.cpp の gnss_ana_off_for_cold_test()）。log.txt の `GNSS ANA off for this boot (cold-start test ...)`
 //   HOT       ホットスタート（navBbrMask=0x0000）
 //   COLD,TIME / COLDONLY,TIME

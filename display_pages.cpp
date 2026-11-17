@@ -1004,7 +1004,7 @@ static void draw_gnss_page3() {
   // ---- UBX NAV-PVT 精度情報 ----------------------------------------
   // gnssFixOK・hAcc・vAcc・sAcc を色分け表示する。
   // 閾値: hAcc <5m=緑 / <25m=橙 / ≥25m=赤、vAcc <10m=緑 / <50m=橙 / ≥50m=赤
-  //        sAcc <1m/s=緑 / <3m/s=橙 / ≥3m/s=赤
+  //        sAcc <0.3m/s=緑 / <3m/s=橙 / ≥3m/s=赤
   y += 16;
   tft.drawFastHLine(0, y - 4, SCREEN_WIDTH, COLOR_GRAY);  // 区切り線
 
@@ -1045,14 +1045,20 @@ static void draw_gnss_page3() {
 
   // sAcc（速度精度）
   float sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
-  uint16_t saccColor = (sacc_mps < 1.0f) ? COLOR_GREEN : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
+  uint16_t saccColor = (sacc_mps < 0.3f) ? COLOR_GREEN : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
   tft.setCursor(1, y);
   tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
   tft.print("sAcc:");
   if (gnss_acc_unknown()) { tft.printf("-- %s", gnss_acc_unknown_note()); }
   else {
+    char sbuf[32];
+    snprintf(sbuf, sizeof(sbuf), "%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
+    if (sacc_mps >= 0.3f) {
+      const int vx = tft.getCursorX();
+      tft.drawRect(vx - 2, y - 2, tft.textWidth(sbuf) + 3, 11, saccColor);
+    }
     tft.setTextColor(saccColor, COLOR_WHITE);
-    tft.printf("%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
+    tft.print(sbuf);
   }
   y += 14;
 

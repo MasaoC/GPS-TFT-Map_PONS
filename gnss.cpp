@@ -43,13 +43,15 @@ uint32_t get_gnss_fix_millis() { return gnss_fix_millis; }
 // UBX-CFG-PRT: UART1 を 38400bps・UBX プロトコルのみ（NMEA 無効）に設定
 //   inProtoMask=0x0001(UBX only), outProtoMask=0x0001(UBX only)
 #define UBLOX_CFG_PRT_38400_UBXONLY {0xB5,0x62,0x06,0x00,0x14,0x00,0x01,0x00,0x00,0x00,0xC0,0x08,0x00,0x00,0x00,0x96,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x7B,0x54}
-// UBX-CFG-MSG: NAV-PVT(01 07) rate=1（毎測位で送信 → 2Hz）
+// UBX-CFG-MSG: NAV-PVT(01 07) rate=1（毎測位で送信 → GNSS_NAV_RATE_HZ）
 #define UBLOX_ENABLE_NAVPVT  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x07,0x01,0x13,0x51}
-// UBX-CFG-MSG: NAV-SAT(01 35) rate=2(1Hz) / rate=20(0.1Hz=10秒に1回)
-#define UBLOX_NAVSAT_RATE_2  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x35,0x02,0x42,0xAE}
-#define UBLOX_NAVSAT_RATE_20 {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x35,0x14,0x54,0xC0}
-// UBX-CFG-MSG: NAV-DOP(01 04) rate=2（1Hz）
-#define UBLOX_ENABLE_NAVDOP  {0xB5,0x62,0x06,0x01,0x03,0x00,0x01,0x04,0x02,0x11,0x4C}
+// ★ NAV-SAT / NAV-DOP / NAV-AOPSTATUS の rate は「何回の測位に 1 回」。測位のレート（settings.h の GNSS_NAV_RATE_HZ）から作る
+//   （2026-11-15〜。それまでは 2Hz 前提の固定のバイト列で、rate=2 が 1Hz・rate=20 が 0.1Hz だった）。
+//   送るのは ubx_cfg_msg_rate()（下）。チェックサムは ubx_send_packet が付ける。
+static_assert(GNSS_NAV_RATE_HZ == 2 || GNSS_NAV_RATE_HZ == 4, "GNSS_NAV_RATE_HZ は 2 か 4");
+static_assert(GNSS_APP_RATE_HZ >= 1 && GNSS_NAV_RATE_HZ % GNSS_APP_RATE_HZ == 0, "GNSS_APP_RATE_HZ は GNSS_NAV_RATE_HZ を割り切る値");
+#define GNSS_EPOCHS_1HZ    ((uint8_t)(GNSS_NAV_RATE_HZ))        // 1Hz（星座画面の NAV-SAT・NAV-DOP・NAV-AOPSTATUS）
+#define GNSS_EPOCHS_01HZ   ((uint8_t)(GNSS_NAV_RATE_HZ * 10))   // 0.1Hz（ナビ画面の NAV-SAT）
 // UBX-CFG-NAV5: ダイナミックモデルを Airborne <1g（dynModel=6）に設定
 //   mask=0x0001（dynModel のみ変更）、payload 36 bytes
 #define UBLOX_CFG_NAV5_AIRBORNE1G \
@@ -67,10 +69,11 @@ uint32_t get_gnss_fix_millis() { return gnss_fix_millis; }
 //   VALSET で送る（Interface description UBX-21035062 §4.9.1）。
 #define UBLOX_CFG_ANA_ON  {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x03,0x00,0x00,0x01,0x00,0x23,0x10,0x01,0xD1,0xD0}
 #define UBLOX_CFG_ANA_OFF {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x03,0x00,0x00,0x01,0x00,0x23,0x10,0x00,0xD0,0xCF}
-// UBX-CFG-VALSET: CFG-MSGOUT-UBX_NAV_AOPSTATUS_UART1（0x2091007A）= 2（2 エポックに 1 回 = 1Hz）。
+// UBX-CFG-VALSET: CFG-MSGOUT-UBX_NAV_AOPSTATUS_UART1（0x2091007A）= GNSS_EPOCHS_1HZ（その回数の測位に 1 回 = 1Hz）。
 //   layers=0x01（RAM のみ。毎回の起動で送り直すので BBR に残す必要は無い）。
 //   「ON になったか」を GNSS 自身の申告で確かめるのと、計算中の時間を測るのに使う。
-#define UBLOX_AOPSTATUS_1HZ {0xB5,0x62,0x06,0x8A,0x09,0x00,0x00,0x01,0x00,0x00,0x7A,0x00,0x91,0x20,0x02,0xC7,0x88}
+//   payload（チェックサムは ubx_send_packet が付ける）
+#define UBLOX_AOPSTATUS_1HZ_PAYLOAD {0x00,0x01,0x00,0x00,0x7A,0x00,0x91,0x20,GNSS_EPOCHS_1HZ}
 
 // --- GNSS 最新値の保持変数 ---
 // UBX NAV-PVT（リプレイ中は CSV）から取り出した値をここに保存し、getter 経由で公開する。
@@ -150,7 +153,8 @@ static uint8_t  eph_orbit_svs  = 0;      // いま放送暦を使っている衛
 // fix の瞬間に手元にある値は**まだ 1 度も届いていない（0 のまま）**ことがあるため。
 static bool     ana_fix_report_pending = false;
 
-// この起動で ANA をどうしたか（2026-11-13〜。BT1 が切れていた起動＝コールドスタートのときだけ切る）。
+// この起動で ANA をどうしたか（2026-11-13〜。settings.h の GNSS_ANA_OFF_ON_COLD が 1 なら、BT1 が切れていた起動＝コールドスタートのときだけ切る。
+// 2026-11-14 から既定は 0 で、コールドの起動でも有効のまま）。
 // SPG 5.10 は「コールドスタートのあと、ANA が有効だと QZSS を航法に使わない」（SPG 5.30 のリリースノート
 // UBXDOC-304424225-20393 §5 の "SPG 5.10 limitation"。回避策は ANA を無効にすること）。
 // 起動時は BT1 の生死が最初の NAV-PVT まで分からないので、そのあと gnss_ana_boot_tick() が送る。
@@ -292,8 +296,82 @@ static void own_time_watch(const uint8_t *p, uint8_t fixType, bool fixOK, uint8_
   s_tw_ms     = now;
 }
 
+// ---- 測位の瞬間から、この NAV-PVT を処理するまでの時間 [µs]（姿勢 ESKF の GNSS 速度の遅れの補償用。2026-11-15〜）----
+// 「処理した時刻 − iTOW」は、Core0 が描画などで受け取りに行けなかったぶん数十〜数百 ms 揺れる。その最小値
+// （＝待たされなかったときの値）を 15 秒の箱 2 つ（いまの箱と 1 つ前の箱）で持ち、いまの値との差を「待たされた時間」とする。
+// 本体の時計のずれ（数十 ppm）は 30 秒で数 ms 以内。最小値から 10 秒以上離れたら（iTOW の週またぎ・時刻の飛び・
+// GNSS のリセット）数え直す。これに settings.h の ESKF_GNSS_VEL_DELAY_MS（待たされなくてもかかる遅れ）を足して返す。
+// ESKF_GNSS_VEL_DELAY_MS が負なら 0（補償しない）。tools/imulog/eskf.py の itow_host_time_causal() と同じ。
+static uint32_t navpvt_age_us(uint32_t itow_ms) {
+#if ESKF_GNSS_VEL_DELAY_MS < 0
+  (void)itow_ms;
+  return 0;
+#else
+  static bool     have_cur = false, have_prev = false, have_b0 = false;
+  static int32_t  cur = 0, prev = 0;
+  static uint32_t b0_ms = 0;
+  const uint32_t now_ms = (uint32_t)(time_us_64() / 1000ULL);
+  const int32_t  off    = (int32_t)(now_ms - itow_ms);
+  if (have_cur || have_prev) {
+    const int32_t ref = !have_prev ? cur : (!have_cur ? prev : (cur < prev ? cur : prev));
+    const int32_t d   = off - ref;
+    if (d > 10000 || d < -10000) { have_cur = have_prev = have_b0 = false; }
+  }
+  if (!have_b0) { have_b0 = true; b0_ms = now_ms; }
+  else if ((uint32_t)(now_ms - b0_ms) >= 15000UL) { prev = cur; have_prev = have_cur; have_cur = false; b0_ms = now_ms; }
+  if (!have_cur || off < cur) { cur = off; have_cur = true; }
+  const int32_t mn     = (have_prev && prev < cur) ? prev : cur;
+  const uint32_t wait  = (uint32_t)(off - mn);                 // 待たされた時間 [ms]（0 以上）
+  const uint32_t age   = (wait + (uint32_t)ESKF_GNSS_VEL_DELAY_MS) * 1000UL;
+  return age ? age : 1;    // 0 は「補償しない」の意味なので避ける（①だけ補償・待たされなかった回）
+#endif
+}
+
+// ---- 4Hz の測位のうち、位置・時刻・画面・CSV・無線などへ通すのは GNSS_APP_RATE_HZ（2Hz）ぶんだけ（2026-11-15〜）----
+// iTOW を 500ms の区切りに分け、区切りごとに最初の 1 回だけ通す。4Hz（iTOW = 0, 250, 500, 750 …）なら 0 と 500 が通り、
+// 2026-11-14 までの 2Hz と同じ時刻の測位が同じ間隔で流れる。GNSS が 2Hz のまま（4Hz を断った・設定前）なら全部通る。
+// iTOW が進まない・おかしいときの保険に、1 秒通していなければ通す。
+static bool navpvt_app_epoch(uint32_t itow_ms) {
+  static bool     have = false;
+  static uint32_t last_bucket = 0, last_ms = 0;
+  const uint32_t bucket = itow_ms / (1000UL / GNSS_APP_RATE_HZ);
+  const uint32_t now = millis();
+  if (have && bucket == last_bucket && (uint32_t)(now - last_ms) < 1000UL) return false;
+  have = true; last_bucket = bucket; last_ms = now;
+  return true;
+}
+
 static void handle_navpvt(const uint8_t *p, uint16_t len) {
   if (len < 84) return;
+
+  // ---- 姿勢 ESKF と生 IMU ログ: 全部の測位（GNSS_NAV_RATE_HZ）で ----
+  // ★ ここでは ubx_* / stored_* に触らない（下の「2Hz ぶんだけ」の測位でしか変えない）。使うのはこのパケットの値だけ。
+  {
+    const uint32_t itow = (uint32_t)(p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24));
+    const int32_t  vN   = (int32_t)(p[48]|(p[49]<<8)|(p[50]<<16)|(p[51]<<24));
+    const int32_t  vE   = (int32_t)(p[52]|(p[53]<<8)|(p[54]<<16)|(p[55]<<24));
+    const int32_t  vD   = (int32_t)(p[56]|(p[57]<<8)|(p[58]<<16)|(p[59]<<24));
+    const uint32_t sAcc = (uint32_t)(p[68]|(p[69]<<8)|(p[70]<<16)|((uint32_t)p[71]<<24));
+    const uint32_t age  = navpvt_age_us(itow);   // 全部の NAV-PVT で呼ぶ（最小値を追うため）
+    // 姿勢 ESKF のオフライン開発用に、GNSS 速度を生 IMU ログへ同じ時間軸で記録する。
+    // velD は UBX 原義（下降正）のまま記録し、PC 側で NED をそのまま扱えるようにする。
+    imulog_push(IMULOG_ID_GNSSVEL, itow, IMULOG_ACC_NONE,
+                vN * 1e-3f, vE * 1e-3f, vD * 1e-3f, sAcc * 1e-3f);
+    // 姿勢 ESKF の速度観測。3D フィックス時のみ渡す（品質の最終判断は sAcc で ESKF 側が行う）。
+    // リプレイ中は CSV 由来の値なので渡さない。
+    if ((p[21] & 0x01) != 0 && p[20] >= 3 && !getReplayMode()) {
+#if ESKF_GNSS_VEL_DELAY_MS >= 0
+      // ★ 遅れを補償するときは、先に溜まっている IMU のサンプルを推定へ渡して、推定を「いま」まで進めておく。
+      //   gnss_loop() は loop() の頭で、imu_update() より前に走る。直前の描画（85〜128ms）の間のサンプルがまだ渡っておらず、
+      //   推定はそのぶん古い。古いままだと「測位の瞬間」が速度の履歴より新しくなって、補償が効かない回が出る
+      //   （tools/imulog/eskf.py は測位が届いた時点まで伝播してから観測を入れるので、こうしないと機上と合わない）。
+      //   補償しない（負）ときは 2026-11-14 までと同じ動きのままにするため、呼ばない。
+      imu_service_if_due();
+#endif
+      attitude_on_gnss_velocity(vN * 1e-3f, vE * 1e-3f, vD * 1e-3f, sAcc * 1e-3f, age);
+    }
+    if (!navpvt_app_epoch(itow)) return;
+  }
 
   // UTC 日時フィールド（valid bits: bit0=validDate, bit1=validTime）
   uint8_t valid  = p[11];
@@ -370,17 +448,7 @@ static void handle_navpvt(const uint8_t *p, uint16_t len) {
   // GPS 週内時刻（bytes 0-3: iTOW ms）。生 IMU ログとの時刻対応付けに使う。
   ubx_itow_ms   = (uint32_t)(p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24));
 
-  // 姿勢 ESKF のオフライン開発用に、GNSS 速度を生 IMU ログへ同じ時間軸で記録する。
-  // velD はここでは UBX 原義（下降正）に戻して記録し、PC 側で NED をそのまま扱えるようにする。
-  imulog_push(IMULOG_ID_GNSSVEL, ubx_itow_ms, IMULOG_ACC_NONE,
-              ubx_veln_mps, ubx_vele_mps, velD * 1e-3f, ubx_sacc_mmps * 1e-3f);
-
-  // 姿勢 ESKF の速度観測。3D フィックス時のみ渡す（品質の最終判断は sAcc で ESKF 側が行う）。
-  // リプレイ中は CSV 由来の値なので渡さない。
-  if (gnssFixOK && fixType >= 3 && !getReplayMode()) {
-    attitude_on_gnss_velocity(ubx_veln_mps, ubx_vele_mps, velD * 1e-3f,
-                              ubx_sacc_mmps * 1e-3f);
-  }
+  // （生 IMU ログと姿勢 ESKF へは、この関数の頭で全部の測位を渡してある）
 
   // pDOP（0.01 スケール）
   uint16_t pDOP = (uint16_t)(p[76] | (p[77]<<8));
@@ -848,6 +916,11 @@ static void ubx_send_packet(uint8_t cls, uint8_t id, const uint8_t *payload, uin
 void gnss_ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len) {
   ubx_send_packet(cls, id, payload, len);
 }
+// UBX-CFG-MSG（06 01）: NAV のメッセージ（class 01）を「epochs 回の測位に 1 回」出させる
+static void ubx_cfg_msg_rate(uint8_t nav_id, uint8_t epochs) {
+  const uint8_t pl[3] = { 0x01, nav_id, epochs };
+  ubx_send_packet(0x06, 0x01, pl, sizeof(pl));
+}
 
 // CFG-ANA-USE_ANA を RAM と BBR に書く（gnss_setup_impl の ⑦ の UBLOX_CFG_ANA_ON / OFF と同じ中身）。返事は待たない。
 static void ana_send_valset(bool on) {
@@ -857,7 +930,8 @@ static void ana_send_valset(bool on) {
 // gnss_ana_boot_tick() が送った CFG-ANA の結果を 1 行残す（ACK / NAK を受けたとき、返事が来なかったとき）
 static void ana_boot_log(const char* result) {
   if (s_ana_mode == ANA_MODE_ON) {
-    enqueueTask(createLogSdfTask("GNSS ANA on for this boot (rtc alive on boot): %s", result));
+    enqueueTask(createLogSdfTask("GNSS ANA on for this boot (%s): %s",
+                                 s_rtc_alive_on_boot ? "rtc alive on boot" : "rtc lost on boot = cold start, GNSS_ANA_OFF_ON_COLD=0", result));
   } else if (s_ana_mode == ANA_MODE_OFF_TEST) {
     enqueueTask(createLogSdfTask("GNSS ANA off for this boot (cold-start test PONS:DBD; "
                                  "SPG 5.10 does not use QZSS after a cold start with ANA): %s", result));
@@ -875,8 +949,8 @@ static void ana_boot_log(const char* result) {
 // 手順（gnss_sig_tick()。log.txt の `GNSS SIGNAL ...`、-- は返事に無かった鍵）:
 //   ① RAM（いま効いている値）を読む
 //   ② 決めた形と違う鍵だけを RAM に書く（ほかの設定と同じく RAM だけ。電源を切れば戻り、毎回の起動でここが書き直す）。
-//      決めた形: QZSS（L1C/A）は入れる。BeiDou は settings.h の GNSS_BDS_B1I が 1 なら B1I にして、同時に有効にできない B1C と
-//      GLONASS を切る（2026-11-14〜）。0 なら工場出荷の B1C のまま、BeiDou が切られていれば入れるだけ。
+//      決めた形: QZSS（L1C/A）は入れる。BeiDou は settings.h の GNSS_BDS_B1I が 0（いま。2026-11-14 に B1I を試して使わないと決めた）なら
+//      工場出荷の B1C・GLONASS のまま（RAM に前の B1I が残っていれば戻す）。1 なら B1I にして、同時に有効にできない B1C と GLONASS を切る。
 //      M10 は 1 通の VALSET の中身をまとめて検査するので、B1I・B1C・GLONASS は必ず同じ 1 通で書く（別々に送ると途中の形が
 //      「B1I と GLONASS が両方有効」になって断られる）。書いたら RAM を読み直して確かめる
 //   ③ BBR（BT1 で残る値。書いていなければ「無い」と断られる）と Default（工場出荷）を読む。①と比べてどこで切られていたかが分かる
@@ -1029,7 +1103,15 @@ static void handle_cfg_valget(const uint8_t *p, uint16_t len) {
       want(SIGK_GLO, 0);
     }
 #else
-    if (val[SIGK_B1I] == 0 && val[SIGK_B1C] != 1) want(SIGK_B1I, 1);   // B1C が入っていれば足りるので B1I は書かない
+    // USB 書き換え等で GNSS の電源が切れず RAM に前回の B1I=1 / B1C=0 / GLO=0 が残っていた場合も工場出荷（B1I=0, B1C=1, GLO=1）へ戻す。
+    // 最初から工場出荷の状態なら val と一致するので何も送らない。
+    if (val[SIGK_B1I] >= 0 && val[SIGK_B1C] >= 0) {
+      want(SIGK_B1I, 0);
+      want(SIGK_B1C, 1);
+      want(SIGK_GLO, 1);
+    } else if (val[SIGK_B1I] == 0) {
+      want(SIGK_B1I, 1);
+    }
 #endif
     want(SIGK_QZSS, 1);
     want(SIGK_QZ_L1CA, 1);
@@ -1460,6 +1542,7 @@ bool get_gnss_ana_off_cold()    { return s_ana_mode == ANA_MODE_OFF_COLD || s_an
 // リセットは GNSS だけ（resetMode=0x02）なので RAM の設定は残る。次の普通の起動（時計が生きている）で ANA は有効に戻る。
 // 戻り値: いま切った（返事は ana_boot_log() が log.txt に残す）。設定で切ってある・すでに切ってあるときは false。
 bool gnss_ana_off_for_cold_test() {
+  if (!GNSS_ANA_OFF_ON_COLD) return false;   // 2026-11-14〜 既定はコールドでも切らない（本物のコールドの起動と同じにそろえる）
   if (!GNSS_USE_ANA || s_ana_mode == ANA_MODE_OFF_SETTING) return false;
   if (s_ana_mode == ANA_MODE_OFF_COLD || s_ana_mode == ANA_MODE_OFF_TEST) return false;
   s_ana_mode = ANA_MODE_OFF_TEST;   // まだ決めていない起動（最初の NAV-PVT の前）でも、gnss_ana_boot_tick は上書きしない
@@ -1487,27 +1570,24 @@ uint32_t gnss_own_tacc_ns() { return ubx_tacc_ns; }
 // GNSS モジュールを「位置取得優先モード」に切り替える。
 // GSV（衛星情報）出力を停止することで NMEA の量を減らし、位置・速度の更新レートを上げる。
 // 設定画面の GNSS 詳細からメインマップへ戻る際に呼ばれる。
-// いま GNSS に頼んでいる NAV-SAT のレート（2 = 1Hz、20 = 0.1Hz）。設定を送り直すと ④ の 0.1Hz に戻るので、
+// いま GNSS に頼んでいる NAV-SAT は 1Hz か（false = 0.1Hz）。設定を送り直すと ④ の 0.1Hz に戻るので、
 // 星座画面や干渉試験が上げていたら送り直したあとに戻す（gnss_setup_impl）。
-static uint8_t s_navsat_rate = 20;
+static bool s_navsat_1hz = false;
 
 void gnss_getposition_mode() {
-  s_navsat_rate = 20;
-  gnss_dbd_finish_tx();   // 航法データベースのフレームを書きかけていたら先に書き切る
+  s_navsat_1hz = false;
   // ナビ画面では NAV-SAT を 0.1Hz（10秒に1回）に落としてトラフィックを抑制
-  { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
-    for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+  // （ubx_cfg_msg_rate → ubx_send_packet が、航法データベースのフレームを書きかけていたら先に書き切る）
+  ubx_cfg_msg_rate(0x35, GNSS_EPOCHS_01HZ);
 }
 
 // GNSS モジュールを「星座表示モード」に切り替える。
 // GSV を有効化して衛星の仰角・方位・SNR を表示できるようにする。
 // GNSS 詳細画面に入る際に呼ばれる。
 void gnss_constellation_mode() {
-  s_navsat_rate = 2;
-  gnss_dbd_finish_tx();   // 航法データベースのフレームを書きかけていたら先に書き切る
+  s_navsat_1hz = true;
   // 星座画面では NAV-SAT を 1Hz に上げて衛星情報をリアルタイム更新
-  { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
-    for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+  ubx_cfg_msg_rate(0x35, GNSS_EPOCHS_1HZ);
 }
 
 int setupcounter = 1;  // gnss_setup() の呼び出し回数（1=初回、2以降=リトライ）
@@ -1572,7 +1652,7 @@ static void gnss_cfg_wait(uint32_t ms) {
 // gnss_setup() の設定コマンドのうち、ACK が返らなかったものを表す内部ビット。
 // RELEASE ではシリアルのデバッグ出力が消えるため、結果は log.txt に残す。
 enum {
-  GNSS_CFGNG_RATE = 0x01,  // CFG-RATE 2Hz
+  GNSS_CFGNG_RATE = 0x01,  // CFG-RATE（GNSS_NAV_RATE_HZ）
   GNSS_CFGNG_PVT  = 0x02,  // NAV-PVT 出力
   GNSS_CFGNG_SAT  = 0x04,  // NAV-SAT 出力
   GNSS_CFGNG_DOP  = 0x08,  // NAV-DOP 出力
@@ -1681,27 +1761,28 @@ static void gnss_setup_impl(bool send_config) {
       Serial.println("[UBX] reopened 38400");
       #endif
 
-      // ② UBX-CFG-RATE: 測位レートを 2Hz（500ms）に設定
-      // Payload: measRate=0x01F4(500ms), navRate=0x0001, timeRef=0x0001(GPS)
+      // ② UBX-CFG-RATE: 測位レートを GNSS_NAV_RATE_HZ（4Hz = 250ms。2026-11-14 までは 2Hz = 500ms）に設定
+      // Payload: measRate [ms], navRate=0x0001, timeRef=0x0001(GPS)
       {
-        const unsigned char UBLOX_RATE_2HZ[] = {0xB5,0x62,0x06,0x08,0x06,0x00,0xF4,0x01,0x01,0x00,0x01,0x00,0x0B,0x77};
+        const uint16_t meas_ms = (uint16_t)(1000 / GNSS_NAV_RATE_HZ);
+        const uint8_t pl[6] = { (uint8_t)(meas_ms & 0xFF), (uint8_t)(meas_ms >> 8), 0x01, 0x00, 0x01, 0x00 };
         gnss_cfg_wait(50);
         #ifdef DEBUG_GBX_NMEA
-        Serial.println("[UBX] sending CFG-RATE 2Hz");
+        Serial.print("[UBX] sending CFG-RATE "); Serial.print(GNSS_NAV_RATE_HZ); Serial.println("Hz");
         #endif
-        for (unsigned i = 0; i < sizeof(UBLOX_RATE_2HZ); i++) GNSS_SERIAL.write(UBLOX_RATE_2HZ[i]);
+        ubx_send_packet(0x06, 0x08, pl, sizeof(pl));
       }
       {
         // NAV-PVT など既存パケットを読み飛ばしながら ACK を待つ
         bool got_ack = ubxWaitAck(600, 0x06, 0x08);   // CFG-RATE
         if (!got_ack) cfg_ng |= GNSS_CFGNG_RATE;
         #ifdef DEBUG_GBX_NMEA
-        if      (got_ack) Serial.println("[UBX] CFG-RATE 2Hz: ACK OK");
-        else              Serial.println("[UBX] CFG-RATE 2Hz: no ACK");
+        if      (got_ack) Serial.println("[UBX] CFG-RATE: ACK OK");
+        else              Serial.println("[UBX] CFG-RATE: no ACK");
         #endif
       }
 
-      // ③ NAV-PVT を毎測位（2Hz）で出力
+      // ③ NAV-PVT を毎測位（GNSS_NAV_RATE_HZ）で出力
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] sending ENABLE NAVPVT");
       #endif
@@ -1718,11 +1799,10 @@ static void gnss_setup_impl(bool send_config) {
 
       // ④ NAV-SAT を 0.1Hz（10秒に1回）で出力（ナビ画面用。星座画面では 1Hz に切替）
       #ifdef DEBUG_GBX_NMEA
-      Serial.println("[UBX] sending NAVSAT rate=20");
+      Serial.println("[UBX] sending NAVSAT 0.1Hz");
       #endif
-      { const unsigned char cmd[] = UBLOX_NAVSAT_RATE_20;
-        gnss_cfg_wait(50);
-        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+      gnss_cfg_wait(50);
+      ubx_cfg_msg_rate(0x35, GNSS_EPOCHS_01HZ);
       {
         bool got_ack = ubxWaitAck(600, 0x06, 0x01);   // CFG-MSG
         if (!got_ack) cfg_ng |= GNSS_CFGNG_SAT;
@@ -1735,9 +1815,8 @@ static void gnss_setup_impl(bool send_config) {
       #ifdef DEBUG_GBX_NMEA
       Serial.println("[UBX] sending ENABLE NAVDOP");
       #endif
-      { const unsigned char cmd[] = UBLOX_ENABLE_NAVDOP;
-        gnss_cfg_wait(50);
-        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+      gnss_cfg_wait(50);
+      ubx_cfg_msg_rate(0x04, GNSS_EPOCHS_1HZ);
       {
         bool got_ack = ubxWaitAck(600, 0x06, 0x01);   // CFG-MSG
         if (!got_ack) cfg_ng |= GNSS_CFGNG_DOP;
@@ -1792,9 +1871,9 @@ static void gnss_setup_impl(bool send_config) {
       }
       // ⑧ NAV-AOPSTATUS を 1Hz で出力（有効なときだけ。GNSS DETAIL 3 と log.txt 用）
       if (GNSS_USE_ANA) {
-        { const unsigned char cmd[] = UBLOX_AOPSTATUS_1HZ;
+        { const uint8_t pl[] = UBLOX_AOPSTATUS_1HZ_PAYLOAD;
           gnss_cfg_wait(50);
-          for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]); }
+          ubx_send_packet(0x06, 0x8A, pl, sizeof(pl)); }
         bool got_ack = ubxWaitAck(600, 0x06, 0x8A);   // CFG-VALSET
         if (!got_ack) cfg_ng |= GNSS_CFGNG_AOPS;
         #ifdef DEBUG_GBX_NMEA
@@ -1803,7 +1882,7 @@ static void gnss_setup_impl(bool send_config) {
       }
 
       // ⑨ MON-RF を 1Hz で出力（受信状態の 1 分まとめ `grf` 用。debug/v7-noise-test と同じ）
-      // ★ MON の出力の rate は航法の周期（2Hz）ではなく秒で数えるので、rate=1 で 1 秒に 1 回。
+      // ★ MON の出力の rate は航法の周期（GNSS_NAV_RATE_HZ）ではなく秒で数えるので、rate=1 で 1 秒に 1 回。
       // ★ 2 つのコマンド（CFG-VALSET と旧式の CFG-MSG）を送るので、返事も 2 つ待つ。片方だけ待つと
       //   残りの ACK が後ろに残る。どちらか一方が通れば出力される（届いた数は `grf` の n= に出る）。
       gnss_enable_mon_rf(1);
@@ -1828,10 +1907,9 @@ static void gnss_setup_impl(bool send_config) {
       #endif
 
       // 送り直したときは、星座画面が上げていた NAV-SAT のレート（1Hz）へ戻す（④ は 0.1Hz で送るため）
-      if (setupcounter != 1 && s_navsat_rate == 2) {
-        const unsigned char cmd[] = UBLOX_NAVSAT_RATE_2;
+      if (setupcounter != 1 && s_navsat_1hz) {
         gnss_cfg_wait(50);
-        for (unsigned i = 0; i < sizeof(cmd); i++) GNSS_SERIAL.write(cmd[i]);
+        ubx_cfg_msg_rate(0x35, GNSS_EPOCHS_1HZ);
         (void)ubxWaitAck(300, 0x06, 0x01);   // CFG-MSG
       }
 
@@ -1844,11 +1922,11 @@ static void gnss_setup_impl(bool send_config) {
         // ANAlater = 起動時で、BT1 の生死が分かってから gnss_ana_boot_tick() が送る（結果は `GNSS ANA on/off for this boot` の行）
         const char* ana = !ana_sent ? "ANAlater" : (ana_on ? "ANA" : (GNSS_USE_ANA ? "ANAoff(cold)" : "ANAoff"));
         if (cfg_ng == 0) {
-          enqueueTask(createLogSdfTask("GNSS CFG OK 2Hz/PVT/SAT/DOP/Air1g/%s%s (prt=%s)", ana,
+          enqueueTask(createLogSdfTask("GNSS CFG OK %dHz/PVT/SAT/DOP/Air1g/%s%s (prt=%s)", (int)GNSS_NAV_RATE_HZ, ana,
             GNSS_DBD_ENABLE ? "/AckAid" : "", prt));
         } else {
           enqueueTask(createLogSdfTask("GNSS CFG NO ACK:%s%s%s%s%s%s%s%s (prt=%s)",
-            (cfg_ng & GNSS_CFGNG_RATE) ? " RATE2HZ"    : "",
+            (cfg_ng & GNSS_CFGNG_RATE) ? " RATE"       : "",
             (cfg_ng & GNSS_CFGNG_PVT)  ? " NAVPVT"     : "",
             (cfg_ng & GNSS_CFGNG_SAT)  ? " NAVSAT"     : "",
             (cfg_ng & GNSS_CFGNG_DOP)  ? " NAVDOP"     : "",
@@ -2446,7 +2524,7 @@ static void gnss_ana_boot_tick() {
   if (!gnss_signal_cfg_settled()) return;   // BeiDou・QZSS の有効化（gnss_sig_tick）が先。同じ VALSET の ACK を取り違えないため
   if (replaymode_gnssoff) return;   // リプレイ中は GNSS の返事を読み捨てている。抜けてから送る
   if (!GNSS_USE_ANA) { s_ana_mode = ANA_MODE_OFF_SETTING; return; }   // ⑦ が「無効」を送り済み
-  s_ana_mode = s_rtc_alive_on_boot ? ANA_MODE_ON : ANA_MODE_OFF_COLD;
+  s_ana_mode = (s_rtc_alive_on_boot || !GNSS_ANA_OFF_ON_COLD) ? ANA_MODE_ON : ANA_MODE_OFF_COLD;
   ana_send_valset(s_ana_mode == ANA_MODE_ON);
   const uint32_t t = millis();
   s_ana_ack_wait_ms = t ? t : 1;

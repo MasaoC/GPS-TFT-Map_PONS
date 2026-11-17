@@ -8,4 +8,6 @@
   (lib (name "bno085")(type "KiCad")(uri "${KIPRJMOD}/Symbols/bno085.kicad_sym")(options "")(descr "同上"))
   (lib (name "USB_microB")(type "KiCad")(uri "${KIPRJMOD}/Symbols/USB_microB.kicad_sym")(options "")(descr "上流の Connector:USB_B_Micro にピン6(シールドパッド)を足した独自版"))
   (lib (name "Conn_01x03_Shielded")(type "KiCad")(uri "${KIPRJMOD}/Symbols/Conn_01x03_Shielded.kicad_sym")(options "")(descr "上流のシールドピン番号 SH を MP に変えた独自版"))
+  (lib (name "MIC841")(type "KiCad")(uri "${KIPRJMOD}/Symbols/MIC841.kicad_sym")(options "")(descr "Microchip MIC841HYC5。KiCad 標準には無いのでプロジェクトで持つ"))
+  (lib (name "RT9078")(type "KiCad")(uri "${KIPRJMOD}/Symbols/RT9078.kicad_sym")(options "")(descr "Richtek RT9078-33GJ5。同上"))
 )

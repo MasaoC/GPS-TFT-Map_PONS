@@ -419,9 +419,67 @@ static void reset_tilt_covariance(float att_sigma_deg) {
     P_[0][0] = P_[1][1] = s * s;
 }
 
+// ============================================================
+// 速度の履歴（GNSS 速度の遅れの補償用。settings.h の ESKF_GNSS_VEL_DELAY_MS）
+// ============================================================
+// NAV-PVT は測位の瞬間より遅れて届く（GNSS の中の計算・UART・Core0 が描画などで受け取りに行けなかった時間）。
+// 届いた時点の v_ と比べると、旋回中は「旋回率 × 遅れ」だけ方位が遅れる。そこで伝播のたびに v_ を覚えておき、
+// 観測が来たら「測位の瞬間の v_」と比べる（直しはいまの状態に入れる。遅れが短いので P と H はいまのものを使う）。
+// ★ 観測で v_ を直したら、同じ量を履歴にも足す（vhist_shift）。履歴を「いまの推定で見た過去の速度」に保つため。
+//   足さないと、次の観測が前の直しのぶんをもう一度残差として見る。
+// ★ v_ を入れ直したら（初期化・ヨーの注入・途絶明け）履歴を捨てる（vhist_clear）。前の速度とはつながっていない。
+// tools/imulog/eskf.py の vh / hist_shift / v_at と同じ。
+struct VHist { uint32_t t_us; float v[3]; };
+static VHist    vhist_[ESKF_VHIST_N];
+static uint16_t vhist_head_ = 0;     // 次に書く位置
+static uint16_t vhist_n_    = 0;     // 入っている数
+
+static void vhist_clear() { vhist_head_ = 0; vhist_n_ = 0; }
+
+static void vhist_push(uint32_t t_us) {
+    VHist &e = vhist_[vhist_head_];
+    e.t_us = t_us;
+    e.v[0] = v_[0]; e.v[1] = v_[1]; e.v[2] = v_[2];
+    vhist_head_ = (uint16_t)((vhist_head_ + 1) % ESKF_VHIST_N);
+    if (vhist_n_ < ESKF_VHIST_N) vhist_n_++;
+}
+
+static void vhist_shift(const float dv[3]) {
+    for (uint16_t i = 0; i < vhist_n_; i++) {
+        vhist_[i].v[0] += dv[0]; vhist_[i].v[1] += dv[1]; vhist_[i].v[2] += dv[2];
+    }
+}
+
+// 時刻 t_us の推定速度。履歴より新しければいまの v_、古ければいちばん古いもの、間なら直線でつなぐ。
+static void vhist_at(uint32_t t_us, float out[3]) {
+    out[0] = v_[0]; out[1] = v_[1]; out[2] = v_[2];
+    if (vhist_n_ == 0) return;
+    // 新しいほうから古いほうへたどる
+    int idx = (int)vhist_head_ - 1;
+    if (idx < 0) idx += ESKF_VHIST_N;
+    const VHist *newer = nullptr;
+    for (uint16_t k = 0; k < vhist_n_; k++) {
+        const VHist &e = vhist_[idx];
+        if ((int32_t)(t_us - e.t_us) >= 0) {
+            // e は t_us と同じか古い。1 つ新しいもの（newer）との間をつなぐ
+            if (newer) {
+                const float span = (float)(int32_t)(newer->t_us - e.t_us);
+                const float w = (span > 0.0f) ? (float)(int32_t)(t_us - e.t_us) / span : 0.0f;
+                for (int c = 0; c < 3; c++) out[c] = e.v[c] + (newer->v[c] - e.v[c]) * w;
+            }   // newer が無い = いちばん新しい履歴より後。いまの v_ のまま
+            return;
+        }
+        newer = &e;
+        if (--idx < 0) idx += ESKF_VHIST_N;
+    }
+    // 履歴のどれよりも古い → いちばん古いもの
+    out[0] = newer->v[0]; out[1] = newer->v[1]; out[2] = newer->v[2];
+}
+
 void attitude_setup() {
     q_[0] = 1; q_[1] = q_[2] = q_[3] = 0;
     v_[0] = v_[1] = v_[2] = 0;
+    vhist_clear();
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
     reset_covariance(10.0f, ESKF_YAW_UNKNOWN_SIGMA_DEG);
     initialized_ = false;
@@ -528,6 +586,7 @@ static bool init_level(const float a[3], float att_sigma_deg) {
     q_[0] = 1.0f; q_[1] = q_[2] = q_[3] = 0.0f;
     if (!level_toward_gravity(a, 1.0f)) return false;
     v_[0] = v_[1] = v_[2] = 0.0f;
+    vhist_clear();
     for (int i = 0; i < 3; i++) { bg_[i] = 0; ba_[i] = 0; }
     reset_covariance(att_sigma_deg, ESKF_YAW_UNKNOWN_SIGMA_DEG);
     initialized_ = true;      // = 水平化済み。ロール・ピッチとバリオはここから有効
@@ -835,6 +894,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     v_[0] += Rf[0] * dt;
     v_[1] += Rf[1] * dt;
     v_[2] += (Rf[2] - GRAVITY) * dt;      // ENU なので重力は -Z
+    vhist_push(t_us);                     // GNSS 速度の遅れの補償用（ESKF_GNSS_VEL_DELAY_MS）
 
     // ---- 誤差状態の遷移 Phi = I + F*dt ----
     //   d(dtheta)/dt = -R dbg
@@ -983,16 +1043,13 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         // マウントから外されたか。機体に付いている限りこの角度には達しない。
         // 検出したら、次に APPLY するまで「較正が無効」の警告を出し続ける。
         // ここは較正オフセット適用後の値で見る（生値だとマウント自体の傾きで誤検出する）。
-        // 右バンク（r > 0）だけしきい値を緩める。プラットホームへ上げるときの
-        // 大きな右バンクを「外した」と誤判定しないため。左バンクとピッチは従来どおり。
-        const float roll_limit = (r > 0.0f) ? OFF_MOUNT_RIGHT_ROLL_DEG : OFF_MOUNT_DEG;
         // ★ **「いま外れている」と「外されたことがある」を分けて持つ。**
         //   needs_apply_ は APPLY するまで下がらないラッチで、較正のやり直しを促すもの。
         //   一方 off_mount_now_ は**今この瞬間の姿勢**で、充電中の警告抑制に使う
         //   （GPS_TFT_map.ino の warn_muted_off_mount）。しきい値をここ 1 か所に保つため
         //   判定はこの中で行い、外へは真偽値だけ出す。
         off_mount_now_ = rpy_enabled_ &&
-                         (fabsf(r) > roll_limit || fabsf(p) > OFF_MOUNT_DEG);
+                         (fabsf(r) > OFF_MOUNT_DEG || fabsf(p) > OFF_MOUNT_DEG);
         if (off_mount_now_) needs_apply_ = true;
 
         // 過去 PITCH_AVG_SEC 秒の移動平均で平均ピッチを作る（上の pavg_* の説明）
@@ -1215,6 +1272,7 @@ static void level_update(const float a[3], float sigma_mps2) {
         bg_[k] += dx[6 + k];
         ba_[k] += dx[9 + k];
     }
+    vhist_shift(&dx[3]);
     clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
     clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
     level_updates_++;
@@ -1230,7 +1288,8 @@ static void clamp_bias(float b[3], float lim) {
     }
 }
 
-void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
+// age_us: この観測が測位の瞬間からどれだけ古いか [µs]（gnss.cpp の navpvt_age_us）。0 なら補償しない（届いた時点の v_ と比べる）。
+void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, uint32_t age_us) {
     // ---- 前後加速度の持続成分（重力観測のゲート用）----
     // ★ ここは観測を取り込むかどうかに関係なく常に更新する。ゲートの材料なので、
     //   ヨー未設定でも計算しておく。GNSS が無い間は last_gsp_ が古くなるので、
@@ -1278,7 +1337,7 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         if (sqrtf(z[0]*z[0] + z[1]*z[1]) < ESKF_YAW_INIT_MIN_SPEED_MPS) return;
         if (!accel_valid_) return;
         if (!init_level(accel_last_, ESKF_INIT_ATT_SIGMA_MOVING_DEG)) return;
-        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2]; vhist_clear();
         return;
     }
 
@@ -1287,7 +1346,7 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
     // ほかとの相関は落とす（入れ直したので意味を失った）。この回は観測として使わない（ヨーを入れたときと同じ）。
     if (v_stale_) {
         if (sAcc > ESKF_SACC_MAX) return;
-        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2]; vhist_clear();
         const float rv = (sAcc < ESKF_SACC_MIN) ? ESKF_SACC_MIN : sAcc;
         for (int k = 3; k < 6; k++)
             for (int i = 0; i < N_ERR; i++) { P_[k][i] = 0.0f; P_[i][k] = 0.0f; }
@@ -1320,7 +1379,7 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
         if (trk < 0.0f) trk += 360.0f;
         init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
-        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+        v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2]; vhist_clear();
         return;                     // この回は観測として使わない（速度は直接入れた）
     }
 
@@ -1353,7 +1412,7 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
             if (fabsf(d) > ESKF_BIGTILT_YAW_CHECK_DEG) {
                 // 方位を保ったのが外れていた（ひっくり返った推定など）。航跡で入れ直し、速度も GNSS の値にする（ヨーを入れたときと同じ）
                 init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
-                v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2];
+                v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2]; vhist_clear();
                 yaw_check_event_ = 2;
                 return;                 // この回は観測として使わない（速度は直接入れた）
             }
@@ -1398,8 +1457,10 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
             K[m][n] = s;
         }
 
-    // dx = K * (z - v)
-    float y[3] = { z[0] - v_[0], z[1] - v_[1], z[2] - v_[2] };
+    // dx = K * (z - v)。v は測位の瞬間の推定速度（age_us が 0 ならいまの v_）
+    float vp[3] = { v_[0], v_[1], v_[2] };
+    if (age_us > 0) vhist_at(time_us_32() - age_us, vp);
+    float y[3] = { z[0] - vp[0], z[1] - vp[1], z[2] - vp[2] };
     float dx[N_ERR];
     for (int m = 0; m < N_ERR; m++)
         dx[m] = K[m][0]*y[0] + K[m][1]*y[1] + K[m][2]*y[2];
@@ -1433,6 +1494,7 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc) {
         bg_[k] += dx[6 + k];
         ba_[k] += dx[9 + k];
     }
+    vhist_shift(&dx[3]);
     clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
     clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
     gnss_updates_++;

@@ -1060,6 +1060,9 @@ extern volatile bool userled_forced_on;  // GPS_TFT_map.ino で定義
 // 戻り値: キューに入れられたら true、満杯で捨てたら false。
 // ※ 捨てられたタスクは二度と実行されない。後始末が必要な呼び出し側
 //   （生 IMU ログのバッファ解放など）は必ず戻り値を確認すること。
+// PC へ送っている間（PONS:GET・一覧）にキューが満杯で捨てたタスクの数。送り終えたら log.txt に 1 行残す（xfer_log_dropped）
+static volatile uint32_t s_xfer_dropped = 0;
+
 bool enqueueTask(Task task) {
   bool queued = false;
   mutex_enter_blocking(&taskQueueMutex);
@@ -1068,6 +1071,12 @@ bool enqueueTask(Task task) {
     taskQueue.tasks[taskQueue.tail] = task;
     taskQueue.tail = nextTail;
     queued = true;
+  } else if (currentTask.type == TASK_SERIAL_GET || currentTask.type == TASK_SERIAL_LIST) {
+    // ★ PC へ送っている間は USB へ何も書かない（2026-11-15〜）。数百 MB の生 IMU ログは送るのに何分もかかり、その間 Core1 は
+    //   キューを消費しないので、Core0 が毎分積む log.txt の行だけで満杯になる。ここで下の 1 行を USB へ書くと
+    //   **ファイルの中身に混ざって PC 側の CRC が合わなくなる**（300MB の転送で実際に起きたと見ている）。
+    //   送っている間に溢れるのは仕組みの上で当たり前なので LED も点けず、数だけ数えて送り終えたら log.txt に残す。
+    s_xfer_dropped++;
   } else {
     userled_forced_on = true;         // 永続点灯フラグを立てる（loop_userled がフラッシュで消さないよう保護）
     digitalWrite(USERLED_PIN, HIGH);  // キュー満杯によるタスクロスト → LED 永続点灯
@@ -2816,28 +2825,36 @@ Task createLatchBattTask() {
 // ★ 本体の固有 ID を入れるのは、SD を別の機体へ差し替えたときにその機体の値を読まないため。
 // ★ CRC は書いている途中で電源が切れた（O_TRUNC のあと空・途中まで）ときに読まないため。
 //   読めなければ rtc_backup.cpp は「記録なし」として安全側から始める。
-Task createSaveRtcBackupTask(float hours, uint32_t utc) {
+Task createSaveRtcBackupTask(float hours, float aon_h, uint32_t utc, uint32_t fix_utc) {
   Task t;
   t.type = TASK_SAVE_RTCBK;
-  t.rtcBkArgs.hours = hours;
-  t.rtcBkArgs.utc   = utc;
+  t.rtcBkArgs.hours   = hours;
+  t.rtcBkArgs.aon_h   = aon_h;
+  t.rtcBkArgs.utc     = utc;
+  t.rtcBkArgs.fix_utc = fix_utc;
   return t;
 }
 
-static void rtc_backup_body(char* buf, size_t n, float hours, uint32_t utc) {
+// 形式（2026-11-16〜 PONSRTC3）:
+//   "PONSRTC3,<本体の固有 ID>,<UTC 秒>,<BT1 の残り ×100 [h]>,<主電池で保てる時間 ×10 [h]>,<最後に測位した UTC 秒>,<CRC16>"
+// ★ 4 つめは v7.2 の回路（settings.h の PONS_MAINBOARD_REV）で、いま切っても主電池が BT1 を保てる見込み。v7.1 は 0。
+// ★ 5 つめは「入れ直したら速く測位できる期間」（RTC_BACKUP_FAST_H）の起点。0 = 分からない。
+//   古い形式（PONSRTC1 は 4・5 つめが無い。PONSRTC2 は 5 つめが無い）も読む（無いものは 0）。
+static void rtc_backup_body(char* buf, size_t n, float hours, float aon_h, uint32_t utc, uint32_t fix_utc) {
   char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
   pico_get_unique_board_id_string(id, sizeof(id));
-  snprintf(buf, n, "PONSRTC1,%s,%lu,%ld", id, (unsigned long)utc, lroundf(hours * 100.0f));
+  snprintf(buf, n, "PONSRTC3,%s,%lu,%ld,%ld,%lu", id, (unsigned long)utc, lroundf(hours * 100.0f),
+           lroundf((aon_h > 0.0f ? aon_h : 0.0f) * 10.0f), (unsigned long)fix_utc);
 }
 
-void rtc_backup_save_sd(float hours, uint32_t utc) {
+void rtc_backup_save_sd(float hours, float aon_h, uint32_t utc, uint32_t fix_utc) {
   ASSERT_SD_CORE1("rtc_backup_save_sd");
   // PC 接続中は SD を読み出し専用に保つ。★ 呼ぶ側（rtc_backup_tick()）は PC 接続中はキューに入れずに待つので、
   // ここで戻るのはキューに入れてから接続された回だけ（その回は次の RTC_BACKUP_SAVE_MS まで書かれない）。
   if (webserial_connected) return;
   if (!good_sd()) return;
   char body[80], line[96];
-  rtc_backup_body(body, sizeof(body), hours, utc);
+  rtc_backup_body(body, sizeof(body), hours, aon_h, utc, fix_utc);
   snprintf(line, sizeof(line), "%s,%04X", body,
            (unsigned)link_crc16((const uint8_t*)body, (uint16_t)strlen(body)));
   FsFile f;
@@ -2848,7 +2865,7 @@ void rtc_backup_save_sd(float hours, uint32_t utc) {
 
 void rtc_backup_load_sd() {
   ASSERT_SD_CORE1("rtc_backup_load_sd");
-  bool ok = false; float hours = 0.0f; unsigned long utc = 0;
+  bool ok = false; float hours = 0.0f, aon_h = 0.0f; unsigned long utc = 0, fix_utc = 0;
   FsFile f;
   if (good_sd() && f.open(RTC_BACKUP_FILE, O_RDONLY)) {
     char line[96] = {0};
@@ -2860,16 +2877,20 @@ void rtc_backup_load_sd() {
       const unsigned crc = (unsigned)strtoul(comma + 1, nullptr, 16);
       char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
       pico_get_unique_board_id_string(id, sizeof(id));
-      char fid[40] = {0}; long h100 = 0;
-      if (crc == link_crc16((const uint8_t*)line, (uint16_t)strlen(line)) &&
-          sscanf(line, "PONSRTC1,%39[^,],%lu,%ld", fid, &utc, &h100) == 3 &&
-          strcmp(fid, id) == 0 && h100 >= 0) {
+      char fid[40] = {0}; long h100 = 0, aon10 = 0;
+      const bool crc_ok = (crc == link_crc16((const uint8_t*)line, (uint16_t)strlen(line)));
+      const bool parsed =
+          (sscanf(line, "PONSRTC3,%39[^,],%lu,%ld,%ld,%lu", fid, &utc, &h100, &aon10, &fix_utc) == 5) ||
+          (fix_utc = 0, sscanf(line, "PONSRTC2,%39[^,],%lu,%ld,%ld", fid, &utc, &h100, &aon10) == 4) ||
+          (aon10 = 0, sscanf(line, "PONSRTC1,%39[^,],%lu,%ld", fid, &utc, &h100) == 3);
+      if (crc_ok && parsed && strcmp(fid, id) == 0 && h100 >= 0 && aon10 >= 0) {
         ok = true;
         hours = h100 / 100.0f;
+        aon_h = aon10 / 10.0f;
       }
     }
   }
-  rtc_backup_set_loaded_core1(ok, hours, (uint32_t)utc);
+  rtc_backup_set_loaded_core1(ok, hours, aon_h, (uint32_t)utc, ok ? (uint32_t)fix_utc : 0);
   log_sdf("RTC BACKUP record: %s", ok ? "loaded" : "none (no file / other unit / broken)");
 }
 
@@ -3002,9 +3023,10 @@ void gnss_dbd_save_sd() {
 #endif
 }
 
-Task createSerialListTask() {
+Task createSerialListTask(bool all) {
   Task t;
   t.type = TASK_SERIAL_LIST;
+  t.serialListArgs.all = all;
   return t;
 }
 
@@ -3038,13 +3060,30 @@ static void webserial_prepare_sd() {
   imulog_flush_and_close();
 }
 
+// PC へ送っている間に捨てたタスクがあれば log.txt に残す（Core1 専用。送り終えたあと・やめたあとに呼ぶ）
+static void xfer_log_dropped() {
+  const uint32_t n = s_xfer_dropped;
+  if (n == 0) return;
+  s_xfer_dropped = 0;
+  log_sdf("PC XFER: %lu tasks dropped (queue full while sending; log lines of that time are lost)", (unsigned long)n);
+}
+
 // 標準 CRC32 (IEEE 802.3, poly 0xEDB88320)
+// ★ 表を引く（2026-11-15〜）。それまでは 1 バイトごとに 8 回まわしていて、数十 MB の生 IMU ログを送るときに効いていた。
+//   表（1KB）は最初に使うときに作る。呼ぶのは Core1 だけ（serial_send_csv_file）。
 static uint32_t calc_crc32_step(uint32_t crc, const uint8_t* data, size_t len) {
-  while (len--) {
-    crc ^= *data++;
-    for (int j = 0; j < 8; j++) {
-      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+  static uint32_t table[256];
+  static bool table_ready = false;
+  if (!table_ready) {
+    for (uint32_t i = 0; i < 256; i++) {
+      uint32_t c = i;
+      for (int j = 0; j < 8; j++) c = (c >> 1) ^ (0xEDB88320 & -(c & 1));
+      table[i] = c;
     }
+    table_ready = true;
+  }
+  while (len--) {
+    crc = (crc >> 8) ^ table[(crc ^ *data++) & 0xFF];
   }
   return crc;
 }
@@ -3056,8 +3095,10 @@ static void print_file_entry(const char* path, uint32_t fsize, uint16_t pdate, u
                 FS_HOUR(ptime), FS_MINUTE(ptime), FS_SECOND(ptime));
 }
 
-// 指定ディレクトリ内の CSV ファイルを列挙してシリアル出力する（Core1専用）
-static void list_csv_in_dir(const char* dirpath, const char* prefix) {
+// 指定ディレクトリ内のファイルを列挙してシリアル出力する（Core1専用）
+// csv_only: .csv だけ出す（ふつうの一覧）。false なら全部のファイル（PONS:LIST,ALL。開発用）。
+// subdirs:  中のフォルダも 1 段だけ入って出す（ルートから呼ぶときだけ true。それより深くは入らない）。
+static void list_files_in_dir(const char* dirpath, const char* prefix, bool csv_only, bool subdirs) {
   FsFile dir = SD.open(dirpath);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
@@ -3073,6 +3114,7 @@ static void list_csv_in_dir(const char* dirpath, const char* prefix) {
     char name[64];
     entry.getName(name, sizeof(name));
     bool isdir = entry.isDirectory();
+    bool hidden = entry.isHidden();   // Windows の System Volume Information など
     uint32_t fsize = isdir ? 0 : entry.size();
     uint16_t pdate = 0, ptime = 0;
     if (!isdir) {
@@ -3080,15 +3122,21 @@ static void list_csv_in_dir(const char* dirpath, const char* prefix) {
     }
     entry.close();
 
-    if (isdir) continue;
+    // 隠しファイル除外（Mac の ._xxx・.Spotlight-V100 など）
+    if (hidden || name[0] == '.' || (name[0] == '/' && name[1] == '.')) continue;
 
-    // 隠しファイル除外
-    if (name[0] == '.' || (name[0] == '/' && name[1] == '.')) continue;
+    if (isdir) {
+      // ルートの直下のフォルダだけ入る（data / received / imuraw と、人が置いたフォルダ）
+      if (subdirs) list_files_in_dir(name, name, csv_only, false);
+      continue;
+    }
 
-    // .csv または .CSV か判定
-    size_t len = strlen(name);
-    if (len < 4) continue;
-    if (strcasecmp(name + len - 4, ".csv") != 0) continue;
+    if (csv_only) {
+      // .csv または .CSV か判定
+      size_t len = strlen(name);
+      if (len < 4) continue;
+      if (strcasecmp(name + len - 4, ".csv") != 0) continue;
+    }
 
     char fullpath[96];
     if (prefix && prefix[0] != '\0') {
@@ -3104,8 +3152,12 @@ static void list_csv_in_dir(const char* dirpath, const char* prefix) {
   dir.close();
 }
 
-// SD 内の全フライトログ CSV を列挙してシリアル出力（Core1専用）
-void serial_list_csv_files() {
+// SD 内のファイルを列挙してシリアル出力（Core1専用）
+// all = false（PONS:LIST）: 飛行 CSV（data/ と received/）と log.txt だけ。
+// all = true （PONS:LIST,ALL。2026-11-15〜）: ルートと、その直下のフォルダの全部のファイル（生 IMU ログ imuraw/*.bin・
+//   settings.txt・gnss_dbd.bin など）。Flight Viewer の開発用のタブが使う。送るほう（PONS:GET）はもとからどのパスでも
+//   中身をそのまま送るので、バイナリもそのまま取れる。★ PONS:GET の受けるパスは 63 バイトまで（それより長い名前は一覧に出ても取れない）。
+void serial_list_csv_files(bool all) {
   ASSERT_SD_CORE1("serial_list_csv_files");
   if (!good_sd()) {
     Serial.println("PONS:ERROR,SD_NOT_READY");
@@ -3115,8 +3167,15 @@ void serial_list_csv_files() {
   // ★ 中断の印はここで下ろさない（2026-11-14、BUG-92）。Core0 が一覧を積む前に下ろしてある（PONS:GET と同じ）。
   //   ここで下ろすと、待っている間に来た CANCEL や再接続（CONNECT）が消えて一覧を最後まで流していた。
 
-  list_csv_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR);
-  list_csv_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR);
+  if (all) {
+    // ルートから 1 段ぶん全部（log.txt もこの中で出る）
+    list_files_in_dir("/", "", false, true);
+    Serial.println("PONS:LIST_END");
+    return;
+  }
+
+  list_files_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR, true, false);
+  list_files_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR, true, false);
 
   // ルートの log.txt も出す（2026-11-11〜。Flight Viewer が種別「ログ」で開き、起動ごとに分けてグラフにする）。
   // ★ 消されずに伸び続ける（数 MB になる）ので、ビューアはふつう末尾だけを PONS:GETTAIL で取る。
@@ -3135,7 +3194,7 @@ void serial_list_csv_files() {
   Serial.println("PONS:LIST_END");
 }
 
-// 指定された CSV ファイルをストリーミング送出（Core1専用）
+// 指定されたファイルをストリーミング送出（Core1専用）。中身はそのまま送る（CSV でもバイナリでも同じ）
 // tail が 0 でなく、ファイルがそれより大きければ、末尾の tail バイトだけ送る（PONS:GETTAIL。伸び続ける log.txt 用）。
 // そのときは最初の改行の次から送り（行の途中から始めない）、DATA_START の 3 つめに送り始めた位置を付ける。
 void serial_send_csv_file(const char* filename, uint32_t tail) {
@@ -3179,8 +3238,13 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
   if (from > 0) Serial.printf("PONS:DATA_START,%s,%lu,%lu\r\n", filename, (unsigned long)total_size, (unsigned long)from);
   else          Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
 
-  uint8_t buf[512];
+  // ★ 8KB ずつ読む（2026-11-15〜。それまでは 512B ＝ 1 セクタずつで、SD へ 1 セクタごとに読み出しを頼んでいた。
+  //   まとめて読むと SdFat が続けて読む命令を使う）。Core1 のスタックには置けない大きさなので static（Core1 専用）。
+  //   USB は Full Speed（12Mbps）なので、どう速くしても 1MB/s あたりが上限。ボーレートの設定は USB のシリアルでは効かない。
+  static uint8_t buf[8192];
   uint32_t crc = 0xFFFFFFFF;
+  // 行の頭に合わせたあと（GETTAIL）は、まず次のセクタの境目まで読む（そのあとの読み出しをセクタ単位にそろえる）
+  size_t want = sizeof(buf) - (size_t)(from % 512);
 
   while (file.available()) {
     // 中断要求または USB ケーブル抜去・切断検知時は即座にファイルを閉じて抜ける
@@ -3191,9 +3255,11 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
       if (usb_power_present()) {
         Serial.println("\r\nPONS:CANCEL_OK");
       }
+      xfer_log_dropped();
       return;
     }
-    int n = file.read(buf, sizeof(buf));
+    int n = file.read(buf, want);
+    want = sizeof(buf);
     if (n <= 0) break;
 
     crc = calc_crc32_step(crc, buf, (size_t)n);
@@ -3208,6 +3274,7 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
   crc ^= 0xFFFFFFFF;
   Serial.printf("\r\nPONS:DATA_END,%08lX\r\n", (unsigned long)crc);
   Serial.flush();
+  xfer_log_dropped();
 }
 
 // 起動時ロゴ BMP 読み込みタスクを生成する（引数なし、ファイル名はハードコード）

@@ -8,6 +8,7 @@ import os
 # Read the CSV file
 # csv_file = "PONSv5_planelog_2025-07-26_1539.csv"
 csv_file = "PONSv4_boatlog_2025-07-26_1530.csv"
+# 意図して直さない（2026-11-14 の監査）: 誤検出。高度の列（Altitude / GNSS_Altitude）は読まない（地面の点とカメラの高さは固定）
 df = pd.read_csv(csv_file)
 
 # Create a KML document

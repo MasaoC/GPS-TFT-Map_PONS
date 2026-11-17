@@ -357,6 +357,9 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
 // 再生中だけ HIGH にし、それ以外では LOW にしてアンプをシャットダウンする。
 // PIN_AMP_SD は SD（シャットダウン）ピンに相当。
 static volatile bool s_amp_on = false;   // いまアンプを入れているか（Core1 の安全弁が見る）
+// いま鳴らしているトーンが聞こえる音量か（2026-11-14〜）。音量 0 で最低音量の指定も無ければ、割り込みの出力は無音なので
+// アンプを入れない（WAV の startPlayWav() と同じ。入れたり切ったりのポップノイズと電流を避ける）。
+static inline bool tone_audible() { return sound_volume > 0 || tone_override_volume > 0; }
 void setAmplifierState(bool enable) {
     s_amp_on = enable;
     digitalWrite(PIN_AMP_SD, enable ? HIGH : LOW);
@@ -1077,7 +1080,7 @@ static void startNextToneEntry() {
 
     sinmode     = true;
     sin_playing = true;
-    setAmplifierState(true);
+    if (tone_audible()) setAmplifierState(true);   // 無音なら入れない（WAV と同じ。tone_audible）
     playNextNote(tone_cur_freq);
     tone_stop_time = millis() + tone_cur_dur;
 }
@@ -1119,7 +1122,7 @@ static void amp_guard() {
         //   startPlayWav() がわざとアンプを入れていないので触らない。
         static unsigned long last_amp_fix_ms = 0;
         const bool wav_audible = wav_playing && (sound_volume > 0 || wav_override_volume > 0);
-        if (!s_amp_on && (wav_audible || sin_playing) && now_ms - last_amp_fix_ms >= 100UL) {
+        if (!s_amp_on && (wav_audible || (sin_playing && tone_audible())) && now_ms - last_amp_fix_ms >= 100UL) {
             last_amp_fix_ms = now_ms;
             setAmplifierState(true);
         }
@@ -1146,7 +1149,7 @@ void loop_tone() {
         tone_paused = false;
         sinmode     = true;
         sin_playing = true;
-        setAmplifierState(true);
+        if (tone_audible()) setAmplifierState(true);
         playNextNote(tone_cur_freq);
         tone_stop_time = millis() + tone_cur_dur;
         return;
@@ -1157,7 +1160,7 @@ void loop_tone() {
         if (millis() >= tone_stop_time) {
             tone_in_gap = false;
             sin_playing = true;
-            setAmplifierState(true);
+            if (tone_audible()) setAmplifierState(true);
             playNextNote(tone_cur_freq);
             tone_stop_time = millis() + tone_cur_dur;
         }

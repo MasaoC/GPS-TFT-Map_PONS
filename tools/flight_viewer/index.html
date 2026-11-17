@@ -682,6 +682,42 @@
     .btn-download:hover {
       background: #1d4ed8;
     }
+    /* 取って保存するだけのボタン（開かない） */
+    .btn-download.sub {
+      background: #ffffff;
+      color: var(--accent-blue);
+      border: 1px solid var(--accent-blue);
+      padding: 3px 9px;
+    }
+    .btn-download.sub:hover {
+      background: #eff6ff;
+    }
+    /* 一覧のタブ（フライト・記録 / IMU 生ログ / その他。後ろの 2 つは開発用） */
+    .file-tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .file-tab {
+      border: 1px solid transparent;
+      border-bottom: none;
+      background: none;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+      color: #64748b;
+      cursor: pointer;
+      border-radius: 6px 6px 0 0;
+      margin-bottom: -1px;
+    }
+    .file-tab:hover { color: #1e293b; }
+    .file-tab.active {
+      background: #ffffff;
+      border-color: var(--card-border);
+      color: #1e293b;
+      font-weight: bold;
+    }
+    .file-tab .cnt { font-family: var(--font-mono); font-size: 0.75rem; color: #94a3b8; margin-left: 4px; }
+    .file-tab-note { font-size: 0.78rem; color: #64748b; min-height: 1.1em; }
     .progress-box {
       display: none;
       flex-direction: column;
@@ -820,7 +856,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <div class="modal-title">
-          <span>⚡ PONS SDフライトログ転送 (Web Serial)</span>
+          <span>⚡ PONS SD ファイル転送 (Web Serial)</span>
           <span class="badge" id="serial-status-badge" style="background:#e2e8f0; color:#475569;">未接続</span>
         </div>
         <button onclick="closeSerialModal()" style="border:none; background:none; font-size:1.2rem; cursor:pointer;">✕</button>
@@ -851,9 +887,12 @@
 
         <!-- SDカード内ファイル一覧 -->
         <div style="font-weight:bold; font-size:0.95rem; color:#1e293b; display:flex; justify-content:space-between; align-items:center;">
-          <span>📂 SDカード内のフライトログと log.txt</span>
+          <span>📂 SDカード内のファイル</span>
           <button onclick="requestFileList()" style="padding:3px 8px; font-size:0.8rem;">🔄 再読み込み</button>
         </div>
+        <!-- タブ（2026-11-15〜）。「IMU 生ログ」と「その他」は開発用で、取ってそのまま PC に保存するだけ -->
+        <div class="file-tabs" id="serial-file-tabs"></div>
+        <div class="file-tab-note" id="serial-file-note"></div>
         <div class="file-table-container">
           <table class="file-table">
             <thead>
@@ -1591,7 +1630,9 @@
       unwrappedYaw.push(prevY);
       for (let i = 1; i < records.length; i++) {
         const yVal = records[i].yaw !== null ? records[i].yaw : prevY;
-        let diff = (yVal - prevY + 540) % 360 - 180;
+        // ★ 正の剰余にそろえてから [-180, 180) にする（2026-11-14、BUG-128）。prevY は巻き戻した累積角なので、右旋回で北を
+        //   2 回またぐと yVal - prevY + 540 が負になり、JavaScript の % が負を返して 1 歩で -360° 跳んでいた（Est.Beta が張り付く）
+        let diff = ((((yVal - prevY) % 360) + 540) % 360) - 180;
         prevY += diff;
         unwrappedYaw.push(prevY);
       }
@@ -2175,21 +2216,22 @@
       }
 
       // 3. 風ベクトル (WIND) : 濃いグリーン (TASの先端から吹いていく向き)
-      let ttTargetX = tasX;
-      let ttTargetY = tasY;
+      //   ★ TAS と機首方位があるときだけ TAS の先端から。無いときは機体（中心）から伸ばす
       if (d.wspd !== null && d.wspd > 0 && d.wdir !== null) {
         const windFlowRad = (d.wdir * Math.PI) / 180;
-        ttTargetX = tasX + Math.sin(windFlowRad) * (d.wspd * scale);
-        ttTargetY = tasY - Math.cos(windFlowRad) * (d.wspd * scale);
-        drawArrow(ctx, tasX, tasY, ttTargetX, ttTargetY, "#16a34a", 3.2);
+        const fromTas = tas !== null && tas > 0 && d.yaw !== null;
+        const wx0 = fromTas ? tasX : cx, wy0 = fromTas ? tasY : cy;
+        drawArrow(ctx, wx0, wy0, wx0 + Math.sin(windFlowRad) * (d.wspd * scale),
+                  wy0 - Math.cos(windFlowRad) * (d.wspd * scale), "#16a34a", 3.2);
       }
 
       // 4. 対地移動ベクトル (TT) : 漆黒太線
+      //   ★ いつも GNSS の実測（真方位 TT と対地速度 GS）を描く（2026-11-14、BUG-129）。以前は風があると TAS + 風 の先端を
+      //     描いていて、HUD の TT の数字と矢印の向きが食い違った（推定の TAS・風・横滑りは瞬時の実測と一致しない）。
+      //     三角形が閉じないぶんは、推定の誤差としてそのまま見える
       if (d.gs !== null && d.gs > 0 && d.tt !== null) {
         const ttRad = (d.tt * Math.PI) / 180;
-        const ttDirectX = cx + Math.sin(ttRad) * (d.gs * scale);
-        const ttDirectY = cy - Math.cos(ttRad) * (d.gs * scale);
-        drawArrow(ctx, cx, cy, (d.wspd !== null && d.wspd > 0) ? ttTargetX : ttDirectX, (d.wspd !== null && d.wspd > 0) ? ttTargetY : ttDirectY, "#0f172a", 4.0);
+        drawArrow(ctx, cx, cy, cx + Math.sin(ttRad) * (d.gs * scale), cy - Math.cos(ttRad) * (d.gs * scale), "#0f172a", 4.0);
       }
 
       // HUDテキスト更新 (下部ステータスバー: データ欠損時は --- を表示)
@@ -2777,18 +2819,33 @@
     let cancelPending = false;
     let cancelWatchTimer = null;
     let lastSerialRxMs = 0;            // 最後に何か受けた時刻（中断の後始末が終わらない古いファームの見切りに使う）
-    let dataBuffer = "";
-    let lineBuffer = "";
+    // ★ 受信はバイトのまま扱う（2026-11-15〜）。それまでは全部を文字列にしていて、生 IMU ログ（imuraw/*.bin）のような
+    //   バイナリは UTF-8 として読めないバイトが化けて取れなかった。行（コマンドの返事）は改行までを貯めてから文字列にし、
+    //   ファイルの中身は DATA_START の言う大きさぶんをそのまま dataBytes に置く。
+    let rxLine = [];                   // 行の途中のバイト（改行が来るまで）
+    let dataBytes = null;              // 受けているファイルの中身（Uint8Array。大きさは PONS:DATA_START で分かる）
+    let dataReceived = 0;              // dataBytes に入れたバイト数
+    let dataTrailerPending = false;    // 中身を受け終えて、PONS:DATA_END の行を待っている
+    let currentDownloadMode = "open";  // "open" = 開く（再生・記録の表示）/ "save" = 取って PC に保存するだけ
+    // 一覧（2026-11-15〜、タブ）。"logs" は今までどおり PONS:LIST（飛行 CSV と log.txt）。ほかのタブを開いたときに
+    // PONS:LIST,ALL（全部のファイル）を頼む。知らないファーム（2026-11-15 より前）は返事をしないので、4 秒で見切る。
+    let fileTab = "logs";
+    let listPending = null;            // 頼んでいる一覧（"basic" / "all"）。LIST_END で null
+    let listIncoming = [];             // 届いている途中の一覧（LIST_END で ponsFileList へ移す）
+    let listIsAll = false;             // いまの ponsFileList は LIST,ALL のものか
+    let listAllUnsupported = false;    // LIST,ALL に返事が無かった（古いファーム）
+    let listAllTimer = null;
     let currentDownloadFile = "";
     let currentDownloadSize = 0;
-    let currentDownloadKind = "csv";   // "csv" = 再生する / "log" = log.txt の表示へ（2026-11-11〜）
+    let currentDownloadKind = "csv";   // "csv" = 再生する / "log" = log.txt の表示へ（2026-11-11〜）/ "raw" = 保存だけ / "discard" = 頼んでいないので捨てる
     let currentDownloadFrom = 0;       // 末尾だけ取ったとき、送り始めた位置 [B]（PONS:DATA_START の 3 つめ）
     let currentDownloadFull = 0;       // 一覧に出ていたファイル全体の大きさ [B]
     let downloadStartTime = 0;
     let lastProgressUpdate = 0;
 
     // 標準 CRC32 (IEEE 802.3, poly 0xEDB88320)
-    function computeCrc32(str) {
+    // bytes: Uint8Array（文字列を渡したら UTF-8 にして計算する）
+    function computeCrc32(bytes) {
       if (!computeCrc32.table) {
         const table = new Uint32Array(256);
         for (let i = 0; i < 256; i++) {
@@ -2801,7 +2858,7 @@
         computeCrc32.table = table;
       }
       let crc = 0xFFFFFFFF;
-      const bytes = new TextEncoder().encode(str);
+      if (typeof bytes === 'string') bytes = new TextEncoder().encode(bytes);
       for (let i = 0; i < bytes.length; i++) {
         crc = (crc >>> 8) ^ computeCrc32.table[(crc ^ bytes[i]) & 0xFF];
       }
@@ -2878,8 +2935,7 @@
       ponsReady = false;
       serialWriter = serialPort.writable.getWriter();
       serialReadLoopActive = true;
-      lineBuffer = "";
-      dataBuffer = "";
+      rxLine = [];
       endDownloadUi();
       readSerialLoop();
 
@@ -3019,57 +3075,125 @@
       }
     }
 
+    // 一覧のタブ。dev = 開発用（PONS:LIST,ALL が要る。取って保存するだけ）
+    const FILE_TABS = [
+      { id: 'logs',  label: 'フライト・記録', dev: false, note: '' },
+      { id: 'imu',   label: 'IMU 生ログ',     dev: true,
+        note: 'imuraw/*.bin（生 IMU ログ。250Hz）。保存したものは tools/imulog/decode_imulog.py で読む。nofixNNN.bin は測位の前の分。' },
+      { id: 'other', label: 'その他',         dev: true,
+        note: 'ルートとその直下のフォルダの、ほかの全部のファイル（settings.txt・gnss_dbd.bin・rtc_backup.txt・mapdata.csv など）。中身はそのまま保存する。' },
+    ];
+    // どのタブに出すか。飛行 CSV（data/・received/ の .csv）と log.txt は今までどおり最初のタブ
+    function fileTabOf(path) {
+      if (/^(data|received)\/[^\/]+\.csv$/i.test(path) || isLogPath(path)) return 'logs';
+      if (/^imuraw\//i.test(path)) return 'imu';
+      return 'other';
+    }
+
+    function setFileTab(id) {
+      fileTab = id;
+      // 開発用のタブを初めて開いたら、全部の一覧を頼む
+      if (id !== 'logs' && !listIsAll && !listAllUnsupported && !listPending && serialWriter && !downloadBusy()) {
+        requestFileList();
+        return;
+      }
+      renderFileList();
+    }
+
     async function requestFileList() {
       if (!serialWriter || downloadBusy()) return;   // 転送中に一覧を頼むと、一覧が転送のあとに遅れて届くだけなので頼まない
-      ponsFileList = [];
+      const all = (listIsAll || fileTab !== 'logs') && !listAllUnsupported;
+      listPending = all ? 'all' : 'basic';
+      listIncoming = [];
+      if (listAllTimer) { clearTimeout(listAllTimer); listAllTimer = null; }
       renderFileList();
-      document.getElementById('serial-file-list').innerHTML = `<tr><td colspan="5" style="text-align:center; color:#64748b; padding:20px;">SDカードを走査中...</td></tr>`;
-      await sendSerialLine("PONS:LIST");
+      await sendSerialLine(all ? "PONS:LIST,ALL" : "PONS:LIST");
+      if (all) {
+        // ★ PONS:LIST,ALL を知らないファームは何も返さない。1 行も来なければ古いファームとして、ふつうの一覧を取り直す
+        listAllTimer = setTimeout(() => {
+          listAllTimer = null;
+          if (listPending !== 'all' || listIncoming.length > 0) return;
+          listAllUnsupported = true;
+          listIsAll = false;
+          listPending = null;
+          requestFileList();
+        }, 4000);
+      }
+    }
+
+    function renderFileTabs() {
+      const box = document.getElementById('serial-file-tabs');
+      box.innerHTML = FILE_TABS.map(t => {
+        // 開発用のタブの数は、全部の一覧を取ったあとだけ出す
+        const n = (!t.dev || listIsAll) ? ponsFileList.filter(f => fileTabOf(f.path) === t.id).length : null;
+        const cnt = (n === null || listPending) ? '' : `<span class="cnt">${n}</span>`;
+        return `<button class="file-tab${t.id === fileTab ? ' active' : ''}" onclick="setFileTab('${t.id}')">${t.label}${cnt}</button>`;
+      }).join('');
+      const tab = FILE_TABS.find(t => t.id === fileTab);
+      document.getElementById('serial-file-note').textContent = tab ? tab.note : '';
     }
 
     function renderFileList() {
+      renderFileTabs();
       const tbody = document.getElementById('serial-file-list');
-      if (ponsFileList.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:20px;">フライトログ（*.csv）も log.txt も見つかりませんでした</td></tr>`;
+      const msgRow = (txt, color = '#94a3b8') =>
+        `<tr><td colspan="5" style="text-align:center; color:${color}; padding:20px; white-space:pre-line;">${txt}</td></tr>`;
+      if (listPending) {
+        tbody.innerHTML = msgRow('SDカードを走査中...', '#64748b');
+        return;
+      }
+      const tab = FILE_TABS.find(t => t.id === fileTab) || FILE_TABS[0];
+      if (tab.dev && !listIsAll) {
+        tbody.innerHTML = msgRow(listAllUnsupported
+          ? 'この本体のファームは全部のファイルの一覧（PONS:LIST,ALL）を出しません。\n2026-11-15 より後のファームで使えます。'
+          : (serialWriter ? '「🔄 再読み込み」を押すと一覧を取ります' : 'PONSを接続すると一覧が表示されます'));
         return;
       }
 
-      // log.txt を先頭に（いちばん新しいことが書いてある）。並べ替えは表示だけで、ponsFileList の添字はそのまま
-      const order = ponsFileList.map((it, i) => i).sort((a, b) => isLogPath(ponsFileList[b].path) - isLogPath(ponsFileList[a].path));
+      // 並べ替えは表示だけで、ponsFileList の添字はそのまま（ボタンは添字で指す）
+      let order = ponsFileList.map((it, i) => i).filter(i => fileTabOf(ponsFileList[i].path) === tab.id);
+      if (order.length === 0) {
+        tbody.innerHTML = msgRow(tab.id === 'logs' ? 'フライトログ（*.csv）も log.txt も見つかりませんでした'
+                               : tab.id === 'imu'  ? 'imuraw/ にファイルがありません'
+                               : 'ほかのファイルはありません');
+        return;
+      }
+      if (tab.dev) {
+        // 新しい順（更新日時。時刻を知らずに書いた 1980 年のものは下へ）
+        order.sort((a, b) => (ponsFileList[b].date || '').localeCompare(ponsFileList[a].date || '') ||
+                             ponsFileList[b].path.localeCompare(ponsFileList[a].path));
+      } else {
+        // log.txt を先頭に（いちばん新しいことが書いてある）
+        order.sort((a, b) => isLogPath(ponsFileList[b].path) - isLogPath(ponsFileList[a].path));
+      }
+      const badge = (txt, bg, fg) => `<span style="background:${bg}; color:${fg}; padding:2px 6px; border-radius:4px; font-size:0.75rem;">${txt}</span>`;
       tbody.innerHTML = order.map((idx) => {
         const item = ponsFileList[idx];
-        let typeBadge = '<span style="background:#e0f2fe; color:#0369a1; padding:2px 6px; border-radius:4px; font-size:0.75rem;">自機ログ</span>';
-        if (item.path.startsWith('received/')) {
-          typeBadge = '<span style="background:#fef3c7; color:#b45309; padding:2px 6px; border-radius:4px; font-size:0.75rem;">無線受信</span>';
-        }
-        const sizeKb = logBytes(item.size);
-        if (isLogPath(item.path)) {
+        const save = `<button class="btn-download sub" onclick="downloadPonsFileIdx(${idx}, 0, 'save')" title="取って、そのまま PC に保存します（開きません）">💾 保存</button>`;
+        let typeBadge, btns;
+        if (tab.dev) {
+          const ext = (item.path.match(/\.([^.\/]+)$/) || [, ''])[1].toUpperCase();
+          typeBadge = tab.id === 'imu' ? badge('生 IMU', '#ccfbf1', '#0f766e') : badge(escapeHtml(ext || 'FILE'), '#f1f5f9', '#475569');
+          btns = save;
+        } else if (isLogPath(item.path)) {
           // log.txt: ふだんは最新の分（LOG_TAIL_BYTES）だけ取る。全部は時間がかかる（数 MB になる）
-          typeBadge = '<span style="background:#ede9fe; color:#6d28d9; padding:2px 6px; border-radius:4px; font-size:0.75rem;">記録 (log)</span>';
+          typeBadge = badge('記録 (log)', '#ede9fe', '#6d28d9');
           const big = item.size > LOG_TAIL_BYTES;
-          const btns = big
+          btns = (big
             ? `<button class="btn-download" onclick="downloadPonsFileIdx(${idx}, ${LOG_TAIL_BYTES})" title="最新の ${logBytes(LOG_TAIL_BYTES)} だけ取って表示します">最新 ${logBytes(LOG_TAIL_BYTES)}</button>
                <button class="btn-download" onclick="downloadPonsFileIdx(${idx}, 0)" title="全部取って表示します（大きいと時間がかかります）" style="opacity:0.8;">全部</button>`
-            : `<button class="btn-download" onclick="downloadPonsFileIdx(${idx}, 0)">見る</button>`;
-          return `
-          <tr>
-            <td style="font-family:var(--font-mono); font-weight:bold;">${escapeHtml(item.path)}</td>
-            <td>${typeBadge}</td>
-            <td style="font-family:var(--font-mono);">${sizeKb}</td>
-            <td style="font-family:var(--font-mono); font-size:0.8rem; color:#64748b;">${item.date}</td>
-            <td style="white-space:nowrap;">${btns}</td>
-          </tr>
-        `;
+            : `<button class="btn-download" onclick="downloadPonsFileIdx(${idx}, 0)">見る</button>`) + ' ' + save;
+        } else {
+          typeBadge = item.path.startsWith('received/') ? badge('無線受信', '#fef3c7', '#b45309') : badge('自機ログ', '#e0f2fe', '#0369a1');
+          btns = `<button class="btn-download" onclick="downloadPonsFileIdx(${idx})">開く</button> ` + save;
         }
         return `
           <tr>
             <td style="font-family:var(--font-mono); font-weight:bold;">${escapeHtml(item.path)}</td>
             <td>${typeBadge}</td>
-            <td style="font-family:var(--font-mono);">${sizeKb}</td>
-            <td style="font-family:var(--font-mono); font-size:0.8rem; color:#64748b;">${item.date}</td>
-            <td>
-              <button class="btn-download" onclick="downloadPonsFileIdx(${idx})">開く</button>
-            </td>
+            <td style="font-family:var(--font-mono);">${logBytes(item.size)}</td>
+            <td style="font-family:var(--font-mono); font-size:0.8rem; color:#64748b;">${escapeHtml(item.date)}</td>
+            <td style="white-space:nowrap;">${btns}</td>
           </tr>
         `;
       }).join('');
@@ -3081,26 +3205,30 @@
     }
 
     // 一覧の「開く」。★ パスを onclick の文字列に埋め込まない（FAT のファイル名には ' が使え、埋め込むと JavaScript が壊れる）
-    // tail: log.txt の末尾だけ取るバイト数（0 = 全部）
-    function downloadPonsFileIdx(idx, tail = 0) {
+    // tail: log.txt の末尾だけ取るバイト数（0 = 全部）。mode: "open" = 開く / "save" = 取って PC に保存するだけ
+    function downloadPonsFileIdx(idx, tail = 0, mode = 'open') {
       const it = ponsFileList[idx];
-      if (it) downloadPonsFile(it.path, it.size, tail);
+      if (it) downloadPonsFile(it.path, it.size, tail, mode);
     }
 
     // log.txt（SD のルートの記録）か。開いたあと再生ではなく記録の表示へ回す
     function isLogPath(path) { return /(^|\/)log[^\/]*\.txt$/i.test(path || ''); }
 
-    async function downloadPonsFile(filename, size, tail = 0) {
-      if (!serialWriter || downloadBusy()) return;
+    async function downloadPonsFile(filename, size, tail = 0, mode = 'open') {
+      if (!serialWriter || downloadBusy() || listPending) return;
 
       currentDownloadFile = filename;
-      currentDownloadKind = isLogPath(filename) ? 'log' : 'csv';
+      // 開けるのは最初のタブのもの（飛行 CSV と log.txt）だけ。ほかは中身をそのまま保存する
+      currentDownloadKind = fileTabOf(filename) !== 'logs' ? 'raw' : (isLogPath(filename) ? 'log' : 'csv');
+      currentDownloadMode = (mode === 'save' || currentDownloadKind === 'raw') ? 'save' : 'open';
       currentDownloadFrom = 0;
       currentDownloadFull = size;
       if (tail > 0 && tail < size) size = tail;   // 進み具合の目安（本当の量は PONS:DATA_START で来る）
       else tail = 0;
       currentDownloadSize = size;
-      dataBuffer = "";
+      dataBytes = null;
+      dataReceived = 0;
+      dataTrailerPending = false;
       downloadStartTime = performance.now();
       lastProgressUpdate = 0;
       // isDataStreaming は DATA_START 受信時に true にする（ヘッダー行混入防止）
@@ -3111,7 +3239,7 @@
       document.getElementById('serial-progress-filename').textContent = `転送中: ${filename}`;
       document.getElementById('serial-progress-fill').style.width = '0%';
       document.getElementById('serial-progress-stats').textContent = '0%';
-      document.getElementById('serial-progress-bytes').textContent = `0 / ${Math.round(size / 1024)} KB`;
+      document.getElementById('serial-progress-bytes').textContent = `0 / ${logBytes(size)}`;
       document.getElementById('serial-progress-speed').textContent = '-- KB/s';
 
       // 末尾だけ: PONS:GETTAIL,<バイト数>,<パス>（2026-11-11〜。log.txt を一覧に出すファームは、どれもこれを知っている）
@@ -3127,6 +3255,9 @@
       isDataStreaming = false;
       downloadPending = false;
       cancelPending = false;
+      dataTrailerPending = false;
+      dataBytes = null;
+      dataReceived = 0;
       if (cancelWatchTimer) { clearInterval(cancelWatchTimer); cancelWatchTimer = null; }
       document.getElementById('serial-progress-box').style.display = 'none';
     }
@@ -3143,8 +3274,7 @@
       cancelWatchTimer = setInterval(() => {
         if (cancelPending && performance.now() - lastSerialRxMs > 3000) {
           console.warn("PONS: CANCEL_OK が来ないので転送の終わりとみなす");
-          dataBuffer = "";
-          lineBuffer = "";
+          rxLine = [];
           endDownloadUi();
         }
       }, 500);
@@ -3175,98 +3305,150 @@
       }
     }
 
-    function checkDataEnd() {
-      // バッファ末尾付近（直前に追加された可能性がある領域）のみを走査（終わりの印は必ず末尾に来るため高速走査）
-      const searchStart = Math.max(0, dataBuffer.length - 256);
-      const endIdx = dataBuffer.indexOf("PONS:DATA_END,", searchStart);
-
-      // ★ 本体が転送の途中でやめた（PONS:CANCEL_OK / PONS:ERROR,...）。ストリーミング中は全部 dataBuffer に入るので、
-      //   ここで拾わないと isDataStreaming が戻らず、以降のダウンロードと PING が止まったままになる。
-      if (endIdx === -1) {
-        // ★ 印は行の頭だけを見る（2026-11-11〜。log.txt を取るようにしたので、中身の文字列で誤って止めないように）
-        const atLineStart = (mk) => {
-          if (dataBuffer.startsWith(mk)) return 0;
-          const i = dataBuffer.indexOf("\n" + mk, searchStart);
-          return i === -1 ? -1 : i + 1;
-        };
-        const idxs = [atLineStart("PONS:CANCEL_OK"), atLineStart("PONS:ERROR,")].filter(i => i !== -1);
-        if (idxs.length > 0) {
-          const rest = dataBuffer.substring(Math.min(...idxs));
-          const nl = rest.indexOf('\n');
-          if (nl === -1) return;   // 行がまだ揃っていない
-          dataBuffer = "";
-          endDownloadUi();
-          lineBuffer = rest.substring(nl + 1);
-          handleSerialLine(rest.substring(0, nl).replace(/\r$/, '').trim());
-          return;
+    // 受けたバイトを 1 つの Uint8Array の列として、行（コマンドの返事）とファイルの中身に振り分ける（2026-11-15〜）
+    const serialLineDecoder = new TextDecoder('utf-8');
+    function feedSerialBytes(u8) {
+      let pos = 0;
+      while (pos < u8.length) {
+        if (isDataStreaming) {
+          pos = feedDataBytes(u8, pos);
+          continue;
         }
-      }
-
-      if (endIdx !== -1) {
-        const endPart = dataBuffer.substring(endIdx);
-        const crcMatch = endPart.match(/PONS:DATA_END,([0-9A-Fa-f]{8})\r?\n/);
-        if (!crcMatch) return;   // 行がまだ揃っていない
-
-        // ファームウェアはファイル本体データのみで CRC を計算し、直後に \r\nPONS:DATA_END を出力する。
-        // そのため DATA_END 直前の改行文字（\r\n または \n）を正確に外してファイル本体のバイナリ文字列を得る。
-        const rawWithNl = dataBuffer.substring(0, endIdx);
-        const fileData = rawWithNl.replace(/\r?\n$/, '');
-        const expectedCrc = crcMatch[1].toUpperCase();
-
-        // ★ 中断を送ったのに最後まで届いた（本体が CANCEL を読む前に送り終えた・古いファーム）。中身は使わずに捨てる（BUG-79）
-        if (cancelPending) {
-          lineBuffer = endPart.substring(crcMatch[0].length);
-          dataBuffer = "";
-          endDownloadUi();
-          return;
-        }
-        endDownloadUi();
-
-        // CRC32 検証（ファイル本体データのみで計算）
-        let crcSuccess = true;
-        if (expectedCrc) {
-          const calculatedCrc = computeCrc32(fileData);
-          if (calculatedCrc !== expectedCrc) {
-            console.warn(`CRC mismatch! Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
-            alert(`⚠️ CRC32チェックサムが一致しません（計算値: ${calculatedCrc} / 受信値: ${expectedCrc}）。\n通信中に一部データが破損した可能性があります。`);
-            crcSuccess = false;
-          } else {
-            console.log(`✅ CRC32 検証成功: ${calculatedCrc}`);
-          }
-        }
-
-        // 余分な行があれば行バッファへ戻す
-        lineBuffer = endPart.substring(crcMatch[0].length);
-
-        // log.txt は記録の表示へ、CSV はパースして再生へ
-        if (currentDownloadKind === 'log') {
-          closeSerialModal();
-          openLogViewer(fileData, currentDownloadFile || "log.txt",
-                        { from: currentDownloadFrom, full: Math.max(currentDownloadFull, currentDownloadFrom + fileData.length) });
-          return;
-        }
-        parseCSVText(fileData, currentDownloadFile || "flight_log.csv");
-        closeSerialModal();
-      } else {
-        // 進捗表示の定期更新
-        const now = performance.now();
-        if (now - lastProgressUpdate > 100) {
-          lastProgressUpdate = now;
-          const received = dataBuffer.length;
-          const pct = currentDownloadSize > 0 ? Math.min(100, Math.round((received / currentDownloadSize) * 100)) : 0;
-          document.getElementById('serial-progress-fill').style.width = pct + '%';
-          document.getElementById('serial-progress-stats').textContent = pct + '%';
-          document.getElementById('serial-progress-bytes').textContent = `${Math.round(received / 1024)} / ${Math.round(currentDownloadSize / 1024)} KB`;
-          const elapsedSec = (now - downloadStartTime) / 1000;
-          const kbps = elapsedSec > 0 ? Math.round((received / 1024) / elapsedSec) : 0;
-          document.getElementById('serial-progress-speed').textContent = `${kbps} KB/s`;
-        }
+        // 行: 改行までを貯める。PONS:DATA_START の行を handleSerialLine が読むと isDataStreaming が立ち、続きは中身へ回る
+        const nl = u8.indexOf(10, pos);
+        const end = nl === -1 ? u8.length : nl;
+        for (let i = pos; i < end; i++) rxLine.push(u8[i]);
+        if (rxLine.length > 8192) rxLine = [];   // 改行の無いごみ（別の機器など）を貯め続けない
+        if (nl === -1) break;
+        pos = nl + 1;
+        const line = serialLineDecoder.decode(Uint8Array.from(rxLine)).replace(/\r$/, '').trim();
+        rxLine = [];
+        if (line.length > 0) handleSerialLine(line);
       }
     }
 
-    async function readSerialLoop() {
-      const decoder = new TextDecoder('utf-8');
+    // ファイルの中身を dataBytes へ。DATA_START の言う大きさぶん受けたら、あとは行（"\r\n" と PONS:DATA_END,<crc>）として読む。
+    // 戻り値は u8 の読み終えた位置。
+    function feedDataBytes(u8, pos) {
+      const n = Math.min(currentDownloadSize - dataReceived, u8.length - pos);
+      dataBytes.set(u8.subarray(pos, pos + n), dataReceived);
+      dataReceived += n;
+      pos += n;
+      if (dataReceived >= currentDownloadSize) {
+        isDataStreaming = false;
+        dataTrailerPending = true;
+        updateDownloadProgress(true);
+        return pos;
+      }
 
+      // ★ 本体が転送の途中でやめた（PONS:CANCEL_OK / PONS:ERROR,... / 読めなくなって早めに出た PONS:DATA_END）。
+      //   受けている間は全部 dataBytes に入るので、ここで拾わないと isDataStreaming が戻らず、以降のダウンロードと PING が止まったままになる。
+      //   印は届いた分の末尾 256 バイトの、行の頭にあるときだけ見る（log.txt の中身の文字列やバイナリの偶然で止めないように）。
+      //   ★ まず今回届いた分（と手前の 64 バイト）に "PONS:" があるかだけを見る。無ければ何もしない（数十 MB を受けるので軽く）
+      let hit = false;
+      for (let i = Math.max(0, dataReceived - n - 64), e = dataReceived - 4; i < e; i++) {
+        if (dataBytes[i] === 80 && dataBytes[i + 1] === 79 && dataBytes[i + 2] === 78 && dataBytes[i + 3] === 83 && dataBytes[i + 4] === 58) { hit = true; break; }
+      }
+      if (!hit) {
+        updateDownloadProgress(false);
+        return pos;
+      }
+      const from = Math.max(0, dataReceived - 256);
+      let tail = '';
+      for (let i = from; i < dataReceived; i++) tail += String.fromCharCode(dataBytes[i]);
+      const m = tail.match(/\n(PONS:CANCEL_OK\r?\n|PONS:ERROR,[^\n]*\n|PONS:DATA_END,[0-9A-Fa-f]{8}\r?\n)/) ||
+                (from === 0 ? tail.match(/^(PONS:CANCEL_OK\r?\n|PONS:ERROR,[^\n]*\n|PONS:DATA_END,[0-9A-Fa-f]{8}\r?\n)/) : null);
+      if (m) {
+        const mark = from + m.index + (m[0].charCodeAt(0) === 10 ? 1 : 0);   // 印の行の頭
+        const rest = dataBytes.slice(mark, dataReceived);                    // 印の行と、そのあとに届いていた行
+        // 本体は印の前に "\r\n" を出す。中身はその手前まで
+        let len = mark;
+        if (len > 0 && dataBytes[len - 1] === 10) len--;
+        if (len > 0 && dataBytes[len - 1] === 13) len--;
+        dataReceived = len;
+        isDataStreaming = false;
+        dataTrailerPending = true;   // DATA_END なら受けた分で終わりの処理へ（短いことは finishDownload が言う）
+        feedSerialBytes(rest);
+        return pos;
+      }
+      updateDownloadProgress(false);
+      return pos;
+    }
+
+    function updateDownloadProgress(force) {
+      const now = performance.now();
+      if (!force && now - lastProgressUpdate <= 100) return;
+      lastProgressUpdate = now;
+      const received = dataReceived;
+      const pct = currentDownloadSize > 0 ? Math.min(100, Math.round((received / currentDownloadSize) * 100)) : 0;
+      document.getElementById('serial-progress-fill').style.width = pct + '%';
+      document.getElementById('serial-progress-stats').textContent = pct + '%';
+      document.getElementById('serial-progress-bytes').textContent = `${logBytes(received)} / ${logBytes(currentDownloadSize)}`;
+      const elapsedSec = (now - downloadStartTime) / 1000;
+      const kbps = elapsedSec > 0 ? Math.round((received / 1024) / elapsedSec) : 0;
+      document.getElementById('serial-progress-speed').textContent = `${kbps} KB/s`;
+    }
+
+    // PONS:DATA_END,<crc> を受けた。CRC を確かめて、開く（CSV は再生・log.txt は記録の表示）か、PC に保存する
+    function finishDownload(expectedCrc) {
+      const bytes = dataBytes ? dataBytes.subarray(0, dataReceived) : new Uint8Array(0);
+      const wantSize = currentDownloadSize;
+      const kind = currentDownloadKind, mode = currentDownloadMode;
+      const name = currentDownloadFile;
+      const sec = (performance.now() - downloadStartTime) / 1000;
+      // ★ 中断を送ったのに最後まで届いた（本体が CANCEL を読む前に送り終えた・古いファーム）。中身は使わずに捨てる（BUG-79）
+      const dropped = cancelPending || kind === 'discard';
+      endDownloadUi();
+      if (dropped) return;
+
+      // CRC32 検証（ファイル本体データのみで計算。本体も送ったバイトだけで計算している）
+      const calculatedCrc = computeCrc32(bytes);
+      let note = `CRC OK ${calculatedCrc}`;
+      if (bytes.length < wantSize) {
+        alert(`⚠️ 転送が途中で終わりました（${bytes.length} / ${wantSize} バイト）。\n本体が SD を読めなくなった可能性があります。`);
+        note = `途中まで ${bytes.length} / ${wantSize} B`;
+      }
+      if (calculatedCrc !== expectedCrc) {
+        console.warn(`CRC mismatch! Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
+        alert(`⚠️ CRC32チェックサムが一致しません（計算値: ${calculatedCrc} / 受信値: ${expectedCrc}）。\n通信中に一部データが破損した可能性があります。`);
+        note = `CRC 不一致（計算 ${calculatedCrc} / 本体 ${expectedCrc}）`;
+      } else {
+        console.log(`✅ CRC32 検証成功: ${calculatedCrc}`);
+      }
+
+      // 保存だけ（開発用のタブと、各行の「💾 保存」）。ダイアログは開いたまま（続けて取れるように）
+      if (mode === 'save') {
+        saveBytesAsFile(bytes, name);
+        document.getElementById('serial-file-note').textContent =
+          `💾 保存: ${name}（${bytes.length.toLocaleString()} B、${sec.toFixed(1)} 秒、${note}）`;
+        return;
+      }
+
+      // log.txt は記録の表示へ、CSV はパースして再生へ
+      const fileData = new TextDecoder('utf-8').decode(bytes);
+      if (kind === 'log') {
+        closeSerialModal();
+        openLogViewer(fileData, name || "log.txt",
+                      { from: currentDownloadFrom, full: Math.max(currentDownloadFull, currentDownloadFrom + bytes.length) });
+        return;
+      }
+      parseCSVText(fileData, name || "flight_log.csv");
+      closeSerialModal();
+    }
+
+    // 受けたバイトをそのままファイルに保存する（ブラウザのダウンロード。名前はパスの最後の部分）
+    function saveBytesAsFile(bytes, path) {
+      const base = (path || 'pons_file.bin').split('/').pop().trim() || 'pons_file.bin';
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = base;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    async function readSerialLoop() {
       try {
         while (serialPort && serialPort.readable && serialReadLoopActive) {
           serialReader = serialPort.readable.getReader();
@@ -3275,51 +3457,8 @@
               const { value, done } = await serialReader.read();
               if (done) break;
               if (!value) continue;
-
-              const chunkText = decoder.decode(value, { stream: true });
               lastSerialRxMs = performance.now();
-
-              if (isDataStreaming) {
-                // ファイルデータストリーミング受信中
-                dataBuffer += chunkText;
-                checkDataEnd();
-              } else {
-                // 通常の行指向コマンド処理
-                lineBuffer += chunkText;
-
-                // チャンク内に DATA_START が届いた場合の確実な分離
-                const startIdx = lineBuffer.indexOf("PONS:DATA_START,");
-                if (startIdx !== -1) {
-                  const nlIdx = lineBuffer.indexOf('\n', startIdx);
-                  if (nlIdx !== -1) {
-                    const before = lineBuffer.substring(0, startIdx);
-                    if (before.trim().length > 0) {
-                      before.split('\n').forEach(l => {
-                        const tr = l.trim();
-                        if (tr) handleSerialLine(tr);
-                      });
-                    }
-                    const startLine = lineBuffer.substring(startIdx, nlIdx).trim();
-                    handleSerialLine(startLine);
-
-                    // 改行以降を純粋なデータバッファへ
-                    dataBuffer = lineBuffer.substring(nlIdx + 1);
-                    lineBuffer = "";
-                    isDataStreaming = true;
-                    checkDataEnd();
-                    continue;
-                  }
-                }
-
-                let nlIdx;
-                while ((nlIdx = lineBuffer.indexOf('\n')) !== -1) {
-                  const line = lineBuffer.substring(0, nlIdx).replace(/\r$/, '').trim();
-                  lineBuffer = lineBuffer.substring(nlIdx + 1);
-                  if (line.length > 0) {
-                    handleSerialLine(line);
-                  }
-                }
-              }
+              feedSerialBytes(value);
             }
           } finally {
             serialReader.releaseLock();
@@ -3336,10 +3475,17 @@
 
     function handleSerialLine(line) {
       console.log("PONS <<", line);
+      // 行の頭にごみ（改行の無いデバッグ出力など）が付いていても DATA_START は拾う（拾い損ねると中身が全部「行」として流れる）
+      const ds = line.indexOf("PONS:DATA_START,");
+      if (ds > 0) line = line.substring(ds);
 
       if (line.startsWith("PONS:READY")) {
         ponsReady = true;
         stopReadyWatch();
+        // 一覧はつなぎ直すたびに取り直す（別の本体・書き替えたファームかもしれないので、LIST,ALL が使えるかも確かめ直す）
+        listIsAll = false;
+        listAllUnsupported = false;
+        listPending = null;
         const parts = line.split(',');
         updateSerialUIStatus('connected', {
           board: parts[1] || 'PONS v7.1',
@@ -3361,13 +3507,21 @@
         // ★ 後ろから切る（FAT のファイル名には , が使える。日時とバイト数には , が入らない）
         const parts = line.split(',');
         if (parts.length >= 4) {
-          ponsFileList.push({
+          listIncoming.push({
             path: parts.slice(1, parts.length - 2).join(','),
             size: parseInt(parts[parts.length - 2], 10) || 0,
             date: parts[parts.length - 1]
           });
         }
       } else if (line === "PONS:LIST_END") {
+        // ★ 全部の一覧かどうかは中身でも見る（LIST,ALL の返事が見切りのあとに遅れて届いたとき）
+        const gotAll = listPending === 'all' || listIncoming.some(f => fileTabOf(f.path) !== 'logs');
+        if (listAllTimer) { clearTimeout(listAllTimer); listAllTimer = null; }
+        ponsFileList = listIncoming;
+        listIncoming = [];
+        listPending = null;
+        listIsAll = gotAll;
+        if (gotAll) listAllUnsupported = false;
         renderFileList();
       } else if (line.startsWith("PONS:DATA_START,")) {
         // PONS:DATA_START,<path>,<size>[,<from>]。★ パスに , が入りうるので、パスは送ったものを使い、数は後ろから読む。
@@ -3381,9 +3535,33 @@
           currentDownloadFile = parts[0] || currentDownloadFile;
           nums = parts.slice(1);
         }
-        currentDownloadSize = parseInt(nums[0], 10) || currentDownloadSize;
+        const sz = parseInt(nums[0], 10);
+        if (Number.isFinite(sz) && sz >= 0) currentDownloadSize = sz;
         currentDownloadFrom = parseInt(nums[1], 10) || 0;   // 末尾だけのとき、送り始めた位置
-        downloadPending = false;   // ここから先は readSerialLoop が isDataStreaming を立てて中身として受ける
+        // 頼んでいないのに始まった（ないはず）: 中身は受けて捨てる（受けないと中身が行として流れる）
+        if (!downloadPending && !cancelPending) currentDownloadKind = 'discard';
+        downloadPending = false;
+        // ここから先のバイトは、この大きさぶんを中身として受ける（feedDataBytes）
+        try {
+          dataBytes = new Uint8Array(currentDownloadSize);
+        } catch (e) {
+          alert(`ファイルが大きすぎて受けられません（${logBytes(currentDownloadSize)}）。`);
+          dataBytes = null;
+          cancelPending = true;   // 届く分は捨てる。本体へ中断を送り、3 秒なにも来なくなったら終わりにする
+          lastSerialRxMs = performance.now();
+          sendSerialLine("PONS:CANCEL").catch(() => {});
+          if (!cancelWatchTimer) cancelWatchTimer = setInterval(() => {
+            if (cancelPending && performance.now() - lastSerialRxMs > 3000) { rxLine = []; endDownloadUi(); }
+          }, 500);
+          return;
+        }
+        dataReceived = 0;
+        dataTrailerPending = false;
+        if (currentDownloadSize > 0) isDataStreaming = true;
+        else dataTrailerPending = true;   // 空のファイル: すぐ DATA_END が来る
+      } else if (line.startsWith("PONS:DATA_END,")) {
+        if (!dataTrailerPending) return;
+        finishDownload(line.substring("PONS:DATA_END,".length).trim().toUpperCase());
       } else if (line === "PONS:CANCEL_OK") {
         endDownloadUi();
       } else if (line === "PONS:BYE") {
@@ -3401,6 +3579,12 @@
           alert("SDカードが認識されていないかエラー状態です。PONS本体を確認してください。");
         } else {
           alert("PONSエラー: " + errMsg);
+        }
+        // 一覧を待っていたなら、待つのをやめる（NOT_CONNECTED は READY のあとで取り直す）
+        if (listPending) {
+          listPending = null;
+          if (listAllTimer) { clearTimeout(listAllTimer); listAllTimer = null; }
+          renderFileList();
         }
         endDownloadUi();
       }

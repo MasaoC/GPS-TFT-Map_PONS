@@ -701,7 +701,7 @@ def quantize_ring(coords, org_lat_e7, org_lon_e7, unit_e7):
     return out
 
 
-DROPPED = {"area": 0, "line": 0}   # 点数上限で捨てたレコード数（無言の欠落を出さないため記録する）
+DROPPED = {"area": 0, "line": 0, "holes": 0}   # 点数上限で捨てたレコード数（無言の欠落を出さないため記録する）
 
 # vectormap.cpp の VM_MAX_RINGS と揃えること
 MAX_RINGS_PER_REC = 64
@@ -714,12 +714,21 @@ def build_records(cls, geoms, org_lat_e7, org_lon_e7, unit_e7, max_pts):
         for poly in geoms:
             # 外周と穴（島）を 1 レコードにまとめる。firmware 側は even-odd で塗るので
             # 穴のリングは自動的に抜ける（巻き方向を揃える必要はない）。
-            rings = [quantize_ring(poly.exterior.coords, org_lat_e7, org_lon_e7, unit_e7)]
-            for h in poly.interiors:
-                rings.append(quantize_ring(h.coords, org_lat_e7, org_lon_e7, unit_e7))
-            rings = [r for r in rings if len(r) >= 3]
-            if not rings:
+            ext = quantize_ring(poly.exterior.coords, org_lat_e7, org_lon_e7, unit_e7)
+            # ★ 外周が量子化で潰れたら（3 点未満）面ごと捨てる（2026-11-14）。穴だけ残すと、穴が外周として塗られて逆になる
+            if len(ext) < 3:
                 continue
+            holes = [quantize_ring(h.coords, org_lat_e7, org_lon_e7, unit_e7) for h in poly.interiors]
+            holes = [r for r in holes if len(r) >= 3]
+            # ★ リングはファームの VM_MAX_RINGS（= MAX_RINGS_PER_REC）まで。超えるとファームが面ごと黙って描かない
+            #   （vm_draw_record）。大きい穴から残し、残りは捨てて数える（2026-11-14）
+            if 1 + len(holes) > MAX_RINGS_PER_REC:
+                def _area(r):
+                    return abs(sum(r[i][0] * r[i - 1][1] - r[i - 1][0] * r[i][1] for i in range(len(r)))) / 2.0
+                holes.sort(key=_area, reverse=True)
+                DROPPED["holes"] += len(holes) - (MAX_RINGS_PER_REC - 1)
+                holes = holes[:MAX_RINGS_PER_REC - 1]
+            rings = [ext] + holes
             if sum(len(r) for r in rings) > max_pts:
                 # firmware の点バッファ（VM_MAX_PTS）を超えるものは描けないので捨てる。
                 # 発生した場合は簡略化不足かタイルが大きすぎる。海岸線に穴が空くため要調整。
@@ -864,10 +873,12 @@ def build_lod(spec, land_shp, land_shp_hires, cache_dir, max_pts, stats, pbf_cac
                 stats[CLASS_NAME[c]] = stats.get(CLASS_NAME[c], 0) + sum(len(r) for r in rings)
             tiles.append((org_lat_e7, org_lon_e7, blob))
     print(f"  → データのあるタイル {len(tiles)} 個 / {sum(len(t[2]) for t in tiles) / 1024:.1f} KB")
+    if DROPPED["holes"]:
+        print(f"  !! リング数の上限({MAX_RINGS_PER_REC})で捨てた小さい穴（島・中洲）: {DROPPED['holes']}")
     if DROPPED["area"] or DROPPED["line"]:
         print(f"  !! 点数上限({max_pts})超過で捨てたレコード: 面 {DROPPED['area']} / 線 {DROPPED['line']}")
         print(f"     地図に欠落が出ます。tol_scale を粗くするか tile_e7 を小さくしてください。")
-    DROPPED["area"] = DROPPED["line"] = 0
+    DROPPED["area"] = DROPPED["line"] = DROPPED["holes"] = 0
     return tiles
 
 

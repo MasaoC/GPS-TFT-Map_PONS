@@ -257,7 +257,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": "7.1"
+      "sch_revision": "7.2"
     },
     "layer_pairs": [],
     "layer_presets": [],
@@ -735,6 +735,24 @@
           "label": "MPN",
           "name": "MPN",
           "show": false
+        },
+        {
+          "group_by": false,
+          "label": "LCSC Part",
+          "name": "LCSC Part",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "FT Rotation Offset",
+          "name": "FT Rotation Offset",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "FT Position Offset",
+          "name": "FT Position Offset",
+          "show": false
         }
       ],
       "filter_string": "",
@@ -801,7 +819,7 @@
         "uuid": "d4198ff8-2b68-4e90-8e61-04bd56061c94"
       }
     ],
-    "used_designators": "U11,C1",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [

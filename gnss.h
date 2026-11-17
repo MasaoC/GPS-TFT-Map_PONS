@@ -97,7 +97,7 @@
   // 起動時点で GNSS 内部 RTC が有効な日時を保持していたか（バックアップ電池 MS621FE の生存判定用）
   bool gnss_rtc_alive_on_boot();
   bool gnss_rtc_boot_checked();   // 起動後最初の NAV-PVT を見て、上の判定が決まったか
-  // 起動時の衛星系の設定（CFG-SIGNAL）の確認と書き直し（QZSS を入れる・GNSS_BDS_B1I なら BeiDou を B1I にして GLONASS を切る）が
+  // 起動時の衛星系の設定（CFG-SIGNAL）の確認と書き直し（QZSS を入れる・BeiDou は B1C のまま。GNSS_BDS_B1I = 1 なら B1I にして GLONASS を切る）が
   // 済んだか（2026-11-13〜）。書き直すと GNSS が測位をやり直すので、ANA の設定・航法データベースの戻し・外からの時刻入れはこれを待つ
   bool gnss_signal_cfg_settled();
   // 一度でも GNSS から受信したか（起動直後と「抜けた」の区別に使う）。

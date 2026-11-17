@@ -3,10 +3,11 @@ CXXFLAGS = -std=c++17 -O2 -I. -I../..
 COMMON = testclock.cpp ../../attitude.cpp
 DEPS = ../../attitude.cpp ../../attitude.h ../../settings.h
 
-all: test yaw_test dead_test
+all: test yaw_test dead_test lag_test
 	@echo "--- 協調旋回（旋回中のバンク復元）---" && ./test
 	@echo "" && echo "--- 水平化・航跡ヨー・待機中の維持（GRV なし）---" && ./yaw_test
 	@echo "" && echo "--- SCH16T 断線・未接続（安全側に倒れるか）---" && ./dead_test
+	@echo "" && echo "--- GNSS 速度の遅れの補償 ---" && ./lag_test
 
 test: main.cpp $(DEPS)
 	g++ $(CXXFLAGS) -o test main.cpp $(COMMON)
@@ -15,6 +16,9 @@ yaw_test: yaw_test.cpp $(DEPS)
 dead_test: dead_test.cpp $(DEPS)
 	g++ $(CXXFLAGS) -o dead_test dead_test.cpp $(COMMON)
 
+lag_test: lag_test.cpp $(DEPS)
+	g++ $(CXXFLAGS) -o lag_test lag_test.cpp $(COMMON)
+
 clean:
-	rm -f test yaw_test dead_test
+	rm -f test yaw_test dead_test lag_test
 .PHONY: all clean

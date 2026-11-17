@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261114
-#define BUILDVERSION "1.07"
+#define BUILDDATE 20261117
+#define BUILDVERSION "1.08"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -39,8 +39,23 @@
 // ★ GPIO42/44 を INPUT_PULLUP で停めないこと。v7 で I2C を守るためにやっていた処置で、
 //   v7.1 では **SPI1 が死ぬ**。
 
-// 起動画面に出す基板世代の表記
-#define VERSION_TEXT "Version 7.1"
+// 本体基板の版（2026-11-16〜）。焼く基板に合わせて選ぶ。
+//   71 = v7.1
+//   72 = v7.2。電源を切っていても、主電池が約 3.8V 以上なら主電池から BT1（GNSS のバックアップ電池）を充電し、
+//        GNSS の時計も主電池で保つ回路（U6 MIC841・U7 RT9078・D9 ほか。止まる約 3.83V／再開 約 3.92V）が付いた。
+//        違いはこれだけで、ピン割り当ては v7.1 と同じ。
+// ★ 変わるのは BT1 の見込み（rtc_backup.cpp。充電ポップアップの "Fast GPS if OFF < ..." と 60 秒ログの aon=）と、
+//   起動画面・log.txt の "BOOT PONS ... board=" の表記（VERSION_TEXT）だけ。
+// ★ 版を取り違えて焼いても壊れない。v7.2 の基板に 71 で焼くと見込みが短く（安全側）、v7.1 の基板に 72 で焼くと
+//   **長く出すぎる**（電源を切ったあと BT1 が減るのに、減らない前提で出す）。迷ったら 71。
+#define PONS_MAINBOARD_REV 71
+#if PONS_MAINBOARD_REV == 72
+  #define VERSION_TEXT "Version 7.2"
+#elif PONS_MAINBOARD_REV == 71
+  #define VERSION_TEXT "Version 7.1"   // 起動画面に出す基板世代の表記
+#else
+  #error "PONS_MAINBOARD_REV は 71 か 72"
+#endif
 
 //----------GNSS---------
 // GNSS は u-blox SAM-M10Q 固定（v6 ハードウェア）。
@@ -72,11 +87,24 @@
 #define BATTERY_PIN 40 //A0
 #define GNSS_SERIAL Serial1
 
+// GNSS の測位のレート [Hz]（UBX-CFG-RATE。2 か 4。SAM-M10Q のデータシートの上限が 4Hz）。2026-11-15〜 4。
+// ★ **4Hz で受けるのは姿勢 ESKF（速度の観測）と生 IMU ログだけ。** 位置・時刻・画面・飛行 CSV・航跡・無線・警報・
+//   航法データベースの時刻の判断などは、今までどおり GNSS_APP_RATE_HZ（2Hz）の測位だけを見る
+//   （gnss.cpp の handle_navpvt が、0.5 秒の区切りごとに最初の 1 回だけを通す）。2Hz を前提にした数え方
+//   （CSV の行の間隔・旋回角速度の窓・リプレイ・無線の時刻の古さ・地図の描き直し）を 1 つも変えないため。
+//   ESKF は観測が倍になるぶん、方位と傾きの直りが速くなる（水平の加速があるときだけ見える量なので、数が効く）。
+// ★ GNSS へ頼む出力のレートは「何回の測位に 1 回」で数えるので、NAV-SAT / NAV-DOP / NAV-AOPSTATUS はこの値から作る
+//   （gnss.cpp の navsat_rate_epochs など）。4 にして数字をそのままにすると出力が倍になる。
+// ★ 2 に戻せば 2026-11-14 までと同じ動きになる（GNSS が 4Hz を断って 2Hz のままでも同じ）。
+#define GNSS_NAV_RATE_HZ       4
+#define GNSS_APP_RATE_HZ       2
+
 // GNSS の UART 受信リングバッファ [バイト]。既定 32 では全く足りない。
 // ★ 大きさの意味は「**Core0 が止まっても取りこぼさない時間**」。
-//   実流量は UBX のみで約 550 B/s（NAV-PVT 100B×2Hz ＋ NAV-SAT 約320B×1Hz
-//   ＋ NAV-DOP 26B×1Hz ＋ NAV-AOPSTATUS 24B×1Hz）。回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
-//     1024B → 約 1.9 秒   4096B → 約 7.4 秒
+//   実流量は UBX のみで約 750 B/s（NAV-PVT 100B×4Hz ＋ NAV-SAT 約320B×1Hz
+//   ＋ NAV-DOP 26B×1Hz ＋ NAV-AOPSTATUS 24B×1Hz。2026-11-14 までは NAV-PVT が 2Hz で約 550 B/s）。
+//   回線速度 38400bps(=3840 B/s) ではなく**これで割る**。
+//     1024B → 約 1.4 秒   4096B → 約 5.5 秒
 //   以前のコメントは 1024B ÷ 3840B/s = 267ms と書いていたが、それは
 //   **回線が飽和している前提の最悪値**で、実態の 7 倍きつい見積りだった。
 //   RAM は 4096B でも全体の 1% 未満。ここを削る理由が無い。
@@ -86,15 +114,15 @@
 // ★ **飛行中に断線したことを検出するためのもの。** 以前は
 //   「1 バイトでも受信したら true、以降ずっと true」のラッチだったので、
 //   途中でコネクタが抜けても画面は正常なまま航法を続けていた。
-// 値の根拠: 設定が通っていれば NAV-PVT が 2Hz（500ms 間隔）、通っていなくても
+// 値の根拠: 設定が通っていれば NAV-PVT が 4Hz（250ms 間隔）、通っていなくても
 //   既定の NMEA が 1Hz で流れ続ける。一方こちらの読み出しが遅れても FIFO
-//   （GNSS_SERIAL_FIFO_SIZE = 4096B ≒ 7 秒ぶん）に溜まるので、描画で数百 ms
+//   （GNSS_SERIAL_FIFO_SIZE = 4096B ≒ 5 秒ぶん）に溜まるので、描画で数百 ms
 //   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
 //   5 秒なら「本当に来ていない」ときだけ立つ。
 #define GNSS_CONN_TIMEOUT_MS   5000UL
 // バイトは届いているのに UBX がこれだけ来なければ、GNSS が設定を失った（電源の瞬断などで GNSS だけが
 // リセットし、工場出荷の NMEA だけに戻った）とみて設定を一式送り直す（gnss.cpp の gnss_ubx_watchdog）。
-// NAV-PVT は 0.5 秒ごとなので 10 秒は 20 回ぶんの欠け。描画で Core0 が止まっても FIFO に溜まるので誤発火しない。
+// NAV-PVT は 0.25 秒ごとなので 10 秒は 40 回ぶんの欠け。描画で Core0 が止まっても FIFO に溜まるので誤発火しない。
 #define GNSS_UBX_LOST_RECONFIG_MS 10000UL
 // 1 を入れると、MON-RF が届くたび（1 秒に 1 回）に log.txt へ `GRF:` の生の行を出す（gnss.cpp の rf_minute_add）。
 // 1 分まとめの `grf` 行はいつも出る。生の行は 1 時間で約 3600 行・約 250KB 増えるので、比べる試験のときだけ 1 にする。
@@ -114,7 +142,8 @@
 // GNSS の AssistNow Autonomous（受信した軌道から GNSS 自身が数日先まで軌道を予測する機能。以下 ANA）。
 // 1 = 使う / 0 = 使わない。効けば、BT1 が生きていて最後の受信から 4 時間〜約 3 日の起動が速くなる
 // （その間はエフェメリスが切れていて、無ければ読み直すぶん 30 秒前後かかる）。条件は README の「GNSS の起動を速くする」。
-// ★ 1 でも、BT1 が切れていた起動（コールドスタート）だけはその起動の間 ANA を切る（2026-11-13〜、ユーザーの判断。gnss.cpp の s_ana_mode）。
+// ★ 下の GNSS_ANA_OFF_ON_COLD が 1 なら、BT1 が切れていた起動（コールドスタート）だけはその起動の間 ANA を切る（2026-11-13 に入れ、
+//   11/14 に既定を 0＝切らない に戻した。gnss.cpp の s_ana_mode）。以下はそれを入れたときの理由。
 //   SAM-M10Q は ROM SPG 5.10（log.txt の `GNSS VER:`）で、SPG 5.30 のリリースノート（UBXDOC-304424225-20393 §5）に
 //   "After a coldstart QZSS satellites will not be used for navigation if AssistNow Autonomous is enabled." とある
 //   （回避策は ANA を無効にすること。5.30 で直ったが、SAM-M10Q は外付けフラッシュが無いので上げられない）。
@@ -127,7 +156,17 @@
 // ★ 0 にしても「使わない」を GNSS へ**書き込む**。この設定は BT1 で保たれる BBR にも
 //   書くので、送るのをやめるだけだと以前のファームが書いた「使う」が残り続ける。
 #define GNSS_USE_ANA              1
-// BeiDou を B1I で受けるか（2026-11-14〜、ユーザーの判断）。gnss.cpp の gnss_sig_tick() が起動のたびに RAM へ書く。
+// コールドスタート（BT1 が切れていた起動）と机の上のコールドの試験（PONS:DBD,COLD / COLDONLY）で、その起動の間 ANA を切るか
+// （上の ★ の仕組みの入り切り。2026-11-14〜）。0 = 切らない（ANA はいつも有効）／ 1 = 切る（2026-11-13〜14 の動き）。
+// ★ 2026-11-14 に 0 にした（ユーザーの判断）。
+//   ・コールドの起動は BT1 が切れるほど長く切っていたときだけで、そのころには SD の DBD の放送暦（約 4 時間）は古く、効くのは
+//     ANA の予測（約 3 日）。ANA を切るとそれを使わないので、DBD の戻しが一番要るときにほとんど効かない。その起動の間は予測も作らない
+//   ・切って得たいはずの QZSS は、11/13〜14 の全ログで ANA の有無にかかわらず、どの GNSS 基板でも一度も測位に使われていない
+//     （ANA を切ったコールドの v7 受信機でも、6 機受けて 0 機使用）
+//   QZSS が使われない理由が ANA だと分かったら 1 に戻す（log.txt の `GNSS QZSS (...)` の行で調べている）。PONSv7 / PONSv7.1 で同じ値にしておく。
+#define GNSS_ANA_OFF_ON_COLD      0
+// BeiDou を B1I で受けるか。**0 のまま使う**（2026-11-14 に 1 を試して、使わないと決めた。ユーザーの判断。理由は下の最後の ★）。
+// gnss.cpp の gnss_sig_tick() が起動のたびに RAM を読み、この値と違えば書き直す。
 // 1: BeiDou B1I ＝有効、B1C ＝無効、**GLONASS ＝無効**（GPS・Galileo・QZSS・SBAS はそのまま）。
 // 0: 工場出荷のまま（SPG 5.10 の SAM-M10Q は GPS＋Galileo＋GLONASS＋BeiDou B1C＋QZSS＋SBAS）。
 // ★ M10 では B1I は B1C とも GLONASS とも同時に有効にできない（MAX-M10S の Integration manual。だめな組み合わせは ACK-NAK で
@@ -135,9 +174,11 @@
 //   衛星が多い。2026-11-13〜14 の log.txt では、B1C の BeiDou は 3 枚の GNSS 基板とも一度も使われず（B0）、GLONASS は 2〜6 機使っていた。
 //   初期の M10（ROM 5.00）の既定も GLONASS なしの GPS＋Galileo＋BeiDou B1I で、昔の PONS（M10Q）で BeiDou が出ていたのもこれ。
 // ★ 書き直すと GNSS が測位をやり直す（起動の最初の数秒だけ）。結果は log.txt の `GNSS SIGNAL set (RAM): ...: ack` と
-//   `GNSS SIGNAL ram(after enable): ...`、そのあとの `GNSS SVS used G.. E.. B.. Q.. R..`（B が増えて R が 0 になる）。
+//   `GNSS SIGNAL ram(after enable): ...`。
+// ★ 2026-11-14 に 1 を試したところ、BeiDou B1I は受かるようになった反面、GLONASS を失ううえに B1I (1561.098 MHz) 帯で
+//   基板のクロック高調波を拾って jam50 が 0→8〜42 に跳ね上がり、Galileo の放送暦復調・測位使用まで悪化したため 0 に戻した。
 //   PONSv7 / PONSv7.1 で同じ値にしておく。
-#define GNSS_BDS_B1I              1
+#define GNSS_BDS_B1I              0
 // AssistNow Autonomous の状況（予測データのある衛星数・計算していた時間）を
 // log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
 // GNSS_USE_ANA = 0 のときは NAV-AOPSTATUS を出させないので、この行は出ない。
@@ -538,6 +579,8 @@
 // ★ 受信モード（ボート）と PC 接続の画面は対象外。ボートは WIRELESS 画面を見ながら機体を追うことがある。
 #define SCREEN_MOVING_EXIT_GS_MPS   3.0f
 #define SCREEN_MOVING_EXIT_HOLD_MS  5000UL
+// 最後のボタン操作からこの時間たつまでは戻さない [ms]（操作中に戻らないように。2026-11-14〜）
+#define SCREEN_MOVING_EXIT_IDLE_MS  10000UL
 
 
 // ---- MS5611（i2c0）の失敗検出と復旧 ----
@@ -1276,7 +1319,10 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   2025 大会の実機体ログでは発進から 2〜3 秒で 3m/s を超えていた
 //   （tools/olddata/PONSv5_planelog_2025-07-26_1539.csv の 15:42:15〜19）。
 #define ESKF_YAW_INIT_MIN_SPEED_MPS  3.0f  // 水平対地速度がこれ以上でヨーを入れる
-#define ESKF_YAW_INIT_ARM_FIXES      2     // これだけ連続で満たしたら注入（単発の化け対策）
+// これだけ連続で満たしたら注入（単発の化け対策）。**1 秒ぶんの測位**（2Hz なら 2 回、4Hz なら 4 回）。
+// 2026-11-14 までは 2 回と書いていた。4Hz にしても「0.5 秒あけた 2 回」と同じ長さを見るように測位のレートから作る
+// （tools/imulog/eskf.py は生ログの測位の間隔から同じ数を作る）。保った方位を航跡で確かめるとき（ESKF_BIGTILT_YAW_CHECK_DEG）も同じ数。
+#define ESKF_YAW_INIT_ARM_FIXES      (GNSS_NAV_RATE_HZ)
 // 表示の「YAW ALIGN」（向き待ち）とみなすヨー精度（95%）[度]。向きが決まっていないとき ESKF は 180°（上限）を返し、
 // 電波（1 度刻み）と記録にも 180 で載る。ミラー中・リプレイ中はこれで向き待ちを見分ける（display_tft.cpp）
 #define ESKF_YAW_ALIGN_ACC95_DEG     179.5f
@@ -1393,7 +1439,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ★ フゴイド（周期 2〜6.7 秒・ピッチ std 1.23 度）は**ゼロ平均の振動なのでゲートしない**
 //   （瞬時値で切ると巡航中ほとんど閉じる）。切るべきは持続的・非ゼロ平均の誤差だけ。
 #define ESKF_LEVEL_ENABLED            1
-// 観測を入れる周期 [µs]。GNSS 速度観測（2Hz）と同じ桁にして、どちらかが
+// 観測を入れる周期 [µs]。GNSS 速度観測（2〜4Hz）と同じ桁にして、どちらかが
 // 一方的に強くなりすぎないようにする。
 #define ESKF_LEVEL_INTERVAL_US        500000UL
 // 観測ノイズ σ [m/s²]。実ログでの掃引（GNSS 断の誤差中央 / 5 度バンクの出力）:
@@ -1526,12 +1572,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 機体に付いている限りロールもピッチもこの角度には達しない。超えたら
 // 「手に持って外した」とみなし、次に APPLY するまで較正が無効だと警告する。
 // 電源を切って充電するケースに備え、この状態は SD に保存して起動をまたいで保持する。
-#define OFF_MOUNT_DEG               30.0f
-// 右バンクだけ緩める [度]。プラットホームへ機体を上げる際に大きな右バンクを伴うため、
-// 30 度のままだと「マウントから外した」と誤判定する。
-// ロールの符号は「正 = 右バンク」。2026 年大会の実測で、右旋回(ヨーレート>0)のとき
-// ロールが正、左旋回で負になることを確認済み（相関 +0.82）。
-#define OFF_MOUNT_RIGHT_ROLL_DEG    40.0f
+#define OFF_MOUNT_DEG               40.0f
 // 機体ゼロ点オフセット（level_roll / level_pitch）の上限 [度]。
 // SD の settings.txt から復元するときのクランプに使う。APPLY は地上でしか通らず、
 // マウントに載っている限りこの角度には達しない（超えるならマウント外れ検出が先に働く）。
@@ -1702,8 +1743,23 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 増えない。ログと表示が読めなくなるうえ、カルマンゲインの計算に極端な値が
 // 入るだけなので、ここで頭打ちにする。観測が入れば普通に縮む。
 #define ESKF_YAW_SIGMA_MAX_DEG 180.0f
+// GNSS 速度の遅れの補償 [ms]（2026-11-15〜）。NAV-PVT は測位の瞬間より遅れて届くので、観測を「測位の瞬間の推定速度」と
+// 比べる（attitude.cpp の vhist_*）。届いた時点の速度と比べると、旋回中は「旋回率 × 遅れ」だけ方位が遅れる
+// （3 deg/s・100ms で 0.3 度、車の 10 deg/s で 1 度）。
+//   遅れ = ①Core0 が受け取りに行けなかった時間（描画など。毎回違う。gnss.cpp の navpvt_age_us が iTOW から測る）
+//        ＋ ②測位の瞬間 → 待たされなければ届く時刻（GNSS の中の計算・速度のならし・UART。ほぼ一定。**この値**）
+//   負 = 補償しない（①も②も。2026-11-14 までと同じ動き）／ 0 = ①だけ補償する／ 正 = ①＋②。
+// ★ 2026-11-15 の 4Hz 生ログ（imuraw/20261115.bin, sess 12）を gnss_lag.py に通して 151ms と出たため、
+//   一旦 150ms を仮設定する（長めの走行ログで 10 分ごとのばらつきを再確認し、必要なら微調整する）。
+//   設定時は tools/imulog/eskf.py の GNSS_DELAY_DEFAULT も同じ値に揃える。
+// ★ いまの機上（補償しない）は、観測を「いまの推定の速度」と比べているが、その推定は loop() の順番のせいで直前の描画のぶん
+//   （数十〜100ms 余り）古い。つまり GNSS の遅れを、毎回違う量だけ、たまたま打ち消している。0 以上にすると gnss.cpp が
+//   観測の前に IMU を受け取って推定を「いま」まで進め、遅れは全部この仕組みで補償する（eskf.py と同じ形になる）。
+#define ESKF_GNSS_VEL_DELAY_MS   150
+// 速度の履歴の数。伝播のたび（250Hz）に 1 つ入れるので 256 で約 1 秒ぶん（4KB）。①が 1 秒を超えたら、いちばん古い履歴と比べる。
+#define ESKF_VHIST_N             256
 // GNSS 速度観測の許容鮮度 [µs]。これを超えたら自動ロールトリムと風推定を止める。
-// GNSS は 2Hz なので 3 秒 = 6 回分の欠測。短い遮蔽では止まらず、
+// GNSS は 4Hz（2026-11-14 までは 2Hz）なので 3 秒 = 12 回分の欠測。短い遮蔽では止まらず、
 // 「そもそも測位していない」状態だけを確実に弾く長さ。
 #define ESKF_GNSS_VEL_TIMEOUT_US 3000000UL
 #define ESKF_DRIFT_LINE_LEN_PX   40   // 機首の先に伸ばす点線の全長 [px]
@@ -1955,6 +2011,32 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define RTC_BACKUP_LOAD_WAIT_MS  20000UL  // 起動後、SD の記録と時刻を待つ上限
 #define RTC_BACKUP_CHECK_MARGIN_H  1.0f   // 「空のはずなのに残っていた」とログに残す余裕 [h]（記録が最大 5 分古いぶん。空から 5 分の充電で約 0.8h）
 #define RTC_BACKUP_FILE         "rtc_backup.txt"   // SD のルート（本体が書く。消してもよい＝安全側から始め直す）
+// ---- v7.2 の「電源を切っていても主電池で BT1 を充電する回路」の見込み（PONS_MAINBOARD_REV = 72 のときだけ使う。2026-11-16〜）----
+// 回路が動いている間は BT1 が減らない（主電池が GNSS の時計を保ち、BT1 も満充電へ近づく）。止まったあとは今までどおり BT1 が減る。
+// 「電源を切ってから止まるまで」を、切ったときの電池電圧と、そこから止まる電圧までの容量 ÷ 減る速さで見積もる（rtc_backup.cpp）。
+// すべて安全側（見込みが短く出る側）に取ってある。
+//   ・回路は約 3.92V（R52/R53/R54 と MIC841 の 1.24V の誤差込みで最悪 約 4.04V）で動き出し、約 3.83V（最悪 3.75〜3.91V）で止まる。
+//     本体が読めるのは負荷のかかった電池の電圧（実際より少し低い）なので、さらに安全側になる。
+#define RTC_BACKUP_AON_ON_V      4.05f   // これ以上を見たら「回路は動いている」とみなす [V]（再開電圧の最悪値より上）
+#define RTC_BACKUP_AON_OFF_V     3.91f   // これより下を見たら「回路は止まっている」とみなす [V]。止まるまでの容量もここまでで数える（止まる電圧の最悪値の高い側）
+// 間（3.91〜4.05V）は直前の状態のまま（回路のヒステリシスと同じ）。起動したときは SD の記録から「切っていた間に止まったか」で決める。
+#define RTC_BACKUP_AON_BATT_MAH  700.0f  // 見込みに使う電池の容量 [mAh]（DTP603048 は 860mAh。劣化と低温を見込んで 8 割）
+// 電源を切っている間に電池が減る速さ [mA]。回路（MIC841 1.5µA・分圧 0.6µA・RT9078 2µA）＋ GNSS の時計 28µA で約 0.032mA。
+// これに電池の自己放電（リチウムポリマーで月 2〜5%。860mAh の 5% で約 0.06mA）と保護回路（DW01 数 µA）を足して丸めた
+#define RTC_BACKUP_AON_DRAIN_MA  0.10f
+// 充電ポップアップに出す「時計が保たれる」見込みの上限 [か月]。それより長くても "clock 12mo" と出す（自己放電の見積もりが長い期間ほど怪しいため）
+#define RTC_BACKUP_AON_SHOW_MAX_MONTHS 12
+// ---- 「入れ直したら GPS がすぐ位置を出す」と言える期間（充電ポップアップの "Fast GPS ..."。rtc_backup.cpp。2026-11-16〜）----
+// 時計（BT1）が保たれていても、速く測位できるのは衛星の軌道のデータが新しい間だけ。**起点は最後に測位した時刻**（電源を切った時刻ではない）。
+//   放送暦 約 4 時間、AssistNow Autonomous（ANA）の予測軌道 約 3 日（docs/pons_ttff_assist_plan.md §2.4）。それより後はアルマナックと
+//   時計・最後の位置だけになり、衛星ごとに暦を読み直すのでほぼコールドと同じ（2026-11-11 の log.txt: 時計あり・最後の測位から 7.5 時間で 134 秒、
+//   時計なしで 164 秒）。そこで "Fast GPS" の見込みは「BT1（v7.2 は主電池の回路も）がもつ時間」と「最後の測位からこの時間」の短いほうにする。
+// ★ ANA の効きはログではばらつく（11.9 秒・9.3 秒・262 秒）ので、3 日いっぱいは「多くは速い」程度。数字は上限として使う。
+#if GNSS_USE_ANA
+  #define RTC_BACKUP_FAST_H      72.0f   // ANA を使うとき
+#else
+  #define RTC_BACKUP_FAST_H       4.0f   // 放送暦だけ
+#endif
 // ★ GNSS の状態の箱（Scanning / Weak GNSS Signal、高さ 40）だけは段を決めず、**ほかの箱が空けている段を探して置く**
 //   （display_tft.cpp の draw_nomapdata と notice_reserve。2026-11-08〜）。既定は自機アイコンの下
 //   （NORTHUP 145 / TRACKUP 192）で、塞がっていれば 192 → 148 → 104 → 82 → 40 の順に探す。

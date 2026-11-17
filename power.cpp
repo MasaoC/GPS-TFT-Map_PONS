@@ -322,8 +322,16 @@ float power_charge_hot_temp()   { return s_hot_temp; }
 void power_format_status(char* buf, size_t n) {
   const char* hot = s_hot ? " hot" : "";
   const char* od  = power_overdischarge_latched() ? " od" : "";
-  char bk[16] = "";
-  if (rtc_backup_known()) snprintf(bk, sizeof(bk), " bk=%.1fh", rtc_backup_hours());
+  char bk[40] = "";
+  // aon= は v7.2 の「いま切っても主電池で BT1 を保てる時間」（rtc_backup.cpp）。v7.1 は出さない
+  if (rtc_backup_known()) {
+#if defined(PONS_MAINBOARD_REV) && PONS_MAINBOARD_REV >= 72
+    snprintf(bk, sizeof(bk), " bk=%.1fh aon=%.0fh fast=%.0fh", rtc_backup_hours(), rtc_backup_aon_hours(),
+             rtc_backup_fast_hours());
+#else
+    snprintf(bk, sizeof(bk), " bk=%.1fh fast=%.0fh", rtc_backup_hours(), rtc_backup_fast_hours());
+#endif
+  }
   snprintf(buf, n, "usb=%d vbus=%.2fV%s%s%s%s", usb_power_present() ? 1 : 0, s_volt,
            power_sw_off_on_usb() ? " sw=off" : "", hot, od, bk);
 }

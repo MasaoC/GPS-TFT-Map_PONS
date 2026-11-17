@@ -3547,13 +3547,27 @@ void draw_gs_track(){
     // 背景は塗らない（1引数の setTextColor）。地図の上に白い箱が出ないようにする。
     // ★ ミラー中は「--」。隣の GS は機体の値なので、ここに受信機自身の sAcc を
     //   並べると機体の測位品質に見える（gnss_acc_unknown() のコメント参照）。
-    backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
-                          : (sacc_mps < 1.0f) ? COLOR_GREEN
-                          : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED);
+    const uint16_t sacc_col = gnss_acc_unknown() ? COLOR_GRAY
+                            : (sacc_mps < 0.3f) ? COLOR_GREEN
+                            : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
+    char sbuf[16];
+    if (gnss_acc_unknown()) snprintf(sbuf, sizeof(sbuf), "sAcc --");
+    else                    snprintf(sbuf, sizeof(sbuf), "sAcc%.2f", sacc_mps);
+    const int sx = 1 + gsw + 4;
     // GS(AA_FONT_SMALL) の行の高さの中央に合わせる
-    backscreen.setCursor(1 + gsw + 4, 1 + (gsh - 8) / 2);
-    if (gnss_acc_unknown()) backscreen.print("sAcc --");
-    else                    backscreen.printf("sAcc%.2f", sacc_mps);
+    const int sy = 1 + (gsh - 8) / 2;
+    // sAcc が 0.3 m/s 以上のときは白地＋色枠で囲んで地図上でも目立つようにする
+    if (!gnss_acc_unknown() && sacc_mps >= 0.3f) {
+      const int bx = sx - 2;
+      const int by = (sy >= 2) ? (sy - 2) : 0;
+      const int bw = backscreen.textWidth(sbuf) + 3;
+      const int bh = 11;
+      backscreen.fillRect(bx, by, bw, bh, COLOR_WHITE);
+      backscreen.drawRect(bx, by, bw, bh, sacc_col);
+    }
+    backscreen.setTextColor(sacc_col);
+    backscreen.setCursor(sx, sy);
+    backscreen.print(sbuf);
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
     backscreen.loadFont(AA_FONT_SMALL);   // 呼び出し側は地図用フォントを期待している
   }
@@ -4249,7 +4263,7 @@ void draw_footer(){
     }
   }
   // ====GNSS====
-  // 0 個は赤地に白字と白地に赤字を交互に（FOOTER_SATS0_BLINK_MS）。1〜4 個は赤地に白字、9 個までは橙、10 個から緑。
+  // 0 個は赤地に白字と白地に赤字を交互に（FOOTER_SATS0_BLINK_MS）。1〜4 個は赤地に白字、14 個までは橙、15 個から緑。
   // 分からないとき（リプレイで列が無い・ミラー中に回転枠 3 をまだ受けていない）は灰色の「--sats」。
   {
     const int ns = get_gnss_numsat();
@@ -4263,7 +4277,7 @@ void draw_footer(){
       header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
     } else if (ns == 0) {
       header_footer.setTextColor(COLOR_RED, COLOR_WHITE);   // 0 個の白地の相
-    } else if (ns < 10) {
+    } else if (ns < 15) {
       header_footer.setTextColor(COLOR_DARKORANGE);
     } else {
       header_footer.setTextColor(COLOR_GREEN);
