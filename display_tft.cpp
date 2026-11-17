@@ -1693,7 +1693,8 @@ void draw_vsi() {
 // ============================================================
 // 背景は敷かず地図へ直接上書きする。リプレイ中は姿勢ログがある日のみ。
 // 位置は左下。最下行(JST 時刻)のすぐ上を最下段とし、下から上へ
-// Rtrim → R → P → 風/Y95 と積む。
+// Rtrim → R → P と積む。
+// ヨー精度（Y95）は中央のヨー 3 桁（draw_eskf_yaw）の真下、風速と風の矢印は右下に置く（2026-11-17 に左下から移した）。
 // 平均ピッチはヘッダー右の大きい枠へ移した（同じ情報を 2 か所に出さない）。
 // DEBUG_ESKF の有無でこの位置と大きさを変えないこと。
 //
@@ -1779,6 +1780,9 @@ static void draw_wind_arrow(int cx, int cy, float screen_deg, uint16_t col, floa
 }
 
 #define ESKF_LABEL_X        2
+// 右下の風のブロック（風速の行と矢印）の右端。右端の縮尺の棒（try_draw_km_distance()。棒は x=233、
+// 数字と "km" は x=215 から）にかからないよう、その 3px 手前で止める。
+#define WIND_BLOCK_RIGHT_X  (BACKSCREEN_SIZE - 2 - 5 - 18 - 3)
 #define ESKF_VALUE_RIGHT_X  50    // P / R の値の右端（ここへ右揃え。桁が揃う）
 #define ESKF_ROW_GAP        1     // 各行の隙間 [px]
 // 最下段(Rtrim, 内蔵フォント8px)の下端から最下行(JST 時刻)までの余白 [px]。
@@ -1794,6 +1798,13 @@ static void draw_ground_ok_range(int y, bool pitch) {
   backscreen.setCursor(ESKF_VALUE_RIGHT_X + 4, y);
   backscreen.printf("ok %+.1f..%+.1f", pitch ? ground_pitch_ok_lo : ground_roll_ok_lo,
                                        pitch ? ground_pitch_ok_hi : ground_roll_ok_hi);
+}
+
+// 中央のヨー 3 桁（draw_eskf_yaw()）の行の上端。自機アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下。
+// ★ ヨー精度（Y95）はこの 1 行下に置き、右下の風のブロックもこの行を避けて組むので、
+//   位置を変えるときはここだけを直す（draw_eskf_yaw() に別の式を書かない）。
+static int eskf_yaw_row_y() {
+  return get_self_cy() + TRIANGLE_SIZE / 2 + 3;
 }
 
 // 較正のやり直しの警告を描く位置（draw_eskf_attitude() が決め、push_backscreen() が描いて -1 に戻す。BUG-87）
@@ -1855,13 +1866,15 @@ void draw_eskf_attitude() {
   const int yroll  = yrtrim - fh_s - ESKF_ROW_GAP;                 // ロール
   const int ypit   = yroll  - fh_s - ESKF_ROW_GAP;                 // ピッチ
 
-  // ---- P の上: ヨー精度（常時）と風ベクトル ----
+  // ---- ヨー精度（常時。中央のヨー 3 桁の真下）と風ベクトル（右下）----
   // 風は「対気速度の向き＝機首方位」を前提にするので、ヨーが著しく信頼できて、かつ
   // 直進が累計 WIND_LPF_SEC 秒たまるまで出ない。出ていない間も理由が分かるよう
   // ヨー精度の 95% 値は常に出す（風が出ているときも隠さない）。
   // リプレイでは記録された値をそのまま出す。
   {
-    const int yacc95 = ypit - ESKF_ROW_GAP - fh_s;   // ヨー精度の行（P のすぐ上）
+    // ヨー精度の行。ヨー 3 桁（draw_eskf_yaw()）の 1 行下に、同じく中央揃えで置く。
+    // ヨーを出さない場合（旧形式のリプレイ）も同じ位置（その行は空く）。
+    const int yacc95 = eskf_yaw_row_y() + fh_s + ESKF_ROW_GAP;
 
     float wspd = 0.0f, wdir = 0.0f;
     float acc95 = 0.0f;
@@ -1893,39 +1906,58 @@ void draw_eskf_attitude() {
     if (has_acc) {
       char ybuf[16];
       snprintf(ybuf, sizeof(ybuf), "Y95%%%.0f\xC2\xB0", acc95);
+      const int xacc95 = BACKSCREEN_SIZE / 2 - backscreen.textWidth(ybuf) / 2;   // ヨー 3 桁と同じ中央揃え
       // 向き待ち（YAW ALIGN）の間は黄色の地で強調する（ヘッダーの札・P / R の線と同じ色。2026-11-13）
       if (eskf_display_gnss_state() == EGS_YAW_ALIGN) {
-        backscreen.fillRect(ESKF_LABEL_X - 1, yacc95 - 1, backscreen.textWidth(ybuf) + 2, fh_s + 1, COLOR_YELLOW);
+        backscreen.fillRect(xacc95 - 1, yacc95 - 1, backscreen.textWidth(ybuf) + 2, fh_s + 1, COLOR_YELLOW);
         backscreen.setTextColor(COLOR_BLACK, COLOR_YELLOW);
       } else {
         backscreen.setTextColor(COLOR_GRAY);
       }
-      backscreen.setCursor(ESKF_LABEL_X, yacc95);
+      backscreen.setCursor(xacc95, yacc95);
       backscreen.print(ybuf);
     }
 
-    int yblock_top = yacc95;
+    // 左下のブロック（P / R / Rtrim）の上端。較正のやり直しの警告はこの上に出す。
+    const int yblock_top = ypit;
     if (has_wind) {
       // 数値だけ NM_FONT_MEDIUM。Arial_Black22 は数字と +-. しか持たないので、
       // "W" と "m/s" は AA_FONT_SMALL のまま描いて数字だけ大きくする。
       char nbuf[8];
       snprintf(nbuf, sizeof(nbuf), "%.1f", wspd);
       const int wlw = backscreen.textWidth("W");
+      const int uw  = backscreen.textWidth("m/s");
       backscreen.loadFont(NM_FONT_MEDIUM);
       const int fh_m = backscreen.fontHeight();
       const int nw   = backscreen.textWidth(nbuf);
-      const int ywtxt = yacc95 - ESKF_ROW_GAP - fh_m;
+
+      // 右下に「風速の行」と「矢印」を縦に積み、右端を WIND_BLOCK_RIGHT_X にそろえる。
+      // 下端は最下行（JST 時刻・MaxGS）の上。
+      // ★ 風速の行は、下に置くと中央の Y95 の行と高さが重なるとき（TRACKUP。自機が下寄りで
+      //   Y95 が y≈209〜 に来る）だけ矢印の上へ回す。風速の行は幅が 85px ほどあって
+      //   中央の Y95（右端 x≈148〜157）まで届くが、矢印（幅 66px）なら届かない。
+      //   NORTHUP では Y95 が y≈149〜 に上がるので、逆に風速の行を下に置かないと重なる。
+      const int wbot      = BACKSCREEN_SIZE - 9 - ESKF_BOTTOM_GAP;
+      const int wtext_w   = wlw + 3 + nw + 2 + uw;
+      const int wtext_x   = WIND_BLOCK_RIGHT_X - wtext_w;
+      const bool text_top = (wbot - fh_m < yacc95 + fh_s) && (wbot > yacc95);
+      int ywtxt, arrow_top;
+      if (text_top) {
+        arrow_top = wbot - WIND_ARROW_LEN_PX;
+        ywtxt     = arrow_top - ESKF_ROW_GAP - fh_m;
+      } else {
+        ywtxt     = wbot - fh_m;
+        arrow_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
+      }
       const int ylbl  = ywtxt + (fh_m - fh_s) / 2;   // 小文字は数値の高さの中央へ
       backscreen.setTextColor(COLOR_BLACK);
-      backscreen.setCursor(ESKF_LABEL_X + wlw + 3, ywtxt);
+      backscreen.setCursor(wtext_x + wlw + 3, ywtxt);
       backscreen.print(nbuf);
       backscreen.loadFont(AA_FONT_SMALL);
-      backscreen.setCursor(ESKF_LABEL_X, ylbl);
+      backscreen.setCursor(wtext_x, ylbl);
       backscreen.print("W");
-      const int wunit_x = ESKF_LABEL_X + wlw + 3 + nw + 2;
-      backscreen.setCursor(wunit_x, ylbl);
+      backscreen.setCursor(wtext_x + wlw + 3 + nw + 2, ylbl);
       backscreen.print("m/s");
-      const int wtext_r = wunit_x + backscreen.textWidth("m/s");   // 風速の行の右端
 
       // ★ GNSS 速度の裏付けが切れている間は、**矢印を灰色にして風のブロック全体に × を重ねる。**
       //   風は対気速度と対地速度の差から出しているので、対地速度が更新されなければ
@@ -1940,16 +1972,16 @@ void draw_eskf_attitude() {
       const float wscreen = is_trackupmode()
                             ? (wdir - (float)get_gnss_truetrack()) : wdir;
       // 中心の数字は真方位なので、地図の向き（wscreen）とは別に wdir をそのまま渡す。
-      const int acx = ESKF_LABEL_X + WIND_ARROW_LEN_PX / 2 + 2;
-      const int acy = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX / 2;
+      const int acx = WIND_BLOCK_RIGHT_X - WIND_ARROW_LEN_PX / 2 - 2;
+      const int acy = arrow_top + WIND_ARROW_LEN_PX / 2;
       draw_wind_arrow(acx, acy, wscreen, wstale ? COLOR_GRAY : wind_arrow_color(wspd), wdir);
-      yblock_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
 
-      // × は矢印の数字より後に描く（上に重ねる）。範囲は矢印の上端から風速の行の下端まで。
+      // × は矢印の数字より後に描く（上に重ねる）。範囲は風のブロック全体（矢印と風速の行）。
       if (wstale) {
-        const int ax_r = acx + WIND_ARROW_LEN_PX / 2;
-        const int x0 = ESKF_LABEL_X, x1 = (ax_r > wtext_r) ? ax_r : wtext_r;
-        const int y0 = yblock_top,   y1 = ywtxt + fh_m;
+        const int ax_l = acx - WIND_ARROW_LEN_PX / 2;
+        const int x0 = (ax_l < wtext_x) ? ax_l : wtext_x, x1 = WIND_BLOCK_RIGHT_X;
+        const int y0 = text_top ? ywtxt : arrow_top;
+        const int y1 = text_top ? (arrow_top + WIND_ARROW_LEN_PX) : (ywtxt + fh_m);
         backscreen.drawWideLine(x0, y0, x1, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
         backscreen.drawWideLine(x1, y0, x0, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
       }
@@ -1976,8 +2008,9 @@ void draw_eskf_attitude() {
       int yw = yblock_top - ESKF_ROW_GAP - fh_s;
       if (boat_hint) yw -= fh_s + ESKF_ROW_GAP;
       // ★ ここでは描かず、位置だけ覚えて push_backscreen() の無線のアイコンより後に描く（2026-11-13、BUG-87）。
-      //   風の矢印が出ているとこの 2 行は y≈44〜77 に来て、地図の左上の無線のアイコン（x=3〜56, y=40〜76。後から描く）と
-      //   重なり、赤い字が橙・緑の絵に潰されていた。
+      //   当時は風の矢印が左下の P の上に積まれていて、この 2 行が y≈44〜77 に来て、地図の左上にあった
+      //   無線のアイコン（x=3〜56, y=40〜76。後から描く）と重なり、赤い字が橙・緑の絵に潰されていた。
+      //   2026-11-17 に無線のアイコンは右上へ、風は右下へ移したが、描く順はこのまま。
       s_eskf_warn_y    = yw;
       s_eskf_warn_boat = boat_hint;
     }
@@ -2069,9 +2102,8 @@ void draw_eskf_yaw() {
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setTextWrap(false);
   backscreen.setTextColor(eskf_yaw_reliable() ? COLOR_BLACK : COLOR_GRAY);
-  // アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下に中央揃えで置く
-  backscreen.setCursor(BACKSCREEN_SIZE / 2 - backscreen.textWidth(buf) / 2,
-                       get_self_cy() + TRIANGLE_SIZE / 2 + 3);
+  // アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下に中央揃えで置く（この 1 行下が Y95）
+  backscreen.setCursor(BACKSCREEN_SIZE / 2 - backscreen.textWidth(buf) / 2, eskf_yaw_row_y());
   backscreen.print(buf);
   backscreen.setTextColor(COLOR_BLACK);
 }
@@ -2875,7 +2907,7 @@ static bool link_frame_visible() {
   return (millis() / LINK_FRAME_BLINK_MS) % 2 == 0;
 }
 
-// 地図の左上に [無線アイコン][役割アイコン] を置く。
+// 地図の右上に [無線アイコン][役割アイコン] を置く（2026-11-17 に左上から移した。高さは同じ）。
 // 受信モードでは役割アイコンを 1 秒ごとに点滅させる（draw_replay_indicator と同じ周期）。
 //
 // ★ **リプレイ中・デモ中はここへ来ない**（draw_link_overlay が先に return する）。
@@ -2889,10 +2921,15 @@ static void draw_link_icons() {
   const bool rx = (mode == LINK_MODE_RX);
   const uint16_t col = rx ? COLOR_CYAN : COLOR_ORANGE;
 
-  // ★ 地図左上は draw_gs_track() が使っている。GS の数値は NM_FONT_MEDIUM で
-  //   y=1..32 あたりまで占めるので、その下に逃がす（重ねると数値が読めなくなる）。
-  // 意図して直さない（2026-11-14 の監査）: 左旋回の draw_degpersec()（y=15..49）と下 10px 重なるのは承知（透過で描くので旋回率の数字は読める。見た目だけ）
-  const int x = 3, y = 40;
+  // ★ 右端は VSI_X で止める。x = VSI_X 以降は VSI が backscreen の push 前に合成されて上書きする
+  //   （draw_link_overlay() の右辺の ★ と同じ理由）。役割アイコンの右端を VSI_X - 3 に合わせ、
+  //   強度アイコンはその左に置く。並びは左上にあったときと同じ [強度][役割]。
+  // ★ 上端の y=0..14 は draw_gs_track() の TT / Pavg / TAS のラベル行なので、その下（y=40〜）に置く。
+  // 意図して直さない: 右旋回の draw_degpersec()（x=192〜, y=15..49）と下 10px 重なるのは承知
+  //   （左上にあったときの左旋回と同じ。透過で描くので旋回率の数字は読める。見た目だけ）
+  const int y  = 40;
+  const int ix = VSI_X - 3 - ICON_PLANE_W;          // 役割アイコンの左端（ICON_BOAT_W も同じ 32）
+  const int x  = ix - 3 - ICON_RSSI_W;              // 強度アイコンの左端
 
   // 無線アイコン。**受信と送信で絵そのものを変える**（docs/pons_link.md §5）。
   //   受信 … アンテナ 0〜3 本。本数と色の両方で強度を示す。
@@ -2948,7 +2985,6 @@ static void draw_link_icons() {
   //   強制リフレッシュに替わって位相が流れるので）数秒だけ現れる、という症状。
   //   同じ罠は settings.h の LINK_FRAME_BLINK_MS にも書いてある。
   const bool blink_on = !rx || blink_1s();
-  const int ix = x + ICON_RSSI_W + 3;
   if (blink_on) {
     if (rx) draw_mask(backscreen, ix, y, ICON_BOAT_W,  ICON_BOAT_H,  ICON_BOAT,  col);
     else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
@@ -2971,16 +3007,16 @@ static void draw_link_icons() {
     }
   }
 
-  // ★ 故障のときだけ、強度アイコンの代わりに役割アイコンの**右**へ FAIL を出す。
-  //   読むと「[飛行機] FAIL」＝この機体の無線が壊れている、になる。
-  //   ★ **19px の強度アイコンの枠には入れない。** あそこに文字を置くと
-  //     役割アイコン（x=25 から）と重なる。右へ逃がすと、内蔵フォント（24px）でも
-  //     AA_FONT_SMALL（約 40px）でも収まるので、**この経路のフォント状態に依らない**
-  //     （draw_link_icons は cfg_str 表示後に loadFont(AA_FONT_SMALL) で地図用フォントに戻して抜けるため、後続の描画と干渉しない）。
+  // ★ 故障のときだけ、強度アイコンの代わりに役割アイコンの**左**へ FAIL を出す。
+  //   読むと「FAIL [飛行機]」＝この機体の無線が壊れている、になる。
+  //   右上に移したので右には VSI まで 3px しか無い。左へ伸ばすので、文字の幅を測ってから
+  //   右端を役割アイコンの 3px 手前にそろえる（19px の強度アイコンの枠より左へはみ出してよい。強度アイコンは故障時に描かない）。
+  //   内蔵フォントで描くので、先に unloadFont() する（抜けるときは下で地図用フォントに戻す）。
   if (failed) {
+    backscreen.unloadFont();
     backscreen.setTextColor(COLOR_PINK, COLOR_WHITE);
     backscreen.setTextSize(1);
-    backscreen.setCursor(ix + ICON_PLANE_W + 3, y + (ICON_PLANE_H - 8) / 2);
+    backscreen.setCursor(ix - 3 - backscreen.textWidth("FAIL"), y + (ICON_PLANE_H - 8) / 2);
     backscreen.print("FAIL");
     // ★ **色を戻す。** このファイルの作法（draw_gnss_disconnect_warning /
     //   draw_warn_mute_banner も描き終わりに黒へ戻している）。いまの下流は
@@ -2990,9 +3026,9 @@ static void draw_link_icons() {
   }
 
   // 設定の一致確認（CH - SF - Group）。
-  // 電波アイコン・アンテナアイコンのすぐ下、風矢印の上の空き領域（x=3, y=69..76）に
-  // 一番小さいデフォルトフォント（GLCD 8px）で表示（例: 3-9-B）。
-  // 役割アイコンのピクセル下端（y=66..67）および風矢印上端（y=78）と重ならない安全位置。
+  // アイコンのすぐ下（y=69..76）に、一番小さいデフォルトフォント（GLCD 8px）で
+  // 右端を役割アイコンの右端にそろえて表示（例: 3-9-B）。
+  // 役割アイコンのピクセル下端（y=66..67）とは重ならない。
   char cfg_str[16];
   snprintf(cfg_str, sizeof(cfg_str), "%u-%u-%c",
            link_get_radio_ch(),
@@ -3001,7 +3037,7 @@ static void draw_link_icons() {
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
-  backscreen.setCursor(x, 69);
+  backscreen.setCursor(ix + ICON_PLANE_W - backscreen.textWidth(cfg_str), 69);
   backscreen.print(cfg_str);
   // ★ 地図用フォントに戻して抜ける（このファイルの約束）。
   backscreen.loadFont(AA_FONT_SMALL);
