@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261117
-#define BUILDVERSION "1.08"
+#define BUILDDATE 20261118
+#define BUILDVERSION "1.09"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -513,6 +513,9 @@
 // 小型スピーカーは低音の音響能率が低く、同じ振幅でも高音ばかり大きく聞こえるため高音側を絞る。
 // 下降音のバランス調整は下の VARIO_DESCEND_* とあわせて行う。小さくするほど高音が控えめになる（目安 15〜40）。
 #define VARIO_ASCEND_VOL_PCT 35
+#define VARIO_ASCEND_ON_MS      120  // 上昇ビープ ON 時間 [ms]
+#define VARIO_ASCEND_OFF_MAX_MS 400  // 上昇ビープ OFF 上限 [ms]（0.20 m/s 付近）
+#define VARIO_ASCEND_OFF_MIN_MS 100  // 上昇ビープ OFF 下限 [ms]（1.50 m/s 以上）
 
 // ---- 下降音の音量傾斜（0.991〜）----
 // 下降音は 580Hz 基準（-0.20m/s で 560Hz）→ 430Hz（1.5m/s 以上）と、**深く沈むほど低音になる**。
@@ -525,6 +528,8 @@
 //   ヘッドルーム ±511 に対してクリップしない。旧値は 30% で浅い沈みが聞こえにくかったため 75% に設定。
 #define VARIO_DESCEND_VOL_MIN_PCT 75     // デッドバンド付近の音量 [%]
 #define VARIO_DESCEND_FULL_MPS   1.0f    // この沈下率[m/s]以上で 100%
+#define VARIO_DESCEND_ON_MS      450     // 下降音 ON 時間 [ms]
+#define VARIO_DESCEND_OFF_MS      50     // 下降音 OFF 時間 [ms]（0 で連続出力）
 
 // バリオ音のデッドバンド [m/s]。この範囲では音を出さない。
 // KF 融合中（IMU 生存 + MS5611 接続）は推定精度が高いので狭くできる。
@@ -1152,8 +1157,15 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // ★ 誤って入っても害は小さい（数秒、気圧ベースのバリオになるだけ）ので、しきい値は人力機の機動から十分離せばよい。
 // ★ 入った・戻ったは log.txt に `VARIO: IMU accel ignored ... +N` / `VARIO: IMU accel back ...` で残す（入るほうは 10 秒に 1 回まで。
 //   +N はその前の行から省いた回数）。
-#define KF_ACC_GUARD_FAST_MPS2   4.0f
-#define KF_ACC_GUARD_FAST_STEPS  4
+// ★★ **2026-11-18 に速い方を 4 m/s²・120ms → 6 m/s²・300ms にした（ユーザーの判断）。** 4・120ms だと手で上下に動かしただけで入り
+//   （±10cm・1.5Hz で |a| が 4 を超える時間は半周期ごとに約 210ms）、落ち着いて 2 秒たつまで V/S が加速度を使わなくなっていた。
+//   6・300ms なら、同じ動きで 6 を超える時間は約 180ms で、向きが変わるたびに数え直すので入らない（vario_test の §7）。
+//   11/18 の自転車でも段差で 30ms 平均 15 m/s² が出たが、4 を超えて続いたのは最長 90ms（入る 120ms まであと 1 回）だった。
+//   ガードを作った 11/11 の件（本体がひっくり返って落ちて姿勢が壊れ、−7.5 m/s² が続いた）は遅い方で約 0.3 秒で入る。
+//   遅い方は |a| が約 7.6 m/s² 以上なら 300ms より早く入るので、速い方が先に効くのは 6〜7.6 m/s² が 300ms 続いたときだけ。
+//   人力機の突風は概算で 1 m/s の上下の突風につき約 3 m/s² が 1 秒ほど（実測なし）で、どちらにも入らない見込み。
+#define KF_ACC_GUARD_FAST_MPS2   6.0f
+#define KF_ACC_GUARD_FAST_STEPS  10      // 30ms × 10 = 300ms
 #define KF_ACC_GUARD_SLOW_MPS2   2.0f
 #define KF_ACC_GUARD_TAU_S       1.0f
 #define KF_ACC_GUARD_CLEAR_MPS2  0.5f

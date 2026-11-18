@@ -124,8 +124,8 @@ int main() {
     CHECK(fabsf(get_imu_vspeed()) < 0.08f, "no V/S spike after baro recovery with reinit (got %.3f)", get_imu_vspeed());
 
     // ---- 3) 鉛直加速度ガード（KF_ACC_GUARD_*）の発動と復帰 ----
-    // 壊れた姿勢で -7.5 m/s² の偽の鉛直加速度が入り続けても、120ms（4 predict）でガードが入り、
-    // 気圧が平坦なら V/S が大きく引きずられないこと。
+    // 壊れた姿勢で -7.5 m/s² の偽の鉛直加速度が入り続けても、ガードが入り（2026-11-18〜 速い方は 6 m/s²・300ms なので、
+    // 1 秒の低域 2 m/s² の遅い方で約 0.3 秒）、気圧が平坦なら V/S が大きく引きずられないこと。
     const int log_before = g_stub_log_count;
     run_sim(4.0f, vz_true, 0.0f, -7.5f, z_baro, true);
     CHECK(g_stub_log_count > log_before, "acc guard logged entry (%s)", g_stub_last_log);
@@ -189,6 +189,43 @@ int main() {
         CHECK(c[GVSI_OK] == 1 && c[GVSI_SATS] == 1 && c[GVSI_INNOV] == 1,
               "vsi counts used=%u sats=%u innov=%u (1/1/1)", (unsigned)c[GVSI_OK], (unsigned)c[GVSI_SATS], (unsigned)c[GVSI_INNOV]);
         CHECK(fabsf(get_imu_vspeed_raw()) < 1.0f, "outlier did not move V/S (%.3f)", get_imu_vspeed_raw());
+    }
+
+    // ---- 7) 手で上下に動かしてもガードが入らず、V/S が追う（2026-11-18〜 KF_ACC_GUARD_FAST 6 m/s²・300ms）----
+    //   ±10cm・1.5Hz（加速度のピーク約 8.9 m/s²）。4 m/s²・120ms のころは半周期ごとに約 210ms 超えて入っていた。
+    {
+        run_sim(4.0f, vz_true, 0.0f, 0.0f, z_baro, true);       // 落ち着かせる（前の試験のガードを戻す）
+        const int   log0 = g_stub_log_count;
+        const float A = 0.10f, w = 2.0f * (float)M_PI * 1.5f;
+        const float zb0 = z_baro;
+        float vmax = 0.0f, vmin = 0.0f;
+        for (int i = 0; i < (int)(6.0f * 250.0f); i++) {
+            test_advance_us(4000);
+            const float tt = (i + 1) * 0.004f;
+            const float a  = A * w * w * cosf(w * tt);           // z = A(1 − cos ωt): 止まった所から動き出す
+            const float zz = A * (1.0f - cosf(w * tt));
+            feed_imu_sample(a);
+            imu_update();
+            if (i % 6 == 0) imu_kalman_baro_update(zb0 + zz);
+            if (tt > 1.0f) {
+                const float v = get_imu_vspeed();
+                if (v > vmax) vmax = v;
+                if (v < vmin) vmin = v;
+            }
+        }
+        z_baro = zb0;
+        const bool entered = g_stub_log_count > log0 && strstr(g_stub_last_log, "ignored") != nullptr;
+        CHECK(!entered, "hand shake did not trip the guard (%s)", g_stub_last_log);
+        CHECK(vmax > 0.6f && vmin < -0.6f, "V/S follows hand shake (%.2f .. %.2f, true ±%.2f)", vmin, vmax, A * w);
+
+        // 7 m/s² が 0.5 秒続く（遅い方は 0.5 秒で 2.75 にしか届かない…ではなく 2.75 を超える前に速い方が 300ms で入る）
+        run_sim(4.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+        const int log1 = g_stub_log_count;
+        run_sim(0.5f, vz_true, 0.0f, 7.0f, z_baro, true);
+        CHECK(g_stub_log_count > log1 && strstr(g_stub_last_log, "ignored") != nullptr,
+              "7 m/s² for 0.5 s trips the guard (%s)", g_stub_last_log);
+        run_sim(6.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+        CHECK(strstr(g_stub_last_log, "IMU accel back") != nullptr, "guard recovered after 7 m/s² (%s)", g_stub_last_log);
     }
 
     printf("vario_test: %d passed, %d failed\n", g_pass, g_fail);

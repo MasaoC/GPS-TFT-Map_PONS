@@ -1780,9 +1780,12 @@ static void draw_wind_arrow(int cx, int cy, float screen_deg, uint16_t col, floa
 }
 
 #define ESKF_LABEL_X        2
-// 右下の風のブロック（風速の行と矢印）の右端。右端の縮尺の棒（try_draw_km_distance()。棒は x=233、
-// 数字と "km" は x=215 から）にかからないよう、その 3px 手前で止める。
+// 右下の風の矢印の右端。右端の縮尺の棒（try_draw_km_distance()。棒は x=233、
+// 上端の数字と "km" は x=215 から）にかからないよう、その 3px 手前で止める。
 #define WIND_BLOCK_RIGHT_X  (BACKSCREEN_SIZE - 2 - 5 - 18 - 3)
+// 風速の行（"W 3.2m/s"）の右端。下段に置くと中央の Y95（右端 x≈148〜153）と重なるため、
+// 縮尺の縦棒（x=233）の手前まで右へ寄せる。
+#define WIND_TEXT_RIGHT_X   (BACKSCREEN_SIZE - 2 - 5)
 #define ESKF_VALUE_RIGHT_X  50    // P / R の値の右端（ここへ右揃え。桁が揃う）
 #define ESKF_ROW_GAP        1     // 各行の隙間 [px]
 // 最下段(Rtrim, 内蔵フォント8px)の下端から最下行(JST 時刻)までの余白 [px]。
@@ -1800,9 +1803,7 @@ static void draw_ground_ok_range(int y, bool pitch) {
                                        pitch ? ground_pitch_ok_hi : ground_roll_ok_hi);
 }
 
-// 中央のヨー 3 桁（draw_eskf_yaw()）の行の上端。自機アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下。
-// ★ ヨー精度（Y95）はこの 1 行下に置き、右下の風のブロックもこの行を避けて組むので、
-//   位置を変えるときはここだけを直す（draw_eskf_yaw() に別の式を書かない）。
+// 中央のヨー表示（draw_eskf_yaw()、"035±3"）の行の上端。自機アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下。
 static int eskf_yaw_row_y() {
   return get_self_cy() + TRIANGLE_SIZE / 2 + 3;
 }
@@ -1866,20 +1867,13 @@ void draw_eskf_attitude() {
   const int yroll  = yrtrim - fh_s - ESKF_ROW_GAP;                 // ロール
   const int ypit   = yroll  - fh_s - ESKF_ROW_GAP;                 // ピッチ
 
-  // ---- ヨー精度（常時。中央のヨー 3 桁の真下）と風ベクトル（右下）----
+  // ---- 風ベクトル（右下）----
   // 風は「対気速度の向き＝機首方位」を前提にするので、ヨーが著しく信頼できて、かつ
-  // 直進が累計 WIND_LPF_SEC 秒たまるまで出ない。出ていない間も理由が分かるよう
-  // ヨー精度の 95% 値は常に出す（風が出ているときも隠さない）。
+  // 直進が累計 WIND_LPF_SEC 秒たまるまで出ない。
   // リプレイでは記録された値をそのまま出す。
   {
-    // ヨー精度の行。ヨー 3 桁（draw_eskf_yaw()）の 1 行下に、同じく中央揃えで置く。
-    // ヨーを出さない場合（旧形式のリプレイ）も同じ位置（その行は空く）。
-    const int yacc95 = eskf_yaw_row_y() + fh_s + ESKF_ROW_GAP;
-
     float wspd = 0.0f, wdir = 0.0f;
-    float acc95 = 0.0f;
-    bool  has_wind, has_acc;
-    has_acc = eskf_display_yaw_acc(acc95);
+    bool  has_wind;
     // ★ **ヨー信頼性のゲートは 3 経路すべてに掛けること。**
     //   風は「対気速度の向き＝機首方位」を前提にしているので、ヨーが信用できない区間の
     //   値は原理的に当てにならない。以前はこのゲートが自機の経路にしか無く、
@@ -1902,22 +1896,6 @@ void draw_eskf_attitude() {
       has_wind = attitude_get_wind_enabled() && attitude_get_wind(wspd, wdir);
     }
 
-    // σ はフォント(NotoSansBold15)に無いので "Y95" と書く。意味は 95% 値（=2σ）。
-    if (has_acc) {
-      char ybuf[16];
-      snprintf(ybuf, sizeof(ybuf), "Y95%%%.0f\xC2\xB0", acc95);
-      const int xacc95 = BACKSCREEN_SIZE / 2 - backscreen.textWidth(ybuf) / 2;   // ヨー 3 桁と同じ中央揃え
-      // 向き待ち（YAW ALIGN）の間は黄色の地で強調する（ヘッダーの札・P / R の線と同じ色。2026-11-13）
-      if (eskf_display_gnss_state() == EGS_YAW_ALIGN) {
-        backscreen.fillRect(xacc95 - 1, yacc95 - 1, backscreen.textWidth(ybuf) + 2, fh_s + 1, COLOR_YELLOW);
-        backscreen.setTextColor(COLOR_BLACK, COLOR_YELLOW);
-      } else {
-        backscreen.setTextColor(COLOR_GRAY);
-      }
-      backscreen.setCursor(xacc95, yacc95);
-      backscreen.print(ybuf);
-    }
-
     // 左下のブロック（P / R / Rtrim）の上端。較正のやり直しの警告はこの上に出す。
     const int yblock_top = ypit;
     if (has_wind) {
@@ -1931,24 +1909,15 @@ void draw_eskf_attitude() {
       const int fh_m = backscreen.fontHeight();
       const int nw   = backscreen.textWidth(nbuf);
 
-      // 右下に「風速の行」と「矢印」を縦に積み、右端を WIND_BLOCK_RIGHT_X にそろえる。
+      // 右下に上段「矢印」・下段「風速の行（W 3.2m/s）」を縦に積む。
       // 下端は最下行（JST 時刻・MaxGS）の上。
-      // ★ 風速の行は、下に置くと中央の Y95 の行と高さが重なるとき（TRACKUP。自機が下寄りで
-      //   Y95 が y≈209〜 に来る）だけ矢印の上へ回す。風速の行は幅が 85px ほどあって
-      //   中央の Y95（右端 x≈148〜157）まで届くが、矢印（幅 66px）なら届かない。
-      //   NORTHUP では Y95 が y≈149〜 に上がるので、逆に風速の行を下に置かないと重なる。
+      // ★ 風速の行は TRACKUP で中央の Y95 と同じ高さになるため、右端を WIND_TEXT_RIGHT_X まで
+      //   右へ寄せて重なりを避ける。矢印は縮尺の数字と "km"（x=215〜）を避けるため従来の右端（WIND_BLOCK_RIGHT_X）のまま。
       const int wbot      = BACKSCREEN_SIZE - 9 - ESKF_BOTTOM_GAP;
       const int wtext_w   = wlw + 3 + nw + 2 + uw;
-      const int wtext_x   = WIND_BLOCK_RIGHT_X - wtext_w;
-      const bool text_top = (wbot - fh_m < yacc95 + fh_s) && (wbot > yacc95);
-      int ywtxt, arrow_top;
-      if (text_top) {
-        arrow_top = wbot - WIND_ARROW_LEN_PX;
-        ywtxt     = arrow_top - ESKF_ROW_GAP - fh_m;
-      } else {
-        ywtxt     = wbot - fh_m;
-        arrow_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
-      }
+      const int wtext_x   = WIND_TEXT_RIGHT_X - wtext_w;
+      const int ywtxt     = wbot - fh_m;
+      const int arrow_top = ywtxt - ESKF_ROW_GAP - WIND_ARROW_LEN_PX;
       const int ylbl  = ywtxt + (fh_m - fh_s) / 2;   // 小文字は数値の高さの中央へ
       backscreen.setTextColor(COLOR_BLACK);
       backscreen.setCursor(wtext_x + wlw + 3, ywtxt);
@@ -1979,9 +1948,9 @@ void draw_eskf_attitude() {
       // × は矢印の数字より後に描く（上に重ねる）。範囲は風のブロック全体（矢印と風速の行）。
       if (wstale) {
         const int ax_l = acx - WIND_ARROW_LEN_PX / 2;
-        const int x0 = (ax_l < wtext_x) ? ax_l : wtext_x, x1 = WIND_BLOCK_RIGHT_X;
-        const int y0 = text_top ? ywtxt : arrow_top;
-        const int y1 = text_top ? (arrow_top + WIND_ARROW_LEN_PX) : (ywtxt + fh_m);
+        const int x0 = (ax_l < wtext_x) ? ax_l : wtext_x, x1 = WIND_TEXT_RIGHT_X;
+        const int y0 = arrow_top;
+        const int y1 = ywtxt + fh_m;
         backscreen.drawWideLine(x0, y0, x1, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
         backscreen.drawWideLine(x1, y0, x0, y1, WIND_STALE_CROSS_PX, COLOR_ORANGE);
       }
@@ -2080,10 +2049,10 @@ void draw_eskf_attitude() {
 
 
 // ============================================================
-// draw_eskf_yaw(): 自機アイコンのすぐ下に ESKF のヨー角（真方位）を描く
+// draw_eskf_yaw(): 自機アイコンのすぐ下に ESKF のヨー角と 95% 精度（"035±3"）を描く
 // ============================================================
 // フォントは [GS] [m/s] [MT] と同じ AA_FONT_SMALL。
-// 色で信頼度を表す:
+// 方位 3 桁の色で信頼度を表す:
 //   黒     = 信頼できる（95%値 < ESKF_YAW_TRUST_95_DEG）。このときアイコンも機首方向へ回る。
 //   グレー = 信頼できない。アイコンは回らず対地進路（トラック）向きのまま。
 // ロール・ピッチ行より後に呼ぶこと（TRACKUP では真下がその行に近いため）。
@@ -2101,10 +2070,43 @@ void draw_eskf_yaw() {
 
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setTextWrap(false);
+  const int yrow = eskf_yaw_row_y();
+  const int fh   = backscreen.fontHeight();
+
+  // 「035±3」「035±30」の形で 1 行に並べる。後ろの精度の桁数が変わっても方位 3 桁が
+  // 左右に揺れないよう、左端 x0 を固定した左揃えにする（"035±3" 幅 44px がほぼ中央に来る位置）。
+  const int YAW_3DIGIT_W = 27;   // NotoSansBold15 の数字送り 9px × 3 桁（末尾が '1' でも ± の位置を揺らさない）
+  const int PM_GAP_L     = 1;
+  const int PM_W         = 6;    // ± 記号の幅 [px]
+  const int PM_GAP_R     = 1;
+  const int x0           = BACKSCREEN_SIZE / 2 - 22;   // = 98
+
   backscreen.setTextColor(eskf_yaw_reliable() ? COLOR_BLACK : COLOR_GRAY);
-  // アイコン（尾翼の下端は cy+TRIANGLE_SIZE/2）のすぐ下に中央揃えで置く（この 1 行下が Y95）
-  backscreen.setCursor(BACKSCREEN_SIZE / 2 - backscreen.textWidth(buf) / 2, eskf_yaw_row_y());
+  backscreen.setCursor(x0, yrow);
   backscreen.print(buf);
+
+  float acc95 = 0.0f;
+  if (eskf_display_yaw_acc(acc95)) {
+    char abuf[8];
+    snprintf(abuf, sizeof(abuf), "%.0f", acc95);
+    const int x_pm  = x0 + YAW_3DIGIT_W + PM_GAP_L;
+    const int x_acc = x_pm + PM_W + PM_GAP_R;
+    const int aw    = backscreen.textWidth(abuf);
+    // 向き待ち（YAW ALIGN）の間は黄色の地で強調する（ヘッダーの札・P / R の線と同じ色。2026-11-13）
+    const bool aligning = (eskf_display_gnss_state() == EGS_YAW_ALIGN);
+    const uint16_t acol = aligning ? COLOR_BLACK : COLOR_GRAY;
+    if (aligning) {
+      backscreen.fillRect(x_pm - 1, yrow - 1, (x_acc + aw) - x_pm + 2, fh + 1, COLOR_YELLOW);
+    }
+    // ± はフォント（NotoSansBold15）に無いので線（太さ 2px）で描く。
+    // 数字の高さ（yrow+1 .. yrow+12）の中に、上段 '+'（6×6px）・隙間 2px・下段 '-'（6×2px）を収める。
+    backscreen.fillRect(x_pm,     yrow + 4,  PM_W, 2, acol);   // '+' の横棒
+    backscreen.fillRect(x_pm + 2, yrow + 2,  2,    6, acol);   // '+' の縦棒
+    backscreen.fillRect(x_pm,     yrow + 10, PM_W, 2, acol);   // '-' の横棒
+    backscreen.setTextColor(acol);
+    backscreen.setCursor(x_acc, yrow);
+    backscreen.print(abuf);
+  }
   backscreen.setTextColor(COLOR_BLACK);
 }
 
@@ -3270,7 +3272,7 @@ static void draw_warn_mute_banner() {
   const int bx = 5, bw = SCREEN_WIDTH - 10, bh = 40;
   notice_reserve(by, bh);   // 点滅で消えている相も押さえる
   if (!banner_visible()) return;
-  begin_notice_box(bx, by, bw, bh, COLOR_RED);
+  begin_notice_box(bx, by, bw, bh, COLOR_ORANGE);
   // フォントを明示する。ここはフレームの最後（push_backscreen）で走るので、
   // 直前の描画が unloadFont() 済みだと内蔵フォントで描かれてしまう。
   backscreen.loadFont(AA_FONT_SMALL);
@@ -3504,7 +3506,16 @@ static void draw_tas_label_row(TasHdr h, int left_limit) {
     const uint16_t col = attitude_implausible(a) ? COLOR_GRAY
                        : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
     backscreen.setTextColor(col, TFT_WHITE);
-    backscreen.drawString(buf, px, 1);
+    const bool has_p = (buf[0] == 'P');
+    // 左下の瞬時ピッチ「P」と区別するため、「P」の上に平均を表す水平バー（P̄）を引く。
+    // 直上のヘッダー下辺の黒線（TFT y=49）とバーがくっつかないよう、文字を y=3（P 本体は y=4..14）に下げ、
+    // y=0 を余白、y=1..2 に太さ 2px のバー、y=3 を文字との隙間（1px）にする。
+    backscreen.drawString(buf, px, has_p ? 3 : 1);
+    if (has_p) {
+      const int pw = backscreen.textWidth("P");
+      backscreen.fillRect(px, 0, pw + 1, 3, TFT_WHITE);
+      backscreen.fillRect(px + 1, 1, pw - 1, 2, col);
+    }
   }
   backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
 }
@@ -4669,22 +4680,17 @@ void draw_nomapdata() {
       if (notice_free(y, bh)) { box_y = y; break; }
     }
   }
-  notice_reserve(box_y, bh);
-
-  backscreen.fillRect(bx, box_y, bw, bh, COLOR_WHITE);
-  backscreen.drawRect(bx, box_y, bw, bh, COLOR_RED);
-  backscreen.drawRect(bx + 1, box_y + 1, bw - 2, bh - 2, COLOR_RED);
+  const uint16_t col = scanning ? COLOR_ORANGE : COLOR_RED;
+  begin_notice_box(bx, box_y, bw, bh, col);
   backscreen.setTextSize(1);
   backscreen.loadFont(AA_FONT_SMALL);   // 前に描いた箱が unloadFont() していることがあるので自分で読む
   const int dotCount = (millis() / 900) % 10;
   char text[28];
   if (scanning) {
-    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
     backscreen.setCursor(42, box_y + 5);
     backscreen.print("Scanning GNSS Signal");
     snprintf(text, sizeof(text), "Stand by for fix%.*s", dotCount, "..........");
   } else {
-    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
     backscreen.setCursor(56, box_y + 5);
     backscreen.print("Weak GNSS Signal");
     snprintf(text, sizeof(text), "Scanning signal%.*s", dotCount, "..........");

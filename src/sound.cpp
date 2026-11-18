@@ -245,7 +245,7 @@ extern volatile bool vario_inhibit;        // true のとき vario を完全無�
 // バリオメーター音声用変数
 //
 // タイマー割り込みが vario_mode=true のとき、WAV/Sinトーンより低優先で
-// 鉛直速度に応じたバリオ音（上昇: 断続ビープ / 下降: 連続低音）を出力する。
+// 鉛直速度に応じたバリオ音（上昇: 断続ビープ / 下降: 断続低音）を出力する。
 // update_vario() が Core0 から約100ms ごとに呼ばれ、vspeed に応じてパラメータを更新する。
 // ============================================================
 volatile bool     vario_mode          = false; // true のとき割り込みがバリオ音を出力
@@ -1235,10 +1235,11 @@ void loop_tone() {
 //
 // 上昇（vspeed > dead_band）: 断続ビープ
 //   ピッチ = 700 + vspeed*400 Hz（0.2→780Hz, 1.0→1100Hz, 1.5→1300Hz）
-//   ON 時間 120ms 固定 / OFF 時間 = 500/vspeed - 120 ms（50〜1000ms）
+//   ON 時間 120ms 固定 / OFF 時間 = 0.20m/s で 400ms 〜 1.50m/s 以上で 100ms
 //
-// 下降（vspeed < -dead_band）: 連続低音
+// 下降（vspeed < -dead_band）: 断続低音（settings.h の VARIO_DESCEND_ON_MS / OFF_MS）
 //   ピッチ = 580 - |vspeed|*100 Hz（0.2→560Hz, 1.0→480Hz, 1.5→430Hz, 下限 300Hz）
+//   ON 時間 450ms / OFF 時間 50ms 固定（計 500ms 周期）
 //
 // アンプ管理:
 //   バリオ開始エッジで amp を ON（WAV/Sinトーン未使用時）。
@@ -1273,25 +1274,25 @@ void update_vario(bool mute) {
         if (vspeed > dead_band) {
             // 上昇: 断続ビープ
             float v = vspeed < 1.5f ? vspeed : 1.5f;  // 1.5 m/s で振り切り
-            int freq = (int)(700 + v * 400);        // 820〜1300 Hz（1.5 m/s → 1300Hz）
+            int freq = (int)(700 + v * 400);        // 780〜1300 Hz（1.5 m/s → 1300Hz）
             vario_phase_inc = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
-            // 1 周期 = 500/v [ms]（ON 120ms ＋ 残りが無音）。上昇率が高いほど忙しくなる。
-            // ★ **OFF に 1 秒の上限を付けてある**（0.991）。上限が無いと 0.3m/s で
-            //   2.2 秒無音になり、弱い上昇を「鳴っていない」と取り違える。
-            //   上限が効くのは v < 約 0.45m/s で、ちょうど KF のデッドバンド
-            //   （VARIO_DEADBAND_KF_MPS = 0.20）から上の弱い上昇帯にあたる。
-            //   MS5611 単独（デッドバンド 0.60）では上限に当たらない。
-            int off_ms = constrain((int)(500.0f / v) - 120, 50, 1000);
-            vario_on_samples     = 120 * 16;         // 120ms × 16kHz = 1920 サンプル
-            vario_cycle_samples  = (uint32_t)((120 + off_ms) * 16);
+            // ビープ頻度 (Hz) を上昇率 0.20〜1.50 m/s で線形に増やす（1.92Hz → 4.55Hz）。
+            // ON 120ms 固定で、0.20 m/s → OFF 400ms、1.50 m/s 以上 → OFF 100ms になる。
+            int off_ms = constrain((int)(1000.0f / (1.52f + 2.02f * v) + 0.5f) - VARIO_ASCEND_ON_MS,
+                                   VARIO_ASCEND_OFF_MIN_MS, VARIO_ASCEND_OFF_MAX_MS);
+            vario_on_samples     = (uint32_t)(VARIO_ASCEND_ON_MS * 16);
+            vario_cycle_samples  = (uint32_t)((VARIO_ASCEND_ON_MS + off_ms) * 16);
             vario_vol_pct        = VARIO_ASCEND_VOL_PCT;  // 高音側の能率補正（一定）
         } else {
-            // 下降: 連続低音
+            // 下降: 断続低音（ON 450ms / OFF 50ms 固定）
             float v = (-vspeed) < 1.5f ? (-vspeed) : 1.5f;  // 1.5 m/s で振り切り
             int freq = (int)(580 - v * 100);
             if (freq < 300) freq = 300;              // 下限 300Hz
             vario_phase_inc     = (uint32_t)((freq * (long)tableSize * (1ULL << 24)) / 16000);
-            vario_cycle_samples = 0;                 // 0 = 連続出力
+            vario_on_samples    = (uint32_t)(VARIO_DESCEND_ON_MS * 16);
+            vario_cycle_samples = (VARIO_DESCEND_OFF_MS > 0)
+                                ? (uint32_t)((VARIO_DESCEND_ON_MS + VARIO_DESCEND_OFF_MS) * 16)
+                                : 0;                 // 0 = 連続出力
             // ★ **沈下率に応じた音量傾斜**（0.991。根拠と調整幅は settings.h の
             //   VARIO_DESCEND_* ）。浅い沈みは周波数が高くスピーカーの能率が良いので
             //   うるさく聞こえる。深い沈みほど低音で能率が落ちるため、
