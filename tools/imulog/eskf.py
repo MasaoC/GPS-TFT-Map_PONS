@@ -541,6 +541,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         bias_n = 0
         bias_sum_t = 0.0
         learned_on_ground = False        # 方位が決まったあとの地上の維持で覚えたか（機上 bias_learned_on_ground_）
+        acc_lp = None                    # 加速度計の値の低域（機上 acc_lp_。ESKF_ACCEL_CHANGE_TAU_S）
+        ah_on, ah_since = False, 0.0     # 水平の比力が大きい（機上 accel_horiz_on_ / accel_horiz_since_us_）
         ground_prev = False              # 前のサンプルで地上の維持だったか（機上 ground_now_）
         yaw_arm = 0
         # ---- 重力観測（Phase 2）のためのゲート用の量 ----
@@ -628,13 +630,31 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                         static_t0 = ts[i]
                 else:
                     static_t0 = None
+            # ---- 加速中か（機上 attitude_on_gyro の「加速中か」と同じ。2026-11-18〜。settings.h の ESKF_ACCEL_*）----
+            # いまの傾きの推定で見た水平の比力 > 0.5 m/s² かつ 加速度計の値そのものが直近の平均（時定数 5 秒）から 0.3 m/s² 以上
+            # 変わっている間は「加速中」とみなし、重力へ寄せない（待機中の維持・地上での維持・方位が決まる前の重力観測）。8 秒を超えたら再開。
+            dta = dt if 0.0 < dt < 0.1 else 0.0
+            if acc_lp is None:
+                acc_lp = np.array(acc[i], dtype=float)
+            dch = acc[i] - acc_lp
+            acc_lp = acc_lp + dch * (dta / 5.0)                        # ESKF_ACCEL_CHANGE_TAU_S
+            fw_a = quat_to_R(f.q) @ acc[i]
+            if np.hypot(fw_a[0], fw_a[1]) > 0.5 and float(dch @ dch) > 0.3 ** 2:   # ESKF_ACCEL_HORIZ_MPS2 / ESKF_ACCEL_CHANGE_MPS2
+                if not ah_on:
+                    ah_on, ah_since = True, ts[i]
+            else:
+                ah_on = False
+            accelerating = ah_on and (ts[i] - ah_since) < 8.0          # ESKF_ACCEL_HOLD_MAX_US
+            if accelerating:
+                bias_reset()                                           # 加速中の分をゼロ点の窓に混ぜない
             # ---- 地上の判定（機上 on_ground_still / gnss_says_ground と同じ）----
             good_fresh = good_gsp_t is not None and (ts[i] - good_gsp_t) < 3.0  # ESKF_GNSS_VEL_TIMEOUT_US
             ground = (use_ground and yaw_set and static_t0 is not None
                       and ts[i] - static_t0 >= 2.0                     # ESKF_GROUND_STATIC_US
-                      and not (good_fresh and good_gsp >= 1.0))        # ESKF_GROUND_MAX_GS_MPS
+                      and not (good_fresh and good_gsp >= 1.0)         # ESKF_GROUND_MAX_GS_MPS
+                      and not accelerating)
             # ---- 待機中の維持（機上 attitude_on_gyro の該当ブロックと同じ）----
-            if (not yaw_set) and static_flags is not None and static_flags[i]:
+            if (not yaw_set) and static_flags is not None and static_flags[i] and not accelerating:
                 f.q = level_toward_gravity(f.q, acc[i], relevel_gain)     # 時定数 1.0 秒
                 learn_bias(w[i], dt)
                 f.reset_covariance(3.0, 180.0)
@@ -709,6 +729,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 #   判定するとゲートが誤って開く／閉じる。
                 if ok and last_gsp is not None and (ts[i] - last_gsp_t) < 3.0:
                     ok = abs(longacc_lp) <= level_longacc
+                # 方位が決まる前の加速中は入れない（機上と同じ。2026-11-18〜）
+                if ok and (not yaw_set) and accelerating:
+                    ok = False
                 if ok:
                     vb = f.v.copy()
                     f.update_level(acc[i], level_sigma)

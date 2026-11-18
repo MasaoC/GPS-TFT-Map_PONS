@@ -204,6 +204,39 @@ int main() {
                bg_sway, bg_still);
         ok &= fabsf(bg_sway) < 0.01f;
         ok &= fabsf(bg_still - 0.1f) < 0.01f;
+
+        // D5) 滑走の加速を傾きと取り違えない（2026-11-18。settings.h の ESKF_ACCEL_* と attitude.cpp の gsp_fresh()）
+        //   静止 4 秒 → 0→6 m/s を 4 秒（1.5 m/s²）→ 6 m/s で 6 秒。本当のピッチ・ロールは 0。GNSS は 4Hz で東向き。
+        //   等加速度ではジャイロが静かで |a| も g に近いので静止の判定を通り、待機中の維持が加速度の向きへ傾きを寄せていた。
+        //   重力観測の前後加速度の門も方位が決まる前は外れていた。直す前はピッチが 8.7 度（atan(1.5/g)）ずれた。
+        attitude_setup();
+        t = 0;
+        {
+            const float gq[3] = {0, 0, 0};
+            float pmax = 0.0f, rmax = 0.0f;
+            bool yaw_seen = false;
+            const int n = (int)(14.0 * fs);
+            for (int i = 0; i < n; i++) {
+                const double tt = i * dt;
+                double a = 0, v = 0;
+                if (tt >= 4.0 && tt < 8.0) { a = 1.5; v = 1.5 * (tt - 4.0); }
+                else if (tt >= 8.0)        { v = 6.0; }
+                const double ab[3] = { a, 0.0, G };
+                float as[3]; body_to_sensor(ab, as);
+                feed(1, dt, t, as, gq);
+                if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, (float)v, 0.0f, 0.10f);
+                if (tt >= 4.0) {
+                    float r, p, y; attitude_get_euler(r, p, y);
+                    if (fabsf(p) > pmax) pmax = fabsf(p);
+                    if (fabsf(r) > rmax) rmax = fabsf(r);
+                    yaw_seen |= attitude_yaw_ready();
+                }
+            }
+            printf("\nD5) 静止 → 0→6 m/s を 4 秒で加速 → 6 m/s（本当のピッチ 0）\n");
+            printf("   滑走から 10 秒の間のピッチの最大 %.2f deg・ロールの最大 %.2f deg（0.5 未満が正しい。直す前は 8.7）  方位 %d（1 が正しい）\n",
+                   pmax, rmax, (int)yaw_seen);
+            ok &= pmax < 0.5f && rmax < 0.5f && yaw_seen;
+        }
     }
 
 

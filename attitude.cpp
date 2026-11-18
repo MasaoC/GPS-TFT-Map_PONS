@@ -68,6 +68,12 @@ static uint32_t good_gsp_us_   = 0;
 // ヨーが決まった後に、地上での再水平化に入った回数（60 秒ログの gnd=）。
 static volatile uint32_t ground_relevels_ = 0;
 static bool     ground_now_    = false;
+// 加速中か（滑走の加速を傾きと取り違えないため。attitude_on_gyro の「加速中か」。settings.h の ESKF_ACCEL_*）
+static bool     accel_horiz_on_ = false;     // 水平の比力が ESKF_ACCEL_HORIZ_MPS2 を超えている
+static uint32_t accel_horiz_since_us_ = 0;
+static bool     accelerating_  = false;      // 上が ESKF_ACCEL_HOLD_MAX_US 未満続いている＝加速中とみなす
+static float    acc_lp_[3]     = {0, 0, 0};  // 加速度計の値の低域（時定数 ESKF_ACCEL_CHANGE_TAU_S）。加速度計が動いたかを見る
+static bool     acc_lp_valid_  = false;
 // 動いているときの、大きくずれた傾きの置き直し（settings.h の ESKF_BIGTILT_*）。
 static float    bt_acc_lp_[3]  = {0.0f, 0.0f, 0.0f};   // 比力の低域（車の振動で |f| が揺れるのを均す）
 static bool     bt_acc_lp_valid_ = false;
@@ -518,6 +524,9 @@ void attitude_setup() {
     good_gsp_us_ = 0;
     ground_relevels_ = 0;
     ground_now_ = false;
+    accel_horiz_on_ = false;
+    accelerating_  = false;
+    acc_lp_valid_  = false;
     bt_acc_lp_valid_ = false;
     bt_rate_lp_ = 0.0f;
     bt_since_us_ = 0;
@@ -569,6 +578,15 @@ static bool imu_fresh() {
 static bool gnss_vel_fresh() {
     if (!gnss_vel_seen_) return false;
     return (uint32_t)(time_us_32() - last_gnss_vel_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
+}
+
+// 測位（sAcc を問わない）が新しいか。重力観測の前後加速度の門（longacc_lp_）の材料が生きているか。
+// ★ gnss_vel_fresh() は「速度の観測を ESKF に入れた」時刻なので、方位が決まる前は常に false になる。
+//   それを門に使っていたため、方位が決まる前の滑走加速中に前後加速度の門が外れ、加速度を傾きと取り違えていた
+//   （2026-11-18 に見つけた。0→6 m/s を 4 秒の模擬でピッチ 8.7 度）。tools/imulog/eskf.py はもともとこちら（最後の測位から 3 秒）。
+static bool gsp_fresh() {
+    if (last_gsp_ < 0.0f) return false;
+    return (uint32_t)(time_us_32() - last_gsp_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
 }
 
 // ---- 地上の判定（settings.h の ESKF_GROUND_*）----
@@ -869,6 +887,43 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 
     if (!accel_valid_) return;
 
+    // ---- 加速中か（滑走の加速を傾きと取り違えないため。2026-11-18〜。settings.h の ESKF_ACCEL_*）----
+    // いまの傾きの推定で見た水平方向の比力（加速度計の値をワールド系へ回した水平成分）。止まっていれば 0、
+    // 水平に a で加速していれば a。これが ESKF_ACCEL_HORIZ_MPS2 を超えている間は「加速中」とみなし、重力へ寄せない
+    // （下の待機中の維持・地上での維持と、方位が決まる前の重力観測）。静止の判定（static_now_）は変えない（較正の条件を変えないため）。
+    // ★ 等加速度の滑走はジャイロが静かで |a| も g に近い（1.5 m/s² で +0.11）ので、静止の判定を通ってしまい、
+    //   待機中の維持が加速度の向きへ傾きを寄せていた（0→6 m/s を 4 秒の模擬で、方位が決まるまでピッチが 8.7 度。attitude_test の D5）。
+    // ★ 傾きの推定そのものがずれていても「水平の比力」は同じ形になる。見分けるため、**加速度計の値そのものが**直近の平均
+    //   （時定数 ESKF_ACCEL_CHANGE_TAU_S）から ESKF_ACCEL_CHANGE_MPS2 以上変わっていることも条件にする（本当の加速は加速度計を
+    //   動かすが、推定のずれは動かさない。attitude_test の G2・G4）。それでも ESKF_ACCEL_HOLD_MAX_US より長く続いたら、
+    //   加速ではなく推定のずれとみなして寄せるのを再開する（滑走は 3〜5 秒）。
+    {
+        const float dta = (dt_meas > 0.0f && dt_meas < 0.1f) ? dt_meas : 0.0f;
+        if (!acc_lp_valid_) {
+            for (int i = 0; i < 3; i++) acc_lp_[i] = accel_last_[i];
+            acc_lp_valid_ = true;
+        }
+        float dch2 = 0.0f;
+        for (int i = 0; i < 3; i++) {
+            const float d = accel_last_[i] - acc_lp_[i];
+            dch2 += d * d;
+            acc_lp_[i] += d * (dta / ESKF_ACCEL_CHANGE_TAU_S);
+        }
+        float Ra[3][3];
+        quat_to_R(q_, Ra);
+        const float fx = Ra[0][0]*accel_last_[0] + Ra[0][1]*accel_last_[1] + Ra[0][2]*accel_last_[2];
+        const float fy = Ra[1][0]*accel_last_[0] + Ra[1][1]*accel_last_[1] + Ra[1][2]*accel_last_[2];
+        if (sqrtf(fx*fx + fy*fy) > ESKF_ACCEL_HORIZ_MPS2 &&
+            dch2 > ESKF_ACCEL_CHANGE_MPS2 * ESKF_ACCEL_CHANGE_MPS2) {
+            if (!accel_horiz_on_) { accel_horiz_on_ = true; accel_horiz_since_us_ = t_us; }
+        } else {
+            accel_horiz_on_ = false;
+        }
+        accelerating_ = accel_horiz_on_ &&
+                        (uint32_t)(t_us - accel_horiz_since_us_) < ESKF_ACCEL_HOLD_MAX_US;
+        if (accelerating_) bias_learn_reset();   // 加速中の分をゼロ点の窓に混ぜない
+    }
+
     // ---- 待機中の維持（ヨー未設定のあいだ）----
     // ★ **ヨーが未設定のあいだ GNSS 速度観測を入れないので、観測が 1 つも無い。**
     //   放っておくとロール・ピッチはジャイロオフセットの積分で漂う
@@ -882,7 +937,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     //   ・level_update（正式な観測・2Hz）… 飛行中と GNSS 断中の錨
     //   どちらも重力へ寄せる方向なので競合しない。1 つに統合するのは、
     //   待機中の挙動（tools/attitude_test の D1/D2）を再検証してからにする。
-    if (!yaw_set_ && static_now_) {
+    if (!yaw_set_ && static_now_ && !accelerating_) {
         level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
         learn_gyro_bias(g);          // ★ bg_ を引く前の生の値を渡すこと
         // 観測が無いので共分散を伝播させても情報は増えない。
@@ -896,7 +951,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     //   （2026-10-27。理由と条件は settings.h の ESKF_GROUND_* のコメント）。
     //   上と違ってヨーの分散は残し、ゼロ点は GNSS が地上を確かめたときだけ学習する。
     {
-        const bool ground = yaw_set_ && on_ground_still(t_us);
+        const bool ground = yaw_set_ && on_ground_still(t_us) && !accelerating_;   // 加速中は寄せない（上の「加速中か」）
         if (ground) {
             if (!ground_now_) ground_relevels_++;
             level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
@@ -1030,8 +1085,12 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
                  && ((uint32_t)(t_us - rate_high_us_) >= ESKF_LEVEL_RATE_QUIET_US)
                  && (fabsf(amag - GRAVITY) <= ESKF_LEVEL_ACCMAG_TOL_MPS2);
         // 前後加速度は測位があるときだけ見る（無いときは条件ごと省く）
-        if (pass && last_gsp_ >= 0.0f && gnss_vel_fresh())
+        // ★ 鮮度は gsp_fresh()（測位）で見る。gnss_vel_fresh()（速度の観測を入れた時刻）だと方位が決まる前に外れる（2026-11-18）。
+        if (pass && gsp_fresh())
             pass = fabsf(longacc_lp_) <= ESKF_LEVEL_MAX_LONGACC_MPS2;
+        // 方位が決まる前の加速中は入れない（上の「加速中か」）。前後加速度は GNSS から作るので、加速の出だし 0.3〜0.5 秒は
+        // まだ上の門に見えず、そこで 1 回入ると傾きが 4 度ほど寄ってしまう。方位が決まったあとは GNSS 速度の観測が傾きを支えるので見ない。
+        if (pass && !yaw_set_ && accelerating_) pass = false;
         if (pass) {
             level_update(accel_last_, ESKF_LEVEL_SIGMA_MPS2);
             level_last_us_ = t_us;
