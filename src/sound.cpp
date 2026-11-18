@@ -333,9 +333,10 @@ bool __not_in_flash_func(timerCallback)(struct repeating_timer *t) {
     if (vario_cycle_samples == 0 || s_vario_cycle_pos <= vario_on_samples) {
       // ON 区間: sin 波を加算（上昇中は能率補正で音量を絞る）
       s_vario_phase_acc += vario_phase_inc;
-      // 能率補正は update_vario() が vario_vol_pct に入れてある（上昇は一定、下降は傾斜）
-      int vario_vol_adj = vario_volume * vario_vol_pct / 100;
-      mix += (int)(sineTable[(s_vario_phase_acc >> 24) % tableSize] - 128) * 4 * VARIO_VOL_SCALE * vario_vol_adj / 100;
+      // 能率補正は update_vario() が vario_vol_pct に入れてある（上昇は一定、下降は傾斜）。
+      // 2段階の /100 による低音量時の量子化ロスを避けるため /10000 でまとめて割る。
+      int vario_vol_scaled = (int)vario_volume * (int)vario_vol_pct;
+      mix += (int)(sineTable[(s_vario_phase_acc >> 24) % tableSize] - 128) * 4 * VARIO_VOL_SCALE * vario_vol_scaled / 10000;
     } else {
       // OFF 区間: 加算なし（サイクルリセットのみ）
       if (s_vario_cycle_pos >= vario_cycle_samples) {
@@ -1229,15 +1230,15 @@ void loop_tone() {
 // 内部で 100ms レート制限しているので毎ループ呼んでよい。
 // get_airdata_vspeed() で 1Hz 更新される鉛直速度を読み、
 // デッドバンド閾値を超えたときにバリオ音パラメータを更新する。
-//   KF融合中（IMU+MS5611）: ±0.3 m/s
-//   MS5611単独            : ±0.6 m/s
+//   KF融合中（IMU+MS5611）: ±0.20 m/s
+//   MS5611単独            : ±0.60 m/s
 //
 // 上昇（vspeed > dead_band）: 断続ビープ
-//   ピッチ = 700 + vspeed*400 Hz（0.3→820Hz, 1.0→1100Hz, 1.5→1300Hz）
-//   ON 時間 120ms 固定 / OFF 時間 = 700/vspeed - 120 ms（最小 50ms）
+//   ピッチ = 700 + vspeed*400 Hz（0.2→780Hz, 1.0→1100Hz, 1.5→1300Hz）
+//   ON 時間 120ms 固定 / OFF 時間 = 500/vspeed - 120 ms（50〜1000ms）
 //
 // 下降（vspeed < -dead_band）: 連続低音
-//   ピッチ = 580 - |vspeed|*100 Hz（0.3→550Hz, 1.0→480Hz, 1.5→430Hz, 下限 300Hz）
+//   ピッチ = 580 - |vspeed|*100 Hz（0.2→560Hz, 1.0→480Hz, 1.5→430Hz, 下限 300Hz）
 //
 // アンプ管理:
 //   バリオ開始エッジで amp を ON（WAV/Sinトーン未使用時）。
@@ -1278,7 +1279,7 @@ void update_vario(bool mute) {
             // ★ **OFF に 1 秒の上限を付けてある**（0.991）。上限が無いと 0.3m/s で
             //   2.2 秒無音になり、弱い上昇を「鳴っていない」と取り違える。
             //   上限が効くのは v < 約 0.45m/s で、ちょうど KF のデッドバンド
-            //   （VARIO_DEADBAND_KF_MPS = 0.25）から上の弱い上昇帯にあたる。
+            //   （VARIO_DEADBAND_KF_MPS = 0.20）から上の弱い上昇帯にあたる。
             //   MS5611 単独（デッドバンド 0.60）では上限に当たらない。
             int off_ms = constrain((int)(500.0f / v) - 120, 50, 1000);
             vario_on_samples     = 120 * 16;         // 120ms × 16kHz = 1920 サンプル

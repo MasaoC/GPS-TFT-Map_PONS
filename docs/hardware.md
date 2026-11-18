@@ -116,7 +116,7 @@ KiCad の Fabrication Toolkit プラグイン（JLCPCB Fabrication Tool）を使
 ### Step 5: 電源導通チェック（最重要）
 **本体と各基板（GNSS は FPC ケーブル込み）を接続した状態で、テスターで電源・GND の導通を必ず確認してください。**
 ピン配列を誤ると SCH16T や SAM-M10Q が破損します。
-* **SCH16T**: 本体 `J6` 8番 ↔ IMU 基板 `J3` 1番（+3V3）、本体 `J6` 1番 ↔ IMU 基板 `J3` 8番（GND）が導通すること（本体 `J6` はピン番号が逆順：`J6`-n ↔ `J3`-(9-n)。詳細は [imu_sch16t_bringup.md](imu_sch16t_bringup.md)）。
+* **SCH16T**: 本体 `J6` 8番 ↔ IMU 基板 `J3` 1番（+3V3）、本体 `J6` 1番 ↔ IMU 基板 `J3` 8番（GND）が導通すること（本体 `J6` はピン番号が逆順：`J6`-n ↔ `J3`-(9-n)。詳細は [sch16t_design.md](sch16t_design.md) §3）。
 * **GNSS**: 本体 `J7` 1番（+3V3）↔ GNSS 基板 `J1` 5番（+3.3V）、本体 `J7` 2番 ↔ GNSS 基板 `J1` 4番（GND）が導通すること（FPC ケーブルを挿した状態で）。
 * **照度センサー**: 本体 `J8` 1番（+3V3）↔ case_cover `J2` 1番。
 

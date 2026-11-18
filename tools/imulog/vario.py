@@ -10,7 +10,8 @@
     （2026-11-11 16:09 のトンネル: 姿勢が壊れて鉛直加速度が −7.5 m/s² になり、V/S が −5 → +3 m/s と振れた）
   ・KF_Q_VEL / KF_Q_BIAS / KF_R やガード（KF_ACC_GUARD_*）を変えたら V/S がどう変わるかを、実機に焼く前に見る
   ・機上の CSV の KF_Vspeed と比べて、この再現が機上と合っているかを確かめる（--flight-csv）。
-    2026-11-12 より前のファームで取った CSV（機上で GNSS の velD も入れていた）と比べるときは --gnss-vel を付ける
+    2026-11-12〜11-17 のファームで取った CSV（GNSS の velD を入れていなかった）と比べるときは --no-gnss-vel を付ける。
+    2026-11-12 より前のファームは velD を条件なし（sAcc < 1.0、2Hz で全部）で入れていたので、--old-gnss-gate も付ける
 
 ■ 機上と同じにしてあるもの（imu.cpp / settings.h の名前）
   ・状態 x = [高度, V/S, 加速度バイアス]、初期 P = diag(100, 1, 0.1)。最初の気圧で x = [z, 0, 0]
@@ -19,8 +20,10 @@
   ・Q = diag(0, KF_Q_VEL + KF_HORIZ_ACCEL_GAIN·水平加速度², KF_Q_BIAS)（1 ステップあたり。dt で割らない）
   ・鉛直加速度は「上向き（ESKF の回転行列の第 3 行）· 比力 − g」。水平化の前は比力の低域の向き（attitude.cpp の up_lp_）
   ・気圧高度の観測（R = KF_R）。生ログの気圧は機上の KF に入れたのと同じ値・同じ回（約 3.7Hz）
-  ・GNSS の上向き速度の観測は**入れない**（2026-11-12〜 機上の KF_GNSS_VEL_ENABLED = 0）。
-    --gnss-vel で以前の動き（sAcc < GNSS_VSI_SACC_MAX_MPS、R = max(sAcc² × GNSS_VSI_R_SCALE, 0.001)）を再現できる
+  ・GNSS の上向き速度の観測（2026-11-18〜 機上の KF_GNSS_VEL_ENABLED = 1。11-12〜11-17 は入れていなかった）:
+    機上が入れるのは 2Hz の測位だけ（gnss.cpp の navpvt_app_epoch。iTOW を 500ms の区切りに分けて最初の 1 回）。
+    条件は sAcc < GNSS_VSI_SACC_MAX_MPS、残差 < GNSS_VSI_INNOV_GATE_SIGMA·√S。R = max(sAcc² × GNSS_VSI_R_SCALE, 0.001)
+    ★ 機上の衛星数（GNSS_VSI_MIN_SATS）と vAcc（GNSS_VSI_VACC_MAX_M）の条件は、生ログに衛星数と vAcc が無いので再現しない
   ・鉛直加速度のガード（KF_ACC_GUARD_*。acc_guard_step / kf_predict_baro_only）
 
 ■ 合わせていないもの（既知の差）
@@ -41,7 +44,7 @@
     python3 vario.py imuraw/20261111.bin --csv vario.csv      # 30ms ごとの結果を書き出す
     python3 vario.py imuraw/20261111.bin --no-guard           # ガードを外して比べる
     python3 vario.py imuraw/20261111.bin --baro-only          # 加速度を使わない（気圧だけ）
-    python3 vario.py imuraw/20261111.bin --gnss-vel           # GNSS の上向き速度も入れる（2026-11-12 より前の機上）
+    python3 vario.py imuraw/20261111.bin --no-gnss-vel        # GNSS の上向き速度を入れない（2026-11-12〜11-17 の機上）
 """
 
 import argparse
@@ -59,8 +62,10 @@ KF_Q_VEL = 0.02
 KF_Q_BIAS = 0.0005
 KF_R = 20.0                           # 2026-11-13 に 12 → 20（settings.h の KF_R）。2026-11-13 より前のログを機上と比べるときは --r 12
 KF_HORIZ_ACCEL_GAIN = 0.01
-KF_GNSS_VEL_ENABLED = False           # settings.h の KF_GNSS_VEL_ENABLED（0 = GNSS の velD を V/S に入れない）
-GNSS_VSI_SACC_MAX_MPS = 1.0
+KF_GNSS_VEL_ENABLED = True            # settings.h の KF_GNSS_VEL_ENABLED（2026-11-18〜 1。11-12〜11-17 は 0）
+GNSS_VSI_SACC_MAX_MPS = 0.3           # 2026-11-18〜 0.3（それまでは 1.0）
+GNSS_VSI_INNOV_GATE_SIGMA = 3.0       # 2026-11-18〜。None で門なし（それより前の機上）
+GNSS_APP_EPOCH_MS = 500               # 機上が 2Hz で通す区切り（1000 / GNSS_APP_RATE_HZ）。None で全部の測位
 GNSS_VSI_R_SCALE = 64.0
 KF_ACC_GUARD_FAST_MPS2 = 4.0
 KF_ACC_GUARD_FAST_STEPS = 4
@@ -130,7 +135,7 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
               guard=True, use_accel=True, use_gnss_vel=KF_GNSS_VEL_ENABLED):
     """セッションごとにバリオ KF を回す。
 
-    use_gnss_vel: GNSS の上向き速度を速度の観測として入れるか（機上の KF_GNSS_VEL_ENABLED。既定は機上に合わせて False）
+    use_gnss_vel: GNSS の上向き速度を速度の観測として入れるか（機上の KF_GNSS_VEL_ENABLED。既定は機上に合わせて True）
 
     戻り値: (結果の DataFrame, ガードの出入りのリスト)
       列: session, t（ホスト時刻 [s]）, vs [m/s], alt [m], bias [m/s²], az [m/s²]（その回の鉛直加速度の平均）, guard（0/1）
@@ -153,6 +158,10 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
         # 同じ測位（iTOW）は 1 回だけ（imu_kalman_gnss_vel_update の s_last_itow_ms）
         if len(gn):
             gn = gn.drop_duplicates(subset="ts", keep="first")
+            if GNSS_APP_EPOCH_MS:
+                # 機上がバリオへ渡すのは 2Hz の測位だけ（navpvt_app_epoch: 500ms の区切りごとに最初の 1 回）
+                bucket = np.floor(gn["ts"].to_numpy(float) * 1000.0 / GNSS_APP_EPOCH_MS + 1e-6)
+                gn = gn[~pd.Series(bucket, index=gn.index).duplicated(keep="first")]
 
         # 時刻順に 3 種類の出来事を並べる（同じ時刻なら 気圧 → GNSS → 加速度。機上の loop() の順に近い）
         ev_t = np.concatenate([bar["t"].to_numpy(float), gn["t"].to_numpy(float), ta])
@@ -192,7 +201,10 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
                 rv = max(gsa[i] * gsa[i] * GNSS_VSI_R_SCALE, 0.001)
                 S = P[1, 1] + rv
                 K = P[:, 1] / S
-                x = x + K * (gvd[i] - x[1])
+                inn = gvd[i] - x[1]
+                if GNSS_VSI_INNOV_GATE_SIGMA is not None and abs(inn) > GNSS_VSI_INNOV_GATE_SIGMA * np.sqrt(S):
+                    continue                                 # 残差の門（反射の保険。imu.cpp と同じ）
+                x = x + K * inn
                 P = P - np.outer(K, P[1, :])
                 P = (P + P.T) * 0.5
                 np.fill_diagonal(P, np.maximum(np.diag(P), 1e-9))
@@ -265,18 +277,23 @@ def main():
     ap.add_argument("--flight-csv", metavar="DIR", help="機上の飛行 CSV のディレクトリ。KF_Vspeed と比べる")
     ap.add_argument("--no-guard", action="store_true", help="鉛直加速度のガード（KF_ACC_GUARD_*）を外す")
     ap.add_argument("--baro-only", action="store_true", help="加速度を使わない（気圧だけ）")
-    ap.add_argument("--gnss-vel", action="store_true",
-                    help="GNSS の上向き速度も観測に入れる（2026-11-12 より前の機上。settings.h の KF_GNSS_VEL_ENABLED = 1）")
+    ap.add_argument("--no-gnss-vel", action="store_true",
+                    help="GNSS の上向き速度を観測に入れない（2026-11-12〜11-17 の機上。settings.h の KF_GNSS_VEL_ENABLED = 0）")
+    ap.add_argument("--old-gnss-gate", action="store_true",
+                    help="2026-11-12 より前の機上の入れ方（sAcc < 1.0・残差の門なし）。2Hz のログなので測位の間引きは関係しない")
     ap.add_argument("--q-vel", type=float, default=KF_Q_VEL)
     ap.add_argument("--q-bias", type=float, default=KF_Q_BIAS)
     ap.add_argument("--r", type=float, default=KF_R, help="気圧高度の観測ノイズ [m²]（KF_R）")
     args = ap.parse_args()
 
+    global GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_INNOV_GATE_SIGMA
+    if args.old_gnss_gate:
+        GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_INNOV_GATE_SIGMA = 1.0, None
     parts = split(load(args.path))
     est = eskf.run_on_log(parts)                 # 上向きは機上と同じ ESKF（PC 版）から
     res, events = run_vario(parts, est, q_vel=args.q_vel, q_bias=args.q_bias, r_baro=args.r,
                             guard=not args.no_guard, use_accel=not args.baro_only,
-                            use_gnss_vel=args.gnss_vel or KF_GNSS_VEL_ENABLED)
+                            use_gnss_vel=KF_GNSS_VEL_ENABLED and not args.no_gnss_vel)
 
     # ホスト時刻 → JST（merge_flight と同じ橋渡し）
     gn = parts.get("gnssvel")

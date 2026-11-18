@@ -62,13 +62,24 @@ void imu_kalman_reinit();   // バリオの KF を起動時の状態へ戻す（
 void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m);
 
 // ---- GNSS垂直速度による Kalman 速度観測更新 ----
-// gnssFixOK && fixtype==3D のとき、GNSS高度補正と同じタイミングで呼ぶ。
-// sAcc を観測ノイズ（R_vel = sAcc²）、vAcc をゲーティングに使い、KF の z_dot を補正する。
+// gnssFixOK && fixtype==3D のとき、GNSS高度補正と同じタイミングで呼ぶ（settings.h の KF_GNSS_VEL_ENABLED = 1 のとき）。
+// sAcc を観測ノイズ（R_vel = sAcc² × GNSS_VSI_R_SCALE）に、衛星数・sAcc・vAcc を入れる条件に使い、KF の z_dot を補正する。
 // IMU の有無によらず動作する。
 //   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
 //   vacc_m    : 垂直位置精度 [m]（get_gnss_vacc_mm() / 1000.0f）
 //   sacc_mps  : 速度精度 [m/s]（get_gnss_sacc_mmps() / 1000.0f）
-void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps);
+//   num_sv    : 衛星数（get_gnss_numsat()）
+void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, int num_sv);
+
+// GNSS の上下速度を入れてよいか（2026-11-18〜。判定はここ 1 か所。VARIO 詳細画面もこれを読む）。
+// GVSI_INNOV は判定ではなく、入れようとして残差の門で捨てた数（60 秒ログの数え方用）。
+enum GnssVsiGate { GVSI_OK = 0, GVSI_NO_3D, GVSI_SATS, GVSI_SACC, GVSI_VACC, GVSI_INNOV, GVSI_N_REASONS };
+GnssVsiGate imu_gnss_vsi_gate(bool fix3d, int num_sv, float sacc_mps, float vacc_m);
+const char *imu_gnss_vsi_gate_name(GnssVsiGate g);
+// いま GNSS の上下速度が V/S に効いているか（最後に入れてから 2 秒以内）
+bool imu_gnss_vsi_active();
+// 60 秒ログ用: 入れた数（[GVSI_OK]）と捨てた理由ごとの数を取り出して 0 に戻す
+void imu_gnss_vsi_take_counts(uint32_t out[GVSI_N_REASONS]);
 
 // ---- センサー状態 ----
 // IMU の接続・初期化が正常に完了しているか（imu_setup() 後に確定）。

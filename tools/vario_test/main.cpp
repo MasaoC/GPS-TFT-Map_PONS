@@ -167,6 +167,30 @@ int main() {
     g_stub_replay_mode = false;
     g_stub_replay_have = 0;
 
+    // ---- 6) GNSS の上下速度を入れる条件（2026-11-18〜。imu_gnss_vsi_gate と残差の門）----
+    CHECK(imu_gnss_vsi_gate(true, 20, 0.10f, 1.0f) == GVSI_OK, "gate OK");
+    CHECK(imu_gnss_vsi_gate(false, 20, 0.10f, 1.0f) == GVSI_NO_3D, "gate no 3D");
+    CHECK(imu_gnss_vsi_gate(true, GNSS_VSI_MIN_SATS - 1, 0.10f, 1.0f) == GVSI_SATS, "gate sats");
+    CHECK(imu_gnss_vsi_gate(true, 20, GNSS_VSI_SACC_MAX_MPS, 1.0f) == GVSI_SACC, "gate sAcc (>= の側で切る)");
+    CHECK(imu_gnss_vsi_gate(true, 20, NAN, 1.0f) == GVSI_SACC, "gate sAcc NaN");
+    CHECK(imu_gnss_vsi_gate(true, 20, 0.10f, GNSS_VSI_VACC_MAX_M) == GVSI_VACC, "gate vAcc");
+    {
+        uint32_t c[GVSI_N_REASONS];
+        imu_gnss_vsi_take_counts(c);                       // それまでの数を捨てる
+        g_stub_itow_ms += 500;
+        imu_kalman_gnss_vel_update(0.30f, 1.0f, 0.10f, 20);   // 入る
+        imu_kalman_gnss_vel_update(0.30f, 1.0f, 0.10f, 20);   // 同じ測位はもう入れない（数えもしない）
+        CHECK(imu_gnss_vsi_active(), "vsi active after a used fix");
+        g_stub_itow_ms += 500;
+        imu_kalman_gnss_vel_update(0.30f, 1.0f, 0.10f, 10);   // 衛星不足
+        g_stub_itow_ms += 500;
+        imu_kalman_gnss_vel_update(30.0f, 1.0f, 0.10f, 20);   // 30 m/s は残差の門で捨てる（反射の保険）
+        imu_gnss_vsi_take_counts(c);
+        CHECK(c[GVSI_OK] == 1 && c[GVSI_SATS] == 1 && c[GVSI_INNOV] == 1,
+              "vsi counts used=%u sats=%u innov=%u (1/1/1)", (unsigned)c[GVSI_OK], (unsigned)c[GVSI_SATS], (unsigned)c[GVSI_INNOV]);
+        CHECK(fabsf(get_imu_vspeed_raw()) < 1.0f, "outlier did not move V/S (%.3f)", get_imu_vspeed_raw());
+    }
+
     printf("vario_test: %d passed, %d failed\n", g_pass, g_fail);
     printf("結果: %s\n", g_fail == 0 ? "PASS — バリオ KF・加速度ガード・MS5611 復帰 全テスト合格" : "FAIL");
     return g_fail == 0 ? 0 : 1;

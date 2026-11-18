@@ -261,7 +261,7 @@ static bool     static_now_ = false;
 static uint32_t static_since_us_ = 0;
 // 静止中の加速度累積（初期姿勢＝重力方向の平均用）。
 // ★ v7 の実測で、チップ内融合のロール・ピッチと 0.05 度以内で一致した
-//   （20260930 / 20260818 の計 5 セッション。→ docs/imu_sch16t_plan.md）。
+//   （20260930 / 20260818 の計 5 セッション。0.983 の検証。git の履歴の docs/imu_sch16t_plan.md §2.2）。
 static float    acc_sum_[3] = {0, 0, 0};
 static uint32_t acc_count_  = 0;
 
@@ -274,8 +274,19 @@ static uint8_t  yaw_src_    = ATT_YAW_SRC_NONE;
 static uint8_t  yaw_arm_    = 0;          // しきい値超過が連続した測位数
 
 // ---- 静止中のジャイロバイアス学習 ----
-static float    bias_sum_[3] = {0, 0, 0};
+// 和と二乗和は窓の最初のサンプル（bias_g0_）からの差で溜める（float の桁落ちを避けるため。
+// ゼロ点は最大 0.3deg/s あり得るのに対し、見たいばらつきは 0.03deg/s 未満）。
+static float    bias_g0_[3]  = {0, 0, 0};
+static float    bias_sum_[3] = {0, 0, 0};   // Σ(g − g0)
+static float    bias_sq_[3]  = {0, 0, 0};   // Σ(g − g0)²
 static uint32_t bias_n_      = 0;
+// 方位が決まったあとの地上での維持でゼロ点を覚えたか（動き出すときに P_bg を広げる。learn_gyro_bias のコメント）
+static bool     bias_learned_on_ground_ = false;
+
+static void bias_learn_reset() {
+    bias_n_ = 0;
+    for (int i = 0; i < 3; i++) { bias_sum_[i] = 0.0f; bias_sq_[i] = 0.0f; }
+}
 
 // ---- 水平化前に使う「重力方向」の暫定値（センサー軸）----
 // ★★ **バリオは起動直後から鉛直加速度を要求する。ESKF の水平化（静止 2 秒）を
@@ -489,8 +500,8 @@ void attitude_setup() {
     yaw_set_ = false;
     yaw_src_ = ATT_YAW_SRC_NONE;
     yaw_arm_ = 0;
-    bias_n_ = 0;
-    for (int i = 0; i < 3; i++) bias_sum_[i] = 0.0f;
+    bias_learn_reset();
+    bias_learned_on_ground_ = false;
     // 重力方向の暫定値も捨てる。実機では setup() が 1 回しか呼ばれないので
     // 影響は無いが、残すと「加速度が 1 度も来ていないのに上方向を返す」状態になる
     // （tools/attitude_test が実際に捕まえた）。
@@ -593,8 +604,8 @@ static bool init_level(const float a[3], float att_sigma_deg) {
     yaw_set_     = false;
     yaw_src_     = ATT_YAW_SRC_NONE;
     yaw_arm_     = 0;
-    bias_sum_[0] = bias_sum_[1] = bias_sum_[2] = 0.0f;
-    bias_n_ = 0;
+    bias_learn_reset();
+    bias_learned_on_ground_ = false;
     return true;
 }
 
@@ -697,18 +708,54 @@ static void imu_gap_recover(float gap_s) {
 
 // 静止中にジャイロのゼロ点を測って bg_ に入れる。
 // 引数は**生の**ジャイロ（bg_ を引く前）。目的と注意は settings.h の
-// ESKF_BIAS_LEARN_SAMPLES のコメント参照。
+// ESKF_BIAS_LEARN_SAMPLES / ESKF_BIAS_LEARN_STD_RADS のコメント参照。
+// ★ **5 秒の窓の中でジャイロが揺れていたら（標準偏差が ESKF_BIAS_LEARN_STD_RADS 以上）覚えずに捨てる**（2026-11-18）。
+//   静止の判定（|ω| < 1.5deg/s）は SCH16T の雑音の 150 倍ゆるく、人が支えて揺れている自転車の平均を
+//   ゼロ点として覚えていた（ヨー軸 −0.049 → +0.009deg/s。GNSS を切ると方位が 180 秒で −8 度ずれた）。
+//   大きさではなくばらつきで見るのは、ゼロ点そのものが最大 0.3deg/s あり得るため（大きさで切ると覚えられない個体が出る）。
+// ★ 方位が決まったあと（地上での維持）に覚えたら、動き出すときに P_bg を広げる（attitude_on_gyro の地上の維持のブロック）。
+//   止まっている間に測った値は正確だが、走り出すと 0.016deg/s ほど違った（2026-11-18、振動か温度）。広げないと
+//   推定がその差を信じ込み、学び直しが遅れる。止まっている間は広げない（広げると方位の σ が止まっているだけで育つ）。
 static void learn_gyro_bias(const float g[3]) {
-    for (int i = 0; i < 3; i++) bias_sum_[i] += g[i];
-    if (++bias_n_ < ESKF_BIAS_LEARN_SAMPLES) return;
+    if (bias_n_ == 0)
+        for (int i = 0; i < 3; i++) bias_g0_[i] = g[i];
     for (int i = 0; i < 3; i++) {
-        float b = bias_sum_[i] / (float)bias_n_;
-        if (b >  ESKF_BIAS_LEARN_MAX_RADS) b =  ESKF_BIAS_LEARN_MAX_RADS;
-        if (b < -ESKF_BIAS_LEARN_MAX_RADS) b = -ESKF_BIAS_LEARN_MAX_RADS;
-        bg_[i] = b;
-        bias_sum_[i] = 0.0f;
+        const float d = g[i] - bias_g0_[i];
+        bias_sum_[i] += d;
+        bias_sq_[i]  += d * d;
     }
-    bias_n_ = 0;
+    if (++bias_n_ < ESKF_BIAS_LEARN_SAMPLES) return;
+    const float n = (float)bias_n_;
+    const float lim2 = ESKF_BIAS_LEARN_STD_RADS * ESKF_BIAS_LEARN_STD_RADS;
+    bool still = true;
+    float mean[3];
+    for (int i = 0; i < 3; i++) {
+        const float md = bias_sum_[i] / n;
+        const float var = bias_sq_[i] / n - md * md;
+        if (var >= lim2) still = false;
+        mean[i] = bias_g0_[i] + md;
+    }
+    if (still) {
+        for (int i = 0; i < 3; i++) {
+            float b = mean[i];
+            if (b >  ESKF_BIAS_LEARN_MAX_RADS) b =  ESKF_BIAS_LEARN_MAX_RADS;
+            if (b < -ESKF_BIAS_LEARN_MAX_RADS) b = -ESKF_BIAS_LEARN_MAX_RADS;
+            bg_[i] = b;
+        }
+        if (yaw_set_) bias_learned_on_ground_ = true;
+    }
+    bias_learn_reset();
+}
+
+// 地上での維持でゼロ点を覚えたあと、動き出すときに P_bg を ESKF_BIAS_LEARN_PBG_RADS まで広げる（小さければ）。
+// 他の状態との相関は、ゼロ点を書き換えた時点で意味を失っているので落とす。
+static void bias_widen_after_ground() {
+    const float s2 = ESKF_BIAS_LEARN_PBG_RADS * ESKF_BIAS_LEARN_PBG_RADS;
+    for (int k = 6; k < 9; k++) {
+        const float old = P_[k][k];
+        for (int i = 0; i < N_ERR; i++) { P_[k][i] = 0.0f; P_[i][k] = 0.0f; }
+        P_[k][k] = (old > s2) ? old : s2;
+    }
 }
 
 
@@ -785,8 +832,7 @@ static void update_static(const float g[3], uint32_t t_us) {
     }
     if (!now) {
         // 動き出したらバイアスの溜めかけを捨てる（中途半端な平均を入れない）
-        bias_n_ = 0;
-        for (int i = 0; i < 3; i++) bias_sum_[i] = 0.0f;
+        bias_learn_reset();
     }
     static_now_ = now;
 }
@@ -856,6 +902,10 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
             if (gnss_says_ground()) learn_gyro_bias(g);   // ★ bg_ を引く前の生の値を渡すこと
             reset_tilt_covariance(ESKF_INIT_ATT_SIGMA_DEG);
+        } else if (ground_now_ && bias_learned_on_ground_) {
+            // 地上の維持を抜けた（動き出した）。止まっている間に覚えたゼロ点の不確かさを広げる（learn_gyro_bias のコメント）
+            bias_widen_after_ground();
+            bias_learned_on_ground_ = false;
         }
         ground_now_ = ground;
     }

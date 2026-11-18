@@ -3,7 +3,7 @@
 PONS Link（920MHz LoRa テレメトリ）を v7.1 基板（E220 M0/M1 = GPIO31）で立ち上げ、送受信・電波強度・安全機能を段階的に検証するためのチェックリストです。
 
 - 詳細仕様書 → [docs/pons_link.md](pons_link.md)
-- IMU（SCH16T）の立ち上げを先に完了させてください → [docs/imu_sch16t_bringup.md](imu_sch16t_bringup.md)
+- IMU（SCH16T）の立ち上げを先に完了させてください → [docs/sch16t_design.md](sch16t_design.md) §6
 
 ---
 

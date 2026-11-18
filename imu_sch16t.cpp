@@ -12,11 +12,11 @@
 //   （2026-10-14。SYS_TEST 5/5・不良 0/約 213 万フレーム・感度 1599.3/1600・
 //     |a|/g = 0.99916）。CRC8 とフレーム組み立ては Murata 自身の BSD コードの
 //   事前計算値 47 件とも一致させてある。**ここを「改善」しないこと。**
-//   実測値と立ち上げ手順 → docs/imu_sch16t_bringup.md
+//   実測値と立ち上げ手順 → docs/sch16t_design.md
 //
 // ■ 設定値は settings.h の SCH16T_* が正本
 //   LPF2(13Hz) + DEC5(737.5Hz、実測 721.5Hz)、読み出し 250Hz（最小推奨 150Hz）。
-//   選定理由は settings.h のコメントと docs/imu_sch16t_plan.md §5 の (2)。
+//   選定理由は settings.h のコメントと docs/sch16t_design.md §1.1。
 //
 // ■ 読み出しはタイマー割り込み（SCH16T_READ_IN_IRQ。2026-11-11〜）
 //   Core0 のハードウェアアラームが 4ms ごとに SPI1 を読み、生のフレームをリングバッファへ積む（imu_alarm_cb）。
@@ -25,7 +25,7 @@
 //   理由・優先度（最低にする）・SPI1 の取り合いの約束は settings.h の SCH16T_READ_IN_IRQ のコメント。
 //
 // ★ **本体基板では起動と机上確認（Step 2〜3）まで済み**（2026-11-03）。
-//   docs/imu_sch16t_bringup.md の Step 4〜5 を通すまで飛ばさないこと。
+//   docs/sch16t_design.md §6 の Step 4〜5 を通すまで飛ばさないこと。
 //
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/11/11
@@ -102,7 +102,7 @@ static float    s_gyro_hz = 0.0f, s_accel_hz = 0.0f;
 
 // 健全性カウンタ。★ **いまは数えるだけで、どこへも出していない**（シリアルにも SD ログにも。2026-11-13 に確かめた。
 //   それまでのコメントは「シリアルと SD ログへ出している」と書いていた）。
-//   画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業（docs/pons_todo.md で保留中）。
+//   画面と 60 秒ログへ繋ぐのは docs/sch16t_design.md §8 の作業（docs/pons_todo.md で保留中）。
 static uint32_t s_crc_err = 0;      // CRC 不一致
 static uint32_t s_ce_err  = 0;      // CE（コマンドエラー）
 static uint32_t s_sat_err = 0;      // S=10（飽和）。データ自体は使える
@@ -286,7 +286,7 @@ static bool sch_init() {
     // ---- 品種の確認 ----
     // ★ **COMP_ID で見る。ASIC_ID はシリコンのリビジョンなので品種判定に使えない。**
     //   他品種だと**ジャイロの感度だけが 16 倍違い、加速度は共通**なので、
-    //   1g 検証では原理的に気づけない（詳細は tools/sch16t_test/README.md）。
+    //   1g 検証では原理的に気づけない（詳細は docs/sch16t_design.md §4）。
     const uint64_t fcomp = reg_read(REG_COMP_ID);
     const uint16_t comp = frame_data_u16(fcomp);
     if (!frame_integrity_ok(fcomp) || comp != SCH16T_COMP_ID) {
@@ -377,7 +377,7 @@ static bool sch_init() {
 // ★ **温度は毎回読まない**（間隔は settings.h の SCH16T_TEMP_EVERY）。
 //   1 サンプルあたりのフレーム数が 8 → 7 に減る。
 // ★ s_temp_c はいま**書くだけで誰も読んでいない**。画面と 60 秒ログへ出すのは
-//   docs/imu_sch16t_plan.md §2.7 の作業で、そのときの受け皿として置いてある。
+//   docs/sch16t_design.md §8 の作業で、そのときの受け皿として置いてある。
 static float s_temp_c = 0.0f;      // 最後に読めたダイ温度 [℃]
 
 // 読んだフレーム（RATE_X2 Y2 Z2 ACC_X2 Y2 Z2 の 6 本と、温度を読んだ回はその 1 本）を検査して推定へ渡す。
@@ -806,7 +806,7 @@ float get_imu_gyro_hz()  { return s_gyro_hz; }
 float get_imu_accel_hz() { return s_accel_hz; }
 
 // ★ 健全性（CRC エラー・CE・飽和・STAT_SUM の故障ビット）は**いまは数えるだけでどこへも出していない**
-//   （上の s_crc_err の宣言のコメント）。**画面と 60 秒ログへ繋ぐのは docs/imu_sch16t_plan.md §2.7 の作業。**
+//   （上の s_crc_err の宣言のコメント）。**画面と 60 秒ログへ繋ぐのは docs/sch16t_design.md §8 の作業。**
 
 // 読み出しの間隔の最長 [µs]（60 秒ログの gapmax=）。★ **読むたびに 0 へ戻す約束**。
 //   割り込みで読んでいるときは割り込みの間隔（ふだん 4ms ちょうど）、ポーリングのときは Core0 が止まった最長時間。

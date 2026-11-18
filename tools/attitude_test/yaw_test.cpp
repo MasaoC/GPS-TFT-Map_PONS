@@ -173,6 +173,37 @@ int main() {
         //   微調整するため（実測で +0.003 deg/s 程度）。見たいのは
         //   「学習器がクランプしている」ことなので、生値 1.2 から大きく離れていればよい。
         ok &= fabsf(bg[1] * 180 / (float)M_PI) <= lim * 1.2f;
+
+        // D4) 揺れている間はゼロ点を覚えない（2026-11-18。ESKF_BIAS_LEARN_STD_RADS）
+        //   自転車を人が支えて揺れていた 6 分（1.5〜2 deg/s）の平均を覚え、ヨー軸のゼロ点が 0.06 deg/s ずれた件の再発防止。
+        //   0.1 deg/s のゼロ点に ±1.0 deg/s・0.5Hz の揺れを乗せて 30 秒（|ω| < 1.5 なので静止の判定は通る）→ 覚えない。
+        //   揺れが止まったら 10 秒で 0.1 を覚える。
+        attitude_setup();
+        t = 0;
+        const float off = (float)(0.1 * M_PI / 180.0);
+        const float g0[3] = { off, 0.0f, 0.0f };
+        feed((int)(4 * fs), dt, t, a20, g0);               // 初期化（ここで 0.1 を覚えることがある）
+        // 覚えた値を消して、揺れの間に覚えるかだけを見る
+        attitude_setup();
+        t = 0;
+        {
+            const int n = (int)(30 * fs);
+            for (int i = 0; i < n; i++) {
+                const float sway = (float)(1.0 * M_PI / 180.0 * sin(2.0 * M_PI * 0.5 * i * dt));
+                const float gs[3] = { off + sway, 0.0f, 0.0f };
+                feed(1, dt, t, a20, gs);
+            }
+        }
+        attitude_get_gyro_bias(bg);
+        const float bg_sway = bg[0] * 180.0f / (float)M_PI;
+        feed((int)(10 * fs), dt, t, a20, g0);              // 揺れが止まった
+        attitude_get_gyro_bias(bg);
+        const float bg_still = bg[0] * 180.0f / (float)M_PI;
+        printf("\nD4) 0.1deg/s のゼロ点に ±1deg/s の揺れを乗せて 30 秒 → 揺れが止まって 10 秒\n");
+        printf("   揺れの間に覚えた X = %.4f deg/s（0 のままが正しい）  止まってから X = %.4f deg/s（0.100 が正しい）\n",
+               bg_sway, bg_still);
+        ok &= fabsf(bg_sway) < 0.01f;
+        ok &= fabsf(bg_still - 0.1f) < 0.01f;
     }
 
 

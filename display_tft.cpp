@@ -775,7 +775,7 @@ bool eskf_yaw_reliable() {
 }
 
 // ヨーが「著しく信頼できる」か（95%値 < ESKF_YAW_DRIFT_95_DEG）。
-// 偏流角を示す点線を出してよいかの判定に使う。eskf_yaw_reliable() より厳しい。
+// 偏流角を示す点線・風ベクトルを出してよいかの判定に使う（現在は ESKF_YAW_TRUST_95_DEG と同じ 10 度）。
 static bool eskf_yaw_high_confidence() {
   static bool held = false;
   static int  src  = -1;
@@ -1674,7 +1674,7 @@ void draw_vsi() {
     // グレー線: バリオ音デッドバンド閾値。**選び方ごと** vario_deadband_mps() に
     // 預けてあるので、音（sound.cpp）と線が構造的にずれない
     // （0.983 まで定数は共有していたが「どちらを選ぶか」の判定式が別々だった）。
-    //   KF融合中(IMU+MS5611): ±0.25 m/s = ±20px / MS5611単独: ±0.60 m/s = ±48px
+    //   KF融合中(IMU+MS5611): ±0.20 m/s = ±16px / MS5611単独: ±0.60 m/s = ±48px
     const float db_mps = vario_deadband_mps();
     const int db_px = (int)(db_mps / MAX_VSPEED * BAR_MAX_PX + 0.5f);
     vsi_sprite.drawFastHLine(0, 120 - db_px, VSI_W, TFT_DARKGREY);

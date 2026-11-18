@@ -447,7 +447,7 @@ void imu_kalman_baro_update(float z_baro_m) {
 //   気圧基準は最大 **GNSS_MAX_DELTA_M [m/s]** の傾きで動く。これは
 //   KF から見ると高度観測のランプ入力なので、V/S に同じ大きさの定常バイアスが乗る。
 //   いまの値（0.05m/s）は表示分解能 0.1m/s の半分、デッドバンド
-//   VARIO_DEADBAND_KF_MPS（0.25m/s）の 1/5 で、**音を鳴らすことはできない**。
+//   VARIO_DEADBAND_KF_MPS（0.20m/s）の 1/4 で、**音を鳴らすことはできない**。
 //   ★ **数値をここに書かないこと。** 0.02 と書いてあった時代があり、
 //     GNSS_MAX_DELTA_M を 0.02→0.05 に上げたときコメントだけ古いまま残った。
 
@@ -522,19 +522,57 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
 // 観測モデル: H = [0, 1, 0]（速度のみ観測する）
 // イノベーション: innov = veld_mps - x[1]
 // R_vel = sAcc² × GNSS_VSI_R_SCALE [m²/s²]
-// ゲートは sAcc のみ（vAcc=垂直位置精度 は速度品質の指標として不適切なため使用しない）。
+// 入れる条件は imu_gnss_vsi_gate()（下）と、残差の門（GNSS_VSI_INNOV_GATE_SIGMA）。
 //
 // IMU の有無によらず動作する（kf_initialized のみチェック）。
 //
-// ★ **2026-11-12〜 呼ばれていない**（settings.h の KF_GNSS_VEL_ENABLED = 0。理由もそこ）。
-//   戻すときのために残してある。tools/imulog/vario.py も同じ切り替えを持つ。
+// ★ 2026-11-12〜11-17 は呼ばれていなかった（KF_GNSS_VEL_ENABLED = 0）。2026-11-18 に新しい GNSS 基板で戻し、
+//   衛星数・vAcc・残差の門を足した（settings.h の KF_GNSS_VEL_ENABLED と GNSS_VSI_* のコメント）。
+//   tools/imulog/vario.py も同じ条件を持つ（ただし生ログに衛星数と vAcc が無いので、その 2 つは再現しない）。
 //
 //   veld_mps  : GNSS 垂直速度 [m/s]（上昇正）= get_gnss_veld_mps()
-//   vacc_m    : 垂直位置精度 [m]  — 本関数では使用しない（呼び出し元の互換性維持のため残す）
-//   sacc_mps  : 速度精度 [m/s]   — ゲート判定と観測ノイズ R の算出に使用
+//   vacc_m    : 垂直位置精度 [m]（ゲートに使う）
+//   sacc_mps  : 速度精度 [m/s]（ゲートと観測ノイズ R の算出に使う）
+//   num_sv    : 測位に使った衛星数（ゲートに使う）
+// 呼び出し側（GPS_TFT_map.ino）は 3D fix（gnssFixOK）・リプレイでない・ミラーでないことを確かめてから呼ぶ。
 // ============================================================
-void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
-    (void)vacc_m;  // 使用しない（引数互換性維持）
+
+// 入れた数・捨てた理由ごとの数（60 秒ログの `vsi gnss` 行。imu_gnss_vsi_take_counts）
+static uint32_t s_vsi_cnt[GVSI_N_REASONS] = {0};
+static uint32_t s_vsi_last_used_ms = 0;
+static bool     s_vsi_ever_used = false;
+
+// GNSS の上下速度をバリオ KF に入れてよいか（残差の門は除く）。★ 判定はここ 1 か所。VARIO 詳細画面もこれを読む。
+GnssVsiGate imu_gnss_vsi_gate(bool fix3d, int num_sv, float sacc_mps, float vacc_m) {
+    if (!fix3d)                                        return GVSI_NO_3D;
+    if (num_sv < GNSS_VSI_MIN_SATS)                    return GVSI_SATS;
+    if (!(sacc_mps < GNSS_VSI_SACC_MAX_MPS))           return GVSI_SACC;   // NaN も弾く
+    if (!(vacc_m < GNSS_VSI_VACC_MAX_M))               return GVSI_VACC;
+    return GVSI_OK;
+}
+
+const char *imu_gnss_vsi_gate_name(GnssVsiGate g) {
+    switch (g) {
+    case GVSI_OK:    return "OK";
+    case GVSI_NO_3D: return "no 3D fix";
+    case GVSI_SATS:  return "sats";
+    case GVSI_SACC:  return "sAcc";
+    case GVSI_VACC:  return "vAcc";
+    case GVSI_INNOV: return "innov";
+    default:         return "?";
+    }
+}
+
+// いま GNSS の上下速度が V/S に効いているか（最後に入れてから 2 秒以内）。表示用。
+bool imu_gnss_vsi_active() {
+    return s_vsi_ever_used && (uint32_t)(millis() - s_vsi_last_used_ms) < 2000UL;
+}
+
+void imu_gnss_vsi_take_counts(uint32_t out[GVSI_N_REASONS]) {
+    for (int i = 0; i < GVSI_N_REASONS; i++) { out[i] = s_vsi_cnt[i]; s_vsi_cnt[i] = 0; }
+}
+
+void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, int num_sv) {
     if (!kf_initialized) return;
 
     // ---- ★★ 同じ測位を 2 回融合しないこと ----
@@ -571,8 +609,11 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
     // 無効値チェック
     if (isnan(veld_mps) || isinf(veld_mps)) return;
 
-    // sAcc ゲート: 速度精度が閾値以上のデータは信頼性が低いためスキップ
-    if (sacc_mps >= GNSS_VSI_SACC_MAX_MPS) return;
+    // 入れる条件（衛星数・sAcc・vAcc。3D fix は呼び出し側が確かめている）
+    {
+        const GnssVsiGate g = imu_gnss_vsi_gate(true, num_sv, sacc_mps, vacc_m);
+        if (g != GVSI_OK) { s_vsi_cnt[g]++; return; }
+    }
 
     // 観測ノイズ分散 R_vel = sAcc² × GNSS_VSI_R_SCALE [m²/s²]
     // sAcc は u-blox の速度精度推定（1-sigma）。Kalman の R は分散 = σ² なので sAcc² が理論値。
@@ -589,6 +630,12 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps) {
 
     // イノベーション（観測残差）
     float innov = veld_mps - kf_x[1];
+
+    // 残差の門: 予測から GNSS_VSI_INNOV_GATE_SIGMA × √S より外れた観測は捨てる（反射は sAcc に出ないので、その保険）
+    if (fabsf(innov) > GNSS_VSI_INNOV_GATE_SIGMA * sqrtf(S)) { s_vsi_cnt[GVSI_INNOV]++; return; }
+    s_vsi_cnt[GVSI_OK]++;
+    s_vsi_last_used_ms = millis();
+    s_vsi_ever_used = true;
 
     // 状態更新: x = x + K * innov
     kf_x[0] += K[0] * innov;

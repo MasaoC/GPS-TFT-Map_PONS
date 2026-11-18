@@ -1495,6 +1495,18 @@ static void periodic_log_tick() {
                                      get_airdata_win_hz(), imu_sensor_name(),
                                      (unsigned long)spk, (unsigned long)rfc, (unsigned long)fb));
       }
+#if KF_GNSS_VEL_ENABLED
+      // GNSS の上下速度をバリオ KF に入れた数と、入れなかった理由ごとの数（この 60 秒。2Hz なので最大 120。2026-11-18〜）。
+      //   used= 入れた / sats= 衛星数不足 / sacc= sAcc 超え / vacc= vAcc 超え / innov= 残差の門で捨てた（反射の疑い）。
+      //   3D fix が無い・リプレイ・ミラーの間は呼ばれないので、どれにも数えない。
+      {
+        uint32_t c[GVSI_N_REASONS];
+        imu_gnss_vsi_take_counts(c);
+        enqueueTask(createLogSdfTask("vsi gnss used=%lu sats=%lu sacc=%lu vacc=%lu innov=%lu",
+                                     (unsigned long)c[GVSI_OK], (unsigned long)c[GVSI_SATS], (unsigned long)c[GVSI_SACC],
+                                     (unsigned long)c[GVSI_VACC], (unsigned long)c[GVSI_INNOV]));
+      }
+#endif
       // 割り込みで読んでいるとき（settings.h の SCH16T_READ_IN_IRQ）は、gapmax= が割り込みの間隔（ふだん 4ms）、
       // drain= が読んでから推定へ渡すまでの最長（＝ Core0 が描画などで止まっていた最長時間）、ovf= がリングが
       // 一杯で読めなかった回数（loop() に入ってから）。★ 行頭の "imu gapmax=" は Flight Viewer が読んでいる。
@@ -1849,14 +1861,13 @@ static void kalman_feed_tick() {
     imu_kalman_gnss_update((float)get_gnss_altitude(),
                            get_gnss_vacc_mm() / 1000.0f);
 #if KF_GNSS_VEL_ENABLED
-    // GNSS 垂直速度を KF 速度観測として追加（sAcc でゲートと R を決める）
+    // GNSS 垂直速度を KF 速度観測として追加（衛星数・sAcc・vAcc・残差で入れるか決め、sAcc で R を決める）
+    // ★ 2026-11-12〜11-17 は入れていなかった。2026-11-18 に新しい GNSS 基板で戻した（settings.h の KF_GNSS_VEL_ENABLED）。
     imu_kalman_gnss_vel_update(get_gnss_veld_mps(),
                                get_gnss_vacc_mm() / 1000.0f,
-                               get_gnss_sacc_mmps() / 1000.0f);
+                               get_gnss_sacc_mmps() / 1000.0f,
+                               get_gnss_numsat());
 #endif
-    // ★ 2026-11-12〜 GNSS の上下の速度は V/S に入れない（settings.h の KF_GNSS_VEL_ENABLED）。
-    //   反射で荒れても sAcc が小さいままで、それでいて気圧より強く V/S を引っ張っていた。
-    //   上の imu_kalman_gnss_update()（GNSS の高度で気圧の基準をゆっくり直す。絶対高度用）は残してある。
   }
 }
 

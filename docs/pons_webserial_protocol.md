@@ -2,7 +2,7 @@
 
 - **文書バージョン**: 1.0
 - **対象基板**: PONS v7 / v7.1 (RP2350B)
-- **更新日**: 2026-11-15
+- **更新日**: 2026-11-17
 
 ---
 
@@ -67,7 +67,7 @@
 
 ### (2) ファイル一覧要求 (LIST)
 SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フォルダ、およびルートディレクトリ）を走査して一覧を返す。
-ルートの `log.txt`（本体の記録）も、あれば最後に 1 行出す（2026-11-11〜。ビューアは種別「記録」で開く。消されずに伸び続ける）。
+ルートの `log.txt`（本体の記録）も、あれば最後に 1 行出す（ビューアは種別「記録」で開く。消されずに伸び続ける）。
 * **PC ➔ PONS**: `PONS:LIST`
 * **PONS ➔ PC**:
   - 各ファイル: `PONS:FILE,<filename>,<size_bytes>,<datetime>`
@@ -82,10 +82,10 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   PONS: PONS:LIST_END
   ```
 
-* **全部のファイルの一覧 (LIST,ALL)**（2026-11-15〜。開発用）: `PONS:LIST,ALL`
+* **全部のファイルの一覧 (LIST,ALL)**（開発用）: `PONS:LIST,ALL`
   - ルートと、その直下のフォルダ（1 段だけ）の**全部のファイル**を同じ `PONS:FILE,...` の行で返す（`imuraw/*.bin` の生 IMU ログ・
     `settings.txt`・`gnss_dbd.bin`・`rtc_backup.txt` など。`data/`・`received/`・`log.txt` もこの中に出る）。隠しファイルと `.` で始まる名前は出さない。
-  - **これを知らないファーム（2026-11-15 より前）は何も返さない**（エラーも出ない）。Flight Viewer は 4 秒待って 1 行も来なければ
+  - **これを知らない古いファーム（1.07 まで）は何も返さない**（エラーも出ない）。Flight Viewer は 4 秒待って 1 行も来なければ
     古いファームとして `PONS:LIST` を頼み直す。
   - 取るのは下の `GET` のまま（`GET` はもとからどのパスでも中身をそのまま送る。バイナリも同じ）。パスは 63 バイトまで。
   ```
@@ -100,7 +100,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 ### (3) ファイル取得 (GET)
 指定したファイルの中身をシリアルへストリーミング送信する（CSV でもバイナリでも、中身はそのまま）。
 **中身は `DATA_START` の `<size_bytes>` バイトちょうど**で、そのあとに `\r\n` と `PONS:DATA_END,<crc32>` の行が来る
-（Flight Viewer は 2026-11-15 からこの大きさで中身を切り出す。バイナリの中に `PONS:DATA_END,` と同じ並びがあっても終わりにしない）。
+（Flight Viewer はこの大きさで中身を切り出す。バイナリの中に `PONS:DATA_END,` と同じ並びがあっても終わりにしない）。
 * **PC ➔ PONS**: `PONS:GET,<filename>`
 * **PONS ➔ PC**:
   - 開始通知: `PONS:DATA_START,<filename>,<size_bytes>`
@@ -108,8 +108,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   - 終了通知: `PONS:DATA_END,<crc32>`
 * **エラー応答**:
   - `PONS:ERROR,FILE_NOT_FOUND` （ファイルが存在しない、またはディレクトリ）
-  - `PONS:ERROR,BUSY` （既に別のファイル転送タスクを実行中）。★ 2026-11-13〜 **前の転送が終わってから**返す
-    （すぐ出すと前の転送の中身に混ざる。BUG-76）
+  - `PONS:ERROR,BUSY` （既に別のファイル転送タスクを実行中）。**前の転送が終わってから**返す（すぐ出すと前の転送の中身に混ざる）
   - `PONS:ERROR,SD_NOT_READY` （SDカード未装着または初期化エラー）
 * **例**:
   ```
@@ -120,7 +119,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   ...
   PONS: PONS:DATA_END,A3F5B12C
   ```
-* **末尾だけ取る (GETTAIL)**（2026-11-11〜）: `PONS:GETTAIL,<バイト数>,<filename>`
+* **末尾だけ取る (GETTAIL)**: `PONS:GETTAIL,<バイト数>,<filename>`
   - ファイルがそれより大きければ、末尾のそのバイト数だけを、**最初の改行の次から**（行の途中から始めないように）送る。
     そのときの開始通知は `PONS:DATA_START,<filename>,<送るバイト数>,<送り始めた位置>`（3 つめが付く）。CRC は送った部分だけ。
   - ファイルのほうが小さければ `GET` と同じ（3 つめは付かない）。
@@ -135,38 +134,34 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   PONS: PONS:DATA_END,5C01A2E7
   ```
 * **ビューアの受信の終わりの見分け**: 中断の印（`PONS:CANCEL_OK` / `PONS:ERROR,`）は**行の頭にあるときだけ**見る
-  （2026-11-11〜。`log.txt` の中身に同じ文字列があっても、転送を止めたことにしない）。
-* **転送の間（GET を受けてから `DATA_END` / `CANCEL_OK` まで）は、本体は転送以外を 1 行も書かない**（2026-11-13〜。BUG-76）。
+  （`log.txt` の中身に同じ文字列があっても、転送を止めたことにしない）。
+* **転送の間（GET を受けてから `DATA_END` / `CANCEL_OK` まで）は、本体は転送以外を 1 行も書かない**。
   PC はその間のバイトを全部ファイルの中身として受けて CRC を取るため。
   - `PONS:READY`（転送中に `CONNECT` し直したとき。前の転送をやめさせてから）・`PONS:BYE`・`PONS:ERROR,BUSY` は、
     転送が終わってから出す。
   - `PONS:PING` の返事は出さない（以前から）。`PONS:DBD` / `PONS:TIME` は転送中は受けない（返事も無い）。
   - 例外: `RELEASE` でないビルドのデバッグ出力。
-  - SD のタスクのキューが溢れたときの `ERR: task queue full` も、転送と一覧の間は出さない（2026-11-15〜）。数百 MB の生 IMU ログは
-    送るのに何分もかかり、その間 Core1 はキューを消費しないので、毎分の `log.txt` の行だけで満杯になる。以前はこの 1 行が
-    ファイルの中身に混ざり、PC 側の CRC が合わなかった。捨てた数は送り終えたあと `log.txt` の `PC XFER: n tasks dropped` に残す
+  - SD のタスクのキューが溢れたときの `ERR: task queue full` も、転送と一覧の間は出さない。数百 MB の生 IMU ログは送るのに何分もかかり、
+    その間 Core1 はキューを消費しないので満杯になる。捨てた数は送り終えたあと `log.txt` の `PC XFER: n tasks dropped` に残す
     （その間の `log.txt` の行は失われる）。
-* **一覧（`LIST` を受けてから `LIST_END` まで）の間も同じ**（2026-11-14〜。BUG-92）。`READY` / `BYE` / `BUSY` / `PONG` は
+* **一覧（`LIST` を受けてから `LIST_END` まで）の間も同じ**。`READY` / `BYE` / `BUSY` / `PONG` は
   `LIST_END` のあとに出す。一覧の最中に来た `CANCEL` の `CANCEL_OK` も `LIST_END` のあと。
-* 本体の SD のタスクのキューが満杯で `LIST` / `GET` / `GETTAIL` を受けられなかったときは `PONS:ERROR,BUSY` を返す
-  （2026-11-14〜。BUG-93。以前は黙って捨て、PC が返事を待ち続けた）。パスが 63 バイトより長いときは `PONS:ERROR,INVALID_FILENAME`
-  （以前は黙って切り詰めた）。`GETTAIL` のバイト数は 9 桁まで。127 バイトより長い行は改行まで読み捨てる。
+* 本体の SD のタスクのキューが満杯で `LIST` / `GET` / `GETTAIL` を受けられなかったときは `PONS:ERROR,BUSY` を返す。
+  パスが 63 バイトより長いときは `PONS:ERROR,INVALID_FILENAME`。`GETTAIL` のバイト数は 9 桁まで。127 バイトより長い行は改行まで読み捨てる。
 
 ### (4) 転送キャンセル (CANCEL)
 転送中のファイル読み出しを中断する。
 * **PC ➔ PONS**: `PONS:CANCEL`
 * **PONS ➔ PC**: `PONS:CANCEL_OK`
-* `GET` がまだ始まる前（本体が別の SD の仕事をしていて待っている間）に来た `CANCEL` も効く（2026-11-13〜。BUG-76。
-  以前は始めるときにフラグを下ろしていたので、全部送っていた）。そのときは `DATA_START` を出さずに `CANCEL_OK` だけ返す。
+* `GET` がまだ始まる前（本体が別の SD の仕事をしていて待っている間）に来た `CANCEL` も効く。そのときは `DATA_START` を出さずに `CANCEL_OK` だけ返す。
 
 ### (5) 切断要求 (DISCONNECT)
 * **PC ➔ PONS**: `PONS:DISCONNECT`
 * **PONS ➔ PC**: `PONS:BYE`
-* 転送中に切断した（`DISCONNECT`・本体のボタン）ときは、転送をやめて行の頭に `PONS:CANCEL_OK` を出してから `PONS:BYE`
-  （2026-11-13〜。以前は `CANCEL_OK` を出さず、`BYE` が転送の途中に混ざっていた）。
+* 転送中に切断した（`DISCONNECT`・本体のボタン）ときは、転送をやめて行の頭に `PONS:CANCEL_OK` を出してから `PONS:BYE`。
 * PONSは安全に通常の航法画面（`MODE_MAP`）と各種ロギングへ復帰する。
 
-### (6) GNSS の航法データベースの机の上の試験 (DBD)（2026-11-09〜）
+### (6) GNSS の航法データベースの机の上の試験 (DBD)
 * **PC ➔ PONS**: `PONS:DBD,SAVE` / `PONS:DBD,COLD` / `PONS:DBD,COLDONLY` / `PONS:DBD,HOT` / `PONS:DBD,STATUS` /
   `PONS:DBD,COLD,TIME` / `PONS:DBD,COLDONLY,TIME`（2026-11-10〜）
 * **PONS ➔ PC**: `PONS:DBD,OK,<コマンド>` / `PONS:DBD,ERROR,<理由>`（`BUSY` / `NO_FIX` / `NO_GNSS_ID` / `NO_TIME` / `REPLAY` / `UNKNOWN` / `DISABLED`）/
@@ -185,7 +180,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   時刻を入れたときに TTFF がどれだけ縮むかを、同じ場所で `COLD` と比べるためのもの。
   `,TIME` の無い試験の間は、PC から時刻が来ても入れない（`PONS:TIME` は `ERROR,TEST`。比べる素の値を汚さない）。
 
-### (7) PC の時刻を GNSS へ入れる (TIME)（2026-11-10〜）
+### (7) PC の時刻を GNSS へ入れる (TIME)
 * **PC ➔ PONS**: `PONS:TIME,<UNIX 時刻 ms>`（UTC。例 `PONS:TIME,1794193200500`。JavaScript の `Date.now()`）
 * **PONS ➔ PC**: `PONS:TIME,OK,<SENT|LATER|NOT_NEEDED|ALREADY>` / `PONS:TIME,ERROR,<理由>`
   （`BAD_FORMAT` / `BAD_TIME` / `GAVE_UP` / `TEST` / `REPLAY` / `DISABLED`）
@@ -230,18 +225,18 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 Web Serial API 対応ブラウザ（Google Chrome / Microsoft Edge など）で開くだけで、インストール不要・完全ローカル動作で以下の機能を利用できます。
 
 - **ワンクリック接続 & ログ吸い出し**: USB 接続した PONS から自機ログ（`data/`）および受信ログ（`received/`）を一覧取得・高速ダウンロード。
-- **PC の時刻を本体へ**（2026-11-10〜）: 接続のたびに `PONS:TIME` を送る。本体の GNSS が時刻を知らないとき（BT1 が切れていた）だけ使われる（上の (7)）。
-- **つながらないとき**（2026-11-11〜）: ポートを開けないとき（Arduino IDE のシリアルモニタ・シリアルプロッタ、別のタブの
-  ビューアなどがポートを掴んでいる）と、開けたのに `PONS:READY` が来ないときは、ダイアログに理由と直し方と「🔁 もう一度つなぐ」を出す
-  （それまでは開けないとコンソールに 1 行出すだけで、画面には何も出なかった）。`PONS:CONNECT` は 2 秒ごとに 6 回まで送り直す
+- **PC の時刻を本体へ**: 接続のたびに `PONS:TIME` を送る。本体の GNSS が時刻を知らないとき（BT1 が切れていた）だけ使われる（上の (7)）。
+- **つながらないとき**: ポートを開けないとき（Arduino IDE のシリアルモニタ・シリアルプロッタ、別のタブの
+  ビューアなどがポートを掴んでいる）と、開けたのに `PONS:READY` が来ないときは、ダイアログに理由と直し方と「🔁 もう一度つなぐ」を出す。
+  `PONS:CONNECT` は 2 秒ごとに 6 回まで送り直す
   （USB を挿した直後で本体が起動中でも、起動し終わればつながる）。逆に、ビューアがポートを掴んでいる間は Arduino IDE から
   書き込めないことがあるので、書き込む前にビューアの「🔌 切断」を押す。
-- **生 IMU ログなどの取り出し（開発用のタブ）**（2026-11-15〜）: 一覧の上のタブ「IMU 生ログ」（`imuraw/`）・「その他」（ほかの全部）を
+- **生 IMU ログなどの取り出し（開発用のタブ）**: 一覧の上のタブ「IMU 生ログ」（`imuraw/`）・「その他」（ほかの全部）を
   開くと `PONS:LIST,ALL` で一覧を取り、「💾 保存」で中身をそのまま PC に保存する（ブラウザのダウンロード。開かない）。
   最初のタブ「フライト・記録」は今までどおりで、各行にも「💾 保存」（開かずに保存）がある。
-  受信は**バイトのまま**扱う（それまでは全部を文字列にしていて、バイナリは取れなかった）。CRC も受けたバイトで計算する。
+  受信は**バイトのまま**扱う。CRC も受けたバイトで計算する。
   保存した `imuraw/*.bin` は `tools/imulog/decode_imulog.py` で読む。
-- **log.txt の表示**（2026-11-11〜）: 一覧の `log.txt` を開くと（手元の log.txt を「CSV / log.txt を開く」やドロップで開いても）、
+- **log.txt の表示**: 一覧の `log.txt` を開くと（手元の log.txt を「CSV / log.txt を開く」やドロップで開いても）、
   起動ごとに分けて、日時・版・最初の測位・エラーと警告の数を並べ、毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG`）を
   グラフにする（電池・GNSS の C/N0 と衛星数・Fix の割合・CPU 温度・IMU の空き・BT1 の残り・充電の残量・明るさ・jamInd）。
   行は種類（起動・DBD と時刻・GNSS・PC と SD・電源・無線・IMU）と重さ（エラー・警告）で色分けし、検索と絞り込みができる。
@@ -261,6 +256,5 @@ Web Serial API 対応ブラウザ（Google Chrome / Microsoft Edge など）で�
 - ダイアログを開き直すと一覧を取り直す。本体が既に戻っていれば `PONS:ERROR,NOT_CONNECTED` が返り、ビューアが自動で
   `PONS:CONNECT` し直して一覧を出す。
 - ヘッダーのボタンは接続中「🔌 PONS接続中 (ファイル一覧)」で、押すとダイアログを開く。**切断はダイアログの中の「🔌 切断」**
-  （2026-11-10 まではボタンが「PONS切断」と書いてあるのに押しても切れなかった）。
 - 転送の途中で本体が `PONS:CANCEL_OK` や `PONS:ERROR,...` を返したときも転送を終わったことにする
   （受信中は全部ファイルのデータとして溜めるので、拾わないと次のダウンロードと PING が止まったままになる）。

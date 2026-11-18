@@ -142,7 +142,7 @@ def main():
     ap.add_argument("--min-speed", type=float, default=3.0, help="この対地速度 [m/s] 以上の測位だけ使う")
     ap.add_argument("--eskf-delay", type=float, default=None,
                     help="姿勢を作る ESKF に入れる遅れの補償 [s]（run_on_log の gnss_delay）。"
-                         "付けなければ eskf.py の GNSS_DELAY_DEFAULT（機上と同じ。いまは補償しない）")
+                         "付けなければ eskf.py の GNSS_DELAY_DEFAULT（機上と同じ。いまは 0.170）")
     ap.add_argument("--plot", metavar="PNG", help="食い違いの曲線を書き出す")
     args = ap.parse_args()
 

@@ -296,9 +296,10 @@ static void draw_vario_page1() {
   y += line_height; 
 
   // 動作モード（GNSS VSI 融合状況を含む）
-  // ★ 2026-11-12〜 GNSS の上下の速度は KF に入れていない（settings.h の KF_GNSS_VEL_ENABLED）。
-  //   GNSS の高度で気圧の基準を直す処理は残っているが、それは V/S の材料ではないので「+GNSS」とは書かない。
-  const bool _gnss_in_kf = (KF_GNSS_VEL_ENABLED != 0) && _gnss3d;
+  // ★ GNSS の上下の速度は 2026-11-12〜11-17 は KF に入れていなかった（settings.h の KF_GNSS_VEL_ENABLED。11-18〜 条件つきで入れる）。
+  //   GNSS の高度で気圧の基準を直す処理は V/S の材料ではないので「+GNSS」とは書かない。「+GNSS」は実際に入れているとき
+  //   （imu_gnss_vsi_active()。最後に入れてから 2 秒以内）だけ。条件を満たさない測位（衛星数・sAcc・vAcc・残差）は入れていない。
+  const bool _gnss_in_kf = (KF_GNSS_VEL_ENABLED != 0) && !_mirror && imu_gnss_vsi_active();
   backscreen.setCursor(2, y);
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   if (_mirror) {
@@ -342,7 +343,9 @@ static void draw_vario_page1() {
     float _sacc_now = get_gnss_sacc_mmps() / 1000.0f;
     backscreen.setCursor(2, y);
 #if KF_GNSS_VEL_ENABLED
-    bool  _gate_ok  = _gnss3d && (_sacc_now < GNSS_VSI_SACC_MAX_MPS);
+    // 入れる条件は imu.cpp の imu_gnss_vsi_gate() を読む（条件を書き写さない）
+    bool  _gate_ok  = imu_gnss_vsi_gate(_gnss3d, get_gnss_numsat(), _sacc_now,
+                                        get_gnss_vacc_mm() / 1000.0f) == GVSI_OK;
     backscreen.setTextColor(gnss_acc_unknown() ? COLOR_GRAY
                           : _gate_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
     if (gnss_acc_unknown()) backscreen.printf("GNSS:  --     %s", gnss_acc_unknown_note());
@@ -578,7 +581,7 @@ static void draw_vario_page2() {
 #else
   backscreen.setCursor(2, y);
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  backscreen.printf("sAcc gate:<%.1fm/s  R_scale:%.1f", GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_R_SCALE);
+  backscreen.printf("Gate:sv>=%d sAcc<%.1f vAcc<%.0fm", GNSS_VSI_MIN_SATS, GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_VACC_MAX_M);
   y += line_height;
 
   float _sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
@@ -596,8 +599,11 @@ static void draw_vario_page2() {
   y += line_height;
 
   bool _gnss3d2 = get_gnss_fixok() && get_gnss_fixtype() >= 3;
-  bool _sacc_ok2 = (_sacc_mps < GNSS_VSI_SACC_MAX_MPS);
-  bool _gate2    = _gnss3d2 && _sacc_ok2;
+  const int   _nsv2   = get_gnss_numsat();
+  const float _vacc2  = get_gnss_vacc_mm() / 1000.0f;
+  // 入れる条件は imu.cpp の imu_gnss_vsi_gate() を読む（条件を書き写さない）。残差の門は観測ごとなのでここでは出さない（60 秒ログの innov=）
+  const GnssVsiGate _g2 = imu_gnss_vsi_gate(_gnss3d2, _nsv2, _sacc_mps, _vacc2);
+  bool _gate2    = (_g2 == GVSI_OK);
   backscreen.setCursor(2, y);
   if (gnss_acc_unknown()) {
     // ★ ミラー中は `loop()` が自機の KF へ GNSS を入れない（受信した機体の
@@ -607,11 +613,13 @@ static void draw_vario_page2() {
     backscreen.print("Gate: -- (no GNSS into KF)");
   } else if (_gate2) {
     backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-    backscreen.printf("Gate:PASS sAcc=%.3f", _sacc_mps);
+    backscreen.printf("Gate:PASS sv%d sAcc%.2f vAcc%.1f", _nsv2, _sacc_mps, _vacc2);
   } else {
     backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-    if (!_gnss3d2) backscreen.print("Gate:FAIL no 3D fix");
-    else           backscreen.printf("Gate:FAIL sAcc%.3f>=%.1f", _sacc_mps, GNSS_VSI_SACC_MAX_MPS);
+    if (_g2 == GVSI_NO_3D)     backscreen.print("Gate:FAIL no 3D fix");
+    else if (_g2 == GVSI_SATS) backscreen.printf("Gate:FAIL sats %d<%d", _nsv2, GNSS_VSI_MIN_SATS);
+    else if (_g2 == GVSI_SACC) backscreen.printf("Gate:FAIL sAcc%.3f>=%.1f", _sacc_mps, GNSS_VSI_SACC_MAX_MPS);
+    else                       backscreen.printf("Gate:FAIL vAcc%.1f>=%.0f", _vacc2, GNSS_VSI_VACC_MAX_M);
   }
   y += line_height;
 #endif
@@ -619,8 +627,8 @@ static void draw_vario_page2() {
   backscreen.setCursor(2, y);
   // ★ ミラー中は自機 KF に GNSS が入っていないので false。上の Gate と揃える。
   //   KF_GNSS_VEL_ENABLED = 0 のあいだは常に false（GNSS の速度を入れていない）。
-  bool _gnss3d_kf = (KF_GNSS_VEL_ENABLED != 0) && !link_mirror_active() &&
-                    get_gnss_fixok() && get_gnss_fixtype() >= 3;
+  //   条件を満たして実際に入れているとき（imu_gnss_vsi_active()）だけ「+GNSS」と書く。
+  bool _gnss3d_kf = (KF_GNSS_VEL_ENABLED != 0) && !link_mirror_active() && imu_gnss_vsi_active();
   if (get_imu_ok() && get_airdata_ok() && _gnss3d_kf) {
     backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
     backscreen.print("KF: Active (Baro+IMU+GNSS)");

@@ -152,15 +152,16 @@ def set_heading(q, want_deg):
 class AttitudeESKF:
     """GNSS 速度で援用する 12 誤差状態の姿勢 ESKF。
 
-    チューニングパラメータ（既定値は v7 で調整し HPA の運動を想定した初期値。
-    実飛行ログで詰めること）:
+    チューニングパラメータ（既定値は機上 settings.h の ESKF_SIGMA_* と同じ。2026-11-18 に sigma_g 2e-3 → 5e-4、
+    sigma_bg 1e-5 → 3e-6 へ SCH16T に合わせて下げた。理由と数字は settings.h のコメント）:
       sigma_g  : ジャイロ白色雑音 [rad/s/sqrt(Hz)]
       sigma_a  : 加速度計白色雑音 [m/s^2/sqrt(Hz)]
       sigma_bg : ジャイロバイアスのランダムウォーク [rad/s^2/sqrt(Hz)]
       sigma_ba : 加速度バイアスのランダムウォーク [m/s^3/sqrt(Hz)]
+    ★ 2026-11-17 より前のログを当時の機上と比べるときは sigma_g=2e-3, sigma_bg=1e-5 を渡す（ゼロ点の学習の直しは戻せない）。
     """
 
-    def __init__(self, sigma_g=2e-3, sigma_a=3e-2, sigma_bg=1e-5, sigma_ba=1e-4,
+    def __init__(self, sigma_g=5e-4, sigma_a=3e-2, sigma_bg=3e-6, sigma_ba=1e-4,
                  estimate_accel_bias=True,
                  max_gyro_bias=np.deg2rad(1.0), max_accel_bias=1.0):
         self.sg, self.sa = sigma_g, sigma_a
@@ -333,7 +334,7 @@ def _map_host_to_sensor_time(imu_df):
     return lambda x: np.asarray(x, dtype=float)
 
 
-GNSS_DELAY_DEFAULT = 0.150    # 機上 settings.h の ESKF_GNSS_VEL_DELAY_MS と同じにしておく（None = 補償しない）[s]
+GNSS_DELAY_DEFAULT = 0.170    # 機上 settings.h の ESKF_GNSS_VEL_DELAY_MS と同じにしておく（None = 補償しない）[s]。2026-11-18 に 0.150 → 0.170
 
 
 def itow_host_time_causal(t, itow, bucket_s=15.0, jump_s=10.0):
@@ -534,9 +535,13 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         gi = 0
         while gi < len(g_ts) and g_ts[gi] < ts[i_start]:
             gi += 1                      # 初期化前の測位は捨てる
-        bias_sum = np.zeros(3)
+        bias_sum = np.zeros(3)           # Σ(w − w0)·dt（窓の最初のサンプル w0 からの差。機上 bias_sum_）
+        bias_sq = np.zeros(3)            # Σ(w − w0)²·dt（機上 bias_sq_）
+        bias_w0 = np.zeros(3)
         bias_n = 0
         bias_sum_t = 0.0
+        learned_on_ground = False        # 方位が決まったあとの地上の維持で覚えたか（機上 bias_learned_on_ground_）
+        ground_prev = False              # 前のサンプルで地上の維持だったか（機上 ground_now_）
         yaw_arm = 0
         # ---- 重力観測（Phase 2）のためのゲート用の量 ----
         # ★ ゲートはジャイロだけから作れるものを主にする。GNSS 断中に働かないと
@@ -584,20 +589,35 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             f.update_velocity(g_enu[gi_], g_sacc[gi_], vp)
             hist_shift(f.v - vb, i_now)
 
+        def bias_reset():
+            nonlocal bias_n, bias_sum_t
+            bias_sum[:] = 0.0
+            bias_sq[:] = 0.0
+            bias_sum_t = 0.0
+            bias_n = 0
+
         def learn_bias(wi, dt_i):
             # 機上 learn_gyro_bias() と同じ（時定数 5.0 秒 / ESKF_BIAS_LEARN_MAX_RADS）
             # サンプリング間隔 dt から時間を積算し、250Hz 機上と 62.5Hz ログの両方で一致させる
-            nonlocal bias_n, bias_sum_t
+            # ★ 5 秒の窓の各軸の標準偏差が ESKF_BIAS_LEARN_STD_RADS（0.03 deg/s）以上なら覚えない（2026-11-18。揺れを覚えないため）
+            nonlocal bias_n, bias_sum_t, learned_on_ground
             if dt_i <= 0.0:
                 return
-            bias_sum[:] += wi * dt_i
+            if bias_n == 0:
+                bias_w0[:] = wi
+            d = wi - bias_w0
+            bias_sum[:] += d * dt_i
+            bias_sq[:] += d * d * dt_i
             bias_sum_t += dt_i
             bias_n += 1
             if bias_sum_t >= 5.0:
-                f.bg = np.clip(bias_sum / bias_sum_t, -0.0087, 0.0087)
-                bias_sum[:] = 0.0
-                bias_sum_t = 0.0
-                bias_n = 0
+                md = bias_sum / bias_sum_t
+                var = bias_sq / bias_sum_t - md * md
+                if np.all(var < 0.000524 ** 2):                 # ESKF_BIAS_LEARN_STD_RADS
+                    f.bg = np.clip(bias_w0 + md, -0.0087, 0.0087)
+                    if yaw_set:
+                        learned_on_ground = True
+                bias_reset()
 
         for k, i in enumerate(range(i_start, len(ts))):
             dt = ts[i] - ts[i - 1] if i else 0.0
@@ -628,9 +648,18 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 f.P[:, 0:2] = 0.0
                 f.P[0, 0] = f.P[1, 1] = np.deg2rad(3.0) ** 2      # ESKF_INIT_ATT_SIGMA_DEG
             elif static_flags is not None and not static_flags[i]:
-                bias_sum[:] = 0.0
-                bias_sum_t = 0.0
-                bias_n = 0
+                bias_reset()
+            if ground_prev and not ground and learned_on_ground:
+                # 地上の維持を抜けた（動き出した）。止まっている間に覚えたゼロ点の不確かさを広げる
+                # （機上 bias_widen_after_ground。ESKF_BIAS_LEARN_PBG_RADS = 0.02 deg/s。2026-11-18〜）
+                s2 = 0.000349 ** 2
+                for kk in range(6, 9):
+                    old = f.P[kk, kk]
+                    f.P[kk, :] = 0.0
+                    f.P[:, kk] = 0.0
+                    f.P[kk, kk] = max(old, s2)
+                learned_on_ground = False
+            ground_prev = ground
             ground_flags[k] = ground
             # ★ ヨーレートを作る回転は**伝播する前**の姿勢（機上 attitude_on_gyro() は伝播の前に作った R を使う）。
             #   2026-11-10 までは predict の後の f.q で作っていて、1 サンプルぶん機上と違っていた。

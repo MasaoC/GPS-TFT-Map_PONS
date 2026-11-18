@@ -41,8 +41,7 @@ SD カードのログを付属ツール（`tools/`）で解析し、機体特性
 | **[PONS_HPA v7.1 説明書](https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/)** | **パイロット・ボートマン向け**。操作手順、画面の見方、警告音の意味、大会当日の運用手順（Google Docs） |
 | **この README** | **開発者・自作者向け**。アーキテクチャ、設計根拠、ハードウェア構成、SD 構成、解析ツール |
 | **[ハードウェア製作・調達ガイド](docs/hardware.md)** | JLCPCB PCBA 発注、手実装部品 BOM、代替部品検証、組み立て・導通チェック手順 |
-| **[IMU SCH16T 統合仕様](docs/imu_sch16t_plan.md)** | Murata SCH16T-K01 SPI 通信仕様、アーキテクチャ抽象化、ESKF / バリオ KF 統合仕様 |
-| **[IMU SCH16T 立ち上げ](docs/imu_sch16t_bringup.md)** | SCH16T の結線・SPI1 単独テストと導通確認手順 |
+| **[SCH16T 設計メモ](docs/sch16t_design.md)** | Murata SCH16T-K01 の仕様と決めごと・ファームの作り・配線・罠・単独テスト・本体での確認と実測の記録 |
 | **[無線 PONS Link 仕様](docs/pons_link.md)** | 920MHz LoRa テレメトリ、32 バイト固定フレーム形式 2、電波法適合、運用ルール、実測性能 |
 | **[無線立ち上げ試験](docs/pons_link_bringup.md)** | 基板到着後の PONS Link 立ち上げ・動作確認手順 |
 | **[音仕様](docs/pons_sound.md)** | 音声 3 系統（WAV / トーン / バリオ）、同時再生・排他制御、WAV 一覧・差し替え手順 |
@@ -62,7 +61,7 @@ SD カードのログを付属ツール（`tools/`）で解析し、機体特性
 | **気圧センサー** | MS5611（約 40Hz 計測・約 4Hz でバリオ KF へ融合、2Hz SD 記録） |
 | **モーションセンサー** | Murata **SCH16T-K01-10**（外付けフレキ、SPI1 250Hz ポーリング） |
 | **姿勢推定** | **機上 250Hz ESKF**（GNSS 航跡ヨー注入 ＋ 2Hz 重力観測レベリング） |
-| **昇降計（バリオ）** | **KF 融合**（SCH16T 鉛直加速度 ＋ MS5611 気圧高度。デッドバンド ±0.25m/s） |
+| **昇降計（バリオ）** | **KF 融合**（SCH16T 鉛直加速度 ＋ MS5611 気圧高度。デッドバンド ±0.20m/s） |
 | **無線 (PONS Link)** | 920MHz LoRa（E220-900T22S(JP)、技適取得済・免許不要、送信 13dBm / 到達実測 **350m**） |
 | **バッテリー / 電源** | LiPo 860mAh、USB-C 充電（303mA）。電源スイッチ後段ロードスイッチ Q3、逆接保護 Q4、過電圧保護 U10 |
 | **稼働時間** | 輝度 High で約 3 時間。Low（自動調光・待機減光有効）で大幅に延長 |
@@ -105,49 +104,26 @@ $$V(\theta) = V_0 \sqrt{\frac{K}{K + \theta}}$$
   書き直しは `settings.tmp` に書き切ってから入れ替えます（途中で電源が切れても設定が消えない。2026-11-14〜）。`settings.tmp` が残っていたら、次の起動で `settings.txt` に戻して読みます。
 
 ### 3. GNSS の起動を速くする（AssistNow Autonomous）
-GNSS の時計と受信した軌道データ（エフェメリス）をバックアップ電池（BT1、MS621FE）で保つので、最後に受信してから約 4 時間以内なら
+GNSS の時計と受信した軌道データ（エフェメリス）をバックアップ電池（BT1、MS621FE）で保つので、最後に測位してから約 4 時間以内なら
 **起動から数秒で測位** します（ホットスタート）。それより後でも、SAM-M10Q が自律予測した数日先までの衛星軌道（AssistNow Autonomous。ANA）を
-BT1 で保つので、約 3 日以内なら速く測位します（データシートは 2 日前のデータで 4 秒。通常のコールドスタートは 23 秒〜、小さいアンテナや悪い空では数分）。
+BT1 で保つので、最後の測位から約 3 日以内なら多くは速く測位します（データシートは 2 日前のデータで 4 秒。通常のコールドスタートは 23 秒〜、
+小さいアンテナや悪い空では数分）。それより後は、時計が残っていても暦を読み直すのでコールドに近くなります。
+ANA は BT1 が切れていた起動でも有効のままです（`settings.h` の `GNSS_ANA_OFF_ON_COLD` = 0。切ると SD のデータベースの予測軌道が使われないため）。
 
-**2026-11-14 からは、BT1 が切れていた起動（コールドスタート）でも ANA を有効のままにしています**（`settings.h` の `GNSS_ANA_OFF_ON_COLD` = 0）。
-切ると SD の航法データベースに入った予測軌道が使われず、しかも QZSS は ANA の有無にかかわらずどの基板でも使われていなかったためです。
-以下は 1 にしたとき（2026-11-13〜14 の動き）の説明です。
-**BT1 が切れていた起動（コールドスタート）だけは、その起動の間 ANA を切ります**（2026-11-13〜）。この GNSS のファーム（ROM SPG 5.10。`log.txt` の `GNSS VER:`）は、
-コールドスタートのあと ANA が有効だと QZSS を航法に使わないためです（SPG 5.30 のリリースノートの既知の制限。5.30 で直ったが、SAM-M10Q は外付けフラッシュが無いので上げられない）。
-BT1 の生死は最初の NAV-PVT で分かるので、ANA の設定はそのあとに送ります。`log.txt` の `GNSS ANA on|off for this boot (...): ack` が結果、
-`GNSS QZSS first used 52.0s after boot (...)` と 10 分ごとの `GNSS SVS used G8 E5 B6 Q2 R0 (QZSS seen 3) ana=off(cold)` で QZSS を使っているかが分かります（まだ実機で確かめていない）。
+- **SD の航法データベース**: 通電中に GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` へ写しておき、起動時に時計が死んでいた
+  ときだけ GNSS へ戻します（`gnss_dbd.cpp`。保存は止まっているときだけ）。予測軌道が入っているので、保存から約 3 日以内なら効く見込みです。
+  `log.txt` の `GNSS FIXED ... after boot rtc=lost dbd=40/52 resend=52/52 time=14.2s` に、戻した結果と測位までの秒数が出ます。
+- **外から時刻を入れる**: 時刻を知らない GNSS は戻したデータベースの一部を断るので、PC につないでいれば Flight Viewer が送る PC の時刻を、
+  無線では仲間（機体のテレメトリ・ボートの時刻のビーコン）の時刻を、精度つきで GNSS へ入れます（`gnss_dbd_give_time()` 1 か所に集約）。
+- **衛星系**: 起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読んで `log.txt` の `GNSS SIGNAL ...` に残します。BeiDou は工場出荷の B1C のまま
+  （B1I は GLONASS と同時に使えず、試すと妨害の指標が上がった）。QZSS はどの GNSS 基板でも測位に使われておらず、理由を調べています
+  （`GNSS QZSS (...)` の行。[docs/pons_todo_notes.md](docs/pons_todo_notes.md)）。
+- **机の上の試験**: USB シリアルの `PONS:DBD,COLD` / `COLDONLY` / `HOT` / `SAVE` / `STATUS`、`COLD,TIME` / `COLDONLY,TIME`
+  （[docs/pons_webserial_protocol.md](docs/pons_webserial_protocol.md)）。
+- GNSS DETAIL 3 の下の 2 行は受け方の指標です: `RF jam:12 50+:3/60 noise:91 agc:4464`（`50+` は直近 60 秒で妨害の指標 jamInd が 50 以上だった秒数。
+  6 以上で橙、18 以上で赤）と `C/N0 top4:30.8 mean:24.7 trk:14`。`log.txt` の `grf` 行と同じ物差しです。
 
-**起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読み、QZSS が切られていれば入れます**（2026-11-13〜）。
-読んでみると、どの GNSS 基板も工場出荷のまま全部有効（GPS・Galileo・GLONASS・BeiDou B1C・QZSS・SBAS）でした。
-**BeiDou は工場出荷の B1C のままにしています**（`settings.h` の `GNSS_BDS_B1I` = 0）。日本の上空に多い BeiDou の静止・傾斜軌道の衛星は B1I しか出していませんが、
-M10 は B1I を B1C とも GLONASS とも同時に有効にできず、2026-11-14 に試すと GLONASS を失ったうえ、B1I の帯域で妨害の指標（jam50）が上がり、
-Galileo も悪くなったためです。RAM に前の B1I が残っていれば工場出荷へ戻します。
-**QZSS は、どの GNSS 基板でも測位に使われていません**（2026-11-13〜14 の全ログ。理由は調べている途中で、下の `GNSS QZSS (...)` の行を見ている）。
-書くのは RAM だけで（電源を切れば戻り、起動のたびに書き直す）、書き直すと GNSS が測位をやり直すので、ANA の設定・航法データベースの戻し・
-外からの時刻入れはそのあとにします。`log.txt` には `GNSS SIGNAL ram: GPS=1 SBAS=1 GAL=1 BDS=1 QZSS=1 GLO=1 | L1CA=1 ...`
-（いま効いている値）、書き直したときは `GNSS SIGNAL set (RAM): ...: ack` と読み直した `GNSS SIGNAL ram(after enable): ...`、
-続いて `GNSS SIGNAL bbr: ...`（BT1 で残る値。書かれていなければ `NAK`）と `GNSS SIGNAL default: ...`（工場出荷）が出ます。
-QZSS の衛星ごとの状態は `GNSS QZSS (10min, ana=on): J2:c35,e--,q4,h1,o0,E0A0,U0 ...`（10 分ごとと最初の測位のあと。読み方は `docs/pons_todo_notes.md` §5）。
-
-バックアップ電池が切れた起動に備えて、通電中に GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` へ写しておき、
-起動時に時計が死んでいたときだけ GNSS へ戻します（2026-11-09〜、まだ実機で確かめていない。`gnss_dbd.cpp`）。
-はっきり効くのは前回の保存から約 4 時間以内（エフェメリスの寿命。データベースには ANA の予測も入っているが、上のとおりコールドの起動では ANA を切るので使わない）。
-それより古いとアルマナック（どの衛星を探すか）だけになります。
-保存は止まっているときだけ（飛行中はしない）。
-`log.txt` の `GNSS FIXED ... after boot rtc=lost dbd=40/52 resend=52/52 time=14.2s` で、戻した結果と測位までの秒数がわかります。
-吸い出し・戻しの 1 回ごとに `GNSS DBD IO (...)` の行で通信の様子（位置の更新が待たされた最大・受信 FIFO のたまり・バイトの欠け・返事の遅れ）を残します。
-**PC につないでいれば、PC の時刻も GNSS へ入れます**（2026-11-10〜、まだ実機で確かめていない）。Flight Viewer が接続のたびに
-`PONS:TIME,<UNIX 時刻 ms>` を送り、GNSS が時刻を知らない（BT1 が切れていた）ときだけ本体が GNSS へ入れます。戻したデータベースが
-「時刻が無いので使えない」と断られずに済みます。結果は `log.txt` の `GNSS TIME (pc): ...`（PC の時計のずれも最初の fix で残す）。
-**LoRa で仲間からも時刻をもらいます**（2026-11-13〜、まだ実機で確かめていない）。ボートは機体のテレメトリから、機体はボートの時刻のビーコンから。fix の前でも、
-GNSS の時計（BT1 の RTC）の時刻をその精度（NAV-PVT の tAcc）つきで渡します（精度が 4 秒より悪ければ使いません）。同じ口（`gnss_dbd_give_time()`）に渡します（下の 4. と [docs/pons_link.md](docs/pons_link.md) §4.4）。
-机の上では USB シリアルの `PONS:DBD,COLD`（コールドにして戻す）/ `COLDONLY` / `HOT` / `SAVE` / `STATUS` と、
-`COLD,TIME` / `COLDONLY,TIME`（リセット前に本体が覚えた時刻を、PC の時刻の代わりに入れる）で試せます
-（`COLD` / `COLDONLY` / `HOT` を打つと、再起動するまで自動の吸い出しは止まります。`SAVE` は効きます）。
-`COLD` / `COLDONLY` は、`GNSS_ANA_OFF_ON_COLD` = 1 のときだけ、本物のコールドの起動と同じくその起動の間 ANA を切ってからリセットします（2026-11-14〜、いまは 0 で切らない。`GNSS ANA off for this boot (cold-start test ...)`）。
-GNSS DETAIL 3 の下の 2 行（2026-11-14〜）は GNSS の受け方です: `RF jam:12 50+:3/60 noise:91 agc:4464`（`50+` は直近 60 秒で妨害の指標 jamInd が 50 以上だった秒数。
-6 以上で橙、18 以上で赤）と `C/N0 top4:30.8 mean:24.7 trk:14`（受信の強さと追尾している衛星の数）。log.txt の `grf` 行と同じ物差しです。
-計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §3（時刻は §3.6）。
+計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)。
 
 ### 4. PONS Link（機体⇄ボート テレメトリ無線）
 * 送信機（機体）から受信機（ボート）へ、**32 バイト固定フレーム**（印 `0xA4`。2026-11-07〜）を送信（テレメトリは下り一方向）。
@@ -350,7 +326,8 @@ NAV 画面でスイッチ長押しで入ります。
   * `tools/createmovie_csv2mp4.py`: 飛行再現 MP4 動画生成
   * `tools/flightanalysis/`: スペクトル解析、フゴイド周期・過負荷 G 評価
   * `tools/imulog/`: SD の生 IMU ログ（`imuraw/*.bin`）の解析。`decode_imulog.py`（読み出し）、`eskf.py`（機上の姿勢 ESKF の PC 版）、
-    `vario.py`（機上のバリオ KF の PC 版。V/S を再現し、`--flight-csv` で機上の CSV の V/S と比べる。2026-11-11〜）、`merge_flight.py`（飛行 CSV との結合）など
+    `vario.py`（機上のバリオ KF の PC 版。V/S を再現し、`--flight-csv` で機上の CSV の V/S と比べる。2026-11-11〜）、`merge_flight.py`（飛行 CSV との結合）、
+    `cadence.py`（前後の加速度の振動からパイロットのケイデンスを推定する。目安は踏み込み 180 回/分＝3.0Hz。2026-11-18〜、人力機では未確認）など
 * **アセット・ファーム生成**:
   * `tools/vectormap/build_vectormap.py`: OpenStreetMap から内蔵ベクタ地図データを生成
   * `tools/gen_wav_flash.py`: 音声 WAV を FLASH 焼き込み用 C++ データへ変換
