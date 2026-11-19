@@ -433,9 +433,23 @@ bool map_notice_shown() {
 // 1 秒おきに点滅（blink_1s）し、
 // steer_angle の符号で "Turn RIGHT" / "Turn LEFT" を切り替える。
 // 呼び出しはメインの draw ループから angle_diff > 15° のときに行われる。
+// ★ 段の予約（notice_reserve）はここで、描くのは push_backscreen() の draw_course_warning_box()。
+//   旋回指示の赤い弧と三角（draw_steer_overlay）を無線アイコンより上へ移したので、ここで描くと
+//   その弧と三角が「Turn LEFT!」の文字の上に重なる（NORTHUP の半径 88〜108px の円は y=175..200 の箱を横切る）。
+//   警告の箱は弧より上に置く（2026-11-19）。ESKF の行より上なのは前と同じ。
+static bool  s_cw_pending = false;
+static float s_cw_angle   = 0.0f;
 void draw_course_warning(float steer_angle){
   // 点滅で消えている相も押さえる（GNSS の状態の箱がこの段を避けるように。notice_reserve の ★）
   notice_reserve(is_trackupmode() ? (get_self_cy() + 12) : 175, 25);
+  s_cw_pending = true;
+  s_cw_angle   = steer_angle;
+}
+
+static void draw_course_warning_box(){
+  if (!s_cw_pending) return;
+  s_cw_pending = false;   // 次のフレームは draw_course_warning() が決め直す
+  const float steer_angle = s_cw_angle;
   if(blink_1s()){
     // TRACKUP: 自機アイコン尾翼（cy+9=189）の下にボックスを配置する
     int box_y = is_trackupmode() ? (get_self_cy() + 12) : 175;  // TRACKUP=192, NORTHUP=175
@@ -451,6 +465,8 @@ void draw_course_warning(float steer_angle){
       backscreen.setCursor(30, box_y+5);
       backscreen.print("Turn LEFT! Turn LEFT!");
     }
+    // 地図用の文字色に戻して抜ける（直後の draw_gs_track() へ赤色が漏れないようにする）
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   }
 }
 
@@ -860,12 +876,124 @@ static bool header_shows_pitch();
 #define TRACKUP_TONE_SHRINK   26
 #define TRACKUP_STEER_SHRINK  24
 
+// 旋回指示（赤いアークと誘導三角形）の遅延描画パラメータ。
+// draw_triangle() が値を入れて有効化し、push_backscreen() が無線情報（船アイコン等）より
+// 上のレイヤーに描いて false に戻す（draw_eskf_calib_warning と同じ仕組み）。
+static bool  s_steer_overlay_valid  = false;
+static int   s_steer_overlay_ttrack = 0;
+static float s_steer_overlay_angle  = 0.0f;
+
+static void draw_steer_overlay() {
+  if (!s_steer_overlay_valid) return;
+  const int   ttrack      = s_steer_overlay_ttrack;
+  const float steer_angle = s_steer_overlay_angle;
+  s_steer_overlay_valid = false;   // 次のフレームは draw_triangle() が決め直す
+
+  if ((millis() / 1000) % 3 == 0) return;
+
+  const int nlen = get_needle_len();  // NORTHUP=120, TRACKUP=180
+  if (upward_mode == MODE_NORTHUP) {
+    float tt_radians = deg2rad(ttrack);
+    float arc_factor = course_warning_index / 900.0;
+    if (steer_angle > 0)
+      backscreen.drawArc(240/2, 240/2, (nlen-21), (nlen-23), (ttrack+180)%360, (ttrack+180+(int)(arc_factor*steer_angle))%360, COLOR_RED, COLOR_WHITE);
+    else
+      backscreen.drawArc(240/2, 240/2, (nlen-21), (nlen-23), (ttrack+180+(int)(arc_factor*steer_angle))%360, (ttrack+180)%360, COLOR_RED, COLOR_WHITE);
+
+    // 約15度以上の方位違いがある場合に、指示三角形を描画する。
+    if (abs(steer_angle) > 15) {
+      double steer_triangle_start_rad = tt_radians + (steer_angle < 0 ? -0.1 : 0.1);
+      double steer_triangle_end_rad   = tt_radians + (steer_angle < 0 ? -0.35 : 0.35);
+      float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
+      float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + 240/2;
+      float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
+      float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + 240/2;
+      float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
+      float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + 240/2;
+      backscreen.fillTriangle(x1, y1, x2, y2, x3, y3, COLOR_RED);
+    }
+    if (abs(steer_angle) > 55) {
+      double steer_triangle_start_rad = tt_radians + (steer_angle < 0 ? -0.7 : 0.7);
+      double steer_triangle_end_rad   = tt_radians + (steer_angle < 0 ? -0.95 : 0.95);
+      float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
+      float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + 240/2;
+      float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
+      float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + 240/2;
+      float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
+      float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + 240/2;
+      backscreen.fillTriangle(x1, y1, x2, y2, x3, y3, COLOR_RED);
+    }
+    if (abs(steer_angle) > 100) {
+      double steer_triangle_start_rad = tt_radians + (steer_angle < 0 ? -1.3 : 1.3);
+      double steer_triangle_end_rad   = tt_radians + (steer_angle < 0 ? -1.55 : 1.55);
+      float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
+      float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + 240/2;
+      float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
+      float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + 240/2;
+      float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
+      float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + 240/2;
+      backscreen.fillTriangle(x1, y1, x2, y2, x3, y3, COLOR_RED);
+    }
+  } else if (upward_mode == MODE_TRACKUP) {
+    const int cy   = BACKSCREEN_SIZE * 3 / 4;  // = 180
+    // 30 度幅の三角形と重ならないよう、こちらも内側へ寄せる
+    const int slen = nlen - TRACKUP_STEER_SHRINK;
+    float arc_factor = course_warning_index / 900.0;
+    // drawArcの座標系: 0°=6時方向（画面下）、時計回り。機首方向（画面上）= drawArc 180°
+    if (steer_angle > 0)
+      backscreen.drawArc(240/2, cy, (slen-21), (slen-23), 180, (180 + (int)(arc_factor*steer_angle)) % 360, COLOR_RED, COLOR_WHITE);
+    else
+      backscreen.drawArc(240/2, cy, (slen-21), (slen-23), (360 + 180 + (int)(arc_factor*steer_angle)) % 360, 180, COLOR_RED, COLOR_WHITE);
+
+    // 誘導三角形: 機首=0ラジアン（画面上）を基準に offset。NORTHUPの tt_radians に相当
+    if (abs(steer_angle) > 15) {
+      double steer_triangle_start_rad = (steer_angle < 0 ? -0.1 : 0.1);
+      double steer_triangle_end_rad   = (steer_angle < 0 ? -0.35 : 0.35);
+      float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
+      float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
+      float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
+      float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
+      float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
+      float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
+      backscreen.fillTriangle(x1, y1, x2, y2, x3, y3, COLOR_RED);
+    }
+    if (abs(steer_angle) > 55) {
+      double steer_triangle_start_rad = (steer_angle < 0 ? -0.7 : 0.7);
+      double steer_triangle_end_rad   = (steer_angle < 0 ? -0.95 : 0.95);
+      float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
+      float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
+      float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
+      float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
+      float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
+      float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
+      backscreen.fillTriangle(x1, y1, x2, y2, x3, y3, COLOR_RED);
+    }
+    if (abs(steer_angle) > 100) {
+      double steer_triangle_start_rad = (steer_angle < 0 ? -1.3 : 1.3);
+      double steer_triangle_end_rad   = (steer_angle < 0 ? -1.55 : 1.55);
+      float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
+      float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
+      float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
+      float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
+      float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
+      float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
+      backscreen.fillTriangle(x1, y1, x2, y2, x3, y3, COLOR_RED);
+    }
+  }
+}
+
 void draw_triangle(int ttrack,float steer_angle) {
   // Core0 スタック残量を計測。
   // draw_triangle() は drawWideLine を最も多く呼ぶ関数であり、
   // TFT_eSPI の drawWideLine が大量のスタックを消費するため、
   // その直前がスタック消費のピーク（5 秒に 1 回出力）。
   DEBUG_STACK_C0("draw_triangle");
+  // 赤い旋回アークと誘導三角形は、無線情報（船アイコン等）より上のレイヤーに出すため
+  // ここではパラメータだけ覚えて push_backscreen() 内の draw_steer_overlay() で描く。
+  s_steer_overlay_valid  = true;
+  s_steer_overlay_ttrack = ttrack;
+  s_steer_overlay_angle  = steer_angle;
+
   float tt_radians = deg2rad(ttrack);
   const int nlen = get_needle_len();  // NORTHUP=120, TRACKUP=180
   if (upward_mode == MODE_NORTHUP) {
@@ -891,50 +1019,6 @@ void draw_triangle(int ttrack,float steer_angle) {
     draw_plane_icon(BACKSCREEN_SIZE / 2, BACKSCREEN_SIZE / 2,
                     plane_icon_screen_deg(ttrack), plane_icon_color());
 
-
-    if((millis()/1000)%3 != 0){
-      float arc_factor = course_warning_index/900.0;
-      if(steer_angle > 0)
-        backscreen.drawArc(240/2, 240/2, (nlen-21), (nlen-23), (ttrack+180)%360, (ttrack+180+(int)(arc_factor*steer_angle))%360, COLOR_RED, COLOR_WHITE);
-      else
-        backscreen.drawArc(240/2, 240/2, (nlen-21), (nlen-23), (ttrack+180+(int)(arc_factor*steer_angle))%360,(ttrack+180)%360, COLOR_RED, COLOR_WHITE);
-
-      //約15度以上の方位違いがある場合に、指示三角形を描画する。
-      if(abs(steer_angle) > 15){
-        double steer_triangle_start_rad = tt_radians + (steer_angle<0?-0.1:0.1);
-        double steer_triangle_end_rad = tt_radians + (steer_angle<0?-0.35:0.35);
-        float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + 240/2;
-        float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + 240/2;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-      if(abs(steer_angle) > 55){
-        double steer_triangle_start_rad = tt_radians + (steer_angle<0?-0.7:0.7);
-        double steer_triangle_end_rad = tt_radians + (steer_angle<0?-0.95:0.95);
-        float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + 240/2;
-        float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + 240/2;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-      if(abs(steer_angle) > 100){
-        double steer_triangle_start_rad = tt_radians + (steer_angle<0?-1.3:1.3);
-        double steer_triangle_end_rad = tt_radians + (steer_angle<0?-1.55:1.55);
-        float x1 = (nlen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (nlen-12) * -cos(steer_triangle_start_rad) + 240/2;
-        float x2 = (nlen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (nlen-32) * -cos(steer_triangle_start_rad) + 240/2;
-        float x3 = (nlen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (nlen-22) * -cos(steer_triangle_end_rad) + 240/2;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-    }
-    
     // Needle (True Track)
     backscreen.drawWideLine(240/2+sin(tt_radians)*9, 240/2-cos(tt_radians)*9, 120+sin(tt_radians)*nlen, 120-cos(tt_radians)*nlen, 5,COLOR_BLACK);
     
@@ -975,54 +1059,6 @@ void draw_triangle(int ttrack,float steer_angle) {
       backscreen.drawTriangle(tx1,ty1,tx2,ty2,tx3,ty3, COLOR_BLACK);
     } else {
       backscreen.fillTriangle(tx1,ty1,tx2,ty2,tx3,ty3, blink_1s()?COLOR_RED:COLOR_BLACK);
-    }
-
-    // ── コース逸脱アーク + 誘導三角形 ──
-    // drawArcの座標系: 0°=6時方向（画面下）、時計回り。機首方向（画面上）= drawArc 180°
-    // NORTHUPの (ttrack+180)%360 は方位角→drawArc角への変換。TRACKUPは機首固定なので 180 を使う。
-    if ((millis()/1000)%3 != 0) {
-      // 上で縮めた 30 度幅の三角形と重ならないよう、こちらも内側へ寄せる
-      const int slen = nlen - TRACKUP_STEER_SHRINK;
-      float arc_factor = course_warning_index / 900.0;
-      if (steer_angle > 0)
-        backscreen.drawArc(240/2, cy, (slen-21), (slen-23), 180, (180 + (int)(arc_factor*steer_angle)) % 360, COLOR_RED, COLOR_WHITE);
-      else
-        backscreen.drawArc(240/2, cy, (slen-21), (slen-23), (360 + 180 + (int)(arc_factor*steer_angle)) % 360, 180, COLOR_RED, COLOR_WHITE);
-
-      // 誘導三角形: 機首=0ラジアン（画面上）を基準に offset。NORTHUPの tt_radians に相当
-      if (abs(steer_angle) > 15) {
-        double steer_triangle_start_rad = (steer_angle<0?-0.1:0.1);
-        double steer_triangle_end_rad   = (steer_angle<0?-0.35:0.35);
-        float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
-        float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
-        float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-      if (abs(steer_angle) > 55) {
-        double steer_triangle_start_rad = (steer_angle<0?-0.7:0.7);
-        double steer_triangle_end_rad   = (steer_angle<0?-0.95:0.95);
-        float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
-        float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
-        float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
-      if (abs(steer_angle) > 100) {
-        double steer_triangle_start_rad = (steer_angle<0?-1.3:1.3);
-        double steer_triangle_end_rad   = (steer_angle<0?-1.55:1.55);
-        float x1 = (slen-12) * sin(steer_triangle_start_rad) + 240/2;
-        float y1 = (slen-12) * -cos(steer_triangle_start_rad) + cy;
-        float x2 = (slen-32) * sin(steer_triangle_start_rad) + 240/2;
-        float y2 = (slen-32) * -cos(steer_triangle_start_rad) + cy;
-        float x3 = (slen-22) * sin(steer_triangle_end_rad) + 240/2;
-        float y3 = (slen-22) * -cos(steer_triangle_end_rad) + cy;
-        backscreen.fillTriangle(x1,y1,x2,y2,x3,y3,COLOR_RED);
-      }
     }
   }
 }
@@ -1643,6 +1679,64 @@ void draw_replay_indicator(){
     const bool rx = (strncmp(fn, kRxPrefix, sizeof(kRxPrefix) - 1) == 0);
     backscreen.setCursor(rx ? 84 : 95, 199);
     backscreen.print(rx ? "REPLAY RX" : "REPLAY");
+  }
+}
+
+// 待機中の自動減光（backlight.cpp の dim_tick）の間、地図の中央に「DIM MODE」と戻し方を出す（2026-11-19）。
+// 暗くなった理由が画面に無いと、故障と思われかねないため。
+// ★ レイヤーは低い（航跡の直後に呼ぶ）。自機マーカー・姿勢・通知の箱はこの上に重なってよい。
+//   減光中は地図を読む場面ではないので、白い箱で地図を隠してよい。
+// 戻し方は dim_tick() の 4) と 1)・2) に合わせる（ボタン・動かす・照度センサーの前で手をかざす・輝度 SW を High）。
+//   戻す条件を足したら、ここの一覧も直すこと。
+void draw_dim_mode_notice() {
+  if (!backlight_is_dimmed()) return;
+  static const char* const kLines[] = {
+    // 動き出したら自動で消えることを先頭に書く（「走り出しても暗いままでは」という不安を消すため。
+    //   実体は対地速度 BL_DIM_SPEED_EXIT 以上か IMU の動き。2026-11-19、ユーザー）
+    "Wake up by:",
+    "- Start moving (auto)",
+    "- Press the button",
+    "- Tap or move the unit",
+    "- Wave hand over sensor",
+    "- Brightness SW to HIGH",
+  };
+  const int n = (int)(sizeof(kLines) / sizeof(kLines[0]));
+  const int area_w = VSI_X;                 // VSI の左までが地図
+  const int title_sz = 3;                   // 内蔵フォント 6x8 の 3 倍＝18x24（日本語・大きい AA フォントは無い）
+  const char* title = "DIM MODE";
+  const int title_w = (int)strlen(title) * 6 * title_sz;
+  const int title_h = 8 * title_sz;
+
+  backscreen.loadFont(AA_FONT_SMALL);
+  const int fh = backscreen.fontHeight();
+  int list_w = 0;
+  for (int i = 0; i < n; i++) {
+    const int w = backscreen.textWidth(kLines[i]);
+    if (w > list_w) list_w = w;
+  }
+  const int gap = 6;
+  const int box_w = max(title_w, list_w) + 16;
+  const int box_h = title_h + gap + n * fh + 14;
+  const int bx = (area_w - box_w) / 2;
+  const int by = (BACKSCREEN_SIZE - box_h) / 2;
+  backscreen.fillRect(bx, by, box_w, box_h, COLOR_WHITE);
+  backscreen.drawRect(bx, by, box_w, box_h, COLOR_GRAY);
+
+  backscreen.unloadFont();
+  backscreen.setTextSize(title_sz);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  backscreen.setCursor((area_w - title_w) / 2, by + 7);
+  backscreen.print(title);
+  backscreen.setTextSize(1);
+
+  backscreen.loadFont(AA_FONT_SMALL);       // 地図用フォントに戻して抜ける（このファイルの約束）
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  const int lx = (area_w - list_w) / 2;
+  int ly = by + 7 + title_h + gap;
+  for (int i = 0; i < n; i++) {
+    backscreen.setCursor(lx, ly);
+    backscreen.print(kLines[i]);
+    ly += fh;
   }
 }
 
@@ -2924,8 +3018,8 @@ void draw_imudetail(int page) {
 
 // 1bit マスクを指定色で描く。0 のビットは透明（背景をそのまま残す）。
 // 色を後から与えられるのがマスクを使う理由そのもの（link_icons.h 参照）。
-static void draw_mask(TFT_eSprite &spr, int x, int y, int w, int h,
-                      const uint8_t* data, uint16_t color) {
+void draw_mask(TFT_eSprite &spr, int x, int y, int w, int h,
+               const uint8_t* data, uint16_t color) {
   const int rowbytes = (w + 7) / 8;
   for (int j = 0; j < h; j++) {
     for (int i = 0; i < w; i++) {
@@ -2952,7 +3046,7 @@ static bool link_frame_visible() {
 }
 
 // 地図の右上に [無線アイコン][役割アイコン] を置く（2026-11-17 に左上から移した。高さは同じ）。
-// 受信モードでは役割アイコンを 1 秒ごとに点滅させる（draw_replay_indicator と同じ周期）。
+// 役割アイコン（船／飛行機）は点滅させない（2026-11-19。下の ★ を参照）。
 //
 // ★ **リプレイ中・デモ中はここへ来ない**（draw_link_overlay が先に return する）。
 //   0.978〜0.984 の「リプレイ中は灰色の弧 1 本」は畳んだ —
@@ -3021,19 +3115,13 @@ static void draw_link_icons() {
     if (lost) draw_mask(backscreen, x, ry, ICON_RSSI_W, ICON_RSSI_H, ICON_RSSI_X, COLOR_RED);
   }
 
-  // 役割アイコン。受信モードだけ点滅させて目を引く（docs/pons_link.md §5）。
-  // ★★ **点滅は blink_1s（半周期 1 秒）を使うこと。** 0.990 まで半周期 500ms＝
-  //   1 秒周期で、**テレメトリ 1Hz の再描画と位相が完全に固定され**ていた
-  //   （0.988 でミラー中はフレーム到着が再描画の契機になったため）。
-  //   毎回同じ位相でサンプルするので、**消えている側に当たるとずっと出ない**。
-  //   実機で確認: 受信中は出ないのに、送信機を切ると（再描画が 1050ms の
-  //   強制リフレッシュに替わって位相が流れるので）数秒だけ現れる、という症状。
-  //   同じ罠は settings.h の LINK_FRAME_BLINK_MS にも書いてある。
-  const bool blink_on = !rx || blink_1s();
-  if (blink_on) {
-    if (rx) draw_mask(backscreen, ix, y, ICON_BOAT_W,  ICON_BOAT_H,  ICON_BOAT,  col);
-    else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
-  }
+  // 役割アイコン。送信・受信とも点滅させない（2026-11-19、ユーザー）。
+  // ★ 0.990〜11/18 は受信モードだけ船を blink_1s で点滅させていた（左上にあった頃、受信機であることに目を引くため）。
+  //   送信側は電波の弧が送るたびに脈動するのに、受信側は役割アイコンの方が点滅していて、
+  //   動くものが逆で鬱陶しかった。受信機であることは船の絵と色（シアン）・受信枠で分かり、
+  //   受け取れているかはアンテナの本数と × が示す。点滅を戻すなら役割ではなく電波アイコンの側で考える。
+  if (rx) draw_mask(backscreen, ix, y, ICON_BOAT_W,  ICON_BOAT_H,  ICON_BOAT,  col);
+  else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
 
   // 役割アイコンの真上に直近の送受信周期 [s] を重ねて表示（例: 1.0s, 2.1s）。
   // 平均化せず、最後に送受信した時の1個前からの経過時間をそのまま出す。
@@ -3491,12 +3579,16 @@ static void draw_eskf_calib_warning() {
 
 void push_backscreen(){
   TIMING_START(push_bs);
+  draw_link_overlay();
+  draw_steer_overlay();            // 無線情報（船アイコン等）より上。VSI や通知の箱よりは下
+  draw_course_warning_box();       // 旋回指示の弧より上（文字が隠れないように）。段の予約は draw_course_warning() 済み
   // vario_inhibit は自機のバリオ禁止。受信ミラー中（link_mirror_active()）は送信機の V/S を表示する。
+  // ★ VSI は右端 5px（x=VSI_X..239）に 40Hz で直接 push されるため、旋回アーク等がはみ出ても
+  //   チラつかないよう draw_steer_overlay() の後に合成する（通知の箱より前）。
   if (vario_volume > 0 && (!vario_inhibit || link_mirror_active())) {
     draw_vsi();
     vsi_sprite.pushToSprite(&backscreen, VSI_X, 0);  // Sprite→Sprite 合成
   }
-  draw_link_overlay();
   draw_eskf_calib_warning();       // 無線のアイコンより上（BUG-87）。下の通知の箱よりは下
   draw_gnss_disconnect_warning();  // 最上位レイヤー。上の draw_link_overlay() より後に描く
   draw_warn_mute_banner();         // 同じく最上位。GNSS 警告の下に並ぶ
@@ -3595,6 +3687,8 @@ void draw_gs_track(){
     backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
     backscreen.drawString(hdr_label, hdr_lx, 1);
   }
+  // hdr_tas 時は上の分岐を通らないため、直前の描画の色を引き継がないよう明示する
+  backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
   backscreen.drawString("GS", 1, 1);
 
   // "m/s" はヘッダーへ縦書き("m p s")で移動した（draw_header 参照）。

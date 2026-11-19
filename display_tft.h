@@ -216,6 +216,9 @@ uint16_t imu_status_color();
 // 状態マーク。色から形を決める（緑・青＝丸 / 赤＝× / グレー＝ハイフン / それ以外＝三角）。r は丸の半径。
 // 状態を色で出すところは fillCircle ではなくこれを使う（形でも見分けられるように）。
 void draw_status_mark(TFT_eSprite &spr, int cx, int cy, int r, uint16_t col);
+// 1bit マスクを指定色で描く（0=透明。display_tft.cpp / display_pages.cpp で共用）。
+void draw_mask(TFT_eSprite &spr, int x, int y, int w, int h,
+               const uint8_t* data, uint16_t color);
 
 // PONS Link（機体⇄ボート無線）の状態の色（灰＝OFF / 赤＝無応答 / 緑＝正常 / 橙＝未受信・確認中など）。
 // WIRELESS LINK 画面の右上のマークと、設定画面の Wireless detail 行のマークの両方がこれを使う。
@@ -223,6 +226,8 @@ uint16_t wireless_status_color();
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
 void draw_wireless(int cursor);
+// 待機中の自動減光の間、地図の中央に DIM MODE と戻し方を出す（低いレイヤー。航跡の直後に呼ぶ）。
+void draw_dim_mode_notice();
 #define WIRELESS_MENU_COUNT 7    // MODE / CH / SF / GROUP / PREFLIGHT / CH SCAN / RETURN
 extern int wireless_cursor;
 // 選べるチャンネルの雑音の一覧（display_pages.cpp）。WIRELESS 画面の Ch scan から入る。

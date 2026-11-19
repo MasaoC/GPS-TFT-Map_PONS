@@ -61,9 +61,10 @@ extern const uint8_t* const ICON_TX_WAVES[4];
 // 「弱い（0 本）」と「切れている」を色だけで区別させないための強調。
 extern const uint8_t ICON_RSSI_X[];
 
-// GNSS 衛星アイコン（フッターの衛星数表示用。13x13 正方形）。
+// GNSS 衛星アイコン（フッターの衛星数・GNSS 詳細コンステレーション用。13x13 正方形）。
 #define ICON_SAT_W 13
 #define ICON_SAT_H 13
-extern const uint8_t ICON_SAT[];
+extern const uint8_t ICON_SAT[];        // 信号あり（塗り＋電波）
+extern const uint8_t ICON_SAT_NOSIG[];  // 信号なし（中抜き＋電波なし。コンステレーションの SNR=0 用）
 
 #endif // LINK_ICONS_H

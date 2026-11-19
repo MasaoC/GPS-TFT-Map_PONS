@@ -21,6 +21,7 @@
 
 #include "settings.h"
 #include "display_tft.h"
+#include "src/flashdata/link_icons.h"
 #include "attitude.h"
 #include "tas.h"         // 推定 TAS の案内（曲線の画面）
 #include "link.h"
@@ -826,21 +827,22 @@ static void draw_gnss_page1() {
 
     const uint16_t color = sat_color(satellites[i].satelliteType);
 
-    // SNR あり: 塗りつぶし円、SNR なし: 枠線のみ（信号未確認の衛星）
-    if (satellites[i].SNR > 0) {
-      backscreen.fillCircle(x, y, 5, color);
-    } else {
-      backscreen.drawCircle(x, y, 4, color);
-    }
+    // SNR あり: 塗り衛星+電波 (ICON_SAT)、SNR なし: 中抜き+電波なし (ICON_SAT_NOSIG)
+    draw_mask(backscreen, x - ICON_SAT_W / 2, y - ICON_SAT_H / 2,
+              ICON_SAT_W, ICON_SAT_H,
+              (satellites[i].SNR > 0) ? ICON_SAT : ICON_SAT_NOSIG, color);
 
-    int textx = constrain(x + 6, 0, SCREEN_WIDTH - 20);
-    if (satellites[i].PRN >= 10)
-      textx -= 10;
-    if (satellites[i].PRN >= 100)
-      textx -= 10;
-    backscreen.setTextColor(COLOR_WHITE, COLOR_BLACK);
+    char prnbuf[8];
+    snprintf(prnbuf, sizeof(prnbuf), "%d", satellites[i].PRN);
+    const int tw = backscreen.textWidth(prnbuf);
+    int textx = x + ICON_SAT_W / 2 + 1;           // アイコン右端の 1px 右
+    if (textx + tw > SCREEN_WIDTH) {
+      textx = x - ICON_SAT_W / 2 - 1 - tw;        // 右端にはみ出すときはアイコンの左側へ
+    }
+    if (textx < 0) textx = 0;
+    backscreen.setTextColor(COLOR_WHITE);         // 透過（背景でアイコンや円を消さない）
     backscreen.setCursor(textx, y - 3);
-    backscreen.print(satellites[i].PRN);
+    backscreen.print(prnbuf);
   }
   backscreen.pushSprite(0,40);
 }

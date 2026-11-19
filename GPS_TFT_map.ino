@@ -1688,6 +1688,8 @@ static void draw_current_screen(bool new_gnss_info) {
       rp_t = time_us_32();
       draw_track(new_lat, new_long, scale, drawupward_direction);
       redraw_prof_add(RP_TRACK, time_us_32() - rp_t);
+      // ---- レイヤー 3.1: 自動減光中の DIM MODE（地図の上・ほかの表示の下）----
+      draw_dim_mode_notice();
       rp_t = time_us_32();   // ここから push の前までが ovl
 
       // ---- レイヤー 3.5: パイロンへの基準線・コース円 ----
@@ -2406,6 +2408,16 @@ void loop() {
     if (millis() - screen_update_time > fresh_interval &&
         (screen_mode != MODE_MAP || link_draw_window_ok())) {
       redraw_screen = true;
+    }
+    // 自動減光に入った・戻ったら、次の周期を待たずに地図の DIM MODE を出す／消す。
+    // （減光は自機の表示のときだけ＝ミラー中は起きないので、link_draw_window_ok は見なくてよい）
+    {
+      static bool s_prev_dimmed = false;
+      const bool dimmed = backlight_is_dimmed();
+      if (dimmed != s_prev_dimmed) {
+        s_prev_dimmed = dimmed;
+        if (screen_mode == MODE_MAP) redraw_screen = true;
+      }
     }
   }
 
