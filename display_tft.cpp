@@ -259,7 +259,7 @@ void setup_tft() {
 
 
 // 指定した km 値のスケールバーを backscreen の右下端に描画する。
-// 画面に収まるサイズ（140px 以内）のときのみ描画し、true を返す。
+// 右上の無線アイコン列（y=51〜103）と重ならないサイズ（125px 以内）のときのみ描画し、true を返す。
 // 緯度補正（cos(lat)）を加えることで Mercator 歪みに対応したスケールを表示する。
 bool try_draw_km_distance(float scale, float km) {
   double latnow = get_gnss_lat();
@@ -267,7 +267,7 @@ bool try_draw_km_distance(float scale, float km) {
     latnow = 35;
   }
   int distance_px =  scale*km/cos(radians(latnow));//scale * km;  //scale is px/km
-  if(distance_px > 140)
+  if(distance_px > 125)
     return false;
 
   int ypos = 240-2;
@@ -2554,15 +2554,29 @@ static void draw_imu_page2() {
 // ============================================================
 int wireless_cursor = 0;
 
+// WIRELESS LINK の状態の色。この画面の右上のマークと、設定画面の Wireless 行（src/button.cpp）が両方これを見る。
+uint16_t wireless_status_color() {
+  const uint8_t m = link_get_mode();
+  // OFF は意図的に切っている＝異常ではない。グレー（対象外）にする。
+  if (m == LINK_MODE_OFF) return COLOR_GRAY;
+  // モジュールが応答しない。送信も受信も語れないのでこれが最優先の赤。
+  if (!link_module_alive()) return COLOR_RED;
+  if (m == LINK_MODE_RX)
+    return link_is_receiving() ? COLOR_GREEN : COLOR_ORANGE;   // 受信中 / NO SIGNAL
+  // 送信モード。送信前チェックの最中はまだ 1 回も送っていないのでオレンジ（＝いまは聴いている）。
+  if (link_preflight_state() == LINK_PF_RUNNING) return COLOR_ORANGE;
+  // 「直近に送出があったか」で見る（Sent は UART へ書けた回数でしかないため）。
+  return (link_since_tx_ms() != 0xFFFFFFFFu) ? COLOR_GREEN : COLOR_ORANGE;
+}
+
 void draw_wireless(int cursor) {
   header_footer.fillScreen(COLOR_WHITE);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(1, 11);
   header_footer.print("WIRELESS LINK");
-  // 大会の推奨設定＝パイロット機が送信モード。右上のマークで一目で分かるようにする。
+  // 設定画面の Wireless 行と同じ判定で右上のマークを描く。
   // 位置は IMU・REPLAY の画面の右上と同じ（このヘッダは y=-10 に置くので、y=9 だと上半分が画面の外だった）。
-  draw_status_mark(header_footer, 228, 18, 6,
-      (link_get_mode() == LINK_MODE_TX) ? COLOR_GREEN : COLOR_ORANGE);
+  draw_status_mark(header_footer, 228, 18, 6, wireless_status_color());
   header_footer.pushSprite(0, -10);
 
   backscreen.fillScreen(COLOR_WHITE);
@@ -2664,10 +2678,16 @@ void draw_wireless(int cursor) {
   y += lh;
 
   // 無線モジュールが応答しているか。ここが NG なら以下の数値は意味を持たない。
-  backscreen.setTextColor(link_module_alive() ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
-  backscreen.setCursor(2, y);
-  backscreen.printf(" Module  : %s", link_module_alive() ? "OK" : "NO RESPONSE");
-  y += lh;
+  {
+    const bool mod_ok = link_module_alive();
+    backscreen.setTextColor(mod_ok ? COLOR_GREEN : COLOR_RED, COLOR_WHITE);
+    backscreen.setCursor(2, y);
+    backscreen.printf(" Module  : %s", mod_ok ? "OK" : "NO RESPONSE");
+    if (mode != LINK_MODE_OFF) {
+      draw_status_mark(backscreen, 232, y + 7, 4, mod_ok ? COLOR_GREEN : COLOR_RED);
+    }
+    y += lh;
+  }
 
   // ★★ リプレイ中・デモ中は無線を「OFF 扱い」にしている（link.h）。
   //   **設定値は書き換えていない**ので、ここに理由を出さないと
@@ -2678,6 +2698,7 @@ void draw_wireless(int cursor) {
     backscreen.setCursor(2, y);
     backscreen.printf(" Hold    : %s (%s)", getReplayMode() ? "replay" : "demo",
                       (mode == LINK_MODE_TX) ? "no TX" : "no mirror");
+    draw_status_mark(backscreen, 232, y + 7, 4, COLOR_ORANGE);
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     y += lh;
   }
@@ -2694,6 +2715,7 @@ void draw_wireless(int cursor) {
       // 平均の窓はアッパーでは送る間隔に合わせて伸びる（10 発ぶん。link_rssi_avg10）
       backscreen.printf(" Signal  : %d dBm (%lus)  %u/3", link_rssi_avg10(),
                         (unsigned long)(link_nosignal_ms() / 1000), bars);
+      draw_status_mark(backscreen, 232, y + 7, 4, COLOR_GREEN);
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     } else if (link_other_group_seen()) {
       // ★ 電波は届いていて、グループ ID だけが食い違っている。
@@ -2701,9 +2723,14 @@ void draw_wireless(int cursor) {
       //   （SD が飛んで group が既定の A に戻ったときに、まさにこれが出る）
       backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
       backscreen.printf(" Signal  : GROUP %c FOUND", link_group_letter(link_other_group_id()));
+      draw_status_mark(backscreen, 232, y + 7, 4, COLOR_ORANGE);
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     } else {
-      backscreen.print(" Signal  : searching...");
+      // 未受信こそ WIRELESS LINK が三角（橙）になる主因なので、文字色と行末の三角で一目で分かるようにする。
+      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      backscreen.print(" Signal  : NO SIGNAL");
+      draw_status_mark(backscreen, 232, y + 7, 4, COLOR_ORANGE);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     }
     y += lh;
     backscreen.setCursor(2, y);
@@ -2792,12 +2819,17 @@ void draw_wireless(int cursor) {
   } else if (mode == LINK_MODE_TX) {
     // 送信機側で唯一確かめられる**実際に送出できた回数**。
     // モジュールがビジーでスロットを捨てると、ここが経過秒数より少なくなる。
-    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    const bool tx_held = link_rf_suppressed();
+    const bool tx_sent = !tx_held && (link_since_tx_ms() != 0xFFFFFFFFu);
+    backscreen.setTextColor(tx_sent ? COLOR_BLACK : COLOR_ORANGE, COLOR_WHITE);
     backscreen.setCursor(2, y);
     // ★ 抑止中に「Sending 1Hz」と書くと嘘になる。上の Hold 行と二重になるが、
     //   **断言している文のほうを直す**（Hold を見落としても誤解しない）。
-    backscreen.print(link_rf_suppressed() ? " Sending : held (not on air)"
-                                          : " Sending 1Hz (no uplink)");
+    if (tx_held)      backscreen.print(" Sending : held (not on air)");
+    else if (tx_sent) backscreen.print(" Sending : 1Hz (no uplink)");
+    else              backscreen.print(" Sending : waiting (no TX yet)");
+    draw_status_mark(backscreen, 232, y + 7, 4, tx_sent ? COLOR_GREEN : COLOR_ORANGE);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     y += lh;
     backscreen.setCursor(2, y);
     backscreen.printf(" Sent    : %u", link_tx_count());
@@ -2810,38 +2842,48 @@ void draw_wireless(int cursor) {
     //   mode 0 で聴くことで、飛ぶ前に自分で確かめられるようにしてある。
     const LinkPreflightState pst = link_preflight_state();
     const uint8_t pf = link_preflight_flags();
+    uint16_t pf_col = COLOR_GREEN;
     backscreen.setCursor(2, y);
     if (pst == LINK_PF_RUNNING) {
-      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      pf_col = COLOR_ORANGE;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.printf(" Preflt  : checking... %lus",
                         (unsigned long)((link_preflight_remain_ms() + 999) / 1000));
     } else if (pst != LINK_PF_DONE) {
-      backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+      pf_col = COLOR_GRAY;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.print(" Preflt  : not run");
     } else if (pf & LINK_PFF_PONS_SAME) {
       // 同じ CH/SF/Group に送信機が 2 台。受信側の表示（DUP_SENDER）と用語を揃える。
       // RSSI を添えるのは、隣で出ているのか遠くなのかで対処が変わるため。
-      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      pf_col = COLOR_RED;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.printf(" Preflt  : DUP SENDER %ddBm", link_preflight_pons_rssi());
     } else if (pf & LINK_PFF_PONS_OTHER) {
-      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      pf_col = COLOR_RED;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.printf(" Preflt  : PONS grp%c %ddBm",
                         link_group_letter(link_preflight_other_group()), link_preflight_pons_rssi());
     } else if (pf & LINK_PFF_BURST) {
-      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      pf_col = COLOR_ORANGE;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.print(" Preflt  : BUSY (bursts)");
     } else if (pf & LINK_PFF_NOISY) {
-      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      pf_col = COLOR_ORANGE;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.printf(" Preflt  : NOISY %d dBm", link_preflight_noise_med());
     } else if (pf & LINK_PFF_SKIPPED) {
       // モジュール無応答か、雑音を 1 つも取れなかった（RSSI バイト無効の疑い）。
       // どちらも「静かだった」ではないので、緑にしてはいけない。
-      backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+      pf_col = COLOR_ORANGE;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.print(" Preflt  : NOT MEASURED");
     } else {
-      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      pf_col = COLOR_GREEN;
+      backscreen.setTextColor(pf_col, COLOR_WHITE);
       backscreen.printf(" Preflt  : OK (%d dBm)", link_preflight_noise_med());
     }
+    draw_status_mark(backscreen, 232, y + 7, 4, pf_col);
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     y += lh;
   }
@@ -2924,14 +2966,17 @@ static void draw_link_icons() {
   const uint16_t col = rx ? COLOR_CYAN : COLOR_ORANGE;
 
   // ★ 右端は VSI_X で止める。x = VSI_X 以降は VSI が backscreen の push 前に合成されて上書きする
-  //   （draw_link_overlay() の右辺の ★ と同じ理由）。役割アイコンの右端を VSI_X - 3 に合わせ、
-  //   強度アイコンはその左に置く。並びは左上にあったときと同じ [強度][役割]。
-  // ★ 上端の y=0..14 は draw_gs_track() の TT / Pavg / TAS のラベル行なので、その下（y=40〜）に置く。
-  // 意図して直さない: 右旋回の draw_degpersec()（x=192〜, y=15..49）と下 10px 重なるのは承知
-  //   （左上にあったときの左旋回と同じ。透過で描くので旋回率の数字は読める。見た目だけ）
-  const int y  = 40;
-  const int ix = VSI_X - 3 - ICON_PLANE_W;          // 役割アイコンの左端（ICON_BOAT_W も同じ 32）
-  const int x  = ix - 3 - ICON_RSSI_W;              // 強度アイコンの左端
+  //   （draw_link_overlay() の右辺の ★ と同じ理由）。
+  //   横幅を食わないよう、右端列（ix..VSI_X-3）に縦積みする:
+  //     y=15..49  : draw_degpersec()（右旋回時の箱）
+  //     y=51..65  : 電波アイコン（強度 19x15。または FAIL）
+  //     y=67..98  : 役割アイコン（船/飛行機 32x32）
+  //     y=96..103 : CH-SF-Group（例: 6-8-A）
+  //     y=105〜   : 地図スケール（try_draw_km_distance は 125px 以内に制限）
+  const int ry = 51;                                   // 電波アイコンの上端（deg/s 箱 y=15..49 の下）
+  const int y  = 67;                                   // 役割アイコンの上端
+  const int ix = VSI_X - 3 - ICON_PLANE_W;             // 役割アイコンの左端（ICON_BOAT_W も同じ 32）
+  const int x  = ix + (ICON_PLANE_W - ICON_RSSI_W) / 2;// 電波アイコンは役割アイコンの上で中央揃え
 
   // 無線アイコン。**受信と送信で絵そのものを変える**（docs/pons_link.md §5）。
   //   受信 … アンテナ 0〜3 本。本数と色の両方で強度を示す。
@@ -2967,8 +3012,6 @@ static void draw_link_icons() {
     rcol  = (level >= 2) ? COLOR_GREEN : COLOR_ORANGE;
     lost  = false;
   }
-  // 役割アイコン(32px)の縦中央に合わせる。
-  const int ry = y + (ICON_PLANE_H - ICON_RSSI_H) / 2;
   // ★ **モジュール故障だけは強度アイコン＋赤× にしない。** あの × は
   //   「弱い／届いていない」にも付くので、**地上で直すべき故障**と
   //   **運用上の無信号**が同じ絵になってしまう。前者だけがピンクの FAIL。
@@ -2992,10 +3035,16 @@ static void draw_link_icons() {
     else    draw_mask(backscreen, ix, y, ICON_PLANE_W, ICON_PLANE_H, ICON_PLANE, col);
   }
 
-  // 受信モード: 船アイコンの真上に直近の受信周期 [s] を重ねて表示（例: 1.0s, 2.1s）。
-  // 平均化せず、最後に受信した時の1個前からの経過時間をそのまま出す。
-  if (rx && link_is_receiving()) {
-    const uint32_t iv_ms = link_rx_interval_ms();
+  // 役割アイコンの真上に直近の送受信周期 [s] を重ねて表示（例: 1.0s, 2.1s）。
+  // 平均化せず、最後に送受信した時の1個前からの経過時間をそのまま出す。
+  {
+    const uint32_t iv_ms = rx
+        ? (link_is_receiving() ? link_rx_interval_ms() : 0)
+        // 送信側も受信側の link_is_receiving() と同じ時間（link_nosignal_ms）で古い値を捨てる。
+        //   送れなくなったあとも最後の周期（例 1.0s）が出続けると、送れているように見えるため。
+        : ((!link_rf_suppressed() && link_preflight_state() != LINK_PF_RUNNING
+            && link_since_tx_ms() < link_nosignal_ms())
+            ? link_tx_interval_ms() : 0);
     if (iv_ms > 0) {
       char per_str[8];
       snprintf(per_str, sizeof(per_str), "%.1fs", iv_ms / 1000.0f);
@@ -3003,22 +3052,19 @@ static void draw_link_icons() {
       backscreen.setTextSize(1);
       backscreen.setTextColor(COLOR_BLACK);
       const int tw = (int)strlen(per_str) * 6;
-      const int tx = ix + (ICON_BOAT_W - tw) / 2;
+      const int tx = ix + (ICON_PLANE_W - tw) / 2;
       backscreen.setCursor(tx, y);
       backscreen.print(per_str);
     }
   }
 
-  // ★ 故障のときだけ、強度アイコンの代わりに役割アイコンの**左**へ FAIL を出す。
-  //   読むと「FAIL [飛行機]」＝この機体の無線が壊れている、になる。
-  //   右上に移したので右には VSI まで 3px しか無い。左へ伸ばすので、文字の幅を測ってから
-  //   右端を役割アイコンの 3px 手前にそろえる（19px の強度アイコンの枠より左へはみ出してよい。強度アイコンは故障時に描かない）。
+  // ★ 故障のときだけ、強度アイコンの代わりに電波アイコンの位置（役割アイコンの上）へ FAIL を出す。
   //   内蔵フォントで描くので、先に unloadFont() する（抜けるときは下で地図用フォントに戻す）。
   if (failed) {
     backscreen.unloadFont();
     backscreen.setTextColor(COLOR_PINK, COLOR_WHITE);
     backscreen.setTextSize(1);
-    backscreen.setCursor(ix - 3 - backscreen.textWidth("FAIL"), y + (ICON_PLANE_H - 8) / 2);
+    backscreen.setCursor(ix + ICON_PLANE_W - backscreen.textWidth("FAIL"), ry + (ICON_RSSI_H - 8) / 2);
     backscreen.print("FAIL");
     // ★ **色を戻す。** このファイルの作法（draw_gnss_disconnect_warning /
     //   draw_warn_mute_banner も描き終わりに黒へ戻している）。いまの下流は
@@ -3028,9 +3074,9 @@ static void draw_link_icons() {
   }
 
   // 設定の一致確認（CH - SF - Group）。
-  // アイコンのすぐ下（y=69..76）に、一番小さいデフォルトフォント（GLCD 8px）で
+  // 役割アイコンのすぐ下（y+29 = 96..103）に、一番小さいデフォルトフォント（GLCD 8px）で
   // 右端を役割アイコンの右端にそろえて表示（例: 3-9-B）。
-  // 役割アイコンのピクセル下端（y=66..67）とは重ならない。
+  // 役割アイコンのピクセル下端（y+26..27）とは重ならない。
   char cfg_str[16];
   snprintf(cfg_str, sizeof(cfg_str), "%u-%u-%c",
            link_get_radio_ch(),
@@ -3039,7 +3085,7 @@ static void draw_link_icons() {
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
-  backscreen.setCursor(ix + ICON_PLANE_W - backscreen.textWidth(cfg_str), 69);
+  backscreen.setCursor(ix + ICON_PLANE_W - backscreen.textWidth(cfg_str), y + 29);
   backscreen.print(cfg_str);
   // ★ 地図用フォントに戻して抜ける（このファイルの約束）。
   backscreen.loadFont(AA_FONT_SMALL);
@@ -3445,7 +3491,8 @@ static void draw_eskf_calib_warning() {
 
 void push_backscreen(){
   TIMING_START(push_bs);
-  if (vario_volume > 0 && !vario_inhibit) {
+  // vario_inhibit は自機のバリオ禁止。受信ミラー中（link_mirror_active()）は送信機の V/S を表示する。
+  if (vario_volume > 0 && (!vario_inhibit || link_mirror_active())) {
     draw_vsi();
     vsi_sprite.pushToSprite(&backscreen, VSI_X, 0);  // Sprite→Sprite 合成
   }
@@ -3507,14 +3554,21 @@ static void draw_tas_label_row(TasHdr h, int left_limit) {
                        : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
     backscreen.setTextColor(col, TFT_WHITE);
     const bool has_p = (buf[0] == 'P');
+    const int  py    = has_p ? 3 : 1;
     // 左下の瞬時ピッチ「P」と区別するため、「P」の上に平均を表す水平バー（P̄）を引く。
     // 直上のヘッダー下辺の黒線（TFT y=49）とバーがくっつかないよう、文字を y=3（P 本体は y=4..14）に下げ、
     // y=0 を余白、y=1..2 に太さ 2px のバー、y=3 を文字との隙間（1px）にする。
-    backscreen.drawString(buf, px, has_p ? 3 : 1);
+    backscreen.drawString(buf, px, py);
     if (has_p) {
       const int pw = backscreen.textWidth("P");
       backscreen.fillRect(px, 0, pw + 1, 3, TFT_WHITE);
       backscreen.fillRect(px + 1, 1, pw - 1, 2, col);
+    }
+    // 左下の P 行と同じ条件で、GNSS 速度の裏付けが無い間は取り消し線を引く
+    const EskfGnssState gst = eskf_display_gnss_state();
+    if (gst != EGS_OK) {
+      strike_through(backscreen, px, py + fh / 2, w,
+                     gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
     }
   }
   backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -4311,27 +4365,38 @@ void draw_footer(){
   }
   // ====GNSS====
   // 0 個は赤地に白字と白地に赤字を交互に（FOOTER_SATS0_BLINK_MS）。1〜4 個は赤地に白字、14 個までは橙、15 個から緑。
-  // 分からないとき（リプレイで列が無い・ミラー中に回転枠 3 をまだ受けていない）は灰色の「--sats」。
+  // 分からないとき（リプレイで列が無い・ミラー中に回転枠 3 をまだ受けていない）は灰色の衛星アイコン＋「--」。
   {
     const int ns = get_gnss_numsat();
     const int sx = SCREEN_WIDTH - 101, sw = 44, sh = 15;
     const bool red_box = (ns == 0) ? ((millis() / FOOTER_SATS0_BLINK_MS) % 2 == 0)
                                    : (ns < 5);
+    uint16_t fg_col;
     if (ns == GNSS_NUMSAT_UNKNOWN) {
-      header_footer.setTextColor(COLOR_GRAY);
+      fg_col = COLOR_GRAY;
+      header_footer.setTextColor(fg_col);
     } else if (red_box) {
+      fg_col = COLOR_WHITE;
       header_footer.fillRect(sx, 1, sw, sh, COLOR_RED);
-      header_footer.setTextColor(COLOR_WHITE, COLOR_RED);
+      header_footer.setTextColor(fg_col, COLOR_RED);
     } else if (ns == 0) {
-      header_footer.setTextColor(COLOR_RED, COLOR_WHITE);   // 0 個の白地の相
+      fg_col = COLOR_RED;
+      header_footer.setTextColor(fg_col, COLOR_WHITE);   // 0 個の白地の相
     } else if (ns < 15) {
-      header_footer.setTextColor(COLOR_DARKORANGE);
+      fg_col = COLOR_DARKORANGE;
+      header_footer.setTextColor(fg_col);
     } else {
-      header_footer.setTextColor(COLOR_GREEN);
+      fg_col = COLOR_GREEN;
+      header_footer.setTextColor(fg_col);
     }
-    header_footer.setCursor(sx + 1, 1);
-    if (ns == GNSS_NUMSAT_UNKNOWN) header_footer.print("--sats");
-    else                           header_footer.printf("%dsats", ns);
+    char satbuf[8];
+    if (ns == GNSS_NUMSAT_UNKNOWN) strlcpy(satbuf, "--", sizeof(satbuf));
+    else                           snprintf(satbuf, sizeof(satbuf), "%d", ns);
+    const int tw = header_footer.textWidth(satbuf);
+    const int ix = sx + (sw - (ICON_SAT_W + 2 + tw)) / 2;
+    draw_mask(header_footer, ix, 2, ICON_SAT_W, ICON_SAT_H, ICON_SAT, fg_col);
+    header_footer.setCursor(ix + ICON_SAT_W + 2, 1);
+    header_footer.print(satbuf);
   }
 
   

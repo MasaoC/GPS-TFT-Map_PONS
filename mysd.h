@@ -39,7 +39,8 @@
       TASK_SERIAL_GET,    // Web Serial: 指定 CSV ファイルをシリアルへストリーミング送出
       TASK_SAVE_RTCBK,    // GNSS のバックアップ電池の推定（rtc_backup.cpp）を SD の rtc_backup.txt へ書く
       TASK_SAVE_DBD,      // GNSS の航法データベース（gnss_dbd.cpp が RAM にためたもの）を SD の GNSS_DBD_FILE へ書く
-      TASK_LOAD_DBD       // 同じファイルを RAM へ読み直す（机の上の試験 PONS:DBD,COLD。起動時は setup1() から直接）
+      TASK_LOAD_DBD,      // 同じファイルを RAM へ読み直す（机の上の試験 PONS:DBD,COLD。起動時は setup1() から直接）
+      TASK_SAVE_GYROBIAS  // 静止で確かめたジャイロのゼロ点（attitude.cpp）を SD の GYRO_BIAS_FILE へ書く
   } TaskType;
 
 
@@ -297,6 +298,9 @@
               uint32_t utc;                  // その値の時刻（UTC、1970 年からの秒）
               uint32_t fix_utc;              // 最後に自機の GNSS が測位した時刻（UTC 秒。0 = 分からない）
           } rtcBkArgs;
+          struct {                           // For TASK_SAVE_GYROBIAS
+              float b[3];                    // ジャイロのゼロ点（センサー軸）[rad/s]
+          } gyroBiasArgs;
           struct {                           // For TASK_SERIAL_GET
               char filename[64];             // 送信対象ファイル名（相対パス含む）
               uint32_t tail;                 // 0 = 全部。それ以外は末尾のこのバイト数だけ（行の頭から。PONS:GETTAIL）
@@ -347,6 +351,12 @@
   // load は起動時の setup_sd() の直後に 1 回。読めなくても rtc_backup_set_loaded_core1(false, ...) を必ず呼ぶ。
   void rtc_backup_load_sd();
   void rtc_backup_save_sd(float hours, float aon_h, uint32_t utc, uint32_t fix_utc);
+  // 静止で確かめたジャイロのゼロ点の記録（SD の GYRO_BIAS_FILE。2026-11-18〜。attitude.cpp の ESKF_BIAS_CONFIRM_DIFF_RADS）。
+  // load は起動時の setup_sd() の直後に 1 回（Core1）。Core0 は gyro_bias_take_loaded() で一度だけ受けて attitude_set_bias_ref() へ渡す。
+  Task createSaveGyroBiasTask(const float b[3]);
+  void gyro_bias_load_sd();
+  void gyro_bias_save_sd(const float b[3]);
+  bool gyro_bias_take_loaded(float b[3]);   // Core0。読めた記録があれば一度だけ true
   // GNSS の航法データベース（SD の GNSS_DBD_FILE。Core1 専用。中身の受け渡しは gnss_dbd.h の *_core1）。
   // load は起動時の setup_sd() の直後に 1 回と、試験の TASK_LOAD_DBD。読めなくても gnss_dbd_loaded_core1(false, ...) を必ず呼ぶ。
   Task createSaveDbdTask();

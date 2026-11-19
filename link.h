@@ -139,6 +139,7 @@
   uint16_t link_miss_count();     // seq の飛びの累計＝電波側で落ちた数
   uint16_t link_tx_count();
   uint32_t link_since_tx_ms();    // 直近の送出からの経過[ms]。未送信は 0xFFFFFFFF
+  uint32_t link_tx_interval_ms(); // 直近の送信間隔 [ms]（最後の送信の1個前からの経過時間。未計測は0）
   // ★ 通算平均は持たない。序盤の至近距離のパケットに引きずられて、
   //   飛行中の実力とかけ離れた数字が出続けるため（60 秒ごとのログに
   //   その窓の min..max が残るので、推移はそちらで追える）。

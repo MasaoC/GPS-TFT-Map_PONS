@@ -15,6 +15,7 @@
 #include "../mysd.h"
 #include "../airdata.h"
 #include "../imu.h"
+#include "../link.h"
 #include "../power.h"
 #include "flashdata/wav_data.h"
 #include "hardware/pwm.h"
@@ -1248,7 +1249,6 @@ void loop_tone() {
 // CORE0
 // ============================================================
 void update_vario(bool mute) {
-    if (vario_inhibit) return;  // inhibit 中はバリオ音を出さない
     static unsigned long last_call = 0;
     if (millis() - last_call < 100) return;
     last_call = millis();
@@ -1260,12 +1260,13 @@ void update_vario(bool mute) {
     //   ここに `get_imu_alive()` / `get_airdata_ok()` を書き戻さないこと。
     float vspeed    = vario_vspeed_mps();
     float dead_band = vario_deadband_mps();
-    // ★★ **運搬中のミュートは should_vario を落として入れること。** 関数の冒頭で
+    // ★★ **ミュートや自機 inhibit は should_vario を落として入れること。** 関数の冒頭で
     //   return すると下の**停止エッジを通らず**、鳴っている音がそのまま鳴り続ける
-    //   （アンプも ON のまま残る）。`vario_inhibit` が冒頭 return でよいのは、
-    //   あれが SD の設定で運転中に変わらないから。
+    //   （アンプも ON のまま残る）。受信ミラー中は vario_inhibit でも送信機の V/S を鳴らすため、
+    //   信号途絶で link_mirror_active() が落ちたときも停止エッジを通る必要がある。
     bool should_vario = (vspeed > dead_band || vspeed < -dead_band)
-                     && (vario_volume > 0) && !mute;
+                     && (vario_volume > 0) && !mute
+                     && (!vario_inhibit || link_mirror_active());
 
     static bool prev_vario = false;
 

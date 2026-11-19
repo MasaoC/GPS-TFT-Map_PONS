@@ -69,11 +69,30 @@ static uint32_t good_gsp_us_   = 0;
 static volatile uint32_t ground_relevels_ = 0;
 static bool     ground_now_    = false;
 // 加速中か（滑走の加速を傾きと取り違えないため。attitude_on_gyro の「加速中か」。settings.h の ESKF_ACCEL_*）
-static bool     accel_horiz_on_ = false;     // 水平の比力が ESKF_ACCEL_HORIZ_MPS2 を超えている
+static bool     accel_horiz_on_ = false;     // 「加速中」の条件（加速度計の向きの変化か GNSS の速さ。settings.h の ESKF_ACCEL_*）
 static uint32_t accel_horiz_since_us_ = 0;
 static bool     accelerating_  = false;      // 上が ESKF_ACCEL_HOLD_MAX_US 未満続いている＝加速中とみなす
-static float    acc_lp_[3]     = {0, 0, 0};  // 加速度計の値の低域（時定数 ESKF_ACCEL_CHANGE_TAU_S）。加速度計が動いたかを見る
+static float    acc_lp_[3]     = {0, 0, 0};  // 加速度計の値の直近の平均（時定数 ESKF_ACCEL_CHANGE_TAU_S。ジャイロで本体と一緒に回す）
+static float    acc_f_[3]      = {0, 0, 0};  // 加速度計の値を ESKF_ACCEL_LP_S で均したもの
 static bool     acc_lp_valid_  = false;
+static bool     init_mov_on_   = false;      // 静止の初期化の門: 信用できる GNSS が動いていると言っている（ESKF_ACCEL_GNSS_MOVING_MPS）
+static uint32_t init_mov_since_us_ = 0;
+static float    acc_dp_raw2_   = 0.0f;       // 均していない加速度計の値で見た、平均の向きに直角な差の 2 乗（方位が決まる前の重力観測の門）
+static bool     accel_gnss_stop_on_ = false; // 信用できる GNSS が止まっていると言っている（ESKF_ACCEL_GNSS_STOP_MPS）
+static uint32_t accel_gnss_stop_since_us_ = 0;
+// ---- 「加速中」になる前に寄せた分の記録（ESKF_ACCEL_UNDO_US。0.1 秒ごとの箱）----
+#define LVL_UNDO_N        20
+#define LVL_UNDO_BUCKET_US 100000UL
+static uint32_t lvl_undo_t_[LVL_UNDO_N];
+static float    lvl_undo_rot_[LVL_UNDO_N][2];   // ワールド系の水平の回転 [rad]
+static float    lvl_undo_bg_[LVL_UNDO_N][3];
+static float    lvl_undo_ba_[LVL_UNDO_N][3];
+static bool     lvl_undo_used_[LVL_UNDO_N];
+static int      lvl_undo_head_   = -1;
+static uint32_t lvl_undo_now_us_ = 0;           // いまのサンプルの時刻（attitude_on_gyro の頭で入れる）
+static volatile bool accel_undo_event_ = false; // ログ用（attitude_take_accel_undo_event）
+static float    accel_undo_deg_  = 0.0f;
+static uint8_t  accel_undo_why_  = 0;           // 0 = 加速度計 / 1 = GNSS の速さ
 // 動いているときの、大きくずれた傾きの置き直し（settings.h の ESKF_BIGTILT_*）。
 static float    bt_acc_lp_[3]  = {0.0f, 0.0f, 0.0f};   // 比力の低域（車の振動で |f| が揺れるのを均す）
 static bool     bt_acc_lp_valid_ = false;
@@ -278,6 +297,35 @@ static uint32_t acc_count_  = 0;
 static bool     yaw_set_    = false;
 static uint8_t  yaw_src_    = ATT_YAW_SRC_NONE;
 static uint8_t  yaw_arm_    = 0;          // しきい値超過が連続した測位数
+// ---- 発進加速の常時前向き 2D 相関（ヨー未設定の間だけ使う。settings.h の ESKF_YAW_CORR_*）----
+static float    yaw_imu_hp_[2]     = {0.0f, 0.0f};   // IMU 水平比力のリーキー積分 (East, North) [m/s]
+static float    yaw_gnss_lp_[2]    = {0.0f, 0.0f};   // GNSS 水平速度の低域 (East, North) [m/s]
+static bool     yaw_gnss_lp_valid_ = false;
+static uint32_t yaw_gnss_last_us_  = 0;
+static float    yaw_static_s_      = 0.0f;           // 静止かつ非加速が続いた時間 [s]
+static float    yaw_corr_c_        = 0.0f;           // Σ w (v_imu · dv_gnss)
+static float    yaw_corr_s_        = 0.0f;           // Σ w (v_imu × dv_gnss)_z
+static float    yaw_corr_n_        = 0.0f;           // Σ w |v_imu| |dv_gnss|（まとまり hypot(C,S)/N の分母）
+// 方位を入れたときの記録（log.txt の `ESKF YAW INIT` 行。attitude_take_yaw_init_event）
+static volatile bool yaw_init_event_ = false;
+static uint8_t  yaw_init_how_      = 0;     // 0 = 2D 相関 / 1 = 航跡（情報不足）/ 2 = 航跡（まとまり不足）/ 3 = 航跡（航跡と食い違い）
+static float    yaw_init_mag_      = 0.0f;
+static float    yaw_init_coh_      = 0.0f;
+static float    yaw_init_trkdiff_  = 0.0f;  // 相関で出した方位 − 航跡 [度]（相関を計算できたときだけ意味がある）
+static float    yaw_init_sigma_    = 0.0f;
+static float    yaw_init_gs_       = 0.0f;  // 方位を入れた瞬間の GNSS の対地速度（ログを書く時点の速さではなく）
+static bool     yaw_init_bias_ok_  = false; // ゼロ点を最近覚えていたので P_bg を小さくした
+
+static void yaw_corr_reset() {
+    yaw_imu_hp_[0] = yaw_imu_hp_[1] = 0.0f;
+    yaw_gnss_lp_[0] = yaw_gnss_lp_[1] = 0.0f;
+    yaw_gnss_lp_valid_ = false;
+    yaw_gnss_last_us_  = 0;
+    yaw_static_s_      = 0.0f;
+    yaw_corr_c_        = 0.0f;
+    yaw_corr_s_        = 0.0f;
+    yaw_corr_n_        = 0.0f;
+}
 
 // ---- 静止中のジャイロバイアス学習 ----
 // 和と二乗和は窓の最初のサンプル（bias_g0_）からの差で溜める（float の桁落ちを避けるため。
@@ -288,10 +336,43 @@ static float    bias_sq_[3]  = {0, 0, 0};   // Σ(g − g0)²
 static uint32_t bias_n_      = 0;
 // 方位が決まったあとの地上での維持でゼロ点を覚えたか（動き出すときに P_bg を広げる。learn_gyro_bias のコメント）
 static bool     bias_learned_on_ground_ = false;
+// 静止中にゼロ点を覚えた最後の時刻（方位を入れるとき P_bg を小さくしてよいかの判断。ESKF_YAW_INIT_BIAS_FRESH_US）
+static bool     bias_learn_ok_valid_ = false;
+static uint32_t bias_learn_ok_us_    = 0;
+// ---- 覚えた値を確かめる（2026-11-18〜。settings.h の ESKF_BIAS_CONFIRM_DIFF_RADS）----
+// ばらつきの門は「一定の速さの回転」を見分けられないので、覚えた値を前回までの値（SD の gyro_bias.txt か、この起動で確かめた値）か、
+// 続けて通った直前の窓と比べ、ESKF_BIAS_CONFIRM_DIFF_RADS 以内のときだけ「覚えた」（bias_learn_ok_*）にする。
+static bool     bias_ref_valid_  = false;   // 前回までに確かめたゼロ点（SD の記録か、この起動で確かめた値）
+static float    bias_ref_[3]     = {0, 0, 0};
+static bool     bias_prev_valid_ = false;   // 切れ目なく続いた直前の窓が門を通ったか（その平均）
+static float    bias_prev_[3]    = {0, 0, 0};
+static bool     bias_confirmed_once_ = false;   // この起動で一度でも確かめたか（ログを最初の 1 回だけにする）
+// SD へ書く頼み（Core0 の .ino が attitude_take_bias_to_save で受けて SD のタスクにする）
+static bool     bias_save_req_   = false;
+static float    bias_save_[3]    = {0, 0, 0};
+static bool     bias_saved_valid_ = false;  // この起動で書いた（書くように頼んだ）値
+static float    bias_saved_[3]   = {0, 0, 0};
+static uint32_t bias_saved_us_   = 0;
+// ログ用（attitude_take_bias_event）
+static bool     bias_ev_         = false;
+static uint8_t  bias_ev_how_     = 0;       // 0 = 前回の値と一致 / 1 = 続けて 2 つの窓が一致 / 2 = 前回の値と食い違い（覚えた扱いにしない）
+static float    bias_ev_b_[3]    = {0, 0, 0};
+static float    bias_ev_diff_    = 0.0f;    // 比べた相手との差の最大（各軸）[rad/s]
 
-static void bias_learn_reset() {
+// 5 秒の窓の和だけを空にする（窓を締めたとき。続けて通った窓どうしの比べは残す）
+static void bias_window_clear() {
     bias_n_ = 0;
     for (int i = 0; i < 3; i++) { bias_sum_[i] = 0.0f; bias_sq_[i] = 0.0f; }
+}
+// 窓の溜めかけを捨て、「直前の窓」も切る（動いた・加速した・初期化した）
+static void bias_learn_reset() {
+    bias_window_clear();
+    bias_prev_valid_ = false;
+}
+static float bias_maxdiff(const float a[3], const float b[3]) {
+    float m = 0.0f;
+    for (int i = 0; i < 3; i++) { const float d = fabsf(a[i] - b[i]); if (d > m) m = d; }
+    return m;
 }
 
 // ---- 水平化前に使う「重力方向」の暫定値（センサー軸）----
@@ -409,6 +490,63 @@ static bool level_toward_gravity(const float a[3], float gain) {
 }
 
 
+// ---- 「加速中」になる前に寄せた分の記録と取り消し（settings.h の ESKF_ACCEL_UNDO_US）----
+static void clamp_bias(float b[3], float lim);
+static void lvl_undo_record(float rx, float ry, const float dbg[3], const float dba[3]) {
+    const uint32_t now = lvl_undo_now_us_;
+    if (lvl_undo_head_ < 0 || (uint32_t)(now - lvl_undo_t_[lvl_undo_head_]) >= LVL_UNDO_BUCKET_US) {
+        lvl_undo_head_ = (lvl_undo_head_ + 1) % LVL_UNDO_N;
+        lvl_undo_t_[lvl_undo_head_] = now;
+        lvl_undo_used_[lvl_undo_head_] = true;
+        lvl_undo_rot_[lvl_undo_head_][0] = lvl_undo_rot_[lvl_undo_head_][1] = 0.0f;
+        for (int k = 0; k < 3; k++) { lvl_undo_bg_[lvl_undo_head_][k] = 0.0f; lvl_undo_ba_[lvl_undo_head_][k] = 0.0f; }
+    }
+    lvl_undo_rot_[lvl_undo_head_][0] += rx;
+    lvl_undo_rot_[lvl_undo_head_][1] += ry;
+    for (int k = 0; k < 3; k++) {
+        if (dbg) lvl_undo_bg_[lvl_undo_head_][k] += dbg[k];
+        if (dba) lvl_undo_ba_[lvl_undo_head_][k] += dba[k];
+    }
+}
+// 待機中の維持・地上での維持の寄せ（level_toward_gravity）を記録つきで行う
+static void level_toward_gravity_rec(const float a[3], float gain) {
+    float q0[4] = { q_[0], q_[1], q_[2], q_[3] };
+    if (!level_toward_gravity(a, gain)) return;
+    // dq = q_ ⊗ conj(q0)（ワールド系の回転）。寄せは毎サンプル小さいので回転ベクトル ≒ 2·(x, y)
+    const float qc[4] = { q0[0], -q0[1], -q0[2], -q0[3] };
+    float dq[4];
+    quat_mul(q_, qc, dq);
+    const float sgn = (dq[0] < 0.0f) ? -2.0f : 2.0f;
+    lvl_undo_record(sgn * dq[1], sgn * dq[2], nullptr, nullptr);
+}
+static void lvl_undo_clear() {
+    lvl_undo_head_ = -1;
+    for (int i = 0; i < LVL_UNDO_N; i++) lvl_undo_used_[i] = false;
+}
+// 直前 ESKF_ACCEL_UNDO_US の間に寄せた分を逆に回して戻す。戻した角度 [度] を返す
+static float lvl_undo_apply(uint32_t t_us) {
+    float r[3] = { 0.0f, 0.0f, 0.0f }, dbg[3] = { 0, 0, 0 }, dba[3] = { 0, 0, 0 };
+    for (int i = 0; i < LVL_UNDO_N; i++) {
+        if (!lvl_undo_used_[i]) continue;
+        if ((int32_t)(t_us - lvl_undo_t_[i]) >= (int32_t)ESKF_ACCEL_UNDO_US) continue;   // 古い箱は戻さない
+        r[0] += lvl_undo_rot_[i][0]; r[1] += lvl_undo_rot_[i][1];
+        for (int k = 0; k < 3; k++) { dbg[k] += lvl_undo_bg_[i][k]; dba[k] += lvl_undo_ba_[i][k]; }
+    }
+    lvl_undo_clear();
+    const float ang = sqrtf(r[0]*r[0] + r[1]*r[1]);
+    if (ang <= 0.0f) return 0.0f;
+    const float inv[3] = { -r[0], -r[1], 0.0f };
+    float dq[4], qn[4];
+    quat_from_rotvec(inv, dq);
+    quat_mul(dq, q_, qn);                 // ワールド系なので左から
+    for (int i = 0; i < 4; i++) q_[i] = qn[i];
+    quat_normalize(q_);
+    for (int k = 0; k < 3; k++) { bg_[k] -= dbg[k]; ba_[k] -= dba[k]; }
+    clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
+    clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
+    return ang * 57.29578f;
+}
+
 // ============================================================
 // 初期化
 // ============================================================
@@ -506,8 +644,17 @@ void attitude_setup() {
     yaw_set_ = false;
     yaw_src_ = ATT_YAW_SRC_NONE;
     yaw_arm_ = 0;
+    yaw_corr_reset();
     bias_learn_reset();
     bias_learned_on_ground_ = false;
+    bias_learn_ok_valid_ = false;
+    // 前回の値は setup のあとで SD から渡される（attitude_set_bias_ref）。実機では setup は 1 回だけ
+    bias_ref_valid_ = false;
+    bias_confirmed_once_ = false;
+    bias_save_req_ = false;
+    bias_saved_valid_ = false;
+    bias_ev_ = false;
+    yaw_init_event_ = false;
     // 重力方向の暫定値も捨てる。実機では setup() が 1 回しか呼ばれないので
     // 影響は無いが、残すと「加速度が 1 度も来ていないのに上方向を返す」状態になる
     // （tools/attitude_test が実際に捕まえた）。
@@ -527,6 +674,11 @@ void attitude_setup() {
     accel_horiz_on_ = false;
     accelerating_  = false;
     acc_lp_valid_  = false;
+    accel_gnss_stop_on_ = false;
+    init_mov_on_ = false;
+    lvl_undo_head_ = -1;
+    for (int i = 0; i < LVL_UNDO_N; i++) lvl_undo_used_[i] = false;
+    accel_undo_event_ = false;
     bt_acc_lp_valid_ = false;
     bt_rate_lp_ = 0.0f;
     bt_since_us_ = 0;
@@ -622,8 +774,11 @@ static bool init_level(const float a[3], float att_sigma_deg) {
     yaw_set_     = false;
     yaw_src_     = ATT_YAW_SRC_NONE;
     yaw_arm_     = 0;
+    yaw_corr_reset();
     bias_learn_reset();
+    lvl_undo_clear();                 // 水平化し直したので、前の寄せの記録は意味が無い
     bias_learned_on_ground_ = false;
+    bias_learn_ok_valid_ = false;     // bg_ を 0 に戻したので、覚えたゼロ点はもう無い
     return true;
 }
 
@@ -731,10 +886,15 @@ static void imu_gap_recover(float gap_s) {
 //   静止の判定（|ω| < 1.5deg/s）は SCH16T の雑音の 150 倍ゆるく、人が支えて揺れている自転車の平均を
 //   ゼロ点として覚えていた（ヨー軸 −0.049 → +0.009deg/s。GNSS を切ると方位が 180 秒で −8 度ずれた）。
 //   大きさではなくばらつきで見るのは、ゼロ点そのものが最大 0.3deg/s あり得るため（大きさで切ると覚えられない個体が出る）。
+// ★ 門を通った値は、前回までの値（SD の gyro_bias.txt か、この起動で確かめた値）か続けて通った直前の窓と比べ、
+//   ESKF_BIAS_CONFIRM_DIFF_RADS 以内のときだけ「覚えた」にする（2026-11-18。ばらつきの門は一定の速さの回転を見分けられないため）。
 // ★ 方位が決まったあと（地上での維持）に覚えたら、動き出すときに P_bg を広げる（attitude_on_gyro の地上の維持のブロック）。
 //   止まっている間に測った値は正確だが、走り出すと 0.016deg/s ほど違った（2026-11-18、振動か温度）。広げないと
 //   推定がその差を信じ込み、学び直しが遅れる。止まっている間は広げない（広げると方位の σ が止まっているだけで育つ）。
-static void learn_gyro_bias(const float g[3]) {
+// ★★ 時刻は**サンプルの時刻 t_us** で持つ（2026-11-18 の夜の車で発覚）。古くなったかの判定（attitude_on_gyro）も t_us で見ていて、
+//   ここを time_us_32()（いま）にしていたら、サンプルはリングにためてから数 ms 遅れて渡るので t_us − いま が負になり、
+//   符号なしの差が巨大になって**覚えた直後に毎回「古い」と捨てていた**（夜の 6 回とも `bias not learned`）。PC の試験は時計が 1 つで見えなかった。
+static void learn_gyro_bias(const float g[3], uint32_t t_us) {
     if (bias_n_ == 0)
         for (int i = 0; i < 3; i++) bias_g0_[i] = g[i];
     for (int i = 0; i < 3; i++) {
@@ -753,16 +913,55 @@ static void learn_gyro_bias(const float g[3]) {
         if (var >= lim2) still = false;
         mean[i] = bias_g0_[i] + md;
     }
-    if (still) {
+    if (!still) { bias_learn_reset(); return; }   // 揺れていた。続けて通った窓の比べも切る
+
+    // ---- 確かめる: 前回までの値か、続けて通った直前の窓と ESKF_BIAS_CONFIRM_DIFF_RADS 以内か ----
+    const float d_ref  = bias_ref_valid_  ? bias_maxdiff(mean, bias_ref_)  : 1e9f;
+    const float d_prev = bias_prev_valid_ ? bias_maxdiff(mean, bias_prev_) : 1e9f;
+    int how = -1;                                      // -1 = 比べる相手が無い（最初の窓）
+    if (d_ref < ESKF_BIAS_CONFIRM_DIFF_RADS)       how = 0;
+    else if (d_prev < ESKF_BIAS_CONFIRM_DIFF_RADS) how = 1;
+    else if (bias_ref_valid_)                      how = 2;
+    const bool confirmed = (how == 0 || how == 1);
+    for (int i = 0; i < 3; i++) bias_prev_[i] = mean[i];
+    bias_prev_valid_ = true;
+
+    // 方位が決まる前は確かめる前でも入れる（P_bg は待機中 1 deg/s のままで、方位を入れるとき 0.3 deg/s。何も入れないよりよい）。
+    // 方位が決まったあと（地上の維持）は確かめた値だけ入れる（GNSS で学んだ値を、確かめていない値で上書きしない）。
+    if (!yaw_set_ || confirmed) {
         for (int i = 0; i < 3; i++) {
             float b = mean[i];
             if (b >  ESKF_BIAS_LEARN_MAX_RADS) b =  ESKF_BIAS_LEARN_MAX_RADS;
             if (b < -ESKF_BIAS_LEARN_MAX_RADS) b = -ESKF_BIAS_LEARN_MAX_RADS;
             bg_[i] = b;
         }
-        if (yaw_set_) bias_learned_on_ground_ = true;
     }
-    bias_learn_reset();
+    if (confirmed) {
+        if (yaw_set_) bias_learned_on_ground_ = true;
+        const uint32_t now = t_us;
+        bias_learn_ok_valid_ = true;
+        bias_learn_ok_us_    = now;
+        for (int i = 0; i < 3; i++) bias_ref_[i] = mean[i];
+        bias_ref_valid_ = true;
+        // SD へ: この起動で初めて確かめたとき、そのあとは ESKF_BIAS_SAVE_DIFF_RADS 以上変わって ESKF_BIAS_SAVE_MIN_US たったとき
+        if (!bias_saved_valid_ ||
+            (bias_maxdiff(mean, bias_saved_) >= ESKF_BIAS_SAVE_DIFF_RADS &&
+             (uint32_t)(now - bias_saved_us_) >= ESKF_BIAS_SAVE_MIN_US)) {
+            for (int i = 0; i < 3; i++) { bias_saved_[i] = mean[i]; bias_save_[i] = mean[i]; }
+            bias_saved_valid_ = true;
+            bias_saved_us_    = now;
+            bias_save_req_    = true;
+        }
+    }
+    // ログ: 最初に確かめたとき、前回の値と食い違ったとき
+    if ((confirmed && !bias_confirmed_once_) || how == 2) {
+        bias_ev_how_  = (uint8_t)how;
+        bias_ev_diff_ = (how == 1) ? d_prev : d_ref;
+        for (int i = 0; i < 3; i++) bias_ev_b_[i] = mean[i];
+        bias_ev_ = true;
+    }
+    if (confirmed) bias_confirmed_once_ = true;
+    bias_window_clear();
 }
 
 // 地上での維持でゼロ点を覚えたあと、動き出すときに P_bg を ESKF_BIAS_LEARN_PBG_RADS まで広げる（小さければ）。
@@ -861,6 +1060,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     const float dt_meas = gyro_seen_ ? (float)(uint32_t)(t_us - last_gyro_us_) * 1e-6f : 0.0f;
     last_gyro_us_ = t_us;
     gyro_seen_ = true;
+    lvl_undo_now_us_ = t_us;
 
     // 意図して直さない（2026-11-14 の監査）: IMU の途絶明けに静止の判定（static_since_us_・acc_sum_）を区切らない。水平化前は静止中の引き戻し（時定数 1 秒）で数秒で直り、水平化後は今の加速度で寄せるので害が無い（直すなら eskf.py も合わせる）
     update_static(g, t_us);
@@ -875,8 +1075,18 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 
     // ---- 初期化（水平化）----
     if (!initialized_) {
+        // ★ GNSS が動いていると言っている間は静止の初期化をしない（2026-11-18 夜の車で発覚）。なめらかに減速・加速している車は
+        //   ジャイロが静かで |a| も g に近いので静止の判定を通り、1.2 m/s で減速しながら初期化して傾きが 2〜4° ずれていた。
+        //   ESKF_ACCEL_HOLD_MAX_US 続いたら許す（一定の速さで飛んでいる最中の再起動）。それより先に 3 m/s を超えれば
+        //   attitude_on_gnss_velocity の「動き出したときの初期化」（σ 30°）が走る。
+        {
+            const bool mov = good_gnss_fresh() && good_gsp_ >= ESKF_ACCEL_GNSS_MOVING_MPS;
+            if (mov) { if (!init_mov_on_) { init_mov_on_ = true; init_mov_since_us_ = t_us; } }
+            else init_mov_on_ = false;
+        }
+        const bool init_gnss_ok = !init_mov_on_ || (uint32_t)(t_us - init_mov_since_us_) >= ESKF_ACCEL_HOLD_MAX_US;
         if (static_now_ && (t_us - static_since_us_) >= ESKF_STATIC_INIT_US &&
-            acc_count_ >= 4) {
+            acc_count_ >= 4 && init_gnss_ok) {
             const float a_avg[3] = { acc_sum_[0] / (float)acc_count_,
                                      acc_sum_[1] / (float)acc_count_,
                                      acc_sum_[2] / (float)acc_count_ };
@@ -887,40 +1097,75 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
 
     if (!accel_valid_) return;
 
-    // ---- 加速中か（滑走の加速を傾きと取り違えないため。2026-11-18〜。settings.h の ESKF_ACCEL_*）----
-    // いまの傾きの推定で見た水平方向の比力（加速度計の値をワールド系へ回した水平成分）。止まっていれば 0、
-    // 水平に a で加速していれば a。これが ESKF_ACCEL_HORIZ_MPS2 を超えている間は「加速中」とみなし、重力へ寄せない
-    // （下の待機中の維持・地上での維持と、方位が決まる前の重力観測）。静止の判定（static_now_）は変えない（較正の条件を変えないため）。
-    // ★ 等加速度の滑走はジャイロが静かで |a| も g に近い（1.5 m/s² で +0.11）ので、静止の判定を通ってしまい、
-    //   待機中の維持が加速度の向きへ傾きを寄せていた（0→6 m/s を 4 秒の模擬で、方位が決まるまでピッチが 8.7 度。attitude_test の D5）。
-    // ★ 傾きの推定そのものがずれていても「水平の比力」は同じ形になる。見分けるため、**加速度計の値そのものが**直近の平均
-    //   （時定数 ESKF_ACCEL_CHANGE_TAU_S）から ESKF_ACCEL_CHANGE_MPS2 以上変わっていることも条件にする（本当の加速は加速度計を
-    //   動かすが、推定のずれは動かさない。attitude_test の G2・G4）。それでも ESKF_ACCEL_HOLD_MAX_US より長く続いたら、
-    //   加速ではなく推定のずれとみなして寄せるのを再開する（滑走は 3〜5 秒）。
+    // ---- 加速中か（滑走の加速を傾きと取り違えないため。2026-11-18〜。判定の考え方は settings.h の ESKF_ACCEL_*）----
+    // ★ 推定の座標では見ない（寄せたぶん判定が壊れる。2026-11-18 夜の車）。加速度計の値を、直近の平均を**ジャイロで本体と一緒に回したもの**と比べ、
+    //   平均の向きに直角な差（回らずに比力の向きが変わった＝加速）を見る。GNSS が動いていると言っていれば、それも加速中。
+    // ★ 「加速中」になった瞬間に、直前 ESKF_ACCEL_UNDO_US の寄せを取り消す（門が開くまでの立ち上がりに寄せた分）。
     {
         const float dta = (dt_meas > 0.0f && dt_meas < 0.1f) ? dt_meas : 0.0f;
         if (!acc_lp_valid_) {
-            for (int i = 0; i < 3; i++) acc_lp_[i] = accel_last_[i];
+            for (int i = 0; i < 3; i++) { acc_lp_[i] = accel_last_[i]; acc_f_[i] = accel_last_[i]; }
             acc_lp_valid_ = true;
         }
-        float dch2 = 0.0f;
-        for (int i = 0; i < 3; i++) {
-            const float d = accel_last_[i] - acc_lp_[i];
-            dch2 += d * d;
-            acc_lp_[i] += d * (dta / ESKF_ACCEL_CHANGE_TAU_S);
+        // 平均を本体と一緒に回す（ワールドに固定した向きは、センサー軸では −ω × v で動く）
+        const float w[3] = { g[0] - bg_[0], g[1] - bg_[1], g[2] - bg_[2] };
+        const float c0 = w[1]*acc_lp_[2] - w[2]*acc_lp_[1];
+        const float c1 = w[2]*acc_lp_[0] - w[0]*acc_lp_[2];
+        const float c2 = w[0]*acc_lp_[1] - w[1]*acc_lp_[0];
+        acc_lp_[0] -= c0 * dta; acc_lp_[1] -= c1 * dta; acc_lp_[2] -= c2 * dta;
+        const float kf = (dta < ESKF_ACCEL_LP_S) ? dta / ESKF_ACCEL_LP_S : 1.0f;
+        for (int i = 0; i < 3; i++) acc_f_[i] += (accel_last_[i] - acc_f_[i]) * kf;
+        // 速く回っている間（静止の判定の角速度以上）は平均を加速度計の値へ寄せず、ジャイロで回すだけにする
+        //   （回っている間の比力には回転に伴う加速度が混ざる。寄せると止まったあと平均がずれて「加速中」が続く。attitude_test の G2）
+        if (w[0]*w[0] + w[1]*w[1] + w[2]*w[2] < ESKF_STATIC_GYRO_RADS * ESKF_STATIC_GYRO_RADS)
+            for (int i = 0; i < 3; i++) acc_lp_[i] += (acc_f_[i] - acc_lp_[i]) * (dta / ESKF_ACCEL_CHANGE_TAU_S);
+        const float ln = sqrtf(acc_lp_[0]*acc_lp_[0] + acc_lp_[1]*acc_lp_[1] + acc_lp_[2]*acc_lp_[2]);
+        float dp2 = 0.0f;
+        acc_dp_raw2_ = 0.0f;
+        if (ln > 1.0f) {
+            const float u[3] = { acc_lp_[0] / ln, acc_lp_[1] / ln, acc_lp_[2] / ln };
+            const float d[3] = { acc_f_[0] - acc_lp_[0], acc_f_[1] - acc_lp_[1], acc_f_[2] - acc_lp_[2] };
+            const float du = d[0]*u[0] + d[1]*u[1] + d[2]*u[2];
+            for (int i = 0; i < 3; i++) { const float e = d[i] - du * u[i]; dp2 += e * e; }
+            const float r[3] = { accel_last_[0] - acc_lp_[0], accel_last_[1] - acc_lp_[1], accel_last_[2] - acc_lp_[2] };
+            const float ru = r[0]*u[0] + r[1]*u[1] + r[2]*u[2];
+            for (int i = 0; i < 3; i++) { const float e = r[i] - ru * u[i]; acc_dp_raw2_ += e * e; }
         }
-        float Ra[3][3];
-        quat_to_R(q_, Ra);
-        const float fx = Ra[0][0]*accel_last_[0] + Ra[0][1]*accel_last_[1] + Ra[0][2]*accel_last_[2];
-        const float fy = Ra[1][0]*accel_last_[0] + Ra[1][1]*accel_last_[1] + Ra[1][2]*accel_last_[2];
-        if (sqrtf(fx*fx + fy*fy) > ESKF_ACCEL_HORIZ_MPS2 &&
-            dch2 > ESKF_ACCEL_CHANGE_MPS2 * ESKF_ACCEL_CHANGE_MPS2) {
-            if (!accel_horiz_on_) { accel_horiz_on_ = true; accel_horiz_since_us_ = t_us; }
+        // 信用できる GNSS の対地速度（good_gsp_。鮮度は測位の時刻）
+        const bool gfresh = good_gnss_fresh();
+        const bool gnss_moving = gfresh && good_gsp_ >= ESKF_ACCEL_GNSS_MOVING_MPS;
+        if (gfresh && good_gsp_ < ESKF_ACCEL_GNSS_STOP_MPS) {
+            if (!accel_gnss_stop_on_) { accel_gnss_stop_on_ = true; accel_gnss_stop_since_us_ = t_us; }
+        } else {
+            accel_gnss_stop_on_ = false;
+        }
+        // ブレーキで止まったあとの平均の残り: GNSS が止まっていると 2 秒言い、「加速中」も 2 秒以上なら平均を取り直す
+        if (accel_horiz_on_ && accel_gnss_stop_on_ &&
+            (uint32_t)(t_us - accel_gnss_stop_since_us_) >= ESKF_ACCEL_GNSS_STOP_US &&
+            (uint32_t)(t_us - accel_horiz_since_us_) >= ESKF_ACCEL_GNSS_STOP_US) {
+            for (int i = 0; i < 3; i++) acc_lp_[i] = acc_f_[i];
+            dp2 = 0.0f;
+        }
+        const bool by_acc = dp2 > ESKF_ACCEL_CHANGE_MPS2 * ESKF_ACCEL_CHANGE_MPS2;
+        if (by_acc || gnss_moving) {
+            if (!accel_horiz_on_) { accel_horiz_on_ = true; accel_horiz_since_us_ = t_us; accel_undo_why_ = by_acc ? 0 : 1; }
         } else {
             accel_horiz_on_ = false;
         }
+        const bool was = accelerating_;
         accelerating_ = accel_horiz_on_ &&
                         (uint32_t)(t_us - accel_horiz_since_us_) < ESKF_ACCEL_HOLD_MAX_US;
+        // 上限が来たら、いまの値を新しい平均にする（加速ではなく、ジャイロと加速度計の食い違いが続いているとみなす。
+        //   取り直さないと、方位が決まる前の重力観測の門（acc_dp_raw2_）が平均の時定数で何十秒も閉じたままになる）
+        if (accel_horiz_on_ && !accelerating_ && was) {
+            for (int i = 0; i < 3; i++) acc_lp_[i] = acc_f_[i];
+            acc_dp_raw2_ = 0.0f;
+        }
+        if (accelerating_ && !was) {
+            // 「加速中」になった瞬間: 門が開くまでに寄せた分を取り消す
+            const float deg = lvl_undo_apply(t_us);
+            if (deg > 0.0f) { accel_undo_deg_ = deg; accel_undo_event_ = true; }
+        }
         if (accelerating_) bias_learn_reset();   // 加速中の分をゼロ点の窓に混ぜない
     }
 
@@ -938,8 +1183,8 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     //   どちらも重力へ寄せる方向なので競合しない。1 つに統合するのは、
     //   待機中の挙動（tools/attitude_test の D1/D2）を再検証してからにする。
     if (!yaw_set_ && static_now_ && !accelerating_) {
-        level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
-        learn_gyro_bias(g);          // ★ bg_ を引く前の生の値を渡すこと
+        level_toward_gravity_rec(accel_last_, ESKF_RELEVEL_GAIN);   // 記録つき（「加速中」になったら直前の分を取り消す）
+        learn_gyro_bias(g, t_us);    // ★ bg_ を引く前の生の値を渡すこと
         // 観測が無いので共分散を伝播させても情報は増えない。
         // 水平化し続けている事実と釣り合うよう初期値へ置き直す。
         reset_covariance(ESKF_INIT_ATT_SIGMA_DEG, ESKF_YAW_UNKNOWN_SIGMA_DEG);
@@ -954,8 +1199,8 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         const bool ground = yaw_set_ && on_ground_still(t_us) && !accelerating_;   // 加速中は寄せない（上の「加速中か」）
         if (ground) {
             if (!ground_now_) ground_relevels_++;
-            level_toward_gravity(accel_last_, ESKF_RELEVEL_GAIN);
-            if (gnss_says_ground()) learn_gyro_bias(g);   // ★ bg_ を引く前の生の値を渡すこと
+            level_toward_gravity_rec(accel_last_, ESKF_RELEVEL_GAIN);   // 記録つき（「加速中」になったら直前の分を取り消す）
+            if (gnss_says_ground()) learn_gyro_bias(g, t_us);   // ★ bg_ を引く前の生の値を渡すこと
             reset_tilt_covariance(ESKF_INIT_ATT_SIGMA_DEG);
         } else if (ground_now_ && bias_learned_on_ground_) {
             // 地上の維持を抜けた（動き出した）。止まっている間に覚えたゼロ点の不確かさを広げる（learn_gyro_bias のコメント）
@@ -1000,6 +1245,29 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     v_[1] += Rf[1] * dt;
     v_[2] += (Rf[2] - GRAVITY) * dt;      // ENU なので重力は -Z
     vhist_push(t_us);                     // GNSS 速度の遅れの補償用（ESKF_GNSS_VEL_DELAY_MS）
+
+    // ---- 発進加速の常時前向き 2D 相関用の IMU 水平速度変化（ヨー未設定の間のみ。settings.h の ESKF_YAW_CORR_*）----
+    // プラットホーム上での手押し・位置調整の誤蓄積を残さないよう、静止（かつ非加速）が
+    // ESKF_YAW_CORR_STATIC_RESET_US（1 秒）続いたら IMU 側・GNSS 低域・相関器（C, S）をすべて 0 にクリアする。
+    // 静止でゼロ点を覚えた記録が古くなったら捨てる（time_us_32 は約 71 分で一周するので、差を取る前に無効にしておく）
+    if (bias_learn_ok_valid_ && (uint32_t)(t_us - bias_learn_ok_us_) >= ESKF_YAW_INIT_BIAS_FRESH_US) bias_learn_ok_valid_ = false;
+    if (!yaw_set_) {
+        if (static_now_ && !accelerating_) {
+            yaw_static_s_ += dt;
+            if (yaw_static_s_ * 1e6f >= (float)ESKF_YAW_CORR_STATIC_RESET_US) {
+                yaw_imu_hp_[0] = yaw_imu_hp_[1] = 0.0f;
+                // ★ GNSS の低域は 0 にせず、次の測位で取り直す（2026-11-18）。等速で動いている間に静止の判定が入ると
+                //   （ジャイロが静かで |a|≒g）、0 にした低域との差が偽の速度変化になって相関を汚す。
+                yaw_gnss_lp_valid_ = false;
+                yaw_corr_c_ = yaw_corr_s_ = yaw_corr_n_ = 0.0f;
+            }
+        } else {
+            yaw_static_s_ = 0.0f;
+            const float dec_i = expf(-dt / ESKF_YAW_CORR_TAU_S);
+            yaw_imu_hp_[0] = yaw_imu_hp_[0] * dec_i + Rf[0] * dt;
+            yaw_imu_hp_[1] = yaw_imu_hp_[1] * dec_i + Rf[1] * dt;
+        }
+    }
 
     // ---- 誤差状態の遷移 Phi = I + F*dt ----
     //   d(dtheta)/dt = -R dbg
@@ -1091,6 +1359,9 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         // 方位が決まる前の加速中は入れない（上の「加速中か」）。前後加速度は GNSS から作るので、加速の出だし 0.3〜0.5 秒は
         // まだ上の門に見えず、そこで 1 回入ると傾きが 4 度ほど寄ってしまう。方位が決まったあとは GNSS 速度の観測が傾きを支えるので見ない。
         if (pass && !yaw_set_ && accelerating_) pass = false;
+        // 方位が決まる前は、均していない今の値でも加速していないことを見る（2Hz の 1 回が門の開く直前の加速を拾うと、
+        //   方位が決まる前は P が大きいので 1 回で数度寄る。いきなり 1.5 m/s² の模擬で 4.5°）。揺れで 1 回見送るだけなので害は無い
+        if (pass && !yaw_set_ && acc_dp_raw2_ > ESKF_ACCEL_CHANGE_MPS2 * ESKF_ACCEL_CHANGE_MPS2) pass = false;
         if (pass) {
             level_update(accel_last_, ESKF_LEVEL_SIGMA_MPS2);
             level_last_us_ = t_us;
@@ -1384,6 +1655,8 @@ static void level_update(const float a[3], float sigma_mps2) {
     vhist_shift(&dx[3]);
     clamp_bias(bg_, ESKF_MAX_GYRO_BIAS);
     clamp_bias(ba_, ESKF_MAX_ACCEL_BIAS);
+    // 方位が決まる前の重力観測は、発進の立ち上がりで加速度の向きへ寄せうるので記録する（ESKF_ACCEL_UNDO_US）
+    if (!yaw_set_) lvl_undo_record(dx[0], dx[1], &dx[6], &dx[9]);
     level_updates_++;
 }
 #endif  // ESKF_LEVEL_ENABLED
@@ -1482,12 +1755,110 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, u
         //   （tools/imulog/eskf.py は sAcc で先に振り落としているので、それと同じになる）。
         if (sAcc > ESKF_SACC_MAX) return;
         const float sp = sqrtf(z[0]*z[0] + z[1]*z[1]);
+        // ---- 常時前向き 2D 相関の更新（2026-11-18〜。docs/pons_yaw_init_plan.md）----
+        // GNSS 水平速度の低域（yaw_gnss_lp_）は静止中から常に更新しておき、動き出しからの速度変化
+        // dv_gnss = z - yaw_gnss_lp_ を作る。GS >= ESKF_YAW_CORR_MIN_GS_MPS（0.8m/s）のときだけ
+        // IMU 側の速度変化（yaw_imu_hp_）との内積 C・外積 S を 1/sAcc² 重みで蓄積する。
+        {
+            const uint32_t now_us = time_us_32();
+            if (!yaw_gnss_lp_valid_) {
+                yaw_gnss_lp_[0] = z[0];
+                yaw_gnss_lp_[1] = z[1];
+                yaw_gnss_lp_valid_ = true;
+                yaw_gnss_last_us_  = now_us;
+            } else {
+                const float dtg = (float)(uint32_t)(now_us - yaw_gnss_last_us_) * 1e-6f;
+                yaw_gnss_last_us_ = now_us;
+                if (dtg > 0.0f && dtg < 2.0f) {
+                    const float alpha_g = 1.0f - expf(-dtg / ESKF_YAW_CORR_TAU_S);
+                    yaw_gnss_lp_[0] += alpha_g * (z[0] - yaw_gnss_lp_[0]);
+                    yaw_gnss_lp_[1] += alpha_g * (z[1] - yaw_gnss_lp_[1]);
+                    const float dv_e = z[0] - yaw_gnss_lp_[0];
+                    const float dv_n = z[1] - yaw_gnss_lp_[1];
+                    if (sp >= ESKF_YAW_CORR_MIN_GS_MPS) {
+                        const float rv = (sAcc < ESKF_SACC_MIN) ? ESKF_SACC_MIN : sAcc;
+                        const float w = 1.0f / (rv * rv);
+                        const float dec_cs = expf(-dtg / ESKF_YAW_CORR_CS_TAU_S);
+                        yaw_corr_c_ = dec_cs * yaw_corr_c_ + w * (yaw_imu_hp_[0] * dv_e + yaw_imu_hp_[1] * dv_n);
+                        yaw_corr_s_ = dec_cs * yaw_corr_s_ + w * (yaw_imu_hp_[0] * dv_n - yaw_imu_hp_[1] * dv_e);
+                        yaw_corr_n_ = dec_cs * yaw_corr_n_ + w * sqrtf(yaw_imu_hp_[0] * yaw_imu_hp_[0] + yaw_imu_hp_[1] * yaw_imu_hp_[1])
+                                                               * sqrtf(dv_e * dv_e + dv_n * dv_n);
+                    }
+                } else {
+                    yaw_gnss_lp_[0] = z[0];
+                    yaw_gnss_lp_[1] = z[1];
+                }
+            }
+        }
         if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) { yaw_arm_ = 0; return; }
         if (++yaw_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;  // 単発の化けで焼き付けない
         // ENU なので航跡（真方位・北 0・時計回り）は atan2(East, North)
         float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
         if (trk < 0.0f) trk += 360.0f;
-        init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
+        // 発進加速の 2D 相関が十分溜まっていれば atan2(S, C) で真の機首方位へ回し、mag から初期 σ を動的に決める。
+        // 使わない（航跡＋ESKF_YAW_INIT_SIGMA_DEG へ戻る）条件（2026-11-18 の自転車の発進 8 回で決めた。settings.h の ESKF_YAW_CORR_*）:
+        //   ・情報が足りない（mag < ESKF_YAW_CORR_MIN_MAG。等速のまま測位が始まったなど）
+        //   ・まとまりが悪い（hypot(C,S)/N < ESKF_YAW_CORR_MIN_COH。1 つの回転で IMU と GNSS の向きがそろわない。止まらずに長く動いて
+        //     傾きが狂ったときなど。11/18 午前の −44° はこれで 0.960）
+        //   ・航跡と ESKF_YAW_CORR_MAX_TRK_DIFF_DEG を超えて食い違う（接地中の機体は横滑りしないので、まっすぐ付けた本体なら
+        //     方位と航跡はほぼ同じ。傾きのかたよりは向きを一様に回すのでまとまりに出ない。11/18 午後の +22° はこれで 35°）
+        const float mag = sqrtf(yaw_corr_c_ * yaw_corr_c_ + yaw_corr_s_ * yaw_corr_s_);
+        const float coh = (yaw_corr_n_ > 1e-6f) ? mag / yaw_corr_n_ : 0.0f;
+        uint8_t how = 1;
+        float d_trk = 0.0f, sig_init = ESKF_YAW_INIT_SIGMA_DEG;
+        if (mag >= ESKF_YAW_CORR_MIN_MAG) {
+            how = 2;
+            if (coh >= ESKF_YAW_CORR_MIN_COH) {
+                const float dpsi = atan2f(yaw_corr_s_, yaw_corr_c_);
+                float q_try[4] = { q_[0], q_[1], q_[2], q_[3] };
+                rotate_world_z(q_try, dpsi);
+                float q_keep[4] = { q_[0], q_[1], q_[2], q_[3] };
+                for (int k = 0; k < 4; k++) q_[k] = q_try[k];
+                float r_chk, p_chk, y_chk;
+                euler_from_state(r_chk, p_chk, y_chk);
+                d_trk = y_chk - trk;
+                while (d_trk >  180.0f) d_trk -= 360.0f;
+                while (d_trk < -180.0f) d_trk += 360.0f;
+                if (fabsf(d_trk) <= ESKF_YAW_CORR_MAX_TRK_DIFF_DEG) {
+                    how = 0;
+                    const float sig_corr = ESKF_YAW_CORR_SIGMA_SCALE * (180.0f / (float)M_PI) / sqrtf(mag);
+                    sig_init = sqrtf(ESKF_YAW_INIT_SIGMA_MIN_DEG * ESKF_YAW_INIT_SIGMA_MIN_DEG + sig_corr * sig_corr);
+                    if (sig_init > ESKF_YAW_INIT_SIGMA_DEG) sig_init = ESKF_YAW_INIT_SIGMA_DEG;
+                    const float s = sig_init * (float)M_PI / 180.0f;
+                    for (int i = 0; i < N_ERR; i++) { P_[2][i] = 0.0f; P_[i][2] = 0.0f; }
+                    P_[2][2] = s * s;
+                    yaw_set_ = true;
+                    yaw_src_ = ATT_YAW_SRC_GNSS;
+                } else {
+                    how = 3;
+                    for (int k = 0; k < 4; k++) q_[k] = q_keep[k];   // 回す前に戻す（下の航跡で入れ直す）
+                }
+            }
+        }
+        if (how != 0) init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
+        // ★ 方位が決まる前は、待機中の維持が毎サンプル P_bg を 1°/s に戻している（ゼロ点を学び直せるように）。そのまま方位を入れると、
+        //   方位の σ がゼロ点の不確かさで 1 秒に約 1° ずつ育ち、せっかく小さく入れた σ が 10 秒で 95% 15° に戻っていた（11/18 の発進 6 回）。
+        //   直前の静止でゼロ点を覚えていた（ESKF_YAW_INIT_BIAS_FRESH_US 以内）なら、P_bg を ESKF_BIAS_LEARN_PBG_RADS（止まって測った値と
+        //   走行中の差 0.016°/s を包む 0.02°/s）にする。
+        yaw_init_bias_ok_ = bias_learn_ok_valid_ &&
+                            (uint32_t)(time_us_32() - bias_learn_ok_us_) < ESKF_YAW_INIT_BIAS_FRESH_US;
+        // 覚えていなければデータシートの最大 ESKF_BIAS_UNLEARNED_RADS（0.3 deg/s。待機中の 1 deg/s より小さければ）にする（2026-11-18）。
+        {
+            const float sb = yaw_init_bias_ok_ ? ESKF_BIAS_LEARN_PBG_RADS : ESKF_BIAS_UNLEARNED_RADS;
+            const float s2 = sb * sb;
+            for (int k = 6; k < 9; k++) {
+                if (!yaw_init_bias_ok_ && P_[k][k] <= s2) continue;   // もう小さければそのまま
+                for (int i = 0; i < N_ERR; i++) { P_[k][i] = 0.0f; P_[i][k] = 0.0f; }
+                P_[k][k] = s2;
+            }
+        }
+        yaw_init_how_     = how;
+        yaw_init_mag_     = mag;
+        yaw_init_coh_     = coh;
+        yaw_init_trkdiff_ = d_trk;
+        yaw_init_sigma_   = sig_init;
+        yaw_init_gs_      = sqrtf(z[0]*z[0] + z[1]*z[1]);
+        yaw_init_event_   = true;
         v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2]; vhist_clear();
         return;                     // この回は観測として使わない（速度は直接入れた）
     }
@@ -1793,6 +2164,40 @@ bool attitude_take_bigtilt_event(float &err_deg, bool &yaw_kept) {
     bigtilt_event_ = false;
     err_deg = bigtilt_event_deg_;
     yaw_kept = bigtilt_event_yaw_kept_;
+    return true;
+}
+// 方位を入れた（GNSS で最初に決めた）ときの記録。how: 0 = 2D 相関 / 1 = 航跡（情報不足）/ 2 = 航跡（まとまり不足）/ 3 = 航跡（航跡と食い違い）
+float attitude_yaw_init_gs() { return yaw_init_gs_; }
+bool attitude_take_yaw_init_event(uint8_t &how, float &mag, float &coh, float &trk_diff_deg, float &sigma_deg, bool &bias_ok) {
+    if (!yaw_init_event_) return false;
+    yaw_init_event_ = false;
+    how = yaw_init_how_; mag = yaw_init_mag_; coh = yaw_init_coh_;
+    trk_diff_deg = yaw_init_trkdiff_; sigma_deg = yaw_init_sigma_; bias_ok = yaw_init_bias_ok_;
+    return true;
+}
+bool attitude_take_accel_undo_event(float &deg, uint8_t &why) {
+    if (!accel_undo_event_) return false;
+    accel_undo_event_ = false;
+    deg = accel_undo_deg_;
+    why = accel_undo_why_;
+    return true;
+}
+void attitude_set_bias_ref(const float b[3]) {
+    for (int i = 0; i < 3; i++) bias_ref_[i] = b[i];
+    bias_ref_valid_ = true;
+}
+bool attitude_take_bias_to_save(float b[3]) {
+    if (!bias_save_req_) return false;
+    bias_save_req_ = false;
+    for (int i = 0; i < 3; i++) b[i] = bias_save_[i];
+    return true;
+}
+bool attitude_take_bias_event(uint8_t &how, float b_dps[3], float &diff_dps) {
+    if (!bias_ev_) return false;
+    bias_ev_ = false;
+    how = bias_ev_how_;
+    for (int i = 0; i < 3; i++) b_dps[i] = bias_ev_b_[i] * 57.29578f;
+    diff_dps = bias_ev_diff_ * 57.29578f;
     return true;
 }
 bool attitude_take_imu_gap_event(float &gap_s, bool &yaw_kept) {

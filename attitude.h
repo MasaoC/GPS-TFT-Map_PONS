@@ -208,6 +208,11 @@ uint32_t attitude_get_bigtilt_relevels();
 // yaw_kept に方位を保ったか（ヨーが決まっていなかったときは false）。
 // ★ 方位は捨てずに保ち、GNSS が戻ったら航跡と比べる（下の attitude_take_bigtilt_yaw_check）。
 bool attitude_take_bigtilt_event(float &err_deg, bool &yaw_kept);
+// 方位を GNSS で最初に入れたときの記録（log.txt の `ESKF YAW INIT` 行）。how: 0 = 発進加速の 2D 相関 / 1 = 航跡（情報不足）/
+// 2 = 航跡（まとまり不足）/ 3 = 航跡（航跡と食い違い）。bias_ok = 直前の静止でゼロ点を覚えていて P_bg を小さくした
+bool attitude_take_yaw_init_event(uint8_t &how, float &mag, float &coh, float &trk_diff_deg, float &sigma_deg, bool &bias_ok);
+// 方位を入れた瞬間の GNSS の対地速度 [m/s]（ログ用。記録を書く時点の速さとは違う。2026-11-18 夜に走りながらの起動で gs=0.0 と出ていた）
+float attitude_yaw_init_gs();
 // 置き直したあと、保った方位を GNSS 航跡と比べた瞬間に一度だけ true を返す（ログ記録用）。
 // diff_deg に 航跡 − 方位 [度]、reset に航跡で入れ直したか（ESKF_BIGTILT_YAW_CHECK_DEG を超えていた）。
 bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset);
@@ -215,6 +220,19 @@ bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset);
 // gap_s に途絶えていた秒数、yaw_kept に方位を保ったか（ヨーが決まっていなかったときは false）。
 // 方位を保ったときは、GNSS が戻ったら航跡と比べ、その結果は attitude_take_bigtilt_yaw_check で出る。
 bool attitude_take_imu_gap_event(float &gap_s, bool &yaw_kept);
+// ---- 静止で覚えたジャイロのゼロ点の保存（SD の gyro_bias.txt。2026-11-18〜。settings.h の ESKF_BIAS_CONFIRM_DIFF_RADS）----
+// 起動時に SD の記録（前回の起動で確かめた値。センサー軸 [rad/s]）を渡す。覚えた値をこれと比べて確かめる。
+void attitude_set_bias_ref(const float b[3]);
+// 「加速中」になった瞬間に、門が開くまでに寄せた分を取り消したら一度だけ true（ログ用。settings.h の ESKF_ACCEL_UNDO_US）。
+// deg に取り消した傾き [度]、why に 0 = 加速度計 / 1 = GNSS の速さ。
+bool attitude_take_accel_undo_event(float &deg, uint8_t &why);
+// 確かめたゼロ点を SD へ書くときに一度だけ true（b にセンサー軸 [rad/s]）。この起動で最初に確かめたときと、
+// ESKF_BIAS_SAVE_DIFF_RADS 以上変わって ESKF_BIAS_SAVE_MIN_US たったとき。
+bool attitude_take_bias_to_save(float b[3]);
+// ログ用: この起動で最初に確かめたときと、前回の値と食い違ったときに一度だけ true。
+// how: 0 = 前回の値と一致 / 1 = 続けて 2 つの窓が一致 / 2 = 前回の値と食い違い（覚えた扱いにしない）。
+// b_dps に覚えた値 [deg/s]、diff_dps に比べた相手との差の最大 [deg/s]。
+bool attitude_take_bias_event(uint8_t &how, float b_dps[3], float &diff_dps);
 
 // ---- 機体ゼロ点（マウント基準）の較正 ----
 // 「いま機体のピッチは target_pitch_deg である」と申告して、その値になるよう

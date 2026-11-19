@@ -2894,6 +2894,85 @@ void rtc_backup_load_sd() {
   log_sdf("RTC BACKUP record: %s", ok ? "loaded" : "none (no file / other unit / broken)");
 }
 
+// ===== 静止で確かめたジャイロのゼロ点（SD の GYRO_BIAS_FILE。2026-11-18〜）=====
+// 1 行だけのテキスト: "PONSGB1,<本体の固有 ID>,<x>,<y>,<z>,<CRC16>"（x/y/z はセンサー軸のゼロ点 ×10000 [deg/s]）
+//   例: PONSGB1,E6614103E7452D2F,-12,35,432,3A7C
+// ★ 本体の固有 ID は rtc_backup.txt と同じ理由（SD を別の機体へ差し替えたときにその機体の値を読まない）。
+//   SCH16T を同じ本体で付け替えたときは前の値を読んでしまうが、食い違えば続けて 2 つの窓で確かめ直すだけ（attitude.cpp）。
+// ★ CRC は書いている途中で電源が切れたときに読まないため。読めなければ「記録なし」（続けて 2 つの窓で確かめる）。
+static volatile bool s_gb_ready = false;   // Core1 が読めた記録を置いた（Core0 が受けたら false）
+static float s_gb[3]    = {0, 0, 0};
+
+Task createSaveGyroBiasTask(const float b[3]) {
+  Task t;
+  t.type = TASK_SAVE_GYROBIAS;
+  for (int i = 0; i < 3; i++) t.gyroBiasArgs.b[i] = b[i];
+  return t;
+}
+
+void gyro_bias_save_sd(const float b[3]) {
+  ASSERT_SD_CORE1("gyro_bias_save_sd");
+  if (webserial_connected) return;   // PC 接続中は SD を読み出し専用に保つ（呼ぶ側も接続中は待つ）
+  if (!good_sd()) return;
+  char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+  pico_get_unique_board_id_string(id, sizeof(id));
+  char body[80], line[96];
+  snprintf(body, sizeof(body), "PONSGB1,%s,%ld,%ld,%ld", id,
+           lroundf(b[0] * 57.29578f * 10000.0f), lroundf(b[1] * 57.29578f * 10000.0f), lroundf(b[2] * 57.29578f * 10000.0f));
+  snprintf(line, sizeof(line), "%s,%04X", body, (unsigned)link_crc16((const uint8_t*)body, (uint16_t)strlen(body)));
+  FsFile f;
+  if (!f.open(GYRO_BIAS_FILE, O_WRONLY | O_CREAT | O_TRUNC)) return;
+  f.println(line);
+  f.close();
+}
+
+void gyro_bias_load_sd() {
+  ASSERT_SD_CORE1("gyro_bias_load_sd");
+  bool ok = false; long v[3] = {0, 0, 0};
+  FsFile f;
+  if (good_sd() && f.open(GYRO_BIAS_FILE, O_RDONLY)) {
+    char line[96] = {0};
+    const int n = f.fgets(line, sizeof(line));
+    f.close();
+    char* comma = (n > 0) ? strrchr(line, ',') : nullptr;
+    if (comma) {
+      *comma = '\0';
+      const unsigned crc = (unsigned)strtoul(comma + 1, nullptr, 16);
+      char id[2 * PICO_UNIQUE_BOARD_ID_SIZE_BYTES + 1];
+      pico_get_unique_board_id_string(id, sizeof(id));
+      char fid[40] = {0};
+      const long lim = lroundf(ESKF_BIAS_LEARN_MAX_RADS * 57.29578f * 10000.0f);
+      if (crc == link_crc16((const uint8_t*)line, (uint16_t)strlen(line)) &&
+          sscanf(line, "PONSGB1,%39[^,],%ld,%ld,%ld", fid, &v[0], &v[1], &v[2]) == 4 && strcmp(fid, id) == 0 &&
+          labs(v[0]) <= lim && labs(v[1]) <= lim && labs(v[2]) <= lim) {
+        ok = true;
+      }
+    }
+  }
+  if (ok) {
+    mutex_enter_blocking(&taskQueueMutex);
+    for (int i = 0; i < 3; i++) s_gb[i] = (float)v[i] / 10000.0f / 57.29578f;
+    s_gb_ready = true;
+    mutex_exit(&taskQueueMutex);
+    log_sdf("GYRO BIAS record: loaded x=%+.4f y=%+.4f z=%+.4f deg/s", v[0] / 10000.0f, v[1] / 10000.0f, v[2] / 10000.0f);
+  } else {
+    log_sdf("GYRO BIAS record: none (no file / other unit / broken)");
+  }
+}
+
+bool gyro_bias_take_loaded(float b[3]) {
+  if (!s_gb_ready) return false;   // 毎ループ呼ばれるので、無いときはロックを取らない
+  bool got = false;
+  mutex_enter_blocking(&taskQueueMutex);
+  if (s_gb_ready) {
+    for (int i = 0; i < 3; i++) b[i] = s_gb[i];
+    s_gb_ready = false;
+    got = true;
+  }
+  mutex_exit(&taskQueueMutex);
+  return got;
+}
+
 // ===== GNSS の航法データベース（SD の GNSS_DBD_FILE。gnss_dbd.cpp）=====
 // 中身: 64 バイトの頭（GnssDbdHead）＋ UBX-MGA-DBD のフレームを受けた順に並べたもの。
 // ★ 書くときは一時ファイル（GNSS_DBD_TMP_FILE）に書き切ってから名前を替える。書いている途中で電源が切れても

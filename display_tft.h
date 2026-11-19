@@ -217,6 +217,9 @@ uint16_t imu_status_color();
 // 状態を色で出すところは fillCircle ではなくこれを使う（形でも見分けられるように）。
 void draw_status_mark(TFT_eSprite &spr, int cx, int cy, int r, uint16_t col);
 
+// PONS Link（機体⇄ボート無線）の状態の色（灰＝OFF / 赤＝無応答 / 緑＝正常 / 橙＝未受信・確認中など）。
+// WIRELESS LINK 画面の右上のマークと、設定画面の Wireless detail 行のマークの両方がこれを使う。
+uint16_t wireless_status_color();
 // PONS Link（機体⇄ボート無線）の設定画面。
 // 無線方式に依存しない表示にしてある。
 void draw_wireless(int cursor);

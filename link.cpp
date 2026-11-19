@@ -83,6 +83,7 @@ static uint32_t s_txNoRf = 0;   // 書いたのに送信が始まらなかった
 static uint32_t s_txAirMaxMs = 0;    // 実測の送信時間の最大 [ms]（60 秒ログの airmax=）
 static uint32_t s_txAirTimeout = 0;  // 送信完了を待ちきれなかった回数（to=）
 static uint32_t s_txMs      = 0;    // 直近に送出できた時刻。地図の電波アイコンを脈動させる
+static uint32_t s_txIntervalMs = 0; // 直近の送信間隔 [ms]（前回の送信からの経過時間。未計測は0）
 static uint16_t s_missTotal = 0;    // seq の飛びの累計＝電波側で落ちた数
 // ---- 直近 10 秒の RSSI ----
 //   通算平均は「今アンテナを向け直したら良くなったか」が分からない。
@@ -1509,6 +1510,8 @@ void link_set_mode(uint8_t mode) {
     s_rxValid = false;                 // モードが変わったら受信データは無効
     s_rxMs = 0;
     s_rxIntervalMs = 0;
+    s_txMs = 0;
+    s_txIntervalMs = 0;
     // ★ MAX G/S は供給元が入れ替わるのでリセットする（ミラー中は機体の値を入れる）。
     //   残すと「ボート自身の最高速」と「機体の最高速」が混ざった値が出続ける。
     reset_maxgs();
@@ -1798,7 +1801,12 @@ static void link_push_telemetry() {
     //   送信時間が 65 バイトの約 6 割になり、送信電流もそのぶん減る）。
     uint8_t w2[LINK_W2_LEN];
     link_w2_encode(&t, w2);
-    if (e220_send(w2, (uint8_t)LINK_W2_LEN)) { s_txCount++; s_txMs = millis(); }
+    if (e220_send(w2, (uint8_t)LINK_W2_LEN)) {
+      const uint32_t now_tx = millis();
+      if (s_txMs > 0) s_txIntervalMs = now_tx - s_txMs;
+      s_txMs = now_tx;
+      s_txCount++;
+    }
 }
 
 // ============================================================
@@ -1883,6 +1891,7 @@ uint16_t link_tx_count()   { return (uint16_t)(s_txCount & 0xFFFF); }
 //   モジュールがビジーでスロットを捨てると更新されないので、
 //   脈動が止まること自体が「送れていない」の合図になる。
 uint32_t link_since_tx_ms() { return s_txMs ? (millis() - s_txMs) : 0xFFFFFFFFu; }
+uint32_t link_tx_interval_ms() { return s_txIntervalMs; }
 
 // 直近 10 秒の平均 RSSI [dBm]。1 パケットも入っていなければ 0。
 //   1 発ぶんの RSSI は数 dB ふらつくので、アンテナの向きや置き場所を

@@ -344,7 +344,8 @@ Setting menu_settings[] = {
   // ----------------------------------------------------------
   { SETTING_VARIO_VOLUME,
     [](bool selected) -> std::string {
-      if (vario_inhibit)
+      // vario_inhibit は自機のバリオ禁止。受信機モードでは受信データのバリオが有効なので音量を表示する。
+      if (vario_inhibit && link_get_mode() != LINK_MODE_RX)
         return std::string(selected ? " Volume(Vario): Inhibit" : "Volume(Vario): Inhibit");
       char buff[32];
       sprintf(buff, selected ? " Volume(Vario): %d/100" : "Volume(Vario): %d/100", vario_volume);
@@ -352,7 +353,7 @@ Setting menu_settings[] = {
     },
     nullptr,
     []() {
-      if (vario_inhibit) return;  // inhibit 中は変更不可
+      if (vario_inhibit && link_get_mode() != LINK_MODE_RX) return;  // 自機 inhibit 中（非 RX）は変更不可
       // Volume と同じステップ: 0 → 5 → 10 → 20 → 30 → 40 → 60 → 80 → 100 → 0
       if (vario_volume == 0) {
         vario_volume = 5;
@@ -657,22 +658,8 @@ Setting menu_settings[] = {
     nullptr,
     nullptr,
     [](){
-      const uint8_t m = link_get_mode();
-      // OFF は**意図的に切っている**＝異常ではない。グレー（対象外）にする。
-      // 「使うつもりだったのに OFF」は起動時の読み上げが拾う（上の ★ 参照）。
-      if (m == LINK_MODE_OFF) return COLOR_GRAY;
-      // モジュールが応答しない。送信も受信も語れないのでこれが最優先の赤。
-      if (!link_module_alive()) return COLOR_RED;
-      if (m == LINK_MODE_RX)
-        return link_is_receiving() ? COLOR_GREEN : COLOR_ORANGE;   // 受信中 / NO SIGNAL
-      // 送信モード。★ 送信前チェックの最中は**まだ 1 回も送っていない**ので、
-      //   下の判定に落とすと「送れていない」に見える。故障と区別するため緑にしない
-      //   でオレンジ（＝いまは聴いている）。draw_link_icons() と同じ扱い。
-      if (link_preflight_state() == LINK_PF_RUNNING) return COLOR_ORANGE;
-      // ★ **`Sent` は「UART へ書けた回数」でしかない**ので、ここでは
-      //   「直近に送出があったか」で見る。電波が本当に出たかは AUX の立ち下がりで
-      //   数えている `noRf`（60 秒ログ）の方が確か。丸は粗い指示器に留める。
-      return (link_since_tx_ms() != 0xFFFFFFFFu) ? COLOR_GREEN : COLOR_ORANGE;
+      // WIRELESS LINK 画面の右上のマークと同じ関数（display_tft.cpp の wireless_status_color）。
+      return (int)wireless_status_color();
     }
   },
 

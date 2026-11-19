@@ -17,6 +17,7 @@
 #include "attitude.h"
 #include <cstdio>
 #include <cmath>
+#include <vector>
 #include <cstring>
 
 static const double G = 9.80665;
@@ -206,6 +207,7 @@ int main() {
         ok &= fabsf(bg_still - 0.1f) < 0.01f;
 
         // D5) 滑走の加速を傾きと取り違えない（2026-11-18。settings.h の ESKF_ACCEL_* と attitude.cpp の gsp_fresh()）
+        //   ＋ 1 回の離陸加速で Y95% が 10 度未満（飛行機アイコン・ドリフト点線の上限）まで縮むこと（ESKF_YAW_CORR_*）
         //   静止 4 秒 → 0→6 m/s を 4 秒（1.5 m/s²）→ 6 m/s で 6 秒。本当のピッチ・ロールは 0。GNSS は 4Hz で東向き。
         //   等加速度ではジャイロが静かで |a| も g に近いので静止の判定を通り、待機中の維持が加速度の向きへ傾きを寄せていた。
         //   重力観測の前後加速度の門も方位が決まる前は外れていた。直す前はピッチが 8.7 度（atan(1.5/g)）ずれた。
@@ -214,6 +216,7 @@ int main() {
         {
             const float gq[3] = {0, 0, 0};
             float pmax = 0.0f, rmax = 0.0f;
+            float y95_at_init = 180.0f, y95_at_8s = 180.0f, y_at_init = 0.0f;
             bool yaw_seen = false;
             const int n = (int)(14.0 * fs);
             for (int i = 0; i < n; i++) {
@@ -229,13 +232,231 @@ int main() {
                     float r, p, y; attitude_get_euler(r, p, y);
                     if (fabsf(p) > pmax) pmax = fabsf(p);
                     if (fabsf(r) > rmax) rmax = fabsf(r);
-                    yaw_seen |= attitude_yaw_ready();
+                    if (!yaw_seen && attitude_yaw_ready()) {
+                        yaw_seen = true;
+                        y95_at_init = attitude_get_yaw_acc95_deg();
+                        y_at_init = y;
+                    }
+                    if (i == (int)(8.0 * fs)) y95_at_8s = attitude_get_yaw_acc95_deg();
                 }
             }
-            printf("\nD5) 静止 → 0→6 m/s を 4 秒で加速 → 6 m/s（本当のピッチ 0）\n");
+            printf("\nD5) 静止 → 0→6 m/s を 4 秒で加速 → 6 m/s（本当のピッチ 0・真方位 90 度）\n");
             printf("   滑走から 10 秒の間のピッチの最大 %.2f deg・ロールの最大 %.2f deg（0.5 未満が正しい。直す前は 8.7）  方位 %d（1 が正しい）\n",
                    pmax, rmax, (int)yaw_seen);
+            printf("   2D 相関注入時: 方位 %.2f deg（90.0 が正しい）  Y95%% = %.1f deg → 加速終了時(8s) Y95%% = %.1f deg（10.0 未満が正しい。旧方式は 16.9）\n",
+                   y_at_init, y95_at_init, y95_at_8s);
             ok &= pmax < 0.5f && rmax < 0.5f && yaw_seen;
+            ok &= fabsf(y_at_init - 90.0f) < 0.5f && y95_at_init < 10.0f && y95_at_8s < 10.0f;
+        }
+
+        // D6) 常時前向き 2D 相関: プラットホーム手押し誤蓄積のリセットと、取付オフセット（12 度）下での真の方位抽出
+        //   静止 4 秒 → 南向き(180°)に 1.8 m/s まで手押し 2.0 秒 → 静止 1.5 秒（>= 1.0s で相関と低域が 0 にリセット）
+        //   → 東向き(航跡 90.0°)へ 0→6 m/s（1.5 m/s²）で発進するが、本体は右へ 12.0 度（真の方位 102.0°）ずれて付いている。
+        //   従来方式（瞬間航跡）では航跡 90.0° がそのまま入って 12° ずれるが、2D 相関は加速度ベクトルを整合させるため
+        //   注入の瞬間から真の方位 102.0° が出る。
+        attitude_setup();
+        t = 0;
+        {
+            const float gq[3] = {0, 0, 0};
+            float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+            feed((int)(4.0 * fs), dt, t, a_lv0, gq);           // 4 秒静止（水平化）
+            // 南向き(180°)へ 0.9 m/s² で 2 秒手押し（最大 1.8 m/s < 3.0 m/s）
+            for (int i = 0; i < (int)(2.0 * fs); i++) {
+                const double v_south = 0.9 * (i * dt);
+                const double ab[3] = { 0.9, 0.0, G };
+                float as[3]; body_to_sensor(ab, as);
+                feed(1, dt, t, as, gq);
+                if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity((float)(-v_south), 0.0f, 0.0f, 0.08f);
+            }
+            const bool yaw_after_push = attitude_yaw_ready();
+            // 発進前に 1.5 秒静止（ここで手押し分の相関 C, S と GNSS 低域が 0 にリセットされる）
+            for (int i = 0; i < (int)(1.5 * fs); i++) {
+                feed(1, dt, t, a_lv0, gq);
+                if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, 0.0f, 0.0f, 0.08f);
+            }
+            // 東向き(航跡 90.0°)へ 1.5 m/s² で 4 秒加速。本体の方位は 102.0°（右へ +12.0° オフセット）なので、
+            // 機体軸(前, 左, 上)での加速度は (a cos12°, +a sin12°, G)
+            const double off_rad = 12.0 * M_PI / 180.0;
+            float y_init6 = 0.0f, y95_init6 = 180.0f;
+            bool seen6 = false;
+            for (int i = 0; i < (int)(4.0 * fs); i++) {
+                const double a_east = 1.5;
+                const double v_east = a_east * (i * dt);
+                const double ab[3] = { a_east * cos(off_rad), a_east * sin(off_rad), G };
+                float as[3]; body_to_sensor(ab, as);
+                feed(1, dt, t, as, gq);
+                if (i % (int)(fs / 4) == 0) {
+                    attitude_on_gnss_velocity(0.0f, (float)v_east, 0.0f, 0.08f);
+                    if (!seen6 && attitude_yaw_ready()) {
+                        seen6 = true;
+                        float r6, p6; attitude_get_euler(r6, p6, y_init6);
+                        y95_init6 = attitude_get_yaw_acc95_deg();
+                    }
+                }
+            }
+            printf("\nD6) 南へ手押し(1.8m/s) → 1.5秒静止でリセット → 東(航跡 90.0°)へ発進・取付オフセット +12.0°（真の方位 102.0°）\n");
+            printf("   手押し後の yaw_ready=%d（0 が正しい）  発進注入時の方位 %.2f deg（102.0 が正しい。旧方式は 90.0）  Y95%% = %.1f deg\n",
+                   (int)yaw_after_push, y_init6, y95_init6);
+            ok &= !yaw_after_push && seen6;
+            ok &= fabsf(y_init6 - 102.0f) < 0.5f && y95_init6 < 10.0f;
+        }
+
+        // D7) 相関の方位が航跡と ESKF_YAW_CORR_MAX_TRK_DIFF_DEG（20°）を超えて食い違うときは、航跡＋15° に戻る（2026-11-18）
+        //   取付オフセット +30.0°（真の方位 120.0°）で東（航跡 90.0°）へ発進。相関は 120° を出すが、航跡と 30° 違うので使わない。
+        //   （11/18 の自転車で、傾きのかたよりで向きが一様に回った +22° の外れがあり、まとまりでは見分けられなかったための門）
+        attitude_setup();
+        t = 0;
+        {
+            const float gq[3] = {0, 0, 0};
+            float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+            feed((int)(4.0 * fs), dt, t, a_lv0, gq);
+            const double off_rad = 30.0 * M_PI / 180.0;
+            float y_init7 = 0.0f, y95_init7 = 0.0f;
+            bool seen7 = false;
+            for (int i = 0; i < (int)(4.0 * fs); i++) {
+                const double v_east = 1.5 * (i * dt);
+                const double ab[3] = { 1.5 * cos(off_rad), 1.5 * sin(off_rad), G };
+                float as[3]; body_to_sensor(ab, as);
+                feed(1, dt, t, as, gq);
+                if (i % (int)(fs / 4) == 0) {
+                    attitude_on_gnss_velocity(0.0f, (float)v_east, 0.0f, 0.08f);
+                    if (!seen7 && attitude_yaw_ready()) {
+                        seen7 = true;
+                        float r7, p7; attitude_get_euler(r7, p7, y_init7);
+                        y95_init7 = attitude_get_yaw_acc95_deg();
+                    }
+                }
+            }
+            uint8_t how7 = 255; float mag7, coh7, td7, sg7; bool bok7;
+            const bool ev7 = attitude_take_yaw_init_event(how7, mag7, coh7, td7, sg7, bok7);
+            printf("\nD7) 取付オフセット +30°（真の方位 120°）で東（航跡 90°）へ発進 → 航跡と 20° を超えて食い違うので航跡に戻る\n");
+            printf("   注入時の方位 %.2f deg（90.0 が正しい）  Y95%% = %.1f deg（30.0 が正しい）  記録 how=%d（3 が正しい）・corr-trk %+.1f deg（+30 前後）\n",
+                   y_init7, y95_init7, ev7 ? (int)how7 : -1, td7);
+            ok &= seen7 && fabsf(y_init7 - 90.0f) < 0.5f && fabsf(y95_init7 - 30.0f) < 1.0f;
+            ok &= ev7 && how7 == 3 && fabsf(td7 - 30.0f) < 2.0f;
+        }
+
+        // D8) 静止で覚えたゼロ点を確かめる（2026-11-18。settings.h の ESKF_BIAS_CONFIRM_DIFF_RADS）
+        //   ばらつきの門は一定の速さの回転を見分けられないので、前回の値（SD）か続けて通った直前の窓と 0.02 deg/s 以内のときだけ「覚えた」。
+        {
+            const float b0[3] = { 0.0005f, -0.0003f, 0.00075f };          // 本当のゼロ点 [rad/s]（0.029 / −0.017 / 0.043 deg/s）
+            float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+            auto run = [&](const float g[3], double secs, bool set_ref, const float ref[3],
+                           int &n_ev, uint8_t hows[4], int &n_save, float saved[3]) {
+                attitude_setup();
+                t = 0;
+                if (set_ref) attitude_set_bias_ref(ref);
+                n_ev = 0; n_save = 0;
+                for (int i = 0; i < (int)(secs * fs); i++) {
+                    feed(1, dt, t, a_lv0, g);
+                    uint8_t h; float bd[3], df;
+                    if (attitude_take_bias_event(h, bd, df) && n_ev < 4) hows[n_ev++] = h;
+                    float sb[3];
+                    if (attitude_take_bias_to_save(sb)) { n_save++; for (int k = 0; k < 3; k++) saved[k] = sb[k]; }
+                }
+            };
+            int ne, ns; uint8_t hw[4] = {9, 9, 9, 9}; float sv[3] = {0, 0, 0};
+            // (a) 前回の値なし・本当に静止 13 秒 → 1 つめの窓は確かめられず、2 つめで「続けて 2 つの窓が一致」（how=1）、SD へ 1 回
+            run(b0, 13.0, false, b0, ne, hw, ns, sv);
+            const bool a_ok = ne == 1 && hw[0] == 1 && ns == 1 && fabsf(sv[2] - b0[2]) < 1e-5f;
+            printf("\nD8) ゼロ点の確かめ（本当のゼロ点 z=%.3f deg/s）\n", b0[2] * 57.29578f);
+            printf("   (a) 前回の値なし・静止 13 秒: 記録 %d 件 how=%d（1 件・1 が正しい）  SD へ %d 回（1 が正しい）  z=%.4f deg/s\n",
+                   ne, (int)hw[0], ns, sv[2] * 57.29578f);
+            // (b) 前回の値あり（同じ値）・静止 8 秒 → 1 つめの窓で「前回の値と一致」（how=0）
+            for (auto &x : hw) x = 9;
+            run(b0, 8.0, true, b0, ne, hw, ns, sv);
+            const bool b_ok = ne == 1 && hw[0] == 0 && ns == 1;
+            printf("   (b) 前回の値あり・静止 8 秒: 記録 %d 件 how=%d（1 件・0 が正しい）  SD へ %d 回（1 が正しい）\n", ne, (int)hw[0], ns);
+            // (c) 前回の値あり・ヨー軸に一定の 0.2 deg/s の回転が 8 秒 → 門は通るが前回の値と食い違うので覚えた扱いにしない（how=2、SD へ書かない）
+            float grot[3] = { b0[0], b0[1], b0[2] + 0.0035f };
+            for (auto &x : hw) x = 9;
+            run(grot, 8.0, true, b0, ne, hw, ns, sv);
+            const bool c_ok = ne == 1 && hw[0] == 2 && ns == 0;
+            printf("   (c) 前回の値あり・一定の 0.2 deg/s の回転 8 秒: 記録 %d 件 how=%d（1 件・2 が正しい）  SD へ %d 回（0 が正しい）\n", ne, (int)hw[0], ns);
+            // (d) 同じ回転が 13 秒（10 秒以上一定に回し続けた）→ 続けて 2 つの窓が一致して覚えてしまう。実機の機体はこう回せない（ユーザー、11/18）ので
+            //     受け入れている限界。挙動が変わったら気づけるように固定しておく
+            for (auto &x : hw) x = 9;
+            run(grot, 13.0, true, b0, ne, hw, ns, sv);
+            const bool d_ok = ne == 2 && hw[0] == 2 && hw[1] == 1 && ns == 1;
+            printf("   (d) 同じ回転が 13 秒（限界の確認）: 記録 %d 件 how=%d,%d（2 件・2,1 が正しい）  SD へ %d 回（1）\n",
+                   ne, (int)hw[0], (int)hw[1], ns);
+            ok &= a_ok && b_ok && c_ok && d_ok;
+        }
+
+        // D9) 実機のように「いま」がサンプルの時刻より 4ms 先でも、静止で覚えたゼロ点が方位を入れるときに「覚えた」になるか（2026-11-18 夜の車で発覚）
+        //   覚えた時刻を time_us_32() で、古さを t_us で見ていたため、差が負になって覚えた直後に捨てていた（夜の 6 回とも bias not learned）。
+        g_test_now_skew_us = 4000;
+        attitude_setup();
+        t = 0;
+        {
+            const float b0[3] = { 0.0005f, -0.0003f, 0.00075f };
+            float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+            feed((int)(13.0 * fs), dt, t, a_lv0, b0);               // 13 秒止めて置く（水平化 2 秒＋続けて 2 つの窓）
+            for (int i = 0; i < (int)(4.0 * fs); i++) {             // 東へ 1.5 m/s² で発進
+                const double v_east = 1.5 * (i * dt);
+                const double ab[3] = { 1.5, 0.0, G };
+                float as[3]; body_to_sensor(ab, as);
+                feed(1, dt, t, as, b0);
+                if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, (float)v_east, 0.0f, 0.08f);
+            }
+            uint8_t how9 = 255; float mag9, coh9, td9, sg9; bool bok9 = false;
+            const bool ev9 = attitude_take_yaw_init_event(how9, mag9, coh9, td9, sg9, bok9);
+            printf("\nD9) いまがサンプルより 4ms 先・13 秒止めてから発進: 方位の記録 %d・bias %s（learned が正しい。直す前は not learned）\n",
+                   (int)ev9, bok9 ? "learned" : "not learned");
+            ok &= ev9 && bok9;
+        }
+        g_test_now_skew_us = 0;
+
+        // D10) 実際の発進の形（2026-11-18 夜の車）: 加速が 0 から徐々に上がる。「いきなり 1.5 m/s²」の D5 では見えなかった。
+        //   車では 2.2 m/s² の発進で方位が決まるまでピッチ +3.2°（門が開く前の立ち上がり 0.5〜1 秒に寄せた）。
+        //   GNSS の速度は 170ms 遅れて届く。本当のピッチは 0。
+        {
+            auto run_ramp = [&](double a_max, double ramp_s, double hold_s, float &pmax_pre, double acc_end_s = 1e9, float *p_end = nullptr) {
+                attitude_setup();
+                t = 0;
+                const float gq[3] = {0, 0, 0};
+                float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+                feed((int)(6.0 * fs), dt, t, a_lv0, gq);
+                for (int i = 0; i < (int)(4.0 * fs); i++) {          // 動き出す前の GNSS（止まっている）
+                    if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, 0.0f, 0.0f, 0.08f);
+                    feed(1, dt, t, a_lv0, gq);
+                }
+                pmax_pre = 0.0f;
+                double v = 0.0;
+                std::vector<double> vh;                                  // GNSS の遅れ用
+                const int n = (int)((ramp_s + hold_s) * fs);
+                for (int i = 0; i < n; i++) {
+                    const double tt = i * dt;
+                    const double a = (tt >= acc_end_s) ? 0.0 : ((tt < ramp_s) ? a_max * tt / ramp_s : a_max);
+                    v += a * dt;
+                    vh.push_back(v);
+                    const double ab[3] = { a, 0.0, G };
+                    float as[3]; body_to_sensor(ab, as);
+                    feed(1, dt, t, as, gq);
+                    if (i % (int)(fs / 4) == 0) {
+                        const int lag = (int)(0.17 * fs);
+                        const double vd = (i >= lag) ? vh[i - lag] : 0.0;
+                        attitude_on_gnss_velocity(0.0f, (float)vd, 0.0f, 0.08f);
+                    }
+                    if (!attitude_yaw_ready()) {
+                        float r, p, y; attitude_get_euler(r, p, y);
+                        if (fabsf(p) > pmax_pre) pmax_pre = fabsf(p);
+                    }
+                }
+                if (p_end) { float r, p, y; attitude_get_euler(r, p, y); *p_end = fabsf(p); }
+            };
+            float p1, p2, p2end = 99.0f;
+            run_ramp(2.2, 1.5, 3.0, p1);
+            // ゆっくり押す: 0.25 m/s² を 4 秒（1 m/s）→ そのまま 1 m/s で 10 秒。門（0.3 m/s²）より弱い加速は見分けられず、
+            //   方位が分からない間は GNSS の加速で傾きを補えないので、押している間は atan(0.25/g) = 1.46° まで寄りうる（限界）。
+            //   GNSS が 0.5 m/s を言ったら直前 1.5 秒の寄せを取り消し、一定の速さになったら（上限 8 秒のあと）水平へ戻る。
+            run_ramp(0.25, 0.5, 14.0, p2, 4.0, &p2end);
+            float du; uint8_t dw; (void)attitude_take_accel_undo_event(du, dw);
+            printf("\nD10) 実際の発進の形（加速が徐々に上がる・GNSS は 170ms 遅れ）。本当のピッチ 0\n");
+            printf("   0→2.2 m/s² を 1.5 秒で: 方位が決まるまでのピッチの最大 %.2f deg（0.5 未満が正しい。直す前は 2〜3）\n", p1);
+            printf("   0.25 m/s² で 4 秒押して 1 m/s で 10 秒: 押している間の最大 %.2f deg（1.5 以下＝atan(0.25/g) を超えないのが正しい）"
+                   "  最後 %.2f deg（0.3 未満が正しい）\n", p2, p2end);
+            ok &= p1 < 0.5f && p2 <= 1.5f && p2end < 0.3f;
         }
     }
 
@@ -404,7 +625,12 @@ int main() {
         float dbg = 0;
         for (int i = 0; i < 3; i++) dbg += (bg1[i] - bg0[i]) * (bg1[i] - bg0[i]);
         dbg = sqrtf(dbg) * 180.0f / (float)M_PI;
-        feed((int)(3 * fs), dt, t, a_lv, gz);            // 止まって 3 秒
+        // 止まって 3 秒。止まったあとの比力は、回った先の重力（ジャイロの積分と合う向き）にする。
+        //   （2026-11-18〜。「加速中」の判定はジャイロで回した平均と比べるので、回ったのに加速度計が動かないままだと加速と読む。
+        //    実機では回ったぶん加速度計も回る。回している間だけ比力を動かさないのは、回転に伴う加速度の代わり）
+        float up2[3]; attitude_get_up_sensor(up2);
+        const float a_after2[3] = { (float)(up2[0] * G), (float)(up2[1] * G), (float)(up2[2] * G) };
+        feed((int)(3 * fs), dt, t, a_after2, gz);
         const uint32_t m2 = attitude_get_level_updates();
         printf("\nG2) 水平な軸まわりに 20deg/s で回している間は重力観測を入れない\n");
         printf("   回している 1.5 秒で %u 回（0 が正しい）  bg の変化 %.3f deg/s（0 が正しい）\n",

@@ -9,7 +9,10 @@
 #include <cstring>
 #include <cmath>
 
-extern uint32_t g_test_us;                 // テストが進める仮想時刻 [µs]
-static inline uint32_t time_us_32() { return g_test_us; }
+extern uint32_t g_test_us;                 // テストが進める仮想時刻 [µs]（＝渡すサンプルの時刻）
+// 「いま」がサンプルの時刻よりどれだけ先か [µs]。実機はサンプルをリングにためてから渡すので、いま（time_us_32）は
+// サンプルの時刻 t_us より数 ms 先になる。0 のままだと 2 つの時計を取り違えた不具合が見えない（2026-11-18、D9）。
+extern uint32_t g_test_now_skew_us;
+static inline uint32_t time_us_32() { return g_test_us + g_test_now_skew_us; }
 static inline void test_set_us(uint32_t t) { g_test_us = t; }
 static inline void test_advance_us(uint32_t d) { g_test_us += d; }

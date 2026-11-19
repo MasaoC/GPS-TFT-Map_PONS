@@ -741,6 +741,7 @@ void setup1(void) {
   setup_sd(SD_BOOT_TRY_COUNT);
   rtc_backup_load_sd();   // GNSS のバックアップ電池の推定の記録（SD が無くても「無し」を渡す。rtc_backup.cpp）
   gnss_dbd_load_sd();     // GNSS の航法データベース（BT1 が切れていた起動で戻す。SD が無くても「無し」を渡す。gnss_dbd.cpp）
+  gyro_bias_load_sd();    // 前回の起動で確かめたジャイロのゼロ点（覚えた値を確かめる相手。attitude.cpp の ESKF_BIAS_CONFIRM_DIFF_RADS）
   bootwatch_report_core1(&tft_pio_ready);
   // 起動音（opening.wav）は startup_demo_tft() 内でエンキューする（重複防止）
 }
@@ -2306,11 +2307,43 @@ void loop() {
 
   eskf_apply_tick();
 
+  // ---- 静止で覚えたジャイロのゼロ点: SD の前回の値を渡す・確かめた値を SD へ書く・ログ（attitude.cpp の ESKF_BIAS_CONFIRM_DIFF_RADS）----
+  {
+    float b[3];
+    if (gyro_bias_take_loaded(b)) attitude_set_bias_ref(b);
+    static bool  gb_pending = false;   // PC 接続中は書かずに待つ（SD を読み出し専用に保つ）
+    static float gb_save[3];
+    if (attitude_take_bias_to_save(b)) { for (int i = 0; i < 3; i++) gb_save[i] = b[i]; gb_pending = true; }
+    if (gb_pending && !webserial_connected) { enqueueTask(createSaveGyroBiasTask(gb_save)); gb_pending = false; }
+    // 発進の立ち上がりで寄せた傾きを取り消した（settings.h の ESKF_ACCEL_UNDO_US）。0.3 度未満は残さない（止まっている間の寄せは小さい）
+    float undo_deg; uint8_t undo_why;
+    if (attitude_take_accel_undo_event(undo_deg, undo_why) && undo_deg >= 0.3f) {
+      enqueueTask(createLogSdfTask("ESKF ACCEL: start detected (%s), undid %.1f deg of leveling (last %.1fs) gs=%.1f",
+                                   undo_why ? "gnss speed" : "accel", undo_deg, ESKF_ACCEL_UNDO_US * 1e-6f, (float)get_gnss_mps()));
+    }
+    uint8_t how; float bd[3], diff;
+    if (attitude_take_bias_event(how, bd, diff)) {
+      static const char *const HOW[] = { "learned (matches saved)", "learned (2 windows agree)", "NOT trusted (differs from saved)" };
+      enqueueTask(createLogSdfTask("GYRO BIAS: %s diff=%.4f x=%+.4f y=%+.4f z=%+.4f deg/s",
+                                   HOW[how < 3 ? how : 2], diff, bd[0], bd[1], bd[2]));
+    }
+  }
+
   // ---- 大きくずれた傾きを比力で置き直したらログに残す（settings.h の ESKF_BIGTILT_*）----
   // ★ 方位は保つ（heading kept）。GNSS が戻って動き出したら航跡と比べ、その結果も残す（yaw check）。
   {
     float err_deg;
     bool yaw_kept;
+    {
+      // 方位を GNSS で最初に入れた（発進）。2D 相関で入れたか、どの理由で航跡に戻ったかを残す（docs/pons_yaw_init_plan.md）
+      uint8_t how; float mag, coh, trk_diff, sig; bool bias_ok;
+      if (attitude_take_yaw_init_event(how, mag, coh, trk_diff, sig, bias_ok)) {
+        static const char *const HOW[] = { "2D corr", "track (low mag)", "track (low coherence)", "track (corr vs track too far)" };
+        enqueueTask(createLogSdfTask("ESKF YAW INIT: %s mag=%.0f coh=%.3f corr-trk=%+.1f deg sigma=%.1f deg gs=%.1f bias %s",
+                                     HOW[how < 4 ? how : 1], mag, coh, trk_diff, sig, attitude_yaw_init_gs(),
+                                     bias_ok ? "learned (Pbg 0.02)" : "not learned (Pbg 0.3)"));
+      }
+    }
     if (attitude_take_bigtilt_event(err_deg, yaw_kept)) {
       const float gs = (float)get_gnss_mps();
       enqueueTask(createLogSdfTask("ESKF RELEVEL: tilt off %.0f deg for %.1fs (gs=%.1f %s) -> leveled from accel, %s",
@@ -2530,6 +2563,9 @@ void loop1() {
       break;
     case TASK_SAVE_DBD:
       gnss_dbd_save_sd();
+      break;
+    case TASK_SAVE_GYROBIAS:
+      gyro_bias_save_sd(currentTask.gyroBiasArgs.b);
       break;
     case TASK_LOAD_DBD:
       gnss_dbd_load_sd();
