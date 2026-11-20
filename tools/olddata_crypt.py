@@ -28,6 +28,10 @@
 #   python3 tools/olddata_crypt.py decrypt                # tools/olddata/*.enc を全部戻す（同じフォルダに .csv。git には入らない）
 #   python3 tools/olddata_crypt.py decrypt --out DIR X.enc
 #   python3 tools/olddata_crypt.py verify FILE...         # 元のファイルと .enc の中身が一致するか
+#
+# 大会動画（YouTube 限定公開）の URL も同じパスワードで暗号化して置く（tools/olddata/videos.json.enc）。
+#   平文の videos.json はリポジトリの外で作る（tools/olddata/ に置いても tools/.gitignore で入らない）。形は tools/olddata/README.md。
+#   python3 tools/olddata_crypt.py encrypt ~/…/videos.json   → Flight Viewer がログを開くときに一緒に復号して動画を出す
 # 環境変数 PONS_OLDDATA_PASSWORD があればそれを使う（試験用。ふだんは使わないこと）
 
 import argparse
@@ -124,7 +128,9 @@ def write_manifest(folder):
     files = []
     for path in sorted(glob.glob(os.path.join(folder, '*.enc'))):
         blob = open(path, 'rb').read(8)
-        files.append({'file': os.path.basename(path), 'bytes': os.path.getsize(path),
+        name = os.path.basename(path)
+        kind = 'log' if name.endswith('.csv.enc') else ('videos' if name.startswith('videos') else 'other')
+        files.append({'file': name, 'kind': kind, 'bytes': os.path.getsize(path),
                       'format': blob.decode('ascii', 'replace')})
     with open(os.path.join(folder, MANIFEST), 'w', encoding='utf-8') as f:
         json.dump({'note': '暗号化した過去の大会ログ。tools/olddata/README.md', 'files': files}, f, ensure_ascii=False, indent=1)

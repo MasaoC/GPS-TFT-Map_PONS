@@ -648,7 +648,7 @@
   }
 
   global.PonsImuAnalysis = {
-    VERSION: '2026.11.20.16',
+    VERSION: '2026.11.20.17',
     decodeImuBin,
     matchSessionToFlight,
     computeImuDirectG,

@@ -25,6 +25,28 @@ python3 tools/olddata_crypt.py decrypt        # パスワードを聞かれる�
 
 できた `.csv` は Flight Viewer（`tools/flight_viewer/index.html`）でそのまま開ける。
 
+## 大会動画（YouTube 限定公開）
+
+ログに対応する動画の URL も公開できないので、同じパスワードで `videos.json.enc` に暗号化して置く。
+Flight Viewer でログを開くと一緒に復号し、動画を小窓に出してビューアの再生（再生・一時停止・シーク・速度）に合わせて動かす。
+ビューアが止まっているときに動画を動かすと、ビューアがそちらへ合わせる。
+
+平文の `videos.json` はリポジトリの外で作る（`tools/olddata/` に置いても `tools/.gitignore` で入らない）:
+
+```json
+{
+  "2026-07-26_0804_fused.csv": { "url": "https://youtu.be/xxxxxxxxxxx", "sync": { "video_sec": 0, "jst": "08:20:40.0" } },
+  "2025-07-26_1539_fused.csv": { "url": "https://youtu.be/xxxxxxxxxxx" },
+  "2024-07-27_0936_fused.csv": { "url": "https://youtu.be/xxxxxxxxxxx" }
+}
+```
+
+- `sync` は「動画の `video_sec` 秒目が JST の `jst`」。分からなければ書かずに、ビューアで動画とログを同じ場面にして
+  「⇆ ここで同期」を押し、±0.5s / ±5s で詰める。合わせた値はそのブラウザに覚え（`videos.json` の `sync` より優先。「↺」で消して戻す）、小窓の下に `videos.json` に書き写す形で出る。
+- 暗号化: `python3 tools/olddata_crypt.py encrypt <どこか>/videos.json`（ログと同じパスワードにする。一覧の manifest.json も作り直す）
+- 埋め込みは YouTube Studio で「埋め込みを許可」になっている必要がある。手元の HTML（file://）として開いたビューアでは
+  YouTube に断られることがあるので、公開ページか http で開く（だめなときは小窓の「YouTube」で別のタブに開ける）。
+
 ## 作り方・注意
 
 - 元データからの変換: 2026 年は `tools/fuse_attitude_csv.py`、2024・2025 年は `tools/convert_old_contest_csv.py`

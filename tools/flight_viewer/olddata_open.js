@@ -10,11 +10,13 @@
 // 鍵は PBKDF2-HMAC-SHA256、本体は AES-256-GCM（ヘッダー 48 バイトを AAD）。どちらも WebCrypto だけで復号する（自前の暗号コードは無い）。
 // パスワードはこのページを開いている間だけメモリに置く（保存しない）。
 // 公開ページ（GitHub Pages）では ../olddata/manifest.json から一覧を出す。file:// で開いたときは手元の .enc を選ぶ。
+// 大会動画（YouTube 限定公開）の URL は videos.json.enc に同じパスワードで暗号化してある。ログを開くときに同じパスワードで
+// 復号して video_sync.js へ渡す（手元で開いたときは videos.json.enc を選ぶ・ドロップする）。
 
 (function (global) {
   'use strict';
 
-  const VERSION = '2026.11.20.16';
+  const VERSION = '2026.11.20.17';
   const OLDDATA_BASE = '../olddata/';
   const KDF_PBKDF2_SHA256 = 1;
   let rememberedPassword = null;   // このページを開いている間だけ
@@ -118,7 +120,7 @@
         try {
           const bytes = await decryptPonsEnc(buf, pw.value);
           if (ov.querySelector('#od-remember').checked) rememberedPassword = pw.value;
-          close(bytes);
+          close({ bytes, password: pw.value });
         } catch (e) {
           err.style.color = '#b91c1c'; err.textContent = e.message; ok.disabled = false;
           if (e.badPassword) { pw.select(); pw.focus(); }
@@ -130,16 +132,50 @@
     });
   }
 
-  // .enc のバイト列を開いて再生する（覚えたパスワードがあればまずそれで試す）
-  async function openEncryptedBytes(buf, name) {
-    let bytes = null;
-    if (rememberedPassword) {
-      try { bytes = await decryptPonsEnc(buf, rememberedPassword); } catch (e) { if (!e.badPassword) { alert(e.message); return; } }
+  // 動画の対応表（videos.json）を使えるようにする
+  function applyVideoMap(bytes) {
+    try {
+      const map = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      if (global.PonsVideo) global.PonsVideo.setMap(map);
+      return Object.keys(map || {}).length;
+    } catch (e) {
+      console.warn('videos.json を読めません', e);
+      return -1;
     }
-    if (!bytes) bytes = await askPasswordAndDecrypt(buf, name);
-    if (!bytes) return;
+  }
+
+  // 公開ページなら ../olddata/videos.json.enc を、ログと同じパスワードで読む（無い・違うパスワードなら黙って何もしない）
+  async function loadRemoteVideoMap(password) {
+    if (!global.PonsVideo || global.PonsVideo.hasMap()) return;
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+    try {
+      const r = await fetch(OLDDATA_BASE + 'videos.json.enc', { cache: 'no-store' });
+      if (!r.ok) return;
+      applyVideoMap(await decryptPonsEnc(await r.arrayBuffer(), password));
+    } catch (e) {
+      console.warn('videos.json.enc を開けません', e.message);
+    }
+  }
+
+  // .enc のバイト列を開く（覚えたパスワードがあればまずそれで試す）。ログなら再生、videos.json なら動画の対応表に
+  async function openEncryptedBytes(buf, name) {
+    let res = null;
+    if (rememberedPassword) {
+      try { res = { bytes: await decryptPonsEnc(buf, rememberedPassword), password: rememberedPassword }; }
+      catch (e) { if (!e.badPassword) { alert(e.message); return; } }
+    }
+    if (!res) res = await askPasswordAndDecrypt(buf, name);
+    if (!res) return;
     const plainName = String(name).replace(/^.*\//, '').replace(/\.enc$/i, '');
-    const text = new TextDecoder('utf-8').decode(bytes);
+    if (/videos[^\/]*\.json$/i.test(plainName)) {
+      const n = applyVideoMap(res.bytes);
+      if (n < 0) { alert('動画の対応表（videos.json）の形が読めません。'); return; }
+      if (global.PonsVideo) global.PonsVideo.attachCurrent();
+      alert(`大会動画の対応表を読み込みました（${n} 件）。対応するログを開くと動画が出ます。`);
+      return;
+    }
+    await loadRemoteVideoMap(res.password);   // 再生を始める前に（CSV を読み終えたときに動画を出すため）
+    const text = new TextDecoder('utf-8').decode(res.bytes);
     if (typeof global.parseCSVText === 'function') global.parseCSVText(text, plainName);
   }
 
@@ -150,10 +186,16 @@
     rd.readAsArrayBuffer(file);
   }
 
+  // 複数の .enc（ファイル選択・ドロップ）。動画の対応表（videos.json.enc）を先に開く（同じパスワードなら聞くのは 1 回）
+  async function openEncryptedFiles(files) {
+    const fs = files.slice().sort((a, b) => (/videos/i.test(b.name) ? 1 : 0) - (/videos/i.test(a.name) ? 1 : 0));
+    for (const f of fs) await openEncryptedBytes(await f.arrayBuffer(), f.name);
+  }
+
   function pickLocalEnc() {
     const inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = '.enc';
-    inp.onchange = () => { if (inp.files && inp.files[0]) openEncryptedFile(inp.files[0]); };
+    inp.type = 'file'; inp.accept = '.enc'; inp.multiple = true;
+    inp.onchange = () => openEncryptedFiles(Array.from(inp.files || []));
     inp.click();
   }
 
@@ -161,7 +203,8 @@
   async function openOldDataMenu() {
     const ov = openOverlay(`
       <div class="od-title">🔒 過去の大会ログ（暗号化）</div>
-      <div class="od-note">2024〜2026 年の大会のログです。開くにはパスワードが要ります（チームの担当者に聞いてください）。</div>
+      <div class="od-note">2024〜2026 年の大会のログです。開くにはパスワードが要ります（チームの担当者に聞いてください）。
+        大会動画（YouTube）があるログは、開くと動画が小窓に出て再生に合わせて動きます。</div>
       <div class="od-list" id="od-list"><div class="od-note">一覧を読み込み中…</div></div>
       <div class="od-row">
         <button id="od-local">📁 手元の .enc を開く</button>
@@ -181,6 +224,7 @@
         リポジトリの <code>tools/olddata/*.enc</code> を「手元の .enc を開く」で選んでください。</div>`;
       return;
     }
+    files = files.filter(f => /\.csv\.enc$/i.test(f.file));   // videos.json.enc は一覧に出さない（ログを開くときに一緒に読む）
     if (files.length === 0) { list.innerHTML = '<div class="od-note">ログがありません。</div>'; return; }
     list.innerHTML = '';
     files.forEach((f) => {
@@ -207,6 +251,7 @@
   global.PONS_OLDDATA_VERSION = VERSION;
   global.decryptPonsEnc = decryptPonsEnc;
   global.openEncryptedFile = openEncryptedFile;
+  global.openEncryptedFiles = openEncryptedFiles;
   global.openEncryptedBytes = openEncryptedBytes;
   global.openOldDataMenu = openOldDataMenu;
 })(window);

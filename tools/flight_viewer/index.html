@@ -1379,7 +1379,7 @@
       <div class="app-title">
         <span>✈️ PONS Flight Viewer</span>
         <span class="badge" id="board-badge">PONS v7.1</span>
-        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.20.16</span>
+        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.20.17</span>
         <button id="btn-viewer-update" style="display:none; background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:bold; padding:3px 9px; font-size:0.76rem;" onclick="reloadViewerFresh()"></button>
       </div>
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
@@ -1739,6 +1739,9 @@
         dropZone.classList.remove('active');
         const files = Array.from(e.dataTransfer.files || []);
         if (files.length === 0) return;
+        // 暗号化した大会ログ・動画の対応表（.enc）はまとめてパスワードを聞いて開く（olddata_open.js）
+        const encFiles = files.filter(f => /\.enc$/i.test(f.name));
+        if (encFiles.length > 0 && typeof openEncryptedFiles === 'function') { openEncryptedFiles(encFiles); return; }
         const binFile = files.find(f => /\.bin$/i.test(f.name));
         const textFile = files.find(f => !/\.bin$/i.test(f.name));
         if (textFile) readCSVFile(textFile);
@@ -2141,6 +2144,8 @@
       // UI初期更新
       updateUI(currentTimeSec);
       console.log(`CSV読込完了: ${flightData.length}点, 全長 ${totalDurationSec.toFixed(1)}s, 離陸 ${takeoffSec.toFixed(1)}s, 着水 ${landSec.toFixed(1)}s`);
+      // 大会動画の対応（video_sync.js）。このログに動画があれば小窓を出し、無ければ閉じる
+      if (typeof window.onFlightCsvLoaded === 'function') window.onFlightCsvLoaded(filename);
     }
 
     // ============================================================
@@ -5908,6 +5913,19 @@
         filename: currentCsvFilename || 'sample_flight.csv'
       };
     };
+    // 動画の同期（video_sync.js）向け: 再生の状態と、CSV の 1 行目の時刻（JST の日内秒）
+    window.getFlightViewerPlayback = function () {
+      return {
+        currentTimeSec, totalDurationSec, isPlaying, playbackSpeed,
+        clockBaseSec: csvClockBaseSec,
+        hasData: !!(flightData && flightData.length > 1),
+        filename: currentCsvFilename
+      };
+    };
+    // 動画側で再生・一時停止されたときにビューアを合わせる
+    window.setFlightViewerPlaying = function (on) {
+      if (!!on !== isPlaying && flightData && flightData.length > 1) togglePlay();
+    };
     window.seekFlightViewerTo = function (tSec, focusMap) {
       if (!flightData || flightData.length === 0) return;
       if (isPlaying) {
@@ -5964,13 +5982,14 @@
       downloadPonsFile(path, size || 0, 0, 'open', imuRange);
     };
   </script>
-  <script src="analysis_dsp.js?v=2026.11.20.16"></script>
-  <script src="analysis_imulog.js?v=2026.11.20.16"></script>
-  <script src="analysis_ui.js?v=2026.11.20.16"></script>
-  <script src="olddata_open.js?v=2026.11.20.16"></script>
+  <script src="analysis_dsp.js?v=2026.11.20.17"></script>
+  <script src="analysis_imulog.js?v=2026.11.20.17"></script>
+  <script src="analysis_ui.js?v=2026.11.20.17"></script>
+  <script src="olddata_open.js?v=2026.11.20.17"></script>
+  <script src="video_sync.js?v=2026.11.20.17"></script>
   <script>
     // Flight Viewer バージョン管理・キャッシュ不整合 / 最新版チェック
-    const VIEWER_VERSION = '2026.11.20.16';
+    const VIEWER_VERSION = '2026.11.20.17';
     function reloadViewerFresh() {
       try {
         const u = new URL(location.href);
@@ -6006,8 +6025,9 @@
       const imuVer = window.PonsImuAnalysis && window.PonsImuAnalysis.VERSION;
       const uiVer = window.PONS_ANALYSIS_UI_VERSION;
       const odVer = window.PONS_OLDDATA_VERSION;
+      const vsVer = window.PONS_VIDEO_SYNC_VERSION;
       if ((dspVer && dspVer !== VIEWER_VERSION) || (imuVer && imuVer !== VIEWER_VERSION) || (uiVer && uiVer !== VIEWER_VERSION) ||
-          (odVer && odVer !== VIEWER_VERSION)) {
+          (odVer && odVer !== VIEWER_VERSION) || (vsVer && vsVer !== VIEWER_VERSION)) {
         showUpdate('⚠️ キャッシュ不整合 — クリックで更新', `HTML: v${VIEWER_VERSION} / DSP: v${dspVer || '?'} / IMU: v${imuVer || '?'} / UI: v${uiVer || '?'}`);
         return;
       }

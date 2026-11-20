@@ -4,6 +4,8 @@
 *.kml
 *.txt
 *.bin
+# 大会動画の URL の平文（暗号化した olddata/videos.json.enc だけを入れる。公開の許可が無い）
+olddata/videos*.json
 
 # ---- Python ----
 __pycache__/

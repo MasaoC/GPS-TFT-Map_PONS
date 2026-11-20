@@ -1135,7 +1135,7 @@
   }
 
   global.PonsAnalysisDSP = {
-    VERSION: '2026.11.20.16',
+    VERSION: '2026.11.20.17',
     G0,
     mean, std, rms, median, pearsonR,
     detrendLinear, movingAverage, unwrapDeg,

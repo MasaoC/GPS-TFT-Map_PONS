@@ -3,17 +3,26 @@
  "files": [
   {
    "file": "2024-07-27_0936_fused.csv.enc",
+   "kind": "log",
    "bytes": 53486,
    "format": "PONSENC2"
   },
   {
    "file": "2025-07-26_1539_fused.csv.enc",
+   "kind": "log",
    "bytes": 248867,
    "format": "PONSENC2"
   },
   {
    "file": "2026-07-26_0804_fused.csv.enc",
+   "kind": "log",
    "bytes": 693528,
+   "format": "PONSENC2"
+  },
+  {
+   "file": "videos.json.enc",
+   "kind": "videos",
+   "bytes": 432,
    "format": "PONSENC2"
   }
  ]
