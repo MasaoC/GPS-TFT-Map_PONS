@@ -330,6 +330,8 @@ NAV 画面でスイッチ長押しで入ります。
   * `tools/logcsv2kml4earth.py` / `logcsv2tourkmz.py`: Google Earth 用 KML / KMZ 変換
   * `tools/createmovie_csv2mp4.py`: 飛行再現 MP4 動画生成
   * `tools/flightanalysis/`: スペクトル解析、フゴイド周期・過負荷 G 評価
+  * `tools/olddata/`: 2024〜2026 年の大会ログ（Flight Viewer で開ける形。**公開の許可が無いので暗号化**。
+    `python3 tools/olddata_crypt.py decrypt` で戻す。パスワードはチームの担当者に聞く。→ [tools/olddata/README.md](tools/olddata/README.md)）
   * `tools/imulog/`: SD の生 IMU ログ（`imuraw/*.bin`）の解析。`decode_imulog.py`（読み出し）、`eskf.py`（機上の姿勢 ESKF の PC 版）、
     `vario.py`（機上のバリオ KF の PC 版。V/S を再現し、`--flight-csv` で機上の CSV の V/S と比べる。2026-11-11〜）、`merge_flight.py`（飛行 CSV との結合）、
     `cadence.py`（前後の加速度の振動からパイロットのケイデンスを推定する。目安は踏み込み 180 回/分＝3.0Hz。2026-11-18〜、人力機では未確認）など

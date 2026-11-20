@@ -1,0 +1,20 @@
+{
+ "note": "暗号化した過去の大会ログ。tools/olddata/README.md",
+ "files": [
+  {
+   "file": "2024-07-27_0936_fused.csv.enc",
+   "bytes": 53486,
+   "format": "PONSENC2"
+  },
+  {
+   "file": "2025-07-26_1539_fused.csv.enc",
+   "bytes": 248867,
+   "format": "PONSENC2"
+  },
+  {
+   "file": "2026-07-26_0804_fused.csv.enc",
+   "bytes": 693528,
+   "format": "PONSENC2"
+  }
+ ]
+}

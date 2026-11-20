@@ -1379,18 +1379,19 @@
       <div class="app-title">
         <span>✈️ PONS Flight Viewer</span>
         <span class="badge" id="board-badge">PONS v7.1</span>
-        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.20.15</span>
+        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.20.16</span>
         <button id="btn-viewer-update" style="display:none; background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:bold; padding:3px 9px; font-size:0.76rem;" onclick="reloadViewerFresh()"></button>
       </div>
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
     </div>
     <div class="header-actions">
-      <input type="file" id="file-input" accept=".csv,.txt" style="display: none;">
+      <input type="file" id="file-input" accept=".csv,.txt,.enc" style="display: none;">
       <button onclick="document.getElementById('file-input').click()" title="飛行CSVファイル(data/*.csv, received/*.csv)か、SD の log.txt を開きます">📁 CSV / log.txt を開く</button>
       <button id="btn-save-csv" onclick="saveCurrentCSV()" disabled style="opacity: 0.5; cursor: not-allowed;" title="現在開いているCSVデータをファイルに保存します">💾 CSV保存</button>
       <button id="btn-open-analysis" onclick="openAnalysisModal()" disabled style="opacity: 0.5; cursor: not-allowed; border-color: #7c3aed; color: #7c3aed; font-weight:bold;" title="読み込み済みの飛行CSVから鉛直G・不安定さ・スペクトル・フゴイド・横モードを解析します">📊 飛行解析</button>
       <button class="btn-primary" onclick="loadSampleFlight()">🚀 自機デモ読込</button>
       <button onclick="loadSampleRxFlight()" style="border-color: #ea580c; color: #ea580c; font-weight:bold;">📡 受信デモ読込</button>
+      <button onclick="openOldDataMenu()" style="border-color: #0f766e; color: #0f766e; font-weight:bold;" title="暗号化した 2024〜2026 年の大会ログをパスワードで開きます（tools/olddata/*.enc）">🔒 大会ログ</button>
       <button id="btn-webserial" onclick="connectWebSerial()" style="border-color: var(--accent-cyan);">⚡ PONSに接続 (USB)</button>
       <select id="theme-select" onchange="toggleTheme(this.value)">
         <option value="light" selected>☀️ ライト (白ベース)</option>
@@ -1899,6 +1900,8 @@
     // ============================================================
     function readCSVFile(file) {
       if (!file) return;
+      // 暗号化した大会ログ（.enc）はパスワードを聞いて開く（olddata_open.js）
+      if (/\.enc$/i.test(file.name) && typeof openEncryptedFile === 'function') { openEncryptedFile(file); return; }
       const reader = new FileReader();
       reader.onload = (e) => {
         // log.txt（.txt）は起動ごとの記録の表示へ。それ以外は飛行 CSV として再生する
@@ -5961,12 +5964,13 @@
       downloadPonsFile(path, size || 0, 0, 'open', imuRange);
     };
   </script>
-  <script src="analysis_dsp.js?v=2026.11.20.15"></script>
-  <script src="analysis_imulog.js?v=2026.11.20.15"></script>
-  <script src="analysis_ui.js?v=2026.11.20.15"></script>
+  <script src="analysis_dsp.js?v=2026.11.20.16"></script>
+  <script src="analysis_imulog.js?v=2026.11.20.16"></script>
+  <script src="analysis_ui.js?v=2026.11.20.16"></script>
+  <script src="olddata_open.js?v=2026.11.20.16"></script>
   <script>
     // Flight Viewer バージョン管理・キャッシュ不整合 / 最新版チェック
-    const VIEWER_VERSION = '2026.11.20.15';
+    const VIEWER_VERSION = '2026.11.20.16';
     function reloadViewerFresh() {
       try {
         const u = new URL(location.href);
@@ -6001,7 +6005,9 @@
       const dspVer = window.PonsAnalysisDSP && window.PonsAnalysisDSP.VERSION;
       const imuVer = window.PonsImuAnalysis && window.PonsImuAnalysis.VERSION;
       const uiVer = window.PONS_ANALYSIS_UI_VERSION;
-      if ((dspVer && dspVer !== VIEWER_VERSION) || (imuVer && imuVer !== VIEWER_VERSION) || (uiVer && uiVer !== VIEWER_VERSION)) {
+      const odVer = window.PONS_OLDDATA_VERSION;
+      if ((dspVer && dspVer !== VIEWER_VERSION) || (imuVer && imuVer !== VIEWER_VERSION) || (uiVer && uiVer !== VIEWER_VERSION) ||
+          (odVer && odVer !== VIEWER_VERSION)) {
         showUpdate('⚠️ キャッシュ不整合 — クリックで更新', `HTML: v${VIEWER_VERSION} / DSP: v${dspVer || '?'} / IMU: v${imuVer || '?'} / UI: v${uiVer || '?'}`);
         return;
       }
