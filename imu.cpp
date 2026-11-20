@@ -13,6 +13,8 @@
 //   - 気圧高度到着時 → update（get_airdata_altitude() で観測修正）
 //   - 鉛直加速度がありえない値のあいだ（姿勢が壊れたときなど）は加速度を使わず、気圧だけで predict し、
 //     加速度バイアスも学ばない（acc_guard_step / kf_predict_baro_only。settings.h の KF_ACC_GUARD_*。2026-11-11〜）
+//   - GNSS の上下速度を入れる前に、加速度計で積分した速度と「GNSS を入れない参照の KF」（kfr_*。気圧と加速度だけ）の
+//     両方と比べ、両方と同じ向きに食い違っていたら入れない（GNSS_VSI_CONSIST_*。2026-11-19〜。反射で速度だけ狂う件）
 //
 // ■ 座標系
 //   imu_feed_accel() が受け取るのはセンサー軸の比力（重力込み）。
@@ -93,6 +95,22 @@ static float kf_P[3][3] = {
     {   0.0f,  1.0f,  0.0f },
     {   0.0f,  0.0f,  0.1f }
 };
+
+// ---- GNSS の上下速度を入れない参照の KF（2026-11-19〜。settings.h の GNSS_VSI_CONSIST_*）----
+// 本体の KF と同じ式・同じ加速度・同じ気圧で回し、GNSS の観測だけ入れない（11/12〜11/17 の機上のバリオと同じもの）。
+// GNSS の上下速度がこれとも加速度計の積分（s_vchk）とも食い違うときだけ、その観測を捨てる（imu_kalman_gnss_vel_update）。
+// ★ 本体の kf_x / kf_P を動かす所（初期化・predict・気圧・ガード・途絶・reinit）では、こちらも同じように動かすこと。
+//   GNSS の観測（imu_kalman_gnss_vel_update）だけは入れない。表示や音には使わない。
+static float kfr_x[3] = { 0.0f, 0.0f, 0.0f };
+static float kfr_P[3][3] = {
+    { 100.0f,  0.0f,  0.0f },
+    {   0.0f,  1.0f,  0.0f },
+    {   0.0f,  0.0f,  0.1f }
+};
+// 加速度計で積分した上下速度（GNSS と比べる側）。加速度を使っている predict だけで進め、GNSS で使った観測へ寄せる。
+// 加速度を使わない回しかた（ガード・IMU 途絶）に入ったら無効にし、次の GNSS の観測で入れ直す。
+static float s_vchk = 0.0f;
+static bool  s_vchk_ok = false;
 
 // 最初の気圧高度を受け取ったときに x[0] を初期化する（それ以前は高度不明）
 static bool kf_initialized = false;
@@ -209,36 +227,42 @@ void imu_feed_accel(const float a[3]) {
 // 共分散伝搬: P_pred = F*P*F^T + Q
 //   Q = diag(0, q_vel_eff, kf_q_bias)
 //   q_vel_eff = kf_q_vel + KF_HORIZ_ACCEL_GAIN * horiz_accel²
-static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
+static void kf3_predict(float x[3], float P[3][3], float a_k, float dt, float q_vel_eff, float q_bias) {
     // ---- 状態予測 ----
-    float z_pred    = kf_x[0] + kf_x[1] * dt;
-    float vz_pred   = kf_x[1] + (a_k - kf_x[2]) * dt;
-    float bias_pred = kf_x[2];  // バイアスはランダムウォーク: 定数モデル
-    kf_x[0] = z_pred;
-    kf_x[1] = vz_pred;
-    kf_x[2] = bias_pred;
+    float z_pred    = x[0] + x[1] * dt;
+    float vz_pred   = x[1] + (a_k - x[2]) * dt;
+    float bias_pred = x[2];  // バイアスはランダムウォーク: 定数モデル
+    x[0] = z_pred;
+    x[1] = vz_pred;
+    x[2] = bias_pred;
 
     // ---- 共分散予測: P_pred = F*P*F^T + Q ----
     // Step1: A = F * P  (F の各行で P の行を線形結合する)
     float A[3][3];
     for (int j = 0; j < 3; j++) {
-        A[0][j] = kf_P[0][j] + dt * kf_P[1][j];       // F[0] = [1, dt, 0]
-        A[1][j] = kf_P[1][j] - dt * kf_P[2][j];       // F[1] = [0, 1, -dt]
-        A[2][j] = kf_P[2][j];                           // F[2] = [0, 0, 1]
+        A[0][j] = P[0][j] + dt * P[1][j];       // F[0] = [1, dt, 0]
+        A[1][j] = P[1][j] - dt * P[2][j];       // F[1] = [0, 1, -dt]
+        A[2][j] = P[2][j];                       // F[2] = [0, 0, 1]
     }
     // Step2: P_new = A * F^T  (F^T の各列 = F の各行)
     // F^T = [[1,0,0],[dt,1,0],[0,-dt,1]]  なので列ベクトルは [1,dt,0], [0,1,-dt], [0,0,1]
     for (int i = 0; i < 3; i++) {
-        kf_P[i][0] = A[i][0] + dt * A[i][1];           // A * F^T の列0
-        kf_P[i][1] = A[i][1] - dt * A[i][2];           // A * F^T の列1
-        kf_P[i][2] = A[i][2];                           // A * F^T の列2
+        P[i][0] = A[i][0] + dt * A[i][1];       // A * F^T の列0
+        P[i][1] = A[i][1] - dt * A[i][2];       // A * F^T の列1
+        P[i][2] = A[i][2];                       // A * F^T の列2
     }
     // Step3: Q を加算  (Q = diag([0, q_vel_eff, q_bias]))
+    P[1][1] += q_vel_eff;
+    P[2][2] += q_bias;
+}
+
+static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
     // 水平加速度が大きいとき IMU の鉛直加速度精度が低下するため、
     // KF_HORIZ_ACCEL_GAIN × horiz_accel² を上乗せして IMU への依存を自動的に弱める。
     float q_vel_eff = kf_q_vel + KF_HORIZ_ACCEL_GAIN * horiz_accel_m_s2 * horiz_accel_m_s2;
-    kf_P[1][1] += q_vel_eff;
-    kf_P[2][2] += kf_q_bias;
+    kf3_predict(kf_x, kf_P, a_k, dt, q_vel_eff, kf_q_bias);
+    kf3_predict(kfr_x, kfr_P, a_k, dt, q_vel_eff, kf_q_bias);   // GNSS を入れない参照（同じ式）
+    if (s_vchk_ok) s_vchk += (a_k - kf_x[2]) * dt;              // 加速度計で積分した上下速度（本体のバイアスで引く）
 }
 
 // ============================================================
@@ -250,20 +274,34 @@ static void kf_predict(float a_k, float dt, float horiz_accel_m_s2 = 0.0f) {
 //   相関が育たないので、気圧と GNSS の観測のゲイン K[2] も 0 のまま＝**バイアスは観測でも動かない**。
 // ★ IMU が居ない・途絶えたとき（imu_update の IMU_DRV_DEAD）もこれで回す（2026-11-13〜。それまでは kf_predict(0, dt)。BUG-65）。
 //   入るときに相関を 0 にするのはそちらも同じ（kf_dead_enter）。
-static void kf_predict_baro_only(float dt) {
-    kf_x[0] += kf_x[1] * dt;
+static void kf3_predict_baro_only(float x[3], float P[3][3], float dt, float q_vel) {
+    x[0] += x[1] * dt;
     float A[3][3];
     for (int j = 0; j < 3; j++) {
-        A[0][j] = kf_P[0][j] + dt * kf_P[1][j];       // F[0] = [1, dt, 0]
-        A[1][j] = kf_P[1][j];                           // F[1] = [0, 1, 0]
-        A[2][j] = kf_P[2][j];                           // F[2] = [0, 0, 1]
+        A[0][j] = P[0][j] + dt * P[1][j];       // F[0] = [1, dt, 0]
+        A[1][j] = P[1][j];                       // F[1] = [0, 1, 0]
+        A[2][j] = P[2][j];                       // F[2] = [0, 0, 1]
     }
     for (int i = 0; i < 3; i++) {
-        kf_P[i][0] = A[i][0] + dt * A[i][1];
-        kf_P[i][1] = A[i][1];
-        kf_P[i][2] = A[i][2];
+        P[i][0] = A[i][0] + dt * A[i][1];
+        P[i][1] = A[i][1];
+        P[i][2] = A[i][2];
     }
-    kf_P[1][1] += kf_q_vel;
+    P[1][1] += q_vel;
+}
+
+static void kf_predict_baro_only(float dt) {
+    kf3_predict_baro_only(kf_x, kf_P, dt, kf_q_vel);
+    kf3_predict_baro_only(kfr_x, kfr_P, dt, kf_q_vel);   // GNSS を入れない参照（同じ式）
+    s_vchk_ok = false;   // 加速度を使っていないので、加速度計の積分は途切れる（次の GNSS で入れ直す）
+}
+
+// バイアスと高度・速度の相関を 0 にする（加速度を使わない回しかたに入るとき。本体と参照の両方）
+static void kf_cut_bias_corr() {
+    kf_P[0][2] = kf_P[2][0] = 0.0f;
+    kf_P[1][2] = kf_P[2][1] = 0.0f;
+    kfr_P[0][2] = kfr_P[2][0] = 0.0f;
+    kfr_P[1][2] = kfr_P[2][1] = 0.0f;
 }
 
 // ============================================================
@@ -292,8 +330,7 @@ static bool acc_guard_step(float a_k, float dt) {
             s_guard_calm_us = 0;
             s_guard_on_ms   = millis();
             // バイアスを観測から切り離す（kf_predict_baro_only のコメント）
-            kf_P[0][2] = kf_P[2][0] = 0.0f;
-            kf_P[1][2] = kf_P[2][1] = 0.0f;
+            kf_cut_bias_corr();
             // 持ち直している間などは出入りを繰り返すので、ログは 10 秒に 1 回まで（省いた回数を次に書く）
             const uint32_t now_ms = millis();
             if (s_guard_log_ms == 0 || now_ms - s_guard_log_ms >= 10000UL) {
@@ -349,12 +386,58 @@ void imu_kalman_reinit() {
     };
     for (int i = 0; i < 3; i++) {
         kf_x[i] = 0.0f;
-        for (int j = 0; j < 3; j++) kf_P[i][j] = P0[i][j];
+        kfr_x[i] = 0.0f;
+        for (int j = 0; j < 3; j++) { kf_P[i][j] = P0[i][j]; kfr_P[i][j] = P0[i][j]; }
     }
+    s_vchk_ok = false;
     _acc_vsum = _acc_hsum = 0.0f;
     _acc_cnt  = 0;
     _imu_vspeed    = 0.0f;
     kf_initialized = false;
+}
+
+// 気圧高度の観測 1 回（本体と参照の KF で同じ式）
+static void kf3_baro(float x[3], float P[3][3], float z_baro_m, float R) {
+    // ---- カルマンゲイン計算 ----
+    // H = [1,0,0] なので H*P*H^T = P[0][0]
+    float S = P[0][0] + R;
+    if (S < 1e-9f) return;  // ゼロ除算ガード（異常値防止）
+
+    float K[3] = {
+        P[0][0] / S,  // K[0] = P[0][0] / S
+        P[1][0] / S,  // K[1] = P[1][0] / S  ← 気圧が来るたびに速度を補正する主経路
+        P[2][0] / S   // K[2] = P[2][0] / S
+    };
+
+    // ---- 状態更新 ----
+    float innov = z_baro_m - x[0];  // イノベーション（残差）
+    x[0] += K[0] * innov;
+    x[1] += K[1] * innov;
+    x[2] += K[2] * innov;
+
+    // ---- 共分散更新: P = (I - K*H) * P ----
+    // K*H は rank-1 行列で、第0列が K に等しく残りは 0。
+    // P_new[i][j] = P[i][j] - K[i] * (H * P)[j] = P[i][j] - K[i] * P[0][j]
+    // ⚠ i=0 のとき P[0][j] を使いながら書き換えるため、第0行を先にコピーする。
+    float P0[3] = { P[0][0], P[0][1], P[0][2] };
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            P[i][j] -= K[i] * P0[j];
+        }
+    }
+
+    // ---- 対称化（数値誤差の蓄積を防ぐ）----
+    for (int i = 0; i < 3; i++) {
+        for (int j = i + 1; j < 3; j++) {
+            float avg = (P[i][j] + P[j][i]) * 0.5f;
+            P[i][j] = P[j][i] = avg;
+        }
+    }
+
+    // ---- 対角成分の下限クランプ（P が負定値になる数値的異常を防ぐ）----
+    for (int i = 0; i < 3; i++) {
+        if (P[i][i] < 1e-9f) P[i][i] = 1e-9f;
+    }
 }
 
 void imu_kalman_baro_update(float z_baro_m) {
@@ -366,52 +449,20 @@ void imu_kalman_baro_update(float z_baro_m) {
         kf_x[0] = z_baro_m;
         kf_x[1] = 0.0f;
         kf_x[2] = 0.0f;
+        // GNSS を入れない参照も同じ状態から始める（P も本体と同じ）
+        for (int i = 0; i < 3; i++) {
+            kfr_x[i] = kf_x[i];
+            for (int j = 0; j < 3; j++) kfr_P[i][j] = kf_P[i][j];
+        }
+        s_vchk_ok = false;
         kf_last_predict_us = time_us_32();
         kf_initialized = true;
         DEBUG_PLN(20260315, "[IMU] Kalman initialized with baro altitude");
         return;
     }
 
-    // ---- カルマンゲイン計算 ----
-    // H = [1,0,0] なので H*P*H^T = P[0][0]
-    float S = kf_P[0][0] + kf_R;
-    if (S < 1e-9f) return;  // ゼロ除算ガード（異常値防止）
-
-    float K[3] = {
-        kf_P[0][0] / S,  // K[0] = P[0][0] / S
-        kf_P[1][0] / S,  // K[1] = P[1][0] / S  ← 気圧が来るたびに速度を補正する主経路
-        kf_P[2][0] / S   // K[2] = P[2][0] / S
-    };
-
-    // ---- 状態更新 ----
-    float innov = z_baro_m - kf_x[0];  // イノベーション（残差）
-    kf_x[0] += K[0] * innov;
-    kf_x[1] += K[1] * innov;
-    kf_x[2] += K[2] * innov;
-
-    // ---- 共分散更新: P = (I - K*H) * P ----
-    // K*H は rank-1 行列で、第0列が K に等しく残りは 0。
-    // P_new[i][j] = P[i][j] - K[i] * (H * P)[j] = P[i][j] - K[i] * P[0][j]
-    // ⚠ i=0 のとき kf_P[0][j] を使いながら書き換えるため、第0行を先にコピーする。
-    float P0[3] = { kf_P[0][0], kf_P[0][1], kf_P[0][2] };
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            kf_P[i][j] -= K[i] * P0[j];
-        }
-    }
-
-    // ---- 対称化（数値誤差の蓄積を防ぐ）----
-    for (int i = 0; i < 3; i++) {
-        for (int j = i + 1; j < 3; j++) {
-            float avg = (kf_P[i][j] + kf_P[j][i]) * 0.5f;
-            kf_P[i][j] = kf_P[j][i] = avg;
-        }
-    }
-
-    // ---- 対角成分の下限クランプ（P が負定値になる数値的異常を防ぐ）----
-    for (int i = 0; i < 3; i++) {
-        if (kf_P[i][i] < 1e-9f) kf_P[i][i] = 1e-9f;
-    }
+    kf3_baro(kf_x, kf_P, z_baro_m, kf_R);
+    kf3_baro(kfr_x, kfr_P, z_baro_m, kf_R);   // GNSS を入れない参照（同じ式）
 
     // ---- 出力を更新 ----
     _imu_altitude = kf_x[0];
@@ -559,6 +610,8 @@ const char *imu_gnss_vsi_gate_name(GnssVsiGate g) {
     case GVSI_SACC:  return "sAcc";
     case GVSI_VACC:  return "vAcc";
     case GVSI_INNOV: return "innov";
+    case GVSI_CONSIST: return "consist";
+    case GVSI_RESCUED: return "rescued";
     default:         return "?";
     }
 }
@@ -572,7 +625,23 @@ void imu_gnss_vsi_take_counts(uint32_t out[GVSI_N_REASONS]) {
     for (int i = 0; i < GVSI_N_REASONS; i++) { out[i] = s_vsi_cnt[i]; s_vsi_cnt[i] = 0; }
 }
 
-void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, int num_sv) {
+// 食い違いの門の逃がし道（GNSS_VSI_CONSIST_HEIGHT_*）用の短い履歴。2Hz の測位なので 4 つで 1.5 秒ぶん。
+struct GvsiRing {
+    uint32_t itow_ms[4];
+    float    val[4];
+    uint8_t  next;    // 次に書く添字
+    uint8_t  count;   // 入っている数（4 で頭打ち）
+};
+static GvsiRing s_gh_h = {};   // 測位ごとの GNSS の高度（門に関係なく、新しい測位のたびに入れる）
+static GvsiRing s_gh_v = {};   // 食い違いの門まで来た velD（上昇正）
+static void gh_push(GvsiRing &r, uint32_t itow_ms, float val) {
+    r.itow_ms[r.next] = itow_ms;
+    r.val[r.next]     = val;
+    r.next = (uint8_t)((r.next + 1) & 3);
+    if (r.count < 4) r.count++;
+}
+
+void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, int num_sv, float h_msl_m) {
     if (!kf_initialized) return;
 
     // ---- ★★ 同じ測位を 2 回融合しないこと ----
@@ -606,6 +675,9 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, in
         s_last_itow_ms = itow_ms;
     }
 
+    // GNSS の高度は門に関係なく測位ごとに覚える（逃がし道で 1 秒前の高度を引くため）
+    if (isfinite(h_msl_m)) gh_push(s_gh_h, get_gnss_itow_ms(), h_msl_m);
+
     // 無効値チェック
     if (isnan(veld_mps) || isinf(veld_mps)) return;
 
@@ -633,6 +705,67 @@ void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, in
 
     // 残差の門: 予測から GNSS_VSI_INNOV_GATE_SIGMA × √S より外れた観測は捨てる（反射は sAcc に出ないので、その保険）
     if (fabsf(innov) > GNSS_VSI_INNOV_GATE_SIGMA * sqrtf(S)) { s_vsi_cnt[GVSI_INNOV]++; return; }
+
+    // ---- 食い違いの門（2026-11-19〜。settings.h の GNSS_VSI_CONSIST_*）----
+    // 反射で GNSS の上下速度だけが数秒かけて狂う（sAcc は小さいまま、上の門はどれも通る）。
+    // 加速度計で積分した速度（s_vchk）とも、GNSS を入れない参照の KF（kfr_x[1]）とも同じ向きに食い違っていたら入れない。
+    // 片方だけ（自転車の傾きで加速度計の積分がずれる、気圧が動圧で揺れる など）では捨てない。
+    {
+        static uint32_t s_last_ok_itow = 0;      // 最後に比べた測位の iTOW [ms]（引き寄せの dt 用）
+        static uint32_t s_rej_since_ms = 0;      // 捨て続けている起点（0 = 捨てていない）
+        const uint32_t itow_ms = get_gnss_itow_ms();
+        float dtg = s_vchk_ok ? (float)(uint32_t)(itow_ms - s_last_ok_itow) * 0.001f : 0.0f;
+        if (dtg < 0.0f || dtg > 1.0f) dtg = 1.0f;   // 週の境目・間が空いたとき
+        s_last_ok_itow = itow_ms;
+        if (!s_vchk_ok) { s_vchk = veld_mps; s_vchk_ok = true; }   // 入れ直し（この回は比べない）
+        const float r_imu = veld_mps - s_vchk;
+        const float r_ref = veld_mps - kfr_x[1];
+        bool bad = fabsf(r_imu) > GNSS_VSI_CONSIST_IMU_MPS && fabsf(r_ref) > GNSS_VSI_CONSIST_REF_MPS
+                && ((r_imu > 0.0f) == (r_ref > 0.0f));
+        // 逃がし道: GNSS 自身の高度の 1 秒の変わり方が、直近 1 秒の velD の平均と合っていれば捨てない（GNSS_VSI_CONSIST_HEIGHT_*）
+        gh_push(s_gh_v, itow_ms, veld_mps);
+        if (bad && isfinite(h_msl_m)) {
+            const uint32_t win = GNSS_VSI_CONSIST_HEIGHT_WIN_MS;
+            int ih = -1;
+            for (int i = 0; i < s_gh_h.count; i++) {   // ちょうど 1 秒前（2Hz なので 2 つ前）の測位の高度
+                const uint32_t age = itow_ms - s_gh_h.itow_ms[i];
+                if (age + 100u >= win && age <= win + 100u) { ih = i; break; }
+            }
+            // 1 秒前〜いまの velD（いまの回を含む）。古い順にたどり、隣り合う測位の差の最大も見る
+            float vsum = 0.0f, prev = NAN, maxstep = 0.0f; int vn = 0;
+            for (int k = 0; k < s_gh_v.count; k++) {
+                const int i = (s_gh_v.next + 4 - s_gh_v.count + k) & 3;
+                const uint32_t age = itow_ms - s_gh_v.itow_ms[i];
+                if (age > win) continue;
+                vsum += s_gh_v.val[i]; vn++;
+                if (isfinite(prev) && fabsf(s_gh_v.val[i] - prev) > maxstep) maxstep = fabsf(s_gh_v.val[i] - prev);
+                prev = s_gh_v.val[i];
+            }
+            if (ih >= 0 && vn >= 2) {
+                const float dt_h = (float)(uint32_t)(itow_ms - s_gh_h.itow_ms[ih]) * 0.001f;
+                const float vh = (h_msl_m - s_gh_h.val[ih]) / dt_h;
+                // ★ 跳ね（隣り合う測位で GNSS_VSI_CONSIST_HEIGHT_STEP_MPS 以上）は逃がさない。11/19 13:30:37 は velD と高度が
+                //   一緒に 1 秒跳ねたので、高度だけを見ると「合っている」になって通っていた（加速度計は何も感じていない）。
+                if (fabsf(vsum / vn - vh) < GNSS_VSI_CONSIST_HEIGHT_AGREE_MPS && maxstep < GNSS_VSI_CONSIST_HEIGHT_STEP_MPS) {
+                    bad = false;
+                    s_vsi_cnt[GVSI_RESCUED]++;     // 捨てかけたが GNSS の高度が合っていたので入れた（used= にも数える）
+                }
+            }
+        }
+        if (bad) {
+            // ★ 捨てている間は s_vchk を GNSS へ寄せない（寄せると、狂ったまま平らになった GNSS を途中で受け入れる）。
+            //   ただし GNSS_VSI_CONSIST_LOCK_MS 捨て続けたら入れ直す（加速度計の積分のほうが狂っていたときに永久に捨てないため）。
+            const uint32_t now_ms = millis();
+            if (s_rej_since_ms == 0) s_rej_since_ms = now_ms ? now_ms : 1;
+            else if ((uint32_t)(now_ms - s_rej_since_ms) >= GNSS_VSI_CONSIST_LOCK_MS) { s_vchk = veld_mps; s_rej_since_ms = 0; }
+            s_vsi_cnt[GVSI_CONSIST]++;
+            return;
+        }
+        s_rej_since_ms = 0;
+        float k = dtg / GNSS_VSI_CONSIST_TAU_S;
+        if (k > 1.0f) k = 1.0f;
+        s_vchk += (veld_mps - s_vchk) * k;
+    }
     s_vsi_cnt[GVSI_OK]++;
     s_vsi_last_used_ms = millis();
     s_vsi_ever_used = true;
@@ -863,8 +996,7 @@ void imu_update() {
         //   KF_ACC_GUARD のときと同じ式。入るときにバイアスと高度・速度の相関を 0 にする（kf_predict_baro_only のコメント）。
         if (!s_kf_dead) {
             s_kf_dead = true;
-            kf_P[0][2] = kf_P[2][0] = 0.0f;
-            kf_P[1][2] = kf_P[2][1] = 0.0f;
+            kf_cut_bias_corr();
         }
         if (kf_initialized) {
             static uint32_t _fallback_predict_us = 0;

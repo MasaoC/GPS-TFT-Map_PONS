@@ -110,6 +110,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   - `PONS:ERROR,FILE_NOT_FOUND` （ファイルが存在しない、またはディレクトリ）
   - `PONS:ERROR,BUSY` （既に別のファイル転送タスクを実行中）。**前の転送が終わってから**返す（すぐ出すと前の転送の中身に混ざる）
   - `PONS:ERROR,SD_NOT_READY` （SDカード未装着または初期化エラー）
+  - `PONS:ERROR,TX_TIMEOUT` （送信中に PC 側の受信停止等で 10 秒連続して 1 バイトも送れなかった場合の中断）
 * **例**:
   ```
   PC:   PONS:GET,data/2026-07-26_0804.csv
@@ -197,6 +198,25 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   どれだけずれていたかを `log.txt` の `GNSS TIME (pc): given time was +0.08s off at 1st fix (told acc 2.0s)` に残す
   （NAV-PVT の届く遅れのぶん少し + に出る。精度より大きいと ` ** more than acc **`）。ほかの結果も `GNSS TIME (pc): ...` の行。
 * LoRa で仲間の機体・ボートからもらう時刻（計画のみ）も、本体の中では同じ口（`gnss_dbd_give_time()`）を通る。
+
+### (8) 本体設定の確認・変更・保存 (SETTINGS_GET / SETTINGS_SET / SETTINGS_SAVE)
+PONS Flight Viewer から `settings.txt` の全設定（32 項目）を確認・変更し、SD へ安全に保存するためのコマンド（2026-11-20〜）。`PONS:CONNECT` 接続中のみ受け付ける。
+
+* **取得 (`SETTINGS_GET`)**:
+  - **PC ➔ PONS**: `PONS:SETTINGS_GET`
+  - **PONS ➔ PC**:
+    - 各設定: `PONS:SETTING,<key>,<value>,<in_file>`（`in_file`: `1` = `settings.txt` に記載あり、`0` = 未記載で本体既定値）
+    - 目的地候補: `PONS:DEST,<name>`（`extradestinations` の全件）
+    - 終了: `PONS:SETTINGS_END`
+* **変更適用 (`SETTINGS_SET`)**:
+  - **PC ➔ PONS**: `PONS:SETTINGS_SET,<key>:<value>`
+  - **PONS ➔ PC**: `PONS:SETTINGS_OK,<key>,<applied_value>` または `PONS:SETTINGS_ERR,<UNKNOWN_KEY|BAD_FORMAT>,<key>`
+  - 本体側の既存 `setter` を通してバリデーション・反映し、変化があれば `log.txt` に `PC SETTING <key>: <old> -> <new>` を記録する。
+* **SD へ保存 (`SETTINGS_SAVE`)**:
+  - **PC ➔ PONS**: `PONS:SETTINGS_SAVE`
+  - **PONS ➔ PC**: `PONS:SETTINGS_SAVED,OK` または `PONS:SETTINGS_ERR,<SD_NOT_READY|SAVE_FAILED>`
+  - 項目間の整合チェック（`attitude_finish_settings_load()`・`airspeed_min < airspeed_max`）ののち、既存の `saveSettings()`（`settings.tmp` に書き切ってからリネームする原子的保存）で `settings.txt` を更新し、`log.txt` に `PC SETTINGS SAVED ...` を残す。
+  - 無線関連（`link_mode` / `link_radio_ch` / `link_radio_prof` / `link_group` / `link_assist`）のハードウェア設定は、本体の再起動後に反映される。
 
 ---
 

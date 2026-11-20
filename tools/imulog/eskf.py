@@ -149,6 +149,12 @@ def set_heading(q, want_deg):
     return quat_norm(quat_mul(qz, q))
 
 
+def world_z_rot(q_old, q_new):
+    """q_new = Rz(a)·q_old のときの a [rad]（評価用。純粋に z まわりの回転のときだけ正しい）。"""
+    dq = quat_mul(np.asarray(q_new, float), np.array([q_old[0], -q_old[1], -q_old[2], -q_old[3]]))
+    return float(2.0 * np.arctan2(dq[3], dq[0]))
+
+
 class AttitudeESKF:
     """GNSS 速度で援用する 12 誤差状態の姿勢 ESKF。
 
@@ -309,6 +315,7 @@ class AttitudeESKF:
 
     def _inject(self, dx):
         dtheta = dx[0:3]
+        self.yaw_fix = getattr(self, "yaw_fix", 0.0) + float(dtheta[2])   # ワールド z まわりに直した量の累計（評価用。仮のヨーの基準）
         # global error なので左から掛ける
         self.q = quat_norm(quat_mul(quat_from_rotvec(dtheta), self.q))
         self.v += dx[3:6]
@@ -333,6 +340,15 @@ def _map_host_to_sensor_time(imu_df):
     """
     return lambda x: np.asarray(x, dtype=float)
 
+
+# 地上の小さな動きの「仮のヨー」の既定（docs/pons_yaw_init_plan.md §5。保留・機上には未実装。名前は settings.h の ESKF_YAW_PROV_* の案）
+PROV_DEFAULT = dict(tau_s=60.0,      # ESKF_YAW_PROV_TAU_S
+                    static_s=2.0,    # ESKF_YAW_PROV_STATIC_US
+                    seg_s=8.0,       # ESKF_YAW_PROV_SEG_US
+                    min_mag=130.0,   # ESKF_YAW_PROV_MIN_MAG（σ の相関の項が約 10°）
+                    min_coh=0.90,    # ESKF_YAW_PROV_MIN_COH
+                    k_lo=0.6, k_hi=1.5,
+                    skip_frozen=True)
 
 GNSS_DELAY_DEFAULT = 0.170    # 機上 settings.h の ESKF_GNSS_VEL_DELAY_MS と同じにしておく（None = 補償しない）[s]。2026-11-18 に 0.150 → 0.170
 
@@ -372,7 +388,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                level_yawrate_inst_dps=3.0,
                level_accmag_tol=0.5, level_longacc=0.2,
                level_rate_dps=10.0, level_rate_quiet=0.5, use_ground=True,
-               use_bigtilt=True, events=None, bias_ref=None):
+               use_bigtilt=True, events=None, bias_ref=None, prov_kw=None):
     """decode_imulog.split() の結果に ESKF を適用して姿勢時系列を返す。
 
     セッション（起動）ごとに独立して処理し、フィルタも都度初期化する。
@@ -395,6 +411,10 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     use_bigtilt: 動いているときに 60 度以上ずれた傾きを比力で置き直すか（機上 ESKF_BIGTILT_*。2026-11-11〜）。
       方位は保ち、GNSS が戻ったら航跡と比べる（2026-11-12〜）。
       ★ 既定 True は機上に合わせてある。効果を見たいときだけ False にする。
+    prov_kw: 辞書を渡すと（{} で既定の値）、地上の小さな動きの「仮のヨー」（計画書 §5。保留・機上には未実装）を計算して
+      列 prov_yaw / prov_sigma / prov_mag / prov_coh / prov_k / prov_valid / prov_dpsi（いまの姿勢をワールド z まわりに回す量 [deg]）と
+      yaw_fix（ESKF がワールド z まわりに直した量の累計 [deg]。当たり外れの基準）を足す。
+      ESKF の計算は変えない（読むだけの出力）。値は PROV_DEFAULT を上書きする。
     events: リストを渡すと、出来事を (session, t, 種類, 値) で足す（検証用）。
       'relevel' … 置き直した（値 = 置き直す前の食い違い [deg]）
       'yaw_kept' / 'yaw_reset' … 保った方位を航跡と比べた（値 = 航跡 − 方位 [deg]。reset は航跡で入れ直した）
@@ -517,7 +537,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 if g_sp[gk] >= 3.0 and i_mv is None:                 # ESKF_YAW_INIT_MIN_SPEED_MPS
                     i_mv = i
             gfresh = gk >= 0 and tsv[i] - g_ts[gk] < 3.0
-            mov = gfresh and g_sp[gk] >= 0.5                          # ESKF_ACCEL_GNSS_MOVING_MPS
+            mov = gfresh and g_sp[gk] >= max(0.2, 2.0 * g_sacc[gk])     # 機上 gnss_moving_mps()（ESKF_ACCEL_GNSS_MOVING_MPS / _SACC_K。2026-11-20〜）
             if mov:
                 if not mov_on:
                     mov_on, mov_since = True, tsv[i]
@@ -579,6 +599,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         undo_boxes = []
         ground_prev = False              # 前のサンプルで地上の維持だったか（機上 ground_now_）
         yaw_arm = 0
+        yaw_arm_lo = 0                   # 2 m/s 以上が連続した測位数（機上 yaw_arm_lo_。2026-11-20〜）
         # ---- 発進加速の常時前向き 2D 相関（機上 yaw_imu_hp_ / yaw_gnss_lp_ / yaw_corr_*。settings.h の ESKF_YAW_CORR_*）----
         yaw_imu_hp = np.zeros(2)
         yaw_gnss_lp = None
@@ -587,6 +608,16 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         yaw_corr_c = 0.0
         yaw_corr_s = 0.0
         yaw_corr_n = 0.0                 # Σ w |v_imu| |dv_gnss|（機上 yaw_corr_n_。まとまりの分母）
+        # ---- 地上の小さな動きの「仮のヨー」（2026-11-19〜。docs/pons_yaw_init_plan.md §5。保留・**機上には未実装**）----
+        # 読むだけの出力。ESKF の状態（q・P・yaw_set）は一切変えない。v_imu_hp と dv_gnss は上の相関器と共用。
+        prov = prov_kw is not None
+        pk = dict(PROV_DEFAULT, **(prov_kw or {}))
+        prov_c = prov_s = prov_n = prov_k = 0.0   # C2, S2, N2, K2
+        prov_seg_until = -1e9            # 「止まっていた状態から始まった動き」の窓の終わり（静止 2 秒以上の間は今 + 8 秒）
+        prov_last_add = None             # 最後に積んだ時刻（ゼロ点のずれの項）
+        prov_out = np.full((n_out, 7), np.nan) if prov else None   # [yaw, sigma, mag, coh, k, valid, dpsi]
+        prov_cur = np.full(7, np.nan)
+        yaw_fix = np.zeros(n_out)        # ESKF がワールド z まわりに直した量の累計 [deg]（評価用。仮のヨーの当たり外れの基準）
         bias_ok_t = None                 # 静止でゼロ点を最後に覚えた時刻（機上 bias_learn_ok_us_）
         bias_ref_v = None if sd_bias is None else sd_bias.copy()   # 前回までに確かめた値（機上 bias_ref_）
         bias_prev = None                 # 切れ目なく続いて門を通った直前の窓の平均（機上 bias_prev_）
@@ -607,6 +638,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         static_t0 = None         # 静止が始まった時刻（機上 static_since_us_）
         good_gsp = None          # 信用できる最後の測位の対地速度（機上 good_gsp_）
         good_gsp_t = None
+        good_sacc = 1.0                  # 機上 good_sacc_（ESKF_SACC_MAX）
         ground_flags = np.zeros(n_out, dtype=bool)
         # ---- 動いているときの大きな傾きの置き直し（機上 bt_*。settings.h の ESKF_BIGTILT_*）----
         bt_acc_lp = None         # 比力の低域（時定数 0.5 秒）
@@ -775,7 +807,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 er = rr - (rr @ u) * u
                 acc_dp_raw2 = float(er @ er)
             gfresh = good_gsp_t is not None and (ts[i] - good_gsp_t) < 3.0
-            gnss_moving = gfresh and good_gsp >= 0.5                     # ESKF_ACCEL_GNSS_MOVING_MPS
+            gnss_moving = gfresh and good_gsp >= max(0.2, 2.0 * good_sacc)   # 機上 gnss_moving_mps()（ESKF_ACCEL_GNSS_MOVING_MPS / _SACC_K）
             if gfresh and good_gsp < 0.2:                                # ESKF_ACCEL_GNSS_STOP_MPS
                 if not gstop_on:
                     gstop_on, gstop_since = True, ts[i]
@@ -855,6 +887,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 v_stale = True
                 bt_since = None
                 bt_acc_lp = None
+                if prov and not yaw_set:
+                    prov_c = prov_s = prov_n = prov_k = 0.0; prov_cur[:] = np.nan
                 if events is not None:
                     events.append((sess, float(ts[i]), "imu_gap", float(dt)))
             R_ = quat_to_R(f.q)
@@ -873,6 +907,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                     yaw_static_s = 0.0
                     rf_en = (R_ @ (np.asarray(acc[i], float) - f.ba))[:2]
                     yaw_imu_hp = yaw_imu_hp * np.exp(-dt / 3.0) + rf_en * dt       # ESKF_YAW_CORR_TAU_S
+                if prov and yaw_static_s >= pk["static_s"]:
+                    prov_seg_until = ts[i] + pk["seg_s"]                           # 止まっている間は窓を開けておく
             # ---- ワールド系ヨーレートの持続成分（機上 yaw_rate_lp_ と同じ式）----
             wz_dps = 0.0
             if dt > 0.0:
@@ -948,7 +984,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                     f.P[:, 0:2] = 0.0
                     f.P[0, 0] = f.P[1, 1] = np.deg2rad(30.0) ** 2                              # ESKF_INIT_ATT_SIGMA_MOVING_DEG
                     if yaw_set:
+                        q_old = f.q.copy()
                         f.q = set_heading(f.q, float(np.atleast_1d(h0)[0]))
+                        f.yaw_fix = getattr(f, "yaw_fix", 0.0) + world_z_rot(q_old, f.q)
                         old = f.P[2, 2]
                         f.P[2, :] = 0.0
                         f.P[:, 2] = 0.0
@@ -956,6 +994,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                         yaw_suspect = True
                         yaw_check_arm = 0
                     bt_since = None
+                    if prov and not yaw_set:
+                        prov_c = prov_s = prov_n = prov_k = 0.0; prov_cur[:] = np.nan
                     if events is not None:
                         events.append((sess, float(ts[i]), "relevel", err_deg))
             while gi < len(g_ts) and g_ts[gi] <= ts[i]:
@@ -971,6 +1011,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 #   振り落とした後の測位で作っている。前後加速度のゲートだけは機上と入力が違う
                 #   （生ログに 3D フィックスかどうかが残っていないため。0.983 からの既知の差）。
                 good_gsp, good_gsp_t = gsp, g_ts[gi]
+                good_sacc = float(g_sacc[gi])            # 機上 good_sacc_
                 # ★ 機上も sAcc の悪い測位ではヨーを入れない（2026-10-27）。ここは振り落とし済み。
                 if v_stale:
                     # 機上 attitude_on_gnss_velocity の v_stale_: 途絶明けは速度を GNSS の値に入れ直す（観測には使わない）
@@ -993,6 +1034,41 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                         if 0.0 < dtg_y < 2.0:
                             yaw_gnss_lp += (1.0 - np.exp(-dtg_y / 3.0)) * (g_enu[gi][:2] - yaw_gnss_lp)   # ESKF_YAW_CORR_TAU_S
                             dv_g = g_enu[gi][:2] - yaw_gnss_lp
+                            if prov:
+                                # 仮のヨーの相関器（§4.3）: 減衰はいつも、積むのは窓の中で IMU 側が凍っていないときだけ（§4.8 の 1 つめ）
+                                dec2 = np.exp(-dtg_y / pk["tau_s"])
+                                prov_c *= dec2; prov_s *= dec2; prov_n *= dec2; prov_k *= dec2
+                                frozen = static_flags[i] and not accelerating
+                                if ts[i] < prov_seg_until and not (pk["skip_frozen"] and frozen):
+                                    rv2 = max(float(g_sacc[gi]), 0.05)
+                                    w2 = 1.0 / (rv2 * rv2)
+                                    hx, hy = yaw_imu_hp
+                                    prov_c += w2 * (hx * dv_g[0] + hy * dv_g[1])
+                                    prov_s += w2 * (hx * dv_g[1] - hy * dv_g[0])
+                                    prov_n += w2 * float(np.hypot(hx, hy) * np.hypot(dv_g[0], dv_g[1]))
+                                    prov_k += w2 * float(hx * hx + hy * hy)
+                                    prov_last_add = ts[i]
+                                if pk.get("debug") is not None:
+                                    pk["debug"].append((sess, float(ts[i]), yaw_imu_hp.copy(), dv_g.copy(),
+                                                        bool(ts[i] < prov_seg_until), bool(frozen), float(g_sacc[gi]),
+                                                        float(np.degrees(getattr(f, "yaw_fix", 0.0)))))
+                                mag2 = float(np.hypot(prov_c, prov_s))
+                                if mag2 > 1e-9:
+                                    from decode_imulog import mount_correct_quat
+                                    dps2 = float(np.arctan2(prov_s, prov_c))
+                                    qz2 = np.array([np.cos(dps2 * 0.5), 0.0, 0.0, np.sin(dps2 * 0.5)])
+                                    _, _, yv = mount_correct_quat(*quat_norm(quat_mul(qz2, f.q)))
+                                    coh2 = mag2 / prov_n if prov_n > 1e-9 else 0.0
+                                    k2 = mag2 / prov_k if prov_k > 1e-9 else 0.0
+                                    sc = 2.0 * (180.0 / np.pi) / np.sqrt(mag2)                 # ESKF_YAW_CORR_SIGMA_SCALE
+                                    bok = bias_ok_t is not None and (ts[i] - bias_ok_t) < 120.0
+                                    sbg = 0.02 if bok else 0.3                                  # [deg/s]
+                                    age = ts[i] - prov_last_add if prov_last_add is not None else 0.0
+                                    sg2 = float(np.sqrt(3.5 ** 2 + sc ** 2 + (sbg * age) ** 2))
+                                    ok = (mag2 >= pk["min_mag"] and coh2 >= pk["min_coh"]
+                                          and pk["k_lo"] <= k2 <= pk["k_hi"])
+                                    prov_cur[:] = [float(np.atleast_1d(yv)[0]) % 360.0, sg2, mag2, coh2, k2, 1.0 if ok else 0.0,
+                                                   float(np.degrees(dps2))]
                             if sp >= 0.8:                                                                 # ESKF_YAW_CORR_MIN_GS_MPS
                                 rv_y = max(float(g_sacc[gi]), 0.05)                                       # ESKF_SACC_MIN
                                 w_y = 1.0 / (rv_y * rv_y)
@@ -1002,11 +1078,16 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                                 yaw_corr_n = dec_cs * yaw_corr_n + w_y * float(np.hypot(yaw_imu_hp[0], yaw_imu_hp[1]) * np.hypot(dv_g[0], dv_g[1]))
                         else:
                             yaw_gnss_lp = g_enu[gi][:2].copy()
-                    if sp < 3.0:                                 # ESKF_YAW_INIT_MIN_SPEED_MPS
+                    # 2 段の門（機上と同じ。2026-11-20〜）: 2 m/s 以上が 1 秒なら 2D 相関の門を全部通ったときだけ、
+                    # 3 m/s 以上が 1 秒なら今までどおり（相関が外れたら航跡＋15°）
+                    if sp < 2.0:                                 # ESKF_YAW_INIT_CORR_MIN_SPEED_MPS
                         yaw_arm = 0
+                        yaw_arm_lo = 0
                     else:
-                        yaw_arm += 1
-                        if yaw_arm >= arm_fixes:                 # ESKF_YAW_INIT_ARM_FIXES
+                        yaw_arm_lo += 1
+                        yaw_arm = yaw_arm + 1 if sp >= 3.0 else 0   # ESKF_YAW_INIT_MIN_SPEED_MPS
+                        arm_trk = yaw_arm >= arm_fixes           # ESKF_YAW_INIT_ARM_FIXES。航跡へ戻ってよい
+                        if yaw_arm_lo >= arm_fixes:
                             trk = float(np.degrees(np.arctan2(g_enu[gi][0], g_enu[gi][1])) % 360.0)
                             # 機上 attitude_on_gnss_velocity の同名ブロックと同じ（settings.h の ESKF_YAW_CORR_*。2026-11-18）
                             mag = float(np.hypot(yaw_corr_c, yaw_corr_s))
@@ -1023,6 +1104,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                                     d_trk = (float(np.atleast_1d(y_chk)[0]) - trk + 180.0) % 360.0 - 180.0
                                     if abs(d_trk) <= 20.0:       # ESKF_YAW_CORR_MAX_TRK_DIFF_DEG
                                         how = 0
+                                        f.yaw_fix = getattr(f, "yaw_fix", 0.0) + world_z_rot(f.q, q_try)
                                         f.q = q_try
                                         sig_corr = 2.0 * (180.0 / np.pi) / np.sqrt(mag)   # ESKF_YAW_CORR_SIGMA_SCALE
                                         sig_init = float(min(np.hypot(3.5, sig_corr), 15.0))  # ESKF_YAW_INIT_SIGMA_MIN_DEG..DEG
@@ -1031,26 +1113,38 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                                         f.P[2, 2] = np.deg2rad(sig_init) ** 2
                                     else:
                                         how = 3
-                            if how != 0:
-                                f.q = set_heading(f.q, trk)
-                                f.P[2, :] = 0.0
-                                f.P[:, 2] = 0.0
-                                f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
-                            yaw_set = True
-                            # 直前の静止でゼロ点を覚えていたら P_bg を 0.02 deg/s に（機上 ESKF_YAW_INIT_BIAS_FRESH_US / ESKF_BIAS_LEARN_PBG_RADS）
-                            bias_ok = bias_ok_t is not None and (ts[i] - bias_ok_t) < 120.0
-                            # 覚えていなければデータシートの最大 0.3 deg/s（ESKF_BIAS_UNLEARNED_RADS。いまより小さいときだけ）
-                            sb2 = (0.000349 if bias_ok else 0.005236) ** 2
-                            for kk in range(6, 9):
-                                if (not bias_ok) and f.P[kk, kk] <= sb2:
-                                    continue
-                                f.P[kk, :] = 0.0
-                                f.P[:, kk] = 0.0
-                                f.P[kk, kk] = sb2
-                            if events is not None:
-                                events.append((sess, float(ts[i]), "yaw_init", dict(how=how, mag=mag, coh=coh, corr_trk=d_trk,
-                                                                                     sigma=sig_init, bias_ok=bias_ok)))
-                            f.v = g_enu[gi].copy(); hist_from = i
+                            # 3 m/s に届く前は、相関で入れられなければ何もせずに待つ（機上と同じ。f.q は how=3 でも回していない）
+                            if how == 0 or arm_trk:
+                                if how != 0:
+                                    q_old = f.q.copy()
+                                    f.q = set_heading(f.q, trk)
+                                    f.yaw_fix = getattr(f, "yaw_fix", 0.0) + world_z_rot(q_old, f.q)
+                                    f.P[2, :] = 0.0
+                                    f.P[:, 2] = 0.0
+                                    f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
+                                yaw_set = True
+                                # 直前の静止でゼロ点を覚えていたら P_bg を 0.02 deg/s に（機上 ESKF_YAW_INIT_BIAS_FRESH_US / ESKF_BIAS_LEARN_PBG_RADS）
+                                bias_ok = bias_ok_t is not None and (ts[i] - bias_ok_t) < 120.0
+                                # 覚えていなければデータシートの最大 0.3 deg/s（ESKF_BIAS_UNLEARNED_RADS。いまより小さいときだけ）
+                                sb2 = (0.000349 if bias_ok else 0.005236) ** 2
+                                for kk in range(6, 9):
+                                    if (not bias_ok) and f.P[kk, kk] <= sb2:
+                                        continue
+                                    f.P[kk, :] = 0.0
+                                    f.P[:, kk] = 0.0
+                                    f.P[kk, kk] = sb2
+                                if events is not None:
+                                    events.append((sess, float(ts[i]), "yaw_init", dict(how=how, mag=mag, coh=coh, corr_trk=d_trk,
+                                                                                         sigma=sig_init, bias_ok=bias_ok)))
+                                    if prov:
+                                        # 確定の瞬間の仮のヨー（入れる前の座標で出した値なので、入れた方位と比べるには dpsi と yaw_fix を使う）
+                                        events.append((sess, float(ts[i]), "prov_at_init", dict(
+                                            yaw=float(prov_cur[0]), sigma=float(prov_cur[1]), mag=float(prov_cur[2]),
+                                            coh=float(prov_cur[3]), k=float(prov_cur[4]), valid=bool(prov_cur[5] == 1.0),
+                                            dpsi=float(prov_cur[6]))))
+                                if prov:
+                                    prov_cur[:] = np.nan          # 確定したら使わない
+                                f.v = g_enu[gi].copy(); hist_from = i
                 elif yaw_suspect:
                     # 機上 attitude_on_gnss_velocity の同名ブロック: 保った方位を航跡で確かめてから観測に入れる
                     sp = float(np.hypot(g_enu[gi][0], g_enu[gi][1]))
@@ -1068,7 +1162,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                             _, _, hh = mount_correct_quat(*f.q)
                             d = (trk - float(np.atleast_1d(hh)[0]) + 180.0) % 360.0 - 180.0
                             if abs(d) > 45.0:                    # ESKF_BIGTILT_YAW_CHECK_DEG
+                                q_old = f.q.copy()
                                 f.q = set_heading(f.q, trk)
+                                f.yaw_fix = getattr(f, "yaw_fix", 0.0) + world_z_rot(q_old, f.q)
                                 f.P[2, :] = 0.0
                                 f.P[:, 2] = 0.0
                                 f.P[2, 2] = np.deg2rad(15.0) ** 2    # ESKF_YAW_INIT_SIGMA_DEG
@@ -1084,6 +1180,9 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
                 gi += 1
             vh[i] = f.v
             qs[k] = f.q
+            if prov:
+                yaw_fix[k] = np.degrees(getattr(f, "yaw_fix", 0.0))
+                prov_out[k] = prov_cur
             ysig[k] = np.degrees(np.sqrt(max(f.P[2, 2], 0.0)))
         imu = imu.iloc[i_start:].reset_index(drop=True)
         ts = ts[i_start:]
@@ -1102,6 +1201,10 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             "qw": qs[:, 0], "qx": qs[:, 1], "qy": qs[:, 2], "qz": qs[:, 3],
             # ヨーが決まった後の「地上での維持」が働いていたサンプル（機上 gnd= の元）
             "ground": ground_flags,
+            **({} if not prov else {
+                "prov_yaw": prov_out[:, 0], "prov_sigma": prov_out[:, 1], "prov_mag": prov_out[:, 2],
+                "prov_coh": prov_out[:, 3], "prov_k": prov_out[:, 4], "prov_valid": prov_out[:, 5],
+                "prov_dpsi": prov_out[:, 6], "yaw_fix": yaw_fix}),
         }))
 
     if not out:

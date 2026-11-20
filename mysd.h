@@ -37,6 +37,9 @@
       TASK_LATCH_BATT_OVERDISCHARGE, // 過放電（3.0V 未満）ラッチを Core1 で本体フラッシュへ記録する
       TASK_SERIAL_LIST,   // Web Serial: SD 内のファイル一覧をシリアル出力（飛行 CSV と log.txt。PONS:LIST,ALL なら全部）
       TASK_SERIAL_GET,    // Web Serial: 指定 CSV ファイルをシリアルへストリーミング送出
+      TASK_SERIAL_SETTINGS_GET,  // Web Serial: 全設定項目と目的地一覧をシリアル出力（PONS:SETTINGS_GET）
+      TASK_SERIAL_SETTINGS_SET,  // Web Serial: 1 項目の設定を適用（PONS:SETTINGS_SET,key:value）
+      TASK_SERIAL_SETTINGS_SAVE, // Web Serial: 変更を settings.txt へ原子的に保存（PONS:SETTINGS_SAVE）
       TASK_SAVE_RTCBK,    // GNSS のバックアップ電池の推定（rtc_backup.cpp）を SD の rtc_backup.txt へ書く
       TASK_SAVE_DBD,      // GNSS の航法データベース（gnss_dbd.cpp が RAM にためたもの）を SD の GNSS_DBD_FILE へ書く
       TASK_LOAD_DBD,      // 同じファイルを RAM へ読み直す（机の上の試験 PONS:DBD,COLD。起動時は setup1() から直接）
@@ -308,6 +311,10 @@
           struct {                           // For TASK_SERIAL_LIST
               bool all;                      // true = 全部のファイル（PONS:LIST,ALL）。false = 飛行 CSV と log.txt だけ
           } serialListArgs;
+          struct {                           // For TASK_SERIAL_SETTINGS_SET
+              char key[32];                  // 設定キー名（settings[].id）
+              char value[64];                // 設定値文字列
+          } serialSetArgs;
       };
   } Task;
 
@@ -365,8 +372,14 @@
   void gnss_dbd_save_sd();
   Task createSerialListTask(bool all = false);   // all: PONS:LIST,ALL（全部のファイル）
   Task createSerialGetTask(const char* filename, uint32_t tail = 0);   // tail: 末尾だけ送る [B]（0 = 全部）
+  Task createSerialSettingsGetTask();
+  Task createSerialSettingsSetTask(const char* key, const char* value);
+  Task createSerialSettingsSaveTask();
   void serial_list_csv_files(bool all = false);
   void serial_send_csv_file(const char* filename, uint32_t tail = 0);
+  void serial_send_settings();
+  void serial_apply_setting(const char* key, const char* value);
+  void serial_save_settings();
 
   // Web Serial 通信状態フラグ（Core0 / Core1 共有）
   extern volatile bool webserial_connected;

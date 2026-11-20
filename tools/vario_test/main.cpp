@@ -6,6 +6,7 @@
 //           3) 鉛直加速度ガード（KF_ACC_GUARD_*）の発動・バイアス保護・2 秒静定後の復帰
 //           4) IMU 途絶時（IMU_DRV_DEAD）の kf_predict_baro_only()（BUG-65）
 //           5) vario_source_ok / vario_vspeed_mps / vario_deadband_mps の 3 系統切り替え
+//           8) GNSS の上下速度の食い違いの門と、GNSS の高度による逃がし道（GNSS_VSI_CONSIST_*。2026-11-19〜）
 // ============================================================
 #include "Arduino.h"
 #include "imu.h"
@@ -226,6 +227,131 @@ int main() {
               "7 m/s² for 0.5 s trips the guard (%s)", g_stub_last_log);
         run_sim(6.0f, vz_true, 0.0f, 0.0f, z_baro, true);
         CHECK(strstr(g_stub_last_log, "IMU accel back") != nullptr, "guard recovered after 7 m/s² (%s)", g_stub_last_log);
+    }
+
+    // ---- 8) GNSS の上下速度の食い違いの門（GNSS_VSI_CONSIST_*。2026-11-19〜）----
+    //   GNSS を 2Hz で入れながら回す。gnss_fn(t) が velD（上昇正）を返す。
+    {
+        auto run_with_gnss = [&](float secs, float az_true, float (*gnss_fn)(float), float& vmin, float& vmax, uint32_t c[GVSI_N_REASONS]) {
+            imu_gnss_vsi_take_counts(c);
+            vmin = 1e9f; vmax = -1e9f;
+            const int steps = (int)(secs * 250.0f);
+            for (int i = 0; i < steps; i++) {
+                test_advance_us(4000);
+                const float tt = (i + 1) * 0.004f;
+                vz_true += az_true * 0.004f;
+                z_baro  += vz_true * 0.004f;
+                feed_imu_sample(az_true);
+                imu_update();
+                if (i % 6 == 0) imu_kalman_baro_update(z_baro);
+                if (i % 125 == 124) {                        // 2Hz の測位
+                    g_stub_itow_ms += 500;
+                    imu_kalman_gnss_vel_update(gnss_fn(tt) + vz_true, 1.0f, 0.09f, 29);
+                }
+                const float v = get_imu_vspeed_raw();
+                if (v < vmin) vmin = v;
+                if (v > vmax) vmax = v;
+            }
+            imu_gnss_vsi_take_counts(c);
+        };
+        uint32_t c[GVSI_N_REASONS];
+        float vmin, vmax;
+        g_drv_present = false;                              // get_imu_vspeed_raw() で KF の値を直接見る
+        vz_true = 0.0f;
+        // まず正しい GNSS で落ち着かせる
+        run_with_gnss(6.0f, 0.0f, [](float) { return 0.0f; }, vmin, vmax, c);
+        CHECK(c[GVSI_OK] >= 10 && c[GVSI_CONSIST] == 0, "clean GNSS used (used=%u consist=%u)", (unsigned)c[GVSI_OK], (unsigned)c[GVSI_CONSIST]);
+
+        // 11/19 13:20:16 の形: 平らな所で、GNSS の velD だけが 3 秒かけて下向き 0.87 m/s まで狂い、1 秒続いて 1 秒で戻る。
+        //   加速度も気圧も平ら。直す前は V/S が −0.8 m/s まで付いていった。
+        run_with_gnss(8.0f, 0.0f, [](float t) {
+            if (t < 1.0f) return 0.0f;
+            if (t < 4.0f) return -0.87f * (t - 1.0f) / 3.0f;
+            if (t < 5.0f) return -0.87f;
+            if (t < 6.0f) return -0.87f * (6.0f - t);
+            return 0.0f;
+        }, vmin, vmax, c);
+        CHECK(vmin > -0.35f, "multipath velD drift rejected: V/S min %.2f (was ~-0.8 before the consist gate)", vmin);
+        CHECK(c[GVSI_CONSIST] >= 3, "consist counted (%u)", (unsigned)c[GVSI_CONSIST]);
+
+        // 本物の上昇: 加速度・気圧・GNSS がそろって 0 → +1.0 m/s（1 秒の加速）。GNSS は捨てず、V/S は付いていく。
+        run_with_gnss(4.0f, 0.0f, [](float) { return 0.0f; }, vmin, vmax, c);
+        run_with_gnss(1.0f, 1.0f, [](float) { return 0.0f; }, vmin, vmax, c);
+        uint32_t c2[GVSI_N_REASONS];
+        run_with_gnss(5.0f, 0.0f, [](float) { return 0.0f; }, vmin, vmax, c2);
+        CHECK(c[GVSI_CONSIST] == 0 && c2[GVSI_CONSIST] == 0, "real climb not rejected (consist=%u/%u)", (unsigned)c[GVSI_CONSIST], (unsigned)c2[GVSI_CONSIST]);
+        CHECK(fabsf(get_imu_vspeed_raw() - 1.0f) < 0.1f, "V/S follows real climb (%.3f, expect 1.0)", get_imu_vspeed_raw());
+
+        // 加速度計の積分だけが狂っている（GNSS を入れない KF とは合う）なら捨てない: 加速度に +0.2 m/s² の偏りを 5 秒
+        run_with_gnss(1.0f, -1.0f, [](float) { return 0.0f; }, vmin, vmax, c);   // 水平に戻す
+        run_with_gnss(4.0f, 0.0f, [](float) { return 0.0f; }, vmin, vmax, c);
+        // 逃がし道（GNSS_VSI_CONSIST_HEIGHT_*）: 13:20 と同じ velD の狂い方でも、GNSS 自身の高度がそれに合って下がっていれば入れる。
+        //   高度が平らなら今までどおり捨てる。
+        auto run_drift_with_height = [&](bool height_follows, float& vmin_out, uint32_t c[GVSI_N_REASONS]) {
+            run_with_gnss(4.0f, 0.0f, [](float) { return 0.0f; }, vmin, vmax, c);   // 落ち着かせる
+            imu_gnss_vsi_take_counts(c);
+            vmin_out = 1e9f;
+            float h = 50.0f;
+            for (int i = 0; i < (int)(8.0f * 250.0f); i++) {
+                test_advance_us(4000);
+                const float tt = (i + 1) * 0.004f;
+                const float vg = (tt < 1.0f) ? 0.0f : (tt < 4.0f) ? -0.87f * (tt - 1.0f) / 3.0f
+                               : (tt < 5.0f) ? -0.87f : (tt < 6.0f) ? -0.87f * (6.0f - tt) : 0.0f;
+                if (height_follows) h += vg * 0.004f;
+                feed_imu_sample(0.0f);
+                imu_update();
+                if (i % 6 == 0) imu_kalman_baro_update(z_baro);
+                if (i % 125 == 124) { g_stub_itow_ms += 500; imu_kalman_gnss_vel_update(vg, 1.0f, 0.09f, 29, h); }
+                const float v = get_imu_vspeed_raw();
+                if (v < vmin_out) vmin_out = v;
+            }
+            imu_gnss_vsi_take_counts(c);
+        };
+        float vmin_h;
+        run_drift_with_height(false, vmin_h, c);
+        CHECK(vmin_h > -0.35f && c[GVSI_CONSIST] >= 3 && c[GVSI_RESCUED] == 0,
+              "flat GNSS height: drift still rejected (V/S min %.2f, consist=%u rescued=%u)", vmin_h, (unsigned)c[GVSI_CONSIST], (unsigned)c[GVSI_RESCUED]);
+        run_drift_with_height(true, vmin_h, c);
+        CHECK(c[GVSI_RESCUED] >= 3, "GNSS height follows velD: rescued (rescued=%u consist=%u)", (unsigned)c[GVSI_RESCUED], (unsigned)c[GVSI_CONSIST]);
+        CHECK(vmin_h < -0.5f, "GNSS height follows velD: V/S follows GNSS (min %.2f)", vmin_h);
+        // 13:30:37 の形: velD と高度が一緒に 1 秒だけ跳ねる。高度は合っていても跳ねなので逃がさない（STEP_MPS）。
+        {
+            run_with_gnss(6.0f, 0.0f, [](float) { return 0.0f; }, vmin, vmax, c);
+            imu_gnss_vsi_take_counts(c);
+            float h = 50.0f, vmin_s = 1e9f;
+            for (int i = 0; i < (int)(5.0f * 250.0f); i++) {
+                test_advance_us(4000);
+                const float tt = (i + 1) * 0.004f;
+                // 2Hz の測位で −1.0 → −1.5 → 0（実際は 4Hz で −1.0 / −1.53 / −2.56 / −0.84。−2.6 だけなら残差の門で捨てられる）
+                const float vg = (tt >= 2.0f && tt < 2.5f) ? -1.0f : (tt >= 2.5f && tt < 3.0f) ? -1.5f : 0.0f;
+                feed_imu_sample(0.0f);
+                imu_update();
+                if (i % 6 == 0) imu_kalman_baro_update(z_baro);
+                // GNSS の高度も測位ごとに velD どおり動く（GNSS の中では辻褄が合っている）
+                if (i % 125 == 124) { g_stub_itow_ms += 500; h += vg * 0.5f; imu_kalman_gnss_vel_update(vg, 1.0f, 0.09f, 29, h); }
+                const float v = get_imu_vspeed_raw();
+                if (v < vmin_s) vmin_s = v;
+            }
+            imu_gnss_vsi_take_counts(c);
+            CHECK(c[GVSI_RESCUED] == 0 && vmin_s > -0.6f,
+                  "velD+height spike not rescued (V/S min %.2f, rescued=%u consist=%u innov=%u)", vmin_s,
+                  (unsigned)c[GVSI_RESCUED], (unsigned)c[GVSI_CONSIST], (unsigned)c[GVSI_INNOV]);
+        }
+
+        {
+            imu_gnss_vsi_take_counts(c);
+            for (int i = 0; i < (int)(5.0f * 250.0f); i++) {
+                test_advance_us(4000);
+                feed_imu_sample(0.2f);                       // 偽の +0.2 m/s²（本当は平ら）
+                imu_update();
+                if (i % 6 == 0) imu_kalman_baro_update(z_baro);
+                if (i % 125 == 124) { g_stub_itow_ms += 500; imu_kalman_gnss_vel_update(0.0f, 1.0f, 0.09f, 29); }
+            }
+            imu_gnss_vsi_take_counts(c);
+            CHECK(c[GVSI_CONSIST] <= 2, "accel-only error does not lock out GNSS (consist=%u used=%u)", (unsigned)c[GVSI_CONSIST], (unsigned)c[GVSI_OK]);
+            CHECK(fabsf(get_imu_vspeed_raw()) < 0.25f, "V/S held near 0 by GNSS despite accel offset (%.3f)", get_imu_vspeed_raw());
+        }
+        g_drv_present = true;
     }
 
     printf("vario_test: %d passed, %d failed\n", g_pass, g_fail);

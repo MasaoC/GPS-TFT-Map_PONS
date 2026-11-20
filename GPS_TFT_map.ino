@@ -846,6 +846,18 @@ bool warn_muted_off_mount() {
   return usb_power_present() && attitude_is_off_mount();
 }
 
+// 充電＋マウント外れ（IN MUTE）または PC 接続通信中（webserial_connected）。
+// 机の上での充電・データ転送中に鬱陶しくなりがちな音（姿勢系4種・バリオ・fixed・destination_toofar）を止める。
+// ★ warn_muted_off_mount() 自体は画面バナー（IN MUTE DUE TO CHARGING + OFF MOUNT）でも使うため分離しておく。
+static bool warn_muted_bench() {
+  return warn_muted_off_mount() || webserial_connected;
+}
+
+static const char *warn_muted_tag(bool muted) {
+  if (!muted) return "";
+  return webserial_connected ? " (MUTED: PC connected)" : " (MUTED: charging + off mount)";
+}
+
 // 地上の姿勢チェック（ロール／ピッチ）の共通部分。
 // 「しきい値を超え**続けたら**、間隔を空けて繰り返し知らせる」。
 //   戻り値 true = いま鳴らす。active =
@@ -870,7 +882,7 @@ static bool ground_warn_due(uint32_t &over_since, uint32_t &last_warn, bool bad,
   if (over_since == 0)
     over_since = now;
   const bool held = (now - over_since) >= GROUND_ROLL_WARN_HOLD_MS;
-  active = held && !warn_muted_off_mount();
+  active = held && !warn_muted_bench();
   if (!held)
     return false;
   if (last_warn != 0 && now - last_warn < GROUND_ROLL_WARN_INTERVAL_MS)
@@ -956,14 +968,15 @@ static void gnss_conn_tick() {
     const bool cur_fix = get_gnss_fix();
     const bool cur_mirror = link_mirror_active();
     if (!prev_gnss_fix && cur_fix && cur_mirror == prev_mirror) {
-      if (fixed_voice_ms == 0 ||
-          millis() - fixed_voice_ms >= GNSS_FIXED_VOICE_GAP_MS) {
+      const bool muted = warn_muted_bench();
+      if (!muted && (fixed_voice_ms == 0 ||
+          millis() - fixed_voice_ms >= GNSS_FIXED_VOICE_GAP_MS)) {
         fixed_voice_ms = millis();
         enqueueTask(createPlayWavTask(
             "wav/fixed.wav",
             4)); // 優先度4: AUTO10Kトーン(p=3)より高くして埋もれないよう
       }
-      enqueueTask(createLogSdTask("GNSS FIX acquired"));
+      enqueueTask(createLogSdfTask("GNSS FIX acquired%s", warn_muted_tag(muted)));
     }
     prev_gnss_fix = cur_fix;
     prev_mirror = cur_mirror;
@@ -1023,12 +1036,12 @@ static void bank_alarm_tick() {
       if (!bank_warned && (now_ms - bank_over_since_ms) >= BANK_WARN_HOLD_MS) {
         bank_last_warn_ms = now_ms;
         bank_warned = true;
-        const bool muted = warn_muted_off_mount();
+        const bool muted = warn_muted_bench();
         if (!muted)
           enqueueTask(createPlayWavTask("wav/bank_warning.wav", 3));
         enqueueTask(
             createLogSdfTask("BANK WARN roll=%+.1f deg%s", wr,
-                             muted ? " (MUTED: charging + off mount)" : ""));
+                             warn_muted_tag(muted)));
       }
     } else {
       bank_over_since_ms = 0; // 一度でも下回ったら継続時間をリセット
@@ -1170,12 +1183,12 @@ static void ground_check_tick() {
                         fabsf(gr - attitude_get_roll_target()) >
                             GROUND_ROLL_WARN_DEG,
                         ground_roll_warn_active)) {
-      const bool muted = warn_muted_off_mount();
+      const bool muted = warn_muted_bench();
       if (!muted)
         enqueueTask(createPlayWavTask("wav/roll_check.wav", 3));
       enqueueTask(
           createLogSdfTask("GROUND ROLL %+.1f deg (check mount / APPLY)%s", gr,
-                           muted ? " (MUTED: charging + off mount)" : ""));
+                           warn_muted_tag(muted)));
     }
 
     // ピッチ: 申告値 SET PITCH からのズレで見る。
@@ -1215,13 +1228,13 @@ static void ground_check_tick() {
             : (fabsf(gp - attitude_get_pitch_target()) > GROUND_PITCH_WARN_DEG);
     if (ground_warn_due(pitch_since, pitch_warn, pitch_bad,
                         ground_pitch_warn_active)) {
-      const bool muted = warn_muted_off_mount();
+      const bool muted = warn_muted_bench();
       if (!muted)
         enqueueTask(createPlayWavTask("wav/pitch_check.wav", 3));
       enqueueTask(createLogSdfTask(
           "GROUND PITCH %+.1f deg (target %+.1f, nearPLA %d)%s", gp,
           attitude_get_pitch_target(), (int)near_platform,
-          muted ? " (MUTED: charging + off mount)" : ""));
+          warn_muted_tag(muted)));
     }
 
     // ---- 較正のやり直しが必要（マウントから外された形跡がある）----
@@ -1243,16 +1256,16 @@ static void ground_check_tick() {
         // 無線へ。**ここは地上・静止のブロックの中**なので、飛行中は立たない
         // （送信機が飛行中に黙るものを受信機に喋らせないため）。
         // 運搬中のミュートも同じく効かせる（上のロールのコメント参照）。
-        ground_calib_warn_active = !warn_muted_off_mount();
+        ground_calib_warn_active = !warn_muted_bench();
         if (eskf_apply_last_warn_ms == 0 ||
             (now_ms - eskf_apply_last_warn_ms) >= ESKF_APPLY_WARN_INTERVAL_MS) {
           eskf_apply_last_warn_ms = now_ms;
-          const bool muted = warn_muted_off_mount();
+          const bool muted = warn_muted_bench();
           if (!muted)
             enqueueTask(createPlayWavTask("wav/eskf_calib_required.wav", 3));
           enqueueTask(
               createLogSdfTask("ESKF CALIBRATION REQUIRED (on ground)%s",
-                               muted ? " (MUTED: charging + off mount)" : ""));
+                               warn_muted_tag(muted)));
         }
       } else {
         eskf_apply_last_warn_ms = 0; // 較正し直したら次回は即座に知らせる
@@ -1498,14 +1511,17 @@ static void periodic_log_tick() {
       }
 #if KF_GNSS_VEL_ENABLED
       // GNSS の上下速度をバリオ KF に入れた数と、入れなかった理由ごとの数（この 60 秒。2Hz なので最大 120。2026-11-18〜）。
-      //   used= 入れた / sats= 衛星数不足 / sacc= sAcc 超え / vacc= vAcc 超え / innov= 残差の門で捨てた（反射の疑い）。
+      //   used= 入れた / sats= 衛星数不足 / sacc= sAcc 超え / vacc= vAcc 超え / innov= 残差の門で捨てた（反射の疑い）/
+      //   consist= 加速度計の積分と GNSS を入れない KF の両方と食い違って捨てた（反射で速度だけ狂う。2026-11-19〜）/
+      //   rescued= そう食い違ったが GNSS の高度の変わり方が合っていたので入れた（used= に含まれる）。
       //   3D fix が無い・リプレイ・ミラーの間は呼ばれないので、どれにも数えない。
       {
         uint32_t c[GVSI_N_REASONS];
         imu_gnss_vsi_take_counts(c);
-        enqueueTask(createLogSdfTask("vsi gnss used=%lu sats=%lu sacc=%lu vacc=%lu innov=%lu",
+        enqueueTask(createLogSdfTask("vsi gnss used=%lu sats=%lu sacc=%lu vacc=%lu innov=%lu consist=%lu rescued=%lu",
                                      (unsigned long)c[GVSI_OK], (unsigned long)c[GVSI_SATS], (unsigned long)c[GVSI_SACC],
-                                     (unsigned long)c[GVSI_VACC], (unsigned long)c[GVSI_INNOV]));
+                                     (unsigned long)c[GVSI_VACC], (unsigned long)c[GVSI_INNOV], (unsigned long)c[GVSI_CONSIST],
+                                     (unsigned long)c[GVSI_RESCUED]));
       }
 #endif
       // 割り込みで読んでいるとき（settings.h の SCH16T_READ_IN_IRQ）は、gapmax= が割り込みの間隔（ふだん 4ms）、
@@ -1869,7 +1885,8 @@ static void kalman_feed_tick() {
     imu_kalman_gnss_vel_update(get_gnss_veld_mps(),
                                get_gnss_vacc_mm() / 1000.0f,
                                get_gnss_sacc_mmps() / 1000.0f,
-                               get_gnss_numsat());
+                               get_gnss_numsat(),
+                               (float)get_gnss_altitude());   // 食い違いの門の逃がし道（GNSS_VSI_CONSIST_HEIGHT_*）
 #endif
   }
 }
@@ -2004,7 +2021,10 @@ static bool s_busy_pending  = false;
 static bool s_cancel_ok_pending = false;   // 一覧の最中に CANCEL を受けた（一覧のあとで CANCEL_OK を返す）
 static bool serial_xfer_active() {
   return isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET) ||
-         isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST);
+         isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST) ||
+         isTaskInQueue(TASK_SERIAL_SETTINGS_GET) || isTaskRunning(TASK_SERIAL_SETTINGS_GET) ||
+         isTaskInQueue(TASK_SERIAL_SETTINGS_SET) || isTaskRunning(TASK_SERIAL_SETTINGS_SET) ||
+         isTaskInQueue(TASK_SERIAL_SETTINGS_SAVE) || isTaskRunning(TASK_SERIAL_SETTINGS_SAVE);
 }
 static void serial_send_ready_now() {
   Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION, (unsigned long)BUILDDATE);
@@ -2129,6 +2149,46 @@ static void handle_serial_command(const char *raw_cmd) {
     }
     webserial_cancel_requested = false;   // PONS:GET と同じ
     if (!enqueueTask(createSerialGetTask(p + 1, tail))) s_busy_pending = true;   // キューが満杯（BUG-93）
+  } else if (strcmp(cmd, "PONS:SETTINGS_GET") == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
+    if (!enqueueTask(createSerialSettingsGetTask())) s_busy_pending = true;
+  } else if (strncmp(cmd, "PONS:SETTINGS_SET,", 18) == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
+    const char *kv = cmd + 18;
+    const char *colon = strchr(kv, ':');
+    if (!colon || colon == kv) {
+      Serial.println("PONS:SETTINGS_ERR,BAD_FORMAT,");
+      return;
+    }
+    char key[32];
+    size_t klen = (size_t)(colon - kv);
+    if (klen >= sizeof(key)) {
+      Serial.println("PONS:SETTINGS_ERR,BAD_FORMAT,");
+      return;
+    }
+    memcpy(key, kv, klen);
+    key[klen] = '\0';
+    const char *val = colon + 1;
+    if (strlen(val) >= sizeof(((Task*)nullptr)->serialSetArgs.value)) {
+      Serial.println("PONS:SETTINGS_ERR,BAD_FORMAT,");
+      return;
+    }
+    if (!enqueueTask(createSerialSettingsSetTask(key, val))) s_busy_pending = true;
+  } else if (strcmp(cmd, "PONS:SETTINGS_SAVE") == 0) {
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
+    if (!enqueueTask(createSerialSettingsSaveTask())) s_busy_pending = true;
   } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
     webserial_cancel_requested = true;
     // 転送タスク実行中でなければ即座に応答（転送中なら Core1
@@ -2189,8 +2249,7 @@ static void serial_command_service() {
   }
 
   // 転送タスク実行中・待機中は無通信タイマーを更新し続け、転送中の誤切断を防止
-  if (isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST) ||
-      isTaskInQueue(TASK_SERIAL_GET) || isTaskRunning(TASK_SERIAL_GET)) {
+  if (serial_xfer_active()) {
     last_serial_rx_ms = millis();
   }
 
@@ -2284,7 +2343,7 @@ void loop() {
   // ★ バリオも警報と同じ条件で黙らせる（机で充電しながら置くと、傾いた姿勢で
   //   延々と鳴る。画面の `IN MUTE DUE TO CHARGING + OFF MOUNT`
   //   がその説明になる）。
-  update_vario(warn_muted_off_mount());
+  update_vario(warn_muted_bench());
 
   bank_alarm_tick();
 
@@ -2584,6 +2643,15 @@ void loop1() {
       break;
     case TASK_SERIAL_GET:
       serial_send_csv_file(currentTask.serialGetArgs.filename, currentTask.serialGetArgs.tail);
+      break;
+    case TASK_SERIAL_SETTINGS_GET:
+      serial_send_settings();
+      break;
+    case TASK_SERIAL_SETTINGS_SET:
+      serial_apply_setting(currentTask.serialSetArgs.key, currentTask.serialSetArgs.value);
+      break;
+    case TASK_SERIAL_SETTINGS_SAVE:
+      serial_save_settings();
       break;
     }
     clearCurrentTask(); // mutex 内で TASK_NONE にする（Core0 の isTaskRunning()
@@ -3430,6 +3498,10 @@ static void nav_alarm_tick(bool new_gnss_info) {
 void check_destination_toofar() {
   // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため何もしない
   if (currentdestination == -1 || currentdestination >= destinations_count) {
+    return;
+  }
+  // 充電＋マウント外れ（IN MUTE）または PC 接続通信中は 2 分ごとの警告を止める
+  if (warn_muted_bench()) {
     return;
   }
   double destlat = extradestinations[currentdestination].cords[0][0];

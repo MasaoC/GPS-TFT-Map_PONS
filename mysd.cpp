@@ -1071,7 +1071,10 @@ bool enqueueTask(Task task) {
     taskQueue.tasks[taskQueue.tail] = task;
     taskQueue.tail = nextTail;
     queued = true;
-  } else if (currentTask.type == TASK_SERIAL_GET || currentTask.type == TASK_SERIAL_LIST) {
+  } else if (currentTask.type == TASK_SERIAL_GET || currentTask.type == TASK_SERIAL_LIST ||
+             currentTask.type == TASK_SERIAL_SETTINGS_GET ||
+             currentTask.type == TASK_SERIAL_SETTINGS_SET ||
+             currentTask.type == TASK_SERIAL_SETTINGS_SAVE) {
     // ★ PC へ送っている間は USB へ何も書かない（2026-11-15〜）。数百 MB の生 IMU ログは送るのに何分もかかり、その間 Core1 は
     //   キューを消費しないので、Core0 が毎分積む log.txt の行だけで満杯になる。ここで下の 1 行を USB へ書くと
     //   **ファイルの中身に混ざって PC 側の CRC が合わなくなる**（300MB の転送で実際に起きたと見ている）。
@@ -3121,6 +3124,26 @@ Task createSerialGetTask(const char* filename, uint32_t tail) {
   return t;
 }
 
+Task createSerialSettingsGetTask() {
+  Task t;
+  t.type = TASK_SERIAL_SETTINGS_GET;
+  return t;
+}
+
+Task createSerialSettingsSetTask(const char* key, const char* value) {
+  Task t;
+  t.type = TASK_SERIAL_SETTINGS_SET;
+  strlcpy(t.serialSetArgs.key, key ? key : "", sizeof(t.serialSetArgs.key));
+  strlcpy(t.serialSetArgs.value, value ? value : "", sizeof(t.serialSetArgs.value));
+  return t;
+}
+
+Task createSerialSettingsSaveTask() {
+  Task t;
+  t.type = TASK_SERIAL_SETTINGS_SAVE;
+  return t;
+}
+
 // オープン中のログファイルを安全に flush/close して SD を静止させる（Core1専用）
 static void webserial_prepare_sd() {
   if (csvFileStatic.isOpen()) {
@@ -3325,12 +3348,56 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
   // 行の頭に合わせたあと（GETTAIL）は、まず次のセクタの境目まで読む（そのあとの読み出しをセクタ単位にそろえる）
   size_t want = sizeof(buf) - (size_t)(from % 512);
 
+  // 全バイトを書き切る（Core1 専用）。
+  // ★ arduino-pico の SerialUSB::write() は tud_cdc_write_available()==0 が 1 秒続くと途中で break して
+  //   written < len を返す。戻り値を捨てるとそのチャンクの残りが欠落し、サイズ不足＋CRC 不一致になる。
+  //   512B 単位で書き切って全バイト送出を保証しつつ、Core0 との USB ミューテックス待ちやキャンセル応答も軽く保つ。
+  //   10 秒連続で 1 バイトも書けなければ TX_TIMEOUT で中断する（欠落したまま DATA_END を出さない）。
+  auto write_all_or_abort = [&](const uint8_t* data, size_t len) -> bool {
+    size_t off = 0;
+    bool stalling = false;
+    uint32_t stall_start_ms = 0;
+    while (off < len) {
+      if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
+        if (file.isOpen()) file.close();
+        // ★ 切断（PONS:DISCONNECT・ボタン）でやめたときも終わりの印を出す（BUG-76）。PC は行の頭の印で転送の終わりを知るので、
+        //   出さないと受信待ちのまま残る。PONS:BYE は Core0 がこのあとに出す（webserial_say_bye）。
+        if (usb_power_present()) {
+          Serial.println("\r\nPONS:CANCEL_OK");
+        }
+        xfer_log_dropped();
+        return false;
+      }
+      const size_t chunk = (len - off > 512) ? 512 : (len - off);
+      const size_t w = Serial.write(data + off, chunk);
+      if (w > 0) {
+        off += w;
+        stalling = false;
+      } else {
+        const uint32_t now = millis();
+        if (!stalling) {
+          stalling = true;
+          stall_start_ms = now;
+        } else if ((uint32_t)(now - stall_start_ms) >= 10000UL) {
+          if (file.isOpen()) file.close();
+          if (usb_power_present()) {
+            Serial.println("\r\nPONS:ERROR,TX_TIMEOUT");
+          }
+          log_sdf("PC XFER: TX timeout (%s)", filename);
+          xfer_log_dropped();
+          return false;
+        }
+        loop_sound();
+        delay(1);
+      }
+    }
+    return true;
+  };
+
   while (file.available()) {
     // 中断要求または USB ケーブル抜去・切断検知時は即座にファイルを閉じて抜ける
     if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
       file.close();
-      // ★ 切断（PONS:DISCONNECT・ボタン）でやめたときも終わりの印を出す（BUG-76）。PC は行の頭の印で転送の終わりを知るので、
-      //   出さないと受信待ちのまま残る。PONS:BYE は Core0 がこのあとに出す（webserial_say_bye）。
       if (usb_power_present()) {
         Serial.println("\r\nPONS:CANCEL_OK");
       }
@@ -3342,8 +3409,7 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
     if (n <= 0) break;
 
     crc = calc_crc32_step(crc, buf, (size_t)n);
-    // 意図して直さない（2026-11-14 の監査）: PC が受け取りを止めると USB のミューテックスで両コアが最大 1 秒止まりうる。USB をつないだ地上だけなので見送り
-    Serial.write(buf, n);
+    if (!write_all_or_abort(buf, (size_t)n)) return;
 
     loop_sound();
     yield();
@@ -3351,9 +3417,127 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
 
   file.close();
   crc ^= 0xFFFFFFFF;
-  Serial.printf("\r\nPONS:DATA_END,%08lX\r\n", (unsigned long)crc);
+  char endline[32];
+  const int elen = snprintf(endline, sizeof(endline), "\r\nPONS:DATA_END,%08lX\r\n", (unsigned long)crc);
+  if (elen > 0 && !write_all_or_abort((const uint8_t*)endline, (size_t)elen)) return;
   Serial.flush();
   xfer_log_dropped();
+}
+
+// ============================================================
+// Web Serial: 本体設定の取得・変更・保存（Core1 専用）
+//   ・PONS:SETTINGS_GET  → 全設定の現在値と settings.txt への記載有無、目的地一覧を返す
+//   ・PONS:SETTINGS_SET  → 1 項目を setter に通して反映し、変更を log.txt に残す
+//   ・PONS:SETTINGS_SAVE → 整合チェック後に saveSettings() で settings.txt へ原子的に保存
+// ============================================================
+void serial_send_settings() {
+  ASSERT_SD_CORE1("serial_send_settings");
+  uint64_t in_file_mask = 0;
+
+  if (good_sd()) {
+    webserial_prepare_sd();
+    FsFile file = SD.open(SETTINGS_FILE, FILE_READ);
+    if (file) {
+      char line[MAX_LINE_LENGTH];
+      int linePos = 0;
+      auto mark_line = [&](char* buf) {
+        char* colon = strchr(buf, ':');
+        if (!colon) return;
+        *colon = '\0';
+        for (int i = 0; i < numSettings && i < 64; i++) {
+          if (strcmp(settings[i].id, buf) == 0) {
+            in_file_mask |= (1ULL << i);
+            break;
+          }
+        }
+      };
+      while (file.available()) {
+        char c = (char)file.read();
+        if (c == '\n' || c == '\r' || linePos >= MAX_LINE_LENGTH - 1) {
+          line[linePos] = '\0';
+          linePos = 0;
+          if (line[0] != '\0') mark_line(line);
+        } else {
+          line[linePos++] = c;
+        }
+      }
+      if (linePos > 0) {
+        line[linePos] = '\0';
+        mark_line(line);
+      }
+      file.close();
+    }
+  }
+
+  char val[MAX_SETTING_LENGTH];
+  for (int i = 0; i < numSettings; i++) {
+    val[0] = '\0';
+    settings[i].getter(val, sizeof(val));
+    const int in_file = (i < 64 && (in_file_mask & (1ULL << i))) ? 1 : 0;
+    Serial.printf("PONS:SETTING,%s,%s,%d\r\n", settings[i].id, val, in_file);
+  }
+  for (int i = 0; i < destinations_count; i++) {
+    Serial.printf("PONS:DEST,%s\r\n", extradestinations[i].name);
+  }
+  Serial.println("PONS:SETTINGS_END");
+  Serial.flush();
+}
+
+void serial_apply_setting(const char* key, const char* value) {
+  ASSERT_SD_CORE1("serial_apply_setting");
+  if (!key || key[0] == '\0') {
+    Serial.println("PONS:SETTINGS_ERR,UNKNOWN_KEY,");
+    return;
+  }
+  int idx = -1;
+  for (int i = 0; i < numSettings; i++) {
+    if (strcmp(settings[i].id, key) == 0) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) {
+    Serial.printf("PONS:SETTINGS_ERR,UNKNOWN_KEY,%s\r\n", key);
+    return;
+  }
+  char old_val[MAX_SETTING_LENGTH];
+  char new_val[MAX_SETTING_LENGTH];
+  old_val[0] = '\0';
+  new_val[0] = '\0';
+  settings[idx].getter(old_val, sizeof(old_val));
+  settings[idx].setter(value ? value : "");
+  settings[idx].getter(new_val, sizeof(new_val));
+  if (strcmp(old_val, new_val) != 0) {
+    log_sdf("PC SETTING %s: %s -> %s", key, old_val, new_val);
+  }
+  Serial.printf("PONS:SETTINGS_OK,%s,%s\r\n", key, new_val);
+  Serial.flush();
+}
+
+void serial_save_settings() {
+  ASSERT_SD_CORE1("serial_save_settings");
+  if (!good_sd()) {
+    Serial.println("PONS:SETTINGS_ERR,SD_NOT_READY");
+    return;
+  }
+  webserial_prepare_sd();
+  attitude_finish_settings_load();
+  if (!(attitude_get_airspeed_min() < attitude_get_airspeed_max())) {
+    log_sdf("ERR airspeed_min %.2f >= airspeed_max %.2f -> defaults %.2f..%.2f",
+            attitude_get_airspeed_min(), attitude_get_airspeed_max(),
+            AIRSPEED_MIN_MPS, AIRSPEED_MAX_MPS);
+    attitude_set_airspeed_min(AIRSPEED_MIN_MPS);
+    attitude_set_airspeed_max(AIRSPEED_MAX_MPS);
+  }
+  if (saveSettings()) {
+    log_sdf("PC SETTINGS SAVED (v0=%.2f k=%.2f range %.2f..%.2f)",
+            attitude_get_airspeed_v0(), attitude_get_airspeed_k(),
+            attitude_get_airspeed_min(), attitude_get_airspeed_max());
+    Serial.println("PONS:SETTINGS_SAVED,OK");
+  } else {
+    Serial.println("PONS:SETTINGS_ERR,SAVE_FAILED");
+  }
+  Serial.flush();
 }
 
 // 起動時ロゴ BMP 読み込みタスクを生成する（引数なし、ファイル名はハードコード）

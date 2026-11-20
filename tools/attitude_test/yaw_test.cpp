@@ -89,12 +89,12 @@ int main() {
     // ================= C) ヨー未設定なら速度観測を入れない =================
     // （B より先にやる。B でヨーを入れてしまうと確認できない）
     // 姿勢と食い違う速度を 10 秒ぶん流しても、ロール・ピッチが動かないこと。
-    // しきい値未満（2m/s）にしてヨー注入も起こらないようにする。
+    // しきい値未満（1.5m/s。2 m/s 以上は 2D 相関だけで入りうる＝ESKF_YAW_INIT_CORR_MIN_SPEED_MPS）にしてヨー注入も起こらないようにする。
     {
         float r0, p0, y0; attitude_get_euler_raw(r0, p0, y0);
         for (int i = 0; i < 20; i++) {
             feed((int)(0.5 * fs), dt, t, a20, gz);                       // 0.5 秒
-            attitude_on_gnss_velocity(2.0f, 0.0f, 0.0f, 0.08f);   // 北へ 2m/s
+            attitude_on_gnss_velocity(1.5f, 0.0f, 0.0f, 0.08f);   // 北へ 1.5m/s
         }
         attitude_get_euler_raw(r, p, y);
         printf("\nC) ヨー未設定のあいだ速度観測を通さない\n");
@@ -457,6 +457,79 @@ int main() {
             printf("   0.25 m/s² で 4 秒押して 1 m/s で 10 秒: 押している間の最大 %.2f deg（1.5 以下＝atan(0.25/g) を超えないのが正しい）"
                    "  最後 %.2f deg（0.3 未満が正しい）\n", p2, p2end);
             ok &= p1 < 0.5f && p2 <= 1.5f && p2end < 0.3f;
+        }
+
+        // D11) 2〜3 m/s の 2 段の門（2026-11-20。settings.h の ESKF_YAW_INIT_CORR_MIN_SPEED_MPS）
+        //   (a) 強い向かい風の離陸: 0→2.5 m/s を 1.5 m/s² で加速し、2.5 m/s のまま（3 m/s に届かない）。前は東（90°）
+        //       → 2D 相関の門を通るので 3 m/s を待たずに決まる（直す前は決まらないまま）
+        //   (b) 機体を横向きに持って東へ 2.5 m/s で運ぶ（前は北 0°）。相関は 0° を出すが航跡 90° と食い違う
+        //       → 決めない（航跡に戻すと 90° ずれた向きが σ 15° で決まってしまう）
+        {
+            auto run_d11 = [&](double front_deg, float &y_out, bool &ready, uint8_t &how) {
+                attitude_setup();
+                t = 0;
+                const float gq[3] = {0, 0, 0};
+                float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+                feed((int)(6.0 * fs), dt, t, a_lv0, gq);
+                for (int i = 0; i < (int)(2.0 * fs); i++) {
+                    if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, 0.0f, 0.0f, 0.08f);
+                    feed(1, dt, t, a_lv0, gq);
+                }
+                // 東（90°）へ動く。本体の前が front_deg を向いているとき、機体軸（前, 左, 上）での加速度は
+                // 前 = a cos(90 − front)、左 = a sin(front − 90)（D6 と同じ約束）
+                const double rel = (90.0 - front_deg) * M_PI / 180.0;
+                double v = 0.0;
+                ready = false; how = 255;
+                for (int i = 0; i < (int)(8.0 * fs); i++) {
+                    const double a = (v < 2.5) ? 1.5 : 0.0;
+                    v += a * dt;
+                    if (v > 2.5) v = 2.5;
+                    const double ab[3] = { a * cos(rel), -a * sin(rel), G };
+                    float as[3]; body_to_sensor(ab, as);
+                    feed(1, dt, t, as, gq);
+                    if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, (float)v, 0.0f, 0.08f);
+                }
+                float r, p; attitude_get_euler(r, p, y_out);
+                ready = attitude_yaw_ready();
+                float mg, ch, td, sg; bool bk;
+                if (!attitude_take_yaw_init_event(how, mg, ch, td, sg, bk)) how = 255;
+            };
+            float ya, yb; bool ra, rb; uint8_t ha, hb;
+            run_d11(90.0, ya, ra, ha);
+            run_d11(0.0, yb, rb, hb);
+            printf("\nD11) 2〜3 m/s の門（2D 相関の門を通ったときだけ決める）\n");
+            printf("   (a) 向かい風の離陸 0→2.5 m/s・前は東: 決まった %d（1 が正しい）  方位 %.2f deg（90.0 が正しい）  how=%d（0 が正しい）\n",
+                   (int)ra, ya, (int)ha);
+            printf("   (b) 横向きに持って東へ 2.5 m/s・前は北: 決まった %d（0 が正しい。航跡に戻すと 90° ずれて決まる）\n", (int)rb);
+            ok &= ra && fabsf(ya - 90.0f) < 1.0f && ha == 0;
+            ok &= !rb;
+        }
+
+        // D12) 「GNSS が動いている」の閾値 max(0.2, 2·sAcc)（2026-11-20。settings.h の ESKF_ACCEL_GNSS_MOVING_*）
+        //   止まっていて GNSS が 0.3 m/s と言う。sAcc 0.30 なら閾値 0.6 で「動いていない」→ ゼロ点を覚える。
+        //   sAcc 0.08 なら閾値 0.2 で「動いている」（＝加速中）→ 覚えない（8 秒の上限より短い 7 秒で見る）。
+        {
+            auto run_d12 = [&](float sacc) {
+                attitude_setup();
+                t = 0;
+                float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+                // ゼロ点 0.1 deg/s は最初から乗せる（ゼロ点の窓 5 秒は初期化の 2 秒後から始まり、途中で値が変わると揺れとして捨てられる）
+                const float off = (float)(0.1 * M_PI / 180.0);
+                const float g1[3] = { off, 0.0f, 0.0f };
+                feed((int)(4.0 * fs), dt, t, a_lv0, g1);                // 初期化。窓は 2〜7 秒で、GNSS は 4 秒目から
+                for (int i = 0; i < (int)(7.0 * fs); i++) {
+                    if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.3f, 0.0f, 0.0f, sacc);
+                    feed(1, dt, t, a_lv0, g1);
+                }
+                float bg[3]; attitude_get_gyro_bias(bg);
+                return bg[0] * 180.0f / (float)M_PI;
+            };
+            const float b_noisy = run_d12(0.30f);
+            const float b_good  = run_d12(0.08f);
+            printf("\nD12) 止まっていて GNSS が 0.3 m/s と言う（閾値 max(0.2, 2·sAcc)）\n");
+            printf("   sAcc 0.30（閾値 0.6）: 覚えたゼロ点 %.3f deg/s（0.100 が正しい＝雑音で学習を止めない）\n", b_noisy);
+            printf("   sAcc 0.08（閾値 0.2）: 覚えたゼロ点 %.3f deg/s（0 のままが正しい＝動いているとみなす）\n", b_good);
+            ok &= fabsf(b_noisy - 0.1f) < 0.02f && fabsf(b_good) < 0.02f;
         }
     }
 

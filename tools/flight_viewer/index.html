@@ -841,6 +841,271 @@
         font-size: 0.8rem;
       }
     }
+
+    /* ===== 本体設定エディタ（#settings-modal / #settings-diff-modal） ===== */
+    #settings-modal, #settings-diff-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.58);
+      backdrop-filter: blur(4px);
+      z-index: 10010;
+      align-items: center;
+      justify-content: center;
+    }
+    #settings-diff-modal { z-index: 10020; }
+    #settings-modal.active, #settings-diff-modal.active { display: flex; }
+    .settings-shell {
+      width: min(1040px, 96vw);
+      height: min(88vh, 860px);
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .settings-header {
+      padding: 12px 18px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .settings-toolbar {
+      padding: 10px 18px;
+      background: #ffffff;
+      border-bottom: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 0.84rem;
+    }
+    .settings-cats {
+      padding: 8px 18px 0 18px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .scat-btn {
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      border: 1px solid #cbd5e1;
+      border-bottom: none;
+      border-radius: 7px 7px 0 0;
+      background: #f1f5f9;
+      color: #475569;
+      cursor: pointer;
+    }
+    .scat-btn.active {
+      background: #fff;
+      color: #0f172a;
+      font-weight: bold;
+      border-color: #94a3b8;
+      position: relative;
+      top: 1px;
+    }
+    .scat-btn .chg-dot {
+      display: inline-block;
+      margin-left: 5px;
+      padding: 0 5px;
+      border-radius: 99px;
+      background: #2563eb;
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: bold;
+    }
+    .settings-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 18px;
+      background: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .settings-footer {
+      padding: 12px 18px;
+      background: #f8fafc;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .setting-card {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 11px 14px;
+      display: grid;
+      grid-template-columns: 1fr 250px;
+      gap: 12px;
+      align-items: start;
+    }
+    .setting-card.tier-caution  { border-left-color: #f59e0b; }
+    .setting-card.tier-expert   { border-left-color: #8b5cf6; }
+    .setting-card.tier-internal { border-left-color: #ef4444; background: #fffafb; }
+    .setting-card.changed       { box-shadow: 0 0 0 2px #93c5fd; background: #f0f9ff; }
+    .setting-card.locked        { opacity: 0.78; }
+    .setting-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+    }
+    .setting-label { font-weight: bold; font-size: 0.94rem; color: #0f172a; }
+    .setting-key {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      color: #475569;
+      background: #f1f5f9;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .sbadge {
+      font-size: 0.7rem;
+      font-weight: bold;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .sbadge-normal   { background: #dcfce7; color: #166534; }
+    .sbadge-caution  { background: #fef3c7; color: #92400e; }
+    .sbadge-expert   { background: #ede9fe; color: #5b21b6; }
+    .sbadge-internal { background: #fee2e2; color: #991b1b; }
+    .sbadge-missing  { background: #e0f2fe; color: #075985; }
+    .sbadge-reboot   { background: #ffedd5; color: #9a3412; }
+    .sbadge-changed  { background: #2563eb; color: #fff; }
+    .setting-desc { font-size: 0.82rem; color: #334155; line-height: 1.45; }
+    .setting-caution {
+      margin-top: 5px;
+      font-size: 0.78rem;
+      color: #92400e;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 5px;
+      padding: 5px 8px;
+      line-height: 1.4;
+    }
+    .setting-card.tier-internal .setting-caution {
+      color: #991b1b;
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    .setting-ctrl {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      align-items: stretch;
+    }
+    .setting-ctrl input[type="number"],
+    .setting-ctrl input[type="text"],
+    .setting-ctrl select {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      font-family: var(--font-mono);
+      background: #fff;
+      box-sizing: border-box;
+    }
+    .setting-ctrl input:disabled,
+    .setting-ctrl select:disabled {
+      background: #f1f5f9;
+      color: #64748b;
+      cursor: not-allowed;
+    }
+    .setting-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.74rem;
+      color: #64748b;
+      gap: 6px;
+    }
+    .setting-meta button {
+      padding: 1px 6px;
+      font-size: 0.72rem;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .setting-err-msg {
+      font-size: 0.75rem;
+      color: #dc2626;
+      font-weight: bold;
+    }
+    .tas-preview-box {
+      background: #fff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .tas-preview-box canvas {
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      background: #fff;
+    }
+    .lock-toggle-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      cursor: pointer;
+      user-select: none;
+      font-weight: bold;
+      color: #475569;
+    }
+    .lock-toggle-label.unlocked {
+      background: #fef2f2;
+      border-color: #fca5a5;
+      color: #b91c1c;
+    }
+    .diff-box {
+      width: min(760px, 94vw);
+      max-height: 86vh;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .diff-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+    .diff-table th, .diff-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #e2e8f0;
+      text-align: left;
+      vertical-align: top;
+    }
+    .diff-table th { background: #f1f5f9; color: #334155; }
+    .diff-old { color: #64748b; text-decoration: line-through; font-family: var(--font-mono); }
+    .diff-new { color: #1d4ed8; font-weight: bold; font-family: var(--font-mono); }
+    @media (max-width: 720px) {
+      .setting-card { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -862,9 +1127,12 @@
         <button onclick="closeSerialModal()" style="border:none; background:none; font-size:1.2rem; cursor:pointer;">✕</button>
       </div>
       <div class="modal-body">
-        <div class="status-card" id="serial-hw-info">
-          <div>状態: <span id="serial-status-text" style="font-weight:bold;">PONSに接続してください</span></div>
-          <div id="serial-board-ver" style="font-family:var(--font-mono); font-size:0.85rem; color:#64748b;"></div>
+        <div class="status-card" id="serial-hw-info" style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+          <div>
+            <div>状態: <span id="serial-status-text" style="font-weight:bold;">PONSに接続してください</span></div>
+            <div id="serial-board-ver" style="font-family:var(--font-mono); font-size:0.85rem; color:#64748b;"></div>
+          </div>
+          <button id="btn-open-settings" onclick="openSettingsModal()" disabled style="padding:7px 14px; font-weight:bold; border-color:#2563eb; color:#1d4ed8; background:#eff6ff; border-radius:7px; cursor:pointer;">⚙️ 本体設定を確認・変更</button>
         </div>
 
         <!-- 転送進捗表示 -->
@@ -952,6 +1220,90 @@
     </div>
   </div>
   <div class="log-tip" id="log-tip"></div>
+
+  <!-- 本体設定エディタ モーダル -->
+  <div id="settings-modal">
+    <div class="settings-shell">
+      <div class="settings-header">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span style="font-weight:bold; font-size:1.05rem;">⚙️ PONS 本体設定（settings.txt）</span>
+          <span class="badge" id="settings-conn-badge" style="background:#dbeafe; color:#1d4ed8;">読み込み中...</span>
+          <span id="settings-change-summary" style="font-size:0.82rem; color:#2563eb; font-weight:bold;"></span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <input type="file" id="settings-import-input" accept=".txt" style="display:none;" onchange="importSettingsFile(this)">
+          <button onclick="requestPonsSettings()" title="本体から最新の設定を読み直します">🔄 再取得</button>
+          <button onclick="document.getElementById('settings-import-input').click()" title="PC 上の settings.txt を読み込んで下書きに反映します（まだ本体には書きません）">📂 ファイル読込</button>
+          <button onclick="exportSettingsBackup(false)" title="現在の表示内容を settings.txt として PC に保存します">💾 エクスポート</button>
+          <button onclick="closeSettingsModal()" style="border:none; background:none; font-size:1.25rem; cursor:pointer; padding:2px 6px;">✕</button>
+        </div>
+      </div>
+
+      <div class="settings-toolbar">
+        <input type="text" id="settings-search" placeholder="🔍 項目名・キー・説明で検索..." oninput="renderSettingsBody()" style="padding:5px 9px; border:1px solid #cbd5e1; border-radius:6px; min-width:210px; flex:1;">
+        <label style="display:inline-flex; align-items:center; gap:5px; cursor:pointer;">
+          <input type="checkbox" id="settings-only-changed" onchange="renderSettingsBody()"> 変更した項目のみ
+        </label>
+        <label class="lock-toggle-label" id="settings-unlock-label" title="専門（TAS・KF等）と内部状態（較正値等）の編集ロックを解除します">
+          <input type="checkbox" id="settings-unlock-expert" onchange="toggleExpertUnlock()"> 🔒 上級者・危険項目のロックを解除
+        </label>
+      </div>
+
+      <div class="settings-cats" id="settings-cats"></div>
+
+      <div class="settings-body" id="settings-body">
+        <div style="text-align:center; color:#64748b; padding:40px;">本体から設定を取得しています...</div>
+      </div>
+
+      <div class="settings-footer">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button id="btn-settings-undo" onclick="undoLastSavedSettings()" disabled style="opacity:0.5;" title="直前の保存前の状態を下書きに戻します">↩️ 直前の保存前に戻す</button>
+          <button id="btn-settings-revert" onclick="revertSettingsDraft()" disabled style="opacity:0.5;" title="未保存の変更をすべて取り消します">✖ 変更を破棄</button>
+          <button onclick="exportSettingsBackup(true)" title="変更前の本体設定をバックアップとして保存します">📦 変更前をバックアップ</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span id="settings-validation-status" style="font-size:0.82rem; color:#dc2626; font-weight:bold;"></span>
+          <button id="btn-settings-review" class="btn-primary" onclick="openSettingsDiffModal()" disabled style="opacity:0.5; padding:8px 16px; font-weight:bold;">📋 変更内容を確認して保存...</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 確定前の変更差分（Diff）確認モーダル -->
+  <div id="settings-diff-modal">
+    <div class="diff-box">
+      <div class="settings-header">
+        <span style="font-weight:bold; font-size:1.02rem;">📋 変更内容の最終確認（本体 SD へ保存）</span>
+        <button onclick="closeSettingsDiffModal()" style="border:none; background:none; font-size:1.2rem; cursor:pointer;">✕</button>
+      </div>
+      <div style="padding:14px 18px; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:12px;">
+        <div id="diff-warnings"></div>
+        <div style="font-size:0.84rem; color:#475569;">以下の内容で PONS 本体の設定を更新し、SD カードの <code>settings.txt</code> に保存します（変更履歴は <code>log.txt</code> にも記録されます）。</div>
+        <table class="diff-table">
+          <thead>
+            <tr>
+              <th style="width:28%;">項目</th>
+              <th style="width:22%;">変更前</th>
+              <th style="width:22%;">変更後</th>
+              <th>注意点</th>
+            </tr>
+          </thead>
+          <tbody id="diff-table-body"></tbody>
+        </table>
+        <div id="diff-danger-ack-box" style="display:none; background:#fef2f2; border:1px solid #fca5a5; border-radius:8px; padding:10px 12px;">
+          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:0.86rem; color:#991b1b; font-weight:bold;">
+            <input type="checkbox" id="diff-danger-ack" onchange="updateDiffCommitBtn()" style="margin-top:3px;">
+            <span>専門項目または内部状態の変更が含まれています。各注意点と飛行への影響を確認しました。</span>
+          </label>
+        </div>
+        <div id="diff-save-progress" style="display:none; font-size:0.86rem; color:#1d4ed8; font-weight:bold;"></div>
+      </div>
+      <div class="settings-footer">
+        <button onclick="closeSettingsDiffModal()" id="btn-diff-cancel">戻って修正する</button>
+        <button id="btn-diff-commit" class="btn-primary" onclick="commitSettingsToPons()" style="padding:8px 18px; font-weight:bold;">✅ この内容で本体に保存する</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ヘッダー -->
   <header>
@@ -2912,8 +3264,9 @@
     //   コンソールに 1 行出すだけで画面には何も出ず、Arduino IDE のシリアルモニタがポートを掴んでいると「押しても何も起きない」だった。
     async function openPonsPort(port) {
       try {
-        // 受信バッファを 16KB に拡張して大容量転送時のドロップとオーバーヘッドを抑制
-        await port.open({ baudRate: 115200, bufferSize: 16384 });
+        // 受信バッファを 1MB に拡張して大容量転送時の OS/Web Serial 側ドロップを抑制
+        // （16KB だと 1MB/s 転送時に約 16ms 分しかなく、GC やタブ切替等で数 KB 欠落しうる）
+        await port.open({ baudRate: 115200, bufferSize: 1024 * 1024 });
       } catch (err) {
         console.warn("Serial open failed:", err);
         serialPort = null;
@@ -3023,6 +3376,7 @@
       }
 
       updateSerialUIStatus('disconnected');
+      resetSettingsState(true);
       closeSerialModal();
     }
 
@@ -3031,6 +3385,13 @@
       const text = document.getElementById('serial-status-text');
       const verText = document.getElementById('serial-board-ver');
       const headerBtn = document.getElementById('btn-webserial');
+      const settingsBtn = document.getElementById('btn-open-settings');
+      if (settingsBtn) {
+        const ok = (state === 'connected');
+        settingsBtn.disabled = !ok;
+        settingsBtn.style.opacity = ok ? '1' : '0.45';
+        settingsBtn.style.cursor = ok ? 'pointer' : 'not-allowed';
+      }
       text.style.whiteSpace = 'pre-line';   // 案内は複数行
       text.style.color = '';
 
@@ -3287,8 +3648,11 @@
       stopSerialPing();
       pingTimer = setInterval(async () => {
         const modal = document.getElementById('serial-modal');
-        const isModalOpen = modal && modal.classList.contains('active');
-        if (serialPort && serialPort.writable && !downloadBusy() && isModalOpen) {
+        const settingsModal = document.getElementById('settings-modal');
+        const isModalOpen = (modal && modal.classList.contains('active')) ||
+                            (settingsModal && settingsModal.classList.contains('active'));
+        const settingsBusy = (typeof settingsState !== 'undefined') && (settingsState.loading || settingsState.saving);
+        if (serialPort && serialPort.writable && !downloadBusy() && !settingsBusy && isModalOpen) {
           try {
             await sendSerialLine("PONS:PING");
           } catch (e) {
@@ -3403,12 +3767,18 @@
 
       // CRC32 検証（ファイル本体データのみで計算。本体も送ったバイトだけで計算している）
       const calculatedCrc = computeCrc32(bytes);
+      const shortRead = bytes.length < wantSize;
+      const crcBad = calculatedCrc !== expectedCrc;
       let note = `CRC OK ${calculatedCrc}`;
-      if (bytes.length < wantSize) {
-        alert(`⚠️ 転送が途中で終わりました（${bytes.length} / ${wantSize} バイト）。\n本体が SD を読めなくなった可能性があります。`);
+      if (shortRead && crcBad) {
+        const missing = wantSize - bytes.length;
+        console.warn(`Transfer drop & CRC mismatch! Got: ${bytes.length}/${wantSize} (-${missing} B), Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
+        alert(`⚠️ 通信途中でデータが欠落しました（${bytes.length.toLocaleString()} / ${wantSize.toLocaleString()} バイト、不足 ${missing.toLocaleString()} B）。\nCRC32 も一致しません（計算値: ${calculatedCrc} / 受信値: ${expectedCrc}）。\n再度転送をお試しください。`);
+        note = `欠落 ${bytes.length}/${wantSize} B・CRC 不一致（計算 ${calculatedCrc} / 本体 ${expectedCrc}）`;
+      } else if (shortRead) {
+        alert(`⚠️ 転送が途中で終わりました（${bytes.length.toLocaleString()} / ${wantSize.toLocaleString()} バイト）。\n本体が SD を読めなくなった可能性があります。`);
         note = `途中まで ${bytes.length} / ${wantSize} B`;
-      }
-      if (calculatedCrc !== expectedCrc) {
+      } else if (crcBad) {
         console.warn(`CRC mismatch! Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
         alert(`⚠️ CRC32チェックサムが一致しません（計算値: ${calculatedCrc} / 受信値: ${expectedCrc}）。\n通信中に一部データが破損した可能性があります。`);
         note = `CRC 不一致（計算 ${calculatedCrc} / 本体 ${expectedCrc}）`;
@@ -3486,6 +3856,7 @@
         listIsAll = false;
         listAllUnsupported = false;
         listPending = null;
+        resetSettingsState(false);
         const parts = line.split(',');
         updateSerialUIStatus('connected', {
           board: parts[1] || 'PONS v7.1',
@@ -3566,6 +3937,11 @@
         endDownloadUi();
       } else if (line === "PONS:BYE") {
         updateSerialUIStatus('disconnected');
+        resetSettingsState(true);
+      } else if (line.startsWith("PONS:SETTING,") || line.startsWith("PONS:DEST,") ||
+                 line === "PONS:SETTINGS_END" || line.startsWith("PONS:SETTINGS_OK,") ||
+                 line.startsWith("PONS:SETTINGS_SAVED,") || line.startsWith("PONS:SETTINGS_ERR,")) {
+        handleSettingsSerialLine(line);
       } else if (line.startsWith("PONS:ERROR,")) {
         const errMsg = line.substring(11);
         if (errMsg === 'BUSY') {
@@ -3577,6 +3953,8 @@
           alert("指定されたファイルがSDカード上に見つかりませんでした。");
         } else if (errMsg === 'SD_NOT_READY') {
           alert("SDカードが認識されていないかエラー状態です。PONS本体を確認してください。");
+        } else if (errMsg === 'TX_TIMEOUT') {
+          alert("送信タイムアウト: PC 側での受信が長時間止まったため、本体が転送を中断しました。\nタブを開いたまま再度お試しください。");
         } else {
           alert("PONSエラー: " + errMsg);
         }
@@ -3586,6 +3964,7 @@
           if (listAllTimer) { clearTimeout(listAllTimer); listAllTimer = null; }
           renderFileList();
         }
+        abortSettingsPending(`PONSエラー: ${errMsg}`);
         endDownloadUi();
       }
     }
@@ -4150,6 +4529,1099 @@
       list.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       list.scrollTop = Math.max(0, k * LOG_ROW_H - list.clientHeight / 3);
       logRenderRows(true);
+    }
+
+    // =========================================================================
+    // 本体設定エディタ（settings.txt の確認・安全な変更・Diff 確認・TAS 曲線プレビュー）
+    // =========================================================================
+    const PONS_SETTING_CATS = [
+      { id: 'all',      label: 'すべて' },
+      { id: 'basic',    label: '基本・表示' },
+      { id: 'nav',      label: 'ナビ・地図' },
+      { id: 'link',     label: '無線 (PONS Link)' },
+      { id: 'tas',      label: '推定 TAS・風' },
+      { id: 'imu',      label: '姿勢・バリオ KF' },
+      { id: 'internal', label: '内部状態・較正' },
+    ];
+
+    const PONS_TIER_META = {
+      normal:   { label: '通常',     cls: 'sbadge-normal',   locked: false },
+      caution:  { label: '注意',     cls: 'sbadge-caution',  locked: false },
+      expert:   { label: '専門',     cls: 'sbadge-expert',   locked: true  },
+      internal: { label: '内部状態', cls: 'sbadge-internal', locked: true  },
+    };
+
+    // mysd.cpp の settings[] 全 32 項目と完全一致する定義
+    const PONS_SETTINGS_SCHEMA = [
+      // --- 基本・表示 ---
+      {
+        key: 'volume', label: '音声・効果音の音量', cat: 'basic', tier: 'normal',
+        type: 'number', min: 0, max: 100, step: 1, unit: '%', defaultVal: '100',
+        desc: '音声ガイドや警告音の全体音量（0 = 消音、100 = 最大）。',
+        caution: '0 にするとコース逸脱や地上チェックなどの重要な音声警報も聞こえなくなります。'
+      },
+      {
+        key: 'vario_volume', label: 'バリオメーター音量', cat: 'basic', tier: 'normal',
+        type: 'number', min: 0, max: 100, step: 1, unit: '%', defaultVal: '50',
+        desc: '上昇・下降音（バリオ音）の音量（0〜100）。',
+        caution: '大きすぎると他の音声案内が聞き取りにくくなることがあります。'
+      },
+      {
+        key: 'vario_inhibit', label: 'バリオ機能の完全抑止', cat: 'basic', tier: 'caution',
+        type: 'select', defaultVal: 'false',
+        options: [{ v: 'false', l: 'false（通常：有効）' }, { v: 'true', l: 'true（完全無効化）' }],
+        desc: 'true にするとバリオメーターの動作と音声を完全に無効化します。',
+        caution: '通常は false にしてください。true のままだと本体設定からバリオ音量を上げても鳴りません。'
+      },
+      {
+        key: 'auto_brightness', label: 'AUTO 輝度カーブ', cat: 'basic', tier: 'normal',
+        type: 'select', defaultVal: 'ECO',
+        options: [{ v: 'ECO', l: 'ECO（省電力・既定）' }, { v: 'BRIGHT', l: 'BRIGHT（明るめ）' }],
+        desc: '輝度スイッチ Low 時の自動調光カーブ。',
+        caution: 'BRIGHT は屋外で見やすくなりますが、バッテリー消費が増えます。'
+      },
+      // --- ナビ・地図 ---
+      {
+        key: 'destination', label: '目的地', cat: 'nav', tier: 'normal',
+        type: 'dest', defaultVal: 'PLATHOME',
+        desc: 'ナビゲーションの対象となる目的地（SD の destination.csv に登録されている名前）。',
+        caution: 'destination.csv に存在しない名前は本体側で無視されます。'
+      },
+      {
+        key: 'navigation_mode', label: 'ナビゲーションモード', cat: 'nav', tier: 'normal',
+        type: 'select', defaultVal: 'AUTO10K',
+        options: [
+          { v: 'INTO',    l: 'INTO（目的地へ向かう）' },
+          { v: 'AWAY',    l: 'AWAY（出発点から離れる）' },
+          { v: 'AUTO10K', l: 'AUTO10K（10km 折返し自動切替）' },
+        ],
+        desc: '航法計算の方向モード。鳥人間コンテストの折返し飛行は AUTO10K を使用します。',
+        caution: 'INTO / AWAY を取り違えると誘導方位が 180° 逆になります。'
+      },
+      {
+        key: 'scaleindex', label: '地図縮尺インデックス', cat: 'nav', tier: 'normal',
+        type: 'select', defaultVal: '4',
+        options: [
+          { v: '0', l: '0（最も広域：横幅 約 1174 km）' },
+          { v: '1', l: '1（広域：横幅 約 294 km）' },
+          { v: '2', l: '2（中域：横幅 約 73 km）' },
+          { v: '3', l: '3（詳細：横幅 約 18.3 km）' },
+          { v: '4', l: '4（より詳細：横幅 約 4.6 km・既定）' },
+          { v: '5', l: '5（最大拡大：横幅 1.2 km）' },
+        ],
+        desc: '起動時の地図ズーム段階（0〜5、大きい番号ほど拡大）。飛行中も本体ボタンで切替可能です。',
+        caution: ''
+      },
+      {
+        key: 'upward_mode', label: '地図の向き', cat: 'nav', tier: 'normal',
+        type: 'select', defaultVal: '0',
+        options: [{ v: '0', l: '0：TRACK UP（進行方向が上）' }, { v: '1', l: '1：NORTH UP（北が上）' }],
+        desc: '地図画面の上方向を進行方向にするか、真北固定にするかを選びます。',
+        caution: ''
+      },
+      // --- 無線 (PONS Link) ---
+      {
+        key: 'link_mode', label: 'PONS Link 動作モード', cat: 'link', tier: 'caution', needsReboot: true,
+        type: 'select', defaultVal: '0',
+        options: [
+          { v: '0', l: '0：OFF（無線無効）' },
+          { v: '1', l: '1：TX（送信・機体側）' },
+          { v: '2', l: '2：RX（受信・追尾ボート側）' },
+        ],
+        desc: '機体⇄追尾ボート間の LoRa 無線の役割。',
+        caution: '【要注意】機体側を 2（受信）にすると自機画面がミラー待機になってしまいます。変更後は本体の再起動が必要です。'
+      },
+      {
+        key: 'link_radio_ch', label: '無線チャネル (CH)', cat: 'link', tier: 'caution', needsReboot: true,
+        type: 'select', defaultVal: '6',
+        options: [
+          { v: '0',  l: 'CH 0' },  { v: '3',  l: 'CH 3' },  { v: '6',  l: 'CH 6（既定）' },
+          { v: '9',  l: 'CH 9' },  { v: '12', l: 'CH 12' }, { v: '15', l: 'CH 15（アッパー）' },
+          { v: '21', l: 'CH 21（アッパー）' }, { v: '27', l: 'CH 27（アッパー）' },
+        ],
+        desc: 'E220 LoRa モジュールの通信チャネル。',
+        caution: '機体と追尾ボートで必ず同じチャネルに揃えてください。ズレると一切通信できません。'
+      },
+      {
+        key: 'link_radio_prof', label: '無線プロファイル (SF)', cat: 'link', tier: 'caution', needsReboot: true,
+        type: 'select', defaultVal: '1',
+        options: [
+          { v: '0', l: '0：SF7（高速・短距離）' },
+          { v: '1', l: '1：SF8（バランス・既定）' },
+          { v: '2', l: '2：SF9（中距離）' },
+          { v: '3', l: '3：SF10（長距離）' },
+          { v: '4', l: '4：SF11（最長距離・低速）' },
+        ],
+        desc: 'LoRa の拡散率（Spreading Factor）プリセット。大きいほど遠くまで届きますが送信時間が伸びます。',
+        caution: '機体と追尾ボートで必ず一致させてください。'
+      },
+      {
+        key: 'link_group', label: '無線グループ (A〜D)', cat: 'link', tier: 'caution', needsReboot: true,
+        type: 'select', defaultVal: 'A',
+        options: [
+          { v: 'A', l: 'A（既定値・工場初期）' },
+          { v: 'B', l: 'B' },
+          { v: 'C', l: 'C' },
+          { v: 'D', l: 'D' },
+        ],
+        desc: '同じチャネルを使う他機との混信を防ぐグループ識別子。',
+        caution: 'A は SD 異常時の既定値なので、普段の運用では B〜D を機体とボートで揃えて使うのが推奨です。'
+      },
+      {
+        key: 'link_assist', label: 'LoRa 時刻アシスト', cat: 'link', tier: 'caution', needsReboot: true,
+        type: 'select', defaultVal: 'ON',
+        options: [{ v: 'ON', l: 'ON（有効・既定）' }, { v: 'OFF', l: 'OFF（無効）' }],
+        desc: 'BT1 電池切れ時などに、LoRa 経由で仲間機・ボートと GNSS 時刻を助け合う機能。',
+        caution: '通常は ON にしてください。'
+      },
+      // --- 推定 TAS・風 ---
+      {
+        key: 'header_tas', label: 'ヘッダー右上の大枠表示', cat: 'tas', tier: 'caution',
+        type: 'select', defaultVal: '0',
+        options: [{ v: '0', l: '0：Pavg（平均ピッチ）' }, { v: '1', l: '1：TAS（推定対気速度）' }],
+        desc: '画面右上の大きい数値枠に、過去 10 秒平均ピッチを出すか、推定対気速度（青箱）を出すかを選びます。',
+        caution: 'TAS は平均ピッチからの推定値です。取付角が 1° ずれると約 0.35〜0.4 m/s ずれます。'
+      },
+      {
+        key: 'wind_estimate', label: '風向・風速推定', cat: 'tas', tier: 'caution',
+        type: 'select', defaultVal: '1',
+        options: [{ v: '1', l: '1：ON（有効）' }, { v: '0', l: '0：OFF（無効）' }],
+        desc: '対地速度ベクトルと推定対気速度ベクトル（TAS）の差から風を推定し、地図に矢印表示します。',
+        caution: '下の V0 / K の値が機体と合っていないと、風の推定値もずれます。'
+      },
+      {
+        key: 'airspeed_v0', label: '対気速度モデル V0（ピッチ 0° の巡航速度）', cat: 'tas', tier: 'expert',
+        type: 'number', min: 3.0, max: 20.0, step: 0.01, decimals: 2, unit: 'm/s', defaultVal: '7.07',
+        desc: '平らな地面に置いた較正姿勢（ピッチ θ = 0°）で定常飛行したときの対気速度 V0。推定 TAS と風推定の両方に使います。',
+        caution: '機体・重量・重心・取付角で変わります。1% 変わると全速度域の推定 TAS が 1% ずれます。上のグラフで曲線を確認してください。'
+      },
+      {
+        key: 'airspeed_k', label: '対気速度モデル K（揚力ゼロまでの角度）', cat: 'tas', tier: 'expert',
+        type: 'number', min: 3.0, max: 60.0, step: 0.1, decimals: 2, unit: '度', defaultVal: '10.00',
+        desc: '揚力係数ではなく「角度」です（K = 取付角 i − 零揚力角 α0L）。θ = 0° から機首を K° 下げると揚力がゼロになる角度。ピッチ 1° あたりの速度変化（dV/dθ ≈ -V0/(2K)）を決めます。',
+        caution: '小さくするほどピッチ変化に対する速度変化が急になり、大きすぎると速度変化が鈍くなります。根拠なく大きく変えないでください。'
+      },
+      {
+        key: 'airspeed_min', label: '推定 TAS 下限クランプ', cat: 'tas', tier: 'expert',
+        type: 'number', min: 1.0, max: 20.0, step: 0.1, decimals: 2, unit: 'm/s', defaultVal: '5.80',
+        desc: '推定対気速度の下限（失速速度付近）。これ未満に張り付くと TAS 箱が灰色になります。',
+        caution: '必ず airspeed_min < airspeed_max にしてください（逆転すると本体が既定値 5.80〜9.00 にリセットします）。'
+      },
+      {
+        key: 'airspeed_max', label: '推定 TAS 上限クランプ', cat: 'tas', tier: 'expert',
+        type: 'number', min: 1.0, max: 25.0, step: 0.1, decimals: 2, unit: 'm/s', defaultVal: '9.00',
+        desc: '推定対気速度の上限（出し得る最大速度）。これ以上に張り付くと TAS 箱が灰色になります。',
+        caution: '必ず airspeed_min < airspeed_max にしてください。'
+      },
+      // --- 姿勢・バリオ KF ---
+      {
+        key: 'rpy_functions', label: 'Roll / Pitch / Yaw 機能（マスター）', cat: 'imu', tier: 'caution',
+        type: 'select', defaultVal: '1',
+        options: [{ v: '1', l: '1：ON（有効）' }, { v: '0', l: '0：OFF（無効）' }],
+        desc: 'ESKF による姿勢・風・推定 TAS 機能のマスタースイッチ。',
+        caution: 'OFF にすると姿勢表示・推定 TAS・風推定・自動ロールトリムがすべて停止します。'
+      },
+      {
+        key: 'auto_roll_trim', label: '直進中の自動ロールトリム', cat: 'imu', tier: 'caution',
+        type: 'select', defaultVal: '1',
+        options: [{ v: '1', l: '1：ON（有効）' }, { v: '0', l: '0：OFF（無効）' }],
+        desc: '定常直進中の微小なロール取り付けズレを自動で学習・補正する機能。',
+        caution: 'OFF にすると既存のロールトリム補正量もクリアされます。'
+      },
+      {
+        key: 'pitch_target', label: '較正時の基準ピッチ角 (SET PITCH)', cat: 'imu', tier: 'expert',
+        type: 'number', min: -3.5, max: 2.0, step: 0.5, decimals: 1, unit: '度', defaultVal: '0.0',
+        desc: '本体画面で APPLY（水平較正）を実行するときに申告する地面・プラットフォームの傾斜角（例: 本番台は -3.5°）。',
+        caution: '値を変えただけでは現在の較正値は変わりません（本体で APPLY したときに使われます）。'
+      },
+      {
+        key: 'roll_target', label: '較正時の基準ロール角 (SET ROLL)', cat: 'imu', tier: 'expert',
+        type: 'number', min: -3.0, max: 3.0, step: 0.5, decimals: 1, unit: '度', defaultVal: '0.0',
+        desc: '本体画面で APPLY を実行するときに申告するロール角（通常は 0.0°）。',
+        caution: '通常は 0.0 のままにしてください。'
+      },
+      {
+        key: 'kf_q_vel', label: 'バリオ KF 速度プロセスノイズ (Q_vel)', cat: 'imu', tier: 'expert',
+        type: 'number', min: 0.00001, max: 100, step: 0.001, unit: '', defaultVal: '0.02',
+        desc: '鉛直速度カルマンフィルタの速度プロセスノイズ（既定 0.02）。',
+        caution: '大きすぎると静止時にバリオ（VSI）がふらつき、小さすぎると昇降への追従が遅れます。'
+      },
+      {
+        key: 'kf_q_bias', label: 'バリオ KF バイアスプロセスノイズ (Q_bias)', cat: 'imu', tier: 'expert',
+        type: 'number', min: 0.00000001, max: 1, step: 0.0001, unit: '', defaultVal: '0.0005',
+        desc: '鉛直加速度バイアス推定のプロセスノイズ（既定 0.0005）。',
+        caution: '通常は既定値（0.0005）から変更しないでください。'
+      },
+      {
+        key: 'kf_R', label: 'バリオ KF 気圧高度観測ノイズ (R)', cat: 'imu', tier: 'expert',
+        type: 'number', min: 0.001, max: 10000, step: 0.5, unit: 'm²', defaultVal: '20',
+        desc: '気圧高度計の観測ノイズ分散（既定 20）。大きいほど気圧ノイズを抑え、IMU 加速度を重視します。',
+        caution: '小さすぎると風圧等の気圧揺らぎが VSI に直接乗ります。'
+      },
+      // --- 内部状態・較正 ---
+      {
+        key: 'level_roll', label: '水平較正オフセット（ロール）', cat: 'internal', tier: 'internal',
+        type: 'number', min: -30, max: 30, step: 0.001, decimals: 3, unit: '度', defaultVal: '0.000',
+        desc: '本体の APPLY 操作で自動記録されたマウント基準のロール補正角。',
+        caution: '【原則編集禁止】手入力で書き換えると姿勢表示と旋回判定が狂います。実機の APPLY 操作で更新してください。'
+      },
+      {
+        key: 'level_pitch', label: '水平較正オフセット（ピッチ）', cat: 'internal', tier: 'internal',
+        type: 'number', min: -30, max: 30, step: 0.001, decimals: 3, unit: '度', defaultVal: '0.000',
+        desc: '本体の APPLY 操作で自動記録されたマウント基準のピッチ補正角。',
+        caution: '【原則編集禁止】1° 狂うと推定 TAS が約 0.35〜0.4 m/s ずれます。実機の APPLY 操作で更新してください。'
+      },
+      {
+        key: 'roll_trim', label: '自動ロールトリム累積値', cat: 'internal', tier: 'internal',
+        type: 'number', min: -5, max: 5, step: 0.001, decimals: 3, unit: '度', defaultVal: '0.000',
+        desc: '直進中に自動学習されたロール微補正量（±5° 上限）。',
+        caution: '【原則編集禁止】マウントから外したときは自動でリセットされます。'
+      },
+      {
+        key: 'needs_apply', label: '要較正フラグ (needs_apply)', cat: 'internal', tier: 'internal',
+        type: 'select', defaultVal: '0',
+        options: [{ v: '0', l: '0：較正済み' }, { v: '1', l: '1：較正のやり直しが必要（赤線警告）' }],
+        desc: 'マウントから外されたことを検知して立つフラグ。1 の間は画面に CALIBRATE 警告が出ます。',
+        caution: '【危険】較正せずに手動で 0 に戻すと、取り付けがずれたまま警告なしで飛行することになります。'
+      },
+      {
+        key: 'calib_date', label: '最終較正日 (YYYYMMDD)', cat: 'internal', tier: 'internal',
+        type: 'text', defaultVal: '0',
+        desc: '最後に APPLY を実行した JST 日付（0 = 不明）。日をまたいだ取り外し検知に使います。',
+        caution: '【原則編集禁止】通常は本体が自動記録します。'
+      },
+      {
+        key: 'auto10k_status', label: 'AUTO10K 折返しフェーズ', cat: 'internal', tier: 'internal',
+        type: 'select', defaultVal: 'AWAY',
+        options: [{ v: 'AWAY', l: 'AWAY（往路：離陸後〜折返し前）' }, { v: 'INTO', l: 'INTO（復路：折返し後）' }],
+        desc: 'AUTO10K モードでの現在の往路／復路状態（飛行中再起動時の復帰用）。',
+        caution: '発進前に INTO になっていると最初から逆方向へ誘導されます。通常は AWAY にしてください。'
+      },
+    ];
+
+    const PONS_SCHEMA_MAP = Object.fromEntries(PONS_SETTINGS_SCHEMA.map(s => [s.key, s]));
+
+    // 設定エディタの状態
+    const settingsState = {
+      loaded: false,
+      loading: false,
+      unsupported: false,
+      saving: false,
+      activeCat: 'all',
+      expertUnlocked: false,
+      // 本体から取得した元値 { key: string }
+      orig: {},
+      // SD の settings.txt に記載されていたか { key: boolean }
+      inFile: {},
+      // 編集中（下書き） { key: string }
+      draft: {},
+      // 未記載項目を既定値のまま settings.txt へ追加する明示フラグ { key: boolean }
+      addToFile: {},
+      // 直前の保存前のスナップショット（Undo 用）
+      lastSavedBackup: null,
+      // 目的地候補一覧（PONS:DEST から取得）
+      destinations: [],
+      // 受信一時バッファ
+      rxVals: {},
+      rxInFile: {},
+      rxDests: [],
+      getTimer: null,
+      // 保存時の逐次コマンド待ち用 Promise resolver
+      pendingReplyResolve: null,
+      pendingReplyReject: null,
+    };
+
+    function abortSettingsPending(reason) {
+      if (settingsState.getTimer) {
+        clearTimeout(settingsState.getTimer);
+        settingsState.getTimer = null;
+      }
+      if (settingsState.loading) {
+        settingsState.loading = false;
+        const badge = document.getElementById('settings-conn-badge');
+        if (badge) {
+          badge.textContent = '取得中断';
+          badge.style.background = '#fee2e2';
+          badge.style.color = '#991b1b';
+        }
+      }
+      if (settingsState.pendingReplyReject) {
+        const rej = settingsState.pendingReplyReject;
+        settingsState.pendingReplyResolve = null;
+        settingsState.pendingReplyReject = null;
+        rej(new Error(reason || '通信が中断されました'));
+      }
+    }
+
+    function resetSettingsState(closeModals) {
+      abortSettingsPending('接続が切断されました');
+      settingsState.loaded = false;
+      settingsState.unsupported = false;
+      settingsState.saving = false;
+      settingsState.orig = {};
+      settingsState.inFile = {};
+      settingsState.draft = {};
+      settingsState.addToFile = {};
+      settingsState.lastSavedBackup = null;
+      settingsState.destinations = [];
+      if (closeModals) {
+        const dm = document.getElementById('settings-diff-modal');
+        const sm = document.getElementById('settings-modal');
+        if (dm) dm.classList.remove('active');
+        if (sm) sm.classList.remove('active');
+      }
+    }
+
+    function openSettingsModal() {
+      if (!serialWriter || !ponsReady) {
+        alert('先に PONS 本体へ USB 接続してください。');
+        return;
+      }
+      document.getElementById('settings-modal').classList.add('active');
+      // 未保存の変更が無ければ、常に本体から最新値を取得する（機体差し替えや本体側操作の取りこぼし防止）
+      if (!settingsState.loaded || settingsState.unsupported || computeSettingsDiffs().length === 0) {
+        requestPonsSettings(true);
+      } else {
+        renderSettingsAll();
+      }
+    }
+
+    function closeSettingsModal() {
+      if (settingsState.saving) return;
+      const diffs = computeSettingsDiffs();
+      if (diffs.length > 0 && !confirm(`未保存の変更が ${diffs.length} 件あります。画面を閉じますか？（下書きは残ります）`)) {
+        return;
+      }
+      document.getElementById('settings-modal').classList.remove('active');
+    }
+
+    async function requestPonsSettings(skipConfirm = false) {
+      if (!serialWriter || !ponsReady) {
+        alert('PONS 本体が未接続です。');
+        return;
+      }
+      if (downloadBusy() || listPending || settingsState.saving) {
+        alert('現在ほかの通信を実行中です。終わってから再試行してください。');
+        return;
+      }
+      if (!skipConfirm && settingsState.loaded && computeSettingsDiffs().length > 0) {
+        if (!confirm('未保存の変更が破棄されます。本体から最新の設定を再取得しますか？')) return;
+      }
+      settingsState.loading = true;
+      settingsState.unsupported = false;
+      settingsState.rxVals = {};
+      settingsState.rxInFile = {};
+      settingsState.rxDests = [];
+      if (settingsState.getTimer) { clearTimeout(settingsState.getTimer); settingsState.getTimer = null; }
+
+      const badge = document.getElementById('settings-conn-badge');
+      badge.textContent = '本体から取得中...';
+      badge.style.background = '#fef3c7';
+      badge.style.color = '#b45309';
+      document.getElementById('settings-body').innerHTML =
+        '<div style="text-align:center; color:#64748b; padding:40px;">本体から現在の設定を読み込んでいます...</div>';
+
+      await sendSerialLine('PONS:SETTINGS_GET');
+      settingsState.getTimer = setTimeout(() => {
+        settingsState.getTimer = null;
+        if (!settingsState.loading) return;
+        settingsState.loading = false;
+        settingsState.unsupported = true;
+        badge.textContent = '未対応ファーム';
+        badge.style.background = '#fee2e2';
+        badge.style.color = '#991b1b';
+        document.getElementById('settings-body').innerHTML =
+          '<div style="text-align:center; color:#b91c1c; padding:36px; line-height:1.7;">' +
+          '<b>本体から設定一覧の応答がありませんでした。</b><br>' +
+          'この機能（<code>PONS:SETTINGS_GET</code>）は 2026-11-20 以降のファームウェアで対応しています。<br>' +
+          '最新ファームウェアを書き込んだあと、「🔄 再取得」を押してください。</div>';
+      }, 4000);
+    }
+
+    function handleSettingsSerialLine(line) {
+      if (line.startsWith('PONS:SETTING,')) {
+        // PONS:SETTING,<key>,<value>,<in_file>
+        // value にカンマが含まれる可能性に備えて先頭と末尾で分割
+        const rest = line.substring('PONS:SETTING,'.length);
+        const firstComma = rest.indexOf(',');
+        const lastComma = rest.lastIndexOf(',');
+        if (firstComma > 0 && lastComma > firstComma) {
+          const key = rest.substring(0, firstComma);
+          const val = rest.substring(firstComma + 1, lastComma);
+          const inF = rest.substring(lastComma + 1).trim() === '1';
+          settingsState.rxVals[key] = val;
+          settingsState.rxInFile[key] = inF;
+        }
+      } else if (line.startsWith('PONS:DEST,')) {
+        const name = line.substring('PONS:DEST,'.length).trim();
+        if (name) settingsState.rxDests.push(name);
+      } else if (line === 'PONS:SETTINGS_END') {
+        if (settingsState.getTimer) { clearTimeout(settingsState.getTimer); settingsState.getTimer = null; }
+        settingsState.loading = false;
+        settingsState.loaded = true;
+        settingsState.unsupported = false;
+        settingsState.orig = { ...settingsState.rxVals };
+        settingsState.inFile = { ...settingsState.rxInFile };
+        settingsState.draft = { ...settingsState.rxVals };
+        settingsState.addToFile = {};
+        settingsState.destinations = [...settingsState.rxDests];
+        const badge = document.getElementById('settings-conn-badge');
+        const missingCnt = Object.values(settingsState.inFile).filter(v => !v).length;
+        badge.textContent = `取得完了（全 ${Object.keys(settingsState.orig).length} 項目 / 未記載 ${missingCnt}）`;
+        badge.style.background = '#dcfce7';
+        badge.style.color = '#166534';
+        renderSettingsAll();
+      } else if (line.startsWith('PONS:SETTINGS_OK,') || line.startsWith('PONS:SETTINGS_SAVED,') || line.startsWith('PONS:SETTINGS_ERR,')) {
+        if (settingsState.pendingReplyResolve) {
+          const r = settingsState.pendingReplyResolve;
+          settingsState.pendingReplyResolve = null;
+          settingsState.pendingReplyReject = null;
+          r(line);
+        }
+      }
+    }
+
+    function sendSettingCmdAndWait(cmd, timeoutMs = 5000) {
+      return new Promise((resolve, reject) => {
+        let timer = setTimeout(() => {
+          if (settingsState.pendingReplyReject) {
+            settingsState.pendingReplyResolve = null;
+            settingsState.pendingReplyReject = null;
+            reject(new Error(`タイムアウト: ${cmd}`));
+          }
+        }, timeoutMs);
+        settingsState.pendingReplyResolve = (line) => { clearTimeout(timer); resolve(line); };
+        settingsState.pendingReplyReject = (err) => { clearTimeout(timer); reject(err); };
+        sendSerialLine(cmd).catch(err => {
+          clearTimeout(timer);
+          settingsState.pendingReplyResolve = null;
+          settingsState.pendingReplyReject = null;
+          reject(err);
+        });
+      });
+    }
+
+    function normalizeSettingVal(schema, raw) {
+      const s = (raw === undefined || raw === null) ? '' : String(raw).trim();
+      if (!schema) return s;
+      if (schema.type === 'number') {
+        const n = Number(s);
+        if (!Number.isFinite(n)) return s;
+        if (typeof schema.decimals === 'number') return n.toFixed(schema.decimals);
+        return String(n);
+      }
+      return s;
+    }
+
+    function isSettingChanged(key) {
+      if (!settingsState.inFile[key] && settingsState.addToFile[key]) return true;
+      const schema = PONS_SCHEMA_MAP[key];
+      const o = normalizeSettingVal(schema, settingsState.orig[key]);
+      const d = normalizeSettingVal(schema, settingsState.draft[key]);
+      return o !== d;
+    }
+
+    function computeSettingsDiffs() {
+      const diffs = [];
+      for (const s of PONS_SETTINGS_SCHEMA) {
+        if (!(s.key in settingsState.orig)) continue;
+        if (isSettingChanged(s.key)) {
+          diffs.push({
+            schema: s,
+            oldVal: settingsState.orig[s.key],
+            newVal: normalizeSettingVal(s, settingsState.draft[s.key]),
+            wasMissing: !settingsState.inFile[s.key],
+          });
+        }
+      }
+      return diffs;
+    }
+
+    function validateAllDrafts() {
+      const errors = {};
+      const warnings = [];
+      for (const s of PONS_SETTINGS_SCHEMA) {
+        if (!(s.key in settingsState.draft)) continue;
+        const raw = String(settingsState.draft[s.key] ?? '').trim();
+        if (/[\r\n]/.test(raw)) {
+          errors[s.key] = '改行文字は使用できません';
+          continue;
+        }
+        if (s.key === 'calib_date' && !/^(0|\d{8})$/.test(raw)) {
+          errors[s.key] = '0 または 8 桁の YYYYMMDD（例: 20261120）を入力してください';
+          continue;
+        }
+        if (s.type === 'number') {
+          const n = Number(raw);
+          if (raw === '' || !Number.isFinite(n)) {
+            errors[s.key] = '数値を入力してください';
+          } else if (typeof s.min === 'number' && n < s.min) {
+            errors[s.key] = `最小値 ${s.min} 未満です`;
+          } else if (typeof s.max === 'number' && n > s.max) {
+            errors[s.key] = `最大値 ${s.max} を超えています`;
+          }
+        }
+      }
+      // 整合性チェック: airspeed_min < airspeed_max
+      const vmin = Number(settingsState.draft.airspeed_min);
+      const vmax = Number(settingsState.draft.airspeed_max);
+      if (Number.isFinite(vmin) && Number.isFinite(vmax) && !(vmin < vmax)) {
+        errors.airspeed_min = 'airspeed_min は airspeed_max より小さくしてください';
+        errors.airspeed_max = 'airspeed_max は airspeed_min より大きくしてください';
+      }
+      // 運用警告（保存はできるが注意喚起）
+      if (isSettingChanged('link_group') && settingsState.draft.link_group === 'A') {
+        warnings.push('無線グループ A は SD 異常時の既定値です。普段の運用では B〜D の使用を推奨します。');
+      }
+      if (isSettingChanged('link_mode') && settingsState.draft.link_mode === '2') {
+        warnings.push('PONS Link が「2：受信（追尾ボート側）」に変更されます。機体本体に書き込んでいないか確認してください。');
+      }
+      if (isSettingChanged('needs_apply') && settingsState.draft.needs_apply === '0') {
+        warnings.push('【危険】needs_apply を手動で 0 にしています。機体の実取り付けと水平較正が一致しているか必ず確認してください。');
+      }
+      const diffs = computeSettingsDiffs();
+      if (diffs.some(d => d.schema.needsReboot)) {
+        warnings.push('無線設定（link_*）の変更は、本体を再起動したあとにハードウェアへ反映されます。');
+      }
+      return { errors, warnings };
+    }
+
+    function toggleExpertUnlock() {
+      const cb = document.getElementById('settings-unlock-expert');
+      settingsState.expertUnlocked = cb.checked;
+      const lbl = document.getElementById('settings-unlock-label');
+      lbl.classList.toggle('unlocked', settingsState.expertUnlocked);
+      lbl.childNodes[lbl.childNodes.length - 1].textContent = settingsState.expertUnlocked
+        ? ' 🔓 上級者・危険項目のロック解除中'
+        : ' 🔒 上級者・危険項目のロックを解除';
+      renderSettingsBody();
+    }
+
+    function setSettingsCat(catId) {
+      settingsState.activeCat = catId;
+      renderSettingsAll();
+    }
+
+    function renderSettingsAll() {
+      renderSettingsCats();
+      renderSettingsBody();
+      updateSettingsFooter();
+    }
+
+    function renderSettingsCats() {
+      const box = document.getElementById('settings-cats');
+      const diffs = computeSettingsDiffs();
+      box.innerHTML = PONS_SETTING_CATS.map(c => {
+        const cnt = c.id === 'all'
+          ? diffs.length
+          : diffs.filter(d => d.schema.cat === c.id).length;
+        const dot = cnt > 0 ? `<span class="chg-dot">${cnt}</span>` : '';
+        return `<button class="scat-btn${c.id === settingsState.activeCat ? ' active' : ''}" onclick="setSettingsCat('${c.id}')">${c.label}${dot}</button>`;
+      }).join('');
+    }
+
+    function escHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function renderSettingsBody() {
+      const body = document.getElementById('settings-body');
+      if (!settingsState.loaded) return;
+
+      const q = (document.getElementById('settings-search').value || '').trim().toLowerCase();
+      const onlyChanged = document.getElementById('settings-only-changed').checked;
+      const { errors } = validateAllDrafts();
+
+      let html = '';
+
+      // TAS カテゴリまたは「すべて」のときはリアルタイム曲線プレビューを表示
+      if ((settingsState.activeCat === 'tas' || settingsState.activeCat === 'all') && !q && !onlyChanged) {
+        html += `
+          <div class="tas-preview-box">
+            <canvas id="tas-curve-canvas" width="320" height="175"></canvas>
+            <div style="flex:1; min-width:220px; font-size:0.82rem; color:#334155; line-height:1.55;">
+              <div style="font-weight:bold; color:#1e40af; font-size:0.9rem; margin-bottom:4px;">📈 推定 TAS モデル リアルタイムプレビュー</div>
+              <div>式: <code>V(θ) = V0 · √(K / (K + θ))</code></div>
+              <div id="tas-preview-stats" style="margin-top:6px; font-family:var(--font-mono); background:#f8fafc; padding:6px 8px; border-radius:6px; border:1px solid #e2e8f0;"></div>
+              <div style="margin-top:6px; font-size:0.76rem; color:#64748b;">
+                青実線＝現在の下書き / 灰点線＝変更前 / 赤点線＝上下限クランプ（min〜max）<br>
+                <b>K</b> は「ピッチ 0° から揚力ゼロになるまでの角度」。K が小さいほどピッチ 1° あたりの速度変化が急になります。
+              </div>
+            </div>
+          </div>`;
+      }
+
+      const items = PONS_SETTINGS_SCHEMA.filter(s => {
+        if (!(s.key in settingsState.orig)) return false;
+        if (settingsState.activeCat !== 'all' && s.cat !== settingsState.activeCat) return false;
+        if (onlyChanged && !isSettingChanged(s.key)) return false;
+        if (q) {
+          const hay = `${s.key} ${s.label} ${s.desc} ${s.caution}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+
+      if (items.length === 0) {
+        html += '<div style="text-align:center; color:#94a3b8; padding:32px;">条件に一致する設定項目はありません。</div>';
+      } else {
+        for (const s of items) {
+          const tier = PONS_TIER_META[s.tier];
+          const locked = tier.locked && !settingsState.expertUnlocked;
+          const changed = isSettingChanged(s.key);
+          const missing = !settingsState.inFile[s.key];
+          const val = settingsState.draft[s.key] ?? '';
+          const origVal = settingsState.orig[s.key] ?? '';
+          const err = errors[s.key] || '';
+
+          let ctrlHtml = '';
+          const dis = locked ? 'disabled' : '';
+          if (s.type === 'select') {
+            const opts = s.options.slice();
+            if (!opts.some(o => o.v === val)) opts.unshift({ v: val, l: `${val}（現在値）` });
+            ctrlHtml = `<select ${dis} onchange="onSettingInput('${s.key}', this.value)">` +
+              opts.map(o => `<option value="${escHtml(o.v)}"${o.v === val ? ' selected' : ''}>${escHtml(o.l)}</option>`).join('') +
+              `</select>`;
+          } else if (s.type === 'dest') {
+            const dests = settingsState.destinations.slice();
+            if (val && !dests.includes(val)) dests.unshift(val);
+            if (dests.length > 0) {
+              ctrlHtml = `<select ${dis} onchange="onSettingInput('${s.key}', this.value)">` +
+                dests.map(d => `<option value="${escHtml(d)}"${d === val ? ' selected' : ''}>${escHtml(d)}</option>`).join('') +
+                `</select>`;
+            } else {
+              ctrlHtml = `<input type="text" ${dis} value="${escHtml(val)}" oninput="onSettingInput('${s.key}', this.value)">`;
+            }
+          } else if (s.type === 'number') {
+            const minA = typeof s.min === 'number' ? `min="${s.min}"` : '';
+            const maxA = typeof s.max === 'number' ? `max="${s.max}"` : '';
+            const stepA = typeof s.step === 'number' ? `step="${s.step}"` : 'step="any"';
+            ctrlHtml = `<div style="display:flex; align-items:center; gap:6px;">` +
+              `<input type="number" ${dis} ${minA} ${maxA} ${stepA} value="${escHtml(val)}" oninput="onSettingInput('${s.key}', this.value)">` +
+              (s.unit ? `<span style="font-size:0.8rem; color:#475569; white-space:nowrap;">${escHtml(s.unit)}</span>` : '') +
+              `</div>`;
+          } else {
+            ctrlHtml = `<input type="text" ${dis} value="${escHtml(val)}" oninput="onSettingInput('${s.key}', this.value)">`;
+          }
+
+          const rangeText = (s.type === 'number' && typeof s.min === 'number' && typeof s.max === 'number')
+            ? `範囲: ${s.min}〜${s.max}` : '';
+
+          html += `
+            <div id="scard-${s.key}" class="setting-card tier-${s.tier}${changed ? ' changed' : ''}${locked ? ' locked' : ''}">
+              <div>
+                <div class="setting-head">
+                  <span class="setting-label">${escHtml(s.label)}</span>
+                  <span class="setting-key">${escHtml(s.key)}</span>
+                  <span class="sbadge ${tier.cls}">${tier.label}</span>
+                  ${missing ? '<span class="sbadge sbadge-missing" title="settings.txt に未記載のため本体の既定値で動作中。保存すると settings.txt に追加されます">未記載（既定値）</span>' : ''}
+                  ${s.needsReboot ? '<span class="sbadge sbadge-reboot">要再起動</span>' : ''}
+                  <span id="schg-${s.key}" class="sbadge sbadge-changed" style="${changed ? '' : 'display:none;'}">${missing ? '追加対象' : '変更あり'}</span>
+                  ${locked ? '<span style="font-size:0.75rem; color:#64748b;">🔒 ロック中</span>' : ''}
+                </div>
+                <div class="setting-desc">${escHtml(s.desc)}</div>
+                ${s.caution ? `<div class="setting-caution">⚠️ ${escHtml(s.caution)}</div>` : ''}
+              </div>
+              <div class="setting-ctrl">
+                ${ctrlHtml}
+                <div class="setting-meta">
+                  <span>既定: <code>${escHtml(s.defaultVal)}</code>${rangeText ? ' / ' + escHtml(rangeText) : ''}</span>
+                  <span style="display:inline-flex; gap:4px;">
+                    ${missing && !locked ? `<button onclick="toggleAddMissingSetting('${s.key}')" title="既定値のまま settings.txt へ書き出す対象に追加/解除します">${settingsState.addToFile[s.key] ? '✓ 追加予約' : '＋ 追加'}</button>` : ''}
+                    ${!locked ? `<button onclick="resetOneSettingDefault('${s.key}')" title="既定値（${escHtml(s.defaultVal)}）に戻す">既定</button>` : ''}
+                  </span>
+                </div>
+                <div id="sorig-${s.key}" style="font-size:0.74rem; color:#1d4ed8; ${changed ? '' : 'display:none;'}">${missing ? '未記載 → 保存で settings.txt に追加' : '変更前: <code>' + escHtml(origVal) + '</code>'}</div>
+                <div id="serr-${s.key}" class="setting-err-msg" style="${err ? '' : 'display:none;'}">${err ? '❌ ' + escHtml(err) : ''}</div>
+              </div>
+            </div>`;
+        }
+      }
+
+      body.innerHTML = html;
+      drawTasPreviewCanvas();
+    }
+
+    function updateSettingCardVisuals(keysToCheck) {
+      const { errors } = validateAllDrafts();
+      for (const k of keysToCheck) {
+        const card = document.getElementById(`scard-${k}`);
+        if (!card) continue;
+        const chg = isSettingChanged(k);
+        const missing = !settingsState.inFile[k];
+        const err = errors[k] || '';
+        card.classList.toggle('changed', chg);
+        const badge = document.getElementById(`schg-${k}`);
+        if (badge) {
+          badge.style.display = chg ? '' : 'none';
+          badge.textContent = missing ? '追加対象' : '変更あり';
+        }
+        const origEl = document.getElementById(`sorig-${k}`);
+        if (origEl) origEl.style.display = chg ? '' : 'none';
+        const errEl = document.getElementById(`serr-${k}`);
+        if (errEl) {
+          errEl.style.display = err ? '' : 'none';
+          errEl.textContent = err ? `❌ ${err}` : '';
+        }
+      }
+    }
+
+    function toggleAddMissingSetting(key) {
+      settingsState.addToFile[key] = !settingsState.addToFile[key];
+      renderSettingsAll();
+    }
+
+    function onSettingInput(key, val) {
+      settingsState.draft[key] = val;
+      // airspeed_min / airspeed_max は相互チェックがあるため両方更新
+      const keys = (key === 'airspeed_min' || key === 'airspeed_max')
+        ? ['airspeed_min', 'airspeed_max']
+        : [key];
+      updateSettingCardVisuals(keys);
+      renderSettingsCats();
+      updateSettingsFooter();
+      if (key.startsWith('airspeed_')) {
+        drawTasPreviewCanvas();
+      }
+    }
+
+    function resetOneSettingDefault(key) {
+      const s = PONS_SCHEMA_MAP[key];
+      if (!s) return;
+      settingsState.draft[key] = s.defaultVal;
+      renderSettingsAll();
+    }
+
+    function revertSettingsDraft() {
+      settingsState.draft = { ...settingsState.orig };
+      settingsState.addToFile = {};
+      renderSettingsAll();
+    }
+
+    function undoLastSavedSettings() {
+      if (!settingsState.lastSavedBackup) return;
+      settingsState.draft = { ...settingsState.lastSavedBackup };
+      renderSettingsAll();
+    }
+
+    function updateSettingsFooter() {
+      const diffs = computeSettingsDiffs();
+      const { errors } = validateAllDrafts();
+      const errCount = Object.keys(errors).length;
+
+      const summary = document.getElementById('settings-change-summary');
+      summary.textContent = diffs.length > 0 ? `未保存の変更: ${diffs.length} 件` : '';
+
+      const valStat = document.getElementById('settings-validation-status');
+      valStat.textContent = errCount > 0 ? `❌ 入力エラーが ${errCount} 件あります（修正してください）` : '';
+
+      const revBtn = document.getElementById('btn-settings-revert');
+      revBtn.disabled = (diffs.length === 0);
+      revBtn.style.opacity = (diffs.length === 0) ? '0.5' : '1';
+
+      const undoBtn = document.getElementById('btn-settings-undo');
+      undoBtn.disabled = !settingsState.lastSavedBackup;
+      undoBtn.style.opacity = settingsState.lastSavedBackup ? '1' : '0.5';
+
+      const reviewBtn = document.getElementById('btn-settings-review');
+      const canSave = settingsState.loaded && diffs.length > 0 && errCount === 0 && !settingsState.saving;
+      reviewBtn.disabled = !canSave;
+      reviewBtn.style.opacity = canSave ? '1' : '0.5';
+    }
+
+    function drawTasPreviewCanvas() {
+      const cv = document.getElementById('tas-curve-canvas');
+      if (!cv) return;
+      const ctx = cv.getContext('2d');
+      const W = cv.width, H = cv.height;
+      ctx.clearRect(0, 0, W, H);
+
+      const v0 = Number(settingsState.draft.airspeed_v0);
+      const k  = Number(settingsState.draft.airspeed_k);
+      const lo = Number(settingsState.draft.airspeed_min);
+      const hi = Number(settingsState.draft.airspeed_max);
+
+      const ov0 = Number(settingsState.orig.airspeed_v0);
+      const ok  = Number(settingsState.orig.airspeed_k);
+
+      const padL = 38, padR = 12, padT = 12, padB = 24;
+      const pw = W - padL - padR, ph = H - padT - padB;
+      const thMin = -6, thMax = 10;
+      const vMin = 4.0, vMax = 12.0;
+
+      const xOf = th => padL + ((th - thMin) / (thMax - thMin)) * pw;
+      const yOf = v  => padT + (1 - (v - vMin) / (vMax - vMin)) * ph;
+
+      // グリッド
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.lineWidth = 1;
+      for (let th = -6; th <= 10; th += 2) {
+        const x = xOf(th);
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.stroke();
+      }
+      for (let v = 4; v <= 12; v += 2) {
+        const y = yOf(v);
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+      }
+      // θ=0 の縦線
+      ctx.strokeStyle = '#94a3b8';
+      ctx.beginPath(); ctx.moveTo(xOf(0), padT); ctx.lineTo(xOf(0), H - padB); ctx.stroke();
+
+      // 軸ラベル
+      ctx.fillStyle = '#64748b';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      for (let th = -6; th <= 10; th += 4) ctx.fillText(`${th}°`, xOf(th), H - 8);
+      ctx.textAlign = 'right';
+      for (let v = 4; v <= 12; v += 2) ctx.fillText(`${v}`, padL - 4, yOf(v) + 3);
+
+      // 上下限の赤点線
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#ef4444';
+      if (Number.isFinite(lo) && lo >= vMin && lo <= vMax) {
+        ctx.beginPath(); ctx.moveTo(padL, yOf(lo)); ctx.lineTo(W - padR, yOf(lo)); ctx.stroke();
+      }
+      if (Number.isFinite(hi) && hi >= vMin && hi <= vMax) {
+        ctx.beginPath(); ctx.moveTo(padL, yOf(hi)); ctx.lineTo(W - padR, yOf(hi)); ctx.stroke();
+      }
+      ctx.restore();
+
+      const drawCurve = (V0, K, color, dashed) => {
+        if (!Number.isFinite(V0) || !Number.isFinite(K) || K <= 0) return;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = dashed ? 1.5 : 2.5;
+        if (dashed) ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        let started = false;
+        for (let th = thMin; th <= thMax; th += 0.2) {
+          const d = K + th;
+          if (d <= 0.1) continue;
+          let v = V0 * Math.sqrt(K / d);
+          if (!dashed && Number.isFinite(lo) && Number.isFinite(hi) && lo < hi) {
+            v = Math.max(lo, Math.min(hi, v));
+          }
+          const x = xOf(th), y = Math.max(padT, Math.min(H - padB, yOf(v)));
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      };
+
+      // 変更前（灰点線）→ 現在（青実線）
+      drawCurve(ov0, ok, '#94a3b8', true);
+      drawCurve(v0, k, '#2563eb', false);
+
+      // θ=0 点の丸
+      if (Number.isFinite(v0) && v0 >= vMin && v0 <= vMax) {
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath(); ctx.arc(xOf(0), yOf(v0), 4, 0, Math.PI * 2); ctx.fill();
+      }
+
+      const stats = document.getElementById('tas-preview-stats');
+      if (stats) {
+        if (Number.isFinite(v0) && Number.isFinite(k) && k > 0) {
+          const slope = -v0 / (2 * k);
+          const vM2 = (k - 2 > 0) ? (v0 * Math.sqrt(k / (k - 2))).toFixed(2) : '--';
+          const vP2 = (v0 * Math.sqrt(k / (k + 2))).toFixed(2);
+          stats.innerHTML =
+            `θ=0°: <b>${v0.toFixed(2)} m/s</b> ｜ 傾き(θ=0): <b>${slope.toFixed(3)} m/s/°</b><br>` +
+            `θ=-2°: ${vM2} m/s ｜ θ=+2°: ${vP2} m/s ｜ 範囲: ${Number.isFinite(lo) ? lo.toFixed(2) : '--'}〜${Number.isFinite(hi) ? hi.toFixed(2) : '--'} m/s`;
+        } else {
+          stats.textContent = 'V0 または K の値が不正です';
+        }
+      }
+    }
+
+    function openSettingsDiffModal() {
+      const diffs = computeSettingsDiffs();
+      const { errors, warnings } = validateAllDrafts();
+      if (diffs.length === 0 || Object.keys(errors).length > 0) return;
+
+      const warnBox = document.getElementById('diff-warnings');
+      if (warnings.length > 0) {
+        warnBox.innerHTML = warnings.map(w =>
+          `<div style="background:#fffbeb; border:1px solid #fcd34d; color:#92400e; padding:8px 10px; border-radius:6px; font-size:0.83rem; margin-bottom:6px;">⚠️ ${escHtml(w)}</div>`
+        ).join('');
+      } else {
+        warnBox.innerHTML = '';
+      }
+
+      const tbody = document.getElementById('diff-table-body');
+      tbody.innerHTML = diffs.map(d => {
+        const tier = PONS_TIER_META[d.schema.tier];
+        return `<tr>
+          <td>
+            <div style="font-weight:bold;">${escHtml(d.schema.label)}</div>
+            <div style="font-size:0.75rem; color:#64748b;">
+              <code>${escHtml(d.schema.key)}</code>
+              <span class="sbadge ${tier.cls}">${tier.label}</span>
+              ${d.wasMissing ? '<span class="sbadge sbadge-missing">新規追加</span>' : ''}
+            </div>
+          </td>
+          <td class="diff-old">${escHtml(d.oldVal)}</td>
+          <td class="diff-new">${escHtml(d.newVal)}</td>
+          <td style="font-size:0.78rem; color:#475569;">${escHtml(d.schema.caution || '—')}</td>
+        </tr>`;
+      }).join('');
+
+      const hasDanger = diffs.some(d => d.schema.tier === 'expert' || d.schema.tier === 'internal');
+      const ackBox = document.getElementById('diff-danger-ack-box');
+      const ackCb = document.getElementById('diff-danger-ack');
+      ackBox.style.display = hasDanger ? 'block' : 'none';
+      ackCb.checked = false;
+
+      document.getElementById('diff-save-progress').style.display = 'none';
+      document.getElementById('btn-diff-cancel').disabled = false;
+      updateDiffCommitBtn();
+      document.getElementById('settings-diff-modal').classList.add('active');
+    }
+
+    function updateDiffCommitBtn() {
+      const ackBox = document.getElementById('diff-danger-ack-box');
+      const needAck = ackBox.style.display !== 'none';
+      const ok = !needAck || document.getElementById('diff-danger-ack').checked;
+      const btn = document.getElementById('btn-diff-commit');
+      btn.disabled = !ok || settingsState.saving;
+      btn.style.opacity = (!ok || settingsState.saving) ? '0.5' : '1';
+    }
+
+    function closeSettingsDiffModal() {
+      if (settingsState.saving) return;
+      document.getElementById('settings-diff-modal').classList.remove('active');
+    }
+
+    async function commitSettingsToPons() {
+      if (!serialWriter || !ponsReady || settingsState.saving) return;
+      const diffs = computeSettingsDiffs();
+      if (diffs.length === 0) return;
+
+      settingsState.saving = true;
+      const backupBeforeSave = { ...settingsState.orig };
+      const prog = document.getElementById('diff-save-progress');
+      const cancelBtn = document.getElementById('btn-diff-cancel');
+      const commitBtn = document.getElementById('btn-diff-commit');
+      prog.style.display = 'block';
+      cancelBtn.disabled = true;
+      commitBtn.disabled = true;
+      commitBtn.style.opacity = '0.5';
+
+      try {
+        const adjusted = [];
+        for (let i = 0; i < diffs.length; i++) {
+          const d = diffs[i];
+          prog.textContent = `送信中 (${i + 1} / ${diffs.length}): ${d.schema.key} = ${d.newVal} ...`;
+          const rep = await sendSettingCmdAndWait(`PONS:SETTINGS_SET,${d.schema.key}:${d.newVal}`);
+          if (!rep.startsWith('PONS:SETTINGS_OK,')) {
+            throw new Error(`設定 ${d.schema.key} の反映に失敗しました (${rep})`);
+          }
+          // PONS:SETTINGS_OK,<key>,<applied_value> を確認し、本体側でクランプ・無視された場合は記録
+          const prefix = `PONS:SETTINGS_OK,${d.schema.key},`;
+          if (rep.startsWith(prefix)) {
+            const applied = rep.substring(prefix.length).trim();
+            const wantNorm = normalizeSettingVal(d.schema, d.newVal);
+            const gotNorm  = normalizeSettingVal(d.schema, applied);
+            if (wantNorm !== gotNorm) {
+              adjusted.push(`${d.schema.key}: 送信 ${d.newVal} → 本体実効値 ${applied}`);
+            }
+          }
+        }
+        prog.textContent = 'SD カード（settings.txt）へ安全に保存中...';
+        const saveRep = await sendSettingCmdAndWait('PONS:SETTINGS_SAVE', 8000);
+        if (!saveRep.startsWith('PONS:SETTINGS_SAVED,OK')) {
+          throw new Error(`SD 保存に失敗しました (${saveRep})`);
+        }
+
+        settingsState.lastSavedBackup = backupBeforeSave;
+        settingsState.addToFile = {};
+        settingsState.saving = false;
+        document.getElementById('settings-diff-modal').classList.remove('active');
+
+        const needReboot = diffs.some(d => d.schema.needsReboot);
+        let msg = `✅ ${diffs.length} 件の設定を本体に保存しました。\n（変更履歴は SD の log.txt にも記録されました）`;
+        if (adjusted.length > 0) {
+          msg += `\n\n⚠️ 一部の値が本体側の制約により調整されました:\n・${adjusted.join('\n・')}`;
+        }
+        if (needReboot) {
+          msg += '\n\n⚠️ 無線設定（link_*）を変更したため、反映するには本体を再起動してください。';
+        }
+        alert(msg);
+        // 本体から最新値を再取得して表示を同期
+        await requestPonsSettings(true);
+      } catch (err) {
+        settingsState.saving = false;
+        cancelBtn.disabled = false;
+        updateDiffCommitBtn();
+        prog.style.color = '#dc2626';
+        prog.textContent = `❌ エラー: ${err.message}`;
+        alert(`設定の保存中にエラーが発生しました:\n${err.message}`);
+      }
+    }
+
+    // ESC キーで設定モーダル／Diff モーダルを安全に閉じる
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const diffM = document.getElementById('settings-diff-modal');
+      if (diffM && diffM.classList.contains('active')) {
+        closeSettingsDiffModal();
+        return;
+      }
+      const setM = document.getElementById('settings-modal');
+      if (setM && setM.classList.contains('active')) {
+        closeSettingsModal();
+      }
+    });
+
+    function exportSettingsBackup(useOrig) {
+      if (!settingsState.loaded) return;
+      const src = useOrig ? settingsState.orig : settingsState.draft;
+      const lines = [];
+      for (const s of PONS_SETTINGS_SCHEMA) {
+        if (s.key in src) {
+          lines.push(`${s.key}:${normalizeSettingVal(s, src[s.key])}`);
+        }
+      }
+      const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      a.href = url;
+      a.download = useOrig ? `settings_backup_${stamp}.txt` : `settings_${stamp}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function importSettingsFile(input) {
+      const file = input.files && input.files[0];
+      input.value = '';
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = String(reader.result || '');
+        let applied = 0;
+        let hasLockedChange = false;
+        for (const rawLine of text.split(/\r?\n/)) {
+          const idx = rawLine.indexOf(':');
+          if (idx <= 0) continue;
+          const k = rawLine.substring(0, idx).trim();
+          const v = rawLine.substring(idx + 1).trim();
+          const s = PONS_SCHEMA_MAP[k];
+          if (!s || !(k in settingsState.orig)) continue;
+          settingsState.draft[k] = v;
+          applied++;
+          if (PONS_TIER_META[s.tier].locked && isSettingChanged(k)) hasLockedChange = true;
+        }
+        if (hasLockedChange && !settingsState.expertUnlocked) {
+          document.getElementById('settings-unlock-expert').checked = true;
+          toggleExpertUnlock();
+        }
+        renderSettingsAll();
+        alert(`ファイルから ${applied} 項目を下書きに読み込みました。\nまだ本体には保存されていません。「📋 変更内容を確認して保存...」で差分を確認してください。`);
+      };
+      reader.readAsText(file);
     }
   </script>
 </body>

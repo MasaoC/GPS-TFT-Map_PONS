@@ -120,6 +120,9 @@ uint16_t e220_airtime_ms(uint8_t profile);
 // ---- 省電力 ----
 void e220_sleep();     // mode 3 へ。送信中なら送信完了後に入る
 void e220_wake();      // mode 0 へ。復帰を**待つ**（最大 50ms Core0 が止まる）
+// mode 0 のまま状態レジスタ読み出しが噛み合わなくなったときに、mode 3 → mode 0 を
+// 1 回だけ経由して立て直す（CH SCAN の初手無応答時の復帰用。最大 ~60ms）。
+void e220_cycle_normal();
 
 // ---- ノンブロッキング起床（1Hz の定期送信用）----
 // e220_wake() は AUX の立ち上がりを待つので、毎秒それをやると Core0 が

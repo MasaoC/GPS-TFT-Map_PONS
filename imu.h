@@ -69,11 +69,13 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m);
 //   vacc_m    : 垂直位置精度 [m]（get_gnss_vacc_mm() / 1000.0f）
 //   sacc_mps  : 速度精度 [m/s]（get_gnss_sacc_mmps() / 1000.0f）
 //   num_sv    : 衛星数（get_gnss_numsat()）
-void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, int num_sv);
+//   h_msl_m   : GNSS の高度 [m]（get_gnss_altitude()。食い違いの門の逃がし道に使う。NAN なら使わない）
+void imu_kalman_gnss_vel_update(float veld_mps, float vacc_m, float sacc_mps, int num_sv, float h_msl_m = NAN);
 
 // GNSS の上下速度を入れてよいか（2026-11-18〜。判定はここ 1 か所。VARIO 詳細画面もこれを読む）。
-// GVSI_INNOV は判定ではなく、入れようとして残差の門で捨てた数（60 秒ログの数え方用）。
-enum GnssVsiGate { GVSI_OK = 0, GVSI_NO_3D, GVSI_SATS, GVSI_SACC, GVSI_VACC, GVSI_INNOV, GVSI_N_REASONS };
+// GVSI_INNOV / GVSI_CONSIST は判定ではなく、入れようとして残差の門・食い違いの門（GNSS_VSI_CONSIST_*）で捨てた数（60 秒ログの数え方用）。
+// GVSI_RESCUED は捨てる理由ではなく、食い違いの門で捨てかけたが GNSS の高度が合っていたので入れた数（used= にも含まれる）。
+enum GnssVsiGate { GVSI_OK = 0, GVSI_NO_3D, GVSI_SATS, GVSI_SACC, GVSI_VACC, GVSI_INNOV, GVSI_CONSIST, GVSI_RESCUED, GVSI_N_REASONS };
 GnssVsiGate imu_gnss_vsi_gate(bool fix3d, int num_sv, float sacc_mps, float vacc_m);
 const char *imu_gnss_vsi_gate_name(GnssVsiGate g);
 // いま GNSS の上下速度が V/S に効いているか（最後に入れてから 2 秒以内）

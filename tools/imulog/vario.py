@@ -24,6 +24,9 @@
     機上が入れるのは 2Hz の測位だけ（gnss.cpp の navpvt_app_epoch。iTOW を 500ms の区切りに分けて最初の 1 回）。
     条件は sAcc < GNSS_VSI_SACC_MAX_MPS、残差 < GNSS_VSI_INNOV_GATE_SIGMA·√S。R = max(sAcc² × GNSS_VSI_R_SCALE, 0.001)
     ★ 機上の衛星数（GNSS_VSI_MIN_SATS）と vAcc（GNSS_VSI_VACC_MAX_M）の条件は、生ログに衛星数と vAcc が無いので再現しない
+    2026-11-19〜 食い違いの門（GNSS_VSI_CONSIST_*）: 加速度計で積分した上下速度と、GNSS を入れない参照の KF の両方と
+    同じ向きに食い違ったら捨てる。2026-11-18 までの機上と比べるときは --no-consist
+    逃がし道（GNSS の高度の 1 秒の変わり方が velD と合っていれば捨てない）は生ログに高度が無いので、--flight-csv を渡したときだけ効く
   ・鉛直加速度のガード（KF_ACC_GUARD_*。acc_guard_step / kf_predict_baro_only）
 
 ■ 合わせていないもの（既知の差）
@@ -67,6 +70,19 @@ GNSS_VSI_SACC_MAX_MPS = 0.3           # 2026-11-18〜 0.3（それまでは 1.0�
 GNSS_VSI_INNOV_GATE_SIGMA = 3.0       # 2026-11-18〜。None で門なし（それより前の機上）
 GNSS_APP_EPOCH_MS = 500               # 機上が 2Hz で通す区切り（1000 / GNSS_APP_RATE_HZ）。None で全部の測位
 GNSS_VSI_R_SCALE = 64.0
+# 食い違いの門（2026-11-19〜。settings.h の GNSS_VSI_CONSIST_*・imu.cpp の imu_kalman_gnss_vel_update と同じ）。
+# GNSS の velD を「加速度計で積分した上下速度」と「GNSS を入れない参照の KF」の両方と比べ、両方と同じ向きに食い違ったら捨てる。
+GNSS_VSI_CONSIST_IMU_MPS = 0.3         # None で門なし（2026-11-18 までの機上）
+GNSS_VSI_CONSIST_REF_MPS = 0.4
+GNSS_VSI_CONSIST_TAU_S = 3.0
+GNSS_VSI_CONSIST_LOCK_S = 10.0
+# 逃がし道（GNSS_VSI_CONSIST_HEIGHT_*）: GNSS の高度の 1 秒の変わり方が直近 1 秒の velD の平均と合っていれば捨てない。
+# 生ログに GNSS の高度は無いので、run_vario の gnss_height（main では --flight-csv の GNSS_Altitude）があるときだけ効く。
+GNSS_VSI_CONSIST_HEIGHT_WIN_S = 1.0
+GNSS_VSI_CONSIST_HEIGHT_AGREE_MPS = 0.2
+GNSS_VSI_CONSIST_HEIGHT_STEP_MPS = 0.5     # 窓の中で隣り合う velD の差がこれ未満のときだけ（跳ねは逃がさない）
+# 直近の run_vario で GNSS の観測をどう扱ったかの数（機上の 60 秒ログの vsi gnss 行と同じ意味。used は rescued を含む）
+GNSS_VSI_COUNTS = {"used": 0, "consist": 0, "rescued": 0}
 KF_ACC_GUARD_FAST_MPS2 = 6.0           # 2026-11-18 に 4.0 → 6.0（settings.h のコメント）
 KF_ACC_GUARD_FAST_STEPS = 10          # 2026-11-18 に 4（120ms）→ 10（300ms）
 KF_ACC_GUARD_SLOW_MPS2 = 2.0
@@ -132,10 +148,12 @@ def vertical_accel(accel, est):
 
 
 def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
-              guard=True, use_accel=True, use_gnss_vel=KF_GNSS_VEL_ENABLED):
+              guard=True, use_accel=True, use_gnss_vel=KF_GNSS_VEL_ENABLED, gnss_height=None):
     """セッションごとにバリオ KF を回す。
 
     use_gnss_vel: GNSS の上向き速度を速度の観測として入れるか（機上の KF_GNSS_VEL_ENABLED。既定は機上に合わせて True）
+    gnss_height : (session, ホスト時刻 [s]) → GNSS の高度 [m]（無ければ NaN）を返す関数。食い違いの門の逃がし道に使う。
+                  None なら逃がし道は無し（生ログに高度が無いため。機上とはそこだけ違う）
 
     戻り値: (結果の DataFrame, ガードの出入りのリスト)
       列: session, t（ホスト時刻 [s]）, vs [m/s], alt [m], bias [m/s²], az [m/s²]（その回の鉛直加速度の平均）, guard（0/1）
@@ -145,6 +163,8 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
     if accel_all is None or baro_all is None:
         raise SystemExit("accel / baro レコードが無い")
     out, events = [], []
+    for k in GNSS_VSI_COUNTS:
+        GNSS_VSI_COUNTS[k] = 0
 
     for sess in sorted(baro_all["session"].unique()):
         acc = accel_all[accel_all["session"] == sess]
@@ -174,6 +194,11 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
 
         x = np.zeros(3)
         P = np.array([[100.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.1]])
+        # GNSS を入れない参照の KF（imu.cpp の kfr_x / kfr_P）と、加速度計で積分した上下速度（s_vchk）
+        xr, Pr = x.copy(), P.copy()
+        vchk, vchk_ok, last_ok_itow, rej_since = 0.0, False, None, None
+        hh, vh_hist = [], []                               # 逃がし道の履歴（imu.cpp の s_gh_h / s_gh_v。(iTOW, 値)）
+        gts = gn["ts"].to_numpy(float) if len(gn) else np.zeros(0)
         init = False
         last_pred = None
         acc_sum = hz_sum = 0.0
@@ -186,16 +211,24 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
             if kind == 0:                                   # ---- 気圧（imu_kalman_baro_update）----
                 if not init:
                     x = np.array([zb[i], 0.0, 0.0])
+                    xr, Pr = x.copy(), P.copy()
+                    vchk_ok = False
                     last_pred = t_now
                     init = True
                     continue
-                S = P[0, 0] + r_baro
-                K = P[:, 0] / S
-                x = x + K * (zb[i] - x[0])
-                P = P - np.outer(K, P[0, :])
-                P = (P + P.T) * 0.5
-                np.fill_diagonal(P, np.maximum(np.diag(P), 1e-9))
+                for xx, PP in ((x, P), (xr, Pr)):           # 本体と参照の KF で同じ式（kf3_baro）
+                    S = PP[0, 0] + r_baro
+                    K = PP[:, 0] / S
+                    xx += K * (zb[i] - xx[0])
+                    PP -= np.outer(K, PP[0, :])
+                    PP[:] = (PP + PP.T) * 0.5
+                    np.fill_diagonal(PP, np.maximum(np.diag(PP), 1e-9))
             elif kind == 1:                                 # ---- GNSS の上向き速度（imu_kalman_gnss_vel_update）----
+                if gnss_height is not None:                 # 高度は門に関係なく測位ごとに覚える
+                    hv = gnss_height(sess, t_now)
+                    if np.isfinite(hv):
+                        hh.append((gts[i], hv))
+                        hh = hh[-4:]
                 if not init or not (gsa[i] < GNSS_VSI_SACC_MAX_MPS) or not np.isfinite(gvd[i]):
                     continue
                 rv = max(gsa[i] * gsa[i] * GNSS_VSI_R_SCALE, 0.001)
@@ -204,6 +237,40 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
                 inn = gvd[i] - x[1]
                 if GNSS_VSI_INNOV_GATE_SIGMA is not None and abs(inn) > GNSS_VSI_INNOV_GATE_SIGMA * np.sqrt(S):
                     continue                                 # 残差の門（反射の保険。imu.cpp と同じ）
+                if GNSS_VSI_CONSIST_IMU_MPS is not None:     # 食い違いの門（imu.cpp と同じ）
+                    dtg = (gts[i] - last_ok_itow) if (vchk_ok and last_ok_itow is not None) else 0.0
+                    if dtg < 0.0 or dtg > 1.0:
+                        dtg = 1.0
+                    last_ok_itow = gts[i]
+                    if not vchk_ok:
+                        vchk, vchk_ok = gvd[i], True
+                    r_imu, r_ref = gvd[i] - vchk, gvd[i] - xr[1]
+                    bad = (abs(r_imu) > GNSS_VSI_CONSIST_IMU_MPS and abs(r_ref) > GNSS_VSI_CONSIST_REF_MPS
+                           and (r_imu > 0.0) == (r_ref > 0.0))
+                    vh_hist.append((gts[i], gvd[i]))
+                    vh_hist = vh_hist[-4:]
+                    if bad and hh and hh[-1][0] == gts[i]:      # 逃がし道（いまの測位の高度があるときだけ）
+                        w = GNSS_VSI_CONSIST_HEIGHT_WIN_S
+                        old = [h for (it, h) in hh if w - 0.1 <= gts[i] - it <= w + 0.1]
+                        vs_ = [v for (it, v) in vh_hist if gts[i] - it <= w + 1e-6]
+                        if old and len(vs_) >= 2:
+                            it_old = [it for (it, h) in hh if w - 0.1 <= gts[i] - it <= w + 0.1][0]
+                            vhh = (hh[-1][1] - old[0]) / (gts[i] - it_old)
+                            steps = np.abs(np.diff(vs_)) if len(vs_) >= 2 else np.zeros(1)
+                            if (abs(np.mean(vs_) - vhh) < GNSS_VSI_CONSIST_HEIGHT_AGREE_MPS
+                                    and steps.max() < GNSS_VSI_CONSIST_HEIGHT_STEP_MPS):
+                                bad = False
+                                GNSS_VSI_COUNTS["rescued"] += 1
+                    if bad:
+                        if rej_since is None:
+                            rej_since = t_now
+                        elif t_now - rej_since >= GNSS_VSI_CONSIST_LOCK_S:
+                            vchk, rej_since = gvd[i], None
+                        GNSS_VSI_COUNTS["consist"] += 1
+                        continue
+                    rej_since = None
+                    vchk += (gvd[i] - vchk) * min(1.0, dtg / GNSS_VSI_CONSIST_TAU_S)
+                GNSS_VSI_COUNTS["used"] += 1
                 x = x + K * inn
                 P = P - np.outer(K, P[1, :])
                 P = (P + P.T) * 0.5
@@ -235,6 +302,7 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
                         if g_fast >= KF_ACC_GUARD_FAST_STEPS or abs(g_lp) > KF_ACC_GUARD_SLOW_MPS2:
                             g_on, g_calm = True, None
                             P[0, 2] = P[2, 0] = P[1, 2] = P[2, 1] = 0.0
+                            Pr[0, 2] = Pr[2, 0] = Pr[1, 2] = Pr[2, 1] = 0.0
                             events.append((sess, float(t_now), "on", float(a_k), float(g_lp), float(x[2])))
                     else:
                         calm = abs(g_lp) < KF_ACC_GUARD_CLEAR_MPS2 and not fast
@@ -248,12 +316,21 @@ def run_vario(parts, est, q_vel=KF_Q_VEL, q_bias=KF_Q_BIAS, r_baro=KF_R,
                     ok = not g_on
                 if ok:                                      # ---- kf_predict ----
                     F = np.array([[1.0, dt, 0.0], [0.0, 1.0, -dt], [0.0, 0.0, 1.0]])
+                    Q = np.diag([0.0, q_vel + KF_HORIZ_ACCEL_GAIN * h_k * h_k, q_bias])
                     x = np.array([x[0] + x[1] * dt, x[1] + (a_k - x[2]) * dt, x[2]])
-                    P = F @ P @ F.T + np.diag([0.0, q_vel + KF_HORIZ_ACCEL_GAIN * h_k * h_k, q_bias])
+                    P = F @ P @ F.T + Q
+                    xr = np.array([xr[0] + xr[1] * dt, xr[1] + (a_k - xr[2]) * dt, xr[2]])
+                    Pr = F @ Pr @ F.T + Q
+                    if vchk_ok:
+                        vchk += (a_k - x[2]) * dt
                 else:                                       # ---- kf_predict_baro_only ----
                     F = np.array([[1.0, dt, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+                    Q = np.diag([0.0, q_vel, 0.0])
                     x = np.array([x[0] + x[1] * dt, x[1], x[2]])
-                    P = F @ P @ F.T + np.diag([0.0, q_vel, 0.0])
+                    P = F @ P @ F.T + Q
+                    xr = np.array([xr[0] + xr[1] * dt, xr[1], xr[2]])
+                    Pr = F @ Pr @ F.T + Q
+                    vchk_ok = False
                 rows.append((t_now, x[1], x[0], x[2], a_k, 1 if g_on else 0))
 
         if rows:
@@ -279,6 +356,8 @@ def main():
     ap.add_argument("--baro-only", action="store_true", help="加速度を使わない（気圧だけ）")
     ap.add_argument("--no-gnss-vel", action="store_true",
                     help="GNSS の上向き速度を観測に入れない（2026-11-12〜11-17 の機上。settings.h の KF_GNSS_VEL_ENABLED = 0）")
+    ap.add_argument("--no-consist", action="store_true",
+                    help="GNSS の上下速度の食い違いの門（GNSS_VSI_CONSIST_*。2026-11-19〜）を外す（それより前の機上）")
     ap.add_argument("--old-gnss-gate", action="store_true",
                     help="2026-11-12 より前の機上の入れ方（sAcc < 1.0・残差の門なし）。2Hz のログなので測位の間引きは関係しない")
     ap.add_argument("--q-vel", type=float, default=KF_Q_VEL)
@@ -286,14 +365,13 @@ def main():
     ap.add_argument("--r", type=float, default=KF_R, help="気圧高度の観測ノイズ [m²]（KF_R）")
     args = ap.parse_args()
 
-    global GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_INNOV_GATE_SIGMA
+    global GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_INNOV_GATE_SIGMA, GNSS_VSI_CONSIST_IMU_MPS
+    if args.no_consist or args.old_gnss_gate:
+        GNSS_VSI_CONSIST_IMU_MPS = None
     if args.old_gnss_gate:
         GNSS_VSI_SACC_MAX_MPS, GNSS_VSI_INNOV_GATE_SIGMA = 1.0, None
     parts = split(load(args.path))
     est = eskf.run_on_log(parts)                 # 上向きは機上と同じ ESKF（PC 版）から
-    res, events = run_vario(parts, est, q_vel=args.q_vel, q_bias=args.q_bias, r_baro=args.r,
-                            guard=not args.no_guard, use_accel=not args.baro_only,
-                            use_gnss_vel=KF_GNSS_VEL_ENABLED and not args.no_gnss_vel)
 
     # ホスト時刻 → JST（merge_flight と同じ橋渡し）
     gn = parts.get("gnssvel")
@@ -303,6 +381,28 @@ def main():
             f, _, n = mf.host_to_jst_fit(g)
             if f is not None:
                 to_jst[sess] = f
+
+    # 食い違いの門の逃がし道に使う GNSS の高度（飛行 CSV があるときだけ。2Hz の点の間は直線で補う）
+    gnss_height = None
+    fl = None
+    if args.flight_csv:
+        fl = mf.load_flight_csvs(args.flight_csv)
+        fh = fl[["jst", "GNSS_Altitude"]].dropna().sort_values("jst")
+        hj, hv = fh["jst"].to_numpy(float), fh["GNSS_Altitude"].to_numpy(float)
+
+        def gnss_height(sess, t):
+            if sess not in to_jst or len(hj) < 2:
+                return float("nan")
+            T = float(to_jst[sess](t)) % 86400
+            k = int(np.searchsorted(hj, T))
+            if k <= 0 or k >= len(hj) or hj[k] - hj[k - 1] > 0.6:
+                return float("nan")
+            return float(hv[k - 1] + (hv[k] - hv[k - 1]) * (T - hj[k - 1]) / (hj[k] - hj[k - 1]))
+
+    res, events = run_vario(parts, est, q_vel=args.q_vel, q_bias=args.q_bias, r_baro=args.r,
+                            guard=not args.no_guard, use_accel=not args.baro_only,
+                            use_gnss_vel=KF_GNSS_VEL_ENABLED and not args.no_gnss_vel,
+                            gnss_height=gnss_height)
 
     def clock(sess, t):
         if sess not in to_jst:
@@ -321,8 +421,7 @@ def main():
         for sess, t, what, a_k, lp, b in events:
             print(f"  sess {sess:>3}  {clock(sess, t)}  {what:>3}  a={a_k:+.1f} lp={lp:+.1f} bias={b:+.2f}")
 
-    if args.flight_csv:
-        fl = mf.load_flight_csvs(args.flight_csv)
+    if fl is not None:
         print("\n機上の CSV の KF_Vspeed との比べ（同じセッションで JST が重なる所）:")
         for sess, r in res.groupby("session"):
             if sess not in to_jst:

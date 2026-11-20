@@ -66,7 +66,8 @@ static void rf_busy_until(uint32_t until_ms) {
 //   の 2 つで、どちらかがあれば 0 に戻す。
 static uint8_t s_ch      = 0;          // 現在のチャンネル（通常送信の宛先に使う）
 static bool    s_strict  = false;      // Strict Mode が有効か（環境ノイズの読み方が変わる）
-static uint8_t s_noResp = 0;           // 連続して返事が無かった回数
+static uint8_t s_noResp = 0;           // 連続して返事が無かった回数（生存確認用: e220_ping 等）
+static uint8_t s_statNoResp = 0;       // 状態レジスタ読み出し(stat_reg_read)の連続失敗回数（待ち時間短縮用）
 static bool s_lastXferHeard = false;   // 直前の reg_xfer でモジュールが何か答えたか
                                        //（失敗でも「化けた返事」なら生きている）
 #define E220_NORESP_LIMIT     3        // これ以上続いたら無応答とみなす
@@ -552,7 +553,10 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     if (s_alive) s_strict = ensure_strict_mode(persist);
     E220_DBG("E220 reconfigure ch=%u prof=%u persist=%d -> alive=%d AUX=%d",
              ch, profile, (int)persist, (int)s_alive, (int)digitalRead(E220_AUX_PIN));
-    if (s_alive) note_response();      // 読み返しが通った＝確実に生きている
+    if (s_alive) {
+        note_response();               // 読み返しが通った＝確実に生きている
+        s_statNoResp = 0;              // 新しい CH は初回 200ms 待ちから始める
+    }
 
     // ---- 常設の診断: 0x08(VERSION) と 0x09(EXT REG) を読んで 1 行残す ----
     // **消さないこと。**無線がおかしいときに最初に見る行。
@@ -574,7 +578,14 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
                  (v_reg3_cache >> 6) & 1);         // REG3 bit6: 1=通常 0=透過
     }
 
+    // ★ mode 3 の最後のコマンド直後に即 set_baud() すると、TX の一瞬の浮きや
+    //   モジュール内部の後始末と重なり、mode 0 復帰後に状態レジスタ読み出し(0xA3)が
+    //   コマンドとして解釈されず送信扱いになることがある（2026-11-20 CH SCAN 実機ログ）。
+    //   間合いを取ってからボーレートを戻し、さらに落ち着かせてから mode 0 へ起こす。
+    wait_aux_idle(50);
+    cfg_wait_ms(E220_CMD_GAP_MS);
     set_baud(LINK_UART_BAUD);          // 通常運用へ戻す
+    cfg_wait_ms(E220_CMD_GAP_MS);
     back_to_normal_mode();             // 起きるのを待って、mode 3 の残りかすを捨てる
 
     return s_alive;
@@ -851,6 +862,14 @@ void e220_wake() {
     delay(2);   // モード切替は AUX が High になってから 2ms 後が安全（5.3。wait_aux_idle と同じ）
 }
 
+void e220_cycle_normal() {
+    if (s_asleep) return;
+    set_mode(MODE_CONFIG);
+    cfg_wait_ms(E220_CMD_GAP_MS);
+    back_to_normal_mode();
+    s_statNoResp = 0;                  // 立て直し直後の 1 発目は 200ms 待つ
+}
+
 // 生存確認。**mode 3 へ潜ってレジスタを 1 バイト読む。**電波は出さない。
 // ★ レジスタの汎用読み出し(0xC1)は mode 3 でしか使えない。データシート 6.5:
 //   「通常送受信モード(mode 0) / WOR 送信モード(mode 1)において、データ送信、
@@ -866,7 +885,10 @@ bool e220_ping() {
     enter_config_mode();
     uint8_t rb = 0;
     const bool ok = reg_xfer(0xC1, 0x00, 1, nullptr, &rb);
+    wait_aux_idle(50);
+    cfg_wait_ms(E220_CMD_GAP_MS);
     set_baud(LINK_UART_BAUD);
+    cfg_wait_ms(E220_CMD_GAP_MS);
     // 起きていたなら起きた状態へ戻す（BUG-77。待ちと受信バッファの片付けは back_to_normal_mode()）
     if (!was_asleep) back_to_normal_mode();
     // ★ 化けた返事でも「生きている」。s_lastXferHeard は reg_xfer が立てる。
@@ -908,8 +930,8 @@ static bool stat_reg_read(uint8_t reg, uint8_t len, uint8_t* out) {
     E220_SERIAL.write(cmd, sizeof(cmd));
     E220_SERIAL.flush();
 
-    const uint32_t wait_ms = (s_noResp == 0) ? E220_NOISE_WAIT_MS
-                                             : E220_NOISE_WAIT_FAST_MS;
+    const uint32_t wait_ms = (s_statNoResp == 0) ? E220_NOISE_WAIT_MS
+                                                 : E220_NOISE_WAIT_FAST_MS;
     const uint16_t need = (uint16_t)(5 + len);
     const uint32_t t0 = millis();
     while (millis() - t0 < wait_ms) {
@@ -923,13 +945,19 @@ static bool stat_reg_read(uint8_t reg, uint8_t len, uint8_t* out) {
             // 応答の分だけを抜く。前後のテレメトリは壊さない。
             memmove(s_rx + i, s_rx + i + need, (size_t)(s_rxLen - (i + need)));
             s_rxLen = (uint16_t)(s_rxLen - need);
+            s_statNoResp = 0;
             note_response();
             return true;
         }
         delay(2);
     }
 
-    note_no_response();
+    // ★ 状態レジスタの無応答は s_noResp（モジュールの生死判定）には数えない。
+    //   生死判定は e220_ping() と e220_reconfigure() が mode 3 のレジスタ読みで確実に行う。
+    //   ここで note_no_response() すると、CH SCAN 中に 1 チャンネルで 3 回外しただけで
+    //   e220_alive() が false に落ちてスキャン全体が中断＋「無線モジュールが応答しません」
+    //   の誤報になる（2026-11-20 実機ログ）。待ち時間短縮だけは s_statNoResp で維持する。
+    if (s_statNoResp < 255) s_statNoResp++;
     const uint16_t g = (uint16_t)(s_rxLen - from);
     E220_DBG("E220 stat %02X len=%u: no reply (waited %ums, got=%u "
              "[%02X %02X %02X %02X %02X %02X] AUX=%d)",

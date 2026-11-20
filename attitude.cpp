@@ -65,6 +65,7 @@ static uint32_t rate_high_us_  = 0;
 // ★ last_gsp_ は前後加速度のゲート用で、sAcc を問わず全測位で更新している。別物。
 static float    good_gsp_      = -1.0f;   // 負 = まだ来ていない
 static uint32_t good_gsp_us_   = 0;
+static float    good_sacc_     = ESKF_SACC_MAX;   // その測位の sAcc（「GNSS が動いている」の閾値。ESKF_ACCEL_GNSS_MOVING_SACC_K）
 // ヨーが決まった後に、地上での再水平化に入った回数（60 秒ログの gnd=）。
 static volatile uint32_t ground_relevels_ = 0;
 static bool     ground_now_    = false;
@@ -75,7 +76,7 @@ static bool     accelerating_  = false;      // 上が ESKF_ACCEL_HOLD_MAX_US �
 static float    acc_lp_[3]     = {0, 0, 0};  // 加速度計の値の直近の平均（時定数 ESKF_ACCEL_CHANGE_TAU_S。ジャイロで本体と一緒に回す）
 static float    acc_f_[3]      = {0, 0, 0};  // 加速度計の値を ESKF_ACCEL_LP_S で均したもの
 static bool     acc_lp_valid_  = false;
-static bool     init_mov_on_   = false;      // 静止の初期化の門: 信用できる GNSS が動いていると言っている（ESKF_ACCEL_GNSS_MOVING_MPS）
+static bool     init_mov_on_   = false;      // 静止の初期化の門: 信用できる GNSS が動いていると言っている（gnss_moving_mps()）
 static uint32_t init_mov_since_us_ = 0;
 static float    acc_dp_raw2_   = 0.0f;       // 均していない加速度計の値で見た、平均の向きに直角な差の 2 乗（方位が決まる前の重力観測の門）
 static bool     accel_gnss_stop_on_ = false; // 信用できる GNSS が止まっていると言っている（ESKF_ACCEL_GNSS_STOP_MPS）
@@ -296,7 +297,8 @@ static uint32_t acc_count_  = 0;
 //   バンク警報とバリオはロール・ピッチだけで動くので、ヨーを待たずに立てる。
 static bool     yaw_set_    = false;
 static uint8_t  yaw_src_    = ATT_YAW_SRC_NONE;
-static uint8_t  yaw_arm_    = 0;          // しきい値超過が連続した測位数
+static uint8_t  yaw_arm_    = 0;          // ESKF_YAW_INIT_MIN_SPEED_MPS 以上が連続した測位数（航跡へ戻れる）
+static uint8_t  yaw_arm_lo_ = 0;          // ESKF_YAW_INIT_CORR_MIN_SPEED_MPS 以上が連続した測位数（2D 相関だけで入れられる。2026-11-20〜）
 // ---- 発進加速の常時前向き 2D 相関（ヨー未設定の間だけ使う。settings.h の ESKF_YAW_CORR_*）----
 static float    yaw_imu_hp_[2]     = {0.0f, 0.0f};   // IMU 水平比力のリーキー積分 (East, North) [m/s]
 static float    yaw_gnss_lp_[2]    = {0.0f, 0.0f};   // GNSS 水平速度の低域 (East, North) [m/s]
@@ -644,6 +646,7 @@ void attitude_setup() {
     yaw_set_ = false;
     yaw_src_ = ATT_YAW_SRC_NONE;
     yaw_arm_ = 0;
+    yaw_arm_lo_ = 0;
     yaw_corr_reset();
     bias_learn_reset();
     bias_learned_on_ground_ = false;
@@ -669,6 +672,7 @@ void attitude_setup() {
     rate_high_us_ = 0;
     good_gsp_ = -1.0f;
     good_gsp_us_ = 0;
+    good_sacc_ = ESKF_SACC_MAX;
     ground_relevels_ = 0;
     ground_now_ = false;
     accel_horiz_on_ = false;
@@ -747,6 +751,12 @@ static bool good_gnss_fresh() {
     if (good_gsp_ < 0.0f) return false;
     return (uint32_t)(time_us_32() - good_gsp_us_) < ESKF_GNSS_VEL_TIMEOUT_US;
 }
+// 「GNSS が動いている」とみなす対地速度 [m/s]（「加速中」の判定と静止の初期化の門。settings.h の ESKF_ACCEL_GNSS_MOVING_*。2026-11-20〜）。
+// 止まっているときの速度の雑音で寄せとゼロ点の学習が止まらないよう、sAcc が悪いときは上げる。
+static float gnss_moving_mps() {
+    const float k = ESKF_ACCEL_GNSS_MOVING_SACC_K * good_sacc_;
+    return (k > ESKF_ACCEL_GNSS_MOVING_MPS) ? k : ESKF_ACCEL_GNSS_MOVING_MPS;
+}
 // GNSS が対地速度で「地上で止まっている」と確かめているか（ゼロ点を学習してよいか）。
 static bool gnss_says_ground() {
     return good_gnss_fresh() && good_gsp_ < ESKF_GROUND_MAX_GS_MPS;
@@ -774,6 +784,7 @@ static bool init_level(const float a[3], float att_sigma_deg) {
     yaw_set_     = false;
     yaw_src_     = ATT_YAW_SRC_NONE;
     yaw_arm_     = 0;
+    yaw_arm_lo_  = 0;
     yaw_corr_reset();
     bias_learn_reset();
     lvl_undo_clear();                 // 水平化し直したので、前の寄せの記録は意味が無い
@@ -1080,7 +1091,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         //   ESKF_ACCEL_HOLD_MAX_US 続いたら許す（一定の速さで飛んでいる最中の再起動）。それより先に 3 m/s を超えれば
         //   attitude_on_gnss_velocity の「動き出したときの初期化」（σ 30°）が走る。
         {
-            const bool mov = good_gnss_fresh() && good_gsp_ >= ESKF_ACCEL_GNSS_MOVING_MPS;
+            const bool mov = good_gnss_fresh() && good_gsp_ >= gnss_moving_mps();
             if (mov) { if (!init_mov_on_) { init_mov_on_ = true; init_mov_since_us_ = t_us; } }
             else init_mov_on_ = false;
         }
@@ -1133,7 +1144,7 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         }
         // 信用できる GNSS の対地速度（good_gsp_。鮮度は測位の時刻）
         const bool gfresh = good_gnss_fresh();
-        const bool gnss_moving = gfresh && good_gsp_ >= ESKF_ACCEL_GNSS_MOVING_MPS;
+        const bool gnss_moving = gfresh && good_gsp_ >= gnss_moving_mps();
         if (gfresh && good_gsp_ < ESKF_ACCEL_GNSS_STOP_MPS) {
             if (!accel_gnss_stop_on_) { accel_gnss_stop_on_ = true; accel_gnss_stop_since_us_ = t_us; }
         } else {
@@ -1692,6 +1703,7 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, u
         if (sAcc <= ESKF_SACC_MAX) {
             good_gsp_    = gsp;
             good_gsp_us_ = now_us;
+            good_sacc_   = sAcc;
         }
     }
 
@@ -1790,8 +1802,16 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, u
                 }
             }
         }
-        if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) { yaw_arm_ = 0; return; }
-        if (++yaw_arm_ < ESKF_YAW_INIT_ARM_FIXES) return;  // 単発の化けで焼き付けない
+        // ★ 2 段の門（2026-11-20〜。settings.h の ESKF_YAW_INIT_CORR_MIN_SPEED_MPS）:
+        //   ・ESKF_YAW_INIT_CORR_MIN_SPEED_MPS（2 m/s）以上が 1 秒 … 2D 相関の門を全部通ったときだけ入れる（外れたら待つ）
+        //   ・ESKF_YAW_INIT_MIN_SPEED_MPS（3 m/s）以上が 1 秒 …… 今までどおり。相関が外れたら航跡＋15°
+        //   どちらも単発の化けで焼き付けないよう連続で数える。
+        if (sp < ESKF_YAW_INIT_CORR_MIN_SPEED_MPS) { yaw_arm_ = 0; yaw_arm_lo_ = 0; return; }
+        if (yaw_arm_lo_ < 255) yaw_arm_lo_++;
+        if (sp < ESKF_YAW_INIT_MIN_SPEED_MPS) yaw_arm_ = 0;
+        else if (yaw_arm_ < 255) yaw_arm_++;
+        const bool arm_trk = yaw_arm_ >= ESKF_YAW_INIT_ARM_FIXES;      // 航跡へ戻ってよい
+        if (yaw_arm_lo_ < ESKF_YAW_INIT_ARM_FIXES) return;
         // ENU なので航跡（真方位・北 0・時計回り）は atan2(East, North)
         float trk = atan2f(z[0], z[1]) * 180.0f / (float)M_PI;
         if (trk < 0.0f) trk += 360.0f;
@@ -1835,6 +1855,8 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, u
                 }
             }
         }
+        // 3 m/s に届く前は、相関で入れられなかったら何もせずに待つ（q_ は how=3 のところで戻してある）
+        if (how != 0 && !arm_trk) return;
         if (how != 0) init_yaw_from_track(trk, ESKF_YAW_INIT_SIGMA_DEG);
         // ★ 方位が決まる前は、待機中の維持が毎サンプル P_bg を 1°/s に戻している（ゼロ点を学び直せるように）。そのまま方位を入れると、
         //   方位の σ がゼロ点の不確かさで 1 秒に約 1° ずつ育ち、せっかく小さく入れた σ が 10 秒で 95% 15° に戻っていた（11/18 の発進 6 回）。

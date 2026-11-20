@@ -154,15 +154,85 @@ def reconstruct_time(t, max_gap=0.5):
     return out
 
 
+_REC_DT = np.dtype([("t_us", "<u4"), ("s_us", "<u4"), ("id", "u1"), ("acc", "u1"),
+                    ("seq", "<u2"), ("v", "<f4", 4)])
+assert _REC_DT.itemsize == REC_SIZE
+_RESYNC_RUN = 16     # 区切りを探し直すとき、この数だけ続けて正しく読めた位置を新しい区切りとする
+
+
+def _rec_valid(a):
+    """レコードの配列のうち、形として正しく読めているものを True にする（区切りのずれの検出用）。"""
+    ids = a["id"]
+    ok = np.isin(ids, list(KINDS.keys()))
+    v = a["v"][:, :3]
+    fin = np.all(np.isfinite(v), axis=1) & np.all(np.abs(v) < 1e5, axis=1)
+    boot = ids == ID_BOOT
+    # BOOT は s_us に BUILDDATE（20xxxxxx）が入る。ゼロ埋め（v0=0）は load() が後で落とす
+    boot_ok = boot & (((a["s_us"] >= 20200101) & (a["s_us"] <= 20991231)) | (a["v"][:, 0] == 0.0))
+    return ok & np.where(boot, boot_ok, fin)
+
+
+def _read_records(raw):
+    """28 バイトのレコードを読む。途中で区切りがずれていたら探し直す。
+
+    ★ ファイルの途中でバイトが抜けたり化けたりすると（電源断で書きかけのレコードが残った所への追記、
+      USB での吸い出しの不具合など）、そこから後ろが全部 1〜27 バイトずれる。そのまま 28 バイトずつ読むと
+      id も値もでたらめになり、BOOT に見えるゴミで落ちたり、偽のセッションができたりする
+      （2026-11-19 に USB で吸い出した生ログで 10 か所。SD から正しく吸い出し直したものにはずれは無かった）。
+      ずれた所から 1 バイトずつ進め、_RESYNC_RUN 件続けて正しく読める位置を新しい区切りにする。
+      ずれが無いファイルは今までどおり読む（警告も出ない）。
+    """
+    out = []
+    pos = 0
+    skipped = 0
+    n_resync = 0
+    L = len(raw)
+    while pos + REC_SIZE <= L:
+        n = (L - pos) // REC_SIZE
+        a = np.frombuffer(raw, dtype=_REC_DT, count=n, offset=pos)
+        ok = _rec_valid(a)
+        bad = np.flatnonzero(~ok)
+        if bad.size == 0:
+            out.append(a)
+            break
+        k = int(bad[0])
+        if k > 0:
+            out.append(a[:k])
+        p = pos + k * REC_SIZE
+        # p のレコードが壊れている。p+1 バイトから先で、続けて正しく読める位置を探す
+        found = None
+        for q in range(p + 1, min(L - REC_SIZE * _RESYNC_RUN, p + REC_SIZE * 4096) + 1):
+            b = np.frombuffer(raw, dtype=_REC_DT, count=_RESYNC_RUN, offset=q)
+            if _rec_valid(b).all():
+                found = q
+                break
+        if found is None:
+            skipped += L - p
+            break
+        skipped += found - p
+        n_resync += 1
+        pos = found
+    if n_resync or skipped:
+        print(f"warn: レコードの区切りのずれを {n_resync} か所で探し直した（読み飛ばし {skipped} バイト）",
+              file=sys.stderr)
+    if not out:
+        return np.zeros(0, dtype=_REC_DT)
+    return np.concatenate(out)
+
+
 def load(path):
     raw = open(path, "rb").read()
     n_full, tail = divmod(len(raw), REC_SIZE)
     if tail:
-        # 電源断などで最後のレコードが途中で切れている場合。切り捨てて続行する。
-        print(f"warn: 末尾 {tail} バイトが不完全なため切り捨てた", file=sys.stderr)
-    recs = struct.iter_unpack(REC_FMT, raw[: n_full * REC_SIZE])
-    df = pd.DataFrame(recs, columns=["t_us", "s_us", "id", "acc", "seq",
-                                     "v0", "v1", "v2", "v3"])
+        # 電源断などで最後のレコードが途中で切れている場合、または途中で区切りがずれている場合。
+        print(f"warn: ファイル長が 28 の倍数でない（余り {tail} バイト）。区切りのずれを探しながら読む",
+              file=sys.stderr)
+    a = _read_records(raw)
+    df = pd.DataFrame({"t_us": a["t_us"].astype(np.int64), "s_us": a["s_us"].astype(np.int64),
+                       "id": a["id"].astype(int), "acc": a["acc"].astype(int),
+                       "seq": a["seq"].astype(int),
+                       "v0": a["v"][:, 0].astype(float), "v1": a["v"][:, 1].astype(float),
+                       "v2": a["v"][:, 2].astype(float), "v3": a["v"][:, 3].astype(float)})
     if df.empty:
         return df
 

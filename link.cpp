@@ -441,7 +441,10 @@ static void link_watch_mirror_transition() {
             }
         } else {
             // 失ったほうは表示の意味が変わるので、言葉で知らせる。
-            link_alert("wav/link_no_signal.wav", 1318, 250, 3);
+            // ★ PC 接続通信中は止める（充電＋倒れだけのときは受信監視のため鳴らす）。
+            if (!webserial_connected) {
+                link_alert("wav/link_no_signal.wav", 1318, 250, 3);
+            }
         }
         enqueueTask(createLogSdfTask("LINK %s", now_mirror ? "acquired" : "lost"));
     }
@@ -469,9 +472,10 @@ static void link_watch_no_signal_repeat() {
         return;
     }
 
-    // ★★ リプレイ中・デモ中・チャンネル調査中は鳴らさない。
+    // ★★ リプレイ中・デモ中・チャンネル調査中・PC 接続通信中は鳴らさない。
+    //   （充電＋倒れだけのときは受信監視のため鳴らす）
     //   復帰直後にいきなり鳴らないよう基準時刻を更新しておく。
-    if (!link_live_ui_ok() || link_chscan_holds_radio()) {
+    if (!link_live_ui_ok() || link_chscan_holds_radio() || webserial_connected) {
         last_repeat_ms = now;
         return;
     }
@@ -1044,7 +1048,6 @@ static void link_preflight_tick() {
     const uint32_t sample_due = (s_pfNoiseN == 0 && s_pfNoiseFail == 0)
                                   ? LINK_PF_FIRST_SAMPLE_MS : LINK_PF_SAMPLE_MS;
     if (!s_pfNoiseGiveUp && (now - s_pfLastSampleMs) >= sample_due) {
-        s_pfLastSampleMs = now;
         int16_t n = 0;
         if (e220_read_noise(&n, nullptr)) {
             s_pfNoiseFail = 0;
@@ -1068,6 +1071,7 @@ static void link_preflight_tick() {
             s_pfFlags      |= LINK_PFF_SKIPPED;
             s_pfNoiseGiveUp = true;
         }
+        s_pfLastSampleMs = millis();
     }
 
     if ((now - s_pfStartMs) >= LINK_PF_WINDOW_MS) link_preflight_finish();
@@ -1415,12 +1419,11 @@ static void link_chscan_tick() {
     }
 
     // ---- 雑音のサンプル ----
-    // ★ 切り替えの直後は待つ（LINK_PF_FIRST_SAMPLE_MS と同じ理由。早すぎると必ず失敗する）。
+    // ★ 切り替えの直後（と 1 回目の立て直し直後）は待つ（LINK_PF_FIRST_SAMPLE_MS と同じ理由）。
     const uint32_t now = millis();
-    const uint32_t due = (s_scanDwellN == 0 && s_scanFail == 0)
+    const uint32_t due = (s_scanDwellN == 0 && s_scanFail <= 1)
                            ? LINK_SCAN_FIRST_SAMPLE_MS : LINK_SCAN_SAMPLE_MS;
     if (!s_scanGiveUp && (now - s_scanLastSampleMs) >= due) {
-        s_scanLastSampleMs = now;
         int16_t n = 0;
         if (e220_read_noise(&n, nullptr)) {
             s_scanFail = 0;
@@ -1428,9 +1431,21 @@ static void link_chscan_tick() {
             s_scanNoise[k][s_scanHead[k]] = (int8_t)constrain((int)n, -128, 127);
             s_scanHead[k] = (uint8_t)((s_scanHead[k] + 1) % LINK_SCAN_MAX_SAMPLES);
             if (s_scanN[k] < LINK_SCAN_MAX_SAMPLES) s_scanN[k]++;
-        } else if (++s_scanFail >= LINK_PF_NOISE_FAIL_MAX) {
-            s_scanGiveUp = true;      // 叩くのはやめる（送信前チェックと同じ。Core0 を止めすぎない）
+        } else {
+            s_scanFail++;
+            if (s_scanDwellN == 0 && s_scanFail == 1) {
+                // ★ CH 切替直後の 1 発目が無応答のとき、mode 3 → mode 0 を 1 回だけ挟んで
+                //   状態レジスタ読み出しの解釈を立て直す（2026-11-20 実機ログで、reconfigure
+                //   直後に FF FF C1 A3 01 が送信扱いになる挙動への復帰）。
+                e220_cycle_normal();
+            }
+            if (s_scanFail >= LINK_PF_NOISE_FAIL_MAX) {
+                s_scanGiveUp = true;      // 叩くのはやめる（送信前チェックと同じ。Core0 を止めすぎない）
+            }
         }
+        // ★ ブロック（最大 200ms）の「あと」の時刻を記録する。手前で入れると、
+        //   タイムアウト直後の次の周回で間隔 0ms のまま 2 発目を叩いてしまう。
+        s_scanLastSampleMs = millis();
     }
 
     // ---- 次のチャンネルへ ----

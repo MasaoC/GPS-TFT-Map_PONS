@@ -108,7 +108,7 @@ attitude.cpp の `pitch_avg_push()`（0.1 秒ごとの小計を 100 個の輪に
 - 入れる場所はいまと同じ SD の `settings.txt`（`airspeed_v0` / `airspeed_k` / `airspeed_min` / `airspeed_max`）。
   起動時に読み、log.txt の `AIRSPEED MODEL` 行に残る。範囲外の値は端で止めて、その理由も log.txt に残る。
   `airspeed_min` ≥ `airspeed_max` なら両方を既定へ戻す（2026-11-10〜。逆のままだと TAS がいつも上限の灰色に張り付いた）。
-- **当面はいまの既定値のまま**（V0 7.0 m/s・K 10°・下限 5.8 m/s・上限 9.0 m/s。2026-11-07 決定）。
+- **既定値**: V0 7.07 m/s（2026-11-20 に 7.0 → 7.07 へ変更）・K 10°・下限 5.8 m/s・上限 9.0 m/s。
   解析値が出たら SD で差し替える。ファームの書き替えは要らない。
 - 同じ式（`airspeed_from_pitch()`）を風の推定も使っている。係数を変えると風の値も変わる。
 
