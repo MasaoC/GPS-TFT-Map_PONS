@@ -3,7 +3,7 @@
 // Project : PONS v7 / v7.1 Flight Viewer
 // Role    : 大会ログに対応する YouTube 動画（限定公開）を小窓に出し、ビューアの再生に合わせて動かす
 // Author  : Claude (2026-11-20)
-// Updated : 2026-11-20
+// Updated : 2026-11-21
 // ============================================================
 //
 // ★ 動画の URL は公開できないので、ログと同じパスワードで暗号化した tools/olddata/videos.json.enc にだけ置く
@@ -15,11 +15,13 @@
 //   再生中はずれが 0.5 秒（速度倍）を超えたらシーク、止まっているときはその場面に合わせる。
 //   ビューアが止まっているときに動画を動かした（シーク・再生）ら、ビューアをそちらへ合わせる。
 // YouTube の埋め込みは file:// では断られることがある（公開ページか http で開く）。そのときは「YouTube で開く」を出す。
+// 小窓は見出しをつかんで動かせ、左下・右下の角で幅を変えられる（位置と幅はこのブラウザに覚える。見出しのダブルクリックで右下に戻す）。
+//   ドラッグ中は動画の iframe がポインタを奪わないよう pointer-events を切る。画面の大きさが変わったら画面の中へ押し戻す。
 
 (function (global) {
   'use strict';
 
-  const VERSION = '2026.11.20.17';
+  const VERSION = '2026.11.21.1';
   const TICK_MS = 250;
   const LS_PREFIX = 'pons_video_offset_';
 
@@ -29,7 +31,8 @@
   let tickTimer = null;
   let ourCmdUntil = 0;          // 自分で play/pause/seek した直後は状態の変化を「人の操作」とみなさない
   let lastExpected = null, lastSeekTarget = null, lastViewerT = null;
-  let large = false;
+  const LS_GEOM = 'pons_video_panel_geom';   // { x, y, w }（左上の位置と幅。無ければ右下）
+  const W_MIN = 240, W_DEFAULT = 384, W_LARGE = 640;
 
   // ------------------------------------------------------------
   // 対応表
@@ -105,13 +108,21 @@
     const st = document.createElement('style');
     st.id = 'vs-style';
     st.textContent = `
-      #pons-video-panel { position: fixed; right: 12px; bottom: 84px; z-index: 2500; width: 384px; max-width: calc(100vw - 24px);
+      #pons-video-panel { position: fixed; right: 12px; bottom: 84px; z-index: 2500; width: 384px; max-width: calc(100vw - 16px);
         background: #0f172a; color: #e2e8f0; border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); overflow: hidden;
         font-size: 0.74rem; }
-      #pons-video-panel.large { width: 640px; }
       #pons-video-panel.min #vs-body { display: none; }
       body.an-modal-open #pons-video-panel { visibility: hidden; }
-      #vs-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #1e293b; }
+      #vs-head { display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #1e293b; cursor: move;
+        touch-action: none; user-select: none; -webkit-user-select: none; }
+      #vs-head button { cursor: pointer; }
+      #pons-video-panel.dragging { box-shadow: 0 16px 40px rgba(0,0,0,0.55); }
+      #pons-video-panel.dragging #vs-frame-wrap { pointer-events: none; }
+      .vs-grip { position: absolute; bottom: 0; width: 16px; height: 16px; z-index: 2; touch-action: none; opacity: 0.55; }
+      .vs-grip:hover { opacity: 1; }
+      .vs-grip.l { left: 0; cursor: nesw-resize; background: linear-gradient(225deg, transparent 50%, #64748b 50%, #64748b 60%, transparent 60%, transparent 70%, #64748b 70%, #64748b 80%, transparent 80%); }
+      .vs-grip.r { right: 0; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #64748b 50%, #64748b 60%, transparent 60%, transparent 70%, #64748b 70%, #64748b 80%, transparent 80%); }
+      #pons-video-panel.min .vs-grip { display: none; }
       #vs-title { font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #pons-video-panel button { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 4px;
         padding: 2px 6px; font-size: 0.72rem; cursor: pointer; box-shadow: none; }
@@ -137,9 +148,9 @@
     p.id = 'pons-video-panel';
     p.innerHTML = `
       <div id="vs-head">
-        <span id="vs-title">▶ 大会動画</span>
+        <span id="vs-title" title="つかんで動かす（ダブルクリックで右下に戻す）">▶ 大会動画</span>
         <button id="vs-min" title="小さくたたむ／戻す">▁</button>
-        <button id="vs-size" title="大きさを切り替える">⤢</button>
+        <button id="vs-size" title="大きさを切り替える（角をつかんで好きな幅にもできる）">⤢</button>
         <button id="vs-close" title="閉じる（このログを開き直すとまた出る）">✕</button>
       </div>
       <div id="vs-body">
@@ -153,11 +164,17 @@
           <button id="vs-open" title="YouTube で開く（いまの場面から）">YouTube</button>
         </div>
         <div id="vs-status"></div>
-      </div>`;
+      </div>
+      <div class="vs-grip l" title="幅を変える"></div><div class="vs-grip r" title="幅を変える"></div>`;
     document.body.appendChild(p);
     p.querySelector('#vs-close').onclick = () => removeVideo();
-    p.querySelector('#vs-min').onclick = () => p.classList.toggle('min');
-    p.querySelector('#vs-size').onclick = () => { large = !large; p.classList.toggle('large', large); };
+    p.querySelector('#vs-min').onclick = () => { p.classList.toggle('min'); clampPanel(); };
+    p.querySelector('#vs-size').onclick = () => {
+      const w = p.getBoundingClientRect().width;
+      setWidth(w < (W_DEFAULT + W_LARGE) / 2 ? W_LARGE : W_DEFAULT, true);
+    };
+    setupDrag(p);
+    restoreGeom(p);
     p.querySelector('#vs-sync').onclick = syncHere;
     p.querySelector('#vs-follow').onclick = followVideo;
     p.querySelector('#vs-reset').onclick = resetOffset;
@@ -165,6 +182,121 @@
     p.querySelectorAll('[data-adj]').forEach(b => { b.onclick = () => adjustOffset(parseFloat(b.dataset.adj)); });
     return p;
   }
+
+  // ------------------------------------------------------------
+  // 小窓の移動・幅（位置は左上の x, y で持つ。覚えた値が無ければ CSS の右下）
+  // ------------------------------------------------------------
+  function panel() { return document.getElementById('pons-video-panel'); }
+
+  function saveGeom() {
+    const p = panel();
+    if (!p || !p.style.left) return;
+    lsSet(LS_GEOM, JSON.stringify({ x: parseFloat(p.style.left), y: parseFloat(p.style.top), w: p.getBoundingClientRect().width }));
+  }
+
+  function placeAt(x, y) {
+    const p = panel();
+    if (!p) return;
+    const r = p.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    // 見出しが必ず画面に残るように押し戻す（横は全体、縦は見出しの高さぶん）
+    const head = p.querySelector('#vs-head');
+    const hh = head ? head.getBoundingClientRect().height : 28;
+    x = Math.min(Math.max(0, x), Math.max(0, vw - r.width));
+    y = Math.min(Math.max(0, y), Math.max(0, vh - Math.min(r.height, hh + 4)));
+    p.style.left = x + 'px'; p.style.top = y + 'px';
+    p.style.right = 'auto'; p.style.bottom = 'auto';
+  }
+
+  function setWidth(w, keepRight) {
+    const p = panel();
+    if (!p) return;
+    const vw = document.documentElement.clientWidth;
+    const r = p.getBoundingClientRect();
+    w = Math.round(Math.min(Math.max(W_MIN, w), vw - 16));
+    p.style.width = w + 'px';
+    if (keepRight) {
+      // ⤢ は右端を動かさずに広げる（初めの位置が右下なので、左へ伸びる方が自然）
+      placeAt(r.right - w, r.top);
+    } else if (p.style.left) {
+      placeAt(parseFloat(p.style.left), parseFloat(p.style.top));
+    }
+    saveGeom();
+  }
+
+  function clampPanel() {
+    const p = panel();
+    if (!p || !p.style.left) return;
+    const vw = document.documentElement.clientWidth;
+    if (p.getBoundingClientRect().width > vw - 16) p.style.width = Math.max(W_MIN, vw - 16) + 'px';
+    placeAt(parseFloat(p.style.left), parseFloat(p.style.top));
+  }
+
+  function restoreGeom(p) {
+    let g = null;
+    try { g = JSON.parse(lsGet(LS_GEOM) || 'null'); } catch (e) { g = null; }
+    if (!g || !isFinite(g.x) || !isFinite(g.y)) return;
+    if (isFinite(g.w)) p.style.width = Math.max(W_MIN, g.w) + 'px';
+    placeAt(g.x, g.y);
+  }
+
+  function resetGeom() {
+    const p = panel();
+    if (!p) return;
+    p.style.left = p.style.top = p.style.right = p.style.bottom = p.style.width = '';
+    lsSet(LS_GEOM, null);
+  }
+
+  // 見出しをつかんで動かす・角で幅を変える（マウスもタッチも pointer events で）
+  function setupDrag(p) {
+    const head = p.querySelector('#vs-head');
+    let drag = null;
+    const start = (ev, mode) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      const r = p.getBoundingClientRect();
+      drag = { mode, id: ev.pointerId, sx: ev.clientX, sy: ev.clientY, x: r.left, y: r.top, w: r.width, right: r.right };
+      placeAt(r.left, r.top);                 // 右下の CSS から left/top に切り替える
+      p.classList.add('dragging');
+      try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (e) { /* 無くても動く */ }
+      ev.preventDefault();
+    };
+    const move = (ev) => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      const dx = ev.clientX - drag.sx, dy = ev.clientY - drag.sy;
+      if (drag.mode === 'move') {
+        placeAt(drag.x + dx, drag.y + dy);
+      } else {
+        const vw = document.documentElement.clientWidth;
+        if (drag.mode === 'r') {
+          const w = Math.min(Math.max(W_MIN, drag.w + dx), vw - drag.x);
+          p.style.width = w + 'px';
+        } else {
+          const w = Math.min(Math.max(W_MIN, drag.w - dx), drag.right);
+          p.style.width = w + 'px';
+          p.style.left = (drag.right - w) + 'px';
+        }
+      }
+    };
+    const end = (ev) => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      drag = null;
+      p.classList.remove('dragging');
+      clampPanel();
+      saveGeom();
+    };
+    head.addEventListener('pointerdown', (ev) => { if (ev.target.closest('button')) return; start(ev, 'move'); });
+    head.addEventListener('dblclick', (ev) => { if (!ev.target.closest('button')) resetGeom(); });
+    p.querySelectorAll('.vs-grip').forEach(g => {
+      g.addEventListener('pointerdown', (ev) => start(ev, g.classList.contains('l') ? 'l' : 'r'));
+    });
+    [head, ...p.querySelectorAll('.vs-grip')].forEach(el => {
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', end);
+      el.addEventListener('pointercancel', end);
+    });
+  }
+
+  global.addEventListener('resize', () => { clampPanel(); });
 
   function showMsg(html) {
     const m = document.getElementById('vs-msg');

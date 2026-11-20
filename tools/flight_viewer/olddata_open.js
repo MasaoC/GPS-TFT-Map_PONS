@@ -16,7 +16,7 @@
 (function (global) {
   'use strict';
 
-  const VERSION = '2026.11.20.17';
+  const VERSION = '2026.11.21.1';
   const OLDDATA_BASE = '../olddata/';
   const KDF_PBKDF2_SHA256 = 1;
   let rememberedPassword = null;   // このページを開いている間だけ

@@ -1379,7 +1379,7 @@
       <div class="app-title">
         <span>✈️ PONS Flight Viewer</span>
         <span class="badge" id="board-badge">PONS v7.1</span>
-        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.20.17</span>
+        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.21.1</span>
         <button id="btn-viewer-update" style="display:none; background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:bold; padding:3px 9px; font-size:0.76rem;" onclick="reloadViewerFresh()"></button>
       </div>
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
@@ -5982,14 +5982,14 @@
       downloadPonsFile(path, size || 0, 0, 'open', imuRange);
     };
   </script>
-  <script src="analysis_dsp.js?v=2026.11.20.17"></script>
-  <script src="analysis_imulog.js?v=2026.11.20.17"></script>
-  <script src="analysis_ui.js?v=2026.11.20.17"></script>
-  <script src="olddata_open.js?v=2026.11.20.17"></script>
-  <script src="video_sync.js?v=2026.11.20.17"></script>
+  <script src="analysis_dsp.js?v=2026.11.21.1"></script>
+  <script src="analysis_imulog.js?v=2026.11.21.1"></script>
+  <script src="analysis_ui.js?v=2026.11.21.1"></script>
+  <script src="olddata_open.js?v=2026.11.21.1"></script>
+  <script src="video_sync.js?v=2026.11.21.1"></script>
   <script>
     // Flight Viewer バージョン管理・キャッシュ不整合 / 最新版チェック
-    const VIEWER_VERSION = '2026.11.20.17';
+    const VIEWER_VERSION = '2026.11.21.1';
     function reloadViewerFresh() {
       try {
         const u = new URL(location.href);
