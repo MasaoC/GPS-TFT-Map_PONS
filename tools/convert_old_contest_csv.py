@@ -5,7 +5,7 @@
 # Role    : 2024・2025 年大会のログを、いまの飛行 CSV と同じ列の並びに直して Flight Viewer で開けるようにする
 #           （2026 年は tools/fuse_attitude_csv.py）
 # Author  : Claude (2026-11-20)
-# Updated : 2026-11-20
+# Updated : 2026-11-21
 # ============================================================
 #
 # ■ 2024（2024-07-27_0936_edited.csv。PONS の位置・G/S・航跡だけ、1 秒ごと）
@@ -14,16 +14,21 @@
 #   （alba2024pilotlog_airspeed_added.csv）は時刻が「記録開始からの秒数」しか無く、速度の波形で合わせても
 #   相関 0.86・位置で合わせた結果と約 10 秒食い違って時刻を決めきれないので入れない。
 #
-# ■ 2025（PONSv5_planelog_2025-07-26_1539.csv ＋ 20250726_log_all_joined.csv）
+# ■ 2025（PONSv5_planelog_2025-07-26_1539.csv ＋ 20250726_log_all_joined0811edit.csv）
 #   行は joined（1 秒ごと・15:42:16〜16:28:31）を土台にし、その前後は planelog の行で補う。
+#   ★ joined は 0811edit 版（ble_plotter/tools/csv/2025/。2025-08-11 に補正の列を足したもの）を使う。YouTube の 2025 年の動画
+#     （ble_plotter/tools/2025/createmovie2025*.py）と同じ補正の値にそろえるため（2026-11-21。最初は補正の無い
+#     20250726_log_all_joined.csv から自分で取り付けのずれを決めていて、ピッチの 0 点 8° と対気速度の補正が抜けていた）。
 #   latitude/longitude/gs/TrueTrack ← planelog（PONS の元の記録。1〜2 秒ごと）を時刻で補間（3 秒より空けば空欄）
-#   GNSS_Altitude ← joined の g_altitude（Garmin の高度。KF_Altitude は空欄なので Viewer はこれを高度に使う）
-#   roll   ← joined の roll − 取り付けのずれ（直進中 = G/S>4 かつ航跡の変化 <0.5°/s の中央値。約 8.3°）
+#   GNSS_Altitude ← joined の g_altitude（Garmin の高度。KF_Altitude は空欄なので Viewer はこれを高度に使う）。
+#            g_altitude_compensated（−83.1 m、湖面からの高さ）は使わない。2026 の CSV と同じ海抜にそろえる
+#   roll   ← roll_compensated（= roll − 8。BNO085 の取り付けのずれ。動画と同じ）
 #            向きは 2026 と同じ（旋回率との相関 2025 +0.84 / 2026 +0.74）
-#   pitch  ← −joined の pitch。★ 機首下げが正で記録されている（対気速度との相関 +0.97。docs/pons_tas.md §2.3 と同じ判断）。
-#            0 点（機体の取り付け・SET PITCH）は分からないので、ずれは引かない
-#   yaw    ← 空欄。joined の yaw は回る向きが航跡と逆で（変化率の相関 −0.69）、ずれも時間で動くので真方位として使えない
-#   tas_mps ← joined の Airspeed（対気速度センサーの実測。PONS の推定 TAS ではない）
+#   pitch  ← pitch_compensated（= 8 − pitch。★ 機首下げが正で記録されているので反転し、取り付けの 8° を足す。動画と同じ）
+#   yaw    ← 空欄。yaw_compensated（= 430 − yaw）は動画では相対の目盛りにだけ使っていて、航跡との差が飛行中に
+#            +3° → −52° と 45 分で流れる（BNO085 の方位のずれ）ので真方位として使えない
+#   tas_mps ← Airspeed_compensated2（対気速度センサーの実測 × 主翼の影響の補正係数。動画と同じ。PONS の推定 TAS ではない）
+#            係数は 7 m/s で約 1.12。低速（地上）では外挿で 2 倍近くになるが、動画と同じにしてある
 #   風・電圧・衛星数は無いので空欄
 #
 # 使い方:
@@ -102,7 +107,7 @@ def convert_2024():
 
 def convert_2025():
     q = pd.read_csv(os.path.join(OLDDATA, 'PONSv5_planelog_2025-07-26_1539.csv'))
-    j = pd.read_csv(os.path.join(OLDDATA, '20250726_log_all_joined.csv'))
+    j = pd.read_csv(os.path.join(OLDDATA, '20250726_log_all_joined0811edit.csv'))
     q['t'] = q.time.map(tsec)
     j['t'] = j.JST.map(tsec)
     q = q.sort_values('t').reset_index(drop=True)
@@ -111,14 +116,9 @@ def convert_2025():
     date = str(q.date.iloc[0])
     qt = q.t.to_numpy()
 
-    # 取り付けのロールのずれ: 直進中（G/S>4・航跡の変化 <0.5°/s、15 秒平均）の中央値
     jt = j.t.to_numpy(dtype=float)
     track = np.array([interp_gap(qt, q.TrueTrack.to_numpy(), t, POS_MAX_GAP_SEC, angle=True) or np.nan for t in jt])
     gsj = np.array([interp_gap(qt, q.gs.to_numpy(), t, POS_MAX_GAP_SEC) or np.nan for t in jt])
-    rate = np.degrees(np.gradient(np.unwrap(np.radians(pd.Series(track).ffill().bfill().to_numpy())), jt))
-    rate_s = pd.Series(rate).rolling(15, center=True, min_periods=5).mean().to_numpy()
-    straight = (gsj > 4) & (np.abs(rate_s) < 0.5)
-    roll_ofs = float(np.nanmedian(j.roll.to_numpy()[straight]))
 
     rows = []
     t_first, t_last = jt[0], jt[-1]
@@ -133,8 +133,8 @@ def convert_2025():
         lon = interp_gap(qt, q.longitude.to_numpy(), t, POS_MAX_GAP_SEC)
         if lat is None or lon is None:
             continue
-        roll = None if pd.isna(r.roll) else float(r.roll) - roll_ofs
-        pitch = None if pd.isna(r.pitch) else -float(r.pitch)
+        roll = None if pd.isna(r.roll_compensated) else float(r.roll_compensated)
+        pitch = None if pd.isna(r.pitch_compensated) else float(r.pitch_compensated)
         n_att += roll is not None
         rows.append({
             'latitude': f'{lat:.6f}', 'longitude': f'{lon:.6f}',
@@ -142,16 +142,17 @@ def convert_2025():
             'GNSS_Altitude': '' if pd.isna(r.g_altitude) else f(float(r.g_altitude), 1),
             'date': date, 'time': hms(t),
             'roll': f(roll, 2), 'pitch': f(pitch, 2),
-            'tas_mps': '' if pd.isna(r.Airspeed) else f(float(r.Airspeed), 2),
+            'tas_mps': '' if pd.isna(r.Airspeed_compensated2) else f(float(r.Airspeed_compensated2), 2),
         })
     # joined の後: planelog の位置だけ
     for _, r in q[q.t > t_last].iterrows():
         rows.append({'latitude': f'{r.latitude:.6f}', 'longitude': f'{r.longitude:.6f}', 'gs': f(float(r.gs), 2),
                      'TrueTrack': f'{r.TrueTrack:.0f}', 'date': date, 'time': hms(r.t)})
     write_rows(os.path.join(OLDDATA, '2025-07-26_1539_fused.csv'), rows)
-    print(f'  姿勢あり {n_att} 行（{hms(t_first)}〜{hms(t_last)}）。ロールの取り付けのずれ {roll_ofs:+.2f}° を引いた'
-          f'（直進 {int(straight.sum())} 点の中央値）。ピッチは符号を反転（0 点は未補正。飛行中の中央値 '
-          f'{-j.pitch[gsj > 4].median():+.2f}°）')
+    fl = gsj > 4
+    print(f'  姿勢あり {n_att} 行（{hms(t_first)}〜{hms(t_last)}）。動画と同じ補正（roll−8・8−pitch・対気速度×係数）。'
+          f'飛行中の中央値 roll {j.roll_compensated[fl].median():+.2f}° pitch {j.pitch_compensated[fl].median():+.2f}° '
+          f'対気速度 {j.Airspeed[fl].median():.2f} → {j.Airspeed_compensated2[fl].median():.2f} m/s')
 
 
 if __name__ == '__main__':
