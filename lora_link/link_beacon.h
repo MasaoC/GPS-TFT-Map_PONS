@@ -29,10 +29,11 @@
 #define LINK_BC_MAGIC_MASK  0xFC
 static_assert(LINK_BC_LEN == LINK_W2_LEN, "ビーコンはテレメトリと同じ長さ（e220.cpp の切り出しを共有する）");
 static_assert((LINK_BC_MAGIC & ~LINK_BC_MAGIC_MASK) == 0, "印の下位 2 ビットはグループ用に空けておく");
-// テレメトリの印（いまの 0xA4・古い 0xA2）と、65 バイト時代の先頭 'P'（0x50）と見分けがつくこと。
+// テレメトリの印（いまの 0xA8・古い 0xA4 / 0xA2）と、65 バイト時代の先頭 'P'（0x50）と見分けがつくこと。
 // テレメトリの印は版を変えるたびに 4 つ飛ばしで上がる（0xA8 …）ので、離れた値にしてある（6 ビットが全部違う）。
 static_assert((LINK_BC_MAGIC & LINK_BC_MAGIC_MASK) != (LINK_W2_MAGIC & LINK_W2_MAGIC_MASK), "テレメトリの印とぶつかっている");
 static_assert((LINK_BC_MAGIC & LINK_BC_MAGIC_MASK) != (0xA2 & LINK_BC_MAGIC_MASK), "古い並び 0xA2 とぶつかっている");
+static_assert((LINK_BC_MAGIC & LINK_BC_MAGIC_MASK) != (0xA4 & LINK_BC_MAGIC_MASK), "古い並び 0xA4 とぶつかっている");
 static_assert((LINK_BC_MAGIC & LINK_BC_MAGIC_MASK) != (0x50 & LINK_BC_MAGIC_MASK), "65 バイト時代の先頭とぶつかっている");
 
 // ---- 位置（バイト） ----

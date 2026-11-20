@@ -1769,12 +1769,24 @@ static void link_push_telemetry() {
     t.numsat  = (uint8_t)constrain(get_gnss_numsat(), 0, 255);
     have |= RHAVE_NUMSAT;
     t.hacc_dm = (uint16_t)constrain(get_gnss_hacc_mm() / 100, 0UL, 65535UL);  // mm → 0.1m
+    // 速度精度 sAcc（2026-11-20〜。回転枠 7 の 6 ビット）。GNSS が黙っているときは載せない
+    // （最後の値が凍ったまま「良い」に見えるため。LINK_ST_GNSS_LOST と同じ条件）。
+    // ★ +5 の四捨五入より先に頭打ちにする（NAV-PVT の sAcc は 32 ビットで、0xFFFFFFFF 付近だと +5 で 0 に回り「とても良い」に化ける）。
+    {
+        const uint32_t sacc_mm = get_gnss_sacc_mmps();
+        const uint32_t cap_mm  = (uint32_t)(LINK_SACC_NONE - 1) * 10u;
+        t.sacc_cms = !get_gnss_connection() ? (uint16_t)LINK_SACC_NONE
+                   : (sacc_mm >= cap_mm)    ? (uint16_t)(LINK_SACC_NONE - 1)
+                   : (uint16_t)((sacc_mm + 5u) / 10u);
+    }
     t.fixflags = get_gnss_fixok() ? 0x01 : 0x00;
 
     // ナビ設定。受信側はこれを自分の設定と突き合わせるためだけに使う。
     t.dest_index = (int8_t)currentdestination;
     t.dest_id    = link_dest_id(currentdestination);   // 受信側は番号ではなくこれで探す
     t.nav_mode   = (uint8_t)destination_mode;
+    static_assert(DMODE_FLYINTO <= 3 && DMODE_FLYAWAY <= 3 && DMODE_AUTO10K <= 3,
+                  "電波のナビモードは 2 ビット（lora_link/link_wire2.h の W2S_NAV）");
     t.scale_index = (uint8_t)scaleindex;   // 受信側は設定画面に添えて出すだけ（合わせない）
     // 大きい枠の設定。受信機（ボート）は自分の設定ではなくこれに従う。地上か飛行中かは送らない
     // （ミラーした対地速度から受信機が計算する。tas.cpp）。
@@ -2040,6 +2052,13 @@ uint32_t link_get_hacc_mm()       {
   return (uint32_t)s_rx.t.hacc_dm * 100u;
 }
 bool     link_get_fix_ok()        { return (s_rx.t.fixflags & 0x01) != 0; }
+// 機体の速度精度 sAcc。回転枠 7 を受けるまでと、送信機の GNSS が黙っているあいだは false。
+// 段で詰めてあるので 0.5 m/s 以上は 0.25 刻み、3.5 は「3.5 以上」（link_wire2.h の link_w2_sacc_code）。
+bool     link_get_sacc_mps(float &mps) {
+  if (!link_rx_slot_known(W2S_NAV) || s_rx.t.sacc_cms == LINK_SACC_NONE) return false;
+  mps = s_rx.t.sacc_cms * 0.01f;
+  return true;
+}
 
 float link_get_kf_altitude() { return s_rx.t.kf_alt_dm  * 0.1f; }
 float link_get_kf_vspeed()   { return s_rx.t.kf_vs_cms  * 0.01f; }

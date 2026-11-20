@@ -134,6 +134,19 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   ...
   PONS: PONS:DATA_END,5C01A2E7
   ```
+* **生 IMU ログの時刻の範囲だけ取る (GETIMU)**: `PONS:GETIMU,<開始 JST 日内秒>,<終了 JST 日内秒>,<filename>`（2026-11-20〜）
+  - 生 IMU ログ（28 バイトのレコード）を 224KB（約 16 秒）おきに覗き、GNSSVEL（id 0x10）の iTOW から JST の日内秒を出して、
+    範囲に入る所の前後 1〜2 区切りぶんだけを送る。開始通知は `GETTAIL` と同じく 3 つめ（送り始めた位置）が付く。CRC は送った部分だけ。
+  - 受け付けたらすぐ `PONS:GETIMU_ACCEPTED` を返す（時刻探しの間は何も出ないので、古いファームと見分けるため）。
+    この印が 12 秒来なければ、Flight Viewer は `GETIMU` を知らないファームとみて `PONS:GET` で全部を取り直す。
+  - 範囲に入る記録が無ければ `PONS:ERROR,IMU_RANGE_NOT_FOUND`。秒は 0〜86400、6 桁まで。開始 ≥ 終了は `INVALID_FILENAME`。
+  ```
+  PC:   PONS:GETIMU,46200,49200,imuraw/20261119.bin
+  PONS: PONS:GETIMU_ACCEPTED
+  PONS: PONS:DATA_START,imuraw/20261119.bin,41440000,11424000
+  ...
+  PONS: PONS:DATA_END,1B2C3D4E
+  ```
 * **ビューアの受信の終わりの見分け**: 中断の印（`PONS:CANCEL_OK` / `PONS:ERROR,`）は**行の頭にあるときだけ**見る
   （`log.txt` の中身に同じ文字列があっても、転送を止めたことにしない）。
 * **転送の間（GET を受けてから `DATA_END` / `CANCEL_OK` まで）は、本体は転送以外を 1 行も書かない**。
@@ -147,7 +160,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
     （その間の `log.txt` の行は失われる）。
 * **一覧（`LIST` を受けてから `LIST_END` まで）の間も同じ**。`READY` / `BYE` / `BUSY` / `PONG` は
   `LIST_END` のあとに出す。一覧の最中に来た `CANCEL` の `CANCEL_OK` も `LIST_END` のあと。
-* 本体の SD のタスクのキューが満杯で `LIST` / `GET` / `GETTAIL` を受けられなかったときは `PONS:ERROR,BUSY` を返す。
+* 本体の SD のタスクのキューが満杯で `LIST` / `GET` / `GETTAIL` / `GETIMU` を受けられなかったときは `PONS:ERROR,BUSY` を返す。
   パスが 63 バイトより長いときは `PONS:ERROR,INVALID_FILENAME`。`GETTAIL` のバイト数は 9 桁まで。127 バイトより長い行は改行まで読み捨てる。
 
 ### (4) 転送キャンセル (CANCEL)

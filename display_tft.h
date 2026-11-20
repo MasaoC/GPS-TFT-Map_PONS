@@ -18,6 +18,7 @@
 #include <SPI.h>
 #include "settings.h"
 #include "navdata.h"
+#include "tas.h"
 
 
 
@@ -104,6 +105,9 @@
   // ★ display_pages.cpp の GNSS DETAIL からも参照するので公開してある。
   bool gnss_acc_unknown();
   const char* gnss_acc_unknown_note();   // "(not on link)" / "(not in log)"
+  // 画面に出す速度精度 sAcc [m/s]。ミラー中は機体の値（電波で 8 発に 1 回）、リプレイ中は無し。
+  // 出せなければ false で、note に「--」に添える理由を返す。sAcc はこれを通して出すこと（gnss_acc_unknown は vAcc 用）。
+  bool gnss_sacc_shown(float &mps, const char* &note);
 
   // フォント定義: TFT_eSPI のカスタムフォント（実体は src/flashdata/font_data.h）。
   // ★ マクロなので、使う .cpp が font_data.h を include していること。
@@ -144,6 +148,7 @@ void draw_map_footer();
 void setup_tft();
 
 void draw_header();
+void draw_header_tas(int x, TasHdr h, float mps);
 void draw_footer();
 float get_input_voltage();      // 実測のバッテリー電圧 [V]（ピーク追跡込み）
 float get_display_voltage();    // 画面表示用。リプレイ中は CSV の電圧を返す
@@ -187,9 +192,10 @@ void draw_pcconnect();
 #define IMU_MENU_AUTOROLL 4   // 直進中のロール自動トリム
 #define IMU_MENU_WIND     5   // 風推定
 #define IMU_MENU_HEADER   6   // ヘッダー右の大きい枠: 平均ピッチ / 推定 TAS（docs/pons_tas.md §4.1）
-#define IMU_MENU_NEXTPAGE 7
-#define IMU_MENU_EXIT     8
-#define IMU_MENU_COUNT    9
+#define IMU_MENU_TASCURVE 7   // ピッチ→推定 TAS の変換曲線画面を直接開く
+#define IMU_MENU_NEXTPAGE 8
+#define IMU_MENU_EXIT     9
+#define IMU_MENU_COUNT    10
 
 // IMU/ESKF 2/2 — IMU の生値（上）と ESKF の状態（下）。見るだけ。
 // Exit はページ1の Exit と同じ（設定を保存して地図画面へ）。

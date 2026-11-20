@@ -531,6 +531,45 @@ int main() {
             printf("   sAcc 0.08（閾値 0.2）: 覚えたゼロ点 %.3f deg/s（0 のままが正しい＝動いているとみなす）\n", b_good);
             ok &= fabsf(b_noisy - 0.1f) < 0.02f && fabsf(b_good) < 0.02f;
         }
+
+        // D13) 風で揺れ続けて静止の判定が一度も取れないまま、振動のある滑走で離陸（2026-11-20）
+        //   ロール ±2°・0.4 Hz（5°/s）で 30 秒揺れる → 1.5 m/s² で滑走（加速度に σ 2 m/s² の振動）。
+        //   3 m/s で「動き出したときの初期化」が走る。1 サンプルで水平化していた頃は最初の傾きが最悪 47° ずれた。
+        //   加速度の低域（up_lp_）なら滑走の加速の分（約 9°）だけ。
+        {
+            attitude_setup();
+            t = 0;
+            unsigned rs = 12345u;
+            auto nrm = [&]() {                                   // 簡単な正規乱数（12 個の一様の和）
+                double s = 0; for (int k = 0; k < 12; k++) { rs = rs * 1103515245u + 12345u; s += (rs >> 8) / 16777216.0; } return s - 6.0;
+            };
+            double v = 0.0, tilt_init = -1.0;
+            const int n = (int)(36.0 * fs);
+            for (int i = 0; i < n; i++) {
+                const double tt = i * dt;
+                const bool fly = tt >= 30.0;
+                const double ph = fly ? 0.0 : 2.0 * M_PI / 180 * sin(2 * M_PI * 0.4 * tt);
+                const double dph = fly ? 0.0 : 2.0 * M_PI / 180 * 2 * M_PI * 0.4 * cos(2 * M_PI * 0.4 * tt);
+                const double a = (fly && v < 7.0) ? 1.5 : 0.0;
+                v += a * dt;
+                double fb[3] = { a, G * sin(ph), G * cos(ph) };
+                if (fly) for (int k = 0; k < 3; k++) fb[k] += 2.0 * nrm();
+                const double wb[3] = { dph, 0.0, 0.0 };
+                float as[3], gs[3]; body_to_sensor(fb, as); body_to_sensor(wb, gs);
+                feed(1, dt, t, as, gs);
+                if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, (float)v, 0.0f, 0.10f);
+                if (tilt_init < 0.0 && attitude_ready()) {
+                    float u[3]; attitude_get_up_sensor(u);
+                    const double ub[3] = { 0.0, sin(ph), cos(ph) };
+                    float us[3]; body_to_sensor(ub, us);
+                    float d = u[0] * us[0] + u[1] * us[1] + u[2] * us[2];
+                    tilt_init = acos(d > 1.0f ? 1.0f : d) * 180.0 / M_PI;
+                }
+            }
+            printf("\nD13) 揺れ続けて静止が取れないまま、振動のある滑走（1.5 m/s²・振動 σ 2 m/s²）で離陸\n");
+            printf("   動き出したときの初期化の傾きの誤差 %.2f deg（12 未満が正しい。1 サンプルだと最悪 47）\n", tilt_init);
+            ok &= tilt_init >= 0.0 && tilt_init < 12.0;
+        }
     }
 
 

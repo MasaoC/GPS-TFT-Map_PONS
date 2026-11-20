@@ -68,8 +68,9 @@ static float    s_batt_v      = 0.0f;  // GPIO40（BATPWR）の生の平均。SW
 static bool     s_swoff       = false; // SW OFF のまま USB（CHARGE_SW_OFF_HOLD_MS 続いて確定）
 static uint32_t s_swoff_since = 0;
 static bool     s_swoff_said  = false; // この回の SW OFF をもう読み上げたか
-static bool     s_moving      = false;
-static uint32_t s_still_since = 0;     // 移動中に止まり始めた時刻（0 = まだ止まっていない）
+static bool     s_moving       = false;
+static uint32_t s_moving_since = 0;    // 静止中に移動条件を満たし始めた時刻（0 = 未達）
+static uint32_t s_still_since  = 0;    // 移動中に止まり始めた時刻（0 = まだ止まっていない）
 static bool     s_hot         = false; // 高温での充電（CHARGE_HOT_HOLD_MS 続いて確定）
 static uint32_t s_hot_since   = 0;
 static uint32_t s_hot_alert   = 0;
@@ -148,16 +149,30 @@ static bool showing_own_state() {
 // 移動中か。**自機の** GNSS（ミラーを通さない）の対地速度で見る。
 // ★ fix が無いときは静止とみなす（屋内で充電している場面が本命なので、fix 待ちで黙らせない）。
 // ★ GNSS が抜けると stored_* が凍ったまま fix が残るので、接続も見る。
+// ★ sAcc が悪い屋内測位（sAcc 2m/s 前後で偽の GS 2〜5m/s が出る）は移動とみなさない。
+//   また 1 発のスパイクで 30 秒間ポップアップが消えないよう、立ち上がりにも継続時間（CHARGE_SW_MOVING_HOLD_MS）を置く。
 // ★ 止まってもすぐには「静止」に戻さない（CHARGE_SW_STILL_MS）。信号待ちのたびに出たり消えたりしない。
 static void update_moving(uint32_t now) {
   double lat, lon, gs, trk;
   const bool fix = get_gnss_connection() && gnss_get_own_fix(lat, lon, gs, trk);
-  if (fix && gs > CHARGE_SW_MOVING_MPS) {
-    s_moving      = true;
+  const float sacc_mps = get_gnss_sacc_mmps() * 0.001f;
+  const float thresh = (CHARGE_SW_MOVING_SACC_K * sacc_mps > CHARGE_SW_MOVING_MPS)
+                         ? (CHARGE_SW_MOVING_SACC_K * sacc_mps)
+                         : CHARGE_SW_MOVING_MPS;
+  const bool moving_now = fix && (sacc_mps <= CHARGE_SW_MOVING_SACC_MAX) && (gs > thresh);
+
+  if (moving_now) {
     s_still_since = 0;
-  } else if (s_moving) {
-    if (s_still_since == 0) s_still_since = now;
-    else if (now - s_still_since >= CHARGE_SW_STILL_MS) s_moving = false;
+    if (!s_moving) {
+      if (s_moving_since == 0) s_moving_since = now ? now : 1;
+      else if (now - s_moving_since >= CHARGE_SW_MOVING_HOLD_MS) s_moving = true;
+    }
+  } else {
+    s_moving_since = 0;
+    if (s_moving) {
+      if (s_still_since == 0) s_still_since = now ? now : 1;
+      else if (now - s_still_since >= CHARGE_SW_STILL_MS) s_moving = false;
+    }
   }
 }
 

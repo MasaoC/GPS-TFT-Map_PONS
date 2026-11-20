@@ -73,12 +73,26 @@ void draw_imu_guide(int page) {
 // ★ 自機の値だけを描く。地上で設定するときの画面なので、ミラー中でも受信機自身の IMU。
 //   日本語は描けない（本体に日本語フォントが無い）ので英字のラベルだけ。説明は 1/2 の画像と音声。
 static void draw_tas_curve() {
-  // ---- 見出し（IMU/ESKF 画面と同じ形）----
+  // 自機の現在値（ヘッダー右上の実表示プレビューと曲線・下部の数値で共用）
+  float tas = 0.0f; bool tas_c = false;
+  const bool avg_ok = attitude_get_tas(tas, tas_c);
+  const float pavg = attitude_get_pitch_avg_deg();
+
+  // ---- 見出し + 右上に本番と同じ TAS 表示 ----
+  // 飛行中の実際の見た目（青箱 / 上下限クランプ時のグレー箱）を地上で傾けながら確認できるよう、
+  // draw_header() と同じ draw_header_tas() で右上に描く（高さ 50px）。
+  const int mtvx = SCREEN_WIDTH - 111;
   header_footer.fillScreen(COLOR_WHITE);
+  header_footer.setTextWrap(false);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
-  header_footer.setCursor(1, 11);
-  header_footer.print("TAS estimate   2/2");
-  header_footer.pushSprite(0, -10);
+  header_footer.setCursor(4, 6);
+  header_footer.print("TAS estimate");
+  header_footer.setCursor(4, 26);
+  header_footer.print("2/2");
+  header_footer.drawFastVLine(mtvx, 0, HEADERFOOTER_HEIGHT, COLOR_GRAY);
+  draw_header_tas(mtvx, (!avg_ok || tas_c) ? HDR_TAS_CLAMP : HDR_TAS, avg_ok ? tas : NAN);
+  header_footer.drawFastHLine(0, HEADERFOOTER_HEIGHT - 1, SCREEN_WIDTH, COLOR_BLACK);
+  header_footer.pushSprite(0, 0);
 
   // ---- 曲線 ----
   backscreen.fillScreen(COLOR_WHITE);
@@ -89,7 +103,7 @@ static void draw_tas_curve() {
   float ymin = floorf(fminf(vlo, vhi)) - 1.0f;
   float ymax = ceilf(fmaxf(vlo, vhi)) + 1.0f;
   if (ymax - ymin < 2.0f) ymax = ymin + 2.0f;
-  const int X0 = 30, X1 = 232, Y0 = 16, Y1 = 172;    // 描く範囲（backscreen 内）
+  const int X0 = 30, X1 = 232, Y0 = 16, Y1 = 164;    // 描く範囲（backscreen 内。ヘッダ 50px + フッタ 40px の間 230px に収める）
   auto px = [&](float th) { return X0 + (int)lroundf((th - XMIN) / (XMAX - XMIN) * (X1 - X0)); };
   auto py = [&](float v)  { return Y1 - (int)lroundf((v - ymin) / (ymax - ymin) * (Y1 - Y0)); };
   auto clampth = [&](float th) { return th < XMIN ? XMIN : (th > XMAX ? XMAX : th); };
@@ -150,9 +164,6 @@ static void draw_tas_curve() {
     backscreen.drawCircle(cx, cy, 5, COLOR_BLACK);
     backscreen.drawCircle(cx, cy, 4, COLOR_BLACK);
   }
-  float tas = 0.0f; bool tas_c = false;
-  const bool avg_ok = attitude_get_tas(tas, tas_c);
-  const float pavg = attitude_get_pitch_avg_deg();
   if (avg_ok) {
     const int cx = px(clampth(pavg)), cy = py(tas);
     for (int y = cy; y < Y1; y += 4) backscreen.drawPixel(cx, y, COLOR_BLUE);   // 横軸へ
@@ -169,7 +180,7 @@ static void draw_tas_curve() {
   // いまの値（大きい枠に出る値）
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  const int ly = 206;
+  const int ly = 198;
   backscreen.setCursor(4, ly);    backscreen.print("Pavg");
   backscreen.setCursor(124, ly);  backscreen.print("TAS");
   backscreen.setCursor(212, ly);  backscreen.print("m/s");
@@ -182,7 +193,8 @@ static void draw_tas_curve() {
   backscreen.setTextColor(tas_c ? COLOR_GRAY : COLOR_BLUE, COLOR_WHITE);
   backscreen.setCursor(158, ly - 4); backscreen.print(b);
   backscreen.unloadFont();
-  backscreen.pushSprite(0, 40);
+  // フッター帯（y=280〜）に重なる下 10px は送らない（毎フレーム白で上書き→描き直しによるチラつき防止）
+  backscreen.pushSprite(0, HEADERFOOTER_HEIGHT, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT - 40 - HEADERFOOTER_HEIGHT);
 
   // ---- いまの係数と、抜け方 ----
   header_footer.fillScreen(COLOR_WHITE);
@@ -1053,13 +1065,15 @@ static void draw_gnss_page3() {
   else { tft.setTextColor(vaccColor, COLOR_WHITE); tft.printf("%.1fm", vacc_m); }
   y += 12;
 
-  // sAcc（速度精度）
-  float sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
+  // sAcc（速度精度）。ミラー中は機体の値（電波で 8 発に 1 回。0.5 m/s 以上は 0.25 刻み）。gnss_sacc_shown() を通す
+  float sacc_mps = 0.0f;
+  const char* sacc_note;
+  const bool  sacc_ok = gnss_sacc_shown(sacc_mps, sacc_note);
   uint16_t saccColor = (sacc_mps < 0.3f) ? COLOR_GREEN : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
   tft.setCursor(1, y);
   tft.setTextColor(COLOR_GRAY, COLOR_WHITE);
   tft.print("sAcc:");
-  if (gnss_acc_unknown()) { tft.printf("-- %s", gnss_acc_unknown_note()); }
+  if (!sacc_ok) { tft.printf("-- %s", sacc_note); }
   else {
     char sbuf[32];
     snprintf(sbuf, sizeof(sbuf), "%.2fm/s (%.1fkm/h)", sacc_mps, sacc_mps * 3.6f);
@@ -1266,7 +1280,24 @@ void draw_chscan() {
                                            : " short: rescan  long: back");
 
   backscreen.unloadFont();
-  // draw_wireless() と同じく自前で置く（push_backscreen は地図専用）。フッタも消す。
+  // draw_wireless() と同じく自前で置く（push_backscreen は地図専用）。下部 40px 帯に UP 帯域の注意を出す。
   backscreen.pushSprite(0, 40);
-  tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
+  header_footer.fillScreen(COLOR_WHITE);
+  header_footer.drawFastHLine(4, 1, SCREEN_WIDTH - 8, COLOR_GRAY);
+  header_footer.loadFont(AA_FONT_SMALL);
+  header_footer.setTextWrap(false);
+  header_footer.setCursor(6, 5);
+  header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+  header_footer.print("UP band: ");
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.print("10x pause, ");
+  header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+  header_footer.print("no SF11");
+  header_footer.setCursor(6, 21);
+  header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+  header_footer.print("slower TX");
+  header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  header_footer.print(" (1.2-3.5s at SF8-10)");
+  header_footer.unloadFont();
+  header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }

@@ -4,11 +4,11 @@
 // Role    : テレメトリ構造体（LinkTelem。メモリの上の形）と、無線モジュールとの UART の約束。
 //           電波に載せる 32 バイトの形は lora_link/link_wire2.h（2026-10-27〜）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/20
 // ============================================================
 //
 // ■ このファイルが持つもの
-//     ・LinkTelem  … テレメトリの 67 バイト（メモリの上の形）。**電波には 32 バイトに詰めて載せる**
+//     ・LinkTelem  … テレメトリの 69 バイト（メモリの上の形）。**電波には 32 バイトに詰めて載せる**
 //                    （lora_link/link_wire2.h。2026-10-27〜）
 //     ・LinkRxTelem… 受信結果を RP 内部で持ち回す入れ物
 //     ・RHAVE_*    … mysd.h からも参照される「値の有無」ビット
@@ -44,7 +44,9 @@
 //      （2026-10-26 までの 32 バイト・debug/v7-noise-test）とは、以前どおり番号で合わせる。
 //   6: 推定 TAS（tas_dmps）と tas_flags を追加し、group を 0〜3（A〜D）にした（2026-11-07。
 //      32 バイトの印 0xA4。docs/pons_tas.md §5.2）。
-#define LINK_PROTO_VER      6
+//   7: 速度精度 sAcc（sacc_cms）を追加した（2026-11-20。32 バイトの印 0xA8・回転枠 7 の 6 ビット。
+//      受信機の地図と GNSS 詳細画面の sAcc を機体の値で出すため）。
+#define LINK_PROTO_VER      7
 
 // ============================================================
 //  UART のボーレート
@@ -272,6 +274,10 @@ typedef struct __attribute__((packed)) {
     uint8_t  volt_cv;           // 電圧: (V - 2.5) × 100 → 2.50〜5.05V
     uint8_t  numsat;
     uint16_t hacc_dm;           // 水平精度 [0.1 m]
+    // 速度精度 sAcc [0.01 m/s]。LINK_SACC_NONE = 無し（GNSS が黙っている・受信機がまだ回転枠 7 を受けていない）。
+    // ★ 電波では回転枠 7 の 6 ビットに段で詰める（0.49 m/s までは 0.01 刻み、そこから 3.50 m/s まで 0.25 刻み、
+    //   3.50 は「3.50 以上」。link_wire2.h の link_w2_sacc_code）。受信機に届くのは 8 発に 1 回。
+    uint16_t sacc_cms;
     uint8_t  fixflags;          // bit0: gnssFixOK
 
     // --- ナビの設定（受信側は「同じか」を確かめるためだけに使う）---
@@ -286,10 +292,13 @@ typedef struct __attribute__((packed)) {
     uint16_t crc16;             // 65 バイトを送っていた頃の CRC 欄。電波に載らないので、いまは 0 のまま
 } LinkTelem;
 
-// ★ 67 バイト（2026-11-07 に推定 TAS の 2 バイトを足した。それまで 65）。
+// ★ 69 バイト（2026-11-07 に推定 TAS の 2 バイト、2026-11-20 に sAcc の 2 バイトを足した。それまで 65 → 67）。
 //   2026-10-27 から電波には 32 バイトに詰めて載せる（lora_link/link_wire2.h）ので、
 //   項目を足すなら詰め方（核か回転枠か）も一緒に決めること。黙って伸びると詰め方とずれる。ビルドで止める。
-static_assert(sizeof(LinkTelem) == 67, "LinkTelem が 67 バイトでなくなっている");
+static_assert(sizeof(LinkTelem) == 69, "LinkTelem が 69 バイトでなくなっている");
+
+// sacc_cms の「無し」
+#define LINK_SACC_NONE    0xFFFF
 
 // tas_flags のビット
 // 推定 TAS が上下限（送信機の airspeed_min / max）に張り付いている。受信機は送信機の上下限を

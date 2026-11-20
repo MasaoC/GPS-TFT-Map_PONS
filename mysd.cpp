@@ -873,6 +873,8 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   task.saveCsvArgs.wind_dir  = t->wind_dir_cdeg  * 0.01f;
   task.saveCsvArgs.tas       = t->tas_dmps * 0.1f;
   task.saveCsvArgs.hdr       = (uint8_t)tas_header();
+  // 機体の sAcc。受けるまでと途切れたあとは LINK_SACC_NONE（link_wire2.h）→ 空欄
+  task.saveCsvArgs.sacc      = (t->sacc_cms != LINK_SACC_NONE) ? t->sacc_cms * 0.01f : NAN;
   return task;
 }
 
@@ -1835,7 +1837,7 @@ void init_replay(){
   }
 
   // 1行目 = ヘッダ。列名から列マップを作る。
-  // ★ **received/ のヘッダは 220 文字、data/ は 190 文字ある**（2026-11-07 に tas_mps,hdr を足したあと）。ここを切り詰めると、切れた列は
+  // ★ **received/ のヘッダは 230 文字、data/ は 190 文字ある**（2026-11-07 に tas_mps,hdr、2026-11-20 に received/ へ sacc_mps を足したあと）。ここを切り詰めると、切れた列は
   //   「名前が壊れたトークン」または「存在しない列」になり、静かに -1 のまま残る。
   //   列を足すときはここも必ず見直すこと。
   char header[256];
@@ -2676,7 +2678,7 @@ void saveRxCSV(const Task& tk) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
                       "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
                       "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
-                      "own_lat,own_lon,dist_m,slot,tas_mps,hdr");
+                      "own_lat,own_lon,dist_m,slot,tas_mps,hdr,sacc_mps");
     rxHeaderWritten = true;
   }
   // 先頭 12 列は飛行 CSV と同じ並び（csv_write_common が唯一の書き手）。
@@ -2701,6 +2703,10 @@ void saveRxCSV(const Task& tk) {
   else                snprintf(own, sizeof(own), ",");
   rxcsvFile.print(own);
   csv_write_tas(rxcsvFile, tk);
+  // 機体の sAcc（2026-11-20〜。0.5 m/s 以上は 0.25 刻み、3.50 は「3.50 以上」）。分からなければ空欄
+  if (!isnan(a.sacc)) snprintf(own, sizeof(own), ",%.2f", a.sacc);
+  else                snprintf(own, sizeof(own), ",");
+  rxcsvFile.print(own);
   rxcsvFile.println();
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
@@ -3112,10 +3118,12 @@ Task createSerialListTask(bool all) {
   return t;
 }
 
-Task createSerialGetTask(const char* filename, uint32_t tail) {
+Task createSerialGetTask(const char* filename, uint32_t tail, uint32_t jst_start, uint32_t jst_end) {
   Task t;
   t.type = TASK_SERIAL_GET;
   t.serialGetArgs.tail = tail;
+  t.serialGetArgs.jst_start = jst_start;
+  t.serialGetArgs.jst_end = jst_end;
   if (filename) {
     strlcpy(t.serialGetArgs.filename, filename, sizeof(t.serialGetArgs.filename));
   } else {
@@ -3298,8 +3306,8 @@ void serial_list_csv_files(bool all) {
 
 // 指定されたファイルをストリーミング送出（Core1専用）。中身はそのまま送る（CSV でもバイナリでも同じ）
 // tail が 0 でなく、ファイルがそれより大きければ、末尾の tail バイトだけ送る（PONS:GETTAIL。伸び続ける log.txt 用）。
-// そのときは最初の改行の次から送り（行の途中から始めない）、DATA_START の 3 つめに送り始めた位置を付ける。
-void serial_send_csv_file(const char* filename, uint32_t tail) {
+// jst_end > jst_start のときは生 IMU ログ（28B/rec）を粗スキャンして該当 JST 秒範囲だけ送る（PONS:GETIMU）。
+void serial_send_csv_file(const char* filename, uint32_t tail, uint32_t jst_start, uint32_t jst_end) {
   ASSERT_SD_CORE1("serial_send_csv_file");
   if (!good_sd()) {
     Serial.println("PONS:ERROR,SD_NOT_READY");
@@ -3324,9 +3332,72 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
     return;
   }
 
+  // ★ 8KB ずつ読む（2026-11-15〜。Core1 専用 static バッファ）
+  static uint8_t buf[8192];
+
   const uint32_t file_size = file.size();
   uint32_t from = 0;
-  if (tail > 0 && tail < file_size) {
+  uint32_t end_pos = file_size;
+
+  if (jst_end > jst_start) {
+    // PONS:GETIMU — 28B 固定長レコードを 224KB（約 16 秒）刻みで粗スキャンし、
+    // GNSSVEL (id=0x10) の iTOW から JST 日内秒が [jst_start, jst_end] に入る範囲を特定する。
+    constexpr uint32_t REC_SIZE = 28UL;
+    constexpr uint8_t  ID_GNSSVEL = 0x10;
+    const uint32_t aligned_size = (file_size / REC_SIZE) * REC_SIZE;
+    const uint32_t step = REC_SIZE * 8000UL;   // 224,000 B (約 16 秒分)
+    constexpr size_t PROBE_CHUNK = REC_SIZE * 73UL; // 2,044 B (約 0.15 秒分ずつ読んで見つかり次第終了)
+    uint32_t first_hit = 0xFFFFFFFFUL;
+    uint32_t last_hit = 0;
+    bool found = false;
+    uint32_t iter = 0;
+
+    for (uint32_t pos = 0; pos < aligned_size; pos += step) {
+      if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
+        file.close();
+        if (usb_power_present()) Serial.println("PONS:CANCEL_OK");
+        return;
+      }
+      file.seekSet(pos);
+      bool got_time = false;
+      uint32_t jst_s = 0;
+      // 最大 8 回 (約 16KB ≒ 1.2 秒分) 読んで GNSSVEL (1〜4Hz) を 1 件拾ったら即抜ける
+      for (int c = 0; c < 8 && !got_time; c++) {
+        int n = file.read(buf, PROBE_CHUNK);
+        if (n < (int)REC_SIZE) break;
+        for (int off = 0; off + (int)REC_SIZE <= n; off += (int)REC_SIZE) {
+          if (buf[off + 8] == ID_GNSSVEL) {
+            uint32_t itow_ms = (uint32_t)buf[off + 4] |
+                               ((uint32_t)buf[off + 5] << 8) |
+                               ((uint32_t)buf[off + 6] << 16) |
+                               ((uint32_t)buf[off + 7] << 24);
+            // GPS 時系 -> UTC (閏秒 18s) -> JST (+9h = +32400s) => +32382s
+            jst_s = ((itow_ms / 1000UL) + 32382UL) % 86400UL;
+            got_time = true;
+            break;
+          }
+        }
+        if (n < (int)PROBE_CHUNK) break;
+      }
+      if (got_time && jst_s >= jst_start && jst_s <= jst_end) {
+        if (!found) first_hit = pos;
+        last_hit = pos;
+        found = true;
+      }
+      if ((++iter & 7) == 0) {
+        loop_sound();
+        yield();
+      }
+    }
+    if (!found) {
+      file.close();
+      Serial.println("PONS:ERROR,IMU_RANGE_NOT_FOUND");
+      return;
+    }
+    from = (first_hit > step) ? (first_hit - step) : 0;
+    end_pos = (last_hit + step * 2UL < aligned_size) ? (last_hit + step * 2UL) : aligned_size;
+    file.seekSet(from);
+  } else if (tail > 0 && tail < file_size) {
     from = file_size - tail;
     file.seekSet(from);
     // 行の頭まで進める（1KB 以内に改行が無ければ、そこから送る）
@@ -3336,16 +3407,13 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
     }
     file.seekSet(from);
   }
-  uint32_t total_size = file_size - from;
+
+  uint32_t total_size = end_pos - from;
   if (from > 0) Serial.printf("PONS:DATA_START,%s,%lu,%lu\r\n", filename, (unsigned long)total_size, (unsigned long)from);
   else          Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
 
-  // ★ 8KB ずつ読む（2026-11-15〜。それまでは 512B ＝ 1 セクタずつで、SD へ 1 セクタごとに読み出しを頼んでいた。
-  //   まとめて読むと SdFat が続けて読む命令を使う）。Core1 のスタックには置けない大きさなので static（Core1 専用）。
-  //   USB は Full Speed（12Mbps）なので、どう速くしても 1MB/s あたりが上限。ボーレートの設定は USB のシリアルでは効かない。
-  static uint8_t buf[8192];
   uint32_t crc = 0xFFFFFFFF;
-  // 行の頭に合わせたあと（GETTAIL）は、まず次のセクタの境目まで読む（そのあとの読み出しをセクタ単位にそろえる）
+  // 行の頭に合わせたあと（GETTAIL / GETIMU）は、まず次のセクタの境目まで読む（そのあとの読み出しをセクタ単位にそろえる）
   size_t want = sizeof(buf) - (size_t)(from % 512);
 
   // 全バイトを書き切る（Core1 専用）。
@@ -3394,7 +3462,8 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
     return true;
   };
 
-  while (file.available()) {
+  uint32_t remaining = total_size;
+  while (remaining > 0 && file.available()) {
     // 中断要求または USB ケーブル抜去・切断検知時は即座にファイルを閉じて抜ける
     if (webserial_cancel_requested || !webserial_connected || !usb_power_present()) {
       file.close();
@@ -3404,9 +3473,11 @@ void serial_send_csv_file(const char* filename, uint32_t tail) {
       xfer_log_dropped();
       return;
     }
-    int n = file.read(buf, want);
+    size_t to_read = (remaining < want) ? (size_t)remaining : want;
+    int n = file.read(buf, to_read);
     want = sizeof(buf);
     if (n <= 0) break;
+    remaining -= (uint32_t)n;
 
     crc = calc_crc32_step(crc, buf, (size_t)n);
     if (!write_all_or_abort(buf, (size_t)n)) return;

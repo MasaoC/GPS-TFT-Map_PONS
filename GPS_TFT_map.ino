@@ -2149,6 +2149,37 @@ static void handle_serial_command(const char *raw_cmd) {
     }
     webserial_cancel_requested = false;   // PONS:GET と同じ
     if (!enqueueTask(createSerialGetTask(p + 1, tail))) s_busy_pending = true;   // キューが満杯（BUG-93）
+  } else if (strncmp(cmd, "PONS:GETIMU,", 12) == 0) {
+    // 生 IMU ログの指定時刻範囲だけ送る: "PONS:GETIMU,<開始JST秒>,<終了JST秒>,<パス>"
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
+    const char *p = cmd + 12;
+    auto parse_u32 = [&](uint32_t &out) -> bool {
+      uint32_t v = 0;
+      int d = 0;
+      while (*p >= '0' && *p <= '9' && d < 6) {
+        v = v * 10 + (uint32_t)(*p - '0');
+        p++; d++;
+      }
+      out = v;
+      return d > 0;
+    };
+    uint32_t jst_start = 0, jst_end = 0;
+    bool ok = parse_u32(jst_start) && (*p == ',') && (p++, parse_u32(jst_end)) && (*p == ',') && (p[1] != '\0');
+    if (!ok || jst_start >= jst_end || jst_end > 86400UL ||
+        strlen(p + 1) >= sizeof(((Task*)nullptr)->serialGetArgs.filename)) {
+      Serial.println("PONS:ERROR,INVALID_FILENAME");
+      return;
+    }
+    webserial_cancel_requested = false;
+    // ★ 受け付けた印を先に出す（2026-11-20）。時刻探しの間（数秒〜）は何も出ないので、PC は印が無いと
+    //   「GETIMU を知らない古いファーム」と見分けられず、12 秒で PONS:GET を送り直していた（転送のあとに BUSY が出る）。
+    //   キューに入れる前に出すのは、Core1 が送り始める DATA_START / ERROR と行が混ざらないようにするため。
+    Serial.println("PONS:GETIMU_ACCEPTED");
+    if (!enqueueTask(createSerialGetTask(p + 1, 0, jst_start, jst_end))) s_busy_pending = true;
   } else if (strcmp(cmd, "PONS:SETTINGS_GET") == 0) {
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
@@ -2642,7 +2673,8 @@ void loop1() {
       gnss_dbd_load_sd();
       break;
     case TASK_SERIAL_GET:
-      serial_send_csv_file(currentTask.serialGetArgs.filename, currentTask.serialGetArgs.tail);
+      serial_send_csv_file(currentTask.serialGetArgs.filename, currentTask.serialGetArgs.tail,
+                           currentTask.serialGetArgs.jst_start, currentTask.serialGetArgs.jst_end);
       break;
     case TASK_SERIAL_SETTINGS_GET:
       serial_send_settings();
@@ -2874,6 +2906,13 @@ static void tas_guide_start() {
   redraw_screen = true;
 }
 
+// 曲線の画面（2/2）だけを直接開く（IMU_MENU_TASCURVE）。説明画像と音声案内は通さない。
+static void tas_guide_open_curve() {
+  tas_guide_page = TAS_GUIDE_PAGES;
+  enqueueTask(createPlayMultiToneTask(1568, 80, 1));
+  redraw_screen = true;
+}
+
 // 短押し・長押しのどちらでも次の画面へ（IMU の案内と同じ操作）。
 static void tas_guide_next() {
   tas_guide_page++;
@@ -2969,6 +3008,11 @@ static void imu_execute() {
     else        enqueueTask(createPlayMultiToneTask(1568, 60, 1));
     break;
   }
+
+  case IMU_MENU_TASCURVE:
+    // ヘッダー設定を変えずに、ピッチ→推定 TAS の変換曲線画面だけ直接開く
+    tas_guide_open_curve();
+    break;
 
   case IMU_MENU_NEXTPAGE:
     detail_page = 1;

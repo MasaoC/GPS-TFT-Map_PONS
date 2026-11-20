@@ -690,7 +690,7 @@ uint16_t e220_airtime_ms(uint8_t profile) {
 //   印が 1 バイトしか無いので、65 バイトの頃の "PL" より偶然に出やすい。
 //   2026-11-07 から印は 6 ビット（下位 2 ビットはグループ）で、ゴミの中に出る確率は 1/64
 //   （それまで 1/256）。ほかの LoRa の電波を受けたとき、壊れフレームの数はそのぶん増える。
-// ★ テレメトリ（印 0xA4）とビーコン（印 0x58。lora_link/link_beacon.h）のどちらも 32 バイトなので、
+// ★ テレメトリ（印 0xA8）とビーコン（印 0x58。lora_link/link_beacon.h）のどちらも 32 バイトなので、
 //   同じ切り出しで両方を拾う（link_frame_is_magic / link_frame_valid）。見分けて振り分けるのは link.cpp。
 static uint16_t later_valid_frame(uint16_t from) {
     for (uint16_t j = from; j + LINK_W2_LEN + 1 <= s_rxLen; j++)

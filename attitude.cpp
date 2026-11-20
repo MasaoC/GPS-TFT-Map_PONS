@@ -1730,7 +1730,10 @@ void attitude_on_gnss_velocity(float velN, float velE, float velD, float sAcc, u
         if (sAcc > ESKF_SACC_MAX) return;
         if (sqrtf(z[0]*z[0] + z[1]*z[1]) < ESKF_YAW_INIT_MIN_SPEED_MPS) return;
         if (!accel_valid_) return;
-        if (!init_level(accel_last_, ESKF_INIT_ATT_SIGMA_MOVING_DEG)) return;
+        // ★ 1 サンプルではなく加速度の低域（up_lp_。時定数 0.8 秒）で水平化する（2026-11-20）。揺れ続けて静止の判定が取れないまま
+        //   滑走すると、1 サンプルに振動が乗って最初の傾きが 25〜47° ずれた（滑走の振動 σ 1〜2 m/s² の模擬）。低域なら振動は消え、
+        //   残るのは滑走の加速の分（1.5 m/s² で約 9°）だけ。σ 30° のまま GNSS の観測で引き戻す。
+        if (!init_level(up_lp_valid_ ? up_lp_ : accel_last_, ESKF_INIT_ATT_SIGMA_MOVING_DEG)) return;
         v_[0] = z[0]; v_[1] = z[1]; v_[2] = z[2]; vhist_clear();
         return;
     }

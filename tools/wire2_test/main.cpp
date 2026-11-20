@@ -52,6 +52,7 @@ static LinkTelem make_full_telem(uint16_t seq) {
     t.volt_cv = link_pack_volt(3.98f);
     t.numsat = 18;
     t.hacc_dm = 14;          // 1.4 m
+    t.sacc_cms = 23;         // 0.23 m/s（0.5 未満は 0.01 刻みでそのまま戻る）
     t.fixflags = 0x01;       // gnssFixOK
     t.dest_index = 5;
     t.nav_mode = 2;
@@ -111,6 +112,7 @@ static void test_roundtrip_8slots() {
     CHECK(got.gnss_alt_dm == ref.gnss_alt_dm && got.volt_cv == ref.volt_cv, "gnss_alt/volt");
     CHECK(got.press_dpa == ref.press_dpa && got.scale_index == ref.scale_index, "press/scale");
     CHECK(got.nav_mode == ref.nav_mode && got.dest_id == ref.dest_id, "nav/dest_id");
+    CHECK(got.sacc_cms == ref.sacc_cms, "sacc got=%u ref=%u", got.sacc_cms, ref.sacc_cms);
 }
 
 static void test_extremes_and_sentinels() {
@@ -164,6 +166,9 @@ static void test_extremes_and_sentinels() {
     bad[W2_MAGIC] = 0xA2;
     w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
     CHECK(!link_w2_valid(bad), "reject old 0xA2 magic");
+    bad[W2_MAGIC] = 0xA4 | 0x02;   // 2026-11-20 までの並び（sAcc なし）
+    w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
+    CHECK(!link_w2_valid(bad), "reject old 0xA4 magic");
     memcpy(bad, wire, LINK_W2_LEN);
     bad[10] ^= 0x01;
     CHECK(!link_w2_valid(bad), "reject bad CRC");
@@ -200,6 +205,57 @@ static void test_midnight_and_stale() {
     link_w2_encode(&t2, w);
     link_w2_decode(w, &rx, 316000, 1000);
     CHECK(rx.seq16 == 301, "long gap seq16 expected 301, got %u", rx.seq16);
+}
+
+// sAcc（回転枠 7 の 6 ビット。2026-11-20〜）
+static void test_sacc() {
+    // 段の表: 0.5 未満は 0.01 刻み、0.5〜3.5 は 0.25 刻み、3.5 以上は頭打ち、無しは 0
+    struct { uint16_t in, out; } tbl[] = {
+        {0, 0}, {1, 1}, {29, 29}, {30, 30}, {49, 49}, {50, 50}, {62, 50}, {63, 75},
+        {100, 100}, {299, 300}, {300, 300}, {349, 350}, {350, 350}, {1000, 350}, {65534, 350},
+        {LINK_SACC_NONE, LINK_SACC_NONE},
+    };
+    for (auto& e : tbl) {
+        const uint8_t c = link_w2_sacc_code(e.in);
+        CHECK(c <= 63, "sacc code %u fits 6 bits (%u)", e.in, c);
+        const uint16_t o = link_w2_sacc_cms(c);
+        CHECK(o == e.out, "sacc %u -> code %u -> %u (expect %u)", e.in, c, o, e.out);
+    }
+    CHECK(link_w2_sacc_code(LINK_SACC_NONE) == W2_SACC_NONE, "sacc none -> code 0");
+
+    // 受けるまでは無し。枠 7 で届き、ナビモードと目的地の ID を壊さない
+    LinkW2Rx rx;
+    link_w2_rx_reset(&rx);
+    CHECK(rx.acc.sacc_cms == LINK_SACC_NONE, "sacc none before slot 7");
+    LinkTelem t = make_full_telem(W2S_NAV);
+    t.sacc_cms = 180;   // 1.80 -> 1.75
+    uint8_t w[LINK_W2_LEN];
+    link_w2_encode(&t, w);
+    link_w2_decode(w, &rx, 1000, 1000);
+    CHECK(rx.acc.sacc_cms == 175, "sacc 1.80 -> 1.75 got=%u", rx.acc.sacc_cms);
+    CHECK(rx.acc.nav_mode == 2 && rx.acc.dest_id == 0xBEEF, "nav/dest_id intact with sacc");
+    for (uint8_t m = 0; m <= 2; m++) {
+        t.nav_mode = m; t.sacc_cms = 3500;   // 上の段いっぱいでもナビモードに漏れない
+        link_w2_encode(&t, w);
+        link_w2_decode(w, &rx, 2000, 1000);
+        CHECK(rx.acc.nav_mode == m && rx.acc.sacc_cms == 350, "nav_mode %u with sacc max", m);
+    }
+
+    // 送信機の GNSS が黙っている（無し）→ 無しで届く
+    t.sacc_cms = LINK_SACC_NONE;
+    link_w2_encode(&t, w);
+    link_w2_decode(w, &rx, 3000, 1000);
+    CHECK(rx.acc.sacc_cms == LINK_SACC_NONE, "sacc none on wire");
+
+    // 長い途切れのあとは、枠 7 を受け直すまで無し（古い値を出さない）
+    t.sacc_cms = 40;
+    link_w2_encode(&t, w);
+    link_w2_decode(w, &rx, 4000, 1000);
+    CHECK(rx.acc.sacc_cms == 40, "sacc 0.40 back");
+    LinkTelem t2 = make_full_telem(8 + W2S_DATE);
+    link_w2_encode(&t2, w);
+    link_w2_decode(w, &rx, 4000 + (LINK_W2_STALE_FRAMES + 1) * 1000, 1000);
+    CHECK(rx.acc.sacc_cms == LINK_SACC_NONE, "sacc none after stale gap");
 }
 
 static void test_utc_ms_and_beacon() {
@@ -265,6 +321,7 @@ int main() {
     test_roundtrip_8slots();
     test_extremes_and_sentinels();
     test_midnight_and_stale();
+    test_sacc();
     test_utc_ms_and_beacon();
 
     printf("wire2_test: %d passed, %d failed\n", g_pass, g_fail);

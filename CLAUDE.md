@@ -187,13 +187,13 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   デモを止める理由は見えにくい: デモは `stored_*` を上書きしないので**CSV には
   残らない**のに、`link_push_telemetry()` は accessor 経由なので**仮想機体が電波に乗る**。
   一覧は [docs/pons_link.md](docs/pons_link.md) §5。
-- **電波に載るのは `LinkTelem`（67 バイト）ではなく 32 バイトのフレーム**
+- **電波に載るのは `LinkTelem`（69 バイト）ではなく 32 バイトのフレーム**
   （[lora_link/link_wire2.h](lora_link/link_wire2.h)。2026-10-27〜、どの CH でも）。`LinkTelem` はメモリの上の形で、
   送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは印だけ**なので、並びの違う版とは通じない（3 台そろえる）。
   並びを変えたら `LINK_W2_MAGIC` も変え、PONSv7 / PONSv7.1 で並びを同じに保つ
-  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xA4`）。印は必ず
+  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xA8`。2026-11-20 に回転枠 7 へ sAcc を足した）。印は必ず
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
-  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（`0xA8` …）。
+  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xAC`）。
   **GNSS の時刻の助け合いのビーコン（印 `0x58`。[lora_link/link_beacon.h](lora_link/link_beacon.h)）も同じ 32 バイト**で、
   e220.cpp の切り出しは両方を拾う（`link_frame_is_magic` / `link_frame_valid`）。テレメトリの印を変えるときはビーコンの印とぶつけないこと
   （`static_assert` で止まる）。ビーコンは `link_recv_telem()` が `link_assist.cpp` へ渡し、**受信の数・seq・ミラー・NO SIGNAL・
@@ -323,7 +323,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す。まだ飛ばしていないので `#warning` で「飛ばすな」が出る。[docs/sch16t_design.md](docs/sch16t_design.md) |
 | [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
-| [link_assist.cpp](link_assist.cpp) | GNSS の時刻の助け合い（LoRa。2026-11-13〜、**実機未確認**）。GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が**精度つきで**時刻を渡す（fix の前の RTC の時刻も。精度は NAV-PVT の tAcc で、テレメトリは status の `LINK_ST_TIME_COARSE` / `BAD`、ビーコンは `BC_TACC`。ビーコンは [lora_link/link_beacon.h](lora_link/link_beacon.h)、印 `0x58`）。機体は窓の間だけ送信の合間も mode 0 で聞く。受けた時刻は 2 発で確かめて `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` へ渡すだけ。定数は `settings.h` の `LINK_ASSIST_*`、`settings.txt` の `link_assist`。**v7 と v7.1 で同じファイル**。計画と決めごとは [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §4 |
+| [link_assist.cpp](link_assist.cpp) | GNSS の時刻の助け合い（LoRa。2026-11-13〜）。GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が**精度つきで**時刻を渡す（fix の前の RTC の時刻も。精度は NAV-PVT の tAcc で、テレメトリは status の `LINK_ST_TIME_COARSE` / `BAD`、ビーコンは `BC_TACC`。ビーコンは [lora_link/link_beacon.h](lora_link/link_beacon.h)、印 `0x58`）。機体は窓の間だけ送信の合間も mode 0 で聞く。受けた時刻は 2 発で確かめて `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` へ渡すだけ。定数は `settings.h` の `LINK_ASSIST_*`、`settings.txt` の `link_assist`。**v7 と v7.1 で同じファイル**。計画と決めごとは [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §4 |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
@@ -342,7 +342,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - GNSS の TTFF を SD の DBD と LoRa の助け合いで縮める計画: [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)
-  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10、無線の時刻の助け合いは 2026-11-13 に実装・どれも実機未確認）
+  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10 に実装・実機未確認、無線の時刻の助け合いは 2026-11-13 に実装・確認済み）
 - 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.2）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
 - 充電中のバッテリー残量(%)・残り時間推定 仕様書: [docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)
 - SCH16T（v7.1 の IMU）の仕様・決めごと・配線・罠・単独テスト・本体での確認と実測: [docs/sch16t_design.md](docs/sch16t_design.md)

@@ -379,16 +379,84 @@
       position: relative;
       display: flex;
       align-items: center;
+      height: 24px;
+    }
+    .seek-track-bg {
+      position: absolute;
+      left: 9px;
+      right: 9px;
+      height: 8px;
+      border-radius: 4px;
+      background: #cbd5e1;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .seek-track-bg.skip-on {
+      background: repeating-linear-gradient(
+        -45deg,
+        #e2e8f0,
+        #e2e8f0 4px,
+        #f1f5f9 4px,
+        #f1f5f9 8px
+      );
+      box-shadow: inset 0 0 0 1px #cbd5e1;
+    }
+    .seek-seg-move {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: #38bdf8;
+    }
+    .seek-track-bg.skip-on .seek-seg-move {
+      background: #0284c7;
+    }
+    .seek-markers {
+      position: absolute;
+      left: 9px;
+      right: 9px;
+      top: 0;
+      bottom: 0;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .seek-start-marker {
+      position: absolute;
+      top: -1px;
+      width: 0;
+      height: 0;
+      transform: translateX(-50%);
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 8px solid #16a34a;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+      pointer-events: auto;
+      cursor: pointer;
+    }
+    .seek-start-marker::after {
+      content: '';
+      position: absolute;
+      left: -1px;
+      top: 0;
+      width: 2px;
+      height: 12px;
+      background: #16a34a;
+    }
+    .seek-start-marker:hover {
+      border-top-color: #15803d;
+      transform: translateX(-50%) scale(1.25);
     }
     .seek-slider {
       width: 100%;
-      height: 7px;
+      height: 8px;
       border-radius: 4px;
-      background: #cbd5e1;
+      background: transparent;
       outline: none;
       cursor: pointer;
       appearance: none;
       -webkit-appearance: none;
+      position: relative;
+      z-index: 2;
     }
     .seek-slider::-webkit-slider-thumb {
       appearance: none;
@@ -1311,6 +1379,8 @@
       <div class="app-title">
         <span>✈️ PONS Flight Viewer</span>
         <span class="badge" id="board-badge">PONS v7.1</span>
+        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.20.15</span>
+        <button id="btn-viewer-update" style="display:none; background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:bold; padding:3px 9px; font-size:0.76rem;" onclick="reloadViewerFresh()"></button>
       </div>
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
     </div>
@@ -1318,6 +1388,7 @@
       <input type="file" id="file-input" accept=".csv,.txt" style="display: none;">
       <button onclick="document.getElementById('file-input').click()" title="飛行CSVファイル(data/*.csv, received/*.csv)か、SD の log.txt を開きます">📁 CSV / log.txt を開く</button>
       <button id="btn-save-csv" onclick="saveCurrentCSV()" disabled style="opacity: 0.5; cursor: not-allowed;" title="現在開いているCSVデータをファイルに保存します">💾 CSV保存</button>
+      <button id="btn-open-analysis" onclick="openAnalysisModal()" disabled style="opacity: 0.5; cursor: not-allowed; border-color: #7c3aed; color: #7c3aed; font-weight:bold;" title="読み込み済みの飛行CSVから鉛直G・不安定さ・スペクトル・フゴイド・横モードを解析します">📊 飛行解析</button>
       <button class="btn-primary" onclick="loadSampleFlight()">🚀 自機デモ読込</button>
       <button onclick="loadSampleRxFlight()" style="border-color: #ea580c; color: #ea580c; font-weight:bold;">📡 受信デモ読込</button>
       <button id="btn-webserial" onclick="connectWebSerial()" style="border-color: var(--accent-cyan);">⚡ PONSに接続 (USB)</button>
@@ -1438,6 +1509,8 @@
     <div class="timeline-row">
       <div class="time-display" id="time-display">00:00:00 / 00:00:00</div>
       <div class="slider-container">
+        <div class="seek-track-bg skip-on" id="seek-track-bg"></div>
+        <div class="seek-markers" id="seek-markers"></div>
         <input type="range" class="seek-slider" id="seek-slider" min="0" max="1000" value="0">
       </div>
     </div>
@@ -1483,6 +1556,7 @@
     let lastAnimFrameTime = null;
     let takeoffSec = 0;
     let landSec = 0;
+    let csvClockBaseSec = null;   // CSV の 1 行目の時刻 [JST の日内秒]（time 列が無ければ null）。時間のバーの時刻表示用
     let flightAltMin = 0.0;
     let flightAltMax = 12.0;
     const FLIGHT_SPEED_THRESHOLD = 1.0; // [m/s] 飛行判定しきい値 (1.0 m/s = 3.6 km/h)
@@ -1506,6 +1580,106 @@
         }
       }
       return 0;
+    }
+
+    // 動いている区間（G/S >= FLIGHT_SPEED_THRESHOLD）。シークバーの青帯・動き出しの印・飛行解析の区間で共通に使う。
+    // 静止したら区切る。2 秒未満の瞬間的な静止は 1 つの区間としてつなぐ。
+    // 戻り値: merged = つないだ区間すべて（青帯）/ segments = 1.5 秒以上動いた区間に #1, #2 … と番号を振ったもの（印と解析）
+    const MOVE_MERGE_GAP_SEC = 2.0;
+    const MOVE_MIN_SEG_SEC = 1.5;
+    // 記録がこれより長く途切れたら、前後が動いていても別の区間にする（2026-11-20。2025 年のログは着水後に
+    // 402 秒の欠けがあり、前後の行がどちらも G/S ≥ 1 m/s だったので欠けをまたいで 1 つの区間になっていた）。
+    // トンネルなど GNSS だけが途切れて走り続けている間（11/19 の車で 22〜89 秒）はつなぐので、2 分にしてある
+    const MOVE_MAX_DATA_GAP_SEC = 120.0;
+    let movingSegments = [];   // 開いている CSV の segments（parseCSVText のたびに作り直す）
+
+    function computeMovingSegments(records) {
+      const rawSegs = [];
+      let segStart = null;
+      for (let i = 0; i < (records ? records.length : 0); i++) {
+        const d = records[i];
+        const moving = (d.gs !== null && d.gs !== undefined && !isNaN(d.gs) && d.gs >= FLIGHT_SPEED_THRESHOLD);
+        // 記録の途切れ: 前の行で区間を閉じる（途切れの中を「動いていた」ことにしない）
+        if (segStart !== null && i > 0 && d.t - records[i - 1].t > MOVE_MAX_DATA_GAP_SEC) {
+          rawSegs.push({ start: segStart, end: records[i - 1].t, gapAfter: true });
+          segStart = null;
+        }
+        if (moving && segStart === null) {
+          segStart = d.t;
+        } else if (!moving && segStart !== null) {
+          rawSegs.push({ start: segStart, end: d.t });
+          segStart = null;
+        }
+      }
+      if (segStart !== null) {
+        rawSegs.push({ start: segStart, end: records[records.length - 1].t });
+      }
+      const merged = [];
+      for (const s of rawSegs) {
+        const last = merged[merged.length - 1];
+        if (last && !last.gapAfter && (s.start - last.end) < MOVE_MERGE_GAP_SEC) {
+          last.end = s.end;
+          last.gapAfter = !!s.gapAfter;
+        } else {
+          merged.push({ start: s.start, end: s.end, gapAfter: !!s.gapAfter });
+        }
+      }
+      const segments = merged
+        .filter(s => s.end - s.start >= MOVE_MIN_SEG_SEC)
+        .map((s, i) => ({ no: i + 1, start: s.start, end: s.end }));
+      return { merged, segments };
+    }
+    window.computeMovingSegments = computeMovingSegments;
+
+    // シークバー上の静止/移動の色分け＆「静止→動き出し」マーカーを描画
+    function updateSeekBarSegments() {
+      const trackBg = document.getElementById('seek-track-bg');
+      const markersEl = document.getElementById('seek-markers');
+      if (!trackBg || !markersEl) return;
+
+      const skipOn = !!document.getElementById('check-flight-only')?.checked;
+      trackBg.classList.toggle('skip-on', skipOn);
+      trackBg.innerHTML = '';
+      markersEl.innerHTML = '';
+
+      const { merged, segments } = computeMovingSegments(flightData);
+      movingSegments = segments;
+      if (!flightData || flightData.length < 2 || totalDurationSec <= 0) return;
+
+      // 移動区間の青帯を描画
+      for (const s of merged) {
+        const leftPct = Math.max(0, Math.min(100, (s.start / totalDurationSec) * 100));
+        const widthPct = Math.max(0.25, Math.min(100 - leftPct, ((s.end - s.start) / totalDurationSec) * 100));
+        const bar = document.createElement('div');
+        bar.className = 'seek-seg-move';
+        bar.style.left = `${leftPct}%`;
+        bar.style.width = `${widthPct}%`;
+        trackBg.appendChild(bar);
+      }
+
+      // 「静止→動き出し」ポイントに緑マーカーを配置（1.5 秒以上動いた区間を対象）。
+      // 番号は飛行解析の「区間 #n」と同じ（先頭から動いている区間は印を出さないが番号は数える）
+      for (const s of segments) {
+        // 先頭(0秒)から既に動いている区間は静止からの動き出しではないので出さない。それ以外はすべてマーカー表示
+        if (s.start <= 0.5) continue;
+        const markIdx = s.no;
+        const leftPct = Math.max(0, Math.min(100, (s.start / totalDurationSec) * 100));
+        const durSec = Math.max(0, s.end - s.start);
+        const mk = document.createElement('div');
+        mk.className = 'seek-start-marker';
+        mk.style.left = `${leftPct}%`;
+        const rec = interpolateAt(s.start);
+        const tLabel = (rec && rec.timeStr) ? rec.timeStr.split('.')[0] : formatTime(s.start);
+        mk.title = `▶ 動き出し（区間 #${markIdx}）: ${tLabel} (移動 ${formatTime(durSec)}) — クリックでジャンプ`;
+        mk.addEventListener('click', (e) => {
+          e.stopPropagation();
+          currentPlaneTransformYaw = null;
+          currentBoatTransformHeading = null;
+          currentTimeSec = s.start;
+          updateUI(currentTimeSec);
+        });
+        markersEl.appendChild(mk);
+      }
     }
 
     // 地図オブジェクト
@@ -1562,8 +1736,15 @@
       dropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         dropZone.classList.remove('active');
-        if (e.dataTransfer.files.length > 0) {
-          readCSVFile(e.dataTransfer.files[0]);
+        const files = Array.from(e.dataTransfer.files || []);
+        if (files.length === 0) return;
+        const binFile = files.find(f => /\.bin$/i.test(f.name));
+        const textFile = files.find(f => !/\.bin$/i.test(f.name));
+        if (textFile) readCSVFile(textFile);
+        if (binFile && typeof loadImuBinBytes === 'function') {
+          const rd = new FileReader();
+          rd.onload = () => loadImuBinBytes(rd.result, binFile.name, { openModal: !textFile, tab: 'imu' });
+          rd.readAsArrayBuffer(binFile);
         }
       });
 
@@ -1598,6 +1779,7 @@
       const checkFlightOnly = document.getElementById('check-flight-only');
       if (checkFlightOnly) {
         checkFlightOnly.addEventListener('change', () => {
+          updateSeekBarSegments();
           if (checkFlightOnly.checked && totalDurationSec > 0) {
             const cur = interpolateAt(currentTimeSec);
             if (cur && cur.gs < FLIGHT_SPEED_THRESHOLD) {
@@ -1881,6 +2063,13 @@
         saveBtn.style.opacity = '1';
         saveBtn.style.cursor = 'pointer';
       }
+      const anBtn = document.getElementById('btn-open-analysis');
+      if (anBtn) {
+        anBtn.disabled = false;
+        anBtn.style.opacity = '1';
+        anBtn.style.cursor = 'pointer';
+      }
+      if (typeof resetAnalysisCache === 'function') resetAnalysisCache();
 
       // 相対時刻でソート
       flightData.sort((a, b) => a.t - b.t);
@@ -1889,6 +2078,9 @@
       const tMin = flightData[0].t;
       if (tMin !== 0) for (const d of flightData) d.t -= tMin;
       totalDurationSec = flightData[flightData.length - 1].t;
+      // 時間のバーに時刻（JST の何時何分何秒）を出すための起点。time 列が無い CSV は経過時間のまま
+      csvClockBaseSec = (col.time >= 0) ? parseTimeToSeconds(flightData[0].timeStr) : null;
+      if (!Number.isFinite(csvClockBaseSec)) csvClockBaseSec = null;
 
       // 横滑り角 (Est.Beta) の自動推定
       estimateSideslipBeta(flightData);
@@ -1941,6 +2133,7 @@
       currentPlaneTransformYaw = null;
       currentBoatTransformHeading = null;
       updateMapTrajectory();
+      updateSeekBarSegments();
 
       // UI初期更新
       updateUI(currentTimeSec);
@@ -2296,7 +2489,10 @@
       const dt = (timestamp - lastAnimFrameTime) / 1000;
       lastAnimFrameTime = timestamp;
 
-      if (isPlaying && totalDurationSec > 0) {
+      // ★ 飛行解析を開いている間は再生を進めず、裏の地図・HUD・グラフも描かない（2026-11-20。見えない所を毎フレーム描いて
+      //   解析画面のスクロールがかくついていた）。閉じれば続きから再生する（dt はここで捨てるので時間は飛ばない）
+      const analysisOpen = typeof window.isAnalysisModalOpen === 'function' && window.isAnalysisModalOpen();
+      if (isPlaying && totalDurationSec > 0 && !analysisOpen) {
         currentTimeSec += dt * playbackSpeed;
 
         const flightOnly = document.getElementById('check-flight-only')?.checked;
@@ -2344,7 +2540,15 @@
       if (document.activeElement !== slider) {
         slider.value = totalDurationSec > 0 ? (t / totalDurationSec) * 1000 : 0;
       }
-      document.getElementById('time-display').textContent = `${formatTime(t)} / ${formatTime(totalDurationSec)}`;
+      // 時刻（何時何分何秒）で出す。経過時間はマウスを載せたときの説明に（2026-11-20）
+      const timeEl = document.getElementById('time-display');
+      if (csvClockBaseSec !== null) {
+        timeEl.textContent = `${formatClock(csvClockBaseSec + t)} / ${formatClock(csvClockBaseSec + totalDurationSec)}`;
+        timeEl.title = `経過 ${formatTime(t)} / ${formatTime(totalDurationSec)}`;
+      } else {
+        timeEl.textContent = `${formatTime(t)} / ${formatTime(totalDurationSec)}`;
+        timeEl.title = 'この CSV には時刻の列が無いので、経過時間を出しています';
+      }
 
       // HUD テキスト更新 (データなし時は --- を表示)
       document.getElementById('hud-press').textContent = (data.press !== null && !isNaN(data.press)) ? `${data.press.toFixed(1)} hPa` : "--- hPa";
@@ -3104,6 +3308,13 @@
       return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
+    // 日内秒 → 時刻 HH:MM:SS（起点は csvClockBaseSec = CSV の 1 行目の時刻）。日を跨いだら 0 時に戻す
+    function formatClock(daySec) {
+      const s = ((Math.floor(daySec) % 86400) + 86400) % 86400;
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+    }
+
     // ============================================================
     // 表示レイアウト＆テーマ切り替え
     // ============================================================
@@ -3461,9 +3672,9 @@
       renderFileList();
     }
 
-    async function requestFileList() {
+    async function requestFileList(forceAll = false) {
       if (!serialWriter || downloadBusy()) return;   // 転送中に一覧を頼むと、一覧が転送のあとに遅れて届くだけなので頼まない
-      const all = (listIsAll || fileTab !== 'logs') && !listAllUnsupported;
+      const all = (forceAll || listIsAll || fileTab !== 'logs') && !listAllUnsupported;
       listPending = all ? 'all' : 'basic';
       listIncoming = [];
       if (listAllTimer) { clearTimeout(listAllTimer); listAllTimer = null; }
@@ -3477,6 +3688,7 @@
           listAllUnsupported = true;
           listIsAll = false;
           listPending = null;
+          if (typeof window.onPonsFileListUpdated === 'function') window.onPonsFileListUpdated();
           requestFileList();
         }, 4000);
       }
@@ -3535,7 +3747,9 @@
         if (tab.dev) {
           const ext = (item.path.match(/\.([^.\/]+)$/) || [, ''])[1].toUpperCase();
           typeBadge = tab.id === 'imu' ? badge('生 IMU', '#ccfbf1', '#0f766e') : badge(escapeHtml(ext || 'FILE'), '#f1f5f9', '#475569');
-          btns = save;
+          btns = (tab.id === 'imu'
+            ? `<button class="btn-download" onclick="downloadPonsFileIdx(${idx}, 0, 'open')" title="生 IMU ログをそのまま解析画面で開きます">📊 解析</button> `
+            : '') + save;
         } else if (isLogPath(item.path)) {
           // log.txt: ふだんは最新の分（LOG_TAIL_BYTES）だけ取る。全部は時間がかかる（数 MB になる）
           typeBadge = badge('記録 (log)', '#ede9fe', '#6d28d9');
@@ -3575,12 +3789,16 @@
     // log.txt（SD のルートの記録）か。開いたあと再生ではなく記録の表示へ回す
     function isLogPath(path) { return /(^|\/)log[^\/]*\.txt$/i.test(path || ''); }
 
-    async function downloadPonsFile(filename, size, tail = 0, mode = 'open') {
+    let imuRangeFallbackTimer = null;
+
+    async function downloadPonsFile(filename, size, tail = 0, mode = 'open', imuRange = null) {
       if (!serialWriter || downloadBusy() || listPending) return;
+      if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
 
       currentDownloadFile = filename;
-      // 開けるのは最初のタブのもの（飛行 CSV と log.txt）だけ。ほかは中身をそのまま保存する
-      currentDownloadKind = fileTabOf(filename) !== 'logs' ? 'raw' : (isLogPath(filename) ? 'log' : 'csv');
+      // 開けるのは飛行 CSV・log.txt・生 IMU (.bin)。ほかは中身をそのまま保存する
+      const ftab = fileTabOf(filename);
+      currentDownloadKind = ftab === 'imu' ? 'imu' : (ftab !== 'logs' ? 'raw' : (isLogPath(filename) ? 'log' : 'csv'));
       currentDownloadMode = (mode === 'save' || currentDownloadKind === 'raw') ? 'save' : 'open';
       currentDownloadFrom = 0;
       currentDownloadFull = size;
@@ -3594,18 +3812,35 @@
       lastProgressUpdate = 0;
       // isDataStreaming は DATA_START 受信時に true にする（ヘッダー行混入防止）
 
+      const useImuRange = !!(imuRange && imuRange.jstEnd > imuRange.jstStart && currentDownloadKind === 'imu');
+
       // プログレスバー表示
       const progBox = document.getElementById('serial-progress-box');
       progBox.style.display = 'flex';
-      document.getElementById('serial-progress-filename').textContent = `転送中: ${filename}`;
+      document.getElementById('serial-progress-filename').textContent = useImuRange
+        ? `転送中 (フライト区間抽出): ${filename}`
+        : `転送中: ${filename}`;
       document.getElementById('serial-progress-fill').style.width = '0%';
-      document.getElementById('serial-progress-stats').textContent = '0%';
-      document.getElementById('serial-progress-bytes').textContent = `0 / ${logBytes(size)}`;
+      document.getElementById('serial-progress-stats').textContent = useImuRange ? '本体で時刻検索中...' : '0%';
+      document.getElementById('serial-progress-bytes').textContent = useImuRange ? '区間算出中...' : `0 / ${logBytes(size)}`;
       document.getElementById('serial-progress-speed').textContent = '-- KB/s';
 
-      // 末尾だけ: PONS:GETTAIL,<バイト数>,<パス>（2026-11-11〜。log.txt を一覧に出すファームは、どれもこれを知っている）
       downloadPending = true;   // DATA_START が来るまで（BUG-79）
-      await sendSerialLine(tail > 0 ? `PONS:GETTAIL,${tail},${filename}` : "PONS:GET," + filename);
+      if (useImuRange) {
+        await sendSerialLine(`PONS:GETIMU,${Math.floor(imuRange.jstStart)},${Math.ceil(imuRange.jstEnd)},${filename}`);
+        // 古いファームは PONS:GETIMU を知らず無応答になるため、12秒後に通常 PONS:GET へ自動フォールバック。
+        // 2026-11-20〜のファームはすぐ PONS:GETIMU_ACCEPTED を返すので、そこでこのタイマーを止める（時刻探しが長くても送り直さない）
+        imuRangeFallbackTimer = setTimeout(() => {
+          imuRangeFallbackTimer = null;
+          if (!downloadPending || currentDownloadFile !== filename) return;
+          document.getElementById('serial-progress-filename').textContent = `転送中 (全件取得): ${filename}`;
+          document.getElementById('serial-progress-stats').textContent = '0%';
+          sendSerialLine("PONS:GET," + filename).catch(() => {});
+        }, 12000);
+      } else {
+        // 末尾だけ: PONS:GETTAIL,<バイト数>,<パス>（2026-11-11〜）
+        await sendSerialLine(tail > 0 ? `PONS:GETTAIL,${tail},${filename}` : "PONS:GET," + filename);
+      }
     }
 
     // 転送が動いているか（GET を送ってから終わりの印まで。中断の後始末を待っている間も含む）
@@ -3613,6 +3848,7 @@
 
     // 転送の状態を全部下ろして、進み具合の箱を閉じる（終わり・中断・エラー・切断）
     function endDownloadUi() {
+      if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
       isDataStreaming = false;
       downloadPending = false;
       cancelPending = false;
@@ -3794,6 +4030,21 @@
         return;
       }
 
+      // 生 IMU ログ (.bin) はバイナリのまま解析エンジンへ渡す
+      if (kind === 'imu') {
+        closeSerialModal();
+        const targetTab = window._pendingImuAnalysisTab || 'imu';
+        window._pendingImuAnalysisTab = null;
+        if (typeof loadImuBinBytes === 'function') {
+          // 欠落・CRC 不一致でも開く（デコーダが区切りを探し直す）。ただし解析画面に警告を出し続ける
+          loadImuBinBytes(bytes, name || 'imulog.bin', {
+            openModal: true, tab: targetTab,
+            transferWarning: (shortRead || crcBad) ? `USB 転送: ${note}` : null
+          });
+        }
+        return;
+      }
+
       // log.txt は記録の表示へ、CSV はパースして再生へ
       const fileData = new TextDecoder('utf-8').decode(bytes);
       if (kind === 'log') {
@@ -3894,7 +4145,14 @@
         listIsAll = gotAll;
         if (gotAll) listAllUnsupported = false;
         renderFileList();
+        if (typeof window.onPonsFileListUpdated === 'function') window.onPonsFileListUpdated();
+      } else if (line === "PONS:GETIMU_ACCEPTED") {
+        // 本体が GETIMU を受け付けた（2026-11-20〜のファーム）。時刻探しが 12 秒を超えても PONS:GET を送り直さない
+        // （送り直すと、転送が終わったあとに BUSY が返ってアラートが出ていた）
+        if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
+        if (downloadPending) document.getElementById('serial-progress-stats').textContent = '本体で時刻検索中（受付済み）...';
       } else if (line.startsWith("PONS:DATA_START,")) {
+        if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
         // PONS:DATA_START,<path>,<size>[,<from>]。★ パスに , が入りうるので、パスは送ったものを使い、数は後ろから読む。
         // 末尾だけ（GETTAIL）のときだけ <from> が付く（mysd.cpp）。
         const body = line.substring("PONS:DATA_START,".length);
@@ -3943,7 +4201,17 @@
                  line.startsWith("PONS:SETTINGS_SAVED,") || line.startsWith("PONS:SETTINGS_ERR,")) {
         handleSettingsSerialLine(line);
       } else if (line.startsWith("PONS:ERROR,")) {
+        if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
         const errMsg = line.substring(11);
+        const failedFile = currentDownloadFile;
+        const failedSize = currentDownloadFull;
+        if (errMsg === 'IMU_RANGE_NOT_FOUND') {
+          endDownloadUi();
+          if (failedFile && confirm(`生 IMU ログ（${failedFile}）内に、このフライト時刻の GNSS 記録が見つかりませんでした。\nファイル全体（${logBytes(failedSize)}）を取得しますか？`)) {
+            downloadPonsFile(failedFile, failedSize, 0, 'open', null);
+          }
+          return;
+        }
         if (errMsg === 'BUSY') {
           alert("PONSが現在別のタスクを実行中です。少し待ってから再試行してください。");
         } else if (errMsg === 'NOT_CONNECTED') {
@@ -3989,7 +4257,7 @@
       { id: 'other', label: 'その他',     color: '#94a3b8', re: /./ },
     ];
     // 重さ（行の色）。目安の正規表現なので、ファームの言い回しが変わればここに足す。
-    const LOG_SEV_ERR  = /(^ERR\b|\bERROR\b|FAIL|[Ff]ault|FAULT|stuck|broken|not written|OVERDISCHARGE|NO RESPONSE|SD_NOT_READY)/;
+    const LOG_SEV_ERR  = /(^ERR\b|\bERROR\b|FAIL|\b[Ff]ault|\bFAULT|stuck|broken|not written|OVERDISCHARGE|NO RESPONSE|SD_NOT_READY)/;
     const LOG_SEV_WARN = /(WARN|Battery low|MUTED|REQUIRED|refused|no answer|too big|not saved|aborted|TIMEOUT|timeout|no RF|restarted|TOO HOT|CHARGE HOT:|NO ACK|NOT MEASURED|not restored \((?!rtc alive)|\*\* more than acc)/;
     // グラフ（毎分の行から）。点が 2 つ以上ある系列のあるものだけ出す。
     const LOG_CHARTS = [
@@ -5623,6 +5891,135 @@
       };
       reader.readAsText(file);
     }
+
+    // 飛行解析モジュール（analysis_ui.js）向け連携フック
+    window.getFlightViewerAnalysisContext = function () {
+      return {
+        flightData,
+        takeoffSec,
+        landSec,
+        totalDurationSec,
+        currentTimeSec,
+        segments: movingSegments,   // 動いている区間（シークバーと同じ分け方。解析はこの 1 つずつを対象にする）
+        speedThreshold: FLIGHT_SPEED_THRESHOLD,
+        filename: currentCsvFilename || 'sample_flight.csv'
+      };
+    };
+    window.seekFlightViewerTo = function (tSec, focusMap) {
+      if (!flightData || flightData.length === 0) return;
+      if (isPlaying) {
+        isPlaying = false;
+        const playBtn = document.getElementById('btn-play');
+        if (playBtn) playBtn.textContent = '▶ 再生';
+      }
+      currentTimeSec = Math.max(0, Math.min(totalDurationSec, tSec));
+      updateUI(currentTimeSec);
+      if (focusMap && mapInitialized && map) {
+        const d = interpolateAt(currentTimeSec);
+        if (d && Number.isFinite(d.lat) && Number.isFinite(d.lon)) {
+          map.invalidateSize(false);
+          map.setView([d.lat, d.lon], Math.max(map.getZoom(), 14), { animate: false });
+        }
+      }
+    };
+    // Web Serial 経由での生 IMU ログ自動検出・取得フック
+    window.getPonsSerialImuMatch = function (csvFilename) {
+      const connected = !!(serialWriter);
+      const imuFiles = (ponsFileList || []).filter(f => fileTabOf(f.path) === 'imu');
+      let matched = null;
+      if (connected && imuFiles.length > 0 && window.PonsImuAnalysis) {
+        const stamp = window.PonsImuAnalysis.extractDateStamp(csvFilename);
+        if (stamp) {
+          matched = imuFiles.find(f => f.path.includes(stamp)) || null;
+        }
+      }
+      return { connected, listIsAll, listAllUnsupported, imuFiles, matched };
+    };
+    window.requestAllPonsFilesForImu = async function () {
+      if (!serialWriter || listPending) return;
+      await requestFileList(true);
+    };
+    window.fetchPonsImuForAnalysis = function (path, size, targetTab) {
+      if (!serialWriter) { alert('PONS が USB 接続されていません。'); return; }
+      window._pendingImuAnalysisTab = targetTab || 'imu';
+      document.getElementById('serial-modal').classList.add('active');
+      // 飛行 CSV が開かれていれば、そのフライト区間（前後 ±30 秒）だけを PONS:GETIMU でピンポイント取得する
+      let imuRange = null;
+      if (flightData && flightData.length >= 2 && flightData[0].timeStr) {
+        const m = String(flightData[0].timeStr).match(/(\d+):(\d+):([\d.]+)/);
+        if (m) {
+          const baseJst = parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]);
+          // 解析は動いている区間ごとなので、最初の区間の始まりから最後の区間の終わりまでを取る（停止中だけの前後は取らない）
+          const segs = movingSegments || [];
+          const relStart = segs.length > 0 ? segs[0].start : 0;
+          const relEnd = segs.length > 0 ? segs[segs.length - 1].end : totalDurationSec;
+          const jstStart = Math.max(0, Math.floor(baseJst + relStart - 30));
+          const jstEnd = Math.min(86400, Math.ceil(baseJst + relEnd + 30));
+          if (jstEnd > jstStart + 10) imuRange = { jstStart, jstEnd };
+        }
+      }
+      downloadPonsFile(path, size || 0, 0, 'open', imuRange);
+    };
+  </script>
+  <script src="analysis_dsp.js?v=2026.11.20.15"></script>
+  <script src="analysis_imulog.js?v=2026.11.20.15"></script>
+  <script src="analysis_ui.js?v=2026.11.20.15"></script>
+  <script>
+    // Flight Viewer バージョン管理・キャッシュ不整合 / 最新版チェック
+    const VIEWER_VERSION = '2026.11.20.15';
+    function reloadViewerFresh() {
+      try {
+        const u = new URL(location.href);
+        u.searchParams.set('_r', String(Date.now()));
+        location.replace(u.toString());
+      } catch (_) {
+        location.reload();
+      }
+    }
+    (function checkViewerVersion() {
+      const badge = document.getElementById('viewer-ver-badge');
+      const btn = document.getElementById('btn-viewer-update');
+      if (badge) badge.textContent = 'v' + VIEWER_VERSION;
+
+      // リロード用クエリ _r が付いていれば URL をきれいに戻す
+      try {
+        const u = new URL(location.href);
+        if (u.searchParams.has('_r')) {
+          u.searchParams.delete('_r');
+          history.replaceState(null, '', u.toString());
+        }
+      } catch (_) {}
+
+      const showUpdate = (label, title) => {
+        if (!btn) return;
+        btn.textContent = label;
+        btn.title = title || 'クリックして最新版を再読み込みします';
+        btn.style.display = 'inline-flex';
+      };
+
+      // 1. HTML と外部 JS のキャッシュ不整合チェック
+      const dspVer = window.PonsAnalysisDSP && window.PonsAnalysisDSP.VERSION;
+      const imuVer = window.PonsImuAnalysis && window.PonsImuAnalysis.VERSION;
+      const uiVer = window.PONS_ANALYSIS_UI_VERSION;
+      if ((dspVer && dspVer !== VIEWER_VERSION) || (imuVer && imuVer !== VIEWER_VERSION) || (uiVer && uiVer !== VIEWER_VERSION)) {
+        showUpdate('⚠️ キャッシュ不整合 — クリックで更新', `HTML: v${VIEWER_VERSION} / DSP: v${dspVer || '?'} / IMU: v${imuVer || '?'} / UI: v${uiVer || '?'}`);
+        return;
+      }
+
+      // 2. GitHub Pages 等の HTTP(S) 上なら裏で最新版の index.html を確認
+      if (location.protocol === 'http:' || location.protocol === 'https:') {
+        const checkUrl = location.pathname + (location.pathname.endsWith('/') ? 'index.html' : '') + '?_vchk=' + Date.now();
+        fetch(checkUrl, { cache: 'no-store' })
+          .then(r => (r.ok ? r.text() : ''))
+          .then(html => {
+            const m = html.match(/const\s+VIEWER_VERSION\s*=\s*['"]([^'"]+)['"]/);
+            if (m && m[1] && m[1] !== VIEWER_VERSION) {
+              showUpdate(`🔄 新しい版あり (v${m[1]}) — 更新`, `現在: v${VIEWER_VERSION} → 最新: v${m[1]}`);
+            }
+          })
+          .catch(() => {});
+      }
+    })();
   </script>
 </body>
 </html>

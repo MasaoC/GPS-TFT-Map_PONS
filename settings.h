@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261118
-#define BUILDVERSION "1.09"
+#define BUILDDATE 20261120
+#define BUILDVERSION "1.10"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -289,8 +289,13 @@
 #define CHARGE_SW_OFF_ARM_MS    15000UL  // 起動からこの時間は読み上げない（起動音・無線モードの読み上げと重ねない）
 // 「移動中は出さない」の判定。**自機の** GNSS の対地速度で見る。
 // ★ fix が無ければ静止とみなす。屋内で充電している場面が本命なので、fix 待ちで黙らせない。
-#define CHARGE_SW_MOVING_MPS     1.5f    // これを超えたら移動中（歩く速さ 1.3m/s 前後より少し上）
-#define CHARGE_SW_STILL_MS      30000UL  // この時間止まっていたら移動が終わったとみなす（信号待ちで出たり消えたりしない）
+// ★ sAcc が悪い屋内測位（sAcc 2m/s 前後で偽の GS 2〜5m/s が出る）で充電ポップアップが
+//   消え続けないよう、速度精度 sAcc の上限と 3σ 下限、および継続時間の門を置く（2026-11-20）。
+#define CHARGE_SW_MOVING_MPS      1.5f    // これを超えたら移動中（歩く速さ 1.3m/s 前後より少し上）
+#define CHARGE_SW_MOVING_SACC_MAX 1.0f    // これを超える sAcc [m/s] の測位は移動判定に使わない（屋内の暴れ除け）
+#define CHARGE_SW_MOVING_SACC_K   3.0f    // 移動とみなす下限に sAcc × この倍率も掛ける（3σ 超えを要求）
+#define CHARGE_SW_MOVING_HOLD_MS  3000UL  // この時間連続で超えたら移動中（1 発のスパイクで 30 秒消さない）
+#define CHARGE_SW_STILL_MS       30000UL  // この時間止まっていたら移動が終わったとみなす（信号待ちで出たり消えたりしない）
 // ---- 高温での充電の警告（power.cpp）----
 // 電池 DTP603048(PHR) の仕様は「充電 0〜45°C」（放電は −20〜60°C）。
 // 温度は MS5611（本体基板）で見る。電池はケースの中で本体基板の隣にあるので、

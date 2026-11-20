@@ -275,6 +275,8 @@
               // 受けた 32 バイトのフレームの回転枠の番号（0〜7。lora_link/link_wire2.h）。
               //   回転枠の項目（日付・平均ピッチ・風・電圧・気圧など）は、その枠の行で更新された値。
               uint8_t  slot;
+              // 機体の速度精度 sAcc [m/s]（received/ だけ。2026-11-20〜。電波で 8 発に 1 回届いた最後の値）。NAN = 空欄
+              float    sacc;
           } saveCsvArgs;
           struct {
               int freq;
@@ -307,6 +309,8 @@
           struct {                           // For TASK_SERIAL_GET
               char filename[64];             // 送信対象ファイル名（相対パス含む）
               uint32_t tail;                 // 0 = 全部。それ以外は末尾のこのバイト数だけ（行の頭から。PONS:GETTAIL）
+              uint32_t jst_start;            // PONS:GETIMU: 抜き出す開始 JST 日内秒 (0..86400)。jst_end > jst_start で有効
+              uint32_t jst_end;              // PONS:GETIMU: 抜き出す終了 JST 日内秒 (0..86400)
           } serialGetArgs;
           struct {                           // For TASK_SERIAL_LIST
               bool all;                      // true = 全部のファイル（PONS:LIST,ALL）。false = 飛行 CSV と log.txt だけ
@@ -371,12 +375,12 @@
   void gnss_dbd_load_sd();
   void gnss_dbd_save_sd();
   Task createSerialListTask(bool all = false);   // all: PONS:LIST,ALL（全部のファイル）
-  Task createSerialGetTask(const char* filename, uint32_t tail = 0);   // tail: 末尾だけ送る [B]（0 = 全部）
+  Task createSerialGetTask(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0);   // tail: 末尾だけ [B] / jst_start..end: IMU時刻範囲 [s]
   Task createSerialSettingsGetTask();
   Task createSerialSettingsSetTask(const char* key, const char* value);
   Task createSerialSettingsSaveTask();
   void serial_list_csv_files(bool all = false);
-  void serial_send_csv_file(const char* filename, uint32_t tail = 0);
+  void serial_send_csv_file(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0);
   void serial_send_settings();
   void serial_apply_setting(const char* key, const char* value);
   void serial_save_settings();

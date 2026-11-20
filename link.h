@@ -118,6 +118,7 @@
   int      link_get_numsat();
   uint32_t link_get_hacc_mm();            // 水平精度 [mm]
   bool     link_get_fix_ok();             // gnssFixOK
+  bool     link_get_sacc_mps(float &mps); // 速度精度 sAcc [m/s]。分からなければ false（8 発に 1 回届く）
   float link_get_kf_altitude();
   float link_get_kf_vspeed();
   float link_get_pressure();

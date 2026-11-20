@@ -1,10 +1,10 @@
 // ============================================================
 // File    : link_wire2.h
 // Project : PONS v7 — PONS Link
-// Role    : 電波に載せる 32 バイトのフレーム。LinkTelem（67 バイト）を詰めて送り、
+// Role    : 電波に載せる 32 バイトのフレーム。LinkTelem（69 バイト）を詰めて送り、
 //           受けたら LinkTelem に戻す。画面・ログ・リプレイは LinkTelem のまま何も変えない。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/20
 // ============================================================
 //
 // ★ **2026-10-27 から、電波に載せるのはどの CH でもこの 32 バイトだけ**（ローワーもアッパーも）。
@@ -23,6 +23,7 @@
 //   ・受信側は回転枠の値を覚えておき、LinkTelem を組み立て直す（LinkW2Rx）。
 //     回転枠の項目は、その枠を受けるまで have ビットを立てない（分からない値を出さない）。
 //     have ビットの無い項目（目的地・目的地の ID・ナビモード・縮尺・水平精度）は link_w2_slot_seen() で確かめる。
+//     sAcc も have ビットを持たないが、受けるまでと途切れたあとは値が LINK_SACC_NONE になっている。
 //   ・核の「無い」は**その項目の使わない値**で表す（フラグのバイトは持たない）。
 //     時刻 0xFFFF / 真方位 0xFFF（対地速度ごと無し）/ 高度 0x8000 / 昇降 -128 / ロール 0x800（ロール・ピッチとも無し）/
 //     ヨー 0xFFF / 平均ピッチ -512 / 推定 TAS 0。送る側は値をその手前で頭打ちにする。
@@ -32,7 +33,7 @@
 //   （昇降 ±6.35m/s、速度 102m/s、平均ピッチ ±51.1°、推定 TAS 25.5m/s まで）。
 //
 // ★ 形を変えたら LINK_W2_MAGIC を変えること（古い機体が新しい形を誤読しないように）。
-//   **印は上位 6 ビットで見る**（下位 2 ビットはグループ）ので、変えるときは 4 つ飛ばし（0xA4 → 0xA8 …）。
+//   **印は上位 6 ビットで見る**（下位 2 ビットはグループ）ので、変えるときは 4 つ飛ばし（0xA4 → 0xA8 → 0xAC …）。
 //   並び（バイトの位置）は PONSv7 と PONSv7.1 で同じに保つ。
 //   debug/v7-noise-test は 2026-11-07 にこの約束から外した（古い 0xA2 を出し続けるが、印で弾くので誤読はしない）。
 //
@@ -42,6 +43,8 @@
 //   0xA4（2026-11-07〜）: グループを印の下位 2 ビットへ（A〜D）、フラグを「無し」の値に置き換えて
 //     空いた 2 バイトで、推定 TAS（核）と平均ピッチ（姿勢を 6 バイトに）を毎回送る。風は 4 発に 1 回。
 //     docs/pons_tas.md §5.2。
+//   0xA8（2026-11-20〜）: 回転枠 7 のナビモードを 8 → 2 ビットに縮め、空いた 6 ビットで速度精度 sAcc を送る
+//     （受信機の地図と GNSS 詳細画面の sAcc を機体の値で出すため。それまでは「--」）。8 発に 1 回。
 //   受信ログ（received/）は LinkTelem から書く。末尾近くの slot 列で、どの回転枠が入っていたか
 //   （＝その行で更新されたゆっくりした項目）が分かる。
 //
@@ -53,12 +56,13 @@
 #include "link_proto.h"
 
 #define LINK_W2_LEN        32
-#define LINK_W2_MAGIC      0xA4   // 印（上位 6 ビット）。下位 2 ビットはグループ。以前の 65 バイトは 'P'＝0x50 で始まる
+#define LINK_W2_MAGIC      0xA8   // 印（上位 6 ビット）。下位 2 ビットはグループ。以前の 65 バイトは 'P'＝0x50 で始まる
 #define LINK_W2_MAGIC_MASK 0xFC
 #define LINK_W2_SLOTS      8      // 回転枠の数。**256 の約数にすること**（seq の 8 ビットが一周しても続くように）
 static_assert((LINK_W2_MAGIC & ~LINK_W2_MAGIC_MASK) == 0, "印の下位 2 ビットはグループ用に空けておく");
 // 古い並びの印（0xA2）と、65 バイト時代の先頭（'P'）を誤読しないこと
 static_assert((0xA2 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "古い並び 0xA2 と印が区別できない");
+static_assert((0xA4 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "古い並び 0xA4 と印が区別できない");
 static_assert((0x50 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "65 バイト時代の先頭と印が区別できない");
 
 // ---- 位置（バイト） ----
@@ -101,7 +105,7 @@ static_assert((LINK_ST_ALL & W2_ST_FIXOK) == 0, "LINK_ST_* が FIXOK のビッ�
 #define W2S_ALTV     4   // GNSS 高度 16bit(0.1m。INT16_MIN = 無し) | 電圧 8bit(link_pack_volt。0 = 無し)
 #define W2S_WIND2    5   // 風（W2S_WIND と同じ。1 周に 2 回載せて 4 発に 1 回にする）
 #define W2S_PRESS    6   // 気圧 16bit(0.1hPa。0 = 無し) | 地図の縮尺 8bit
-#define W2S_NAV      7   // ナビモード 8bit | 目的地の ID 16bit（0 = 送っていない）
+#define W2S_NAV      7   // ナビモード 2bit | sAcc 6bit（link_w2_sacc_code。0 = 無し）| 目的地の ID 16bit（0 = 送っていない）
 
 // 回転枠で運ぶ have ビット（受けるまで立てない）
 #define W2_SLOT_HAVE (RHAVE_DATE | RHAVE_ATT_TRIM | RHAVE_ATT_WIND | \
@@ -119,6 +123,24 @@ static inline int32_t  w2_clampi(int32_t v, int32_t lo, int32_t hi) { return v <
 static inline int32_t  w2_sext(uint32_t v, int bits) { const uint32_t m = 1u << (bits - 1); v &= (1u << bits) - 1; return (int32_t)((v ^ m) - m); }
 // 割り算の四捨五入（負の数も）
 static inline int32_t  w2_divr(int32_t a, int32_t b) { return (a >= 0) ? (a + b / 2) / b : -((-a + b / 2) / b); }
+
+// 速度精度 sAcc の 6 ビットの段（回転枠 7）。0 = 無し（古い並びの予備ビットと同じく 0 を「無し」にしておく）。
+//   1〜50  : 0.00〜0.49 m/s（0.01 刻み）
+//   51〜63 : 0.50〜3.50 m/s（0.25 刻み。63 は「3.50 以上」）
+// ★ 画面の色の境目（0.3 / 3.0 m/s。display_tft.cpp）はどちらも段の上にある。細かさが要るのは 0.5 未満だけ。
+#define W2_SACC_NONE  0
+static inline uint8_t link_w2_sacc_code(uint16_t cms) {
+    if (cms == LINK_SACC_NONE) return W2_SACC_NONE;
+    if (cms < 50) return (uint8_t)(1 + cms);
+    const int32_t c = 51 + w2_divr((int32_t)cms - 50, 25);
+    return (uint8_t)(c > 63 ? 63 : c);
+}
+static inline uint16_t link_w2_sacc_cms(uint8_t code) {
+    code &= 0x3F;
+    if (code == W2_SACC_NONE) return LINK_SACC_NONE;
+    if (code <= 50) return (uint16_t)(code - 1);
+    return (uint16_t)(50 + (code - 51) * 25);
+}
 
 static inline uint8_t link_w2_slot_of(uint8_t seq8) { return (uint8_t)(seq8 % LINK_W2_SLOTS); }
 // その 1 バイトが印か（グループの 2 ビットを落として比べる）。
@@ -210,7 +232,8 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
         break; }
     case W2S_NAV:
         // 目的地の ID の 0 は「送っていない」。受信側は番号で合わせる。
-        s = t->nav_mode | ((uint32_t)t->dest_id << 8);
+        // ナビモードは 2 ビット（DMODE_* は 0〜2。link.cpp の static_assert）。上の 6 ビットは sAcc。
+        s = (t->nav_mode & 0x03u) | ((uint32_t)link_w2_sacc_code(t->sacc_cms) << 2) | ((uint32_t)t->dest_id << 8);
         break;
     }
     w2_put24(out + W2_SLOT, s);
@@ -250,7 +273,10 @@ struct LinkW2Rx {
 // 受信機の「無信号」（ローワーで 10 秒）と同じ長さ。電波が戻った直後に古い風や電圧を出さないため。
 #define LINK_W2_STALE_FRAMES  10
 
-static inline void link_w2_rx_reset(LinkW2Rx* st) { memset(st, 0, sizeof(*st)); }
+static inline void link_w2_rx_reset(LinkW2Rx* st) {
+    memset(st, 0, sizeof(*st));
+    st->acc.sacc_cms = LINK_SACC_NONE;   // 0 は「0.00 m/s」なので、受けるまでは「無し」にしておく
+}
 
 // その回転枠を（途切れてから）受けたか。have ビットの無い項目を使う前に見ること。
 // ★ 受けるまで 0 のままの目的地・ナビモード・縮尺をそのまま使うと、受信機が
@@ -279,6 +305,7 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     if (st->seq_known && gap_ms > LINK_W2_STALE_FRAMES * per_ms) {
         // 長く途切れた後。回転枠で覚えていた値はもう信用しない（受け直すまで出さない）
         st->slot_have = 0; st->slot_seen = 0; st->yawacc_known = false;
+        t.sacc_cms = LINK_SACC_NONE;   // have ビットが無いので値で「無し」に戻す（古い sAcc を出さない）
         // ★ 時は 30 分より短い途切れなら、下の「その時の中の 0.1 秒が戻ったら繰り上げる」で追える
         //   （時をまたげば必ず 30 分以上戻る）ので覚えておく。忘れると回転枠 0 が来るまでの最大 8 発、
         //   受信ログの時刻が 0 時になる。それより長い途切れは分からないので捨てる。
@@ -422,7 +449,8 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         t.scale_index = (uint8_t)((s >> 16) & 0xFF);
         break; }
     case W2S_NAV:
-        t.nav_mode = (uint8_t)(s & 0xFF);
+        t.nav_mode = (uint8_t)(s & 0x03);
+        t.sacc_cms = link_w2_sacc_cms((uint8_t)((s >> 2) & 0x3F));
         t.dest_id  = (uint16_t)((s >> 8) & 0xFFFF);
         break;
     }

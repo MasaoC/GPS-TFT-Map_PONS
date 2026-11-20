@@ -555,7 +555,18 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             if i_mv is not None:
                 break
         if i_lv is None and i_mv is not None:
-            a0, sig = acv[i_mv], 30.0          # ESKF_INIT_ATT_SIGMA_MOVING_DEG
+            # 機上と同じ: 1 サンプルではなく加速度の低域（up_lp_。時定数 0.8 秒、|a| が g から 2 m/s² 以上外れた分は除く）で水平化（2026-11-20）
+            up = None
+            for j in range(i_mv + 1):
+                an = float(np.linalg.norm(acv[j]))
+                if an > 1.0 and abs(an - 9.80665) < 2.0:                # ESKF_UP_LP_ACC_TOL
+                    if up is None:
+                        up = acv[j] / an
+                    else:
+                        dtj = tsv[j] - tsv[j - 1] if j else 0.004
+                        up = up + (acv[j] / an - up) * min(1.0, 1.25 * max(dtj, 0.0))   # ESKF_UP_LP_GAIN（0.005 × 250 Hz）
+                        up = up / np.linalg.norm(up)
+            a0, sig = (acv[i_mv] if up is None else up), 30.0          # ESKF_INIT_ATT_SIGMA_MOVING_DEG
             i_start = i_mv
         elif i_lv is None:
             print(f"warn: session {sess} に 2 秒の静止区間が無い。"

@@ -726,9 +726,11 @@ static void strike_through(TFT_eSprite &spr, int x, int y_mid, int w, uint16_t c
   spr.drawFastHLine(x, y_mid + 1, w, col);   // 2px。地図の上でも見えるように
 }
 
-// 測位品質（sAcc / vAcc）を「不明」として出すべきか。
-// ★ **PONS Link が運ぶ測位品質は hAcc / numsat / fixOK だけ**（link_proto.h の
-//   LinkTelem。65 バイト固定で、電波では 32 バイトに詰めるので安易に足せない）。sAcc と vAcc は載っていない。
+// 測位品質（vAcc など）を「不明」として出すべきか。
+// ★ **PONS Link が運ぶ測位品質は hAcc / numsat / fixOK と sAcc だけ**（link_proto.h の
+//   LinkTelem。電波では 32 バイトに詰めるので安易に足せない）。vAcc は載っていない。
+//   sAcc は 2026-11-20 から載る（8 発に 1 回）ので、sAcc の表示は下の gnss_sacc_shown() を通す。
+//   バリオ画面の GNSS の上下速度の門の行（sAcc も出る）は自機の KF の話なので、ミラー中は引き続きここで「--」。
 //   それなのに get_gnss_sacc_mmps() / get_gnss_vacc_mm() はミラーで差し替わらない
 //   ので、**ミラー中は受信機自身の値がそのまま出る**。隣に並ぶ GS・高度・hAcc は
 //   機体の値なので、**機体の測位品質だと読まれる**（ボートは止まっているから
@@ -740,6 +742,22 @@ static void strike_through(TFT_eSprite &spr, int x, int y_mid, int w, uint16_t c
 bool gnss_acc_unknown() { return link_mirror_active() || getReplayMode(); }
 // 「--」の理由（受信のミラーは電波に載っていない、リプレイは CSV に無い）
 const char* gnss_acc_unknown_note() { return link_mirror_active() ? "(not on link)" : "(not in log)"; }
+
+// 画面に出す sAcc。**sAcc だけは 2026-11-20 から電波に載る**（回転枠 7 の 6 ビット。lora_link/link_wire2.h）ので、
+// ミラー中は機体の値を出す。vAcc は載っていないので gnss_acc_unknown() のまま。
+// ★ 電波の sAcc は段で詰めてある（0.5 m/s 以上は 0.25 刻み、3.5 は「3.5 以上」）。届くのは 8 発に 1 回。
+//   回転枠 7 を受けるまでと、機体の GNSS が黙っているあいだは「--」。
+bool gnss_sacc_shown(float &mps, const char* &note) {
+  note = "";
+  if (getReplayMode()) { note = "(not in log)"; return false; }
+  if (link_mirror_active()) {
+    if (link_get_sacc_mps(mps)) return true;
+    note = "(waiting)";
+    return false;
+  }
+  mps = get_gnss_sacc_mmps() / 1000.0f;
+  return true;
+}
 
 // ESKF のヨー（真方位）を表示・アイコン回転に使ってよいかを判定する。
 // ヨーは水平加速度がある間しか可観測にならず、等速直進が続くと際限なく漂うため、
@@ -1924,10 +1942,17 @@ void draw_eskf_attitude() {
     backscreen.setTextWrap(false);
     backscreen.loadFont(AA_FONT_SMALL);
     const int fh = backscreen.fontHeight();
+    const int y2 = BACKSCREEN_SIZE - 9 - 8 - ESKF_BOTTOM_GAP;
+    float rem = (ESKF_STATIC_INIT_US * 1e-6f) - attitude_get_static_secs();
+    if (rem < 0.0f) rem = 0.0f;
     backscreen.setTextColor(COLOR_ORANGE);
-    backscreen.setCursor(ESKF_LABEL_X,
-                         BACKSCREEN_SIZE - 9 - 8 - ESKF_BOTTOM_GAP - fh - ESKF_ROW_GAP);
+    backscreen.setCursor(ESKF_LABEL_X, y2 - fh - ESKF_ROW_GAP);
     backscreen.print("ESKF Not ready");
+    backscreen.unloadFont();
+    backscreen.setTextSize(1);
+    backscreen.setCursor(ESKF_LABEL_X, y2);
+    backscreen.printf("Hold still %.1fs", rem);
+    backscreen.loadFont(AA_FONT_SMALL);
     backscreen.setTextColor(COLOR_BLACK);
     return;
   }
@@ -2306,17 +2331,19 @@ void draw_status_mark(TFT_eSprite &spr, int cx, int cy, int r, uint16_t col) {
 
 // タイトル右端の状態マークが緑（丸）になる条件を 1 か所にまとめる。
 // 各メニュー行のマークもここを参照するので、条件と表示が食い違わない。
-//   緑になるのは次の 4 つを全て満たすとき（どれもページ1で見える）:
+//   緑になるのは次の 5 つを全て満たすとき（どれもページ1で見える）:
 //     1. ESKF が収束している（READY）        … ページ1の ESKF 行 / ページ2の READY 行
 //     2. Roll/Pitch/Yaw func が ON          … ページ1
 //     3. Roll trim during flight が ON      … ページ1
-//     4. 自動トリムの累積が ROLL_TRIM_WARN_DEG 未満  … ページ1の Rtrim 表示
+//     4. Wind estimate が ON                … ページ1
+//     5. 自動トリムの累積が ROLL_TRIM_WARN_DEG 未満  … ページ1の Rtrim 表示
 // 1 は「まだ姿勢が出せていない」状態なので、これを緑にすると準備完了と誤解する。
-// 4 は、累積が大きい＝取り付けがずれていてバンク警報の基準が信用できない状態だから。
+// 5 は、累積が大きい＝取り付けがずれていてバンク警報の基準が信用できない状態だから。
 // 飛行前点検で気づけるようにする。
 static bool imu_ok_ready() { return attitude_ready(); }
 static bool imu_ok_rpy()   { return attitude_get_rpy_enabled(); }
 static bool imu_ok_trim()  { return attitude_get_roll_trim_enabled(); }
+static bool imu_ok_wind()  { return attitude_get_wind_enabled(); }
 static bool imu_ok_rtrim() { return fabsf(attitude_get_roll_trim_deg()) < ROLL_TRIM_WARN_DEG; }
 
 // メニュー行の右端に状態マークを描く（行の縦中央）。x は全行で揃える。
@@ -2336,7 +2363,7 @@ uint16_t imu_status_color() {
   // マウントから外されたあと APPLY していない＝較正が無効。これだけは赤にする。
   // 姿勢の基準そのものが失われている状態で、他の設定の良し悪しより深刻なため。
   if (attitude_needs_apply() && attitude_get_rpy_enabled()) return COLOR_RED;
-  const bool ok = imu_ok_ready() && imu_ok_rpy() && imu_ok_trim() && imu_ok_rtrim();
+  const bool ok = imu_ok_ready() && imu_ok_rpy() && imu_ok_trim() && imu_ok_wind() && imu_ok_rtrim();
   return ok ? COLOR_GREEN : COLOR_ORANGE;
 }
 
@@ -2410,7 +2437,7 @@ static void draw_imu_page1() {
     // マウントから外された形跡がある。較正をやり直すまで姿勢は信用できない。
     backscreen.print("!! REMOVED FROM MOUNT"); y += lh;
     backscreen.setCursor(2, y);
-    backscreen.print("   APPLY required"); y += lh + 6;
+    backscreen.print("   APPLY required"); y += lh + 4;
   } else if (attitude_get_rpy_enabled() && !getReplayMode() &&
              attitude_calib_date_stale(get_gnss_jst_yyyymmdd())) {
     // 較正した日と今日（JST）が違う。電源が切れている間に外して付け直していても
@@ -2426,7 +2453,7 @@ static void draw_imu_page1() {
     backscreen.printf("! CALIB IS FROM %02u/%02u",
                       (unsigned)(cd / 100 % 100), (unsigned)(cd % 100)); y += lh;
     backscreen.setCursor(2, y);
-    backscreen.print("  APPLY again if remounted"); y += lh + 6;
+    backscreen.print("  APPLY again if remounted"); y += lh + 4;
   }
   // ★ 2026-11-07 まで、どちらにも当たらないときは青の注意書き
   //   「Note: Make sure actual aircraft attitude matches SET attitude」を 2 行出していた。
@@ -2435,10 +2462,10 @@ static void draw_imu_page1() {
   const bool warn_shown = (y > 50);   // 上の赤・橙の 2 行を出したか（出していなければ y はまだ 44）
 
   // ---- 操作メニュー ----
-  // 項目数 9。行間 17 で、警告の 2 行が無いときの最終行（stored offset）は y≈201。
-  // 警告の 2 行を出しているときは行間を 16 に詰めて、最終行を y≈222 に収める（backscreen は 240px）。
+  // 項目数 10。行間 16 で、警告の 2 行が無いときの最終行（stored offset）は y≈208。
+  // 警告の 2 行を出しているときは行間を 15 に詰めて、最終行を y≈224 に収める（backscreen は 240px）。
   // 項目を足すときはこの計算もやり直すこと。
-  const int mh = warn_shown ? 16 : 17;
+  const int mh = warn_shown ? 15 : 16;
   bool on_ground = eskf_calib_allowed();
   for (int i = 0; i < IMU_MENU_COUNT; i++) {
     bool sel = (imu_cursor == i);
@@ -2461,7 +2488,15 @@ static void draw_imu_page1() {
         // 実行可否をそのまま出す。飛行中は通さない。
         if (attitude_calib_pending())
                              backscreen.print("APPLY  ... hold still");
-        else if (!ready)     backscreen.print("APPLY  (ESKF not ready)");
+        else if (!ready) {
+          if (get_imu_ok()) {
+            float rem = (ESKF_STATIC_INIT_US * 1e-6f) - attitude_get_static_secs();
+            if (rem < 0.0f) rem = 0.0f;
+            backscreen.printf("APPLY (Hold still %.1fs)", rem);
+          } else {
+            backscreen.print("APPLY (IMU no signal)");
+          }
+        }
         else if (!on_ground) backscreen.print((getReplayMode() || is_demo_active())
                                               ? "APPLY  (hold still)" : "APPLY  (moving)");
         else                 backscreen.print("APPLY above=calibrate now");
@@ -2486,10 +2521,14 @@ static void draw_imu_page1() {
       case IMU_MENU_WIND:
         backscreen.printf("Wind estimate: %s",
                           attitude_get_wind_enabled() ? "ON " : "OFF");
+        draw_imu_row_dot(y, imu_row_col(imu_ok_wind()));
         break;
       case IMU_MENU_HEADER:
         // ヘッダー右の大きい枠。TAS にすると案内（2 画面）を通る（GPS_TFT_map.ino の tas_guide_start）
         backscreen.printf("Header: %s", tas_setting_get() ? "TAS (estimate)" : "Pavg");
+        break;
+      case IMU_MENU_TASCURVE:
+        backscreen.print("TAS curve >");
         break;
       case IMU_MENU_NEXTPAGE:
         // ★ 丸は出さない。右上の丸が緑になる条件は全部このページの行に丸として出ているので、
@@ -2502,7 +2541,7 @@ static void draw_imu_page1() {
   }
 
   // ---- 現在保存されているオフセット ----
-  y += 4;
+  y += warn_shown ? 2 : 4;
   float lr, lp;
   attitude_get_level_offset(lr, lp);
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
@@ -2696,10 +2735,15 @@ void draw_wireless(int cursor) {
   // 選べるのは帯域が重ならない 0/3/6/9/12 と、アッパーバンドの 15/21/27（link_proto.h）。
   // アッパーには UP を付ける（休止の決まりがかかり、SF9 以上は送る間隔が 1 秒より長い。SF11 は使えない）。
   const uint8_t ch = link_get_radio_ch();
+  const bool ch_upper = link_radio_ch_upper(ch);
   backscreen.setTextColor(cursor == 1 ? COLOR_BLUE : COLOR_BLACK, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.printf("%sCh      : %u  (%.1f MHz)%s", cursor == 1 ? ">" : " ",
-                    ch, 920.8f + 0.2f * ch, link_radio_ch_upper(ch) ? " UP" : "");
+  backscreen.printf("%sCh      : %u  (%.1f MHz)", cursor == 1 ? ">" : " ",
+                    ch, 920.8f + 0.2f * ch);
+  if (ch_upper) {
+    backscreen.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    backscreen.print(" UP");
+  }
   y += lh;
   // ★ 帯域幅（500kHz 固定）ではなく **送信時間と電波占有率** を出す。
   //   BW は変えられないので毎回出しても情報にならない。一方 SF は現地で
@@ -2920,7 +2964,11 @@ void draw_wireless(int cursor) {
     // ★ 抑止中に「Sending 1Hz」と書くと嘘になる。上の Hold 行と二重になるが、
     //   **断言している文のほうを直す**（Hold を見落としても誤解しない）。
     if (tx_held)      backscreen.print(" Sending : held (not on air)");
-    else if (tx_sent) backscreen.print(" Sending : 1Hz (no uplink)");
+    else if (tx_sent) {
+      const uint32_t per = link_tx_period_ms();
+      if (per <= 1000) backscreen.print(" Sending : 1Hz (no uplink)");
+      else             backscreen.printf(" Sending : %.1fs (no uplink)", per * 0.001f);
+    }
     else              backscreen.print(" Sending : waiting (no TX yet)");
     draw_status_mark(backscreen, 232, y + 7, 4, tx_sent ? COLOR_GREEN : COLOR_ORANGE);
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
@@ -2999,7 +3047,31 @@ void draw_wireless(int cursor) {
   //       設定の上に受信枠の矩形まで描かれる
   //   詳細画面は自前で置く。フッタは誰も上書きしないので、ここで消す。
   backscreen.pushSprite(0, 40);
-  tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
+  if (ch_upper) {
+    // UP 帯域（CH15/21/27）のデメリット（10 倍休止による送信間隔延長・SF11 不可）を下部 40px 帯に明示する。
+    const uint32_t per = link_tx_period_ms();
+    header_footer.fillScreen(COLOR_WHITE);
+    header_footer.drawRect(2, 1, SCREEN_WIDTH - 4, 38, COLOR_ORANGE);
+    header_footer.loadFont(AA_FONT_SMALL);
+    header_footer.setTextWrap(false);
+    header_footer.setCursor(8, 5);
+    header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    header_footer.print("! UP BAND");
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    header_footer.print(" (10x pause rule)");
+    header_footer.setCursor(8, 21);
+    header_footer.print("TX ");
+    header_footer.setTextColor(per > 1000 ? COLOR_ORANGE : COLOR_BLACK, COLOR_WHITE);
+    header_footer.printf("%.1fs/pkt", per * 0.001f);
+    header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    header_footer.print("  ");
+    header_footer.setTextColor(COLOR_ORANGE, COLOR_WHITE);
+    header_footer.print("no SF11 (max 10)");
+    header_footer.unloadFont();
+    header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
+  } else {
+    tft.fillRect(0, SCREEN_HEIGHT - 40, SCREEN_WIDTH, 40, COLOR_WHITE);
+  }
 }
 
 void draw_imudetail(int page) {
@@ -3615,21 +3687,26 @@ static int truetrack_display_deg() {
   return ((int)lroundf(get_gnss_truetrack()) % 360 + 360) % 360;
 }
 
-// 推定 TAS を出しているときのラベルの行（地図の上端・右）。青い小箱「TAS」と、その左に小さい平均ピッチ。
+// 推定 TAS を出しているときのラベルの行（地図の上端・右）。青い小箱「TAS̄」（上に平均バー）と、その左に小さい平均ピッチ「P̄」。
 // ★ 平均ピッチは大きい枠の TAS の元の値なので、枠の真下に並べて 1 対 1 で対応させる
 //   （docs/pons_tas.md §4.3。地図左下の P 行は瞬時値のまま）。地上チェックでピッチがずれて
 //   鳴っている間は赤（平均ピッチを大きい枠に出しているときに数字を赤にするのと同じ条件）。
+// ★ ヘッダー右枠の左を大きな「~」（推定）にしたので、こちらは「TAS̄」（平均バー付き）として
+//   「平均かつ推定の TAS」であることを示す（TAS の文字重複も解消）。
 // ★ 置けるのはこの行だけ。すぐ下（右端の y = 15〜50）は右旋回の角速度表示が使う。
 //   中央の「TT 123」にぶつかるなら、先頭の「P」を落として詰める（left_limit = TT の右端）。
 // 意図して直さない（2026-11-14 の監査）: 右旋回の draw_degpersec() の枠（y=15〜）と 1〜2px 重なりうる（見た目だけ）
 static void draw_tas_label_row(TasHdr h, int left_limit) {
   const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
   const int fh = backscreen.fontHeight();
-  const int bw = backscreen.textWidth("TAS") + 6;
+  const int tw = backscreen.textWidth("TAS");
+  const int bw = tw + 6;
   const int bx = SCREEN_WIDTH - bw;
-  backscreen.fillRect(bx, 0, bw, fh + 1, box);
+  // 左の P̄ と同じ高さ関係: y=0 余白 / y=1..2 太さ 2px の平均バー / y=3 から文字（下端は fh+2）
+  backscreen.fillRect(bx, 0, bw, fh + 2, box);
   backscreen.setTextColor(COLOR_WHITE, box);
-  backscreen.drawString("TAS", bx + 3, 1);
+  backscreen.drawString("TAS", bx + 3, 3);
+  backscreen.fillRect(bx + 3, 1, tw, 2, COLOR_WHITE);
   float a;
   if (tas_header_pitch_avg(a)) {
     char buf[12];
@@ -3736,23 +3813,25 @@ void draw_gs_track(){
     // 内蔵フォントの値になってしまい、中央合わせが効かない）。
     const int gsw = backscreen.textWidth("GS");
     const int gsh = backscreen.fontHeight();
-    const float sacc_mps = get_gnss_sacc_mmps() / 1000.0f;
+    float sacc_mps = 0.0f;
+    const char* sacc_note;
+    const bool  sacc_ok = gnss_sacc_shown(sacc_mps, sacc_note);
     backscreen.unloadFont();
     backscreen.setTextSize(1);
     // 背景は塗らない（1引数の setTextColor）。地図の上に白い箱が出ないようにする。
-    // ★ ミラー中は「--」。隣の GS は機体の値なので、ここに受信機自身の sAcc を
-    //   並べると機体の測位品質に見える（gnss_acc_unknown() のコメント参照）。
-    const uint16_t sacc_col = gnss_acc_unknown() ? COLOR_GRAY
+    // ★ ミラー中は機体の sAcc（電波で届いた値）。受信機自身の sAcc を出してはいけない。隣の GS は機体の値なので、
+    //   機体の測位品質に見える（gnss_sacc_shown()）。届くまでとリプレイ中は「--」。
+    const uint16_t sacc_col = !sacc_ok ? COLOR_GRAY
                             : (sacc_mps < 0.3f) ? COLOR_GREEN
                             : (sacc_mps < 3.0f) ? COLOR_ORANGE : COLOR_RED;
     char sbuf[16];
-    if (gnss_acc_unknown()) snprintf(sbuf, sizeof(sbuf), "sAcc --");
-    else                    snprintf(sbuf, sizeof(sbuf), "sAcc%.2f", sacc_mps);
+    if (!sacc_ok) snprintf(sbuf, sizeof(sbuf), "sAcc --");
+    else          snprintf(sbuf, sizeof(sbuf), "sAcc%.2f", sacc_mps);
     const int sx = 1 + gsw + 4;
     // GS(AA_FONT_SMALL) の行の高さの中央に合わせる
     const int sy = 1 + (gsh - 8) / 2;
     // sAcc が 0.3 m/s 以上のときは白地＋色枠で囲んで地図上でも目立つようにする
-    if (!gnss_acc_unknown() && sacc_mps >= 0.3f) {
+    if (sacc_ok && sacc_mps >= 0.3f) {
       const int bx = sx - 2;
       const int by = (sy >= 2) ? (sy - 2) : 0;
       const int bw = backscreen.textWidth(sbuf) + 3;
@@ -3950,49 +4029,58 @@ static void draw_header_pitch(int x, float deg, uint16_t col) {
 
 // ヘッダー右の大きい枠に推定 TAS を描く（C 案。docs/pons_tas.md §4.3）。
 // ★ 青は字の色ではなく**塗り**に使う。日なたで色が薄れても明暗の塊として残り、左の対地速度（白地に黒字）と
-//   形で見分けられる（色の見え方の個人差にも効く）。枠の左 25px（平均ピッチなら符号の場所）に白の縦書き
-//   「T A S」を置き、左の「m p s」と対にする。TAS には符号が付かないので、平均ピッチとも見分けられる。
+//   形で見分けられる（色の見え方の個人差にも効く）。枠の左 25px（平均ピッチなら符号の場所）に太い白の
+//   「~」（約・チルダ）を置き、ひと目で「~7.8＝実測ではなく推定値」と読めるようにする（下の小箱は「TAS̄」）。
 //   地上（HDR_TAS_GROUND）は数字を出したまま横線で消し、「GROUND」の札を載せる（header_strike()）。上下限に張り付いたら
 //   （HDR_TAS_CLAMP）箱を灰色にする（推定ではなく端の値。灰色はいまも「ありえない値」の色）。
-//   幅は平均ピッチと同じ組み方: ラベル 25 + 数字 37 + 点 10 + 数字 37 = 109px。10m/s 以上は小数を落とす。
-static void draw_header_tas(int x, TasHdr h, float mps) {
+//   幅は平均ピッチと同じ組み方: 記号 25 + 数字 37 + 点 10 + 数字 37 = 109px。10m/s 以上は小数を落とす。
+//   mps が NaN のときは数字の代わりに横棒 2 本（平均ピッチ未確定時のプレビュー用）。
+void draw_header_tas(int x, TasHdr h, float mps) {
   const int LABEL_W = 25, DIGIT_W = 37, DOT_W = 10;
   const int ytop = 3;
   const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
   header_footer.fillRect(x + 1, 0, SCREEN_WIDTH - x - 1, HEADERFOOTER_HEIGHT - 1, box);
 
-  // 縦書きの「T A S」。字の高さの中央を数字の高さの中央（ytop + 21）に合わせる。
-  header_footer.loadFont(AA_FONT_SMALL);
-  header_footer.setTextColor(COLOR_WHITE, box);
+  // 推定を示す大きな「~」（チルダ）。平均ピッチの + / - と同じ位置・高さ中央（ytop + 21）に置く。
   {
-    static const char* const kLbl[3] = {"T", "A", "S"};
-    const int uh = header_footer.fontHeight() - 2;
-    const int y0 = ytop + 21 - (uh * 3) / 2;
-    for (int i = 0; i < 3; i++) {
-      const int w = header_footer.textWidth(kLbl[i]);
-      header_footer.setCursor(x + 1 + (LABEL_W - w) / 2, y0 + uh * i);
-      header_footer.print(kLbl[i]);
+    const float x0 = (float)(x + 4), x1 = (float)(x + LABEL_W - 4);
+    const float cy = (float)(ytop + 21), amp = 4.0f;
+    const int SEG = 8;
+    float px = x0, py = cy;
+    for (int i = 1; i <= SEG; i++) {
+      const float t = (float)i / (float)SEG;
+      const float nx = x0 + (x1 - x0) * t;
+      const float ny = cy - amp * sinf(2.0f * (float)M_PI * t);
+      header_footer.drawWideLine(px, py, nx, ny, 4.5f, COLOR_WHITE);
+      px = nx; py = ny;
     }
   }
-  header_footer.loadFont(NM_FONT_LARGE);
-  // ★ 背景を塗る指定（第 3 引数 true）にしないこと。箱はもう塗ってあるので要らないうえ、
-  //   header_footer はフッターと共用で、TFT_eSPI の setTextColor(色) は 1 引数だと「背景を塗る」を戻さない。
-  //   2026-11-07 に true にしていたら、フッターの文字（TC・km・10K INTO・目的地名）が全部ベタ塗りの箱になった。
-  header_footer.setTextColor(COLOR_WHITE, box);
   x += LABEL_W;
 
-  long tenths = lroundf(mps * 10.0f);
-  if (tenths < 0) tenths = 0;
-  header_footer.setCursor(x, ytop);
-  if (tenths < 100) {
-    header_footer.printf("%ld", tenths / 10);
-    header_footer.fillRect(x + DIGIT_W + 2, ytop + 36, 6, 6, COLOR_WHITE);   // 小数点
-    header_footer.setCursor(x + DIGIT_W + DOT_W, ytop);
-    header_footer.printf("%ld", tenths % 10);
+  if (isnan(mps)) {
+    // 平均ピッチ未確定時: 横棒 2 本
+    header_footer.fillRect(x + 10, ytop + 18, 24, 6, COLOR_WHITE);
+    header_footer.fillRect(x + 46, ytop + 18, 24, 6, COLOR_WHITE);
   } else {
-    long whole = lroundf(mps);
-    if (whole > 99) whole = 99;
-    header_footer.printf("%02ld", whole);
+    header_footer.loadFont(NM_FONT_LARGE);
+    // ★ 背景を塗る指定（第 3 引数 true）にしないこと。箱はもう塗ってあるので要らないうえ、
+    //   header_footer はフッターと共用で、TFT_eSPI の setTextColor(色) は 1 引数だと「背景を塗る」を戻さない。
+    //   2026-11-07 に true にしていたら、フッターの文字（TC・km・10K INTO・目的地名）が全部ベタ塗りの箱になった。
+    header_footer.setTextColor(COLOR_WHITE, box);
+
+    long tenths = lroundf(mps * 10.0f);
+    if (tenths < 0) tenths = 0;
+    header_footer.setCursor(x, ytop);
+    if (tenths < 100) {
+      header_footer.printf("%ld", tenths / 10);
+      header_footer.fillRect(x + DIGIT_W + 2, ytop + 36, 6, 6, COLOR_WHITE);   // 小数点
+      header_footer.setCursor(x + DIGIT_W + DOT_W, ytop);
+      header_footer.printf("%ld", tenths % 10);
+    } else {
+      long whole = lroundf(mps);
+      if (whole > 99) whole = 99;
+      header_footer.printf("%02ld", whole);
+    }
   }
 
   // 地上の横線は header_strike()（較正・GNSS の線と 1 つにまとめて、どれを出すかを決める）。
