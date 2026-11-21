@@ -1,6 +1,6 @@
 // ============================================================
-// File    : tools/flight_viewer/video_sync.js
-// Project : PONS v7 / v7.1 Flight Viewer
+// File    : tools/repons/video_sync.js
+// Project : PONS v7 / v7.1 Re:PONS
 // Role    : 大会ログに対応する YouTube 動画（限定公開）を小窓に出し、ビューアの再生に合わせて動かす
 // Author  : Claude (2026-11-20)
 // Updated : 2026-11-21
@@ -21,7 +21,7 @@
 (function (global) {
   'use strict';
 
-  const VERSION = '2026.11.21.1';
+  const VERSION = '2026.11.22.2';
   const TICK_MS = 250;
   const LS_PREFIX = 'pons_video_offset_';
 
@@ -375,7 +375,7 @@
   }
 
   function viewer() {
-    return typeof global.getFlightViewerPlayback === 'function' ? global.getFlightViewerPlayback() : null;
+    return typeof global.getReponsPlayback === 'function' ? global.getReponsPlayback() : null;
   }
 
   function expectedVideoSec(pb) {
@@ -409,8 +409,8 @@
     if (!pb.isPlaying && !force && performance.now() > ourCmdUntil && lastSeekTarget !== null &&
         lastViewerT !== null && Math.abs(pb.currentTimeSec - lastViewerT) < 0.05 && Math.abs(vt - lastSeekTarget) > 1.0) {
       const t = vt - cur.offsetSec - pb.clockBaseSec;
-      if (t >= 0 && t <= pb.totalDurationSec && typeof global.seekFlightViewerTo === 'function') {
-        global.seekFlightViewerTo(t, false);
+      if (t >= 0 && t <= pb.totalDurationSec && typeof global.seekReponsTo === 'function') {
+        global.seekReponsTo(t, false);
         lastSeekTarget = vt; lastViewerT = t;
         return;
       }
@@ -448,14 +448,14 @@
   function onPlayerState(ev) {
     if (!cur || cur.offsetSec === null || performance.now() < ourCmdUntil) return;
     const pb = viewer();
-    if (!pb || !pb.hasData || typeof global.setFlightViewerPlaying !== 'function') return;
+    if (!pb || !pb.hasData || typeof global.setReponsPlaying !== 'function') return;
     if (ev.data === 1 && !pb.isPlaying) {
       const vt = player.getCurrentTime();
       const t = vt - cur.offsetSec - pb.clockBaseSec;
-      if (t >= 0 && t <= pb.totalDurationSec && typeof global.seekFlightViewerTo === 'function') global.seekFlightViewerTo(t, false);
-      global.setFlightViewerPlaying(true);
+      if (t >= 0 && t <= pb.totalDurationSec && typeof global.seekReponsTo === 'function') global.seekReponsTo(t, false);
+      global.setReponsPlaying(true);
     } else if (ev.data === 2 && pb.isPlaying) {
-      global.setFlightViewerPlaying(false);
+      global.setReponsPlaying(false);
     }
   }
 
@@ -504,7 +504,7 @@
     if (!cur || cur.offsetSec === null || !player || !playerReady || !pb) return;
     const t = player.getCurrentTime() - cur.offsetSec - pb.clockBaseSec;
     if (t < 0 || t > pb.totalDurationSec) { alert('いまの動画の場面は、このログの時間の外です。'); return; }
-    global.seekFlightViewerTo(t, false);
+    global.seekReponsTo(t, false);
     lastSeekTarget = null;
   }
 

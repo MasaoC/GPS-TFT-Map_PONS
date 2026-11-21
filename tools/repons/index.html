@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PONS Flight Viewer & Player</title>
+  <title>Re:PONS</title>
   <!-- Leaflet Map CSS & JS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -1377,9 +1377,10 @@
   <header>
     <div class="header-left">
       <div class="app-title">
-        <span>✈️ PONS Flight Viewer</span>
+        <span title="Re:PONS（リ・ポンズ）— PONS の飛行ログの再生・解析と、本体とのやりとり">✈️ Re:PONS</span>
         <span class="badge" id="board-badge">PONS v7.1</span>
-        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Flight Viewer のバージョン">v2026.11.21.1</span>
+        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Re:PONS のバージョン">v2026.11.22.2</span>
+        <a class="badge" id="manual-link" href="https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; text-decoration:none; font-weight:700;" title="PONS_HPA v7.1 説明書（パイロット・ボートマン向け。操作手順・画面の見方・警告音の意味。Google Docs が別のタブで開きます）">📖 説明書</a>
         <button id="btn-viewer-update" style="display:none; background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:bold; padding:3px 9px; font-size:0.76rem;" onclick="reloadViewerFresh()"></button>
       </div>
       <div class="flight-info-text" id="flight-title">CSV未読込 (サンプルまたはCSVファイルを開いてください)</div>
@@ -2146,6 +2147,8 @@
       console.log(`CSV読込完了: ${flightData.length}点, 全長 ${totalDurationSec.toFixed(1)}s, 離陸 ${takeoffSec.toFixed(1)}s, 着水 ${landSec.toFixed(1)}s`);
       // 大会動画の対応（video_sync.js）。このログに動画があれば小窓を出し、無ければ閉じる
       if (typeof window.onFlightCsvLoaded === 'function') window.onFlightCsvLoaded(filename);
+      // 大会ログのデータの注意（olddata_open.js）など、読み終えたことを知りたいものへ
+      try { document.dispatchEvent(new CustomEvent('pons-csv-loaded', { detail: { filename } })); } catch (e) { /* 古いブラウザ */ }
     }
 
     // ============================================================
@@ -3495,7 +3498,7 @@
           badge: 'ポートを開けません',
           msg: 'このポートを開けませんでした。ほかのアプリが使っていると開けません。\n' +
                '・Arduino IDE のシリアルモニタ（下のタブ）やシリアルプロッタを閉じる\n' +
-               '・別のタブやウィンドウの Flight Viewer で「🔌 切断」を押す\n' +
+               '・別のタブやウィンドウの Re:PONS で「🔌 切断」を押す\n' +
                'それから「🔁 もう一度つなぐ」を押してください。\n' +
                `（ブラウザの言葉: ${err && err.name ? err.name + ': ' : ''}${err && err.message ? err.message : err}）`,
           retry: true,
@@ -5901,7 +5904,7 @@
     }
 
     // 飛行解析モジュール（analysis_ui.js）向け連携フック
-    window.getFlightViewerAnalysisContext = function () {
+    window.getReponsAnalysisContext = function () {
       return {
         flightData,
         takeoffSec,
@@ -5914,7 +5917,7 @@
       };
     };
     // 動画の同期（video_sync.js）向け: 再生の状態と、CSV の 1 行目の時刻（JST の日内秒）
-    window.getFlightViewerPlayback = function () {
+    window.getReponsPlayback = function () {
       return {
         currentTimeSec, totalDurationSec, isPlaying, playbackSpeed,
         clockBaseSec: csvClockBaseSec,
@@ -5923,10 +5926,10 @@
       };
     };
     // 動画側で再生・一時停止されたときにビューアを合わせる
-    window.setFlightViewerPlaying = function (on) {
+    window.setReponsPlaying = function (on) {
       if (!!on !== isPlaying && flightData && flightData.length > 1) togglePlay();
     };
-    window.seekFlightViewerTo = function (tSec, focusMap) {
+    window.seekReponsTo = function (tSec, focusMap) {
       if (!flightData || flightData.length === 0) return;
       if (isPlaying) {
         isPlaying = false;
@@ -5982,14 +5985,14 @@
       downloadPonsFile(path, size || 0, 0, 'open', imuRange);
     };
   </script>
-  <script src="analysis_dsp.js?v=2026.11.21.1"></script>
-  <script src="analysis_imulog.js?v=2026.11.21.1"></script>
-  <script src="analysis_ui.js?v=2026.11.21.1"></script>
-  <script src="olddata_open.js?v=2026.11.21.1"></script>
-  <script src="video_sync.js?v=2026.11.21.1"></script>
+  <script src="analysis_dsp.js?v=2026.11.22.2"></script>
+  <script src="analysis_imulog.js?v=2026.11.22.2"></script>
+  <script src="analysis_ui.js?v=2026.11.22.2"></script>
+  <script src="olddata_open.js?v=2026.11.22.2"></script>
+  <script src="video_sync.js?v=2026.11.22.2"></script>
   <script>
-    // Flight Viewer バージョン管理・キャッシュ不整合 / 最新版チェック
-    const VIEWER_VERSION = '2026.11.21.1';
+    // Re:PONS バージョン管理・キャッシュ不整合 / 最新版チェック
+    const VIEWER_VERSION = '2026.11.22.2';
     function reloadViewerFresh() {
       try {
         const u = new URL(location.href);

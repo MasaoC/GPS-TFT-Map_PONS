@@ -558,7 +558,7 @@ void setup(void) {
   //   上げずに焼き直すとログからビルドを区別できなかった（11/11〜12 に中身の違う 1.05 が何本も "build 20261111" で焼かれた）。
   //   ★ __DATE__ / __TIME__ は**この .ino に置くこと。** Arduino は .ino から作るファイルをビルドのたびにコンパイルし直すが、
   //     ほかの .cpp は中身が変わったときしかコンパイルしないので、そちらに置くと古い日時が残る（2026-11-12 に arduino-cli で確認）。
-  //   ★ 行の形は Flight Viewer が読んでいる（tools/flight_viewer の logScanLine。末尾の compiled も拾う）。
+  //   ★ 行の形は Re:PONS が読んでいる（tools/repons の logScanLine。末尾の compiled も拾う）。
   char compiled[24];
   format_compile_time(compiled, sizeof(compiled));
   enqueueTask(createLogSdfTask("BOOT PONS %s build %lu board=%s imu=%s%s compiled %s",
@@ -693,7 +693,7 @@ void setup1(void) {
   // setup() 内で enqueueTask() を 呼ぶので、mutex_init が遅れると未初期化の
   // mutex を掴む危険がある。 特に下の while(!Serial) は USB
   // 接続まで待つため、その後ろに置くと窓が極端に長くなる。
-  // 意図して直さない（2026-11-14 の監査）: BOOT PONS より先に VEML7700・IMU・MS5611・SD INIT の行が出ることがある（Flight Viewer は SD INIT からも分けて読める）
+  // 意図して直さない（2026-11-14 の監査）: BOOT PONS より先に VEML7700・IMU・MS5611・SD INIT の行が出ることがある（Re:PONS は SD INIT からも分けて読める）
   mutex_init(
       &taskQueueMutex); // Core0/Core1 間のタスクキュー排他制御用 mutex を初期化
   bootwatch_stage1(BW_STAGE1_SETUP1); // 起動の見張りの目印（bootwatch.h）
@@ -1526,7 +1526,7 @@ static void periodic_log_tick() {
 #endif
       // 割り込みで読んでいるとき（settings.h の SCH16T_READ_IN_IRQ）は、gapmax= が割り込みの間隔（ふだん 4ms）、
       // drain= が読んでから推定へ渡すまでの最長（＝ Core0 が描画などで止まっていた最長時間）、ovf= がリングが
-      // 一杯で読めなかった回数（loop() に入ってから）。★ 行頭の "imu gapmax=" は Flight Viewer が読んでいる。
+      // 一杯で読めなかった回数（loop() に入ってから）。★ 行頭の "imu gapmax=" は Re:PONS が読んでいる。
       if (imu_read_in_irq()) {
         enqueueTask(createLogSdfTask("imu gapmax=%lums drain=%lums ovf=%lu",
                                      (unsigned long)(get_imu_poll_gap_max_us() / 1000),
@@ -2094,7 +2094,7 @@ static void handle_serial_command(const char *raw_cmd) {
       Serial.println("PONS:PONG");
     }
   } else if (strcmp(cmd, "PONS:LIST") == 0 || strcmp(cmd, "PONS:LIST,ALL") == 0) {
-    // "PONS:LIST,ALL"（2026-11-15〜）は全部のファイル（生 IMU ログなど。Flight Viewer の開発用のタブ）
+    // "PONS:LIST,ALL"（2026-11-15〜）は全部のファイル（生 IMU ログなど。Re:PONS の開発用のタブ）
     const bool list_all = (cmd[9] == ',');
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
@@ -2247,7 +2247,7 @@ static void handle_serial_command(const char *raw_cmd) {
     gnss_dbd_command(cmd + 9);
   } else if (strncmp(cmd, "PONS:TIME,", 10) == 0) {
     // PC の時刻（UNIX 時刻 ms）。GNSS が時刻を知らない（BT1 が切れていた）ときだけ GNSS へ入れる
-    // （gnss_dbd.cpp の gnss_dbd_give_time。Flight Viewer が接続のたびに送る）。PONS:CONNECT は要らない。
+    // （gnss_dbd.cpp の gnss_dbd_give_time。Re:PONS が接続のたびに送る）。PONS:CONNECT は要らない。
     // 受けた瞬間は関数の頭で取った last_serial_rx_ms（行を読み終えた直後）。
     gnss_dbd_time_command(cmd + 10, last_serial_rx_ms);
   } else {

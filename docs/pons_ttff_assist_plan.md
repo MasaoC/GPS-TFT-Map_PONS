@@ -200,7 +200,7 @@
 - **なぜ**: 時刻を知らない GNSS は戻した DBD のうち時刻の要るもの（`notime`）を断り、衛星から時刻を読むまで入れ直しを待つ。時刻が先にあれば最初から受け取られる
   （Integration Manual §3.11.4 も、BBR が無いときは MGA-INI-TIME_UTC を勧めている）。
 - **入口は 1 つ**: `gnss_dbd_give_time(utc_ms, at_ms, src[, acc_ms])`。**いつ入れるか・入れ直すか・ログは中（`time_block()`）で決め、呼び出し側に条件を書かない。**
-  呼び出し元は USB シリアルの `PONS:TIME,<UNIX 時刻 ms>`（Flight Viewer が `PONS:READY` を受けるたびに送る）と link_assist.cpp。
+  呼び出し元は USB シリアルの `PONS:TIME,<UNIX 時刻 ms>`（Re:PONS が `PONS:READY` を受けるたびに送る）と link_assist.cpp。
 - **入れる条件**: 起動後最初の NAV-PVT で GNSS が時刻を知らないときだけ（知っていれば `NOT_NEEDED`）。分からないうちは覚えておき（`LATER`）、入れるときに
   その時点まで進め、本体の時計のずれ（100ppm）を精度に足す。受け取られたらこの GNSS には入れない（`ALREADY`）。断られたら 60 秒あけて 3 回まで。
   試験中（`TEST`）・リプレイ中（`REPLAY`）は入れない。ビルドした日の前日より前・2100 年以降・SD の DBD を吸い出した時刻より前は `BAD_TIME`。

@@ -1,6 +1,6 @@
 // ============================================================
-// File    : tools/flight_viewer/analysis_ui.js
-// Project : PONS v7 / v7.1 Flight Viewer
+// File    : tools/repons/analysis_ui.js
+// Project : PONS v7 / v7.1 Re:PONS
 // Role    : 飛行解析モーダル UI・インタラクティブグラフ描画・本体シーク連携
 // ============================================================
 
@@ -533,8 +533,8 @@
     document.getElementById('an-btn-close-goto').addEventListener('click', () => {
       const targetSec = state.lastSeekSec;
       closeAnalysisModal();
-      if (targetSec !== null && global.seekFlightViewerTo) {
-        requestAnimationFrame(() => global.seekFlightViewerTo(targetSec, true));
+      if (targetSec !== null && global.seekReponsTo) {
+        requestAnimationFrame(() => global.seekReponsTo(targetSec, true));
       }
     });
     document.getElementById('an-btn-kml').addEventListener('click', exportKmlFromModal);
@@ -594,7 +594,7 @@
   // 本体とのデータ連携ヘルパー
   // ------------------------------------------------------------
   function getViewerContext() {
-    const ctx = global.getFlightViewerAnalysisContext ? global.getFlightViewerAnalysisContext() : null;
+    const ctx = global.getReponsAnalysisContext ? global.getReponsAnalysisContext() : null;
     return ctx || { flightData: [], takeoffSec: 0, landSec: 0, totalDurationSec: 0, currentTimeSec: 0, filename: '' };
   }
 
@@ -760,7 +760,7 @@
   function seekTo(tSec) {
     const ctx = getViewerContext();
     const clamped = Math.max(0, Math.min(ctx.totalDurationSec, tSec));
-    if (global.seekFlightViewerTo) global.seekFlightViewerTo(clamped, true);
+    if (global.seekReponsTo) global.seekReponsTo(clamped, true);
     state.lastSeekSec = clamped;
     const banner = document.getElementById('an-seek-banner');
     const txt = document.getElementById('an-seek-text');
@@ -2717,7 +2717,7 @@
     }
   }
 
-  global.PONS_ANALYSIS_UI_VERSION = '2026.11.21.1';
+  global.PONS_ANALYSIS_UI_VERSION = '2026.11.22.2';
   global.openAnalysisModal = openAnalysisModal;
   global.closeAnalysisModal = closeAnalysisModal;
   global.isAnalysisModalOpen = () => state.open;

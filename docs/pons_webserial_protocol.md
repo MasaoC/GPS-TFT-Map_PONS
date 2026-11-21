@@ -85,7 +85,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 * **全部のファイルの一覧 (LIST,ALL)**（開発用）: `PONS:LIST,ALL`
   - ルートと、その直下のフォルダ（1 段だけ）の**全部のファイル**を同じ `PONS:FILE,...` の行で返す（`imuraw/*.bin` の生 IMU ログ・
     `settings.txt`・`gnss_dbd.bin`・`rtc_backup.txt` など。`data/`・`received/`・`log.txt` もこの中に出る）。隠しファイルと `.` で始まる名前は出さない。
-  - **これを知らない古いファーム（1.07 まで）は何も返さない**（エラーも出ない）。Flight Viewer は 4 秒待って 1 行も来なければ
+  - **これを知らない古いファーム（1.07 まで）は何も返さない**（エラーも出ない）。Re:PONS は 4 秒待って 1 行も来なければ
     古いファームとして `PONS:LIST` を頼み直す。
   - 取るのは下の `GET` のまま（`GET` はもとからどのパスでも中身をそのまま送る。バイナリも同じ）。パスは 63 バイトまで。
   ```
@@ -100,7 +100,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 ### (3) ファイル取得 (GET)
 指定したファイルの中身をシリアルへストリーミング送信する（CSV でもバイナリでも、中身はそのまま）。
 **中身は `DATA_START` の `<size_bytes>` バイトちょうど**で、そのあとに `\r\n` と `PONS:DATA_END,<crc32>` の行が来る
-（Flight Viewer はこの大きさで中身を切り出す。バイナリの中に `PONS:DATA_END,` と同じ並びがあっても終わりにしない）。
+（Re:PONS はこの大きさで中身を切り出す。バイナリの中に `PONS:DATA_END,` と同じ並びがあっても終わりにしない）。
 * **PC ➔ PONS**: `PONS:GET,<filename>`
 * **PONS ➔ PC**:
   - 開始通知: `PONS:DATA_START,<filename>,<size_bytes>`
@@ -125,7 +125,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
     そのときの開始通知は `PONS:DATA_START,<filename>,<送るバイト数>,<送り始めた位置>`（3 つめが付く）。CRC は送った部分だけ。
   - ファイルのほうが小さければ `GET` と同じ（3 つめは付かない）。
   - バイト数を先に置くのは、FAT のファイル名に `,` が使えるため（パスは行の最後まで）。
-  - 伸び続ける `log.txt` を、最新の分だけ速く取るためのもの。Flight Viewer は 1MB を超える `log.txt` を、
+  - 伸び続ける `log.txt` を、最新の分だけ速く取るためのもの。Re:PONS は 1MB を超える `log.txt` を、
     ふだん「最新 1MB」で取る（「全部」も選べる）。
   ```
   PC:   PONS:GETTAIL,1048576,log.txt
@@ -138,7 +138,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   - 生 IMU ログ（28 バイトのレコード）を 224KB（約 16 秒）おきに覗き、GNSSVEL（id 0x10）の iTOW から JST の日内秒を出して、
     範囲に入る所の前後 1〜2 区切りぶんだけを送る。開始通知は `GETTAIL` と同じく 3 つめ（送り始めた位置）が付く。CRC は送った部分だけ。
   - 受け付けたらすぐ `PONS:GETIMU_ACCEPTED` を返す（時刻探しの間は何も出ないので、古いファームと見分けるため）。
-    この印が 12 秒来なければ、Flight Viewer は `GETIMU` を知らないファームとみて `PONS:GET` で全部を取り直す。
+    この印が 12 秒来なければ、Re:PONS は `GETIMU` を知らないファームとみて `PONS:GET` で全部を取り直す。
   - 範囲に入る記録が無ければ `PONS:ERROR,IMU_RANGE_NOT_FOUND`。秒は 0〜86400、6 桁まで。開始 ≥ 終了は `INVALID_FILENAME`。
   ```
   PC:   PONS:GETIMU,46200,49200,imuraw/20261119.bin
@@ -206,14 +206,14 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
   断られずに済み、断られていた分はすぐ入れ直す。仕組みは `gnss_dbd.cpp` の冒頭と docs/pons_ttff_assist_plan.md §3.6。
 * `PONS:CONNECT` は要らない（シリアルモニタからも打てる）。PC 接続の画面のあいだも GNSS は動いている。屋内では fix しないが、
   入れた時刻と受け取られたデータベースは GNSS に残り、つないでいる間は BT1 も充電されるので、電源を切ってもしばらく持つ。
-* Flight Viewer は `PONS:READY` を受けるたびに送る（`PONS:LIST` より前。返事は見ない）。
+* Re:PONS は `PONS:READY` を受けるたびに送る（`PONS:LIST` より前。返事は見ない）。
 * **PC の時計がずれていると、GNSS の性能はかえって落ちる**（伝えた精度より外れたとき）。最初の fix で、入れた時刻が本当は
   どれだけずれていたかを `log.txt` の `GNSS TIME (pc): given time was +0.08s off at 1st fix (told acc 2.0s)` に残す
   （NAV-PVT の届く遅れのぶん少し + に出る。精度より大きいと ` ** more than acc **`）。ほかの結果も `GNSS TIME (pc): ...` の行。
 * LoRa で仲間の機体・ボートからもらう時刻（計画のみ）も、本体の中では同じ口（`gnss_dbd_give_time()`）を通る。
 
 ### (8) 本体設定の確認・変更・保存 (SETTINGS_GET / SETTINGS_SET / SETTINGS_SAVE)
-PONS Flight Viewer から `settings.txt` の全設定（32 項目）を確認・変更し、SD へ安全に保存するためのコマンド（2026-11-20〜）。`PONS:CONNECT` 接続中のみ受け付ける。
+Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し、SD へ安全に保存するためのコマンド（2026-11-20〜）。`PONS:CONNECT` 接続中のみ受け付ける。
 
 * **取得 (`SETTINGS_GET`)**:
   - **PC ➔ PONS**: `PONS:SETTINGS_GET`
@@ -252,9 +252,9 @@ PONS Flight Viewer から `settings.txt` の全設定（32 項目）を確認・
 
 ---
 
-## 6. クライアント実装（PONS Flight Viewer）
+## 6. クライアント実装（Re:PONS）
 
-本プロトコルに対応した公式 Web クライアントとして、`tools/flight_viewer/index.html` が同梱されています。
+本プロトコルに対応した公式 Web クライアントとして、`tools/repons/index.html` が同梱されています。
 Web Serial API 対応ブラウザ（Google Chrome / Microsoft Edge など）で開くだけで、インストール不要・完全ローカル動作で以下の機能を利用できます。
 
 - **ワンクリック接続 & ログ吸い出し**: USB 接続した PONS から自機ログ（`data/`）および受信ログ（`received/`）を一覧取得・高速ダウンロード。

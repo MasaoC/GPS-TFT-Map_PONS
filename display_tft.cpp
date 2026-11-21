@@ -5801,7 +5801,7 @@ void draw_pcconnect() {
   print_centered_aa(backscreen, 30, "USB SERIAL LINK ACTIVE");
 
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  print_centered_aa(backscreen, 65, "Web Flight Viewer Connected");
+  print_centered_aa(backscreen, 65, "Re:PONS Connected");
 
   backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
   print_centered_aa(backscreen, 95, "SD Card: Read-Only (Protected)");

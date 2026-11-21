@@ -14,7 +14,7 @@
 #   パスワードは別の経路（口頭・チームの非公開の場所）で渡す。リポジトリ・コミットメッセージ・Issue に書かない。
 #
 # 方式（PONSENC2。2026-11-20〜）: PBKDF2-HMAC-SHA256（100 万回）で鍵を作り、AES-256-GCM で暗号化。
-#   どちらもブラウザの WebCrypto にあるので、Flight Viewer（tools/flight_viewer/olddata_open.js）が自前の暗号コード無しで開ける。
+#   どちらもブラウザの WebCrypto にあるので、Re:PONS（tools/repons/olddata_open.js）が自前の暗号コード無しで開ける。
 #   ★ 最初は scrypt（PONSENC1）にしたが、WebCrypto に scrypt が無くビューアで JS の自前実装が要るのでやめた。
 #     PBKDF2 は scrypt と違ってメモリを使わず GPU の総当たりにやや弱いので、反復は OWASP の推奨（60 万回）より多めの 100 万回にし、
 #     パスワードの長さ（12 文字以上）で守る。PONSENC1 も読める（復元だけ）。
@@ -31,7 +31,7 @@
 #
 # 大会動画（YouTube 限定公開）の URL も同じパスワードで暗号化して置く（tools/olddata/videos.json.enc）。
 #   平文の videos.json はリポジトリの外で作る（tools/olddata/ に置いても tools/.gitignore で入らない）。形は tools/olddata/README.md。
-#   python3 tools/olddata_crypt.py encrypt ~/…/videos.json   → Flight Viewer がログを開くときに一緒に復号して動画を出す
+#   python3 tools/olddata_crypt.py encrypt ~/…/videos.json   → Re:PONS がログを開くときに一緒に復号して動画を出す
 # 環境変数 PONS_OLDDATA_PASSWORD があればそれを使う（試験用。ふだんは使わないこと）
 
 import argparse
@@ -124,7 +124,7 @@ def cmd_encrypt(args):
 
 
 def write_manifest(folder):
-    """folder の .enc の一覧を manifest.json に書く（Flight Viewer の「大会ログ」の一覧。中身・パスワードは含まない）"""
+    """folder の .enc の一覧を manifest.json に書く（Re:PONS の「大会ログ」の一覧。中身・パスワードは含まない）"""
     files = []
     for path in sorted(glob.glob(os.path.join(folder, '*.enc'))):
         blob = open(path, 'rb').read(8)

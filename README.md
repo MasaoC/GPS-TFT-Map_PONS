@@ -113,7 +113,7 @@ ANA は BT1 が切れていた起動でも有効のままです（`settings.h` �
 - **SD の航法データベース**: 通電中に GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` へ写しておき、起動時に時計が死んでいた
   ときだけ GNSS へ戻します（`gnss_dbd.cpp`。保存は止まっているときだけ）。予測軌道が入っているので、保存から約 3 日以内なら効く見込みです。
   `log.txt` の `GNSS FIXED ... after boot rtc=lost dbd=40/52 resend=52/52 time=14.2s` に、戻した結果と測位までの秒数が出ます。
-- **外から時刻を入れる**: 時刻を知らない GNSS は戻したデータベースの一部を断るので、PC につないでいれば Flight Viewer が送る PC の時刻を、
+- **外から時刻を入れる**: 時刻を知らない GNSS は戻したデータベースの一部を断るので、PC につないでいれば Re:PONS が送る PC の時刻を、
   無線では仲間（機体のテレメトリ・ボートの時刻のビーコン）の時刻を、精度つきで GNSS へ入れます（`gnss_dbd_give_time()` 1 か所に集約）。
 - **衛星系**: 起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読んで `log.txt` の `GNSS SIGNAL ...` に残します。BeiDou は工場出荷の B1C のまま
   （B1I は GLONASS と同時に使えず、試すと妨害の指標が上がった）。QZSS はどの GNSS 基板でも測位に使われておらず、理由を調べています
@@ -320,7 +320,7 @@ NAV 画面でスイッチ長押しで入ります。
 
 ## ツール (tools/)
 
-* **[PONS Flight Viewer](tools/flight_viewer/index.html)**: ブラウザ（Chrome / Edge）完結型の WebSerial ログ吸い出し・可視化再生ツール。
+* **[Re:PONS](tools/repons/index.html)**（リ・ポンズ。旧名 Flight Viewer）: ブラウザ（Chrome / Edge）完結型の WebSerial ログ吸い出し・可視化再生ツール。
   * 風の三角形（Wind Triangle）、人工水平儀・スリップボール、横滑り角推定（$\text{Est.}\beta$）HUD、自機／受信機（ボート）の連携プロットに対応。
   * **SD の log.txt も見られる**（2026-11-11〜）。PC 接続の一覧から開くか、手元の log.txt を開く・ドロップする。起動ごとに分けて
     日時・版・最初の測位・エラーと警告の数を並べ、毎分の行（電池・GNSS の受信・CPU 温度・IMU・BT1・充電）をグラフにし、
@@ -330,7 +330,7 @@ NAV 画面でスイッチ長押しで入ります。
   * `tools/logcsv2kml4earth.py` / `logcsv2tourkmz.py`: Google Earth 用 KML / KMZ 変換
   * `tools/createmovie_csv2mp4.py`: 飛行再現 MP4 動画生成
   * `tools/flightanalysis/`: スペクトル解析、フゴイド周期・過負荷 G 評価
-  * `tools/olddata/`: 2024〜2026 年の大会ログ（Flight Viewer で開ける形。**公開の許可が無いので暗号化**。
+  * `tools/olddata/`: 2024〜2026 年の大会ログ（Re:PONS で開ける形。**公開の許可が無いので暗号化**。
     `python3 tools/olddata_crypt.py decrypt` で戻す。パスワードはチームの担当者に聞く。→ [tools/olddata/README.md](tools/olddata/README.md)）
   * `tools/imulog/`: SD の生 IMU ログ（`imuraw/*.bin`）の解析。`decode_imulog.py`（読み出し）、`eskf.py`（機上の姿勢 ESKF の PC 版）、
     `vario.py`（機上のバリオ KF の PC 版。V/S を再現し、`--flight-csv` で機上の CSV の V/S と比べる。2026-11-11〜）、`merge_flight.py`（飛行 CSV との結合）、
@@ -378,7 +378,7 @@ Most of the documentation is in Japanese.
   350 m measured range.
 * **Hardware**: RP2350B, u-blox SAM-M10Q, 2.8-inch 1000-nit TFT, built-in OpenStreetMap vector map,
   microSD logging at 2 Hz. 59 × 81 × 20 mm, about 62 g with the case.
-* **Tools**: a browser-based Flight Viewer (WebSerial), Google Earth KML export and flight analysis scripts
+* **Tools**: a browser-based log viewer, Re:PONS (WebSerial), Google Earth KML export and flight analysis scripts
   (phugoid period, load factor).
 
 Contact: masaochiguchi@gmail.com (X: masao_mobile)

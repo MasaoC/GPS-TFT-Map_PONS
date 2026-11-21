@@ -1,6 +1,6 @@
 // ============================================================
-// File    : tools/flight_viewer/analysis_dsp.js
-// Project : PONS v7 / v7.1 Flight Viewer
+// File    : tools/repons/analysis_dsp.js
+// Project : PONS v7 / v7.1 Re:PONS
 // Role    : 飛行CSVログに対する信号処理・飛行力学解析エンジン（純JS）
 //           tools/flightanalysis/*.py の定型分析をブラウザ内で完結させる。
 // ============================================================
@@ -1135,7 +1135,7 @@
   }
 
   global.PonsAnalysisDSP = {
-    VERSION: '2026.11.21.1',
+    VERSION: '2026.11.22.2',
     G0,
     mean, std, rms, median, pearsonR,
     detrendLinear, movingAverage, unwrapDeg,

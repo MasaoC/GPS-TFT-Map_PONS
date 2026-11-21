@@ -178,7 +178,7 @@
     <text x="112" y="34" font-size="18" font-weight="800" fill="#FFFFFF">融合バリオ ＆ 解析ツール</text>
     <text x="18" y="64" font-size="13.5" font-weight="600" fill="#CBD5E1">飛んでいる間の「道具」＋ 飛んだ後の「計測器」</text>
     <text x="18" y="88" font-size="13" font-weight="500" fill="#94A3B8">・鉛直加速度＋MS5611気圧＋GNSS融合バリオ</text>
-    <text x="18" y="109" font-size="13" font-weight="500" fill="#94A3B8">・WebSerial ブラウザ Flight Viewer &amp; リプレイ</text>
+    <text x="18" y="109" font-size="13" font-weight="500" fill="#94A3B8">・WebSerial ブラウザ Re:PONS &amp; リプレイ</text>
     <text x="18" y="128" font-size="13" font-weight="500" fill="#94A3B8">・フゴイド周期・横モード・構造荷重解析群</text>
   </g>
 

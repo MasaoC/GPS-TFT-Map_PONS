@@ -1,6 +1,6 @@
 // ============================================================
-// File    : tools/flight_viewer/analysis_imulog.js
-// Project : PONS v7 / v7.1 Flight Viewer
+// File    : tools/repons/analysis_imulog.js
+// Project : PONS v7 / v7.1 Re:PONS
 // Role    : 生 IMU バイナリログ (imuraw/YYYYMMDD.bin) のデコーダ・
 //           時刻同期・250Hz 直接鉛直G・ケイデンス推定 (cadence.py 準拠)・
 //           高周波振動解析エンジン
@@ -648,7 +648,7 @@
   }
 
   global.PonsImuAnalysis = {
-    VERSION: '2026.11.21.1',
+    VERSION: '2026.11.22.2',
     decodeImuBin,
     matchSessionToFlight,
     computeImuDirectG,

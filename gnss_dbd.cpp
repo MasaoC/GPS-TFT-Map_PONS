@@ -21,7 +21,7 @@
 //     断られた分があれば、GNSS が衛星から時刻を読んだところで 1 回だけ全部を入れ直す。時刻は 1 衛星の
 //     1 語から読めるので、衛星ごとのエフェメリスよりずっと先にわかる（計画書 §3.4）。
 //   - 効くのは、前回の吸い出しから予測軌道の寿命（約 3 日）以内の起動。それより古いとアルマナックだけ。
-//   - 外から来た時刻（2026-11-10〜。計画書 §3.6）: GNSS が時刻を知らない間に PC（USB シリアルの PONS:TIME。Flight Viewer が
+//   - 外から来た時刻（2026-11-10〜。計画書 §3.6）: GNSS が時刻を知らない間に PC（USB シリアルの PONS:TIME。Re:PONS が
 //     接続のたびに送る）から時刻が来たら、UBX-MGA-INI-TIME_UTC で入れる。断られていた DBD は、受け取られたらすぐ入れ直す。
 //     LoRa で仲間からもらう時刻（計画書 §4）も gnss_dbd_give_time() に渡すだけで同じように入る（出どころは GNSS_TIME_SRC_*）。
 //     入れる・入れないの判断は time_block() の 1 か所。GNSS が時刻を知っていれば入れない（GNSS の時刻のほうが正確）。
@@ -1283,9 +1283,9 @@ GnssTimeWant gnss_dbd_time_want() {
 #endif
 }
 
-// USB シリアルの "PONS:TIME,<UNIX 時刻 ms>"（Flight Viewer が PONS:READY を受けるたびに送る。
+// USB シリアルの "PONS:TIME,<UNIX 時刻 ms>"（Re:PONS が PONS:READY を受けるたびに送る。
 // Arduino IDE のシリアルモニタからも打てる）。返事は "PONS:TIME,OK,<SENT|LATER|NOT_NEEDED|ALREADY>" か
-// "PONS:TIME,ERROR,<理由>"。Flight Viewer は返事を見ない（PONS:ERROR, で始まらないので警告も出ない）。
+// "PONS:TIME,ERROR,<理由>"。Re:PONS は返事を見ない（PONS:ERROR, で始まらないので警告も出ない）。
 void gnss_dbd_time_command(const char* arg, uint32_t rx_ms) {
   uint64_t v = 0;
   int n = 0;

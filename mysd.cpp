@@ -3265,7 +3265,7 @@ static void list_files_in_dir(const char* dirpath, const char* prefix, bool csv_
 // SD 内のファイルを列挙してシリアル出力（Core1専用）
 // all = false（PONS:LIST）: 飛行 CSV（data/ と received/）と log.txt だけ。
 // all = true （PONS:LIST,ALL。2026-11-15〜）: ルートと、その直下のフォルダの全部のファイル（生 IMU ログ imuraw/*.bin・
-//   settings.txt・gnss_dbd.bin など）。Flight Viewer の開発用のタブが使う。送るほう（PONS:GET）はもとからどのパスでも
+//   settings.txt・gnss_dbd.bin など）。Re:PONS の開発用のタブが使う。送るほう（PONS:GET）はもとからどのパスでも
 //   中身をそのまま送るので、バイナリもそのまま取れる。★ PONS:GET の受けるパスは 63 バイトまで（それより長い名前は一覧に出ても取れない）。
 void serial_list_csv_files(bool all) {
   ASSERT_SD_CORE1("serial_list_csv_files");
@@ -3287,7 +3287,7 @@ void serial_list_csv_files(bool all) {
   list_files_in_dir(REPLAY_FLIGHT_DIR, REPLAY_FLIGHT_DIR, true, false);
   list_files_in_dir(REPLAY_RECEIVED_DIR, REPLAY_RECEIVED_DIR, true, false);
 
-  // ルートの log.txt も出す（2026-11-11〜。Flight Viewer が種別「ログ」で開き、起動ごとに分けてグラフにする）。
+  // ルートの log.txt も出す（2026-11-11〜。Re:PONS が種別「ログ」で開き、起動ごとに分けてグラフにする）。
   // ★ 消されずに伸び続ける（数 MB になる）ので、ビューアはふつう末尾だけを PONS:GETTAIL で取る。
   //   開いている書き込みのハンドルは上の webserial_prepare_sd() が閉じてある。
   if (!(webserial_cancel_requested || !webserial_connected || !usb_power_present())) {

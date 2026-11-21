@@ -15,14 +15,14 @@
 #   --log    SD の log.txt（起動からの秒数:メッセージ）。"GPS TIME: ... UTC" の行で JST に合わせ、
 #            "volt=4.08V"（60 秒ごと）と "ACC ... sats=11"（約 10 秒ごと）を拾う（createmovie_csv2mp4.py と同じ読み方）
 #
-# 出力: いまの飛行 CSV（README の「飛行 CSV フォーマット」）と同じ 24 列。Flight Viewer でそのまま開ける。
+# 出力: いまの飛行 CSV（README の「飛行 CSV フォーマット」）と同じ 24 列。Re:PONS でそのまま開ける。
 #   roll, pitch      ← euler（線形補間）
 #   yaw              ← betada の yaw_true（機体磁気の誤差を推定して直した真方位。角度で補間）。
 #                      euler の yaw は地磁気のままで機体磁気のずれ（十数度）を含むので使わない。飛行区間の外は空欄
 #   tas_mps          ← betada の tas
 #   wind_mps         ← betada の wind_speed
 #   wind_dir         ← betada の wind_dir + 180°。★ betada は「吹いてくる」真方位、いまの CSV（attitude_get_wind の
-#                      dir_to_deg）と Flight Viewer の矢印は「吹いていく」真方位。そのまま入れると風ベクトルが逆を向き、
+#                      dir_to_deg）と Re:PONS の矢印は「吹いていく」真方位。そのまま入れると風ベクトルが逆を向き、
 #                      風の三角形（対地 = 対気 + 風）が閉じない（2026-11-20 に実際に間違えた）
 #   voltage          ← log の volt=（60 秒ごとの点を線形補間。前後の点が 90 秒より離れていれば空欄）
 #   numsat           ← log の ACC 行の sats=（直前の値。15 秒より古ければ空欄）

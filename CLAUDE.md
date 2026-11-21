@@ -270,7 +270,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   PONSv7.1 で同じ並び・同じ数え方に保つ。** v7 と v7.1 の基板の GNSS の受け方を比べるための行なので、
   片方だけ変えると比べられなくなる。
 - **log.txt の毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG [..m]:`）と `BOOT PONS` / `GNSS TIME:` / `GNSS FIXED` の形を変えたら、
-  Flight Viewer の log.txt の表示（`tools/flight_viewer/index.html` の `logScanLine` / `LOG_CATS`）も合わせる。**
+  Re:PONS の log.txt の表示（`tools/repons/index.html` の `logScanLine` / `LOG_CATS`）も合わせる。**
   ビューアは正規表現で拾っているので、読めなくなった値は**グラフと起動のまとめから黙って消える**。
   v7 の機体も v7.1 のリポジトリのビューアで見るので、両ブランチの行の形をそろえておく。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**

@@ -50,7 +50,7 @@ void gnss_dbd_command(const char* arg);
 // 「時刻が無いので使えない」と断られずに済み（断られていた分はすぐ入れ直す）、予測軌道（ANA）もすぐ使える。
 // 入れるのは GNSS が時刻を知らないときだけ（知っていれば GNSS の時刻のほうが正確）。判断はぜんぶ gnss_dbd.cpp の中。
 // ★ **時刻の出どころを足すときも、ここへ渡すだけにする**（GNSS へ書く・いつ入れるか・入れ直しの判断を呼び出し側に書かない）。
-//   いまの入口は USB シリアルの PONS:TIME（PC。Flight Viewer が接続のたびに送る）。LoRa で仲間からもらう時刻
+//   いまの入口は USB シリアルの PONS:TIME（PC。Re:PONS が接続のたびに送る）。LoRa で仲間からもらう時刻
 //   （計画書 §4）も、受けた側の確かめ（§4.6 の 1.）を済ませてから GNSS_TIME_SRC_LORA で渡す。
 enum GnssTimeSrc : uint8_t {
   GNSS_TIME_SRC_PC   = 0,   // USB シリアルの PONS:TIME
