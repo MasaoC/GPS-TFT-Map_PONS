@@ -67,8 +67,7 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
   `python3 tools/gen_guide_flash.py --render`（Chrome で等倍の PNG にしてから
   `src/flashdata/imu_guide_data.cpp` / `tas_guide_data.cpp` を作る）。
   **忘れると古い画像のまま黙って焼ける。** 1 画面ごとの音声は `.ino` の `IMU_GUIDE_WAV[]` / `TAS_GUIDE_WAV[]` と順番で 1 対 1
-  （TAS の案内の 2 画面目は曲線をファームが描く）。**TAS の案内の音声 2 本（`guide_tas_*.wav`）は Mac の読み上げ（Kyoko）で
-  作った仮のもの**（2026-11-07）。
+  （TAS の案内の 2 画面目は曲線をファームが描く）。
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 

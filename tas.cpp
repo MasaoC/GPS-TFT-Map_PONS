@@ -24,6 +24,7 @@
 #include "gnss.h"
 #include "imu.h"
 #include "link.h"
+#include "mysd.h"
 
 static volatile bool s_setting = false;   // 書くのは Core1（SD の読み込み）と Core0（設定画面）
 
@@ -43,6 +44,11 @@ static uint32_t s_runMs    = 0;       // 続き始めた時刻
 // 地上のまま、飛び出す側の条件（対地速度 TAS_AIR_GS_MPS 以上）が成り立っているか（2026-11-14〜）。
 // GROUND の札だけはこれで先に外す（線は TAS_SWITCH_HOLD_MS 待ってから外す）。tas_leaving_ground()
 static bool     s_leaving  = false;
+// リプレイ中の札の残り秒数のための時計（2026-11-22）。リプレイは s_runMs を数えないので、
+// 再生速度を掛けた仮想時間で「飛び出す側の条件が続き始めてから」を測る。
+static uint32_t s_repClock = 0;       // 仮想経過時間 [ms]
+static uint32_t s_repTick  = 0;       // 前回進めた millis()
+static uint32_t s_repRunMs = 0;       // 続き始めた仮想時刻
 
 static TasSrc current_src() {
   if (link_mirror_active()) return SRC_MIRROR;
@@ -66,7 +72,16 @@ void tas_tick() {
   const bool gs_ok = !(ns == 0 || ns == GNSS_NUMSAT_UNKNOWN);
   const float gs = gs_ok ? (float)get_gnss_mps() : 0.0f;
   // リプレイは記録された hdr をそのまま出すので、札を外すかだけを再生中の対地速度から決める
-  if (src == SRC_REPLAY) { s_leaving = gs_ok && gs >= TAS_AIR_GS_MPS; return; }
+  if (src == SRC_REPLAY) {
+    const uint32_t t = millis();
+    if (s_repTick != 0 && !replay_is_paused()) s_repClock += (t - s_repTick) * (uint32_t)get_replay_speed();
+    s_repTick = t;
+    const bool lv = gs_ok && gs >= TAS_AIR_GS_MPS;
+    if (lv && !s_leaving) s_repRunMs = s_repClock;
+    s_leaving = lv;
+    return;
+  }
+  s_repTick = 0;
   if (!gs_ok) { s_runOn = false; s_leaving = false; return; }
 
   // いまの状態から抜ける条件が成り立っているか
@@ -82,6 +97,19 @@ void tas_tick() {
 }
 
 bool tas_leaving_ground() { return s_leaving; }
+
+int tas_ground_wait_sec() {
+  if (!s_leaving) return 0;
+  const bool replay = (s_src == SRC_REPLAY);
+  const uint32_t el = replay ? (s_repClock - s_repRunMs) : (millis() - s_runMs);
+  if (el >= TAS_SWITCH_HOLD_MS) {
+    // 実機・ミラー: tas_tick() のあと描画までの間に 10 秒を越えた。次の tas_tick() で線が外れるので 1 のまま。
+    // リプレイ: 線を外すのは記録された hdr。記録のほうが遅い（当時は行の間で一瞬 3m/s を割って数え直した、など）と
+    //   「WAIT 1s」のまま止まって見えるので、札を出さない（2026-11-14 までと同じ、線だけ）。
+    return replay ? 0 : 1;
+  }
+  return (int)((TAS_SWITCH_HOLD_MS - el + 999UL) / 1000UL);   // 切り上げ（10 → … → 1）
+}
 
 // ============================================================
 //  大きい枠

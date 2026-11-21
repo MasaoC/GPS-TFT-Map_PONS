@@ -1394,6 +1394,7 @@ static uint32_t replay_course_t_ms = 0;
 
 // 再生の一時停止／再開。設定画面など地図以外を表示している間は停止させる。
 // 一時停止中は仮想時刻を進めないだけなので、再開すると続きから再生される。
+bool replay_is_paused() { return replay_paused; }
 void replay_set_paused(bool paused) {
   replay_paused = paused;
 }

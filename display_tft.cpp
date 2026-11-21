@@ -4093,6 +4093,7 @@ void draw_header_tas(int x, TasHdr h, float mps) {
 //   YAW_ALIGN … 黄 2px「YAW ALIGN」。GNSS は来ているが向きが決まっていない（動き出せば直る。2026-11-13〜）
 //   GROUND  … 白 4px「GROUND」。推定 TAS を選んでいて地上（対気速度ではない。毎回の、正常な状態）。
 //             札は対地速度 3m/s 以上ですぐ外し、線は 10 秒続いてから外す（tas_leaving_ground()。2026-11-14〜）
+//             札を外したあとは線が外れるまで「WAIT 5s」の残り秒数を出す（tas_ground_wait_sec()。2026-11-22〜）
 // ★ 2026-11-11 までは地上の白線の上に赤・橙を重ねて引いていて、地上で GNSS を待っている間は
 //   白と橙の混ざった線になっていた。札は 1 枚しか載らないので、どれか 1 つにする。
 //   地上より GNSS を先にするのは、Pavg の箱（地上の線が無い）と同じ札になるようにするため。
@@ -4167,10 +4168,18 @@ static void header_strike(int mtvx, TasHdr h) {
       const int x = mtvx + 25, lw = SCREEN_WIDTH - x - 1;
       header_footer.fillRect(x, 20, lw, 8, COLOR_BLUE);
       header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
-      // ★ 札は動き出したらすぐ外す（2026-11-14〜）。線は 10 秒続いてから（tas_tick()）。
+      // ★ GROUND の札は動き出したらすぐ外す（2026-11-14〜）。線は 10 秒続いてから（tas_tick()）。
       //   札が 10 秒残ると、飛んでいるのに「いつ消えるのか」と気になる。
-      if (!tas_leaving_ground())
+      // ★ 外したあとは同じ白い札に線が外れるまでの残り秒数「WAIT 5s」を出す（2026-11-22〜）。
+      //   線だけが残ると、あと何秒で消えるのかが分からなかった。
+      const int wait = tas_ground_wait_sec();
+      if (wait > 0) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "WAIT %ds", wait);
+        header_strike_tag(mtvx + 25, SCREEN_WIDTH, buf, COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
+      } else if (!tas_leaving_ground()) {
         header_strike_tag(mtvx + 25, SCREEN_WIDTH, "GROUND", COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
+      }
       break;
     }
     default:

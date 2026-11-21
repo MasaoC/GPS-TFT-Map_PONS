@@ -144,6 +144,7 @@
     const char* replay_filename_base();       // 再生中ファイルのフォルダを除いた部分
     bool        replay_filename_is(const char* name);  // 一覧の name が再生中か（フルパスで比較）
     void     replay_set_paused(bool paused);  // 再生の一時停止（設定画面表示中など）
+    bool     replay_is_paused();
 
     bool browse_sd(int page);
     void log_sd(const char* text);

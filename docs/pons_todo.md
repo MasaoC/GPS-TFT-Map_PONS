@@ -24,18 +24,14 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
   車で止まった所から発進し、log.txt の `ESKF ACCEL: start detected ... undid` と、方位が決まるまでのピッチを見る → メモ §4.1
 - [ ] **方位の確定（2D 相関・11/18〜20。実機未確認）**: 2 m/s 以上 1 秒で相関の門を通れば確定（向かい風の離陸のため。「GNSS が動いている」max(0.2, 2·sAcc) と組）、
   3 m/s 以上は外れたら航跡。止まった所から発進し `ESKF YAW INIT:` の `gs=`・`corr-trk`・`bias` を見る。発進前は 7 秒止めて置く → [pons_yaw_init_plan.md](pons_yaw_init_plan.md) §4
-- [ ] 本番機・予備機の GNSS 基板を、屋外で合否チェックリストに通す（11/18 の新しい基板 `FFAC548FAF54` は合格。基板 c `DBEE4A0FB354` は NG）→ メモ §5
-- [ ] BUG-16: SCH16T を抜いたとき 50ms で見切るか（`SCH16T_READY_NOFRAME_MS`）
 - [ ] Step 5 飛行。**立ち会わず、飛んだあとに直せない**ので、直すものは飛ぶ前に決める。
   飛行のログで見ること: GNSS の上下速度（`vsi gnss` の `innov=`＝湖面の反射）、加速度のガード（`VARIO: IMU accel ignored`）、離陸直後のピッチ
 
 ## 2. 車・屋外で確かめる
-- [ ] 動き出したら地図へ戻す処理: 車の中で設定画面を操作している間は戻らず、10 秒触らなければ戻るか（`SCREEN n -> MAP (moving ...)`）
 - [ ] 無線の到達距離（いま約 130m）と屋外の雑音（画面オン・オフで比べる）→ 送信前チェックのしきい値 −95 dBm を見直す → メモ §4.5
 - [ ] GNSS 速度の遅れ（いま 170ms）: `gnss_lag.py` は約 200ms、ESKF の再現は 150ms が最良で食い違いが未解決。円を長く走ったログで比べ直す → メモ §4.1
 - [ ] DBD と PC の時刻: BT1 が切れた起動の TTFF、`COLD` / `COLDONLY` の比べ、`given time was ... off`（新しい基板の DBD は 11/18 に保存済み）
   → [pons_ttff_assist_plan.md](pons_ttff_assist_plan.md) §3.5・§3.6
-- [ ] TTFF の段階 0 の測定（空の開けた所と悪い所）→ [pons_ttff_assist_plan.md](pons_ttff_assist_plan.md) §7
 - [ ] ケイデンスの推定（`tools/imulog/cadence.py`）: 台の上で漕ぐか飛行の生ログで、前後の振動が 180 回/分（3.0Hz）前後に出るか
 
 ## 3. 机の上で確かめる
@@ -47,14 +43,12 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
   機体の sAcc が 8 秒以内に出るか、`received/` の `sacc_mps` 列 → [pons_link.md](pons_link.md) §4.3
 
 ## 5. 原因を探している不具合・見張り
-- [ ] **無線 ON のとき気圧の値が跳ねる**: 止めて置いたときは直った（11/13・11/18）。残りは SF を上げたとき（SF10・11 の AUX の Low の長さ）、
-  MS5611 の電源、10 秒周期の元 → メモ §3
 - [ ] 照度センサーと GNSS が起動時に同時に黙った（13 回中 1 回）。次に起きたら直前の操作と +3V3
 
 ## 6. 部品・手作業
 - [ ] 22µF の基板で SW OFF＋USB の充電 LED が消えるか、Q4 の逆接保護、VBUS の分圧、リコール基板の後付け
 - [ ] 取扱説明書（Google Docs）の更新: SW OFF で充電しない、推定 TAS、DBD、充電ポップアップ、ユーザー LED（fix なしで 1 回点滅）、GNSS 詳細画面の SBAS（赤紫）
-- [ ] 推定 TAS の案内の音声 2 本の差し替え（いまは仮）、V0・K・上下限の解析値を `settings.txt` へ
+- [ ] 推定 TAS の V0・K・上下限の解析値を `settings.txt` へ
 
 ## 7. いつか（計画だけ）
 - [ ] ESKF にジャイロの感度の誤差を持たせるか（何周も回る旋回の途中で GNSS を切ると、方位のずれが σ の 1.4〜2.9 倍）→ メモ §6
