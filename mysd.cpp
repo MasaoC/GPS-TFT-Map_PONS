@@ -16,7 +16,7 @@
 #include <SPI.h>
 
 #include "mysd.h"
-#include "navdata.h"
+#include "src/navdata.h"
 #include "gnss.h"      // gnss_get_own_fix()（received/ に自機位置と距離を書くため）
 #include "settings.h"
 #include "imu.h"

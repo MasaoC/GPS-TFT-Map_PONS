@@ -27,8 +27,8 @@
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
 // ============================================================
-// このブランチ（PONSv7.1）は **v7.1 基板専用**。初代 v7 基板（BNO085 搭載）は PONSv7 ブランチで、
-// ピン割り当てがまるで違う（2026-10-23 にブランチごと分けた）。
+// このブランチ（PONSv7.1）は **v7.1 / v7.2 基板専用**。初代 v7 基板（BNO085 搭載）とはピン割り当てがまるで違う
+// （v7 は 2026-11-22 に廃止した）。
 //   v7.1 だけの事情があるピン:
 //     GPIO41-44 SPI1（SCH16T の CS / SCK / MOSI / MISO）
 //     GPIO45    SCH16T EXTRESN / GPIO46 SCH16T DRY(SYNC)
@@ -163,7 +163,7 @@
 //     ANA の予測（約 3 日）。ANA を切るとそれを使わないので、DBD の戻しが一番要るときにほとんど効かない。その起動の間は予測も作らない
 //   ・切って得たいはずの QZSS は、11/13〜14 の全ログで ANA の有無にかかわらず、どの GNSS 基板でも一度も測位に使われていない
 //     （ANA を切ったコールドの v7 受信機でも、6 機受けて 0 機使用）
-//   QZSS が使われない理由が ANA だと分かったら 1 に戻す（log.txt の `GNSS QZSS (...)` の行で調べている）。PONSv7 / PONSv7.1 で同じ値にしておく。
+//   QZSS が使われない理由が ANA だと分かったら 1 に戻す（log.txt の `GNSS QZSS (...)` の行で調べている）。
 #define GNSS_ANA_OFF_ON_COLD      0
 // BeiDou を B1I で受けるか。**0 のまま使う**（2026-11-14 に 1 を試して、使わないと決めた。ユーザーの判断。理由は下の最後の ★）。
 // gnss.cpp の gnss_sig_tick() が起動のたびに RAM を読み、この値と違えば書き直す。
@@ -177,7 +177,6 @@
 //   `GNSS SIGNAL ram(after enable): ...`。
 // ★ 2026-11-14 に 1 を試したところ、BeiDou B1I は受かるようになった反面、GLONASS を失ううえに B1I (1561.098 MHz) 帯で
 //   基板のクロック高調波を拾って jam50 が 0→8〜42 に跳ね上がり、Galileo の放送暦復調・測位使用まで悪化したため 0 に戻した。
-//   PONSv7 / PONSv7.1 で同じ値にしておく。
 #define GNSS_BDS_B1I              0
 // AssistNow Autonomous の状況（予測データのある衛星数・計算していた時間）を
 // log.txt に残す間隔 [ms]。計算中は GNSS の消費電流が増えるので、その割合を見るためのもの。
@@ -416,12 +415,12 @@
 // 保持したまま残量に換算すると、抜いた瞬間に 10% ほど跳ねて見えるため。
 #define BATTERY_UNPLUG_FOLLOW_MS 5000UL
 // 100% とみなす電圧。残量%と色分けの基準（display_tft.cpp の battery_*）。
-// ★ 2026-11-13 に 4.2 → 4.15（ユーザーの判断。PONSv7 も同じ値にそろえる）。電池のときの % は負荷のかかった BATPWR から出すので、
+// ★ 2026-11-13 に 4.2 → 4.15（ユーザーの判断）。電池のときの % は負荷のかかった BATPWR から出すので、
 //   満充電の電池でも USB を抜いた直後は 4.14〜4.16V（本体の電流で約 30mV 下がり、充電が止まって数分で少し緩む）しか読めず、
 //   4.2 のままだと 100% の FULL から抜いた瞬間に 92〜94% へ落ちていた（log.txt の CHG UNPLUG）。4.15 は抜いた直後に読める値。
 //   ★ 1.06 の新しい満充電の判定（CHG_FULL_*）で最後まで充電してから抜いた `CHG UNPLUG ... post=` はまだ見ていない。
 //     そこで 4.15 から大きくずれていたら直す。
-//   ★ 無線の受信機は送信機の電圧から % を自分の目盛りで出す（display_tft.cpp の s/r）ので、両ブランチで同じ値にしておくこと。
+//   ★ 無線の受信機は送信機の電圧から % を自分の目盛りで出す（display_tft.cpp の s/r）ので、送信機と受信機で同じ値にしておくこと。
 //   ★ 充電中の残り時間の計算（power.cpp）はこの目盛りを使わない（CHG_REG_V を上端にした目盛りで合わせ込んである）。
 #define BAT_FULL_VOLTAGE 4.15
 #define BAT_HALF_VOLTAGE ((BAT_FULL_VOLTAGE + BAT_ZERO_VOLTAGE) / 2.0) // 50%未満の色（マゼンタ）の境。目盛りの真ん中（3.775V）
@@ -431,6 +430,13 @@
 // 電池は減り続けるので 1 回きりの通知では足りない。逆に短くすると、
 // 本当に聞くべき他の警報（コース・バンク角）が埋もれる。
 #define BAT_WARN_INTERVAL_MS 60000UL
+// 無線の「送信機の電池低下」（LINK_ST_BAT_LOW）を立てるまでに、BAT_LOW_VOLTAGE 以下が続く時間 [ms]（link.cpp）。
+// ★ 2026-11-22、充電中の送信機の SW を OFF にしたら、受信機が「送信機の電池低下」を鳴らした（電池は 80% 近く）。
+//   SW OFF で GPIO40 が 0V へ下がる途中、電圧（get_input_voltage() はすぐ追う）は 3.5V を割っているのに、
+//   SW OFF の判定（power_sw_off_on_usb()。250ms ごと・1.0V 未満）がまだ追いついていない瞬間があり、
+//   そこへ 1 秒ごとの送信が重なると印が 1 回だけ電波に載る。受信機は 1 回で鳴る。
+//   本当の電池低下は数秒遅れても困らないので、続いたときだけ立てる。
+#define LINK_BAT_LOW_HOLD_MS 5000UL
 // ---- 電池低下のときの省電力（GPS_TFT_map.ino の batt_alarm_tick → backlight.cpp）----
 // 電池低下の警告と同じ条件（BAT_LOW_VOLTAGE）で、バックライトを点滅させて電池をもたせる。
 // ★ 暗くしたままにしないこと。本番では電池を最後まで使ってでも画面を見たいので、
@@ -461,7 +467,7 @@
 // ★ 誤検知防止: SW OFF（GPIO40=0V）や電源切断時の電圧降下（数十 ms）を拾わないよう、
 //   物理下限（TPS63031 が電池で動ける 1.8V 以上）と連続継続（5 秒）を両方要求する。
 // ★ 解除（裏コマンド）: SD ルートに BATT_UNLOCK_FILENAME を置いて起動（中身照合なし・照合後に自動削除）。
-// ★ EEPROM のオフセット 64 は PONSv7（BNO085 の ImuCalRec = 0..11）との非衝突のため。
+// ★ EEPROM のオフセット 64 は廃止した v7（BNO085 の ImuCalRec = 0..11）とぶつけないために選んだ位置。動かすと書き込み済みの記録を読めなくなる。
 #define BAT_OVERDISCHARGE_VOLTAGE      3.00f
 #define BAT_OVERDISCHARGE_MIN_VALID_V  1.80f   // これ未満は SW OFF 遷移中または USB 給電時のみ
 #define BAT_OVERDISCHARGE_ARM_MS       5000UL  // 起動直後は判定しない
@@ -469,7 +475,7 @@
 #define BATT_LATCH_USB_HOLD_MS         2000UL  // ラッチ中に USB 接続が続いたら即完全ロック画面へ
 #define BATT_LATCH_ALERT_MS           30000UL  // 完全ロック画面で USB 給電中に警告トーン＋音声を繰り返す間隔
 #define BATT_LATCH_EE_TOTAL_SIZE       256     // arduino-pico の EEPROM 最小単位（256B 境界）
-#define BATT_LATCH_EE_ADDR             64      // 0..11 は PONSv7 の ImuCalRec 予約域
+#define BATT_LATCH_EE_ADDR             64      // 動かさない（power.h）
 #define BATT_LATCH_EE_MAGIC            0x54414250UL  // 'P','B','A','T'（リトルエンディアン）
 #define BATT_LATCH_EE_VERSION          1
 #define BATT_UNLOCK_FILENAME           "batt_unlock.txt"
@@ -1211,6 +1217,17 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define GNSS_CORRECT_RATE      0.02f  // 気圧基準補正ゲイン（旧 0.005 → 4倍に増速）
 #define GNSS_MAX_DELTA_M       0.05f  // 1回あたりの最大補正量 [m]（旧 0.02 → 2.5倍）
 #define GNSS_OFFSET_UPDATE_RATE 0.005f // MSL絶対基準の長期収束ゲイン
+// ★ 起動地の MSL 高度（gnss_kf_offset）の決め方と決め直し（2026-11-22〜）。
+//   11/22 の車: 測位して最初の数十秒の GNSS 高度は 53〜310 m（本当は 3〜12 m）とでたらめなのに vAcc は 9.9 m と出て
+//   GNSS_VACC_MAX_M（10 m）を通り、オフセットが +82.7 m で決まった。そのあとは GNSS_OFFSET_OUTLIER_M を超える食い違いを
+//   外れ値として捨てる（下の長期更新もその後ろ）ので**二度と直らず**、KF の MSL 高度（VARIO 画面・無線・CSV）が 30 分ずっと 80 m 高かった。
+//   ・最初に決めるときは vAcc が GNSS_OFFSET_INIT_VACC_MAX_M 未満の測位だけを使う
+//   ・vAcc が GNSS_OFFSET_REINIT_VACC_MAX_M 未満なのに GNSS_OFFSET_OUTLIER_M を超えて食い違うのが GNSS_OFFSET_REINIT_SAMPLES 回
+//     （1 秒に 1 回）続いたら、その間の平均で決め直す（log.txt に "GNSS alt offset re-init"）。V/S は変わらない（高度の表示が跳ぶだけ）
+#define GNSS_OFFSET_INIT_VACC_MAX_M    5.0f   // 最初に決めるときの vAcc の上限 [m]
+#define GNSS_OFFSET_OUTLIER_M          50.0f  // これを超える食い違いは一時的な外れ値として補正に使わない [m]
+#define GNSS_OFFSET_REINIT_VACC_MAX_M  5.0f   // 決め直しに数える測位の vAcc の上限 [m]
+#define GNSS_OFFSET_REINIT_SAMPLES     20     // 決め直すまでに続く回数（約 1 秒ごと）
 //
 // ============================================================
 // GNSS の上下の速度（velD）をバリオ KF に入れるか（2026-11-12〜11-17 は 0、2026-11-18〜 1 = 入れる）
@@ -1225,7 +1242,6 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //     それ以上は良くならなかったので、重みは以前の R_SCALE 64 のまま。
 //   ・下の「外した理由」は旧アンテナの話で、この基板では止まっているときの揺れも逆に減った。反射（sAcc に出ない）への備えとして、
 //     衛星数・vAcc・残差の門（GNSS_VSI_*）を足した。旧アンテナの基板は衛星数と sAcc の条件でほとんど入らない。
-//   ・v7（PONSv7）は旧アンテナなので 0 のまま。
 // ★ 外した理由（2026-11-12、ユーザーの判断）:
 //   ・GNSS の上下は、反射（マルチパス）で荒れても sAcc が小さいままで、重みを自動で落とせない（下の R_SCALE のコメント）。
 //     飛行では「GNSS の高さ・上下は V/S に使い物にならない」という経験がずっとあった。
@@ -1542,6 +1558,13 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 「加速中」がこれより長く続いたら、加速ではなく別の理由（推定のずれ・一定の速さで動き続けている）とみなして寄せるのを再開する [µs]。
 // 鳥人間の台の滑走は 3〜5 秒。これが無いと、一定の速さで押し続けたときに傾きを支えるものが無くなる。
 #define ESKF_ACCEL_HOLD_MAX_US       8000000UL
+// 方位が決まる前で、信用できる GNSS が「動いている」（gnss_moving_mps() 以上）と言い続けている間は、上の上限をここまで延ばす [µs]（2026-11-22〜）。
+//   11/22 の車: 0.1〜1.4 m/s で 8 秒はうように動き出したところで上の 8 秒が切れ、そのあとの本当の加速（0.5〜1.0 m/s²・0.9 → 3.2 m/s）を
+//   方位が決まる前の重力観測が傾きとして取り込んでピッチが +3.8° 上がった。同じ理由で「静止」の判定が 2D 相関を 1 秒ごとに 0 に戻し、
+//   方位は相関で決まらず航跡に戻った（mag=0）。台の上でゆっくり押してから加速しても同じことが起きる。
+//   上限を無くさないのは、屋内の荒れた測位が偽の速さを言い続けると、机の上でも待機中の維持とゼロ点の学習が止まったままになるため。
+//   ゆっくり押す〜滑走の加速が収まる長さ。方位が決まるまでの間に寄せないことで溜まる傾きは、ゼロ点のずれ 0.005°/s でも 30 秒で 0.15°。
+#define ESKF_ACCEL_HOLD_MAX_PREYAW_US 30000000UL
 // ブレーキで止まったあとは平均に減速が残り、①が最大 8 秒開いたままになる。信用できる GNSS が ESKF_ACCEL_GNSS_STOP_MPS 未満を
 // ESKF_ACCEL_GNSS_STOP_US 続けて言い、「加速中」もその時間以上続いていたら、平均をいまの値に取り直して閉じる。
 // （発進の立ち上がりは GNSS の速さが遅れて上がるので、「加速中」になってすぐは取り直さない）

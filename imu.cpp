@@ -49,7 +49,7 @@
 // ★ **imulog.h はここには無い。** 生ログのレコードはチップ固有なのでドライバ側にある。
 //   ここへ戻すと「チップ非依存」という前提が静かに崩れる。
 #include "imu.h"
-#include "imu_sensor.h"   // チップ境界（feed の口・imu_drv_*）
+#include "src/imu_sensor.h"   // チップ境界（feed の口・imu_drv_*）
 #include "link.h"
 #include "settings.h"
 #include "airdata.h"  // airdata_* （気圧計は i2c0。IMU のバスとは別系統）
@@ -507,6 +507,8 @@ static float  _gnss_kf_offset     = 0.0f;   // GNSS MSL高度 - KF AGL高度 の
 static float  _gnss_offset_sum    = 0.0f;   // 初期化用積算
 static int    _gnss_offset_n      = 0;      // 初期化サンプル数
 static bool   _gnss_offset_ready  = false;  // 初期化済みフラグ
+static float  _gnss_reinit_sum    = 0.0f;   // 決め直し用: 外れ続けている間の (GNSS MSL - KF) の和（GNSS_OFFSET_REINIT_*）
+static int    _gnss_reinit_n      = 0;      // 決め直し用: 外れ続けている回数
 static uint32_t _gnss_last_ms     = 0;      // 最後に補正を実行したシステム時刻 [ms]
 
 void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
@@ -523,6 +525,8 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
     // ---- フェーズ1: gnss_kf_offset の初期化 ----
     // GNSS MSL高度 - KF AGL高度 ≈ 起動地点の MSL 高度。初回 N サンプルの平均で推定する。
     if (!_gnss_offset_ready) {
+        // ★ 最初の測位の vAcc は当てにならない（11/22 は 9.9 m と出て実際は 50 m 以上ずれていた）ので、決めるときは厳しく見る
+        if (vacc_m >= GNSS_OFFSET_INIT_VACC_MAX_M) return;
         _gnss_offset_sum += z_gnss_msl - kf_x[0];
         _gnss_offset_n++;
         if (_gnss_offset_n >= GNSS_INIT_SAMPLES) {
@@ -540,8 +544,30 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
     float z_gnss_kf = z_gnss_msl - _gnss_kf_offset;
     float innov     = z_gnss_kf - kf_x[0];
 
-    // 50m を超える乖離はGNSSの一時的な外れ値（マルチパス等）として無視する
-    if (fabsf(innov) > 50.0f) return;
+    // GNSS_OFFSET_OUTLIER_M を超える乖離はGNSSの一時的な外れ値（マルチパス等）として無視する。
+    // ★ ただし精度の良い測位で外れ続けるなら、外れているのはオフセットの方（最初の測位の高度がでたらめだった）なので決め直す
+    //   （2026-11-22。settings.h の GNSS_OFFSET_REINIT_*。ここで捨てるだけだと下の長期更新も届かず、二度と直らなかった）
+    if (fabsf(innov) > GNSS_OFFSET_OUTLIER_M) {
+        if (vacc_m < GNSS_OFFSET_REINIT_VACC_MAX_M) {
+            _gnss_reinit_sum += z_gnss_msl - kf_x[0];
+            _gnss_reinit_n++;
+            if (_gnss_reinit_n >= GNSS_OFFSET_REINIT_SAMPLES) {
+                const float old = _gnss_kf_offset;
+                _gnss_kf_offset = _gnss_reinit_sum / _gnss_reinit_n;
+                enqueueTask(createLogSdfTask(
+                    "[IMU] GNSS alt offset re-init: %.1f -> %.1f m (off by >%.0f m for %d fixes, vAcc %.1f m)",
+                    old, _gnss_kf_offset, GNSS_OFFSET_OUTLIER_M, _gnss_reinit_n, vacc_m));
+                _gnss_reinit_sum = 0.0f;
+                _gnss_reinit_n   = 0;
+            }
+        } else {
+            _gnss_reinit_sum = 0.0f;
+            _gnss_reinit_n   = 0;
+        }
+        return;
+    }
+    _gnss_reinit_sum = 0.0f;
+    _gnss_reinit_n   = 0;
 
     // 精度係数: vAcc が小さいほど 1 に近く、GNSS_VACC_MAX_M に近づくほど 0 になる
     float quality = 1.0f - (vacc_m / GNSS_VACC_MAX_M);

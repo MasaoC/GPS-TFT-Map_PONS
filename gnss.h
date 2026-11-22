@@ -241,7 +241,7 @@
   };
   GnssRfNow gnss_rf_now();
   void      gnss_enable_mon_rf(uint8_t rate = 1);
-  // 1 分ぶんの受信状態を log.txt の `grf` 行にする（60 秒ログから呼ぶ。debug/v7-noise-test と同じ行）
+  // 1 分ぶんの受信状態を log.txt の `grf` 行にする（60 秒ログから呼ぶ）
   void      gnss_log_rf_minute();
 
 #endif

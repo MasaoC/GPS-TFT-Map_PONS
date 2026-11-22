@@ -25,15 +25,15 @@
 //     言い直さない（言い直すのは欠けてから戻ったときだけなので）。
 //   ★ 「準備完了」は**足りないものが無い**という意味で、機体の安全を保証するものではない。
 #include "readiness.h"
-#include "settings.h"
-#include "gnss.h"
-#include "imu.h"
-#include "attitude.h"
-#include "link.h"
-#include "mysd.h"
-#include "power.h"
-#include "display_tft.h"   // get_input_voltage / battery_percent / COLOR_RED / SETTING_*
-#include "src/button.h"    // menu_settings（設定画面の丸の色）
+#include "../settings.h"
+#include "../gnss.h"
+#include "../imu.h"
+#include "../attitude.h"
+#include "../link.h"
+#include "../mysd.h"
+#include "../power.h"
+#include "../display_tft.h"   // get_input_voltage / battery_percent / COLOR_RED / SETTING_*
+#include "button.h"    // menu_settings（設定画面の丸の色）
 
 // 地上の姿勢チェックが発報中か（GPS_TFT_map.ino の ground_check_tick が毎周回立て直す）。
 extern bool ground_roll_warn_active;

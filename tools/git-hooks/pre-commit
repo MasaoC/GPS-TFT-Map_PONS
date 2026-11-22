@@ -1,0 +1,41 @@
+#!/bin/bash
+# pre-commit フック（有効にするには一度だけ: git config core.hooksPath tools/git-hooks）
+#
+# Re:PONS（tools/repons/）を変えたのに VIEWER_VERSION を上げていないコミットを止める。
+# JS は index.html が ?v=<VIEWER_VERSION> を付けて読むので、版数を上げ忘れると
+# 公開ページを前に開いたブラウザが古い JS を使い続ける（2026-11-22 に実際に起きた）。
+# どうしても通したいときは git commit --no-verify。
+
+REPONS=tools/repons
+HTML=$REPONS/index.html
+
+changed=$(git diff --cached --name-only -- "$REPONS/")
+[ -z "$changed" ] && exit 0
+
+ver_of() {  # 標準入力の index.html から VIEWER_VERSION を取り出す
+  sed -n "s/^[[:space:]]*const VIEWER_VERSION = '\([^']*\)'.*/\1/p" | head -1
+}
+
+new=$(git show ":$HTML" 2>/dev/null | ver_of)
+if [ -z "$new" ]; then
+  echo "pre-commit: $HTML に const VIEWER_VERSION = '...' が見つかりません。" >&2
+  exit 1
+fi
+
+# 比べる相手は HEAD。ただし git commit --amend のときは HEAD 自身を作り直すので、その 1 つ前と比べる
+# （HEAD で版数を上げたあと Re:PONS を直して amend したときに、誤って止めないため）。
+base=HEAD
+if ps -o args= -p "$PPID" 2>/dev/null | grep -q -E -- '(^| )--amend( |$)'; then
+  base=HEAD~1
+fi
+old=$(git show "$base:$HTML" 2>/dev/null | ver_of)
+[ -z "$old" ] && exit 0   # 比べる相手に無い（初回など）
+
+if [ "$new" = "$old" ]; then
+  echo "pre-commit: Re:PONS を変えたのに VIEWER_VERSION が $old のまま（$base と同じ）です。" >&2
+  echo "  $HTML の const VIEWER_VERSION を上げて、もう一度 git add してください。" >&2
+  echo "  変えたファイル:" >&2
+  echo "$changed" | sed 's/^/    /' >&2
+  exit 1
+fi
+exit 0

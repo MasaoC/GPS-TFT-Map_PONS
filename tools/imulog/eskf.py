@@ -835,7 +835,8 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             else:
                 ah_on = False
             was_acc = accelerating
-            accelerating = ah_on and (ts[i] - ah_since) < 8.0          # ESKF_ACCEL_HOLD_MAX_US
+            hold_max = 30.0 if ((not yaw_set) and gnss_moving) else 8.0   # ESKF_ACCEL_HOLD_MAX_PREYAW_US / _HOLD_MAX_US（2026-11-22）
+            accelerating = ah_on and (ts[i] - ah_since) < hold_max
             if ah_on and (not accelerating) and was_acc:
                 acc_lp = acc_f.copy()                                    # 上限が来たら平均を取り直す
                 acc_dp_raw2 = 0.0

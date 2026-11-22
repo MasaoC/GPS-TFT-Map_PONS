@@ -25,19 +25,19 @@
 #include "tas.h"         // ヘッダー右の大きい枠に何を出すか（平均ピッチ / 推定 TAS / 真方位）
 #include "link.h"
 #include "power.h"    // USB 判定・電源経路の異常・SW OFF のまま充電（電池表示と地図の注意）
-#include "readiness.h"  // 本番前チェック（設定画面の右上）
+#include "src/readiness.h"  // 本番前チェック（設定画面の右上）
 #include "e220.h"     // 無線設定画面で SF と周波数を出すため
 #include "src/flashdata/link_icons.h"
 #include "src/flashdata/logo_data.h"
 #include "gnss.h"
 #include "mysd.h"
-#include "navdata.h"
+#include "src/navdata.h"
 #include "src/flashdata/font_data.h"
 #include "src/sound.h"
 #include "src/button.h"
 #include "airdata.h"
 #include "imu.h"
-#include "imu_sensor.h"   // imu_sensor_name()
+#include "src/imu_sensor.h"   // imu_sensor_name()
 #include "backlight.h"    // 照度センサー（VEML7700）の状態と照度（起動画面・設定画面のフッター）
 #include "src/vectormap.h"
 #include "TFT_eSPI/CopySetupFile_TFT_eSPI.h"

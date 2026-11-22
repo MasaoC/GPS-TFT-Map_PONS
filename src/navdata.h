@@ -8,7 +8,7 @@
 // Author  : MasaoC (@masao_mobile)
 // Updated : 2026/10/08
 // ============================================================
-#include "settings.h"
+#include "../settings.h"
 
 
 #ifndef NAVDATA_H

@@ -17,7 +17,7 @@
 #include <TFT_eSPI.h> // Hardware-specific library
 #include <SPI.h>
 #include "settings.h"
-#include "navdata.h"
+#include "src/navdata.h"
 #include "tas.h"
 
 

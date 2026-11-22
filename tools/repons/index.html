@@ -1379,7 +1379,7 @@
       <div class="app-title">
         <span title="Re:PONS（リ・ポンズ）— PONS の飛行ログの再生・解析と、本体とのやりとり">✈️ Re:PONS</span>
         <span class="badge" id="board-badge">PONS v7.1</span>
-        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Re:PONS のバージョン">v2026.11.22.2</span>
+        <span class="badge" id="viewer-ver-badge" style="background:#e2e8f0; color:#475569; font-family:var(--font-mono); font-weight:600;" title="Re:PONS のバージョン"></span>
         <a class="badge" id="manual-link" href="https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/" target="_blank" rel="noopener" style="background:#e0f2fe; color:#0369a1; text-decoration:none; font-weight:700;" title="PONS_HPA v7.1 説明書（パイロット・ボートマン向け。操作手順・画面の見方・警告音の意味。Google Docs が別のタブで開きます）">📖 説明書</a>
         <button id="btn-viewer-update" style="display:none; background:#fef3c7; border-color:#f59e0b; color:#92400e; font-weight:bold; padding:3px 9px; font-size:0.76rem;" onclick="reloadViewerFresh()"></button>
       </div>
@@ -5987,14 +5987,16 @@
       downloadPonsFile(path, size || 0, 0, 'open', imuRange);
     };
   </script>
-  <script src="analysis_dsp.js?v=2026.11.22.2"></script>
-  <script src="analysis_imulog.js?v=2026.11.22.2"></script>
-  <script src="analysis_ui.js?v=2026.11.22.2"></script>
-  <script src="olddata_open.js?v=2026.11.22.2"></script>
-  <script src="video_sync.js?v=2026.11.22.2"></script>
   <script>
-    // Re:PONS バージョン管理・キャッシュ不整合 / 最新版チェック
-    const VIEWER_VERSION = '2026.11.22.3';
+    // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
+    // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
+    // 下の JS は ?v= にこの版数を付けて読むので、HTML と JS の版が食い違うことはない。
+    const VIEWER_VERSION = '2026.11.22.4';
+    ['analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js']
+      .forEach(f => document.write('<script src="' + f + '?v=' + VIEWER_VERSION + '"><\/script>'));
+  </script>
+  <script>
+    // Re:PONS 最新版チェック
     function reloadViewerFresh() {
       try {
         const u = new URL(location.href);
@@ -6025,19 +6027,7 @@
         btn.style.display = 'inline-flex';
       };
 
-      // 1. HTML と外部 JS のキャッシュ不整合チェック
-      const dspVer = window.PonsAnalysisDSP && window.PonsAnalysisDSP.VERSION;
-      const imuVer = window.PonsImuAnalysis && window.PonsImuAnalysis.VERSION;
-      const uiVer = window.PONS_ANALYSIS_UI_VERSION;
-      const odVer = window.PONS_OLDDATA_VERSION;
-      const vsVer = window.PONS_VIDEO_SYNC_VERSION;
-      if ((dspVer && dspVer !== VIEWER_VERSION) || (imuVer && imuVer !== VIEWER_VERSION) || (uiVer && uiVer !== VIEWER_VERSION) ||
-          (odVer && odVer !== VIEWER_VERSION) || (vsVer && vsVer !== VIEWER_VERSION)) {
-        showUpdate('⚠️ キャッシュ不整合 — クリックで更新', `HTML: v${VIEWER_VERSION} / DSP: v${dspVer || '?'} / IMU: v${imuVer || '?'} / UI: v${uiVer || '?'}`);
-        return;
-      }
-
-      // 2. GitHub Pages 等の HTTP(S) 上なら裏で最新版の index.html を確認
+      // GitHub Pages 等の HTTP(S) 上なら裏で最新版の index.html を確認
       if (location.protocol === 'http:' || location.protocol === 'https:') {
         const checkUrl = location.pathname + (location.pathname.endsWith('/') ? 'index.html' : '') + '?_vchk=' + Date.now();
         fetch(checkUrl, { cache: 'no-store' })

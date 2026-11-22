@@ -21,7 +21,6 @@
 (function (global) {
   'use strict';
 
-  const VERSION = '2026.11.22.2';
   const TICK_MS = 250;
   const LS_PREFIX = 'pons_video_offset_';
 
@@ -565,5 +564,4 @@
     },
     youtubeId
   };
-  global.PONS_VIDEO_SYNC_VERSION = VERSION;
 })(window);

@@ -35,12 +35,12 @@
 #include "gnss_dbd.h"  // GNSS の航法データベース（USB シリアルの PONS:DBD,... と、デバッグ中継の前の書き切り）
 #include "hardware/adc.h"
 #include "imu.h"
-#include "imu_sensor.h" // imu_sensor_name()
+#include "src/imu_sensor.h" // imu_sensor_name()
 #include "link.h"       // PONS Link（機体⇄ボート無線）
 #include "mysd.h"
-#include "navdata.h"
+#include "src/navdata.h"
 #include "power.h"     // USB 判定・電源経路の異常
-#include "readiness.h" // 本番前チェック（そろったら「準備完了」）
+#include "src/readiness.h" // 本番前チェック（そろったら「準備完了」）
 #include "settings.h"
 #include "src/button.h"
 #include "src/imulog.h"
@@ -1486,7 +1486,7 @@ static void periodic_log_tick() {
       enqueueTask(createLogSdfTask("volt=%.2fV %s%s cpu=%.1fC %s JST",
                                    get_input_voltage(), pst, bst,
                                    analogReadTemp(), jst_str));
-      // GNSS の受信状態の 1 分まとめ（`grf` 行。debug/v7-noise-test と同じ並びで v7 と比べられる。gnss.cpp）
+      // GNSS の受信状態の 1 分まとめ（`grf` 行。gnss.cpp）
       gnss_log_rf_minute();
 
       // センサー受信レートも 60 秒ごとに残す（RELEASE

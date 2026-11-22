@@ -14,8 +14,8 @@
 #include <Arduino.h>
 
 #include "navdata.h"
-#include "link.h"
-#include "gnss.h"
+#include "../link.h"
+#include "../gnss.h"
 
 
 // LatLonManager コンストラクタ：リングバッファのインデックスとカウントを 0 で初期化

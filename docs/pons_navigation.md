@@ -4,7 +4,7 @@
 この文書は**ロジックだけ**を短くまとめたもの。画面写真つきの操作説明は Google Docs の説明書、
 しきい値と色の一覧は [../README.md](../README.md) にある。
 
-実装は [../navdata.cpp](../navdata.cpp)（計算）と [../GPS_TFT_map.ino](../GPS_TFT_map.ino)（判断・発報）、
+実装は [../src/navdata.cpp](../src/navdata.cpp)（計算）と [../GPS_TFT_map.ino](../GPS_TFT_map.ino)（判断・発報）、
 [../display_tft.cpp](../display_tft.cpp)（描画）の 3 つに分かれている。
 
 ---

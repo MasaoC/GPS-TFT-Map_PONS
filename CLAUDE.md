@@ -1,24 +1,19 @@
 # CLAUDE.md
 
-> ## このブランチは **v7.1 / v7.2 基板（SCH16T を J6 の FPC コネクタで外付け）用**
+> ## 対象は **v7.1 / v7.2 基板（SCH16T を J6 の FPC コネクタで外付け）**
 >
-> 初代 v7（BNO085 搭載）基板は **`PONSv7`** ブランチ（2026-10-23 に分けた）。
+> 初代 v7（BNO085 搭載）基板と `PONSv7` ブランチは廃止した（2026-11-22）。v7 へ直しを渡す必要はない。
 >
 > - **基板の版は `settings.h` の `PONS_MAINBOARD_REV`（71 / 72）で選ぶ。** 違いは v7.2 の「電源を切っていても主電池で BT1 を
 >   充電する回路」だけでピンは同じ。変わるのは BT1 の見込み（rtc_backup.cpp）と基板名の表記（`VERSION_TEXT`）だけ。
 >   v7.1 の基板に 72 で焼くと BT1 の見込みが長く出すぎるので、迷ったら 71。`kicad/` は本体基板のデータ（いまの版は v7.2）。
-> - **航法・音・無線・画面など基板に関係しない直しは、`PONSv7` へ cherry-pick で渡す**（逆も同じ）。
->   コードが少しずつ違うので、マージではなく 1 コミットずつ取り込み、衝突したら受け取る側の基板に合わせる。
-> - **無線（PONS Link）は v7 の機体とも混ぜて使う。** プロトコル（`lora_link/link_proto.h`）と飛行 CSV の列は両ブランチでそろえる。
-> - **SCH16T は机の上の確認まで済み、まだ飛ばしていない**（`#warning "... DO NOT FLY."`）。残りは
->   [docs/sch16t_design.md](docs/sch16t_design.md) §6 の Step 4〜5。**ESKF の dt は直前のサンプルとの実際の時間差**
->   （SCH16T は 1 回読むと 1 サンプル）。PONSv7 の BNO085 はまとめて届くので平均間隔が正しく、**この直しは cherry-pick しない。**
-> - **v7.1 は SCH16T を必ずつなぐ。** 起動時に見つからないのも、あとで黙ったのも IMU の欠け（本番前チェックの `IMU`）。
->   `get_imu_ok()` は通信が 1 秒途絶えると false に変わるので、「載っていない機体」の判定には使えない。PONSv7 へは持ち込まない。
-> - BNO085 用の能力ビット・融合出力（GRV / RV / LACC）・動的校正は削除済み。PONSv7 から IMU の直しを持ってくるときは
->   SCH16T に合わせて読み替える。
+> - **SCH16T は机の上の確認と車の走行（旋回・加減速・停止）まで済み、まだ飛ばしていない**（`#warning "... DO NOT FLY."`）。残りは
+>   [docs/sch16t_design.md](docs/sch16t_design.md) §6 の GNSS 断を含む走行と Step 5（飛行）。**ESKF の dt は直前のサンプルとの実際の時間差**
+>   （SCH16T は 1 回読むと 1 サンプル）。
+> - **SCH16T は必ずつなぐ。** 起動時に見つからないのも、あとで黙ったのも IMU の欠け（本番前チェックの `IMU`）。
+>   `get_imu_ok()` は通信が 1 秒途絶えると false に変わるので、「載っていない機体」の判定には使えない。
 
-PONS v7 — 人力飛行機パイロット向けの GNSS 航法装置ファームウェア。
+PONS v7.1 — 人力飛行機パイロット向けの GNSS 航法装置ファームウェア。
 RP2350B(80QFN) 自作基板 + 2.8" TFT、Arduino（arduino-pico 4.5.1）。
 
 **コメントとドキュメントは日本語で書く。**
@@ -89,6 +84,8 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 - コミットメッセージは `0.966 何をしたか` の形式（先頭にバージョン）。
   **バージョンは毎回 `settings.h` の `BUILDVERSION` を読んでから書く**
   （記憶で書いて 1 つ古い番号を付ける事故が実際に 2 回起きた）。
+- **pre-commit フック（[tools/git-hooks/pre-commit](tools/git-hooks/pre-commit)）を使う。** 新しく clone した PC では一度だけ
+  `git config core.hooksPath tools/git-hooks`。いまは Re:PONS の版数の上げ忘れを止めるだけ（下の「破ると静かに壊れる約束」）。
 
 ## テスト
 
@@ -189,7 +186,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 - **電波に載るのは `LinkTelem`（69 バイト）ではなく 32 バイトのフレーム**
   （[lora_link/link_wire2.h](lora_link/link_wire2.h)。2026-10-27〜、どの CH でも）。`LinkTelem` はメモリの上の形で、
   送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは印だけ**なので、並びの違う版とは通じない（3 台そろえる）。
-  並びを変えたら `LINK_W2_MAGIC` も変え、PONSv7 / PONSv7.1 で並びを同じに保つ
+  並びを変えたら `LINK_W2_MAGIC` も変える。
   **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xA8`。2026-11-20 に回転枠 7 へ sAcc を足した）。印は必ず
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
   SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xAC`）。
@@ -221,10 +218,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   `setup1()` が `setup_sd()` の前に `tft_pio_ready` を待つのも同じ種類。TFT（16bit パラレル）と
   SD（SDIO）はどちらも PIO を使い、別々のコアで同時に確保すると片方が死ぬ（[display_tft.h](display_tft.h)）。
 - **ピンの割り当ては `settings.h` の冒頭（「基板」の節）に 1 つだけ置いてある。** ピンを足すときもそこへ。
-  v7 と同じ GPIO が逆の意味になっているものが多い（41-44 は SPI1、M0/M1 は GPIO31）ので、
-  v7 のコードや文書を持ち込むときは必ずそこと突き合わせる。
-- **GPIO42 / GPIO44 を `INPUT_PULLUP` で停めないこと。** v7 では I2C バスを守るための処置だったが、
-  v7.1 では SPI1 の SCK / MISO で、**SPI1 が死ぬ**。
+  古い v7 の文書は GPIO の意味が逆のものが多い（v7.1 は 41-44 が SPI1、M0/M1 は GPIO31）。
 - **E220 の M0/M1（GPIO31）は e220.cpp だけが駆動する。** ほかから触ると E220 が mode 3
   （Config/DeepSleep）へ落ちて無線が黙る（v7 で IMU の初期化から触って、飛行中に無線が黙った）。
 - **E220 の AUX と mode 3 の扱いは [docs/pons_link.md](docs/pons_link.md) §6 に
@@ -251,27 +245,27 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   ほかの設定（ボーレート・出力・Airborne）は RAM にだけ書いていて、電源を切れば工場出荷に戻る前提で
   `gnss_setup()` が組んである（毎回 9600 で開いて 38400 へ切り替える）。BBR へ移すならそこも見直す。
   **本体が動いたまま GNSS だけがリセットしても同じく工場出荷に戻る**（NMEA だけで UBX を出さない）。
-  こちらは NMEA を読まないので、`gnss_ubx_watchdog()` が「バイトは来るのに UBX が来ない」を見て設定を一式送り直す
+  こちらは NMEA を読まないので、`gnss_ubx_watchdog()` が「バイトは来るのに UBX が来ない」を見て設定を一式送り直す。
   設定を足すときは `gnss_setup_impl()` の
   `send_config` の側に足すこと（起動時と送り直しの両方で送られる）。
 - **GNSS は 4Hz で測位するが、4Hz で受けるのは姿勢 ESKF と生 IMU ログだけ**（2026-11-15〜。`settings.h` の `GNSS_NAV_RATE_HZ` = 4 /
-  `GNSS_APP_RATE_HZ` = 2。**実機未確認**）。位置・時刻・画面・飛行 CSV・航跡・無線・警報は今までどおり 2Hz の測位だけを見る
+  `GNSS_APP_RATE_HZ` = 2。2026-11-18 に実機で確認）。位置・時刻・画面・飛行 CSV・航跡・無線・警報は今までどおり 2Hz の測位だけを見る
   （gnss.cpp の `handle_navpvt()` の頭で ESKF と生ログへ渡し、`navpvt_app_epoch()` が 0.5 秒の区切りごとに最初の 1 回だけを下へ通す）。
   **`handle_navpvt()` の頭の部分で `ubx_*` / `stored_*` を書かないこと**（時刻だけ 4Hz・位置は 2Hz のような食い違いになる）。
   NAV-PVT を見る処理を足すときは、どちらのレートで見るのかを決めてから置く。GNSS へ頼む NAV-SAT / NAV-DOP / NAV-AOPSTATUS の
   レートは「何回の測位に 1 回」なので、固定の数字で書かず `GNSS_EPOCHS_1HZ` / `GNSS_EPOCHS_01HZ` を使う。
-  `GNSS_NAV_RATE_HZ` を 2 にすれば 2026-11-14 までと同じ動きに戻る。v7（PONSv7）は 2Hz のまま。
+  `GNSS_NAV_RATE_HZ` を 2 にすれば 2026-11-14 までと同じ動きに戻る。
 - **姿勢 ESKF の GNSS 速度の遅れの補償**（`ESKF_GNSS_VEL_DELAY_MS`。いまは 170ms＝2026-11-18 の自転車で gnss_lag.py の約 190ms と eskf.py の再現で最良の 150ms の間。使う衛星が多いほど遅れて届く。
   attitude.cpp の `vhist_*`・gnss.cpp の `navpvt_age_us()`・eskf.py の `GNSS_DELAY_DEFAULT`・`tools/attitude_test/lag_test.cpp`）。
   値は 250Hz の生ログを `tools/imulog/gnss_lag.py` に通して決め、eskf.py と同じ値にそろえる。**`v_` を観測で直す所を足したら `vhist_shift()`、
   入れ直す所を足したら `vhist_clear()` を呼ぶこと**（忘れると次の観測が前の直しをもう一度残差として見る）。
-- **log.txt の `grf` 行（GNSS の受信状態の 1 分まとめ。`gnss_log_rf_minute()`）は、debug/v7-noise-test と
-  PONSv7.1 で同じ並び・同じ数え方に保つ。** v7 と v7.1 の基板の GNSS の受け方を比べるための行なので、
-  片方だけ変えると比べられなくなる。
 - **log.txt の毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG [..m]:`）と `BOOT PONS` / `GNSS TIME:` / `GNSS FIXED` の形を変えたら、
   Re:PONS の log.txt の表示（`tools/repons/index.html` の `logScanLine` / `LOG_CATS`）も合わせる。**
   ビューアは正規表現で拾っているので、読めなくなった値は**グラフと起動のまとめから黙って消える**。
-  v7 の機体も v7.1 のリポジトリのビューアで見るので、両ブランチの行の形をそろえておく。
+- **Re:PONS（`tools/repons/`）を変えたら `index.html` の `VIEWER_VERSION` を上げる。版数を書くのはそこ 1 か所だけ。**
+  JS は `?v=<VIEWER_VERSION>` を付けて読むので、上げ忘れると公開ページを前に開いたブラウザが**古い JS を黙って使い続ける**。
+  2026-11-22 に版数を 11 か所に書いていて一部だけ上げ忘れ、「キャッシュ不整合」が出た。そのあと 1 か所にまとめ、
+  上げ忘れは pre-commit フックが止める。JS の側に版数を書き戻さないこと。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
   `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
   `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。
@@ -297,7 +291,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 - **生ログ（`src/imulog.h`）の レコード ID を再利用しない。** 退避済みの過去ログは
   id だけでレコードを解釈するので、止めた ID に別の意味を割り当てると
   **古いログが静かに誤デコードされる**（値はもっともらしく出る）。
-  0.984 で止めた `IMULOG_ID_MAG 0x03` と、v7 のログにだけ出る `0x04〜0x06`（GAMERV / RV / LINACC）は
+  0.984 で止めた `IMULOG_ID_MAG 0x03` と、初代 v7（BNO085）の古いログにだけ出る `0x04〜0x06`（GAMERV / RV / LINACC）は
   欠番としてコメントを残してある。
   `tools/imulog/decode_imulog.py` の `KINDS` も同じ理由で定義を残す。
 - 方位はすべて真方位。磁方位は廃止済み。
@@ -320,23 +314,23 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す。まだ飛ばしていないので `#warning` で「飛ばすな」が出る。[docs/sch16t_design.md](docs/sch16t_design.md) |
-| [imu_sensor.h](imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
+| [src/imu_sensor.h](src/imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
-| [link_assist.cpp](link_assist.cpp) | GNSS の時刻の助け合い（LoRa。2026-11-13〜）。GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が**精度つきで**時刻を渡す（fix の前の RTC の時刻も。精度は NAV-PVT の tAcc で、テレメトリは status の `LINK_ST_TIME_COARSE` / `BAD`、ビーコンは `BC_TACC`。ビーコンは [lora_link/link_beacon.h](lora_link/link_beacon.h)、印 `0x58`）。機体は窓の間だけ送信の合間も mode 0 で聞く。受けた時刻は 2 発で確かめて `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` へ渡すだけ。定数は `settings.h` の `LINK_ASSIST_*`、`settings.txt` の `link_assist`。**v7 と v7.1 で同じファイル**。計画と決めごとは [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §4 |
+| [link_assist.cpp](link_assist.cpp) | GNSS の時刻の助け合い（LoRa。2026-11-13〜）。GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が**精度つきで**時刻を渡す（fix の前の RTC の時刻も。精度は NAV-PVT の tAcc で、テレメトリは status の `LINK_ST_TIME_COARSE` / `BAD`、ビーコンは `BC_TACC`。ビーコンは [lora_link/link_beacon.h](lora_link/link_beacon.h)、印 `0x58`）。機体は窓の間だけ送信の合間も mode 0 で聞く。受けた時刻は 2 発で確かめて `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` へ渡すだけ。定数は `settings.h` の `LINK_ASSIST_*`、`settings.txt` の `link_assist`。計画と決めごとは [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §4 |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
-| [readiness.cpp](readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
-| [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。**v7.2 基板（`settings.h` の `PONS_MAINBOARD_REV` = 72、2026-11-16〜）は、電源を切っていても主電池が BT1 を保つ時間を足す**（PONSv7 へ持っていくと `PONS_MAINBOARD_REV` が無いので今までどおり）。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1）。**v7 と v7.1 で同じファイル** |
-| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。**外から GNSS へ時刻を入れる口 `gnss_dbd_give_time()` もここ**（2026-11-10。PC の `PONS:TIME`。LoRa の時刻もここへ渡すだけにして、入れる条件を呼び出し側に書かない）。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS / COLD,TIME / COLDONLY,TIME`。SD の読み書きは mysd.cpp・Core1。**v7 と v7.1 で同じファイル** |
+| [src/readiness.cpp](src/readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
+| [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。**v7.2 基板（`settings.h` の `PONS_MAINBOARD_REV` = 72、2026-11-16〜）は、電源を切っていても主電池が BT1 を保つ時間を足す**。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1） |
+| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。**外から GNSS へ時刻を入れる口 `gnss_dbd_give_time()` もここ**（2026-11-10。PC の `PONS:TIME`。LoRa の時刻もここへ渡すだけにして、入れる条件を呼び出し側に書かない）。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS / COLD,TIME / COLDONLY,TIME`。SD の読み書きは mysd.cpp・Core1 |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
-| [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す）。PONSv7 と並びを同じに保つ |
+| [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す） |
 | [tas.cpp](tas.cpp) | 推定 TAS の表示の判断（2026-11-07）。ヘッダー右の大きい枠に何を出すか（真方位 / 平均ピッチ / 推定 TAS / 地上の横線つき TAS）を、設定・地上と飛行中・**表示の供給元 4 つ**から 1 か所で決める。描画は `tas_header()` を読むだけ。仕様は [docs/pons_tas.md](docs/pons_tas.md) |
-| [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata） |
+| [src/](src/) | 仕様が固まって普段いじらないもの（button / sound / vectormap / imulog / flashdata / navdata / readiness / imu_sensor。最後の 3 つは 2026-11-22 に移した） |
 | [wav/](wav/) | 音声の原本。**FLASH へ焼く元**で、SD には入れない |
 | [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) | 焼き込んだ音声の実体。`tools/gen_wav_flash.py` の生成物。手で編集しない |
 
-- **やること・後回しにしていること（v7・v7.1 両方）: [docs/pons_todo.md](docs/pons_todo.md)**。済んだら行を消す。
+- **やること・後回しにしていること: [docs/pons_todo.md](docs/pons_todo.md)**。済んだら行を消す。
   1 項目 1〜2 行に保ち、経緯や数字は [docs/pons_todo_notes.md](docs/pons_todo_notes.md) へ
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)

@@ -44,7 +44,7 @@
 #include "hardware/sync.h"
 #endif
 #include "imu.h"
-#include "imu_sensor.h"
+#include "src/imu_sensor.h"
 #include "mysd.h"         // enqueueTask / createLogSdTask
 #include "src/imulog.h"   // 生データロガー（★ チップ側に残す。理由は imu_sensor.h）
 

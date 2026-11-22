@@ -27,7 +27,7 @@
 #include "airdata.h"
 #include "display_tft.h"
 #include "mysd.h"
-#include "navdata.h"
+#include "src/navdata.h"
 #include "e220.h"        // 下位ドライバ（UART・モード制御・レジスタ）
 #include "lora_link/link_wire2.h"   // 電波に載せる 32 バイトのフレーム
 #include "lora_link/link_beacon.h"  // GNSS の時刻の助け合いのビーコン（同じ 32 バイト。印だけが違う）
@@ -1802,7 +1802,19 @@ static void link_push_telemetry() {
     if (attitude_needs_apply() && attitude_get_rpy_enabled()) st |= LINK_ST_NEEDS_APPLY;
     // 電源経路の異常のあいだは電池低下を立てない（電圧が低いのは故障のせい。下の PWR_FAULT が知らせる）
     // 電池電圧が読めないあいだも立てない（0V を「電池切れ」と言うと受信機が誤報する）
-    if (batt_ok && batt_v <= BAT_LOW_VOLTAGE && !power_fault_active()) st |= LINK_ST_BAT_LOW;
+    // USB で動いているあいだも立てない（送信機自身の警告 batt_alarm_tick() と同じ条件。充電中なので知らせても意味がない）
+    // ★ LINK_BAT_LOW_HOLD_MS 続いてから立てる。SW を OFF にした直後は、電圧が 0V へ下がる途中なのに
+    //   SW OFF の判定（batt_ok）がまだ追いついていない瞬間があり、1 回の送信で受信機が鳴っていた（settings.h）。
+    //   USB の条件だけでは足りない（細いケーブルで VBUS が一瞬 4.3V を割ると外れる。CLAUDE.md）。
+    {
+        static uint32_t bat_low_since = 0;   // 0 = いま低くない
+        const uint32_t now_ms = millis();
+        const bool low_now = batt_ok && batt_v <= BAT_LOW_VOLTAGE &&
+                             !usb_power_present() && !power_fault_active();
+        if (!low_now)                bat_low_since = 0;
+        else if (bat_low_since == 0) bat_low_since = now_ms ? now_ms : 1;
+        if (bat_low_since != 0 && now_ms - bat_low_since >= LINK_BAT_LOW_HOLD_MS) st |= LINK_ST_BAT_LOW;
+    }
     // 地上チェック（ロール／ピッチ／較正やり直し）。**送信機しか判定できない**ので
     // ビットで運ぶ（link_proto.h の「再計算できるものは載せない」の例外）。
     if (ground_roll_warn_active)                       st |= LINK_ST_GROUND_ROLL;

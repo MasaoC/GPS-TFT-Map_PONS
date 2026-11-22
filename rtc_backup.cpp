@@ -62,7 +62,7 @@
 #include "gnss.h"   // gnss_rtc_boot_checked()・gnss_rtc_alive_on_boot()・get_gnss_date()/time()・リプレイ／デモ中か
 #include "power.h"  // power_estimated_cell_voltage()・power_sw_off_on_usb()（v7.2 の回路が動いているかを電池の電圧で見る）
 
-// v7.2 の回路があるか。PONSv7 へ持っていったとき（PONS_MAINBOARD_REV が無い）も 0 になる
+// v7.2 の回路があるか。PONS_MAINBOARD_REV が無いときも 0 になる
 #if defined(PONS_MAINBOARD_REV) && PONS_MAINBOARD_REV >= 72
   #define RTC_BACKUP_HAS_AON 1
 #else

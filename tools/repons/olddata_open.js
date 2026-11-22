@@ -19,7 +19,6 @@
 (function (global) {
   'use strict';
 
-  const VERSION = '2026.11.22.2';
   const OLDDATA_BASE = '../olddata/';
   const KDF_PBKDF2_SHA256 = 1;
   let rememberedPassword = null;   // このページを開いている間だけ
@@ -384,7 +383,6 @@
     if (lsGet(LS_NOTES_QUIET) !== '1') showDataNotes(key);
   });
 
-  global.PONS_OLDDATA_VERSION = VERSION;
   global.showOldDataNotes = (filename) => { const k = notesKey(filename); if (k) showDataNotes(k); return !!k; };
   global.decryptPonsEnc = decryptPonsEnc;
   global.openEncryptedFile = openEncryptedFile;

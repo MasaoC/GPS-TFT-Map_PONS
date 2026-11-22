@@ -11,7 +11,7 @@ Author  : MasaoC (@masao_mobile)
 Updated : 2026/11/17
 -->
 
-v7 基板（BNO085）は `PONSv7` ブランチ（BNO085 の記録は同ブランチの docs/imu_i2c_bringup.md）。
+v7 基板（BNO085）は 2026-11-22 に廃止した（BNO085 の記録は `PONSv7` ブランチの docs/imu_i2c_bringup.md に残っている）。
 
 **いまの状態**: 本体基板で起動と机の上の確認（下の §6 Step 1〜3）は済み。車の走行（Step 4）は旋回・加減速・止まるまで済み、
 GNSS 断を含む走行と飛行（Step 5）はまだ。`settings.h` の `#warning "... DO NOT FLY."` は Step 5 が済んだら消す。
@@ -87,7 +87,7 @@ LPF ごとに「最小推奨読み出しレート」がある（データシー�
 | ファイル | 中身 |
 |---|---|
 | [imu_sch16t.cpp](../imu_sch16t.cpp) | **チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・タイマー割り込みでの読み出しとリングバッファ・復旧 |
-| [imu_sensor.h](../imu_sensor.h) | チップと推定の境界。feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`（setup / poll / service_if_due / present / alive） |
+| [src/imu_sensor.h](../src/imu_sensor.h) | チップと推定の境界。feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`（setup / poll / service_if_due / present / alive） |
 | [imu.cpp](../imu.cpp) | バリオの KF と推定側のゲッター（チップ非依存） |
 | [attitude.cpp](../attitude.cpp) | 姿勢 ESKF（`tools/imulog/eskf.py` と二重実装） |
 

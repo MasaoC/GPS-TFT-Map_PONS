@@ -16,7 +16,7 @@
 #include "gnss.h"
 #include "link.h"   // ミラー表示（受信モード）
 #include "mysd.h"
-#include "navdata.h"
+#include "src/navdata.h"
 #include "settings.h"
 #include "display_tft.h"
 #include "airdata.h"
@@ -774,9 +774,8 @@ static void handle_navaopstatus(const uint8_t *p, uint16_t len) {
 static GnssMonRf s_mon_rf = {};
 
 // ---- GNSS の受信状態の 1 分まとめ（log.txt の `grf` 行）----
-// ★ v7（debug/v7-noise-test）と v7.1 で**同じ行を出す**（2 つの基板の GNSS の受け方を比べるため。
-//   2026-11 の GNSS 干渉試験で、焼損した v7 の主基板だけ CW のバーストが出ていた）。
-//   **並びや数え方を変えるときは両方のブランチを同じに直すこと。**
+// ★ 2026-11 の GNSS 干渉試験（v7 と v7.1 の比較。焼損した v7 の主基板だけ CW のバーストが出ていた）のために作った行。
+//   **並びを変えたら Re:PONS の log.txt の表示（tools/repons/index.html の logScanLine）も合わせること。**
 //   MON-RF が届くたび（1 秒に 1 回）に 1 つ数え、60 秒ログ（.ino の periodic_log_tick）が
 //   gnss_log_rf_minute() で 1 行にして空にする。どちらも Core0。
 //   C/N0 と追尾数は NAV-SAT の値。ナビ画面では NAV-SAT が 10 秒に 1 回なので、12 秒以内に届いた衛星を数える。
@@ -1882,7 +1881,7 @@ static void gnss_setup_impl(bool send_config) {
         #endif
       }
 
-      // ⑨ MON-RF を 1Hz で出力（受信状態の 1 分まとめ `grf` 用。debug/v7-noise-test と同じ）
+      // ⑨ MON-RF を 1Hz で出力（受信状態の 1 分まとめ `grf` 用）
       // ★ MON の出力の rate は航法の周期（GNSS_NAV_RATE_HZ）ではなく秒で数えるので、rate=1 で 1 秒に 1 回。
       // ★ 2 つのコマンド（CFG-VALSET と旧式の CFG-MSG）を送るので、返事も 2 つ待つ。片方だけ待つと
       //   残りの ACK が後ろに残る。どちらか一方が通れば出力される（届いた数は `grf` の n= に出る）。
@@ -3015,7 +3014,7 @@ int get_gnss_numsat() {
 // 60 秒ログ（.ino の periodic_log_tick）から呼ぶ。1 分ぶんの受信状態を `grf` の 1 行にして空にする。
 // 列: n=MON-RF の数 / jam50=jamInd>=50 の数 / jmax / agc=平均(最小-最大) / noise=平均 /
 //     cno=C/N0 上位4/全体 の平均 / trk=追尾衛星の平均 / used=使用衛星の平均 / fix=Fix していた割合
-// ★ 並びは v7（debug/v7-noise-test）と v7.1 で同じに保つ（上の GnssRfMinute の説明）。
+// ★ 並びを変えたら Re:PONS も合わせる（上の GnssRfMinute の説明）。
 void gnss_log_rf_minute() {
   const GnssRfMinute m = s_rfmin;   // Core0 だけが触るので、写して空にするだけでよい
   s_rfmin = {};

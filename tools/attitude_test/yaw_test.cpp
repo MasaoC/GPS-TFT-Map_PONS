@@ -570,6 +570,52 @@ int main() {
             printf("   動き出したときの初期化の傾きの誤差 %.2f deg（12 未満が正しい。1 サンプルだと最悪 47）\n", tilt_init);
             ok &= tilt_init >= 0.0 && tilt_init < 12.0;
         }
+
+        // D14) はうように 8 秒以上動いてから本当に加速する（2026-11-22 の車。settings.h の ESKF_ACCEL_HOLD_MAX_PREYAW_US）
+        //   0.2 m/s² で 7 秒（1.4 m/s）→ 3 秒ゆるく減速（1.1 m/s）→ 1.0 m/s² で 2.5 秒（3.6 m/s）→ そのまま。前は東・本当のピッチ 0。
+        //   「加速中」が 8 秒で切れていた頃は、そのあとの加速を方位が決まる前の重力観測が傾きとして取り込み（車で +3.8°）、
+        //   「静止」の判定が 2D 相関を 0 に戻して方位は航跡に戻った（mag=0）。
+        {
+            attitude_setup();
+            t = 0;
+            const float gq[3] = {0, 0, 0};
+            float a_lv0[3]; static_accel_for_bank(0.0, a_lv0);
+            feed((int)(6.0 * fs), dt, t, a_lv0, gq);
+            for (int i = 0; i < (int)(4.0 * fs); i++) {
+                if (i % (int)(fs / 4) == 0) attitude_on_gnss_velocity(0.0f, 0.0f, 0.0f, 0.08f);
+                feed(1, dt, t, a_lv0, gq);
+            }
+            double v = 0.0;
+            float pmax = 0.0f;
+            std::vector<double> vh;
+            const int n = (int)(16.0 * fs);
+            for (int i = 0; i < n; i++) {
+                const double tt = i * dt;
+                const double a = tt < 7.0 ? 0.2 : (tt < 10.0 ? -0.1 : (tt < 12.5 ? 1.0 : 0.0));
+                v += a * dt;
+                vh.push_back(v);
+                const double ab[3] = { a, 0.0, G };
+                float as[3]; body_to_sensor(ab, as);
+                feed(1, dt, t, as, gq);
+                if (i % (int)(fs / 4) == 0) {
+                    const int lag = (int)(0.17 * fs);
+                    const double vd = (i >= lag) ? vh[i - lag] : 0.0;
+                    attitude_on_gnss_velocity(0.0f, (float)vd, 0.0f, 0.08f);
+                }
+                if (!attitude_yaw_ready()) {
+                    float r, p, y; attitude_get_euler(r, p, y);
+                    if (fabsf(p) > pmax) pmax = fabsf(p);
+                }
+            }
+            uint8_t how14 = 255; float mag14 = 0, coh14 = 0, td14 = 0, sg14 = 0; bool bok14 = false;
+            const bool ev14 = attitude_take_yaw_init_event(how14, mag14, coh14, td14, sg14, bok14);
+            float r14, p14, y14; attitude_get_euler(r14, p14, y14);
+            printf("\nD14) はうように 10 秒動いてから 1.0 m/s² で加速（11/22 の車の形）。本当のピッチ 0・前は東\n");
+            printf("   方位が決まるまでのピッチの最大 %.2f deg（1.2 以下＝はう加速 atan(0.2/g) を超えないのが正しい。直す前は 5.3）\n", pmax);
+            printf("   方位の決まり方 how=%d（0 = 2D 相関が正しい。直す前の 11/22 の車は 1 = 航跡）  mag %.0f  方位 %.1f deg（90 が正しい）\n",
+                   ev14 ? (int)how14 : -1, mag14, y14);
+            ok &= pmax <= 1.2f && ev14 && how14 == 0 && fabsf(y14 - 90.0f) < 5.0f;
+        }
     }
 
 

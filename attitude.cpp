@@ -1164,8 +1164,10 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             accel_horiz_on_ = false;
         }
         const bool was = accelerating_;
+        // 方位が決まる前で GNSS が動いていると言い続けている間は、上限を ESKF_ACCEL_HOLD_MAX_PREYAW_US まで延ばす（2026-11-22。settings.h）
+        const uint32_t hold_max = (!yaw_set_ && gnss_moving) ? ESKF_ACCEL_HOLD_MAX_PREYAW_US : ESKF_ACCEL_HOLD_MAX_US;
         accelerating_ = accel_horiz_on_ &&
-                        (uint32_t)(t_us - accel_horiz_since_us_) < ESKF_ACCEL_HOLD_MAX_US;
+                        (uint32_t)(t_us - accel_horiz_since_us_) < hold_max;
         // 上限が来たら、いまの値を新しい平均にする（加速ではなく、ジャイロと加速度計の食い違いが続いているとみなす。
         //   取り直さないと、方位が決まる前の重力観測の門（acc_dp_raw2_）が平均の時定数で何十秒も閉じたままになる）
         if (accel_horiz_on_ && !accelerating_ && was) {

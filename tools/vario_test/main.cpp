@@ -10,7 +10,7 @@
 // ============================================================
 #include "Arduino.h"
 #include "imu.h"
-#include "imu_sensor.h"
+#include "src/imu_sensor.h"
 #include "attitude.h"
 #include "settings.h"
 #include <limits>
@@ -352,6 +352,40 @@ int main() {
             CHECK(fabsf(get_imu_vspeed_raw()) < 0.25f, "V/S held near 0 by GNSS despite accel offset (%.3f)", get_imu_vspeed_raw());
         }
         g_drv_present = true;
+    }
+
+    // ---- 8) 起動地の MSL 高度（gnss_kf_offset）の決め方と決め直し（2026-11-22。settings.h の GNSS_OFFSET_*）----
+    //   11/22 の車: 最初の測位の GNSS 高度がでたらめ（vAcc 9.9 m と出て実際は 50 m 以上ずれ）でオフセットが +82.7 m で決まり、
+    //   50 m の外れ値の門で長期更新も届かず 30 分ずっと 80 m 高かった。
+    {
+        auto gnss_1s = [&](float msl_minus_kf, float vacc, int n) {
+            for (int k = 0; k < n; k++) {
+                run_sim(1.0f, vz_true, 0.0f, 0.0f, z_baro, true);     // 1 秒（imu_kalman_gnss_update は 1 秒に 1 回）
+                imu_kalman_gnss_update(z_baro + msl_minus_kf, vacc);
+            }
+        };
+        const float TRUE_MSL = 3.0f;          // 起動地の本当の MSL（KF は起動地 = z_baro の高さ）
+        gnss_1s(TRUE_MSL + 80.0f, 9.9f, 12);  // vAcc 9.9 m（GNSS_VACC_MAX_M は通るが決めるのには使わない）
+        CHECK(!get_imu_gnss_offset_ready(), "offset not set from vAcc 9.9 m fixes");
+        gnss_1s(TRUE_MSL + 80.0f, 4.0f, GNSS_INIT_SAMPLES);   // vAcc は良いと言いながら 80 m ずれた測位で決まってしまった
+        CHECK(get_imu_gnss_offset_ready() && fabsf(get_imu_altitude_msl() - (z_baro + TRUE_MSL + 80.0f)) < 1.0f,
+              "bad first fix sets offset +80 (alt %.1f, expect %.1f)", get_imu_altitude_msl(), z_baro + TRUE_MSL + 80.0f);
+        const int log0 = g_stub_log_count;
+        gnss_1s(TRUE_MSL, 2.0f, GNSS_OFFSET_REINIT_SAMPLES - 1);  // 正しい測位が 19 回: まだ決め直さない
+        CHECK(g_stub_log_count == log0 && fabsf(get_imu_altitude_msl() - (z_baro + TRUE_MSL + 80.0f)) < 1.0f,
+              "no re-init before %d fixes", GNSS_OFFSET_REINIT_SAMPLES);
+        gnss_1s(TRUE_MSL, 6.0f, 3);           // vAcc 6 m（決め直しに数えない）を挟むと数え直し
+        gnss_1s(TRUE_MSL, 2.0f, GNSS_OFFSET_REINIT_SAMPLES - 1);
+        CHECK(g_stub_log_count == log0, "re-init count restarts after a vAcc 6 m fix");
+        gnss_1s(TRUE_MSL, 2.0f, 1);           // 20 回目
+        CHECK(strstr(g_stub_last_log, "re-init") != nullptr && fabsf(get_imu_altitude_msl() - (z_baro + TRUE_MSL)) < 1.0f,
+              "re-init to true MSL (alt %.2f, expect %.2f; %s)", get_imu_altitude_msl(), z_baro + TRUE_MSL, g_stub_last_log);
+        // マルチパスの外れ（80 m・5 秒）では決め直さない
+        const int log1 = g_stub_log_count;
+        gnss_1s(TRUE_MSL + 80.0f, 3.0f, 5);
+        gnss_1s(TRUE_MSL, 2.0f, 30);
+        CHECK(g_stub_log_count == log1 && fabsf(get_imu_altitude_msl() - (z_baro + TRUE_MSL)) < 1.0f,
+              "5 s multipath outlier does not re-init (alt %.2f)", get_imu_altitude_msl());
     }
 
     printf("vario_test: %d passed, %d failed\n", g_pass, g_fail);

@@ -13,13 +13,10 @@
 #include <Arduino.h>
 
 // 本体フラッシュ（EEPROM 領域）に残す過放電ラッチの記録（32 バイト固定）。
-// ★ PONSv7（BNO085 搭載）の ImuCalRec がオフセット 0..11 を使っているため、
-//   cherry-pick しても衝突しないよう BATT_LATCH_EE_ADDR（64）に置く。
-// ★ PONSv7 への cherry-pick 注意:
-//   v7 では Core0 の ImuCalRec（オフセット 0..11）と Core1 の過放電ラッチ（オフセット 64..95）が
-//   同一 EEPROM（EEPROM.commit()）を共有する。両方のコアが同時に commit() すると
+// ★ 置き場所は BATT_LATCH_EE_ADDR（64）。廃止した v7（BNO085）の ImuCalRec（0..11）とぶつけないために選んだ位置。
+//   動かすと書き込み済みの記録（ラッチ中の機体）を読めなくなるので動かさない。
+// ★ EEPROM の読み書きと commit() は Core1 だけで行う（power.cpp）。両方のコアが同時に commit() すると
 //   arduino-pico の idleOtherCore 機構によってデッドロック（フリーズ）する恐れがある。
-//   v7 へ取り込む際は commit() をどちらか単一のコア（Core1 推奨）に集約するか mutex で保護すること。
 #define BATT_LATCH_FLAG_MOVING    0x01  // 検知時に移動中（フライト中）だった
 #define BATT_LATCH_FLAG_JST_VALID 0x02  // date_yyyymmdd / time_hhmmss が有効
 
