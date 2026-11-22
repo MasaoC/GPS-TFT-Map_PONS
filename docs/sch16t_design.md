@@ -13,8 +13,8 @@ Updated : 2026/11/17
 
 v7 基板（BNO085）は 2026-11-22 に廃止した（BNO085 の記録は `PONSv7` ブランチの docs/imu_i2c_bringup.md に残っている）。
 
-**いまの状態**: 本体基板で起動と机の上の確認（下の §6 Step 1〜3）は済み。車の走行（Step 4）は旋回・加減速・止まるまで済み、
-GNSS 断を含む走行と飛行（Step 5）はまだ。`settings.h` の `#warning "... DO NOT FLY."` は Step 5 が済んだら消す。
+**いまの状態**: 本体基板で起動と机の上の確認（下の §6 Step 1〜3）は済み。車の走行（Step 4）も済み（旋回・加減速・止まるまで、
+2026-11-19 のトンネル 3 本で GNSS 断、11/22 の発進）。飛行（Step 5）はまだ。`settings.h` の `#warning "... DO NOT FLY."` は Step 5 が済んだら消す。
 残りの作業は [pons_todo.md](pons_todo.md) §1。
 
 ---

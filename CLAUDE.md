@@ -7,8 +7,9 @@
 > - **基板の版は `settings.h` の `PONS_MAINBOARD_REV`（71 / 72）で選ぶ。** 違いは v7.2 の「電源を切っていても主電池で BT1 を
 >   充電する回路」だけでピンは同じ。変わるのは BT1 の見込み（rtc_backup.cpp）と基板名の表記（`VERSION_TEXT`）だけ。
 >   v7.1 の基板に 72 で焼くと BT1 の見込みが長く出すぎるので、迷ったら 71。`kicad/` は本体基板のデータ（いまの版は v7.2）。
-> - **SCH16T は机の上の確認と車の走行（旋回・加減速・停止）まで済み、まだ飛ばしていない**（`#warning "... DO NOT FLY."`）。残りは
->   [docs/sch16t_design.md](docs/sch16t_design.md) §6 の GNSS 断を含む走行と Step 5（飛行）。**ESKF の dt は直前のサンプルとの実際の時間差**
+> - **SCH16T は机の上の確認と車の走行（Step 4。旋回・加減速・停止、11/19 のトンネルの GNSS 断）まで済み、まだ飛ばしていない**
+>   （`#warning "... DO NOT FLY."`）。残りは [docs/pons_todo.md](docs/pons_todo.md) §1 の車での確認と、
+>   [docs/sch16t_design.md](docs/sch16t_design.md) §6 の Step 5（飛行）。**ESKF の dt は直前のサンプルとの実際の時間差**
 >   （SCH16T は 1 回読むと 1 サンプル）。
 > - **SCH16T は必ずつなぐ。** 起動時に見つからないのも、あとで黙ったのも IMU の欠け（本番前チェックの `IMU`）。
 >   `get_imu_ok()` は通信が 1 秒途絶えると false に変わるので、「載っていない機体」の判定には使えない。

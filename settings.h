@@ -1025,7 +1025,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 
   // ★ 2026-11-03 に v7.1 本体で起動・机上確認（docs/sch16t_design.md §6 の Step 2〜3）まで済んだ。
   //   **走行（Step 4）と飛行（Step 5）はまだ。** 通してからこの #warning を消すこと。
-  #warning "SCH16T: bench-tested on v7.1 (Step 2-3) but not yet road/flight-tested. do docs/sch16t_design.md Step 4-5 first. DO NOT FLY."
+  #warning "SCH16T: road-tested on v7.1 (Step 4 done 2026-11-19/22) but not yet flight-tested. Check docs/pons_todo.md section 1 by car, then Step 5. DO NOT FLY."
 
 // ============================================================
 //  IMU の生ログと読み出し
