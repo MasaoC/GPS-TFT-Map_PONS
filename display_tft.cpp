@@ -676,7 +676,7 @@ static bool ground_warn_shown(bool pitch) {
 // GNSS の速度の状態（表示用。供給元ごとに答える）。2026-11-13 に「YAW ALIGN」を分けた。
 //   EGS_NO_GNSS   … 橙「NO GNSS」。GNSS の速度が来ていない（ロール・ピッチの錨が無い）
 //   EGS_YAW_ALIGN … 黄「YAW ALIGN」。GNSS は来ているが、向き（ヨー）が決まっていない・確かめ待ちで、速度を使えていない。
-//                   磁気センサーが無いので、向きは 3m/s 以上で動くまで決まらない。**故障ではない**（止まっている間は
+//                   磁気センサーが無いので、向きは 2〜3m/s 以上で動くまで決まらない。**故障ではない**（止まっている間は
 //                   重力で水平を取っているのでロール・ピッチは正しい）。以前は橙「NO GNSS」と出ていて、準備完了の
 //                   読み上げと食い違い、不具合に見えた
 // ★ ミラー中は送信機の状態。送信機の内部の状態は電波に載らないので、送信機の GNSS 断・fix と、送信機のヨー精度
@@ -3551,7 +3551,8 @@ static void fmt_charge_min(char* buf, size_t n, int m) {
 }
 
 // USB 充電中かつ地上静止中の充電ポップアップ（充電ダッシュボード）
-// メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、GNSS の速い測位がもつ時間（BT1 の残り）を表示
+// メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、GNSS の速い測位がもつ時間（BT1 の残り）、
+// 本体基板の温度と充電してよい温度の範囲（2026-11-22〜）を表示
 static void draw_charge_popup() {
   if (screen_mode != MODE_MAP) return;
   // GNSS 断線の箱を最優先（同じ段に重ねない）。★ 判定は箱そのものの条件を使う。ミラー中は自機の GNSS が抜けても
@@ -3601,19 +3602,22 @@ static void draw_charge_popup() {
     fmt_charge_min(r, sizeof(r), rem_m);
     snprintf(l1, sizeof(l1), "CHG %d%%  %s", pct, r);
   }
+  // ★ 行の位置は 4 行目（温度）を足すときに詰めた（2026-11-22。それまでは 5 / 23 / 45）。
+  //   箱は大きくできない: 下の段（無信号・送信前チェック、148〜）と上の段（警報ミュート、40〜79）が同時に出る。
+  //   AA_FONT_SMALL は 1 行 約 17px なので 16px 送り（draw_notice_2lines() と同じ）、内蔵フォントは 8px で 11px 送り。
   backscreen.setTextColor(box_col, COLOR_WHITE);
-  backscreen.setCursor(bx + 8, by + 5);
+  backscreen.setCursor(bx + 8, by + 4);
   backscreen.print(l1);
 
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  backscreen.setCursor(bx + 8, by + 23);
+  backscreen.setCursor(bx + 8, by + 20);
   backscreen.print(l2);
   backscreen.unloadFont();
 
   // 3行目: ハードウェア LED 消灯確認案内（補足注記のため標準フォントで横幅に余裕を持たせる）
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  backscreen.setCursor(bx + 8, by + 45);
+  backscreen.setCursor(bx + 8, by + 39);
   if (cutoff_confirmed) {
     backscreen.print("* Side RED LED should be OFF now");
   } else if (is_full) {
@@ -3621,6 +3625,25 @@ static void draw_charge_popup() {
   } else {
     backscreen.print("* Wait until side RED LED turns off");
   }
+
+  // 4行目: 本体基板の温度（MS5611）と、充電してよい温度の範囲（電池の仕様。参考）。例: "Board 31.2C  (charge 0-45C)"
+  // ★ 温度は高温充電の警告（power.cpp の charge_hot_tick()）と同じ get_airdata_temperature()。電池そのものではなく
+  //   隣の基板の温度で、充電 IC の熱で少し高めに出る。範囲の数字は settings.h の定数から作る（書き写さない）。
+  // ★ 範囲の外は赤。45°C 以上が 30 秒続くとこのポップアップは消えて「TOO HOT TO CHARGE」の箱に替わる
+  //   （power_charge_popup_active()）ので、赤が見えるのはその手前の間と、0°C 未満（警告は無い。表示だけ）。
+  backscreen.setCursor(bx + 8, by + 50);
+  if (get_airdata_ok()) {
+    // ★ 色は表示する数字（0.1°C に丸めた値）で決める。生の値で比べると 44.96°C が黒の「45.0C」、
+    //   −0.04°C が赤の「-0.0C」になる。+0.0f は −0 を +0 にするため
+    const float t = roundf(get_airdata_temperature() * 10.0f) / 10.0f + 0.0f;
+    const bool out = (t >= CHARGE_HOT_C || t < CHARGE_COLD_C);
+    backscreen.setTextColor(out ? COLOR_RED : COLOR_BLACK, COLOR_WHITE);
+    backscreen.printf("Board %.1fC", t);
+  } else {
+    backscreen.print("Board --C");
+  }
+  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+  backscreen.printf("  (charge %.0f-%.0fC)", CHARGE_COLD_C, CHARGE_HOT_C);
 
   // 地図用フォントと色に戻して抜ける
   backscreen.loadFont(AA_FONT_SMALL);
@@ -3926,7 +3949,7 @@ float get_display_voltage() {
 // 旋回角速度（deg/s）を backscreen の左端または右端に表示する。
 // - 0.5 deg/s 未満は非表示。
 // - 正（右旋回）: 右端に表示。負（左旋回）: 左端に表示。
-// - GNSS 速度 2.0 m/s 以上のとき色分け: 1 deg/s 超=緑（適切な右旋回）、-1 deg/s 未満=青（左旋回）。
+// - GNSS 速度 NAV_MIN_GS_MPS（2.0 m/s）を超えるとき色分け: 1 deg/s 超=緑（適切な右旋回）、-1 deg/s 未満=青（左旋回）。
 // - 3 deg/s 超: 背景を塗りつぶして強調（背景色 = 旋回方向色）。
 // - 4 deg/s 超: さらに赤枠で警告強調。
 void draw_degpersec(double degpersecond){
@@ -3934,7 +3957,7 @@ void draw_degpersec(double degpersecond){
     return;
   backscreen.loadFont(AA_FONT_SMALL);  // Must load the font first
   int col = COLOR_GRAY;
-  if(get_gnss_mps() > 2.0){
+  if(get_gnss_mps() > NAV_MIN_GS_MPS){
     if (degpersecond > 1.0)
       col = COLOR_GREEN;
     if (degpersecond < -1.0)
@@ -4092,7 +4115,7 @@ void draw_header_tas(int x, TasHdr h, float mps) {
 //   NO_GNSS … 橙 2px「NO GNSS」。GNSS 速度が来ていない（元のピッチが不正確なので平均ピッチも不正確）
 //   YAW_ALIGN … 黄 2px「YAW ALIGN」。GNSS は来ているが向きが決まっていない（動き出せば直る。2026-11-13〜）
 //   GROUND  … 白 4px「GROUND」。推定 TAS を選んでいて地上（対気速度ではない。毎回の、正常な状態）。
-//             札は対地速度 3m/s 以上ですぐ外し、線は 10 秒続いてから外す（tas_leaving_ground()。2026-11-14〜）
+//             札は対地速度 TAS_AIR_GS_MPS（2m/s）以上ですぐ外し、線は 10 秒続いてから外す（tas_leaving_ground()。2026-11-14〜）
 //             札を外したあとは線が外れるまで「WAIT 5s」の残り秒数を出す（tas_ground_wait_sec()。2026-11-22〜）
 // ★ 2026-11-11 までは地上の白線の上に赤・橙を重ねて引いていて、地上で GNSS を待っている間は
 //   白と橙の混ざった線になっていた。札は 1 枚しか載らないので、どれか 1 つにする。
@@ -4198,7 +4221,7 @@ void draw_header() {
   header_footer.fillScreen(COLOR_WHITE);
   header_footer.setTextWrap(false);
   header_footer.loadFont(NM_FONT_LARGE);  // Must load the font first
-  int sel_col = get_gnss_mps()<2?COLOR_GRAY:COLOR_BLACK;
+  int sel_col = get_gnss_mps()<NAV_MIN_GS_MPS?COLOR_GRAY:COLOR_BLACK;
   header_footer.setTextColor(sel_col, TFT_WHITE);
 
 

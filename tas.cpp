@@ -104,7 +104,7 @@ int tas_ground_wait_sec() {
   const uint32_t el = replay ? (s_repClock - s_repRunMs) : (millis() - s_runMs);
   if (el >= TAS_SWITCH_HOLD_MS) {
     // 実機・ミラー: tas_tick() のあと描画までの間に 10 秒を越えた。次の tas_tick() で線が外れるので 1 のまま。
-    // リプレイ: 線を外すのは記録された hdr。記録のほうが遅い（当時は行の間で一瞬 3m/s を割って数え直した、など）と
+    // リプレイ: 線を外すのは記録された hdr。記録のほうが遅い（当時は行の間で一瞬 TAS_AIR_GS_MPS を割って数え直した、2026-11-21 までの 3m/s で記録したログを 2m/s で再生した、など）と
     //   「WAIT 1s」のまま止まって見えるので、札を出さない（2026-11-14 までと同じ、線だけ）。
     return replay ? 0 : 1;
   }

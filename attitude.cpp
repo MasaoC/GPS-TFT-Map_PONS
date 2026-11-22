@@ -1447,12 +1447,15 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         pitch_avg_push(p, dt);
 
         const float sp = sqrtf(v_[0]*v_[0] + v_[1]*v_[1]);
-        // 直進しているか。ロール自動トリムと風推定で共用する。
+        // 直進しているか。ロール自動トリムと風推定で共用する。速さの門だけ別（2026-11-22〜）:
+        //   風は WIND_UPDATE_MIN_SPEED_MPS（2 m/s。強い向かい風の 2〜3 m/s の飛行でも出す）、
+        //   トリムは ROLL_TRIM_MIN_SPEED（3 m/s のまま。覚えた値は SD に残って次の飛行へ持ち越すので、
+        //   着水後の曳航やゆっくりの試走で覚えないように）。
         // ★ sp は GNSS の対地速度ではなく **ESKF が積分した速度** なので、
         //   観測が無いと育つ（gnss_vel_fresh() のコメント参照）。鮮度を必ず併せて見る。
-        const bool straight_flight = gnss_vel_fresh() &&
-                                     (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS) &&
-                                     (sp > ROLL_TRIM_MIN_SPEED);
+        const bool straight_moving = gnss_vel_fresh() &&
+                                     (fabsf(yaw_rate_lp_) < ROLL_TRIM_YAWRATE_DPS);
+        const bool straight_flight = straight_moving && (sp > WIND_UPDATE_MIN_SPEED_MPS);
 
         // ---- 風の推定 ----
         // 対気速度の大きさはピッチから引き、向きは機首方位とする。
@@ -1490,7 +1493,8 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             wind_e_ = wind_n_ = 0.0f;
         }
 
-        const bool straight = straight_flight && rpy_enabled_ && roll_trim_enabled_;
+        const bool straight = straight_moving && (sp > ROLL_TRIM_MIN_SPEED) &&
+                              rpy_enabled_ && roll_trim_enabled_;
         if (straight) {
             trim_roll_sum_ += r * dt;
             trim_time_s_   += dt;

@@ -1126,7 +1126,8 @@
     out.sort((a, b) => a.t - b.t);
     const minT = out[0].t;
     for (const d of out) d.t -= minT;
-    let firstFly = out.findIndex(d => d.gs !== null && d.gs > 3.0);
+    // 離陸は 2.0（2026-11-22〜。それまで 3.0。index.html の離陸の検出と同じ）
+    let firstFly = out.findIndex(d => d.gs !== null && d.gs > 2.0);
     let lastFly = -1;
     for (let k = out.length - 1; k >= 0; k--) { if (out[k].gs !== null && out[k].gs > 2.0) { lastFly = k; break; } }
     const takeoff = firstFly >= 0 ? out[firstFly].t : 0;
@@ -1135,7 +1136,7 @@
   }
 
   global.PonsAnalysisDSP = {
-    VERSION: '2026.11.22.2',
+    VERSION: '2026.11.22.3',
     G0,
     mean, std, rms, median, pearsonR,
     detrendLinear, movingAverage, unwrapDeg,

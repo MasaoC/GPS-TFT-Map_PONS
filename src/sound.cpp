@@ -884,10 +884,10 @@ unsigned long trackwarning_until;  // コース警告音を鳴らし続ける期
 //   【警告1: コース逸脱警告】
 //     前回呼び出し時の GNSS 真方位 (last_tone_tt) と現在の真方位の差 (angle_diff) が
 //     15° を超えたとき → コース逸脱と判断して警告音 + "track.wav" を再生する。
-//     速度が 2.0m/s 以上のときのみ発動（静止中の GNSS ブレを無視するため）。
+//     速度が NAV_MIN_GS_MPS（2.0m/s）を超えるときのみ発動（静止中の GNSS ブレを無視するため）。
 //
 //   【警告2: 旋回角速度トーン】
-//     上記に当てはまらない場合で、degpersecond が 2.0 以上かつ速度 2.0m/s 以上のとき、
+//     上記に当てはまらない場合で、degpersecond が 2.0 を超え、かつ速度が NAV_MIN_GS_MPS を超えるとき、
 //     旋回の強さに応じた音程のトーンを鳴らす。
 //     周波数の計算: freq = |degpersecond| * 600 - 680
 //       - 2 deg/s → 520Hz,  5 deg/s → 2320Hz,  上限は 3136Hz（G7, スピーカー限界）
@@ -916,17 +916,17 @@ void update_tone(float degpersecond){
   //【警告1】方位変化が 15° 超 → コース逸脱警告
   if(angle_diff > 15){
     last_tone_tt = get_gnss_truetrack();
-    if(get_gnss_mps() > 2.0){
+    if(get_gnss_mps() > NAV_MIN_GS_MPS){
         trackwarning_until = millis()+8000;
         // 変化量に応じて警告音の回数を変える（30°超なら 5 回、15°超なら 3 回）
         enqueueTask(createPlayMultiToneTask(3136,120,angle_diff>30?5:3)); // G7（スピーカー上限付近）
         enqueueTask(createPlayWavTask("wav/track.wav")); // 音声警告も再生（FLASH なので SD 不要）
     }
   }
-  //【警告2】旋回角速度トーン: 2.0 deg/s 以上 かつ 2.0 m/s 以上のとき発動
+  //【警告2】旋回角速度トーン: 2.0 deg/s 超 かつ NAV_MIN_GS_MPS 超のとき発動
   // angle_diff > 15 のときは警告1 が優先されるためここには来ない
   // バリオ音（700〜1300Hz）と混同しないよう、固定高音 2093Hz（C7）のピピ2回に統一
-  else if(abs(degpersecond) > 2.0 && get_gnss_mps() > 2.0){
+  else if(abs(degpersecond) > 2.0 && get_gnss_mps() > NAV_MIN_GS_MPS){
     enqueueTask(createPlayMultiToneTask(2093, 80, 2));
   }
 }

@@ -4,7 +4,7 @@
 File    : docs/pons_todo.md
 Project : PONS v7.1 / v7.2
 Role    : 残っている作業の一覧。1 項目 1〜2 行。経緯・数字・確かめ方の詳細は pons_todo_notes.md。
-Updated : 2026/11/20
+Updated : 2026/11/22
 -->
 
 **済んだら行を消す。増えたら足す。** 1 項目は 1〜2 行。詳しいことは [pons_todo_notes.md](pons_todo_notes.md)（「メモ §n」）か各行のリンク先。
@@ -32,6 +32,8 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] GNSS 速度の遅れ（いま 170ms）: `gnss_lag.py` は約 200ms、ESKF の再現は 150ms が最良で食い違いが未解決。円を長く走ったログで比べ直す → メモ §4.1
 - [ ] DBD と PC の時刻: BT1 が切れた起動の TTFF、`COLD` / `COLDONLY` の比べ、`given time was ... off`（新しい基板の DBD は 11/18 に保存済み）
   → [pons_ttff_assist_plan.md](pons_ttff_assist_plan.md) §3.5・§3.6
+- [ ] 対地 2 m/s で飛ぶときの門（11/22。実機未確認）: 車で 2〜3 m/s で走り、TAS の線が 10 秒で外れる・設定画面が 5 秒で地図へ戻る・
+  止まって 10 秒で線が戻る・`eskf` 行の風（ヨーが決まっていれば）。Google Docs の説明書の 3 m/s の記述も直す
 - [ ] ケイデンスの推定（`tools/imulog/cadence.py`）: 台の上で漕ぐか飛行の生ログで、前後の振動が 180 回/分（3.0Hz）前後に出るか
 
 ## 3. 机の上で確かめる

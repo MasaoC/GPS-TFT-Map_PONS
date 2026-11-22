@@ -3601,7 +3601,7 @@ void update_course_warning(float degpersecond) {
   //   来るので、ここは毎回呼ばれる。衛星数と速度だけでは、衛星 1〜3 個で fix していないときの速度の
   //   ばらつきで積算が進み得た（2026-11-10 まで）。
   // ★ 目的地が無いときも積算しない（steer_angle は 0 にしてあるが、明示しておく。BUG-111）
-  if (!get_gnss_fix() || get_gnss_mps() < 2 || get_gnss_numsat() == 0 ||
+  if (!get_gnss_fix() || get_gnss_mps() < NAV_MIN_GS_MPS || get_gnss_numsat() == 0 ||
       currentdestination < 0 || currentdestination >= destinations_count) {
     course_warning_index = 0;
   }
