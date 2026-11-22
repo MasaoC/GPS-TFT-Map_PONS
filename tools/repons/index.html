@@ -2020,7 +2020,8 @@
         // 姿勢・風・横滑り (データ欠損時は 0 ではなく null で保持)
         const roll = (col.roll >= 0 && parts[col.roll] !== '') ? parseFloat(parts[col.roll]) : null;
         const pitch = (col.pitch >= 0 && parts[col.pitch] !== '') ? parseFloat(parts[col.pitch]) : null;
-        const yaw = (col.yaw >= 0 && parts[col.yaw] !== '') ? parseFloat(parts[col.yaw]) : (tt !== null ? tt : null);
+        const yawFromCsv = col.yaw >= 0 && parts[col.yaw] !== '';
+        const yaw = yawFromCsv ? parseFloat(parts[col.yaw]) : (tt !== null ? tt : null);   // 方位が無い行は航跡で代用（描画用）
         const pavg = (col.pavg >= 0 && parts[col.pavg] !== '') ? parseFloat(parts[col.pavg]) : null;
         const rtrim = (col.rtrim >= 0 && parts[col.rtrim] !== '') ? parseFloat(parts[col.rtrim]) : null;
         const yaw_acc95 = (col.yaw_acc95 >= 0 && parts[col.yaw_acc95] !== '') ? parseFloat(parts[col.yaw_acc95]) : null;
@@ -2047,7 +2048,7 @@
           timeStr, dateStr,
           lat, lon, gs, tt,
           kf_alt, kf_vs, press,
-          roll, pitch, yaw, pavg, rtrim, yaw_acc95,
+          roll, pitch, yaw, yawIsTrack: !yawFromCsv, pavg, rtrim, yaw_acc95,
           wspd, wdir,
           csvBeta, csvTas,
           estBeta: (csvBeta !== null && !isNaN(csvBeta)) ? csvBeta : null,
@@ -2179,8 +2180,13 @@
       }
 
       const GRAVITY = 9.80; // [m/s^2]
-      const TAU = 5.0;      // 横滑り減衰時定数 [s] (方向安定性)
-      const GAIN = 0.25;    // 協調操作度合い (1.0=無操舵、0.25=ラダー協調旋回)
+      // ★ TAU・GAIN は 2026 年の機体（陽還）の大会ログに合わせた値（2026-11-22。それまでは 5.0 / 0.25 の仮の値）。
+      //   flight_preprocess.py（YouTube の動画の後処理）が風の三角形から求めた β に合わせ込んだ運動方程式の β と、
+      //   この式（0.5 秒の行・角速度はならさない）で比べて最良: TAU 5.3 / GAIN 0.73 で RMS 0.70°・相関 0.98（5.0 / 0.25 では
+      //   振れ幅が約 1/3 で RMS 2.5°）。2027 年の機体も同じような特性とみてこの値にした（ユーザーの判断）。角速度を 1〜2 秒で
+      //   ならしても良くならなかった。CSV に β の列（beta_air など）があれば、この推定は使わずそちらを出す。
+      const TAU = 5.3;      // 横滑り減衰時定数 [s] (方向安定性)
+      const GAIN = 0.73;    // 協調操作度合い (1.0=無操舵、小さいほど協調が良い)
 
       // ヨー角の360°アンラップ
       const unwrappedYaw = [];
@@ -2204,7 +2210,11 @@
         const dt = Math.max(0.01, r1.t - r0.t);
 
         // 姿勢データが欠損、または地上滑走前・着水後 (gs < 2.0 m/s) は横滑り角未定義 (null)
-        if (r1.roll === null || r1.pitch === null || r1.gs === null || r1.gs < 2.0) {
+        // ★ CSV に方位（yaw）が無い行も出さない（2026-11-22）。その行の yaw は航跡（TrueTrack）で代用しているので、
+        //   ヨー角速度が航跡の変わる速さになる。航跡と機首方位は偏流角（風で 1〜3 m/s・TAS 7 m/s なら旋回中に数十度動く）だけ違い、
+        //   方位の無い 2025 年の大会ログや、方位が決まる前の自機のログで、もっともらしいが根拠の無い β が出ていた。
+        if (r1.roll === null || r1.pitch === null || r1.gs === null || r1.gs < 2.0 ||
+            r1.yawIsTrack || r0.yawIsTrack || r1.yaw === null || isNaN(r1.yaw) || r0.yaw === null || isNaN(r0.yaw)) {
           betaRad = 0.0;
           r1.estBeta = null;
           continue;
@@ -5991,7 +6001,7 @@
     // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
     // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
     // 下の JS は ?v= にこの版数を付けて読むので、HTML と JS の版が食い違うことはない。
-    const VIEWER_VERSION = '2026.11.22.4';
+    const VIEWER_VERSION = '2026.11.22.5';
     ['analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js']
       .forEach(f => document.write('<script src="' + f + '?v=' + VIEWER_VERSION + '"><\/script>'));
   </script>

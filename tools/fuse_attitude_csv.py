@@ -15,7 +15,7 @@
 #   --log    SD の log.txt（起動からの秒数:メッセージ）。"GPS TIME: ... UTC" の行で JST に合わせ、
 #            "volt=4.08V"（60 秒ごと）と "ACC ... sats=11"（約 10 秒ごと）を拾う（createmovie_csv2mp4.py と同じ読み方）
 #
-# 出力: いまの飛行 CSV（README の「飛行 CSV フォーマット」）と同じ 24 列。Re:PONS でそのまま開ける。
+# 出力: いまの飛行 CSV（README の「飛行 CSV フォーマット」）と同じ 24 列＋末尾に beta_air。Re:PONS でそのまま開ける。
 #   roll, pitch      ← euler（線形補間）
 #   yaw              ← betada の yaw_true（機体磁気の誤差を推定して直した真方位。角度で補間）。
 #                      euler の yaw は地磁気のままで機体磁気のずれ（十数度）を含むので使わない。飛行区間の外は空欄
@@ -27,6 +27,9 @@
 #   voltage          ← log の volt=（60 秒ごとの点を線形補間。前後の点が 90 秒より離れていれば空欄）
 #   numsat           ← log の ACC 行の sats=（直前の値。15 秒より古ければ空欄）
 #   GNSS_Altitude    ← 元の Altitude
+#   beta_air         ← betada の beta_air（対気ベクトルの向き − 真方位。YouTube の動画（createmovie_csv2mp4.py）が表示している β と同じ。
+#                      2026-11-22〜）。飛行 CSV には無い列で、Re:PONS はこの列があれば自前の推定（運動方程式）の代わりに使う。
+#                      風の三角形がぴったり閉じる幾何学的な値なので、風の推定や GPS のばらつきも入る。飛行区間の外は空欄
 #   元に無い列（lux, backlight, pitch_avg, roll_trim, yaw_acc95, hdr）は空欄（値を作らない）
 #   補間の両側のサンプルが MAX_GAP_SEC より離れているか、範囲の外なら空欄
 #
@@ -49,7 +52,8 @@ SATS_MAX_AGE_SEC = 15.0    # ACC 行は約 10 秒ごと
 
 OUT_HEADER = ['latitude', 'longitude', 'gs', 'TrueTrack', 'GNSS_Altitude', 'KF_Altitude', 'KF_Vspeed', 'pressure',
               'voltage', 'numsat', 'date', 'time', 'lux', 'backlight',
-              'roll', 'pitch', 'yaw', 'pitch_avg', 'roll_trim', 'yaw_acc95', 'wind_mps', 'wind_dir', 'tas_mps', 'hdr']
+              'roll', 'pitch', 'yaw', 'pitch_avg', 'roll_trim', 'yaw_acc95', 'wind_mps', 'wind_dir', 'tas_mps', 'hdr',
+              'beta_air']   # ← 飛行 CSV には無い。動画と同じ β（上の説明）
 
 
 def tsec(s):
@@ -181,7 +185,7 @@ def main():
         sys.exit('出力が入力と同じファイルです')
 
     eu = load_series(args.euler, ['roll', 'pitch'])
-    bd = load_series(args.betada, ['yaw_true', 'tas', 'wind_speed', 'wind_dir'])
+    bd = load_series(args.betada, ['yaw_true', 'tas', 'wind_speed', 'wind_dir', 'beta_air'])
     bd_yaw = unwrap_deg(bd['yaw_true'])
     # 吹いてくる → 吹いていく（いまの CSV の向き）
     bd_wdir = unwrap_deg([(d + 180.0) % 360.0 for d in bd['wind_dir']])
@@ -210,7 +214,7 @@ def main():
                 if not row or all(not c.strip() for c in row):
                     continue
                 t = tsec(col(row, 'time'))
-                roll = pitch = yaw = tas = wspd = wdir = volt = sats = None
+                roll = pitch = yaw = tas = wspd = wdir = volt = sats = beta = None
                 if t is not None:
                     roll = interp(eu['t'], eu['roll'], t)
                     pitch = interp(eu['t'], eu['pitch'], t)
@@ -218,6 +222,7 @@ def main():
                     tas = interp(bd['t'], bd['tas'], t)
                     wspd = interp(bd['t'], bd['wind_speed'], t)
                     wdir = interp(bd['t'], bd_wdir, t)
+                    beta = interp(bd['t'], bd['beta_air'], t)
                     volt = interp_gap(vt, vv, t, VOLT_MAX_GAP_SEC)
                     sats = last_within(st, sv, t, SATS_MAX_AGE_SEC)
                 if yaw is not None:
@@ -238,6 +243,7 @@ def main():
                     col(row, 'date'), col(row, 'time'), col(row, 'lux'), col(row, 'backlight'),
                     fmt(roll, 2), fmt(pitch, 2), fmt(yaw, 2), '', '', '',
                     fmt(wspd, 2), fmt(wdir, 1), fmt(tas, 2), '',
+                    fmt(beta, 2),
                 ])
 
     print(f'書き出し: {out_path}')
