@@ -3478,7 +3478,14 @@
       }
 
       if (!('serial' in navigator)) {
-        alert("お使いのブラウザはWeb Serial APIに対応していません。Google ChromeまたはMicrosoft Edgeをご利用ください。");
+        // ★ iPhone・iPad はどのブラウザも中身が WebKit で、Web Serial が無い（Chrome を入れても同じ）。
+        //   「Chrome を使ってください」とだけ出すと、iPhone の Chrome で開いている人には意味が通らないので出し分ける。
+        //   iPadOS 13 以降の Safari は Mac を名乗るので、タッチの点数で見分ける。2026-11-23〜（ユーザー）
+        const ua = navigator.userAgent || '';
+        const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+        alert(isIOS
+          ? "iPhone・iPad では本体に接続できません（どのブラウザも USB の接続〔Web Serial〕に対応していないため）。\nMac・Windows か Android の Chrome を使ってください。"
+          : "お使いのブラウザは本体への USB の接続（Web Serial）に対応していません。\nMac・Windows か Android の Chrome を使ってください。");
         return;
       }
 
@@ -6188,7 +6195,7 @@
     // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
     // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
     // 下の JS は ?v= にこの版数を付けて読むので、HTML と JS の版が食い違うことはない。
-    const VIEWER_VERSION = '2026.11.23.3';
+    const VIEWER_VERSION = '2026.11.23.4';
     ['analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js']
       .forEach(f => document.write('<script src="' + f + '?v=' + VIEWER_VERSION + '"><\/script>'));
   </script>

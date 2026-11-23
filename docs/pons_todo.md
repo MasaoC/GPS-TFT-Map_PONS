@@ -53,6 +53,8 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
   充電ポップアップの `Fast GPS <2d, clock 3mo`、回路が動き出す・止まる電圧（約 3.92V / 3.83V）→ [pons_charge_estimation.md](pons_charge_estimation.md)
 
 ## 4. 2 台以上で確かめる（無線）
+- [ ] **MAX G/S・航跡を受信機の分と送信機の分で別々に（11/23。実機未確認）**: 受信機を持って車で動かし、送信機は止めておく → 送信機の電源を切る→入れる。
+  受信中は送信機の MaxGS（0 付近）と送信機の航跡、NO SIGNAL の間は受信機の MaxGS（車の速さ）と受信機の航跡に切り替わり、互いに混ざらないか
 - [ ] **sAcc の無線（印 0xA8・11/20。実機未確認）**: 3 台とも焼き直す（0xA4 の機体とは通じない）。ボートの地図の GS の右と GNSS 詳細画面に
   機体の sAcc が 8 秒以内に出るか、`received/` の `sacc_mps` 列 → [pons_link.md](pons_link.md) §4.3
 

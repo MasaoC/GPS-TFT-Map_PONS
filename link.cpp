@@ -1543,9 +1543,10 @@ void link_set_mode(uint8_t mode) {
     s_rxIntervalMs = 0;
     s_txMs = 0;
     s_txIntervalMs = 0;
-    // ★ MAX G/S は供給元が入れ替わるのでリセットする（ミラー中は機体の値を入れる）。
-    //   残すと「ボート自身の最高速」と「機体の最高速」が混ざった値が出続ける。
-    reset_maxgs();
+    // ★ 送信機の MAX G/S と航跡は捨てる（受信モードへ入り直したら、そこから数え直す）。
+    //   自機の分は別に持っていて供給元も変わらないので残す（gnss.cpp。2026-11-23〜）。
+    reset_maxgs_link();
+    reset_track_link();
     link_apply_power_state();
     // 送信モードに入ったら送り始める前にチャンネルを確かめる。
     // 抜けたときは IDLE に戻す（結果を残すと古い判定が画面に出続ける）。

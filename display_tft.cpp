@@ -1222,20 +1222,22 @@ static bool track_gap(float lat0, float lon0, float lat1, float lon1, float m_pe
   return dx * dx + dy * dy > TRACK_BREAK_M * TRACK_BREAK_M;
 }
 
-// LatLonManager（latlon_manager）に蓄積されたフライトトラックを backscreen に描画する。
+// LatLonManager に蓄積されたフライトトラックを backscreen に描画する。
+// どちらの航跡か（ミラー中は送信機の分、それ以外は自機の分）は gnss_track_shown() が決める（gnss.cpp）。
 // 最新座標（getData(0)）から自機位置（画面中央）への緑線を引き、
 // その後 getData(i) → getData(i+1) を順に繋いでトラック履歴を表示する。
 // ★ 隣り合う点が TRACK_BREAK_M 以上離れていたら、その間だけ線を引かない。
 //   GNSS が不安定な所やトンネルの出入りで fix が遠くへ跳ぶと、跳んだ点へ向かう線が
 //   画面を横切っていた。点は記録したままなので、線が切れて見えるだけ。
 void draw_track(double center_lat, double center_lon, float scale, float up) {
-  int sizetrack = latlon_manager.getCount();
+  LatLonManager &trk = gnss_track_shown();
+  int sizetrack = trk.getCount();
   if(sizetrack <= 0){
     return;
   }
   const float m_per_deg_lon = 111320.0f * cosf((float)deg2rad(center_lat));
   //latest
-  Coordinate c0 = latlon_manager.getData(0);
+  Coordinate c0 = trk.getData(0);
   cord_tft p0 = latLonToXY(c0.latitude, c0.longitude, center_lat, center_lon, scale, up);
   
 
@@ -1259,7 +1261,7 @@ void draw_track(double center_lat, double center_lon, float scale, float up) {
     //   航跡は最大 MAX_TRACK_CORDS（500）点で、1 点ごとに座標変換と太さ 2 の線を引くので、
     //   地図と同じく描き直しの間 Core0 を止める側にいる。周期内なら時刻を見て戻るだけなので軽い。
     imu_service_if_due();
-    Coordinate c1 = latlon_manager.getData(i+1);
+    Coordinate c1 = trk.getData(i+1);
     if(c1.latitude == 0 && c1.longitude == 0){
       DEBUGW_PLN(20250510,"ERR lat lon 0");
       break;

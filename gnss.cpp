@@ -81,17 +81,21 @@ double stored_longitude, stored_latitude, stored_truetrack, stored_gnss_altitude
 int stored_numsats;
 
 // --- 最大 G/S 保持変数 ---
-// maxgs        : 起動後の全時間最大 G/S [m/s]
-// maxgs_5min   : 直近 5 分間の最大 G/S [m/s]（5分間更新がなければ現在値にリセット）
+// all          : 起動後の全時間最大 G/S [m/s]
+// m5           : 直近 5 分間の最大 G/S [m/s]（5分間更新がなければ現在値にリセット）
 // *_hour / *_min : 最大値を記録した時刻（JST 時・分）
-static float  maxgs            = 0.0f;
-static int    maxgs_hour       = 0;
-static int    maxgs_min        = 0;
-static float  maxgs_5min       = 0.0f;
-static int    maxgs_5min_hour  = 0;
-static int    maxgs_5min_min   = 0;
-static unsigned long maxgs_5min_last_update = 0;  // 5分保持の最終更新時刻 [ms]
-static float  maxgs_prev_gs    = -1.0f;  // 直前のエポックの速度（feed_maxgs）。-1 = 直前は使えなかった
+// ★ **自機の分と、受信した送信機の分を別々に持つ**（2026-11-23〜、ユーザー）。表示はいま画面に出している方
+//   （ミラー中は送信機、それ以外は自機。maxgs_shown()）。以前は 1 組で、受信できている間だけ送信機の速度を入れ、
+//   切れている（NO SIGNAL）間は自機の速度を入れていたので、電波が入ったり切れたりする所では**ボートの最高速が
+//   機体の MAX G/S に混ざって**、受信が戻ったあとも残っていた。それぞれ自分の供給元だけで更新する。
+struct MaxGs {
+  float all;  int all_hour;  int all_min;
+  float m5;   int m5_hour;   int m5_min;
+  unsigned long m5_last_update;  // 5分保持の最終更新時刻 [ms]
+  float prev_gs;                 // 直前のエポックの速度（feed_maxgs）。-1 = 直前は使えなかった
+};
+static MaxGs maxgs_own  = {0, 0, 0, 0, 0, 0, 0, -1.0f};   // 自機の GNSS（デモ・リプレイの速度もこちら）
+static MaxGs maxgs_link = {0, 0, 0, 0, 0, 0, 0, -1.0f};   // 受信した送信機のフレーム
 bool gnss_connection = false;  // GNSS モジュールから1文字でも受信したことがあるか
 // ★ 最後にバイトが届いた時刻。**飛行中の断線を検出するために要る。**
 //   gnss_connection だけだと一度 true になったら戻らないので、コネクタが抜けても
@@ -1971,17 +1975,19 @@ void gnss_setup() {
   gnss_setup_impl(setupcounter == 1);
 }
 
-// 最大 G/S の全情報をリセットする（デモ／リプレイ／無線モードの切替時に呼ぶ）
+static void clear_maxgs(MaxGs &g) { g = {0, 0, 0, 0, 0, 0, 0, -1.0f}; }
+
+// 自機の分をリセットする（デモ／リプレイの切替時に呼ぶ。航跡の latlon_manager.reset() と同じ所）。
+// 送信機の分は残す（デモ・リプレイの間はミラーしないので触られず、終われば続きから）。
 void reset_maxgs() {
-  maxgs                  = 0.0f;
-  maxgs_hour             = 0;
-  maxgs_min              = 0;
-  maxgs_5min             = 0.0f;
-  maxgs_5min_hour        = 0;
-  maxgs_5min_min         = 0;
-  maxgs_5min_last_update = 0;
-  maxgs_prev_gs          = -1.0f;
+  clear_maxgs(maxgs_own);
 }
+// 受信した送信機の分だけリセットする（無線モードの切替時。自機の分は供給元が変わらないので残す）
+void reset_maxgs_link() {
+  clear_maxgs(maxgs_link);
+}
+// いま画面に出している方（ミラー中は送信機、それ以外は自機）
+static const MaxGs &maxgs_shown() { return link_mirror_active() ? maxgs_link : maxgs_own; }
 
 // 最大 G/S を更新する（NMEAパス・DEMOパス共通）。
 // GNSS 時刻が有効な場合は JST 時刻を記録し、無効な場合は 0:00 として速度値だけ更新する。
@@ -1989,31 +1995,32 @@ void reset_maxgs() {
 //   ループ再生で 0 に戻ったときは差が大きくなり、5 分を越えたとして今の速度から数え直す。
 static uint32_t maxgs_clock_ms() { return replaymode_gnssoff ? replay_virtual_ms : millis(); }
 
-static void update_maxgs(float gs) {
+static void update_maxgs(MaxGs &g, float gs) {
   int jst_h = 0, jst_m = 0;
   // UBX モード・リプレイモード共に ubx_hour/ubx_min を参照（両モードとも更新済み）
+  // （送信機の分も自機の時計で記録する。同じ時刻なので、記録した時刻として困らない）
   if (ubx_time_valid) {
     jst_h = (ubx_hour + 9) % 24;
     jst_m = ubx_min;
   }
   // 全時間最大 G/S
-  if (gs > maxgs) {
-    maxgs      = gs;
-    maxgs_hour = jst_h;
-    maxgs_min  = jst_m;
+  if (gs > g.all) {
+    g.all      = gs;
+    g.all_hour = jst_h;
+    g.all_min  = jst_m;
   }
   // 5 分保持最大 G/S
-  if (gs > maxgs_5min) {
-    maxgs_5min             = gs;
-    maxgs_5min_hour        = jst_h;
-    maxgs_5min_min         = jst_m;
-    maxgs_5min_last_update = maxgs_clock_ms();
-  } else if (maxgs_clock_ms() - maxgs_5min_last_update > 5UL * 60 * 1000) {
+  if (gs > g.m5) {
+    g.m5             = gs;
+    g.m5_hour        = jst_h;
+    g.m5_min         = jst_m;
+    g.m5_last_update = maxgs_clock_ms();
+  } else if (maxgs_clock_ms() - g.m5_last_update > 5UL * 60 * 1000) {
     // 5 分間更新がなければ現在の G/S にリセット
-    maxgs_5min             = gs;
-    maxgs_5min_hour        = jst_h;
-    maxgs_5min_min         = jst_m;
-    maxgs_5min_last_update = maxgs_clock_ms();
+    g.m5             = gs;
+    g.m5_hour        = jst_h;
+    g.m5_min         = jst_m;
+    g.m5_last_update = maxgs_clock_ms();
   }
 }
 
@@ -2024,12 +2031,11 @@ static void update_maxgs(float gs) {
 //   以前は stored_gs を無条件に入れていたので、1 エポックの化けが一日中残った。
 // ★ さらに **2 エポック続けて ok だったときだけ、小さいほうを入れる。** 品質の申告が
 //   正常なまま 1 エポックだけ跳ねる値も捨てるため。本物の最高速は 1 エポック（0.5 秒）では終わらない。
-//   供給元が入れ替わった直後の 1 回は前の供給元の値と比べるが、小さいほうを入れるので
-//   大きく出ることは無い。
-static void feed_maxgs(float gs, bool ok) {
-  if (!ok) { maxgs_prev_gs = -1.0f; return; }
-  if (maxgs_prev_gs >= 0.0f) update_maxgs(fminf(maxgs_prev_gs, gs));
-  maxgs_prev_gs = gs;
+//   自機の分と送信機の分は別々に持つので、供給元が入れ替わって前の供給元の値と組になることは無い。
+static void feed_maxgs(MaxGs &g, float gs, bool ok) {
+  if (!ok) { g.prev_gs = -1.0f; return; }
+  if (g.prev_gs >= 0.0f) update_maxgs(g, fminf(g.prev_gs, gs));
+  g.prev_gs = gs;
 }
 
 extern unsigned long last_gnss_time;  // 実体は下方で定義（apply_replay_row から先に参照するため）
@@ -2133,7 +2139,7 @@ static void apply_replay_row(const ReplayRow* row) {
   if (row->have & RHAVE_GS) {
     stored_gs = row->gs;
     // CSV には測位の品質（fixOK・sAcc）の列が無いので、1 エポックだけの跳ねを捨てるだけ（feed_maxgs）
-    feed_maxgs(stored_gs, true);
+    feed_maxgs(maxgs_own, stored_gs, true);
   }
   if (row->have & RHAVE_TTRACK) {
     if (!is_demo_active()) newcourse_arrived = true;
@@ -2236,6 +2242,7 @@ void set_demo_off() {
 }
 
 unsigned long last_latlon_manager = 0;
+static unsigned long last_latlon_manager_link = 0;   // 送信機の航跡（latlon_manager_link）の最後の点の時刻
 unsigned long last_gnss_save_time = 0;
 unsigned long last_gnss_time = 0;// last position update time.
 
@@ -2281,10 +2288,13 @@ unsigned long last_demo_gnss_update = 0;
 // 追加間隔を速度に応じて調整することで、約 50m おきに記録する。
 //   低速（停止近く）→ 最大 15 秒間隔（静止中に大量の点が積まれるのを防ぐ）
 //   高速（約 20m/s）→ 最小 1 秒間隔
-void add_latlon_track(float lat,float lon){
-  // ★ 速度は accessor（get_gnss_mps()）で読む。stored_gs だとミラー中は**ボート自身の速度**になり、
-  //   止まっているボートでは飛んでいる機体の航跡がいつも 15 秒おきに間引かれる。
-  int tracklog_interval = constrain(50000/(1.0+get_gnss_mps()/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
+// ★ **航跡も自機の分（latlon_manager）と受信した送信機の分（latlon_manager_link）を別々に持つ**（2026-11-23〜、ユーザー）。
+//   地図にはいま出している方だけを描く（gnss_track_shown()。ミラー中は送信機、それ以外は自機）。以前は 1 本で、
+//   受信が切れている（NO SIGNAL）間だけボートの位置が足され、受信が戻ると機体の点とつながって嘘の線になっていた。
+// ★ 点の間隔はその航跡の持ち主の速度で決める（mps）。ボートの速度で機体の航跡を間引くと、止まっているボートでは
+//   飛んでいる機体の航跡がいつも 15 秒おきになる。
+static void add_track_point(LatLonManager &m, unsigned long &last_ms, float lat, float lon, double mps) {
+  int tracklog_interval = constrain(50000/(1.0+mps/2.0), 1000, 15000);//約50mおきに一回記録するような計算となる。
   if(is_demo_active()){
     tracklog_interval = 900;  // デモモードは短めの間隔でアニメーション的に記録
   }
@@ -2295,10 +2305,27 @@ void add_latlon_track(float lat,float lon){
   if(getReplayMode()){
     tracklog_interval /= get_replay_speed();
   }
-  if(millis() - last_latlon_manager > tracklog_interval){
-    latlon_manager.addCoord({ lat, lon});
-    last_latlon_manager = millis();
+  if(millis() - last_ms > tracklog_interval){
+    m.addCoord({ lat, lon});
+    last_ms = millis();
   }
+}
+
+// 自機の航跡（デモ・リプレイの位置もこちら）。速度は自機の速度（デモ中はデモの速度、リプレイ中は CSV の速度）。
+void add_latlon_track(float lat,float lon){
+  add_track_point(latlon_manager, last_latlon_manager, lat, lon, is_demo_active() ? demo_mps : stored_gs);
+}
+// 受信した送信機の航跡。速度は送信機の速度。
+static void add_latlon_track_link(float lat, float lon, double mps) {
+  add_track_point(latlon_manager_link, last_latlon_manager_link, lat, lon, mps);
+}
+// 送信機の航跡を捨てる（無線モードの切替時。reset_maxgs_link() と同じ）
+void reset_track_link() {
+  latlon_manager_link.reset();
+}
+// 地図に描く航跡（ミラー中は送信機の分、それ以外は自機の分）
+LatLonManager &gnss_track_shown() {
+  return link_mirror_active() ? latlon_manager_link : latlon_manager;
 }
 
 bool gnss_new_location_arrived(){
@@ -2322,7 +2349,7 @@ bool gnss_new_location_arrived(){
       last_demo_gnss_update = millis();
       new_location_arrived = true;
       demo_mps = 7 + sin(millis() / 1500.0);
-      update_maxgs(demo_mps);  // DEMOモードでも最大 G/S を更新
+      update_maxgs(maxgs_own, demo_mps);  // DEMOモードでも最大 G/S を更新（自機の分。デモ中はミラーしない）
       
       
       int basetrack = site.basetrack;
@@ -2358,8 +2385,8 @@ bool gnss_new_location_arrived(){
   //   **地図は 1050ms の強制再描画で出続けるので、止まっていることに気づけない。**
   //   受信モードは「CSV の代わりに電波からリプレイする」実装なので、
   //   apply_replay_row() と同じくここで刻みを作るのが筋。
-  //   ★ 航跡をここで足すのは try_enque_savecsv() が自機の ubx_* 待ちだから
-  //     （あちらはボート自身の CSV を書く役）。ミラー中はあちらでは足さない。
+  //   ★ 送信機の航跡をここで足すのは try_enque_savecsv() が自機の ubx_* 待ちだから
+  //     （あちらはボート自身の CSV を書く役で、自機の航跡を足す。2026-11-23〜 航跡は 2 本）。
   //   ★ 位置を進めるのは**送信機が fix しているフレームだけ**（自機の NAV-PVT で
   //     ubx_pos_valid を見るのと同じ）。起動してまだ一度も fix していない送信機は
   //     (0, 0) を送ってくるので、通すと Auto10km が「10km 以上離れた」と復路へ切り替えて
@@ -2368,12 +2395,12 @@ bool gnss_new_location_arrived(){
   if (link_mirror_active() && link_take_new_frame()) {
     if (link_get_fix_ok()) {
       new_location_arrived = true;
-      add_latlon_track(get_gnss_lat(), get_gnss_lon());
+      add_latlon_track_link(get_gnss_lat(), get_gnss_lon(), get_gnss_mps());   // 送信機の航跡（自機の航跡とは別）
     }
     newcourse_arrived    = true;
-    // MAX G/S も機体の値（下の UBX 経路参照）。sAcc は電波に載っていないので、
+    // MAX G/S も送信機の分へ（自機の分は下の UBX 経路）。sAcc は電波に載っていないので、
     // 機体の gnssFixOK と GNSS の断線（LINK_ST_GNSS_LOST）で判断する。
-    feed_maxgs((float)get_gnss_mps(),
+    feed_maxgs(maxgs_link, (float)get_gnss_mps(),
                link_get_fix_ok() && !(link_sender_status() & LINK_ST_GNSS_LOST));
   }
   return new_location_arrived;
@@ -2718,16 +2745,18 @@ void gnss_loop(int id) {
       if (ubx_pos_valid) new_location_arrived = true;
       newcourse_arrived = true;
     }
-    // ★ ミラー中は入れない。入れると MAX G/S が**ボート自身の最高速**になる
-    //   （画面の他の数字は機体のものなので、1 項目だけ出どころが違う状態になる）。
-    //   機体の値は上のミラー分岐で入れている。
+    // ★ ここは**自機の分**（maxgs_own）。ミラー中も入れる（2026-11-23〜）。送信機の分は上のミラー分岐で
+    //   maxgs_link へ入れていて、画面にはいま出している方だけを出す（maxgs_shown()）ので混ざらない。
+    // ★ 受信モードで受信が切れている（NO SIGNAL）間は、送信機の分の「続き」を断つ（受信が戻った最初のフレームを、
+    //   切れる前のフレームと組にしない。2 エポック続けて、の約束）。
     // ★ 入れるのは 3D フィックス・gnssFixOK・sAcc が MAXGS_SACC_MAX_MPS 以下のエポックだけ
     //   （ESKF への速度観測と同じ考え方。理由は feed_maxgs）。
     // ★ デモ中は実機の速度を入れない（2026-11-14、BUG-102）。入れると、画面の他の数字はデモなのに MAX G/S だけが
     //   実機（机の上や車）の値になる。デモの速度は gnss_new_location_arrived() が update_maxgs() で入れている。
-    if (!is_demo_active() && !link_mirror_active())
-      feed_maxgs(stored_gs, gsa_fixtype >= 3 && ubx_gnssFixOK &&
-                            ubx_sacc_mmps * 1e-3f <= MAXGS_SACC_MAX_MPS);
+    if (!is_demo_active())
+      feed_maxgs(maxgs_own, stored_gs, gsa_fixtype >= 3 && ubx_gnssFixOK &&
+                                       ubx_sacc_mmps * 1e-3f <= MAXGS_SACC_MAX_MPS);
+    if (!link_mirror_active()) feed_maxgs(maxgs_link, 0.0f, false);
 
     if (stored_truetrack < 0 || stored_truetrack > 360) {
       DEBUGW_P(20250923,"ERROR:MT");
@@ -2795,11 +2824,12 @@ void try_enque_savecsv(){
 
   // 位置・日時が全て揃っていて、前回保存から 400ms 以上経過した時のみ保存（2Hz GNSS に合わせて調整）
   if(all_valid && millis() - last_gnss_save_time > 400){
-    // デモとミラーは別の場所（gnss_new_location_arrived()）で登録済み。
-    // ★ ミラー中にここで足すと、ボートの fix で**機体の位置**（accessor が差し替える）を積むことになり、
-    //   送信機が fix していないときの (0, 0) も入ってしまう。
-    if(!is_demo_active() && !link_mirror_active()){
-      add_latlon_track(get_gnss_lat(),get_gnss_lon());
+    // デモと送信機の航跡は別の場所（gnss_new_location_arrived()）で登録済み。
+    // ★ ここは自機の航跡。ミラー中も足す（2026-11-23〜）。ただし get_gnss_lat() はミラー中は**機体の位置**を返すので、
+    //   ミラー中は自機の値（stored_*）を直接読む（ここは ubx_pos_valid＝自機の fix があるときだけ通る）。
+    if(!is_demo_active()){
+      const bool m = link_mirror_active();
+      add_latlon_track(m ? stored_latitude : get_gnss_lat(), m ? stored_longitude : get_gnss_lon());
     }
 
     //リプレイは保存しない。
@@ -2935,12 +2965,13 @@ double get_gnss_mps() {
 }
 
 // 最大 G/S getter 関数群
-float get_maxgs()           { return maxgs; }
-int   get_maxgs_hour()      { return maxgs_hour; }
-int   get_maxgs_min()       { return maxgs_min; }
-float get_maxgs_5min()      { return maxgs_5min; }
-int   get_maxgs_5min_hour() { return maxgs_5min_hour; }
-int   get_maxgs_5min_min()  { return maxgs_5min_min; }
+// いま画面に出している方（ミラー中は送信機の分、それ以外は自機の分）を返す
+float get_maxgs()           { return maxgs_shown().all; }
+int   get_maxgs_hour()      { return maxgs_shown().all_hour; }
+int   get_maxgs_min()       { return maxgs_shown().all_min; }
+float get_maxgs_5min()      { return maxgs_shown().m5; }
+int   get_maxgs_5min_hour() { return maxgs_shown().m5_hour; }
+int   get_maxgs_5min_min()  { return maxgs_shown().m5_min; }
 
 
 // GNSS モジュールと「いま」通信できているか。

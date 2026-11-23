@@ -301,8 +301,9 @@ Coordinate LatLonManager::getData(int newest_index) {
   return coords[index];
 }
 
-// グローバルインスタンス（プロジェクト全体で共有する唯一の軌跡バッファ）
+// グローバルインスタンス。自機の航跡と、受信した送信機の航跡（2026-11-23〜 別々に持つ。gnss.cpp の add_track_point）
 LatLonManager latlon_manager;
+LatLonManager latlon_manager_link;
 
 
 // 度 → ラジアン変換。navdata.h で宣言している唯一の版。

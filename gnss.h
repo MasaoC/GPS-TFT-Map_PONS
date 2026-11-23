@@ -12,6 +12,8 @@
 
 #ifndef GNSS_H
   #define GNSS_H
+
+  class LatLonManager;   // src/navdata.h（航跡）
   // GnssDate / GnssTime: get_gnss_date() / get_gnss_time() の戻り値型
   // 実 GNSS は UBX NAV-PVT から更新、リプレイモードは SD の飛行 CSV から更新する。
   struct GnssDate {
@@ -164,7 +166,11 @@
   uint32_t get_gnss_jst_yyyymmdd();   // JST の今日の日付 YYYYMMDD。0 = 時刻がまだ無い
 
   // 最大 G/S 取得関数
-  void  reset_maxgs();          // 最大 G/S を捨てる（供給元が入れ替わるとき）
+  // ★ 自機の分と、受信した送信機の分を別々に持つ。get_* はいま画面に出している方（ミラー中は送信機）。航跡も同じ。
+  void  reset_maxgs();          // 自機の最大 G/S を捨てる（デモ・リプレイの切替）
+  void  reset_maxgs_link();     // 送信機の最大 G/S を捨てる（無線モードの切替）
+  void  reset_track_link();     // 送信機の航跡を捨てる（無線モードの切替）
+  LatLonManager &gnss_track_shown();   // 地図に描く航跡（ミラー中は送信機の分、それ以外は自機の分）
   float get_maxgs();            // 全時間最大 G/S [m/s]
   int   get_maxgs_hour();       // 全時間最大 G/S の記録時刻（JST 時）
   int   get_maxgs_min();        // 全時間最大 G/S の記録時刻（JST 分）

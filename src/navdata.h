@@ -34,7 +34,8 @@
     void reset();
     Coordinate getData(int newest_index);
   };
-  extern LatLonManager latlon_manager;
+  extern LatLonManager latlon_manager;        // 自機の航跡（デモ・リプレイもこちら）
+  extern LatLonManager latlon_manager_link;   // 受信した送信機の航跡（2026-11-23〜。地図に描くのは gnss_track_shown()）
 
 
   // Function to calculate y-coordinate in Mercator projection
