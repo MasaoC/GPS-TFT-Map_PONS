@@ -122,7 +122,8 @@
   float link_get_kf_altitude();
   float link_get_kf_vspeed();
   float link_get_pressure();
-  float link_get_voltage();               // 送信側（機体）のバッテリー電圧
+  // 送信側（機体）の電池の表示（電池 / 充電中 / SW OFF のまま USB / 分からない）。電池・充電中は pct に残量 %
+  LinkBattKind link_get_sender_battery(int &pct);
   bool  link_get_attitude(float &roll, float &pitch);
   bool  link_get_yaw(float &yaw, float &acc95);
   bool  link_get_pitch_avg(float &avg);

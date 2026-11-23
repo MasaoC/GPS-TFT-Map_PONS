@@ -779,7 +779,7 @@ static GnssMonRf s_mon_rf = {};
 
 // ---- GNSS の受信状態の 1 分まとめ（log.txt の `grf` 行）----
 // ★ 2026-11 の GNSS 干渉試験（v7 と v7.1 の比較。焼損した v7 の主基板だけ CW のバーストが出ていた）のために作った行。
-//   **並びを変えたら Re:PONS の log.txt の表示（tools/repons/index.html の logScanLine）も合わせること。**
+//   **並びを変えたら Re:PONS の log.txt の表示（tools/repons/logview.js の logScanLine）も合わせること。**
 //   MON-RF が届くたび（1 秒に 1 回）に 1 つ数え、60 秒ログ（.ino の periodic_log_tick）が
 //   gnss_log_rf_minute() で 1 行にして空にする。どちらも Core0。
 //   C/N0 と追尾数は NAV-SAT の値。ナビ画面では NAV-SAT が 10 秒に 1 回なので、12 秒以内に届いた衛星を数える。

@@ -100,6 +100,8 @@
   //   受信モードの S/R 表示を足したときにさらに増えた。
   int      battery_percent(float v);
   uint16_t battery_color(float v);
+  bool     battery_low_pct(int pct);      // 残量 % で見る電池の低下（受信機の s。境目は BAT_LOW_VOLTAGE の %）
+  uint16_t battery_color_pct(int pct);    // 残量 % → 表示色（battery_color() の境目を % にしたもの）
 
   // GNSS の精度表示を「分からない」にすべきか（ミラー中は hAcc 以外が載っていない）。
   // ★ display_pages.cpp の GNSS DETAIL からも参照するので公開してある。

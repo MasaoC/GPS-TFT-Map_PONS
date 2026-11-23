@@ -49,13 +49,17 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
   北パイロンを 7 km の所にすると欄が赤く、保存で確認のダイアログが出てキャンセルで何も書かれないか → [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (8)
 - [ ] **CH を変えると時々「モジュールの応答がありません」（11/23 修正・実機未確認）**: 送信機をアッパー（CH15〜27・SF9/10）で送らせたまま
   WIRELESS 画面で CH を何度か変え、`LINK ERROR: radio module not responding` が出ず `E220 reconfigure ... waited=` が 0 でない回があるか → [pons_link.md](pons_link.md) §6.9
+- [ ] **Re:PONS を分けた（11/23。本体につないでは未確認）**: index.html を CSS と JS 6 つに分けた（中身は同じ。ヘッドレス Chrome で
+  サンプル再生・log.txt・本体設定の描画は元と一致）。本体につないでファイル一覧・ダウンロード・log.txt・本体設定・IMU の取得を一通り。公開ページでも開く
 - [ ] v7.2 基板が届いたら: `PONS_MAINBOARD_REV` = 72 で焼き、満充電で数日〜数週間切ってから起動して `RTC BACKUP CHECK: ok` か、
   充電ポップアップの `Fast GPS <2d, clock 3mo`、回路が動き出す・止まる電圧（約 3.92V / 3.83V）→ [pons_charge_estimation.md](pons_charge_estimation.md)
 
 ## 4. 2 台以上で確かめる（無線）
 - [ ] **MAX G/S・航跡を受信機の分と送信機の分で別々に（11/23。実機未確認）**: 受信機を持って車で動かし、送信機は止めておく → 送信機の電源を切る→入れる。
   受信中は送信機の MaxGS（0 付近）と送信機の航跡、NO SIGNAL の間は受信機の MaxGS（車の速さ）と受信機の航跡に切り替わり、互いに混ざらないか
-- [ ] **sAcc の無線（印 0xA8・11/20。実機未確認）**: 3 台とも焼き直す（0xA4 の機体とは通じない）。ボートの地図の GS の右と GNSS 詳細画面に
+- [ ] **無線の電池の表示（印 0xAC・11/23。実機未確認）**: 3 台とも焼き直す（0xA8 以前の機体とは通じない）。送信機を電池・USB 充電中・SW OFF のまま USB に
+  して、受信機の `s` が送信機の画面と同じ %（87% / 青の 87 / `s5V`）か、`received/` の `voltage` 列 → [pons_link.md](pons_link.md) §4.3
+- [ ] **sAcc の無線（11/20。実機未確認）**: ボートの地図の GS の右と GNSS 詳細画面に
   機体の sAcc が 8 秒以内に出るか、`received/` の `sacc_mps` 列 → [pons_link.md](pons_link.md) §4.3
 
 ## 5. 原因を探している不具合・見張り
@@ -72,6 +76,8 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] SCH16T の健全性（CRC エラー・STAT・飽和）を 60 秒ログへ、セルフテスト → [sch16t_design.md](sch16t_design.md) §8
 - [ ] 描き直しを速くする（重ね描き `ovl` 28〜39ms が大きい）
 - [ ] リプレイの x20 で方位変化の警告（track.wav）が鳴りすぎる
+- [ ] ライブ配信（11/23 計画・方針決定済み・未着手）: 受信機だけが USB で LinkTelem と画面の判断を流し、Re:PONS で本体と同じ画面（hires の地図・送信機の縮尺・補間）
+  ＋ボートの帯を描いて OBS へ。受信機に `LIVE` の印。音は保留 → [pons_live_stream_plan.md](pons_live_stream_plan.md) §8（段階）・§10
 
 ## 8. 保留（決めて止めているもの）
 水晶を推奨品に（費用）・電源 ON 直後のバックライトの一瞬の点灯・2 台をつなぐ端子（次の改版で）・

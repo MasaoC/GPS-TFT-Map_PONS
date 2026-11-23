@@ -126,7 +126,7 @@ ANA は BT1 が切れていた起動でも有効のままです（`settings.h` �
 計画と根拠は [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)。
 
 ### 4. PONS Link（機体⇄ボート テレメトリ無線）
-* 送信機（機体）から受信機（ボート）へ、**32 バイト固定フレーム**（印 `0xA8`。2026-11-20〜）を送信（テレメトリは下り一方向）。
+* 送信機（機体）から受信機（ボート）へ、**32 バイト固定フレーム**（印 `0xAC`。2026-11-23〜）を送信（テレメトリは下り一方向）。
   グループは A〜D（`settings.txt` の `link_group:B`）。推定 TAS と平均ピッチは毎回、風は 4 秒に 1 回。
 * 電波法適合のため、標準ではローワーバンド（CH0/3/6/9/12、SF8、1Hz）を使用し、混雑時はアッパーバンド（CH15/21/27）へ退避可能。
 * **GNSS の時刻の助け合い**（2026-11-13〜）: BT1 が切れて GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が精度つきで時刻を渡す
@@ -357,6 +357,9 @@ NAV 画面でスイッチ長押しで入ります。
     日時・版・最初の測位・エラーと警告の数を並べ、毎分の行（電池・GNSS の受信・CPU 温度・IMU・BT1・充電）をグラフにし、
     行を種類と重さで色分けして検索・絞り込みできる。log.txt は消されずに伸び続けるので、1MB を超えたらふだんは最新の 1MB だけ取る
     （`PONS:GETTAIL`。「全部」も選べる）。プロトコルは [docs/pons_webserial_protocol.md](docs/pons_webserial_protocol.md)。
+  * ファイル: `index.html`（画面と版数）・`repons.css`・`player.js`（再生・地図・CSV）・`gauges.js`（計器・グラフ）・
+    `serial.js`（PONS との接続）・`logview.js`（log.txt）・`settings_editor.js`（本体設定）・`hooks.js`・`analysis_*.js`・
+    `olddata_open.js`・`video_sync.js`。CSS と JS は index.html が版数付きでこの順に読む（2026-11-23 に index.html を分けた）。
 * **解析スクリプト**:
   * `tools/logcsv2kml4earth.py` / `logcsv2tourkmz.py`: Google Earth 用 KML / KMZ 変換
   * `tools/createmovie_csv2mp4.py`: 飛行再現 MP4 動画生成

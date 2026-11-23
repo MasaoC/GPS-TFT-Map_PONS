@@ -159,7 +159,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   SW を OFF にしたまま USB で動いていると GPIO40 は SW4 で GND に落ちていて、
   `get_input_voltage()` は 0V へ下がる。0V を本物として扱うと、残量 0%・電池低下の誤報
   （自機と受信機）・CSV の 0.00V になる。いまは電池表示・`batt_alarm_tick()`・
-  `link_push_telemetry()`（`RHAVE_VOLT` を立てず `LINK_ST_USB_SW_OFF` を立てる。受信機は `s5V`）・
+  `link_push_telemetry()`（電池の表示 `LINK_BATT_SW_OFF` を送る。受信機は `s5V`）・
   CSV（空欄）で処理してある。**`usb_power_present()` で代用しないこと** — VBUS が一瞬
   4.3V を割っただけで外れ、その瞬間の 0V が流れる。
 - **設定値は settings.h に一箇所だけ。** 例えばバリオのデッドバンドは音（sound.cpp）と
@@ -188,9 +188,9 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   （[lora_link/link_wire2.h](lora_link/link_wire2.h)。2026-10-27〜、どの CH でも）。`LinkTelem` はメモリの上の形で、
   送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは印だけ**なので、並びの違う版とは通じない（3 台そろえる）。
   並びを変えたら `LINK_W2_MAGIC` も変える。
-  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xA8`。2026-11-20 に回転枠 7 へ sAcc を足した）。印は必ず
+  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xAC`。2026-11-23 に回転枠 4 の電圧を「電池の表示」に替えた）。印は必ず
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
-  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xAC`）。
+  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xB0`）。
   **GNSS の時刻の助け合いのビーコン（印 `0x58`。[lora_link/link_beacon.h](lora_link/link_beacon.h)）も同じ 32 バイト**で、
   e220.cpp の切り出しは両方を拾う（`link_frame_is_magic` / `link_frame_valid`）。テレメトリの印を変えるときはビーコンの印とぶつけないこと
   （`static_assert` で止まる）。ビーコンは `link_recv_telem()` が `link_assist.cpp` へ渡し、**受信の数・seq・ミラー・NO SIGNAL・
@@ -261,12 +261,17 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   値は 250Hz の生ログを `tools/imulog/gnss_lag.py` に通して決め、eskf.py と同じ値にそろえる。**`v_` を観測で直す所を足したら `vhist_shift()`、
   入れ直す所を足したら `vhist_clear()` を呼ぶこと**（忘れると次の観測が前の直しをもう一度残差として見る）。
 - **log.txt の毎分の行（`volt=` / `grf` / `imu gapmax=` / `CHG [..m]:`）と `BOOT PONS` / `GNSS TIME:` / `GNSS FIXED` の形を変えたら、
-  Re:PONS の log.txt の表示（`tools/repons/index.html` の `logScanLine` / `LOG_CATS`）も合わせる。**
+  Re:PONS の log.txt の表示（`tools/repons/logview.js` の `logScanLine` / `LOG_CATS`）も合わせる。**
   ビューアは正規表現で拾っているので、読めなくなった値は**グラフと起動のまとめから黙って消える**。
 - **Re:PONS（`tools/repons/`）を変えたら `index.html` の `VIEWER_VERSION` を上げる。版数を書くのはそこ 1 か所だけ。**
   JS は `?v=<VIEWER_VERSION>` を付けて読むので、上げ忘れると公開ページを前に開いたブラウザが**古い JS を黙って使い続ける**。
   2026-11-22 に版数を 11 か所に書いていて一部だけ上げ忘れ、「キャッシュ不整合」が出た。そのあと 1 か所にまとめ、
   上げ忘れは pre-commit フックが止める。JS の側に版数を書き戻さないこと。
+- **Re:PONS の CSS（`repons.css`）と JS は `index.html` の一覧の順に読む。順を変えない。**
+  関数・変数はファイルをまたいでグローバルで見えるが、読み込みの最中に動くコード（トップレベルの `const` の初期値や
+  `for` など）は**先に読んだファイルのものしか使えない**（後のファイルのものを使うと、その場で止まって以降が動かない）。
+  2026-11-23 に index.html（6250 行）を player / gauges / serial / logview / settings_editor / hooks の .js と repons.css に分けた。
+  新しい機能（ライブ配信など）は index.html に書き足さず、別の .js にして一覧に足す。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
   `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
   `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。

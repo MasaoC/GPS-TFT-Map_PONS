@@ -822,8 +822,16 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   task.saveCsvArgs.kf_altitude   = t->kf_alt_dm / 10.0f;
   task.saveCsvArgs.kf_vspeed     = t->kf_vs_cms / 100.0f;
   task.saveCsvArgs.pressure      = t->press_dpa / 10.0f;
-  // 送信機が SW OFF のまま USB で動いていると電圧は載ってこない → 空欄（csv_write_common）
-  task.saveCsvArgs.voltage       = (t->have & RHAVE_VOLT) ? link_unpack_volt(t->volt_cv) : NAN;
+  // ★ 無線では電圧ではなく送信機の電池の表示（残量 %）が届く（2026-11-23〜。lora_link/link_proto.h の LINK_BATT_*）。
+  //   電池で動いているときだけ、% の目盛りの真ん中の電圧に戻して書く（リプレイの battery_percent() で同じ % が出る）。
+  //   本当の電圧ではない（7.5mV 刻み、3.40〜4.15V の外は端に張り付く。本当の電圧は送信機自身の飛行 CSV にある）。
+  //   充電中・SW OFF のまま USB・まだ分からないときは空欄（csv_write_common）。
+  {
+    int pct = 0;
+    task.saveCsvArgs.voltage = (link_batt_decode(t->batt, pct) == LINK_BATT_K_BATTERY)
+        ? (float)(BAT_ZERO_VOLTAGE + (pct + 0.5) * (BAT_FULL_VOLTAGE - BAT_ZERO_VOLTAGE) / 100.0)
+        : NAN;
+  }
   task.saveCsvArgs.numsat        = t->numsat;
   // 電波の回転枠 0 の日付と時は GNSS の UTC そのまま（link.cpp の link_push_telemetry）。
   // 飛行 CSV（data/）やリプレイ（apply_replay_row() が JST→UTC に戻す）と同じ JST に揃えてから書く。
@@ -2773,7 +2781,9 @@ static void csv_write_common(FsFile &f, const Task &tk) {
   // リプレイ時の電池表示に使う。測れなかったとき（NAN）は 0 ではなく空欄にする
   // （SW OFF のまま USB で動いていた。0.00 と書くと「電池切れだった」と読めてしまう）。
   // 空欄ならリプレイは RHAVE_VOLT を立てない（replay_get_float）。
-  if (!isnan(a.voltage) && (!is_rx || (a.have & RHAVE_VOLT))) f.print(a.voltage, 2);
+  // ★ 受信ログは 3 桁。% から戻した電圧（createSaveRxCsvTask）は 7.5mV 刻みなので、2 桁（10mV）に丸めると
+  //   リプレイで隣の % に化けることがある。
+  if (!isnan(a.voltage)) f.print(a.voltage, is_rx ? 3 : 2);
   f.print(",");
 
   // 衛星数: 受信ログでは回転枠 3 を受けるまで空欄（0衛星を防止）

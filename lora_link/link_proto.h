@@ -46,7 +46,9 @@
 //      32 バイトの印 0xA4。docs/pons_tas.md §5.2）。
 //   7: 速度精度 sAcc（sacc_cms）を追加した（2026-11-20。32 バイトの印 0xA8・回転枠 7 の 6 ビット。
 //      受信機の地図と GNSS 詳細画面の sAcc を機体の値で出すため）。
-#define LINK_PROTO_VER      7
+//   8: 電圧（volt_cv）を電池の表示（batt）に置き換えた（2026-11-23。32 バイトの印 0xAC・回転枠 4 の 8 ビット。
+//      受信機の s を送信機の画面と同じ % にするため。下の「電池の表示」）。
+#define LINK_PROTO_VER      8
 
 // ============================================================
 //  UART のボーレート
@@ -191,7 +193,7 @@ static inline char link_group_letter(uint8_t g) { return (char)('A' + (g & 0x03)
 #define RHAVE_PRESS    0x0020
 #define RHAVE_DATE     0x0040
 #define RHAVE_NUMSAT   0x0080
-#define RHAVE_VOLT     0x0100
+#define RHAVE_VOLT     0x0100   // CSV の voltage 列（リプレイだけ。無線は 2026-11-23 から電圧ではなく電池の表示 batt を運ぶ）
 // 姿勢の項目。RHAVE_ATT 以外は ESKF の結果を持つ新形式にしか無い。
 #define RHAVE_ATT      0x0200   // ロール・ピッチ
 #define RHAVE_ATT_YAW  0x0400   // ヨー + ヨー精度95%値
@@ -271,7 +273,9 @@ typedef struct __attribute__((packed)) {
     uint8_t  tas_flags;         // LINK_TAS_*
 
     // --- 機体状態 ---
-    uint8_t  volt_cv;           // 電圧: (V - 2.5) × 100 → 2.50〜5.05V
+    // 電池の表示（LINK_BATT_*。下の「電池の表示」）。送信機のヘッダーの電池の欄そのもの（87% / CHG 87% / FULL / SW OFF）。
+    // ★ 2026-11-23 まではここが電圧（volt_cv）で、受信機が % にしていた。have ビットは持たず、0 が「分からない」。
+    uint8_t  batt;
     uint8_t  numsat;
     uint16_t hacc_dm;           // 水平精度 [0.1 m]
     // 速度精度 sAcc [0.01 m/s]。LINK_SACC_NONE = 無し（GNSS が黙っている・受信機がまだ回転枠 7 を受けていない）。
@@ -347,11 +351,8 @@ static_assert(sizeof(LinkTelem) == 69, "LinkTelem が 69 バイトでなくな�
 // 送信機の電源経路の異常（充電 IC の故障。power.cpp）。機体が発熱している恐れがあり、
 // ボート側からも知らせたい。受信側では作れない（送信機の電圧と USB 判定が要る）。
 #define LINK_ST_PWR_FAULT    0x0100
-// 送信機が SW を OFF にしたまま USB で動いている（v7.1。power_sw_off_on_usb()）。
-// 電池は切り離されていて電圧は読めないので、このあいだ RHAVE_VOLT は立たない。
-// 受信機の電池表示を "s5V" にするためのもので、**故障ではない**（WIRELESS 画面の
-// Sender 行も赤にしない）。受信側では作れない（送信機の SW の状態は電波に乗らない）。
-#define LINK_ST_USB_SW_OFF   0x0200
+// 0x0200 は 2026-11-23（印 0xAC）まで LINK_ST_USB_SW_OFF（SW OFF のまま USB）だった。いまは電池の表示（batt）の
+// LINK_BATT_SW_OFF で運ぶ（下の「電池の表示」）。空き。
 // 送信機の GNSS が時刻を知らず、仲間から時刻をもらおうと聞いている（2026-11-13〜。GNSS の時刻の助け合い。
 // link_assist.cpp・docs/pons_ttff_assist_plan.md §4）。fix しているボートはこれを見て時刻の提供ビーコンを送る。
 // **故障ではない**（WIRELESS 画面の Sender 行も赤にしない）。時刻を受け取ったら（または 30 分で）下りる。
@@ -363,10 +364,10 @@ static_assert(sizeof(LinkTelem) == 69, "LinkTelem が 69 バイトでなくな�
 #define LINK_ST_TIME_COARSE  0x0800   // 時刻の精度が 1〜4 秒（LINK_ASSIST_TACC_FINE_MS〜LINK_ASSIST_TACC_MAX_MS）
 #define LINK_ST_TIME_BAD     0x1000   // 時刻の精度が 4 秒より悪い・分からない（tAcc は 4.29 秒で頭打ち。受信機は使わない）
 // 定義済みのビット全部。★ **0x8000 は使わないこと。** 32 バイトのフレームの上では状態の最上位ビットを
-// FIXOK に使っている（link_wire2.h の W2_ST_FIXOK。ビルドで止める）。
-#define LINK_ST_ALL          0x1FFF
+// FIXOK に使っている（link_wire2.h の W2_ST_FIXOK。ビルドで止める）。空きは 0x0200・0x2000・0x4000。
+#define LINK_ST_ALL          0x1DFF
 // 故障ではないビット（知らせるだけ）。WIRELESS 画面の Sender 行の赤／OK の判定から外す。
-#define LINK_ST_NOT_FAULT    (LINK_ST_USB_SW_OFF | LINK_ST_TIME_WANTED | LINK_ST_TIME_COARSE | LINK_ST_TIME_BAD)
+#define LINK_ST_NOT_FAULT    (LINK_ST_TIME_WANTED | LINK_ST_TIME_COARSE | LINK_ST_TIME_BAD)
 
 // ============================================================
 //  数値の詰め方
@@ -400,16 +401,49 @@ static inline uint8_t link_pack_u8(float v, float scale) {
 }
 
 // ============================================================
-//  電圧の詰め方
-//    2.50〜5.05V を 1 バイトに収める。0.01V 刻みで十分。
+//  電池の表示（batt。2026-11-23〜、印 0xAC）
+//    **送信機のヘッダーの電池の欄に出しているものを、そのまま 1 バイトで送る。受信機は計算し直さない。**
+//      0         : 分からない（送っていない。受信機では回転枠 4 を受けるまでと長い途切れのあと）
+//      1〜101    : 電池で動いている。残量 0〜100%（battery_percent()。送信機の「87%」）
+//      102〜202  : SW を入れたまま USB で充電している。残量 0〜100%（power_charging_percent()。送信機の「CHG 87%」、
+//                  100 は「FULL」。満充電と決まる前は 99 で止まる）
+//      255       : SW を OFF にしたまま USB で動いている（電池が切り離されていて残量が分からない。送信機の「SW OFF」、
+//                  受信機の「s5V」）
+//      203〜254  : 使わない（受けたら「分からない」）
+//    ★ 2026-11-23 までは電池の電圧（0.01V 刻み）を送り、受信機が電池の目盛りで % にしていた。
+//      ・充電中は電圧が充電で持ち上がっていて（CV で 4.1〜4.2V）、送信機が CHG 87% のときに受信機は s98 と出ていた
+//      ・電池で動いているときも、目盛りの 1% は 7.5mV で電圧は 10mV 刻みなので、4 つに 1 つの %（87% など）が出せず、
+//        送信機と 1% ずれた
+//    ★ 受信機の色の境目は % で見る（display_tft.cpp の battery_color_pct()）。マゼンタ（50% 未満）は電圧で見る送信機と
+//      ぴったり合うが、赤（3.5V 以下）は「13% 以下」になり、3.500〜3.505V の間だけ受信機が先に赤くなる。
+//    ★ 受信ログ（received/）の voltage 列は、電池で動いているときだけ % から逆算した電圧（mysd.cpp）。本当の電圧は
+//      送信機自身の飛行 CSV にある。
 // ============================================================
-static inline uint8_t link_pack_volt(float v) {
-    float x = (v - 2.5f) * 100.0f;
-    if (x < 0)   x = 0;
-    if (x > 255) x = 255;
-    return (uint8_t)(x + 0.5f);
+#define LINK_BATT_NONE      0
+#define LINK_BATT_BAT_BASE  1      // 1 + 残量 %（電池で動いている）
+#define LINK_BATT_CHG_BASE  102    // 102 + 残量 %（USB で充電中）
+#define LINK_BATT_SW_OFF    255    // SW OFF のまま USB
+static_assert(LINK_BATT_BAT_BASE + 100 < LINK_BATT_CHG_BASE && LINK_BATT_CHG_BASE + 100 < LINK_BATT_SW_OFF,
+              "電池の表示の値が重なっている");
+
+enum LinkBattKind : uint8_t {
+    LINK_BATT_K_UNKNOWN = 0,   // 分からない
+    LINK_BATT_K_BATTERY,       // 電池で動いている（pct に残量）
+    LINK_BATT_K_CHARGING,      // USB で充電中（pct に残量。100 = FULL）
+    LINK_BATT_K_SW_OFF,        // SW OFF のまま USB（pct は無し）
+};
+
+static inline uint8_t link_batt_clamp_pct(int pct) { return (uint8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct)); }
+static inline uint8_t link_batt_on_battery(int pct) { return (uint8_t)(LINK_BATT_BAT_BASE + link_batt_clamp_pct(pct)); }
+static inline uint8_t link_batt_charging(int pct)   { return (uint8_t)(LINK_BATT_CHG_BASE + link_batt_clamp_pct(pct)); }
+
+// 電池の表示を読む。残量のある種類（電池・充電中）だけ pct に入れる（ほかは触らない）。
+static inline LinkBattKind link_batt_decode(uint8_t b, int &pct) {
+    if (b >= LINK_BATT_BAT_BASE && b <= LINK_BATT_BAT_BASE + 100) { pct = b - LINK_BATT_BAT_BASE; return LINK_BATT_K_BATTERY; }
+    if (b >= LINK_BATT_CHG_BASE && b <= LINK_BATT_CHG_BASE + 100) { pct = b - LINK_BATT_CHG_BASE; return LINK_BATT_K_CHARGING; }
+    if (b == LINK_BATT_SW_OFF) return LINK_BATT_K_SW_OFF;
+    return LINK_BATT_K_UNKNOWN;
 }
-static inline float link_unpack_volt(uint8_t c) { return 2.5f + c * 0.01f; }
 
 // ============================================================
 //  受信したテレメトリ＋受信時の付帯情報

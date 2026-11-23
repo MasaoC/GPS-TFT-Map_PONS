@@ -2,7 +2,7 @@
 # pre-commit フック（有効にするには一度だけ: git config core.hooksPath tools/git-hooks）
 #
 # Re:PONS（tools/repons/）を変えたのに VIEWER_VERSION を上げていないコミットを止める。
-# JS は index.html が ?v=<VIEWER_VERSION> を付けて読むので、版数を上げ忘れると
+# CSS と JS は index.html が ?v=<VIEWER_VERSION> を付けて読むので、版数を上げ忘れると
 # 公開ページを前に開いたブラウザが古い JS を使い続ける（2026-11-22 に実際に起きた）。
 # どうしても通したいときは git commit --no-verify。
 

@@ -2922,8 +2922,8 @@ void draw_wireless(int cursor) {
     // 送信機の健康状態。受信側からは知りようがないので電波で運んでいる。
     // 飛ぶ前に気づきたい項目だけを載せてある（link_proto.h の status 設計）。
     const uint16_t st = link_sender_status();
-    // ★ LINK_ST_USB_SW_OFF（SW OFF のまま USB）と LINK_ST_TIME_WANTED（時刻をもらおうと聞いている）は
-    //   故障ではないので、赤／OK の判定から外す（LINK_ST_NOT_FAULT）。
+    // ★ LINK_ST_TIME_WANTED（時刻をもらおうと聞いている）と時刻の精度のビットは故障ではないので、
+    //   赤／OK の判定から外す（LINK_ST_NOT_FAULT）。SW OFF のまま USB（" 5V"）は電池の表示から出す。
     const uint16_t fault = st & (uint16_t)~LINK_ST_NOT_FAULT;
     if (link_is_receiving()) {
       backscreen.setTextColor(fault ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
@@ -2938,7 +2938,8 @@ void draw_wireless(int cursor) {
         if (st & LINK_ST_GNSS_LOST)   backscreen.print(" GNSS");
         if (st & LINK_ST_PWR_FAULT)   backscreen.print(" PWR");
       }
-      if (st & LINK_ST_USB_SW_OFF) {
+      int sw_off_pct;
+      if (link_get_sender_battery(sw_off_pct) == LINK_BATT_K_SW_OFF) {   // 送信機が SW OFF のまま USB
         backscreen.setTextColor(COLOR_DARKORANGE, COLOR_WHITE);
         backscreen.print(" 5V");
       }
@@ -4534,21 +4535,29 @@ void draw_footer(){
     //   組み込みフォント（6x8）に落として 48px に収める。色分けは変わらず効く。
     header_footer.unloadFont();
     header_footer.setTextSize(1);
-    // ★ SW OFF のまま USB で動いている側は電池電圧が読めないので "5V"（USB 給電）と出す。
-    //   送信機は LINK_ST_USB_SW_OFF で知らせてくる（そのあいだ RHAVE_VOLT は立たない）。
-    //   電圧が載っていないのに 0 を残量 0% と読まないよう、それ以外の欠けは "--"。
+    // ★ s は送信機のヘッダーの電池の欄そのもの（無線の「電池の表示」。lora_link/link_proto.h の LINK_BATT_*）。
+    //   % は送信機が決めたものをそのまま出し、計算し直さない。2026-11-23 までは電圧が届いて受信機が % にしていて、
+    //   送信機が USB で充電中（CHG 87%）に s98 と出ていた。色は下の r と同じ分け方。
+    //   SW OFF のまま USB で動いている側は電池が読めないので "5V"（USB 給電）。まだ分からないときは "--"。
     char sbuf[6], rbuf[6];
     uint16_t scol;
     bool slow = false;
-    const uint16_t sst = link_sender_status();   // 未受信なら 0
-    if (sst & LINK_ST_USB_SW_OFF) {
+    int spct = 0;
+    switch (link_get_sender_battery(spct)) {
+    case LINK_BATT_K_SW_OFF:
       strlcpy(sbuf, "s5V", sizeof(sbuf));  scol = COLOR_DARKORANGE;
-    } else if (link_is_receiving() && link_has_value(RHAVE_VOLT)) {
-      const float sv = link_get_voltage();
-      snprintf(sbuf, sizeof(sbuf), "s%d", battery_percent(sv));
-      scol = battery_color(sv);  slow = (sv <= BAT_LOW_VOLTAGE);
-    } else {
+      break;
+    case LINK_BATT_K_CHARGING:
+      snprintf(sbuf, sizeof(sbuf), "s%d", spct);
+      scol = (spct >= 100) ? COLOR_GREEN : COLOR_BLUE;
+      break;
+    case LINK_BATT_K_BATTERY:
+      snprintf(sbuf, sizeof(sbuf), "s%d", spct);
+      scol = battery_color_pct(spct);  slow = battery_low_pct(spct);
+      break;
+    default:
       strlcpy(sbuf, "s--", sizeof(sbuf));  scol = COLOR_GRAY;
+      break;
     }
     uint16_t rcol;
     bool rlow = false;
@@ -5439,6 +5448,19 @@ int battery_percent(float v) {
 uint16_t battery_color(float v) {
   if (v <= BAT_LOW_VOLTAGE)  return COLOR_RED;
   if (v <  BAT_HALF_VOLTAGE) return COLOR_MAGENTA;
+  return COLOR_GREEN;
+}
+
+// 残量 [%] で見る電池の低下と表示色。受信機が送信機の電池（無線では % が届く。lora_link/link_proto.h の LINK_BATT_*）に使う。
+// 境目は battery_color() の電圧を battery_percent() で % にしたもの（定数は settings.h の電圧だけ）。
+// ★ マゼンタ（BAT_HALF_VOLTAGE = 50% 未満）は電圧で見る送信機とぴったり合う。赤（BAT_LOW_VOLTAGE = 3.5V 以下）は
+//   13.3% なので「13% 以下」になり、3.500〜3.505V の間だけ送信機より先に赤くなる（13% は 3.4975〜3.505V のため）。
+bool battery_low_pct(int pct) {
+  return pct <= battery_percent(BAT_LOW_VOLTAGE);
+}
+uint16_t battery_color_pct(int pct) {
+  if (battery_low_pct(pct))                   return COLOR_RED;
+  if (pct < battery_percent(BAT_HALF_VOLTAGE)) return COLOR_MAGENTA;
   return COLOR_GREEN;
 }
 

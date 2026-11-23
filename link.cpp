@@ -743,8 +743,10 @@ static void link_watch_sender_battery() {
     // ★ 最低音量 60 を付けてよい唯一の警告（上の link_alert() のコメント参照）。
     //   本番では機体のバッテリーを交換できないが、試験飛行では役に立つ。
     link_alert("wav/battery_low_sender.wav", 1568, 200, 4, 60);
-    enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%.2fV)",
-                                 (double)link_get_voltage()));
+    // 無線では電圧ではなく残量 % が届く（2026-11-23〜。link_proto.h の「電池の表示」）。まだ分からなければ -1
+    int pct = -1;
+    link_get_sender_battery(pct);
+    enqueueTask(createLogSdfTask("LINK WARN: sender battery low (%d%%)", pct));
 }
 
 // 送信機の電源経路の異常（LINK_ST_PWR_FAULT）を受信機でも鳴らす。
@@ -1780,14 +1782,18 @@ static void link_push_telemetry() {
         }
     }
 
-    // ★ SW OFF のまま USB で動いているあいだは電池電圧が読めない（power.h）。
-    //   電圧は載せず（RHAVE_VOLT を立てない）、下で LINK_ST_USB_SW_OFF を立てる（受信機は "s5V"）。
-    const float batt_v = get_input_voltage();   // ピーク追跡を回すため、載せないときも読む
+    // 電池の表示（lora_link/link_proto.h の LINK_BATT_*）。**送信機のヘッダーの電池の欄と同じもの**を送り、受信機は
+    // 計算し直さずに "s87" などと出す。分け方も同じ（display_tft.cpp の draw_footer の電池の欄）:
+    //   SW OFF のまま USB → "SW OFF"（電池が切り離されていて電圧が読めない。power.h）
+    //   USB（SW ON）      → "CHG 87%" / "FULL"（power_charging_percent()。充電で持ち上がった電圧は使わない）
+    //   電池              → "87%"（battery_percent()）
+    // ★ 2026-11-23 までは電圧を送っていて、受信機が電池の目盛りで % にしていた。充電中は送信機が CHG 87% のときに
+    //   受信機が s98、電池のときも 10mV 刻みのせいで 1% ずれることがあった。
+    const float batt_v = get_input_voltage();   // ピーク追跡を回すため、毎回読む
     const bool  batt_ok = !power_sw_off_on_usb();
-    if (batt_ok) {
-        t.volt_cv = link_pack_volt(batt_v);
-        have |= RHAVE_VOLT;
-    }
+    if (!batt_ok)                 t.batt = LINK_BATT_SW_OFF;
+    else if (usb_power_present()) t.batt = link_batt_charging(power_charging_percent());
+    else                          t.batt = link_batt_on_battery(battery_percent(batt_v));
 
     t.numsat  = (uint8_t)constrain(get_gnss_numsat(), 0, 255);
     have |= RHAVE_NUMSAT;
@@ -1849,7 +1855,6 @@ static void link_push_telemetry() {
     //   立ち**、受信機が電源投入ごとに誤報する。
     if (gnss_ever_connected() && !get_gnss_connection()) st |= LINK_ST_GNSS_LOST;
     if (power_fault_active())                          st |= LINK_ST_PWR_FAULT;
-    if (!batt_ok)                                      st |= LINK_ST_USB_SW_OFF;   // 受信機は "s5V"
     // GNSS が時刻を知らず、仲間の提供ビーコンを聞いている（link_assist.cpp）。fix しているボートがこれを見て時刻を送る
     if (lassist_time_wanted())                         st |= LINK_ST_TIME_WANTED;
     // 時刻の確からしさ（NAV-PVT の tAcc。1〜10 秒なら COARSE、それより悪ければ BAD、よければ 0）。fix の前の RTC の時刻を
@@ -2098,7 +2103,12 @@ bool     link_get_sacc_mps(float &mps) {
 float link_get_kf_altitude() { return s_rx.t.kf_alt_dm  * 0.1f; }
 float link_get_kf_vspeed()   { return s_rx.t.kf_vs_cms  * 0.01f; }
 float link_get_pressure()    { return s_rx.t.press_dpa  * 0.1f; }
-float link_get_voltage()     { return link_unpack_volt(s_rx.t.volt_cv); }
+// 送信機の電池の表示（送信機のヘッダーの電池の欄そのもの。link_proto.h の LINK_BATT_*）。
+// 電池・充電中のときは pct に残量（充電中の 100 = FULL）。回転枠 4 で来るので、受けるまでと長く途切れたあとは UNKNOWN。
+LinkBattKind link_get_sender_battery(int &pct) {
+  if (!link_is_receiving() || !link_rx_slot_known(W2S_ALTV)) return LINK_BATT_K_UNKNOWN;
+  return link_batt_decode(s_rx.t.batt, pct);
+}
 
 bool link_get_attitude(float &roll, float &pitch) {
     if (!link_has_value(RHAVE_ATT)) return false;

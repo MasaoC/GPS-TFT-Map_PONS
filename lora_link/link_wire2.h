@@ -19,11 +19,12 @@
 // ★ 作り
 //   ・毎回送る「核」（位置・速度・方位・高度・昇降・姿勢・平均ピッチ・推定 TAS・状態）と、3 バイトの「回転枠」。
 //     回転枠の中身は seq を LINK_W2_SLOTS で割った余りで決まり、ゆっくりした項目
-//     （日付・風・電圧・気圧・目的地など）を順番に運ぶ（8 発で一周。風だけは 2 回載る）。
+//     （日付・風・電池の表示・気圧・目的地など）を順番に運ぶ（8 発で一周。風だけは 2 回載る）。
 //   ・受信側は回転枠の値を覚えておき、LinkTelem を組み立て直す（LinkW2Rx）。
 //     回転枠の項目は、その枠を受けるまで have ビットを立てない（分からない値を出さない）。
 //     have ビットの無い項目（目的地・目的地の ID・ナビモード・縮尺・水平精度）は link_w2_slot_seen() で確かめる。
 //     sAcc も have ビットを持たないが、受けるまでと途切れたあとは値が LINK_SACC_NONE になっている。
+//     電池の表示（回転枠 4）も同じで、受けるまでと途切れたあとは LINK_BATT_NONE（分からない）になっている。
 //   ・核の「無い」は**その項目の使わない値**で表す（フラグのバイトは持たない）。
 //     時刻 0xFFFF / 真方位 0xFFF（対地速度ごと無し）/ 高度 0x8000 / 昇降 -128 / ロール 0x800（ロール・ピッチとも無し）/
 //     ヨー 0xFFF / 平均ピッチ -512 / 推定 TAS 0。送る側は値をその手前で頭打ちにする。
@@ -43,6 +44,10 @@
 //     docs/pons_tas.md §5.2。
 //   0xA8（2026-11-20〜）: 回転枠 7 のナビモードを 8 → 2 ビットに縮め、空いた 6 ビットで速度精度 sAcc を送る
 //     （受信機の地図と GNSS 詳細画面の sAcc を機体の値で出すため。それまでは「--」）。8 発に 1 回。
+//   0xAC（2026-11-23〜）: 回転枠 4 の 8 ビットを電池の電圧から「電池の表示」（link_proto.h の LINK_BATT_*。送信機のヘッダーの
+//     87% / CHG 87% / FULL / SW OFF そのもの）に替えた。状態の LINK_ST_USB_SW_OFF（0x0200）はそこへ移して空けた。
+//     送信機が USB で充電中に、受信機が持ち上がった電圧を % にして s98（送信機は CHG 87%）と出ていたのと、
+//     電池で動いているときも 10mV 刻みの電圧では 4 つに 1 つの % が出せず 1% ずれていたため。
 //   受信ログ（received/）は LinkTelem から書く。末尾近くの slot 列で、どの回転枠が入っていたか
 //   （＝その行で更新されたゆっくりした項目）が分かる。
 //
@@ -54,13 +59,14 @@
 #include "link_proto.h"
 
 #define LINK_W2_LEN        32
-#define LINK_W2_MAGIC      0xA8   // 印（上位 6 ビット）。下位 2 ビットはグループ。以前の 65 バイトは 'P'＝0x50 で始まる
+#define LINK_W2_MAGIC      0xAC   // 印（上位 6 ビット）。下位 2 ビットはグループ。以前の 65 バイトは 'P'＝0x50 で始まる
 #define LINK_W2_MAGIC_MASK 0xFC
 #define LINK_W2_SLOTS      8      // 回転枠の数。**256 の約数にすること**（seq の 8 ビットが一周しても続くように）
 static_assert((LINK_W2_MAGIC & ~LINK_W2_MAGIC_MASK) == 0, "印の下位 2 ビットはグループ用に空けておく");
 // 古い並びの印（0xA2）と、65 バイト時代の先頭（'P'）を誤読しないこと
 static_assert((0xA2 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "古い並び 0xA2 と印が区別できない");
 static_assert((0xA4 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "古い並び 0xA4 と印が区別できない");
+static_assert((0xA8 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "古い並び 0xA8 と印が区別できない");
 static_assert((0x50 & LINK_W2_MAGIC_MASK) != LINK_W2_MAGIC, "65 バイト時代の先頭と印が区別できない");
 
 // ---- 位置（バイト） ----
@@ -100,14 +106,14 @@ static_assert((LINK_ST_ALL & W2_ST_FIXOK) == 0, "LINK_ST_* が FIXOK のビッ�
 #define W2S_WIND     1   // 風速 8bit(0.1m/s) | 風向 12bit(0.1°) | 風有効(1)
 #define W2S_TRIM     2   // ロールトリム 12bit(0.01°) | ヨー精度 8bit | トリム有効(1) | ヨー精度有効(1)
 #define W2S_HACC     3   // 水平精度 10bit(0.1m。1023 で頭打ち) | 衛星数 6bit(63 = 無し) | 目的地 8bit(符号付き)
-#define W2S_ALTV     4   // GNSS 高度 16bit(0.1m。INT16_MIN = 無し) | 電圧 8bit(link_pack_volt。0 = 無し)
+#define W2S_ALTV     4   // GNSS 高度 16bit(0.1m。INT16_MIN = 無し) | 電池の表示 8bit(LINK_BATT_*。0 = 分からない)
 #define W2S_WIND2    5   // 風（W2S_WIND と同じ。1 周に 2 回載せて 4 発に 1 回にする）
 #define W2S_PRESS    6   // 気圧 16bit(0.1hPa。0 = 無し) | 地図の縮尺 8bit
 #define W2S_NAV      7   // ナビモード 2bit | sAcc 6bit（link_w2_sacc_code。0 = 無し）| 目的地の ID 16bit（0 = 送っていない）
 
 // 回転枠で運ぶ have ビット（受けるまで立てない）
 #define W2_SLOT_HAVE (RHAVE_DATE | RHAVE_ATT_TRIM | RHAVE_ATT_WIND | \
-                      RHAVE_NUMSAT | RHAVE_GNSSALT | RHAVE_VOLT | RHAVE_PRESS)
+                      RHAVE_NUMSAT | RHAVE_GNSSALT | RHAVE_PRESS)
 
 // ---- 小さな道具 ----
 static inline void w2_put16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
@@ -221,8 +227,7 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
     case W2S_ALTV: {
         const uint16_t alt = (t->have & RHAVE_GNSSALT) ? (uint16_t)w2_clampi(t->gnss_alt_dm, -32767, 32767)
                                                        : (uint16_t)0x8000;
-        const uint8_t  v   = (t->have & RHAVE_VOLT) ? (t->volt_cv ? t->volt_cv : 1) : 0;
-        s = alt | ((uint32_t)v << 16);
+        s = alt | ((uint32_t)t->batt << 16);   // 電池の表示はそのまま（0 = 分からない）
         break; }
     case W2S_PRESS: {
         const uint16_t pr = (t->have & RHAVE_PRESS) ? (t->press_dpa ? t->press_dpa : 1) : 0;
@@ -268,12 +273,13 @@ struct LinkW2Rx {
 };
 
 // 回転枠の値を「送る間隔 × これ」より長く受けていなければ、分からなくなったとみなす。
-// 受信機の「無信号」（ローワーで 10 秒）と同じ長さ。電波が戻った直後に古い風や電圧を出さないため。
+// 受信機の「無信号」（ローワーで 10 秒）と同じ長さ。電波が戻った直後に古い風や電池を出さないため。
 #define LINK_W2_STALE_FRAMES  10
 
 static inline void link_w2_rx_reset(LinkW2Rx* st) {
     memset(st, 0, sizeof(*st));
     st->acc.sacc_cms = LINK_SACC_NONE;   // 0 は「0.00 m/s」なので、受けるまでは「無し」にしておく
+    // 電池の表示（batt）は 0 が「分からない」なので memset のままでよい
 }
 
 // その回転枠を（途切れてから）受けたか。have ビットの無い項目を使う前に見ること。
@@ -304,6 +310,7 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         // 長く途切れた後。回転枠で覚えていた値はもう信用しない（受け直すまで出さない）
         st->slot_have = 0; st->slot_seen = 0; st->yawacc_known = false;
         t.sacc_cms = LINK_SACC_NONE;   // have ビットが無いので値で「無し」に戻す（古い sAcc を出さない）
+        t.batt     = LINK_BATT_NONE;   // 電池の表示も同じ（受信ログに古い値を書かない）
         // ★ 時は 30 分より短い途切れなら、下の「その時の中の 0.1 秒が戻ったら繰り上げる」で追える
         //   （時をまたげば必ず 30 分以上戻る）ので覚えておく。忘れると回転枠 0 が来るまでの最大 8 発、
         //   受信ログの時刻が 0 時になる。それより長い途切れは分からないので捨てる。
@@ -436,10 +443,9 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         break; }
     case W2S_ALTV: {
         const uint16_t galt = (uint16_t)(s & 0xFFFF);
-        const uint8_t  v    = (uint8_t)((s >> 16) & 0xFF);
         if (galt != 0x8000) { t.gnss_alt_dm = (int16_t)galt; st->slot_have |= RHAVE_GNSSALT; }
         else                st->slot_have &= (uint16_t)~RHAVE_GNSSALT;
-        if (v) { t.volt_cv = v; st->slot_have |= RHAVE_VOLT; } else st->slot_have &= (uint16_t)~RHAVE_VOLT;
+        t.batt = (uint8_t)((s >> 16) & 0xFF);   // 電池の表示（読むのは link_batt_decode()）
         break; }
     case W2S_PRESS: {
         const uint16_t pr = (uint16_t)(s & 0xFFFF);

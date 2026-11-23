@@ -5,6 +5,7 @@
 //           2) 負角・飽和クランプ値が「無し」センチネル（0x800 / -512 / 0x8000 / -128）に化けないこと
 //           3) NaN パック・23→0 時跨ぎ（BUG-72 途切れ明けを含む）・うるう年・seq16 復元
 //           4) link_w2_utc_ms（BUG-68 GNSS_LOST 拒否を含む）と LinkBeacon の往復・印の識別
+//           5) 電池の表示（LINK_BATT_*。回転枠 4 の 8 ビット。電池・充電中・SW OFF・分からない）
 // ============================================================
 #include <cstdio>
 #include <cmath>
@@ -49,7 +50,7 @@ static LinkTelem make_full_telem(uint16_t seq) {
     t.wind_dir_cdeg = 19540; // 195.4°
     t.tas_dmps = 96;         // 9.6 m/s
     t.tas_flags = LINK_TAS_CLAMPED | LINK_TAS_HDR;
-    t.volt_cv = link_pack_volt(3.98f);
+    t.batt = link_batt_on_battery(77);   // 電池で 77%
     t.numsat = 18;
     t.hacc_dm = 14;          // 1.4 m
     t.sacc_cms = 23;         // 0.23 m/s（0.5 未満は 0.01 刻みでそのまま戻る）
@@ -58,7 +59,7 @@ static LinkTelem make_full_telem(uint16_t seq) {
     t.nav_mode = 2;
     t.status = LINK_ST_BAT_LOW | LINK_ST_TIME_WANTED;
     t.have = RHAVE_GS | RHAVE_TTRACK | RHAVE_GNSSALT | RHAVE_KFALT | RHAVE_KFVS |
-             RHAVE_PRESS | RHAVE_DATE | RHAVE_NUMSAT | RHAVE_VOLT |
+             RHAVE_PRESS | RHAVE_DATE | RHAVE_NUMSAT |
              RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG | RHAVE_ATT_TRIM |
              RHAVE_ATT_WIND | RHAVE_TAS;
     return t;
@@ -109,7 +110,7 @@ static void test_roundtrip_8slots() {
     CHECK(got.wind_dmps == ref.wind_dmps && got.wind_dir_cdeg == ref.wind_dir_cdeg, "wind");
     CHECK(got.roll_trim_cdeg == ref.roll_trim_cdeg && got.yaw_acc95_deg == ref.yaw_acc95_deg, "trim/yawacc");
     CHECK(got.hacc_dm == ref.hacc_dm && got.numsat == ref.numsat && got.dest_index == ref.dest_index, "hacc/nsat/dest");
-    CHECK(got.gnss_alt_dm == ref.gnss_alt_dm && got.volt_cv == ref.volt_cv, "gnss_alt/volt");
+    CHECK(got.gnss_alt_dm == ref.gnss_alt_dm && got.batt == ref.batt, "gnss_alt/batt");
     CHECK(got.press_dpa == ref.press_dpa && got.scale_index == ref.scale_index, "press/scale");
     CHECK(got.nav_mode == ref.nav_mode && got.dest_id == ref.dest_id, "nav/dest_id");
     CHECK(got.sacc_cms == ref.sacc_cms, "sacc got=%u ref=%u", got.sacc_cms, ref.sacc_cms);
@@ -160,7 +161,7 @@ static void test_extremes_and_sentinels() {
     CHECK(link_pack_u16(nan_v, 100.0f, 35999) == 0, "pack_u16 NaN");
     CHECK(link_pack_u8(nan_v, 10.0f) == 0, "pack_u8 NaN");
 
-    // 4) 古い印 0xA2 / 0x50 や CRC 改ざんを弾くこと
+    // 4) 古い印 0xA2 / 0xA4 / 0xA8 や CRC 改ざんを弾くこと
     uint8_t bad[LINK_W2_LEN];
     memcpy(bad, wire, LINK_W2_LEN);
     bad[W2_MAGIC] = 0xA2;
@@ -169,6 +170,9 @@ static void test_extremes_and_sentinels() {
     bad[W2_MAGIC] = 0xA4 | 0x02;   // 2026-11-20 までの並び（sAcc なし）
     w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
     CHECK(!link_w2_valid(bad), "reject old 0xA4 magic");
+    bad[W2_MAGIC] = 0xA8 | 0x02;   // 2026-11-23 までの並び（回転枠 4 が電圧）
+    w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
+    CHECK(!link_w2_valid(bad), "reject old 0xA8 magic");
     memcpy(bad, wire, LINK_W2_LEN);
     bad[10] ^= 0x01;
     CHECK(!link_w2_valid(bad), "reject bad CRC");
@@ -258,6 +262,74 @@ static void test_sacc() {
     CHECK(rx.acc.sacc_cms == LINK_SACC_NONE, "sacc none after stale gap");
 }
 
+// 電池の表示（回転枠 4 の 8 ビット。2026-11-23〜、印 0xAC）。送信機のヘッダーの電池の欄そのもの
+static void test_battery() {
+    // 値の表: 電池 1〜101、充電中 102〜202、SW OFF 255、0 と 203〜254 は分からない。範囲の外の % は端に丸める
+    CHECK(link_batt_on_battery(-5) == 1 && link_batt_on_battery(0) == 1 && link_batt_on_battery(87) == 88 &&
+          link_batt_on_battery(100) == 101 && link_batt_on_battery(150) == 101, "on_battery codes");
+    CHECK(link_batt_charging(-1) == 102 && link_batt_charging(0) == 102 && link_batt_charging(87) == 189 &&
+          link_batt_charging(100) == 202 && link_batt_charging(999) == 202, "charging codes");
+    for (int c = 0; c <= 255; c++) {
+        int pct = -7;
+        const LinkBattKind k = link_batt_decode((uint8_t)c, pct);
+        if (c >= 1 && c <= 101)        CHECK(k == LINK_BATT_K_BATTERY  && pct == c - 1,   "code %d battery %d", c, pct);
+        else if (c >= 102 && c <= 202) CHECK(k == LINK_BATT_K_CHARGING && pct == c - 102, "code %d charging %d", c, pct);
+        else if (c == 255)             CHECK(k == LINK_BATT_K_SW_OFF   && pct == -7,      "code 255 sw off");
+        else                           CHECK(k == LINK_BATT_K_UNKNOWN  && pct == -7,      "code %d unknown", c);
+    }
+
+    // 受けるまでは分からない
+    LinkW2Rx rx;
+    link_w2_rx_reset(&rx);
+    int pct = -1;
+    CHECK(link_batt_decode(rx.acc.batt, pct) == LINK_BATT_K_UNKNOWN, "unknown before slot 4");
+
+    // 電池・充電中の 0〜100% と SW OFF が回転枠 4 でそのまま戻る。GNSS 高度は壊れない
+    uint8_t w[LINK_W2_LEN];
+    for (int kind = 0; kind < 2; kind++) {
+        for (int p = 0; p <= 100; p++) {
+            LinkTelem t = make_full_telem(W2S_ALTV);
+            t.batt = kind ? link_batt_charging(p) : link_batt_on_battery(p);
+            link_w2_encode(&t, w);
+            link_w2_decode(w, &rx, 1000 + kind * 200 + p, 1000);
+            pct = -1;
+            const LinkBattKind k = link_batt_decode(rx.acc.batt, pct);
+            CHECK(k == (kind ? LINK_BATT_K_CHARGING : LINK_BATT_K_BATTERY) && pct == p, "kind %d %d%% got %d %d", kind, p, (int)k, pct);
+            CHECK(rx.acc.gnss_alt_dm == t.gnss_alt_dm && (rx.acc.have & RHAVE_GNSSALT), "gnss_alt intact (%d %d%%)", kind, p);
+            CHECK((rx.acc.have & RHAVE_VOLT) == 0, "link never sets RHAVE_VOLT");
+        }
+    }
+    {
+        LinkTelem t = make_full_telem(W2S_ALTV);
+        t.batt = LINK_BATT_SW_OFF;
+        link_w2_encode(&t, w);
+        link_w2_decode(w, &rx, 2000, 1000);
+        CHECK(link_batt_decode(rx.acc.batt, pct) == LINK_BATT_K_SW_OFF, "sw off roundtrip");
+    }
+
+    // 別の回転枠では書き換えない（届くのは回転枠 4 だけ）
+    {
+        LinkTelem t = make_full_telem(8 + W2S_ALTV);
+        t.batt = link_batt_charging(64);
+        link_w2_encode(&t, w);
+        link_w2_decode(w, &rx, 3000, 1000);
+        LinkTelem t2 = make_full_telem(8 + W2S_PRESS);
+        t2.batt = link_batt_on_battery(3);
+        link_w2_encode(&t2, w);
+        link_w2_decode(w, &rx, 4000, 1000);
+        pct = -1;
+        CHECK(link_batt_decode(rx.acc.batt, pct) == LINK_BATT_K_CHARGING && pct == 64, "kept on other slot got %d", pct);
+    }
+
+    // 長い途切れのあとは、回転枠 4 を受け直すまで分からない（古い値を出さない・受信ログに書かない）
+    {
+        LinkTelem t2 = make_full_telem(16 + W2S_DATE);
+        link_w2_encode(&t2, w);
+        link_w2_decode(w, &rx, 4000 + (LINK_W2_STALE_FRAMES + 1) * 1000, 1000);
+        CHECK(rx.acc.batt == LINK_BATT_NONE, "unknown after stale gap");
+    }
+}
+
 static void test_utc_ms_and_beacon() {
     LinkW2Rx rx;
     link_w2_rx_reset(&rx);
@@ -322,6 +394,7 @@ int main() {
     test_extremes_and_sentinels();
     test_midnight_and_stale();
     test_sacc();
+    test_battery();
     test_utc_ms_and_beacon();
 
     printf("wire2_test: %d passed, %d failed\n", g_pass, g_fail);
