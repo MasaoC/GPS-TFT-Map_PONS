@@ -4,7 +4,7 @@
 File    : docs/pons_todo.md
 Project : PONS v7.1 / v7.2
 Role    : 残っている作業の一覧。1 項目 1〜2 行。経緯・数字・確かめ方の詳細は pons_todo_notes.md。
-Updated : 2026/11/22
+Updated : 2026/11/23
 -->
 
 **済んだら行を消す。増えたら足す。** 1 項目は 1〜2 行。詳しいことは [pons_todo_notes.md](pons_todo_notes.md)（「メモ §n」）か各行のリンク先。
@@ -37,6 +37,10 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] ケイデンスの推定（`tools/imulog/cadence.py`）: 台の上で漕ぐか飛行の生ログで、前後の振動が 180 回/分（3.0Hz）前後に出るか
 
 ## 3. 机の上で確かめる
+- [ ] **Re:PONS からパイロン座標を変える（11/23。実機未確認）**: 本体設定の「コース（パイロン）」で北パイロンを変えて保存 → SD の `override_pilon_coordinate.csv` と
+  log.txt の `PC PILON ... (next boot)` → 再起動で `PILON OVERRIDE: 1 applied` と地図。既定に戻すとファイルが消えるか → [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (8)
+- [ ] **CH を変えると時々「モジュールの応答がありません」（11/23 修正・実機未確認）**: 送信機をアッパー（CH15〜27・SF9/10）で送らせたまま
+  WIRELESS 画面で CH を何度か変え、`LINK ERROR: radio module not responding` が出ず `E220 reconfigure ... waited=` が 0 でない回があるか → [pons_link.md](pons_link.md) §6.9
 - [ ] v7.2 基板が届いたら: `PONS_MAINBOARD_REV` = 72 で焼き、満充電で数日〜数週間切ってから起動して `RTC BACKUP CHECK: ok` か、
   充電ポップアップの `Fast GPS <2d, clock 3mo`、回路が動き出す・止まる電圧（約 3.92V / 3.83V）→ [pons_charge_estimation.md](pons_charge_estimation.md)
 

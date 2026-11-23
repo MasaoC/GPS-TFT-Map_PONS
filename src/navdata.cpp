@@ -88,7 +88,7 @@ double takeshima_lat_v = TAKESHIMA_LAT,   takeshima_lon_v = TAKESHIMA_LON;
 bool   pilon_override_loaded = false;
 
 // 起動時に固定の目的地を登録する。
-// 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ S_PILON（南パイロン）→ TAKESHIMA（竹島）
+// 登録順: PLATHOME（出発地）→ N_PILON（北パイロン）→ S_PILON（南パイロン）→ TAKESHIMA（多景島。竹島とも）
 // SHINURA（新浦安）はコメントアウト中（現時点では使用しない）。
 // 座標は上の実行時変数を使う。SD で上書きした後に呼び直せば新しい座標で登録し直せる。
 // 呼び直しても前回分は解放しない（理由は本体の先頭コメント）。
@@ -137,7 +137,7 @@ void init_destinations(){
   extradestinations[n].size = 1;
   extradestinations[n].cords = new double[][2]{ {pilon_south_lat, pilon_south_lon} };
   n++;
-  // TAKESHIMA: 竹島（10km コース折り返し地点）
+  // TAKESHIMA: 多景島（竹島とも。10km コース折り返し地点）
   extradestinations[n].id = current_id++;
   extradestinations[n].name = pons_strdup("TAKESHIMA");
   extradestinations[n].size = 1;
@@ -404,7 +404,7 @@ const double map_okishima_coords[] = {
 
 
 
-// 竹島（琵琶湖の島）の輪郭座標
+// 多景島（竹島とも。琵琶湖の島）の輪郭座標
 const double map_takeshima_coords[] = {
   136.1791589861376,35.29716068038715,
   136.1777344333285,35.29669382781091,
@@ -684,7 +684,7 @@ mapdata map_karasu = create_static_mapdata(21, "g_karasu", 5, map_karasu_coords)
 // 飛行に必須の注記はこちらに置く。描画は display_tft.cpp の draw_FlashMaps()、
 // 一覧表示は MAPLIST 画面が参照する。
 mapdata* flashmaps[] = {
-  // 琵琶湖の島（沖島・竹島・竹生島）。
+  // 琵琶湖の島（沖島・多景島・竹生島）。
   // ベクタ地図の琵琶湖ポリゴンにも島は穴として含まれており「重複」ではあるが、
   // パイロットが飛行中に位置の目印として視覚的に使うため、緑の輪郭線として
   // 意図的に残している。OSM と重複しているという理由で削除しないこと。

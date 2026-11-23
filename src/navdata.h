@@ -117,7 +117,7 @@
   extern double pilon_north_lat, pilon_north_lon;  // 北パイロン
   extern double pilon_south_lat, pilon_south_lon;  // 南パイロン（旧称 西パイロン）
   extern double pilon_1km_lat, pilon_1km_lon;      // 1km パイロン
-  extern double takeshima_lat_v, takeshima_lon_v;  // 竹島
+  extern double takeshima_lat_v, takeshima_lon_v;  // 竹島（多景島）
   extern bool   pilon_override_loaded;             // SD から上書きしたか（表示用）
   extern float dest_dist;
 

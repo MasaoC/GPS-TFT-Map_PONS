@@ -4219,7 +4219,7 @@
       } else if (line === "PONS:BYE") {
         updateSerialUIStatus('disconnected');
         resetSettingsState(true);
-      } else if (line.startsWith("PONS:SETTING,") || line.startsWith("PONS:DEST,") ||
+      } else if (line.startsWith("PONS:SETTING,") || line.startsWith("PONS:DEST,") || line.startsWith("PONS:PILON_INFO,") ||
                  line === "PONS:SETTINGS_END" || line.startsWith("PONS:SETTINGS_OK,") ||
                  line.startsWith("PONS:SETTINGS_SAVED,") || line.startsWith("PONS:SETTINGS_ERR,")) {
         handleSettingsSerialLine(line);
@@ -4833,6 +4833,7 @@
       { id: 'tas',      label: '推定 TAS・風' },
       { id: 'imu',      label: '姿勢・バリオ KF' },
       { id: 'internal', label: '内部状態・較正' },
+      { id: 'course',   label: 'コース（パイロン）' },
     ];
 
     const PONS_TIER_META = {
@@ -4842,7 +4843,7 @@
       internal: { label: '内部状態', cls: 'sbadge-internal', locked: true  },
     };
 
-    // mysd.cpp の settings[] 全 32 項目と完全一致する定義
+    // mysd.cpp の settings[] 全 32 項目と完全一致する定義（パイロン座標の pilon.* は下の PONS_PILON_SCHEMA で足す）
     const PONS_SETTINGS_SCHEMA = [
       // --- 基本・表示 ---
       {
@@ -5090,7 +5091,44 @@
       },
     ];
 
+    // ---- コースの座標（パイロン）。2026-11-23〜 ----
+    // settings.txt ではなく SD の override_pilon_coordinate.csv（地点ごとの上書き）を読み書きする（mysd.cpp の pilon.* 項目）。
+    // 値は「次の起動で使う座標」"緯度,経度"。既定（navdata.h。公式ルール 2026.06.21）と同じにすると上書きを消す。
+    // ★ 反映は本体の次の起動から（いまの座標は Core0 が読み続けていて、飛行中に変えると無線の目的地の照合もずれる）。
+    // defaultVal は本体の PONS:PILON_INFO で置き換える（ファームの navdata.h が正）。
+    const PONS_PILON_SCHEMA = [
+      { name: 'PLATHOME',  label: 'プラットホーム',  def: '35.294222,136.254333' },
+      { name: 'N_PILON',   label: '北パイロン',       def: '35.377878,136.189907' },
+      { name: 'S_PILON',   label: '南パイロン（旧称 西）', def: '35.274220,136.136183' },
+      { name: 'PILON_1KM', label: '1km パイロン',     def: '35.297961,136.243624' },
+      { name: 'TAKESHIMA', label: '多景島',          def: '35.296584,136.178054' },
+    ];
+    for (const p of PONS_PILON_SCHEMA) {
+      PONS_SETTINGS_SCHEMA.push({
+        key: `pilon.${p.name}`, label: `${p.label}の座標`, cat: 'course', tier: 'caution',
+        type: 'latlon', defaultVal: p.def,
+        desc: `「緯度,経度」（10 進の度、真北基準の WGS84）。毎年の大会ルールで変わったら直す。SD の override_pilon_coordinate.csv の ${p.name} の行に書かれ、既定と同じにすると上書きを消す。`,
+        caution: '保存しても本体の次の起動まで使われません（保存したら再起動）。機体・予備機・ボートの 3 台で同じにしないと、無線で目的地が合いません。',
+      });
+    }
+
     const PONS_SCHEMA_MAP = Object.fromEntries(PONS_SETTINGS_SCHEMA.map(s => [s.key, s]));
+
+    // "緯度,経度" を数 2 つにする（形が違えば null）
+    function parseLatLon(raw) {
+      const m = String(raw ?? '').trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+      if (!m) return null;
+      const lat = Number(m[1]), lon = Number(m[2]);
+      return (Number.isFinite(lat) && Number.isFinite(lon)) ? { lat, lon } : null;
+    }
+    // 2 点間の距離 [m]
+    function latLonDistM(a, b) {
+      const R = 6371000, r = Math.PI / 180;
+      const dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+    function fmtDistM(m) { return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`; }
 
     // 設定エディタの状態
     const settingsState = {
@@ -5112,6 +5150,11 @@
       lastSavedBackup: null,
       // 目的地候補一覧（PONS:DEST から取得）
       destinations: [],
+      // パイロン座標のいま使っている値 { 'pilon.N_PILON': '緯度,経度' }（PONS:PILON_INFO から）
+      pilonRuntime: {},
+      rxPilonRuntime: {},
+      // 本体へ SET を送ったが、まだ SAVE で書き切っていないパイロンの項目（本体の s_pilon_stage に残っている）
+      pilonStaged: new Set(),
       // 受信一時バッファ
       rxVals: {},
       rxInFile: {},
@@ -5203,6 +5246,7 @@
       settingsState.rxVals = {};
       settingsState.rxInFile = {};
       settingsState.rxDests = [];
+      settingsState.rxPilonRuntime = {};
       if (settingsState.getTimer) { clearTimeout(settingsState.getTimer); settingsState.getTimer = null; }
 
       const badge = document.getElementById('settings-conn-badge');
@@ -5246,6 +5290,15 @@
       } else if (line.startsWith('PONS:DEST,')) {
         const name = line.substring('PONS:DEST,'.length).trim();
         if (name) settingsState.rxDests.push(name);
+      } else if (line.startsWith('PONS:PILON_INFO,')) {
+        // PONS:PILON_INFO,<NAME>,<既定の緯度>,<既定の経度>,<いまの緯度>,<いまの経度>
+        const f = line.substring('PONS:PILON_INFO,'.length).split(',');
+        if (f.length >= 5) {
+          const key = `pilon.${f[0].trim()}`;
+          const s = PONS_SCHEMA_MAP[key];
+          if (s) s.defaultVal = `${Number(f[1]).toFixed(6)},${Number(f[2]).toFixed(6)}`;   // 本体の navdata.h が正
+          settingsState.rxPilonRuntime[key] = `${Number(f[3]).toFixed(6)},${Number(f[4]).toFixed(6)}`;
+        }
       } else if (line === 'PONS:SETTINGS_END') {
         if (settingsState.getTimer) { clearTimeout(settingsState.getTimer); settingsState.getTimer = null; }
         settingsState.loading = false;
@@ -5256,8 +5309,11 @@
         settingsState.draft = { ...settingsState.rxVals };
         settingsState.addToFile = {};
         settingsState.destinations = [...settingsState.rxDests];
+        settingsState.pilonRuntime = { ...settingsState.rxPilonRuntime };
+        settingsState.pilonStaged = new Set();   // 本体も SETTINGS_GET で決めかけを捨てている
         const badge = document.getElementById('settings-conn-badge');
-        const missingCnt = Object.values(settingsState.inFile).filter(v => !v).length;
+        // パイロン（pilon.*）は settings.txt の項目ではないので「未記載」に数えない（既定の座標で動いているだけ）
+        const missingCnt = Object.entries(settingsState.inFile).filter(([k, v]) => !v && !k.startsWith('pilon.')).length;
         badge.textContent = `取得完了（全 ${Object.keys(settingsState.orig).length} 項目 / 未記載 ${missingCnt}）`;
         badge.style.background = '#dcfce7';
         badge.style.color = '#166534';
@@ -5295,6 +5351,10 @@
     function normalizeSettingVal(schema, raw) {
       const s = (raw === undefined || raw === null) ? '' : String(raw).trim();
       if (!schema) return s;
+      if (schema.type === 'latlon') {
+        const ll = parseLatLon(s);
+        return ll ? `${ll.lat.toFixed(6)},${ll.lon.toFixed(6)}` : s;
+      }
       if (schema.type === 'number') {
         const n = Number(s);
         if (!Number.isFinite(n)) return s;
@@ -5338,6 +5398,18 @@
           errors[s.key] = '改行文字は使用できません';
           continue;
         }
+        if (s.type === 'latlon') {
+          const ll = parseLatLon(raw);
+          if (!ll) { errors[s.key] = '「緯度,経度」の形で入れてください（例: 35.377878,136.189907）'; continue; }
+          if (ll.lat < -90 || ll.lat > 90 || ll.lon < -180 || ll.lon > 180) { errors[s.key] = '緯度は −90〜90、経度は −180〜180 です'; continue; }
+          if (ll.lat === 0 && ll.lon === 0) { errors[s.key] = '0,0 は使えません'; continue; }
+          if (isSettingChanged(s.key)) {
+            const def = parseLatLon(s.defaultVal);
+            const dm = def ? latLonDistM(def, ll) : 0;
+            if (dm > 3000) warnings.push(`${s.label}が既定（navdata.h）から ${fmtDistM(dm)} 離れています。打ち間違い（緯度と経度の入れ違い・桁）でないか確かめてください。`);
+          }
+          continue;
+        }
         if (s.key === 'calib_date' && !/^(0|\d{8})$/.test(raw)) {
           errors[s.key] = '0 または 8 桁の YYYYMMDD（例: 20261120）を入力してください';
           continue;
@@ -5371,6 +5443,9 @@
         warnings.push('【危険】needs_apply を手動で 0 にしています。機体の実取り付けと水平較正が一致しているか必ず確認してください。');
       }
       const diffs = computeSettingsDiffs();
+      if (diffs.some(d => d.schema.type === 'latlon')) {
+        warnings.push('パイロン座標は保存しても本体の次の起動まで使われません。保存したら本体を再起動してください。機体・予備機・ボートの 3 台で同じ座標にしないと、無線で目的地が合いません。');
+      }
       if (diffs.some(d => d.schema.needsReboot)) {
         warnings.push('無線設定（link_*）の変更は、本体を再起動したあとにハードウェアへ反映されます。');
       }
@@ -5505,7 +5580,10 @@
                   <span class="setting-label">${escHtml(s.label)}</span>
                   <span class="setting-key">${escHtml(s.key)}</span>
                   <span class="sbadge ${tier.cls}">${tier.label}</span>
-                  ${missing ? '<span class="sbadge sbadge-missing" title="settings.txt に未記載のため本体の既定値で動作中。保存すると settings.txt に追加されます">未記載（既定値）</span>' : ''}
+                  ${s.type === 'latlon'
+                    ? (missing ? '<span class="sbadge sbadge-missing" title="override_pilon_coordinate.csv に無いので、ファームの既定（navdata.h）の座標で動きます">既定の座標</span>'
+                               : '<span class="sbadge sbadge-reboot" title="SD の override_pilon_coordinate.csv で既定（navdata.h）を上書きしています">SD で上書き中</span>')
+                    : (missing ? '<span class="sbadge sbadge-missing" title="settings.txt に未記載のため本体の既定値で動作中。保存すると settings.txt に追加されます">未記載（既定値）</span>' : '')}
                   ${s.needsReboot ? '<span class="sbadge sbadge-reboot">要再起動</span>' : ''}
                   <span id="schg-${s.key}" class="sbadge sbadge-changed" style="${changed ? '' : 'display:none;'}">${missing ? '追加対象' : '変更あり'}</span>
                   ${locked ? '<span style="font-size:0.75rem; color:#64748b;">🔒 ロック中</span>' : ''}
@@ -5518,11 +5596,12 @@
                 <div class="setting-meta">
                   <span>既定: <code>${escHtml(s.defaultVal)}</code>${rangeText ? ' / ' + escHtml(rangeText) : ''}</span>
                   <span style="display:inline-flex; gap:4px;">
-                    ${missing && !locked ? `<button onclick="toggleAddMissingSetting('${s.key}')" title="既定値のまま settings.txt へ書き出す対象に追加/解除します">${settingsState.addToFile[s.key] ? '✓ 追加予約' : '＋ 追加'}</button>` : ''}
+                    ${missing && !locked && s.type !== 'latlon' ? `<button onclick="toggleAddMissingSetting('${s.key}')" title="既定値のまま settings.txt へ書き出す対象に追加/解除します">${settingsState.addToFile[s.key] ? '✓ 追加予約' : '＋ 追加'}</button>` : ''}
                     ${!locked ? `<button onclick="resetOneSettingDefault('${s.key}')" title="既定値（${escHtml(s.defaultVal)}）に戻す">既定</button>` : ''}
                   </span>
                 </div>
-                <div id="sorig-${s.key}" style="font-size:0.74rem; color:#1d4ed8; ${changed ? '' : 'display:none;'}">${missing ? '未記載 → 保存で settings.txt に追加' : '変更前: <code>' + escHtml(origVal) + '</code>'}</div>
+                <div id="sorig-${s.key}" style="font-size:0.74rem; color:#1d4ed8; ${changed ? '' : 'display:none;'}">${(missing && s.type !== 'latlon') ? '未記載 → 保存で settings.txt に追加' : '変更前: <code>' + escHtml(origVal) + '</code>'}</div>
+                ${s.type === 'latlon' ? pilonInfoHtml(s, val) : ''}
                 <div id="serr-${s.key}" class="setting-err-msg" style="${err ? '' : 'display:none;'}">${err ? '❌ ' + escHtml(err) : ''}</div>
               </div>
             </div>`;
@@ -5531,6 +5610,23 @@
 
       body.innerHTML = html;
       drawTasPreviewCanvas();
+    }
+
+    // パイロンの項目の下に出す: 既定からの距離・地図のリンク・いま本体が使っている座標（保存済みで再起動待ちなら知らせる）
+    function pilonInfoHtml(s, val) {
+      const ll = parseLatLon(val), def = parseLatLon(s.defaultVal);
+      const rt = settingsState.pilonRuntime[s.key];
+      const parts = [];
+      if (ll && def) {
+        const dm = latLonDistM(def, ll);
+        parts.push(dm < 0.5 ? '既定と同じ' : `既定から ${fmtDistM(dm)}`);
+        parts.push(`<a href="https://www.google.com/maps?q=${ll.lat.toFixed(6)},${ll.lon.toFixed(6)}" target="_blank" rel="noopener">地図で見る</a>`);
+      }
+      // いま本体が使っている座標が入力欄と違うときだけ知らせる（保存済みなら再起動で、まだなら保存して再起動で変わる）
+      const cur = normalizeSettingVal(s, val);
+      const saved = normalizeSettingVal(s, settingsState.orig[s.key]) === cur;
+      if (rt && rt !== cur) parts.push(`<span style="color:#b45309;">いま本体が使っているのは <code>${escHtml(rt)}</code>（${saved ? '保存済み。再起動で' : '保存して再起動すると'}上の値に変わる）</span>`);
+      return `<div id="spilon-${s.key}" style="font-size:0.74rem; color:#475569;">${parts.join(' / ')}</div>`;
     }
 
     function updateSettingCardVisuals(keysToCheck) {
@@ -5549,6 +5645,8 @@
         }
         const origEl = document.getElementById(`sorig-${k}`);
         if (origEl) origEl.style.display = chg ? '' : 'none';
+        const pEl = document.getElementById(`spilon-${k}`);
+        if (pEl && PONS_SCHEMA_MAP[k]) pEl.outerHTML = pilonInfoHtml(PONS_SCHEMA_MAP[k], settingsState.draft[k] ?? '');
         const errEl = document.getElementById(`serr-${k}`);
         if (errEl) {
           errEl.style.display = err ? '' : 'none';
@@ -5800,9 +5898,20 @@
 
       try {
         const adjusted = [];
+        // ★ 前の保存が SAVE まで行かずに失敗していると、本体にパイロンの決めかけ（SET 済み）が残っている。そのあと下書きを
+        //   元に戻したパイロンは差分に出ないので、そのまま SAVE すると取り消したはずの座標が書かれる。元の値を送り直して打ち消す。
+        for (const k of [...settingsState.pilonStaged]) {
+          if (diffs.some(d => d.schema.key === k) || !(k in settingsState.orig)) continue;
+          const s = PONS_SCHEMA_MAP[k];
+          const v = normalizeSettingVal(s, settingsState.orig[k]);
+          prog.textContent = `前回の決めかけを打ち消し中: ${k} = ${v} ...`;
+          const rep0 = await sendSettingCmdAndWait(`PONS:SETTINGS_SET,${k}:${v}`);
+          if (!rep0.startsWith('PONS:SETTINGS_OK,')) throw new Error(`設定 ${k} の打ち消しに失敗しました (${rep0})`);
+        }
         for (let i = 0; i < diffs.length; i++) {
           const d = diffs[i];
           prog.textContent = `送信中 (${i + 1} / ${diffs.length}): ${d.schema.key} = ${d.newVal} ...`;
+          if (d.schema.type === 'latlon') settingsState.pilonStaged.add(d.schema.key);   // 本体に決めかけが残りうる（失敗に備えて先に記録）
           const rep = await sendSettingCmdAndWait(`PONS:SETTINGS_SET,${d.schema.key}:${d.newVal}`);
           if (!rep.startsWith('PONS:SETTINGS_OK,')) {
             throw new Error(`設定 ${d.schema.key} の反映に失敗しました (${rep})`);
@@ -5826,6 +5935,7 @@
 
         settingsState.lastSavedBackup = backupBeforeSave;
         settingsState.addToFile = {};
+        settingsState.pilonStaged = new Set();   // SAVE で書き切った
         settingsState.saving = false;
         document.getElementById('settings-diff-modal').classList.remove('active');
 
@@ -5836,6 +5946,9 @@
         }
         if (needReboot) {
           msg += '\n\n⚠️ 無線設定（link_*）を変更したため、反映するには本体を再起動してください。';
+        }
+        if (diffs.some(d => d.schema.type === 'latlon')) {
+          msg += '\n\n⚠️ パイロン座標は SD の override_pilon_coordinate.csv に書きました。本体を再起動すると使われます。機体・予備機・ボートの 3 台を同じにしてください。';
         }
         alert(msg);
         // 本体から最新値を再取得して表示を同期
@@ -6001,7 +6114,7 @@
     // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
     // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
     // 下の JS は ?v= にこの版数を付けて読むので、HTML と JS の版が食い違うことはない。
-    const VIEWER_VERSION = '2026.11.22.5';
+    const VIEWER_VERSION = '2026.11.23.2';
     ['analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js']
       .forEach(f => document.write('<script src="' + f + '?v=' + VIEWER_VERSION + '"><\/script>'));
   </script>

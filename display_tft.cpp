@@ -3117,6 +3117,33 @@ static bool link_frame_visible() {
   return (millis() / LINK_FRAME_BLINK_MS) % 2 == 0;
 }
 
+// 無線アイコンの位置。draw_link_icons() と draw_link_rssi_value() で共通。
+static const int LINK_ICON_RY = 51;                        // 電波アイコンの上端
+static const int LINK_ICON_IX = VSI_X - 3 - ICON_PLANE_W;  // 役割アイコンの左端
+
+// 受信強度の数値（例: -60dB）をアンテナの真上に小さく黒で（2026-11-23、ユーザー）。
+//   値は本数と同じ **直近 10 秒の平均**（link_rssi_avg10）。1 発ぶんだと数 dB 跳ねて
+//   本数と食い違って見えるため。受信できていない（×）・故障・送信モード・リプレイ／デモ中は出さない。
+//   y = 43..49（GLCD の数字は 7 行なので 50 が空いてアイコンに触れない）。
+// ★ **右旋回の deg/s（y=15..49）より背面に置く**（deg/s の方が重要。ユーザー）。そのため
+//   draw_link_icons()（push のときに重ねる）ではなく、地図を描くときに .ino から
+//   draw_degpersec() の**直前**に呼ぶ。順番を入れ替えると deg/s の下端が数字に隠れる。
+void draw_link_rssi_value() {
+  if (!link_live_ui_ok()) return;
+  if (link_get_mode() != LINK_MODE_RX) return;
+  if (!link_module_alive() || !link_is_receiving()) return;
+  const int8_t r = link_rssi_avg10();
+  if (r == 0) return;
+  char rs[8];
+  snprintf(rs, sizeof(rs), "%ddB", (int)r);
+  backscreen.unloadFont();
+  backscreen.setTextSize(1);
+  backscreen.setTextColor(COLOR_BLACK);
+  const int tw = (int)strlen(rs) * 6;
+  backscreen.setCursor(LINK_ICON_IX + (ICON_PLANE_W - tw) / 2, LINK_ICON_RY - 8);
+  backscreen.print(rs);
+}
+
 // 地図の右上に [無線アイコン][役割アイコン] を置く（2026-11-17 に左上から移した。高さは同じ）。
 // 役割アイコン（船／飛行機）は点滅させない（2026-11-19。下の ★ を参照）。
 //
@@ -3135,13 +3162,14 @@ static void draw_link_icons() {
   //   （draw_link_overlay() の右辺の ★ と同じ理由）。
   //   横幅を食わないよう、右端列（ix..VSI_X-3）に縦積みする:
   //     y=15..49  : draw_degpersec()（右旋回時の箱）
+  //     y=43..49  : 受信強度の数値（draw_link_rssi_value。上の箱より背面）
   //     y=51..65  : 電波アイコン（強度 19x15。または FAIL）
   //     y=67..98  : 役割アイコン（船/飛行機 32x32）
   //     y=96..103 : CH-SF-Group（例: 6-8-A）
   //     y=105〜   : 地図スケール（try_draw_km_distance は 125px 以内に制限）
-  const int ry = 51;                                   // 電波アイコンの上端（deg/s 箱 y=15..49 の下）
+  const int ry = LINK_ICON_RY;                         // 電波アイコンの上端（deg/s 箱 y=15..49 の下）
   const int y  = 67;                                   // 役割アイコンの上端
-  const int ix = VSI_X - 3 - ICON_PLANE_W;             // 役割アイコンの左端（ICON_BOAT_W も同じ 32）
+  const int ix = LINK_ICON_IX;                         // 役割アイコンの左端（ICON_BOAT_W も同じ 32）
   const int x  = ix + (ICON_PLANE_W - ICON_RSSI_W) / 2;// 電波アイコンは役割アイコンの上で中央揃え
 
   // 無線アイコン。**受信と送信で絵そのものを変える**（docs/pons_link.md §5）。

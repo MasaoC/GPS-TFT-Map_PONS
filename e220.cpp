@@ -108,9 +108,16 @@ static bool s_lastXferHeard = false;   // 直前の reg_xfer でモジュール�
 //   got>0 で不一致 → 返事はある。ボーレート違いか、別のものが喋っている
 //   AUX=0        → モジュールがビジー、または AUX が張り付いている
 // log.txt が溢れないよう 1 起動あたりの件数に上限を置く。
-static uint16_t s_dbgLeft = 40;
-#define E220_DBG(...) do { if (s_dbgLeft) { s_dbgLeft--; \
-                           enqueueTask(createLogSdfTask(__VA_ARGS__)); } } while (0)
+// ★★ **うまくいった報告（E220_INFO）と、おかしいときの報告（E220_DBG）で枠を分ける。**
+//   以前は 1 つの枠（40 行）だったので、CH SCAN（1 チャンネルごとに 3 行 × 11）で使い切り、
+//   そのあと CH を変えて「無応答」になったときの regfail の行が 1 つも残らなかった（2026-11-22 のログ）。
+//   失敗の行は失敗のときにしか出ないので、40 行で足りる。
+static uint16_t s_dbgLeft  = 40;   // 失敗・異常（regfail・AUX stuck・retry・MISMATCH など）
+static uint16_t s_infoLeft = 60;   // 正常の報告（reconfigure の結果・regs・wake ready など）
+#define E220_LOG_(left, ...) do { if (left) { left--; \
+                                  enqueueTask(createLogSdfTask(__VA_ARGS__)); } } while (0)
+#define E220_DBG(...)  E220_LOG_(s_dbgLeft,  __VA_ARGS__)
+#define E220_INFO(...) E220_LOG_(s_infoLeft, __VA_ARGS__)
 
 static inline void note_response()   { s_noResp = 0; }
 static inline void note_no_response(){ if (s_noResp < 255) s_noResp++; }
@@ -434,7 +441,8 @@ static bool write_config(uint8_t ch, uint8_t profile, bool persist) {
     if (reg_xfer(0xC1, 0x00, 6, nullptr, rb) && memcmp(v, rb, sizeof(v)) == 0)
         return true;                       // 既に正しい。何も書かない
 
-    E220_DBG("E220 cfg: readback differs or unread, writing (persist=%d)", (int)persist);
+    // 設定画面・CH SCAN（persist=0）は RAM にしか書かないので毎回ここを通る。正常の報告。
+    E220_INFO("E220 cfg: readback differs or unread, writing (persist=%d)", (int)persist);
     // ★ 0xC2（RAM のみ）は **データシート v2.0 に記載が無い**。
     //   10.1 の表 22/23 に載っているのは 0xC1（読み）と 0xC0（不揮発書き）だけで、
     //   0xC2 は EBYTE の ver.1 系の慣習。6.5 は Strict Mode では
@@ -535,8 +543,46 @@ void e220_setup(uint8_t ch, uint8_t profile) {
     e220_reconfigure(ch, profile, true);
 }
 
+// ---- 送信中・休止中なら、終わるまで待つ（mode 3 へ入る前）----
+// ★★ **アッパーの CH で送信の途中に CH を変えると「Module NO RESPONSE」になっていた**（実機 2026-11-22、
+//   1.11。t=252 と t=359 の 2 回。どちらも air TIMEOUT と同時で、Core0 が約 4 秒止まり GNSS 時刻が -3.3 秒飛んだ）。
+//   アッパーはモジュールが送信のあと送信時間の 10 倍休む（ARIB STD-T108）。その間 AUX は Low のままで、
+//   実測は SF9 で 1357ms、SF10 で 2357ms。ところが set_mode() は AUX を 200ms しか待たないので、
+//   休みの途中で M ピンを切り替える → **切替は効かない（5.3）まま 9600bps で命令を送る** →
+//   モジュールは mode 0・115200bps のまま → 読み返しが通らず、やり直しも通らず s_alive が落ちる。
+//   ローワーでも SF11 は AUX Low が約 540ms あるので 200ms では足りない。
+// ★ 待つ上限は「いまの設定（s_ch / s_rfAirMs ＝ 送信に使っていた CH と SF）の送信＋休止」。
+//   送る間隔の計算（link_tx_period_ms）と同じ見込みで、アッパーの SF10 でも約 3.5 秒。
+//   GNSS の受信バッファは約 5 秒ぶん（GNSS_SERIAL_FIFO_SIZE）なので溢れない。失敗の道（約 4 秒）より短い。
+//   待っている間も IMU は引き取る（wait_aux_idle）。
+// ★ e220_send() の直後は、UART で渡し終えて AUX が落ちる前のことがある（35 バイトで約 3ms）。
+//   そこで High を見て「静か」と取らないよう、送った直後なら少し待ってから見る。
+// ★ 待つのは **最後に送った時刻から見込みの時間まで**。「いまから見込みの時間」にすると、送信と関係のない Low
+//   （受けたデータの吐き出し、AUX の張り付き）でも毎回 3.5 秒待ってしまう。一度も送っていなければ待たない
+//   （送る口は e220_send() だけ。テレメトリも時刻の助け合いのビーコンもここを通る）。
+#define E220_SEND_TO_AUX_MS   20    // 送ってから AUX が落ちるまでの余裕 [ms]
+#define E220_TX_QUIET_EXTRA_MS 100  // 見込みに足す余裕 [ms]
+static uint32_t wait_tx_quiet() {
+    if (!s_rfSendEver) return 0;
+    const uint32_t t0 = millis();
+    const uint32_t since = t0 - s_rfLastSendMs;
+    if (since < E220_SEND_TO_AUX_MS) cfg_wait_ms(E220_SEND_TO_AUX_MS - since);
+    const bool upper = (s_ch > E220_CH_MAX);
+    const uint32_t busy = E220_SEND_TO_AUX_MS
+                        + (uint32_t)s_rfAirMs * (1 + (upper ? LINK_UPPER_PAUSE_X : 0)) * LINK_UPPER_TX_MARGIN_PCT / 100
+                        + E220_TX_QUIET_EXTRA_MS;          // 送ってから静かになるまでの見込み（アッパーの SF10 で約 3.6 秒）
+    const uint32_t el = millis() - s_rfLastSendMs;
+    if (el < busy && digitalRead(E220_AUX_PIN) == LOW) {
+        const uint32_t left = busy - el;
+        wait_aux_idle((uint16_t)(left > 60000 ? 60000 : left));
+    }
+    return millis() - t0;
+}
+
 bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
     if (ch > E220_CH_MAX_ALL) ch = E220_CH_MAX_ALL;
+    // ★ write_config() が s_ch / s_rfAirMs を新しい値に変える前に待つこと（待つ長さは前の設定で決まる）
+    const uint32_t waitedMs = wait_tx_quiet();
     enter_config_mode();
     s_alive = write_config(ch, profile, persist);
     // ★ 1 回だけやり直す。**「一度失敗したら二度と戻らない」を防ぐための保険。**
@@ -551,8 +597,13 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
         s_alive = write_config(ch, profile, persist);
     }
     if (s_alive) s_strict = ensure_strict_mode(persist);
-    E220_DBG("E220 reconfigure ch=%u prof=%u persist=%d -> alive=%d AUX=%d",
-             ch, profile, (int)persist, (int)s_alive, (int)digitalRead(E220_AUX_PIN));
+    // waited= は mode 3 へ入る前に送信・休止の終わりを待った時間（wait_tx_quiet）。0 でなければ送信の途中だった。
+    if (s_alive)
+        E220_INFO("E220 reconfigure ch=%u prof=%u persist=%d -> alive=1 AUX=%d waited=%lums",
+                  ch, profile, (int)persist, (int)digitalRead(E220_AUX_PIN), (unsigned long)waitedMs);
+    else
+        E220_DBG("E220 reconfigure ch=%u prof=%u persist=%d -> alive=0 AUX=%d waited=%lums",
+                 ch, profile, (int)persist, (int)digitalRead(E220_AUX_PIN), (unsigned long)waitedMs);
     if (s_alive) {
         note_response();               // 読み返しが通った＝確実に生きている
         s_statNoResp = 0;              // 新しい CH は初回 200ms 待ちから始める
@@ -571,11 +622,18 @@ bool e220_reconfigure(uint8_t ch, uint8_t profile, bool persist) {
         uint8_t ver = 0, ext = 0;
         const bool okv = reg_xfer(0xC1, 0x08, 1, nullptr, &ver);
         const bool oke = reg_xfer(0xC1, 0x09, 1, nullptr, &ext);
-        E220_DBG("E220 regs: ver=%s%02X ext=%s%02X strict=%d rssiNoise=%d txmode=%d",
-                 okv ? "0x" : "??", ver, oke ? "0x" : "??", ext,
-                 oke ? ((ext >> 6) & 1) : -1,      // 1 なら ver.1 互換コマンドが死ぬ
-                 (v_reg1_cache >> 5) & 1,          // REG1 bit5: 環境ノイズ有効
-                 (v_reg3_cache >> 6) & 1);         // REG3 bit6: 1=通常 0=透過
+        // 読めたなら正常の報告、読めなかったなら異常の報告（枠を分けている理由は E220_DBG の上）
+        if (okv && oke)
+            E220_INFO("E220 regs: ver=0x%02X ext=0x%02X strict=%d rssiNoise=%d txmode=%d",
+                      ver, ext, (ext >> 6) & 1,     // 1 なら ver.1 互換コマンドが死ぬ
+                      (v_reg1_cache >> 5) & 1,      // REG1 bit5: 環境ノイズ有効
+                      (v_reg3_cache >> 6) & 1);     // REG3 bit6: 1=通常 0=透過
+        else
+            E220_DBG("E220 regs: ver=%s%02X ext=%s%02X strict=%d rssiNoise=%d txmode=%d",
+                     okv ? "0x" : "??", ver, oke ? "0x" : "??", ext,
+                     oke ? ((ext >> 6) & 1) : -1,
+                     (v_reg1_cache >> 5) & 1,
+                     (v_reg3_cache >> 6) & 1);
     }
 
     // ★ mode 3 の最後のコマンド直後に即 set_baud() すると、TX の一瞬の浮きや
@@ -818,12 +876,12 @@ bool e220_wake_ready() {
     if (!s_wakeSawLow && el < E220_WAKE_SETTLE_MS) return false;
     if (el < 2) return false;              // 切替そのものは 1ms（5.3）。余裕を見て 2ms
 
-    // ★ 最初の 3 回だけ残す。E220_DBG の 1 起動 40 行の予算を毎秒食い潰さないため。
+    // ★ 最初の 3 回だけ残す。E220_INFO の 1 起動の予算を毎秒食い潰さないため。
     //   sawLow=0 で el が E220_WAKE_SETTLE_MS 付近なら、**時間待ちで救われている**
     //   （= AUX の 1 回サンプルだけでは書き込みが捨てられていた）ことの証拠になる。
     { static uint8_t left = 3;
       if (left) { left--;
-          E220_DBG("E220 wake ready in %lums (sawLow=%d)", (unsigned long)el, (int)s_wakeSawLow); } }
+          E220_INFO("E220 wake ready in %lums (sawLow=%d)", (unsigned long)el, (int)s_wakeSawLow); } }
     s_asleep     = false;
     s_waking     = false;
     s_wakeSawLow = false;

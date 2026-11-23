@@ -1755,6 +1755,7 @@ static void draw_current_screen(bool new_gnss_info) {
       draw_own_position_marker(new_lat, new_long, scale, drawupward_direction);
 
       // ---- レイヤー 5: オーバーレイ（速度グラフ・スケールバーなど）----
+      draw_link_rssi_value();       // 受信強度の数値。deg/s より背面にするため必ずこの前に
       draw_degpersec(degpersecond);
       if (is_demo_active()) {
         draw_demo_biwako(); // 琵琶湖デモ表示（見た目や警告音などに慣れるための練習用）

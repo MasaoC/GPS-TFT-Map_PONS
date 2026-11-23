@@ -1569,7 +1569,8 @@ uint32_t link_tx_period_ms() {
 // アッパーの 15/21/27 だけを使う（link_proto.h の LINK_RADIO_CHS）。アッパーでは SF10 まで。
 // チャンネル/プロファイルの変更はモジュールへ書き直しが要る。
 // mode 3 へ入って書き、読み返して照合し、mode 0 へ戻る（e220.cpp）。
-// ★ この間 Core0 が最大 0.6 秒ほど止まる（9600 での往復とタイムアウト）。
+// ★ この間 Core0 が最大 0.6 秒ほど止まる（9600 での往復とタイムアウト）。送信の途中で呼ぶと、
+//   その前に送信と休止の終わりを待つ（e220.cpp の wait_tx_quiet。アッパーの SF10 で最大約 3.5 秒）。
 //   設定画面はメニューからしか入れないので飛行中には起きないが、
 //   **飛行中に呼んではいけない**関数である点は意識しておくこと。
 // ★★ 書込みは **RAM のみ（0xC2）**。設定画面で CH を一周させるだけで
@@ -1603,6 +1604,10 @@ void link_set_radio_ch(uint8_t ch) {
     s_otherGroup  = false;   // 別グループを見たのは前の CH の話
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();
+    // ★ 送信の途中で変えたときの状態を畳む。e220_reconfigure() は送信と休止の終わりを待ってから書き換えるので
+    //   （e220.cpp の wait_tx_quiet）、送信はもう終わっている。LTX_TXDONE のまま残すと、書き換えにかかった時間ごと
+    //   「送信時間」と数えて airmax を水増しし、待ちが長いと air TIMEOUT と出る（2026-11-22 のログ）。
+    s_txState = LTX_IDLE;
     link_preflight_start();
 }
 void link_set_radio_profile(uint8_t p) {
@@ -1615,6 +1620,7 @@ void link_set_radio_profile(uint8_t p) {
     s_otherGroup  = false;
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();
+    s_txState = LTX_IDLE;   // 送信の途中で変えたときの状態を畳む（link_set_radio_ch と同じ）
     link_preflight_start();
 }
 // 別グループの送信機を直近 10 秒以内に受けたか。

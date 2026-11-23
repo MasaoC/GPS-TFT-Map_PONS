@@ -230,6 +230,18 @@ Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し�
   - **PONS ➔ PC**: `PONS:SETTINGS_SAVED,OK` または `PONS:SETTINGS_ERR,<SD_NOT_READY|SAVE_FAILED>`
   - 項目間の整合チェック（`attitude_finish_settings_load()`・`airspeed_min < airspeed_max`）ののち、既存の `saveSettings()`（`settings.tmp` に書き切ってからリネームする原子的保存）で `settings.txt` を更新し、`log.txt` に `PC SETTINGS SAVED ...` を残す。
   - 無線関連（`link_mode` / `link_radio_ch` / `link_radio_prof` / `link_group` / `link_assist`）のハードウェア設定は、本体の再起動後に反映される。
+* **パイロン座標（`pilon.<NAME>`。2026-11-23〜）**: 同じ 3 つのコマンドに、地点ごとに 1 項目として載せる。`settings.txt` ではなく
+  SD の `override_pilon_coordinate.csv`（書式は README の「SD カードの構成」）を読み書きする。`<NAME>` は `PLATHOME` / `N_PILON` / `S_PILON` / `PILON_1KM` / `TAKESHIMA`。
+  - 取得: `PONS:SETTING,pilon.<NAME>,<緯度>,<経度>,<in_file>`（値は**次の起動で使う座標**＝上書きファイルにあればその値、無ければ既定。`in_file` は上書きファイルにあるか）と、
+    `PONS:PILON_INFO,<NAME>,<既定の緯度>,<既定の経度>,<いま使っている緯度>,<いま使っている経度>`（既定は `src/navdata.h`）。
+    古い Re:PONS は `PILON_INFO` を読まずに捨てる。
+  - 変更: `PONS:SETTINGS_SET,pilon.<NAME>:<緯度>,<経度>` → `PONS:SETTINGS_OK,pilon.<NAME>,<緯度>,<経度>`（6 桁）。範囲外・`0,0`・形の違いは
+    `PONS:SETTINGS_ERR,BAD_VALUE,pilon.<NAME>`。**決めておくだけ**で、既定と同じ座標は「上書きを消す」とみなす。
+  - 保存: `SETTINGS_SAVE` で `settings.txt` のあとに上書きファイルを書き直す（`.tmp` に書き切ってから入れ替え。上書きが 1 つも無ければファイルを消す）。
+    書き直すので、手で書いた注記（`#` の行）や読めない行は消える（地点の行は残す）。
+    `log.txt` に `PC PILON <NAME>: ... (next boot)`。上書きファイルだけ書けなかったときは `PONS:SETTINGS_ERR,PILON_SAVE_FAILED`。
+  - **反映は次の起動から。** いまの座標と目的地の一覧は Core0 が読み続けていて、目的地の照合（`dest_id`）も座標から作るため、動いている間は変えない。
+    機体・予備機・ボートで同じ座標にしないと無線で目的地が合わない（CLAUDE.md の `dest_id`）。
 
 ---
 

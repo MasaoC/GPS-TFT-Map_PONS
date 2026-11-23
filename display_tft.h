@@ -144,6 +144,7 @@ cord_tft latLonToXY(float lat, float lon, float mapCenterLat, float mapCenterLon
 
 void draw_gs_track();
 void draw_degpersec(double degpersecond);
+void draw_link_rssi_value();   // 受信強度の数値。draw_degpersec() の直前に呼ぶ（deg/s より背面）
 void draw_map_footer();
 void setup_tft();
 

@@ -1268,8 +1268,15 @@ static bool apply_pilon_override(const char* name, double lat, double lon) {
 }
 
 // 意図して直さない（2026-11-14 の監査）: 誤検出: 上書きは 1 行に緯度・経度の両方を書く形（name,lat,lon）で、片方だけの上書きは起きない
+#define PILON_OVERRIDE_FILE     "override_pilon_coordinate.csv"
+#define PILON_OVERRIDE_TMP_FILE "override_pilon_coordinate.tmp"
 void load_pilon_override(){
-  FsFile f = SD.open("override_pilon_coordinate.csv");
+  // Re:PONS からの保存の途中（古いのを消して名前を変える前）で切れていたら、書き切った tmp を戻す（save_pilon_override_file() の ★）
+  if (!SD.exists(PILON_OVERRIDE_FILE) && SD.exists(PILON_OVERRIDE_TMP_FILE)) {
+    const bool r = SD.rename(PILON_OVERRIDE_TMP_FILE, PILON_OVERRIDE_FILE);
+    log_sdf("override_pilon_coordinate.csv missing, restored from .tmp: %s", r ? "ok" : "FAILED");
+  }
+  FsFile f = SD.open(PILON_OVERRIDE_FILE);
   if (!f) return;
   int applied = 0, rejected = 0;
   char line[80];
@@ -1279,7 +1286,8 @@ void load_pilon_override(){
     if (*p == '#' || *p == '\r' || *p == '\n' || *p == '\0') continue;
     char name[16];
     double lat = 0.0, lon = 0.0;
-    if (sscanf(p, "%15[^,],%lf,%lf", name, &lat, &lon) != 3) { rejected++; continue; }
+    // カンマの前後の空白は許す（"%lf" は前の空白を飛ばし、" ," がカンマの前の空白を飛ばす。手で書いたファイル向け。2026-11-23）
+    if (sscanf(p, "%15[^,],%lf ,%lf", name, &lat, &lon) != 3) { rejected++; continue; }
     // 名前の末尾の空白を落とす
     for (int i = (int)strlen(name) - 1; i >= 0 && (name[i]==' '||name[i]=='\t'); i--) name[i] = '\0';
     if (apply_pilon_override(name, lat, lon)) applied++;
@@ -1288,6 +1296,174 @@ void load_pilon_override(){
   f.close();
   if (applied > 0) pilon_override_loaded = true;
   log_sdf("PILON OVERRIDE: %d applied, %d ignored", applied, rejected);
+}
+
+// ===== Re:PONS からのパイロン座標の変更（2026-11-23〜）=====
+// 本体設定の画面（PONS:SETTINGS_GET / SET / SAVE）に、地点ごとに 1 項目 `pilon.<NAME>`（値は "緯度,経度"）として載せる。
+//   GET  : 値は「次の起動で使う座標」＝ override_pilon_coordinate.csv にあればその値、無ければ既定（navdata.h）。
+//          in_file は override_pilon_coordinate.csv に書いてあるか。あわせて PONS:PILON_INFO で既定と「いま使っている座標」を送る。
+//   SET  : 決めておくだけ（s_pilon_stage）。既定と同じ座標は「上書きを消す」とみなす。
+//   SAVE : settings.txt のあと override_pilon_coordinate.csv を書き直す（tmp に書いてから入れ替える）。上書きが 1 つも無ければ消す。
+// ★ **反映は次の起動から。** いま使っている座標（pla_lat など）と目的地の一覧（extradestinations[]）は Core0 が描画とナビから
+//   読み続けていて、double の書き換えは 1 命令で終わらないので途中の値を読まれうる。また目的地の照合（dest_id）は座標から作るので、
+//   飛行中に変わると無線の受信機と合わなくなる。地上で直して再起動する運用にする（Re:PONS が再起動を促す）。
+static const char* const PILON_NAMES[] = { "PLATHOME", "N_PILON", "S_PILON", "PILON_1KM", "TAKESHIMA" };
+static const double PILON_DEFAULTS[][2] = {
+  { PLA_LAT, PLA_LON }, { PILON_NORTH_LAT, PILON_NORTH_LON }, { PILON_SOUTH_LAT, PILON_SOUTH_LON },
+  { PILON_1KM_LAT, PILON_1KM_LON }, { TAKESHIMA_LAT, TAKESHIMA_LON } };
+static const int PILON_N = (int)(sizeof(PILON_NAMES) / sizeof(PILON_NAMES[0]));
+struct PilonEnt { bool has; double lat, lon; };
+static PilonEnt s_pilon_stage[5];     // SET で決めた値（has=false は「上書きを消す」）
+static bool     s_pilon_staged[5];    // SET を受けた地点
+static_assert(sizeof(PILON_DEFAULTS) / sizeof(PILON_DEFAULTS[0]) == 5, "PILON_NAMES と数をそろえる");
+
+static int pilon_index(const char* name) {
+  for (int i = 0; i < PILON_N; i++) if (!strcmp(name, PILON_NAMES[i])) return i;
+  return -1;
+}
+// いま使っている座標（navdata.cpp の実行時変数）
+static void pilon_runtime(int i, double& lat, double& lon) {
+  switch (i) {
+    case 0:  lat = pla_lat;         lon = pla_lon;         break;
+    case 1:  lat = pilon_north_lat; lon = pilon_north_lon; break;
+    case 2:  lat = pilon_south_lat; lon = pilon_south_lon; break;
+    case 3:  lat = pilon_1km_lat;   lon = pilon_1km_lon;   break;
+    default: lat = takeshima_lat_v; lon = takeshima_lon_v; break;
+  }
+}
+static bool pilon_coord_ok(double lat, double lon) {   // apply_pilon_override() と同じ判定
+  if (!isfinite(lat) || !isfinite(lon)) return false;
+  if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+  return !(lat == 0.0 && lon == 0.0);
+}
+// override_pilon_coordinate.csv の中身（地点ごと）。書式は load_pilon_override() と同じ読み方
+// ★ 本体が無くて .tmp だけが残っていれば .tmp を読む（入れ替えの途中で失敗したとき。次の起動で load_pilon_override() が
+//   .tmp を戻して使うので、Re:PONS に見せる「次の起動で使う座標」もそれに合わせる）
+static void read_pilon_override_file(PilonEnt out[5]) {
+  for (int i = 0; i < PILON_N; i++) out[i] = { false, 0.0, 0.0 };
+  FsFile f = SD.open(PILON_OVERRIDE_FILE);
+  if (!f && !SD.exists(PILON_OVERRIDE_FILE)) f = SD.open(PILON_OVERRIDE_TMP_FILE);
+  if (!f) return;
+  char line[80];
+  while (f.fgets(line, sizeof(line)) > 0) {
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == '\r' || *p == '\n' || *p == '\0') continue;
+    char name[16];
+    double lat = 0.0, lon = 0.0;
+    if (sscanf(p, "%15[^,],%lf ,%lf", name, &lat, &lon) != 3) continue;
+    for (int k = (int)strlen(name) - 1; k >= 0 && (name[k]==' '||name[k]=='\t'); k--) name[k] = '\0';
+    const int i = pilon_index(name);
+    if (i >= 0 && pilon_coord_ok(lat, lon)) out[i] = { true, lat, lon };
+  }
+  f.close();
+}
+
+// PONS:SETTINGS_GET の続き。各地点の「次の起動で使う座標」と、既定・いま使っている座標を送る（serial_send_settings から）
+static void serial_send_pilon_settings() {
+  PilonEnt file[5];
+  read_pilon_override_file(file);
+  for (int i = 0; i < PILON_N; i++) {
+    s_pilon_staged[i] = false;      // 取り直したら決めかけは捨てる（Re:PONS は SET を続けて送ってから SAVE する）
+    const double lat = file[i].has ? file[i].lat : PILON_DEFAULTS[i][0];
+    const double lon = file[i].has ? file[i].lon : PILON_DEFAULTS[i][1];
+    Serial.printf("PONS:SETTING,pilon.%s,%.6f,%.6f,%d\r\n", PILON_NAMES[i], lat, lon, file[i].has ? 1 : 0);
+    double rl, ro;
+    pilon_runtime(i, rl, ro);
+    Serial.printf("PONS:PILON_INFO,%s,%.6f,%.6f,%.6f,%.6f\r\n", PILON_NAMES[i],
+                  PILON_DEFAULTS[i][0], PILON_DEFAULTS[i][1], rl, ro);
+  }
+}
+
+// PONS:SETTINGS_SET,pilon.<NAME>:<緯度>,<経度>（serial_apply_setting から）。決めておくだけで、書くのは SAVE
+static void serial_apply_pilon_setting(const char* key, const char* value) {
+  const int i = pilon_index(key + 6);   // "pilon." の後ろ
+  double lat = NAN, lon = NAN;
+  char tail = '\0';
+  if (i < 0) {
+    Serial.printf("PONS:SETTINGS_ERR,UNKNOWN_KEY,%s\r\n", key);
+    return;
+  }
+  if (!value || sscanf(value, " %lf , %lf %c", &lat, &lon, &tail) != 2 || !pilon_coord_ok(lat, lon)) {
+    Serial.printf("PONS:SETTINGS_ERR,BAD_VALUE,%s\r\n", key);
+    return;
+  }
+  // 既定と同じ（6 桁で一致）なら上書きを消す
+  const bool is_default = fabs(lat - PILON_DEFAULTS[i][0]) < 5e-7 && fabs(lon - PILON_DEFAULTS[i][1]) < 5e-7;
+  s_pilon_stage[i] = { !is_default, lat, lon };
+  s_pilon_staged[i] = true;
+  Serial.printf("PONS:SETTINGS_OK,%s,%.6f,%.6f\r\n", key, lat, lon);
+  Serial.flush();
+}
+
+// PONS:SETTINGS_SAVE の続き。SET を受けた地点があれば override_pilon_coordinate.csv を書き直す。書かなかったときも true
+static bool save_pilon_override_file() {
+  bool any = false;
+  for (int i = 0; i < PILON_N; i++) any |= s_pilon_staged[i];
+  if (!any) return true;
+  // 前の保存が入れ替えの途中で失敗して .tmp しか無ければ、先に本体の名前へ戻す（下で .tmp を開き直すと前の値が消えるため）
+  if (!SD.exists(PILON_OVERRIDE_FILE) && SD.exists(PILON_OVERRIDE_TMP_FILE)) SD.rename(PILON_OVERRIDE_TMP_FILE, PILON_OVERRIDE_FILE);
+  PilonEnt ent[5];
+  read_pilon_override_file(ent);
+  int n = 0;
+  for (int i = 0; i < PILON_N; i++) {
+    if (s_pilon_staged[i]) {
+      if (ent[i].has != s_pilon_stage[i].has || (ent[i].has && (ent[i].lat != s_pilon_stage[i].lat || ent[i].lon != s_pilon_stage[i].lon))) {
+        if (s_pilon_stage[i].has)
+          log_sdf("PC PILON %s: %s -> %.6f,%.6f (next boot)", PILON_NAMES[i], ent[i].has ? "override" : "default",
+                  s_pilon_stage[i].lat, s_pilon_stage[i].lon);
+        else
+          log_sdf("PC PILON %s: override removed -> default %.6f,%.6f (next boot)", PILON_NAMES[i],
+                  PILON_DEFAULTS[i][0], PILON_DEFAULTS[i][1]);
+      }
+      ent[i] = s_pilon_stage[i];
+    }
+    n += ent[i].has ? 1 : 0;
+  }
+  if (n == 0) {
+    // 上書きが 1 つも無い → ファイルごと消す（既定 = navdata.h の座標で動く）
+    SD.remove(PILON_OVERRIDE_TMP_FILE);
+    if (SD.exists(PILON_OVERRIDE_FILE) && !SD.remove(PILON_OVERRIDE_FILE)) {
+      log_sd("ERR pilon override save: cannot remove override_pilon_coordinate.csv");
+      return false;
+    }
+    for (int i = 0; i < PILON_N; i++) s_pilon_staged[i] = false;
+    return true;
+  }
+  // ★ tmp に書き切ってから入れ替える（saveSettings() と同じ）。消してから名前を変えるまでの隙に切れたときは、
+  //   load_pilon_override() が残った tmp を戻して読む
+  FsFile file;
+  if (!file.open(PILON_OVERRIDE_TMP_FILE, O_WRONLY | O_CREAT | O_TRUNC)) {
+    log_sd("ERR pilon override save: cannot open .tmp");
+    return false;
+  }
+  // ★ 注記は短い ASCII にする。load_pilon_override() は 1 行を 79 バイトまでしか読まないので、長い行（日本語は 1 字 3 バイト）は
+  //   切れ端が `#` で始まらない行になって「無視した行」に数えられる（座標は化けないが、ログの ignored が紛らわしい）
+  bool ok = file.print("# Saved by Re:PONS. NAME,lat,lon (overrides navdata.h)\n") > 0;
+  char line[64];
+  for (int i = 0; i < PILON_N; i++) {
+    if (!ent[i].has) continue;
+    snprintf(line, sizeof(line), "%s,%.6f,%.6f\n", PILON_NAMES[i], ent[i].lat, ent[i].lon);
+    ok &= file.print(line) > 0;
+  }
+  ok &= !file.getWriteError();
+  ok &= file.close();
+  if (!ok) {
+    SD.remove(PILON_OVERRIDE_TMP_FILE);
+    log_sd("ERR pilon override save: write failed (old file kept)");
+    return false;
+  }
+  if (SD.exists(PILON_OVERRIDE_FILE) && !SD.remove(PILON_OVERRIDE_FILE)) {
+    SD.remove(PILON_OVERRIDE_TMP_FILE);
+    log_sd("ERR pilon override save: cannot remove old file");
+    return false;
+  }
+  if (!SD.rename(PILON_OVERRIDE_TMP_FILE, PILON_OVERRIDE_FILE)) {
+    log_sd("ERR pilon override save: rename failed (.tmp is kept and read at next boot)");
+    return false;
+  }
+  for (int i = 0; i < PILON_N; i++) s_pilon_staged[i] = false;
+  return true;
 }
 
 void load_destinations(){
@@ -3547,6 +3723,7 @@ void serial_send_settings() {
     const int in_file = (i < 64 && (in_file_mask & (1ULL << i))) ? 1 : 0;
     Serial.printf("PONS:SETTING,%s,%s,%d\r\n", settings[i].id, val, in_file);
   }
+  if (good_sd()) serial_send_pilon_settings();   // パイロン座標（pilon.<NAME>。2026-11-23〜）
   for (int i = 0; i < destinations_count; i++) {
     Serial.printf("PONS:DEST,%s\r\n", extradestinations[i].name);
   }
@@ -3558,6 +3735,10 @@ void serial_apply_setting(const char* key, const char* value) {
   ASSERT_SD_CORE1("serial_apply_setting");
   if (!key || key[0] == '\0') {
     Serial.println("PONS:SETTINGS_ERR,UNKNOWN_KEY,");
+    return;
+  }
+  if (strncmp(key, "pilon.", 6) == 0) {   // パイロン座標（2026-11-23〜。保存は SAVE、反映は次の起動）
+    serial_apply_pilon_setting(key, value);
     return;
   }
   int idx = -1;
@@ -3604,7 +3785,9 @@ void serial_save_settings() {
     log_sdf("PC SETTINGS SAVED (v0=%.2f k=%.2f range %.2f..%.2f)",
             attitude_get_airspeed_v0(), attitude_get_airspeed_k(),
             attitude_get_airspeed_min(), attitude_get_airspeed_max());
-    Serial.println("PONS:SETTINGS_SAVED,OK");
+    // パイロン座標（2026-11-23〜）。settings.txt は書けたので、ここで失敗したときはそれと分かる印を返す
+    if (save_pilon_override_file()) Serial.println("PONS:SETTINGS_SAVED,OK");
+    else                            Serial.println("PONS:SETTINGS_ERR,PILON_SAVE_FAILED");
   } else {
     Serial.println("PONS:SETTINGS_ERR,SAVE_FAILED");
   }
