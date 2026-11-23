@@ -84,7 +84,7 @@ int imu2_cursor = 0; // IMU/ESKF ページ2/2 のカーソル位置（IMU の生
 // 最後の次でページ1（較正の画面）へ移る（imu_guide_next）。
 int imu_guide_page = -1;
 // 推定 TAS の案内（docs/pons_tas.md §4.4）の何画面目を出しているか。-1 = 出していない。
-// IMU/ESKF 画面 1 ページ目で「Header」を TAS にしたときだけ 0 から通る（tas_guide_start）。
+// IMU/ESKF 画面 1 ページ目で「Header」を TAS にしたときと「TAS curve >」で 0 から通る（tas_guide_start）。
 // 0 = 説明の画像、1 = 対気速度モデルの曲線（ファームが描く）。最後の次でページ1へ戻る。
 int tas_guide_page = -1;
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
@@ -2731,12 +2731,13 @@ void shortPressCallback() {
   // MAP モードでは短押しは何もしない（スケール変更はダブルクリックへ移した）。
   // 充電ポップアップが表示されている場合は、短押しで 15
   // 秒間スヌーズ（一時非表示）にして地図を確認できるようにする。
+  // ★ 受信のミラー中は USB を抜くまで出さない（power_charge_popup_dismiss()。2026-11-23〜）
   // ★ 地図では描き直さない（2026-11-14、BUG-88）。以前は先頭で無条件に redraw_screen を立てていて、何もしない短押しと
   //   ダブルクリックの 1 打目のたびに地図を丸ごと（約 200ms）描き直していた。受信のミラー中は link_draw_window_ok() を
   //   通らずに描くので、電波を受ける時刻に TFT の雑音が重なる。
   if (screen_mode == MODE_MAP) {
-    if (power_charge_popup_active()) {
-      power_charge_popup_snooze();
+    if (charge_popup_on_screen()) {   // ★ 隠れていて見えないポップアップは消さない（display_tft.cpp）
+      power_charge_popup_dismiss();
       redraw_screen = true;
     }
     return;
@@ -2882,7 +2883,8 @@ static void imu_guide_next() {
 }
 
 // ---- 推定 TAS の案内（docs/pons_tas.md §4.4）----
-// 大きい枠を TAS にしたときだけ通す 2 画面。1 画面ごとに読み上げる（画面と音声は順番で 1 対 1）。
+// 大きい枠を TAS にしたときと、メニューの「TAS curve >」から通す 2 画面（2026-11-23〜 後者も 1/2 から）。
+// 1 画面ごとに読み上げる（画面と音声は順番で 1 対 1）。
 // 画像の原本は tools/tas_guide/、焼き込みは tools/gen_guide_flash.py。曲線の画面はファームが描く
 // （display_pages.cpp の draw_tas_guide。本体を傾けると点と数字が動く）。
 // ★ 起動のたびには出さない。IMU/ESKF 画面の入口の案内にも足さない（2026-11-07 決定）。
@@ -2903,14 +2905,11 @@ static void tas_guide_say(const char *wav) {
 
 static void tas_guide_start() {
   tas_guide_page = 0;
+  // ★ 入口の案内の最後の 1 文（guide_eskf_apply.wav・優先度 3・約 10 秒）がまだ鳴っていたら止める。
+  //   こちらは優先度 2 なので、止めないと TAS の説明が後ろに回され、1/2 の画像の間ずっと「APPLY してください」が
+  //   流れる（ページ1に着いてすぐ TAS curve / Header を押したとき）。較正の画面を離れたので imu_exit() と同じ扱い。
+  enqueueTask(createStopWavTask(WAV_EXCL_ESKF_GUIDE));
   tas_guide_say(TAS_GUIDE_WAV[0]);
-  redraw_screen = true;
-}
-
-// 曲線の画面（2/2）だけを直接開く（IMU_MENU_TASCURVE）。説明画像と音声案内は通さない。
-static void tas_guide_open_curve() {
-  tas_guide_page = TAS_GUIDE_PAGES;
-  enqueueTask(createPlayMultiToneTask(1568, 80, 1));
   redraw_screen = true;
 }
 
@@ -3011,8 +3010,10 @@ static void imu_execute() {
   }
 
   case IMU_MENU_TASCURVE:
-    // ヘッダー設定を変えずに、ピッチ→推定 TAS の変換曲線画面だけ直接開く
-    tas_guide_open_curve();
+    // ヘッダー設定を変えずに、推定 TAS の案内を 1/2（説明の画像と音声）から通す（押せば 2/2 の曲線へ進む）。
+    // ★ 2026-11-23〜（ユーザー）。それまでは曲線（2/2）だけを直接開いていて、大きい枠がもう TAS の機体では
+    //   1/2 の説明を見る入り口が無かった（Header は TAS → Pavg に戻すときは案内を通さない）。
+    tas_guide_start();
     break;
 
   case IMU_MENU_NEXTPAGE:
@@ -3549,6 +3550,22 @@ void check_destination_toofar() {
   if (warn_muted_bench()) {
     return;
   }
+  // ★ リプレイ中・デモ中は鳴らさず、数えもしない（2026-11-23）。そのときの位置は自機の位置ではない
+  //   （デモの白浜・笠岡は琵琶湖の目的地から 100 km 以上あり、デモ中に鳴っていた）。下の打ち止めの 3 回を
+  //   デモで使い切ると、同じ起動の本番で目的地が本当に遠いときに鳴らなくなる。
+  if (getReplayMode() || is_demo_active()) {
+    return;
+  }
+  // 1 回の起動で DEST_TOOFAR_WARN_MAX 回まで。目的地を選び直したら数え直す（settings.h。2026-11-23〜）
+  static int toofar_dest = -2;
+  static uint8_t toofar_count = 0;
+  if (currentdestination != toofar_dest) {
+    toofar_dest = currentdestination;
+    toofar_count = 0;
+  }
+  if (toofar_count >= DEST_TOOFAR_WARN_MAX) {
+    return;
+  }
   double destlat = extradestinations[currentdestination].cords[0][0];
   double destlon = extradestinations[currentdestination].cords[0][1];
   if (calculateDistanceKm(get_gnss_lat(), get_gnss_lon(), destlat, destlon) >
@@ -3556,7 +3573,11 @@ void check_destination_toofar() {
     if (millis() - last_destination_toofar_time >
         1000 * 120) { // 120秒クールダウン
       last_destination_toofar_time = millis();
+      toofar_count++;
       enqueueTask(createPlayWavTask("wav/destination_toofar.wav", 1));
+      if (toofar_count >= DEST_TOOFAR_WARN_MAX)
+        enqueueTask(createLogSdfTask("DEST TOOFAR: warned %u times, silent until the destination is changed",
+                                     (unsigned)toofar_count));
     }
   }
 }

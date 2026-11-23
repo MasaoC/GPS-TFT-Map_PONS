@@ -603,6 +603,10 @@
 // ★ 2 m/s ちょうどで飛ぶと鳴ったり鳴らなかったりする。1.5 へ下げる案は、歩く速さ（1.3 m/s 前後）に近く
 //   台の上で運ぶと航跡の警告が鳴るので見送った（2026-11-22、ユーザー）。
 #define NAV_MIN_GS_MPS              2.0f
+// 「目的地が 100 km 以上遠い」（destination_toofar.wav。2 分ごと）を、1 回の起動で何回まで鳴らすか。目的地を選び直したら数え直す。
+// ★ 2026-11-23〜（ユーザー）。それまでは遠い限りずっと 2 分ごとに鳴り、自宅で充電しているとうるさかった。
+//   本番で目的地を間違えたまま充電していても、測位してすぐ 2 分おきに 3 回は鳴る。
+#define DEST_TOOFAR_WARN_MAX        3
 
 
 // ---- MS5611（i2c0）の失敗検出と復旧 ----
@@ -2227,6 +2231,11 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 途切れた瞬間は link_no_signal.wav（「受信が途切れました。自機の情報を表示します。」）が鳴り、
 // その後も信号が無い状態が続く間は 120 秒ごとに「信号がありません」を繰り返す。
 #define LINK_NOSIGNAL_REPEAT_MS 120000UL
+// ★ 受信モードにしてから送信機を**一度も受けていない**間は、この繰り返しを LINK_NOSIGNAL_NO_RX_MAX 回までにする（2026-11-23〜、ユーザー）。
+//   机の上の受信機が 2 分ごとに鳴り続けてうるさかった。何回かは鳴らすのは、機体の電源が入っていないのか、
+//   CH・グループの設定が違うのかを知らせるため（「目的地が 100 km 以上遠い」の DEST_TOOFAR_WARN_MAX とそろえて 3 回）。
+//   一度でも受けたあとは今までどおり 120 秒ごとに鳴り続ける。受信モードに入り直したら数え直す。
+#define LINK_NOSIGNAL_NO_RX_MAX 3
 
 // ---- 地図に重ねる通知ボックスの縦位置（display_tft.cpp の begin_notice_box）----
 // ★ **同時に出るものを重ねないこと。** 括弧内が実際に占める範囲。
@@ -2256,6 +2265,8 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 #define NOTICE_Y_CHG_POPUP   82
 #define CHG_POPUP_BOX_H      64
 #define CHG_POPUP_SNOOZE_MS  15000UL  // 操作時にポップアップを一時非表示にする時間 [ms]
+// 受信のミラー中に短押しで消した充電ポップアップを、USB を抜いてからまた出すまで [ms]（power.cpp。VBUS の一瞬の落ち込みで戻さない）
+#define CHG_POPUP_REARM_USB_OFF_MS 3000UL
 // ---- GNSS のバックアップ電池（BT1 = MS621FE）が「あと何時間もつか」の推定（rtc_backup.cpp。2026-11-08〜）----
 // 通電した時間で満充電へ近づけ、電源を切っていた時間をそのまま引く。起動時の GNSS の時計の生死で引き戻す。
 // 値は README の BT1 の表（Seiko の充電カーブと u-blox のバックアップ電流 28µA からの見積もり）に合わせた。

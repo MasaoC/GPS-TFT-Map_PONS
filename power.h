@@ -115,6 +115,7 @@ uint32_t power_charging_elapsed_sec();   // USB 通電（充電開始）から�
 const char* power_rtc_backup_status_str(); // 充電ポップアップの 2 行目 "Fast GPS if OFF < 36 hours" 等（BT1 の残り。rtc_backup.cpp）
 bool  power_charge_popup_active();       // 充電ポップアップを地図画面に表示すべきか
 void  power_charge_popup_snooze();       // ボタン操作時にポップアップを一時非表示にする
+void  power_charge_popup_dismiss();      // 地図で短押しして消した（15 秒。受信のミラー中は USB を抜くまで）
 
 // ログ用の短い文字列（例: "usb=1" / "usb=1 vbus=4.95V"）。
 void power_format_status(char* buf, size_t n);

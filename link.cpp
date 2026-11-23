@@ -459,6 +459,9 @@ static void link_watch_mirror_transition() {
 static void link_watch_no_signal_repeat() {
     static uint32_t last_repeat_ms = 0;
     static uint8_t  prev_mode      = LINK_MODE_OFF;
+    // 受信モードにしてから送信機を一度でも受けたか／一度も受けずに鳴らした回数（settings.h の LINK_NOSIGNAL_NO_RX_MAX）
+    static bool     ever_rx        = false;
+    static uint8_t  said_no_rx     = 0;
     const uint32_t  now            = millis();
 
     if (link_mode_setting != LINK_MODE_RX) {
@@ -469,8 +472,13 @@ static void link_watch_no_signal_repeat() {
     if (prev_mode != LINK_MODE_RX) {
         prev_mode      = LINK_MODE_RX;
         last_repeat_ms = now;
+        ever_rx        = false;   // 受信モードに入り直したら数え直す
+        said_no_rx     = 0;
         return;
     }
+
+    // 一度でも受けたかは、下の「鳴らさない」間も数える（PC 接続中だけ受けていて、外したあとに切れたときも 120 秒ごとに鳴らすため）
+    if (link_is_receiving()) ever_rx = true;
 
     // ★★ リプレイ中・デモ中・チャンネル調査中・PC 接続通信中は鳴らさない。
     //   （充電＋倒れだけのときは受信監視のため鳴らす）
@@ -493,8 +501,16 @@ static void link_watch_no_signal_repeat() {
 
     if (now - last_repeat_ms >= LINK_NOSIGNAL_REPEAT_MS) {
         last_repeat_ms = now;
+        // ★ 一度も受けていない間は LINK_NOSIGNAL_NO_RX_MAX 回まで（2026-11-23〜。settings.h）
+        if (!ever_rx && said_no_rx >= LINK_NOSIGNAL_NO_RX_MAX) return;
         link_alert("wav/link_no_signal_repeat.wav", 1318, 250, 3);
-        enqueueTask(createLogSdTask("LINK WARN: no signal (periodic 120s)"));
+        if (ever_rx) {
+            enqueueTask(createLogSdTask("LINK WARN: no signal (periodic 120s)"));
+        } else {
+            said_no_rx++;
+            enqueueTask(createLogSdfTask("LINK WARN: no signal yet since RX mode (%u/%u, then silent until first reception)",
+                                         (unsigned)said_no_rx, (unsigned)LINK_NOSIGNAL_NO_RX_MAX));
+        }
     }
 }
 

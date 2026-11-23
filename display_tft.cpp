@@ -3121,7 +3121,7 @@ static bool link_frame_visible() {
 static const int LINK_ICON_RY = 51;                        // 電波アイコンの上端
 static const int LINK_ICON_IX = VSI_X - 3 - ICON_PLANE_W;  // 役割アイコンの左端
 
-// 受信強度の数値（例: -60dB）をアンテナの真上に小さく黒で（2026-11-23、ユーザー）。
+// 受信強度の数値（例: -60dBm）をアンテナの真上に小さく黒で（2026-11-23、ユーザー）。
 //   値は本数と同じ **直近 10 秒の平均**（link_rssi_avg10）。1 発ぶんだと数 dB 跳ねて
 //   本数と食い違って見えるため。受信できていない（×）・故障・送信モード・リプレイ／デモ中は出さない。
 //   y = 43..49（GLCD の数字は 7 行なので 50 が空いてアイコンに触れない）。
@@ -3135,7 +3135,7 @@ void draw_link_rssi_value() {
   const int8_t r = link_rssi_avg10();
   if (r == 0) return;
   char rs[8];
-  snprintf(rs, sizeof(rs), "%ddB", (int)r);
+  snprintf(rs, sizeof(rs), "%ddBm", (int)r);
   backscreen.unloadFont();
   backscreen.setTextSize(1);
   backscreen.setTextColor(COLOR_BLACK);
@@ -3343,6 +3343,14 @@ static void draw_link_dupsender_box() {
                      "DUP SENDER !!", "2 TX ON SAME CH/GROUP");
 }
 
+// 上の箱が出ているか。draw_link_overlay() の分かれ道と同じ条件（そこもこれを使う）。
+// ★ 充電ポップアップ（NOTICE_Y_CHG_POPUP 82..146）と段が重なる（96..139）。2026-11-23 に充電ポップアップを受信の
+//   ミラー中も出すようにしたので、同時に出うる。送信機 2 台のほうが大事なので、出ている間は充電ポップアップを出さない。
+static bool link_dupsender_box_shown() {
+  return link_live_ui_ok() && link_get_mode() == LINK_MODE_RX && screen_mode == MODE_MAP &&
+         link_display_state() != LINK_DISP_NOSIGNAL && link_dup_sender();
+}
+
 // 送信前チェックのポップアップ（送信モードのみ・地図画面のみ）。
 //   点検中 : 橙枠。「今は聴いている」＝送信していないことを明示する
 //   警告   : 赤枠。判定が出てから LINK_PF_WARN_SHOW_MS の間だけ出す
@@ -3428,7 +3436,7 @@ static void draw_link_overlay() {
     if (link_display_state() == LINK_DISP_NOSIGNAL) draw_link_nosignal_box();
     // ★ 送信機が 2 台。ミラーの値そのものが信用できないので、
     //   目的地の不一致より先に出す（同じ場所を使うため排他）。
-    else if (link_dup_sender()) draw_link_dupsender_box();
+    else if (link_dupsender_box_shown()) draw_link_dupsender_box();
     // ★ 目的地／ナビモードが送信側と違う。
     //   受信側の警告は自分で再計算する方式なので、目的地が違うと
     //   **コース警告だけが静かにずれる**（計算は正しいのに結果が違う）。
@@ -3581,12 +3589,20 @@ static void fmt_charge_min(char* buf, size_t n, int m) {
 // USB 充電中かつ地上静止中の充電ポップアップ（充電ダッシュボード）
 // メイン画面（地図）の中央に表示し、充電残量、残り時間、90%確実目安、GNSS の速い測位がもつ時間（BT1 の残り）、
 // 本体基板の温度と充電してよい温度の範囲（2026-11-22〜）を表示
-static void draw_charge_popup() {
-  if (screen_mode != MODE_MAP) return;
+// 充電ポップアップがいま画面に出ているか。描く条件そのもの（下の draw_charge_popup() もこれを使う）。
+// ★ .ino の短押しもこれで見る（2026-11-23）。power_charge_popup_active() だけで見ると、GNSS 断線や送信機 2 台の箱に
+//   隠れて見えていないポップアップを短押しで「消した」ことになり、受信のミラー中は USB を抜くまで出なくなっていた。
+bool charge_popup_on_screen() {
+  if (screen_mode != MODE_MAP) return false;
   // GNSS 断線の箱を最優先（同じ段に重ねない）。★ 判定は箱そのものの条件を使う。ミラー中は自機の GNSS が抜けても
   //   断線の箱は出ないので、以前の `!get_gnss_connection()` ではポップアップだけが理由なく消えていた
-  if (gnss_disconnect_warning_shown()) return;
-  if (!power_charge_popup_active()) return;
+  if (gnss_disconnect_warning_shown()) return false;
+  if (link_dupsender_box_shown()) return false;   // 送信機 2 台の箱と段が重なる（そちらが大事。上の関数の ★）
+  return power_charge_popup_active();
+}
+
+static void draw_charge_popup() {
+  if (!charge_popup_on_screen()) return;
 
   const int bx = 6, by = NOTICE_Y_CHG_POPUP, bw = SCREEN_WIDTH - 12, bh = CHG_POPUP_BOX_H;
   const int pct = power_charging_percent();
@@ -3599,13 +3615,16 @@ static void draw_charge_popup() {
 
   begin_notice_box(bx, by, bw, bh, box_col);
 
+  // ★ 受信のミラー中は地図が機体の画面なので、頭に "RX" を付けて受信機自身の充電だと分かるようにする（2026-11-23〜）
+  const char* who = link_mirror_active() ? "RX " : "";
+
   // 1行目: メイン電池充電残量と残り時間（90%確実目安）
-  char l1[32];
+  char l1[40];
   if (is_full) {
     if (cutoff_confirmed) {
-      snprintf(l1, sizeof(l1), "CHG: FULL (90%%+ Cutoff)");
+      snprintf(l1, sizeof(l1), "%sCHG: FULL (90%%+ Cutoff)", who);
     } else {
-      snprintf(l1, sizeof(l1), "CHG: FULL (Main 100%%)");
+      snprintf(l1, sizeof(l1), "%sCHG: FULL (Main 100%%)", who);
     }
   } else {
     // 例: "CHG 71%  1h00 (max 1h33)"。括弧の中は 90% の確かさで終わっている時刻までの残り。
@@ -3614,7 +3633,7 @@ static void draw_charge_popup() {
     char r[12], r90[12];
     fmt_charge_min(r, sizeof(r), rem_m);
     fmt_charge_min(r90, sizeof(r90), rem_90_m);
-    snprintf(l1, sizeof(l1), "CHG %d%%  %s (max %s)", pct, r, r90);
+    snprintf(l1, sizeof(l1), "%sCHG %d%%  %s (max %s)", who, pct, r, r90);
   }
 
   // 2行目: GNSS のバックアップ電池（BT1）の残りを、何が起きるかの文で出す（rtc_backup_format）。
@@ -3625,10 +3644,14 @@ static void draw_charge_popup() {
 
   backscreen.loadFont(AA_FONT_SMALL);
   // 箱の内側（二重枠の内側）に収まらないときは括弧の中を落とす。数字の桁が増えても枠を突き抜けない。
-  if (!is_full && backscreen.textWidth(l1) > bw - 8 - 3) {
-    char r[12];
-    fmt_charge_min(r, sizeof(r), rem_m);
-    snprintf(l1, sizeof(l1), "CHG %d%%  %s", pct, r);
+  if (backscreen.textWidth(l1) > bw - 8 - 3) {
+    if (is_full) {
+      snprintf(l1, sizeof(l1), "%sCHG: FULL", who);
+    } else {
+      char r[12];
+      fmt_charge_min(r, sizeof(r), rem_m);
+      snprintf(l1, sizeof(l1), "%sCHG %d%%  %s", who, pct, r);
+    }
   }
   // ★ 行の位置は 4 行目（温度）を足すときに詰めた（2026-11-22。それまでは 5 / 23 / 45）。
   //   箱は大きくできない: 下の段（無信号・送信前チェック、148〜）と上の段（警報ミュート、40〜79）が同時に出る。

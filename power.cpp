@@ -63,6 +63,9 @@ static uint32_t s_last_sample = 0;
 // USB 物理通電開始時刻 [ms]（SW OFF/ON でも維持。0 = USB なし）。
 // ★ power_tick() で更新するので、それより前（ここ）で宣言する。
 static uint32_t s_usb_connected_ms = 0;
+// 充電ポップアップをミラー中に短押しで消した（USB を抜くまで出さない。power_charge_popup_dismiss()。2026-11-23〜）
+static bool     s_chg_popup_mirror_dismissed = false;
+static uint32_t s_usb_absent_since           = 0;   // USB が無くなった時刻（上を戻すのは CHG_POPUP_REARM_USB_OFF_MS 続いてから）
 static float    s_volt        = 0.0f;  // VBUS（生の平均。ピーク追跡は通さない）
 static float    s_batt_v      = 0.0f;  // GPIO40（BATPWR）の生の平均。SW OFF なら SW4 が GND に落とすので 0V
 static bool     s_swoff       = false; // SW OFF のまま USB（CHARGE_SW_OFF_HOLD_MS 続いて確定）
@@ -564,8 +567,13 @@ void power_tick() {
   // USB 物理通電時間の追跡（SW OFF/ON でも USB が給電されている限り保持する）
   if (usb_power_present()) {
     if (s_usb_connected_ms == 0) s_usb_connected_ms = now ? now : 1;
+    s_usb_absent_since = 0;
   } else {
     s_usb_connected_ms = 0;
+    // ミラー中に消した充電ポップアップは、USB を抜いたら（挿し直したら）また出す。★ 細いケーブルで VBUS が一瞬
+    //   4.3V を割るだけで戻らないよう、抜けた状態が CHG_POPUP_REARM_USB_OFF_MS 続いてから戻す
+    if (s_usb_absent_since == 0) s_usb_absent_since = now ? now : 1;
+    else if (now - s_usb_absent_since >= CHG_POPUP_REARM_USB_OFF_MS) s_chg_popup_mirror_dismissed = false;
   }
 
   sw_off_tick(now);
@@ -650,6 +658,7 @@ static void charge_full_tick(uint32_t now) {
   static float    s_chg_ref_v         = 0.0f;  // 飽和タイマー基準電圧 [V]
   static uint32_t s_chg_ref_ms        = 0;     // 最後に CHG_FULL_PEAK_STEP_V 以上上がった時刻
   static uint32_t s_chg_drop_since_ms = 0;     // ピークから CHG_FULL_DROP_V 以上下がり始めた時刻
+  static bool     s_full_tone_done    = false; // この USB 接続で満充電の音を鳴らしたか（抜くまで鳴らさない）
 
   auto reset_watch = [&]() {
     s_chg_peak_v        = 0.0f;
@@ -664,6 +673,7 @@ static void charge_full_tick(uint32_t now) {
   if (!usb_power_present()) {
     s_chg_full_latched  = false;
     s_chg_full_since_ms = 0;
+    s_full_tone_done    = false;
     s_was_charging      = false;
     s_chg_enter_ms      = 0;
     s_chg_lp            = 0.0f;
@@ -733,8 +743,21 @@ static void charge_full_tick(uint32_t now) {
   }
 
   if (plateau_full || drop_full) {
+    const bool was_full = s_chg_full_latched;
     s_chg_full_latched = true;
     if (s_chg_full_since_ms == 0) s_chg_full_since_ms = now ? now : 1;
+    // ★ 満充電になったら明るく上がっていく音（ド・ミ・ソ・ド。最後を伸ばす）を鳴らす（2026-11-23〜、ユーザー）。
+    //   ・USB を挿している間に 1 回だけ。満充電のあと少し下がって充電し直し、また満充電になっても鳴らさない（夜通し鳴らないため）
+    //   ・動いているとき（自機の GNSS。update_moving()）は鳴らさない。飛行中に USB で給電して満充電になっても、
+    //     パイロットの気を散らさないため（画面の FULL はそのまま出る）
+    //   ・受信の上がる 3 音（ラ・ド#・ミ ×2）・ボタンの 2 音（1568→2093Hz）と聞き分けられるよう、4 音で最後を長くした
+    if (!was_full && !s_full_tone_done && !s_moving) {
+      s_full_tone_done = true;
+      enqueueTask(createPlayMultiToneTask(1047, 120, 1, 2));   // ド
+      enqueueTask(createPlayMultiToneTask(1319, 120, 1, 2));   // ミ
+      enqueueTask(createPlayMultiToneTask(1568, 120, 1, 2));   // ソ
+      enqueueTask(createPlayMultiToneTask(2093, 450, 1, 2));   // ド（1 オクターブ上を伸ばす）
+    }
   }
 }
 
@@ -831,14 +854,27 @@ void power_charge_popup_snooze() {
   s_chg_popup_snooze_since = millis() ? millis() : 1;
 }
 
+// 地図画面で充電ポップアップを短押しで消したとき（.ino の shortPressCallback）。
+// ふだんは 15 秒のスヌーズ。**受信のミラー中は USB を抜くまで出さない**（離陸前のボートで機体の画面に重なり続けないため）。
+void power_charge_popup_dismiss() {
+  power_charge_popup_snooze();
+  if (link_mirror_active()) s_chg_popup_mirror_dismissed = true;
+}
+
 // 地図画面に充電ポップアップを表示すべきか
-// 条件: USB接続中 ＆ SW ON ＆ 危険異常なし ＆ 地上静止中 ＆ 自機表示中 ＆ スヌーズ時間外
+// 条件: USB接続中 ＆ SW ON ＆ 危険異常なし ＆ 地上静止中 ＆ リプレイ・デモでない ＆ スヌーズ時間外
+// ★ **受信のミラー中も出す**（2026-11-23〜、ユーザー）。屋内で送信機と受信機を一緒に充電すると、受信機が電波を受けて
+//   ミラーになり、充電の画面が出なかった。止まっているときだけ（追走中のボートは自機の GNSS で動いているので出ない）。
+//   地図は機体の画面なので、描く側は 1 行目に "RX" を付けて受信機自身の充電だと分かるようにする（display_tft.cpp）。
+//   ミラー中に短押しで消したら USB を抜くまで出さない（power_charge_popup_dismiss()）。
+//   リプレイ・デモは自機の状態ではないので今までどおり出さない。
 bool power_charge_popup_active() {
   const uint32_t now = millis();
   if (s_chg_popup_snooze_since != 0 && (now - s_chg_popup_snooze_since < CHG_POPUP_SNOOZE_MS)) return false;
   if (!usb_power_present() || power_sw_off_on_usb()) return false;
   if (power_overdischarge_latched() || s_fault || s_hot) return false;
-  if (s_moving || !showing_own_state()) return false;
+  if (s_moving || getReplayMode() || is_demo_active()) return false;
+  if (link_mirror_active() && s_chg_popup_mirror_dismissed) return false;
   return true;
 }
 

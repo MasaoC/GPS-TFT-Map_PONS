@@ -193,7 +193,7 @@ void draw_pcconnect();
 #define IMU_MENU_AUTOROLL 4   // 直進中のロール自動トリム
 #define IMU_MENU_WIND     5   // 風推定
 #define IMU_MENU_HEADER   6   // ヘッダー右の大きい枠: 平均ピッチ / 推定 TAS（docs/pons_tas.md §4.1）
-#define IMU_MENU_TASCURVE 7   // ピッチ→推定 TAS の変換曲線画面を直接開く
+#define IMU_MENU_TASCURVE 7   // 推定 TAS の案内を 1/2（説明）から開く。押すと 2/2（ピッチ→推定 TAS の曲線）
 #define IMU_MENU_NEXTPAGE 8
 #define IMU_MENU_EXIT     9
 #define IMU_MENU_COUNT    10
@@ -208,6 +208,7 @@ extern int imu2_cursor;   // GPS_TFT_map.ino で定義。ページ2/2のカー�
 // 警告音を抑制しているか（充電中 かつ マウント外れ姿勢）。実体は GPS_TFT_map.ino。
 // ★ 判断は .ino に置く（CLAUDE.md: display_tft.cpp に判断や発報は置かない）。
 bool warn_muted_off_mount();
+bool charge_popup_on_screen();   // 充電ポップアップがいま地図に出ているか（短押しで消すのはこれが真のときだけ）
 void draw_imudetail(int page);
 // IMU / ESKF 画面の入口の案内（全画面の画像。page は 0〜IMU_GUIDE_PAGES-1）。
 // 実体は display_pages.cpp、画像は src/flashdata/imu_guide_data.h。
