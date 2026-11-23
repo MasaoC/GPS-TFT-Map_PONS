@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261122
-#define BUILDVERSION "1.11"
+#define BUILDDATE 20261123
+#define BUILDVERSION "1.12"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）

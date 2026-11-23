@@ -5130,6 +5130,56 @@
     }
     function fmtDistM(m) { return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`; }
 
+    // ---- パイロン座標の打ち間違いの見張り（2026-11-23〜、ユーザー）----
+    // 保存の前に確認のダイアログ（confirm）を出す。止めはしない（ルールで本当に変わることがあるため）。
+    // 琵琶湖の湖面をおおまかに囲む箱（北端 塩津・南端 瀬田・西端 大津・東端 長浜）。箱の外へ BIWAKO_FAR_M を超えて出ていたら
+    // 「琵琶湖から明らかに遠い」（度の桁・符号・緯度と経度の入れ違いなど）。湖岸の細かい形は見ない。
+    const BIWAKO_BOX = { latMin: 34.97, latMax: 35.53, lonMin: 135.85, lonMax: 136.29 };
+    const BIWAKO_FAR_M = 5000;
+    // 北・南パイロンとプラットホームの距離がこの範囲の外なら確かめる（既定は北 約 10.99 km・南 約 10.95 km。ふつうは約 11 km）
+    const PILON_PLAT_MIN_M = 10000, PILON_PLAT_MAX_M = 12000;
+    const PILON_PLAT_CHECK = ['N_PILON', 'S_PILON'];
+    // 琵琶湖の箱から何 m 外にいるか（箱の中なら 0）
+    function biwakoOutsideM(ll) {
+      const b = BIWAKO_BOX;
+      const c = { lat: Math.min(Math.max(ll.lat, b.latMin), b.latMax), lon: Math.min(Math.max(ll.lon, b.lonMin), b.lonMax) };
+      return latLonDistM(c, ll);
+    }
+    function pilonShortLabel(key) {
+      const p = PONS_PILON_SCHEMA.find(q => `pilon.${q.name}` === key);
+      return p ? p.label : key;
+    }
+    // パイロン（N/S）とプラットホームの、いまの下書きでの距離 [m]。どちらかが読めなければ null
+    function pilonPlatDistM(name) {
+      const plat = parseLatLon(settingsState.draft['pilon.PLATHOME']);
+      const p = parseLatLon(settingsState.draft[`pilon.${name}`]);
+      const dm = (plat && p) ? latLonDistM(plat, p) : NaN;
+      return Number.isFinite(dm) ? dm : null;   // 範囲外の緯度（入力の途中）では NaN になりうる
+    }
+    function pilonPlatDistBad(dm) { return dm !== null && (dm < PILON_PLAT_MIN_M || dm >= PILON_PLAT_MAX_M); }
+    // 保存の前に確かめてほしいこと（文の配列）。変えたパイロンの項目だけを見る。
+    // 距離は、プラットホームか、その北・南パイロンを変えたときだけ見る（変えていない組は前から使っている値なので言わない）。
+    function pilonSafetyIssues() {
+      const diffs = computeSettingsDiffs().filter(d => d.schema.type === 'latlon');
+      const issues = [];
+      if (diffs.length === 0) return issues;
+      for (const d of diffs) {
+        const ll = parseLatLon(d.newVal);
+        if (!ll) continue;
+        const out = biwakoOutsideM(ll);
+        if (out > BIWAKO_FAR_M) issues.push(`${pilonShortLabel(d.schema.key)}（${d.newVal}）が琵琶湖から約 ${fmtDistM(out)} 離れています。`);
+      }
+      const changed = new Set(diffs.map(d => d.schema.key));
+      for (const name of PILON_PLAT_CHECK) {
+        const key = `pilon.${name}`;
+        if (!changed.has(key) && !changed.has('pilon.PLATHOME')) continue;
+        const dm = pilonPlatDistM(name);
+        if (pilonPlatDistBad(dm))
+          issues.push(`${pilonShortLabel(key)}とプラットホームの距離が ${fmtDistM(dm)} です（${PILON_PLAT_MIN_M / 1000}〜${PILON_PLAT_MAX_M / 1000} km の外。既定は約 11 km）。`);
+      }
+      return issues;
+    }
+
     // 設定エディタの状態
     const settingsState = {
       loaded: false,
@@ -5443,6 +5493,8 @@
         warnings.push('【危険】needs_apply を手動で 0 にしています。機体の実取り付けと水平較正が一致しているか必ず確認してください。');
       }
       const diffs = computeSettingsDiffs();
+      // 打ち間違いの見張り。保存を押すと確認のダイアログでもう一度聞く（commitSettingsToPons）
+      for (const msg of pilonSafetyIssues()) warnings.push(`【要確認】${msg}入力の間違いでないか確かめてください。`);
       if (diffs.some(d => d.schema.type === 'latlon')) {
         warnings.push('パイロン座標は保存しても本体の次の起動まで使われません。保存したら本体を再起動してください。機体・予備機・ボートの 3 台で同じ座標にしないと、無線で目的地が合いません。');
       }
@@ -5622,6 +5674,18 @@
         parts.push(dm < 0.5 ? '既定と同じ' : `既定から ${fmtDistM(dm)}`);
         parts.push(`<a href="https://www.google.com/maps?q=${ll.lat.toFixed(6)},${ll.lon.toFixed(6)}" target="_blank" rel="noopener">地図で見る</a>`);
       }
+      // 打ち間違いの見張り（pilonSafetyIssues と同じ基準。保存の前にも確認のダイアログが出る）
+      if (ll) {
+        const out = biwakoOutsideM(ll);
+        if (out > BIWAKO_FAR_M) parts.push(`<span style="color:#dc2626; font-weight:bold;">琵琶湖から約 ${fmtDistM(out)} 離れています</span>`);
+      }
+      const pname = s.key.substring('pilon.'.length);
+      if (PILON_PLAT_CHECK.includes(pname)) {
+        const dm = pilonPlatDistM(pname);
+        if (dm !== null) parts.push(pilonPlatDistBad(dm)
+          ? `<span style="color:#dc2626; font-weight:bold;">プラットホームから ${fmtDistM(dm)}（${PILON_PLAT_MIN_M / 1000}〜${PILON_PLAT_MAX_M / 1000} km の外）</span>`
+          : `プラットホームから ${fmtDistM(dm)}`);
+      }
       // いま本体が使っている座標が入力欄と違うときだけ知らせる（保存済みなら再起動で、まだなら保存して再起動で変わる）
       const cur = normalizeSettingVal(s, val);
       const saved = normalizeSettingVal(s, settingsState.orig[s.key]) === cur;
@@ -5663,9 +5727,12 @@
     function onSettingInput(key, val) {
       settingsState.draft[key] = val;
       // airspeed_min / airspeed_max は相互チェックがあるため両方更新
+      // パイロンはプラットホームとの距離を北・南の欄に出すので、どれかを変えたら全部を出し直す
       const keys = (key === 'airspeed_min' || key === 'airspeed_max')
         ? ['airspeed_min', 'airspeed_max']
-        : [key];
+        : key.startsWith('pilon.')
+          ? PONS_PILON_SCHEMA.map(p => `pilon.${p.name}`)
+          : [key];
       updateSettingCardVisuals(keys);
       renderSettingsCats();
       updateSettingsFooter();
@@ -5885,6 +5952,13 @@
       if (!serialWriter || !ponsReady || settingsState.saving) return;
       const diffs = computeSettingsDiffs();
       if (diffs.length === 0) return;
+      // ★ パイロン座標の打ち間違い（琵琶湖から遠い・プラットホームとの距離が 10〜12 km の外）は、保存の直前に確認のダイアログ。
+      //   キャンセルなら何も送らない（差分の画面に戻る）。2026-11-23〜（ユーザー）
+      const pilonIssues = pilonSafetyIssues();
+      if (pilonIssues.length > 0 &&
+          !confirm(`パイロン座標が入力の間違いかもしれません。\n\n・${pilonIssues.join('\n・')}\n\nこのまま本体に保存しますか？`)) {
+        return;
+      }
 
       settingsState.saving = true;
       const backupBeforeSave = { ...settingsState.orig };
@@ -6114,7 +6188,7 @@
     // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
     // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
     // 下の JS は ?v= にこの版数を付けて読むので、HTML と JS の版が食い違うことはない。
-    const VIEWER_VERSION = '2026.11.23.2';
+    const VIEWER_VERSION = '2026.11.23.3';
     ['analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js']
       .forEach(f => document.write('<script src="' + f + '?v=' + VIEWER_VERSION + '"><\/script>'));
   </script>
