@@ -1386,7 +1386,9 @@ void draw_version_backscreen(){
   backscreen.print("SOFTWARE:");
   backscreen.print(BUILDVERSION);
   backscreen.print("(Build ");
-  backscreen.print(BUILDDATE);
+  char build_stamp[16];   // "20261125 09:10"
+  format_compile_stamp(build_stamp, sizeof(build_stamp));
+  backscreen.print(build_stamp);
   backscreen.print(")");
 
   // 160 だと "Version 7.1" の末尾 "1" が右端（240px）を超えて折り返されるため、少し左（145）に寄せる
@@ -4470,16 +4472,21 @@ void draw_map_footer(){
                       (unsigned long)(sec % 60UL));
   }
 
-  // 最大 G/S（JST 時刻のすぐ右）。
-  // 5分保持と全時間が同値の場合は片側のみ表示。異なる場合は両方表示。
-  backscreen.setCursor(75, BACKSCREEN_SIZE-9);
-  if (get_maxgs_5min() == get_maxgs()) {
-    backscreen.printf("MaxGS %.1f(%02d:%02d)",
-      get_maxgs(), get_maxgs_hour(), get_maxgs_min());
-  } else {
-    backscreen.printf("MaxGS%.1f(%02d:%02d)%.1f(%02d:%02d)",
-      get_maxgs_5min(), get_maxgs_5min_hour(), get_maxgs_5min_min(),
-      get_maxgs(),      get_maxgs_hour(),      get_maxgs_min());
+  // RX モードで無信号のときは、自機（ボート）の最高速を飛行機の値と誤認しないよう隠す。
+  // ★ リプレイ・デモ中は無線 OFF 扱い（link_live_ui_ok()）なので隠さない。そのとき get_maxgs() は
+  //   再生・デモの速度（maxgs_own）で、受信機の設定のままでも見たい値そのもの。
+  const bool hide_maxgs = link_get_mode() == LINK_MODE_RX && link_live_ui_ok() && !link_is_receiving();
+  if (!hide_maxgs) {
+    // 5分保持と全時間が同値の場合は片側のみ表示。異なる場合は両方表示。
+    backscreen.setCursor(75, BACKSCREEN_SIZE-9);
+    if (get_maxgs_5min() == get_maxgs()) {
+      backscreen.printf("MaxGS %.1f(%02d:%02d)",
+        get_maxgs(), get_maxgs_hour(), get_maxgs_min());
+    } else {
+      backscreen.printf("MaxGS%.1f(%02d:%02d)%.1f(%02d:%02d)",
+        get_maxgs_5min(), get_maxgs_5min_hour(), get_maxgs_5min_min(),
+        get_maxgs(),      get_maxgs_hour(),      get_maxgs_min());
+    }
   }
   backscreen.loadFont(AA_FONT_SMALL);
 }

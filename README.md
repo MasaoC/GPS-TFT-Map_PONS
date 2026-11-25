@@ -95,7 +95,7 @@ $$V(\theta) = V_0 \sqrt{\frac{K}{K + \theta}}$$
 * ピッチには**過去 10 秒の移動平均**（平均ピッチ `Pavg`）を使う（2026-11-07 までは時定数 10 秒の一次遅れだった）。
 * $\text{風ベクトル} = \text{対地速度ベクトル} - \text{対気速度ベクトル}$（対気速度の向き＝機首方位）により算出。
 * 同じ式の値を**推定 TAS** としてヘッダー右の大きい枠にも出せる（IMU/ESKF 画面 1 ページ目の `Header: Pavg / TAS`。`settings.txt` の `header_tas:1`）。
-  青い箱に白字・縦書きの `TAS`。地上は数字に白い横線と `GROUND` の札が入る。対地速度 2m/s 以上で札が `WAIT 10s` の残り秒数に変わり、それが 10 秒続くと線も取れる（1m/s 未満が 10 秒で線が戻る）。上下限に張り付いたら灰色の箱。
+  青い箱に白字・縦書きの `TAS`。地上は数字に白い横線と `GROUND` の札が入る。対地速度 2m/s 以上で札が `WAIT 10s` の残り秒数に変わり、それが 10 秒続くと線も取れる（1m/s 未満が 5 秒続くと線が戻る）。上下限に張り付いたら灰色の箱。
   較正のやり直しが要るときは赤い線と `CALIBRATE`、GNSS の速度が来ていないときは橙の線と `NO GNSS` の札、GNSS は来ているが向きがまだ決まっていない（止まっている間。2〜3m/s 以上で動けば決まる）ときは黄色の線と `YAW ALIGN` の札（平均ピッチの箱も同じ）。
   平均ピッチは地図の上端（`TAS` の小箱の左）に小さく残る。TAS にすると日本語の案内（画像と曲線の 2 画面・音声）が出る。
   仕組みと精度は **[docs/pons_tas.md](docs/pons_tas.md)**（増減は信用できるが、値は取り付け 1° で約 0.4m/s ずれる）。
@@ -152,7 +152,7 @@ ANA は BT1 が切れていた起動でも有効のままです（`settings.h` �
 | 1.0 m/s 以下 | 本番前チェックの「止まっている」（準備完了の読み上げ）・GNSS の DBD の吸い出し | 読み上げ 5 秒・DBD 30 秒 | 自機 | `READY_STILL_MPS` |
 | 1.0 m/s 以下 | 地上の姿勢チェックと APPLY（水平較正）を受け付ける | — | 表示の供給元（デモ・リプレイ・ミラー中は別の扱い） | `LEVEL_CALIB_MAX_MPS` |
 | 1.0 m/s 未満 | ESKF の「地上」（止まっている間の再水平化・ゼロ点の学習など） | — | 信用できる GNSS | `ESKF_GROUND_MAX_GS_MPS` |
-| 1.0 m/s 未満 | 推定 TAS を地上の横線に戻す | 10 秒 | 表示の供給元 | `TAS_GND_GS_MPS` |
+| 1.0 m/s 未満 | 推定 TAS を地上の横線に戻す | 5 秒 | 表示の供給元 | `TAS_GND_GS_MPS` / `TAS_LAND_HOLD_MS` |
 | 1.0 m/s 以下 | 風を捨てる | — | ESKF | `WIND_MIN_SPEED_MPS` |
 | 1.5 m/s 超（3·sAcc が大きければそちら） | 移動中: 充電ポップアップを出さない・「SW OFF のまま充電」を見ない | 3 秒（戻るのは 30 秒止まってから） | 自機 | `CHARGE_SW_MOVING_MPS` |
 | 2.0 m/s | ナビの警告と表示（コース逸脱の積算・航跡 15° の警告・旋回の音と色・ヘッダーの文字の灰色） | — | 表示の供給元 | `NAV_MIN_GS_MPS` |
@@ -370,9 +370,9 @@ NAV 画面でスイッチ長押しで入ります。
     `serial.js`（PONS との接続）・`logview.js`（log.txt）・`settings_editor.js`（本体設定）・`hooks.js`・`analysis_*.js`・
     `olddata_open.js`・`video_sync.js`・`live_launcher.js`。CSS と JS は index.html が版数付きでこの順に読む（2026-11-23 に index.html を分けた）。
   * **ライブ配信**（2026-11-23〜・実機未確認）: ヘッダーの「📡 ライブ」で別窓（`live.html`）を開き、USB でつないだ**受信機**から
-    `PONS:LIVE,ON` で受けた行で**機体の画面を本体と同じ見た目で描き直す**（本体と同じ hires のベクター地図・送信機の縮尺・動きの補間）。
+    `PONS:LIVE,ON` で受けた行で**機体の画面を本体と同じ見た目で描き直す**（本体と同じ hires のベクター地図・送信機の縮尺。届いたらすぐ描く）。
     画面の下にボートの受信強度と機体までの距離の帯。OBS でこの窓を取り込んで配信する。受けた行は保存・再生できる（受信機が無くても練習できる。
-    模擬の記録は `test/make_live_sample.py`）。窓の中身は `live.js`（接続・補間・帯）・`live_screen.js`（本体の地図画面の写し）・`live_tft.js`（TFT_eSPI の写し）・
+    模擬の記録は `test/make_live_sample.py`）。窓の中身は `live.js`（接続・行の読み取り・帯）・`live_screen.js`（本体の地図画面の写し）・`live_tft.js`（TFT_eSPI の写し）・
     `live_map.js`（地図）・`live_assets.js`（本体の文字）。設計は [docs/pons_live_stream_plan.md](docs/pons_live_stream_plan.md)、行の形は docs/pons_webserial_protocol.md §4 (9)。
     地図 `vectormap_hires.js`（gzip 4.7MB を base64 にした .js。file:// で開いても読める。OpenStreetMap 由来・ODbL）は `tools/vectormap/build_vectormap.py --variant hires` が `export_repons_map.py` で作り直す。
 * **解析スクリプト**:

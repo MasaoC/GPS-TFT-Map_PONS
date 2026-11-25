@@ -28,12 +28,9 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
   飛行のログで見ること: GNSS の上下速度（`vsi gnss` の `innov=`＝湖面の反射。食い違いの門は 11/22 の車で働いた `consist=` も）、加速度のガード（`VARIO: IMU accel ignored`）、離陸直後のピッチ
 
 ## 2. 車・屋外で確かめる
-- [ ] 無線の到達距離（いま約 130m）と屋外の雑音（画面オン・オフで比べる）→ 送信前チェックのしきい値 −95 dBm を見直す → メモ §4.5
-- [ ] GNSS 速度の遅れ（いま 170ms）: `gnss_lag.py` は約 200ms、ESKF の再現は 150ms が最良で食い違いが未解決。円を長く走ったログで比べ直す → メモ §4.1
 - [ ] DBD と PC の時刻: BT1 が切れた起動の TTFF、`COLD` / `COLDONLY` の比べ、`given time was ... off`（新しい基板の DBD は 11/18 に保存済み）
   → [pons_ttff_assist_plan.md](pons_ttff_assist_plan.md) §3.5・§3.6
-- [ ] 対地 2 m/s で飛ぶときの門（11/22。実機未確認）: 車で 2〜3 m/s で走り、TAS の線が 10 秒で外れる・設定画面が 5 秒で地図へ戻る・
-  止まって 10 秒で線が戻る・`eskf` 行の風（ヨーが決まっていれば）。Google Docs の説明書の 3 m/s の記述も直す
+- [ ] 対地 2 m/s で飛ぶときの門（車で動作確認）: 停止後、5 秒で `GROUND` が戻るか（`TAS_LAND_HOLD_MS`）
 - [ ] ケイデンスの推定（`tools/imulog/cadence.py`）: 台の上で漕ぐか飛行の生ログで、前後の振動が 180 回/分（3.0Hz）前後に出るか
 
 ## 3. 机の上で確かめる
@@ -44,15 +41,6 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] **USB のまま SW を入れたら「挿し直して」（11/25。実機未確認）**: 実機: 電池 90% 前後で SW OFF のまま USB → SW ON で赤 LED が点かないか・ヘッダーが `REPLUG` か、挿し直すと点くか → [pons_power.md](pons_power.md) §4.1
 - [ ] **充電の残り時間の終わり（11/25。実機未確認）**: 4.20V に着いてから 45 分を数え下げる（`CHG_TAIL_MIN`）。`1m (max 16m)` に張り付かないか、
   log.txt の `CHG [..m]` の rem と `CHG FULL` の時刻が合うか → [pons_charge_estimation.md](pons_charge_estimation.md) §4.3
-- [ ] **満充電の音（11/23、11/25 に 5 分ごと。実機未確認）**: 満充電（`FULL`）でド・ミ・ソ・ドがすぐ鳴り、そのあと 5 分ごとに鳴り続けるか、
-  USB を抜くと止まるか、SW OFF の間は鳴らないか
-- [ ] **`TAS curve >` から推定 TAS の案内 1/2（11/23。実機未確認）**: 説明の画像と音声 → 押して曲線 → 押してページ1。
-  ページ1に着いてすぐ（「APPLY してください」の最中）入ると、その音声が止まって TAS の説明が流れるか
-- [ ] **うるさい警告の打ち止め（残り: 受信機の無信号警告）**: 送信機なしで「信号がありません」が 2 分おきに 3 回で止まり（`no signal yet since RX mode (3/3 ...)`）、
-  送信機を一度受けて切ると今までどおり 120 秒ごとか
-- [ ] **Re:PONS の SD の整理（11/25。実機未確認）**: 焼いて（パスワードは `settings.h` の `deletealllog`）、「🧹 SD の整理」で一覧が SD と合うか
-  （`..._fused.csv` が「残す」）、本体の画面に 4 桁の番号、番号違いで `BAD_CODE`・パスワード違い 3 回で `LOCKED`、移すと `trash/<回>/`、戻すと log.txt が `log_r<回>.txt`、
-  空にすると空き容量が増えるか、移したあとの飛行で CSV がヘッダー付きで作り直されるか。FAT32 の空き容量を数える時間（接続して最初の一覧）→ [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (10)
 - [ ] **Re:PONS からパイロン座標を変える（11/23。実機未確認）**: 本体設定の「コース（パイロン）」で北パイロンを変えて保存 → SD の `override_pilon_coordinate.csv` と
   log.txt の `PC PILON ... (next boot)` → 再起動で `PILON OVERRIDE: 1 applied` と地図。既定に戻すとファイルが消えるか。
   北パイロンを 7 km の所にすると欄が赤く、保存で確認のダイアログが出てキャンセルで何も書かれないか → [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (8)
@@ -65,18 +53,7 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 
 ## 4. 2 台以上で確かめる（無線）
 - [ ] **MAX G/S・航跡を受信機の分と送信機の分で別々に（11/23。実機未確認）**: 受信機を持って車で動かし、送信機は止めておく → 送信機の電源を切る→入れる。
-  受信中は送信機の MaxGS（0 付近）と送信機の航跡、NO SIGNAL の間は受信機の MaxGS（車の速さ）と受信機の航跡に切り替わり、互いに混ざらないか
-- [ ] **無線の電池の表示（印 0xAC・11/23。実機未確認）**: 3 台とも焼き直す（0xA8 以前の機体とは通じない）。送信機を電池・USB 充電中・SW OFF のまま USB に
-  して、受信機の `s` が送信機の画面と同じ %（87% / 青の 87 / `s5V`）か、`received/` の `voltage` 列 → [pons_link.md](pons_link.md) §4.3
-- [ ] **sAcc の無線（11/20。実機未確認）**: ボートの地図の GS の右と GNSS 詳細画面に
-  機体の sAcc が 8 秒以内に出るか、`received/` の `sacc_mps` 列 → [pons_link.md](pons_link.md) §4.3
-
-- [ ] **ライブ配信（11/23 実装・実機未確認）**: 送信機＋受信機＋Mac。Re:PONS の「📡 ライブ」→ 接続で、受信機の画面（縮尺を送信機と同じに）と並べて
-  数字・線・札・電池・衛星が同じか（目的地を変える・Auto10km の折り返し・GROUND → 飛行・送信機の電源を切って NO SIGNAL）、帯の RSSI・距離が `received/` と合うか、
-  送信機だけパイロン座標を変えると帯に `PLANE DEST NOT IN BOAT PONS` が出るか。
-  **受信機が止まらないこと**: 読み取りを止める（タブを閉じる・ケーブルを抜く）を繰り返して 60 秒ログの `drain=`・`redraw` が変わらず、`LIVE ... dropped=` が増えるだけか、
-  `LIVE` の印が緑 → 3 秒で赤 → `LIVE,OFF` で消えるか、USB をつないだだけで受信率が落ちないか、送信機で `ON` が `NOT_RX`、受信モードから外すと止まるか。
-  OBS で 30 分以上 → [pons_live_stream_plan.md](pons_live_stream_plan.md) §8
+  受信中は送信機の MaxGS（0 付近）と送信機の航跡、NO SIGNAL の間は MaxGS が隠れ受信機の航跡に切り替わり、互いに混ざらないか
 
 ## 5. 原因を探している不具合・見張り
 - [ ] 照度センサーと GNSS が起動時に同時に黙った（13 回中 1 回）。次に起きたら直前の操作と +3V3

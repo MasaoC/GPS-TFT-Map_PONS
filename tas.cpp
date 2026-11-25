@@ -86,10 +86,11 @@ void tas_tick() {
 
   // いまの状態から抜ける条件が成り立っているか
   const bool toward = s_airborne ? (gs < TAS_GND_GS_MPS) : (gs >= TAS_AIR_GS_MPS);
+  const uint32_t hold_ms = s_airborne ? TAS_LAND_HOLD_MS : TAS_SWITCH_HOLD_MS;
   const uint32_t now = millis();
   if (!toward) { s_runOn = false; s_leaving = false; return; }
   if (!s_runOn) { s_runOn = true; s_runMs = now; s_leaving = !s_airborne; return; }
-  if (now - s_runMs >= TAS_SWITCH_HOLD_MS) {
+  if (now - s_runMs >= hold_ms) {
     s_airborne = !s_airborne;
     s_runOn = false;
   }

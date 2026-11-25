@@ -313,7 +313,7 @@ Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し�
 * **リプレイ中・デモ中**は `LS` だけ（画面が電波と無関係なので）。受信が切れて自機の画面に戻っている間は `LN` を出さない（ボートの値を機体の値として出さない）。
 * `log.txt` に `LIVE ON` / `LIVE OFF (<理由>) lines=… dropped=…`。
 
-### (10) SD の整理 (WIPE_SCAN / WIPE / TRASH_EMPTY / TRASH_RESTORE。2026-11-25〜・実機未確認)
+### (10) SD の整理 (WIPE_SCAN / WIPE / TRASH_EMPTY / TRASH_RESTORE。2026-11-25〜)
 Re:PONS の「🧹 SD の整理」（`tools/repons/sd_wipe.js`）から、本体が書いたログを**ゴミ箱（SD の `trash/`）へ移す**・ゴミ箱から**戻す**・
 **ゴミ箱を空にする**。`PONS:CONNECT` 接続中のみ受け付ける。**どれを扱うか・番号とパスワードの照合・直前の数え直しは本体がする**
 （`src/sd_wipe_rules.h`・`mysd.cpp` の `serial_wipe_scan` / `serial_wipe` / `serial_trash_empty` / `serial_trash_restore`）。

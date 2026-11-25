@@ -13,6 +13,7 @@
 // ★ LinkTelem の並び（decodeLT）は lora_link/link_proto.h の LinkTelem と同じにする。並びを変えたら LINK_PROTO_VER が
 //   上がるので、合わなければ描かない（PONS:LIVE,OK の版・大きさで止める）。tools/repons/test/ の照合を回すこと。
 // ★ ボートの値を機体の値として出さない（設計書 §1.3）。機体の画面には LT・LN だけを使い、LS（受信機の状態）は帯にだけ出す。
+// ★ 届いたフレームをすぐ描く（補間しない。設計書 §5.5）。
 (function (global) {
   'use strict';
   const LIVE_FMT_VER = 1, LINK_PROTO_VER = 8, LINKTELEM_SIZE = 69;
@@ -20,7 +21,6 @@
     ATT: 0x0200, ATT_YAW: 0x0400, ATT_AVG: 0x0800, ATT_TRIM: 0x1000, ATT_WIND: 0x2000, TAS: 0x4000 };
   const W2S = { DATE: 0, WIND: 1, TRIM: 2, HACC: 3, ALTV: 4, WIND2: 5, PRESS: 6, NAV: 7 };
   const f32 = Math.fround;
-  const SKIP_FACTOR = 1.6;      // 前のフレームから「送る間隔 × これ」より空いたら、補間せずに跳ばす（設計書 §5.5）
   const NOSIG_LT_MS = 3000;     // LT がこれより来なければ（受信機が NO SIGNAL と言う前でも）灰色にする目安の下限
   const NOLINE_MS = 3000;       // 行が何も来なければ「PONS 未接続」
   const STRIP_H = 30;           // 帯の高さ（論理 px。画面と同じ倍率で拡大する）
@@ -86,11 +86,11 @@
     ok: null, okMismatch: '',
     onSentAt: 0, lastOnRetry: 0, message: '', messageKind: '',
     dests: [], pilon: null, maps: new Map(), dumpEnd: false,
-    frames: [], lastLn: null, ls: null, lsAt: 0,
-    lastLineAt: 0, lastLtAt: 0, lastLtRxMs: 0,
+    frame: null, lastLn: null, ls: null, lsAt: 0,
+    lastLineAt: 0, lastLtAt: 0,
     lines: 0, ltCount: 0, lnCount: 0, badLines: 0,
-    track: null,
-    seg: null, periodEst: 1000, interp: true, northUp: false,
+    track: null, northUp: false,
+    dirty: true,              // 描き直す（LT・LN が来た）
     rec: [], recT0: (typeof performance !== 'undefined') ? performance.now() : 0,
     player: null,
   };
@@ -131,7 +131,6 @@
       }
       st.okMismatch = '';
       st.live = true;
-      if (ok.period > 0) st.periodEst = ok.period;
       st.dests = []; st.maps = new Map(); st.pilon = null; st.dumpEnd = false;
       if (!st.player) setMessage(`流れています（CH${ok.ch}・SF${ok.sf}・グループ ${'ABCD'[ok.group & 3]}・本体 ${ok.build}）`, 'ok');
     } else if (kind === 'DEST') {
@@ -177,22 +176,14 @@
     if (hex.length !== LINKTELEM_SIZE * 2) { st.badLines++; return; }
     const t = decodeLT(hexToBytes(hex));
     if (t.ver !== LINK_PROTO_VER) { st.badLines++; return; }
-    const fr = { ms: +p[1] >>> 0, slot: +p[2], known: parseInt(p[3], 16), t, rxAt: now, ln: null, shownAt: 0 };
+    const fr = { ms: +p[1] >>> 0, slot: +p[2], known: parseInt(p[3], 16), t, rxAt: now, ln: null };
     fr.view = ltView(t, fr.known);
     st.ltCount++;
     // 航跡（LIVE を始めてから受けた位置だけ。送信機が fix しているフレームだけ。gnss.cpp と同じ）
     if (fr.view.fix) st.track.feed(fr.ms, fr.view.lat, fr.view.lon, fr.view.gs);
-    const prev = st.frames.length ? st.frames[st.frames.length - 1] : null;
-    st.frames.push(fr);
-    if (st.frames.length > 64) st.frames.shift();
-    // 送る間隔の見積もり（続けて受かった 2 発の間隔。受信機の millis で測る）
-    if (prev && ((t.seq - prev.t.seq) & 0xFFFF) === 1) {
-      const iv = ((fr.ms - prev.ms) >>> 0);
-      if (iv > 300 && iv < 5000) st.periodEst = st.periodEst * 0.75 + iv * 0.25;
-    }
-    startSegment(fr, prev, now);
+    st.frame = fr;
     st.lastLtAt = now;
-    st.lastLtRxMs = fr.ms;
+    st.dirty = true;
   }
   function onLN(p) {
     // PONS:LN,<seq>,<flags>,<hdr>,<strike>,<wait>,<egs>,<marker>,<ltt>,<steer>,<cwi>,<dps>,<db>,<dest>,<dmode>,<a10k>,
@@ -206,9 +197,9 @@
     };
     st.lnCount++;
     st.lastLn = ln;
-    for (let i = st.frames.length - 1; i >= 0 && i >= st.frames.length - 8; i--) {
-      if (st.frames[i].t.seq === ln.seq) { st.frames[i].ln = ln; break; }
-    }
+    // LN は受信機がそのフレームの画面を描いたあとに来る。来るまでは前の LN で描く
+    if (st.frame && st.frame.t.seq === ln.seq) st.frame.ln = ln;
+    st.dirty = true;
   }
   // 受信機の状態の印（live.cpp の push_ls）
   const LSF_RECEIVING = 0x01, LSF_DUP = 0x02, LSF_OFFLINE = 0x04, LSF_DEST_MISSING = 0x08;
@@ -222,35 +213,6 @@
       ? (ls.rx - prev.rx) / ((ls.rx - prev.rx) + (ls.miss - prev.miss)) : (prev ? prev.rate : null);
     st.ls = ls;
     st.lsAt = now;
-    if (ls.period > 0 && (!st.frames.length)) st.periodEst = ls.period;
-  }
-
-  // ---- 動きの補間（設計書 §5.5。1 発遅らせて、前の位置から今の位置へ送る間隔かけて動かす）----
-  const poseOf = (fr) => ({ lat: fr.view.lat, lon: fr.view.lon, track: fr.view.track, yaw: fr.view.yaw.ok ? fr.view.yaw.yaw : null });
-  const angLerp = (a, b, k) => { let d = ((b - a) % 360 + 540) % 360 - 180; return ((a + d * k) % 360 + 360) % 360; };
-  function poseAt(seg, now) {
-    const k = seg.dur > 0 ? Math.min(1, Math.max(0, (now - seg.t0) / seg.dur)) : 1;
-    const a = seg.from, b = seg.to;
-    return {
-      k,
-      lat: a.lat + (b.lat - a.lat) * k, lon: a.lon + (b.lon - a.lon) * k,
-      track: angLerp(a.track, b.track, k),
-      yaw: (a.yaw === null || b.yaw === null) ? b.yaw : angLerp(a.yaw, b.yaw, k),
-    };
-  }
-  function startSegment(fr, prev, now) {
-    const period = st.ls && st.ls.period > 0 ? Math.max(st.ls.period, st.periodEst) : st.periodEst;
-    const gap = prev ? (now - prev.rxAt) : Infinity;
-    const jump = !st.interp || !prev || !st.seg || gap > period * SKIP_FACTOR || !fr.view.fix || !prev.view.fix;
-    if (jump) {
-      st.seg = { from: poseOf(fr), to: poseOf(fr), t0: now, dur: 0, frame: fr, shown: fr };
-      return;
-    }
-    // 数字は「いま向かっていた先のフレーム」を出す（新しいフレームの 1 つ前。位置と同じく 1 発遅れ）。
-    // ★ 前の動きが終わっていなくても進める。行がまとめて届いた（USB の詰まり・記録の早送り）ときに古い数字のまま止まらないように
-    const cur = poseAt(st.seg, now);
-    st.seg = { from: { lat: cur.lat, lon: cur.lon, track: cur.track, yaw: cur.yaw }, to: poseOf(fr), t0: now, dur: period, frame: fr,
-      shown: st.seg.frame };
   }
 
   const DEFAULT_LN = { seq: -1, flags: 0, hdr: 0, strike: 0, wait: 0, egs: 0, marker: 2, ltt: 0, steer: 0, cwi: 0, dps: 0, db: 0.2,
@@ -258,24 +220,22 @@
 
   // 1 コマの状態（live_screen.js の render へ渡す）
   function makeState(now) {
-    const seg = st.seg;
-    if (!seg) return null;
-    const pose = poseAt(seg, now);
-    const fr = (pose.k >= 1) ? seg.frame : seg.shown;
-    if (!fr.shownAt) fr.shownAt = now;
+    const fr = st.frame;
+    if (!fr) return null;
     const v = fr.view;
     const ln = fr.ln || st.lastLn || Object.assign({}, DEFAULT_LN, { marker: v.fix ? 2 : 0, ltt: v.track });
     const SL = global.LiveScreen.SCALELIST;
     const si = (v.scaleIndex !== null && v.scaleIndex >= 0 && v.scaleIndex < SL.length) ? v.scaleIndex : global.LiveScreen.SCALE_INDEX_DEFAULT;
     let time = { valid: false, sec: 0 };
     if (v.time) {
-      const el = Math.max(0, now - fr.shownAt);
+      // 本体の draw_map_footer() と同じく、受けてからの経過を足して時計を進める（記録の再生中は足さない）
+      const el = st.player ? 0 : Math.max(0, now - fr.rxAt);
       time = { valid: true, sec: v.time.h * 3600 + v.time.m * 60 + v.time.s + Math.floor((v.time.cs * 10 + el) / 1000) };
     }
     return {
-      lat: pose.lat, lon: pose.lon, trackDraw: pose.track, yawDraw: pose.yaw !== null ? pose.yaw : (v.yaw.ok ? v.yaw.yaw : 0),
-      up: st.northUp ? 0 : pose.track, trackup: !st.northUp, scale: SL[si],
-      lt: v, ln, dests: st.dests, pilon: st.pilon, maps: [...st.maps.values()], track: st.track, time, frame: fr,
+      lat: v.lat, lon: v.lon, trackDraw: v.track, yawDraw: v.yaw.ok ? v.yaw.yaw : 0,
+      up: st.northUp ? 0 : v.track, trackup: !st.northUp, scale: SL[si],
+      lt: v, ln, dests: st.dests, pilon: st.pilon, maps: [...st.maps.values()], track: st.track, time,
     };
   }
 
@@ -288,16 +248,16 @@
     if (!st.live && !st.player) return { kind: 'notlive' };
     if (st.player && st.player.paused) return { kind: 'ok' };   // 一時停止の間は止めた画面のまま（灰色にしない）
     const ls = st.ls;
-    const period = (ls && ls.period > 0) ? ls.period : st.periodEst;
+    const period = (ls && ls.period > 0) ? ls.period : 1000;
     const ltAge = now - st.lastLtAt;
     // ★ LS は 1 秒ごとなので、受信が戻った直後の LS はまだ「受けていない」と言う。そのあとに LT が届いていれば古い知らせとして見ない
     const lsSaysNo = ls && !(ls.flags & LSF_RECEIVING) && !(st.lastLtAt > ls.at);
     // 受信機がリプレイ・デモ中（LT が来なくなる）。NO SIGNAL より先に見る
     if (ls && (ls.flags & LSF_OFFLINE) && !(st.lastLtAt > ls.at)) return { kind: 'offline' };
-    if (!st.seg || lsSaysNo || ltAge > Math.max(NOSIG_LT_MS, 3 * period)) {
+    if (!st.frame || lsSaysNo || ltAge > Math.max(NOSIG_LT_MS, 3 * period)) {
       // 経過秒は受信機の数（最後に受けてからの ms）を使う。無ければ自分の時計で
       const sec = (ls && ls.age >= 0) ? Math.floor((ls.age + (now - st.lsAt)) / 1000) : Math.floor(ltAge / 1000);
-      return { kind: 'nosignal', sec: st.seg ? sec : -1 };
+      return { kind: 'nosignal', sec: st.frame ? sec : -1 };
     }
     return { kind: 'ok' };
   }
@@ -318,14 +278,15 @@
     canvas.height = (320 + STRIP_H) * scaleN;
     canvas.style.width = canvas.width / (window.devicePixelRatio || 1) + 'px';
     canvas.style.height = canvas.height / (window.devicePixelRatio || 1) + 'px';
-    lastDrawKey = '';
+    st.dirty = true;
   }
-  let lastDrawKey = '', lastRenderAt = 0;
+  let lastRenderAt = 0;
+  // LT・LN が来たら次のコマで描く。来なくても 1 秒に 4 回（点滅・時計・NO SIGNAL の秒・帯）
   function frameLoop() {
     requestAnimationFrame(frameLoop);
     const now = performance.now();
-    const fps = (st.seg && st.seg.dur > 0 && (now - st.seg.t0) < st.seg.dur + 100) ? 30 : 4;
-    if (now - lastRenderAt < 1000 / fps - 2) return;
+    if (!st.dirty && now - lastRenderAt < 250) return;
+    st.dirty = false;
     lastRenderAt = now;
     draw(now);
   }
@@ -601,7 +562,7 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
   function resetStream() {
-    st.frames = []; st.seg = null; st.lastLn = null; st.ls = null; st.live = false;
+    st.frame = null; st.lastLn = null; st.ls = null; st.live = false;
     st.dests = []; st.maps = new Map(); st.pilon = null;
     st.track.reset();
   }
@@ -642,7 +603,17 @@
   function togglePause() {
     const p = st.player;
     if (!p) return;
-    if (p.paused) { p.t0 += performance.now() - p.pausedAt; p.paused = false; }
+    if (p.paused) {
+      const d = performance.now() - p.pausedAt;
+      p.t0 += d;
+      // ★ 止めていた時間を受信の途切れに数えない（続けた直後に「NO SIGNAL <止めていた秒>s」の灰色が出ていた。2026-11-25）。
+      //   linkState() と時計が now との差で見る時刻を、止めていた分だけ後ろへずらす。0 は「まだ受けていない」なのでそのまま
+      if (st.lastLtAt) st.lastLtAt += d;
+      if (st.lsAt) st.lsAt += d;
+      if (st.ls) st.ls.at += d;
+      if (st.frame) st.frame.rxAt += d;
+      p.paused = false;
+    }
     else { p.paused = true; p.pausedAt = performance.now(); }
     updateButtons();
   }
@@ -678,7 +649,7 @@
     $('btn-pause').textContent = st.player && st.player.paused ? '▶ 続き' : '⏸ 止める';
   }
   function saveSettings() {
-    try { localStorage.setItem('pons_live_ui', JSON.stringify({ scaleN, bg, northUp: st.northUp, interp: st.interp })); } catch (e) {}
+    try { localStorage.setItem('pons_live_ui', JSON.stringify({ scaleN, bg, northUp: st.northUp })); } catch (e) {}
   }
   function loadSettings() {
     try {
@@ -686,7 +657,6 @@
       if (s.scaleN) scaleN = s.scaleN;
       if (s.bg) bg = s.bg;
       if (typeof s.northUp === 'boolean') st.northUp = s.northUp;
-      if (typeof s.interp === 'boolean') st.interp = s.interp;
     } catch (e) {}
   }
   function togglePanel(force) {
@@ -706,7 +676,7 @@
   function updateNumbers() {
     const el = document.getElementById('numbers');
     if (!el || el.hidden) return;
-    const fr = st.frames.length ? st.frames[st.frames.length - 1] : null;
+    const fr = st.frame;
     const v = fr && fr.view, t = fr && fr.t, ln = st.lastLn, L = st.ls;
     const fx = (x, n = 1) => (x === undefined || x === null || Number.isNaN(x)) ? '--' : Number(x).toFixed(n);
     const rows = [
@@ -734,7 +704,6 @@
       ['機体まで', L ? (L.dist >= 0 ? L.dist + ' m' : '--（ボートの fix なし）') : '--'],
       ['受信機の LIVE', L ? `書いた ${L.lines}・捨てた ${L.dropped}` : '--'],
       ['目的地・地図の一覧', `${st.dests.length} 件・${st.maps.size} 枚・パイロン ${st.pilon ? 'あり' : 'なし'}${st.dumpEnd ? '（そろった）' : ''}`],
-      ['送る間隔の見積もり', `${Math.round(st.periodEst)} ms`],
     ];
     el.innerHTML = '<table>' + rows.map(([k, x]) => `<tr><th>${k}</th><td>${escapeHtml(String(x))}</td></tr>`).join('') + '</table>';
   }
@@ -749,14 +718,12 @@
     $('sel-scale').value = String(scaleN);
     $('sel-bg').value = bg;
     $('sel-up').value = st.northUp ? 'north' : 'track';
-    $('chk-interp').checked = st.interp;
     document.body.style.background = bg;
     $('btn-connect').onclick = connect;
     $('btn-disconnect').onclick = disconnect;
     $('sel-scale').onchange = (e) => { scaleN = +e.target.value; resizeCanvas(); saveSettings(); if (document.body.classList.contains('bare')) fitWindow(); };
     $('sel-bg').onchange = (e) => { bg = e.target.value; document.body.style.background = bg; saveSettings(); };
     $('sel-up').onchange = (e) => { st.northUp = e.target.value === 'north'; saveSettings(); };
-    $('chk-interp').onchange = (e) => { st.interp = e.target.checked; saveSettings(); };
     $('btn-save').onclick = saveRecording;
     $('btn-clear-track').onclick = () => st.track.reset();
     $('file-play').onchange = (e) => { if (e.target.files[0]) startPlayback(e.target.files[0]); e.target.value = ''; };

@@ -3,11 +3,11 @@
 # File    : tools/repons/test/make_live_sample.py
 # Project : PONS v7.1 / v7.2 Re:PONS
 # Role    : ライブ配信の窓（live.html）の再生で使う、模擬の記録（受信機が流す行）を作る。
-#           受信機も送信機も無しで画面・補間・NO SIGNAL・帯を確かめるため（設計書 §5.7）。
+#           受信機も送信機も無しで画面・NO SIGNAL・帯を確かめるため（設計書 §5.7）。
 #           琵琶湖のプラットホームで止まってから北パイロンへ飛び、途中で 12 秒受信が切れる。
 #           25〜34 秒は「送信機の目的地が受信機に無い」（受信機は目的地を未選択にし、LS の 0x08 を立てる）。
 # Author  : MasaoC (@masao_mobile)
-# Updated : 2026-11-24
+# Updated : 2026-11-25
 # ============================================================
 # 使い方: python3 make_live_sample.py [出力]（既定は同じフォルダの live_sample.txt）
 #   live.html の「▶ 記録を再生」で開くか、http で開いて live.html?replay=test/live_sample.txt

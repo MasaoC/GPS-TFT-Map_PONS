@@ -312,6 +312,7 @@ void draw_ExtraMaps(double center_lat,double center_lon,float scale,float up);
 bool try_draw_km_distance(float scale, float km);
 void draw_km_distances(float scale);
 void draw_boot_title();   // 起動直後のタイトル（白画面を埋めるため setup() からも呼ぶ）
+void format_compile_stamp(char *buf, size_t n); // __DATE__/__TIME__ から起動画面用の "YYYYMMDD hh:mm" を作る（GPS_TFT_map.ino）
 // 起動時センサーチェックの進捗表示（draw_boot_progress() 用）。まだ確認できていない項目は PENDING。
 enum BootCheckState : uint8_t { BOOT_CHECK_PENDING, BOOT_CHECK_OK, BOOT_CHECK_NG };
 // setup() の間、センサーの初期化が終わった順に OK/NG を出す。

@@ -448,16 +448,30 @@ static void run_overdischarge_warning_loop(bool from_loop) {
 
 // コンパイルした日時（__DATE__ "Nov 12 2026" と __TIME__ "15:41:40"）を "2026-11-12 15:41:40" にする。
 // ★ この .ino の中に置くこと（理由は setup() の BOOT PONS の行のコメント）。
-static void format_compile_time(char *buf, size_t n) {
+static void compile_ymd(int *year, int *mon, int *day) {
   static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
   const char *d = __DATE__;   // "Mmm dd yyyy"（日が 1 桁なら "Nov  2 2026"）
-  int mon = 0;
+  *mon = 0;
   for (int i = 0; i < 12; i++) {
-    if (strncmp(d, months + i * 3, 3) == 0) { mon = i + 1; break; }
+    if (strncmp(d, months + i * 3, 3) == 0) { *mon = i + 1; break; }
   }
-  const int day = atoi(d + 4);
-  const int year = atoi(d + 7);
+  *day = atoi(d + 4);
+  *year = atoi(d + 7);
+}
+
+static void format_compile_time(char *buf, size_t n) {
+  int year, mon, day;
+  compile_ymd(&year, &mon, &day);
   snprintf(buf, n, "%04d-%02d-%02d %s", year, mon, day, __TIME__);
+}
+
+// 起動画面のビルド表示（"20261125 09:10"）。日付も時刻もコンパイルした日時から作る。
+// ★ 日付に BUILDDATE を使わない。BUILDDATE は手で上げるので、上げずに別の日に焼くと
+//   「その日付のその時刻」という実在しないビルドに見える（2026-11-25）。
+void format_compile_stamp(char *buf, size_t n) {
+  int year, mon, day;
+  compile_ymd(&year, &mon, &day);
+  snprintf(buf, n, "%04d%02d%02d %.5s", year, mon, day, __TIME__);
 }
 
 //===============SET UP CORE0=================

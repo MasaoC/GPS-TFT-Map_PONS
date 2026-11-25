@@ -1,0 +1,184 @@
+# tools/repons/test/live_fingerprints.txt
+# Re:PONS のライブ配信（tools/repons/live*.js）が写している本体の関数の指紋（コメントと空白を除いた SHA-1 の頭 12 桁）。
+# run_live_tests.py --update が書く。手で直さない。見張る関数の一覧は run_live_tests.py の FP_TARGETS。
+display_tft.cpp latLonToXY() 0dd9989ffe6d
+display_tft.cpp get_self_cy() 713e60a20c78
+display_tft.cpp get_needle_len() 97e13e20e3ac
+display_tft.cpp draw_clipped_line() 3bbca65018c7
+display_tft.cpp draw_clipped_wideline() 45d2c5a43763
+display_tft.cpp draw_map_line() e9ef683f1baa
+display_tft.cpp try_draw_km_distance() 0a8e4524b08a
+display_tft.cpp draw_compass() ffa5771db5b7
+display_tft.cpp draw_km_distances() 397418a883ea
+display_tft.cpp notice_reserve() 72a15b250afd
+display_tft.cpp notice_free() a43c0467be84
+display_tft.cpp draw_course_warning() 2c36170be956
+display_tft.cpp draw_course_warning_box() 6ffbf769264b
+display_tft.cpp draw_nofix_cross() 592f45ecd272
+display_tft.cpp draw_hacc_circle() cdda24f9b772
+display_tft.cpp strike_through() 0291237f5c2c
+display_tft.cpp gnss_sacc_shown() 284bc08b30e6
+display_tft.cpp plane_icon_color() 74ff4bc20e2d
+display_tft.cpp draw_plane_icon() 1217ee5fd731
+display_tft.cpp plane_icon_screen_deg() 58a9222d4846
+display_tft.cpp draw_steer_overlay() 9cddd52a1be8
+display_tft.cpp draw_triangle() d4aae73ebaf4
+display_tft.cpp calculatePointC() 409c5e49c2a7
+display_tft.cpp calculatePointD() 79b2e06ac0a4
+display_tft.cpp calculatePointFromBearing() 721d4cc72df1
+display_tft.cpp draw_flyawayfrom() e6be7824191c
+display_tft.cpp draw_flyinto2() 65734fb56078
+display_tft.cpp draw_flyinto() 0c264b97fbfb
+display_tft.cpp track_gap() 35c34af9c9a1
+display_tft.cpp draw_track() 133f39c2cafc
+display_tft.cpp mapdata_color() 472a8b72166c
+display_tft.cpp draw_FlashMaps() 1be1c2293609
+display_tft.cpp draw_ExtraMaps() 34b611e75cfe
+display_tft.cpp draw_vsi() 9906bb549f11
+display_tft.cpp roll_trim_color() 1b6cf1d3e7af
+display_tft.cpp attitude_implausible() 3436a60a024e
+display_tft.cpp wind_arrow_color() 47caadff481c
+display_tft.cpp draw_wind_arrow() 1f00458d5a8f
+display_tft.cpp draw_ground_ok_range() 782a962351c0
+display_tft.cpp eskf_yaw_row_y() a27fb8466cf5
+display_tft.cpp draw_eskf_attitude() a1d03417fae3
+display_tft.cpp draw_eskf_yaw() 00964804b6ef
+display_tft.cpp begin_notice_box() b42b1e36261d
+display_tft.cpp draw_power_fault_warning() a7b6637846ba
+display_tft.cpp draw_eskf_calib_warning() b2ca8a9cf70f
+display_tft.cpp push_backscreen() b7f72d75370e
+display_tft.cpp truetrack_display_deg() aa4cf10c552b
+display_tft.cpp draw_tas_label_row() b38318974c60
+display_tft.cpp draw_gs_track() 735dc659bbeb
+display_tft.cpp draw_degpersec() 418b3ad2b7a2
+display_tft.cpp header_shows_pitch() 2af6fc5d8689
+display_tft.cpp header_pitch_value() eed0f21b64cb
+display_tft.cpp draw_header_pitch() b80e146ba60f
+display_tft.cpp draw_header_tas() 1927d1160729
+display_tft.cpp live_collect_screen() d311ba12bda1
+display_tft.cpp header_strike_tag() 3075b8fb4bd8
+display_tft.cpp header_strike() e0316b1d0fa3
+display_tft.cpp draw_header() 6dfbb63813b6
+display_tft.cpp draw_map_footer() 38b4fbb73d3d
+display_tft.cpp draw_batt_part() 049dc62fed8a
+display_tft.cpp draw_footer() 052409bd75f6
+display_tft.cpp draw_map() dfb98ccc60ba
+display_tft.cpp clip_outcode() 03283ecbba8b
+display_tft.cpp clip_line_to_screen() 0aec3b11f3df
+display_tft.cpp fill_polygon_evenodd() 6133c9a3018e
+display_tft.cpp draw_pilon_takeshima_line() 368468332076
+display_tft.cpp draw_pilon_takeshima_marks() f44f37bd7a04
+display_tft.cpp draw_nomapdata() 669705438680
+display_tft.cpp battery_percent() dc0d8023a7c7
+display_tft.cpp battery_low_pct() 08909cf79345
+display_tft.cpp battery_color_pct() 4c22fb8310b9
+display_tft.cpp NEEDLE_LEN_NORTHUP 072aa8ab1d26
+display_tft.cpp NEEDLE_LEN_TRACKUP ace15bc8be18
+display_tft.cpp EskfGnssState 8684c7c85f09
+display_tft.cpp HdrStrike ebed7ac6739b
+display_tft.cpp #define TRIANGLE_HWIDTH 8a959c032857
+display_tft.cpp #define TRIANGLE_SIZE 68e00957659c
+display_tft.cpp #define NOTICE_RES_MAX 596a72966ab1
+display_tft.cpp #define TRACKUP_TONE_SHRINK 8724cfd59c7a
+display_tft.cpp #define TRACKUP_STEER_SHRINK e00ca6ae4aee
+display_tft.cpp #define ESKF_LABEL_X f8a706648a6e
+display_tft.cpp #define WIND_BLOCK_RIGHT_X 86dd30d166a6
+display_tft.cpp #define WIND_TEXT_RIGHT_X 4c28a1251a95
+display_tft.cpp #define ESKF_VALUE_RIGHT_X 871f9f518f7b
+display_tft.cpp #define ESKF_ROW_GAP bf38cd393d43
+display_tft.cpp #define ESKF_BOTTOM_GAP cf9e9eac4f61
+display_tft.cpp #define CLIP_MARGIN f5dfa5ee0839
+display_tft.cpp #define VM_MAX_EDGES 6c2c32b19747
+display_tft.cpp #define PILON_LINE_WIDTH d96f187ab581
+display_tft.cpp #define CENTERLINE_WIDTH 55f4458c2b67
+display_tft.cpp #define CENTERLINE_INNER_KM 0b1d3ea8ea1d
+display_tft.cpp #define CENTERLINE_OUTER_KM 2ae6f54a3753
+display_tft.h cord_tft df8ba82f534d
+display_tft.h LiveScreen 1ebb836531e5
+display_tft.h #define SCREEN_WIDTH e1ac12369b07
+display_tft.h #define HEADERFOOTER_HEIGHT 45112d4e7526
+display_tft.h #define SCREEN_HEIGHT 36b3616c6c08
+display_tft.h #define BACKSCREEN_SIZE b5a0c1cad579
+display_tft.h #define VSI_X eb0e66e5ad72
+display_tft.h #define VSI_W 7a38a6cba883
+display_tft.h #define COLOR_ORANGE 7c9239987237
+display_tft.h #define COLOR_WHITE e46ad11e9e4e
+display_tft.h #define COLOR_BLUE 8e2f739b6783
+display_tft.h #define COLOR_GREEN 6f7ff9d37b94
+display_tft.h #define COLOR_RED e973d19f0a1b
+display_tft.h #define COLOR_DARKORANGE 2e9312033b51
+display_tft.h #define COLOR_MAGENTA 1eb8e40a2515
+display_tft.h #define COLOR_BLACK aff16c7ddca6
+display_tft.h #define COLOR_CYAN 51afb03b6a07
+display_tft.h #define COLOR_GRAY 0ae9654f1849
+display_tft.h #define COLOR_BRIGHTGRAY 87b71391acd7
+display_tft.h #define COLOR_LIGHT_BLUE 8921e4c326ed
+display_tft.h #define COLOR_PINK f66e626b9b1d
+display_tft.h #define COLOR_YELLOW 4030f67db503
+display_tft.h #define COLOR_WIND_PURPLE bba8b2831ff9
+display_tft.h #define COLOR_OWNPOS 6e93e9476821
+display_tft.h #define AA_FONT_SMALL 2ae70255f5ba
+display_tft.h #define NM_FONT_MEDIUM 35118cd7e39f
+display_tft.h #define NM_FONT_LARGE 5f918d98a4a7
+display_tft.h #define LIVESCR_ESKF_EN 05f4f05b8fb9
+display_tft.h #define LIVESCR_YAW_REL e68b9268cac8
+display_tft.h #define LIVESCR_YAW_HC aaabe633cb7d
+display_tft.h #define LIVESCR_NEEDS_APPLY 09be180023c4
+display_tft.h #define LIVESCR_GROUND_ROLL 4653e0c31fbb
+display_tft.h #define LIVESCR_GROUND_PITCH f5a036fa417f
+display_tft.h #define LIVESCR_GST_INVALID f838d679e123
+display_tft.h #define LIVESCR_TRACKWARN ac4bc3bbe501
+display_tft.h #define LIVESCR_CWARN d98abc3d66d3
+display_tft.h #define LIVESCR_VSI 841bf2686d77
+display_tft.h #define LIVESCR_VARIO_OK d61e1d6e4fc6
+display_tft.h #define LIVESCR_SCANNING 7e0e99202e61
+display_tft.h #define LIVESCR_WEAK b99f45d8fe13
+display_tft.h #define LIVESCR_NAV_VALID 667c7c7ef75f
+display_tft.h #define LIVESCR_WIND a001f4e035f2
+display_tft.h #define LIVESCR_LEAVING cd4c22b94854
+GPS_TFT_map.ino draw_current_screen() の screen_mode==MODE_MAP) 4fddcaeb75bd
+src/vectormap.cpp (まるごと) 7bb03731e8cb
+src/navdata.cpp rad2deg() 83edf2e00cf0
+src/navdata.cpp deg2rad() 4d445cc72b6c
+src/navdata.cpp calculateDistanceKm() 1e320e548bdb
+src/navdata.cpp calculateTrueCourseRad() 3dc6fb136cc7
+src/navdata.cpp pla_centerline_bearing_rad() d213adb8eace
+src/navdata.cpp latitudeToMercatorY() cec5f7765adb
+src/navdata.cpp check_within_latlon() 1334c80e2a5c
+gnss.cpp add_track_point() 60a0879794f2
+gnss.cpp get_gnss_numsat() 1a3ddbba2f74
+tas.h TasHdr 036cf426f82c
+tas.cpp tas_header_pitch_avg() b02a445be1a9
+tas.cpp tas_header_value() d0af531eb1dd
+link.cpp link_get_lat() d68683f7ac83
+link.cpp link_get_lon() 8d92fa955ede
+link.cpp link_get_gs() b743c39f7d38
+link.cpp link_get_truetrack() 851691b95548
+link.cpp link_get_numsat() 64389989bd7a
+link.cpp link_get_hacc_mm() 40c45e20b849
+link.cpp link_get_fix_ok() 0c9e87c20bf2
+link.cpp link_get_sacc_mps() 037d99a28996
+link.cpp link_get_kf_vspeed() de5f9f0a4eb2
+link.cpp link_get_attitude() 945b2e8ab840
+link.cpp link_get_yaw() 67d5b406df63
+link.cpp link_get_pitch_avg() 3475c260d5c0
+link.cpp link_get_tas() 2e2d1e93ba0f
+link.cpp link_get_roll_trim() f81e8a7924fa
+link.cpp link_get_wind() 269d3897e20a
+link.cpp link_get_sender_battery() 729242a514c7
+link.cpp link_get_sender_scale_index() a6afbe6766a4
+lora_link/link_proto.h link_batt_decode() a7a0bc42a022
+lora_link/link_proto.h LinkBattKind aa1863ddf25c
+lora_link/link_wire2.h #define W2S_DATE 740148356a14
+lora_link/link_wire2.h #define W2S_WIND adef089261b2
+lora_link/link_wire2.h #define W2S_TRIM 6570564fe6a4
+lora_link/link_wire2.h #define W2S_HACC 241dd7f5764b
+lora_link/link_wire2.h #define W2S_ALTV 77f6e2d09061
+lora_link/link_wire2.h #define W2S_WIND2 eb92463ffbab
+lora_link/link_wire2.h #define W2S_PRESS 0ad2c9f5a5a8
+lora_link/link_wire2.h #define W2S_NAV ba9d0e12c51e
+live.cpp send_ok() e0eb3b9f7579
+live.cpp dump_step() 4a3a827cea14
+live.cpp live_on_rx_frame() 6fc29793070b
+live.cpp live_after_screen() 11ac23aafd24
+live.cpp push_ls() ece66947d6cf
