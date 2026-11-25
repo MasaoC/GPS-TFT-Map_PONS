@@ -422,7 +422,7 @@ static inline uint8_t link_pack_u8(float v, float scale) {
 #define LINK_BATT_NONE      0
 #define LINK_BATT_BAT_BASE  1      // 1 + 残量 %（電池で動いている）
 #define LINK_BATT_CHG_BASE  102    // 102 + 残量 %（USB で充電中）
-#define LINK_BATT_SW_OFF    255    // SW OFF のまま USB
+#define LINK_BATT_SW_OFF    255    // SW OFF のまま USB（2026-11-25〜 USB の挿し直し待ちの "REPLUG" も。power_charge_replug_needed()）
 static_assert(LINK_BATT_BAT_BASE + 100 < LINK_BATT_CHG_BASE && LINK_BATT_CHG_BASE + 100 < LINK_BATT_SW_OFF,
               "電池の表示の値が重なっている");
 

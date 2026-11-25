@@ -56,6 +56,7 @@ volatile bool sd_setup_complete = false;  // Core1 の setup_sd() が完了し�
 // Web Serial 通信状態フラグ
 volatile bool webserial_connected = false;
 volatile bool webserial_cancel_requested = false;
+volatile uint32_t webserial_session = 0;   // PONS:CONNECT で PC 接続に入るたびに Core0 が増やす（SD の空き容量を接続ごとに 1 回数える）
 #define LOGFILE_NAME "log.txt"
 
 // ---- 処理時間計測変数（IMU の読み出しを飢えさせない調査用、デバッグビルドのみ） ----
@@ -2331,24 +2332,34 @@ static bool is_replay_candidate(const char* name) {
   return has_csv_ext(name);
 }
 
-// 再生元フォルダのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
-// start_index: 対象CSVの通し番号（0始まり）のうち、どこから格納するか。
-// 戻り値: 1 件以上格納できたら true。フォルダは対象外。
-//
-// ★ 並び順は **ディレクトリの登録順**（openNextFile が返す順）で、ファイル名順ではない。
-//   FAT はディレクトリエントリを先頭の空きスロットから埋めるので、実質は
-//   「SD へ書かれた順（削除跡があればそこを再利用）」になる。
-//   大会データを一覧の上に出したいなら、**カードへ最初にコピーする**こと。
-//   名前を変えても順番は変わらない。
-bool browse_replay_files(int start_index) {
-  if (start_index < 0) start_index = 0;
-
-  for (int i = 0; i < REPLAY_LIST_ROWS; i++) {
-    replayfiles[i][0] = '\0';
-    replayfiles_size[i] = 0;
+// 名前が日付（YYYY-MM-DD）で始まるか。飛行 CSV・受信ログ（YYYY-MM-DD_HHMM.csv）と大会ログ（..._fused.csv）はみな当てはまる。
+static bool replay_name_dated(const char* s) {
+  for (int i = 0; i < 10; i++) {
+    const char c = s[i];
+    if (i == 4 || i == 7) { if (c != '-') return false; }
+    else if (c < '0' || c > '9') return false;
   }
+  return true;
+}
+
+// 一覧の並び。a が b より上なら負、下なら正。
+//   日付で始まる名前が先で、その中は名前の降順（YYYY-MM-DD_HHMM は文字の順が時刻の順なので、新しいものが上）。
+//   日付で始まらない名前（人が付けた名前）はその下に名前の昇順。同じ名前は FAT では作れないが、念のため全順序にしておく。
+static int replay_order_cmp(const char* a, const char* b) {
+  const bool da = replay_name_dated(a), db = replay_name_dated(b);
+  if (da != db) return da ? -1 : 1;
+  int c = strcasecmp(a, b);
+  if (c == 0) c = strcmp(a, b);
+  return da ? -c : c;
+}
+
+// 1 回ディレクトリを読み、並びで after より下（after が nullptr なら全部）の名前のうち上から want 件を
+// replayfiles[] へ並びの順に入れる。戻り値はフォルダが開けたか。*total には対象の CSV の総数。
+// ★ 覚えるのは replayfiles[] の REPLAY_LIST_ROWS 件だけ（件数が増えても RAM を使わない）。
+static bool replay_scan_page(const char* after, int want, int* total) {
   replayfiles_count = 0;
-  replayfiles_total = 0;
+  *total = 0;
+  if (want > REPLAY_LIST_ROWS) want = REPLAY_LIST_ROWS;
 
   // 再生元フォルダ。received/ がまだ無い機体（一度も受信していない）は
   // ここで開けないので、素直に「0 件」の空一覧になる。
@@ -2356,10 +2367,10 @@ bool browse_replay_files(int start_index) {
   if (!root || !root.isDirectory()) {
     DEBUGW_PLN(20260731, "REPLAY: failed to open source dir");
     if (root) root.close();
-    loading_replaylist = false;
     return false;
   }
 
+  int count = 0;
   while (true) {
     FsFile entry = root.openNextFile();
     if (!entry) break;
@@ -2372,17 +2383,75 @@ bool browse_replay_files(int start_index) {
     entry.close();
 
     if (isdir || !is_replay_candidate(name)) continue;
+    (*total)++;
+    if (after && replay_order_cmp(name, after) <= 0) continue;   // 前のページまでに出した分
 
-    // 該当ページの範囲内なら格納する
-    if (replayfiles_total >= start_index && replayfiles_count < REPLAY_LIST_ROWS) {
-      strlcpy(replayfiles[replayfiles_count], name, 32);
-      replayfiles_size[replayfiles_count] = (int)fsize;
-      replayfiles_count++;
+    // 並びの順に差し込む（入りきらなければいちばん下を落とす）
+    int pos = count;
+    while (pos > 0 && replay_order_cmp(name, replayfiles[pos - 1]) < 0) pos--;
+    if (pos >= want) continue;
+    const int last = (count < want) ? count : want - 1;
+    for (int i = last; i > pos; i--) {
+      memcpy(replayfiles[i], replayfiles[i - 1], sizeof(replayfiles[i]));
+      replayfiles_size[i] = replayfiles_size[i - 1];
     }
-    replayfiles_total++;
+    strlcpy(replayfiles[pos], name, sizeof(replayfiles[pos]));
+    replayfiles_size[pos] = (int)fsize;
+    if (count < want) count++;
   }
-
   root.close();
+  replayfiles_count = count;
+  return true;
+}
+
+// 前に読んだページ（replayfiles[] の中身）の始まりの通し番号と再生元。-1 = 無い（中身を信用しない）。
+static int  replay_loaded_start = -1;
+static bool replay_loaded_received = false;
+
+// 再生元フォルダのリプレイ対象CSVを列挙し replayfiles[] に格納する（Core1 で実行）。
+// start_index: 対象CSVの通し番号（0始まり）のうち、どこから格納するか。
+// 戻り値: 1 件以上格納できたら true。フォルダは対象外。
+//
+// ★ 並びは**新しいファイルが上**（2026-11-25〜。replay_order_cmp()）。名前の日付（記録を始めた JST の時刻）で決め、
+//   SD の更新日時は見ない（時刻を知らずに書いたファイルは 1980 年になるため）。
+//   それまでは openNextFile が返す順（SD へ書かれた順）で、新しいファイルがいちばん下だった。
+// ★ 全部の名前を覚えて並べ替えるのではなく、「前のページの最後の名前より下で、上から 20 件」をそのつど読み直す。
+//   ページはふつう前から順に開く（短押しは次へだけ）ので 1 ページ 1 回の走査で済む。
+//   前のページが手元に無い所へ飛んだときは、先頭から 20 件ずつ読み飛ばす（そのぶん遅いが並びは同じ）。
+bool browse_replay_files(int start_index) {
+  if (start_index < 0) start_index = 0;
+
+  // 前のページの中に、今度のページの 1 つ上の名前があればそれを境にする（ふつうの「次のページ」はここ）
+  char after[32] = "";
+  int skip = start_index;
+  const int prev_start = replay_loaded_start;
+  if (start_index > 0 && prev_start >= 0 && replay_loaded_received == replay_from_received &&
+      start_index > prev_start && start_index - prev_start <= replayfiles_count) {
+    strlcpy(after, replayfiles[start_index - prev_start - 1], sizeof(after));
+    skip = 0;
+  }
+  replay_loaded_start = -1;   // ここから先は書き換え途中
+
+  int total = 0;
+  bool ok = true;
+  // 境の名前が無ければ、先頭から 20 件ずつ読み飛ばして境を作る
+  while (ok && skip > 0) {
+    const int n = (skip < REPLAY_LIST_ROWS) ? skip : REPLAY_LIST_ROWS;
+    ok = replay_scan_page(after[0] ? after : nullptr, n, &total);
+    if (!ok || replayfiles_count < n) { replayfiles_count = 0; break; }   // そこまで件数が無い
+    strlcpy(after, replayfiles[n - 1], sizeof(after));
+    skip -= n;
+  }
+  if (ok && skip == 0) ok = replay_scan_page(after[0] ? after : nullptr, REPLAY_LIST_ROWS, &total);
+
+  for (int i = replayfiles_count; i < REPLAY_LIST_ROWS; i++) {
+    replayfiles[i][0] = '\0';
+    replayfiles_size[i] = 0;
+  }
+  replayfiles_total = ok ? total : 0;
+  if (!ok) replayfiles_count = 0;
+  if (ok) { replay_loaded_start = start_index; replay_loaded_received = replay_from_received; }
+
   DEBUG_P(20260731, "REPLAY files total: ");
   DEBUG_PLN(20260731, replayfiles_total);
   loading_replaylist = false;
@@ -3304,12 +3373,15 @@ Task createSerialListTask(bool all) {
   return t;
 }
 
-Task createSerialGetTask(const char* filename, uint32_t tail, uint32_t jst_start, uint32_t jst_end) {
+Task createSerialGetTask(const char* filename, uint32_t tail, uint32_t jst_start, uint32_t jst_end,
+                         uint32_t range_from, uint32_t range_len) {
   Task t;
   t.type = TASK_SERIAL_GET;
   t.serialGetArgs.tail = tail;
   t.serialGetArgs.jst_start = jst_start;
   t.serialGetArgs.jst_end = jst_end;
+  t.serialGetArgs.range_from = range_from;
+  t.serialGetArgs.range_len = range_len;
   if (filename) {
     strlcpy(t.serialGetArgs.filename, filename, sizeof(t.serialGetArgs.filename));
   } else {
@@ -3335,6 +3407,46 @@ Task createSerialSettingsSetTask(const char* key, const char* value) {
 Task createSerialSettingsSaveTask() {
   Task t;
   t.type = TASK_SERIAL_SETTINGS_SAVE;
+  return t;
+}
+
+Task createSerialWipeScanTask(uint8_t mask) {
+  Task t;
+  memset(&t.serialWipeArgs, 0, sizeof(t.serialWipeArgs));
+  t.type = TASK_SERIAL_WIPE_SCAN;
+  t.serialWipeArgs.mask = mask;
+  return t;
+}
+
+Task createSerialWipeTask(uint8_t mask, uint32_t count, uint32_t fp, uint16_t code, const char* stamp, const char* password) {
+  Task t;
+  memset(&t.serialWipeArgs, 0, sizeof(t.serialWipeArgs));
+  t.type = TASK_SERIAL_WIPE;
+  t.serialWipeArgs.mask  = mask;
+  t.serialWipeArgs.count = count;
+  t.serialWipeArgs.fp    = fp;
+  t.serialWipeArgs.code  = code;
+  strlcpy(t.serialWipeArgs.stamp, stamp ? stamp : "", sizeof(t.serialWipeArgs.stamp));
+  strlcpy(t.serialWipeArgs.password, password ? password : "", sizeof(t.serialWipeArgs.password));
+  return t;
+}
+
+Task createSerialTrashEmptyTask(uint32_t count, uint32_t fp, uint16_t code, const char* password) {
+  Task t;
+  memset(&t.serialWipeArgs, 0, sizeof(t.serialWipeArgs));
+  t.type = TASK_SERIAL_TRASH_EMPTY;
+  t.serialWipeArgs.count = count;
+  t.serialWipeArgs.fp    = fp;
+  t.serialWipeArgs.code  = code;
+  strlcpy(t.serialWipeArgs.password, password ? password : "", sizeof(t.serialWipeArgs.password));
+  return t;
+}
+
+Task createSerialTrashRestoreTask(const char* batch) {
+  Task t;
+  memset(&t.serialWipeArgs, 0, sizeof(t.serialWipeArgs));
+  t.type = TASK_SERIAL_TRASH_RESTORE;
+  strlcpy(t.serialWipeArgs.batch, batch ? batch : "", sizeof(t.serialWipeArgs.batch));
   return t;
 }
 
@@ -3448,6 +3560,8 @@ static void list_files_in_dir(const char* dirpath, const char* prefix, bool csv_
   dir.close();
 }
 
+static void serial_print_sdinfo();   // SD の空き容量の行（下の「SD の整理」の節）
+
 // SD 内のファイルを列挙してシリアル出力（Core1専用）
 // all = false（PONS:LIST）: 飛行 CSV（data/ と received/）と log.txt だけ。
 // all = true （PONS:LIST,ALL。2026-11-15〜）: ルートと、その直下のフォルダの全部のファイル（生 IMU ログ imuraw/*.bin・
@@ -3466,6 +3580,7 @@ void serial_list_csv_files(bool all) {
   if (all) {
     // ルートから 1 段ぶん全部（log.txt もこの中で出る）
     list_files_in_dir("/", "", false, true);
+    serial_print_sdinfo();   // SD の空き容量（2026-11-25〜。知らない Re:PONS は読み捨てる）
     Serial.println("PONS:LIST_END");
     return;
   }
@@ -3476,16 +3591,28 @@ void serial_list_csv_files(bool all) {
   // ルートの log.txt も出す（2026-11-11〜。Re:PONS が種別「ログ」で開き、起動ごとに分けてグラフにする）。
   // ★ 消されずに伸び続ける（数 MB になる）ので、ビューアはふつう末尾だけを PONS:GETTAIL で取る。
   //   開いている書き込みのハンドルは上の webserial_prepare_sd() が閉じてある。
+  // ゴミ箱から戻した古い log.txt（log_r003.txt。src/sd_wipe_rules.h）も出す（2026-11-25〜）。Mac の ._ は出さない
   if (!(webserial_cancel_requested || !webserial_connected || !usb_power_present())) {
-    FsFile lf = SD.open(LOGFILE_NAME, O_RDONLY);
-    if (lf && !lf.isDirectory()) {
-      uint16_t pdate = 0, ptime = 0;
-      lf.getModifyDateTime(&pdate, &ptime);
-      print_file_entry(LOGFILE_NAME, lf.size(), pdate, ptime);
+    FsFile root = SD.open("/", O_RDONLY);
+    if (root && root.isDirectory()) {
+      while (true) {
+        FsFile e = root.openNextFile();
+        if (!e) break;
+        char name[64];
+        const bool named = e.getName(name, sizeof(name)) > 0;
+        if (named && !e.isDirectory() && name[0] != '.' &&
+            sdwipe_category(SDWIPE_DIR_ROOT, name) == SDWIPE_CAT_LOGTXT) {
+          uint16_t pdate = 0, ptime = 0;
+          e.getModifyDateTime(&pdate, &ptime);
+          print_file_entry(name, e.size(), pdate, ptime);
+        }
+        e.close();
+      }
     }
-    if (lf) lf.close();
+    if (root) root.close();
   }
 
+  serial_print_sdinfo();   // SD の空き容量（2026-11-25〜。知らない Re:PONS は読み捨てる）
   // 意図して直さない（2026-11-14 の監査）: 中断・切断のあとも LIST_END は出す（ビューアが「走査中」から抜ける印で、害が無い）
   Serial.println("PONS:LIST_END");
 }
@@ -3493,7 +3620,11 @@ void serial_list_csv_files(bool all) {
 // 指定されたファイルをストリーミング送出（Core1専用）。中身はそのまま送る（CSV でもバイナリでも同じ）
 // tail が 0 でなく、ファイルがそれより大きければ、末尾の tail バイトだけ送る（PONS:GETTAIL。伸び続ける log.txt 用）。
 // jst_end > jst_start のときは生 IMU ログ（28B/rec）を粗スキャンして該当 JST 秒範囲だけ送る（PONS:GETIMU）。
-void serial_send_csv_file(const char* filename, uint32_t tail, uint32_t jst_start, uint32_t jst_end) {
+// range_len > 0 のときは range_from から range_len バイト（ファイルの終わりで切る）だけ送る（PONS:GETRANGE。2026-11-25〜）。
+//   大きいファイルを PC が 1MB ずつ取り、CRC が合わない塊だけ取り直すため。USB の転送の途中でバイトが抜けることがあり
+//   （2026-11-25 の調査。生 IMU ログ 4 本とも 0.002〜0.04%。SD のファイルは無事）、全部を 1 回で送ると 1 か所の抜けで全部やり直しになる。
+void serial_send_csv_file(const char* filename, uint32_t tail, uint32_t jst_start, uint32_t jst_end,
+                          uint32_t range_from, uint32_t range_len) {
   ASSERT_SD_CORE1("serial_send_csv_file");
   if (!good_sd()) {
     Serial.println("PONS:ERROR,SD_NOT_READY");
@@ -3524,8 +3655,19 @@ void serial_send_csv_file(const char* filename, uint32_t tail, uint32_t jst_star
   const uint32_t file_size = file.size();
   uint32_t from = 0;
   uint32_t end_pos = file_size;
+  const bool ranged = (range_len > 0);
 
-  if (jst_end > jst_start) {
+  if (ranged) {
+    // PONS:GETRANGE — 位置と長さをそのまま使う（行の頭にも合わせない。バイナリをバイト単位で継ぎ合わせるため）
+    if (range_from > file_size) {
+      file.close();
+      Serial.println("PONS:ERROR,INVALID_RANGE");
+      return;
+    }
+    from = range_from;
+    end_pos = (range_len < file_size - from) ? (from + range_len) : file_size;
+    if (from > 0) file.seekSet(from);
+  } else if (jst_end > jst_start) {
     // PONS:GETIMU — 28B 固定長レコードを 224KB（約 16 秒）刻みで粗スキャンし、
     // GNSSVEL (id=0x10) の iTOW から JST 日内秒が [jst_start, jst_end] に入る範囲を特定する。
     constexpr uint32_t REC_SIZE = 28UL;
@@ -3595,8 +3737,11 @@ void serial_send_csv_file(const char* filename, uint32_t tail, uint32_t jst_star
   }
 
   uint32_t total_size = end_pos - from;
-  if (from > 0) Serial.printf("PONS:DATA_START,%s,%lu,%lu\r\n", filename, (unsigned long)total_size, (unsigned long)from);
-  else          Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
+  // GETRANGE は 0 から始まる塊でも位置を付け、4 つめにファイル全体の大きさを付ける（PC は一覧のあとに伸びた・縮んだを知る）
+  if (ranged)        Serial.printf("PONS:DATA_START,%s,%lu,%lu,%lu\r\n", filename, (unsigned long)total_size,
+                                   (unsigned long)from, (unsigned long)file_size);
+  else if (from > 0) Serial.printf("PONS:DATA_START,%s,%lu,%lu\r\n", filename, (unsigned long)total_size, (unsigned long)from);
+  else               Serial.printf("PONS:DATA_START,%s,%lu\r\n", filename, (unsigned long)total_size);
 
   uint32_t crc = 0xFFFFFFFF;
   // 行の頭に合わせたあと（GETTAIL / GETIMU）は、まず次のセクタの境目まで読む（そのあとの読み出しをセクタ単位にそろえる）
@@ -3800,6 +3945,666 @@ void serial_save_settings() {
     else                            Serial.println("PONS:SETTINGS_ERR,PILON_SAVE_FAILED");
   } else {
     Serial.println("PONS:SETTINGS_ERR,SAVE_FAILED");
+  }
+  Serial.flush();
+}
+
+// ============================================================
+// Web Serial: SD の整理（2026-11-25〜。Core1 専用）
+//   PONS:WIPE_SCAN      一覧（ゴミ箱へ移すもの・残すもの・ゴミ箱の中身・空き容量）。本体の画面に番号を出す
+//   PONS:WIPE           ログをゴミ箱へ移す（名前の付け替え。空き容量は増えない）
+//   PONS:TRASH_EMPTY    ゴミ箱を空にする（ここだけが本当に消す）
+//   PONS:TRASH_RESTORE  ゴミ箱の 1 回分を元の場所へ戻す
+//   docs/pons_webserial_protocol.md §4 (10)。どれを扱うか・ゴミ箱の名前の決まりは src/sd_wipe_rules.h。
+// 誤って消さないための仕掛け（Re:PONS の確認のダイアログに加えて、本体の側で）:
+//   ・移す・空にするには、本体の画面の番号とパスワードが要る。番号は一覧を出したときに本体が決めて PC 接続の画面に出す
+//     （機体・予備機・ボートは同じパスワードなので、つないでいる本体を取り違えたまま消さないため）。
+//     5 分で切れ、1 回頼むと当たり外れにかかわらず使い切る（打ち直しで当てられない）。
+//   ・パスワードは本体が照合する。値は settings.h の PONS_SD_WIPE_PASSWORD（Re:PONS は知らない）。
+//     空なら受けない（WIPE_ERR,NO_PASSWORD）。続けて SDWIPE_MAX_WRONG 回違えたら再起動するまで受けない。
+//   ・Re:PONS が見せた一覧（件数と名前の指紋）と、直前に数え直したものが違えば何もしない（WIPE_ERR,CHANGED）。
+//   ・「消す」はゴミ箱へ移すだけ。戻すときも上書きしない（同じ名前があれば _r<回> を付ける）。
+//   ・リプレイ中は移さない。再生中のファイルは開いたまま（replayFileStatic）なので。
+//   ・止める（PONS:CANCEL・切断・本体のボタン・USB を抜く）と、次のファイルの前で止まる。
+// ============================================================
+
+static uint8_t s_wipe_wrong = 0;    // パスワードを続けて違えた回数（再起動で 0 に戻る。Core1 だけが触る）
+
+static const char* sdwipe_dir_path(int d) {
+  switch (d) {
+  case SDWIPE_DIR_FLIGHT:   return REPLAY_FLIGHT_DIR;
+  case SDWIPE_DIR_RECEIVED: return REPLAY_RECEIVED_DIR;
+  case SDWIPE_DIR_IMURAW:   return IMULOG_DIR;
+  default:                  return "/";
+  }
+}
+
+static bool sdwipe_should_stop() {
+  return webserial_cancel_requested || !webserial_connected || !usb_power_present();
+}
+
+// パスワードが本体にあって、続けて違えて止めていないか（番号を出す・受けるかの判断）
+static bool sdwipe_password_usable() {
+  return PONS_SD_WIPE_PASSWORD[0] != '\0' && s_wipe_wrong < SDWIPE_MAX_WRONG;
+}
+
+// ---- PC 接続の画面に出す番号と知らせ（Core1 が書き、Core0 が sdwipe_screen_get で読む。taskQueueMutex で守る）----
+static int      s_code = -1;             // いま有効な番号（-1 = 無い）
+static uint32_t s_code_expire_ms = 0;    // この時刻を過ぎたら使えない
+static char     s_screen_msg[40] = "";   // 番号の下に出す知らせ（英字。本体に日本語の字は無い）
+static volatile uint32_t s_screen_seq = 0;
+
+static bool sdwipe_code_live_locked() {   // mutex の中で呼ぶ
+  return s_code >= 0 && (int32_t)(s_code_expire_ms - millis()) > 0;
+}
+
+uint32_t sdwipe_screen_seq() { return s_screen_seq; }
+
+void sdwipe_screen_get(int* code, char* msg, size_t msgsize) {
+  mutex_enter_blocking(&taskQueueMutex);
+  if (code) *code = sdwipe_code_live_locked() ? s_code : -1;
+  if (msg && msgsize > 0) strlcpy(msg, s_screen_msg, msgsize);
+  mutex_exit(&taskQueueMutex);
+}
+
+// 一覧を出したとき（Core1）: 有効な番号が無ければ新しく決め、期限を 5 分先へ延ばす（調べ直すたびに番号が変わらないように）。
+// ★ 知らせは消さない（Re:PONS は操作のあとすぐ調べ直すので、消すと結果 "Moved 6 files" や "Wrong password" が見えない）
+static void sdwipe_issue_code() {
+  mutex_enter_blocking(&taskQueueMutex);
+  if (!sdwipe_code_live_locked()) s_code = (int)(rp2040.hwrand32() % 10000UL);
+  s_code_expire_ms = millis() + SDWIPE_CODE_TTL_MS;
+  s_screen_seq++;
+  mutex_exit(&taskQueueMutex);
+}
+
+// PC 接続に入り直したとき（Core0 の PONS:CONNECT）: 前の接続の番号と知らせを捨てる（つなぎ直した PC に前の番号を使わせない）
+void sdwipe_screen_reset() {
+  mutex_enter_blocking(&taskQueueMutex);
+  s_code = -1;
+  s_screen_msg[0] = '\0';
+  s_screen_seq++;
+  mutex_exit(&taskQueueMutex);
+}
+
+// 移す・空にするとき（Core1）: 有効な番号を返して使い切る（-1 = 無い・切れていた）
+static int sdwipe_take_code() {
+  mutex_enter_blocking(&taskQueueMutex);
+  const int c = sdwipe_code_live_locked() ? s_code : -1;
+  s_code = -1;
+  s_screen_seq++;
+  mutex_exit(&taskQueueMutex);
+  return c;
+}
+
+static void sdwipe_screen_msg(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void sdwipe_screen_msg(const char* fmt, ...) {
+  char buf[sizeof(s_screen_msg)];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  mutex_enter_blocking(&taskQueueMutex);
+  strlcpy(s_screen_msg, buf, sizeof(s_screen_msg));
+  s_screen_seq++;
+  mutex_exit(&taskQueueMutex);
+}
+
+// ---- SD の空き容量（PONS:SDINFO の行。PONS:LIST と PONS:WIPE_SCAN の終わりに出す）----
+// ★ 数えるのは PC 接続ごとに 1 回（と、ゴミ箱を空にしたあと）。FAT32 は FAT を全部読むので、32GB のカードで約 4MB。
+//   SdFat の freeClusterCount() は 1 セクタずつ読む（数秒かかりうる）ので、FAT32 だけは 8 セクタずつまとめて読む（読むだけ）。
+//   exFAT は割り当ての表が小さいので SdFat に任せる。
+static bool     s_sdinfo_valid = false;
+static uint32_t s_sdinfo_session = 0;
+static uint32_t s_sdinfo_free_kb = 0, s_sdinfo_total_kb = 0;
+static uint8_t  s_sdinfo_type = 0;
+
+static bool sdinfo_count_free(uint32_t* out) {
+  const uint32_t nclus = (uint32_t)SD.clusterCount();
+  if (SD.fatType() == 32 && nclus > 0) {
+    static uint32_t fatbuf[8 * 512 / 4];   // 8 セクタ。uint32_t にして 4 バイト境界にそろえる
+    uint32_t sector = (uint32_t)SD.fatStartSector();
+    const uint32_t last = nclus + 2;       // FAT の項目 0〜nclus+1（0・1 は予約。2 からがクラスタ）
+    uint32_t entry = 0, freec = 0, reads = 0;
+    while (entry < last) {
+      uint32_t nsec = (last - entry + 127) / 128;
+      if (nsec > 8) nsec = 8;
+      if (!SD.card()->readSectors(sector, (uint8_t*)fatbuf, nsec)) return false;
+      uint32_t n = nsec * 128;
+      if (n > last - entry) n = last - entry;
+      for (uint32_t i = 0; i < n; i++) {
+        if (entry + i >= 2 && (fatbuf[i] & 0x0FFFFFFFUL) == 0) freec++;
+      }
+      entry += n;
+      sector += nsec;
+      if ((++reads & 31) == 0) { loop_sound(); yield(); }
+    }
+    *out = freec;
+    return true;
+  }
+  const int32_t f = SD.freeClusterCount();
+  if (f < 0) return false;
+  *out = (uint32_t)f;
+  return true;
+}
+
+// PONS:SDINFO,<空き KB>,<全体 KB>,<FAT の種類 12|16|32|64(exFAT)> / PONS:SDINFO,ERR
+static void serial_print_sdinfo() {
+  if (sdwipe_should_stop()) return;
+  if (!s_sdinfo_valid || s_sdinfo_session != webserial_session) {
+    uint32_t freec = 0;
+    if (!sdinfo_count_free(&freec)) {
+      Serial.println("PONS:SDINFO,ERR");
+      return;
+    }
+    const uint64_t bpc = SD.bytesPerCluster();
+    s_sdinfo_free_kb  = (uint32_t)((uint64_t)freec * bpc / 1024ULL);
+    s_sdinfo_total_kb = (uint32_t)((uint64_t)SD.clusterCount() * bpc / 1024ULL);
+    s_sdinfo_type     = SD.fatType();
+    s_sdinfo_session  = webserial_session;
+    s_sdinfo_valid    = true;
+  }
+  Serial.printf("PONS:SDINFO,%lu,%lu,%u\r\n", (unsigned long)s_sdinfo_free_kb, (unsigned long)s_sdinfo_total_kb,
+                (unsigned)s_sdinfo_type);
+}
+
+// ---- ゴミ箱へ移すもの ----
+// 移すファイルを走査の順（SDWIPE_DIR_* の順・フォルダの登録順）に on_file(path, size, cat) へ渡す。
+// on_file が false を返したらそこで終える。on_keep(path, size) には、ログのフォルダ（data/・received/・imuraw/）の中で
+// 名前の形が違うファイル（残すもの。過去大会のデータなど）を渡す。戻り値: 途中で止められた（sdwipe_should_stop）なら false。
+// ★ 走査の順は、間に何も書かなければ毎回同じ（指紋を数え直して比べられるのはそのため）。
+template <typename OnFile, typename OnKeep>
+static bool sdwipe_walk(uint8_t mask, OnFile on_file, OnKeep on_keep) {
+  for (int d = 0; d < SDWIPE_DIR_COUNT; d++) {
+    const char* dpath = sdwipe_dir_path(d);
+    FsFile dir = SD.open(dpath, O_RDONLY);
+    if (!dir || !dir.isDirectory()) {   // まだ無いフォルダ（受信したことの無い機体の received/ など）
+      if (dir) dir.close();
+      continue;
+    }
+    uint32_t n = 0;
+    while (true) {
+      if (sdwipe_should_stop()) { dir.close(); return false; }
+      FsFile e = dir.openNextFile();
+      if (!e) break;
+      char name[64];
+      if (!e.getName(name, sizeof(name))) strlcpy(name, "(long name)", sizeof(name));   // 長すぎる名前は扱うものの形に合わない
+      const bool isdir = e.isDirectory();
+      const uint32_t sz = isdir ? 0 : (uint32_t)e.size();
+      e.close();
+      if (!isdir) {
+        char path[SDWIPE_PATH_MAX];
+        if (d == SDWIPE_DIR_ROOT) strlcpy(path, name, sizeof(path));
+        else                      snprintf(path, sizeof(path), "%s/%s", dpath, name);
+        const uint8_t cat = sdwipe_category(d, name);
+        if (cat & mask) {
+          if (!on_file(path, sz, cat)) { dir.close(); return true; }
+        } else if (cat == 0 && d != SDWIPE_DIR_ROOT && name[0] != '.') {
+          on_keep(path, sz);
+        }
+      }
+      if ((++n & 15) == 0) { loop_sound(); yield(); }
+    }
+    dir.close();
+  }
+  return true;
+}
+
+// ---- ゴミ箱の中 ----
+// trash/ の中のファイルを on_file(path, size) へ渡す（trash/<回>/… を深さ 2 まで。登録順・深さ優先）。only_batch を渡すと
+// その回だけ（trash/ 直下のファイルは渡さない）。パスが SDWIPE_PATH_MAX に入らないファイルは渡さない（切り詰めた名前で
+// 別のファイルを扱わない）。戻り値: 0 = 終わり / 1 = on_file が false を返して途中で終えた / -1 = 止められた
+template <typename OnFile>
+static int trash_walk_dir(const char* dpath, int depth, const char* only_batch, OnFile& on_file) {
+  FsFile dir = SD.open(dpath, O_RDONLY);
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return 0;
+  }
+  int ret = 0;
+  uint32_t n = 0;
+  while (ret == 0) {
+    if (sdwipe_should_stop()) { ret = -1; break; }
+    FsFile e = dir.openNextFile();
+    if (!e) break;
+    char name[64];
+    const bool named = e.getName(name, sizeof(name)) > 0;
+    const bool isdir = e.isDirectory();
+    const uint32_t sz = isdir ? 0 : (uint32_t)e.size();
+    e.close();
+    if (!named) continue;
+    char path[SDWIPE_PATH_MAX];
+    const int len = snprintf(path, sizeof(path), "%s/%s", dpath, name);
+    if (len <= 0 || len >= (int)sizeof(path)) continue;
+    if (isdir) {
+      if (depth >= 2) continue;   // 本体が作るのは trash/<回>/<フォルダ>/<ファイル> まで
+      if (depth == 0 && only_batch && !sdwipe_ieq(name, only_batch)) continue;
+      ret = trash_walk_dir(path, depth + 1, only_batch, on_file);
+    } else {
+      if (depth == 0 && only_batch) continue;
+      if (!on_file(path, sz)) ret = 1;
+    }
+    if ((++n & 15) == 0) { loop_sound(); yield(); }
+  }
+  dir.close();
+  return ret;
+}
+template <typename OnFile>
+static bool trash_walk(const char* only_batch, OnFile on_file) {   // 止められたら false
+  return trash_walk_dir(SDWIPE_TRASH_DIR, 0, only_batch, on_file) >= 0;
+}
+
+// path の中の空になったフォルダを消し、最後に path そのものも空なら消す（深さ 2 まで）。中にファイルが残るフォルダはそのまま。
+// ★ 開いているフォルダの中身を消しながら読み進めない（8 件ずつ名前を控えて閉じてから。残ったフォルダの数だけ次の周で飛ばす）
+static void trash_prune(const char* path, int depth) {
+  static char names[3][8][32];
+  if (depth < 0 || depth > 2) return;
+  uint32_t skip = 0;
+  for (int round = 0; round < 250; round++) {
+    FsFile dir = SD.open(path, O_RDONLY);
+    if (!dir || !dir.isDirectory()) {
+      if (dir) dir.close();
+      return;
+    }
+    int n = 0;
+    uint32_t sk = skip;
+    while (n < 8) {
+      FsFile e = dir.openNextFile();
+      if (!e) break;
+      char nm[32];
+      const bool named = e.getName(nm, sizeof(nm)) > 0;
+      const bool isd = e.isDirectory();
+      e.close();
+      if (!isd || !named) continue;
+      if (sk > 0) { sk--; continue; }
+      strlcpy(names[depth][n++], nm, sizeof(names[depth][0]));
+    }
+    dir.close();
+    if (n == 0) break;
+    for (int i = 0; i < n; i++) {
+      char child[SDWIPE_PATH_MAX];
+      const int len = snprintf(child, sizeof(child), "%s/%s", path, names[depth][i]);
+      if (len <= 0 || len >= (int)sizeof(child)) { skip++; continue; }
+      if (depth < 2) trash_prune(child, depth + 1);   // 中を片付けて、空なら child も消える
+      else           SD.rmdir(child);
+      if (SD.exists(child)) skip++;                   // 残った（中にファイルがある）
+    }
+    loop_sound();
+    yield();
+  }
+  SD.rmdir(path);   // 空なら消える。中身があれば失敗するだけ
+}
+
+// ゴミ箱の次の回の通し番号（1〜）。trash がファイルなど使えなければ -1
+static int trash_next_batch_no() {
+  FsFile dir = SD.open(SDWIPE_TRASH_DIR, O_RDONLY);
+  if (!dir) return 1;
+  if (!dir.isDirectory()) { dir.close(); return -1; }
+  int maxn = 0;
+  while (true) {
+    FsFile e = dir.openNextFile();
+    if (!e) break;
+    char nm[32];
+    const bool named = e.getName(nm, sizeof(nm)) > 0;
+    const bool isd = e.isDirectory();
+    e.close();
+    if (named && isd) {
+      const int k = sdwipe_batch_number(nm);
+      if (k > maxn) maxn = k;
+    }
+  }
+  dir.close();
+  return maxn + 1;
+}
+
+// trash/<回>/<rel> を元の場所へ戻すときの行き先。本体が書いた名前の形でなければ false（ゴミ箱に残す）。
+// batch_len は回の名前の長さ（walk が大文字・小文字を区別せずに選んだので、名前そのものでなく長さで切る）
+static bool trash_restore_target(const char* path, size_t batch_len, char* dst, size_t dstsz,
+                                 char* name_out, size_t namesz, int* dir_idx) {
+  const size_t pre = strlen(SDWIPE_TRASH_DIR) + 1 + batch_len + 1;   // "trash/<回>/"
+  if (strlen(path) <= pre) return false;
+  const char* rel = path + pre;
+  const char* slash = strchr(rel, '/');
+  int d = SDWIPE_DIR_ROOT;
+  const char* name = rel;
+  if (slash) {
+    char sub[16];
+    const size_t sl = (size_t)(slash - rel);
+    if (sl == 0 || sl >= sizeof(sub)) return false;
+    memcpy(sub, rel, sl);
+    sub[sl] = '\0';
+    d = -1;
+    for (int k = SDWIPE_DIR_FLIGHT; k < SDWIPE_DIR_COUNT; k++) {
+      if (sdwipe_ieq(sub, sdwipe_dir_path(k))) { d = k; break; }
+    }
+    if (d < 0) return false;
+    name = slash + 1;
+  }
+  if (sdwipe_category(d, name) == 0) return false;
+  int len;
+  if (d == SDWIPE_DIR_ROOT) len = snprintf(dst, dstsz, "%s", name);
+  else                      len = snprintf(dst, dstsz, "%s/%s", sdwipe_dir_path(d), name);
+  if (len <= 0 || (size_t)len >= dstsz) return false;
+  if (strlcpy(name_out, name, namesz) >= namesz) return false;
+  *dir_idx = d;
+  return true;
+}
+
+// 番号とパスワードを確かめる（ゴミ箱へ移す・空にする）。だめなら WIPE_ERR を出して false。
+// ★ 番号は当たり外れにかかわらずここで使い切る（打ち直しで当てられない。Re:PONS は調べ直して新しい番号を出させる）。
+//   番号が違うときはパスワードを見ない（違えた回数に数えない。取り違えた本体や打ち間違いでロックしない）。
+static bool sdwipe_check_auth(uint16_t code_given, const char* password) {
+  if (PONS_SD_WIPE_PASSWORD[0] == '\0') { Serial.println("PONS:WIPE_ERR,NO_PASSWORD"); return false; }
+  if (s_wipe_wrong >= SDWIPE_MAX_WRONG) { Serial.println("PONS:WIPE_ERR,LOCKED");      return false; }
+  const int code = sdwipe_take_code();
+  if (code < 0) {
+    sdwipe_screen_msg("Code expired - check again");
+    Serial.println("PONS:WIPE_ERR,NO_CODE");
+    return false;
+  }
+  if (code != (int)code_given) {
+    log_sdf("PC SD WIPE: wrong screen code");
+    sdwipe_screen_msg("Wrong code - check again");
+    Serial.println("PONS:WIPE_ERR,BAD_CODE");
+    return false;
+  }
+  if (!sdwipe_password_match(PONS_SD_WIPE_PASSWORD, password)) {
+    s_wipe_wrong++;
+    const bool locked = s_wipe_wrong >= SDWIPE_MAX_WRONG;
+    log_sdf("PC SD WIPE: wrong password (%u/%u)%s", (unsigned)s_wipe_wrong, (unsigned)SDWIPE_MAX_WRONG,
+            locked ? " -> refuse until reboot" : "");
+    if (locked) {
+      sdwipe_screen_msg("Locked until restart");
+      Serial.println("PONS:WIPE_ERR,LOCKED");
+    } else {
+      sdwipe_screen_msg("Wrong password (%u left)", (unsigned)(SDWIPE_MAX_WRONG - s_wipe_wrong));
+      Serial.printf("PONS:WIPE_ERR,BAD_PASSWORD,%u\r\n", (unsigned)(SDWIPE_MAX_WRONG - s_wipe_wrong));
+    }
+    return false;
+  }
+  s_wipe_wrong = 0;
+  return true;
+}
+
+// 進み具合（0.25 秒ごとに PC と本体の画面へ）。1 件ごとに呼ぶ
+struct SdWipeProgress {
+  const char* what;          // 本体の画面の言葉（"Moving to trash" など）
+  uint32_t last_ms;
+  void operator()(uint32_t processed, uint32_t total) {
+    if ((uint32_t)(millis() - last_ms) >= 250) {
+      last_ms = millis();
+      Serial.printf("PONS:WIPE_PROGRESS,%lu,%lu\r\n", (unsigned long)processed, (unsigned long)total);
+      sdwipe_screen_msg("%s %lu/%lu", what, (unsigned long)processed, (unsigned long)total);
+    }
+    loop_sound();
+    yield();
+  }
+};
+
+// PONS:WIPE_SCAN,<mask> — 一覧を返して本体の画面に番号を出す（何も動かさない）。
+//   PONS:WIPE_FILE,<種類>,<バイト数>,<パス> / PONS:WIPE_KEEP,<バイト数>,<パス> / PONS:TRASH_FILE,<バイト数>,<パス> /
+//   PONS:SDINFO,... / PONS:WIPE_SCAN_END,<mask>,<件数>,<指紋>,<ゴミ箱の件数>,<ゴミ箱の指紋>,<NONE|あと何回>,<OK|STOPPED>
+void serial_wipe_scan(uint8_t mask) {
+  ASSERT_SD_CORE1("serial_wipe_scan");
+  if (!good_sd()) {
+    Serial.println("PONS:WIPE_ERR,SD_NOT_READY");
+    return;
+  }
+  webserial_prepare_sd();   // 開いているログを閉じる（大きさを書き切った値で出す。PONS:LIST と同じ）
+  uint32_t count = 0, fp = SDWIPE_FP_INIT;
+  bool ok = sdwipe_walk(mask,
+      [&](const char* path, uint32_t sz, uint8_t cat) {
+        count++;
+        fp = sdwipe_fp_add(fp, path);
+        Serial.printf("PONS:WIPE_FILE,%u,%lu,%s\r\n", (unsigned)cat, (unsigned long)sz, path);
+        return true;
+      },
+      [&](const char* path, uint32_t sz) {
+        Serial.printf("PONS:WIPE_KEEP,%lu,%s\r\n", (unsigned long)sz, path);
+      });
+  uint32_t tcount = 0, tfp = SDWIPE_FP_INIT;
+  if (ok) {
+    ok = trash_walk(nullptr, [&](const char* path, uint32_t sz) {
+      tcount++;
+      tfp = sdwipe_fp_add(tfp, path);
+      Serial.printf("PONS:TRASH_FILE,%lu,%s\r\n", (unsigned long)sz, path);
+      return true;
+    });
+  }
+  if (ok) serial_print_sdinfo();
+  // 番号は、パスワードが使えるときだけ出す（使えなければ出しても意味が無い）
+  if (ok && sdwipe_password_usable()) sdwipe_issue_code();
+  // パスワードの状態: NONE = 本体に設定が無い / 0 = 違え続けたので再起動まで受けない / それ以外 = あと何回
+  char pw[8];
+  if (PONS_SD_WIPE_PASSWORD[0] == '\0') strlcpy(pw, "NONE", sizeof(pw));
+  else snprintf(pw, sizeof(pw), "%u", (unsigned)(SDWIPE_MAX_WRONG - s_wipe_wrong));
+  // 止められても終わりの行は出す（Re:PONS が「走査中」から抜ける印。PONS:LIST の LIST_END と同じ）
+  if (usb_power_present()) {
+    Serial.printf("PONS:WIPE_SCAN_END,%u,%lu,%08lX,%lu,%08lX,%s,%s\r\n", (unsigned)mask, (unsigned long)count,
+                  (unsigned long)fp, (unsigned long)tcount, (unsigned long)tfp, pw, ok ? "OK" : "STOPPED");
+  }
+  Serial.flush();
+}
+
+// PONS:WIPE,<mask>,<件数>,<指紋>,<番号>,<日時>,<パスワード> — 確かめてからゴミ箱（trash/<回>/）へ移す。
+//   PONS:WIPE_PROGRESS,<済んだ数>,<全部> / PONS:WIPE_DONE,<移した数>,<移せなかった数>,<OK|STOPPED>,<回の名前> /
+//   PONS:WIPE_ERR,<SD_NOT_READY|REPLAY|NO_PASSWORD|LOCKED|NO_CODE|BAD_CODE|BAD_PASSWORD,<あと何回>|CHANGED|TRASH_FULL|TRASH_FAILED>
+void serial_wipe(const Task& tk) {
+  ASSERT_SD_CORE1("serial_wipe");
+  const auto& a = tk.serialWipeArgs;
+  // ★ パスワードは log.txt にもデバッグ出力にも書かない（RAM から消す手間はかけない。照合する値が本体の FLASH に平文である）
+  if (!good_sd())      { Serial.println("PONS:WIPE_ERR,SD_NOT_READY"); return; }
+  if (getReplayMode()) { Serial.println("PONS:WIPE_ERR,REPLAY");       return; }
+  if (!sdwipe_check_auth(a.code, a.password)) return;
+
+  // ★ 開いているログ（log.txt・飛行 CSV・受信 CSV・生 IMU）を閉じてから移す。開いたまま名前を付け替えると、あとで閉じるときに
+  //   ゴミ箱のファイルへ書く（log.txt なら記録がゴミ箱の中へ続く）。ここから移し終えるまで log_sdf() を呼ばない（log.txt を開き直してしまう）。
+  webserial_prepare_sd();
+
+  // 確かめた一覧と同じか（件数と名前の指紋）
+  uint32_t count = 0, fp = SDWIPE_FP_INIT;
+  if (!sdwipe_walk(a.mask,
+          [&](const char* path, uint32_t, uint8_t) { count++; fp = sdwipe_fp_add(fp, path); return true; },
+          [](const char*, uint32_t) {})) {
+    if (usb_power_present()) Serial.println("PONS:WIPE_DONE,0,0,STOPPED,-");
+    return;
+  }
+  if (count != a.count || fp != a.fp) {
+    log_sdf("PC SD WIPE: refused, files changed since the check (now %lu files, checked %lu)",
+            (unsigned long)count, (unsigned long)a.count);
+    sdwipe_screen_msg("SD changed - check again");
+    Serial.println("PONS:WIPE_ERR,CHANGED");
+    return;
+  }
+  if (count == 0) {
+    Serial.println("PONS:WIPE_DONE,0,0,OK,-");
+    return;
+  }
+
+  // ゴミ箱の回のフォルダ（trash/003_20261125-1430）
+  const int no = trash_next_batch_no();
+  char bname[SDWIPE_BATCH_NAME_MAX + 1];
+  if (no < 1 || no > SDWIPE_BATCH_MAX || !sdwipe_batch_name(no, a.stamp, bname, sizeof(bname))) {
+    log_sdf("PC SD WIPE: trash full or unusable (next no %d)", no);
+    sdwipe_screen_msg("Trash full - empty it first");
+    Serial.println("PONS:WIPE_ERR,TRASH_FULL");
+    return;
+  }
+  char bdir[SDWIPE_PATH_MAX];
+  snprintf(bdir, sizeof(bdir), "%s/%s", SDWIPE_TRASH_DIR, bname);
+  if (SD.exists(bdir) || !SD.mkdir(bdir, true)) {
+    log_sdf("PC SD WIPE: cannot make %s", bdir);
+    sdwipe_screen_msg("Cannot make trash folder");
+    Serial.println("PONS:WIPE_ERR,TRASH_FAILED");
+    return;
+  }
+
+  // 移す（手順と、走査しながら移さない理由は src/sd_wipe_rules.h の sdwipe_delete_batched）
+  char last_parent[SDWIPE_PATH_MAX] = "";
+  Serial.printf("PONS:WIPE_PROGRESS,0,%lu\r\n", (unsigned long)count);
+  SdWipeProgress prog{ "Moving to trash", millis() };
+  const SdWipeResult r = sdwipe_delete_batched(count,
+      [&](auto fn) {
+        return sdwipe_walk(a.mask, [&](const char* path, uint32_t sz, uint8_t) { return fn(path, sz); },
+                           [](const char*, uint32_t) {});
+      },
+      [&](const char* path) -> bool {
+        char dst[SDWIPE_PATH_MAX];
+        const int len = snprintf(dst, sizeof(dst), "%s/%s", bdir, path);
+        if (len <= 0 || len >= (int)sizeof(dst)) return false;
+        // 行き先のフォルダ（trash/<回> か trash/<回>/<data など>）。フォルダが変わったときだけ確かめる
+        char parent[SDWIPE_PATH_MAX];
+        strlcpy(parent, dst, sizeof(parent));
+        char* sl = strrchr(parent, '/');
+        if (!sl) return false;
+        *sl = '\0';
+        if (strcmp(parent, last_parent) != 0) {
+          if (!SD.exists(parent) && !SD.mkdir(parent, true)) return false;
+          strlcpy(last_parent, parent, sizeof(last_parent));
+        }
+        return SD.rename(path, dst);
+      },
+      []() { return sdwipe_should_stop(); },
+      prog);
+
+  // ここから log.txt へ書いてよい（log.txt を移したなら、新しい log.txt の最初の行になる）
+  if (r.done == 0) {
+    // 1 つも移せなかった回のフォルダは残さない（中に作った空の data/ なども一緒に。ゴミ箱が空なら trash も）
+    trash_prune(bdir, 1);
+    SD.rmdir(SDWIPE_TRASH_DIR);
+  }
+  log_sdf("PC SD WIPE: mask=0x%02X moved %lu of %lu files (%lu KB) to %s, failed %lu%s", (unsigned)a.mask,
+          (unsigned long)r.done, (unsigned long)count, (unsigned long)(r.freed / 1024), bdir, (unsigned long)r.failed,
+          r.stopped ? ", stopped" : "");
+  if (r.failed == 0 && !r.stopped) sdwipe_screen_msg("Moved %lu files to trash", (unsigned long)r.done);
+  else sdwipe_screen_msg("Moved %lu, failed %lu%s", (unsigned long)r.done, (unsigned long)r.failed, r.stopped ? " (stop)" : "");
+  if (usb_power_present()) {
+    Serial.printf("PONS:WIPE_DONE,%lu,%lu,%s,%s\r\n", (unsigned long)r.done, (unsigned long)r.failed,
+                  r.stopped ? "STOPPED" : "OK", r.done > 0 ? bname : "-");
+  }
+  Serial.flush();
+}
+
+// PONS:TRASH_EMPTY,<件数>,<指紋>,<番号>,<パスワード> — 確かめてからゴミ箱の中を全部消す（ここだけが本当に消す）。
+//   PONS:WIPE_PROGRESS,... / PONS:TRASH_EMPTY_DONE,<消した数>,<消せなかった数>,<OK|STOPPED> / PONS:WIPE_ERR,...（PONS:WIPE と同じ）
+void serial_trash_empty(const Task& tk) {
+  ASSERT_SD_CORE1("serial_trash_empty");
+  const auto& a = tk.serialWipeArgs;
+  if (!good_sd()) { Serial.println("PONS:WIPE_ERR,SD_NOT_READY"); return; }
+  if (!sdwipe_check_auth(a.code, a.password)) return;
+  webserial_prepare_sd();
+
+  uint32_t count = 0, fp = SDWIPE_FP_INIT;
+  if (!trash_walk(nullptr, [&](const char* path, uint32_t) { count++; fp = sdwipe_fp_add(fp, path); return true; })) {
+    if (usb_power_present()) Serial.println("PONS:TRASH_EMPTY_DONE,0,0,STOPPED");
+    return;
+  }
+  if (count != a.count || fp != a.fp) {
+    log_sdf("PC SD TRASH EMPTY: refused, trash changed since the check (now %lu files, checked %lu)",
+            (unsigned long)count, (unsigned long)a.count);
+    sdwipe_screen_msg("Trash changed - check again");   // 枠（224px）に入る長さ
+    Serial.println("PONS:WIPE_ERR,CHANGED");
+    return;
+  }
+
+  Serial.printf("PONS:WIPE_PROGRESS,0,%lu\r\n", (unsigned long)count);
+  SdWipeProgress prog{ "Emptying trash", millis() };
+  const SdWipeResult r = sdwipe_delete_batched(count,
+      [&](auto fn) { return trash_walk(nullptr, [&](const char* path, uint32_t sz) { return fn(path, sz); }); },
+      [](const char* path) { return SD.remove(path); },
+      []() { return sdwipe_should_stop(); },
+      prog);
+  if (!r.stopped) trash_prune(SDWIPE_TRASH_DIR, 0);   // 空になったフォルダ（trash も）を消す
+  s_sdinfo_valid = false;                               // 空き容量が変わった（次の一覧で数え直す）
+
+  log_sdf("PC SD TRASH EMPTY: deleted %lu of %lu files (%lu KB), failed %lu%s", (unsigned long)r.done,
+          (unsigned long)count, (unsigned long)(r.freed / 1024), (unsigned long)r.failed, r.stopped ? ", stopped" : "");
+  if (r.failed == 0 && !r.stopped) sdwipe_screen_msg("Trash emptied: %lu files", (unsigned long)r.done);
+  else sdwipe_screen_msg("Deleted %lu, failed %lu%s", (unsigned long)r.done, (unsigned long)r.failed, r.stopped ? " (stop)" : "");
+  if (usb_power_present()) {
+    Serial.printf("PONS:TRASH_EMPTY_DONE,%lu,%lu,%s\r\n", (unsigned long)r.done, (unsigned long)r.failed,
+                  r.stopped ? "STOPPED" : "OK");
+  }
+  Serial.flush();
+}
+
+// PONS:TRASH_RESTORE,<回の名前> — ゴミ箱の 1 回分を元の場所へ戻す（上書きしない。番号・パスワードは要らない＝何も消さない）。
+//   本体が書いた名前の形のファイルだけ戻す（ほかはゴミ箱に残す）。同じ名前が既にあれば "_r<回>" を付けて戻し、それも在れば残す。
+//   PONS:WIPE_PROGRESS,... / PONS:TRASH_RESTORE_DONE,<戻した数>,<名前を変えて戻した数>,<残した数>,<OK|STOPPED> /
+//   PONS:WIPE_ERR,<SD_NOT_READY|BAD_ARG|NOT_FOUND>
+void serial_trash_restore(const Task& tk) {
+  ASSERT_SD_CORE1("serial_trash_restore");
+  const char* batch = tk.serialWipeArgs.batch;
+  if (!good_sd()) { Serial.println("PONS:WIPE_ERR,SD_NOT_READY"); return; }
+  if (!sdwipe_batch_arg_ok(batch)) { Serial.println("PONS:WIPE_ERR,BAD_ARG"); return; }
+  webserial_prepare_sd();   // log.txt を閉じる（無ければ戻した log.txt に、このあとの行が続く）
+  char bdir[SDWIPE_PATH_MAX];
+  snprintf(bdir, sizeof(bdir), "%s/%s", SDWIPE_TRASH_DIR, batch);
+  {
+    FsFile d = SD.open(bdir, O_RDONLY);
+    const bool isdir = d && d.isDirectory();
+    if (d) d.close();
+    if (!isdir) { Serial.println("PONS:WIPE_ERR,NOT_FOUND"); return; }
+  }
+  const size_t blen = strlen(batch);
+  const int bno = sdwipe_batch_number(batch);
+
+  // 戻せるもの（本体が書いた名前の形）と、残すもの
+  uint32_t count = 0, other = 0;
+  if (!trash_walk(batch, [&](const char* path, uint32_t) {
+        char dst[SDWIPE_PATH_MAX], nm[64];
+        int d;
+        if (trash_restore_target(path, blen, dst, sizeof(dst), nm, sizeof(nm), &d)) count++;
+        else other++;
+        return true;
+      })) {
+    if (usb_power_present()) Serial.println("PONS:TRASH_RESTORE_DONE,0,0,0,STOPPED");
+    return;
+  }
+
+  uint32_t restored = 0, renamed = 0;
+  Serial.printf("PONS:WIPE_PROGRESS,0,%lu\r\n", (unsigned long)count);
+  SdWipeProgress prog{ "Restoring", millis() };
+  const SdWipeResult r = sdwipe_delete_batched(count,
+      [&](auto fn) {
+        return trash_walk(batch, [&](const char* path, uint32_t sz) {
+          char dst[SDWIPE_PATH_MAX], nm[64];
+          int d;
+          if (!trash_restore_target(path, blen, dst, sizeof(dst), nm, sizeof(nm), &d)) return true;   // 戻さないものは飛ばす
+          return fn(path, sz);
+        });
+      },
+      [&](const char* path) -> bool {
+        char dst[SDWIPE_PATH_MAX], nm[64];
+        int d;
+        if (!trash_restore_target(path, blen, dst, sizeof(dst), nm, sizeof(nm), &d)) return false;
+        if (d != SDWIPE_DIR_ROOT && !SD.exists(sdwipe_dir_path(d)) && !SD.mkdir(sdwipe_dir_path(d), true)) return false;
+        if (!SD.exists(dst)) {
+          if (!SD.rename(path, dst)) return false;
+          restored++;
+          return true;
+        }
+        // 同じ名前が在る（log.txt・その起動の CSV など）: 上書きせず "_r<回>" を付けて戻す
+        char alt[64], dst2[SDWIPE_PATH_MAX];
+        if (!sdwipe_restore_name(nm, bno, alt, sizeof(alt))) return false;
+        const int len = (d == SDWIPE_DIR_ROOT) ? snprintf(dst2, sizeof(dst2), "%s", alt)
+                                               : snprintf(dst2, sizeof(dst2), "%s/%s", sdwipe_dir_path(d), alt);
+        if (len <= 0 || len >= (int)sizeof(dst2) || SD.exists(dst2)) return false;
+        if (!SD.rename(path, dst2)) return false;
+        renamed++;
+        return true;
+      },
+      []() { return sdwipe_should_stop(); },
+      prog);
+  trash_prune(bdir, 1);         // 空になった回のフォルダを消す
+  SD.rmdir(SDWIPE_TRASH_DIR);   // ゴミ箱が空なら trash も消す（中身があれば失敗するだけ）
+
+  const uint32_t left = other + (count - r.done);
+  log_sdf("PC SD TRASH RESTORE %s: restored %lu (renamed %lu), left %lu%s", batch, (unsigned long)r.done,
+          (unsigned long)renamed, (unsigned long)left, r.stopped ? ", stopped" : "");
+  sdwipe_screen_msg("Restored %lu files%s", (unsigned long)r.done, left > 0 ? " (some left)" : "");
+  if (usb_power_present()) {
+    Serial.printf("PONS:TRASH_RESTORE_DONE,%lu,%lu,%lu,%s\r\n", (unsigned long)restored, (unsigned long)renamed,
+                  (unsigned long)left, r.stopped ? "STOPPED" : "OK");
   }
   Serial.flush();
 }

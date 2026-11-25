@@ -3,7 +3,7 @@
 // Project : PONS v7 / v7.1 Re:PONS
 // Role    : 暗号化した過去の大会ログ（tools/olddata/*.enc。PONSENC2）をパスワードで開いて再生する
 // Author  : Claude (2026-11-20)
-// Updated : 2026-11-21
+// Updated : 2026-11-25
 // ============================================================
 //
 // 形式は tools/olddata_crypt.py と同じ: "PONSENC2" | KDF=1, 反復回数, 0 (uint32 LE) | salt 16B | nonce 12B | 暗号文+tag
@@ -241,6 +241,8 @@
       return;
     }
     files = files.filter(f => /\.csv\.enc$/i.test(f.file));   // videos.json.enc は一覧に出さない（ログを開くときに一緒に読む）
+    // 新しい年が上（2026-11-25〜。名前が YYYY-MM-DD_HHMM で始まるので名前の降順）
+    files.sort((a, b) => (b.file > a.file) - (b.file < a.file));
     if (files.length === 0) { list.innerHTML = '<div class="od-note">ログがありません。</div>'; return; }
     list.innerHTML = '';
     files.forEach((f) => {

@@ -11,7 +11,7 @@
     // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
     // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
     // CSS と JS は ?v= にこの版数を付けて読むので、HTML と CSS・JS の版が食い違うことはない。
-    const VIEWER_VERSION = '2026.11.23.5';
+    const VIEWER_VERSION = '2026.11.25.8';
     document.write('<link rel="stylesheet" href="repons.css?v=' + VIEWER_VERSION + '">');
   </script>
 </head>
@@ -39,7 +39,10 @@
             <div>状態: <span id="serial-status-text" style="font-weight:bold;">PONSに接続してください</span></div>
             <div id="serial-board-ver" style="font-family:var(--font-mono); font-size:0.85rem; color:#64748b;"></div>
           </div>
-          <button id="btn-open-settings" onclick="openSettingsModal()" disabled style="padding:7px 14px; font-weight:bold; border-color:#2563eb; color:#1d4ed8; background:#eff6ff; border-radius:7px; cursor:pointer;">⚙️ 本体設定を確認・変更</button>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="btn-open-settings" onclick="openSettingsModal()" disabled style="padding:7px 14px; font-weight:bold; border-color:#2563eb; color:#1d4ed8; background:#eff6ff; border-radius:7px; cursor:pointer;">⚙️ 本体設定を確認・変更</button>
+            <button id="btn-open-wipe" onclick="openWipeModal()" disabled title="本体が書いたログ（飛行・受信・生 IMU・log.txt）をゴミ箱へ移す・戻す・ゴミ箱を空にする。空き容量も見られます" style="padding:7px 14px; font-weight:bold; border-color:#fca5a5; color:#b91c1c; background:#fef2f2; border-radius:7px; cursor:pointer;">🧹 SD の整理</button>
+          </div>
         </div>
 
         <!-- 転送進捗表示 -->
@@ -62,7 +65,7 @@
 
         <!-- SDカード内ファイル一覧 -->
         <div style="font-weight:bold; font-size:0.95rem; color:#1e293b; display:flex; justify-content:space-between; align-items:center;">
-          <span>📂 SDカード内のファイル</span>
+          <span>📂 SDカード内のファイル <span id="serial-sd-free" style="font-weight:normal; font-size:0.8rem; color:#64748b; margin-left:6px;"></span></span>
           <button onclick="requestFileList()" style="padding:3px 8px; font-size:0.8rem;">🔄 再読み込み</button>
         </div>
         <!-- タブ（2026-11-15〜）。「IMU 生ログ」と「その他」は開発用で、取ってそのまま PC に保存するだけ -->
@@ -212,6 +215,72 @@
     </div>
   </div>
 
+  <!-- SD の整理（2026-11-25〜。sd_wipe.js）。ログをゴミ箱へ移す・ゴミ箱から戻す・ゴミ箱を空にする・空き容量。
+       どれを扱うか・番号とパスワードの照合・直前の数え直しは本体がする。docs/pons_webserial_protocol.md §4 (10) -->
+  <div id="wipe-modal">
+    <div class="wipe-box">
+      <div class="settings-header">
+        <span style="font-weight:bold; font-size:1.02rem;">🧹 SD の整理（ログ・ゴミ箱）</span>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <button id="btn-wipe-rescan" onclick="rescanWipe()" style="padding:3px 8px; font-size:0.8rem;">🔄 調べ直す</button>
+          <button onclick="closeWipeModal()" style="border:none; background:none; font-size:1.2rem; cursor:pointer;">✕</button>
+        </div>
+      </div>
+      <div class="wipe-body">
+        <div id="wipe-sd-free" class="wipe-sd"></div>
+
+        <section class="wipe-sec wipe-auth">
+          <div class="wipe-sec-title">移す・空にするときに要るもの（戻すときは要りません）</div>
+          <div class="wipe-pw">
+            <label for="wipe-code">本体の画面の番号</label>
+            <input type="text" id="wipe-code" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" spellcheck="false"
+                   placeholder="4 桁" class="wipe-code-input" oninput="onWipeAuthInput()">
+            <label for="wipe-password">本体のパスワード</label>
+            <input type="password" id="wipe-password" autocomplete="new-password" maxlength="32" spellcheck="false"
+                   oninput="onWipeAuthInput()" onkeydown="onWipePasswordKey(event)">
+            <div id="wipe-pw-note" class="wipe-pw-note"></div>
+          </div>
+        </section>
+
+        <section class="wipe-sec">
+          <div class="wipe-sec-title">① ログをゴミ箱へ移す</div>
+          <div class="wipe-note">
+            扱うのは<b>本体が書いた名前のログだけ</b>です。設定（settings.txt）・地図・目的地・パイロンの上書き・GNSS の DBD・BT1 の推定・
+            ジャイロのゼロ点と、<b>data/ に置いた過去大会のデータ</b>など名前の形が違うファイルは残ります。
+            移したものは SD の <code>trash/</code> に入り、<b>元に戻せます</b>。空き容量は「ゴミ箱を空にする」まで増えません。
+          </div>
+          <div id="wipe-cats" class="wipe-cats"></div>
+          <div id="wipe-summary" class="wipe-summary"></div>
+          <details class="wipe-list"><summary>ゴミ箱へ移すファイル<span id="wipe-files-count"></span></summary><div id="wipe-files"></div></details>
+          <details class="wipe-list"><summary>残すファイル（data/・received/・imuraw/ の中で名前の形が違うもの）<span id="wipe-keep-count"></span></summary><div id="wipe-keep"></div></details>
+          <div style="text-align:right;">
+            <button id="btn-wipe-exec" class="btn-danger" onclick="executeWipe()" disabled>🗑 ゴミ箱へ移す...</button>
+          </div>
+        </section>
+
+        <section class="wipe-sec">
+          <div class="wipe-sec-title">② ゴミ箱（trash/）</div>
+          <div id="wipe-trash-summary" class="wipe-summary"></div>
+          <div id="wipe-trash" class="trash-batches"></div>
+          <div class="wipe-warn">⚠️ <b>「ゴミ箱を空にする」は元に戻せません。</b>要るログは先にファイルの一覧の「💾 保存」で PC へ保存するか、「↩️ 元に戻す」で戻してください。</div>
+          <div style="text-align:right;">
+            <button id="btn-trash-empty" class="btn-danger" onclick="executeTrashEmpty()" disabled>🔥 ゴミ箱を空にする...</button>
+          </div>
+        </section>
+
+        <div id="wipe-progress" class="progress-box" style="display:none;">
+          <div class="progress-bar-bg"><div class="progress-bar-fill" id="wipe-progress-fill" style="background:linear-gradient(90deg,#dc2626,#b91c1c);"></div></div>
+          <div id="wipe-progress-text" style="font-size:0.82rem; color:#475569;"></div>
+        </div>
+        <div id="wipe-message" class="wipe-message" style="display:none;"></div>
+      </div>
+      <div class="settings-footer">
+        <span></span>
+        <button onclick="closeWipeModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ヘッダー -->
   <header>
     <div class="header-left">
@@ -233,6 +302,7 @@
       <button onclick="loadSampleRxFlight()" style="border-color: #ea580c; color: #ea580c; font-weight:bold;">📡 受信デモ読込</button>
       <button onclick="openOldDataMenu()" style="border-color: #0f766e; color: #0f766e; font-weight:bold;" title="暗号化した 2024〜2026 年の大会ログをパスワードで開きます（tools/olddata/*.enc）">🔒 大会ログ</button>
       <button id="btn-webserial" onclick="connectWebSerial()" style="border-color: var(--accent-cyan);">⚡ PONSに接続 (USB)</button>
+      <button id="btn-live" onclick="openLiveWindow()" style="border-color:#16a34a; color:#15803d; font-weight:bold;" title="受信機（ボートの PONS）を USB でつなぎ、機体の画面を別窓に描きます（OBS で配信する用。docs/pons_live_stream_plan.md）">📡 ライブ</button>
       <select id="theme-select" onchange="toggleTheme(this.value)">
         <option value="light" selected>☀️ ライト (白ベース)</option>
         <option value="chromakey">🟩 グリーンバック (動画用)</option>
@@ -386,8 +456,8 @@
   <script>
     // JS は ?v=<VIEWER_VERSION> を付けて、この順に読む。**順を変えないこと**（読み込みの最中に動くコードは、
     // 先に読んだファイルの関数・変数しか使えない）。player〜hooks は 2026-11-23 まで index.html の中にあったもの。
-    ['player.js', 'gauges.js', 'serial.js', 'logview.js', 'settings_editor.js', 'hooks.js',
-     'analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js']
+    ['player.js', 'gauges.js', 'serial.js', 'logview.js', 'settings_editor.js', 'sd_wipe.js', 'hooks.js',
+     'analysis_dsp.js', 'analysis_imulog.js', 'analysis_ui.js', 'olddata_open.js', 'video_sync.js', 'live_launcher.js']
       .forEach(f => document.write('<script src="' + f + '?v=' + VIEWER_VERSION + '"><\/script>'));
   </script>
   <script>

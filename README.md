@@ -187,7 +187,7 @@ NAV 画面でスイッチ長押しで入ります。
   * **受信モードでは送信機の縮尺に合わせません**（2026-11-12〜。ボートでは機体と違う縮尺で見られます）。
     `Map scale` の行の後ろに送信機の縮尺を `(S: 18km)` と添え、送信機が標準縮尺なら緑・違えば赤・まだ届いていなければ灰の `(S: --)` で出します。受信機自身の行の右端はハイフン（判定しない）です。
 * 設定は SD の `settings.txt` に自動保存されますが、**DEMO / REPLAY モードは保存されません**（再起動すれば必ず本番航法へ復帰する安全設計）。
-* **`REPLAY/DEMO`** の行から入る画面で、リプレイするファイルとデモの地点（BIWAKO / SHIRAHAMA / KASAOKA / FUJIGAWA / TOKYO / OSAKA）をまとめて選びます。短押しでカーソル移動、長押しで決定（その場で始めて地図画面へ）。先頭の `OFF (Normal GNSS)` でリプレイもデモも止まります。デモとリプレイは同時には使えず、どちらかを始めるともう片方は止まります。
+* **`REPLAY/DEMO`** の行から入る画面で、リプレイするファイルとデモの地点（BIWAKO / SHIRAHAMA / KASAOKA / FUJIGAWA / TOKYO / OSAKA）をまとめて選びます。短押しでカーソル移動、長押しで決定（その場で始めて地図画面へ）。先頭の `OFF (Normal GNSS)` でリプレイもデモも止まります。デモとリプレイは同時には使えず、どちらかを始めるともう片方は止まります。ファイルは新しいものが上に並びます（名前の日時 `YYYY-MM-DD_HHMM` の降順。日付で始まらない名前はその下に名前の順。Re:PONS の SD の一覧も同じく新しい日付が上で、日付ごとに見出しが付きます）。
 * `Save & Exit >>` は他の行と見分けやすいよう中央に寄せてあります。
 * 設定画面を 3 分操作しないと地図へ戻ります。設定画面を含め、**地図以外の画面（IMU/ESKF・GNSS 詳細・VARIO・WIRELESS など）を出したまま動き出すと**（自機の対地速度 2m/s 以上が 5 秒）、地図へ戻ります（降下する 2 音）。受信モードと PC 接続の画面は対象外です。
 * **本番前チェック（画面右上）**:
@@ -316,8 +316,15 @@ NAV 画面でスイッチ長押しで入ります。
 ├── data/                         # 自機の飛行ログ CSV（2Hz。姿勢・風・推定 TAS の列も含む）
 ├── received/                     # PONS Link で受信した他機ログ CSV
 ├── imuraw/                       # 生 IMU バイナリログ（250Hz。2026-11-13 より前は 62.5Hz）
+├── trash/                        # Re:PONS の「SD の整理」で移したログ（trash/<回>/<元のパス>。戻せる。空にするまで場所を取る）
 └── log.txt                       # 起動・診断・通信イベントログ
 ```
+
+* **SD の整理**（2026-11-25〜）: Re:PONS の「🧹 SD の整理」で、本体が書いた名前のログ（`data/`・`received/` の `YYYY-MM-DD_HHMM.csv`、
+  `imuraw/*.bin`、`log.txt`）だけを**ゴミ箱（`trash/`）へ移す**・**戻す**・**ゴミ箱を空にする**。設定・地図・目的地・パイロン・DBD・BT1 の推定と、
+  名前の形が違うファイル（過去大会のデータなど）は扱わない。移す・空にするには **PC 接続中の本体の画面に出る 4 桁の番号**と
+  **本体のパスワード**（`settings.h` の `PONS_SD_WIPE_PASSWORD`。いまは `deletealllog`）が要る。戻すとき同じ名前があれば `_r<回>` を付ける（`log_r003.txt`）。
+  SD の空き容量もファイルの一覧と整理の画面に出る。仕組みは [docs/pons_webserial_protocol.md](docs/pons_webserial_protocol.md) §4 (10)。
 
 * **飛行 CSV フォーマット (`data/*.csv`)**: 2Hz 記録
   ```csv
@@ -353,13 +360,21 @@ NAV 画面でスイッチ長押しで入ります。
 
 * **[Re:PONS](tools/repons/index.html)**（リ・ポンズ。旧名 Flight Viewer）: ブラウザ（Chrome / Edge）完結型の WebSerial ログ吸い出し・可視化再生ツール。
   * 風の三角形（Wind Triangle）、人工水平儀・スリップボール、横滑り角推定（$\text{Est.}\beta$）HUD、自機／受信機（ボート）の連携プロットに対応。
+  * **SD の整理**（2026-11-25〜）: 「🧹 SD の整理」。ログをゴミ箱へ移す・戻す・ゴミ箱を空にする、SD の空き容量。移す・空にするは
+    本体の画面の番号とパスワードと確認のあとで本体がする（照合と直前の数え直しは本体）。`sd_wipe.js`。
   * **SD の log.txt も見られる**（2026-11-11〜）。PC 接続の一覧から開くか、手元の log.txt を開く・ドロップする。起動ごとに分けて
     日時・版・最初の測位・エラーと警告の数を並べ、毎分の行（電池・GNSS の受信・CPU 温度・IMU・BT1・充電）をグラフにし、
     行を種類と重さで色分けして検索・絞り込みできる。log.txt は消されずに伸び続けるので、1MB を超えたらふだんは最新の 1MB だけ取る
     （`PONS:GETTAIL`。「全部」も選べる）。プロトコルは [docs/pons_webserial_protocol.md](docs/pons_webserial_protocol.md)。
   * ファイル: `index.html`（画面と版数）・`repons.css`・`player.js`（再生・地図・CSV）・`gauges.js`（計器・グラフ）・
     `serial.js`（PONS との接続）・`logview.js`（log.txt）・`settings_editor.js`（本体設定）・`hooks.js`・`analysis_*.js`・
-    `olddata_open.js`・`video_sync.js`。CSS と JS は index.html が版数付きでこの順に読む（2026-11-23 に index.html を分けた）。
+    `olddata_open.js`・`video_sync.js`・`live_launcher.js`。CSS と JS は index.html が版数付きでこの順に読む（2026-11-23 に index.html を分けた）。
+  * **ライブ配信**（2026-11-23〜・実機未確認）: ヘッダーの「📡 ライブ」で別窓（`live.html`）を開き、USB でつないだ**受信機**から
+    `PONS:LIVE,ON` で受けた行で**機体の画面を本体と同じ見た目で描き直す**（本体と同じ hires のベクター地図・送信機の縮尺・動きの補間）。
+    画面の下にボートの受信強度と機体までの距離の帯。OBS でこの窓を取り込んで配信する。受けた行は保存・再生できる（受信機が無くても練習できる。
+    模擬の記録は `test/make_live_sample.py`）。窓の中身は `live.js`（接続・補間・帯）・`live_screen.js`（本体の地図画面の写し）・`live_tft.js`（TFT_eSPI の写し）・
+    `live_map.js`（地図）・`live_assets.js`（本体の文字）。設計は [docs/pons_live_stream_plan.md](docs/pons_live_stream_plan.md)、行の形は docs/pons_webserial_protocol.md §4 (9)。
+    地図 `vectormap_hires.js`（gzip 4.7MB を base64 にした .js。file:// で開いても読める。OpenStreetMap 由来・ODbL）は `tools/vectormap/build_vectormap.py --variant hires` が `export_repons_map.py` で作り直す。
 * **解析スクリプト**:
   * `tools/logcsv2kml4earth.py` / `logcsv2tourkmz.py`: Google Earth 用 KML / KMZ 変換
   * `tools/createmovie_csv2mp4.py`: 飛行再現 MP4 動画生成

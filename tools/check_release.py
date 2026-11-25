@@ -5,7 +5,8 @@
 # Role    : リリース前・コミット前の一括チェックスクリプト。
 #           1) settings.h の RELEASE / RELEASE_GNSS / デバッグフラグ / BUILDVERSION 検査
 #           2) FLASH 焼き込みアセット（音声 wav_data・案内画像 guide_data）の CRC 整合性検査
-#           3) ホスト単体テスト一括実行（attitude_test / wire2_test / vario_test / dbd_test / test_eskf.py）
+#           3) ホスト単体テスト一括実行（attitude_test / wire2_test / vario_test / dbd_test / sdwipe_test / test_eskf.py /
+#              Re:PONS のライブ配信 run_live_tests.py）
 #              ※ Arduino IDE がビルド時に tools/ ごとコピーして重くならないよう、実行後に make clean する
 #
 # 使い方:
@@ -107,11 +108,17 @@ def main():
         ("wire2_test (C++ PONS Link Wire2 / Beacon)", "tools/wire2_test"),
         ("vario_test (C++ バリオ KF / 加速度ガード / MS5611 reinit)", "tools/vario_test"),
         ("dbd_test (C++ GNSS DBD 保存・復元・時刻注入)", "tools/dbd_test"),
+        ("sdwipe_test (C++ SD のログの消去: 消す名前の形・パスワード・16 件ずつ消す手順)", "tools/sdwipe_test"),
     ]:
         if not run_make_test(name, rel_dir):
             all_ok = False
 
     if not run_step("test_eskf.py (Python ESKF 二重実装テスト)", [sys.executable, "tools/imulog/test_eskf.py"]):
+        all_ok = False
+
+    # ライブ配信（Re:PONS の live*.js）: LinkTelem の並び・描く関数の定数・printf の丸め・文字とアイコン（2026-11-23〜）
+    if not run_step("run_live_tests.py (Re:PONS ライブ配信の読み取り・定数・写しの見張り)",
+                    [sys.executable, "tools/repons/test/run_live_tests.py"]):
         all_ok = False
 
     print("\n============================================================")

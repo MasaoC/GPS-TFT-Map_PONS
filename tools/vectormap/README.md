@@ -13,6 +13,7 @@
 | 収録範囲 | 飛行エリア 7 箇所を高精細＋本州広域＋日本全国 |
 | 地物 | 海岸線・水面・高速道路・幹線道路・鉄道 |
 | ライセンス | ODbL（`../../LICENSE.ODbL` を参照） |
+| Re:PONS 用 | `--variant hires` のときは最後に `export_repons_map.py` が `../repons/vectormap_hires.js`（gzip 約 4.7MB を base64 にした .js、約 6.4MB。`<script>` で読むので Re:PONS を file:// で開いても読める）も作り直す。ライブ配信の窓（`live.html`）が本体と同じ地図を描くのに使う。**git に入れてある**ので、作り直したらコミットする。単独でも `python3 export_repons_map.py`（できた `.cpp` を読むだけ） |
 
 ## 準備
 

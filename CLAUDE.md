@@ -67,7 +67,7 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
-`python3 tools/check_release.py` で以下（設定マクロ・FLASH アセット CRC・ホスト単体テスト 5 本）を一括検査できる。
+`python3 tools/check_release.py` で以下（設定マクロ・FLASH アセット CRC・ホスト単体テスト 6 本）を一括検査できる。
 
 - `RELEASE` — 有効に。無効だと `setup()`（Core0）が `while(!Serial)` で待ち、実機が起動しない。
 - `RELEASE_GNSS` — GNSS シミュレーション（`DEBUG_GNSS_SIM_*`）が全部コメントアウト済みか。
@@ -90,7 +90,7 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
 
 ## テスト
 
-以下の 4 モジュールは最小スタブで実機の `.cpp`/`.h` をそのまま PC 上でコンパイルして単体検証できる（`python3 tools/check_release.py` で一括実行＋`make clean` される）。該当モジュールを触ったら必ず走らせること。
+以下の 5 モジュールは最小スタブで実機の `.cpp`/`.h` をそのまま PC 上でコンパイルして単体検証できる（`python3 tools/check_release.py` で一括実行＋`make clean` される）。該当モジュールを触ったら必ず走らせること。
 
 ```sh
 python3 tools/check_release.py       # リリース設定 + アセット CRC + 全ホストテスト一括実行
@@ -98,7 +98,10 @@ cd tools/attitude_test && make       # 姿勢 ESKF（協調旋回 / 水平化と
 cd tools/wire2_test && make          # PONS Link Wire2（8 回転枠往復 / 境界値 / 日跨ぎ / ビーコン）
 cd tools/vario_test && make          # バリオ 3 状態 KF（上昇追従 / 加速度ガード / MS5611 復帰 reinit / 供給元）
 cd tools/dbd_test && make            # GNSS DBD（256B 境界フレーム検証 / コールド復元・再送 / 0 件保護 / 時刻注入）
+cd tools/sdwipe_test && make         # SD の整理（扱う名前の形 / パスワード / 指紋 / 16 件ずつ動かす手順 / ゴミ箱の名前・番号）
 python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
+python3 tools/repons/test/run_serial_tests.py # Re:PONS のファイル転送（1MB ずつ取り、抜けた塊だけ取り直す PONS:GETRANGE。模擬の本体・jsc）
+python3 tools/repons/test/run_live_tests.py   # Re:PONS のライブ配信（LinkTelem の並び・描く関数の定数・printf の丸め・文字・写しの見張り）
 ```
 
 **`attitude.cpp` と `tools/imulog/eskf.py` は同じ数式の二重実装。
@@ -272,6 +275,23 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
   `for` など）は**先に読んだファイルのものしか使えない**（後のファイルのものを使うと、その場で止まって以降が動かない）。
   2026-11-23 に index.html（6250 行）を player / gauges / serial / logview / settings_editor / hooks の .js と repons.css に分けた。
   新しい機能（ライブ配信など）は index.html に書き足さず、別の .js にして一覧に足す。
+- **ライブ配信（`live.cpp`・Re:PONS の `tools/repons/live*.js`。2026-11-23〜）の約束。**
+  - **LIVE 中に Core0 から USB へ書く行は `live.cpp` のリングを通す**（`Serial.availableForWrite()` に行がまるごと入るときだけ書く）。
+    `Serial.print` で直接書くと、PC がポートを開いたまま読まないとき arduino-pico の `write()` が**最大 1 秒 Core0 を止める**
+    （IMU の受け取り・描き直し・無線の受信が遅れる）。
+  - **`LinkTelem` の並びを変えたら Re:PONS の `live.js` の `decodeLT()` も直す**（`LINK_PROTO_VER` が上がるので、合わなければ Re:PONS は描かない。
+    `tools/repons/test/run_live_tests.py` が本物の `link_proto.h` で詰めたバイト列と照合する。`check_release.py` から回る）。
+  - **地図画面の描き方（display_tft.cpp・.ino の MODE_MAP）を変えたら `tools/repons/live_screen.js` も同じに直す**（描き方の写し。
+    座標・色・文字・順番まで本体のまま）。判断（どの札・線・色を出すか）を足したら、`display_tft.cpp` の `live_collect_screen()`
+    （`LIVESCR_*`）と `live.cpp` の LN 行にも足し、Re:PONS では計算し直さずに LN の値を描く（判断を二重に持たない）。
+    **写した本体の関数は `run_live_tests.py` が指紋（コメントと空白を除いた SHA-1）で見張る**（`tools/repons/test/live_fingerprints.txt`。
+    一覧は `run_live_tests.py` の `FP_TARGETS`）。本体のその関数を変えると `check_release.py` が止まって関数の名前を出すので、写し先を同じに直してから
+    `python3 tools/repons/test/run_live_tests.py --update`。**写しを直さずに `--update` だけしないこと**（見張りが黙って外れる）。
+    写した関数を増やしたら `FP_TARGETS` にも足す。
+    `live_screen.js` の定数（`K`）は `run_live_tests.py` が settings.h と照合する。本体の文字（`font_data.h`）・衛星のアイコンを差し替えたら
+    `python3 tools/repons/gen_live_assets.py`、地図を作り直したら `build_vectormap.py --variant hires` が `tools/repons/vectormap_hires.js` も作り直す
+    （gzip を base64 にした .js。`<script>` で読むので file:// で開いても地図が出る。**fetch で読む形に戻さないこと**）。
+  - 行の形を変えたら `live.h` の `LIVE_FMT_VER` と `live.js` を合わせる（docs/pons_webserial_protocol.md §4 (9)）。
 - **送信したら AUX の立ち下がりで「本当に送ったか」を確かめる。**
   `link_tx_tick()` の `LTX_TXSTART` が AUX の Low（＝動き出した証拠）を待ち、
   `LTX_TXDONE` が High へ戻る（＝送信完了）のを待って mode 3 へ落とす。
@@ -322,6 +342,7 @@ python3 tools/imulog/test_eskf.py    # Python 版 ESKF テスト
 | [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す。まだ飛ばしていないので `#warning` で「飛ばすな」が出る。[docs/sch16t_design.md](docs/sch16t_design.md) |
 | [src/imu_sensor.h](src/imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
+| [live.cpp](live.cpp) | ライブ配信（2026-11-23〜・実機未確認）。**受信機だけ**が `PONS:LIVE,ON` で、受けた LinkTelem（`LT`）・画面の判断（`LN`）・受信機の状態（`LS`）を USB へ流す。PC 接続の画面には入らない。行の形は docs/pons_webserial_protocol.md §4 (9)、設計は [docs/pons_live_stream_plan.md](docs/pons_live_stream_plan.md)。Re:PONS の側は `tools/repons/live.html`（配信の窓）と `live*.js` |
 | [link_assist.cpp](link_assist.cpp) | GNSS の時刻の助け合い（LoRa。2026-11-13〜）。GNSS が時刻を知らない機体・ボートへ、時刻を持つ仲間が**精度つきで**時刻を渡す（fix の前の RTC の時刻も。精度は NAV-PVT の tAcc で、テレメトリは status の `LINK_ST_TIME_COARSE` / `BAD`、ビーコンは `BC_TACC`。ビーコンは [lora_link/link_beacon.h](lora_link/link_beacon.h)、印 `0x58`）。機体は窓の間だけ送信の合間も mode 0 で聞く。受けた時刻は 2 発で確かめて `gnss_dbd_give_time(..., GNSS_TIME_SRC_LORA)` へ渡すだけ。定数は `settings.h` の `LINK_ASSIST_*`、`settings.txt` の `link_assist`。計画と決めごとは [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md) §4 |
 | [power.cpp](power.cpp) | USB 判定・電源経路の異常（充電 IC の故障）の検出と警報・高温での充電の警告・過放電（3.0V 未満）の本体フラッシュ記録と次回起動警告／USB 完全ロック・「SW OFF のまま充電」の検出・充電残量(%)と残り時間推定物理モデル（[docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)） |
 | [backlight.cpp](backlight.cpp) | バックライト PWM。輝度スイッチ High で最大、Low で照度センサー VEML7700（i2c0、ケースカバー基板）による自動調光。待機中自動減光（Auto-Dimming: 30 秒静止で 5% へ減光、手仰ぎや振動で即座に復帰）。電池低下のときの 2 段階点滅（判定は `batt_alarm_tick()`） |

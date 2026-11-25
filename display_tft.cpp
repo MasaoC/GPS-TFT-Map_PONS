@@ -24,6 +24,7 @@
 #include "attitude.h"
 #include "tas.h"         // ヘッダー右の大きい枠に何を出すか（平均ピッチ / 推定 TAS / 真方位）
 #include "link.h"
+#include "live.h"     // ライブ配信の LIVE の印（受信機の地図。draw_link_icons）
 #include "power.h"    // USB 判定・電源経路の異常・SW OFF のまま充電（電池表示と地図の注意）
 #include "src/readiness.h"  // 本番前チェック（設定画面の右上）
 #include "e220.h"     // 無線設定画面で SF と周波数を出すため
@@ -3264,6 +3265,27 @@ static void draw_link_icons() {
     backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   }
 
+  // ライブ配信の印（受信機だけ。live.h。2026-11-23〜）。電波のアイコンの左に「LIVE」。
+  //   緑 = PC へ流している（直近 3 秒に行を書けた）/ 赤 = PC が読んでいないので行を捨てている / 出さない = 流していない。
+  // ★ ここ（ふだんの描き直し）でだけ描く。色が変わっても別に描き直さない（ミラー中の地図はフレームを受けた直後だけ描く。
+  //   TFT のバスの雑音を受信に重ねないため。docs/pons_live_stream_plan.md §4.6）。変わるのは最大 1 秒遅れるだけ。
+  // ★ 受信機の側の状態（電波のアイコンと同じ種類）なので、docs/pons_link.md §5.1「ミラー中に自機の状態を混ぜない」の例外。
+  if (rx) {
+    const uint8_t lm = live_mark_state();
+    if (lm) {
+      const uint16_t lc = (lm == 1) ? COLOR_GREEN : COLOR_RED;
+      const int lw = 4 * 6 + 3, lh = 11;                    // 内蔵フォント 6x8 の 4 文字＋左右の余白
+      const int lx = x - 4 - lw, ly = ry + (ICON_RSSI_H - lh) / 2;
+      backscreen.unloadFont();
+      backscreen.setTextSize(1);
+      backscreen.fillRect(lx, ly, lw, lh, lc);
+      backscreen.setTextColor(COLOR_WHITE, lc);
+      backscreen.setCursor(lx + 2, ly + 2);
+      backscreen.print("LIVE");
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    }
+  }
+
   // 設定の一致確認（CH - SF - Group）。
   // 役割アイコンのすぐ下（y+29 = 96..103）に、一番小さいデフォルトフォント（GLCD 8px）で
   // 右端を役割アイコンの右端にそろえて表示（例: 3-9-B）。
@@ -4186,6 +4208,52 @@ static HdrStrike header_strike_kind(TasHdr h) {
   return HSTRIKE_NONE;
 }
 
+// ライブ配信の判断の行（LN）に載せる、地図画面の判断（display_tft.h の LiveScreen の説明。2026-11-23〜）。描かない。
+// ★ どれも上と下の描く関数と**同じ関数**で答える（条件を書き写さない）。ヒステリシスを持つ eskf_yaw_reliable() /
+//   eskf_yaw_high_confidence() は、描いた直後に同じ入力でもう一度呼んでも答えは変わらない（held を同じ式で決め直すだけ）。
+// ★ 地図画面の描き方に判断を足したら、ここにも足す（Re:PONS の tools/repons/live_screen.js が描くのに使う）。
+void live_collect_screen(LiveScreen &s) {
+  uint16_t f = 0;
+  if (eskf_display_enabled())     f |= LIVESCR_ESKF_EN;
+  if (eskf_yaw_reliable())        f |= LIVESCR_YAW_REL;
+  if (eskf_yaw_high_confidence()) f |= LIVESCR_YAW_HC;
+  if (eskf_display_needs_apply()) f |= LIVESCR_NEEDS_APPLY;
+  if (ground_warn_shown(false))   f |= LIVESCR_GROUND_ROLL;
+  if (ground_warn_shown(true))    f |= LIVESCR_GROUND_PITCH;
+  if (gnss_speed_track_invalid()) f |= LIVESCR_GST_INVALID;
+  if (vario_source_ok())          f |= LIVESCR_VARIO_OK;
+  // GNSS の状態の箱（draw_nomapdata() と同じ分かれ道）
+  const bool scanning = gnss_shown_no_fix();
+  if (scanning) f |= LIVESCR_SCANNING;
+  else if (get_gnss_numsat() == 0 && !is_demo_active()) f |= LIVESCR_WEAK;
+  // フッターの TC・距離（draw_footer() の nav_valid）と目的地の線（.ino の地図の描き直し）
+  if (get_gnss_fix() || is_demo_active()) f |= LIVESCR_NAV_VALID;
+  // 風の矢印（draw_eskf_attitude() の has_wind と同じ分かれ道）
+  {
+    float ws = 0.0f, wd = 0.0f;
+    bool w;
+    if (is_demo_active())                 w = attitude_get_wind_enabled() && demo_wind(ws, wd);
+    else if (!eskf_yaw_high_confidence()) w = false;
+    else if (link_mirror_active())        w = link_get_wind(ws, wd);
+    else if (getReplayMode())             w = get_replay_wind(ws, wd);
+    else                                  w = attitude_get_wind_enabled() && attitude_get_wind(ws, wd);
+    if (w) f |= LIVESCR_WIND;
+  }
+  if (tas_leaving_ground()) f |= LIVESCR_LEAVING;
+  s.flags = f;
+  const TasHdr h = tas_header();
+  s.hdr    = (uint8_t)h;
+  s.strike = (uint8_t)header_strike_kind(h);
+  s.wait   = (uint8_t)tas_ground_wait_sec();
+  s.egs    = (uint8_t)eskf_display_gnss_state();
+  // 自機の印（.ino の地図の描き直しの分かれ道と同じ）
+  if (!get_gnss_fix() && !is_demo_active() && !getReplayMode()) s.marker = 0;
+  else if (!is_demo_active() && !getReplayMode() &&
+           (!get_gnss_fixok() || get_gnss_hacc_mm() / 1000.0f >= HACC_THRESHOLD_M)) s.marker = 1;
+  else s.marker = 2;
+  s.deadband = vario_deadband_mps();
+}
+
 // 横線の上に載せる理由の札（2026-11-11）。
 // ★ 線だけでは、利用者に**なぜ消されているのか**が分からなかった（白・橙・赤の 3 種類があり、
 //   色の意味は説明書にしか無い）。本体に日本語のフォントは無いので英語の 1 語にする
@@ -4561,7 +4629,8 @@ void draw_footer(){
     }
     uint16_t rcol;
     bool rlow = false;
-    if (power_sw_off_on_usb()) {           // 自機（power.h）
+    // 自機（power.h）。USB の挿し直し待ちも電池は充電されていないので "5V"（送信機の s と同じ）
+    if (power_sw_off_on_usb() || power_charge_replug_needed()) {
       strlcpy(rbuf, "r5V", sizeof(rbuf));  rcol = COLOR_DARKORANGE;
     } else if (usb_power_present()) {
       const int rpct = power_charging_percent();
@@ -4588,6 +4657,10 @@ void draw_footer(){
     uint16_t chgcol;
     if (power_sw_off_on_usb()) {
       strlcpy(chgbuf, "SW OFF", sizeof(chgbuf));
+      chgcol = COLOR_DARKORANGE;
+    } else if (power_charge_replug_needed()) {
+      // USB のまま SW が入った。USB を挿し直すまで充電されないことがある（power.cpp の sw_off_tick()。2026-11-25〜）
+      strlcpy(chgbuf, "REPLUG", sizeof(chgbuf));
       chgcol = COLOR_DARKORANGE;
     } else {
       const int chg_pct = power_charging_percent();
@@ -5476,7 +5549,7 @@ uint16_t battery_color_pct(int pct) {
 uint16_t battery_status_color() {
   if (power_fault_active() || power_overdischarge_boot_latched() || power_charge_hot_active())
     return COLOR_RED;
-  if (power_sw_off_on_usb() && !replay_voltage_active())
+  if ((power_sw_off_on_usb() || power_charge_replug_needed()) && !replay_voltage_active())
     return COLOR_DARKORANGE;
   if (usb_power_present() && !replay_voltage_active())
     return (power_charging_percent() >= 100) ? COLOR_GREEN : COLOR_BLUE;
@@ -5612,6 +5685,10 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
     // v7.1: 電池は SW で切り離されていて電圧は読めない（power.h）。このままでは満充電にならない
     header_footer.setTextColor(COLOR_DARKORANGE);
     header_footer.print("Battery: SW OFF - turn ON to charge");
+  } else if (power_charge_replug_needed() && !replay_voltage_active()) {
+    // USB のまま SW が入った。USB を挿し直すまで充電されないことがある（power.cpp の sw_off_tick()）
+    header_footer.setTextColor(COLOR_DARKORANGE);
+    header_footer.print("Battery: replug USB to charge");
   } else if (usb_power_present() && !replay_voltage_active()) {
     // USB 充電中: 推定残量 % と残り時間を表示（docs/pons_charge_estimation.md）
     const int chg_pct = power_charging_percent();
@@ -5887,7 +5964,9 @@ void draw_overdischarge_cleared_screen() {
 }
 
 // PC接続・Web Serial データ転送画面
-void draw_pcconnect() {
+// SD の整理（Re:PONS の「🧹 SD の整理」。mysd.cpp）の番号が出ている間は、その番号を大きく出す。機体・予備機・ボートは
+// 同じパスワードなので、つないでいる本体を取り違えたまま消さないよう、Re:PONS ではこの番号を打ってもらう。
+void draw_pcconnect(int wipe_code, const char* wipe_msg) {
   header_footer.fillScreen(COLOR_BLUE);
   header_footer.drawFastHLine(0, 39, SCREEN_WIDTH, COLOR_CYAN);
   header_footer.loadFont(AA_FONT_SMALL);
@@ -5903,22 +5982,52 @@ void draw_pcconnect() {
 
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setTextSize(1);
+  const bool has_msg = wipe_msg && wipe_msg[0] != '\0';
 
-  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
-  print_centered_aa(backscreen, 30, "USB SERIAL LINK ACTIVE");
+  if (wipe_code >= 0 && wipe_code <= 9999) {
+    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    print_centered_aa(backscreen, 22, "USB SERIAL LINK ACTIVE");
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    print_centered_aa(backscreen, 56, "SD CLEAN-UP CODE");
+    // 4 桁を大きく（NM_FONT_LARGE は数字だけを持つ。字送り 37px で 4 桁 148px）
+    char digits[8];
+    snprintf(digits, sizeof(digits), "%04d", wipe_code);
+    backscreen.drawRect(36, 78, SCREEN_WIDTH - 72, 72, COLOR_RED);
+    backscreen.drawRect(37, 79, SCREEN_WIDTH - 74, 70, COLOR_RED);
+    backscreen.loadFont(NM_FONT_LARGE);
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    backscreen.setCursor((SCREEN_WIDTH - backscreen.textWidth(digits)) / 2, 86);
+    backscreen.print(digits);
+    backscreen.loadFont(AA_FONT_SMALL);   // 小さい字に戻して抜ける（このファイルの約束）
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    print_centered_aa(backscreen, 160, has_msg ? wipe_msg : "Enter it in Re:PONS (5 min)");
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    print_centered_aa(backscreen, 198, "Press Push-SW to Disconnect");
+  } else {
+    backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+    print_centered_aa(backscreen, 30, "USB SERIAL LINK ACTIVE");
 
-  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  print_centered_aa(backscreen, 65, "Re:PONS Connected");
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    print_centered_aa(backscreen, 65, "Re:PONS Connected");
 
-  backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
-  print_centered_aa(backscreen, 95, "SD Card: Read-Only (Protected)");
+    if (has_msg) {
+      // SD の整理の結果（"Moved 6 files to trash" など）。次の操作まで出しておく。
+      // ★ 「Read-Only」の行の代わりに出す（ファイルを動かしたあとに読み出し専用と言わない）
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+      print_centered_aa(backscreen, 95, wipe_msg);
+    } else {
+      backscreen.setTextColor(COLOR_GREEN, COLOR_WHITE);
+      print_centered_aa(backscreen, 95, "SD Card: Read-Only (Protected)");
+    }
 
-  backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  print_centered_aa(backscreen, 130, "Transferring flight logs via USB...");
-  print_centered_aa(backscreen, 155, "Safe to disconnect at any time.");
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    print_centered_aa(backscreen, 130, "Transferring flight logs via USB...");
+    backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
+    print_centered_aa(backscreen, 155, "Safe to disconnect at any time.");
 
-  backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
-  print_centered_aa(backscreen, 195, "Press Push-SW to Disconnect");
+    backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+    print_centered_aa(backscreen, 195, "Press Push-SW to Disconnect");
+  }
 
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   backscreen.pushSprite(0, 40);

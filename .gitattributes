@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Re:PONS のライブ配信の地図（tools/vectormap/export_repons_map.py の生成物。base64 で約 6.4MB。git diff に中身を出さない）
+tools/repons/vectormap_hires.js -diff

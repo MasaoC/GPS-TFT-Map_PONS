@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- File: tools/repons/live.html / Role: ライブ配信の窓（受信機の行で機体の画面を描く。OBS で取り込む）。
+       docs/pons_live_stream_plan.md。Re:PONS（index.html）の「📡 ライブ」から ?v=<VIEWER_VERSION> 付きで開く。 -->
+  <title>PONS ライブ</title>
+  <style>
+    :root { --panel: #1b2026; --ink: #e6edf3; --sub: #8b98a5; --line: #2d353e; --accent: #3ddc84; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { background: #000; color: var(--ink); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", sans-serif; }
+    #wrap { display: flex; align-items: flex-start; }
+    #stage { flex: none; line-height: 0; }
+    #screen { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+    #panel { flex: 1; min-width: 280px; max-width: 460px; padding: 10px 12px; background: var(--panel); min-height: 100vh; border-left: 1px solid var(--line); }
+    #panel h1 { font-size: 15px; margin: 0 0 6px; }
+    #panel .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+    #panel label { color: var(--sub); }
+    button, select { font: inherit; color: var(--ink); background: #2a323b; border: 1px solid #3b4651; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    button.primary { background: #1f6f43; border-color: #2c8a57; }
+    .msg { margin: 8px 0; padding: 6px 8px; border-radius: 6px; background: #222a31; white-space: pre-wrap; }
+    .msg.ok { background: #143323; color: #8ff0b8; }
+    .msg.warn { background: #3a2f12; color: #ffd27a; }
+    .msg.error { background: #3d1717; color: #ff9a9a; }
+    .hint.bad { color: #ff9a9a; }
+    .hint { color: var(--sub); font-size: 12px; }
+    #numbers { margin-top: 8px; }
+    #numbers table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    #numbers th { text-align: left; color: var(--sub); font-weight: normal; padding: 1px 6px 1px 0; white-space: nowrap; vertical-align: top; }
+    #numbers td { font-family: ui-monospace, Menlo, monospace; padding: 1px 0; }
+    input[type=file] { display: none; }
+    .filebtn { display: inline-block; color: var(--ink); background: #2a323b; border: 1px solid #3b4651; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+    /* 配信用: パネルを隠して画面と帯だけにする（H キー・画面のダブルクリック・Esc で戻す） */
+    body.bare #panel { display: none; }
+  </style>
+  <script>
+    // 版数は Re:PONS（index.html の VIEWER_VERSION）が ?v= で渡す。直接開いたときは毎回読み直す。
+    (function () {
+      var v = new URLSearchParams(location.search).get('v') || String(Date.now());
+      ['live_assets.js', 'live_tft.js', 'live_map.js', 'live_screen.js', 'live.js'].forEach(function (f) {
+        document.write('<script src="' + f + '?v=' + encodeURIComponent(v) + '"><\/script>');
+      });
+    })();
+  </script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="stage"><canvas id="screen" width="720" height="1050"></canvas></div>
+    <div id="panel">
+      <h1>📡 PONS ライブ</h1>
+      <div class="hint">受信機（ボートの PONS）を USB でつなぎ、受けた電波から機体の画面を描きます。受信機は今までどおり動きます（PC 接続の画面にはなりません）。</div>
+      <div class="row">
+        <button id="btn-connect" class="primary">🔌 接続</button>
+        <button id="btn-disconnect">切断</button>
+      </div>
+      <div id="message" class="msg"></div>
+      <div class="row">
+        <label>大きさ</label>
+        <select id="sel-scale"><option value="2">×2</option><option value="3">×3</option><option value="4">×4</option><option value="5">×5</option></select>
+        <label>地図の向き</label>
+        <select id="sel-up"><option value="track">トラックアップ</option><option value="north">ノースアップ</option></select>
+      </div>
+      <div class="hint">地図の向きは電波に載っていません。パイロットがノースアップにしているときだけ切り替えてください。縮尺はパイロットの縮尺に合わせます。</div>
+      <div class="row">
+        <label><input type="checkbox" id="chk-interp"> 動きを補間する（1 発遅らせてなめらかに）</label>
+      </div>
+      <div class="row">
+        <label>背景</label>
+        <select id="sel-bg"><option value="#000000">黒</option><option value="#00b140">緑（クロマキー）</option><option value="#0047bb">青</option><option value="#ffffff">白</option></select>
+        <button id="btn-bare">配信用にする（パネルを隠す）</button>
+      </div>
+      <div class="hint">配信用: パネルを隠して窓を画面の大きさにします。戻すのは H キー・画面のダブルクリック・Esc。OBS は「ウィンドウキャプチャ」（Mac は「macOS 画面キャプチャ」のウィンドウ）でこの窓を取り込みます。窓は最小化しない・ほかの窓の下に隠さないでください。</div>
+      <div class="row">
+        <button id="btn-save">💾 記録を保存</button>
+        <button id="btn-clear-track">航跡を消す</button>
+      </div>
+      <div class="row">
+        <label class="filebtn">▶ 記録を再生<input type="file" id="file-play" accept=".txt,text/plain"></label>
+        <button id="btn-pause">⏸ 止める</button>
+        <button id="btn-stop-play">再生をやめる</button>
+      </div>
+      <div class="hint">記録はこの窓を開いてから受けた行ぜんぶです（受信機の SD の received/ には無い、画面の判断の行も入ります）。再生すると受信機が無くても画面と OBS の配置を試せます。</div>
+      <div class="row"><span id="map-status" class="hint">地図: --</span></div>
+      <div class="row"><button id="btn-numbers">数字の表</button></div>
+      <div id="numbers" hidden></div>
+    </div>
+  </div>
+</body>
+</html>

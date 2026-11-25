@@ -1154,6 +1154,16 @@ def main():
     print("\n  ライセンス: Map data (c) OpenStreetMap contributors, ODbL 1.0")
     print("  vectormap_data.cpp は ODbL で配布すること。")
 
+    # ★ Re:PONS のライブ配信の画面（tools/repons/live_map.js）が読む地図も、いま書いた .cpp から作り直す（2026-11-23〜）。
+    #   本体（VECTORMAP_HIRES）と同じ地図にするため。hires だけ（Re:PONS は hires を読む。git に入れてある）。
+    if args.variant == "hires":
+        try:
+            sys.path.insert(0, str(script_dir))
+            import export_repons_map
+            export_repons_map.export(args.out, str(script_dir / "../repons/vectormap_hires.js"))
+        except SystemExit as e:
+            print(f"★ Re:PONS 用の地図を書き出せませんでした: {e}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()

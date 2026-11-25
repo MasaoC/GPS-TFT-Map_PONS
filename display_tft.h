@@ -180,7 +180,9 @@ extern volatile bool loading_replaylist;   // Core1 でリプレイ用ファイ�
 extern bool replay_loading_displayed;      // "Stand by..." 表示中（読み込み完了時の再描画判定用）
 void draw_variodetail(int page);
 void draw_maplist_mode(int maplist_page);
-void draw_pcconnect();
+// PC 接続の画面。wipe_code は SD の整理の番号（Re:PONS で打ってもらう 4 桁。-1 = 出さない）、wipe_msg はその知らせ（英字。"" = 無し）。
+// 値は .ino が mysd.cpp の sdwipe_screen_get() で読んで渡す（ここでは判断しない）
+void draw_pcconnect(int wipe_code = -1, const char* wipe_msg = nullptr);
 
 
 // IMU / ESKF 画面（ページ1）のメニュー項目。
@@ -267,6 +269,37 @@ bool eskf_calib_allowed();
 void draw_eskf_debug();
 #endif
 void draw_vsi();
+
+// ---- ライブ配信の判断の行（LN。live.cpp）に載せる、地図画面の判断 ----
+// ★ **描く関数が使っている判断を、同じ関数で集めるだけ**（描かない）。Re:PONS（tools/repons/live_screen.js）は
+//   これを描くだけで、判断を計算し直さない（docs/pons_live_stream_plan.md §1.4）。
+//   地図画面の描き方に判断を足したら、ここと live.cpp の LN 行と live_screen.js にも足すこと。
+#define LIVESCR_ESKF_EN      0x0001   // eskf_display_enabled()
+#define LIVESCR_YAW_REL      0x0002   // eskf_yaw_reliable()（機首方位として信用できる。アイコンが機首へ回る）
+#define LIVESCR_YAW_HC       0x0004   // eskf_yaw_high_confidence()（偏流の点線）
+#define LIVESCR_NEEDS_APPLY  0x0008   // 較正のやり直しが必要（ミラー中は送信機の状態）
+#define LIVESCR_GROUND_ROLL  0x0010   // 地上チェックがロールで鳴っている
+#define LIVESCR_GROUND_PITCH 0x0020   // 地上チェックがピッチで鳴っている
+#define LIVESCR_GST_INVALID  0x0040   // 対地速度・真方位が無効（赤線）
+#define LIVESCR_TRACKWARN    0x0080   // 方位変化の警告中（真方位の点滅）。live.cpp が足す
+#define LIVESCR_CWARN        0x0100   // コース警告の箱を出す。live.cpp が足す
+#define LIVESCR_VSI          0x0200   // VSI を出す（バリオの音量 > 0）。live.cpp が足す
+#define LIVESCR_VARIO_OK     0x0400   // vario_source_ok()（V/S が載っている）
+#define LIVESCR_SCANNING     0x0800   // GNSS の状態の箱「Scanning」
+#define LIVESCR_WEAK         0x1000   // GNSS の状態の箱「Weak GNSS Signal」
+#define LIVESCR_NAV_VALID    0x2000   // get_gnss_fix()（フッターの TC・距離を出す・目的地の線を引く）
+#define LIVESCR_WIND         0x4000   // 風の矢印を出す（ヨーが著しく信頼でき、風が載っている）
+#define LIVESCR_LEAVING      0x8000   // tas_leaving_ground()（GROUND の札を外した）
+struct LiveScreen {
+  uint16_t flags;      // LIVESCR_*
+  uint8_t  hdr;        // tas_header()（TasHdr）
+  uint8_t  strike;     // 大きい枠の横線（0 無し / 1 地上 / 2 向き待ち / 3 GNSS 無し / 4 較正）
+  uint8_t  wait;       // tas_ground_wait_sec()
+  uint8_t  egs;        // GNSS の速度の状態（0 OK / 1 NO GNSS / 2 YAW ALIGN）
+  uint8_t  marker;     // 自機の印（0 測位なしの × / 1 精度の円 / 2 飛行機）
+  float    deadband;   // vario_deadband_mps()
+};
+void live_collect_screen(LiveScreen &s);
 
 
 void draw_flyinto(double dest_lat, double dest_lon, double center_lat, double center_lon, float scale, float up,int thickness);

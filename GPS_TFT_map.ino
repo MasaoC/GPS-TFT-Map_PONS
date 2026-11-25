@@ -37,6 +37,7 @@
 #include "imu.h"
 #include "src/imu_sensor.h" // imu_sensor_name()
 #include "link.h"       // PONS Link（機体⇄ボート無線）
+#include "live.h"       // ライブ配信（受信機が USB へテレメトリと画面の判断を流す。2026-11-23〜）
 #include "mysd.h"
 #include "src/navdata.h"
 #include "power.h"     // USB 判定・電源経路の異常
@@ -1538,6 +1539,7 @@ static void periodic_log_tick() {
                              (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
       }
       redraw_prof_log();   // 地図の描き直しの内訳（どこで時間がかかっているか）
+      live_periodic_log(); // ライブ配信（流している間だけ。書いた行・捨てた行・リングの最大）
       enqueueTask(createLogSdfTask(
           "raw GYR=%.1f ACC=%.1f Hz stale=%lu drop=%lu wrote=%lu",
           get_imu_gyro_hz(), get_imu_accel_hz(),
@@ -1611,8 +1613,13 @@ static void draw_current_screen(bool new_gnss_info) {
     if (redraw_screen)
       draw_chscan();
   } else if (screen_mode == MODE_PCCONNECT) {
-    if (redraw_screen)
-      draw_pcconnect();
+    if (redraw_screen) {
+      // SD の整理の番号と知らせ（mysd.cpp。Re:PONS で打ってもらう番号）
+      int wipe_code = -1;
+      char wipe_msg[40];
+      sdwipe_screen_get(&wipe_code, wipe_msg, sizeof(wipe_msg));
+      draw_pcconnect(wipe_code, wipe_msg);
+    }
   } else if (screen_mode == MODE_VARIODETAIL) {
     if (redraw_screen) {
       draw_variodetail(detail_page);
@@ -2005,6 +2012,7 @@ static bool serial_cmd_overflow = false;   // 長すぎる行を読み捨て中�
 static size_t serial_cmd_len = 0;
 static int prev_screen_mode = MODE_MAP;
 static uint32_t last_serial_rx_ms = 0;
+static uint32_t pc_port_seen_ms = 0;   // PC 接続の画面で、PC がポートを開いていた（DTR）最後の時刻（serial_command_service）
 
 // ---- ファイル転送（TASK_SERIAL_GET）の間は Core0 から USB シリアルへ書かない（2026-11-13、BUG-76）----
 // ★ 転送は Core1 が DATA_START 〜 DATA_END（または CANCEL_OK）を流していて、PC はその間のバイトを全部ファイルの中身として
@@ -2025,7 +2033,11 @@ static bool serial_xfer_active() {
          isTaskInQueue(TASK_SERIAL_LIST) || isTaskRunning(TASK_SERIAL_LIST) ||
          isTaskInQueue(TASK_SERIAL_SETTINGS_GET) || isTaskRunning(TASK_SERIAL_SETTINGS_GET) ||
          isTaskInQueue(TASK_SERIAL_SETTINGS_SET) || isTaskRunning(TASK_SERIAL_SETTINGS_SET) ||
-         isTaskInQueue(TASK_SERIAL_SETTINGS_SAVE) || isTaskRunning(TASK_SERIAL_SETTINGS_SAVE);
+         isTaskInQueue(TASK_SERIAL_SETTINGS_SAVE) || isTaskRunning(TASK_SERIAL_SETTINGS_SAVE) ||
+         isTaskInQueue(TASK_SERIAL_WIPE_SCAN) || isTaskRunning(TASK_SERIAL_WIPE_SCAN) ||
+         isTaskInQueue(TASK_SERIAL_WIPE) || isTaskRunning(TASK_SERIAL_WIPE) ||
+         isTaskInQueue(TASK_SERIAL_TRASH_EMPTY) || isTaskRunning(TASK_SERIAL_TRASH_EMPTY) ||
+         isTaskInQueue(TASK_SERIAL_TRASH_RESTORE) || isTaskRunning(TASK_SERIAL_TRASH_RESTORE);
 }
 static void serial_send_ready_now() {
   Serial.printf("PONS:READY,%s,%s,%lu\r\n", VERSION_TEXT, BUILDVERSION, (unsigned long)BUILDDATE);
@@ -2035,7 +2047,8 @@ static void webserial_say_bye() {
   if (serial_xfer_active()) { s_bye_pending = true; s_ready_pending = s_busy_pending = false; return; }
   Serial.println("PONS:BYE");
 }
-// PC 接続の画面から元の画面へ戻す（2026-11-13、BUG-85）。抜け道は 5 つ（PONS:DISCONNECT・USB を抜いた・60 秒無通信・短押し・長押し）。
+// PC 接続の画面から元の画面へ戻す（2026-11-13、BUG-85）。抜け道は 5 つ（PONS:DISCONNECT・USB を抜いた・PC がポートを閉じた
+// （2026-11-25 までは 60 秒無通信）・短押し・長押し）。
 // ★ 画面を白で消してから戻る（ほかの画面の切り替えと同じ）。PC 接続の画面は青いヘッダー・下端の "WEB SERIAL MODE" を描くが、
 //   設定画面はタイトルの右と本体しか塗らないので、左上の青と下の帯が残って "SETTINGS" が読めなかった。
 // ★ 操作した時刻も今にする。ボタン以外で抜けたとき、設定画面から PC をつないで 3 分以上たっていると、戻った直後に
@@ -2071,12 +2084,19 @@ static void handle_serial_command(const char *raw_cmd) {
   }
 
   if (strcmp(cmd, "PONS:CONNECT") == 0) {
+    // ライブ配信とファイルの一覧・取り出しは同時にしない（転送中は本体が転送以外を 1 行も書かない約束。live.h）
+    live_stop("CONNECT");
+    if (!webserial_connected) {
+      webserial_session++;     // PC 接続に入った（Core1 は SD の空き容量をこの接続で 1 回数え直す）
+      sdwipe_screen_reset();   // 前の接続の SD の整理の番号と知らせを捨てる
+    }
     webserial_connected = true;
     webserial_cancel_requested = false;
     // ★ PC 接続のまま CONNECT をもう一度受けたとき（ビューアのページを読み直した等）に、戻り先を
     //   MODE_PCCONNECT で上書きしない（上書きすると抜けたときに元の画面ではなく地図へ戻る）。
     if (screen_mode != MODE_PCCONNECT) prev_screen_mode = screen_mode;
     screen_mode = MODE_PCCONNECT;
+    pc_port_seen_ms = millis();   // ポートが閉じたら抜ける見張り（serial_command_service）の起点
     redraw_screen = true;
     enqueueTask(createLogSdTask("PC CONNECTED (WEB SERIAL ACTIVE)"));
     // ★ 前の接続の転送が残っていたら（ビューアのページを読み直した等）、やめさせてから READY を出す（BUG-76）。
@@ -2181,6 +2201,39 @@ static void handle_serial_command(const char *raw_cmd) {
     //   キューに入れる前に出すのは、Core1 が送り始める DATA_START / ERROR と行が混ざらないようにするため。
     Serial.println("PONS:GETIMU_ACCEPTED");
     if (!enqueueTask(createSerialGetTask(p + 1, 0, jst_start, jst_end))) s_busy_pending = true;
+  } else if (strncmp(cmd, "PONS:GETRANGE,", 14) == 0) {
+    // 位置と長さを決めて送る: "PONS:GETRANGE,<開始位置>,<バイト数>,<パス>"（2026-11-25〜）。
+    // 大きいファイルを Re:PONS が 1MB ずつ取り、CRC が合わない塊だけ取り直すため（USB の転送の途中でバイトが抜けることがある）。
+    // ★ 数を先に置く（GETTAIL と同じ。パスは行の最後まで）。返事は GETTAIL と同じ形に 4 つめ（ファイル全体の大きさ）が付く。
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }   // PONS:GET と同じ（BUG-76）。Re:PONS は少し待って頼み直す
+    const char *p = cmd + 14;
+    // ★ 10 桁まで読んで uint32_t に収まるかを見る（GETTAIL の 9 桁と違い、4GB 近いファイルの終わりの方も指せるように）
+    auto parse_u32 = [&](uint32_t &out) -> bool {
+      uint64_t v = 0;
+      int d = 0;
+      while (*p >= '0' && *p <= '9' && d < 10) {
+        v = v * 10 + (uint64_t)(*p - '0');
+        p++; d++;
+      }
+      if (d == 0 || v > 0xFFFFFFFFULL) return false;
+      out = (uint32_t)v;
+      return true;
+    };
+    uint32_t from = 0, len = 0;
+    bool ok = parse_u32(from) && (*p == ',') && (p++, parse_u32(len)) && (*p == ',') && (p[1] != '\0');
+    if (!ok || len == 0 || strlen(p + 1) >= sizeof(((Task*)nullptr)->serialGetArgs.filename)) {
+      Serial.println("PONS:ERROR,INVALID_FILENAME");
+      return;
+    }
+    webserial_cancel_requested = false;   // PONS:GET と同じ
+    // 受け付けた印（GETIMU と同じ。これを知らない古いファームは何も返さないので、Re:PONS は印が来なければ PONS:GET に戻す）。
+    // キューに入れる前に出す（Core1 が出す DATA_START / ERROR と行が混ざらないように）
+    Serial.println("PONS:GETRANGE_ACCEPTED");
+    if (!enqueueTask(createSerialGetTask(p + 1, 0, 0, 0, from, len))) s_busy_pending = true;
   } else if (strcmp(cmd, "PONS:SETTINGS_GET") == 0) {
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
@@ -2221,6 +2274,84 @@ static void handle_serial_command(const char *raw_cmd) {
     }
     if (serial_xfer_active()) { s_busy_pending = true; return; }
     if (!enqueueTask(createSerialSettingsSaveTask())) s_busy_pending = true;
+  } else if (strncmp(cmd, "PONS:WIPE_SCAN,", 15) == 0 || strncmp(cmd, "PONS:WIPE,", 10) == 0 ||
+             strncmp(cmd, "PONS:TRASH_EMPTY,", 17) == 0 || strncmp(cmd, "PONS:TRASH_RESTORE,", 19) == 0) {
+    // SD の整理（2026-11-25〜。docs/pons_webserial_protocol.md §4 (10)）。
+    //   PONS:WIPE_SCAN,<mask>                                    一覧（何も動かさない。本体の画面に番号を出す）
+    //   PONS:WIPE,<mask>,<件数>,<指紋>,<番号>,<日時>,<パスワード>  ログをゴミ箱へ移す
+    //   PONS:TRASH_EMPTY,<件数>,<指紋>,<番号>,<パスワード>        ゴミ箱を空にする（ここだけが本当に消す）
+    //   PONS:TRASH_RESTORE,<回の名前>                             ゴミ箱の 1 回分を元の場所へ戻す
+    // ★ 番号とパスワードの照合も、件数と指紋の数え直しも Core1（mysd.cpp の serial_wipe など）がする。ここは形だけ見て積む。
+    //   パスワードは行の最後（, を含んでもよい）。log.txt にもデバッグ出力にも書かない。
+    if (!webserial_connected) {
+      Serial.println("PONS:ERROR,NOT_CONNECTED");
+      return;
+    }
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
+    const char *p = cmd;
+    // 10 進の数（max_digits 桁まで）を読む。読めた桁が 0 なら false
+    auto parse_dec = [&](uint32_t &out, int max_digits) -> bool {
+      uint32_t v = 0;
+      int d = 0;
+      while (*p >= '0' && *p <= '9' && d < max_digits) { v = v * 10 + (uint32_t)(*p - '0'); p++; d++; }
+      out = v;
+      return d > 0;
+    };
+    // 16 進 8 桁ちょうど（指紋）
+    auto parse_hex8 = [&](uint32_t &out) -> bool {
+      uint32_t v = 0;
+      for (int h = 0; h < 8; h++, p++) {
+        const char c = *p;
+        const int x = (c >= '0' && c <= '9') ? c - '0' : (c >= 'A' && c <= 'F') ? c - 'A' + 10 :
+                      (c >= 'a' && c <= 'f') ? c - 'a' + 10 : -1;
+        if (x < 0) return false;
+        v = (v << 4) | (uint32_t)x;
+      }
+      out = v;
+      return true;
+    };
+    // 次の , までを out へ（, は読み飛ばす）。入りきらない・, が無ければ false
+    auto take = [&](char *out, size_t outsz) -> bool {
+      const char *c = strchr(p, ',');
+      if (!c || (size_t)(c - p) >= outsz) return false;
+      memcpy(out, p, (size_t)(c - p));
+      out[c - p] = '\0';
+      p = c + 1;
+      return true;
+    };
+    auto comma = [&]() -> bool { if (*p != ',') return false; p++; return true; };
+    Task t;
+    bool ok = false;
+    uint32_t mask = 0, count = 0, fp = 0;
+    uint16_t code = 0;
+    char code_s[6], stamp[16];
+    if (strncmp(cmd, "PONS:WIPE_SCAN,", 15) == 0) {
+      p = cmd + 15;
+      ok = parse_dec(mask, 2) && mask >= 1 && mask <= SDWIPE_CAT_ALL && *p == '\0';
+      if (ok) t = createSerialWipeScanTask((uint8_t)mask);
+    } else if (strncmp(cmd, "PONS:WIPE,", 10) == 0) {
+      p = cmd + 10;
+      ok = parse_dec(mask, 2) && mask >= 1 && mask <= SDWIPE_CAT_ALL && comma() && parse_dec(count, 6) && comma() &&
+           parse_hex8(fp) && comma() && take(code_s, sizeof(code_s)) && sdwipe_parse_code(code_s, &code) &&
+           take(stamp, sizeof(stamp)) && strlen(p) <= SDWIPE_PASSWORD_MAX;
+      if (ok) t = createSerialWipeTask((uint8_t)mask, count, fp, code, stamp, p);
+    } else if (strncmp(cmd, "PONS:TRASH_EMPTY,", 17) == 0) {
+      p = cmd + 17;
+      ok = parse_dec(count, 6) && comma() && parse_hex8(fp) && comma() && take(code_s, sizeof(code_s)) &&
+           sdwipe_parse_code(code_s, &code) && strlen(p) <= SDWIPE_PASSWORD_MAX;
+      if (ok) t = createSerialTrashEmptyTask(count, fp, code, p);
+    } else {
+      p = cmd + 19;
+      ok = sdwipe_batch_arg_ok(p);
+      if (ok) t = createSerialTrashRestoreTask(p);
+    }
+    if (!ok) {
+      Serial.println("PONS:WIPE_ERR,BAD_ARG");
+      return;
+    }
+    // ★ 前の中断の印は積む前に下ろす（PONS:GET と同じ。Core1 は始める前にこれを見る。転送が無いことは上で確かめた）
+    webserial_cancel_requested = false;
+    if (!enqueueTask(t)) s_busy_pending = true;   // キューが満杯（BUG-93）
   } else if (strcmp(cmd, "PONS:CANCEL") == 0) {
     webserial_cancel_requested = true;
     // 転送タスク実行中でなければ即座に応答（転送中なら Core1
@@ -2238,6 +2369,21 @@ static void handle_serial_command(const char *raw_cmd) {
       pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
       redraw_screen = true;
     }
+  } else if (strncmp(cmd, "PONS:LIVE,", 10) == 0) {
+    // ライブ配信（live.h・docs/pons_live_stream_plan.md。2026-11-23〜）。PONS:CONNECT は要らない
+    // （PC 接続の画面に入ると received/ の記録が止まるので、LIVE は入らない）。
+    // ★ ファイルの転送・一覧の最中は受けない（返事が転送の中身に混ざる。BUG-76）。BUSY は転送のあとで返す
+    if (serial_xfer_active()) { s_busy_pending = true; return; }
+    // ★ PC 接続の画面のまま ON が来た（Re:PONS でファイルの一覧からライブへ移った）ら、PC 接続を抜けてから始める
+    if (strcmp(cmd + 10, "ON") == 0 && (webserial_connected || screen_mode == MODE_PCCONNECT)) {
+      webserial_connected = false;
+      enqueueTask(createLogSdTask("PC DISCONNECTED (LIVE ON) -> RESUME"));
+      if (screen_mode == MODE_PCCONNECT) {
+        pcconnect_leave_screen();
+        redraw_screen = true;
+      }
+    }
+    live_command(cmd + 10);
   } else if (serial_xfer_active() &&
              (strncmp(cmd, "PONS:DBD,", 9) == 0 || strncmp(cmd, "PONS:TIME,", 10) == 0)) {
     // 転送中は受けない（返事が転送の中身に混ざる。BUG-76）。ビューアは PONS:TIME を READY の直後、一覧より先に送る
@@ -2280,24 +2426,48 @@ static void serial_command_service() {
     return;
   }
 
-  // 転送タスク実行中・待機中は無通信タイマーを更新し続け、転送中の誤切断を防止
-  if (serial_xfer_active()) {
-    last_serial_rx_ms = millis();
-  }
-
-  // 無通信フェイルセーフ: PC接続モードのまま 60
-  // 秒間無通信なら自動で通常航法へ復帰
-  if (screen_mode == MODE_PCCONNECT &&
-      (millis() - last_serial_rx_ms >= 60000UL)) {
-    webserial_connected = false;
-    webserial_cancel_requested = true;
-    enqueueTask(createLogSdTask("PC TIMEOUT (60s IDLE) -> RESUME MAP"));
-    pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
-    redraw_screen = true;
-    return;
+  // PC がポートを閉じた（DTR が落ちた）まま 3 秒たったら通常航法へ戻る（2026-11-25〜）。
+  // ★ ポートが開いている間は、何も来なくても PC 接続を抜けない。以前は 60 秒無通信で抜けていた。Re:PONS は転送のダイアログを
+  //   閉じると PING（15 秒ごと）を止めるので、ダイアログを閉じて 60 秒で地図へ戻り、生 IMU ログ・飛行 CSV の記録を再開していた
+  //   （2026-11-25、取り込みの合間に今日の生 IMU ログが 7MB 伸び、取り直すたびに大きくなった）。PC へ吸い出している間に
+  //   記録する意味は無いので（ユーザー）、PC がつないでいる間は PC 接続のまま＝記録を止めたままにする。
+  //   ほかの抜け道は PONS:DISCONNECT（Re:PONS の「🔌 切断」）・USB を抜く・ボタン（短押し・長押し）。
+  // ★ DTR は arduino-pico の Serial.dtr()（USB の SET_CONTROL_LINE_STATE で変わる値を読むだけで、USB のロックは取らない）。
+  //   DTR が立っていないと Serial.write() は何も送らない（tud_cdc_connected()）ので、Re:PONS と話せている間は必ず立っている。
+  //   ブラウザのタブを閉じる・ページを読み直す・Mac から抜けるとポートが閉じて落ちる。転送中は転送の側が始末するので見ない。
+  if (screen_mode == MODE_PCCONNECT) {
+    const uint32_t now = millis();
+    if (Serial.dtr() || serial_xfer_active()) pc_port_seen_ms = now;
+    if (now - pc_port_seen_ms >= 3000UL) {
+      webserial_connected = false;
+      webserial_cancel_requested = true;
+      enqueueTask(createLogSdTask("PC PORT CLOSED (3s) -> RESUME MAP"));
+      pcconnect_leave_screen();   // 画面を消して戻る（BUG-85）
+      redraw_screen = true;
+      return;
+    }
   }
 
   serial_flush_deferred_replies();   // 転送のあとに回した READY / BYE（BUG-76）
+
+  // SD の整理の番号と知らせが変わった（Core1 が出した・使い切った・5 分の期限が切れた）ら PC 接続の画面を描き直す。
+  // 0.2 秒ごとに見る（番号は mutex の中で読むので、毎周は見ない）
+  if (screen_mode == MODE_PCCONNECT) {
+    static uint32_t s_wipe_check_ms = 0;
+    static uint32_t s_wipe_seq_seen = 0;
+    static bool     s_wipe_code_shown = false;
+    if ((uint32_t)(millis() - s_wipe_check_ms) >= 200) {
+      s_wipe_check_ms = millis();
+      int code = -1;
+      sdwipe_screen_get(&code, nullptr, 0);
+      const uint32_t q = sdwipe_screen_seq();
+      if (q != s_wipe_seq_seen || (code >= 0) != s_wipe_code_shown) {
+        s_wipe_seq_seen = q;
+        s_wipe_code_shown = (code >= 0);
+        redraw_screen = true;
+      }
+    }
+  }
 
   while (Serial.available()) {
     char c = (char)Serial.read();
@@ -2333,6 +2503,9 @@ void loop() {
   // 無線モジュールが繋がっていなくても、link_module_alive() が false
   // になるだけで無害。
   link_loop();
+  // ライブ配信（live.h）。受けたテレメトリの行を USB の送信バッファに入る分だけ書く（待たない）・
+  // 受信機の状態の行（1 秒ごと）・止める条件。流していなければすぐ戻る。
+  live_tick();
   // ★
   // チャンネル調査は一覧の画面にいる間だけ。ほかへ移ったら止めて元の設定へ戻す
   //   （調査中は送信も受信も止まっているので、画面を離れたまま走らせない）。
@@ -2530,6 +2703,9 @@ void loop() {
   screen_moving_exit_tick();   // 地図以外の画面を出したまま動き出したら地図へ
 
   draw_current_screen(new_gnss_info);
+  // ライブ配信の判断の行（LN）。新しいフレームを受けたあと、ナビの判断（nav_alarm_tick）と描き直しが済んだここで、
+  // 画面に使った値を 1 行にする（live.cpp。描く関数の中には書かない）。
+  live_after_screen();
 
   if (redraw_screen) {
     // 更新終了
@@ -2675,7 +2851,8 @@ void loop1() {
       break;
     case TASK_SERIAL_GET:
       serial_send_csv_file(currentTask.serialGetArgs.filename, currentTask.serialGetArgs.tail,
-                           currentTask.serialGetArgs.jst_start, currentTask.serialGetArgs.jst_end);
+                           currentTask.serialGetArgs.jst_start, currentTask.serialGetArgs.jst_end,
+                           currentTask.serialGetArgs.range_from, currentTask.serialGetArgs.range_len);
       break;
     case TASK_SERIAL_SETTINGS_GET:
       serial_send_settings();
@@ -2685,6 +2862,18 @@ void loop1() {
       break;
     case TASK_SERIAL_SETTINGS_SAVE:
       serial_save_settings();
+      break;
+    case TASK_SERIAL_WIPE_SCAN:
+      serial_wipe_scan(currentTask.serialWipeArgs.mask);
+      break;
+    case TASK_SERIAL_WIPE:
+      serial_wipe(currentTask);
+      break;
+    case TASK_SERIAL_TRASH_EMPTY:
+      serial_trash_empty(currentTask);
+      break;
+    case TASK_SERIAL_TRASH_RESTORE:
+      serial_trash_restore(currentTask);
       break;
     }
     clearCurrentTask(); // mutex 内で TASK_NONE にする（Core0 の isTaskRunning()

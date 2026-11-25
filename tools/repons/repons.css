@@ -4,7 +4,7 @@
    Role    : Re:PONS の見た目（2026-11-23 に index.html から分けた）。
              index.html が ?v=<VIEWER_VERSION> を付けて読む
    Author  : MasaoC (@masao_mobile)
-   Updated : 2026-11-23
+   Updated : 2026-11-25
    ============================================================ */
 
 :root {
@@ -737,6 +737,17 @@ select {
 .file-table tr:hover {
   background: #f8fafc;
 }
+/* フライト・記録のタブの日付の見出し（2026-11-25〜。新しい日付が上） */
+.file-table tr.file-day td {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: bold;
+  font-size: 0.8rem;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--card-border);
+}
+.file-table tr.file-day:hover { background: none; }
+.file-table tr.file-day .cnt { font-family: var(--font-mono); font-weight: normal; color: #94a3b8; margin-left: 8px; }
 .btn-download {
   background: var(--accent-blue);
   color: #ffffff;
@@ -1172,4 +1183,115 @@ select {
 .diff-new { color: #1d4ed8; font-weight: bold; font-family: var(--font-mono); }
 @media (max-width: 720px) {
   .setting-card { grid-template-columns: 1fr; }
+}
+
+/* ===== SD のログを消す（#wipe-modal。2026-11-25〜。sd_wipe.js） ===== */
+#wipe-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(4px);
+  z-index: 10030;
+  align-items: center;
+  justify-content: center;
+}
+#wipe-modal.active { display: flex; }
+.wipe-box {
+  width: min(720px, calc(100vw - 32px));
+  max-height: 88vh;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.wipe-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 0.88rem;
+  color: #1e293b;
+}
+.wipe-note { color: #475569; line-height: 1.55; }
+.wipe-cats { display: flex; flex-direction: column; gap: 6px; }
+.wipe-cat {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  background: #f8fafc;
+}
+.wipe-cat.on { background: #fef2f2; border-color: #fca5a5; }
+.wipe-cat-name { font-weight: bold; white-space: nowrap; }
+.wipe-cat-where { color: #64748b; font-size: 0.78rem; font-family: var(--font-mono); min-width: 0; overflow-wrap: anywhere; }
+.wipe-cnt { font-family: var(--font-mono); font-weight: bold; color: #b91c1c; white-space: nowrap; }
+.wipe-cnt.off { color: #94a3b8; font-weight: normal; }
+.wipe-summary { font-size: 0.95rem; }
+.wipe-big { color: #b91c1c; font-size: 1.1rem; }
+.wipe-list summary { cursor: pointer; color: #334155; font-weight: bold; }
+.wipe-list > div {
+  margin-top: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.wipe-file {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+.wipe-file span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.wipe-file span:last-child { color: #64748b; white-space: nowrap; }
+.wipe-file.muted { color: #94a3b8; }
+.wipe-warn { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; border-radius: 8px; padding: 8px 12px; }
+.wipe-pw { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.wipe-pw label { font-weight: bold; }
+.wipe-pw input { padding: 6px 9px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.95rem; width: min(260px, 100%); }
+.wipe-pw-note { flex-basis: 100%; color: #64748b; font-size: 0.78rem; }
+.wipe-err { color: #b91c1c; font-weight: bold; }
+.wipe-message { border-radius: 8px; padding: 8px 12px; line-height: 1.5; }
+.wipe-message.error { background: #fef2f2; border: 1px solid #fca5a5; color: #b91c1c; }
+.wipe-message.ok { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; }
+.wipe-message.info { background: #eff6ff; border: 1px solid #93c5fd; color: #1d4ed8; }
+.btn-danger {
+  background-color: #dc2626;
+  border-color: #dc2626;
+  color: white;
+  font-weight: bold;
+  padding: 8px 16px;
+}
+.btn-danger:hover { background-color: #b91c1c; border-color: #b91c1c; }
+.btn-danger:disabled { cursor: not-allowed; }
+/* SD の空き容量・区画・ゴミ箱の回・番号の欄（2026-11-25〜） */
+.wipe-sd { display: flex; flex-direction: column; gap: 4px; }
+.wipe-sd-text { font-weight: bold; color: #334155; }
+.wipe-sd-bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+.wipe-sd-bar > div { height: 100%; }
+.wipe-sec { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.wipe-sec-title { font-weight: bold; font-size: 0.95rem; color: #0f172a; }
+.wipe-auth { background: #f8fafc; }
+.trash-batches { display: flex; flex-direction: column; gap: 6px; }
+.trash-batch { border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px 10px; }
+.trash-batch-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.trash-batch-name { font-weight: bold; }
+.trash-batch-cnt { color: #64748b; font-family: var(--font-mono); font-size: 0.8rem; flex: 1; }
+.trash-batch-head button { padding: 3px 9px; font-size: 0.8rem; }
+.wipe-code-input { width: 5.5em !important; font-family: var(--font-mono); font-size: 1.1rem !important; letter-spacing: 0.15em; text-align: center; }
+@media (max-width: 600px) {
+  .wipe-cat { grid-template-columns: auto 1fr auto; }
+  .wipe-cat-where { grid-column: 2 / 4; }
 }

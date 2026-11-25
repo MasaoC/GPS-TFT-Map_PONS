@@ -71,6 +71,7 @@ static float    s_batt_v      = 0.0f;  // GPIO40（BATPWR）の生の平均。SW
 static bool     s_swoff       = false; // SW OFF のまま USB（CHARGE_SW_OFF_HOLD_MS 続いて確定）
 static uint32_t s_swoff_since = 0;
 static bool     s_swoff_said  = false; // この回の SW OFF をもう読み上げたか
+static bool     s_replug      = false; // USB のまま SW が入った。USB を挿し直すまで充電しないことがある（sw_off_tick()。2026-11-25〜）
 static bool     s_moving       = false;
 static uint32_t s_moving_since = 0;    // 静止中に移動条件を満たし始めた時刻（0 = 未達）
 static uint32_t s_still_since  = 0;    // 移動中に止まり始めた時刻（0 = まだ止まっていない）
@@ -141,6 +142,8 @@ bool power_sw_off_on_usb() {
   //   扱わないようにするため。
   return s_batt_v < CHARGE_SW_OFF_BATT_V;
 }
+
+bool power_charge_replug_needed() { return s_replug; }
 
 // 地図が自機の状態を映しているか。ミラー中は機体、リプレイ中は過去のログ、デモ中は
 // 仮想機体を映しているので、自機の充電の話は重ねない。
@@ -486,17 +489,31 @@ static void overdischarge_tick(uint32_t now) {
 // ★ 読み上げたあとに SW が入ったら charge_sw_on.wav で知らせる。同じ排他グループなので、
 //   割り込まれて pending に残っていた「切れています」もここで捨てられる
 //   （残すと SW を入れたあとに「切れています」と嘘を喋る。docs/pons_sound.md §3）。
+// ★ USB のまま SW が入ったら、USB を抜くまで「挿し直して」を出す（s_replug。2026-11-25〜）。
+//   SW OFF のあいだ充電 IC（MCP73831）は電池が見えず「充電 → すぐ終了」をくり返していて（docs/pons_power.md §4.1）、
+//   SW が入った瞬間はたいてい「終了」にいる。終了から充電をやり直すのは電池が再充電の電圧（4.20V の 94〜96.5%、
+//   約 3.95〜4.05V。データシート 4.8 Automatic Recharge）を下回ったときだけなので、それより高い電池は充電されない。
+//   USB を挿し直せば充電 IC は必ず充電をやり直す。2026-11-20 の log.txt で、ほぼ満充電の電池（4.18V）が 20 分充電されず、
+//   電圧が上がらないのを「上昇停止」と見て FULL になった（抜くと 94%）。
+//   電池の電圧では見分けない（充電が始まっていても頼む。挿し直しても害は無い）。FULL のあとは頼まない（もう満充電）。
+//   一瞬だけ切れても充電 IC は終了に入るので、確定（s_swoff）を待たず OFF を 1 回でも見たら（s_swoff_since）対象にする。
 static void sw_off_tick(uint32_t now) {
   if (!getReplayMode()) update_moving(now);   // リプレイ中の速度は過去のログなので見ない
+  if (!usb_power_present()) s_replug = false;   // 抜いた。挿せば充電 IC は充電をやり直す
 
   if (!power_sw_off_on_usb()) {
+    if (s_swoff_since != 0 && usb_power_present() && power_charging_percent() < 100) {
+      if (!s_replug) enqueueTask(createLogSdfTask("CHG REPLUG: SW ON on USB (batt=%.2fV). Charger may not restart until USB is replugged", s_batt_v));
+      s_replug = true;
+    }
     s_swoff_since = 0;
     if (s_swoff) {
       // ここへ来るのは電池電圧が読めるようになったとき＝SW が入ったときだけ
       // （SW OFF のまま USB を抜けば本体ごと止まる）。
       s_swoff = false;
       enqueueTask(createLogSdfTask("CHARGE: SW ON (batt=%.2fV)", s_batt_v));
-      if (s_swoff_said && !power_overdischarge_latched())
+      // 「電源スイッチが入りました。USB を挿し直してください。」なので、挿し直しを頼まない FULL のときは鳴らさない
+      if (s_swoff_said && s_replug && !power_overdischarge_latched())
         enqueueTask(createPlayWavTask("wav/charge_sw_on.wav", 1, 0, WAV_EXCL_CHARGE_SW));
     }
     s_swoff_said = false;
@@ -643,6 +660,7 @@ void power_tick() {
 static bool     s_chg_full_latched       = false;
 static uint32_t s_chg_start_ms           = 0;  // USB 充電開始時刻 [ms]
 static uint32_t s_chg_full_since_ms      = 0;  // 満充電ラッチ到達時刻 [ms]
+static uint32_t s_chg_tail_since_ms      = 0;  // この充電で平滑 BATPWR が CHG_REG_V に着いた時刻 [ms]（0 = まだ）。残り時間の終わりの部分（CHG_TAIL_MIN）の起点
 static uint32_t s_chg_popup_snooze_since = 0;  // 充電ポップアップをスヌーズした時刻 [ms]
 
 // 満充電ラッチを決める（power_tick() から 250ms ごと）。
@@ -658,7 +676,7 @@ static void charge_full_tick(uint32_t now) {
   static float    s_chg_ref_v         = 0.0f;  // 飽和タイマー基準電圧 [V]
   static uint32_t s_chg_ref_ms        = 0;     // 最後に CHG_FULL_PEAK_STEP_V 以上上がった時刻
   static uint32_t s_chg_drop_since_ms = 0;     // ピークから CHG_FULL_DROP_V 以上下がり始めた時刻
-  static bool     s_full_tone_done    = false; // この USB 接続で満充電の音を鳴らしたか（抜くまで鳴らさない）
+  static uint32_t s_full_tone_ms      = 0;     // 最後に満充電の音を鳴らした時刻（0 = この USB 接続でまだ鳴らしていない）
 
   auto reset_watch = [&]() {
     s_chg_peak_v        = 0.0f;
@@ -667,13 +685,32 @@ static void charge_full_tick(uint32_t now) {
     s_chg_drop_since_ms = 0;
   };
 
+  // ★ 満充電の間は明るく上がっていく音（ド・ミ・ソ・ド。最後を伸ばす）を鳴らす（2026-11-23〜、ユーザー）。
+  //   ・満充電になったらすぐ鳴らし、そのあと CHG_FULL_TONE_INTERVAL_MS（5 分）ごとに USB を抜くまで鳴らし続ける。
+  //     2026-11-25 までは USB を挿している間に 1 回だけで、聞き逃すと満充電に気づけなかった（ユーザー）
+  //   ・満充電のあと下がって充電し直している間（画面は CHG 9x%）は鳴らさない。また満充電になったら続きを鳴らす
+  //   ・SW OFF のまま USB の間も鳴らさない（下の早い return。充電は止まっていて、画面は SW OFF）
+  //   ・動いているとき（自機の GNSS。update_moving()）は鳴らさない。飛行中に USB で給電して満充電になっても、
+  //     パイロットの気を散らさないため（画面の FULL はそのまま出る）。止まったら、間隔が空いていればすぐ鳴らす
+  //   ・受信の上がる 3 音（ラ・ド#・ミ ×2）・ボタンの 2 音（1568→2093Hz）と聞き分けられるよう、4 音で最後を長くした
+  auto full_tone_tick = [&]() {
+    if (s_moving) return;
+    if (s_full_tone_ms != 0 && now - s_full_tone_ms < CHG_FULL_TONE_INTERVAL_MS) return;
+    s_full_tone_ms = now ? now : 1;
+    enqueueTask(createPlayMultiToneTask(1047, 120, 1, 2));   // ド
+    enqueueTask(createPlayMultiToneTask(1319, 120, 1, 2));   // ミ
+    enqueueTask(createPlayMultiToneTask(1568, 120, 1, 2));   // ソ
+    enqueueTask(createPlayMultiToneTask(2093, 450, 1, 2));   // ド（1 オクターブ上を伸ばす）
+  };
+
   const uint32_t dt = (s_last_tick_ms == 0) ? POWER_SAMPLE_MS : (now - s_last_tick_ms);
   s_last_tick_ms = now;
 
   if (!usb_power_present()) {
     s_chg_full_latched  = false;
     s_chg_full_since_ms = 0;
-    s_full_tone_done    = false;
+    s_chg_tail_since_ms = 0;
+    s_full_tone_ms      = 0;
     s_was_charging      = false;
     s_chg_enter_ms      = 0;
     s_chg_lp            = 0.0f;
@@ -687,9 +724,10 @@ static void charge_full_tick(uint32_t now) {
   }
 
   if (!s_was_charging) {
-    s_was_charging = true;
-    s_chg_enter_ms = now ? now : 1;
-    s_chg_lp       = s_batt_v;
+    s_was_charging      = true;
+    s_chg_enter_ms      = now ? now : 1;
+    s_chg_lp            = s_batt_v;
+    s_chg_tail_since_ms = 0;   // 挿した・SW を入れ直した充電は終わりの部分を数え直す（長めに出る側）
     reset_watch();
   } else {
     float k = (float)dt / (float)CHG_FULL_LP_TAU_MS;
@@ -697,17 +735,29 @@ static void charge_full_tick(uint32_t now) {
     s_chg_lp += (s_batt_v - s_chg_lp) * k;
   }
 
+  // ★ USB の挿し直し待ち（s_replug）のあいだは満充電を決めない。充電 IC が充電していないと電圧が上がらず、
+  //   上の「上昇停止 20 分」で FULL になる（2026-11-20 の log.txt。sw_off_tick() の説明）。
+  if (s_replug) return;
+
   if (s_chg_full_latched) {
     if (s_chg_lp < CHG_RECHARGE_V) {
       s_chg_full_latched  = false;
       s_chg_full_since_ms = 0;
+      s_chg_tail_since_ms = 0;   // 充電し直し。終わりの部分は電圧が上端に戻ってから数え直す
       reset_watch();
+      return;
     }
+    full_tone_tick();   // 満充電の間は 5 分ごと
     return;
   }
 
   // 接続／SW ON 直後の単発ノイズが偽ピークにならないよう、平滑フィルタが落ち着くまで待つ
   if (now - s_chg_enter_ms < CHG_FULL_WARMUP_MS) return;
+
+  // 電圧の上端（平滑 BATPWR が CHG_REG_V）に着いた時刻。残り時間はここから CHG_TAIL_MIN を数え下げる
+  // （power_charging_remaining_min()）。★ 一度着いたら、この充電の間は上端の前後で揺れても数え直さない
+  //   （ログの 1 分ごとの rem が 4m と 1m を行き来していた。数え直すと残り時間が跳ねる）。
+  if (s_chg_tail_since_ms == 0 && s_chg_lp >= CHG_REG_V) s_chg_tail_since_ms = now ? now : 1;
 
   // ★ 一度 CHG_FULL_MIN_V に届いたら、下へ戻っても監視を消さない（2026-11-13、BUG-81）。以前は「ピークが
   //   CHG_FULL_DROP_MIN_V（4.180V）に届いていない」ときも消していて、V_REG が公差の下寄り（最小 4.168V）でピークが
@@ -743,21 +793,9 @@ static void charge_full_tick(uint32_t now) {
   }
 
   if (plateau_full || drop_full) {
-    const bool was_full = s_chg_full_latched;
     s_chg_full_latched = true;
     if (s_chg_full_since_ms == 0) s_chg_full_since_ms = now ? now : 1;
-    // ★ 満充電になったら明るく上がっていく音（ド・ミ・ソ・ド。最後を伸ばす）を鳴らす（2026-11-23〜、ユーザー）。
-    //   ・USB を挿している間に 1 回だけ。満充電のあと少し下がって充電し直し、また満充電になっても鳴らさない（夜通し鳴らないため）
-    //   ・動いているとき（自機の GNSS。update_moving()）は鳴らさない。飛行中に USB で給電して満充電になっても、
-    //     パイロットの気を散らさないため（画面の FULL はそのまま出る）
-    //   ・受信の上がる 3 音（ラ・ド#・ミ ×2）・ボタンの 2 音（1568→2093Hz）と聞き分けられるよう、4 音で最後を長くした
-    if (!was_full && !s_full_tone_done && !s_moving) {
-      s_full_tone_done = true;
-      enqueueTask(createPlayMultiToneTask(1047, 120, 1, 2));   // ド
-      enqueueTask(createPlayMultiToneTask(1319, 120, 1, 2));   // ミ
-      enqueueTask(createPlayMultiToneTask(1568, 120, 1, 2));   // ソ
-      enqueueTask(createPlayMultiToneTask(2093, 450, 1, 2));   // ド（1 オクターブ上を伸ばす）
-    }
+    full_tone_tick();   // 満充電になった（上の full_tone_tick の説明）
   }
 }
 
@@ -798,32 +836,54 @@ static int charge_cv_start_percent() {
   return charge_progress_pct(CHG_CV_START_V - CHG_CC_DROP_V);
 }
 
-int power_charging_remaining_min() {
-  if (s_chg_full_latched) return 0;
+// 満充電（ラッチ）までの残り時間を 2 つに分けて返す [分]。読むだけ（判断は charge_full_tick()）。
+//   to_top: 電圧で見た上端（推定セル電圧が CHG_REG_V）まで。CC は 1.7 分/% ＋ CV の CHG_CV_MIN、CV は上端までを CHG_CV_MIN で
+//   tail  : 上端から満充電ラッチまで（CHG_TAIL_MIN）。上端に着いたら（s_chg_tail_since_ms）そこから時間で数え下げる
+// ★ 2026-11-25 までは tail が無く、上端（BATPWR 4.20V）で残り 1 分（max 16 分）に張り付いたまま 40 分以上かかっていた。
+//   充電 IC が止める電圧は個体差（V_REG 4.168〜4.232V）と ADC の誤差で、実機の 2 台は 4.21・4.22V まで上がり、4.20V のあとも
+//   絞られた電流で 30 分ほど充電が続く。さらにラッチは終止から 15 分ほど遅れる（上昇停止 20 分か −12mV・2 分を待つ）。
+//   上端の手前でも tail を足しておくのは、上端に着いた瞬間に残り時間が跳ねないため。
+// ★ 上端は平滑 BATPWR（s_chg_lp）で見るので、V_REG が 4.20V より低い個体は上端に着かず、ラッチまで「to_top の残り ＋ 45 分」で止まる。
+static void charge_remaining_parts(int &to_top, int &tail) {
+  if (s_chg_tail_since_ms != 0) {
+    to_top = 0;
+    const uint32_t el_min = (millis() - s_chg_tail_since_ms) / 60000UL;
+    tail = (el_min >= (uint32_t)CHG_TAIL_MIN) ? 0 : (int)(CHG_TAIL_MIN - el_min);
+    return;
+  }
+  tail = CHG_TAIL_MIN;
   const int pct = charge_progress_pct(power_estimated_cell_voltage());
   const int top = charge_progress_top();
-  // ★ 満充電ラッチ（charge_full_tick）が立つまでは 0 を返さない。0 は「FULL」と読まれる（充電ポップアップ）。
-  if (pct >= top) return 1;
+  if (pct >= top) { to_top = 0; return; }   // 平滑値が上端に着く少し前（ピーク追跡の電圧は先に着く）
   const int cv_pct = charge_cv_start_percent();
   if (pct < cv_pct) {
     // CC フェーズ: CV に入るまで（303mA 充電で約 1.7 分/%）＋ CV の所要時間（CHG_CV_MIN）
-    return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
+    to_top = (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
   } else {
     // CV フェーズ: CV に入ってから上端（約 96%）までを CHG_CV_MIN で（CV に入った瞬間は CC の式と連続）。
-    // ★ 2026-11-13 まで 100% までで割っていて、届かない 96〜100% のぶん（約 15 分）が最後に残り、
-    //   ラッチまで "15m" のまま止まってから FULL へ飛んでいた（BUG-80）。ラッチの前は 1 分より下げない。
-    const int rem = (int)((top - pct) * CHG_CV_MIN / (float)(top - cv_pct));
-    return rem < 1 ? 1 : rem;
+    // ★ 2026-11-13 まで 100% までで割っていて、届かない 96〜100% のぶん（約 15 分）が最後に残っていた（BUG-80）
+    to_top = (int)((top - pct) * CHG_CV_MIN / (float)(top - cv_pct));
   }
 }
 
-// 90%以上の確率で完了していると言える安全マージン込みの残り時間 [分]
-// 熱ダレ（最大1.3倍の電流低下）および終止テーリング（+15分）を織り込んだ推定
+int power_charging_remaining_min() {
+  if (s_chg_full_latched) return 0;
+  int to_top, tail;
+  charge_remaining_parts(to_top, tail);
+  // ★ 満充電ラッチ（charge_full_tick）が立つまでは 0 を返さない。0 は「FULL」と読まれる（充電ポップアップ）。
+  //   tail を数え終わってもラッチがまだなら 1 分で待つ。
+  const int rem = to_top + tail;
+  return rem < 1 ? 1 : rem;
+}
+
+// 90%以上の確率で完了していると言える安全マージン込みの残り時間 [分]（充電ポップアップの括弧の中 "max"）。
+// 熱ダレ（最大 1.3 倍の電流低下）は上端までの分だけに掛け、上端から先（tail）はそのまま足し、終わりのばらつき +15 分。
+// ★ 2026-11-25 までは「残り × 1.3 ＋ 15」で、上端に着くと残り 1 分から max 16 分のまま 40 分以上止まっていた。
 int power_charging_remaining_90_min() {
   if (s_chg_full_latched) return 0;
-  const int rem = power_charging_remaining_min();
-  if (rem == 0) return 0;
-  return (int)(rem * 1.3f) + 15;
+  int to_top, tail;
+  charge_remaining_parts(to_top, tail);
+  return (int)(to_top * 1.3f) + tail + 15;
 }
 
 // 満充電到達後、90%確実消灯目安（到達後 +20分）を達成したか
@@ -872,6 +932,7 @@ bool power_charge_popup_active() {
   const uint32_t now = millis();
   if (s_chg_popup_snooze_since != 0 && (now - s_chg_popup_snooze_since < CHG_POPUP_SNOOZE_MS)) return false;
   if (!usb_power_present() || power_sw_off_on_usb()) return false;
+  if (s_replug) return false;   // 充電していないかもしれない（% と残り時間は意味が無い）。ヘッダーの REPLUG で知らせる
   if (power_overdischarge_latched() || s_fault || s_hot) return false;
   if (s_moving || getReplayMode() || is_demo_active()) return false;
   if (link_mirror_active() && s_chg_popup_mirror_dismissed) return false;

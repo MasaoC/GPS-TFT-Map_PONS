@@ -95,6 +95,7 @@ flowchart LR
 ## 4. 適切かつシンプルな推奨アルゴリズム（決定版: 完全ステートレス物理モデル）
 
 Flash へのアクセスはもちろん、タイマーや状態変数（`t_cv_start` 等）の保存すら一切不要な **「完全ステートレス（純粋関数）物理モデル」** を採用する。
+例外は満充電ラッチ（§4.3 の下）と、残り時間の終わりの部分（電圧の上端に着いた時刻から 45 分を数え下げる。2026-11-25〜。§4.3）の 2 つ。
 定数は [settings.h](../settings.h) の `CHG_*` に 1 か所だけ置き、実装は [power.cpp](../power.cpp)。
 
 > ★ **2026-11-11 に実機の測定で定数を変えた**（§7.3）。それまでは回路からの見積もり（CC の差 75mV・CV は 4.125V から）で、
@@ -108,7 +109,7 @@ flowchart TD
     B -->|"No (CV フェーズ: 約68%〜)"| D["V_cell = min(2 × V_BATPWR - 4.20V, 4.20V)"]
     C --> P["SoC = battery_percent(V_cell - 0.030V)"]
     D --> P
-    P --> R["残り時間: CC = (68 - SoC) × 1.7分 + 120分 / CV = (100 - SoC) × 120分 ÷ 32"]
+    P --> R["残り時間 = 上端まで（CC = (68 - SoC) × 1.7分 + 120分 / CV = (96 - SoC) × 120分 ÷ 28）＋ 上端から 45 分<br>（上端に着いたら着いた時刻から 45 分を数え下げる）"]
     P --> E{"平滑BATPWR ≥ 4.17V で上昇停止20分<br>または終止折り返し？"}
     E -->|"Yes"| F["【満充電】 FULL (100%) / 残り 0分"]
 ```
@@ -120,7 +121,8 @@ flowchart TD
 | `CHG_LOAD_DROP_V` | 0.030V | 電池だけで動くときのセルの開放電圧 − BATPWR（本体の電流 × 下流の抵抗） |
 | `CHG_CV_START_V` | 4.088V | CV に入る BATPWR（`CHG_REG_V − CHG_CC_DROP_V`。上流と下流の抵抗を等しいとみなす） |
 | `CHG_CC_MIN_PER_PCT` | 1.7 分 | CC 中、残量が 1% 進む時間（303mA・約 850mAh） |
-| `CHG_CV_MIN` | 120 分 | CV に入ってから満充電まで（2026-11-13 の実機ログで 45 分から見直し） |
+| `CHG_CV_MIN` | 120 分 | CV に入ってから電圧の上端（BATPWR が 4.20V）まで（2026-11-13 の実機ログで 45 分から見直し） |
+| `CHG_TAIL_MIN` | 45 分 | 電圧の上端から満充電（ラッチ）まで（2026-11-25〜。§4.3） |
 
 ### 4.1 セル開放電圧（$V_{cell}$）の物理的逆算式
 `BATPWR` の測定値から、以下の連続な数式でセルの開放電圧 $V_{cell}$ を推計する（`power_estimated_cell_voltage()`。log.txt の `cell=`）：
@@ -156,15 +158,29 @@ $$SoC = \min(99,\ \text{battery\_percent}(V_{cell} - 0.030\text{V}))\quad(\text{
   `CHG_CC_MIN_PER_PCT`・`CHG_CV_MIN` がその目盛りで合わせてあるため。下の 68% はその目盛りの値。
 
 ### 4.3 満充電までの残り時間（推定分）
+**残り時間 ＝ 電圧で見た上端までの分（to_top）＋ 上端から満充電（ラッチ）までの 45 分（tail、`CHG_TAIL_MIN`）**
+（`power.cpp` の `charge_remaining_parts()`。満充電ラッチまでは 1 分より下げない）。
+
 CV に入るときの % を $SoC_{cv}$（= 68%）とする（定数から計算するので、定数を変えても境目で連続）。
 - **CC フェーズ**（$SoC < SoC_{cv}$）: CV に入るまで 1.7 分/%、そのあと CV の 120 分
-  $$\text{残り時間 [分]} = (SoC_{cv} - SoC) \times 1.7\text{分} + 120\text{分}$$
+  $$\text{to\_top [分]} = (SoC_{cv} - SoC) \times 1.7\text{分} + 120\text{分}$$
 - **CV フェーズ**: CV に入ってから上端 $SoC_{top}$（= 96%）までを 120 分で
-  $$\text{残り時間 [分]} = (SoC_{top} - SoC) \times \frac{120\text{分}}{SoC_{top} - SoC_{cv}}\quad(\text{満充電ラッチまでは }1\text{ 分より下げない})$$
+  $$\text{to\_top [分]} = (SoC_{top} - SoC) \times \frac{120\text{分}}{SoC_{top} - SoC_{cv}}$$
   （$SoC = SoC_{cv}$ のとき、どちらの式でも **ぴったり 120 分**）
+- **上端に着いたあと**（平滑 BATPWR が `CHG_REG_V` = 4.20V に着いた時刻から）: to_top は 0、tail は 45 分から時間で数え下げる。
+  一度着いたら、その充電の間は上端の前後で揺れても数え直さない（USB の挿し直し・SW の入れ直し・再起動・満充電のあとの充電し直しでは
+  数え直すので、長めに出る）。上端の手前でも tail の 45 分を足しておくのは、上端に着いた瞬間に残り時間が跳ねないため。
+  ★ この起点だけは状態を持つ（上の「完全ステートレス」の例外）。電圧だけでは上端から先の進み具合が分からないため。
+- ★ **2026-11-25 までは tail が無く、上端（BATPWR 4.20V）で残り `1m`（max `16m`）に張り付いたまま 40 分以上かかっていた**（ユーザー）。
+  充電 IC が止める電圧は個体差（$V_{REG}$ 4.168〜4.232V）と ADC の誤差で 4.20V より高いことがあり、実機の 2 台は 4.21・4.22V まで上がって、
+  4.20V のあとも絞られた電流で 30 分ほど充電が続いた。さらに満充電ラッチは終止から 15 分ほど遅れる（下の判定）。
+  2026-11-23〜25 の log.txt では上端から `FULL` まで 40・41 分（もう 1 回は 40 分たっても `FULL` にならないうちに抜いた）。
+  この 3 回をいまの式に通すと、97% から挿した回は実際の残りと 1〜3 分の差、99% から挿した回は 6 分長め、
+  90% から挿した回は 75 分目で残り 2 分（`FULL` はそれより後）だった。
+- **V_REG が 4.20V より低い個体**は上端に着かないので、ラッチまで「to_top の残り ＋ 45 分」で止まる（限界）。
 - ★ この $SoC$ は残り時間用の目盛り（`charge_progress_pct()`、上端は `CHG_REG_V` = 4.20V）で、`CHG_LOAD_DROP_V` を引くので
   推定セル電圧が上限の 4.20V でも 96% までしか上がらない。2026-11-13 まで 100% までで割っていて、届かない 4% ぶん（15 分）が残り、
-  ラッチまで `15m` のまま止まってから `FULL` へ飛んでいた（BUG-80）。上端で 0 になるように割り、ラッチの前は 1 分で止める。
+  ラッチまで `15m` のまま止まってから `FULL` へ飛んでいた（BUG-80）。上端で 0 になるように割った（そのあとは tail）。
   充電ポップアップの `FULL` もラッチ（% が 100）だけで決める（以前は残り 0 分でも `FULL` にしていた）。
 - 2026-11-11 までは CV の境目を 80% に固定していた。% の目盛りが下がったので、境目も定数から出すようにした。
 - 2026-11-13 の実機ログで 83%（4.15V）→ 4.21V 到達が 77 分・終止（緩和開始）まで約 94 分かかったため、45 分の仮置きから 120 分へ改めた。
@@ -173,6 +189,8 @@ CV に入るときの % を $SoC_{cv}$（= 68%）とする（定数から計算�
   ピークが 4.180V に届かない個体（$V_{REG}$ が公差の下寄り、最小 4.168V）で、4.170V をまたいで揺れるたびに計時が 0 に戻り、
   終止して緩和しても自然緩和の判定（ピーク 4.180V 以上が条件）が使えず、FULL にならなかった。上昇停止の 20 分は、
   4.170V に届いたあと 4mV 以上上がらなければ、下がっていても数える。
+- **USB のまま SW を入れたあと（挿し直し待ち。`power_charge_replug_needed()`）は満充電を決めない**（2026-11-25〜）。充電 IC が
+  充電をやり直していないと電圧が上がらず、上昇停止の 20 分で `FULL` になっていた（2026-11-20 の log.txt。抜くと 94%）。[pons_power.md](pons_power.md) §4.1。
 
 ### 4.4 ソフトウェア実装（power.cpp）
 ```cpp
@@ -200,15 +218,36 @@ static int charge_progress_pct(float cell_v) {
 static int charge_progress_top()     { return charge_progress_pct(CHG_REG_V); }                        // 96%
 static int charge_cv_start_percent() { return charge_progress_pct(CHG_CV_START_V - CHG_CC_DROP_V); }  // 68%
 
-int power_charging_remaining_min() {
-  if (s_chg_full_latched) return 0;
+// 残り時間を「上端まで（to_top）」と「上端から満充電ラッチまで（tail）」に分けて返す（2026-11-25〜）
+static void charge_remaining_parts(int &to_top, int &tail) {
+  if (s_chg_tail_since_ms != 0) {                 // 平滑 BATPWR が CHG_REG_V に着いた（charge_full_tick() が記録）
+    to_top = 0;
+    const uint32_t el_min = (millis() - s_chg_tail_since_ms) / 60000UL;
+    tail = (el_min >= CHG_TAIL_MIN) ? 0 : (int)(CHG_TAIL_MIN - el_min);
+    return;
+  }
+  tail = CHG_TAIL_MIN;
   const int pct = charge_progress_pct(power_estimated_cell_voltage());
   const int top = charge_progress_top();
-  if (pct >= top) return 1;                       // ラッチまでは 0（＝FULL）にしない
+  if (pct >= top) { to_top = 0; return; }
   const int cv_pct = charge_cv_start_percent();
-  if (pct < cv_pct) return (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
-  const int rem = (int)((top - pct) * CHG_CV_MIN / (float)(top - cv_pct));
-  return rem < 1 ? 1 : rem;
+  if (pct < cv_pct) to_top = (int)((cv_pct - pct) * CHG_CC_MIN_PER_PCT + CHG_CV_MIN);
+  else              to_top = (int)((top - pct) * CHG_CV_MIN / (float)(top - cv_pct));
+}
+
+int power_charging_remaining_min() {
+  if (s_chg_full_latched) return 0;
+  int to_top, tail;
+  charge_remaining_parts(to_top, tail);
+  const int rem = to_top + tail;
+  return rem < 1 ? 1 : rem;                       // ラッチまでは 0（＝FULL）にしない
+}
+
+int power_charging_remaining_90_min() {            // 充電ポップアップの "max"
+  if (s_chg_full_latched) return 0;
+  int to_top, tail;
+  charge_remaining_parts(to_top, tail);
+  return (int)(to_top * 1.3f) + tail + 15;         // 熱ダレは上端までの分だけ
 }
 ```
 
@@ -229,7 +268,7 @@ int power_charging_remaining_min() {
 - **通常時（放電中）**:
   `Battery Time: Approx. 2h 30m (3.85V)`
 - **USB 充電中（SW ON）**:
-  - 1行目: **`Charging: 72% (45m to FULL)`**（60 分以上は `Charging: 40% (1h 20m to FULL)`、満充電は `Charging: FULL 100% (4.20V)`）
+  - 1行目: **`Charging: 99% (45m to FULL)`**（60 分以上は `Charging: 40% (3h 37m to FULL)`、満充電は `Charging: FULL 100% (4.20V)`）
   - 2行目: **`Batt: 4.02V (Est. Cell 3.95V)`**
 - **USB 接続中（SW OFF）**:
   - 1行目: `Battery: SW OFF - turn ON to charge`
@@ -243,14 +282,15 @@ int power_charging_remaining_min() {
   - 地上静止中（対地速度 $GS < 1.5\text{m/s}$、GNSS 未測位含む）
   - リプレイ中・デモ中・過放電ロック中・電源異常・高温充電時は非表示
   - **受信のミラー中も出す**（2026-11-23〜）。屋内で送信機と受信機を一緒に充電すると受信機がミラーになり、出なかったため。
-    地図は機体の画面なので、1 行目の頭に `RX` を付けて受信機自身の充電だと示す（例: `RX CHG 85%  33m`）。
+    地図は機体の画面なので、1 行目の頭に `RX` を付けて受信機自身の充電だと示す（例: `RX CHG 85%  1h57`）。
     **ミラー中に短押しで消すと、USB を抜く（3 秒以上）まで出さない**（離陸前のボートで機体の画面に重なり続けないため。`CHG_POPUP_REARM_USB_OFF_MS`）
   - **フライト中や機体移動中は 100% 非表示** を保証（移動は自機の GNSS で見るので、追走中のボートでも出ない）。
   - ボタン操作（短押し・ダブルクリック・長押し）があった場合は **15 秒間スヌーズ（一時非表示）** され、背景の地図をクリアに確認可能。
 - **表示レイアウト（4行。4 行目は 2026-11-22〜。箱の高さは変えず行を詰めた）**:
   - 枠色: 充電中=`COLOR_BLUE` / 満充電=`COLOR_GREEN`
-  - **1行目**: メイン電池残量 %、公称残り時間、90%確実完了目安時間（熱ダレ $1.3\times$ ＋終止テーリング $+15$ 分を織り込み）
-    - 充電中: `CHG 85%  33m (max 57m)`（1 時間以上は `1h00` の形。括弧の中は 90% の確かさで終わっているまでの残り。箱に収まらないときは括弧を落とす）
+  - **1行目**: メイン電池残量 %、公称残り時間、90%確実完了目安時間（上端までの分に熱ダレ $1.3\times$、上端から先の 45 分はそのまま、
+    終わりのばらつき $+15$ 分。2026-11-25 までは「残り × 1.3 ＋ 15」で、上端に着くと `1m (max 16m)` のまま 40 分以上止まっていた。§4.3）
+    - 充電中: `CHG 85%  1h57 (max 2h33)`、上端（4.20V）に着いたら `CHG 99%  45m (max 1h00)` から数え下げ（1 時間以上は `1h00` の形。括弧の中は 90% の確かさで終わっているまでの残り。箱に収まらないときは括弧を落とす）
     - 満充電到達直後: `CHG: FULL (Main 100%)`
     - 満充電到達から 20 分以上経過: `CHG: FULL (90%+ Cutoff)`
   - **2行目**: GNSS バックアップ電池（`MS621FE` 5.5mAh）の残りを、何が起きるかの文で出す
@@ -331,7 +371,7 @@ int power_charging_remaining_min() {
 | :--- | :--- | :--- |
 | **`CHG START`** | USB 接続（SW ON）時 | `120:CHG START: vbus=5.02V raw=3.85V cell=3.78V soc=47% rem=101m T=26.4C`<br>充電開始時の VBUS 電圧、ADC 電圧、逆算セル電圧、残量 %、残り時間、基板温度 |
 | **`CHG [XXm]`** | 充電中 60 秒ごと | `180:CHG [1m]: raw=3.87V cell=3.80V soc=50% rem=96m CC T=28.1C`<br>1 分ごとの電圧上昇、推定残量推移、モード（CC/CV/FULL）、温度 |
-| **`CHG CV ENTER`**| $V_{BATPWR} \ge 4.088\text{V}$（`CHG_CV_START_V`）到達（1 回の充電で 1 回。USB を挿したまま SW を OFF→ON しても出し直さない） | `3240:CHG CV ENTER: raw=4.125V cell=4.05V soc=81% rem=45m t=52m T=36.2C`<br>CV モード突入の瞬間。ここから残り時間が 45 分カウントダウンになる |
+| **`CHG CV ENTER`**| $V_{BATPWR} \ge 4.088\text{V}$（`CHG_CV_START_V`）到達（1 回の充電で 1 回。USB を挿したまま SW を OFF→ON しても出し直さない） | `3240:CHG CV ENTER: raw=4.125V cell=4.05V soc=81% rem=45m t=52m T=36.2C`<br>CV モード突入の瞬間（残り時間は上端までの `CHG_CV_MIN` 120 分＋上端から満充電までの `CHG_TAIL_MIN` 45 分。§4.3） |
 | **`CHG FULL`** | $SoC \ge 100\%$ 到達（同上） | `8640:CHG FULL: raw=4.20V cell=4.20V t=142m T=29.1C`<br>満充電（FULL）判定の到達時刻とトータル所要時間 |
 | **`CHG UNPLUG`** | **USB 抜去直後（約 750ms 後）** | `2700:CHG UNPLUG: chg=4.05V(72%) post=3.97V(71%) dV=80mV t=43m`<br>**最も重要な検証データ**。充電中の $V_{BATPWR}$ から抜去後の実測電池電圧への段差（実測 IR ドロップ $dV$）を記録 |
 

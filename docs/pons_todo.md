@@ -4,7 +4,7 @@
 File    : docs/pons_todo.md
 Project : PONS v7.1 / v7.2
 Role    : 残っている作業の一覧。1 項目 1〜2 行。経緯・数字・確かめ方の詳細は pons_todo_notes.md。
-Updated : 2026/11/23
+Updated : 2026/11/25
 -->
 
 **済んだら行を消す。増えたら足す。** 1 項目は 1〜2 行。詳しいことは [pons_todo_notes.md](pons_todo_notes.md)（「メモ §n」）か各行のリンク先。
@@ -37,13 +37,22 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] ケイデンスの推定（`tools/imulog/cadence.py`）: 台の上で漕ぐか飛行の生ログで、前後の振動が 180 回/分（3.0Hz）前後に出るか
 
 ## 3. 机の上で確かめる
+- [ ] **PC がつないでいる間は PC 接続のまま（11/25。実機未確認）**: Re:PONS のダイアログを閉じて 2 分置いても本体が地図へ戻らず生 IMU ログが伸びないか、
+  タブを閉じると 3 秒で戻り log.txt に `PC PORT CLOSED (3s)` が出るか
 - [ ] **受信のミラー中の充電ポップアップ（11/23。実機未確認）**: 送信機と受信機を一緒に充電 → 受信機に `RX CHG ...` が出るか・箱が機体の表示と重ならないか、
   短押しで消えて USB を挿し直すまで出ないか、受信が切れて自機の画面に戻ると `RX` の無い箱が出るか
-- [ ] **満充電の音（11/23。実機未確認）**: 満充電（`CHG FULL`）でド・ミ・ソ・ドが 1 回鳴るか、挿したまま再充電→満充電で鳴り直さないか
+- [ ] **USB のまま SW を入れたら「挿し直して」（11/25。実機未確認）**: 実機: 電池 90% 前後で SW OFF のまま USB → SW ON で赤 LED が点かないか・ヘッダーが `REPLUG` か、挿し直すと点くか → [pons_power.md](pons_power.md) §4.1
+- [ ] **充電の残り時間の終わり（11/25。実機未確認）**: 4.20V に着いてから 45 分を数え下げる（`CHG_TAIL_MIN`）。`1m (max 16m)` に張り付かないか、
+  log.txt の `CHG [..m]` の rem と `CHG FULL` の時刻が合うか → [pons_charge_estimation.md](pons_charge_estimation.md) §4.3
+- [ ] **満充電の音（11/23、11/25 に 5 分ごと。実機未確認）**: 満充電（`FULL`）でド・ミ・ソ・ドがすぐ鳴り、そのあと 5 分ごとに鳴り続けるか、
+  USB を抜くと止まるか、SW OFF の間は鳴らないか
 - [ ] **`TAS curve >` から推定 TAS の案内 1/2（11/23。実機未確認）**: 説明の画像と音声 → 押して曲線 → 押してページ1。
   ページ1に着いてすぐ（「APPLY してください」の最中）入ると、その音声が止まって TAS の説明が流れるか
-- [ ] **うるさい警告の打ち止め（11/23。実機未確認）**: 自宅で測位して「目的地が 100km 以上」が 2 分おきに 3 回で止まり log.txt に `DEST TOOFAR: warned 3 times`、
-  受信モードで送信機なしなら「信号がありません」が 2 分おきに 3 回で止まり（`no signal yet since RX mode (3/3 ...)`）、送信機を一度受けて切ると今までどおり 120 秒ごと
+- [ ] **うるさい警告の打ち止め（残り: 受信機の無信号警告）**: 送信機なしで「信号がありません」が 2 分おきに 3 回で止まり（`no signal yet since RX mode (3/3 ...)`）、
+  送信機を一度受けて切ると今までどおり 120 秒ごとか
+- [ ] **Re:PONS の SD の整理（11/25。実機未確認）**: 焼いて（パスワードは `settings.h` の `deletealllog`）、「🧹 SD の整理」で一覧が SD と合うか
+  （`..._fused.csv` が「残す」）、本体の画面に 4 桁の番号、番号違いで `BAD_CODE`・パスワード違い 3 回で `LOCKED`、移すと `trash/<回>/`、戻すと log.txt が `log_r<回>.txt`、
+  空にすると空き容量が増えるか、移したあとの飛行で CSV がヘッダー付きで作り直されるか。FAT32 の空き容量を数える時間（接続して最初の一覧）→ [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (10)
 - [ ] **Re:PONS からパイロン座標を変える（11/23。実機未確認）**: 本体設定の「コース（パイロン）」で北パイロンを変えて保存 → SD の `override_pilon_coordinate.csv` と
   log.txt の `PC PILON ... (next boot)` → 再起動で `PILON OVERRIDE: 1 applied` と地図。既定に戻すとファイルが消えるか。
   北パイロンを 7 km の所にすると欄が赤く、保存で確認のダイアログが出てキャンセルで何も書かれないか → [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (8)
@@ -62,6 +71,13 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] **sAcc の無線（11/20。実機未確認）**: ボートの地図の GS の右と GNSS 詳細画面に
   機体の sAcc が 8 秒以内に出るか、`received/` の `sacc_mps` 列 → [pons_link.md](pons_link.md) §4.3
 
+- [ ] **ライブ配信（11/23 実装・実機未確認）**: 送信機＋受信機＋Mac。Re:PONS の「📡 ライブ」→ 接続で、受信機の画面（縮尺を送信機と同じに）と並べて
+  数字・線・札・電池・衛星が同じか（目的地を変える・Auto10km の折り返し・GROUND → 飛行・送信機の電源を切って NO SIGNAL）、帯の RSSI・距離が `received/` と合うか、
+  送信機だけパイロン座標を変えると帯に `PLANE DEST NOT IN BOAT PONS` が出るか。
+  **受信機が止まらないこと**: 読み取りを止める（タブを閉じる・ケーブルを抜く）を繰り返して 60 秒ログの `drain=`・`redraw` が変わらず、`LIVE ... dropped=` が増えるだけか、
+  `LIVE` の印が緑 → 3 秒で赤 → `LIVE,OFF` で消えるか、USB をつないだだけで受信率が落ちないか、送信機で `ON` が `NOT_RX`、受信モードから外すと止まるか。
+  OBS で 30 分以上 → [pons_live_stream_plan.md](pons_live_stream_plan.md) §8
+
 ## 5. 原因を探している不具合・見張り
 - [ ] 照度センサーと GNSS が起動時に同時に黙った（13 回中 1 回）。次に起きたら直前の操作と +3V3
 
@@ -76,8 +92,6 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] SCH16T の健全性（CRC エラー・STAT・飽和）を 60 秒ログへ、セルフテスト → [sch16t_design.md](sch16t_design.md) §8
 - [ ] 描き直しを速くする（重ね描き `ovl` 28〜39ms が大きい）
 - [ ] リプレイの x20 で方位変化の警告（track.wav）が鳴りすぎる
-- [ ] ライブ配信（11/23 計画・方針決定済み・未着手）: 受信機だけが USB で LinkTelem と画面の判断を流し、Re:PONS で本体と同じ画面（hires の地図・送信機の縮尺・補間）
-  ＋ボートの帯を描いて OBS へ。受信機に `LIVE` の印。音は保留 → [pons_live_stream_plan.md](pons_live_stream_plan.md) §8（段階）・§10
 
 ## 8. 保留（決めて止めているもの）
 水晶を推奨品に（費用）・電源 ON 直後のバックライトの一瞬の点灯・2 台をつなぐ端子（次の改版で）・

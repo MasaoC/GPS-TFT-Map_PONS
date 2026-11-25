@@ -894,7 +894,10 @@ function loadSampleRxFlight() {
     rows.push(`${curLat.toFixed(6)},${curLon.toFixed(6)},${gs.toFixed(2)},${curYaw.toFixed(1)},${curAlt.toFixed(2)},${curAlt.toFixed(2)},${vs.toFixed(2)},${press.toFixed(2)},${volt},14,2026-07-26,${timeStr},${rssi},${seq},${age_ms},${roll.toFixed(2)},${pitch.toFixed(2)},${curYaw.toFixed(2)},0.20,-0.10,1.2,${wind_mps},${wind_dir},${own_lat.toFixed(6)},${own_lon.toFixed(6)},${dist_m.toFixed(1)},0`);
   }
 
-  parseCSVText(rows.join('\n'), "received/2026-07-26_0804_boat.csv");
+  // ★ 名前に大会ログの形（2026-07-26_0804 など日付の入った名前）を使わない。大会の注意（olddata_open.js の notesKey）は
+  //   名前の頭、大会動画（video_sync.js の findEntry）は名前の日付で大会ログと見なすので、デモに 2026 年大会の注意と動画が付いた
+  //   （2026-11-25）。受信ログの判定は rssi などの列で付く。
+  parseCSVText(rows.join('\n'), "琵琶湖デモ受信_2026_boat.csv");
 }
 
 // ============================================================

@@ -93,6 +93,11 @@ bool power_fault_active();
 //   電池低下の誤報（自機と受信機）・CSV の 0.00V になる。
 bool power_sw_off_on_usb();
 
+// USB のまま SW が入ったので、USB の挿し直しを頼んでいる（USB を抜くまで。FULL のあとに入れたときは false）。
+// 充電 IC は SW OFF のあいだ「充電 → すぐ終了」をくり返していて、SW が入っても電池が約 4.05V より高いと充電をやり直さない。
+// ヘッダーは "REPLUG"、無線と受信機の r は SW OFF と同じ "5V"、充電ポップアップは出さず、満充電も決めない（power.cpp の sw_off_tick()）。
+bool power_charge_replug_needed();
+
 // 「SW を入れて充電して」の注意を地図に出すか。
 // 移動中・ミラー中・リプレイ中・デモ中・電源経路の異常・高温の充電のあいだは false。
 bool power_sw_off_notice_active();

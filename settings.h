@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261123
-#define BUILDVERSION "1.12"
+#define BUILDDATE 20261125
+#define BUILDVERSION "1.13"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -322,9 +322,15 @@
 // BATPWR が CHG_REG_V − CHG_CC_DROP_V のとき。CV の式（2 × BATPWR − CHG_REG_V）とここで段差なくつながる。
 #define CHG_CV_START_V      (CHG_REG_V - CHG_CC_DROP_V)
 #define CHG_CC_MIN_PER_PCT  1.7f    // CC 中、残量が 1% 進む分数（303mA・約 850mAh）
-// CV に入ってから満充電までの分数。2026-11-13 の実機ログでは 83% (4.15V) → 4.21V 到達が 77 分・
+// CV に入ってから電圧の上端（BATPWR が CHG_REG_V）までの分数。2026-11-13 の実機ログでは 83% (4.15V) → 4.21V 到達が 77 分・
 // 終止（緩和開始）まで約 94 分だったため、45 分の仮置きから実測に合わせて引き上げた。
+// ★ 2026-11-25 までは「CV に入ってから満充電まで」として使っていて、上端のあとの分（下の CHG_TAIL_MIN）が無かった。
 #define CHG_CV_MIN          120.0f
+// 電圧の上端（平滑 BATPWR が CHG_REG_V）に着いてから満充電（ラッチ）までの分数（power.cpp の charge_remaining_parts()）。
+// 充電 IC が止める電圧は個体差と ADC の誤差で 4.20V より高いことがあり（実機の 2 台は 4.21・4.22V）、4.20V のあとも
+// 絞られた電流で充電が続く。さらにラッチは終止から 15 分ほど遅れる。2026-11-23〜25 の log.txt では上端から FULL まで
+// 40・41 分（もう 1 回は 40 分たっても FULL にならないうちに抜いた）。それまでは残り 1 分（max 16 分）のまま止まっていた。
+#define CHG_TAIL_MIN        45
 // 満充電ラッチ（power.cpp の charge_full_tick）。
 // 2026-11-13 まで「ピーク追跡電圧 >= 4.190V」で即ラッチしていたが、MCP73831 の V_REG 公差
 // （4.168〜4.232V）や ADC 誤差で実機では 4.21V まで上がるため、40〜50 分早く FULL になっていた。
@@ -339,6 +345,9 @@
 #define CHG_FULL_DROP_V       0.012f    // 終止後の自然緩和とみなすピークからの低下幅 [V]
 #define CHG_FULL_DROP_HOLD_MS 120000UL  // 低下が続いたら FULL とみなす時間 [ms]（2 分）
 #define CHG_RECHARGE_V        4.050f    // FULL 後にこれ未満へ下がったら再充電としてラッチ解除 [V]
+// 満充電の音（ド・ミ・ソ・ド）を繰り返す間隔 [ms]（5 分）。満充電（FULL）の間、USB を抜くまで鳴らし続ける。
+// 2026-11-25 までは 1 回だけで、聞き逃すと気づけなかった（ユーザー）。
+#define CHG_FULL_TONE_INTERVAL_MS 300000UL
 // ---- TFT バックライト（backlight.cpp）----
 // Q1（P-ch）のゲートを PWM で駆動する。**Low で点灯**（ゲートは R47 で +3V3 へ
 // プルアップしてあるので、PWM を設定するまでは消灯）。
@@ -739,10 +748,16 @@
 //   （以前はルートを走査していたため、ルートに CSV を足すたびに除外リストへ
 //     追記する必要があり、実際 override_pilon_coordinate.csv が漏れていた）
 //
-//   一覧の並びはファイル名順ではなく **ディレクトリの登録順**（＝SD へコピーした順）。
-//   上に出したいものは先にコピーすること（browse_replay_files 参照）。
+//   一覧の並びは **新しいファイルが上**（名前の日時 YYYY-MM-DD_HHMM の降順。日付で始まらない名前はその下に名前の順。
+//   2026-11-25〜。それまでは SD へコピーした順だった）。過去大会のデータも名前の日付の位置に並ぶ（browse_replay_files 参照）。
 #define REPLAY_FLIGHT_DIR   "data"       // 自機の飛行 CSV と過去大会データ
 #define REPLAY_RECEIVED_DIR "received"   // 無線で受け取った機体のログ
+
+// Re:PONS の「SD の整理」（ゴミ箱へ移す・ゴミ箱を空にする）で本体が照合するパスワード（mysd.cpp の serial_wipe。2026-11-25〜）。
+// 公開してよい（ユーザー 2026-11-25）。目的は「誤って消さない」で、人を締め出すことではない（SD を PC に挿せば誰でも消せる）。
+// 本体を取り違えないための本体の画面の番号と、Re:PONS の確認と合わせて使う。"" にすると移す・空にするを受けない（戻すは受ける）。
+// 32 バイトまで。前後の空白は使えない（本体がコマンドの行の後ろの空白を落とすため）。
+#define PONS_SD_WIPE_PASSWORD "deletealllog"
 
 #define REPLAY_BUF_SIZE   16   // 先読みするCSV行数（Core1が供給 → Core0が消費するリングバッファ）
                                // ※ インデックス計算にビットマスクを使うので必ず 2 のべき乗にすること

@@ -17,6 +17,7 @@
   #include <Arduino.h>
   #include <limits.h>   // INT_MAX（removeDuplicateTask の既定引数）
   #include "lora_link/link_proto.h"
+  #include "src/sd_wipe_rules.h"   // SDWIPE_PASSWORD_MAX（Task の serialWipeArgs）
 
   typedef enum {
       TASK_NONE,
@@ -40,6 +41,10 @@
       TASK_SERIAL_SETTINGS_GET,  // Web Serial: 全設定項目と目的地一覧をシリアル出力（PONS:SETTINGS_GET）
       TASK_SERIAL_SETTINGS_SET,  // Web Serial: 1 項目の設定を適用（PONS:SETTINGS_SET,key:value）
       TASK_SERIAL_SETTINGS_SAVE, // Web Serial: 変更を settings.txt へ原子的に保存（PONS:SETTINGS_SAVE）
+      TASK_SERIAL_WIPE_SCAN,     // Web Serial: SD の整理の一覧（ゴミ箱へ移すもの・残すもの・ゴミ箱の中身・空き容量）と本体の画面の番号（PONS:WIPE_SCAN。2026-11-25〜）
+      TASK_SERIAL_WIPE,          // Web Serial: 番号・パスワード・一覧の指紋を確かめてからゴミ箱へ移す（PONS:WIPE）
+      TASK_SERIAL_TRASH_EMPTY,   // Web Serial: 番号・パスワード・ゴミ箱の指紋を確かめてからゴミ箱を空にする（PONS:TRASH_EMPTY）
+      TASK_SERIAL_TRASH_RESTORE, // Web Serial: ゴミ箱の 1 回分を元の場所へ戻す（PONS:TRASH_RESTORE）
       TASK_SAVE_RTCBK,    // GNSS のバックアップ電池の推定（rtc_backup.cpp）を SD の rtc_backup.txt へ書く
       TASK_SAVE_DBD,      // GNSS の航法データベース（gnss_dbd.cpp が RAM にためたもの）を SD の GNSS_DBD_FILE へ書く
       TASK_LOAD_DBD,      // 同じファイルを RAM へ読み直す（机の上の試験 PONS:DBD,COLD。起動時は setup1() から直接）
@@ -312,6 +317,8 @@
               uint32_t tail;                 // 0 = 全部。それ以外は末尾のこのバイト数だけ（行の頭から。PONS:GETTAIL）
               uint32_t jst_start;            // PONS:GETIMU: 抜き出す開始 JST 日内秒 (0..86400)。jst_end > jst_start で有効
               uint32_t jst_end;              // PONS:GETIMU: 抜き出す終了 JST 日内秒 (0..86400)
+              uint32_t range_from;           // PONS:GETRANGE: 送り始める位置 [B]。range_len > 0 で有効（2026-11-25〜）
+              uint32_t range_len;            // PONS:GETRANGE: 送るバイト数（ファイルの終わりで切る）
           } serialGetArgs;
           struct {                           // For TASK_SERIAL_LIST
               bool all;                      // true = 全部のファイル（PONS:LIST,ALL）。false = 飛行 CSV と log.txt だけ
@@ -320,6 +327,15 @@
               char key[32];                  // 設定キー名（settings[].id）
               char value[64];                // 設定値文字列
           } serialSetArgs;
+          struct {                           // For TASK_SERIAL_WIPE_SCAN / WIPE / TRASH_EMPTY / TRASH_RESTORE（src/sd_wipe_rules.h）
+              uint8_t  mask;                 // 移す種類（SDWIPE_CAT_* の組み合わせ）
+              uint32_t count;                // WIPE / TRASH_EMPTY: Re:PONS が見せた件数（直前に数え直して同じでなければ何もしない）
+              uint32_t fp;                   // WIPE / TRASH_EMPTY: 同じく、名前の指紋（PONS:WIPE_SCAN_END で本体が出した値）
+              uint16_t code;                 // WIPE / TRASH_EMPTY: 本体の画面の番号（Re:PONS で打ってもらう）
+              char     stamp[14];            // WIPE: PC の日時 "YYYYMMDD-HHMM"（ゴミ箱の回の名前。形が違えば番号だけ）
+              char     batch[SDWIPE_BATCH_NAME_MAX + 1];    // TRASH_RESTORE: 戻す回のフォルダの名前
+              char     password[SDWIPE_PASSWORD_MAX + 1];   // WIPE / TRASH_EMPTY: パスワード（照合は Core1。log.txt には書かない）
+          } serialWipeArgs;
       };
   } Task;
 
@@ -376,15 +392,33 @@
   void gnss_dbd_load_sd();
   void gnss_dbd_save_sd();
   Task createSerialListTask(bool all = false);   // all: PONS:LIST,ALL（全部のファイル）
-  Task createSerialGetTask(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0);   // tail: 末尾だけ [B] / jst_start..end: IMU時刻範囲 [s]
+  Task createSerialGetTask(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0,
+                           uint32_t range_from = 0, uint32_t range_len = 0);   // tail: 末尾だけ [B] / jst_start..end: IMU時刻範囲 [s] / range: 位置と長さ [B]
   Task createSerialSettingsGetTask();
   Task createSerialSettingsSetTask(const char* key, const char* value);
   Task createSerialSettingsSaveTask();
   void serial_list_csv_files(bool all = false);
-  void serial_send_csv_file(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0);
+  void serial_send_csv_file(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0,
+                            uint32_t range_from = 0, uint32_t range_len = 0);
   void serial_send_settings();
   void serial_apply_setting(const char* key, const char* value);
   void serial_save_settings();
+  // SD の整理（2026-11-25〜。docs/pons_webserial_protocol.md §4 (10)。どれを扱うかは src/sd_wipe_rules.h）
+  Task createSerialWipeScanTask(uint8_t mask);
+  Task createSerialWipeTask(uint8_t mask, uint32_t count, uint32_t fp, uint16_t code, const char* stamp, const char* password);
+  Task createSerialTrashEmptyTask(uint32_t count, uint32_t fp, uint16_t code, const char* password);
+  Task createSerialTrashRestoreTask(const char* batch);
+  void serial_wipe_scan(uint8_t mask);
+  void serial_wipe(const Task& tk);
+  void serial_trash_empty(const Task& tk);
+  void serial_trash_restore(const Task& tk);
+  // PC 接続の画面に出す SD の整理の番号と知らせ（Core1 が決め、Core0 の draw_pcconnect が読む）。
+  // seq は変わるたびに増える（Core0 が描き直しの合図に使う）。番号が無い・期限切れなら code = -1
+  uint32_t sdwipe_screen_seq();
+  void     sdwipe_screen_get(int* code, char* msg, size_t msgsize);
+  void     sdwipe_screen_reset();   // PC 接続に入り直した（Core0）: 前の番号と知らせを捨てる
+  // PONS:CONNECT で PC 接続に入るたびに Core0 が増やす（Core1 は空き容量を接続ごとに 1 回だけ数える）
+  extern volatile uint32_t webserial_session;
 
   // Web Serial 通信状態フラグ（Core0 / Core1 共有）
   extern volatile bool webserial_connected;

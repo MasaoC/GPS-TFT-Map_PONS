@@ -33,6 +33,7 @@
 #include "lora_link/link_beacon.h"  // GNSS の時刻の助け合いのビーコン（同じ 32 バイト。印だけが違う）
 #include "link_assist.h"            // GNSS の時刻の助け合い（2026-11-13〜）
 #include "power.h"       // 電源経路の異常・SW OFF のまま USB（送信機の電源の状態をビットで運ぶ）
+#include "live.h"        // ライブ配信（受けたテレメトリを USB へ。2026-11-23〜）
 
 // ★ UART とモジュール制御は e220.cpp が持つ。ここは「何を送るか」だけを扱う。
 //   AUX(GPIO30) は e220.h の E220_AUX_PIN。送信の刻みは RP2350 が持つ。
@@ -252,6 +253,8 @@ static void link_poll_radio() {
 
         // 受信ログ（docs/pons_link.md §5）。received/ は無線で得た情報だけを置く。
         enqueueTask(createSaveRxCsvTask(&s_rx.t, s_rx.rssi, s_rx.age_ms, s_lastSlot));
+        // ライブ配信（live.h）。received/ に書くのと同じ瞬間・同じ値を USB の行のリングへ積む（流していなければ何もしない）
+        live_on_rx_frame(&s_rx.t, s_lastSlot, s_w2rx.slot_seen);
 
         // ---- 集計 ----
         s_rxTotal++;
@@ -1791,7 +1794,8 @@ static void link_push_telemetry() {
     //   受信機が s98、電池のときも 10mV 刻みのせいで 1% ずれることがあった。
     const float batt_v = get_input_voltage();   // ピーク追跡を回すため、毎回読む
     const bool  batt_ok = !power_sw_off_on_usb();
-    if (!batt_ok)                 t.batt = LINK_BATT_SW_OFF;
+    // USB の挿し直し待ち（ヘッダーは "REPLUG"）も電池は充電されていないので SW OFF と同じ番号で送る（受信機は "s5V"。2026-11-25〜）
+    if (!batt_ok || power_charge_replug_needed()) t.batt = LINK_BATT_SW_OFF;
     else if (usb_power_present()) t.batt = link_batt_charging(power_charging_percent());
     else                          t.batt = link_batt_on_battery(battery_percent(batt_v));
 

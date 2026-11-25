@@ -4,7 +4,7 @@
 // Role    : Web Serial の接続と PONS とのやりとり（ファイルの一覧・転送・PONS: の行）。
 //           形式は docs/pons_webserial_protocol.md
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026-11-23
+// Updated : 2026-11-25
 // ============================================================
 //
 // 2026-11-23 に index.html から分けた。読む順は index.html の一覧どおり。関数・変数はファイルをまたいで
@@ -53,8 +53,23 @@ let currentDownloadSize = 0;
 let currentDownloadKind = "csv";   // "csv" = 再生する / "log" = log.txt の表示へ（2026-11-11〜）/ "raw" = 保存だけ / "discard" = 頼んでいないので捨てる
 let currentDownloadFrom = 0;       // 末尾だけ取ったとき、送り始めた位置 [B]（PONS:DATA_START の 3 つめ）
 let currentDownloadFull = 0;       // 一覧に出ていたファイル全体の大きさ [B]
+let currentDownloadVia = "get";    // 1 回で取るときの頼み方 "get" / "gettail" / "getimu"（GETIMU が合わなければ範囲を取り直す）
 let downloadStartTime = 0;
 let lastProgressUpdate = 0;
+
+// ---- 1MB ずつ取って、合わない塊だけ取り直す（PONS:GETRANGE。2026-11-25〜）----
+// ★ USB の転送の途中でバイトが抜けることがある（2026-11-25 の調査。生 IMU ログ 4 本とも 0.002〜0.04%、2 B〜11 KB を数か所。
+//   SD のファイルは無事。タブを前に出したままでも抜けた）。全部を 1 回で取ると、1 か所の抜けで全部が「欠落・CRC 不一致」になって
+//   いたので、ファイル全体を取るとき（GETTAIL・GETIMU でないとき）は塊ごとに CRC を確かめ、合わない塊だけ頼み直す。
+//   形式は docs/pons_webserial_protocol.md の (3)。知らない古いファームは何も返さないので、印 PONS:GETRANGE_ACCEPTED が
+//   来なければ PONS:GET に戻す（rangeSupport = false。つなぎ直すまで覚える）。
+const RANGE_CHUNK_BYTES = 1024 * 1024;   // 1 つの塊 [B]
+const RANGE_MAX_TRIES = 5;               // 1 つの塊を取る回数の上限（越えたら取れた分で先へ進み、最後に知らせる）
+const RANGE_STALL_MS = 6000;             // 塊の途中でこれだけ何も来なければ、終わりの印が抜けたとみて頼み直す
+const RANGE_ACCEPT_WAIT_MS = 5000;       // 最初の塊で受け付けの印を待つ時間（来なければ古いファーム）
+let rangeSupport = null;                 // null = この接続でまだ分からない / true / false
+let rangeDl = null;                      // 塊ごとに取っている間の状態（startRangeDownload）
+let rangeStallTimer = null;
 
 // 標準 CRC32 (IEEE 802.3, poly 0xEDB88320)
 // bytes: Uint8Array（文字列を渡したら UTF-8 にして計算する）
@@ -96,9 +111,9 @@ async function sendSerialLine(str) {
 async function connectWebSerial() {
   if (serialPort && serialPort.readable) {
     // すでに接続中ならモーダルを開く。
-    // ★ PING はモーダルが開いている間だけ送る（startSerialPing）ので、閉じて 60 秒経つと本体は
-    //   PC 接続の画面を抜けて地図へ戻っている（リプレイを見ている間は本体を通常に戻す、意図した作り）。
-    //   一覧を取り直し、本体が戻っていれば PONS:ERROR,NOT_CONNECTED → 自動で CONNECT し直す（handleSerialLine）。
+    // ★ 本体はポートが開いている間は PC 接続の画面のまま（2026-11-25〜。それまではダイアログを閉じて PING が止まると
+    //   60 秒で地図へ戻り、記録を再開していた）。本体のボタンで抜けていることはあるので、一覧を取り直し、
+    //   戻っていれば PONS:ERROR,NOT_CONNECTED → 自動で CONNECT し直す（handleSerialLine）。
     openSerialModal();
     if (!downloadBusy()) requestFileList();
     return;
@@ -145,6 +160,7 @@ async function openPonsPort(port) {
       msg: 'このポートを開けませんでした。ほかのアプリが使っていると開けません。\n' +
            '・Arduino IDE のシリアルモニタ（下のタブ）やシリアルプロッタを閉じる\n' +
            '・別のタブやウィンドウの Re:PONS で「🔌 切断」を押す\n' +
+           '・📡 ライブの窓を使っていれば、その窓の「切断」を押す（開いたままだと、つなぎ直そうとして取り合います）\n' +
            'それから「🔁 もう一度つなぐ」を押してください。\n' +
            `（ブラウザの言葉: ${err && err.name ? err.name + ': ' : ''}${err && err.message ? err.message : err}）`,
       retry: true,
@@ -245,6 +261,8 @@ async function disconnectWebSerial() {
 
   updateSerialUIStatus('disconnected');
   resetSettingsState(true);
+  if (typeof resetWipeState === 'function') resetWipeState(true);
+  if (typeof resetSdInfo === 'function') resetSdInfo();
   closeSerialModal();
 }
 
@@ -253,12 +271,14 @@ function updateSerialUIStatus(state, info = {}) {
   const text = document.getElementById('serial-status-text');
   const verText = document.getElementById('serial-board-ver');
   const headerBtn = document.getElementById('btn-webserial');
-  const settingsBtn = document.getElementById('btn-open-settings');
-  if (settingsBtn) {
+  // 本体設定と SD のログの消去（sd_wipe.js）は、つながっている間だけ押せる
+  for (const id of ['btn-open-settings', 'btn-open-wipe']) {
+    const b = document.getElementById(id);
+    if (!b) continue;
     const ok = (state === 'connected');
-    settingsBtn.disabled = !ok;
-    settingsBtn.style.opacity = ok ? '1' : '0.45';
-    settingsBtn.style.cursor = ok ? 'pointer' : 'not-allowed';
+    b.disabled = !ok;
+    b.style.opacity = ok ? '1' : '0.45';
+    b.style.cursor = ok ? 'pointer' : 'not-allowed';
   }
   text.style.whiteSpace = 'pre-line';   // 案内は複数行
   text.style.color = '';
@@ -381,6 +401,7 @@ function renderFileList() {
   }
 
   // 並べ替えは表示だけで、ponsFileList の添字はそのまま（ボタンは添字で指す）
+  const keyOf = {};   // 添字 → flightFileKey()（フライト・記録のタブだけ）
   let order = ponsFileList.map((it, i) => i).filter(i => fileTabOf(ponsFileList[i].path) === tab.id);
   if (order.length === 0) {
     tbody.innerHTML = msgRow(tab.id === 'logs' ? 'フライトログ（*.csv）も log.txt も見つかりませんでした'
@@ -393,12 +414,33 @@ function renderFileList() {
     order.sort((a, b) => (ponsFileList[b].date || '').localeCompare(ponsFileList[a].date || '') ||
                          ponsFileList[b].path.localeCompare(ponsFileList[a].path));
   } else {
-    // log.txt を先頭に（いちばん新しいことが書いてある）
-    order.sort((a, b) => isLogPath(ponsFileList[b].path) - isLogPath(ponsFileList[a].path));
+    // log.txt を先頭に（いちばん新しいことが書いてある）。そのあとは新しい日付が上（2026-11-25〜。本体の REPLAY/DEMO の一覧も新しい順）。
+    // 同じ時刻の自機ログと受信ログは data/ → received/ の順。名前に日付の無いものは更新日時の位置（本体はいちばん下に名前の順）、
+    // それも分からないものはいちばん下に名前の順
+    order.forEach(i => { keyOf[i] = flightFileKey(ponsFileList[i]); });
+    order.sort((a, b) => isLogPath(ponsFileList[b].path) - isLogPath(ponsFileList[a].path) ||
+                         (keyOf[b] > keyOf[a]) - (keyOf[b] < keyOf[a]) ||
+                         ponsFileList[a].path.localeCompare(ponsFileList[b].path));
   }
   const badge = (txt, bg, fg) => `<span style="background:${bg}; color:${fg}; padding:2px 6px; border-radius:4px; font-size:0.75rem;">${txt}</span>`;
+  // フライト・記録のタブは日付ごとに見出しの行を挟む（何日のものかを探しやすく）
+  const dayCount = {};
+  if (!tab.dev) order.forEach(i => {
+    if (isLogPath(ponsFileList[i].path)) return;
+    const d = keyOf[i].slice(0, 10);
+    dayCount[d] = (dayCount[d] || 0) + 1;
+  });
+  let lastDay = null;
   tbody.innerHTML = order.map((idx) => {
     const item = ponsFileList[idx];
+    let dayRow = '';
+    if (!tab.dev && !isLogPath(item.path)) {
+      const d = keyOf[idx].slice(0, 10);
+      if (d !== lastDay) {
+        lastDay = d;
+        dayRow = `<tr class="file-day"><td colspan="5">${escapeHtml(dayLabel(d))}<span class="cnt">${dayCount[d]} 件</span></td></tr>`;
+      }
+    }
     const save = `<button class="btn-download sub" onclick="downloadPonsFileIdx(${idx}, 0, 'save')" title="取って、そのまま PC に保存します（開きません）">💾 保存</button>`;
     let typeBadge, btns;
     if (tab.dev) {
@@ -419,7 +461,7 @@ function renderFileList() {
       typeBadge = item.path.startsWith('received/') ? badge('無線受信', '#fef3c7', '#b45309') : badge('自機ログ', '#e0f2fe', '#0369a1');
       btns = `<button class="btn-download" onclick="downloadPonsFileIdx(${idx})">開く</button> ` + save;
     }
-    return `
+    return dayRow + `
           <tr>
             <td style="font-family:var(--font-mono); font-weight:bold;">${escapeHtml(item.path)}</td>
             <td>${typeBadge}</td>
@@ -429,6 +471,28 @@ function renderFileList() {
           </tr>
         `;
   }).join('');
+}
+
+// 飛行 CSV を並べる鍵 "YYYY-MM-DD HH:MM"（大きいほど新しい）。名前の日時（記録を始めた JST。YYYY-MM-DD_HHMM.csv・
+// 大会ログの ..._fused.csv）を使い、名前に日付が無いものだけ更新日時。どちらも無い・時刻を知らずに書いた 1980 年なら ''。
+// ★ 更新日時を先に見ないこと: 名前は始めた時刻、更新日時は終わった時刻で、PC でコピーし直したファイルは更新日時が変わる
+function flightFileKey(item) {
+  const name = String(item.path || '').split('/').pop();
+  const m = name.match(/^(\d{4})-(\d{2})-(\d{2})(?:_(\d{2})(\d{2}))?/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]} ${m[4] !== undefined ? m[4] + ':' + m[5] : '--:--'}`;
+  const d = String(item.date || '').match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
+  if (d && parseInt(d[1], 10) >= 2020) return `${d[1]}-${d[2]}-${d[3]} ${d[4]}:${d[5]}`;
+  return '';
+}
+
+// 見出しの日付 "2026-11-25（水）"。'' は日付の分からないもの
+function dayLabel(ymd) {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '日付の分からないファイル';
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  // 2026-13-40 のような名前は Date が繰り上げてしまうので、曜日を出さない
+  if (dt.getUTCMonth() !== +m[2] - 1 || dt.getUTCDate() !== +m[3]) return ymd;
+  return `${ymd}（${'日月火水木金土'[dt.getUTCDay()]}）`;
 }
 
 // HTML に文字列を埋め込むときのエスケープ（ファイル名に < & ' などが入っていても壊れないように）
@@ -470,6 +534,7 @@ async function downloadPonsFile(filename, size, tail = 0, mode = 'open', imuRang
   // isDataStreaming は DATA_START 受信時に true にする（ヘッダー行混入防止）
 
   const useImuRange = !!(imuRange && imuRange.jstEnd > imuRange.jstStart && currentDownloadKind === 'imu');
+  currentDownloadVia = useImuRange ? 'getimu' : (tail > 0 ? 'gettail' : 'get');
 
   // プログレスバー表示
   const progBox = document.getElementById('serial-progress-box');
@@ -492,12 +557,233 @@ async function downloadPonsFile(filename, size, tail = 0, mode = 'open', imuRang
       if (!downloadPending || currentDownloadFile !== filename) return;
       document.getElementById('serial-progress-filename').textContent = `転送中 (全件取得): ${filename}`;
       document.getElementById('serial-progress-stats').textContent = '0%';
+      currentDownloadVia = 'get';
       sendSerialLine("PONS:GET," + filename).catch(() => {});
     }, 12000);
-  } else {
+  } else if (tail > 0) {
     // 末尾だけ: PONS:GETTAIL,<バイト数>,<パス>（2026-11-11〜）
-    await sendSerialLine(tail > 0 ? `PONS:GETTAIL,${tail},${filename}` : "PONS:GET," + filename);
+    await sendSerialLine(`PONS:GETTAIL,${tail},${filename}`);
+  } else if (rangeSupport !== false) {
+    // 全部: 1MB ずつ取って、合わない塊だけ取り直す（2026-11-25〜）
+    startRangeDownload(filename, size);
+  } else {
+    await sendSerialLine("PONS:GET," + filename);
   }
+}
+
+// ---- 塊ごとの取り込み（PONS:GETRANGE）----
+// 流れ: requestRangeChunk() で 1 つ頼む → DATA_START〜DATA_END は今までの受け口（feedDataBytes）がそのまま受ける →
+// finishDownload() が finishRangeChunk() へ回す → 合えば out に足して次の塊、合わなければ同じ塊を頼み直す。
+// 本体は塊のたびに PONS:GETRANGE_ACCEPTED を返し、DATA_START の 4 つめにファイル全体の大きさを付ける。
+// sub: ファイル全体ではなく [sub.base, sub.base + sub.size) だけを取る（飛行の時刻の範囲 GETIMU が合わなかったときの取り直し）。
+//   sub.bytes / sub.note は 1 回目に取れた分とその一言。本体が GETRANGE を知らなければ、それを警告つきで開く（今までどおり）。
+function startRangeDownload(filename, fullSize, sub = null) {
+  const base = sub ? sub.base : 0;
+  const end = sub ? sub.base + sub.size : fullSize;
+  let out;
+  try {
+    out = new Uint8Array(end - base);
+  } catch (e) {
+    alert(`ファイルが大きすぎて受けられません（${logBytes(end - base)}）。`);
+    endDownloadUi();
+    return;
+  }
+  rangeDl = {
+    file: filename, kind: currentDownloadKind, mode: currentDownloadMode,
+    base, end, sub,                    // 取る範囲 [base, end)（ファイルの中の位置）
+    out, filled: 0,                    // out[0..filled) が取れた中身（諦めた塊があると end - base より短い）
+    nextFrom: base, len: 0, want: 0,   // 頼んでいる塊の位置（ファイルの中）・頼んだ長さ・本体が送ると言った長さ
+    tries: 0, retries: 0, best: null,  // この塊を取った回数・取り直した回数の合計・この塊でいちばん長く取れた分
+    gaveUp: [], busyCount: 0, busyWait: false,
+    recovering: false, recoverStart: 0, stallBytes: null,
+    attemptStart: 0, startTime: performance.now(),
+    fallbackTimer: null, retryTimer: null,
+  };
+  if (!rangeStallTimer) rangeStallTimer = setInterval(rangeStallCheck, 1000);
+  requestRangeChunk();
+}
+
+function requestRangeChunk() {
+  const r = rangeDl;
+  if (!r) return;
+  // ★ 大きさの分からない（一覧で 0）ファイルは 1 塊ぶん頼む。本体が DATA_START の 4 つめで本当の大きさを返す
+  r.len = (r.end > r.nextFrom) ? Math.min(RANGE_CHUNK_BYTES, r.end - r.nextFrom) : RANGE_CHUNK_BYTES;
+  r.want = r.len;   // DATA_START で本体の言う長さに直す
+  r.recovering = false;
+  r.attemptStart = performance.now();
+  // 1 つの塊ぶんの受け口（大きさは DATA_START で来る）
+  isDataStreaming = false;
+  dataTrailerPending = false;
+  dataBytes = null;
+  dataReceived = 0;
+  currentDownloadSize = r.len;
+  downloadPending = true;
+  if (rangeSupport === null && !r.fallbackTimer) r.fallbackTimer = setTimeout(rangeFallbackToGet, RANGE_ACCEPT_WAIT_MS);
+  sendSerialLine(`PONS:GETRANGE,${r.nextFrom},${r.len},${r.file}`).catch(() => {});
+}
+
+// 受け付けの印も DATA_START も来ない: PONS:GETRANGE を知らない古いファーム。
+// ファイル全体なら全部を 1 回で取る（今までどおり）。GETIMU の取り直しなら、1 回目に取れた分を警告つきで開く（今までどおり）
+function rangeFallbackToGet() {
+  const r = rangeDl;
+  if (!r) return;
+  r.fallbackTimer = null;
+  if (rangeSupport !== null || !downloadPending || isDataStreaming || cancelPending) return;
+  rangeSupport = false;
+  if (r.sub) {
+    console.warn("PONS: PONS:GETRANGE に返事が無いので（古いファーム）、取り直さずに 1 回目の分を開きます");
+    // 頼んだ GETRANGE には本体が答えないので、待たずに閉じる
+    endDownloadUi();
+    deliverDownload(r.sub.bytes, { name: r.file, kind: r.kind, mode: r.mode, sec: r.sub.sec, from: r.base,
+                                   full: r.sub.full, bad: true, note: r.sub.note });
+    return;
+  }
+  console.warn("PONS: PONS:GETRANGE に返事が無いので（古いファーム）、PONS:GET で全部を 1 回で取ります");
+  clearRangeState();
+  currentDownloadSize = r.end;
+  downloadStartTime = performance.now();
+  document.getElementById('serial-progress-filename').textContent = `転送中（古いファームなので 1 回で全部）: ${r.file}`;
+  sendSerialLine("PONS:GET," + r.file).catch(() => {});
+}
+
+function rangeGrowOut(n) {
+  const r = rangeDl;
+  const grown = new Uint8Array(n);
+  grown.set(r.out.subarray(0, r.filled));
+  r.out = grown;
+}
+
+// DATA_START の 4 つめ（ファイル全体の大きさ）。ファイル全体を取っているなら、一覧のあとに伸びた・縮んだのに合わせる。
+// 範囲を取り直しているときは、縮んで範囲が切れたときだけ合わせる
+function rangeFileSize(fileSize) {
+  const r = rangeDl;
+  if (r.sub) {
+    if (fileSize < r.end) r.end = Math.max(r.base, fileSize);
+    return;
+  }
+  r.end = fileSize;
+  if (fileSize - r.base > r.out.length) rangeGrowOut(fileSize - r.base);
+}
+
+// PONS:DATA_END を受けた（塊ごとの取り込みのとき）
+function finishRangeChunk(expectedCrc) {
+  const r = rangeDl;
+  const bytes = dataBytes ? dataBytes.subarray(0, dataReceived) : new Uint8Array(0);
+  const want = currentDownloadSize;
+  // 塊の受け口を下ろす（進み具合の箱は出したまま）
+  isDataStreaming = false;
+  dataTrailerPending = false;
+  dataBytes = null;
+  dataReceived = 0;
+  // ★ 中断を送ったあとに届いた終わり: 捨てて終わる（BUG-79 と同じ）
+  if (cancelPending) { endDownloadUi(); return; }
+  // ★ 止まったとみて頼み直しに入ったあとに遅れて届いた: 使わない（本体の CANCEL_OK を待って頼み直す）
+  if (r.recovering) return;
+  const crc = computeCrc32(bytes);
+  if (bytes.length === want && crc === expectedCrc) {
+    rangeAppend(bytes);
+    r.nextFrom += bytes.length;
+    rangeNext(bytes.length === 0);
+    return;
+  }
+  console.warn(`PONS: GETRANGE ${r.nextFrom}+${want} が合わない（${bytes.length} B・CRC ${crc} / 本体 ${expectedCrc}、${r.tries + 1} 回目）`);
+  rangeChunkFailed(bytes);
+}
+
+function rangeAppend(bytes) {
+  const r = rangeDl;
+  if (r.filled + bytes.length > r.out.length) rangeGrowOut(r.filled + bytes.length);
+  r.out.set(bytes, r.filled);
+  r.filled += bytes.length;
+  r.tries = 0;
+  r.best = null;
+  r.busyCount = 0;
+}
+
+// 次の塊へ（終わりなら仕上げる）。atEof: 本体が 0 バイトを返した（ファイルの終わり）
+function rangeNext(atEof) {
+  const r = rangeDl;
+  if (atEof || r.nextFrom >= r.end) { rangeFinish(); return; }
+  updateDownloadProgress(true);
+  requestRangeChunk();
+}
+
+// 塊が足りない・CRC が合わない・途中で止まった。上限までは同じ塊を頼み直し、越えたら取れた分で先へ進む
+function rangeChunkFailed(bytes) {
+  const r = rangeDl;
+  if (!r) return;
+  r.tries++;
+  r.retries++;
+  if (bytes && bytes.length > 0 && (!r.best || bytes.length > r.best.length)) r.best = bytes.slice();
+  if (r.tries < RANGE_MAX_TRIES) {
+    updateDownloadProgress(true);
+    requestRangeChunk();
+    return;
+  }
+  const got = r.best ? r.best.length : 0;
+  console.warn(`PONS: GETRANGE ${r.nextFrom}+${r.want} を ${RANGE_MAX_TRIES} 回取っても合わない。取れた ${got} B で先へ進む`);
+  r.gaveUp.push({ from: r.nextFrom, len: r.want, got });
+  const skip = r.want;
+  if (r.best) rangeAppend(r.best);
+  r.tries = 0;
+  r.best = null;
+  r.nextFrom += skip;
+  rangeNext(skip === 0);
+}
+
+// 全部の塊を取り終えた: 開く・保存する（今までの 1 回で取ったときと同じ先へ）
+function rangeFinish() {
+  const r = rangeDl;
+  const bytes = r.out.subarray(0, r.filled);
+  const sec = (performance.now() - r.startTime) / 1000;
+  const total = r.end - r.base;
+  const nChunks = Math.max(1, Math.ceil(total / RANGE_CHUNK_BYTES));
+  const o = { name: r.file, kind: r.kind, mode: r.mode, sec, from: r.base, full: r.sub ? r.sub.full : r.end, bad: false,
+              note: (r.sub ? '1 回目は合わず、取り直して ' : '') + `CRC OK（1MB × ${nChunks} 個、取り直し ${r.retries} 回）` };
+  if (r.gaveUp.length > 0) {
+    const missing = Math.max(0, total - r.filled);
+    o.bad = true;
+    o.note = `${r.gaveUp.length} 個の塊が ${RANGE_MAX_TRIES} 回取っても合わず、不足 ${missing.toLocaleString()} B`;
+    alert(`⚠️ ${r.file}: ${nChunks} 個の塊のうち ${r.gaveUp.length} 個が、${RANGE_MAX_TRIES} 回取り直しても合いませんでした` +
+          `（不足 ${missing.toLocaleString()} B）。\n取れた分で${r.mode === 'save' ? '保存します' : '開きます'}。`);
+  } else if (r.retries > 0) {
+    console.log(`PONS: ${r.file} は取り直し ${r.retries} 回で全部の塊が合った`);
+  }
+  endDownloadUi();
+  deliverDownload(bytes, o);
+}
+
+// 1 秒ごと: 塊の途中で何も来なくなった（終わりの印や DATA_START の行が抜けた）ら、本体に中断を送って片付けてから頼み直す
+function rangeStallCheck() {
+  const r = rangeDl;
+  if (!r || cancelPending || r.busyWait || rangeSupport === null) return;
+  const now = performance.now();
+  if (r.recovering) {
+    // CANCEL_OK が来なくても 3 秒で頼み直す
+    if (now - r.recoverStart > 3000) { r.recovering = false; rangeChunkFailed(r.stallBytes); }
+    return;
+  }
+  if (now - Math.max(lastSerialRxMs, r.attemptStart) < RANGE_STALL_MS) return;
+  console.warn(`PONS: GETRANGE ${r.nextFrom}+${r.want} が途中で止まった（${dataReceived} B 受けたところ）。中断して頼み直す`);
+  r.stallBytes = dataBytes ? dataBytes.slice(0, dataReceived) : null;
+  isDataStreaming = false;
+  dataTrailerPending = false;
+  dataBytes = null;
+  dataReceived = 0;
+  rxLine = [];
+  downloadPending = true;   // 中断ボタンが効くように「転送中」のまま
+  r.recovering = true;
+  r.recoverStart = now;
+  sendSerialLine("PONS:CANCEL").catch(() => {});
+}
+
+function clearRangeState() {
+  if (rangeDl) {
+    if (rangeDl.fallbackTimer) clearTimeout(rangeDl.fallbackTimer);
+    if (rangeDl.retryTimer) clearTimeout(rangeDl.retryTimer);
+  }
+  rangeDl = null;
+  if (rangeStallTimer) { clearInterval(rangeStallTimer); rangeStallTimer = null; }
 }
 
 // 転送が動いているか（GET を送ってから終わりの印まで。中断の後始末を待っている間も含む）
@@ -505,6 +791,7 @@ function downloadBusy() { return isDataStreaming || downloadPending || cancelPen
 
 // 転送の状態を全部下ろして、進み具合の箱を閉じる（終わり・中断・エラー・切断）
 function endDownloadUi() {
+  clearRangeState();
   if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
   isDataStreaming = false;
   downloadPending = false;
@@ -542,10 +829,12 @@ function startSerialPing() {
   pingTimer = setInterval(async () => {
     const modal = document.getElementById('serial-modal');
     const settingsModal = document.getElementById('settings-modal');
+    const wipeOpen = (typeof wipeModalOpen === 'function') && wipeModalOpen();
     const isModalOpen = (modal && modal.classList.contains('active')) ||
-                        (settingsModal && settingsModal.classList.contains('active'));
+                        (settingsModal && settingsModal.classList.contains('active')) || wipeOpen;
     const settingsBusy = (typeof settingsState !== 'undefined') && (settingsState.loading || settingsState.saving);
-    if (serialPort && serialPort.writable && !downloadBusy() && !settingsBusy && isModalOpen) {
+    const wipeBusyNow = (typeof wipeBusy === 'function') && wipeBusy();
+    if (serialPort && serialPort.writable && !downloadBusy() && !settingsBusy && !wipeBusyNow && isModalOpen) {
       try {
         await sendSerialLine("PONS:PING");
       } catch (e) {
@@ -636,18 +925,22 @@ function updateDownloadProgress(force) {
   const now = performance.now();
   if (!force && now - lastProgressUpdate <= 100) return;
   lastProgressUpdate = now;
-  const received = dataReceived;
-  const pct = currentDownloadSize > 0 ? Math.min(100, Math.round((received / currentDownloadSize) * 100)) : 0;
+  // 塊ごとに取っているときは、ファイル全体での進み具合（取れた塊＋いま受けている塊）
+  const r = rangeDl;
+  const received = r ? r.filled + dataReceived : dataReceived;
+  const total = r ? r.end - r.base : currentDownloadSize;
+  const pct = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
   document.getElementById('serial-progress-fill').style.width = pct + '%';
-  document.getElementById('serial-progress-stats').textContent = pct + '%';
-  document.getElementById('serial-progress-bytes').textContent = `${logBytes(received)} / ${logBytes(currentDownloadSize)}`;
-  const elapsedSec = (now - downloadStartTime) / 1000;
+  document.getElementById('serial-progress-stats').textContent = pct + '%' + (r && r.retries > 0 ? `（取り直し ${r.retries}）` : '');
+  document.getElementById('serial-progress-bytes').textContent = `${logBytes(received)} / ${logBytes(total)}`;
+  const elapsedSec = (now - (r ? r.startTime : downloadStartTime)) / 1000;
   const kbps = elapsedSec > 0 ? Math.round((received / 1024) / elapsedSec) : 0;
   document.getElementById('serial-progress-speed').textContent = `${kbps} KB/s`;
 }
 
 // PONS:DATA_END,<crc> を受けた。CRC を確かめて、開く（CSV は再生・log.txt は記録の表示）か、PC に保存する
 function finishDownload(expectedCrc) {
+  if (rangeDl) { finishRangeChunk(expectedCrc); return; }   // 塊ごとに取っている（1 つの塊の終わり）
   const bytes = dataBytes ? dataBytes.subarray(0, dataReceived) : new Uint8Array(0);
   const wantSize = currentDownloadSize;
   const kind = currentDownloadKind, mode = currentDownloadMode;
@@ -663,6 +956,18 @@ function finishDownload(expectedCrc) {
   const shortRead = bytes.length < wantSize;
   const crcBad = calculatedCrc !== expectedCrc;
   let note = `CRC OK ${calculatedCrc}`;
+  // ★ 飛行の時刻の範囲（GETIMU）が合わなかった: 本体が言った範囲 [from, from + 大きさ) を 1MB ずつ取り直す（2026-11-25〜）。
+  //   本体が GETRANGE を知らなければ（rangeFallbackToGet）、この 1 回目の分を今までどおり警告つきで開く
+  if ((shortRead || crcBad) && currentDownloadVia === 'getimu' && kind === 'imu' && rangeSupport !== false && wantSize > 0) {
+    console.warn(`PONS: GETIMU が合わない（${bytes.length}/${wantSize} B・CRC ${calculatedCrc} / ${expectedCrc}）。範囲を 1MB ずつ取り直す`);
+    document.getElementById('serial-progress-box').style.display = 'flex';
+    document.getElementById('serial-progress-filename').textContent = `取り直し中（1 回目は合わず、1MB ずつ）: ${name}`;
+    startRangeDownload(name, currentDownloadFull, {
+      base: currentDownloadFrom, size: wantSize, bytes: bytes.slice(), sec, full: currentDownloadFull,
+      note: `欠落 ${bytes.length}/${wantSize} B・CRC 不一致（計算 ${calculatedCrc} / 本体 ${expectedCrc}）。本体のファームが古く取り直せない`,
+    });
+    return;
+  }
   if (shortRead && crcBad) {
     const missing = wantSize - bytes.length;
     console.warn(`Transfer drop & CRC mismatch! Got: ${bytes.length}/${wantSize} (-${missing} B), Calc: ${calculatedCrc}, Expected: ${expectedCrc}`);
@@ -679,16 +984,24 @@ function finishDownload(expectedCrc) {
     console.log(`✅ CRC32 検証成功: ${calculatedCrc}`);
   }
 
+  deliverDownload(bytes, { name, kind, mode, sec, note, bad: shortRead || crcBad,
+                           from: currentDownloadFrom, full: currentDownloadFull });
+}
+
+// 取れた中身を開く・保存する（1 回で取ったときと塊ごとに取ったときで同じ）。
+// o: { name, kind, mode, sec, note（保存の一言・解析画面の警告）, bad（欠落・CRC 不一致）, from / full（log.txt の位置） }
+function deliverDownload(bytes, o) {
+  const name = o.name;
   // 保存だけ（開発用のタブと、各行の「💾 保存」）。ダイアログは開いたまま（続けて取れるように）
-  if (mode === 'save') {
+  if (o.mode === 'save') {
     saveBytesAsFile(bytes, name);
     document.getElementById('serial-file-note').textContent =
-      `💾 保存: ${name}（${bytes.length.toLocaleString()} B、${sec.toFixed(1)} 秒、${note}）`;
+      `💾 保存: ${name}（${bytes.length.toLocaleString()} B、${o.sec.toFixed(1)} 秒、${o.note}）`;
     return;
   }
 
   // 生 IMU ログ (.bin) はバイナリのまま解析エンジンへ渡す
-  if (kind === 'imu') {
+  if (o.kind === 'imu') {
     closeSerialModal();
     const targetTab = window._pendingImuAnalysisTab || 'imu';
     window._pendingImuAnalysisTab = null;
@@ -696,7 +1009,7 @@ function finishDownload(expectedCrc) {
       // 欠落・CRC 不一致でも開く（デコーダが区切りを探し直す）。ただし解析画面に警告を出し続ける
       loadImuBinBytes(bytes, name || 'imulog.bin', {
         openModal: true, tab: targetTab,
-        transferWarning: (shortRead || crcBad) ? `USB 転送: ${note}` : null
+        transferWarning: o.bad ? `USB 転送: ${o.note}` : null
       });
     }
     return;
@@ -704,10 +1017,10 @@ function finishDownload(expectedCrc) {
 
   // log.txt は記録の表示へ、CSV はパースして再生へ
   const fileData = new TextDecoder('utf-8').decode(bytes);
-  if (kind === 'log') {
+  if (o.kind === 'log') {
     closeSerialModal();
     openLogViewer(fileData, name || "log.txt",
-                  { from: currentDownloadFrom, full: Math.max(currentDownloadFull, currentDownloadFrom + bytes.length) });
+                  { from: o.from, full: Math.max(o.full, o.from + bytes.length) });
     return;
   }
   parseCSVText(fileData, name || "flight_log.csv");
@@ -764,7 +1077,10 @@ function handleSerialLine(line) {
     listIsAll = false;
     listAllUnsupported = false;
     listPending = null;
+    rangeSupport = null;   // PONS:GETRANGE が使えるかも確かめ直す（書き替えたファームかもしれない）
     resetSettingsState(false);
+    if (typeof resetSdInfo === 'function') resetSdInfo();   // 別の本体かもしれない（一覧の終わりで本体が出し直す）
+    if (typeof resetWipeState === 'function') resetWipeState(false);
     const parts = line.split(',');
     updateSerialUIStatus('connected', {
       board: parts[1] || 'PONS v7.1',
@@ -808,6 +1124,10 @@ function handleSerialLine(line) {
     // （送り直すと、転送が終わったあとに BUSY が返ってアラートが出ていた）
     if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
     if (downloadPending) document.getElementById('serial-progress-stats').textContent = '本体で時刻検索中（受付済み）...';
+  } else if (line === "PONS:GETRANGE_ACCEPTED") {
+    // 本体が PONS:GETRANGE を受け付けた（2026-11-25〜のファーム）。PONS:GET に戻さない
+    rangeSupport = true;
+    if (rangeDl && rangeDl.fallbackTimer) { clearTimeout(rangeDl.fallbackTimer); rangeDl.fallbackTimer = null; }
   } else if (line.startsWith("PONS:DATA_START,")) {
     if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
     // PONS:DATA_START,<path>,<size>[,<from>]。★ パスに , が入りうるので、パスは送ったものを使い、数は後ろから読む。
@@ -824,6 +1144,14 @@ function handleSerialLine(line) {
     const sz = parseInt(nums[0], 10);
     if (Number.isFinite(sz) && sz >= 0) currentDownloadSize = sz;
     currentDownloadFrom = parseInt(nums[1], 10) || 0;   // 末尾だけのとき、送り始めた位置
+    // 塊ごとに取っているとき（PONS:GETRANGE）: 4 つめがファイル全体の大きさ。一覧のあとで変わっていたら合わせる
+    if (rangeDl && downloadPending) {
+      rangeSupport = true;
+      if (rangeDl.fallbackTimer) { clearTimeout(rangeDl.fallbackTimer); rangeDl.fallbackTimer = null; }
+      const fs = parseInt(nums[2], 10);
+      if (Number.isFinite(fs) && fs >= 0) rangeFileSize(fs);
+      rangeDl.want = currentDownloadSize;
+    }
     // 頼んでいないのに始まった（ないはず）: 中身は受けて捨てる（受けないと中身が行として流れる）
     if (!downloadPending && !cancelPending) currentDownloadKind = 'discard';
     downloadPending = false;
@@ -849,19 +1177,44 @@ function handleSerialLine(line) {
     if (!dataTrailerPending) return;
     finishDownload(line.substring("PONS:DATA_END,".length).trim().toUpperCase());
   } else if (line === "PONS:CANCEL_OK") {
+    // 塊の途中で止まったので中断を送った（rangeStallCheck）: 本体が片付いたので、同じ塊を頼み直す
+    if (rangeDl && rangeDl.recovering && !cancelPending) {
+      rangeDl.recovering = false;
+      rangeChunkFailed(rangeDl.stallBytes);
+      return;
+    }
     endDownloadUi();
   } else if (line === "PONS:BYE") {
     updateSerialUIStatus('disconnected');
     resetSettingsState(true);
+    if (typeof resetWipeState === 'function') resetWipeState(true);
+    if (typeof resetSdInfo === 'function') resetSdInfo();
   } else if (line.startsWith("PONS:SETTING,") || line.startsWith("PONS:DEST,") || line.startsWith("PONS:PILON_INFO,") ||
              line === "PONS:SETTINGS_END" || line.startsWith("PONS:SETTINGS_OK,") ||
              line.startsWith("PONS:SETTINGS_SAVED,") || line.startsWith("PONS:SETTINGS_ERR,")) {
     handleSettingsSerialLine(line);
+  } else if (line.startsWith("PONS:WIPE_") || line.startsWith("PONS:TRASH_") || line.startsWith("PONS:SDINFO,")) {
+    // SD の整理と空き容量（sd_wipe.js。PONS:WIPE_FILE / WIPE_KEEP / TRASH_FILE / WIPE_SCAN_END / WIPE_PROGRESS /
+    // WIPE_DONE / TRASH_EMPTY_DONE / TRASH_RESTORE_DONE / WIPE_ERR、一覧の終わりの PONS:SDINFO）
+    if (typeof handleWipeSerialLine === 'function') handleWipeSerialLine(line);
   } else if (line.startsWith("PONS:ERROR,")) {
     if (imuRangeFallbackTimer) { clearTimeout(imuRangeFallbackTimer); imuRangeFallbackTimer = null; }
     const errMsg = line.substring(11);
     const failedFile = currentDownloadFile;
     const failedSize = currentDownloadFull;
+    // 塊ごとに取っている途中の BUSY: 本体が前の塊の後始末（DATA_END のあと、タスクを終えるまで）を終える前に次を頼んだ。
+    // 少し待って同じ塊を頼み直す（1 つの塊で 30 回まで。取り直しの回数には数えない）
+    if (errMsg === 'BUSY' && rangeDl && !cancelPending && rangeDl.busyCount < 30) {
+      const r = rangeDl;
+      r.busyCount++;
+      r.busyWait = true;
+      r.retryTimer = setTimeout(() => {
+        r.retryTimer = null;
+        r.busyWait = false;
+        if (rangeDl === r && !cancelPending) requestRangeChunk();
+      }, 100);
+      return;
+    }
     if (errMsg === 'IMU_RANGE_NOT_FOUND') {
       endDownloadUi();
       if (failedFile && confirm(`生 IMU ログ（${failedFile}）内に、このフライト時刻の GNSS 記録が見つかりませんでした。\nファイル全体（${logBytes(failedSize)}）を取得しますか？`)) {
@@ -890,6 +1243,7 @@ function handleSerialLine(line) {
       renderFileList();
     }
     abortSettingsPending(`PONSエラー: ${errMsg}`);
+    if (typeof abortWipePending === 'function') abortWipePending(`PONSエラー: ${errMsg}`);
     endDownloadUi();
   }
 }
