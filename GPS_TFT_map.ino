@@ -1593,6 +1593,24 @@ static void periodic_log_tick() {
 // *_tick() 群が持つ。CLAUDE.md の約束）。ここは「どの画面を描くか」だけ。
 // new_gnss_info: 新しい位置が届いたか。MODE_MAP が再描画の契機に使う。
 static void draw_current_screen(bool new_gnss_info) {
+  // ---- 地図以外の画面の DIM MODE（2026-11-26）----
+  // 地図は下の MODE_MAP の分岐で draw_dim_mode_notice() が地図の上に描く。ほかの画面は描き方がばらばら
+  // （TFT へ直接・backscreen を y=30 / 40 へ）なので、減光に入ったらその画面を 1 回描き直した上へ
+  // TFT に直接箱を重ね（draw_dim_mode_notice_tft）、**減光の間は描き直さない**（描き直すと箱が消えるため。
+  // 減光中は画面を読む場面ではないので、中身が止まっていてよい）。戻ったら描き直す。
+  // ★ 減光中に画面が変わったとき（設定画面の時間切れで地図へ、など）は、新しい画面を描いてから重ね直す。
+  //   地図へ移ったときは地図の側で描く。
+  static int s_dim_page_mode = -1;   // DIM MODE の箱を重ねた画面（-1 = 重ねていない）
+  const bool dim_page = screen_mode != MODE_MAP && backlight_is_dimmed();
+  if (dim_page) {
+    if (s_dim_page_mode == screen_mode) return;   // 重ねたまま止めておく
+    redraw_screen = true;                         // 入った直後: いまの画面を描いてから重ねる
+  } else if (s_dim_page_mode >= 0) {
+    s_dim_page_mode = -1;
+    // 戻った: 箱を消すために描き直す。地図はミラー中の窓（link_draw_window_ok）があるので loop() の側に任せる
+    if (screen_mode != MODE_MAP) redraw_screen = true;
+  }
+
   if (screen_mode == MODE_SETTING) {
     if (redraw_screen) {
       draw_setting_mode(selectedLine, cursorLine);
@@ -1850,11 +1868,12 @@ static void draw_current_screen(bool new_gnss_info) {
     }
 
     // backscreen 非更新時、airdata が更新されたタイミングで VSI を TFT
-    // へ直接転写 バリオ音量が 0 の場合は非表示 ★ ミラー中は転写しない。V/S
+    // へ直接転写。バリオ音量が 0 でも出す（2026-11-26〜。音量は音だけ。push_backscreen() と同じ条件）
+    // ★ ミラー中は転写しない。V/S
     // は機体の値でフレームが届いたときしか変わらず、
     //   受信機自身の気圧計の更新（約 3.7Hz）で同じ絵を送り直していただけだった。
     //   フレームを受けた直後の描き直しで push_backscreen() が合成して出す。
-    if (!redraw_screen && !link_mirror_active() && vario_volume > 0 &&
+    if (!redraw_screen && !link_mirror_active() &&
         !vario_inhibit && airdata_updated) {
       draw_vsi();
       vsi_sprite.pushSprite(
@@ -1862,6 +1881,12 @@ static void draw_current_screen(bool new_gnss_info) {
     }
   } else {
     DEBUGW_PLN(20250510, "ERR screen mode");
+  }
+
+  // 地図以外の画面で減光に入った: 描いた画面の上へ DIM MODE を重ねる（この関数の頭の説明）
+  if (dim_page) {
+    draw_dim_mode_notice_tft();
+    s_dim_page_mode = screen_mode;
   }
 }
 
@@ -2688,12 +2713,18 @@ void loop() {
       redraw_screen = true;
     }
     // 自動減光に入った・戻ったら、次の周期を待たずに地図の DIM MODE を出す／消す。
-    // （減光は自機の表示のときだけ＝ミラー中は起きないので、link_draw_window_ok は見なくてよい）
+    // ★ ミラー中も減光する（2026-11-26〜）ので、ミラー中の地図は上と同じく窓（link_draw_window_ok）に入るまで待つ。
+    //   地図以外の画面は draw_current_screen() の頭が自分で描き直すので、ここでは地図だけ。
     {
       static bool s_prev_dimmed = false;
+      static bool s_dim_redraw  = false;   // 地図の描き直しを窓まで待っている
       const bool dimmed = backlight_is_dimmed();
       if (dimmed != s_prev_dimmed) {
         s_prev_dimmed = dimmed;
+        s_dim_redraw = true;
+      }
+      if (s_dim_redraw && (screen_mode != MODE_MAP || link_draw_window_ok())) {
+        s_dim_redraw = false;
         if (screen_mode == MODE_MAP) redraw_screen = true;
       }
     }

@@ -46,7 +46,7 @@ display_tft.cpp draw_eskf_yaw() 00964804b6ef
 display_tft.cpp begin_notice_box() b42b1e36261d
 display_tft.cpp draw_power_fault_warning() a7b6637846ba
 display_tft.cpp draw_eskf_calib_warning() b2ca8a9cf70f
-display_tft.cpp push_backscreen() b7f72d75370e
+display_tft.cpp push_backscreen() e6967182938b
 display_tft.cpp truetrack_display_deg() aa4cf10c552b
 display_tft.cpp draw_tas_label_row() b38318974c60
 display_tft.cpp draw_gs_track() 735dc659bbeb
@@ -136,7 +136,7 @@ display_tft.h #define LIVESCR_WEAK b99f45d8fe13
 display_tft.h #define LIVESCR_NAV_VALID 667c7c7ef75f
 display_tft.h #define LIVESCR_WIND a001f4e035f2
 display_tft.h #define LIVESCR_LEAVING cd4c22b94854
-GPS_TFT_map.ino draw_current_screen() の screen_mode==MODE_MAP) 4fddcaeb75bd
+GPS_TFT_map.ino draw_current_screen() の screen_mode==MODE_MAP) 12925fefab7c
 src/vectormap.cpp (まるごと) 7bb03731e8cb
 src/navdata.cpp rad2deg() 83edf2e00cf0
 src/navdata.cpp deg2rad() 4d445cc72b6c
@@ -180,5 +180,5 @@ lora_link/link_wire2.h #define W2S_NAV ba9d0e12c51e
 live.cpp send_ok() e0eb3b9f7579
 live.cpp dump_step() 4a3a827cea14
 live.cpp live_on_rx_frame() 6fc29793070b
-live.cpp live_after_screen() 11ac23aafd24
+live.cpp live_after_screen() 8e3c23b0328d
 live.cpp push_ls() ece66947d6cf

@@ -43,7 +43,6 @@ extern float         course_warning_index;
 extern unsigned long last_course_warning_time;
 extern unsigned long trackwarning_until;
 extern float         last_tone_tt;
-extern volatile int  vario_volume;
 
 #define LIVE_RING_BYTES 2048   // 2KB。1 秒に約 0.5KB 流すので、PC が 3〜4 秒読まないと捨て始める
 #define LIVE_LINE_MAX    224   // 1 行の上限（\r\n 込み）。リングの長さは 1 バイトで持つので 255 以下
@@ -343,8 +342,9 @@ void live_after_screen() {
   if (trackwarning_until > now) fl |= LIVESCR_TRACKWARN;
   // コース警告の箱（.ino の地図の描き直し: 警告から 10 秒、起動から 10 秒より後）
   if (now - last_course_warning_time < 10000 && now > 10000) fl |= LIVESCR_CWARN;
-  // VSI（display_tft.cpp の push_backscreen。ミラー中は自機のバリオ禁止を見ない）
-  if (vario_volume > 0) fl |= LIVESCR_VSI;
+  // VSI（display_tft.cpp の push_backscreen。ミラー中は自機のバリオ禁止を見ず、バリオの音量も見ない
+  //   （2026-11-26〜。音量 0 でも VSI は出す）ので、ミラー中だけのこの行では必ず出す）
+  fl |= LIVESCR_VSI;
 
   char line[LIVE_LINE_MAX];
   snprintf(line, sizeof(line),

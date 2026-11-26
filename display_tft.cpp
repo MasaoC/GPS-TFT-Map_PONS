@@ -85,7 +85,6 @@ int upward_mode = MODE_TRACKUP;
 
 
 extern volatile int sound_volume;
-extern volatile int vario_volume;
 extern volatile bool vario_inhibit;
 extern int screen_mode;
 extern int destination_mode;
@@ -1711,56 +1710,71 @@ void draw_replay_indicator(){
 //   減光中は地図を読む場面ではないので、白い箱で地図を隠してよい。
 // 戻し方は dim_tick() の 4) と 1)・2) に合わせる（ボタン・動かす・照度センサーの前で手をかざす・輝度 SW を High）。
 //   戻す条件を足したら、ここの一覧も直すこと。
-void draw_dim_mode_notice() {
-  if (!backlight_is_dimmed()) return;
-  static const char* const kLines[] = {
-    // 動き出したら自動で消えることを先頭に書く（「走り出しても暗いままでは」という不安を消すため。
-    //   実体は対地速度 BL_DIM_SPEED_EXIT 以上か IMU の動き。2026-11-19、ユーザー）
+// ★ 地図（backscreen）と地図以外の画面（TFT へ直接。draw_dim_mode_notice_tft）で同じ箱を描く（2026-11-26）。
+//   g は backscreen か tft。area_w × area_h の範囲の真ん中に置く（y0 = 範囲の上端）。
+//   抜けるときは AA_FONT_SMALL を読み込んだまま・文字の大きさ 1（どちらもこのファイルの約束）。
+template <class G>
+static void dim_mode_box(G &g, int area_w, int y0, int area_h) {
+  // 動き出したら自動で消えることを 2 行目に書く（「走り出しても暗いままでは」という不安を消すため。
+  //   実体は対地速度 BL_DIM_SPEED_EXIT 以上か IMU の動き。2026-11-19、ユーザー）。
+  //   受信機のミラー中は、機体が動き出しても戻る（dim_tick の ①'）ことを書く（2026-11-26）。
+  const char* const kLines[] = {
     "Wake up by:",
-    "- Start moving (auto)",
+    link_mirror_active() ? "- Plane or boat moves (auto)" : "- Start moving (auto)",
     "- Press the button",
     "- Tap or move the unit",
     "- Wave hand over sensor",
     "- Brightness SW to HIGH",
   };
   const int n = (int)(sizeof(kLines) / sizeof(kLines[0]));
-  const int area_w = VSI_X;                 // VSI の左までが地図
   const int title_sz = 3;                   // 内蔵フォント 6x8 の 3 倍＝18x24（日本語・大きい AA フォントは無い）
   const char* title = "DIM MODE";
   const int title_w = (int)strlen(title) * 6 * title_sz;
   const int title_h = 8 * title_sz;
 
-  backscreen.loadFont(AA_FONT_SMALL);
-  const int fh = backscreen.fontHeight();
+  g.loadFont(AA_FONT_SMALL);
+  const int fh = g.fontHeight();
   int list_w = 0;
   for (int i = 0; i < n; i++) {
-    const int w = backscreen.textWidth(kLines[i]);
+    const int w = g.textWidth(kLines[i]);
     if (w > list_w) list_w = w;
   }
   const int gap = 6;
   const int box_w = max(title_w, list_w) + 16;
   const int box_h = title_h + gap + n * fh + 14;
   const int bx = (area_w - box_w) / 2;
-  const int by = (BACKSCREEN_SIZE - box_h) / 2;
-  backscreen.fillRect(bx, by, box_w, box_h, COLOR_WHITE);
-  backscreen.drawRect(bx, by, box_w, box_h, COLOR_GRAY);
+  const int by = y0 + (area_h - box_h) / 2;
+  g.fillRect(bx, by, box_w, box_h, COLOR_WHITE);
+  g.drawRect(bx, by, box_w, box_h, COLOR_GRAY);
 
-  backscreen.unloadFont();
-  backscreen.setTextSize(title_sz);
-  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  backscreen.setCursor((area_w - title_w) / 2, by + 7);
-  backscreen.print(title);
-  backscreen.setTextSize(1);
+  g.unloadFont();
+  g.setTextSize(title_sz);
+  g.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  g.setCursor((area_w - title_w) / 2, by + 7);
+  g.print(title);
+  g.setTextSize(1);
 
-  backscreen.loadFont(AA_FONT_SMALL);       // 地図用フォントに戻して抜ける（このファイルの約束）
-  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  g.loadFont(AA_FONT_SMALL);                // フォントを戻して抜ける（このファイルの約束）
+  g.setTextColor(COLOR_BLACK, COLOR_WHITE);
   const int lx = (area_w - list_w) / 2;
   int ly = by + 7 + title_h + gap;
   for (int i = 0; i < n; i++) {
-    backscreen.setCursor(lx, ly);
-    backscreen.print(kLines[i]);
+    g.setCursor(lx, ly);
+    g.print(kLines[i]);
     ly += fh;
   }
+}
+
+void draw_dim_mode_notice() {
+  if (!backlight_is_dimmed()) return;
+  dim_mode_box(backscreen, VSI_X, 0, BACKSCREEN_SIZE);   // VSI の左までが地図
+}
+
+// 地図以外の画面の DIM MODE（2026-11-26）。その画面を描いた上へ TFT に直接重ねる（GPS_TFT_map.ino の draw_current_screen）。
+// ★ 画面の真ん中に置く。どの画面も本体（設定画面は y=30、ほかは y=40 から 240px）を backscreen ごと送り直すか
+//   TFT を塗り直すので、戻ったあとの描き直しで箱は残らない。真ん中の箱（高さ約 140px）はその範囲に収まる。
+void draw_dim_mode_notice_tft() {
+  dim_mode_box(tft, SCREEN_WIDTH, 0, SCREEN_HEIGHT);
 }
 
 // backscreen スプライトを白でクリアする（毎フレームの描画前に呼ぶ）。
@@ -3756,9 +3770,10 @@ void push_backscreen(){
   draw_steer_overlay();            // 無線情報（船アイコン等）より上。VSI や通知の箱よりは下
   draw_course_warning_box();       // 旋回指示の弧より上（文字が隠れないように）。段の予約は draw_course_warning() 済み
   // vario_inhibit は自機のバリオ禁止。受信ミラー中（link_mirror_active()）は送信機の V/S を表示する。
+  // ★ バリオの音量（vario_volume）は見ない。音量 0 は「鳴らさない」だけで、VSI は出す（2026-11-26、ユーザー）。
   // ★ VSI は右端 5px（x=VSI_X..239）に 40Hz で直接 push されるため、旋回アーク等がはみ出ても
   //   チラつかないよう draw_steer_overlay() の後に合成する（通知の箱より前）。
-  if (vario_volume > 0 && (!vario_inhibit || link_mirror_active())) {
+  if (!vario_inhibit || link_mirror_active()) {
     draw_vsi();
     vsi_sprite.pushToSprite(&backscreen, VSI_X, 0);  // Sprite→Sprite 合成
   }

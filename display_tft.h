@@ -240,6 +240,8 @@ uint16_t wireless_status_color();
 void draw_wireless(int cursor);
 // 待機中の自動減光の間、地図の中央に DIM MODE と戻し方を出す（低いレイヤー。航跡の直後に呼ぶ）。
 void draw_dim_mode_notice();
+// 地図以外の画面で減光している間、その画面の上に TFT へ直接 DIM MODE と戻し方を重ねる（GPS_TFT_map.ino の draw_current_screen）。
+void draw_dim_mode_notice_tft();
 #define WIRELESS_MENU_COUNT 7    // MODE / CH / SF / GROUP / PREFLIGHT / CH SCAN / RETURN
 extern int wireless_cursor;
 // 選べるチャンネルの雑音の一覧（display_pages.cpp）。WIRELESS 画面の Ch scan から入る。
@@ -283,7 +285,7 @@ void draw_vsi();
 #define LIVESCR_GST_INVALID  0x0040   // 対地速度・真方位が無効（赤線）
 #define LIVESCR_TRACKWARN    0x0080   // 方位変化の警告中（真方位の点滅）。live.cpp が足す
 #define LIVESCR_CWARN        0x0100   // コース警告の箱を出す。live.cpp が足す
-#define LIVESCR_VSI          0x0200   // VSI を出す（バリオの音量 > 0）。live.cpp が足す
+#define LIVESCR_VSI          0x0200   // VSI を出す（ミラー中は必ず。2026-11-25 まではバリオの音量 > 0）。live.cpp が足す
 #define LIVESCR_VARIO_OK     0x0400   // vario_source_ok()（V/S が載っている）
 #define LIVESCR_SCANNING     0x0800   // GNSS の状態の箱「Scanning」
 #define LIVESCR_WEAK         0x1000   // GNSS の状態の箱「Weak GNSS Signal」

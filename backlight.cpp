@@ -4,7 +4,7 @@
 // Role    : v7.1 の TFT バックライト。輝度スイッチと照度センサー（VEML7700）で
 //           PWM の点灯率を決める。電池低下のときは 2 段階で点滅させて電池をもたせる。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/08
+// Updated : 2026/11/26
 // ============================================================
 //
 // ■ 決め方（値は settings.h の TFT_BL_* / BL_AUTO_* / BL_DIM_*。括弧は設定画面の表示名 = backlight_mode_label）
@@ -15,7 +15,8 @@
 //   待機中の自動減光 … 静止が BL_DIM_TIMEOUT_MS 続いたら TFT_BL_DUTY_DIM（IDLE DIM。dim_tick）。
 //                        照度で手が来たと分かったら（1 秒で半分に落ちた＝かざした、30% 落ちて
 //                        1 秒以内に戻った＝あおいだ。lux_hand_feed）戻す。
-//                        ただし暗い所では自動調光の値を超えない（減光で明るくしない）
+//                        ただし暗い所では自動調光の値を超えない（減光で明るくしない）。
+//                        受信機のミラー中は、送信機（機体）も止まっていることを足す（2026-11-26〜）
 //
 // ■ 電池低下のとき（backlight_set_saver。判定は GPS_TFT_map.ino の batt_alarm_tick）
 //   第 1 段階（<=3.5V）は BL_SAVER_ON_MS 点けて BL_SAVER_OFF_MS 消す、
@@ -39,7 +40,7 @@
 #include "imu.h"       // get_imu_alive()
 #include "attitude.h"   // attitude_is_static()
 #include "power.h"     // usb_power_present(), power_sw_off_on_usb(), power_fault_active(), power_charge_hot_active(), power_overdischarge_latched()
-#include "link.h"      // link_mirror_active()
+#include "link.h"      // link_mirror_active(), link_get_fix_ok(), link_get_gs()
 #include "display_tft.h"  // map_notice_shown()（地図に通知の箱が出ている間は減光しない）
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
@@ -163,8 +164,32 @@ static void lux_hand_feed(float lux, uint32_t now) {
   if (s_lux_hist_n < LUX_HIST_N) s_lux_hist_n++;
 }
 
-static bool showing_own_state() {
-  return !getReplayMode() && !link_mirror_active() && !is_demo_active();
+// 減光してよい表示の供給元か。リプレイとデモは画面が実物の待機ではないので減光しない。
+// ★ 無線のミラー中は減光してよい（2026-11-26〜。受信機でも電池をもたせたいため）。
+//   ただしミラー中は受信機だけでなく送信機（機体）も止まっていること（sender_still / sender_wake_reason）。
+static bool dim_source_ok() {
+  return !getReplayMode() && !is_demo_active();
+}
+
+// ミラー中の送信機（機体）が止まっているか。**fix が無いときは止まっているとみなさない**
+// （自機の「fix が無ければ一度も動いていない限り静止」とは逆。機体の様子が分からないまま暗くしない）。
+// 速さは送信機の GNSS の対地速度（電波で 1 秒に 1 回）。
+// ★ fix の有無は gnss_shown_no_fix()（ミラー中は送信機の fix と LINK_ST_GNSS_LOST）で見る。fix の印だけを見ると、
+//   送信機の GNSS が抜けたとき（印は立ったまま、速さは最後の値で止まる）に、動いている機体を「止まっている」とみなす。
+//   どちらもミラー中にだけ呼ぶ（gnss_shown_no_fix() はミラー中でなければ自機を見るため）。
+static bool sender_still() {
+  return !gnss_shown_no_fix() && link_get_gs() < BL_DIM_SPEED_ENTER;
+}
+
+// ミラー中に減光から戻す送信機の理由（無ければ nullptr）。動き出した（BL_DIM_SPEED_EXIT 以上）か、fix を失った。
+static const char* sender_wake_reason(char* buf, size_t n) {
+  if (gnss_shown_no_fix()) return "sender no fix";
+  const double gs = link_get_gs();
+  if (gs >= BL_DIM_SPEED_EXIT) {
+    snprintf(buf, n, "sender speed %.2fm/s", gs);
+    return buf;
+  }
+  return nullptr;
 }
 
 bool backlight_is_dimmed() {
@@ -477,7 +502,8 @@ static void dim_tick(uint32_t now) {
   }
 
   // 3) システム前提条件（実機フライト待機中、USBなし、重大安全警告なし）
-  const bool sys_ok = showing_own_state() &&
+  //    電源の条件は受信機のミラー中も**受信機自身**のもの（暗くして電池をもたせるのは受信機の電池なので）。
+  const bool sys_ok = dim_source_ok() &&
                       !usb_power_present() &&
                       !power_sw_off_on_usb() &&
                       !power_overdischarge_latched() &&
@@ -494,6 +520,12 @@ static void dim_tick(uint32_t now) {
     return;
   }
 
+  // ミラー中か（受信機が機体の画面を出している）。ミラー中は下の 4)・5) で送信機の動きも見る。
+  // ★ 受信機自身の対地速度・IMU・照度はミラー中もそのまま見る（ボートが動いた・叩いた・手をかざした、で戻す）。
+  //   波で揺れるボートの上では IMU が静止にならないので減光しないが、暗くしない側に倒れるだけなのでそれでよい。
+  // ★ ミラーが切れて NO SIGNAL になると、地図には無信号の箱が出るので 2') で戻る。
+  const bool mirror = link_mirror_active();
+
   // 4) 減光中の復帰トリガー判定
   if (s_dimmed) {
     const char* wake_reason = nullptr;
@@ -505,6 +537,11 @@ static void dim_tick(uint32_t now) {
     if (fix && gs >= BL_DIM_SPEED_EXIT) {
       snprintf(reason_buf, sizeof(reason_buf), "speed %.2fm/s", gs);
       wake_reason = reason_buf;
+    }
+
+    // ①' ミラー中は送信機（機体）の動き出し・fix を失ったとき
+    if (!wake_reason && mirror) {
+      wake_reason = sender_wake_reason(reason_buf, sizeof(reason_buf));
     }
 
     // ② IMU 振動（漕ぎ始め・ペダリング・機体運動）
@@ -550,7 +587,10 @@ static void dim_tick(uint32_t now) {
   // ゆっくりした変化（雲・夕暮れ）では待ち直さない。
   const bool lux_still = !lux_hand;
 
-  const bool is_still = speed_still && imu_still && lux_still;
+  // ミラー中は送信機（機体）も止まっていること（受信機と送信機の両方が止まって 30 秒）
+  const bool sender_ok = !mirror || sender_still();
+
+  const bool is_still = speed_still && imu_still && lux_still && sender_ok;
 
   if (!is_still) {
     s_dim_wait_t0 = now ? now : 1;
@@ -558,7 +598,11 @@ static void dim_tick(uint32_t now) {
     if (s_dim_wait_t0 == 0) s_dim_wait_t0 = now ? now : 1;
     if (now - s_dim_wait_t0 >= BL_DIM_TIMEOUT_MS) {
       s_dimmed = true;
-      enqueueTask(createLogSdfTask("BACKLIGHT: enter auto-dim (gs=%.2f lux=%.0f)", gs, s_lux));
+      if (mirror)
+        enqueueTask(createLogSdfTask("BACKLIGHT: enter auto-dim (gs=%.2f lux=%.0f mirror sender_gs=%.2f)",
+                                     gs, s_lux, link_get_gs()));
+      else
+        enqueueTask(createLogSdfTask("BACKLIGHT: enter auto-dim (gs=%.2f lux=%.0f)", gs, s_lux));
     }
   }
 }

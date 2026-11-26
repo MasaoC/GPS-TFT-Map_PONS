@@ -48,12 +48,18 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
   WIRELESS 画面で CH を何度か変え、`LINK ERROR: radio module not responding` が出ず `E220 reconfigure ... waited=` が 0 でない回があるか → [pons_link.md](pons_link.md) §6.9
 - [ ] **Re:PONS を分けた（11/23。本体につないでは未確認）**: index.html を CSS と JS 6 つに分けた（中身は同じ。ヘッドレス Chrome で
   サンプル再生・log.txt・本体設定の描画は元と一致）。本体につないでファイル一覧・ダウンロード・log.txt・本体設定・IMU の取得を一通り。公開ページでも開く
+- [ ] **地図以外の画面の DIM MODE（11/26。実機未確認）**: 電池で設定画面・GNSS DETAIL・VARIO などを出したまま 30 秒置く → 画面の上に `DIM MODE` の箱が出て、
+  ボタン・手かざしで戻ると箱が消えて元の画面に描き直されるか。減光中に設定画面が時間切れで地図へ戻ったときも → [pons_power.md](pons_power.md) §4.3
 - [ ] v7.2 基板が届いたら: `PONS_MAINBOARD_REV` = 72 で焼き、満充電で数日〜数週間切ってから起動して `RTC BACKUP CHECK: ok` か、
   充電ポップアップの `Fast GPS <2d, clock 3mo`、回路が動き出す・止まる電圧（約 3.92V / 3.83V）→ [pons_charge_estimation.md](pons_charge_estimation.md)
 
 ## 4. 2 台以上で確かめる（無線）
 - [ ] **MAX G/S・航跡を受信機の分と送信機の分で別々に（11/23。実機未確認）**: 受信機を持って車で動かし、送信機は止めておく → 送信機の電源を切る→入れる。
   受信中は送信機の MaxGS（0 付近）と送信機の航跡、NO SIGNAL の間は MaxGS が隠れ受信機の航跡に切り替わり、互いに混ざらないか
+- [ ] **受信機のヨーが 328 で止まる（11/26 修正・実機未確認・3 台焼き直し）**: 送信機を 320〜360° でゆっくり回し、受信機のヨーと自機アイコン・
+  Re:PONS のライブが付いてくるか、received/ の yaw 列が 0〜360° か。LinkTelem のヨーを int16 → uint16 0〜35999 に（LINK_PROTO_VER 9）
+- [ ] **受信機のミラー中の DIM MODE（11/26。実機未確認）**: 送信機・受信機とも電池で机に置き 30 秒 → 受信機が減光して `Plane or boat moves (auto)` の箱が出るか、
+  log.txt に `enter auto-dim (... mirror sender_gs=)`。送信機を持って歩く（0.6 m/s 以上）・受信機を叩く・送信機の GNSS を抜く・地図を出したまま送信機の電源を切る（NO SIGNAL）で戻るか → [pons_power.md](pons_power.md) §4.3
 
 ## 5. 原因を探している不具合・見張り
 - [ ] 照度センサーと GNSS が起動時に同時に黙った（13 回中 1 回）。次に起きたら直前の操作と +3V3

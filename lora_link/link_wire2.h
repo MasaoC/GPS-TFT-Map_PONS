@@ -4,7 +4,7 @@
 // Role    : 電波に載せる 32 バイトのフレーム。LinkTelem（69 バイト）を詰めて送り、
 //           受けたら LinkTelem に戻す。画面・ログ・リプレイは LinkTelem のまま何も変えない。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/20
+// Updated : 2026/11/26
 // ============================================================
 //
 // ★ **2026-10-27 から、電波に載せるのはどの CH でもこの 32 バイトだけ**（ローワーもアッパーも）。
@@ -190,7 +190,7 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
     const uint32_t r12 = att_ok ? ((uint32_t)w2_clampi(w2_divr(t->roll_cdeg,  10), -2047, 2047) & 0xFFF) : W2_ROLL_NONE;
     const uint32_t p12 = att_ok ? ((uint32_t)w2_clampi(w2_divr(t->pitch_cdeg, 10), -2047, 2047) & 0xFFF) : 0;
     const uint32_t y12 = (t->have & RHAVE_ATT_YAW)
-                       ? (uint32_t)(((w2_divr(t->yaw_cdeg, 10) % 3600) + 3600) % 3600) : W2_YAW_NONE;
+                       ? (uint32_t)(w2_divr((int32_t)t->yaw_cdeg, 10) % 3600) : W2_YAW_NONE;   // 0.01 → 0.1°（359.95〜 は 0）
     const uint32_t pa10 = (uint32_t)((t->have & RHAVE_ATT_AVG)
                        ? w2_clampi(w2_divr(t->pitch_avg_cdeg, 10), -511, 511) : W2_PAVG_NONE) & 0x3FF;
     const uint64_t att = (uint64_t)r12 | ((uint64_t)p12 << 12) | ((uint64_t)y12 << 24) | ((uint64_t)pa10 << 36)
@@ -391,15 +391,11 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         t.roll_cdeg  = (int16_t)(w2_sext(r12, 12) * 10);
         t.pitch_cdeg = (int16_t)(w2_sext((uint32_t)((att >> 12) & 0xFFF), 12) * 10);
     }
-    // ★ ヨーは ±180° に戻す。LinkTelem の yaw_cdeg は int16（0.01°）なので 327.67° までしか入らず、
-    //   0〜359.9° のまま戻すと 350° が 35000 で溢れて化ける。
+    // ヨーは 0〜359.9° のまま戻す（LinkTelem の yaw_cdeg は uint16 の 0〜35999。LINK_PROTO_VER 9 〜。
+    //   8 までは int16 で ±180° に戻していた）。送る側は 3600 以上を出さないので、W2_YAW_NONE 以外の 3600〜4094 も「無し」。
     const uint32_t y12 = (uint32_t)((att >> 24) & 0xFFF);
-    const bool yaw_ok = (y12 != W2_YAW_NONE);
-    if (yaw_ok) {
-        int32_t y = (int32_t)y12;
-        if (y > 1800) y -= 3600;
-        t.yaw_cdeg = (int16_t)(y * 10);
-    }
+    const bool yaw_ok = (y12 < 3600);
+    if (yaw_ok) t.yaw_cdeg = (uint16_t)(y12 * 10);
     const int32_t pa = w2_sext((uint32_t)((att >> 36) & 0x3FF), 10);
     const bool pavg_ok = (pa != W2_PAVG_NONE);
     if (pavg_ok) t.pitch_avg_cdeg = (int16_t)(pa * 10);

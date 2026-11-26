@@ -4,7 +4,7 @@
 // Role    : ライブ配信の窓（live.html）。受信機と USB でつなぎ、PONS:LIVE,ON で流れてくる行を読み、
 //           機体の画面（live_screen.js）を描いて、ボートの側の情報の帯を付ける。記録の保存と再生、数字の表も。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026-11-25
+// Updated : 2026-11-26
 // ============================================================
 //
 // ★ 設計は docs/pons_live_stream_plan.md、行の形は docs/pons_webserial_protocol.md §4 (9)。
@@ -16,7 +16,7 @@
 // ★ 届いたフレームをすぐ描く（補間しない。設計書 §5.5）。
 (function (global) {
   'use strict';
-  const LIVE_FMT_VER = 1, LINK_PROTO_VER = 8, LINKTELEM_SIZE = 69;
+  const LIVE_FMT_VER = 1, LINK_PROTO_VER = 9, LINKTELEM_SIZE = 69;
   const RHAVE = { GS: 0x0001, TTRACK: 0x0002, GNSSALT: 0x0004, KFALT: 0x0008, KFVS: 0x0010, PRESS: 0x0020, DATE: 0x0040, NUMSAT: 0x0080,
     ATT: 0x0200, ATT_YAW: 0x0400, ATT_AVG: 0x0800, ATT_TRIM: 0x1000, ATT_WIND: 0x2000, TAS: 0x4000 };
   const W2S = { DATE: 0, WIND: 1, TRIM: 2, HACC: 3, ALTV: 4, WIND2: 5, PRESS: 6, NAV: 7 };
@@ -38,7 +38,7 @@
       year: dv.getUint16(10, true), month: bytes[12], day: bytes[13], hour: bytes[14], minute: bytes[15], second: bytes[16], centi: bytes[17],
       lat_1e7: dv.getInt32(18, true), lon_1e7: dv.getInt32(22, true), gs_cms: dv.getUint16(26, true), track_cdeg: dv.getUint16(28, true),
       gnss_alt_dm: dv.getInt16(30, true), kf_alt_dm: dv.getInt16(32, true), kf_vs_cms: dv.getInt16(34, true), press_dpa: dv.getUint16(36, true),
-      roll_cdeg: dv.getInt16(38, true), pitch_cdeg: dv.getInt16(40, true), yaw_cdeg: dv.getInt16(42, true),
+      roll_cdeg: dv.getInt16(38, true), pitch_cdeg: dv.getInt16(40, true), yaw_cdeg: dv.getUint16(42, true),
       pitch_avg_cdeg: dv.getInt16(44, true), roll_trim_cdeg: dv.getInt16(46, true), yaw_acc95_deg: bytes[48],
       wind_dmps: bytes[49], wind_dir_cdeg: dv.getUint16(50, true), tas_dmps: bytes[52], tas_flags: bytes[53],
       batt: bytes[54], numsat: bytes[55], hacc_dm: dv.getUint16(56, true), sacc_cms: dv.getUint16(58, true), fixflags: bytes[60],

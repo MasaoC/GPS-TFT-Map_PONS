@@ -6,6 +6,7 @@
 //           3) NaN パック・23→0 時跨ぎ（BUG-72 途切れ明けを含む）・うるう年・seq16 復元
 //           4) link_w2_utc_ms（BUG-68 GNSS_LOST 拒否を含む）と LinkBeacon の往復・印の識別
 //           5) 電池の表示（LINK_BATT_*。回転枠 4 の 8 ビット。電池・充電中・SW OFF・分からない）
+//           6) ヨーの全周（0〜360°）の往復。327.7° 以上が頭打ちにならず、いつも 0〜35999 に戻ること（link_pack_heading_cdeg）
 // ============================================================
 #include <cstdio>
 #include <cmath>
@@ -42,7 +43,7 @@ static LinkTelem make_full_telem(uint16_t seq) {
     t.press_dpa = 10132;     // 1013.2 hPa
     t.roll_cdeg = -1240;     // -12.4°
     t.pitch_cdeg = 350;      // +3.5°
-    t.yaw_cdeg = -4560;      // -45.6°
+    t.yaw_cdeg = 31440;      // 314.4°
     t.pitch_avg_cdeg = 210;  // +2.1°
     t.roll_trim_cdeg = -85;  // -0.85°
     t.yaw_acc95_deg = 4;
@@ -104,7 +105,7 @@ static void test_roundtrip_8slots() {
     CHECK(got.gs_cms == ref.gs_cms && got.track_cdeg == ref.track_cdeg, "gs/trk");
     CHECK(got.kf_alt_dm == ref.kf_alt_dm && got.kf_vs_cms == ref.kf_vs_cms, "kf alt/vs");
     CHECK(got.roll_cdeg == ref.roll_cdeg && got.pitch_cdeg == ref.pitch_cdeg, "roll/pitch");
-    CHECK(got.yaw_cdeg == ref.yaw_cdeg, "yaw got=%d ref=%d", got.yaw_cdeg, ref.yaw_cdeg);
+    CHECK(got.yaw_cdeg == ref.yaw_cdeg, "yaw got=%u ref=%u", got.yaw_cdeg, ref.yaw_cdeg);
     CHECK(got.pitch_avg_cdeg == ref.pitch_avg_cdeg, "pavg got=%d ref=%d", got.pitch_avg_cdeg, ref.pitch_avg_cdeg);
     CHECK(got.tas_dmps == ref.tas_dmps && got.tas_flags == ref.tas_flags, "tas");
     CHECK(got.wind_dmps == ref.wind_dmps && got.wind_dir_cdeg == ref.wind_dir_cdeg, "wind");
@@ -137,7 +138,7 @@ static void test_extremes_and_sentinels() {
     ext.roll_cdeg = -30000;       // -300° -> -2047 (-204.7°) にクランプされ W2_ROLL_NONE(0x800) を避ける
     ext.pitch_cdeg = -30000;
     ext.pitch_avg_cdeg = -10000;  // -100° -> -511 (-51.1°) にクランプされ W2_PAVG_NONE(-512) を避ける
-    ext.yaw_cdeg = -17990;        // -179.9°
+    ext.yaw_cdeg = 35990;         // 359.9°（int16 には入らない値）
     ext.tas_dmps = 0;             // have & RHAVE_TAS なら 0 でも 1 (0.1m/s) に持ち上げられる
 
     link_w2_rx_reset(&rx);
@@ -151,8 +152,8 @@ static void test_extremes_and_sentinels() {
           "roll/pitch min clamp got=%d/%d", rx.acc.roll_cdeg, rx.acc.pitch_cdeg);
     CHECK((rx.acc.have & RHAVE_ATT_AVG) != 0 && rx.acc.pitch_avg_cdeg == -5110,
           "pavg min clamp got=%d", rx.acc.pitch_avg_cdeg);
-    CHECK((rx.acc.have & RHAVE_ATT_YAW) != 0 && rx.acc.yaw_cdeg == -17990,
-          "negative yaw got=%d", rx.acc.yaw_cdeg);
+    CHECK((rx.acc.have & RHAVE_ATT_YAW) != 0 && rx.acc.yaw_cdeg == 35990,
+          "yaw 359.9 got=%u", rx.acc.yaw_cdeg);
     CHECK((rx.acc.have & RHAVE_TAS) != 0 && rx.acc.tas_dmps == 1, "tas zero promoted to 1");
 
     // 3) NaN パック安全性
@@ -389,6 +390,53 @@ static void test_utc_ms_and_beacon() {
     CHECK(bc_out.has_pos && bc_out.lat_1e7 == bc_in.lat_1e7 && bc_out.lon_1e7 == bc_in.lon_1e7 && bc_out.alt_m == 85, "beacon pos");
 }
 
+// 6) ヨーを 0〜360° の全周で「送信機の値 → 詰める → 電波 → 戻す」と通し、どこでも元の向きに戻ること、
+//    戻した値がいつも 0〜35999（負の数・360.00 にならない）であること。
+//    2026-11-26 まで yaw_cdeg は int16 で、送信機が 0〜360° のまま詰めていて 327.7〜359.9° が 32767 に頭打ちになり、
+//    受信機のヨーが「328」で止まっていた（link_pack_heading_cdeg。LINK_PROTO_VER 9 で uint16 の 0〜35999 にした）。
+static void test_yaw_full_circle() {
+    int bad = 0;
+    for (int i = 0; i < 36000; i += 7) {          // 0.07° 刻み（0.1° の格子からずらして丸めの境目も通す）
+        const float deg = i * 0.01f;
+        LinkTelem t = make_full_telem(W2S_TRIM);
+        t.yaw_cdeg = link_pack_heading_cdeg(deg);   // link.cpp の link_push_telemetry() と同じ
+        LinkW2Rx rx;
+        link_w2_rx_reset(&rx);
+        uint8_t wire[LINK_W2_LEN];
+        link_w2_encode(&t, wire);
+        link_w2_decode(wire, &rx, 1000, 1000);
+        const float got = rx.acc.yaw_cdeg * 0.01f;   // link_get_yaw()
+        float d = fabsf(got - deg);
+        if (d > 180.0f) d = 360.0f - d;
+        if ((rx.acc.have & RHAVE_ATT_YAW) == 0 || rx.acc.yaw_cdeg >= 36000 || d > 0.051f) {
+            if (bad++ < 5) printf("  yaw %.2f -> packed %u -> got %.2f\n", deg, t.yaw_cdeg, got);
+        }
+    }
+    CHECK(bad == 0, "yaw full circle: %d angles did not come back", bad);
+    CHECK(link_pack_heading_cdeg(340.0f) == 34000 && link_pack_heading_cdeg(180.0f) == 18000 &&
+          link_pack_heading_cdeg(-20.0f) == 34000 && link_pack_heading_cdeg(720.5f) == 50 &&
+          link_pack_heading_cdeg(359.996f) == 0 && link_pack_heading_cdeg(360.0f) == 0,
+          "pack heading 340/180/-20/720.5/359.996/360");
+    // 電波の 12 ビットの 3600〜4094（送る側は出さない）は「無し」に戻すこと
+    {
+        LinkTelem t = make_full_telem(W2S_TRIM);
+        uint8_t wire[LINK_W2_LEN];
+        link_w2_encode(&t, wire);
+        uint64_t att = 0;
+        for (int i = 0; i < 6; i++) att |= (uint64_t)wire[W2_ATT + i] << (8 * i);
+        att = (att & ~((uint64_t)0xFFF << 24)) | ((uint64_t)3600 << 24);
+        for (int i = 0; i < 6; i++) wire[W2_ATT + i] = (uint8_t)(att >> (8 * i));
+        LinkW2Rx rx;
+        link_w2_rx_reset(&rx);
+        link_w2_decode(wire, &rx, 1000, 1000);
+        CHECK((rx.acc.have & RHAVE_ATT_YAW) == 0, "yaw 3600 on air -> none");
+    }
+    const float nan_v = std::numeric_limits<float>::quiet_NaN();
+    const float inf_v = std::numeric_limits<float>::infinity();
+    CHECK(link_pack_heading_cdeg(nan_v) == 0 && link_pack_heading_cdeg(inf_v) == 0 &&
+          link_pack_heading_cdeg(-inf_v) == 0, "pack heading NaN/inf");
+}
+
 int main() {
     test_roundtrip_8slots();
     test_extremes_and_sentinels();
@@ -396,6 +444,7 @@ int main() {
     test_sacc();
     test_battery();
     test_utc_ms_and_beacon();
+    test_yaw_full_circle();
 
     printf("wire2_test: %d passed, %d failed\n", g_pass, g_fail);
     printf("結果: %s\n", g_fail == 0 ? "PASS — Wire2 / Beacon 全テスト合格" : "FAIL");

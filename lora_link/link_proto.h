@@ -4,7 +4,7 @@
 // Role    : テレメトリ構造体（LinkTelem。メモリの上の形）と、無線モジュールとの UART の約束。
 //           電波に載せる 32 バイトの形は lora_link/link_wire2.h（2026-10-27〜）。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/20
+// Updated : 2026/11/26
 // ============================================================
 //
 // ■ このファイルが持つもの
@@ -48,7 +48,10 @@
 //      受信機の地図と GNSS 詳細画面の sAcc を機体の値で出すため）。
 //   8: 電圧（volt_cv）を電池の表示（batt）に置き換えた（2026-11-23。32 バイトの印 0xAC・回転枠 4 の 8 ビット。
 //      受信機の s を送信機の画面と同じ % にするため。下の「電池の表示」）。
-#define LINK_PROTO_VER      8
+//   9: ヨー（yaw_cdeg）を int16 の ±180° から uint16 の 0〜35999（真方位。対地進路・風向と同じ）にした（2026-11-26。
+//      int16 では 0〜360° のヨーが 327.67° で頭打ちになり、受信機のヨーが「328」で止まっていた。
+//      32 バイトの電波の並び（12 ビット・0〜3599）と印は変わらない）。
+#define LINK_PROTO_VER      9
 
 // ============================================================
 //  UART のボーレート
@@ -257,7 +260,7 @@ typedef struct __attribute__((packed)) {
     // --- 姿勢（ESKF）---
     int16_t  roll_cdeg;         // [0.01 度]
     int16_t  pitch_cdeg;
-    int16_t  yaw_cdeg;
+    uint16_t yaw_cdeg;          // ヨー（真方位）[0.01 度] 0〜35999。詰めるのは link_pack_heading_cdeg()
     int16_t  pitch_avg_cdeg;    // 平均ピッチ
     int16_t  roll_trim_cdeg;    // 自動ロールトリムの累積
     uint8_t  yaw_acc95_deg;     // ヨー精度95% [度]
@@ -398,6 +401,18 @@ static inline uint8_t link_pack_u8(float v, float scale) {
     if (x <= 0.0f) return 0;
     if (x >= 255.0f) return 255;
     return (uint8_t)(x + 0.5f);
+}
+// 方位 [度]（ヨー）を 0.01° の 0〜35999 に詰める（LinkTelem の yaw_cdeg）。360.00 に丸まったら 0 に戻す。
+// ★ 2026-11-26 まで yaw_cdeg は int16 で、0〜360° のヨーを link_pack_i16() で詰めていた。int16 の 0.01° は 327.67° までしか
+//   入らないので 327.7〜359.9° が頭打ちになり、**機首が北寄り（北北西〜北）の間、受信機のヨーが「328」のまま動かなかった**
+//   （0.960 から）。対地進路・風向と同じ uint16 の 0〜35999 にした（LINK_PROTO_VER 9）。
+// 壊れた値（NaN・inf・桁外れ）は 0 にする（link_pack_i16 の NaN と同じ考え。下の畳みが回り続けないように）。
+static inline uint16_t link_pack_heading_cdeg(float deg) {
+    if (deg != deg || deg > 3600.0f || deg < -3600.0f) return 0;
+    while (deg >= 360.0f) deg -= 360.0f;
+    while (deg <    0.0f) deg += 360.0f;
+    const uint16_t c = (uint16_t)(deg * 100.0f + 0.5f);
+    return (c >= 36000) ? 0 : c;
 }
 
 // ============================================================

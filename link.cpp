@@ -5,7 +5,7 @@
 //           UART1 のフレーミング、送信テレメトリの組み立て、
 //           受信テレメトリの保持と供給。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/07
+// Updated : 2026/11/26
 // ============================================================
 //
 // ■ 設計の要点
@@ -1756,7 +1756,9 @@ static void link_push_telemetry() {
         if (attitude_ready()) {
             t.roll_cdeg  = link_pack_i16(roll,  100.0f);
             t.pitch_cdeg = link_pack_i16(pitch, 100.0f);
-            t.yaw_cdeg   = link_pack_i16(yaw,   100.0f);
+            // ★ ヨーは 0〜360° の真方位のまま 0〜35999 に詰める（link_pack_heading_cdeg）。2026-11-26 まで int16 に
+            //   link_pack_i16 で詰めていて、327.7° 以上が頭打ちになり受信機のヨーが「328」で止まっていた。
+            t.yaw_cdeg   = link_pack_heading_cdeg(yaw);
             have |= RHAVE_ATT;
             float acc95 = attitude_get_yaw_acc95_deg();
             t.yaw_acc95_deg = link_pack_u8(acc95, 1.0f);

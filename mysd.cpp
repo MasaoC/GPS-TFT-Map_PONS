@@ -8,7 +8,7 @@
 //           Core1タスクキューのエンキュー/デキュー管理。
 //           地図画像(BMPタイル)のロードはベクタ地図への移行に伴い廃止した。
 // Author  : MasaoC (@masao_mobile)
-// Updated : 2026/11/11
+// Updated : 2026/11/26
 // ============================================================
 // SD card read and write programs.
 // All process regarding SD card access are done in Core1.(#2 core)
@@ -874,6 +874,7 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   task.saveCsvArgs.have      = t->have;
   task.saveCsvArgs.roll      = t->roll_cdeg      * 0.01f;
   task.saveCsvArgs.pitch     = t->pitch_cdeg     * 0.01f;
+  // ヨーは 0〜359.99°（飛行 CSV と同じ）。LINK_PROTO_VER 8 までは ±180° で書いていて、Re:PONS の計器に「-30°」のように出ていた
   task.saveCsvArgs.yaw       = t->yaw_cdeg       * 0.01f;
   task.saveCsvArgs.pitch_avg = t->pitch_avg_cdeg * 0.01f;
   task.saveCsvArgs.roll_trim = t->roll_trim_cdeg * 0.01f;
