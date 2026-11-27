@@ -81,11 +81,6 @@ static float last_temperature = 0.0f;  // [℃]
 static float last_pressure    = 0.0f;  // [hPa]
 static float last_altitude    = 0.0f;  // [m]（VSPEED_WINDOW_MS ウィンドウ平均値）
 
-// オーバーサンプリング ウィンドウ幅 [ms]。
-// 短くすると vspeed の応答が速くなるがノイズが増える。
-// 長くすると平滑化されるがバリオの反応が遅くなる。
-#define VSPEED_WINDOW_MS 250
-
 // 垂直速度 (vspeed) 計算用: ウィンドウ トリム平均によるオーバーサンプリング
 // 24ms周期（D1+D2）のサンプルを VSPEED_WINDOW_MS 分バッファに蓄積し、挿入ソート後に
 // 上下 2 サンプルずつ棄却したトリム平均で代表値を求める。

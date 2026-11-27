@@ -431,6 +431,7 @@ function parseCSVText(text, filename = "フライトログ") {
     beta: header.indexOf('beta_air') >= 0 ? header.indexOf('beta_air') : (header.indexOf('beta') >= 0 ? header.indexOf('beta') : (header.indexOf('est_beta') >= 0 ? header.indexOf('est_beta') : -1)),
     // ファームの列名は tas_mps（mysd.cpp）。header は配列なので indexOf は完全一致で、'tas' では見つからない。
     tas: header.indexOf('tas_mps') >= 0 ? header.indexOf('tas_mps') : header.indexOf('tas'),
+    hdr: header.indexOf('hdr'),
     time: header.indexOf('time'),
     date: header.indexOf('date'),
     volt: header.indexOf('voltage'),
@@ -477,8 +478,8 @@ function parseCSVText(text, filename = "フライトログ") {
     const gs = (col.gs >= 0 && parts[col.gs] !== '') ? parseFloat(parts[col.gs]) : null;
     const tt = (col.tt >= 0 && parts[col.tt] !== '') ? parseFloat(parts[col.tt]) : null;
     let kf_alt = null;
-    if (col.kf_alt >= 0 && parts[col.kf_alt] !== '') kf_alt = parseFloat(parts[col.kf_alt]);
-    else if (col.gnss_alt >= 0 && parts[col.gnss_alt] !== '') kf_alt = parseFloat(parts[col.gnss_alt]);
+    const altCol = col.kf_alt >= 0 ? col.kf_alt : col.gnss_alt;
+    if (altCol >= 0 && parts[altCol] !== '') kf_alt = parseFloat(parts[altCol]);
     const kf_vs = (col.kf_vs >= 0 && parts[col.kf_vs] !== '') ? parseFloat(parts[col.kf_vs]) : null;
     const press = (col.press >= 0 && parts[col.press] !== '') ? parseFloat(parts[col.press]) : null;
 
@@ -494,6 +495,9 @@ function parseCSVText(text, filename = "フライトログ") {
     const wdir = (col.wdir >= 0 && parts[col.wdir] !== '') ? parseFloat(parts[col.wdir]) : null;
     const csvBeta = (col.beta >= 0 && parts[col.beta] !== '') ? parseFloat(parts[col.beta]) : null;
     const csvTas = (col.tas >= 0 && parts[col.tas] !== '') ? parseFloat(parts[col.tas]) : null;
+    // TAS 列の空欄は記録された欠測。列そのものがない旧ログだけ風から補完できる。
+    const csvHdr = col.hdr >= 0 ? parseInt(parts[col.hdr], 10) : NaN;
+    const tasUnavailable = csvHdr === 6 || (col.tas >= 0 && !Number.isFinite(csvTas));
 
     // システム・自機特有
     const volt = (col.volt >= 0 && parts[col.volt] !== '') ? parseFloat(parts[col.volt]) : null;
@@ -515,7 +519,7 @@ function parseCSVText(text, filename = "フライトログ") {
       kf_alt, kf_vs, press,
       roll, pitch, yaw, yawIsTrack: !yawFromCsv, pavg, rtrim, yaw_acc95,
       wspd, wdir,
-      csvBeta, csvTas,
+      csvBeta, csvTas, tasUnavailable,
       estBeta: (csvBeta !== null && !isNaN(csvBeta)) ? csvBeta : null,
       volt, sats, lux, backlight,
       rssi, age_ms, own_lat, own_lon, dist_m
@@ -576,12 +580,14 @@ function parseCSVText(text, filename = "フライトログ") {
     flightAltMax = flightAltMin + 6;
   }
 
-  // VSIの自動補完 (もしCSVにVSI列がなく全て0の場合、高度差分から算出)
+  // VSI 列が無い旧ログや、値が全て 0 のログでは高度差分で補完する。
+  // VSI 列があるログの空欄は欠測なので書き換えない。
   let hasVsi = flightData.some(d => d.kf_vs !== null && Math.abs(d.kf_vs) > 0.05);
   if (!hasVsi && flightData.length > 1) {
     for (let i = 1; i < flightData.length; i++) {
       let dt = flightData[i].t - flightData[i - 1].t;
-      if (dt > 0.05 && flightData[i].kf_alt !== null && flightData[i - 1].kf_alt !== null) {
+      if (dt > 0.05 && (col.kf_vs < 0 || flightData[i].kf_vs !== null) &&
+          flightData[i].kf_alt !== null && flightData[i - 1].kf_alt !== null) {
         flightData[i].kf_vs = (flightData[i].kf_alt - flightData[i - 1].kf_alt) / dt;
       }
     }
@@ -678,7 +684,7 @@ function estimateSideslipBeta(records) {
     // ★ CSV に方位（yaw）が無い行も出さない（2026-11-22）。その行の yaw は航跡（TrueTrack）で代用しているので、
     //   ヨー角速度が航跡の変わる速さになる。航跡と機首方位は偏流角（風で 1〜3 m/s・TAS 7 m/s なら旋回中に数十度動く）だけ違い、
     //   方位の無い 2025 年の大会ログや、方位が決まる前の自機のログで、もっともらしいが根拠の無い β が出ていた。
-    if (r1.roll === null || r1.pitch === null || r1.gs === null || r1.gs < 2.0 ||
+    if (r1.tasUnavailable || r1.roll === null || r1.pitch === null || r1.gs === null || r1.gs < 2.0 ||
         r1.yawIsTrack || r0.yawIsTrack || r1.yaw === null || isNaN(r1.yaw) || r0.yaw === null || isNaN(r0.yaw)) {
       betaRad = 0.0;
       r1.estBeta = null;
@@ -903,6 +909,14 @@ function loadSampleRxFlight() {
 // ============================================================
 // データ補間エンジン
 // ============================================================
+// CSV に TAS が無い旧ログでは風と機首方位から簡易推計する。
+function replayTas(data) {
+  if (data.tasUnavailable) return null;
+  if (Number.isFinite(data.csvTas)) return data.csvTas;
+  if (![data.gs, data.yaw, data.wdir, data.wspd].every(Number.isFinite)) return null;
+  return Math.max(0, data.gs - Math.cos((data.yaw - data.wdir) * Math.PI / 180) * data.wspd);
+}
+
 function interpolateAt(t) {
   if (flightData.length === 0) return null;
   if (t <= flightData[0].t) return flightData[0];
@@ -922,6 +936,7 @@ function interpolateAt(t) {
 
   let d0 = flightData[i0], d1 = flightData[i1];
   let frac = (t - d0.t) / (d1.t - d0.t);
+  const sample = t === d1.t ? d1 : d0;
 
   // 角度の補間 (360度跨ぎ対応、null 対応)
   function lerpAngle(a0, a1, f) {
@@ -946,8 +961,8 @@ function interpolateAt(t) {
     lon: lerp(d0.lon, d1.lon, frac),
     gs: lerp(d0.gs, d1.gs, frac),
     tt: lerpAngle(d0.tt, d1.tt, frac),
-    kf_alt: lerp(d0.kf_alt, d1.kf_alt, frac),
-    kf_vs: lerp(d0.kf_vs, d1.kf_vs, frac),
+    kf_alt: (d0.kf_alt === null || d1.kf_alt === null) ? sample.kf_alt : lerp(d0.kf_alt, d1.kf_alt, frac),
+    kf_vs: (d0.kf_vs === null || d1.kf_vs === null) ? sample.kf_vs : lerp(d0.kf_vs, d1.kf_vs, frac),
     press: lerp(d0.press, d1.press, frac),
     roll: lerp(d0.roll, d1.roll, frac),
     pitch: lerp(d0.pitch, d1.pitch, frac),
@@ -958,7 +973,8 @@ function interpolateAt(t) {
     wspd: lerp(d0.wspd, d1.wspd, frac),
     wdir: lerpAngle(d0.wdir, d1.wdir, frac),
     csvBeta: d0.csvBeta,
-    csvTas: d0.csvTas,
+    csvTas: sample.csvTas,
+    tasUnavailable: sample.tasUnavailable,
     estBeta: lerp(d0.estBeta, d1.estBeta, frac),
     volt: lerp(d0.volt, d1.volt, frac),
     sats: d0.sats,
@@ -1062,13 +1078,7 @@ function updateUI(t) {
   }
 
   document.getElementById('chart-val-gs').textContent = (data.gs !== null && !isNaN(data.gs)) ? data.gs.toFixed(1) : "--.-";
-  // 推定TAS: CSV値があれば優先、無ければ風と偏流から簡易推計 (データ欠損時は null)
-  let tasEst = null;
-  if (data.csvTas !== null && !isNaN(data.csvTas)) {
-    tasEst = data.csvTas;
-  } else if (data.gs !== null && data.yaw !== null && data.wdir !== null && data.wspd !== null) {
-    tasEst = Math.max(0, data.gs - (Math.cos((data.yaw - data.wdir) * Math.PI / 180) * data.wspd));
-  }
+  const tasEst = replayTas(data);
   document.getElementById('chart-val-tas').textContent = (tasEst !== null && !isNaN(tasEst)) ? tasEst.toFixed(1) : "--.-";
 
   document.getElementById('chart-val-roll').textContent = (data.roll !== null && !isNaN(data.roll)) ? `${data.roll > 0 ? '+' : ''}${data.roll.toFixed(1)}°` : "--.-°";

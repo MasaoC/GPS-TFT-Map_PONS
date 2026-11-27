@@ -102,6 +102,8 @@ static uint8_t  s_r10Head = 0;
 static bool     s_otherGroup   = false;
 static uint8_t  s_otherGroupId = 0;
 static uint32_t s_otherGroupMs = 0;
+static uint8_t  s_incompatibleFormat = 0;
+static uint32_t s_incompatibleFormatMs = 0;
 
 // 送信機の重複検出。★ bool の永久ラッチにしない（settings.h の LINK_DUPSENDER_* 参照）。
 static uint32_t s_dupSenderMs      = 0;  // 最後に検出した時刻（0 = 一度も検出していない）
@@ -178,6 +180,24 @@ static LinkW2Rx s_w2rx;
 static uint8_t  s_lastSlot = 0xFF;   // 最後に受けた自グループのフレームの回転枠の番号（received/ の slot 列）
 static uint8_t  s_lastRaw[LINK_W2_LEN];   // 最後に受けたテレメトリの電波の 32 バイト（GNSS の時刻の助け合いが時刻を読む）
 
+// 受信先が変わったら、新しい設定で 1 発受けるまで前の受信値や診断を表示しない。
+static void link_reset_receive() {
+    s_rxValid = false;
+    s_rxMs = 0;
+    s_rxIntervalMs = 0;
+    s_rxNewFrame = false;
+    s_drawFrame = false;
+    s_txPeriodEstMs = link_tx_period_ms();
+    link_w2_rx_reset(&s_w2rx);
+    s_haveLastSeq = false;
+    s_otherGroup = false;
+    s_incompatibleFormat = 0;
+    s_dupSenderMs = 0;
+    s_dupSenderAlertMs = 0;
+    memset(s_r10Ms, 0, sizeof(s_r10Ms));
+    s_r10Head = 0;
+}
+
 // 1 フレーム受けて LinkTelem にする。slot には回転枠の番号を返す（要らなければ nullptr）。
 // ★ ビーコン（GNSS の時刻の助け合い。印 0x58。2026-11-13〜）はここで link_assist.cpp へ渡し、テレメトリとしては返さない。
 //   受信の数・RSSI・seq・ミラー・NO SIGNAL・DUP SENDER・GROUP X FOUND・送信前チェック・チャンネル調査の数には混ぜない。
@@ -185,9 +205,15 @@ static uint8_t  s_lastRaw[LINK_W2_LEN];   // 最後に受けたテレメトリ�
 static bool link_recv_telem(LinkTelem* t, int16_t* rssi, bool merge_own, uint8_t* slot) {
     uint8_t buf[LINK_W2_LEN];
     for (;;) {
-        if (!e220_recv(buf, (uint8_t)LINK_W2_LEN, rssi)) return false;
-        if (!link_bc_is_magic(buf[0])) break;
-        if (!link_chscan_running()) lassist_on_beacon(buf, *rssi);
+        if (!e220_recv(buf, (uint8_t)LINK_W2_LEN, rssi, merge_own)) return false;
+        if (link_w2_is_magic(buf[0])) break;
+        if (link_bc_is_magic(buf[0])) {
+            if (!link_chscan_running()) lassist_on_beacon(buf, *rssi);
+        } else if (link_w2_legacy_group(buf) == link_group) {
+            // 旧形式は診断表示だけに使い、下のテレメトリの組み立てに渡さない。
+            s_incompatibleFormat = link_w2_legacy_magic(buf[0]);
+            s_incompatibleFormatMs = millis();
+        }
     }
     memcpy(s_lastRaw, buf, sizeof(s_lastRaw));
     if (slot) *slot = link_w2_slot(buf);
@@ -238,6 +264,7 @@ static void link_poll_radio() {
             s_otherGroupMs = millis();
             continue;
         }
+        s_incompatibleFormat = 0;
         s_rx.t      = t;
         s_lastSlot  = slot;
         s_rx.rssi   = (int8_t)constrain((int)rssi, -128, 127);
@@ -1543,9 +1570,7 @@ void link_set_mode(uint8_t mode) {
     if      (mode == LINK_MODE_TX) enqueueTask(createPlayWavTask("wav/sender_mode.wav",   2, 0, WAV_EXCL_LINKMODE));
     else if (mode == LINK_MODE_RX) enqueueTask(createPlayWavTask("wav/receiver_mode.wav", 2, 0, WAV_EXCL_LINKMODE));
     else                           enqueueTask(createPlayWavTask("wav/link_off.wav",      2, 0, WAV_EXCL_LINKMODE));
-    s_rxValid = false;                 // モードが変わったら受信データは無効
-    s_rxMs = 0;
-    s_rxIntervalMs = 0;
+    link_reset_receive();
     s_txMs = 0;
     s_txIntervalMs = 0;
     // ★ 送信機の MAX G/S と航跡は捨てる（受信モードへ入り直したら、そこから数え直す）。
@@ -1620,10 +1645,7 @@ void link_set_radio_ch(uint8_t ch) {
     }
     // CH が変わったら別のリンク。送る間隔の推定と、32 バイトの組み立て（回転枠の値・8 ビットから
     // 戻した seq の続き）はやり直す。
-    s_txPeriodEstMs = link_tx_period_ms();
-    link_w2_rx_reset(&s_w2rx);
-    s_haveLastSeq = false;
-    s_otherGroup  = false;   // 別グループを見たのは前の CH の話
+    link_reset_receive();
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();
     // ★ 送信の途中で変えたときの状態を畳む。e220_reconfigure() は送信と休止の終わりを待ってから書き換えるので
@@ -1635,11 +1657,7 @@ void link_set_radio_ch(uint8_t ch) {
 void link_set_radio_profile(uint8_t p) {
     if (!link_radio_profile_allowed(link_radio_ch, p) || p == link_radio_profile) return;
     link_radio_profile = p;
-    s_txPeriodEstMs = link_tx_period_ms();   // アッパーでは SF で送る間隔が変わる
-    // SF が変われば別のリンク。CH を変えたときと同じく 32 バイトの組み立てをやり直す（2026-11-10 まで抜けていた）
-    link_w2_rx_reset(&s_w2rx);
-    s_haveLastSeq = false;
-    s_otherGroup  = false;
+    link_reset_receive();
     e220_reconfigure(link_radio_ch, link_radio_profile, false);
     link_apply_power_state();
     s_txState = LTX_IDLE;   // 送信の途中で変えたときの状態を畳む（link_set_radio_ch と同じ）
@@ -1652,6 +1670,11 @@ bool    link_other_group_seen() {
 }
 uint8_t link_other_group_id()    { return s_otherGroupId; }
 
+uint8_t link_incompatible_format() {
+    if (link_mode_setting != LINK_MODE_RX || link_rf_suppressed() || link_is_receiving()) return 0;
+    return millis() - s_incompatibleFormatMs < link_nosignal_ms() ? s_incompatibleFormat : 0;
+}
+
 // ★ グループが変わったら 32 バイトの組み立て（回転枠の値・seq の続き）をやり直す。やり直さないと、新しい
 //   グループのフレームが前のグループの目的地 ID・縮尺・日付などの上に積まれ、最大 7 発のあいだ混ざる
 //   （目的地を前のグループの送信機に合わせ直してしまうこともある）。「別のグループを見た」も前の設定の話なので消す
@@ -1660,9 +1683,7 @@ void    link_set_group(uint8_t g) {
     const uint8_t ng = (g <= LINK_GROUP_MAX) ? g : LINK_GROUP_DEFAULT;
     if (ng == link_group) return;
     link_group = ng;
-    link_w2_rx_reset(&s_w2rx);
-    s_haveLastSeq = false;
-    s_otherGroup  = false;
+    link_reset_receive();
 }
 uint8_t link_get_group()          { return link_group; }
 // ============================================================
@@ -1771,13 +1792,13 @@ static void link_push_telemetry() {
             t.pitch_avg_cdeg = link_pack_i16(attitude_get_pitch_avg_deg(), 100.0f);
             have |= RHAVE_ATT_AVG;
         }
-        // 推定 TAS。大きい枠の設定（Pavg / TAS）にかかわらず、出せる限り毎回載せる
-        // （平均ピッチと同じく核に入っていて毎秒届く。docs/pons_tas.md §5.2）。
-        float tas; bool clamped = false;
-        if (tas_local(tas, clamped)) {
+        // 推定 TAS と平均迎角は大きい枠の設定にかかわらず、有効なときは毎回載せる。
+        float tas, alpha; bool clamped = false;
+        if (tas_local(tas, clamped, &alpha)) {
             t.tas_dmps = link_pack_u8(tas, 10.0f);
+            t.alpha_avg_cdeg = link_pack_i16(alpha, 100.0f);
             if (clamped) t.tas_flags |= LINK_TAS_CLAMPED;
-            have |= RHAVE_TAS;
+            have |= RHAVE_TAS | RHAVE_ALPHA;
         }
         float wspd, wdir;
         if (attitude_get_wind(wspd, wdir)) {
@@ -2134,14 +2155,21 @@ bool link_get_pitch_avg(float &avg) {
     return true;
 }
 // 送信機の推定 TAS。**受信機の係数で計算し直さない**（受信機は送信機の V0・K を知らない）。
+bool link_get_alpha_avg(float &avg) {
+    if (!link_has_value(RHAVE_ALPHA)) return false;
+    avg = s_rx.t.alpha_avg_cdeg * 0.01f;
+    return true;
+}
 bool link_get_tas(float &mps, bool &clamped) {
     if (!link_has_value(RHAVE_TAS)) return false;
     mps     = s_rx.t.tas_dmps * 0.1f;
     clamped = (s_rx.t.tas_flags & LINK_TAS_CLAMPED) != 0;
     return true;
 }
-bool link_sender_header_tas() {
-    return link_is_receiving() && (s_rx.t.tas_flags & LINK_TAS_HDR) != 0;
+bool link_get_sender_header_tas(bool &tas) {
+    if (!link_is_receiving() || !s_w2rx.slow_known) return false;
+    tas = (s_rx.t.tas_flags & LINK_TAS_HDR) != 0;
+    return true;
 }
 bool link_get_roll_trim(float &trim) {
     if (!link_has_value(RHAVE_ATT_TRIM)) return false;

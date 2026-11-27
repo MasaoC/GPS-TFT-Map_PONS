@@ -28,6 +28,7 @@ docs は、利用・製作手順、機能仕様、実装計画と調査メモに
 |---|---|
 | [sch16t_design.md](sch16t_design.md) | SCH16T の設定、接続、ドライバ、試験記録 |
 | [pons_yaw_init_plan.md](pons_yaw_init_plan.md) | ESKF の初期ヨー推定の方式と評価 |
+| [pons_tas_gamma_plan.md](pons_tas_gamma_plan.md) | 推定 TAS の経路角 γ 補正の実装記録と、大会ログでの根拠・残る実機確認 |
 | [pons_ttff_assist_plan.md](pons_ttff_assist_plan.md) | GNSS の時刻・航法データベースを助け合う設計と試験 |
 | [pons_live_stream_plan.md](pons_live_stream_plan.md) | Re:PONS ライブ配信の決定事項、実装構成、運用メモ |
 

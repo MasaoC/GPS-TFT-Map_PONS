@@ -2048,6 +2048,7 @@ static float    replay_roll_deg  = 0.0f;
 static float    replay_pitch_deg = 0.0f;
 static float    replay_yaw_deg   = 0.0f;
 static float    replay_pitch_avg = 0.0f;
+static float    replay_alpha_avg = 0.0f;
 static float    replay_roll_trim = 0.0f;
 static float    replay_yaw_acc95 = 0.0f;
 static float    replay_wind_mps  = 0.0f;
@@ -2071,6 +2072,11 @@ bool get_replay_attitude(float &roll, float &pitch) {
 bool get_replay_pitch_avg(float &avg) {
   if (!(replay_att_have & RHAVE_ATT_AVG)) return false;
   avg = replay_pitch_avg;
+  return true;
+}
+bool get_replay_alpha_avg(float &avg) {
+  if (!(replay_att_have & RHAVE_ALPHA)) return false;
+  avg = replay_alpha_avg;
   return true;
 }
 bool get_replay_roll_trim(float &trim) {
@@ -2110,12 +2116,13 @@ static void apply_replay_row(const ReplayRow* row) {
     replay_pitch_deg = row->pitch;
     replay_yaw_deg   = row->yaw;
     replay_pitch_avg = row->pitch_avg;
+    replay_alpha_avg = row->alpha_avg;
     replay_roll_trim = row->roll_trim;
     replay_yaw_acc95 = row->yaw_acc95;
     replay_wind_mps  = row->wind_mps;
     replay_wind_dir  = row->wind_dir;
     replay_att_have  = row->have & (RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG |
-                                    RHAVE_ATT_TRIM | RHAVE_ATT_WIND);
+                                    RHAVE_ATT_TRIM | RHAVE_ATT_WIND | RHAVE_ALPHA);
   } else {
     // ★ 姿勢が空欄の行（ESKF が未収束・止まっていた区間）では消す（2026-11-14、BUG-106）。残すと直前の姿勢と風が固まって出る
     replay_att_have = 0;

@@ -25,8 +25,9 @@
 #include "imu.h"
 #include "link.h"
 #include "mysd.h"
+#include <math.h>
 
-static volatile bool s_setting = false;   // 書くのは Core1（SD の読み込み）と Core0（設定画面）
+static volatile bool s_setting = TAS_HEADER_DEFAULT != 0;   // Core1（SD）と Core0（設定画面）から変更
 
 void tas_setting_set(bool tas) { s_setting = tas; }
 bool tas_setting_get()         { return s_setting; }
@@ -120,12 +121,12 @@ static bool local_pavg_ok() {
   return get_imu_ok() && attitude_get_rpy_enabled() && attitude_pitch_avg_valid();
 }
 
-bool tas_local(float &mps, bool &clamped) {
+bool tas_local(float &mps, bool &clamped, float *alpha_deg) {
   if (!attitude_get_rpy_enabled()) return false;
-  return attitude_get_tas(mps, clamped);
+  return attitude_get_tas(mps, clamped, alpha_deg);
 }
 
-bool tas_header_pitch_avg(float &avg) {
+bool tas_pitch_avg(float &avg) {
   if (link_mirror_active()) return link_get_pitch_avg(avg);
   if (getReplayMode())      return get_replay_pitch_avg(avg);
   if (!local_pavg_ok())     return false;
@@ -133,19 +134,28 @@ bool tas_header_pitch_avg(float &avg) {
   return true;
 }
 
-// TAS を選んでいるときの箱の中身。値が無ければ（送信機・自機とも平均ピッチが無いのと同じ）真方位へ戻す。
+bool tas_header_alpha_avg(float &avg) {
+  if (link_mirror_active()) return link_get_alpha_avg(avg);
+  if (getReplayMode()) return get_replay_alpha_avg(avg);
+  return attitude_get_alpha_avg(avg);
+}
+
+// 平均ピッチがある状態で TAS を選んでいるときの箱。地上・WAIT の札を優先する。
 static TasHdr tas_box(bool have, bool clamped) {
-  if (!have)       return HDR_TT;
   if (!s_airborne) return HDR_TAS_GROUND;
-  return clamped ? HDR_TAS_CLAMP : HDR_TAS;
+  if (!have)       return HDR_TAS_UNAVAILABLE;
+  if (clamped)     return HDR_TAS_CLAMP;
+  return HDR_TAS;
 }
 
 TasHdr tas_header() {
   float a;
   if (link_mirror_active()) {
-    if (!link_get_pitch_avg(a)) return HDR_TT;
+    if (!link_get_alpha_avg(a) && !link_get_pitch_avg(a)) return HDR_TT;
     // ★ ボートは自分の設定ではなく送信機の設定に従う（受信モードは送信機の画面を再現する）
-    if (!link_sender_header_tas()) return HDR_PAVG;
+    bool show_tas;
+    if (!link_get_sender_header_tas(show_tas)) return HDR_TT;
+    if (!show_tas) return HDR_ALPHA;
     float v; bool c = false;
     const bool have = link_get_tas(v, c);
     return tas_box(have, c);
@@ -153,10 +163,10 @@ TasHdr tas_header() {
   if (getReplayMode()) {
     int h;
     if (get_replay_hdr(h) && h >= 0 && h < HDR_COUNT) {
-      const TasHdr r = (TasHdr)h;
-      // 記録が TAS でも値の列が読めなければ出さない（中身の無い箱にしない。地上の横線も数字を出す）
+      const TasHdr r = h == HDR_TAS_VS_LEGACY ? HDR_TAS : (TasHdr)h;
+      // 地上と欠測は TAS 列が空でも記録どおり表示する。
       float v;
-      if (tas_hdr_is_tas(r) && !get_replay_tas(v)) return HDR_TT;
+      if ((r == HDR_TAS || r == HDR_TAS_CLAMP) && !get_replay_tas(v)) return HDR_TT;
       if (r == HDR_PAVG && !get_replay_pitch_avg(a)) return HDR_TT;
       return r;
     }
@@ -164,15 +174,15 @@ TasHdr tas_header() {
     return get_replay_pitch_avg(a) ? HDR_PAVG : HDR_TT;
   }
   if (!local_pavg_ok()) return HDR_TT;
-  if (!s_setting)       return HDR_PAVG;
+  if (!s_setting)       return HDR_ALPHA;
   float v; bool c = false;
-  return tas_box(attitude_get_tas(v, c), c);
+  const bool have = attitude_get_tas(v, c);
+  return tas_box(have, c);
 }
 
 float tas_header_value() {
-  float v = 0.0f; bool c = false;
-  if (link_mirror_active())  { link_get_tas(v, c); return v; }
-  if (getReplayMode())       { get_replay_tas(v);  return v; }
-  attitude_get_tas(v, c);
-  return v;
+  float v; bool c;
+  if (link_mirror_active()) return link_get_tas(v, c) ? v : NAN;
+  if (getReplayMode())      return get_replay_tas(v)  ? v : NAN;
+  return attitude_get_tas(v, c) ? v : NAN;
 }

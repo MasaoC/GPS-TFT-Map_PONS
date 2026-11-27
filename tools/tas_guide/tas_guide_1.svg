@@ -1,5 +1,5 @@
 <svg width="240" height="320" viewBox="0 0 240 320" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',sans-serif" font-weight="700">
-  <!-- 推定 TAS の案内 1/2: 大きい枠の青い箱の意味。2/2 は曲線の画面（ファームが描く）。docs/pons_tas.md §4.4 -->
+  <!-- 推定 TAS の案内 1/2: 大きい枠の青い箱の意味。docs/pons_tas.md §4.4 -->
   <rect width="240" height="320" fill="#FFFFFF"/>
 
   <!-- 見出し帯（IMU の案内と同じ形） -->
@@ -19,21 +19,22 @@
   <text x="128" y="83" font-size="10" fill="#FFFFFF" text-anchor="middle">S</text>
   <text x="140" y="82" font-family="'Arial Black','Arial',sans-serif" font-weight="900" font-size="34" fill="#FFFFFF">6.5</text>
 
-  <!-- 地図の上端の行の見本: 小さい平均ピッチと青い小箱 TAS -->
+  <!-- 地図の上端の行の見本: 小さい平均迎角と青い小箱 TAS -->
   <rect x="8" y="92" width="224" height="18" fill="#E7E7E7"/>
-  <text x="192" y="106" font-size="13" fill="#000000" text-anchor="end">P+1.5</text>
+  <text x="192" y="107" font-size="13" fill="#000000" text-anchor="end">ᾱ+1.5</text>
   <rect x="196" y="93" width="35" height="16" fill="#0000FF"/>
-  <text x="213" y="106" font-size="12" fill="#FFFFFF" text-anchor="middle">TAS</text>
+  <text x="213" y="107" font-size="12" fill="#FFFFFF" text-anchor="middle">TAS</text>
+  <path d="M201 95h24" stroke="#FFFFFF"/>
 
   <!-- 見本の読み方 -->
   <text x="12" y="132" font-size="16" fill="#000000"><tspan fill="#0000FF">青い箱</tspan> ＝ 推定の対気速度</text>
-  <text x="12" y="154" font-size="15" fill="#000000">P ＝ 平均ピッチ（過去10秒）</text>
+  <text x="12" y="154" font-size="15" fill="#000000">ᾱ ＝ 平均迎角（過去10秒）</text>
   <rect x="8" y="163" width="224" height="2" fill="#7B797B"/>
 
   <!-- 本文 -->
-  <text x="12" y="184" font-size="14" fill="#000000">・ピッチから計算した推定値</text>
-  <text x="12" y="204" font-size="14" fill="#000000">・機首を上げると遅く出る</text>
-  <text x="12" y="224" font-size="14" fill="#000000">・増減は信用できる</text>
+  <text x="12" y="184" font-size="14" fill="#000000">・平均ピッチ P̄ は左下の P の上</text>
+  <text x="12" y="204" font-size="14" fill="#000000">・V/Sで上昇・降下分を補正</text>
+  <text x="12" y="224" font-size="14" fill="#000000">・V/S欠測・復帰待ちは灰色の --</text>
   <text x="12" y="244" font-size="14" fill="#000000">・値は取付1°で約0.4m/sずれる</text>
   <!-- 地上は数字に横線（本体と同じく、白い線の上下に箱の青を残す）。離陸して 10 秒で線が取れる -->
   <text x="12" y="264" font-size="14" fill="#000000">・地上は</text>

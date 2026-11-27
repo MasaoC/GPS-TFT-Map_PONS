@@ -351,7 +351,7 @@ function drawArtificialHorizon(d) {
         <span style="color: #dc2626;">Roll: ${rollStr}</span>
         <span style="color: #7c3aed;">Pitch: ${pitchStr}</span>
         <span style="color: #d97706; font-weight:bold;">Est.Beta: ${betaStr}</span>
-        <span style="color: #64748b;">AvgP: ${pavgStr}</span>
+        <span style="color: #64748b;">P̄: ${pavgStr}</span>
         <span style="color: #475569;">RTrim: ${rtrimStr}</span>
       `;
 }
@@ -399,12 +399,7 @@ function drawSpeedChart(t) {
   for (let dt = -winSec; dt <= 0; dt += 0.2) {
     let sample = interpolateAt(t + dt);
     if (!sample) { started = false; continue; }
-    let tasEst = null;
-    if (sample.csvTas !== null && !isNaN(sample.csvTas)) {
-      tasEst = sample.csvTas;
-    } else if (sample.gs !== null && sample.yaw !== null && sample.wdir !== null && sample.wspd !== null) {
-      tasEst = Math.max(0, sample.gs - (Math.cos((sample.yaw - sample.wdir) * Math.PI / 180) * sample.wspd));
-    }
+    const tasEst = replayTas(sample);
     if (tasEst === null || isNaN(tasEst)) {
       started = false;
       continue;

@@ -57,13 +57,13 @@ GitHub の 2.3.1 を `libraries/SdFat` に手で入れる。古い方を `librar
   [src/flashdata/wav_data.cpp](src/flashdata/wav_data.cpp) を作り直すこと。
   **忘れると古い音のまま黙って焼ける。** 生成物は git に入れてあるので、
   音を触らないなら実行は不要。
-- **案内の日本語の画像も本体 FLASH に焼いてある**（IMU/ESKF 画面の入口の 3 枚と、推定 TAS の案内の 1 枚）。
+- **案内の日本語の画像も本体 FLASH に焼いてある**（IMU/ESKF 画面の入口と、推定 TAS の案内）。
   本体に日本語フォントは無いので、文字ごと画像にしている。原本は [tools/imu_guide/](tools/imu_guide/) と
   [tools/tas_guide/](tools/tas_guide/) の SVG（別の AI に作らせるときの指示文は `tools/imu_guide/prompt.md`）。差し替えたら
   `python3 tools/gen_guide_flash.py --render`（Chrome で等倍の PNG にしてから
   `src/flashdata/imu_guide_data.cpp` / `tas_guide_data.cpp` を作る）。
-  **忘れると古い画像のまま黙って焼ける。** 1 画面ごとの音声は `.ino` の `IMU_GUIDE_WAV[]` / `TAS_GUIDE_WAV[]` と順番で 1 対 1
-  （TAS の案内の 2 画面目は曲線をファームが描く）。
+  **忘れると古い画像のまま黙って焼ける。** IMU/ESKF の音声は `.ino` の `IMU_GUIDE_WAV[]` に画面順で並べる。
+  TAS の案内は最初の画像と最後の曲線で読み上げ、曲線はファームが描く。
 
 ### リリース前チェック（すべて [settings.h](settings.h) 冒頭）
 
@@ -191,9 +191,9 @@ python3 tools/repons/test/run_live_tests.py   # Re:PONS のライブ配信（Lin
   （[lora_link/link_wire2.h](lora_link/link_wire2.h)。2026-10-27〜、どの CH でも）。`LinkTelem` はメモリの上の形で、
   送る直前に詰めて受けたらすぐ戻す。**形式を見分ける仕掛けは印だけ**なので、並びの違う版とは通じない（3 台そろえる）。
   並びを変えたら `LINK_W2_MAGIC` も変える。
-  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xAC`。2026-11-23 に回転枠 4 の電圧を「電池の表示」に替えた）。印は必ず
+  **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xC0`。ヨー精度・状態 3 項目・ヘッダー設定は枠 2・6）。印は必ず
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
-  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xB0`）。
+  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xC4`）。
   **GNSS の時刻の助け合いのビーコン（印 `0x58`。[lora_link/link_beacon.h](lora_link/link_beacon.h)）も同じ 32 バイト**で、
   e220.cpp の切り出しは両方を拾う（`link_frame_is_magic` / `link_frame_valid`）。テレメトリの印を変えるときはビーコンの印とぶつけないこと
   （`static_assert` で止まる）。ビーコンは `link_recv_telem()` が `link_assist.cpp` へ渡し、**受信の数・seq・ミラー・NO SIGNAL・

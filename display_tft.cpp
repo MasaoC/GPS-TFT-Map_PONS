@@ -24,6 +24,7 @@
 #include "attitude.h"
 #include "tas.h"         // ヘッダー右の大きい枠に何を出すか（平均ピッチ / 推定 TAS / 真方位）
 #include "link.h"
+#include "lora_link/link_wire2.h"  // WIRELESS LINK に出す自機の RF 形式
 #include "live.h"     // ライブ配信の LIVE の印（受信機の地図。draw_link_icons）
 #include "power.h"    // USB 判定・電源経路の異常・SW OFF のまま充電（電池表示と地図の注意）
 #include "src/readiness.h"  // 本番前チェック（設定画面の右上）
@@ -59,6 +60,29 @@ volatile bool tft_pio_ready = false;       // tft.begin() が PIO を確保し�
 TFT_eSprite backscreen = TFT_eSprite(&tft);
 TFT_eSprite header_footer = TFT_eSprite(&tft);
 TFT_eSprite vsi_sprite = TFT_eSprite(&tft);  // VSIインジケーター (5×240px, 16bit, 2,400 Byte)
+
+int draw_average_pitch_label(int x, int y, uint16_t color) {
+  backscreen.setTextColor(color);
+  const int width = backscreen.drawString("P", x, y + 2);
+  backscreen.fillRect(x + 1, y, width - 1, 2, color);
+  return width;
+}
+
+void draw_average_alpha_label(int x, int y, uint16_t color) {
+  // AA_FONT_SMALL の小文字と同じ高さの α。平均バーと字形だけを描く。
+  static const uint8_t alpha[] PROGMEM = {
+    0x38, 0x00, // ..###.....
+    0x6C, 0xC0, // .##.##..##
+    0xC6, 0x80, // ##...##.#.
+    0xC3, 0x80, // ##....###.
+    0xC3, 0x00, // ##....##..
+    0xC7, 0x00, // ##...###..
+    0x6D, 0x80, // .##.##.##.
+    0x38, 0xC0, // ..###...##
+  };
+  backscreen.fillRect(x + 1, y + 1, 10, 2, color);
+  backscreen.drawBitmap(x + 1, y + 4, alpha, 10, 8, color);
+}
 
 // 詳細画面の見出しのフォント（理由は display_tft.h）
 void header_font_detail() {
@@ -2004,6 +2028,9 @@ void draw_eskf_attitude() {
   const int yrtrim = BACKSCREEN_SIZE - 9 - 8 - ESKF_BOTTOM_GAP;
   const int yroll  = yrtrim - fh_s - ESKF_ROW_GAP;                 // ロール
   const int ypit   = yroll  - fh_s - ESKF_ROW_GAP;                 // ピッチ
+  const int ypavg  = ypit - fh_s - ESKF_ROW_GAP;
+  float pavg;
+  const bool have_pavg = tas_pitch_avg(pavg);
 
   // ---- 風ベクトル（右下）----
   // 風は「対気速度の向き＝機首方位」を前提にするので、ヨーが著しく信頼できて、かつ
@@ -2035,7 +2062,7 @@ void draw_eskf_attitude() {
     }
 
     // 左下のブロック（P / R / Rtrim）の上端。較正のやり直しの警告はこの上に出す。
-    const int yblock_top = ypit;
+    const int yblock_top = have_pavg ? ypavg : ypit;
     if (has_wind) {
       // 数値だけ NM_FONT_MEDIUM。Arial_Black22 は数字と +-. しか持たないので、
       // "W" と "m/s" は AA_FONT_SMALL のまま描いて数字だけ大きくする。
@@ -2142,6 +2169,18 @@ void draw_eskf_attitude() {
   //   それを直すのが GNSS 速度援用の ESKF そのもの）。値は残して線だけ引く。
   // 向き待ち（YAW ALIGN）は黄色の線（GNSS は来ていて、動き出せば数秒で直る。故障の橙と分ける）
   const EskfGnssState gst = eskf_display_gnss_state();
+  if (have_pavg) {
+    char avg_buf[12];
+    snprintf(avg_buf, sizeof(avg_buf), "%+.1f", pavg);
+    const int value_x = ESKF_LABEL_X + draw_average_pitch_label(ESKF_LABEL_X, ypavg, COLOR_GRAY) + 4;
+    backscreen.setTextColor(attitude_implausible(pavg) ? COLOR_GRAY : (gpitch ? COLOR_RED : COLOR_BLACK));
+    backscreen.setCursor(value_x, ypavg);
+    backscreen.print(avg_buf);
+    if (gst != EGS_OK)
+      strike_through(backscreen, ESKF_LABEL_X, ypavg + fh_s / 2,
+                     value_x + backscreen.textWidth(avg_buf) - ESKF_LABEL_X,
+                     gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
+  }
   if (gst != EGS_OK)
     strike_through(backscreen, ESKF_LABEL_X, ypit + fh_s / 2,
                    ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
@@ -2436,11 +2475,12 @@ static void draw_imu_page1() {
   // 巡航のトリム状態は瞬時ピッチではなく 平均で見る（瞬時値は std 1.23 度の振動があるため）。
   // 直進中のロール自動トリムの累積量も併記して、どれだけ補正が入ったか分かるようにする。
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
-  backscreen.setCursor(2, y);
+  const int pitch_label_width = draw_average_pitch_label(2, y, COLOR_GRAY);
+  backscreen.setCursor(2 + pitch_label_width, y);
   if (attitude_pitch_avg_valid())
-    backscreen.printf("P avg%.0fs %+5.1f  ", PITCH_AVG_SEC, attitude_get_pitch_avg_deg());
+    backscreen.printf(" %.0fs %+5.1f  ", PITCH_AVG_SEC, attitude_get_pitch_avg_deg());
   else
-    backscreen.printf("P avg%.0fs   --    ", PITCH_AVG_SEC);
+    backscreen.printf(" %.0fs   --    ", PITCH_AVG_SEC);
   // Rtrim は緑条件の 3 つ目。しきい値を超えていることが分かるよう色を変える。
   backscreen.setTextColor(imu_ok_rtrim() ? COLOR_GRAY : COLOR_ORANGE, COLOR_WHITE);
   backscreen.printf("Rtrim %+.2f", attitude_get_roll_trim_deg());
@@ -2477,7 +2517,7 @@ static void draw_imu_page1() {
   // ★ 2026-11-07 まで、どちらにも当たらないときは青の注意書き
   //   「Note: Make sure actual aircraft attitude matches SET attitude」を 2 行出していた。
   //   入口の案内（画像 3 枚）が同じことを言うようになったので削り、空いた行に
-  //   「Header: Pavg / TAS」を足した（docs/pons_tas.md §4.1）。
+  //   ヘッダー表示の選択を足した（docs/pons_tas.md §4.1）。
   const bool warn_shown = (y > 50);   // 上の赤・橙の 2 行を出したか（出していなければ y はまだ 44）
 
   // ---- 操作メニュー ----
@@ -2546,8 +2586,12 @@ static void draw_imu_page1() {
         draw_imu_row_dot(y, imu_row_col(imu_ok_wind()));
         break;
       case IMU_MENU_HEADER:
-        // ヘッダー右の大きい枠。TAS にすると案内（2 画面）を通る（GPS_TFT_map.ino の tas_guide_start）
-        backscreen.printf("Header: %s", tas_setting_get() ? "TAS (estimate)" : "Pavg");
+        // ヘッダー右の大きい枠。TAS にすると案内を通る（GPS_TFT_map.ino の tas_guide_start）
+        if (tas_setting_get()) backscreen.print("Header: TAS (estimate)");
+        else {
+          backscreen.print("Header: ");
+          draw_average_alpha_label(backscreen.getCursorX(), y, sel ? COLOR_MAGENTA : COLOR_BLACK);
+        }
         break;
       case IMU_MENU_TASCURVE:
         backscreen.print("TAS curve >");
@@ -2734,8 +2778,10 @@ uint16_t wireless_status_color() {
   if (m == LINK_MODE_OFF) return COLOR_GRAY;
   // モジュールが応答しない。送信も受信も語れないのでこれが最優先の赤。
   if (!link_module_alive()) return COLOR_RED;
-  if (m == LINK_MODE_RX)
+  if (m == LINK_MODE_RX) {
+    if (link_incompatible_format()) return COLOR_RED;
     return link_is_receiving() ? COLOR_GREEN : COLOR_ORANGE;   // 受信中 / NO SIGNAL
+  }
   // 送信モード。送信前チェックの最中はまだ 1 回も送っていないのでオレンジ（＝いまは聴いている）。
   if (link_preflight_state() == LINK_PF_RUNNING) return COLOR_ORANGE;
   // 「直近に送出があったか」で見る（Sent は UART へ書けた回数でしかないため）。
@@ -2852,7 +2898,7 @@ void draw_wireless(int cursor) {
   // ---- 状態 ----
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y);
-  backscreen.print("---- status ----");
+  backscreen.printf(" RF format: %02X", (unsigned)LINK_W2_MAGIC);
   y += lh;
 
   // 無線モジュールが応答しているか。ここが NG なら以下の数値は意味を持たない。
@@ -2894,6 +2940,11 @@ void draw_wireless(int cursor) {
       backscreen.printf(" Signal  : %d dBm (%lus)  %u/3", link_rssi_avg10(),
                         (unsigned long)(link_nosignal_ms() / 1000), bars);
       draw_status_mark(backscreen, 232, y + 7, 4, COLOR_GREEN);
+      backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    } else if (const uint8_t format = link_incompatible_format()) {
+      backscreen.setTextColor(COLOR_RED, COLOR_WHITE);
+      backscreen.printf(" RF MISMATCH: RX %02X", (unsigned)format);
+      draw_status_mark(backscreen, 232, y + 7, 4, COLOR_RED);
       backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
     } else if (link_other_group_seen()) {
       // ★ 電波は届いていて、グループ ID だけが食い違っている。
@@ -3384,7 +3435,13 @@ static void draw_notice_2lines(int y, uint16_t col, const char *l1, const char *
 static void draw_link_nosignal_box() {
   notice_reserve(NOTICE_Y_LINK_STATE, 44);   // 点滅で消えている相も押さえる（上の notice_reserve の ★）
   if (!banner_visible()) return;
-  draw_notice_2lines(NOTICE_Y_LINK_STATE, COLOR_RED, "RECEIVER MODE.", "NO SIGNAL.");
+  if (const uint8_t format = link_incompatible_format()) {
+    char detail[24];
+    snprintf(detail, sizeof(detail), "RX %02X / LOCAL %02X", (unsigned)format, (unsigned)LINK_W2_MAGIC);
+    draw_notice_2lines(NOTICE_Y_LINK_STATE, COLOR_RED, "RF FORMAT MISMATCH", detail);
+  } else {
+    draw_notice_2lines(NOTICE_Y_LINK_STATE, COLOR_RED, "RECEIVER MODE.", "NO SIGNAL.");
+  }
 }
 
 // 送信機が 2 台いるときのポップアップ（受信モードのみ・地図画面のみ）。
@@ -3824,57 +3881,42 @@ static int truetrack_display_deg() {
   return ((int)lroundf(get_gnss_truetrack()) % 360 + 360) % 360;
 }
 
-// 推定 TAS を出しているときのラベルの行（地図の上端・右）。青い小箱「TAS̄」（上に平均バー）と、その左に小さい平均ピッチ「P̄」。
-// ★ 平均ピッチは大きい枠の TAS の元の値なので、枠の真下に並べて 1 対 1 で対応させる
-//   （docs/pons_tas.md §4.3。地図左下の P 行は瞬時値のまま）。地上チェックでピッチがずれて
-//   鳴っている間は赤（平均ピッチを大きい枠に出しているときに数字を赤にするのと同じ条件）。
+// 推定 TAS を出しているときのラベルの行（地図の上端・右）。青い小箱「TAS̄」と、その左に平均迎角「ᾱ」を並べる。
 // ★ ヘッダー右枠の左を大きな「~」（推定）にしたので、こちらは「TAS̄」（平均バー付き）として
 //   「平均かつ推定の TAS」であることを示す（TAS の文字重複も解消）。
 // ★ 置けるのはこの行だけ。すぐ下（右端の y = 15〜50）は右旋回の角速度表示が使う。
-//   中央の「TT 123」にぶつかるなら、先頭の「P」を落として詰める（left_limit = TT の右端）。
+//   中央の「TT 123」と重なる場合は平均迎角を省く（left_limit = TT の右端）。
 // 意図して直さない（2026-11-14 の監査）: 右旋回の draw_degpersec() の枠（y=15〜）と 1〜2px 重なりうる（見た目だけ）
+static uint16_t tas_box_color(TasHdr h, float mps) {
+  return (h == HDR_TAS_CLAMP || h == HDR_TAS_UNAVAILABLE || isnan(mps)) ? COLOR_GRAY : COLOR_BLUE;
+}
+
 static void draw_tas_label_row(TasHdr h, int left_limit) {
-  const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
+  const uint16_t box = tas_box_color(h, tas_header_value());
   const int fh = backscreen.fontHeight();
   const int tw = backscreen.textWidth("TAS");
   const int bw = tw + 6;
   const int bx = SCREEN_WIDTH - bw;
-  // 左の P̄ と同じ高さ関係: y=0 余白 / y=1..2 太さ 2px の平均バー / y=3 から文字（下端は fh+2）
+  // y=0 余白 / y=1..2 平均バー / y=3 から文字（下端は fh+2）
   backscreen.fillRect(bx, 0, bw, fh + 2, box);
   backscreen.setTextColor(COLOR_WHITE, box);
   backscreen.drawString("TAS", bx + 3, 3);
   backscreen.fillRect(bx + 3, 1, tw, 2, COLOR_WHITE);
-  float a;
-  if (tas_header_pitch_avg(a)) {
+  float alpha;
+  if (tas_header_alpha_avg(alpha)) {
     char buf[12];
-    if (fabsf(a) < 9.95f) snprintf(buf, sizeof(buf), "P%+.1f", a);
-    else                  snprintf(buf, sizeof(buf), "P%+.0f", a);
-    int w  = backscreen.textWidth(buf);
-    int px = bx - 3 - w;
-    if (px < left_limit + 3) {
-      memmove(buf, buf + 1, strlen(buf));   // 「P」を落とす
-      w  = backscreen.textWidth(buf);
-      px = bx - 3 - w;
-    }
-    const uint16_t col = attitude_implausible(a) ? COLOR_GRAY
-                       : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
-    backscreen.setTextColor(col, TFT_WHITE);
-    const bool has_p = (buf[0] == 'P');
-    const int  py    = has_p ? 3 : 1;
-    // 左下の瞬時ピッチ「P」と区別するため、「P」の上に平均を表す水平バー（P̄）を引く。
-    // 直上のヘッダー下辺の黒線（TFT y=49）とバーがくっつかないよう、文字を y=3（P 本体は y=4..14）に下げ、
-    // y=0 を余白、y=1..2 に太さ 2px のバー、y=3 を文字との隙間（1px）にする。
-    backscreen.drawString(buf, px, py);
-    if (has_p) {
-      const int pw = backscreen.textWidth("P");
-      backscreen.fillRect(px, 0, pw + 1, 3, TFT_WHITE);
-      backscreen.fillRect(px + 1, 1, pw - 1, 2, col);
-    }
-    // 左下の P 行と同じ条件で、GNSS 速度の裏付けが無い間は取り消し線を引く
-    const EskfGnssState gst = eskf_display_gnss_state();
-    if (gst != EGS_OK) {
-      strike_through(backscreen, px, py + fh / 2, w,
-                     gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
+    if (fabsf(alpha) < 9.95f) snprintf(buf, sizeof(buf), "%+.1f", alpha);
+    else                      snprintf(buf, sizeof(buf), "%+.0f", alpha);
+    const int w = AVERAGE_ALPHA_LABEL_WIDTH + backscreen.textWidth(buf);
+    const int x = bx - 3 - w;
+    if (x >= left_limit + 3) {
+      backscreen.setTextColor(COLOR_BLACK, TFT_WHITE);
+      draw_average_alpha_label(x, 2, COLOR_BLACK);
+      backscreen.drawString(buf, x + AVERAGE_ALPHA_LABEL_WIDTH, 3);
+      const EskfGnssState gst = eskf_display_gnss_state();
+      if (gst != EGS_OK)
+        strike_through(backscreen, x, 3 + fh / 2, w,
+                       gst == EGS_YAW_ALIGN ? COLOR_YELLOW : COLOR_ORANGE);
     }
   }
   backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -3888,18 +3930,15 @@ void draw_gs_track(){
   const TasHdr hdr = tas_header();
   const bool hdr_pitch = (hdr != HDR_TT);
   const bool hdr_tas   = tas_hdr_is_tas(hdr);
-  const char* hdr_label = hdr_pitch ? "Pavg" : "TT";
-  const int   hdr_lx    = SCREEN_WIDTH - (hdr_pitch ? 52 : 40);
   // コース警報の点滅はトラック表示のときだけ（ピッチ表示中は無関係なので点滅させない）
-  if (hdr_tas) {
-    // draw_tas_label_row（下）
-  } else if(trackwarning_until > millis() && !hdr_pitch){
-    backscreen.setTextColor(blink_1s()?COLOR_RED:COLOR_BLACK, TFT_WHITE);
-    backscreen.drawString(hdr_label, hdr_lx, 1);
-    backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
-  }else{
-    backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
-    backscreen.drawString(hdr_label, hdr_lx, 1);
+  if (hdr == HDR_ALPHA) {
+    draw_average_alpha_label(SCREEN_WIDTH - 61, 1, COLOR_BLACK);
+  } else if (hdr == HDR_PAVG) {
+    draw_average_pitch_label(SCREEN_WIDTH - 60, 1, COLOR_BLACK);
+  } else if (!hdr_tas) {
+    const bool warn = trackwarning_until > millis() && blink_1s();
+    backscreen.setTextColor(warn ? COLOR_RED : COLOR_BLACK, TFT_WHITE);
+    backscreen.drawString("TT", SCREEN_WIDTH - 40, 1);
   }
   // hdr_tas 時は上の分岐を通らないため、直前の描画の色を引き継がないよう明示する
   backscreen.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -4118,11 +4157,11 @@ static bool header_shows_pitch() {
   return tas_header() != HDR_TT;
 }
 
-// ヘッダーに出す平均ピッチの値（ミラー中は送信機、リプレイでは記録値。tas.cpp が解決する）。
-static float header_pitch_value() {
-  float a = 0.0f;
-  tas_header_pitch_avg(a);
-  return a;
+// ヘッダーの平均迎角と、旧 CSV に記録された平均ピッチ。
+static float header_pitch_value(TasHdr hdr) {
+  float a;
+  const bool have = hdr == HDR_ALPHA ? tas_header_alpha_avg(a) : tas_pitch_avg(a);
+  return have ? a : NAN;
 }
 
 // ヘッダー右に平均ピッチを描く。
@@ -4137,6 +4176,11 @@ static float header_pitch_value() {
 static void draw_header_pitch(int x, float deg, uint16_t col) {
   const int SIGN_W = 25, DIGIT_W = 37, DOT_W = 10;
   const int ytop = 3;               // 数字の描画開始 y（従来の方位表示と同じ）
+  if (isnan(deg)) {
+    header_footer.fillRect(x + 35, ytop + 18, 24, 6, COLOR_GRAY);
+    header_footer.fillRect(x + 71, ytop + 18, 24, 6, COLOR_GRAY);
+    return;
+  }
   const bool neg = (deg < 0.0f);
   float a = fabsf(deg);
   if (a > 99.9f) a = 99.9f;
@@ -4169,13 +4213,13 @@ static void draw_header_pitch(int x, float deg, uint16_t col) {
 //   形で見分けられる（色の見え方の個人差にも効く）。枠の左 25px（平均ピッチなら符号の場所）に太い白の
 //   「~」（約・チルダ）を置き、ひと目で「~7.8＝実測ではなく推定値」と読めるようにする（下の小箱は「TAS̄」）。
 //   地上（HDR_TAS_GROUND）は数字を出したまま横線で消し、「GROUND」の札を載せる（header_strike()）。上下限に張り付いたら
-//   （HDR_TAS_CLAMP）箱を灰色にする（推定ではなく端の値。灰色はいまも「ありえない値」の色）。
+//   （HDR_TAS_CLAMP）箱を灰色にする。欠測は灰色の箱に横棒 2 本。
 //   幅は平均ピッチと同じ組み方: 記号 25 + 数字 37 + 点 10 + 数字 37 = 109px。10m/s 以上は小数を落とす。
 //   mps が NaN のときは数字の代わりに横棒 2 本（平均ピッチ未確定時のプレビュー用）。
 void draw_header_tas(int x, TasHdr h, float mps) {
   const int LABEL_W = 25, DIGIT_W = 37, DOT_W = 10;
   const int ytop = 3;
-  const uint16_t box = (h == HDR_TAS_CLAMP) ? COLOR_GRAY : COLOR_BLUE;
+  const uint16_t box = tas_box_color(h, mps);
   header_footer.fillRect(x + 1, 0, SCREEN_WIDTH - x - 1, HEADERFOOTER_HEIGHT - 1, box);
 
   // 推定を示す大きな「~」（チルダ）。平均ピッチの + / - と同じ位置・高さ中央（ytop + 21）に置く。
@@ -4194,8 +4238,7 @@ void draw_header_tas(int x, TasHdr h, float mps) {
   }
   x += LABEL_W;
 
-  if (isnan(mps)) {
-    // 平均ピッチ未確定時: 横棒 2 本
+  if (h == HDR_TAS_UNAVAILABLE || isnan(mps)) {
     header_footer.fillRect(x + 10, ytop + 18, 24, 6, COLOR_WHITE);
     header_footer.fillRect(x + 46, ytop + 18, 24, 6, COLOR_WHITE);
   } else {
@@ -4347,9 +4390,10 @@ static void header_strike(int mtvx, TasHdr h) {
       //   黒だけだと青地の上で見えにくい。縁があると数字の上でも青地の上でも線として読める。
       //   赤・橙にしないのは、この箱で赤は「較正のやり直しが必要」、橙は「GNSS 速度が止まっている」の線で、
       //   地上はどちらでもない（いつもの状態）から。
-      //   縦書きの「T A S」にはかからないよう、ラベルの右から引く。地上の箱はいつも青（灰色の箱は飛行中だけ）。
+      //   地上で V/S が欠測しているときは灰色の箱にも同じ札を出す。
       const int x = mtvx + 25, lw = SCREEN_WIDTH - x - 1;
-      header_footer.fillRect(x, 20, lw, 8, COLOR_BLUE);
+      const uint16_t box = tas_box_color(h, tas_header_value());
+      header_footer.fillRect(x, 20, lw, 8, box);
       header_footer.fillRect(x, 22, lw, 4, COLOR_WHITE);
       // ★ GROUND の札は動き出したらすぐ外す（2026-11-14〜）。線は 10 秒続いてから（tas_tick()）。
       //   札が 10 秒残ると、飛んでいるのに「いつ消えるのか」と気になる。
@@ -4359,9 +4403,9 @@ static void header_strike(int mtvx, TasHdr h) {
       if (wait > 0) {
         char buf[12];
         snprintf(buf, sizeof(buf), "WAIT %ds", wait);
-        header_strike_tag(mtvx + 25, SCREEN_WIDTH, buf, COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
+        header_strike_tag(mtvx + 25, SCREEN_WIDTH, buf, COLOR_WHITE, box, box);
       } else if (!tas_leaving_ground()) {
-        header_strike_tag(mtvx + 25, SCREEN_WIDTH, "GROUND", COLOR_WHITE, COLOR_BLUE, COLOR_BLUE);
+        header_strike_tag(mtvx + 25, SCREEN_WIDTH, "GROUND", COLOR_WHITE, box, box);
       }
       break;
     }
@@ -4412,19 +4456,13 @@ void draw_header() {
   const TasHdr hdr = tas_header();
   if (tas_hdr_is_tas(hdr)) {
     // ---- 推定 TAS（青い箱。地上は数字に横線と「GROUND」の札）----
-    // 平均ピッチはラベルの行（地図の上端）に小さく残す（draw_gs_track）。
+    // 平均迎角は地図の上端に小さく出す（draw_gs_track）。
     draw_header_tas(mtvx, hdr, tas_header_value());
     header_strike(mtvx, hdr);
-  } else if (hdr == HDR_PAVG) {
-    // ---- 平均ピッチ ----
-    // パイロットは対地進路を地図から読めるが、平均ピッチは他に得る手段が無い。
-    // 一番目立つ枠はこちらに使う（パイロットからのフィードバックによる）。
-    // 対地速度が遅いと sel_col が灰色になるが、それは速度表示の都合。
-    // ピッチの信頼性とは無関係なので巻き込まない。灰色にするのは「ありえない値」のときだけ。
-    const float pv = header_pitch_value();
-    // 地上チェックでピッチがずれて鳴っている間は赤（地図の P 行と同じ条件。許容範囲は P 行に出る）
+  } else if (hdr == HDR_ALPHA || hdr == HDR_PAVG) {
+    const float pv = header_pitch_value(hdr);
     const uint16_t pcol = attitude_implausible(pv) ? COLOR_GRAY
-                        : (ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
+                        : (hdr == HDR_PAVG && ground_warn_shown(true) ? COLOR_RED : COLOR_BLACK);
     header_footer.setTextColor(pcol, TFT_WHITE);
     draw_header_pitch(mtvx, pv, pcol);
     header_strike(mtvx, hdr);

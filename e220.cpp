@@ -741,22 +741,7 @@ uint16_t e220_airtime_ms(uint8_t profile) {
     return (profile < (E220_SF_MAX - E220_SF_MIN + 1)) ? tbl[profile] : 0;
 }
 
-// from から後ろに、もう揃っていて CRC も通るフレームがあればその位置。無ければ 0xFFFF。
-// ★ 揃っていない候補（途中で切れたフレームや、ゴミの中の印）の後ろに正しいフレームが届いているのに
-//   候補が揃うのを待つと、次のフレームが来るまで（1 秒以上）止まる。後ろに正しいものがあるなら、
-//   手前の候補は残骸として捨ててよい（正しいかどうかは CRC で確かめるので、本物を捨てる心配は無い）。
-//   印が 1 バイトしか無いので、65 バイトの頃の "PL" より偶然に出やすい。
-//   2026-11-07 から印は 6 ビット（下位 2 ビットはグループ）で、ゴミの中に出る確率は 1/64
-//   （それまで 1/256）。ほかの LoRa の電波を受けたとき、壊れフレームの数はそのぶん増える。
-// ★ テレメトリ（印 0xAC）とビーコン（印 0x58。lora_link/link_beacon.h）のどちらも 32 バイトなので、
-//   同じ切り出しで両方を拾う（link_frame_is_magic / link_frame_valid）。見分けて振り分けるのは link.cpp。
-static uint16_t later_valid_frame(uint16_t from) {
-    for (uint16_t j = from; j + LINK_W2_LEN + 1 <= s_rxLen; j++)
-        if (link_frame_is_magic(s_rx[j]) && link_frame_valid(s_rx + j)) return j;
-    return 0xFFFF;
-}
-
-bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
+bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm, bool diagnose_formats) {
     // 印 + CRC の検査を 32 バイトのフレームとして行うので、長さが違うと読み過ぎる。
     if (!out || frame_len != LINK_W2_LEN) return false;
 
@@ -764,21 +749,16 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
 
     const uint16_t need = (uint16_t)frame_len + 1;   // ペイロード + RSSI
     uint16_t i = 0;
-    while (i < s_rxLen) {
+    for (; i + need <= s_rxLen; ++i) {
         // ★ 印は下位 2 ビット（グループ）を落として比べる。== にすると別グループのフレームを
         //   見つけられず、受信機が「無信号」になる（link_w2_is_magic）。
         // ★ ビーコン（GNSS の時刻の助け合い。2026-11-13〜）も同じ 32 バイトなので、ここで一緒に拾う。
-        if (!link_frame_is_magic(s_rx[i])) { i++; continue; }
-        if (i + need > s_rxLen) {
-            // 揃うまで待つ。ただし後ろにもう正しいフレームがあれば、これは残骸
-            const uint16_t j = later_valid_frame((uint16_t)(i + 1));
-            if (j == 0xFFFF) break;
-            s_badFrames++;
-            rx_drop_front(j);
-            i = 0;
-            continue;
-        }
-        if (!link_frame_valid(s_rx + i)) {
+        const bool current = link_frame_is_magic(s_rx[i]);
+        const bool legacy = !current && diagnose_formats && link_w2_legacy_magic(s_rx[i]);
+        if (!current && !legacy) continue;
+        // CRC を通った旧形式だけを診断へ渡す。旧形式に見えただけの候補は bad に足さない。
+        if (legacy && !link_w2_crc_ok(s_rx + i)) continue;
+        if (current && !link_frame_valid(s_rx + i)) {
             // ★ 印は合ったのに検証に落ちた＝**電波は届いたが化けている**。
             //   「そもそも来ていない」と区別できると、現場の対処がまるで変わる:
             //     壊れフレームが多い → 信号は届いている。SNR 不足。
@@ -789,13 +769,7 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
             //   （雑音や他方式の LoRa の中にたまたま印が出た場合もここに入るが、
             //     それも「その CH に何か出ている」ことの手掛かりになる）
             s_badFrames++;
-            // ★ 数えたら印の 1 バイトだけ捨てて頭から探し直す。捨てないと
-            //   次の正しいフレームが来るまで**ループのたびに同じフレームを数え直し**、
-            //   0.994 までは 1 分で bad=35166 まで膨らんだ（2026-10-22 の距離試験）。
-            //   フレーム丸ごと（need）は捨てない。途中のバイトが欠けた短いフレームの
-            //   すぐ後ろから正しいフレームが始まっている場合に、その頭を削ってしまうため。
-            rx_drop_front((uint16_t)(i + 1));
-            i = 0;
+            // 直後に正常なフレームの頭があるかもしれないので、1 バイト先から探す。
             continue;
         }
 
@@ -807,8 +781,8 @@ bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm) {
         return true;
     }
 
-    // 溜まりすぎたら古い方を捨てる（印が見つからないまま埋まった場合）
-    if (s_rxLen > RXBUF_SIZE - 8) rx_drop_front((uint16_t)(s_rxLen / 2));
+    // 検査した先頭は再検査しない。まだ 1 フレームに満たない末尾は次回に残す。
+    if (i) rx_drop_front(i);
     return false;
 }
 

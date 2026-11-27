@@ -16,9 +16,9 @@
 // ★ 届いたフレームをすぐ描く（補間しない。設計書 §5.5）。
 (function (global) {
   'use strict';
-  const LIVE_FMT_VER = 1, LINK_PROTO_VER = 9, LINKTELEM_SIZE = 69;
+  const LIVE_FMT_VER = 1, LINK_PROTO_VER = 10, LINKTELEM_SIZE = 69;
   const RHAVE = { GS: 0x0001, TTRACK: 0x0002, GNSSALT: 0x0004, KFALT: 0x0008, KFVS: 0x0010, PRESS: 0x0020, DATE: 0x0040, NUMSAT: 0x0080,
-    ATT: 0x0200, ATT_YAW: 0x0400, ATT_AVG: 0x0800, ATT_TRIM: 0x1000, ATT_WIND: 0x2000, TAS: 0x4000 };
+    ATT: 0x0200, ATT_YAW: 0x0400, ATT_AVG: 0x0800, ATT_TRIM: 0x1000, ATT_WIND: 0x2000, TAS: 0x4000, ALPHA: 0x8000 };
   const W2S = { DATE: 0, WIND: 1, TRIM: 2, HACC: 3, ALTV: 4, WIND2: 5, PRESS: 6, NAV: 7 };
   const f32 = Math.fround;
   const NOSIG_LT_MS = 3000;     // LT がこれより来なければ（受信機が NO SIGNAL と言う前でも）灰色にする目安の下限
@@ -42,7 +42,8 @@
       pitch_avg_cdeg: dv.getInt16(44, true), roll_trim_cdeg: dv.getInt16(46, true), yaw_acc95_deg: bytes[48],
       wind_dmps: bytes[49], wind_dir_cdeg: dv.getUint16(50, true), tas_dmps: bytes[52], tas_flags: bytes[53],
       batt: bytes[54], numsat: bytes[55], hacc_dm: dv.getUint16(56, true), sacc_cms: dv.getUint16(58, true), fixflags: bytes[60],
-      dest_index: dv.getInt8(61), nav_mode: bytes[62], have: dv.getUint16(63, true), status: dv.getUint16(65, true), crc16: dv.getUint16(67, true),
+      dest_index: dv.getInt8(61), nav_mode: bytes[62], have: dv.getUint16(63, true), status: dv.getUint16(65, true),
+      alpha_avg_cdeg: bytes[2] >= 10 ? dv.getInt16(67, true) : 0,
     };
   }
   function decodeBatt(b) {
@@ -67,10 +68,11 @@
       att: has(RHAVE.ATT) ? { ok: true, roll: f32(t.roll_cdeg * f32(0.01)), pitch: f32(t.pitch_cdeg * f32(0.01)) } : { ok: false },
       yaw: has(RHAVE.ATT_YAW) ? { ok: true, yaw: f32(t.yaw_cdeg * f32(0.01)), acc95: t.yaw_acc95_deg } : { ok: false },
       pavg: has(RHAVE.ATT_AVG) ? { ok: true, v: f32(t.pitch_avg_cdeg * f32(0.01)) } : { ok: false, v: 0 },
+      alpha: t.ver >= 10 && has(RHAVE.ALPHA) ? { ok: true, v: f32(t.alpha_avg_cdeg * f32(0.01)) } : { ok: false, v: 0 },
       tas: has(RHAVE.TAS) ? { ok: true, mps: f32(t.tas_dmps * f32(0.1)), clamped: (t.tas_flags & 1) !== 0 } : { ok: false, mps: 0 },
       trim: has(RHAVE.ATT_TRIM) ? { ok: true, v: f32(t.roll_trim_cdeg * f32(0.01)) } : { ok: false },
       wind: has(RHAVE.ATT_WIND) ? { ok: true, spd: f32(t.wind_dmps * f32(0.1)), dir: f32(t.wind_dir_cdeg * f32(0.01)) } : { ok: false },
-      vs: f32(t.kf_vs_cms * f32(0.01)),
+      vs: has(RHAVE.KFVS) ? f32(t.kf_vs_cms * f32(0.01)) : 0,
       batt: slot(W2S.ALTV) ? decodeBatt(t.batt) : { kind: 0, pct: 0 },
       status: t.status,
       scaleIndex: slot(W2S.PRESS) ? t.scale_index : null,
@@ -122,7 +124,7 @@
       // PONS:LIVE,OK,ON,<形の版>,<LINK_PROTO_VER>,<sizeof(LinkTelem)>,<group>,<ch>,<sf>,<送る間隔>,<版>
       const ok = { fmt: +p[3], proto: +p[4], size: +p[5], group: +p[6], ch: +p[7], sf: +p[8], period: +p[9], build: p[10] || '' };
       st.ok = ok;
-      if (ok.fmt !== LIVE_FMT_VER || ok.proto !== LINK_PROTO_VER || ok.size !== LINKTELEM_SIZE) {
+      if (ok.fmt !== LIVE_FMT_VER || (ok.proto !== LINK_PROTO_VER && ok.proto !== 9) || ok.size !== LINKTELEM_SIZE) {
         const tooNew = ok.fmt > LIVE_FMT_VER || ok.proto > LINK_PROTO_VER;
         st.okMismatch = tooNew ? 'Re:PONS が古いです（ページを読み直してください）' : '本体のファームが古いです（焼き直してください）';
         setMessage(st.okMismatch + `　本体: 形 ${ok.fmt}・無線の版 ${ok.proto}・${ok.size} バイト／Re:PONS: 形 ${LIVE_FMT_VER}・無線の版 ${LINK_PROTO_VER}・${LINKTELEM_SIZE} バイト`, 'error');
@@ -175,7 +177,7 @@
     const hex = p[4] || '';
     if (hex.length !== LINKTELEM_SIZE * 2) { st.badLines++; return; }
     const t = decodeLT(hexToBytes(hex));
-    if (t.ver !== LINK_PROTO_VER) { st.badLines++; return; }
+    if (t.ver !== LINK_PROTO_VER && t.ver !== 9) { st.badLines++; return; }
     const fr = { ms: +p[1] >>> 0, slot: +p[2], known: parseInt(p[3], 16), t, rxAt: now, ln: null };
     fr.view = ltView(t, fr.known);
     st.ltCount++;
@@ -684,8 +686,8 @@
       ['seq / 回転枠', t ? `${t.seq} / ${fr.slot}（受けた ${fr.known.toString(2).padStart(8, '0')}）` : '--'],
       ['位置', v ? `${v.lat.toFixed(7)}, ${v.lon.toFixed(7)}（fix ${v.fix ? 'あり' : 'なし'}）` : '--'],
       ['GS / 真方位', v ? `${fx(v.gs, 2)} m/s / ${fx(v.track, 1)}°` : '--'],
-      ['高度 GNSS / KF', t ? `${fx(t.gnss_alt_dm / 10)} / ${fx(t.kf_alt_dm / 10)} m` : '--'],
-      ['V/S', v ? `${fx(v.vs, 2)} m/s` : '--'],
+      ['高度 GNSS / KF', t ? `${t.have & RHAVE.GNSSALT ? fx(t.gnss_alt_dm / 10) : '--'} / ${t.have & RHAVE.KFALT ? fx(t.kf_alt_dm / 10) : '--'} m` : '--'],
+      ['V/S', t && (t.have & RHAVE.KFVS) ? `${fx(v.vs, 2)} m/s` : '--'],
       ['R / P', v && v.att.ok ? `${fx(v.att.roll)} / ${fx(v.att.pitch)}` : '--'],
       ['ヨー ± 95%', v && v.yaw.ok ? `${fx(v.yaw.yaw)} ± ${v.yaw.acc95}` : '--'],
       ['平均ピッチ / TAS', v ? `${v.pavg.ok ? fx(v.pavg.v) : '--'} / ${v.tas.ok ? fx(v.tas.mps) : '--'}` : '--'],

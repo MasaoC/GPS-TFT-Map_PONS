@@ -89,6 +89,21 @@ def check_consts():
     if not m2 or (m2.group(1), m2.group(2), m2.group(3)) != (fmt, proto, size):
         print(f'  [NG] live.js の版・大きさ {m2.groups() if m2 else None} が本体（形 {fmt}・LINK_PROTO_VER {proto}・{size} バイト）と違う')
         ok = False
+    editor = (REPONS / 'settings_editor.js').read_text(encoding='utf-8')
+    field = re.search(r"key:\s*'airspeed_weight_kg'[^}]+", editor)
+    fields = dict(re.findall(r"\b(min|max|defaultVal):\s*'?([\d.]+)", field.group(0))) if field else {}
+    for prop, define in (('defaultVal', 'AIRSPEED_DESIGN_WEIGHT_KG'),
+                         ('min', 'AIRSPEED_WEIGHT_MIN_KG'), ('max', 'AIRSPEED_WEIGHT_MAX_KG')):
+        if prop not in fields or float(fields[prop]) != num(d[define]):
+            print(f'  [NG] Re:PONS の総重量 {prop}: {fields.get(prop)} / 本体 {d[define]}')
+            ok = False
+    header_default = re.search(r"key:\s*'header_tas'[^}]*?defaultVal:\s*'([01])'", editor)
+    sd_settings = (ROOT / 'sd' / 'settings.txt').read_text(encoding='utf-8')
+    sd_header = re.search(r"^header_tas:\s*([01])\s*$", sd_settings, re.M)
+    for name, match in (('Re:PONS', header_default), ('SD の雛形', sd_header)):
+        if not match or match.group(1) != d['TAS_HEADER_DEFAULT']:
+            print(f"  [NG] {name} の header_tas の既定が本体（{d['TAS_HEADER_DEFAULT']}）と違う")
+            ok = False
     print('  [OK] 定数・版' if ok else '  [NG] 定数・版')
     return ok
 
@@ -171,7 +186,8 @@ FP_TARGETS = [
         'draw_vsi', 'roll_trim_color', 'attitude_implausible', 'wind_arrow_color', 'draw_wind_arrow',
         'draw_ground_ok_range', 'eskf_yaw_row_y', 'draw_eskf_attitude', 'draw_eskf_yaw', 'begin_notice_box',
         'draw_power_fault_warning', 'draw_eskf_calib_warning', 'push_backscreen', 'truetrack_display_deg',
-        'draw_tas_label_row', 'draw_gs_track', 'draw_degpersec', 'header_shows_pitch', 'header_pitch_value',
+        'draw_average_pitch_label', 'draw_average_alpha_label',
+        'tas_box_color', 'draw_tas_label_row', 'draw_gs_track', 'draw_degpersec', 'header_shows_pitch', 'header_pitch_value',
         'draw_header_pitch', 'draw_header_tas', 'live_collect_screen', 'header_strike_tag', 'header_strike',
         'draw_header', 'draw_map_footer', 'draw_batt_part', 'draw_footer', 'draw_map', 'clip_outcode',
         'clip_line_to_screen', 'fill_polygon_evenodd', 'draw_pilon_takeshima_line', 'draw_pilon_takeshima_marks',
@@ -187,11 +203,11 @@ FP_TARGETS = [
                                         'pla_centerline_bearing_rad', 'latitudeToMercatorY', 'check_within_latlon']),
     ('gnss.cpp', 'live_screen.js', ['add_track_point', 'get_gnss_numsat']),
     ('tas.h', 'live_screen.js', ['d:TasHdr']),
-    ('tas.cpp', 'live_screen.js', ['tas_header_pitch_avg', 'tas_header_value']),
+    ('tas.cpp', 'live_screen.js', ['tas_pitch_avg', 'tas_header_alpha_avg', 'tas_header_value']),
     ('link.cpp', 'live.js（ltView）', [
         'link_get_lat', 'link_get_lon', 'link_get_gs', 'link_get_truetrack', 'link_get_numsat', 'link_get_hacc_mm',
         'link_get_fix_ok', 'link_get_sacc_mps', 'link_get_kf_vspeed', 'link_get_attitude', 'link_get_yaw',
-        'link_get_pitch_avg', 'link_get_tas', 'link_get_roll_trim', 'link_get_wind', 'link_get_sender_battery',
+        'link_get_pitch_avg', 'link_get_alpha_avg', 'link_get_tas', 'link_get_roll_trim', 'link_get_wind', 'link_get_sender_battery',
         'link_get_sender_scale_index']),
     ('lora_link/link_proto.h', 'live.js（decodeBatt）', ['link_batt_decode', 'd:LinkBattKind']),
     ('lora_link/link_wire2.h', 'live.js（W2S）', ['#define:W2S_']),

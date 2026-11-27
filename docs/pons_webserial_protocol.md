@@ -246,7 +246,7 @@ SDカード内の飛行CSVファイル（`data/` フォルダ、`received/` フ�
 * LoRa で仲間の機体・ボートからもらう時刻（計画のみ）も、本体の中では同じ口（`gnss_dbd_give_time()`）を通る。
 
 ### (8) 本体設定の確認・変更・保存 (SETTINGS_GET / SETTINGS_SET / SETTINGS_SAVE)
-Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し、SD へ安全に保存するためのコマンド（2026-11-20〜）。`PONS:CONNECT` 接続中のみ受け付ける。
+Re:PONS から `settings.txt` の設定を確認・変更し、SD へ保存するためのコマンド（2026-11-20〜）。`PONS:CONNECT` 接続中のみ受け付ける。
 
 * **取得 (`SETTINGS_GET`)**:
   - **PC ➔ PONS**: `PONS:SETTINGS_GET`
@@ -257,11 +257,13 @@ Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し�
 * **変更適用 (`SETTINGS_SET`)**:
   - **PC ➔ PONS**: `PONS:SETTINGS_SET,<key>:<value>`
   - **PONS ➔ PC**: `PONS:SETTINGS_OK,<key>,<applied_value>` または `PONS:SETTINGS_ERR,<UNKNOWN_KEY|BAD_FORMAT>,<key>`
-  - 本体側の既存 `setter` を通してバリデーション・反映し、変化があれば `log.txt` に `PC SETTING <key>: <old> -> <new>` を記録する。
+  - 総重量を除き、本体側の既存 `setter` を通して反映し、変化があれば `log.txt` に `PC SETTING <key>: <old> -> <new>` を記録する。
+    `airspeed_weight_kg` に対する `SETTINGS_SET` は `PONS:SETTINGS_ERR,USE_SETTINGS_SAVE,airspeed_weight_kg` を返す。
 * **SD へ保存 (`SETTINGS_SAVE`)**:
-  - **PC ➔ PONS**: `PONS:SETTINGS_SAVE`
-  - **PONS ➔ PC**: `PONS:SETTINGS_SAVED,OK` または `PONS:SETTINGS_ERR,<SD_NOT_READY|SAVE_FAILED>`
-  - 項目間の整合チェック（`attitude_finish_settings_load()`・`airspeed_min < airspeed_max`）ののち、既存の `saveSettings()`（`settings.tmp` に書き切ってからリネームする原子的保存）で `settings.txt` を更新し、`log.txt` に `PC SETTINGS SAVED ...` を残す。
+  - **PC ➔ PONS**: `PONS:SETTINGS_SAVE`。総重量を変更するときは `PONS:SETTINGS_SAVE,<kg>`（例 `PONS:SETTINGS_SAVE,96.00`）。
+  - **PONS ➔ PC**: `PONS:SETTINGS_SAVED,OK` または `PONS:SETTINGS_ERR,<SD_NOT_READY|SAVE_FAILED>`。重量が無効なら `PONS:SETTINGS_ERR,BAD_VALUE,airspeed_weight_kg`。
+  - 項目間の整合チェック後、`settings.new` に書き切り、前の `settings.txt` を `settings.tmp` に退避して入れ替える。失敗時は退避したファイルを復元する。
+    総重量の動作値は入れ替えに成功してから変更し、`log.txt` に `PC SETTINGS SAVED ...` を残す。パイロン座標だけの保存失敗は `PILON_SAVE_FAILED`。
   - 無線関連（`link_mode` / `link_radio_ch` / `link_radio_prof` / `link_group` / `link_assist`）のハードウェア設定は、本体の再起動後に反映される。
 * **パイロン座標（`pilon.<NAME>`。2026-11-23〜）**: 同じ 3 つのコマンドに、地点ごとに 1 項目として載せる。`settings.txt` ではなく
   SD の `override_pilon_coordinate.csv`（書式は README の「SD カードの構成」）を読み書きする。`<NAME>` は `PLATHOME` / `N_PILON` / `S_PILON` / `PILON_1KM` / `TAKESHIMA`。
@@ -297,7 +299,7 @@ Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し�
   | `PONS:LIVE,PILON,<PLA 緯度>,<経度>,<北>,<>,<南>,<>,<1km>,<>,<多景島>,<>` | 同じ | 受信機のコースの座標 |
   | `PONS:LIVE,MAP,<F\|X>,<番号>,<点数>,<名前>` と `PONS:LIVE,MP,<F\|X>,<番号>,<最初の点>,<緯度>,<経度>,...` | 同じ | ポリゴン地図（F＝内蔵、X＝SD の mapdata.csv）。MP は 1 行 7 点まで |
   | `PONS:LIVE,DUMP_END,<目的地の数>,<地図の数>` | 一覧の終わり | |
-  | `PONS:LT,<ms>,<回転枠>,<受けた回転枠 hex>,<LinkTelem hex>` | 自分のグループのテレメトリを受けるたび | 回転枠を組み立てた後の LinkTelem（いまは 69 バイト）。`received/` に書くのと同じ瞬間・同じ値 |
+  | `PONS:LT,<ms>,<回転枠>,<受けた回転枠 hex>,<LinkTelem hex>` | 自分のグループのテレメトリを受けるたび | 回転枠を組み立てた後の LinkTelem（69 バイト）。版 10 の末尾 2 バイトは平均迎角（符号付き 0.01°）。Re:PONS は旧版 9 の記録も読める |
   | `PONS:LN,<seq>,<flags hex>,<hdr>,<strike>,<wait>,<egs>,<marker>,<last_tone_tt>,<steer>,<cwi>,<deg/s>,<deadband>,<目的地>,<ナビモード>,<Auto10km>,<truec>,<目的地まで km>,<MaxGS>,<時>,<分>,<5分の MaxGS>,<時>,<分>` | そのフレームのあと、ナビの判断と描き直しが済んだところ（**ミラー中だけ**） | 画面の判断。flags は `display_tft.h` の `LIVESCR_*`、ほかは `display_tft.cpp` の `live_collect_screen()` と `live.cpp` |
   | `PONS:LS,<flags hex>,<最後に受けてからの ms>,<直近 10 秒の RSSI>,<本数>,<受けた数>,<落ちた数>,<機体までの距離 m>,<送る間隔 ms>,<書いた行>,<捨てた行>` | 1 秒ごと | 受信機の状態。flags: 0x01 受信中 / 0x02 DUP SENDER / 0x04 リプレイ・デモ中 / 0x08 送信機の目的地が受信機に無い（`link_dest_missing()`。Re:PONS の帯に `PLANE DEST NOT IN BOAT PONS`）。距離は `received/` の `dist_m` と同じ計算（分からなければ -1） |
   | `PONS:LIVE,OFF,<CMD\|CONNECT\|MODE\|PORT>` | 止めたとき | |

@@ -102,10 +102,10 @@ bool e220_send(const uint8_t* payload, uint8_t n);
 
 // 受信バイトを取り込み、完全な 1 パケットが揃ったら true。
 // 毎ループ呼ぶこと。frame_len バイトのペイロードと RSSI 1 バイトを想定する。
-// frame_len は LINK_W2_LEN（32 バイトのフレーム。印 0xAC の上位 6 ビット。lora_link/link_wire2.h）。それ以外は false。
+// frame_len は LINK_W2_LEN（32 バイトのフレーム。印は lora_link/link_wire2.h の LINK_W2_MAGIC）。それ以外は false。
 // ★ GNSS の時刻の助け合いのビーコン（印 0x58。lora_link/link_beacon.h。2026-11-13〜）も同じ長さなので一緒に返す。
-//   どちらかは呼び出し側（link.cpp）が印で見分ける。
-bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm);
+//   diagnose_formats が真なら、CRC の通った既知の旧形式も診断用に返す。呼び出し側が印で見分ける。
+bool e220_recv(uint8_t* out, uint8_t frame_len, int16_t* rssi_dbm, bool diagnose_formats);
 
 // 印は合ったが CRC の検証に落ちたフレームの累計。
 // 「電波は届いたが化けている」と「そもそも来ていない」を区別する診断用。

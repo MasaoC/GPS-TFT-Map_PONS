@@ -199,6 +199,7 @@ SDSetting settings[] = {
   {"calib_time",      setCalibTime,      getCalibTime},
   {"airspeed_v0",     setAirspeedV0,     getAirspeedV0},
   {"airspeed_k",      setAirspeedK,      getAirspeedK},
+  {"airspeed_weight_kg", setAirspeedWeightKg, getAirspeedWeightKg},
   {"airspeed_min",    setAirspeedMin,    getAirspeedMin},
   {"airspeed_max",    setAirspeedMax,    getAirspeedMax},
   {"roll_trim",       setRollTrim,       getRollTrim},
@@ -220,25 +221,36 @@ extern double scale;
 extern int upward_mode;  // display_tft.cpp で定義。0=TRACKUP, 1=NORTHUP
 
 
-// 全設定を settings.txt に保存する。
-// 新しいファイルに書き切ってから入れ替えるので、古い項目は残らない。
-// ★ 2026-11-14 まで先に settings.txt を消してから書いていて、書いている途中で電源が切れる・SD が瞬断すると
-//   設定がまるごと消え、次の起動は既定値（無線 OFF・グループ A など）で走った。いまは SETTINGS_TMP_FILE に書き切って
-//   閉じてから入れ替える（gnss_dbd の保存と同じ）。消してから名前を変えるまでの隙に切れたときは、
-//   loadSettings() が残った SETTINGS_TMP_FILE を settings.txt に戻して読む。
+// settings.new に書き切ってから、いまの settings.txt を settings.tmp に退避して入れ替える。
+// 入れ替えに失敗したら退避した設定を復元する。settings.new は起動時の復元に使わない。
 #define SETTINGS_FILE     "settings.txt"
 #define SETTINGS_TMP_FILE "settings.tmp"
-bool saveSettings() {
+#define SETTINGS_NEW_FILE "settings.new"
+static constexpr char AIRSPEED_WEIGHT_KEY[] = "airspeed_weight_kg";
+
+static bool restore_settings_file() {
+  if (SD.exists(SETTINGS_FILE) || !SD.exists(SETTINGS_TMP_FILE)) return true;
+  const bool ok = SD.rename(SETTINGS_TMP_FILE, SETTINGS_FILE);
+  log_sdf("settings.txt missing, restored from settings.tmp: %s", ok ? "ok" : "FAILED");
+  return ok;
+}
+
+static bool save_settings_file(float weight_kg) {
+  if (!restore_settings_file()) return false;
   FsFile file;
-  if (!file.open(SETTINGS_TMP_FILE, O_WRONLY | O_CREAT | O_TRUNC)) {
-    DEBUGW_PLN(20250401,"Failed to open settings.tmp for writing");
+  if (!file.open(SETTINGS_NEW_FILE, O_WRONLY | O_CREAT | O_TRUNC)) {
+    DEBUGW_PLN(20250401,"Failed to open settings.new for writing");
     return false;
   }
 
   char value[MAX_SETTING_LENGTH];
   bool ok = true;
   for (int i = 0; i < numSettings; i++) {
-    settings[i].getter(value, MAX_SETTING_LENGTH);
+    if (weight_kg > 0.0f && strcmp(settings[i].id, AIRSPEED_WEIGHT_KEY) == 0) {
+      snprintf(value, sizeof(value), "%.2f", weight_kg);
+    } else {
+      settings[i].getter(value, MAX_SETTING_LENGTH);
+    }
     ok &= file.print(settings[i].id) > 0;
     ok &= file.print(":") > 0;
     file.print(value);   // 空の値もある（0 文字は失敗ではない）
@@ -247,33 +259,34 @@ bool saveSettings() {
   ok &= !file.getWriteError();
   ok &= file.close();
   if (!ok) {
-    SD.remove(SETTINGS_TMP_FILE);   // 書きかけは使わない（settings.txt はそのまま）
+    SD.remove(SETTINGS_NEW_FILE);
     log_sd("ERR settings save: write failed (settings.txt kept)");
     return false;
   }
-  if (SD.exists(SETTINGS_FILE) && !SD.remove(SETTINGS_FILE)) {
-    SD.remove(SETTINGS_TMP_FILE);
-    log_sd("ERR settings save: cannot remove old settings.txt");
+  if ((SD.exists(SETTINGS_TMP_FILE) && !SD.remove(SETTINGS_TMP_FILE)) ||
+      (SD.exists(SETTINGS_FILE) && !SD.rename(SETTINGS_FILE, SETTINGS_TMP_FILE))) {
+    SD.remove(SETTINGS_NEW_FILE);
+    log_sd("ERR settings save: cannot back up settings.txt");
     return false;
   }
-  if (!SD.rename(SETTINGS_TMP_FILE, SETTINGS_FILE)) {
-    log_sd("ERR settings save: rename failed (settings.tmp is kept and read at next boot)");
+  if (!SD.rename(SETTINGS_NEW_FILE, SETTINGS_FILE)) {
+    restore_settings_file();
+    SD.remove(SETTINGS_NEW_FILE);
+    log_sd("ERR settings save: cannot install settings.new");
     return false;
   }
+  if (SD.exists(SETTINGS_TMP_FILE)) SD.remove(SETTINGS_TMP_FILE);
   DEBUG_PLN(20250401,"Settings saved to settings.txt");
   return true;
 }
 
+bool saveSettings() { return save_settings_file(0.0f); }
 
 // settings.txt から設定を読み込み、各 setter を呼んで反映する。
 // ファイルを 1 文字ずつ読んで行を組み立て、"id:value" 形式でパースする。
 // ファイル末尾に改行がない場合も処理できるよう、ループ後に残余バッファをチェックする。
 bool loadSettings() {
-  // 保存の途中（古いのを消して名前を変える前）で切れていたら、書き切った SETTINGS_TMP_FILE を戻す（saveSettings() の ★）
-  if (!SD.exists(SETTINGS_FILE) && SD.exists(SETTINGS_TMP_FILE)) {
-    const bool r = SD.rename(SETTINGS_TMP_FILE, SETTINGS_FILE);
-    log_sdf("settings.txt missing, restored from settings.tmp: %s", r ? "ok" : "FAILED");
-  }
+  if (!restore_settings_file()) return false;
   FsFile file = SD.open(SETTINGS_FILE, FILE_READ);
   if (!file) {
     DEBUGW_PLN(20250401,"Failed to open settings.txt for reading");
@@ -399,7 +412,8 @@ static bool read_setting_int(const char* id, const char* value, int lo, int hi, 
 //   NaN はどの比較も false になるため、しきい値の警告に一つも引っかからないまま
 //   姿勢機能だけが死ぬ。範囲のクランプは attitude.cpp 側にもあるが（将来の
 //   呼び出し元への保険）、ログを出せるのはここだけなので範囲もここで見る。
-static bool read_setting_float(const char* id, const char* value, float lo, float hi, float* out) {
+static bool read_setting_float(const char* id, const char* value, float lo, float hi, float* out,
+                               bool clamp = true) {
   char* end = nullptr;
   const double v = strtod(value, &end);
   bool bad = (end == value);
@@ -414,6 +428,10 @@ static bool read_setting_float(const char* id, const char* value, float lo, floa
     return false;
   }
   if (v < lo || v > hi) {
+    if (!clamp) {
+      log_sdf("ERR %s(%s) outside %g..%g, ignored", id, value, (double)lo, (double)hi);
+      return false;
+    }
     *out = (float)(v < lo ? lo : hi);
     // %g: KF の係数（0.0005 など）が %.2f だと 0.00 に見えるため（2026-11-13〜）
     log_sdf("ERR %s(%s) range %g..%g -> %g",
@@ -686,6 +704,16 @@ void setAirspeedK(const char* value) {
 void getAirspeedK(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%.2f", attitude_get_airspeed_k());
 }
+static bool read_airspeed_weight(const char* value, float &kg) {
+  return read_setting_float(AIRSPEED_WEIGHT_KEY, value, AIRSPEED_WEIGHT_MIN_KG, AIRSPEED_WEIGHT_MAX_KG, &kg, false);
+}
+void setAirspeedWeightKg(const char* value) {
+  float kg;
+  if (read_airspeed_weight(value, kg)) attitude_set_airspeed_weight_kg(kg);
+}
+void getAirspeedWeightKg(char* buffer, size_t bufferSize) {
+  snprintf(buffer, bufferSize, "%.2f", attitude_get_airspeed_weight_kg());
+}
 void setAirspeedMin(const char* value) {
   float v;
   if (read_setting_float("airspeed_min", value, 1.0f, 20.0f, &v))
@@ -891,6 +919,7 @@ Task createSaveRxCsvTask(const LinkTelem* t, int rssi, uint16_t age_ms, uint8_t 
   // ヨーは 0〜359.99°（飛行 CSV と同じ）。LINK_PROTO_VER 8 までは ±180° で書いていて、Re:PONS の計器に「-30°」のように出ていた
   task.saveCsvArgs.yaw       = t->yaw_cdeg       * 0.01f;
   task.saveCsvArgs.pitch_avg = t->pitch_avg_cdeg * 0.01f;
+  task.saveCsvArgs.alpha_avg = t->alpha_avg_cdeg * 0.01f;
   task.saveCsvArgs.roll_trim = t->roll_trim_cdeg * 0.01f;
   task.saveCsvArgs.yaw_acc95 = (float)t->yaw_acc95_deg;
   task.saveCsvArgs.wind_mps  = t->wind_dmps      * 0.1f;
@@ -952,10 +981,11 @@ Task createSaveCsvTask(float latitude, float longitude, float gs, int ttrack, fl
   // 推定 TAS は大きい枠の設定にかかわらず書く（あとで Pavg の機体の TAS も見られるように）。
   // hdr は大きい枠に出していたもの。リプレイはこの 2 列で当時の画面を出す（計算し直さない）。
   task.saveCsvArgs.tas = 0.0f;
+  task.saveCsvArgs.alpha_avg = 0.0f;
   task.saveCsvArgs.hdr = (uint8_t)tas_header();
   if (!link_mirror_active()) {
     bool clamped;
-    if (tas_local(task.saveCsvArgs.tas, clamped)) have |= RHAVE_TAS;
+    if (tas_local(task.saveCsvArgs.tas, clamped, &task.saveCsvArgs.alpha_avg)) have |= RHAVE_TAS | RHAVE_ALPHA;
   }
   task.saveCsvArgs.have = have;
   return task;
@@ -1698,11 +1728,11 @@ void setup_sd(int trycount, bool load_settings){
       attitude_set_airspeed_min(AIRSPEED_MIN_MPS);
       attitude_set_airspeed_max(AIRSPEED_MAX_MPS);
     }
-    // 対気速度モデルの実効値。風の推定はこの 4 つで決まり、機体ごとに違う。
+    // 対気速度モデルの設定値。風の推定にも使う。
     // 「SD に書いたつもりで効いていなかった」を後から突き止められるようにする。
-    log_sdf("AIRSPEED MODEL v0=%.2f k=%.2f range %.2f..%.2f",
+    log_sdf("AIRSPEED MODEL v0=%.2f k=%.2f range %.2f..%.2f weight=%.2fkg",
             attitude_get_airspeed_v0(),  attitude_get_airspeed_k(),
-            attitude_get_airspeed_min(), attitude_get_airspeed_max());
+            attitude_get_airspeed_min(), attitude_get_airspeed_max(), attitude_get_airspeed_weight_kg());
   }
   sd_setup_complete = true;  // 全 SD 初期化処理完了を Core0 に通知
 }
@@ -1746,6 +1776,7 @@ static FsFile csvFileStatic;  // セッション中開きっぱなし。SDエラ
 
 static FsFile replayFileStatic;      // セッション中は開きっぱなし（SDIOハングリスク低減のため）
 static int8_t replay_col[REPLAY_COL_COUNT];  // 列名 → CSV上の列インデックス（-1 = その列は無い）
+static uint32_t replay_header_pos = 0;      // 現在の列マップを定義したヘッダのファイル位置
 static uint32_t replay_csv_t0_ms = 0;        // CSV 先頭データ行の時刻（0時からのms）
 static uint32_t replay_prev_ms = 0;          // 直前行の時刻（日跨ぎ検出用）
 static uint32_t replay_day_offset_ms = 0;    // 日跨ぎ補正の累積 [ms]
@@ -1758,9 +1789,13 @@ static bool replay_t0_valid = false;         // 先頭行の時刻を確定済�
 static uint32_t replay_skipped_ms = 0;         // スキップした区間の累計 [ms]
 static uint32_t replay_leadin_until_abs = 0;   // この絶対時刻までは静止していても再生する（助走区間）
 
-// 助走区間の開始位置を探すためのリングバッファ（静止行のファイル位置と時刻）
-static uint32_t replay_leadin_pos[REPLAY_LEADIN_SLOTS];
-static uint32_t replay_leadin_abs[REPLAY_LEADIN_SLOTS];
+// 巻き戻し候補には、その行を読むためのヘッダも保持する。
+struct ReplayLeadinRow {
+  uint32_t pos;
+  uint32_t abs_ms;
+  uint32_t header_pos;
+};
+static ReplayLeadinRow replay_leadin[REPLAY_LEADIN_SLOTS];
 
 // CSV ヘッダで探す列名。並びは ReplayCol の enum と一致させること。
 // ★ 姿勢・風の列名は **data/（自機飛行 CSV）と received/（受信ログ）の両方**で共通。
@@ -1770,7 +1805,7 @@ static const char* const replay_col_names[REPLAY_COL_COUNT] = {
   "numsat", "voltage",
   "roll", "pitch", "yaw",
   "pitch_avg", "roll_trim", "yaw_acc95", "wind_mps", "wind_dir",
-  "tas_mps", "hdr"
+  "tas_mps", "hdr", "alpha_avg"
 };
 
 // 旧バージョンの CSV 用の別名。同じ並びで、無い列は nullptr。
@@ -1919,6 +1954,7 @@ bool replay_pop(ReplayRow* out) {
   // ReplayRow にメンバを足したら必ずこの関数にも足すこと。
   out->roll = src->roll;             out->pitch = src->pitch;
   out->yaw = src->yaw;               out->pitch_avg = src->pitch_avg;
+  out->alpha_avg = src->alpha_avg;
   out->roll_trim = src->roll_trim;   out->yaw_acc95 = src->yaw_acc95;
   out->wind_mps = src->wind_mps;     out->wind_dir = src->wind_dir;
   out->tas = src->tas;               out->hdr = src->hdr;
@@ -1957,7 +1993,8 @@ void cycle_replay_speed() {
 
 // CSV のヘッダ行を列名で解釈し、replay_col[] に「その列が何列目か」を入れる（無い列は -1）。
 // 列名は大文字小文字を無視して照合し、未知の列や空の列名（2026大会データに存在）は無視する。
-static void replay_parse_header(const char* header) {
+static void replay_parse_header(const char* header, uint32_t pos) {
+  replay_header_pos = pos;
   for (int i = 0; i < REPLAY_COL_COUNT; i++) replay_col[i] = -1;
 
   int index = 0;
@@ -2040,7 +2077,7 @@ void init_replay(){
   // ★ **received/ のヘッダは 230 文字、data/ は 190 文字ある**（2026-11-07 に tas_mps,hdr、2026-11-20 に received/ へ sacc_mps を足したあと）。ここを切り詰めると、切れた列は
   //   「名前が壊れたトークン」または「存在しない列」になり、静かに -1 のまま残る。
   //   列を足すときはここも必ず見直すこと。
-  char header[256];
+  char header[320];
   int n = replayFileStatic.fgets(header, sizeof(header));
   if (n <= 0) {
     log_sdf("ERR REPLAY empty file: %s", replay_filename);
@@ -2048,7 +2085,7 @@ void init_replay(){
     replay_eof = true; replay_file_bad = REPLAY_BAD_FILE;
     return;
   }
-  replay_parse_header(header);
+  replay_parse_header(header, 0);
 
   // 最低限 latitude / longitude / time が無ければ再生できない
   if (replay_col[RCOL_LAT] < 0 || replay_col[RCOL_LON] < 0 || replay_col[RCOL_TIME] < 0) {
@@ -2078,11 +2115,11 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
   uint32_t saved_day_offset = replay_day_offset_ms;
 
   // 区間の先頭を最初の候補として登録する
-  replay_leadin_pos[0] = run_start_pos;
-  replay_leadin_abs[0] = run_start_abs;
+  const ReplayLeadinRow start = {run_start_pos, run_start_abs, replay_header_pos};
+  replay_leadin[0] = start;
   uint8_t head = 1, count = 1;
 
-  char line[256], buf[24];
+  char line[320], buf[24];
   uint32_t move_abs = 0;
   uint32_t last_abs = run_start_abs;
   bool found_move = false;
@@ -2098,6 +2135,10 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
       return false;
     }
     scanned++;
+    if (strncmp(line, "latitude,", 9) == 0) {
+      replay_parse_header(line, pos);
+      continue;
+    }
 
     uint32_t tod; int hh, mm, ss, cc;
     if (!replay_get_field(line, replay_col[RCOL_TIME], buf, sizeof(buf))) continue;
@@ -2116,8 +2157,7 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
     }
 
     // まだ静止 → 直近 REPLAY_LEADIN_SLOTS 行のファイル位置を保持する
-    replay_leadin_pos[head] = pos;
-    replay_leadin_abs[head] = abs_ms;
+    replay_leadin[head] = {pos, abs_ms, replay_header_pos};
     head = (head + 1) % REPLAY_LEADIN_SLOTS;
     if (count < REPLAY_LEADIN_SLOTS) count++;
   }
@@ -2136,32 +2176,37 @@ static bool replay_handle_stationary_run(uint32_t run_start_pos, uint32_t run_st
   replay_day_offset_ms = saved_day_offset;
 
   // 再生を再開する位置を決める
-  uint32_t resume_pos, resume_abs;
-  if (move_abs - run_start_abs < REPLAY_LEADIN_MS) {
-    // 短い静止 → スキップしない（区間の先頭から再生する）
-    resume_pos = run_start_pos;
-    resume_abs = run_start_abs;
-  } else {
+  ReplayLeadinRow resume = start; // 短い静止は区間の先頭から再生する
+  if (move_abs - run_start_abs >= REPLAY_LEADIN_MS) {
     // 動き出しの REPLAY_LEADIN_MS 手前以降で、最も古い行を探す
     uint32_t target = move_abs - REPLAY_LEADIN_MS;
     uint8_t oldest = (uint8_t)((head + REPLAY_LEADIN_SLOTS - count) % REPLAY_LEADIN_SLOTS);
-    resume_pos = replay_leadin_pos[oldest];   // 保持している中で最も古い行（既定値）
-    resume_abs = replay_leadin_abs[oldest];
+    resume = replay_leadin[oldest];
     for (uint8_t i = 0; i < count; i++) {
       uint8_t k = (uint8_t)((oldest + i) % REPLAY_LEADIN_SLOTS);
-      if (replay_leadin_abs[k] >= target) {
-        resume_pos = replay_leadin_pos[k];
-        resume_abs = replay_leadin_abs[k];
+      if (replay_leadin[k].abs_ms >= target) {
+        resume = replay_leadin[k];
         break;
       }
     }
   }
 
+  // 途中のヘッダをまたいで戻る場合は、巻き戻し先の列マップを読み直す。
+  if (resume.header_pos != replay_header_pos) {
+    if (!replayFileStatic.seek(resume.header_pos) || replayFileStatic.fgets(line, sizeof(line)) <= 0) {
+      replay_file_bad = good_sd() ? REPLAY_BAD_FILE : REPLAY_BAD_NOSD;
+      return false;
+    }
+    replay_parse_header(line, resume.header_pos);
+  }
+  if (!replayFileStatic.seek(resume.pos)) {
+    replay_file_bad = good_sd() ? REPLAY_BAD_FILE : REPLAY_BAD_NOSD;
+    return false;
+  }
   // 飛ばした分だけ再生タイムラインを詰める
-  replay_skipped_ms += resume_abs - run_start_abs;
+  replay_skipped_ms += resume.abs_ms - run_start_abs;
   // 動き出しまでは静止していても再生する（助走区間）
   replay_leadin_until_abs = move_abs;
-  replayFileStatic.seek(resume_pos);
   return true;
 }
 
@@ -2181,7 +2226,7 @@ void load_replay() {
     return;
   }
 
-  char line[256];
+  char line[320];
 
   while (replay_free_slots() > 0) {
     uint32_t line_pos = (uint32_t)replayFileStatic.position();  // 静止区間の巻き戻しに使う
@@ -2195,6 +2240,11 @@ void load_replay() {
     }
 
     // --- 時刻（必須） ---
+    // 同じ分に再起動したとき、旧形式の CSV に新しいヘッダが追記されることがある。
+    if (strncmp(line, "latitude,", 9) == 0) {
+      replay_parse_header(line, line_pos);
+      continue;
+    }
     char buf[24];
     if (!replay_get_field(line, replay_col[RCOL_TIME], buf, sizeof(buf))) continue;
     uint32_t tod_ms;
@@ -2309,8 +2359,10 @@ void load_replay() {
 
     // --- 推定 TAS と大きい枠の中身（列の無い古い CSV は -1 のまま。tas.cpp が今までどおり出す）---
     row->tas = 0.0f;
+    row->alpha_avg = 0.0f;
     row->hdr = -1;
     if (replay_get_float(line, RCOL_TAS, &v)) { row->tas = v; row->have |= RHAVE_TAS; }
+    if (replay_get_float(line, RCOL_ALPHA, &v) && isfinite(v)) { row->alpha_avg = v; row->have |= RHAVE_ALPHA; }
     if (replay_get_float(line, RCOL_HDR, &v) && v >= 0.0f && v < 100.0f) row->hdr = (int8_t)(v + 0.5f);
 
     // 内容を書き終えてから head を進める（Core0 が中途半端な行を読まないようにする）
@@ -2855,8 +2907,10 @@ static void csv_write_common(FsFile &f, const Task &tk) {
   if (!is_rx || (a.have & RHAVE_GNSSALT)) f.print(a.gnss_altitude, 2);
   f.print(",");
 
-  f.print(a.kf_altitude, 2);   f.print(",");   // KF 推定高度 [m]（気圧基準）
-  f.print(a.kf_vspeed, 2);     f.print(",");   // KF 推定上昇率 [m/s]
+  if (!is_rx || (a.have & RHAVE_KFALT)) f.print(a.kf_altitude, 2);
+  f.print(",");                              // KF 推定高度 [m]（気圧基準）
+  if (!is_rx || (a.have & RHAVE_KFVS)) f.print(a.kf_vspeed, 2);
+  f.print(",");                              // KF 推定上昇率 [m/s]
 
   // 気圧: 受信ログでは回転枠 6 を受けるまで空欄（0.00hPa を防止）
   if (!is_rx || (a.have & RHAVE_PRESS)) f.print(a.pressure, 2);
@@ -2918,6 +2972,11 @@ static void csv_write_tas(FsFile &f, const Task &tk) {
   f.print(line);
 }
 
+static void csv_write_alpha(FsFile &f, const Task &tk) {
+  f.print(",");
+  if (tk.saveCsvArgs.have & RHAVE_ALPHA) f.print(tk.saveCsvArgs.alpha_avg, 2);
+}
+
 void saveRxCSV(const Task& tk) {
   ASSERT_SD_CORE1("saveRxCSV");
   if (webserial_connected) return;  // PC接続中はSD読み出し専用に固定
@@ -2948,7 +3007,7 @@ void saveRxCSV(const Task& tk) {
     rxcsvFile.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,"
                       "KF_Vspeed,pressure,voltage,numsat,date,time,rssi,seq,age_ms,"
                       "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
-                      "own_lat,own_lon,dist_m,slot,tas_mps,hdr,sacc_mps");
+                      "own_lat,own_lon,dist_m,slot,tas_mps,hdr,sacc_mps,alpha_avg");
     rxHeaderWritten = true;
   }
   // 先頭 12 列は飛行 CSV と同じ並び（csv_write_common が唯一の書き手）。
@@ -2977,6 +3036,7 @@ void saveRxCSV(const Task& tk) {
   if (!isnan(a.sacc)) snprintf(own, sizeof(own), ",%.2f", a.sacc);
   else                snprintf(own, sizeof(own), ",");
   rxcsvFile.print(own);
+  csv_write_alpha(rxcsvFile, tk);
   rxcsvFile.println();
 
   // 1Hz でしか来ないので毎回 flush してよい。電源断で末尾を失わないほうが大事。
@@ -3022,7 +3082,7 @@ void saveCSV(const Task& tk) {
       csvFileStatic.println("latitude,longitude,gs,TrueTrack,GNSS_Altitude,KF_Altitude,KF_Vspeed,"
                             "pressure,voltage,numsat,date,time,lux,backlight,"
                             "roll,pitch,yaw,pitch_avg,roll_trim,yaw_acc95,wind_mps,wind_dir,"
-                            "tas_mps,hdr");
+                            "tas_mps,hdr,alpha_avg");
       headerWritten = true;
     }
 
@@ -3035,6 +3095,7 @@ void saveCSV(const Task& tk) {
     csvFileStatic.print(",");
     csv_write_attitude(csvFileStatic, tk);
     csv_write_tas(csvFileStatic, tk);
+    csv_write_alpha(csvFileStatic, tk);
     csvFileStatic.println();
 
     // flush() は SD への物理書き込みを伴うため消費電力が大きい。
@@ -3419,9 +3480,10 @@ Task createSerialSettingsSetTask(const char* key, const char* value) {
   return t;
 }
 
-Task createSerialSettingsSaveTask() {
+Task createSerialSettingsSaveTask(const char* weight_kg) {
   Task t;
   t.type = TASK_SERIAL_SETTINGS_SAVE;
+  strlcpy(t.serialSaveSettingsArgs.weight_kg, weight_kg, sizeof(t.serialSaveSettingsArgs.weight_kg));
   return t;
 }
 
@@ -3911,6 +3973,10 @@ void serial_apply_setting(const char* key, const char* value) {
     serial_apply_pilon_setting(key, value);
     return;
   }
+  if (strcmp(key, AIRSPEED_WEIGHT_KEY) == 0) {
+    Serial.println("PONS:SETTINGS_ERR,USE_SETTINGS_SAVE,airspeed_weight_kg");
+    return;
+  }
   int idx = -1;
   for (int i = 0; i < numSettings; i++) {
     if (strcmp(settings[i].id, key) == 0) {
@@ -3936,11 +4002,19 @@ void serial_apply_setting(const char* key, const char* value) {
   Serial.flush();
 }
 
-void serial_save_settings() {
+void serial_save_settings(const char* weight_kg) {
   ASSERT_SD_CORE1("serial_save_settings");
   if (!good_sd()) {
     Serial.println("PONS:SETTINGS_ERR,SD_NOT_READY");
     return;
+  }
+  float saved_weight = 0.0f;
+  if (*weight_kg) {
+    if (!read_airspeed_weight(weight_kg, saved_weight)) {
+      Serial.println("PONS:SETTINGS_ERR,BAD_VALUE,airspeed_weight_kg");
+      return;
+    }
+    saved_weight = roundf(saved_weight * 100.0f) / 100.0f;
   }
   webserial_prepare_sd();
   attitude_finish_settings_load();
@@ -3951,10 +4025,15 @@ void serial_save_settings() {
     attitude_set_airspeed_min(AIRSPEED_MIN_MPS);
     attitude_set_airspeed_max(AIRSPEED_MAX_MPS);
   }
-  if (saveSettings()) {
-    log_sdf("PC SETTINGS SAVED (v0=%.2f k=%.2f range %.2f..%.2f)",
+  if (save_settings_file(saved_weight)) {
+    const float old_weight = attitude_get_airspeed_weight_kg();
+    if (saved_weight > 0.0f && saved_weight != old_weight) {
+      attitude_set_airspeed_weight_kg(saved_weight);
+      log_sdf("PC SETTING %s: %.2f -> %.2f", AIRSPEED_WEIGHT_KEY, old_weight, saved_weight);
+    }
+    log_sdf("PC SETTINGS SAVED (v0=%.2f k=%.2f range %.2f..%.2f weight=%.2fkg)",
             attitude_get_airspeed_v0(), attitude_get_airspeed_k(),
-            attitude_get_airspeed_min(), attitude_get_airspeed_max());
+            attitude_get_airspeed_min(), attitude_get_airspeed_max(), attitude_get_airspeed_weight_kg());
     // パイロン座標（2026-11-23〜）。settings.txt は書けたので、ここで失敗したときはそれと分かる印を返す
     if (save_pilon_override_file()) Serial.println("PONS:SETTINGS_SAVED,OK");
     else                            Serial.println("PONS:SETTINGS_ERR,PILON_SAVE_FAILED");

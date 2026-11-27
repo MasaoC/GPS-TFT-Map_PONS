@@ -114,6 +114,7 @@ static bool  s_vchk_ok = false;
 
 // 最初の気圧高度を受け取ったときに x[0] を初期化する（それ以前は高度不明）
 static bool kf_initialized = false;
+static uint32_t kf_last_baro_us = 0;
 
 // 前回の predict ステップを実行した時刻 [µs]（dt 計算に使用）
 static uint32_t kf_last_predict_us = 0;
@@ -155,6 +156,10 @@ static volatile float _raw_accel[3] = {0, 0, 0};   // [m/s²]
 
 void imu_feed_gyro(const float g[3], uint32_t t_us) {
     _raw_gyro[0] = g[0]; _raw_gyro[1] = g[1]; _raw_gyro[2] = g[2];
+    // 自機の平均ピッチには自機の KF を組み合わせる。気圧の観測が TAS_GAMMA_VS_STALE_MS 以内なら有効（理由は settings.h）。
+    const bool vs_ok = get_airdata_ok() && kf_initialized &&
+        (uint32_t)(time_us_32() - kf_last_baro_us) <= 1000UL * TAS_GAMMA_VS_STALE_MS;
+    attitude_set_vspeed(_imu_vspeed, vs_ok);
     // ESKF の伝播はジャイロ到着で回す（加速度は直近値を使う。ドライバは同じサンプルの加速度を先に渡す）。
     // ※ 時刻は受信時刻（SCH16T はサンプルにタイムスタンプを付けない）。
     //   dt は attitude.cpp が直前のサンプルとの実際の時間差で取る。
@@ -444,6 +449,7 @@ void imu_kalman_baro_update(float z_baro_m) {
     // IMU の有無によらず気圧高度で KF を初期化・更新する。
     // IMU なし時は imu_update() の恒速 predict と組み合わせてバリオとして動作。
 
+    kf_last_baro_us = time_us_32();
     // 初回: 気圧高度で状態を初期化する（初期値のない状態で始めると発散するため）
     if (!kf_initialized) {
         kf_x[0] = z_baro_m;

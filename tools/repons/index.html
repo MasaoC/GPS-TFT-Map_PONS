@@ -11,7 +11,7 @@
     // Re:PONS の版数。版数を書くのはここ 1 か所だけ。
     // tools/repons/ のどれかを変えたら上げる（上げ忘れは pre-commit フックが止める）。
     // CSS と JS は ?v= にこの版数を付けて読むので、HTML と CSS・JS の版が食い違うことはない。
-    const VIEWER_VERSION = '2026.11.27.1';
+    const VIEWER_VERSION = '2026.11.28.1';
     document.write('<link rel="stylesheet" href="repons.css?v=' + VIEWER_VERSION + '">');
   </script>
 </head>
@@ -356,7 +356,7 @@
             <span style="color: #dc2626;">Roll: ---°</span>
             <span style="color: #7c3aed;">Pitch: ---°</span>
             <span style="color: #d97706; font-weight:bold;">Est.Beta: --.-°</span>
-            <span style="color: #64748b;">AvgP: ---°</span>
+            <span style="color: #64748b;">P̄: ---°</span>
             <span style="color: #475569;">RTrim: ---°</span>
           </div>
         </div>

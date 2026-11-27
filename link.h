@@ -127,10 +127,11 @@
   bool  link_get_attitude(float &roll, float &pitch);
   bool  link_get_yaw(float &yaw, float &acc95);
   bool  link_get_pitch_avg(float &avg);
+  bool  link_get_alpha_avg(float &avg);
   // 送信機の推定 TAS（clamped = 上下限に張り付いている）と、送信機の大きい枠の設定が TAS か。
   // 表示は直接読まず tas.h の tas_header() を通す。
   bool  link_get_tas(float &mps, bool &clamped);
-  bool  link_sender_header_tas();
+  bool  link_get_sender_header_tas(bool &tas);  // 枠 2 / 6 のどちらからも新しい設定を受けていなければ false
   bool  link_get_roll_trim(float &trim);
   bool  link_get_wind(float &speed_mps, float &dir_to_deg);
 
@@ -164,6 +165,8 @@
   // これが真なら、電波は届いていてグループ ID だけが食い違っている。
   bool     link_other_group_seen();
   uint8_t  link_other_group_id();
+  // 自グループで直近に確認した旧形式の印。正常に受信中か、該当なしなら 0。
+  uint8_t  link_incompatible_format();
   // 送信機の健康状態（LINK_ST_* のビット）。受信側からは知りようがない項目だけ。
   uint16_t link_sender_status();
   // 目的地／ナビモードが送信側と食い違っているか。

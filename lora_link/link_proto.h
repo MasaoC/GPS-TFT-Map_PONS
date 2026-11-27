@@ -51,7 +51,8 @@
 //   9: ヨー（yaw_cdeg）を int16 の ±180° から uint16 の 0〜35999（真方位。対地進路・風向と同じ）にした（2026-11-26。
 //      int16 では 0〜360° のヨーが 327.67° で頭打ちになり、受信機のヨーが「328」で止まっていた。
 //      32 バイトの電波の並び（12 ビット・0〜3599）と印は変わらない）。
-#define LINK_PROTO_VER      9
+//  10: USB 上の末尾 2 バイトに平均 α を追加した（32 バイトの電波の印 0xB0）。
+#define LINK_PROTO_VER      10
 
 // ============================================================
 //  UART のボーレート
@@ -205,6 +206,7 @@ static inline char link_group_letter(uint8_t g) { return (char)('A' + (g & 0x03)
 #define RHAVE_ATT_WIND 0x2000   // 風速・風向（推定できていた区間のみ）
 // 推定 TAS（平均ピッチの換算。docs/pons_tas.md）。無線では核で毎回、CSV では tas_mps 列。
 #define RHAVE_TAS      0x4000
+#define RHAVE_ALPHA    0x8000   // APPLY 基準の平均迎角
 
 // type の値。0 = テレメトリ。将来ほかの種類を足すための欄。
 // ★ LinkTelem の magic / ver / type / crc16 は 65 バイトを送っていた頃の検査用。電波には載らなくなった
@@ -296,7 +298,7 @@ typedef struct __attribute__((packed)) {
     uint16_t have;              // RHAVE_* と同一のビットマスク
     uint16_t status;            // LINK_ST_* のビット
 
-    uint16_t crc16;             // 65 バイトを送っていた頃の CRC 欄。電波に載らないので、いまは 0 のまま
+    int16_t  alpha_avg_cdeg;    // 平均迎角 [0.01 度]。旧 CRC 欄を使用
 } LinkTelem;
 
 // ★ 69 バイト（2026-11-07 に推定 TAS の 2 バイト、2026-11-20 に sAcc の 2 バイトを足した。それまで 65 → 67）。
@@ -328,8 +330,7 @@ static_assert(sizeof(LinkTelem) == 69, "LinkTelem が 69 バイトでなくな�
 //    送信側と受信側で挙動がずれる余地も無い。
 //
 //    したがって status に載せるのは
-//    **「受信側からは知りようがない、送信機自身の健康状態」だけ**にする。
-//    どれも飛ぶ前に気づきたいもので、飛行中の値からは推し量れない。
+//    **「受信側からは知りようがない送信機側の状態」だけ**にする。
 #define LINK_ST_SD_ERROR    0x0001   // SD が使えない（ログが残らない）
 #define LINK_ST_IMU_ERROR   0x0002   // IMU が応答しない（姿勢が出ない）
 #define LINK_ST_NEEDS_APPLY 0x0004   // ロールトリムが未適用（設定し忘れ）
@@ -348,8 +349,7 @@ static_assert(sizeof(LinkTelem) == 69, "LinkTelem が 69 バイトでなくな�
 //   `stored_*` が凍ったまま送信は続き、`fixflags` も `numsat` も最後の値のまま、
 //   `seq` は進むので `NO SIGNAL` にもならない。つまりボートからは
 //   **「止まった正常な機体」**に見える。音で知らせるしかないのでビットで運ぶ。
-// ★ ビットを足すだけなら LINK_PROTO_VER も LINK_W2_MAGIC も変えなくてよい（status は 32 バイトの核に
-//   16 ビットのまま載り、古い送信機は 0 を送るので誤報も出ない）。
+// ★ LinkTelem のビットと無線のビットは別。追加・変更するときは link_wire2.h の詰め方も確認する。
 #define LINK_ST_GNSS_LOST    0x0080   // 送信機の GNSS モジュールが応答しない
 // 送信機の電源経路の異常（充電 IC の故障。power.cpp）。機体が発熱している恐れがあり、
 // ボート側からも知らせたい。受信側では作れない（送信機の電圧と USB 判定が要る）。
@@ -366,8 +366,7 @@ static_assert(sizeof(LinkTelem) == 69, "LinkTelem が 69 バイトでなくな�
 // ★ **よいとき（1 秒以内）は 0。** 古い受信機の WIRELESS 画面を赤くしない・古い送信機（0 を送る）と同じ扱いにするため。
 #define LINK_ST_TIME_COARSE  0x0800   // 時刻の精度が 1〜4 秒（LINK_ASSIST_TACC_FINE_MS〜LINK_ASSIST_TACC_MAX_MS）
 #define LINK_ST_TIME_BAD     0x1000   // 時刻の精度が 4 秒より悪い・分からない（tAcc は 4.29 秒で頭打ち。受信機は使わない）
-// 定義済みのビット全部。★ **0x8000 は使わないこと。** 32 バイトのフレームの上では状態の最上位ビットを
-// FIXOK に使っている（link_wire2.h の W2_ST_FIXOK。ビルドで止める）。空きは 0x0200・0x2000・0x4000。
+// LinkTelem の定義済み状態ビット。FIXOK は別フィールド fixflags に入る。
 #define LINK_ST_ALL          0x1DFF
 // 故障ではないビット（知らせるだけ）。WIRELESS 画面の Sender 行の赤／OK の判定から外す。
 #define LINK_ST_NOT_FAULT    (LINK_ST_TIME_WANTED | LINK_ST_TIME_COARSE | LINK_ST_TIME_BAD)

@@ -86,7 +86,7 @@ int imu2_cursor = 0; // IMU/ESKF ページ2/2 のカーソル位置（IMU の生
 int imu_guide_page = -1;
 // 推定 TAS の案内（docs/pons_tas.md §4.4）の何画面目を出しているか。-1 = 出していない。
 // IMU/ESKF 画面 1 ページ目で「Header」を TAS にしたときと「TAS curve >」で 0 から通る（tas_guide_start）。
-// 0 = 説明の画像、1 = 対気速度モデルの曲線（ファームが描く）。最後の次でページ1へ戻る。
+// 0 から TAS_GUIDE_PAGES - 1 までは画像。その次は曲線。最後の次でページ1へ戻る。
 int tas_guide_page = -1;
 // バンク角警告の有効/無効（IMU/ESKF 画面で切替、SD に保存）
 double scalelist[6]; // 選択可能なスケール値リスト（ズームレベルに対応）
@@ -1996,21 +1996,26 @@ static void setting_timeout_tick() {
 // ★ 各画面の「戻る」と同じ後始末をしてから、放置タイムアウトと同じ経路（設定を保存）で地図へ戻す。
 //   音も放置タイムアウトと同じ降下ペア（勝手に閉じた、の合図）。
 static void screen_moving_exit_tick() {
-  static uint32_t s_since = 0;
+  static uint32_t s_since;
+  static bool s_timing = false;
   double lat, lon, gs = 0.0, trk;
   const bool applies = screen_mode != MODE_MAP && screen_mode != MODE_PCCONNECT &&
                        link_get_mode() != LINK_MODE_RX;
   const bool moving = applies && get_gnss_connection() &&
                       gnss_get_own_fix(lat, lon, gs, trk) && gs >= SCREEN_MOVING_EXIT_GS_MPS;
-  if (!moving) { s_since = 0; return; }
+  if (!moving) { s_timing = false; return; }
   const uint32_t now = millis();
-  if (s_since == 0) { s_since = now ? now : 1; return; }
-  if (now - s_since < SCREEN_MOVING_EXIT_HOLD_MS) return;
+  if (!s_timing) { s_since = now; s_timing = true; }
+  const bool tas_curve = screen_mode == MODE_IMUDETAIL && tas_guide_page == TAS_GUIDE_PAGES;
+  const uint32_t hold_ms = tas_curve ? SCREEN_MOVING_EXIT_TAS_CURVE_MS : SCREEN_MOVING_EXIT_HOLD_MS;
+  if (now - s_since < hold_ms) return;
   // ★ ボタンを操作している間は戻さない（2026-11-14）。以前は操作を見ておらず、車や船の上で設定画面・詳細画面を
   //   触っていると、押した直後でも 5 秒走った時点で地図へ戻っていた。最後の操作から SCREEN_MOVING_EXIT_IDLE_MS
   //   たってから戻す（画面を出したまま発進したときに地図へ戻す、という目的はそのまま）。
-  if (now - last_user_input_ms < SCREEN_MOVING_EXIT_IDLE_MS) return;
-  s_since = 0;
+  // 曲線へ送ったボタン操作からも 60 秒待ち、移動中に開いても観察時間を確保する。
+  const uint32_t idle_ms = tas_curve ? SCREEN_MOVING_EXIT_TAS_CURVE_MS : SCREEN_MOVING_EXIT_IDLE_MS;
+  if (now - last_user_input_ms < idle_ms) return;
+  s_timing = false;
 
   const int from = screen_mode;
   switch (from) {
@@ -2051,7 +2056,7 @@ static void screen_moving_exit_tick() {
   enqueueTask(createPlayMultiToneTask(659, 100, 1, 2)); // ミ
   enqueueTask(createPlayMultiToneTask(523, 100, 1, 2)); // ド
   enqueueTask(createLogSdfTask("SCREEN %d -> MAP (moving %.1fm/s for %lus)", from, gs,
-                               (unsigned long)(SCREEN_MOVING_EXIT_HOLD_MS / 1000UL)));
+                               (unsigned long)(hold_ms / 1000UL)));
   redraw_screen = true;
 }
 
@@ -2316,13 +2321,19 @@ static void handle_serial_command(const char *raw_cmd) {
       return;
     }
     if (!enqueueTask(createSerialSettingsSetTask(key, val))) s_busy_pending = true;
-  } else if (strcmp(cmd, "PONS:SETTINGS_SAVE") == 0) {
+  } else if (strcmp(cmd, "PONS:SETTINGS_SAVE") == 0 || strncmp(cmd, "PONS:SETTINGS_SAVE,", 19) == 0) {
     if (!webserial_connected) {
       Serial.println("PONS:ERROR,NOT_CONNECTED");
       return;
     }
     if (serial_xfer_active()) { s_busy_pending = true; return; }
-    if (!enqueueTask(createSerialSettingsSaveTask())) s_busy_pending = true;
+    const bool has_weight = cmd[18] == ',';
+    const char* weight_kg = has_weight ? cmd + 19 : "";
+    if (has_weight && (!*weight_kg || strlen(weight_kg) >= sizeof(((Task*)nullptr)->serialSaveSettingsArgs.weight_kg))) {
+      Serial.println("PONS:SETTINGS_ERR,BAD_VALUE,airspeed_weight_kg");
+      return;
+    }
+    if (!enqueueTask(createSerialSettingsSaveTask(weight_kg))) s_busy_pending = true;
   } else if (strncmp(cmd, "PONS:WIPE_SCAN,", 15) == 0 || strncmp(cmd, "PONS:WIPE,", 10) == 0 ||
              strncmp(cmd, "PONS:TRASH_EMPTY,", 17) == 0 || strncmp(cmd, "PONS:TRASH_RESTORE,", 19) == 0) {
     // SD の整理（2026-11-25〜。docs/pons_webserial_protocol.md §4 (10)）。
@@ -2687,6 +2698,15 @@ void loop() {
                                      dropped ? "heading dropped (re-set on next takeoff run)" : "yaw was not set"));
       }
     }
+    // V/S の 10 秒窓が有効かの切替を記録する。
+    {
+      bool active;
+      if (attitude_take_gamma_event(active)) {
+        enqueueTask(createLogSdfTask(active
+            ? "TAS GAMMA: 10s V/S window ready; path-angle correction enabled"
+            : "TAS GAMMA: V/S window unavailable; TAS unavailable"));
+      }
+    }
   }
 
   // ---- 直進中のロール自動トリムが入ったらログに残す ----
@@ -2716,10 +2736,11 @@ void loop() {
   {
     // IMU/ESKF の入口の案内は動かない画像なので、200ms ごとに 150KB を送り直さない
     // （上に重なった表示を消すための保険として、地図と同じ間隔だけ描き直す）。
-    // 推定 TAS の案内も、画像（0 枚目）は同じ。曲線の画面（1）は本体を傾けると点が動くので短い間隔。
+    // 推定 TAS の案内画像も同じ。曲線の画面は本体を傾けると点が動くので短い間隔。
     unsigned long fresh_interval =
         (screen_mode == MODE_VARIODETAIL ||
-         (screen_mode == MODE_IMUDETAIL && imu_guide_page < 0 && tas_guide_page != 0))
+         (screen_mode == MODE_IMUDETAIL && imu_guide_page < 0 &&
+          (tas_guide_page < 0 || tas_guide_page == TAS_GUIDE_PAGES)))
             ? SCREEN_FRESH_INTERVAL_DETAIL
             : SCREEN_FRESH_INTERVAL;
     // ★
@@ -2925,7 +2946,7 @@ void loop1() {
       serial_apply_setting(currentTask.serialSetArgs.key, currentTask.serialSetArgs.value);
       break;
     case TASK_SERIAL_SETTINGS_SAVE:
-      serial_save_settings();
+      serial_save_settings(currentTask.serialSaveSettingsArgs.weight_kg);
       break;
     case TASK_SERIAL_WIPE_SCAN:
       serial_wipe_scan(currentTask.serialWipeArgs.mask);
@@ -3136,41 +3157,34 @@ static void imu_guide_next() {
 }
 
 // ---- 推定 TAS の案内（docs/pons_tas.md §4.4）----
-// 大きい枠を TAS にしたときと、メニューの「TAS curve >」から通す 2 画面（2026-11-23〜 後者も 1/2 から）。
-// 1 画面ごとに読み上げる（画面と音声は順番で 1 対 1）。
+// 大きい枠を TAS にしたときと、メニューの「TAS curve >」から通す画面。
+// 最初の画像と最後の曲線で読み上げる。
 // 画像の原本は tools/tas_guide/、焼き込みは tools/gen_guide_flash.py。曲線の画面はファームが描く
 // （display_pages.cpp の draw_tas_guide。本体を傾けると点と数字が動く）。
 // ★ 起動のたびには出さない。IMU/ESKF 画面の入口の案内にも足さない（2026-11-07 決定）。
 // ★ 抜けたら読み上げを止める（TASK_STOP_WAV）。IMU の案内のように最後に流す 1 文が無いので、
 //   止めないと曲線の画面の説明がページ1に戻ってからも鳴り続ける。
-#define TAS_GUIDE_SCREENS 2
-static const char *const TAS_GUIDE_WAV[TAS_GUIDE_SCREENS] = {
-  "wav/guide_tas_1.wav",       // 1/2 説明の画像  「青い箱は、ピッチから計算した、推定の対気速度です…地上では数字に横線が入り…」
-  "wav/guide_tas_curve.wav",   // 2/2 曲線の画面  「ピッチと対気速度の関係です…」
-};
-static_assert(TAS_GUIDE_PAGES + 1 == TAS_GUIDE_SCREENS,
-              "TAS の案内は画像 TAS_GUIDE_PAGES 枚＋曲線の画面 1 つ（TAS_GUIDE_WAV[] と数を合わせる）");
-
 // 優先度 2。誤った較正のように警告機能を壊す話ではないので、IMU の案内（3）より下げる。
 static void tas_guide_say(const char *wav) {
-  enqueueTask(createPlayWavTask(wav, 2, 0, WAV_EXCL_TAS_GUIDE));
+  if (wav) enqueueTask(createPlayWavTask(wav, 2, 0, WAV_EXCL_TAS_GUIDE));
+  else enqueueTask(createStopWavTask(WAV_EXCL_TAS_GUIDE));
 }
 
 static void tas_guide_start() {
   tas_guide_page = 0;
   // ★ 入口の案内の最後の 1 文（guide_eskf_apply.wav・優先度 3・約 10 秒）がまだ鳴っていたら止める。
-  //   こちらは優先度 2 なので、止めないと TAS の説明が後ろに回され、1/2 の画像の間ずっと「APPLY してください」が
+  //   こちらは優先度 2 なので、止めないと TAS の説明が後ろに回され、最初の画像の間ずっと「APPLY してください」が
   //   流れる（ページ1に着いてすぐ TAS curve / Header を押したとき）。較正の画面を離れたので imu_exit() と同じ扱い。
   enqueueTask(createStopWavTask(WAV_EXCL_ESKF_GUIDE));
-  tas_guide_say(TAS_GUIDE_WAV[0]);
+  tas_guide_say("wav/guide_tas_1.wav");
   redraw_screen = true;
 }
 
 // 短押し・長押しのどちらでも次の画面へ（IMU の案内と同じ操作）。
 static void tas_guide_next() {
   tas_guide_page++;
-  if (tas_guide_page < TAS_GUIDE_SCREENS) {
-    tas_guide_say(TAS_GUIDE_WAV[tas_guide_page]);
+  if (tas_guide_page <= TAS_GUIDE_PAGES) {
+    tas_guide_say(tas_guide_page == TAS_GUIDE_PAGES ? "wav/guide_tas_curve.wav" : nullptr);
   } else {
     tas_guide_page = -1;
     enqueueTask(createStopWavTask(WAV_EXCL_TAS_GUIDE));
@@ -3263,9 +3277,7 @@ static void imu_execute() {
   }
 
   case IMU_MENU_TASCURVE:
-    // ヘッダー設定を変えずに、推定 TAS の案内を 1/2（説明の画像と音声）から通す（押せば 2/2 の曲線へ進む）。
-    // ★ 2026-11-23〜（ユーザー）。それまでは曲線（2/2）だけを直接開いていて、大きい枠がもう TAS の機体では
-    //   1/2 の説明を見る入り口が無かった（Header は TAS → Pavg に戻すときは案内を通さない）。
+    // ヘッダー設定を変えずに、推定 TAS の案内を最初から通す（曲線は最後の画面）。
     tas_guide_start();
     break;
 

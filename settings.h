@@ -21,8 +21,8 @@
 #define RELEASE
 //#define DEBUG_ESKF
 
-#define BUILDDATE 20261125
-#define BUILDVERSION "1.14"
+#define BUILDDATE 20261128
+#define BUILDVERSION "1.16"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -602,6 +602,8 @@
 #define SCREEN_MOVING_EXIT_HOLD_MS  5000UL
 // 最後のボタン操作からこの時間たつまでは戻さない [ms]（操作中に戻らないように。2026-11-14〜）
 #define SCREEN_MOVING_EXIT_IDLE_MS  10000UL
+// TAS 曲線は移動中の確認用。対地速度の条件と最後の操作からの待ち時間をともに 60 秒にする。
+#define SCREEN_MOVING_EXIT_TAS_CURVE_MS 60000UL
 
 // ---- ナビの警告・表示を効かせる対地速度 [m/s]（2026-11-22 に 4 か所の 2 / 2.0 をまとめた。値は変えていない）----
 // 止まっている・歩いている間の GNSS の航跡のぶれで鳴らさないための門。使う所:
@@ -661,6 +663,7 @@
 #define BARO_RF_BLANK_ENABLED   1
 #define BARO_SPIKE_REJECT_M     1.5f
 #define BARO_WIN_MIN_OK         2
+#define VSPEED_WINDOW_MS        250  // 気圧観測のトリム平均窓 [ms]
 // 無線のせいで BARO_WIN_MIN_OK に足りない窓は、閉じずにこの窓数ぶん（250ms × 3 = 750ms）まで延ばす。
 // 10 秒に 1 回ほどの長い送信（約 350ms）が窓をまるごと覆うため。延ばしても足りなければ上の「全部で平均」へ。
 #define BARO_WIN_EXTEND_MAX     3
@@ -1962,6 +1965,12 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //   古い値が残り続けた（発進 10 秒後も地上の姿勢が 37%）。推定 TAS を出すにあたって直した
 //   （docs/pons_tas.md §2.4）。
 #define PITCH_AVG_SEC          10.0f
+// 最後の気圧観測からこれ以内なら、TAS の補正に使う V/S（自機の KF）を有効とみなす [ms]（imu.cpp の imu_feed_gyro）。
+// ★ 1 サンプルでも無効になると、その 10 秒の窓が抜けるまで TAS は欠測（灰色の --）になり、風の推定も止まる。
+// ★ 2026-11-27 まで 1000 ms（気圧の窓 250 ms × 4）だったが、11/25 の生ログで気圧が KF に届く間隔が 57.8 分に 4 回 1000 ms を
+//   越えた（最大 1022 ms・800 ms 超え 17 回。無線で延びた窓 最長約 0.78 秒＋地図の描き直しで loop() が止まる最長約 0.29 秒）。
+//   KF の V/S は気圧の観測の間も IMU で進めているので、1〜2 秒届かなくても使える。airdata.cpp の V/S の古さの判定と同じ 2 秒にする。
+#define TAS_GAMMA_VS_STALE_MS   2000UL
 
 // ---- 推定 TAS（ヘッダー右の大きい枠。docs/pons_tas.md）----
 // TAS を選んでいても、地上では数字に横線を引いて消し、飛び出してから線を外す
@@ -2058,7 +2067,7 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 // 「ピッチ 0 度で 7.0m/s で飛ぶ」という設計前提を使い、ピッチから対気速度を引く。
 // ピッチが上がる（機首上げ）ほど遅く、下がるほど速い。
 //
-//     V(θ) = V0 * sqrt( K / (K + θ) )      θ: ピッチ [度]
+//     V(α) = V0 * sqrt( (実重量 / 設計重量) * K / (K + α) )  α: APPLY 基準の平均迎角 [度]
 //
 // ★ 区分線形をやめてこの形にした理由。**これは近似曲線ではなく式そのもの**。
 //   定常飛行では 揚力 = 重量 なので
@@ -2075,14 +2084,18 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
 //
 // ※ 機体・重量・重心で変わる値なので、機体が変わったら直すこと。
 //   **ここは既定値で、実際の値は SD の settings.txt から上書きできる**
-//   （`airspeed_v0` / `airspeed_k` / `airspeed_min` / `airspeed_max`。README 参照）。
+//   （`airspeed_v0` / `airspeed_k` / `airspeed_weight_kg` / `airspeed_min` / `airspeed_max`。README 参照）。
 //   読み込んだ値は起動時に log.txt の AIRSPEED MODEL 行に残る。
 //   使うピッチは瞬時値ではなく平均（瞬時値は std 1.23 度の振動があるため）。
 //   同じ値を推定 TAS としてヘッダー右の大きい枠にも出せる（tas.cpp。docs/pons_tas.md）。
-#define AIRSPEED_V0_MPS       7.07f   // V0: 巡航ピッチ 0 度での対気速度 [m/s]
+#define AIRSPEED_V0_MPS       7.07f   // V0: 設計重量での巡航ピッチ 0 度の対気速度 [m/s]
 #define AIRSPEED_CURVE_K_DEG  10.0f   // K : θ=0 の姿勢から揚力ゼロの姿勢までの角度（取付角 − 零揚力角）[度]
+#define AIRSPEED_DESIGN_WEIGHT_KG  93.8f  // V0 の設計総重量。Re:PONS の設定画面と合わせる
+#define AIRSPEED_WEIGHT_MIN_KG    50.0f  // 飛行時総重量の入力範囲
+#define AIRSPEED_WEIGHT_MAX_KG   150.0f
 #define AIRSPEED_MIN_MPS       5.8f   // 推定の下限 [m/s]（この機体で起こり得ない値を出さない）
-#define AIRSPEED_MAX_MPS       9.0f   // 推定の上限 [m/s]
+#define AIRSPEED_MAX_MPS       9.9f   // 推定の上限 [m/s]
+#define TAS_HEADER_DEFAULT     1      // header_tas が未設定なら TAS（0 は平均迎角）
 
 // ---- 風の推定 ----
 // 風ベクトル = 対地速度ベクトル - 対気速度ベクトル。

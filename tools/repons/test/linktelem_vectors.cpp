@@ -20,12 +20,12 @@ static void dump(const LinkTelem& t) {
          "second: %u, centi: %u, lat_1e7: %d, lon_1e7: %d, gs_cms: %u, track_cdeg: %u, gnss_alt_dm: %d, kf_alt_dm: %d, kf_vs_cms: %d, "
          "press_dpa: %u, roll_cdeg: %d, pitch_cdeg: %d, yaw_cdeg: %u, pitch_avg_cdeg: %d, roll_trim_cdeg: %d, yaw_acc95_deg: %u, "
          "wind_dmps: %u, wind_dir_cdeg: %u, tas_dmps: %u, tas_flags: %u, batt: %u, numsat: %u, hacc_dm: %u, sacc_cms: %u, "
-         "fixflags: %u, dest_index: %d, nav_mode: %u, have: %u, status: %u } },\n",
+         "fixflags: %u, dest_index: %d, nav_mode: %u, have: %u, status: %u, alpha_avg_cdeg: %d } },\n",
          t.ver, t.seq, t.group, t.scale_index, t.dest_id, t.year, t.month, t.day, t.hour, t.minute, t.second, t.centi,
          t.lat_1e7, t.lon_1e7, t.gs_cms, t.track_cdeg, t.gnss_alt_dm, t.kf_alt_dm, t.kf_vs_cms, t.press_dpa,
          t.roll_cdeg, t.pitch_cdeg, t.yaw_cdeg, t.pitch_avg_cdeg, t.roll_trim_cdeg, t.yaw_acc95_deg,
          t.wind_dmps, t.wind_dir_cdeg, t.tas_dmps, t.tas_flags, t.batt, t.numsat, t.hacc_dm, t.sacc_cms,
-         t.fixflags, t.dest_index, t.nav_mode, t.have, t.status);
+         t.fixflags, t.dest_index, t.nav_mode, t.have, t.status, t.alpha_avg_cdeg);
 }
 
 int main() {
@@ -41,7 +41,7 @@ int main() {
   a.roll_cdeg = -455; a.pitch_cdeg = 312; a.yaw_cdeg = 34211; a.pitch_avg_cdeg = 341; a.roll_trim_cdeg = -12;
   a.yaw_acc95_deg = 7; a.wind_dmps = 18; a.wind_dir_cdeg = 25000; a.tas_dmps = 78; a.tas_flags = 3;
   a.batt = 102 + 87; a.numsat = 21; a.hacc_dm = 14; a.sacc_cms = 0xFFFF; a.fixflags = 1;
-  a.dest_index = -1; a.nav_mode = 2; a.have = 0x7FFF; a.status = 0x1A85; a.crc16 = 0x55AA;
+  a.dest_index = -1; a.nav_mode = 2; a.have = 0xFFFF; a.status = 0x1A85; a.alpha_avg_cdeg = -317;
   dump(a);
   // 2) 端の値（符号の付いた欄の最小・最大、無しの印）
   LinkTelem b; memset(&b, 0, sizeof(b));

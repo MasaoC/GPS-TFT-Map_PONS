@@ -182,10 +182,22 @@ static float    wind_fill_s_ = 0.0f;            // 平滑化がたまった秒�
 static constexpr int PITCH_AVG_NBIN = (int)(PITCH_AVG_SEC / PITCH_AVG_BIN_S + 0.5f);
 static float pavg_bin_sum_[PITCH_AVG_NBIN];   // 小計: ∫ピッチ dt [度·s]
 static float pavg_bin_dt_[PITCH_AVG_NBIN];    // 小計: ∫dt [s]
+static float vs_bin_sum_[PITCH_AVG_NBIN];     // 同じ区間の小計: ∫V/S dt [m]
+static bool  vs_bin_valid_[PITCH_AVG_NBIN];   // その 0.1 秒区間の全サンプルで V/S が有効
 static int   pavg_head_  = 0;                 // 次に書く小計の位置
 static int   pavg_count_ = 0;                 // 埋まっている小計の数（PITCH_AVG_NBIN で頭打ち）
 static float pavg_cur_sum_ = 0.0f, pavg_cur_dt_ = 0.0f;   // いま貯めている小計
 static float pitch_avg_ = 0.0f;           // 満ちるまでは、それまでに貯まった分の平均
+static float vs_avg_ = 0.0f;              // 平均ピッチと全く同じ時間窓の V/S 平均
+static float pavg_cur_vs_sum_ = 0.0f;
+static bool  pavg_cur_vs_valid_ = true;
+static volatile float vs_input_mps_ = 0.0f;
+static volatile bool  vs_input_valid_ = false;
+static bool  vs_window_valid_ = false;
+static bool  gamma_state_known_ = false;
+static bool  gamma_state_active_ = false;
+static volatile bool gamma_event_ = false;
+static volatile bool gamma_event_active_ = false;
 
 // ---- 直進中のロール自動トリム ----
 // 直進中のロールは理論上 0。ズレをゆっくり戻して誤警報の連発を防ぐ。
@@ -206,21 +218,21 @@ static float    yaw_rate_lp_   = 0.0f;    // ワールド系ヨーレートの�
 //   非 volatile だと、飛行中ずっと回るこのループで値をレジスタに抱え込まれうる。
 static volatile float airspeed_v0_  = AIRSPEED_V0_MPS;
 static volatile float airspeed_k_   = AIRSPEED_CURVE_K_DEG;
+static volatile float airspeed_weight_kg_ = AIRSPEED_DESIGN_WEIGHT_KG;
 static volatile float airspeed_min_ = AIRSPEED_MIN_MPS;
 static volatile float airspeed_max_ = AIRSPEED_MAX_MPS;
 
 // ピッチ [度] から対気速度 [m/s] を引く。式の導出は settings.h のコメント。
-//     V(θ) = V0 * sqrt( K / (K + θ) )
+//     V(θ) = V0 * sqrt( (実重量 / 設計重量) * K / (K + θ) )
 // ピッチが上がるほど遅く、下がるほど速い。上下限でクランプし、
 // この機体で起こり得ない対気速度を出さないようにする。
 // clamped を渡すと、上下限に張り付いたか（推定ではなく端の値か）を返す。
 // 推定 TAS の表示で箱を灰色にするのに使う（docs/pons_tas.md §4.3）。
 static float airspeed_from_pitch(float pitch_deg, bool *clamped = nullptr) {
     if (clamped) *clamped = false;
-    // 入力が NaN／無限大なら設計点を返す。比較が全部 false になるので
-    // 下のクランプでは捕まえられず、そのまま風の LPF を殺す（下記参照）。
-    // ここを抜けた値は必ず有限なので、以降は d の符号だけ見ればよい。
-    if (!(pitch_deg > -1000.0f && pitch_deg < 1000.0f)) return airspeed_v0_;
+    // NaN・無限大は基準角 0° に戻し、通常と同じ上下限を適用する。
+    if (!(pitch_deg > -1000.0f && pitch_deg < 1000.0f)) pitch_deg = 0.0f;
+    const float weight_ratio = airspeed_weight_kg_ / AIRSPEED_DESIGN_WEIGHT_KG;
     const float k = airspeed_k_;
     const float d = k + pitch_deg;
     // ★ K + θ がゼロに近づくと発散し、負になると sqrtf() は NaN を返す。
@@ -230,7 +242,7 @@ static float airspeed_from_pitch(float pitch_deg, bool *clamped = nullptr) {
     //   物理的には「揚力がゼロになるピッチまで機首を下げた」状況で、
     //   そこまで下げれば対気速度は上限側に張り付く。
     if (d <= 0.01f) { if (clamped) *clamped = true; return airspeed_max_; }
-    float v = airspeed_v0_ * sqrtf(k / d);
+    float v = airspeed_v0_ * sqrtf(weight_ratio * k / d);
     // 上下限が逆に設定されていても NaN にはならない（max 側が残るだけ）。
     if (v < airspeed_min_) { v = airspeed_min_; if (clamped) *clamped = true; }
     if (v > airspeed_max_) { v = airspeed_max_; if (clamped) *clamped = true; }
@@ -239,15 +251,31 @@ static float airspeed_from_pitch(float pitch_deg, bool *clamped = nullptr) {
 
 // ---- 平均ピッチ（過去 PITCH_AVG_SEC 秒の移動平均）----
 static void pitch_avg_reset() {
-    for (int i = 0; i < PITCH_AVG_NBIN; i++) { pavg_bin_sum_[i] = 0.0f; pavg_bin_dt_[i] = 0.0f; }
+    for (int i = 0; i < PITCH_AVG_NBIN; i++) {
+        pavg_bin_sum_[i] = 0.0f; pavg_bin_dt_[i] = 0.0f;
+        vs_bin_sum_[i] = 0.0f; vs_bin_valid_[i] = false;
+    }
     pavg_head_ = 0;
     pavg_count_ = 0;
     pavg_cur_sum_ = pavg_cur_dt_ = 0.0f;
+    pavg_cur_vs_sum_ = 0.0f;
+    pavg_cur_vs_valid_ = true;
+    // ★ V/S の入力（vs_input_*）はここでは消さない。窓の状態ではなく「いまの V/S」で、毎サンプル imu.cpp が入れ直す。
+    //   消すと、窓を空にしたサンプルの小計が欠測扱いになり、窓が満ちるのが 1 小計（0.1 秒）遅れていた。消すのは attitude_setup()。
     pitch_avg_ = 0.0f;
+    vs_avg_ = 0.0f;
+    vs_window_valid_ = false;
+    gamma_state_known_ = false;
+    gamma_state_active_ = false;
+    gamma_event_ = false;
 }
 
 // 平均が PITCH_AVG_SEC 秒ぶん満ちているか（満ちる前は発進直後と同じく地上の値しか無い）。
 static bool pitch_avg_full() { return pavg_count_ >= PITCH_AVG_NBIN; }
+
+static bool tas_gamma_ready() {
+    return vs_window_valid_ && pavg_cur_vs_valid_ && vs_input_valid_;
+}
 
 // 1 サンプル足す。小計が 0.1 秒ぶん貯まったら輪へ移し、輪全体で平均し直す。
 // ★ 合計を足し引きで持ち回さず、毎回 PITCH_AVG_NBIN 個を足し直す（0.1 秒に 1 回なので軽い）。
@@ -257,17 +285,50 @@ static bool pitch_avg_full() { return pavg_count_ >= PITCH_AVG_NBIN; }
 static void pitch_avg_push(float p, float dt) {
     if (!(p > -1000.0f && p < 1000.0f) || !(dt > 0.0f)) return;   // NaN を輪に入れない
     pavg_cur_sum_ += p * dt;
+    const float vs = vs_input_mps_;
+    if (vs_input_valid_ && vs > -1000.0f && vs < 1000.0f) pavg_cur_vs_sum_ += vs * dt;
+    else pavg_cur_vs_valid_ = false;
     pavg_cur_dt_  += dt;
     if (pavg_cur_dt_ < PITCH_AVG_BIN_S) return;
     pavg_bin_sum_[pavg_head_] = pavg_cur_sum_;
     pavg_bin_dt_[pavg_head_]  = pavg_cur_dt_;
+    vs_bin_sum_[pavg_head_] = pavg_cur_vs_sum_;
+    vs_bin_valid_[pavg_head_] = pavg_cur_vs_valid_;
     pavg_head_ = (pavg_head_ + 1) % PITCH_AVG_NBIN;
     if (pavg_count_ < PITCH_AVG_NBIN) pavg_count_++;
-    pavg_cur_sum_ = pavg_cur_dt_ = 0.0f;
+    pavg_cur_sum_ = pavg_cur_dt_ = pavg_cur_vs_sum_ = 0.0f;
+    pavg_cur_vs_valid_ = true;
     // 満ちる前は 0 番から順に埋まっているので、先頭 pavg_count_ 個がそのまま有効
-    float s = 0.0f, t = 0.0f;
-    for (int i = 0; i < pavg_count_; i++) { s += pavg_bin_sum_[i]; t += pavg_bin_dt_[i]; }
+    float s = 0.0f, vs_s = 0.0f, t = 0.0f;
+    bool vs_ok = pavg_count_ >= PITCH_AVG_NBIN;
+    for (int i = 0; i < pavg_count_; i++) {
+        s += pavg_bin_sum_[i];
+        vs_s += vs_bin_sum_[i];
+        t += pavg_bin_dt_[i];
+        if (!vs_bin_valid_[i]) vs_ok = false;
+    }
     if (t > 0.0f) pitch_avg_ = s / t;
+    vs_window_valid_ = vs_ok && t > 0.0f && vs_input_valid_;
+    if (t > 0.0f) vs_avg_ = vs_s / t;
+    const bool gamma_active = tas_gamma_ready();
+    if (!gamma_state_known_ && pitch_avg_full()) {
+        gamma_state_known_ = true;
+        gamma_state_active_ = gamma_active;
+        gamma_event_active_ = gamma_active;
+        gamma_event_ = true;
+    } else if (gamma_state_known_ && gamma_active != gamma_state_active_) {
+        gamma_state_active_ = gamma_active;
+        gamma_event_active_ = gamma_active;
+        gamma_event_ = true;
+    }
+}
+
+// 平均ピッチから経路角を引いた推定 TAS。最初に補正前の速度を使い、補正後の速度で γ を 1 回出し直す。
+static float alpha_from_pitch_avg() {
+    const float to_deg = 180.0f / (float)M_PI;
+    const float v0 = airspeed_from_pitch(pitch_avg_);
+    const float v1 = airspeed_from_pitch(pitch_avg_ - atan2f(vs_avg_, v0) * to_deg);
+    return pitch_avg_ - atan2f(vs_avg_, v1) * to_deg;
 }
 
 // 前方宣言。attitude_on_gyro() が 平均ピッチとロール自動トリムの
@@ -713,6 +774,8 @@ void attitude_setup() {
     last_gyro_us_ = 0;
     last_gnss_vel_us_ = 0;
     gnss_vel_seen_ = false;
+    vs_input_mps_ = 0.0f;
+    vs_input_valid_ = false;
     pitch_avg_reset();
     // roll_trim_deg_ はここでは触らない。level_roll_off_ と同じく SD から復元する値で、
     // 設定の読み込み（Core1 の setup_sd）と この関数（Core0 の setup）は並行に走るため、
@@ -1543,9 +1606,8 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
         //   風はゆっくりしか変わらないので、旋回中は更新を止めて直前の値を保持すればよい。
         //   同飛行の 94% は直進だったので、捨てる情報はごくわずか。
         //   ※ ESKF のヨー推定自体は beta の影響を受けない（空力の仮定を含まないため）。
-        if (rpy_enabled_ && wind_enabled_ && straight_flight &&
-            pitch_avg_full()) {
-            const float va  = airspeed_from_pitch(pitch_avg_);
+        if (rpy_enabled_ && wind_enabled_ && straight_flight && tas_gamma_ready()) {
+            const float va  = airspeed_from_pitch(alpha_from_pitch_avg());
             // y は真方位（北=0・東=90）。ENU では E=sin, N=cos。
             const float ya  = y * (float)M_PI / 180.0f;
             const float we  = v_[0] - va * sinf(ya);
@@ -1554,8 +1616,9 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
             wind_e_ += (we - wind_e_) * aw;
             wind_n_ += (wn - wind_n_) * aw;
             if (wind_fill_s_ < WIND_LPF_SEC) wind_fill_s_ += dt;
-        } else if (!rpy_enabled_ || !wind_enabled_ || (gnss_vel_fresh() && sp <= WIND_MIN_SPEED_MPS)) {
-            // 地上・OFF のときだけ捨てる。旋回中と GNSS 断中は「保持」であって破棄ではない。
+        } else if (!tas_gamma_ready() || !rpy_enabled_ || !wind_enabled_ ||
+                   (gnss_vel_fresh() && sp <= WIND_MIN_SPEED_MPS)) {
+            // TAS 欠測・地上・OFF では推定をやり直す。旋回中と GNSS 断中は直前の値を保持する。
             // ★ 遅いかどうかは **GNSS の速度の観測が生きているときだけ** sp で見る（2026-11-13〜。BUG-63）。
             //   断中の sp は加速度の積分で漂うので、飛んでいても 2 m/s を割ると保持していた風を捨てていた
             //   （画面では断中の風はオレンジの × 付きで残す作り。eskf_display_gnss_stale）。
@@ -2128,9 +2191,35 @@ bool  attitude_pitch_avg_valid()   { return attitude_ready() && pitch_avg_full()
 // 推定 TAS（平均ピッチを対気速度モデルで換算した値）。平均が満ちていない・IMU が途絶えたら false。
 // ★ 姿勢機能が OFF でも平均ピッチ自体は回っているので、出してよいかは
 //   呼び出し側（tas.cpp）が平均ピッチと同じ条件で決める。
-bool attitude_get_tas(float &mps, bool &clamped) {
-    if (!attitude_pitch_avg_valid()) return false;
-    mps = airspeed_from_pitch(pitch_avg_, &clamped);
+bool attitude_get_tas(float &mps, bool &clamped, float *alpha_deg) {
+    float alpha;
+    if (!attitude_get_alpha_avg(alpha)) return false;
+    mps = airspeed_from_pitch(alpha, &clamped);
+    if (alpha_deg) *alpha_deg = alpha;
+    return true;
+}
+bool attitude_get_alpha_avg(float &deg) {
+    if (!attitude_ready() || !tas_gamma_ready()) return false;
+    deg = alpha_from_pitch_avg();
+    return true;
+}
+void attitude_set_vspeed(float mps, bool valid) {
+    const bool ok = valid && mps > -1000.0f && mps < 1000.0f;
+    vs_input_mps_ = ok ? mps : 0.0f;
+    vs_input_valid_ = ok;
+    // 小計中に復帰しても、この区間は欠測として窓から抜けるまで残す。
+    if (!ok) pavg_cur_vs_valid_ = false;
+    const bool active = tas_gamma_ready();
+    if (gamma_state_known_ && active != gamma_state_active_) {
+        gamma_state_active_ = active;
+        gamma_event_active_ = active;
+        gamma_event_ = true;
+    }
+}
+bool attitude_take_gamma_event(bool &active) {
+    if (!gamma_event_) return false;
+    gamma_event_ = false;
+    active = gamma_event_active_;
     return true;
 }
 float attitude_airspeed_from_pitch(float pitch_deg, bool *clamped) {
@@ -2178,8 +2267,8 @@ void  attitude_finish_settings_load() {
 }
 
 bool attitude_get_wind(float &speed_mps, float &dir_to_deg) {
-    // IMU が途絶えたら出さない（理由は attitude_pitch_avg_valid()）
-    if (!attitude_ready() || !wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;
+    // IMU または TAS が欠測したら風も出さない。
+    if (!attitude_ready() || !tas_gamma_ready() || !wind_enabled_ || wind_fill_s_ < WIND_LPF_SEC) return false;
     speed_mps = sqrtf(wind_e_*wind_e_ + wind_n_*wind_n_);
     // 「風が吹いていく方向」の真方位（北=0、東=90）
     dir_to_deg = atan2f(wind_e_, wind_n_) * 180.0f / (float)M_PI;
@@ -2403,6 +2492,10 @@ float attitude_get_airspeed_v0()  { return airspeed_v0_; }
 void  attitude_set_airspeed_v0(float mps)  { if (airspeed_param_ok(mps)) airspeed_v0_  = mps; }
 float attitude_get_airspeed_k()   { return airspeed_k_; }
 void  attitude_set_airspeed_k(float deg)   { if (airspeed_param_ok(deg)) airspeed_k_   = deg; }
+float attitude_get_airspeed_weight_kg() { return airspeed_weight_kg_; }
+void  attitude_set_airspeed_weight_kg(float kg) {
+    if (kg >= AIRSPEED_WEIGHT_MIN_KG && kg <= AIRSPEED_WEIGHT_MAX_KG) airspeed_weight_kg_ = kg;
+}
 float attitude_get_airspeed_min() { return airspeed_min_; }
 void  attitude_set_airspeed_min(float mps) { if (airspeed_param_ok(mps)) airspeed_min_ = mps; }
 float attitude_get_airspeed_max() { return airspeed_max_; }

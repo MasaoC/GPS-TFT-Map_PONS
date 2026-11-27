@@ -2,7 +2,7 @@
 // File    : tools/wire2_test/main.cpp
 // Role    : lora_link/link_wire2.h・link_beacon.h・link_proto.h のホスト単体テスト。
 //           1) 8 回転枠（slot 0〜7）のエンコード→デコード往復恒等性
-//           2) 負角・飽和クランプ値が「無し」センチネル（0x800 / -512 / 0x8000 / -128）に化けないこと
+//           2) 負角・飽和クランプ値が「無し」センチネルに化けないこと
 //           3) NaN パック・23→0 時跨ぎ（BUG-72 途切れ明けを含む）・うるう年・seq16 復元
 //           4) link_w2_utc_ms（BUG-68 GNSS_LOST 拒否を含む）と LinkBeacon の往復・印の識別
 //           5) 電池の表示（LINK_BATT_*。回転枠 4 の 8 ビット。電池・充電中・SW OFF・分からない）
@@ -44,7 +44,8 @@ static LinkTelem make_full_telem(uint16_t seq) {
     t.roll_cdeg = -1240;     // -12.4°
     t.pitch_cdeg = 350;      // +3.5°
     t.yaw_cdeg = 31440;      // 314.4°
-    t.pitch_avg_cdeg = 210;  // +2.1°
+    t.pitch_avg_cdeg = 225;  // +2.25°
+    t.alpha_avg_cdeg = -170; // -1.7°
     t.roll_trim_cdeg = -85;  // -0.85°
     t.yaw_acc95_deg = 4;
     t.wind_dmps = 38;        // 3.8 m/s
@@ -61,7 +62,7 @@ static LinkTelem make_full_telem(uint16_t seq) {
     t.status = LINK_ST_BAT_LOW | LINK_ST_TIME_WANTED;
     t.have = RHAVE_GS | RHAVE_TTRACK | RHAVE_GNSSALT | RHAVE_KFALT | RHAVE_KFVS |
              RHAVE_PRESS | RHAVE_DATE | RHAVE_NUMSAT |
-             RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG | RHAVE_ATT_TRIM |
+             RHAVE_ATT | RHAVE_ATT_YAW | RHAVE_ATT_AVG | RHAVE_ATT_TRIM | RHAVE_ALPHA |
              RHAVE_ATT_WIND | RHAVE_TAS;
     return t;
 }
@@ -79,6 +80,8 @@ static void test_roundtrip_8slots() {
         CHECK(!link_bc_valid(wire), "slot %u is not beacon", seq);
         CHECK(link_w2_group(wire) == 2, "slot %u group", seq);
         CHECK(link_w2_slot(wire) == seq, "slot %u index", seq);
+        const uint8_t unused = seq == W2S_TRIM ? 0xFCu : seq == W2S_PRESS ? 0xC0u : 0xFFu;
+        CHECK((wire[W2_SLOT + 3] & unused) == 0, "slot %u sends unused high bits as zero", seq);
 
         link_w2_decode(wire, &rx, 1000 + seq * 1000, 1000);
 
@@ -89,6 +92,8 @@ static void test_roundtrip_8slots() {
             CHECK((rx.acc.have & RHAVE_ATT_YAW) != 0, "yaw enabled from slot 2 (seq=%u)", seq);
         }
         CHECK(link_w2_slot_seen(&rx, (uint8_t)seq), "slot %u seen", seq);
+        CHECK(rx.slow_known == (seq >= W2S_TRIM) && ((rx.acc.tas_flags & LINK_TAS_HDR) != 0) == rx.slow_known,
+              "sender header is known from slot 2 (seq=%u)", seq);
     }
 
     // 8 枠すべて受けた後の完全一致確認
@@ -101,12 +106,13 @@ static void test_roundtrip_8slots() {
     CHECK(got.fixflags == ref.fixflags, "fixflags=0x%02X", got.fixflags);
     CHECK(got.year == ref.year && got.month == ref.month && got.day == ref.day, "date");
     CHECK(got.hour == ref.hour && got.minute == ref.minute && got.second == ref.second && got.centi == ref.centi, "time");
-    CHECK(got.lat_1e7 == ref.lat_1e7 && got.lon_1e7 == ref.lon_1e7, "lat/lon");
+    CHECK(got.lat_1e7 == 352945680 && got.lon_1e7 == 1362543210, "lat/lon round to 1e-6 degrees");
     CHECK(got.gs_cms == ref.gs_cms && got.track_cdeg == ref.track_cdeg, "gs/trk");
     CHECK(got.kf_alt_dm == ref.kf_alt_dm && got.kf_vs_cms == ref.kf_vs_cms, "kf alt/vs");
     CHECK(got.roll_cdeg == ref.roll_cdeg && got.pitch_cdeg == ref.pitch_cdeg, "roll/pitch");
     CHECK(got.yaw_cdeg == ref.yaw_cdeg, "yaw got=%u ref=%u", got.yaw_cdeg, ref.yaw_cdeg);
     CHECK(got.pitch_avg_cdeg == ref.pitch_avg_cdeg, "pavg got=%d ref=%d", got.pitch_avg_cdeg, ref.pitch_avg_cdeg);
+    CHECK(got.alpha_avg_cdeg == ref.alpha_avg_cdeg, "alpha round trip");
     CHECK(got.tas_dmps == ref.tas_dmps && got.tas_flags == ref.tas_flags, "tas");
     CHECK(got.wind_dmps == ref.wind_dmps && got.wind_dir_cdeg == ref.wind_dir_cdeg, "wind");
     CHECK(got.roll_trim_cdeg == ref.roll_trim_cdeg && got.yaw_acc95_deg == ref.yaw_acc95_deg, "trim/yawacc");
@@ -115,6 +121,204 @@ static void test_roundtrip_8slots() {
     CHECK(got.press_dpa == ref.press_dpa && got.scale_index == ref.scale_index, "press/scale");
     CHECK(got.nav_mode == ref.nav_mode && got.dest_id == ref.dest_id, "nav/dest_id");
     CHECK(got.sacc_cms == ref.sacc_cms, "sacc got=%u ref=%u", got.sacc_cms, ref.sacc_cms);
+
+    // TAS 欠測でも Pavg と TAS 選択は届く。直前の TAS は残さない。
+    LinkTelem missing = make_full_telem(8);
+    missing.have &= ~(RHAVE_TAS | RHAVE_ALPHA | RHAVE_KFVS);
+    missing.tas_flags = LINK_TAS_HDR;
+    uint8_t packet[LINK_W2_LEN];
+    link_w2_encode(&missing, packet);
+    link_w2_decode(packet, &rx, 9000, 1000);
+    CHECK(!(rx.acc.have & (RHAVE_TAS | RHAVE_ALPHA | RHAVE_ATT_WIND)) && (rx.acc.have & RHAVE_ATT_AVG) &&
+          rx.acc.tas_flags == LINK_TAS_HDR, "missing TAS clears old value and keeps header selection");
+    CHECK(!(rx.acc.have & RHAVE_KFVS) && rx.acc.kf_vs_cms == 0, "missing vertical speed clears old value");
+    LinkTelem recovered = make_full_telem(8 + W2S_TRIM);
+    link_w2_encode(&recovered, packet);
+    link_w2_decode(packet, &rx, 10000, 1000);
+    CHECK((rx.acc.have & RHAVE_TAS) && !(rx.acc.have & RHAVE_ATT_WIND), "wind waits for a fresh wind slot");
+    recovered = make_full_telem(8 + W2S_WIND2);
+    link_w2_encode(&recovered, packet);
+    link_w2_decode(packet, &rx, 13000, 1000);
+    CHECK(rx.acc.have & RHAVE_ATT_WIND, "wind returns after a fresh wind slot");
+}
+
+static void test_position_and_reference_pitch() {
+    LinkW2Rx rx;
+    link_w2_rx_reset(&rx);
+    uint8_t wire[LINK_W2_LEN];
+    const auto send = [&](const LinkTelem& t) {
+        link_w2_encode(&t, wire);
+        link_w2_decode(wire, &rx, 1000 + t.seq * 1000, 1000);
+    };
+
+    for (uint16_t seq = 0; seq < 8; seq++) {
+        LinkTelem tx = make_full_telem(seq);
+        tx.pitch_avg_cdeg = (int16_t)(-100 + seq * 25);
+        send(tx);
+        CHECK((rx.acc.have & RHAVE_ATT_AVG) && rx.acc.pitch_avg_cdeg == tx.pitch_avg_cdeg,
+              "average pitch updates every frame seq=%u", seq);
+    }
+
+    LinkTelem tx = make_full_telem(8);
+    tx.lat_1e7 = -899999995;
+    tx.lon_1e7 = -1799999995;
+    tx.pitch_avg_cdeg = -1575;
+    send(tx);
+    CHECK(rx.acc.lat_1e7 == -900000000 && rx.acc.lon_1e7 == -1800000000, "signed coordinates round to south pole/antimeridian");
+    CHECK((rx.acc.have & RHAVE_ATT_AVG) && rx.acc.pitch_avg_cdeg == -1575, "average pitch low limit");
+    tx.seq = 9;
+    tx.have &= ~RHAVE_ATT_AVG;
+    send(tx);
+    CHECK(!(rx.acc.have & RHAVE_ATT_AVG) && rx.acc.pitch_avg_cdeg == 0, "average pitch invalidates immediately");
+    tx = make_full_telem(10);
+    tx.lat_1e7 = 899999995;
+    tx.lon_1e7 = 1799999995;
+    tx.pitch_avg_cdeg = 1575;
+    send(tx);
+    CHECK(rx.acc.lat_1e7 == 900000000 && rx.acc.lon_1e7 == 1800000000, "coordinates round to north pole/antimeridian");
+    CHECK((rx.acc.have & RHAVE_ATT_AVG) && rx.acc.pitch_avg_cdeg == 1575, "average pitch recovers on the next frame");
+    tx.seq = 11;
+    tx.pitch_avg_cdeg = 1600;
+    send(tx);
+    CHECK(!(rx.acc.have & RHAVE_ATT_AVG), "out-of-range pitch clears prior value");
+}
+
+static void test_status_and_kf_alt() {
+    LinkW2Rx rx;
+    link_w2_rx_reset(&rx);
+    uint8_t wire[LINK_W2_LEN];
+    const auto send = [&](const LinkTelem& t, uint32_t now) {
+        link_w2_encode(&t, wire);
+        link_w2_decode(wire, &rx, now, 1000);
+    };
+
+    const uint16_t fast[] = { LINK_ST_IMU_ERROR, LINK_ST_GROUND_ROLL, LINK_ST_GROUND_PITCH, LINK_ST_CALIB_GND,
+        LINK_ST_GNSS_LOST, LINK_ST_PWR_FAULT, LINK_ST_TIME_WANTED, LINK_ST_TIME_COARSE, LINK_ST_TIME_BAD };
+    for (uint8_t bit = 0; bit < 9; bit++) {
+        LinkTelem tx = make_full_telem(bit);
+        tx.status = fast[bit];
+        tx.fixflags = 0;
+        tx.kf_alt_dm = (bit & 1) ? -3000 : 13382;
+        send(tx, 1000 + bit * 1000);
+        CHECK(w2_get24(wire + W2_STATUS_ALT) ==
+              ((1u << bit) | ((uint32_t)(tx.kf_alt_dm + 3000) << 10)), "wire bit %u and KF altitude stay independent", bit);
+        CHECK(rx.acc.status == tx.status && rx.acc.fixflags == 0, "fast status bit %u", bit);
+        CHECK((rx.acc.have & RHAVE_KFALT) && rx.acc.kf_alt_dm == tx.kf_alt_dm, "KF altitude boundary");
+    }
+    LinkTelem tx = make_full_telem(9);
+    tx.status = LINK_ST_TIME_BAD;
+    const int16_t invalid_altitudes[] = {-3001, 13383};
+    for (int16_t invalid : invalid_altitudes) {
+        tx.kf_alt_dm = invalid;
+        send(tx, 1000 + tx.seq * 1000);
+        CHECK(w2_get24(wire + W2_STATUS_ALT) == (0x3FFFu << 10 | 0x0300u), "KF altitude missing code with FIXOK and TIME_BAD");
+        CHECK(!(rx.acc.have & RHAVE_KFALT) && rx.acc.kf_alt_dm == 0, "out-of-range KF altitude does not wrap or retain past value");
+        CHECK(rx.acc.fixflags == 1 && rx.acc.status == LINK_ST_TIME_BAD, "KF altitude missing does not alter status");
+        tx.seq++;
+    }
+    tx.kf_alt_dm = 0;
+    send(tx, 12000);
+    CHECK((rx.acc.have & RHAVE_KFALT) && rx.acc.kf_alt_dm == 0, "zero height is valid");
+    tx.seq++;
+    tx.have &= ~RHAVE_KFALT;
+    send(tx, 13000);
+    CHECK(!(rx.acc.have & RHAVE_KFALT), "KF altitude have bit can mark zero unavailable");
+
+    link_w2_rx_reset(&rx);
+    tx = make_full_telem(5);
+    tx.status = W2_ST_SLOW | LINK_ST_GNSS_LOST;
+    send(tx, 6000);
+    CHECK(rx.acc.status == LINK_ST_GNSS_LOST && !(rx.acc.tas_flags & LINK_TAS_HDR), "slot 5 carries fast state only");
+    tx.seq = 6;
+    send(tx, 7000);
+    CHECK(w2_get32(wire + W2_SLOT) == (10132u | (3u << 14) | (0xFu << 17) | (0x104u << 21)), "slot 6 flags and yaw accuracy have defined positions");
+    CHECK(rx.acc.status == tx.status && (rx.acc.tas_flags & LINK_TAS_HDR), "slot 6 installs slow state and header");
+    wire[W2_SLOT + 3] ^= 1;
+    CHECK(!link_w2_valid(wire), "CRC includes fourth rotation byte");
+    tx.seq = 7;
+    tx.status = LINK_ST_IMU_ERROR;
+    tx.tas_flags = 0;
+    send(tx, 8000);
+    CHECK(rx.acc.status == (W2_ST_SLOW | LINK_ST_IMU_ERROR) && rx.acc.tas_flags == LINK_TAS_HDR,
+          "fast flags and TAS clamp change without overwriting cached slot 6");
+    tx.seq = 10;
+    send(tx, 11000);
+    CHECK(rx.slow_known && rx.acc.status == LINK_ST_IMU_ERROR && !(rx.acc.tas_flags & LINK_TAS_HDR),
+          "next slot 2 clears slow state after four frames");
+
+    tx.seq = 22;
+    tx.status = W2_ST_SLOW;
+    tx.tas_flags = LINK_TAS_HDR;
+    send(tx, 23000);
+    for (tx.seq = 23; tx.seq <= 33; tx.seq++) {
+        if (tx.seq % 8 != W2S_PRESS) send(tx, 1000 + tx.seq * 1000);
+    }
+    CHECK(!link_w2_slot_seen(&rx, W2S_PRESS) && !(rx.acc.have & RHAVE_PRESS) &&
+          rx.slow_known && (rx.acc.status & W2_ST_SLOW) == W2_ST_SLOW && (rx.acc.tas_flags & LINK_TAS_HDR),
+          "slot 2 keeps slow state fresh without refreshing pressure or scale");
+    CHECK((w2_get32(wire + W2_SLOT) >> 22) == 0, "slot 1 has no copy of slot 6 flags");
+    tx.seq = 34;
+    send(tx, 35000);
+    CHECK((w2_get32(wire + W2_SLOT) >> 22) == 0xF, "slot 2 flags have defined positions");
+    tx.seq = 38;
+    tx.status = 0;
+    tx.tas_flags = 0;
+    send(tx, 39000);
+    CHECK(link_w2_slot_seen(&rx, W2S_PRESS) && (rx.acc.have & RHAVE_PRESS) && rx.slow_known &&
+          !(rx.acc.status & W2_ST_SLOW) && !(rx.acc.tas_flags & LINK_TAS_HDR), "slot 6 overwrites slot 2 and restores pressure");
+    tx.seq = 42;
+    tx.status = W2_ST_SLOW;
+    tx.tas_flags = LINK_TAS_HDR;
+    send(tx, 43000);
+    for (tx.seq = 43; tx.seq <= 53; tx.seq++) {
+        const auto slot = tx.seq % 8;
+        if (slot != W2S_TRIM && slot != W2S_PRESS) send(tx, 1000 + tx.seq * 1000);
+    }
+    CHECK(!rx.slow_known && !(rx.acc.status & W2_ST_SLOW) && !(rx.acc.tas_flags & LINK_TAS_HDR),
+          "slow state expires only after losing both copies");
+    tx.seq = 54;
+    send(tx, 55000);
+    CHECK(rx.slow_known && (rx.acc.status & W2_ST_SLOW) == W2_ST_SLOW, "slot 6 alone restores slow state");
+    tx.seq = 65;
+    send(tx, 66000);
+    CHECK(!rx.slow_known && !(rx.acc.status & W2_ST_SLOW) && !(rx.acc.tas_flags & LINK_TAS_HDR), "long reception gap clears slow state");
+}
+
+static void test_yaw_accuracy_cadence() {
+    LinkW2Rx rx;
+    link_w2_rx_reset(&rx);
+    uint8_t wire[LINK_W2_LEN];
+    LinkTelem tx = make_full_telem(W2S_PRESS);
+    const auto send = [&](uint16_t seq) {
+        tx.seq = seq;
+        link_w2_encode(&tx, wire);
+        link_w2_decode(wire, &rx, 1000 + seq * 1000, 1000);
+    };
+
+    tx.yaw_acc95_deg = 180;
+    send(6);
+    CHECK((rx.acc.have & RHAVE_ATT_YAW) && rx.acc.yaw_acc95_deg == 180 && !(rx.acc.have & RHAVE_ATT_TRIM),
+          "slot 6 alone provides yaw accuracy without claiming roll trim");
+    tx.yaw_acc95_deg = 255;
+    send(10);
+    CHECK((rx.acc.have & RHAVE_ATT_YAW) && rx.acc.yaw_acc95_deg == 255 && (rx.acc.have & RHAVE_ATT_TRIM),
+          "slot 2 refreshes yaw accuracy four frames later and provides roll trim");
+    tx.have &= ~RHAVE_ATT_YAW;
+    send(14);
+    tx.have |= RHAVE_ATT_YAW;
+    send(15);
+    CHECK(!(rx.acc.have & RHAVE_ATT_YAW), "unavailable accuracy clears yaw even when raw yaw returns before the next copy");
+    tx.yaw_acc95_deg = 0;
+    send(18);
+    CHECK((rx.acc.have & RHAVE_ATT_YAW) && rx.acc.yaw_acc95_deg == 0, "zero is a valid yaw accuracy");
+
+    for (uint16_t seq = 19; seq <= 29; seq++) {
+        if (seq % 4 != 2) send(seq);
+    }
+    CHECK(!(rx.acc.have & RHAVE_ATT_YAW), "yaw accuracy expires if neither copy is received");
+    tx.yaw_acc95_deg = 12;
+    send(30);
+    CHECK((rx.acc.have & RHAVE_ATT_YAW) && rx.acc.yaw_acc95_deg == 12, "slot 6 restores yaw accuracy");
 }
 
 static void test_extremes_and_sentinels() {
@@ -133,11 +337,12 @@ static void test_extremes_and_sentinels() {
 
     // 2) 極端な負値・正値（クランプ上限超え）を送っても「無し」センチネルに化けないこと
     LinkTelem ext = make_full_telem(W2S_TRIM); // slot 2 で yawacc_known を立てる
-    ext.kf_alt_dm = -32768;       // INT16_MIN -> -32767 にクランプされ W2_ALT_NONE(0x8000) を避ける
+    ext.kf_alt_dm = -32768;       // 無線の範囲を下回るので欠測
     ext.kf_vs_cms = -1000;        // -10 m/s -> -127 (-6.35m/s) にクランプされ W2_VS_NONE(-128) を避ける
     ext.roll_cdeg = -30000;       // -300° -> -2047 (-204.7°) にクランプされ W2_ROLL_NONE(0x800) を避ける
     ext.pitch_cdeg = -30000;
-    ext.pitch_avg_cdeg = -10000;  // -100° -> -511 (-51.1°) にクランプされ W2_PAVG_NONE(-512) を避ける
+    ext.pitch_avg_cdeg = -10000;  // 参考値の送信範囲外
+    ext.alpha_avg_cdeg = -10000;  // -51.1° まで
     ext.yaw_cdeg = 35990;         // 359.9°（int16 には入らない値）
     ext.tas_dmps = 0;             // have & RHAVE_TAS なら 0 でも 1 (0.1m/s) に持ち上げられる
 
@@ -146,12 +351,13 @@ static void test_extremes_and_sentinels() {
     link_w2_encode(&ext, wire);
     link_w2_decode(wire, &rx, 1000, 1000);
 
-    CHECK((rx.acc.have & RHAVE_KFALT) != 0 && rx.acc.kf_alt_dm == -32767, "kf_alt min clamp got=%d", rx.acc.kf_alt_dm);
+    CHECK(!(rx.acc.have & RHAVE_KFALT), "KF altitude outside radio range is unavailable");
     CHECK((rx.acc.have & RHAVE_KFVS) != 0 && rx.acc.kf_vs_cms == -635, "kf_vs min clamp got=%d", rx.acc.kf_vs_cms);
     CHECK((rx.acc.have & RHAVE_ATT) != 0 && rx.acc.roll_cdeg == -20470 && rx.acc.pitch_cdeg == -20470,
           "roll/pitch min clamp got=%d/%d", rx.acc.roll_cdeg, rx.acc.pitch_cdeg);
-    CHECK((rx.acc.have & RHAVE_ATT_AVG) != 0 && rx.acc.pitch_avg_cdeg == -5110,
-          "pavg min clamp got=%d", rx.acc.pitch_avg_cdeg);
+    CHECK((rx.acc.have & RHAVE_ALPHA) != 0 && rx.acc.alpha_avg_cdeg == -5110,
+          "alpha min clamp got=%d", rx.acc.alpha_avg_cdeg);
+    CHECK(!(rx.acc.have & RHAVE_ATT_AVG), "out-of-range average pitch is absent");
     CHECK((rx.acc.have & RHAVE_ATT_YAW) != 0 && rx.acc.yaw_cdeg == 35990,
           "yaw 359.9 got=%u", rx.acc.yaw_cdeg);
     CHECK((rx.acc.have & RHAVE_TAS) != 0 && rx.acc.tas_dmps == 1, "tas zero promoted to 1");
@@ -162,18 +368,30 @@ static void test_extremes_and_sentinels() {
     CHECK(link_pack_u16(nan_v, 100.0f, 35999) == 0, "pack_u16 NaN");
     CHECK(link_pack_u8(nan_v, 10.0f) == 0, "pack_u8 NaN");
 
-    // 4) 古い印 0xA2 / 0xA4 / 0xA8 や CRC 改ざんを弾くこと
+    // 4) CRC の通った旧形式は診断できるが、通常の受信には入らない。
     uint8_t bad[LINK_W2_LEN];
     memcpy(bad, wire, LINK_W2_LEN);
     bad[W2_MAGIC] = 0xA2;
+    bad[2] = 3;
     w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
-    CHECK(!link_w2_valid(bad), "reject old 0xA2 magic");
-    bad[W2_MAGIC] = 0xA4 | 0x02;   // 2026-11-20 までの並び（sAcc なし）
-    w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
-    CHECK(!link_w2_valid(bad), "reject old 0xA4 magic");
-    bad[W2_MAGIC] = 0xA8 | 0x02;   // 2026-11-23 までの並び（回転枠 4 が電圧）
-    w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
-    CHECK(!link_w2_valid(bad), "reject old 0xA8 magic");
+    CHECK(link_w2_crc_ok(bad) && !link_frame_valid(bad), "A2 CRC valid, reject as telemetry");
+    CHECK(link_w2_legacy_magic(bad[0]) == 0xA2 && link_w2_legacy_group(bad) == 3,
+          "diagnose A2 with separate group byte");
+    constexpr uint8_t old_formats[] = {0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xBC};
+    for (const uint8_t magic : old_formats) {
+        for (uint8_t group = 0; group < 4; group++) {
+            bad[W2_MAGIC] = magic | group;
+            w2_put16(bad + W2_CRC, link_crc16(bad, W2_CRC));
+            CHECK(link_w2_crc_ok(bad) && !link_frame_valid(bad), "%02X CRC valid, reject as telemetry", magic);
+            CHECK(link_w2_legacy_magic(bad[0]) == magic && link_w2_legacy_group(bad) == group,
+                  "diagnose %02X group %u", magic, group);
+        }
+    }
+    bad[10] ^= 0x01;
+    CHECK(!link_w2_crc_ok(bad), "reject old format with corrupt CRC");
+    CHECK(!link_w2_legacy_magic(wire[0]) && !link_w2_legacy_magic(LINK_BC_MAGIC) &&
+          !link_w2_legacy_magic(0x50) && !link_w2_legacy_magic(0xFF),
+          "current, beacon, 65-byte marker and unknown marker are not old 32-byte formats");
     memcpy(bad, wire, LINK_W2_LEN);
     bad[10] ^= 0x01;
     CHECK(!link_w2_valid(bad), "reject bad CRC");
@@ -361,6 +579,17 @@ static void test_utc_ms_and_beacon() {
     link_w2_decode(w, &rx, 3000, 1000);
     CHECK(link_w2_utc_ms(w, &rx, &utc) == LINK_W2_TIME_COARSE, "utc_ms COARSE");
 
+    tx.status = LINK_ST_TIME_BAD;
+    link_w2_encode(&tx, w);
+    link_w2_decode(w, &rx, 4000, 1000);
+    CHECK(link_w2_utc_ms(w, &rx, &utc) == LINK_W2_TIME_NONE, "utc_ms rejected on TIME_BAD");
+    tx.status = 0;
+    tx.have &= ~RHAVE_DATE;
+    tx.year = tx.hour = tx.minute = tx.second = tx.centi = 0;
+    link_w2_encode(&tx, w);
+    link_w2_decode(w, &rx, 5000, 1000);
+    CHECK(link_w2_utc_ms(w, &rx, &utc) == LINK_W2_TIME_NONE, "utc_ms rejects unavailable timestamp");
+
     // LinkBeacon 往復テスト
     LinkBeacon bc_in;
     memset(&bc_in, 0, sizeof(bc_in));
@@ -439,6 +668,9 @@ static void test_yaw_full_circle() {
 
 int main() {
     test_roundtrip_8slots();
+    test_position_and_reference_pitch();
+    test_status_and_kf_alt();
+    test_yaw_accuracy_cadence();
     test_extremes_and_sentinels();
     test_midnight_and_stale();
     test_sacc();

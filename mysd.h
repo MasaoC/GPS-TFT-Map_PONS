@@ -74,7 +74,7 @@
         RCOL_ROLL, RCOL_PITCH, RCOL_YAW,
         RCOL_PAVG, RCOL_RTRIM, RCOL_YAWACC, RCOL_WSPD, RCOL_WDIR,
         // 推定 TAS と大きい枠の中身（2026-11-07〜。docs/pons_tas.md §6）
-        RCOL_TAS, RCOL_HDR,
+        RCOL_TAS, RCOL_HDR, RCOL_ALPHA,
         REPLAY_COL_COUNT
     } ReplayCol;
 
@@ -91,7 +91,7 @@
         float    gnss_altitude, kf_altitude, kf_vspeed, pressure, voltage;
         // 姿勢ログ由来の値 [度]。有効かどうかは RHAVE_ATT* のビットで判断する。
         float    roll, pitch, yaw;
-        float    pitch_avg, roll_trim, yaw_acc95;
+        float    pitch_avg, roll_trim, yaw_acc95, alpha_avg;
         float    wind_mps, wind_dir;
         float    tas;    // 推定 TAS [m/s]（RHAVE_TAS）
         int8_t   hdr;    // 大きい枠の中身（tas.h の TasHdr）。-1 = 列が無い
@@ -211,6 +211,8 @@
     void getAirspeedV0(char* buffer, size_t bufferSize);
     void setAirspeedK(const char* value);
     void getAirspeedK(char* buffer, size_t bufferSize);
+    void setAirspeedWeightKg(const char* value);
+    void getAirspeedWeightKg(char* buffer, size_t bufferSize);
     void setAirspeedMin(const char* value);
     void getAirspeedMin(char* buffer, size_t bufferSize);
     void setAirspeedMax(const char* value);
@@ -266,7 +268,7 @@
               // ★ 姿勢・風。自機飛行 CSV（data/）と受信ログ（received/）の両方で使う。
               //   未収束の項目は have ビットを立てず、書き出し側で空欄にする。
               float    roll, pitch, yaw;
-              float    pitch_avg, roll_trim, yaw_acc95;
+              float    pitch_avg, roll_trim, yaw_acc95, alpha_avg;
               float    wind_mps, wind_dir;
               // 推定 TAS（RHAVE_TAS）と、大きい枠に何を出していたか（tas.h の TasHdr）。
               // 受信ログでは送信機の推定 TAS と、ボートの大きい枠に出していたもの。
@@ -329,6 +331,9 @@
               char key[32];                  // 設定キー名（settings[].id）
               char value[64];                // 設定値文字列
           } serialSetArgs;
+          struct {
+              char weight_kg[32];            // SETTINGS_SAVE の総重量。空欄は変更なし
+          } serialSaveSettingsArgs;
           struct {                           // For TASK_SERIAL_WIPE_SCAN / WIPE / TRASH_EMPTY / TRASH_RESTORE（src/sd_wipe_rules.h）
               uint8_t  mask;                 // 移す種類（SDWIPE_CAT_* の組み合わせ）
               uint32_t count;                // WIPE / TRASH_EMPTY: Re:PONS が見せた件数（直前に数え直して同じでなければ何もしない）
@@ -398,13 +403,13 @@
                            uint32_t range_from = 0, uint32_t range_len = 0);   // tail: 末尾だけ [B] / jst_start..end: IMU時刻範囲 [s] / range: 位置と長さ [B]
   Task createSerialSettingsGetTask();
   Task createSerialSettingsSetTask(const char* key, const char* value);
-  Task createSerialSettingsSaveTask();
+  Task createSerialSettingsSaveTask(const char* weight_kg);
   void serial_list_csv_files(bool all = false);
   void serial_send_csv_file(const char* filename, uint32_t tail = 0, uint32_t jst_start = 0, uint32_t jst_end = 0,
                             uint32_t range_from = 0, uint32_t range_len = 0);
   void serial_send_settings();
   void serial_apply_setting(const char* key, const char* value);
-  void serial_save_settings();
+  void serial_save_settings(const char* weight_kg);
   // SD の整理（2026-11-25〜。docs/pons_webserial_protocol.md §4 (10)。どれを扱うかは src/sd_wipe_rules.h）
   Task createSerialWipeScanTask(uint8_t mask);
   Task createSerialWipeTask(uint8_t mask, uint32_t count, uint32_t fp, uint16_t code, const char* stamp, const char* password);

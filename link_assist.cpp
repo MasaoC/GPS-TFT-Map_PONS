@@ -491,7 +491,7 @@ void lassist_on_beacon(const uint8_t* p, int16_t rssi) {
 void lassist_on_telem(const uint8_t* p, const LinkW2Rx* st, int16_t rssi) {
   if (!assist_on()) return;
   const uint32_t now = millis();
-  const uint16_t sb = w2_get16(p + W2_STATUS);
+  const uint16_t sb = st->acc.status;
   s_acT0  = now ? now : 1;
   s_acNew = true;
   s_acWants = (sb & LINK_ST_TIME_WANTED) != 0;

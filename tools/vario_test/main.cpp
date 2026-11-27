@@ -168,6 +168,42 @@ int main() {
     g_stub_replay_mode = false;
     g_stub_replay_have = 0;
 
+    // 自機 TAS の窓は、表示の供給元を切り替えても自機 KF だけで進む。
+    attitude_setup();
+    imu_kalman_reinit();
+    vz_true = 0.0f;
+    run_sim(12.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+    float local_tas = 0.0f; bool clamped = false;
+    CHECK(attitude_get_tas(local_tas, clamped) && fabsf(local_tas - AIRSPEED_V0_MPS) < 0.05f,
+          "local TAS before mirror: %.3f", local_tas);
+    g_stub_mirror_active = true;
+    g_stub_link_vs = -0.35f;
+    run_sim(12.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+    g_stub_mirror_active = false;
+    CHECK(attitude_get_tas(local_tas, clamped) && fabsf(local_tas - AIRSPEED_V0_MPS) < 0.05f,
+          "local TAS after mirror: %.3f", local_tas);
+    g_stub_replay_mode = true;
+    g_stub_replay_have = RHAVE_KFVS;
+    run_sim(12.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+    g_stub_replay_mode = false;
+    g_stub_replay_have = 0;
+    CHECK(attitude_get_tas(local_tas, clamped) && fabsf(local_tas - AIRSPEED_V0_MPS) < 0.05f,
+          "local TAS after replay: %.3f", local_tas);
+
+    // 通信が正常でも気圧観測が途絶えた場合は欠測。KF 再初期化後は初観測から窓を満たす。
+    // TAS_GAMMA_VS_STALE_MS（2 秒）まではまだ有効、越えたら欠測
+    run_sim(1.5f, vz_true, 0.0f, 0.0f, z_baro, false);
+    CHECK(attitude_get_tas(local_tas, clamped), "TAS still available within the stale limit");
+    run_sim(1.0f, vz_true, 0.0f, 0.0f, z_baro, false);
+    CHECK(!attitude_get_tas(local_tas, clamped), "TAS unavailable with stale baro observations");
+    imu_kalman_reinit();
+    run_sim(12.0f, vz_true, 0.0f, 0.0f, z_baro, false);
+    CHECK(attitude_pitch_avg_valid() && !attitude_get_tas(local_tas, clamped), "TAS unavailable before KF initialization");
+    run_sim(9.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+    CHECK(!attitude_get_tas(local_tas, clamped), "TAS waits for a full window after the first baro observation");
+    run_sim(3.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+    CHECK(attitude_get_tas(local_tas, clamped), "TAS recovers when the valid window is full");
+
     // ---- 6) GNSS の上下速度を入れる条件（2026-11-18〜。imu_gnss_vsi_gate と残差の門）----
     CHECK(imu_gnss_vsi_gate(true, 20, 0.10f, 1.0f) == GVSI_OK, "gate OK");
     CHECK(imu_gnss_vsi_gate(false, 20, 0.10f, 1.0f) == GVSI_NO_3D, "gate no 3D");

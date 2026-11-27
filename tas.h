@@ -26,14 +26,17 @@ enum TasHdr : uint8_t {
   HDR_TAS        = 2,   // 推定 TAS（青い箱に数字）
   HDR_TAS_CLAMP  = 3,   // 推定 TAS が上下限に張り付いている（灰色の箱。推定ではなく端の値）
   HDR_TAS_GROUND = 4,   // TAS を選んでいるが地上（青い箱の数字に横線。2026-11-07 までは「-.-」）
+  HDR_TAS_VS_LEGACY = 5, // 旧 CSV の V/S 札。再生時は通常の TAS として表示
+  HDR_TAS_UNAVAILABLE = 6, // V/S の有効窓がない（灰色の箱に横棒）
+  HDR_ALPHA      = 7,   // APPLY 基準の平均迎角。無効時は --
 };
-#define HDR_COUNT 5
+#define HDR_COUNT 8
 
 static inline bool tas_hdr_is_tas(TasHdr h) {
-  return h == HDR_TAS || h == HDR_TAS_CLAMP || h == HDR_TAS_GROUND;
+  return h == HDR_TAS || h == HDR_TAS_CLAMP || h == HDR_TAS_GROUND || h == HDR_TAS_UNAVAILABLE;
 }
 
-// ---- 設定（IMU/ESKF 画面 1 ページ目の「Header: Pavg / TAS」。settings.txt の header_tas）----
+// ---- 設定（IMU/ESKF 画面 1 ページ目の「Header: AoA / TAS」。settings.txt の header_tas）----
 // この機体の大きい枠を TAS にするか。受信機（ボート）のミラー中は自分のこれではなく、
 // 送信機の設定（無線で受けたビット）に従う。
 void tas_setting_set(bool tas);
@@ -56,14 +59,14 @@ int tas_ground_wait_sec();
 
 // いま大きい枠に出すもの（供給元を解決済み）。描画・CSV の hdr 列・受信ログはこれを読む。
 TasHdr tas_header();
-// TAS の箱（HDR_TAS / HDR_TAS_CLAMP / HDR_TAS_GROUND）に出す推定 TAS [m/s]。
+// TAS の箱に出す推定 TAS [m/s]。値が無ければ NaN。
 float  tas_header_value();
-// 大きい枠の平均ピッチ（HDR_PAVG）と、TAS の箱の横に小さく残す平均ピッチ [度]。
-// 供給元を解決済み（ミラー中は送信機、リプレイ中は記録値）。無ければ false。
-bool   tas_header_pitch_avg(float &avg);
+// 表示用の平均ピッチ・平均迎角 [度]。ミラー中は送信機、リプレイ中は記録値を使う。
+bool   tas_pitch_avg(float &avg);
+bool   tas_header_alpha_avg(float &avg);
 
 // ---- 自機の値（無線で送る・飛行 CSV に書く）----
 // 送信機の設定（Pavg / TAS）にかかわらず、出せる限り出す。姿勢機能 OFF では出さない（平均ピッチと同じ）。
-bool tas_local(float &mps, bool &clamped);
+bool tas_local(float &mps, bool &clamped, float *alpha_deg = nullptr);
 
 #endif // TAS_H

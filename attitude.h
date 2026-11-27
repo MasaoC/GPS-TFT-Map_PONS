@@ -128,7 +128,12 @@ bool  attitude_pitch_avg_valid();          // 平均が PITCH_AVG_SEC 秒ぶん�
 // 平均ピッチを下の対気速度モデルで換算した値（docs/pons_tas.md）。平均が満ちていなければ false。
 // clamped: 上下限（airspeed_min / max）に張り付いた。推定ではなく端の値。
 // ★ 画面・無線・CSV は直接呼ばず tas.h を通す（地上と飛行中の切り替え・供給元の解決はそちら）。
-bool  attitude_get_tas(float &mps, bool &clamped);
+bool  attitude_get_tas(float &mps, bool &clamped, float *alpha_deg = nullptr);
+bool  attitude_get_alpha_avg(float &deg);         // 平均ピッチ − γ [度]。APPLY の基準姿勢からの相対値
+// V/S は IMU 側から各ジャイロサンプルの前に渡す。平均ピッチと同じ 10 秒窓で平均し、
+// 窓がすべて有効なときだけ TAS を出し、風を更新する。
+void  attitude_set_vspeed(float mps, bool valid);
+bool  attitude_take_gamma_event(bool &active);   // 補正が有効/無効へ変わったとき一度だけ true（ログ用）
 // 任意のピッチでの対気速度（TAS の案内の曲線を描くため。いまの係数で計算する）。
 float attitude_airspeed_from_pitch(float pitch_deg, bool *clamped = nullptr);
 
@@ -270,13 +275,15 @@ void attitude_set_level_offset(float roll_deg, float pitch_deg);  // SD 設定�
 // （ESKF が回っていないため）。その穴を埋めるための、日付だけの弱い手がかり。
 // 「日付をまたいだ＝一度持ち帰った可能性がある」として設定画面に注意を出すのに使う。
 // 断定はしない。付けっぱなしで日をまたぐこともあるため。
-// ---- 対気速度モデル V(θ) = V0 * sqrt(K / (K + θ)) の係数 ----
+// ---- 対気速度モデルの設計重量での係数、重量比、表示上下限 ----
 // 既定値は settings.h、実際の値は SD の settings.txt から上書きできる。
 // 機体・重量・重心で変わるので、機体ごとに SD 側で設定する運用を想定している。
 float attitude_get_airspeed_v0();
 void  attitude_set_airspeed_v0(float mps);   // V0 [m/s]
 float attitude_get_airspeed_k();
 void  attitude_set_airspeed_k(float deg);    // K [度]
+float attitude_get_airspeed_weight_kg();
+void  attitude_set_airspeed_weight_kg(float kg); // 飛行時総重量 [kg]
 float attitude_get_airspeed_min();
 void  attitude_set_airspeed_min(float mps);  // 推定の下限 [m/s]
 float attitude_get_airspeed_max();

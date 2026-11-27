@@ -135,6 +135,9 @@
   //   unloadFont() で抜けていて、その画面と次の画面の最初の 1 フレームが内蔵フォント ×2 の大きな字になった
   //   （MAPLIST や GNSS DETAIL 1 の見出しは 27 文字あり、×2 では 20 文字で切れる）。
   void header_font_detail();
+  int draw_average_pitch_label(int x, int y, uint16_t color);  // AA_FONT_SMALL
+  constexpr int AVERAGE_ALPHA_LABEL_WIDTH = 12;
+  void draw_average_alpha_label(int x, int y, uint16_t color);
 
 #endif
 

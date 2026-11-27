@@ -11,7 +11,7 @@
 # ============================================================
 # 使い方: python3 make_live_sample.py [出力]（既定は同じフォルダの live_sample.txt）
 #   live.html の「▶ 記録を再生」で開くか、http で開いて live.html?replay=test/live_sample.txt
-# ★ LinkTelem の並びは lora_link/link_proto.h（LINK_PROTO_VER 8・69 バイト）。変わったらここも直す。
+# ★ LinkTelem の並びは lora_link/link_proto.h（LINK_PROTO_VER 10・69 バイト）。変わったらここも直す。
 import math
 import struct
 import sys
@@ -23,8 +23,9 @@ SP = (35.274220, 136.136183)
 K1 = (35.297961, 136.243624)
 TK = (35.296584352454964, 136.1780537684742)
 RHAVE = dict(GS=0x1, TTRACK=0x2, GNSSALT=0x4, KFALT=0x8, KFVS=0x10, PRESS=0x20, DATE=0x40, NUMSAT=0x80,
-             ATT=0x200, ATT_YAW=0x400, ATT_AVG=0x800, ATT_TRIM=0x1000, ATT_WIND=0x2000, TAS=0x4000)
-FMT = '<BBBBHBBHHBBBBBBiiHHhhhHhhhhhBBHBBBBHHBbBHHH'
+             ATT=0x200, ATT_YAW=0x400, ATT_AVG=0x800, ATT_TRIM=0x1000, ATT_WIND=0x2000, TAS=0x4000, ALPHA=0x8000)
+LINK_PROTO_VER = 10
+FMT = '<BBBBHBBHHBBBBBBiiHHhhhHhhHhhBBHBBBBHHBbBHHh'
 assert struct.calcsize(FMT) == 69
 
 
@@ -51,20 +52,23 @@ def move(p, brg, m):
 
 
 def telem(seq, pos, gs, trk, t_utc, roll, pitch, yaw, yacc, pavg, tas, vs, numsat=18, hacc_m=1.4, sacc=0.12,
-          batt=1 + 76, status=0, wind=(1.8, 250.0), scale_index=3, dest_id=0x5a3c, dest_index=1, nav=2, fix=True):
+          batt=1 + 76, status=0, wind=(1.8, 250.0), scale_index=3, dest_id=0x5a3c, dest_index=1, nav=2, fix=True,
+          alpha=None):
     h, m, s, cs = t_utc
     have = (RHAVE['GS'] | RHAVE['TTRACK'] | RHAVE['GNSSALT'] | RHAVE['KFALT'] | RHAVE['KFVS'] | RHAVE['PRESS'] |
             RHAVE['DATE'] | RHAVE['NUMSAT'] | RHAVE['ATT'] | RHAVE['ATT_YAW'] | RHAVE['ATT_AVG'] | RHAVE['ATT_TRIM'] |
             RHAVE['TAS'])
     if wind:
         have |= RHAVE['ATT_WIND']
-    return struct.pack(FMT, ord('P'), ord('L'), 8, 0, seq & 0xFFFF, 0, scale_index, dest_id, 2026, 11, 23, h, m, s, cs,
+    if alpha is not None:
+        have |= RHAVE['ALPHA']
+    return struct.pack(FMT, ord('P'), ord('L'), LINK_PROTO_VER, 0, seq & 0xFFFF, 0, scale_index, dest_id, 2026, 11, 23, h, m, s, cs,
                        round(pos[0] * 1e7), round(pos[1] * 1e7), round(gs * 100), round(trk * 100) % 36000,
                        round(85.0 * 10), round(84.6 * 10), round(vs * 100), round(1008.2 * 10),
                        round(roll * 100), round(pitch * 100), round(yaw * 100) % 36000, round(pavg * 100), round(0.12 * 100),
                        yacc, round((wind or (0, 0))[0] * 10), round((wind or (0, 0))[1] * 100), round(tas * 10), 0,
                        batt, numsat, round(hacc_m * 10), round(sacc * 100), 1 if fix else 0, dest_index, nav,
-                       have, status, 0)
+                       have, status, round(alpha * 100) if alpha is not None else 0)
 
 
 def main():
@@ -77,7 +81,7 @@ def main():
         t += dt
         lines.append(f'{round(t)}\t{line}')
 
-    emit('PONS:LIVE,OK,ON,1,8,69,0,6,8,1000,1.12')
+    emit(f'PONS:LIVE,OK,ON,1,{LINK_PROTO_VER},69,0,6,8,1000,1.15')
     dests = [('PLATHOME', PLA), ('N_PILON', NP), ('S_PILON', SP), ('TAKESHIMA', TK), ('SHINURA', (35.650433188178, 139.913699521520))]
     for i, (n, p) in enumerate(dests):
         emit(f'PONS:LIVE,DEST,{i},{p[0]:.7f},{p[1]:.7f},{n}', 2)
@@ -129,13 +133,14 @@ def main():
         tas = 7.8 if flying else 6.9
         vs = 0.25 * math.sin(sec / 4.0) if flying else 0.0
         hhmmss = (utc // 3600 % 24, utc // 60 % 60, utc % 60, 0)
-        raw = telem(seq, pos, gs, trk, hhmmss, roll, pitch, yaw, 4 if flying else 30, pavg, tas, vs)
+        alpha = pavg - math.degrees(math.atan2(vs, tas))
+        raw = telem(seq, pos, gs, trk, hhmmss, roll, pitch, yaw, 4 if flying else 30, pavg, tas, vs, alpha=alpha)
         known = 0xFF if sec > 8 else (1 << ((seq % 8) + 1)) - 1
         emit(f'PONS:LT,{ms},{seq % 8},{known:02x},{raw.hex()}', 1000)
         truec = bearing(pos, NP)
         truec = (truec + 180) % 360   # Auto10km の AWAY（目的地から離れる。往路）
         steer = ((truec - trk + 540) % 360) - 180
-        hdr = 2 if flying else 4
+        hdr = (7 if 40 <= sec < 70 else 2) if flying else 4
         strike = 0 if flying else 1
         wait = 0 if (not flying or sec > 22) else max(0, 22 - sec)
         flags = 0x0001 | 0x0400 | 0x2000 | 0x0200

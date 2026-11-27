@@ -30,7 +30,7 @@ const PONS_TIER_META = {
   internal: { label: '内部状態', cls: 'sbadge-internal', locked: true  },
 };
 
-// mysd.cpp の settings[] 全 32 項目と完全一致する定義（パイロン座標の pilon.* は下の PONS_PILON_SCHEMA で足す）
+// mysd.cpp の settings[] と対応する定義（パイロン座標の pilon.* は下の PONS_PILON_SCHEMA で足す）
 const PONS_SETTINGS_SCHEMA = [
   // --- 基本・表示 ---
   {
@@ -156,10 +156,10 @@ const PONS_SETTINGS_SCHEMA = [
   // --- 推定 TAS・風 ---
   {
     key: 'header_tas', label: 'ヘッダー右上の大枠表示', cat: 'tas', tier: 'caution',
-    type: 'select', defaultVal: '0',
-    options: [{ v: '0', l: '0：Pavg（平均ピッチ）' }, { v: '1', l: '1：TAS（推定対気速度）' }],
-    desc: '画面右上の大きい数値枠に、過去 10 秒平均ピッチを出すか、推定対気速度（青箱）を出すかを選びます。',
-    caution: 'TAS は平均ピッチからの推定値です。取付角が 1° ずれると約 0.35〜0.4 m/s ずれます。'
+    type: 'select', defaultVal: '1',
+    options: [{ v: '1', l: '1：TAS（推定対気速度・既定）' }, { v: '0', l: '0：ᾱ（平均迎角）' }],
+    desc: '画面右上に、APPLY 基準の平均迎角か推定対気速度（青箱）を表示します。平均ピッチ P̄ は地図左下の瞬時ピッチ P の上です。',
+    caution: '取付角が 1° ずれると、推定 TAS は約 0.35〜0.4 m/s ずれます。'
   },
   {
     key: 'wind_estimate', label: '風向・風速推定', cat: 'tas', tier: 'caution',
@@ -169,10 +169,16 @@ const PONS_SETTINGS_SCHEMA = [
     caution: '下の V0 / K の値が機体と合っていないと、風の推定値もずれます。'
   },
   {
-    key: 'airspeed_v0', label: '対気速度モデル V0（ピッチ 0° の巡航速度）', cat: 'tas', tier: 'expert',
+    key: 'airspeed_weight_kg', label: '飛行時総重量（TAS 補正）', cat: 'tas', tier: 'caution',
+    type: 'number', min: 50, max: 150, step: 0.01, decimals: 2, unit: 'kg', defaultVal: '93.80',
+    desc: '機体・パイロット・装備を含む飛行時の総重量を入力します。既定値は設計総重量です。',
+    caution: '推定 TAS と風の計算に反映します。表示の上下限は個別に設定します。'
+  },
+  {
+    key: 'airspeed_v0', label: '対気速度モデル V0（設計重量・ピッチ 0°）', cat: 'tas', tier: 'expert',
     type: 'number', min: 3.0, max: 20.0, step: 0.01, decimals: 2, unit: 'm/s', defaultVal: '7.07',
     desc: '平らな地面に置いた較正姿勢（ピッチ θ = 0°）で定常飛行したときの対気速度 V0。推定 TAS と風推定の両方に使います。',
-    caution: '機体・重量・重心・取付角で変わります。1% 変わると全速度域の推定 TAS が 1% ずれます。上のグラフで曲線を確認してください。'
+    caution: '飛行時総重量の差は上の重量補正欄で調整できます。'
   },
   {
     key: 'airspeed_k', label: '対気速度モデル K（揚力ゼロまでの角度）', cat: 'tas', tier: 'expert',
@@ -184,11 +190,11 @@ const PONS_SETTINGS_SCHEMA = [
     key: 'airspeed_min', label: '推定 TAS 下限クランプ', cat: 'tas', tier: 'expert',
     type: 'number', min: 1.0, max: 20.0, step: 0.1, decimals: 2, unit: 'm/s', defaultVal: '5.80',
     desc: '推定対気速度の下限（失速速度付近）。これ未満に張り付くと TAS 箱が灰色になります。',
-    caution: '必ず airspeed_min < airspeed_max にしてください（逆転すると本体が既定値 5.80〜9.00 にリセットします）。'
+    caution: '必ず airspeed_min < airspeed_max にしてください（逆転すると本体が既定値 5.80〜9.90 にリセットします）。'
   },
   {
     key: 'airspeed_max', label: '推定 TAS 上限クランプ', cat: 'tas', tier: 'expert',
-    type: 'number', min: 1.0, max: 25.0, step: 0.1, decimals: 2, unit: 'm/s', defaultVal: '9.00',
+    type: 'number', min: 1.0, max: 25.0, step: 0.1, decimals: 2, unit: 'm/s', defaultVal: '9.90',
     desc: '推定対気速度の上限（出し得る最大速度）。これ以上に張り付くと TAS 箱が灰色になります。',
     caution: '必ず airspeed_min < airspeed_max にしてください。'
   },
@@ -756,7 +762,7 @@ function renderSettingsBody() {
             <canvas id="tas-curve-canvas" width="320" height="175"></canvas>
             <div style="flex:1; min-width:220px; font-size:0.82rem; color:#334155; line-height:1.55;">
               <div style="font-weight:bold; color:#1e40af; font-size:0.9rem; margin-bottom:4px;">📈 推定 TAS モデル リアルタイムプレビュー</div>
-              <div>式: <code>V(θ) = V0 · √(K / (K + θ))</code></div>
+              <div><code>V(α) = V0 · √((総重量 / ${Number(PONS_SCHEMA_MAP.airspeed_weight_kg.defaultVal)} kg) · K / (K + α))</code>（α は APPLY 基準の平均迎角）</div>
               <div id="tas-preview-stats" style="margin-top:6px; font-family:var(--font-mono); background:#f8fafc; padding:6px 8px; border-radius:6px; border:1px solid #e2e8f0;"></div>
               <div style="margin-top:6px; font-size:0.76rem; color:#64748b;">
                 青実線＝現在の下書き / 灰点線＝変更前 / 赤点線＝上下限クランプ（min〜max）<br>
@@ -989,13 +995,27 @@ function drawTasPreviewCanvas() {
   const W = cv.width, H = cv.height;
   ctx.clearRect(0, 0, W, H);
 
-  const v0 = Number(settingsState.draft.airspeed_v0);
-  const k  = Number(settingsState.draft.airspeed_k);
-  const lo = Number(settingsState.draft.airspeed_min);
-  const hi = Number(settingsState.draft.airspeed_max);
-
-  const ov0 = Number(settingsState.orig.airspeed_v0);
-  const ok  = Number(settingsState.orig.airspeed_k);
+  // 旧ファームではキーが返らない。従来の曲線は重量比 1 と同じ。
+  const weightSetting = PONS_SCHEMA_MAP.airspeed_weight_kg; // settings.h の設計重量と入力範囲
+  const designWeight = Number(weightSetting.defaultVal);
+  const model = values => {
+    const weightKg = Number(values.airspeed_weight_kg ?? designWeight);
+    return {
+      v0: weightKg >= weightSetting.min && weightKg <= weightSetting.max
+        ? Number(values.airspeed_v0) * Math.sqrt(weightKg / designWeight) : NaN,
+      k: Number(values.airspeed_k),
+      lo: Number(values.airspeed_min),
+      hi: Number(values.airspeed_max),
+    };
+  };
+  const draft = model(settingsState.draft);
+  const { v0, k, lo, hi } = draft;
+  const speed = ({ v0, k, lo, hi }, th) => {
+    const d = k + th;
+    if (d <= 0.01) return hi;
+    const v = v0 * Math.sqrt(k / d);
+    return lo < hi ? Math.max(lo, Math.min(hi, v)) : v;
+  };
 
   const padL = 38, padR = 12, padT = 12, padB = 24;
   const pw = W - padL - padR, ph = H - padT - padB;
@@ -1016,7 +1036,7 @@ function drawTasPreviewCanvas() {
     const y = yOf(v);
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
   }
-  // θ=0 の縦線
+  // α=0 の縦線
   ctx.strokeStyle = '#94a3b8';
   ctx.beginPath(); ctx.moveTo(xOf(0), padT); ctx.lineTo(xOf(0), H - padB); ctx.stroke();
 
@@ -1040,8 +1060,8 @@ function drawTasPreviewCanvas() {
   }
   ctx.restore();
 
-  const drawCurve = (V0, K, color, dashed) => {
-    if (!Number.isFinite(V0) || !Number.isFinite(K) || K <= 0) return;
+  const drawCurve = (curve, color, dashed) => {
+    if (!Number.isFinite(curve.v0) || !Number.isFinite(curve.k) || curve.k <= 0) return;
     ctx.save();
     ctx.strokeStyle = color;
     ctx.lineWidth = dashed ? 1.5 : 2.5;
@@ -1049,12 +1069,8 @@ function drawTasPreviewCanvas() {
     ctx.beginPath();
     let started = false;
     for (let th = thMin; th <= thMax; th += 0.2) {
-      const d = K + th;
-      if (d <= 0.1) continue;
-      let v = V0 * Math.sqrt(K / d);
-      if (!dashed && Number.isFinite(lo) && Number.isFinite(hi) && lo < hi) {
-        v = Math.max(lo, Math.min(hi, v));
-      }
+      const v = speed(curve, th);
+      if (!Number.isFinite(v)) continue;
       const x = xOf(th), y = Math.max(padT, Math.min(H - padB, yOf(v)));
       if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
     }
@@ -1063,26 +1079,26 @@ function drawTasPreviewCanvas() {
   };
 
   // 変更前（灰点線）→ 現在（青実線）
-  drawCurve(ov0, ok, '#94a3b8', true);
-  drawCurve(v0, k, '#2563eb', false);
+  drawCurve(model(settingsState.orig), '#94a3b8', true);
+  drawCurve(draft, '#2563eb', false);
 
-  // θ=0 点の丸
-  if (Number.isFinite(v0) && v0 >= vMin && v0 <= vMax) {
+  const atZero = k > 0 ? speed(draft, 0) : NaN;
+  if (atZero >= vMin && atZero <= vMax) {
     ctx.fillStyle = '#2563eb';
-    ctx.beginPath(); ctx.arc(xOf(0), yOf(v0), 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(xOf(0), yOf(atZero), 4, 0, Math.PI * 2); ctx.fill();
   }
 
   const stats = document.getElementById('tas-preview-stats');
   if (stats) {
     if (Number.isFinite(v0) && Number.isFinite(k) && k > 0) {
       const slope = -v0 / (2 * k);
-      const vM2 = (k - 2 > 0) ? (v0 * Math.sqrt(k / (k - 2))).toFixed(2) : '--';
-      const vP2 = (v0 * Math.sqrt(k / (k + 2))).toFixed(2);
+      const vM2 = speed(draft, -2).toFixed(2);
+      const vP2 = speed(draft, 2).toFixed(2);
       stats.innerHTML =
-        `θ=0°: <b>${v0.toFixed(2)} m/s</b> ｜ 傾き(θ=0): <b>${slope.toFixed(3)} m/s/°</b><br>` +
-        `θ=-2°: ${vM2} m/s ｜ θ=+2°: ${vP2} m/s ｜ 範囲: ${Number.isFinite(lo) ? lo.toFixed(2) : '--'}〜${Number.isFinite(hi) ? hi.toFixed(2) : '--'} m/s`;
+        `α=0°: <b>${atZero.toFixed(2)} m/s</b> ｜ モデルの傾き(α=0): <b>${slope.toFixed(3)} m/s/°</b><br>` +
+        `α=-2°: ${vM2} m/s ｜ α=+2°: ${vP2} m/s ｜ 範囲: ${Number.isFinite(lo) ? lo.toFixed(2) : '--'}〜${Number.isFinite(hi) ? hi.toFixed(2) : '--'} m/s`;
     } else {
-      stats.textContent = 'V0 または K の値が不正です';
+      stats.textContent = 'V0・K・総重量を確認してください';
     }
   }
 }
@@ -1169,6 +1185,7 @@ async function commitSettingsToPons() {
 
   try {
     const adjusted = [];
+    const weightDiff = diffs.find(d => d.schema.key === 'airspeed_weight_kg');
     // ★ 前の保存が SAVE まで行かずに失敗していると、本体にパイロンの決めかけ（SET 済み）が残っている。そのあと下書きを
     //   元に戻したパイロンは差分に出ないので、そのまま SAVE すると取り消したはずの座標が書かれる。元の値を送り直して打ち消す。
     for (const k of [...settingsState.pilonStaged]) {
@@ -1181,6 +1198,7 @@ async function commitSettingsToPons() {
     }
     for (let i = 0; i < diffs.length; i++) {
       const d = diffs[i];
+      if (d === weightDiff) continue;  // 総重量は SD に保存できた時点で本体に反映する
       prog.textContent = `送信中 (${i + 1} / ${diffs.length}): ${d.schema.key} = ${d.newVal} ...`;
       if (d.schema.type === 'latlon') settingsState.pilonStaged.add(d.schema.key);   // 本体に決めかけが残りうる（失敗に備えて先に記録）
       const rep = await sendSettingCmdAndWait(`PONS:SETTINGS_SET,${d.schema.key}:${d.newVal}`);
@@ -1199,7 +1217,15 @@ async function commitSettingsToPons() {
       }
     }
     prog.textContent = 'SD カード（settings.txt）へ安全に保存中...';
-    const saveRep = await sendSettingCmdAndWait('PONS:SETTINGS_SAVE', 8000);
+    const saveCmd = weightDiff ? `PONS:SETTINGS_SAVE,${weightDiff.newVal}` : 'PONS:SETTINGS_SAVE';
+    const saveRep = await sendSettingCmdAndWait(saveCmd, 8000);
+    if (saveRep === 'PONS:SETTINGS_ERR,PILON_SAVE_FAILED') {
+      if (weightDiff) {
+        settingsState.orig.airspeed_weight_kg = weightDiff.newVal;
+        settingsState.inFile.airspeed_weight_kg = true;
+      }
+      throw new Error('settings.txt は保存済みです。パイロン座標の保存に失敗しました。');
+    }
     if (!saveRep.startsWith('PONS:SETTINGS_SAVED,OK')) {
       throw new Error(`SD 保存に失敗しました (${saveRep})`);
     }

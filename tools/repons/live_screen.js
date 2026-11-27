@@ -49,8 +49,9 @@
     GROUND_PITCH: 0x0020, GST_INVALID: 0x0040, TRACKWARN: 0x0080, CWARN: 0x0100, VSI: 0x0200,
     VARIO_OK: 0x0400, SCANNING: 0x0800, WEAK: 0x1000, NAV_VALID: 0x2000, WIND: 0x4000, LEAVING: 0x8000,
   };
-  const HDR_TT = 0, HDR_PAVG = 1, HDR_TAS = 2, HDR_TAS_CLAMP = 3, HDR_TAS_GROUND = 4;
-  const isTasHdr = (h) => h === HDR_TAS || h === HDR_TAS_CLAMP || h === HDR_TAS_GROUND;
+  const HDR_TT = 0, HDR_PAVG = 1, HDR_TAS = 2, HDR_TAS_CLAMP = 3, HDR_TAS_GROUND = 4, HDR_TAS_VS_LEGACY = 5, HDR_TAS_UNAVAILABLE = 6, HDR_ALPHA = 7;
+  const isTasHdr = (h) => h === HDR_TAS || h === HDR_TAS_CLAMP || h === HDR_TAS_GROUND || h === HDR_TAS_VS_LEGACY || h === HDR_TAS_UNAVAILABLE;
+  const tasBoxColor = (h, mps) => (h === HDR_TAS_CLAMP || h === HDR_TAS_UNAVAILABLE || Number.isNaN(mps)) ? C.GRAY : C.BLUE;
   const HSTRIKE_NONE = 0, HSTRIKE_GROUND = 1, HSTRIKE_YAW_ALIGN = 2, HSTRIKE_NO_GNSS = 3, HSTRIKE_CALIB = 4;
   const EGS_OK = 0, EGS_NO_GNSS = 1, EGS_YAW_ALIGN = 2;
   const DMODE_FLYINTO = 0, DMODE_FLYAWAY = 1, DMODE_AUTO10K = 2;
@@ -96,8 +97,8 @@
   const eskfYawHighConfidence = () => lnf(LS.YAW_HC);
   const eskfDisplayEnabled = () => lnf(LS.ESKF_EN);
   const egs = () => S.ln.egs;
-  const pitchAvg = () => S.lt.pavg;                             // tas_header_pitch_avg()（{ok, v}）
-  const tasHeaderValue = () => S.lt.tas.ok ? S.lt.tas.mps : 0;
+  const pitchAvg = () => S.lt.pavg;                             // tas_pitch_avg()（{ok, v}）
+  const tasHeaderValue = () => S.lt.tas.ok ? S.lt.tas.mps : NaN;
   const numsat = () => S.lt.numsatShown;                       // get_gnss_numsat()（ミラー中）
   const roundf = (x) => (x < 0 ? -Math.round(-x) : Math.round(x));
 
@@ -116,6 +117,11 @@
   // =====================================================================
   function drawHeaderPitch(x, deg, col) {
     const SIGN_W = 25, DIGIT_W = 37, DOT_W = 10, ytop = 3;
+    if (Number.isNaN(deg)) {
+      HF.fillRect(x + 35, ytop + 18, 24, 6, C.GRAY);
+      HF.fillRect(x + 71, ytop + 18, 24, 6, C.GRAY);
+      return;
+    }
     const neg = deg < 0;
     let a = f32(Math.abs(deg));
     if (a > f32(99.9)) a = f32(99.9);
@@ -139,7 +145,7 @@
 
   function drawHeaderTas(x, h, mps) {
     const LABEL_W = 25, DIGIT_W = 37, DOT_W = 10, ytop = 3;
-    const box = (h === HDR_TAS_CLAMP) ? C.GRAY : C.BLUE;
+    const box = tasBoxColor(h, mps);
     HF.fillRect(x + 1, 0, SCREEN_WIDTH - x - 1, HEADERFOOTER_HEIGHT - 1, box);
     {
       const x0 = f32(x + 4), x1 = f32(x + LABEL_W - 4);
@@ -155,7 +161,7 @@
       }
     }
     x += LABEL_W;
-    if (Number.isNaN(mps)) {
+    if (h === HDR_TAS_UNAVAILABLE || Number.isNaN(mps)) {
       HF.fillRect(x + 10, ytop + 18, 24, 6, C.WHITE);
       HF.fillRect(x + 46, ytop + 18, 24, 6, C.WHITE);
     } else {
@@ -209,11 +215,12 @@
         break;
       case HSTRIKE_GROUND: {
         const x = mtvx + 25, lw = SCREEN_WIDTH - x - 1;
-        HF.fillRect(x, 20, lw, 8, C.BLUE);
+        const box = tasBoxColor(S.ln.hdr, tasHeaderValue());
+        HF.fillRect(x, 20, lw, 8, box);
         HF.fillRect(x, 22, lw, 4, C.WHITE);
         const wait = S.ln.wait;
-        if (wait > 0) headerStrikeTag(mtvx + 25, SCREEN_WIDTH, sprintf('WAIT %ds', wait), C.WHITE, C.BLUE, C.BLUE);
-        else if (!lnf(LS.LEAVING)) headerStrikeTag(mtvx + 25, SCREEN_WIDTH, 'GROUND', C.WHITE, C.BLUE, C.BLUE);
+        if (wait > 0) headerStrikeTag(mtvx + 25, SCREEN_WIDTH, sprintf('WAIT %ds', wait), C.WHITE, box, box);
+        else if (!lnf(LS.LEAVING)) headerStrikeTag(mtvx + 25, SCREEN_WIDTH, 'GROUND', C.WHITE, box, box);
         break;
       }
       default: break;
@@ -247,9 +254,10 @@
     if (isTasHdr(hdr)) {
       drawHeaderTas(mtvx, hdr, tasHeaderValue());
       headerStrike(mtvx);
-    } else if (hdr === HDR_PAVG) {
-      const pv = pitchAvg().ok ? pitchAvg().v : f32(0);
-      const pcol = attitudeImplausible(pv) ? C.GRAY : (groundWarnShown(true) ? C.RED : C.BLACK);
+    } else if (hdr === HDR_ALPHA || hdr === HDR_PAVG) {
+      const angle = hdr === HDR_ALPHA ? S.lt.alpha : pitchAvg();
+      const pv = angle.ok ? angle.v : NaN;
+      const pcol = attitudeImplausible(pv) ? C.GRAY : (hdr === HDR_PAVG && groundWarnShown(true) ? C.RED : C.BLACK);
       HF.setTextColor(pcol, C.WHITE);
       drawHeaderPitch(mtvx, pv, pcol);
       headerStrike(mtvx);
@@ -672,10 +680,12 @@
     const yrtrim = BACKSCREEN_SIZE - 9 - 8 - ESKF_BOTTOM_GAP;
     const yroll = yrtrim - fh_s - ESKF_ROW_GAP;
     const ypit = yroll - fh_s - ESKF_ROW_GAP;
+    const ypavg = ypit - fh_s - ESKF_ROW_GAP;
+    const pa = pitchAvg();
     {
-      const has_wind = lnf(LS.WIND) && S.lt.wind.ok;
+      const has_wind = lnf(LS.WIND) && S.lt.wind.ok && S.lt.tas.ok;
       const wspd = S.lt.wind.spd, wdir = S.lt.wind.dir;
-      const yblock_top = ypit;
+      const yblock_top = pa.ok ? ypavg : ypit;
       if (has_wind) {
         const nbuf = sprintf('%.1f', wspd);
         const wlw = BS.textWidth('W');
@@ -724,6 +734,16 @@
     BS.print(pbuf);
     // （地上チェックの許容範囲は電波に載っていないのでミラー中は出さない。draw_ground_ok_range）
     const gst = egs();
+    if (pa.ok) {
+      const avgBuf = sprintf('%+.1f', pa.v);
+      const valueX = ESKF_LABEL_X + drawAveragePitchLabel(ESKF_LABEL_X, ypavg, C.GRAY) + 4;
+      BS.setTextColor(attitudeImplausible(pa.v) ? C.GRAY : (gpitch ? C.RED : C.BLACK));
+      BS.setCursor(valueX, ypavg);
+      BS.print(avgBuf);
+      if (gst !== EGS_OK)
+        strikeThrough(BS, ESKF_LABEL_X, ypavg + (fh_s / 2 | 0), valueX + BS.textWidth(avgBuf) - ESKF_LABEL_X,
+          gst === EGS_YAW_ALIGN ? C.YELLOW : C.ORANGE);
+    }
     if (gst !== EGS_OK)
       strikeThrough(BS, ESKF_LABEL_X, ypit + (fh_s / 2 | 0), ESKF_VALUE_RIGHT_X - ESKF_LABEL_X, gst === EGS_YAW_ALIGN ? C.YELLOW : C.ORANGE);
     BS.setTextColor(C.GRAY);
@@ -781,8 +801,27 @@
   // =====================================================================
   //  地図の上端の文字（draw_gs_track）・下端（draw_map_footer）
   // =====================================================================
+  function drawAveragePitchLabel(x, y, color) {
+    BS.setTextColor(color);
+    const width = BS.drawString('P', x, y + 2);
+    BS.fillRect(x + 1, y, width - 1, 2, color);
+    return width;
+  }
+
+  const AVERAGE_ALPHA_LABEL_WIDTH = 12;
+  const AVERAGE_ALPHA_ROWS = [0x3800, 0x6CC0, 0xC680, 0xC380, 0xC300, 0xC700, 0x6D80, 0x38C0];
+  function drawAverageAlphaLabel(x, y, color) {
+    BS.fillRect(x + 1, y + 1, 10, 2, color);
+    for (let row = 0; row < AVERAGE_ALPHA_ROWS.length; row++) {
+      for (let col = 0; col < 10; col++) {
+        if (AVERAGE_ALPHA_ROWS[row] & (0x8000 >> col))
+          BS.drawPixel(x + 1 + col, y + 4 + row, color);
+      }
+    }
+  }
+
   function drawTasLabelRow(h, leftLimit) {
-    const box = (h === HDR_TAS_CLAMP) ? C.GRAY : C.BLUE;
+    const box = tasBoxColor(h, tasHeaderValue());
     const fh = BS.fontHeight();
     const tw = BS.textWidth('TAS');
     const bw = tw + 6, bx = SCREEN_WIDTH - bw;
@@ -790,25 +829,18 @@
     BS.setTextColor(C.WHITE, box);
     BS.drawString('TAS', bx + 3, 3);
     BS.fillRect(bx + 3, 1, tw, 2, C.WHITE);
-    const pa = pitchAvg();
-    if (pa.ok) {
-      const a = pa.v;
-      let buf = Math.abs(a) < f32(9.95) ? sprintf('P%+.1f', a) : sprintf('P%+.0f', a);
-      let w = BS.textWidth(buf);
-      let px = bx - 3 - w;
-      if (px < leftLimit + 3) { buf = buf.slice(1); w = BS.textWidth(buf); px = bx - 3 - w; }
-      const col = attitudeImplausible(a) ? C.GRAY : (groundWarnShown(true) ? C.RED : C.BLACK);
-      BS.setTextColor(col, C.WHITE);
-      const hasP = buf[0] === 'P';
-      const py = hasP ? 3 : 1;
-      BS.drawString(buf, px, py);
-      if (hasP) {
-        const pw = BS.textWidth('P');
-        BS.fillRect(px, 0, pw + 1, 3, C.WHITE);
-        BS.fillRect(px + 1, 1, pw - 1, 2, col);
+    const a = S.lt.alpha;
+    if (a.ok) {
+      const buf = Math.abs(a.v) < f32(9.95) ? sprintf('%+.1f', a.v) : sprintf('%+.0f', a.v);
+      const w = AVERAGE_ALPHA_LABEL_WIDTH + BS.textWidth(buf), x = bx - 3 - w;
+      if (x >= leftLimit + 3) {
+        BS.setTextColor(C.BLACK, C.WHITE);
+        drawAverageAlphaLabel(x, 2, C.BLACK);
+        BS.drawString(buf, x + AVERAGE_ALPHA_LABEL_WIDTH, 3);
+        const gst = egs();
+        if (gst !== EGS_OK) strikeThrough(BS, x, 3 + (fh / 2 | 0), w,
+          gst === EGS_YAW_ALIGN ? C.YELLOW : C.ORANGE);
       }
-      const gst = egs();
-      if (gst !== EGS_OK) strikeThrough(BS, px, py + (fh / 2 | 0), w, gst === EGS_YAW_ALIGN ? C.YELLOW : C.ORANGE);
     }
     BS.setTextColor(C.BLACK, C.WHITE);
   }
@@ -817,17 +849,14 @@
     BS.setTextWrap(false);
     const hdr = S.ln.hdr;
     const hdrPitch = hdr !== HDR_TT, hdrTas = isTasHdr(hdr);
-    const label = hdrPitch ? 'Pavg' : 'TT';
-    const lx = SCREEN_WIDTH - (hdrPitch ? 52 : 40);
-    if (hdrTas) {
-      // ラベルは下の drawTasLabelRow
-    } else if (lnf(LS.TRACKWARN) && !hdrPitch) {
-      BS.setTextColor(blink1s() ? C.RED : C.BLACK, C.WHITE);
-      BS.drawString(label, lx, 1);
-      BS.setTextColor(C.BLACK, C.WHITE);
-    } else {
-      BS.setTextColor(C.BLACK, C.WHITE);
-      BS.drawString(label, lx, 1);
+    if (hdr === HDR_ALPHA) {
+      drawAverageAlphaLabel(SCREEN_WIDTH - 61, 1, C.BLACK);
+    } else if (hdr === HDR_PAVG) {
+      drawAveragePitchLabel(SCREEN_WIDTH - 60, 1, C.BLACK);
+    } else if (!hdrTas) {
+      const warn = lnf(LS.TRACKWARN) && blink1s();
+      BS.setTextColor(warn ? C.RED : C.BLACK, C.WHITE);
+      BS.drawString('TT', SCREEN_WIDTH - 40, 1);
     }
     BS.setTextColor(C.BLACK, C.WHITE);
     BS.drawString('GS', 1, 1);

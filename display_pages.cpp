@@ -66,17 +66,17 @@ void draw_imu_guide(int page) {
   push_guide_image(IMU_GUIDE_DATA[page], IMU_GUIDE_W, IMU_GUIDE_H);
 }
 
-// 推定 TAS の案内 2/2: 対気速度モデル V(θ) = V0·√(K/(K+θ)) の曲線と、いまの点（docs/pons_tas.md §4.4）。
-// 横軸は平均ピッチ、縦軸は m/s。上下限（airspeed_min / max）で張り付く所は灰色。
-// 白抜きの丸がいまのピッチ（傾けるとすぐ動く）、青い丸が過去 10 秒の平均（大きい枠に出る値）。
+// 推定 TAS の案内の最終ページ。横軸は APPLY 基準の平均迎角 [度]、縦軸は推定 TAS [m/s]。
+// 青い丸は実際に使った平均迎角と TAS。上下限で張り付く所は灰色。
+// 枠線の三角形は、経路角補正前の瞬時ピッチと平均ピッチを曲線に当てはめた参考点。
 // ★ いまの係数（settings.txt の airspeed_*）で描くので、係数を確かめる画面にもなる。
 // ★ 自機の値だけを描く。地上で設定するときの画面なので、ミラー中でも受信機自身の IMU。
-//   日本語は描けない（本体に日本語フォントが無い）ので英字のラベルだけ。説明は 1/2 の画像と音声。
+//   本体に日本語フォントが無いので英字のラベルだけ。説明は前の画像と音声。
 static void draw_tas_curve() {
   // 自機の現在値（ヘッダー右上の実表示プレビューと曲線・下部の数値で共用）
-  float tas = 0.0f; bool tas_c = false;
-  const bool avg_ok = attitude_get_tas(tas, tas_c);
-  const float pavg = attitude_get_pitch_avg_deg();
+  float tas = 0.0f, alpha = 0.0f; bool tas_c = false;
+  const bool tas_ok = attitude_get_tas(tas, tas_c, &alpha);
+  const float pitch_avg = attitude_get_pitch_avg_deg();
 
   // ---- 見出し + 右上に本番と同じ TAS 表示 ----
   // 飛行中の実際の見た目（青箱 / 上下限クランプ時のグレー箱）を地上で傾けながら確認できるよう、
@@ -86,11 +86,12 @@ static void draw_tas_curve() {
   header_footer.setTextWrap(false);
   header_font_detail();   // 見出しは AA_FONT_SMALL（display_tft.h）
   header_footer.setCursor(4, 6);
-  header_footer.print("TAS estimate");
+  header_footer.print("TAS curve");
   header_footer.setCursor(4, 26);
-  header_footer.print("2/2");
+  constexpr int page_count = TAS_GUIDE_PAGES + 1;
+  header_footer.printf("%d/%d", page_count, page_count);
   header_footer.drawFastVLine(mtvx, 0, HEADERFOOTER_HEIGHT, COLOR_GRAY);
-  draw_header_tas(mtvx, (!avg_ok || tas_c) ? HDR_TAS_CLAMP : HDR_TAS, avg_ok ? tas : NAN);
+  draw_header_tas(mtvx, !tas_ok ? HDR_TAS_UNAVAILABLE : (tas_c ? HDR_TAS_CLAMP : HDR_TAS), tas_ok ? tas : NAN);
   header_footer.drawFastHLine(0, HEADERFOOTER_HEIGHT - 1, SCREEN_WIDTH, COLOR_BLACK);
   header_footer.pushSprite(0, 0);
 
@@ -98,7 +99,7 @@ static void draw_tas_curve() {
   backscreen.fillScreen(COLOR_WHITE);
   backscreen.unloadFont();
   backscreen.setTextSize(1);
-  const float XMIN = -6.0f, XMAX = 10.0f;            // 平均ピッチ [度]
+  const float XMIN = -6.0f, XMAX = 10.0f;            // 平均迎角 [度]
   const float vlo = attitude_get_airspeed_min(), vhi = attitude_get_airspeed_max();
   float ymin = floorf(fminf(vlo, vhi)) - 1.0f;
   float ymax = ceilf(fmaxf(vlo, vhi)) + 1.0f;
@@ -106,7 +107,6 @@ static void draw_tas_curve() {
   const int X0 = 30, X1 = 232, Y0 = 16, Y1 = 164;    // 描く範囲（backscreen 内。ヘッダ 50px + フッタ 40px の間 230px に収める）
   auto px = [&](float th) { return X0 + (int)lroundf((th - XMIN) / (XMAX - XMIN) * (X1 - X0)); };
   auto py = [&](float v)  { return Y1 - (int)lroundf((v - ymin) / (ymax - ymin) * (Y1 - Y0)); };
-  auto clampth = [&](float th) { return th < XMIN ? XMIN : (th > XMAX ? XMAX : th); };
 
   // 目盛り（2 度ごと・1 m/s ごと）
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
@@ -126,8 +126,10 @@ static void draw_tas_curve() {
   }
   backscreen.setCursor(2, 2);
   backscreen.print("m/s");
-  backscreen.setCursor((X0 + X1) / 2 - 30, Y1 + 14);
-  backscreen.print("Pavg [deg]");
+  const int axis_label_x = (X0 + X1 - AVERAGE_ALPHA_LABEL_WIDTH - backscreen.textWidth(" [deg]")) / 2;
+  draw_average_alpha_label(axis_label_x, Y1 + 11, COLOR_GRAY);
+  backscreen.setCursor(axis_label_x + AVERAGE_ALPHA_LABEL_WIDTH, Y1 + 15);
+  backscreen.print(" [deg]");
 
   // 上下限（点線）
   const float lims[2] = {vlo, vhi};
@@ -155,44 +157,61 @@ static void draw_tas_curve() {
     prev_x = x; prev_y = y;
   }
 
-  // いまのピッチ（白抜き）と過去 10 秒の平均（青い丸）
-  if (attitude_ready()) {
-    float r, p, yw;
-    attitude_get_euler(r, p, yw);
-    const float th = clampth(p);
-    const int cx = px(th), cy = py(attitude_airspeed_from_pitch(th));
-    backscreen.drawCircle(cx, cy, 5, COLOR_BLACK);
-    backscreen.drawCircle(cx, cy, 4, COLOR_BLACK);
-  }
-  if (avg_ok) {
-    const int cx = px(clampth(pavg)), cy = py(tas);
+  // 補正済みの平均迎角と TAS
+  if (tas_ok && alpha >= XMIN && alpha <= XMAX) {
+    const int cx = px(alpha), cy = py(tas);
     for (int y = cy; y < Y1; y += 4) backscreen.drawPixel(cx, y, COLOR_BLUE);   // 横軸へ
     for (int x = X0; x < cx; x += 4) backscreen.drawPixel(x, cy, COLOR_BLUE);   // 縦軸へ
     backscreen.fillCircle(cx, cy, 6, tas_c ? COLOR_GRAY : COLOR_BLUE);
   }
+  auto draw_pitch_marker = [&](int x, int y, int direction, uint16_t color) {
+    backscreen.drawTriangle(x, y + direction * 7,
+                            x - 6, y - direction * 4,
+                            x + 6, y - direction * 4, color);
+  };
+  auto draw_pitch_point = [&](float pitch, int direction, uint16_t color) {
+    if (pitch >= XMIN && pitch <= XMAX)
+      draw_pitch_marker(px(pitch), py(attitude_airspeed_from_pitch(pitch)), direction, color);
+  };
+  if (get_imu_ok() && attitude_get_rpy_enabled() && attitude_ready()) {
+    float roll, pitch, yaw;
+    attitude_get_euler(roll, pitch, yaw);
+    draw_pitch_point(pitch, -1, COLOR_BLACK);
+    if (attitude_pitch_avg_valid())
+      draw_pitch_point(pitch_avg, 1, COLOR_ORANGE);
+  }
+
   // 凡例（右上）
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
-  backscreen.drawCircle(150, 6, 4, COLOR_BLACK);
-  backscreen.setCursor(158, 3);  backscreen.print("now");
   backscreen.fillCircle(186, 6, 4, COLOR_BLUE);
   backscreen.setCursor(194, 3);  backscreen.print("10s avg");
 
   // いまの値（大きい枠に出る値）
   backscreen.loadFont(AA_FONT_SMALL);
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+  draw_pitch_marker(92, 7, -1, COLOR_BLACK);
+  backscreen.drawString("P", 102, 0);
+  draw_pitch_marker(133, 7, 1, COLOR_ORANGE);
+  draw_average_pitch_label(143, 0, COLOR_BLACK);
+  backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
   const int ly = 198;
-  backscreen.setCursor(4, ly);    backscreen.print("Pavg");
+  draw_average_alpha_label(4, ly, COLOR_BLACK);
   backscreen.setCursor(124, ly);  backscreen.print("TAS");
   backscreen.setCursor(212, ly);  backscreen.print("m/s");
   backscreen.loadFont(NM_FONT_MEDIUM);   // Arial_Black22: 数字と +-. だけ
-  backscreen.setTextColor(COLOR_BLUE, COLOR_WHITE);
+  backscreen.setTextColor(tas_ok ? COLOR_BLUE : COLOR_GRAY, COLOR_WHITE);
   char b[10];
-  if (avg_ok) snprintf(b, sizeof(b), "%+.1f", pavg); else snprintf(b, sizeof(b), "--");
-  backscreen.setCursor(44, ly - 4);  backscreen.print(b);
-  if (avg_ok) snprintf(b, sizeof(b), "%.1f", tas);  else snprintf(b, sizeof(b), "--");
-  backscreen.setTextColor(tas_c ? COLOR_GRAY : COLOR_BLUE, COLOR_WHITE);
+  if (tas_ok) snprintf(b, sizeof(b), "%+.1f", alpha); else snprintf(b, sizeof(b), "--");
+  backscreen.setCursor(4 + AVERAGE_ALPHA_LABEL_WIDTH + 4, ly - 4);  backscreen.print(b);
+  if (tas_ok) snprintf(b, sizeof(b), "%.1f", tas);  else snprintf(b, sizeof(b), "--");
+  backscreen.setTextColor(!tas_ok || tas_c ? COLOR_GRAY : COLOR_BLUE, COLOR_WHITE);
   backscreen.setCursor(158, ly - 4); backscreen.print(b);
   backscreen.unloadFont();
+  // 同じ平均ピッチと補正後の平均迎角の差から、実際に引いた経路角を表示する。
+  backscreen.setTextColor(tas_ok ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
+  backscreen.setCursor(4, ly + 22);
+  if (tas_ok) backscreen.printf("Gamma %+.1f deg", pitch_avg - alpha);
+  else        backscreen.print("Gamma --");
   // フッター帯（y=280〜）に重なる下 10px は送らない（毎フレーム白で上書き→描き直しによるチラつき防止）
   backscreen.pushSprite(0, HEADERFOOTER_HEIGHT, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT - 40 - HEADERFOOTER_HEIGHT);
 
@@ -205,7 +224,7 @@ static void draw_tas_curve() {
   header_footer.printf("V0 %.2f  K %.1f  min %.2f  max %.2f",
                        attitude_get_airspeed_v0(), attitude_get_airspeed_k(), vlo, vhi);
   header_footer.setCursor(4, 24);
-  header_footer.print("SD settings.txt");
+  header_footer.printf("Weight %.2f kg", attitude_get_airspeed_weight_kg());
   header_footer.loadFont(AA_FONT_SMALL);
   header_footer.setTextColor(COLOR_BLACK, COLOR_WHITE);
   const char* back = "Press: back >";
@@ -215,7 +234,7 @@ static void draw_tas_curve() {
   header_footer.pushSprite(0, SCREEN_HEIGHT - 40);
 }
 
-// 推定 TAS の案内（GPS_TFT_map.ino の tas_guide_*）。0 = 説明の画像、1 = 曲線の画面。
+// 推定 TAS の案内（GPS_TFT_map.ino の tas_guide_*）。画像を順に表示し、最後に曲線を描く。
 void draw_tas_guide(int page) {
   if (page >= 0 && page < TAS_GUIDE_PAGES) {
     push_guide_image(TAS_GUIDE_DATA[page], TAS_GUIDE_W, TAS_GUIDE_H);
@@ -408,13 +427,16 @@ static void draw_vario_page1() {
     // ★ ミラー中の KF 高度は**機体の** MSL なので、受信機自身のオフセットが決まったかでは判断しない
     //   （受信機が屋根の下で fix していないと、機体の高度に "(-)" が付いていた。2026-11-10 まで）。
     //   機体のオフセットは電波に載っていないので、機体の fix と KF 高度が届いているかで代える。
-    bool _msl_ready = _mirror ? (link_get_fix_ok() && link_has_value(RHAVE_KFALT))
+    const bool kf_alt_ok = _mirror ? link_has_value(RHAVE_KFALT)
+                                   : !getReplayMode() || replay_has_value(RHAVE_KFALT);
+    bool _msl_ready = _mirror ? (link_get_fix_ok() && kf_alt_ok)
                               : get_imu_gnss_offset_ready();
     float _kf_msl   = get_imu_altitude_msl();
     float _gnss_msl = get_gnss_altitude();
     backscreen.setCursor(2, y);
     backscreen.setTextColor(_msl_ready ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
-    backscreen.printf("GNSS:%.1fm  KF:%.1fm%s", _gnss_msl, _kf_msl, _msl_ready ? "" : "(-)");
+    if (kf_alt_ok) backscreen.printf("GNSS:%.1fm  KF:%.1fm%s", _gnss_msl, _kf_msl, _msl_ready ? "" : "(-)");
+    else           backscreen.printf("GNSS:%.1fm  KF:--", _gnss_msl);
     y += line_height;
 
     // B.S.L. = MSL - ELEVATION_GEOID_OFFSET_M（琵琶湖面 0m 基準）
@@ -422,7 +444,8 @@ static void draw_vario_page1() {
     float _gnss_bsl = _gnss_msl - ELEVATION_GEOID_OFFSET_M;
     backscreen.setCursor(2, y);
     backscreen.setTextColor(_msl_ready ? COLOR_BLACK : COLOR_GRAY, COLOR_WHITE);
-    backscreen.printf("BSL GNSS:%.1fm KF:%.1fm", _gnss_bsl, _kf_bsl);
+    if (kf_alt_ok) backscreen.printf("BSL GNSS:%.1fm KF:%.1fm", _gnss_bsl, _kf_bsl);
+    else           backscreen.printf("BSL GNSS:%.1fm KF:--", _gnss_bsl);
     y += nextcolumn_height;
 
   } else {

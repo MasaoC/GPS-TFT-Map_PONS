@@ -27,6 +27,7 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] **ジャイロの飽和で方位を捨てる（11/27。実機未確認）**: 手で素早く回すと SCH16T が ±327.68 °/s で頭打ちになり、方位が大きく狂うのに精度は良いままだった。
   300 °/s 以上で方位を捨てる（`ESKF_GYRO_SAT_DPS`）。方位が決まったあとに手で素早く回す → 灰色・`YAW ALIGN`、log.txt に `ESKF GYRO SAT` と `imu sat`。
   そのまま発進して `ESKF YAW INIT` で入れ直されるか。`imu sat` の数と `ESKF GYRO SAT` のサンプル数で、チップが飽和を言う角速度も見る。yaw_test G8・G9
+- [ ] **推定 TAS の経路角補正を実機で確認（11/27）**: 実装と PC テストは済み。車の坂道で γ の符号・V/S の遅れを確認し、飛行時に対気速度センサーと比較する。 → [pons_tas_gamma_plan.md](pons_tas_gamma_plan.md) §9
 - [ ] Step 5 飛行。**立ち会わず、飛んだあとに直せない**ので、直すものは飛ぶ前に決める。
   飛行のログで見ること: GNSS の上下速度（`vsi gnss` の `innov=`＝湖面の反射。食い違いの門は 11/22 の車で働いた `consist=` も）、加速度のガード（`VARIO: IMU accel ignored`）、離陸直後のピッチ
 

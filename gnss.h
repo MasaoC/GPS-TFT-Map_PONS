@@ -207,6 +207,7 @@
   bool get_replay_attitude(float &roll, float &pitch);
   // 以下はその列が CSV にあり、値が入っている行だけ true を返す（姿勢の列の無い古い CSV では false）。
   bool get_replay_pitch_avg(float &avg);
+  bool get_replay_alpha_avg(float &avg);
   bool get_replay_roll_trim(float &trim);
   bool get_replay_yaw(float &yaw, float &acc95);
   bool get_replay_wind(float &speed_mps, float &dir_to_deg);
