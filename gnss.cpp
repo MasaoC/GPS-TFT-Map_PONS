@@ -2282,6 +2282,18 @@ uint32_t get_gnss_jst_yyyymmdd() {
   return (uint32_t)y * 10000UL + (uint32_t)mo * 100UL + (uint32_t)da;
 }
 
+// GNSS の UTC 時刻から、JST の時刻を HHMM の整数で返す。-1 = 時刻がまだ無い。
+// APPLY した時刻を設定画面に出すため（2026-11-27〜）。日付と同じ測位から取るので、上の get_gnss_jst_yyyymmdd() と続けて呼べば
+// 日付と食い違わない（ubx_* を書き換えるのも同じ Core0 の loop() なので、2 つの呼び出しの間に変わらない）。
+int get_gnss_jst_hhmm() {
+  GnssDate d = get_gnss_date();
+  GnssTime t = get_gnss_time();
+  if (!d.isValid() || !t.isValid()) return -1;
+  int y = d.year(), mo = d.month(), da = d.day(), h = t.hour();
+  utcToJst(&y, &mo, &da, &h);
+  return h * 100 + t.minute();
+}
+
 unsigned long last_demo_gnss_update = 0;
 
 // 飛行軌跡（トラックログ）に現在位置を追加する。

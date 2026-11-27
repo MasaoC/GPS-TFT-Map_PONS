@@ -196,6 +196,7 @@ SDSetting settings[] = {
   {"roll_target",     setRollTarget,     getRollTarget},
   {"needs_apply",     setNeedsApply,     getNeedsApply},
   {"calib_date",      setCalibDate,      getCalibDate},
+  {"calib_time",      setCalibTime,      getCalibTime},
   {"airspeed_v0",     setAirspeedV0,     getAirspeedV0},
   {"airspeed_k",      setAirspeedK,      getAirspeedK},
   {"airspeed_min",    setAirspeedMin,    getAirspeedMin},
@@ -645,6 +646,19 @@ void setCalibDate(const char* value) {
 }
 void getCalibDate(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%lu", (unsigned long)attitude_get_calib_date());
+}
+
+// 最後に APPLY した時刻（JST の HHMM、-1 = 不明。2026-11-27〜）。設定画面の stored offset の下に日付と並べて出すだけ。
+// ★ 数字が 1 つも無い値（空など）は不明にする。atoi だと 0 ＝ 00:00 になってしまう。
+void setCalibTime(const char* value) {
+  char* end = nullptr;
+  const long v = strtol(value, &end, 10);
+  attitude_set_calib_time((end == value) ? -1 : (int32_t)v);
+}
+void getCalibTime(char* buffer, size_t bufferSize) {
+  const int32_t t = attitude_get_calib_time();
+  if (t < 0) snprintf(buffer, bufferSize, "-1");
+  else       snprintf(buffer, bufferSize, "%04ld", (long)t);
 }
 
 // ---- 対気速度の推定モデル V(θ) = V0 * sqrt(K / (K + θ)) ----

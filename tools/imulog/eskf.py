@@ -418,6 +418,7 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
     events: リストを渡すと、出来事を (session, t, 種類, 値) で足す（検証用）。
       'relevel' … 置き直した（値 = 置き直す前の食い違い [deg]）
       'yaw_kept' / 'yaw_reset' … 保った方位を航跡と比べた（値 = 航跡 − 方位 [deg]。reset は航跡で入れ直した）
+      'gyro_sat' … ジャイロの飽和のひとまとまりが終わった（値 = dict(secs, samples, yaw_dropped)。機上の ESKF GYRO SAT の行）
 
     gnss_delay: GNSS 速度の遅れ [s]（機上 ESKF_GNSS_VEL_DELAY_MS）。None なら補償しない（届いた時点の速度と比べる）。
       数字を渡すと、測位の瞬間（iTOW を本体の時計へ写した時刻 − gnss_delay）の推定速度を速度の履歴から引いて
@@ -658,6 +659,12 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
         yaw_suspect = False      # 置き直したあと、保った方位を航跡でまだ確かめていない（機上 yaw_suspect_）
         yaw_check_arm = 0
         v_stale = False          # IMU の途絶明け。次の測位で速度を入れ直す（機上 v_stale_。BUG-62）
+        # ---- ジャイロの飽和（機上 gyro_sat_*。settings.h の ESKF_GYRO_SAT_DPS。2026-11-27〜）----
+        sat_lim = np.deg2rad(300.0)      # ESKF_GYRO_SAT_DPS
+        sat_on = False                   # ひとまとまりの飽和の途中（機上 gyro_sat_on_）
+        sat_since = sat_last = 0.0
+        sat_n = 0
+        sat_drop = False                 # 方位を捨てたか（始まったときにヨーが決まっていたか）
         # ---- GNSS の遅れの補償のための速度の履歴（機上 vhist_。約 1 秒ぶん）----
         vh = np.zeros((len(ts), 3))      # vh[j] = サンプル j を処理し終えたときの速度（あとの直しも足し込む）
         hist_from = i_start              # これより前の履歴は使えない（速度を入れ直した）
@@ -786,6 +793,38 @@ def run_on_log(parts, sigma_kw=None, sacc_max=1.0, use_gnss=True,
             dt = ts[i] - ts[i - 1] if i else 0.0
             cur_t = ts[i]
             relevel_gain = min(1.0, dt / 1.0) if dt > 0.0 else 0.004   # 時定数 1.0 秒（機上 ESKF_RELEVEL_GAIN）
+            # ---- ジャイロの飽和（機上 attitude_on_gyro の同名ブロックと gyro_saturated()。2026-11-27〜）----
+            # どれか 1 軸の生の値が ESKF_GYRO_SAT_DPS 以上なら**方位を捨てる**（ヨー未設定に戻し σ 180°。次の発進で入れ直す）。
+            # 傾きの不確かさは 30° へ広げ、速度は次の測位で入れ直す。理由は settings.h。
+            # 機上と同じく「加速中か」より前に置く（方位を捨てると hold_max が変わる）。伝播は頭打ちの値のまま続ける。
+            if float(np.max(np.abs(w[i]))) >= sat_lim:
+                if not sat_on:
+                    sat_on, sat_since, sat_n, sat_drop = True, ts[i], 0, yaw_set
+                sat_last = ts[i]
+                sat_n += 1
+                yaw_set = False
+                yaw_arm = 0
+                yaw_arm_lo = 0
+                yaw_imu_hp[:] = 0.0                                      # 機上 yaw_corr_reset()
+                yaw_gnss_lp = None
+                yaw_static_s = 0.0
+                yaw_corr_c = yaw_corr_s = yaw_corr_n = 0.0
+                yaw_suspect = False
+                yaw_check_arm = 0
+                f.P[2, :] = 0.0
+                f.P[:, 2] = 0.0
+                f.P[2, 2] = np.deg2rad(180.0) ** 2                       # ESKF_YAW_UNKNOWN_SIGMA_DEG
+                f.P[0:2, :] = 0.0
+                f.P[:, 0:2] = 0.0
+                f.P[0, 0] = f.P[1, 1] = np.deg2rad(30.0) ** 2            # ESKF_INIT_ATT_SIGMA_MOVING_DEG
+                v_stale = True
+                if prov:
+                    prov_c = prov_s = prov_n = prov_k = 0.0; prov_cur[:] = np.nan
+            elif sat_on and ts[i] - sat_last >= 0.5:                      # ESKF_GYRO_SAT_END_US
+                sat_on = False
+                if events is not None:
+                    events.append((sess, float(ts[i]), "gyro_sat", dict(secs=float(sat_last - sat_since), samples=sat_n,
+                                                                        yaw_dropped=sat_drop)))
             if static_flags is not None:
                 if static_flags[i]:
                     if static_t0 is None:

@@ -220,6 +220,10 @@ bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset);
 // gap_s に途絶えていた秒数、yaw_kept に方位を保ったか（ヨーが決まっていなかったときは false）。
 // 方位を保ったときは、GNSS が戻ったら航跡と比べ、その結果は attitude_take_bigtilt_yaw_check で出る。
 bool attitude_take_imu_gap_event(float &gap_s, bool &yaw_kept);
+// ジャイロの飽和（ESKF_GYRO_SAT_DPS 以上）のひとまとまりが終わった瞬間に一度だけ true を返す（ログ記録用。2026-11-27〜）。
+// secs に最初から最後の飽和までの秒数、samples に飽和したサンプル数、yaw_dropped に方位を捨てたか
+// （始まったときにヨーが決まっていなかったら false）。方位は次の発進で入れ直す（YAW INIT の行が出る）。
+bool attitude_take_gyro_sat_event(float &secs, uint32_t &samples, bool &yaw_dropped);
 // ---- 静止で覚えたジャイロのゼロ点の保存（SD の gyro_bias.txt。2026-11-18〜。settings.h の ESKF_BIAS_CONFIRM_DIFF_RADS）----
 // 起動時に SD の記録（前回の起動で確かめた値。センサー軸 [rad/s]）を渡す。覚えた値をこれと比べて確かめる。
 void attitude_set_bias_ref(const float b[3]);
@@ -281,6 +285,8 @@ void  attitude_set_airspeed_max(float mps);  // 推定の上限 [m/s]
 uint32_t attitude_get_calib_date();
 void     attitude_set_calib_date(uint32_t yyyymmdd);   // APPLY 直後と SD 復元から呼ぶ
 bool     attitude_calib_date_stale(uint32_t today_jst);
+int32_t  attitude_get_calib_time();                    // 較正した時刻（JST の HHMM）。-1 = 不明。表示だけに使う
+void     attitude_set_calib_time(int32_t hhmm);        // APPLY 直後と SD 復元から呼ぶ（2026-11-27〜）
 
 // ---- 較正時に申告するピッチ角（画面の SET PITCH 行の値）----
 // 次に較正するときの目標値。SD に保存して次回起動でも同じ値から始められるようにする。

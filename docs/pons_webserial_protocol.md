@@ -280,7 +280,7 @@ Re:PONS から `settings.txt` の全設定（32 項目）を確認・変更し�
     （既定は約 11 km）は、差分の画面に【要確認】を出し、保存を押したときに確認のダイアログで聞く（キャンセルなら何も送らない。2026-11-23〜）。
     距離は、プラットホームかその北・南パイロンを変えたときだけ見る。1km パイロンと多景島は琵琶湖の箱だけ。定数は `tools/repons/settings_editor.js` の `BIWAKO_BOX` / `PILON_PLAT_*`。
 
-### (9) ライブ配信 (LIVE。2026-11-23〜・実機未確認)
+### (9) ライブ配信 (LIVE。2026-11-23〜・実機確認済み)
 受信機（ボートの PONS）が受けた機体のテレメトリと画面の判断を USB へ流し、Re:PONS のライブの窓（`tools/repons/live.html`）が
 機体の画面を描き直して OBS で配信するための行。設計と決めたことは [pons_live_stream_plan.md](pons_live_stream_plan.md)、本体は `live.cpp`。
 

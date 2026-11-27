@@ -4,7 +4,7 @@
 File    : docs/pons_todo.md
 Project : PONS v7.1 / v7.2
 Role    : 残っている作業の一覧。1 項目 1〜2 行。経緯・数字・確かめ方の詳細は pons_todo_notes.md。
-Updated : 2026/11/25
+Updated : 2026/11/27
 -->
 
 **済んだら行を消す。増えたら足す。** 1 項目は 1〜2 行。詳しいことは [pons_todo_notes.md](pons_todo_notes.md)（「メモ §n」）か各行のリンク先。
@@ -24,6 +24,9 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] **起動地の MSL 高度の決め直し（11/22。実機未確認）**: 11/22 の車で最初の測位のでたらめな高度（vAcc 9.9 m と出て 50 m 以上ずれ）でオフセットが +82.7 m に決まり、
   50 m の外れ値の門で 30 分直らなかった（KF の MSL 高度が 80 m 高い）。決めるときは vAcc 5 m 未満、精度の良い測位で 50 m を超えて外れ続けたら 20 回で決め直す
   （`GNSS_OFFSET_*`、log.txt `GNSS alt offset re-init`）。vario_test §8。次の走行で CSV の GNSS_Altitude と KF_Altitude が数 m 以内か見る
+- [ ] **ジャイロの飽和で方位を捨てる（11/27。実機未確認）**: 手で素早く回すと SCH16T が ±327.68 °/s で頭打ちになり、方位が大きく狂うのに精度は良いままだった。
+  300 °/s 以上で方位を捨てる（`ESKF_GYRO_SAT_DPS`）。方位が決まったあとに手で素早く回す → 灰色・`YAW ALIGN`、log.txt に `ESKF GYRO SAT` と `imu sat`。
+  そのまま発進して `ESKF YAW INIT` で入れ直されるか。`imu sat` の数と `ESKF GYRO SAT` のサンプル数で、チップが飽和を言う角速度も見る。yaw_test G8・G9
 - [ ] Step 5 飛行。**立ち会わず、飛んだあとに直せない**ので、直すものは飛ぶ前に決める。
   飛行のログで見ること: GNSS の上下速度（`vsi gnss` の `innov=`＝湖面の反射。食い違いの門は 11/22 の車で働いた `consist=` も）、加速度のガード（`VARIO: IMU accel ignored`）、離陸直後のピッチ
 
@@ -44,12 +47,12 @@ SCH16T は Step 5 が済むまで飛ばさない（`#warning "... DO NOT FLY."`�
 - [ ] **Re:PONS からパイロン座標を変える（11/23。実機未確認）**: 本体設定の「コース（パイロン）」で北パイロンを変えて保存 → SD の `override_pilon_coordinate.csv` と
   log.txt の `PC PILON ... (next boot)` → 再起動で `PILON OVERRIDE: 1 applied` と地図。既定に戻すとファイルが消えるか。
   北パイロンを 7 km の所にすると欄が赤く、保存で確認のダイアログが出てキャンセルで何も書かれないか → [pons_webserial_protocol.md](pons_webserial_protocol.md) §4 (8)
-- [ ] **CH を変えると時々「モジュールの応答がありません」（11/23 修正・実機未確認）**: 送信機をアッパー（CH15〜27・SF9/10）で送らせたまま
-  WIRELESS 画面で CH を何度か変え、`LINK ERROR: radio module not responding` が出ず `E220 reconfigure ... waited=` が 0 でない回があるか → [pons_link.md](pons_link.md) §6.9
-- [ ] **Re:PONS を分けた（11/23。本体につないでは未確認）**: index.html を CSS と JS 6 つに分けた（中身は同じ。ヘッドレス Chrome で
-  サンプル再生・log.txt・本体設定の描画は元と一致）。本体につないでファイル一覧・ダウンロード・log.txt・本体設定・IMU の取得を一通り。公開ページでも開く
+- [ ] **GNSS が抜けたあとの KF 高度（11/27 修正・実機未確認）**: 起動して fix → GNSS のコネクタを抜いて本体を 1〜2 m 上下させ、数分置いても
+  高度の表示が抜けた時点の GNSS 高度へ寄っていかないか（凍った高度を 1 秒ごとに入れていた。imu.cpp の imu_kalman_gnss_update を iTOW で 1 回だけに）
 - [ ] **地図以外の画面の DIM MODE（11/26。実機未確認）**: 電池で設定画面・GNSS DETAIL・VARIO などを出したまま 30 秒置く → 画面の上に `DIM MODE` の箱が出て、
   ボタン・手かざしで戻ると箱が消えて元の画面に描き直されるか。減光中に設定画面が時間切れで地図へ戻ったときも → [pons_power.md](pons_power.md) §4.3
+- [ ] **APPLY した日時の表示（11/27。実機未確認）**: 測位してから APPLY → IMU/ESKF 1/2 の stored offset の下に `applied YYYY/MM/DD HH:MM`（JST）。
+  再起動しても残るか（settings.txt の `calib_time`）、前日の較正で橙の警告 2 行が出ているときも最終行が画面の下で切れないか
 - [ ] v7.2 基板が届いたら: `PONS_MAINBOARD_REV` = 72 で焼き、満充電で数日〜数週間切ってから起動して `RTC BACKUP CHECK: ok` か、
   充電ポップアップの `Fast GPS <2d, clock 3mo`、回路が動き出す・止まる電圧（約 3.92V / 3.83V）→ [pons_charge_estimation.md](pons_charge_estimation.md)
 

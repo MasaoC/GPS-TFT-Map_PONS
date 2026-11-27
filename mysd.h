@@ -204,6 +204,8 @@
     // 最後に APPLY した日（JST の YYYYMMDD、0 = 不明）
     void setCalibDate(const char* value);
     void getCalibDate(char* buffer, size_t bufferSize);
+    void setCalibTime(const char* value);
+    void getCalibTime(char* buffer, size_t bufferSize);
     // 対気速度モデル V(θ)=V0*sqrt(K/(K+θ)) の係数（機体依存。既定は settings.h）
     void setAirspeedV0(const char* value);
     void getAirspeedV0(char* buffer, size_t bufferSize);

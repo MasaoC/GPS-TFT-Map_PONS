@@ -107,6 +107,11 @@ static uint32_t s_crc_err = 0;      // CRC 不一致
 static uint32_t s_ce_err  = 0;      // CE（コマンドエラー）
 static uint32_t s_sat_err = 0;      // S=10（飽和）。データ自体は使える
 static uint32_t s_stat_bad = 0;     // STAT_SUM に 0 のビットがあった回数
+// 飽和したサンプル数（ジャイロ 3 軸・加速度 3 軸のどれかが S=10）。**これだけは 60 秒ログの `imu sat` に出す**（2026-11-27〜。
+//   get_imu_sat_counts()）。推定は値（settings.h の ESKF_GYRO_SAT_DPS）で飽和を見ていて、こちらはチップがどこで
+//   飽和を言うのかを確かめるため（仕様のレンジ 300 deg/s か、頭打ちの 327.68 deg/s か）。
+static uint32_t s_sat_gyro_n = 0;
+static uint32_t s_sat_acc_n  = 0;
 
 // ============================================================
 //  SPI 48bit フレーム層（tools/sch16t_test から移植）
@@ -394,6 +399,14 @@ static bool take_sample(const uint64_t fr[6], const uint64_t *ft, uint32_t t_us)
     bool ok = true;
     for (int i = 0; i < 6; i++) ok &= frame_sample_ok(fr[i]);
     if (!ok) return false;
+    // 飽和をジャイロと加速度に分けてサンプル単位で数える。ここまで来たフレームの S は 00 か 10 なので、S1 だけ見ればよい。
+    {
+        bool sg = false, sa = false;
+        for (int i = 0; i < 6; i++)
+            if (fr[i] & MASK48_S1) { if (i < 3) sg = true; else sa = true; }
+        if (sg) s_sat_gyro_n++;
+        if (sa) s_sat_acc_n++;
+    }
 
     // ジャイロ [LSB] → [rad/s]。
     // ★ **バイアスを引かずに渡す。** ESKF が自分で推定する（imu_sensor.h の約束）。
@@ -844,6 +857,13 @@ uint32_t get_imu_ring_ovf() {
 #else
     return 0;
 #endif
+}
+
+// チップが飽和を言ったサンプル数（60 秒ログの imu sat）。★ **読むたびに 0 へ戻す約束**。
+//   数えるのはスレッド側の take_sample() だけ（割り込みは触らない）なので、loop() から読むのに割り込みを止めなくてよい。
+void get_imu_sat_counts(uint32_t &gyro, uint32_t &acc) {
+    gyro = s_sat_gyro_n; s_sat_gyro_n = 0;
+    acc  = s_sat_acc_n;  s_sat_acc_n  = 0;
 }
 
 // 割り込みで読んでいるか（60 秒ログの行の形を決める）。

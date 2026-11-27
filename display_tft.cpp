@@ -2456,7 +2456,7 @@ static void draw_imu_page1() {
     // マウントから外された形跡がある。較正をやり直すまで姿勢は信用できない。
     backscreen.print("!! REMOVED FROM MOUNT"); y += lh;
     backscreen.setCursor(2, y);
-    backscreen.print("   APPLY required"); y += lh + 4;
+    backscreen.print("   APPLY required"); y += lh + 3;
   } else if (attitude_get_rpy_enabled() && !getReplayMode() &&
              attitude_calib_date_stale(get_gnss_jst_yyyymmdd())) {
     // 較正した日と今日（JST）が違う。電源が切れている間に外して付け直していても
@@ -2472,7 +2472,7 @@ static void draw_imu_page1() {
     backscreen.printf("! CALIB IS FROM %02u/%02u",
                       (unsigned)(cd / 100 % 100), (unsigned)(cd % 100)); y += lh;
     backscreen.setCursor(2, y);
-    backscreen.print("  APPLY again if remounted"); y += lh + 4;
+    backscreen.print("  APPLY again if remounted"); y += lh + 3;
   }
   // ★ 2026-11-07 まで、どちらにも当たらないときは青の注意書き
   //   「Note: Make sure actual aircraft attitude matches SET attitude」を 2 行出していた。
@@ -2481,10 +2481,13 @@ static void draw_imu_page1() {
   const bool warn_shown = (y > 50);   // 上の赤・橙の 2 行を出したか（出していなければ y はまだ 44）
 
   // ---- 操作メニュー ----
-  // 項目数 10。行間 16 で、警告の 2 行が無いときの最終行（stored offset）は y≈208。
-  // 警告の 2 行を出しているときは行間を 15 に詰めて、最終行を y≈224 に収める（backscreen は 240px）。
-  // 項目を足すときはこの計算もやり直すこと。
-  const int mh = warn_shown ? 15 : 16;
+  // 項目数 10。その下に stored offset と、それを APPLY した日時の 2 行（2026-11-27〜）。最終行（日時）は y≈224 までに収める
+  // （backscreen は 240px。この字の高さで y≈224 が下端）。
+  //   警告の 2 行が無いとき: 44 から行間 16 → 204、+4 で stored offset 208、+12 で日時 220。
+  //   警告の 2 行を出しているとき: 警告の下を +3、行間を 14 に詰め、stored offset の前を +1 にする →
+  //   71 から 211、stored offset 212、日時 224（日時の行を足す前は行間 15・最終行 224 だった）。
+  // 項目や行を足すときはこの計算もやり直すこと。
+  const int mh = warn_shown ? 14 : 16;
   bool on_ground = eskf_calib_allowed();
   for (int i = 0; i < IMU_MENU_COUNT; i++) {
     bool sel = (imu_cursor == i);
@@ -2560,12 +2563,30 @@ static void draw_imu_page1() {
   }
 
   // ---- 現在保存されているオフセット ----
-  y += warn_shown ? 2 : 4;
+  y += warn_shown ? 1 : 4;
   float lr, lp;
   attitude_get_level_offset(lr, lp);
   backscreen.setTextColor(COLOR_GRAY, COLOR_WHITE);
   backscreen.setCursor(2, y);
   backscreen.printf("stored offset  R%+.1f  P%+.1f", lr, lp);
+  // その offset を APPLY した日時（JST。2026-11-27〜）。日付の警告（上の橙の行）は MM/DD しか出さないので、ここで年と時刻まで見る。
+  //   日付が不明（測位していない所・リプレイ中に APPLY した、または一度も APPLY していない）なら全部 --、
+  //   時刻だけ不明（2026-11-27 より前の設定ファイル）なら時刻だけ --:--。
+  y += lh;
+  backscreen.setCursor(2, y);
+  {
+    const uint32_t cd = attitude_get_calib_date();
+    const int32_t  ct = attitude_get_calib_time();
+    if (cd == 0)
+      backscreen.print("applied  ----/--/-- --:--");
+    else if (ct < 0)
+      backscreen.printf("applied  %04u/%02u/%02u --:--", (unsigned)(cd / 10000),
+                        (unsigned)(cd / 100 % 100), (unsigned)(cd % 100));
+    else
+      backscreen.printf("applied  %04u/%02u/%02u %02ld:%02ld", (unsigned)(cd / 10000),
+                        (unsigned)(cd / 100 % 100), (unsigned)(cd % 100),
+                        (long)(ct / 100), (long)(ct % 100));
+  }
 
   backscreen.unloadFont();
   backscreen.pushSprite(0, 40);

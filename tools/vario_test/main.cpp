@@ -361,6 +361,7 @@ int main() {
         auto gnss_1s = [&](float msl_minus_kf, float vacc, int n) {
             for (int k = 0; k < n; k++) {
                 run_sim(1.0f, vz_true, 0.0f, 0.0f, z_baro, true);     // 1 秒（imu_kalman_gnss_update は 1 秒に 1 回）
+                g_stub_itow_ms += 1000;                                // 毎回新しい測位（同じ測位は使わない）
                 imu_kalman_gnss_update(z_baro + msl_minus_kf, vacc);
             }
         };
@@ -386,6 +387,20 @@ int main() {
         gnss_1s(TRUE_MSL, 2.0f, 30);
         CHECK(g_stub_log_count == log1 && fabsf(get_imu_altitude_msl() - (z_baro + TRUE_MSL)) < 1.0f,
               "5 s multipath outlier does not re-init (alt %.2f)", get_imu_altitude_msl());
+
+        // GNSS が抜けた（NAV-PVT が来ない。iTOW・高度・fix は最後の値のまま凍る）あとに 5 m 上った。
+        //   呼び出し元は凍った高度を 1 秒ごとに渡し続けるが、同じ測位なので使わず、気圧の基準は引っぱられない（2026-11-27）。
+        //   直す前は 60 秒で約 2 m、凍った高度の側へ寄っていた。
+        const float frozen_msl = z_baro + TRUE_MSL;       // 抜けた時点の GNSS 高度
+        z_baro += 5.0f;                                   // 抜けたあとに 5 m 上った
+        run_sim(10.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+        for (int k = 0; k < 60; k++) {
+            run_sim(1.0f, vz_true, 0.0f, 0.0f, z_baro, true);
+            imu_kalman_gnss_update(frozen_msl, 2.0f);     // iTOW は進めない
+        }
+        CHECK(fabsf(get_imu_altitude_msl() - (z_baro + TRUE_MSL)) < 0.3f,
+              "frozen GNSS altitude is not fused again (alt %.2f, expect %.2f, frozen %.2f)",
+              get_imu_altitude_msl(), z_baro + TRUE_MSL, frozen_msl);
     }
 
     printf("vario_test: %d passed, %d failed\n", g_pass, g_fail);

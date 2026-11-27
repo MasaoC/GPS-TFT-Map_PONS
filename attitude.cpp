@@ -115,6 +115,16 @@ static bool     v_stale_ = false;
 static volatile bool  imu_gap_event_          = false;   // 途絶明けを扱った（呼び出し側がログに残す）
 static volatile float imu_gap_event_s_        = 0.0f;    // 途絶えていた秒数
 static volatile bool  imu_gap_event_yaw_kept_ = false;   // 方位を保ったか（ヨーが決まっていなかったら false）
+// ジャイロの飽和（gyro_saturated()。settings.h の ESKF_GYRO_SAT_DPS。2026-11-27〜）。
+static bool     gyro_sat_on_       = false;   // ひとまとまりの飽和の途中（ESKF_GYRO_SAT_END_US 下回るまで）
+static uint32_t gyro_sat_since_us_ = 0;       // 最初に飽和したサンプルの時刻
+static uint32_t gyro_sat_last_us_  = 0;       // 最後に飽和したサンプルの時刻
+static uint32_t gyro_sat_n_        = 0;       // 飽和したサンプル数
+static bool     gyro_sat_yaw_drop_ = false;   // 方位を捨てたか（始まったときにヨーが決まっていたか）
+static volatile bool     gyro_sat_event_      = false;   // ひとまとまりが終わった（呼び出し側がログに残す）
+static volatile float    gyro_sat_event_s_    = 0.0f;    // 最初から最後の飽和までの秒数
+static volatile uint32_t gyro_sat_event_n_    = 0;
+static volatile bool     gyro_sat_event_drop_ = false;
 
 // ---- 機体ゼロ点（マウント基準）のオフセット [度] ----
 static float level_roll_off_ = 0.0f;
@@ -143,6 +153,9 @@ static volatile bool calib_done_    = false;
 //   読むのは Core0（.ino の発報と画面）。needs_apply_ と同じ理由で、
 //   ループの中で値をレジスタに抱え込まれると測位後の変化を取りこぼす。
 static volatile uint32_t calib_date_ = 0;
+// 較正した時刻（JST の HHMM）。-1 = 不明（2026-11-27〜。設定画面の stored offset の下に出すだけで、判定には使わない）。
+// 入れ方・保存・volatile の理由は calib_date_ と同じ。2026-11-27 より前の設定ファイルには無いので、日付だけ分かって時刻は不明になる。
+static volatile int32_t calib_time_ = -1;
 
 // ---- Roll/Pitch/Yaw 機能のマスタースイッチ ----
 // ESKF から得た姿勢を「使う」機能を一括で ON/OFF する。既定 ON。
@@ -693,6 +706,8 @@ void attitude_setup() {
     yaw_check_event_ = 0;
     v_stale_ = false;
     imu_gap_event_ = false;
+    gyro_sat_on_ = false;
+    gyro_sat_event_ = false;
     gnss_updates_ = 0;
     gyro_seen_ = false;
     last_gyro_us_ = 0;
@@ -888,6 +903,36 @@ static void imu_gap_recover(float gap_s) {
     trim_run_sum_   = 0.0f;
     imu_gap_event_s_ = gap_s;
     imu_gap_event_   = true;
+}
+
+// ジャイロが飽和したサンプル（settings.h の ESKF_GYRO_SAT_DPS）。**方位を捨てる。**毎サンプル呼ぶ（何度呼んでも同じ）。
+// ★ 頭打ちの値で回した姿勢は、取りこぼした角度だけ狂っている。方位は分からないので捨て、起動直後（水平化しただけ）と同じ
+//   状態に戻す: σ 180°・表示は灰色と YAW ALIGN・動いている間は速度の観測を入れない・次の発進で 2D 相関か航跡で入れ直す。
+//   σ だけ 180° にして方位を保たない理由は settings.h。保った方位を航跡で確かめる道（yaw_suspect_）にも乗せない
+//   （航跡と比べるのは 3 m/s 以上なので、止まっている間「確かめ待ち」のまま狂った方位が出続ける。比べて 45° 以内なら
+//   残るが、取りこぼしは 45° を簡単に超え、超えなくても σ は確かめた量にならない）。
+// ★ ロール・ピッチは保つ（頭打ちは向きだけでなく傾きも狂わせ得るので、不確かさは IMU の途絶明けと同じ 30° へ広げる）。
+//   止まっていれば待機中の維持（時定数 1 秒）、動いていれば重力の観測と大きな傾きの置き直し（ESKF_BIGTILT_*）が戻す。
+// ★ 速度は次の信用できる測位で入れ直す（回している間の比力には回転に伴う加速度が混ざり、狂った姿勢で積分している）。
+// ★ ゼロ点（bg_）は触らない。回している間は静止の判定に入らないので、学習の窓には混ざらない。
+static void gyro_saturated() {
+    yaw_set_       = false;
+    yaw_src_       = ATT_YAW_SRC_NONE;
+    yaw_arm_       = 0;
+    yaw_arm_lo_    = 0;
+    yaw_corr_reset();                       // 2D 相関は捨てた方位の座標で積んでいる
+    yaw_suspect_   = false;
+    yaw_check_arm_ = 0;
+    const float ys = ESKF_YAW_UNKNOWN_SIGMA_DEG * (float)M_PI / 180.0f;
+    for (int i = 0; i < N_ERR; i++) { P_[2][i] = 0.0f; P_[i][2] = 0.0f; }
+    P_[2][2] = ys * ys;
+    reset_tilt_covariance(ESKF_INIT_ATT_SIGMA_MOVING_DEG);
+    v_stale_ = true;
+    pitch_avg_reset();
+    trim_roll_sum_  = 0.0f;
+    trim_time_s_    = 0.0f;
+    trim_run_count_ = 0;
+    trim_run_sum_   = 0.0f;
 }
 
 // 静止中にジャイロのゼロ点を測って bg_ に入れる。
@@ -1107,6 +1152,30 @@ void attitude_on_gyro(const float g[3], uint32_t t_us) {
     }
 
     if (!accel_valid_) return;
+
+    // ---- ジャイロの飽和（2026-11-27〜。settings.h の ESKF_GYRO_SAT_DPS）----
+    // ★ 下の「加速中か」より前に置く（方位を捨てると hold_max が変わる。tools/imulog/eskf.py もループの頭）。
+    //   伝播は頭打ちの値のまま続ける（ほかに使える値が無い）。
+    {
+        const float lim = ESKF_GYRO_SAT_DPS * (float)M_PI / 180.0f;
+        if (fabsf(g[0]) >= lim || fabsf(g[1]) >= lim || fabsf(g[2]) >= lim) {
+            if (!gyro_sat_on_) {
+                gyro_sat_on_       = true;
+                gyro_sat_since_us_ = t_us;
+                gyro_sat_n_        = 0;
+                gyro_sat_yaw_drop_ = yaw_set_;
+            }
+            gyro_sat_last_us_ = t_us;
+            gyro_sat_n_++;
+            gyro_saturated();
+        } else if (gyro_sat_on_ && (uint32_t)(t_us - gyro_sat_last_us_) >= ESKF_GYRO_SAT_END_US) {
+            gyro_sat_on_         = false;
+            gyro_sat_event_s_    = (float)(uint32_t)(gyro_sat_last_us_ - gyro_sat_since_us_) * 1e-6f;
+            gyro_sat_event_n_    = gyro_sat_n_;
+            gyro_sat_event_drop_ = gyro_sat_yaw_drop_;
+            gyro_sat_event_      = true;
+        }
+    }
 
     // ---- 加速中か（滑走の加速を傾きと取り違えないため。2026-11-18〜。判定の考え方は settings.h の ESKF_ACCEL_*）----
     // ★ 推定の座標では見ない（寄せたぶん判定が壊れる。2026-11-18 夜の車）。加速度計の値を、直近の平均を**ジャイロで本体と一緒に回したもの**と比べ、
@@ -2238,6 +2307,14 @@ bool attitude_take_imu_gap_event(float &gap_s, bool &yaw_kept) {
     yaw_kept = imu_gap_event_yaw_kept_;
     return true;
 }
+bool attitude_take_gyro_sat_event(float &secs, uint32_t &samples, bool &yaw_dropped) {
+    if (!gyro_sat_event_) return false;
+    gyro_sat_event_ = false;
+    secs        = gyro_sat_event_s_;
+    samples     = gyro_sat_event_n_;
+    yaw_dropped = gyro_sat_event_drop_;
+    return true;
+}
 bool attitude_take_bigtilt_yaw_check(float &diff_deg, bool &reset) {
     if (yaw_check_event_ == 0) return false;
     reset = (yaw_check_event_ == 2);
@@ -2276,6 +2353,7 @@ void attitude_calibrate_to(float target_pitch_deg, float target_roll_deg) {
     // ここで古い日付を残すと、測位できていない場所で APPLY し直したときに
     // 「前の日の較正のままだ」と誤って警告することになる。不明 = 警告しない。
     calib_date_ = 0;
+    calib_time_ = -1;
 
     // 自動トリムの累積量は捨てる。ここでロールのゼロ点を取り直したので、
     // 残したままだと表示が -roll_trim_deg_ になり「APPLY したのに 0 にならない」
@@ -2341,6 +2419,12 @@ void attitude_set_calib_date(uint32_t yyyymmdd) {
     const uint32_t d = yyyymmdd % 100;
     if (y < 2020 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31) { calib_date_ = 0; return; }
     calib_date_ = yyyymmdd;
+}
+// 較正した時刻（JST の HHMM、-1 = 不明）。日付と同じく、ありえない値は不明に倒す（壊れた設定ファイル対策）。
+int32_t attitude_get_calib_time() { return calib_time_; }
+void attitude_set_calib_time(int32_t hhmm) {
+    if (hhmm < 0 || hhmm / 100 > 23 || hhmm % 100 > 59) { calib_time_ = -1; return; }
+    calib_time_ = hhmm;
 }
 // 較正した日と today_jst が違うか。
 // today_jst は get_gnss_jst_yyyymmdd() の戻り値をそのまま渡す（0 = 測位前）。

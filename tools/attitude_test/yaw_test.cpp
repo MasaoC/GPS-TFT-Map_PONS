@@ -727,6 +727,8 @@ int main() {
     //       方位は保ち、ひっくり返った推定で 180 度逆を保っていたら、GNSS が戻ったときに航跡で入れ直す
     //   G6: 誤差が 60 度未満なら G5 は働かない。回している間も働かない
     //   G7: 保った方位が合っていれば、横滑りで 10 度ずれた航跡では上書きしない（ヨーを捨てない。2026-11-12）
+    //   G8: ジャイロが飽和（ESKF_GYRO_SAT_DPS 以上）したら方位を捨て、止まっている間はそのまま、次の発進で入れ直す（2026-11-27）
+    //   G9: 飽和しない速い回転（250 deg/s）では方位を捨てず、回した分だけ正しく回る
     {
         float a_lv[3]; static_accel_for_bank(0.0, a_lv);   // 機体水平
         // 上方向と比力のなす角 [deg]（0 が正しい）
@@ -956,6 +958,69 @@ int main() {
         printf("   方位 %.1f deg（0 のまま＝航跡の 10 で上書きしないのが正しい）  上方向の誤差 %.2f deg\n", h7, up_err_deg(a_lv));
         ok &= ev7 && kept7 && chk7 && !reset7 && fabsf(dd7 - 10.0f) < 3.0f;
         ok &= h7e < 3.0f && up_err_deg(a_lv) < 5.0f;
+
+        // ---- G8) ジャイロが飽和したら方位を捨て、次の発進で入れ直す ----
+        // 真方位 0 度で方位を決めたあと、機体の上下軸まわりに 2 秒回す。本当は 500 deg/s だがチップは 327.68 で頭打ち。
+        // 頭打ちのまま積分すると (500 − 327.68) × 2 = 345 度取りこぼすのに、σ は雑音の分しか増えず「精度が良い」まま残っていた
+        // （2026-11-27 の実機）。方位を捨てて σ 180°・YAW ALIGN になり、止まっている間はそのまま、発進の航跡で入れ直すこと。
+        attitude_setup();
+        t = 0;
+        feed((int)(4 * fs), dt, t, a_lv, gz);
+        set_yaw_good();                                  // 真方位 0 度
+        const float acc95_b8 = attitude_get_yaw_acc95_deg();
+        const double wb8[3] = { 0.0, 0.0, 327.68 * M_PI / 180.0 };   // 機体の上下軸まわり（頭打ちの値）
+        float wv8[3]; body_to_sensor(wb8, wv8);
+        const int n_sat8 = (int)(2 * fs);
+        feed(n_sat8, dt, t, a_lv, wv8);
+        const bool  drop8   = !attitude_yaw_ready();
+        const float acc95_8 = attitude_get_yaw_acc95_deg();
+        const bool  align8  = attitude_yaw_aligning();
+        float s8 = 0.0f; uint32_t n8 = 0; bool d8 = false;
+        const bool ev8_early = attitude_take_gyro_sat_event(s8, n8, d8);   // 回している間は出ない
+        feed((int)(4 * fs), dt, t, a_lv, gz);            // 止まって 4 秒（ESKF_GYRO_SAT_END_US を越える）
+        const bool ev8 = attitude_take_gyro_sat_event(s8, n8, d8);
+        const float acc95_8s = attitude_get_yaw_acc95_deg();
+        const bool  still8   = !attitude_yaw_ready();
+        // 発進: 東（真方位 90 度）へ 8 m/s。最初の 1 回は速度の入れ直しに使う（v_stale_）ので 1 回多く流す
+        for (int i = 0; i < ESKF_YAW_INIT_ARM_FIXES + 1; i++) {
+            feed((int)(0.5 * fs), dt, t, a_lv, gz);
+            attitude_on_gnss_velocity(0.0f, 8.0f, 0.0f, 0.08f);   // NED で渡す
+        }
+        float r8, p8, h8; attitude_get_euler_raw(r8, p8, h8);
+        printf("\nG8) 方位 0 度のあと上下軸まわりに頭打ち（327.68 deg/s）で 2 秒（本当は 500 deg/s で 345 度取りこぼす）\n");
+        printf("   回す前の yaw_acc95 %.1f deg → 回した直後 %.0f deg（180 が正しい）  方位を捨てた %d・YAW ALIGN %d（1・1 が正しい）\n",
+               acc95_b8, acc95_8, (int)drop8, (int)align8);
+        printf("   ログの印: 回している間 %d（0 が正しい）・止まったあと %d・%.3f s・%u サンプル・方位を捨てた %d（1・約 2・%d・1 が正しい）\n",
+               (int)ev8_early, (int)ev8, s8, (unsigned)n8, (int)d8, n_sat8);
+        printf("   止まって 4 秒後: ヨー未設定 %d・yaw_acc95 %.0f deg（1・180 が正しい＝止まっている間は入れ直さない）\n",
+               (int)still8, acc95_8s);
+        printf("   発進（東へ 8 m/s）: 入れ直した %d・方位 %.1f deg（1・90 が正しい）  上方向の誤差 %.2f deg\n",
+               (int)attitude_yaw_ready(), h8, up_err_deg(a_lv));
+        ok &= acc95_b8 < 179.0f && drop8 && acc95_8 > 179.0f && align8;
+        ok &= !ev8_early && ev8 && d8 && n8 == (uint32_t)n_sat8 && fabsf(s8 - 2.0f) < 0.05f;
+        ok &= still8 && acc95_8s > 179.0f;
+        ok &= attitude_yaw_ready() && fabsf(h8 - 90.0f) < 1.0f && up_err_deg(a_lv) < 2.0f;
+
+        // ---- G9) 飽和しない速い回転では方位を捨てない ----
+        // 同じく真方位 0 度から、上下軸まわりに 250 deg/s で 1 秒（ESKF_GYRO_SAT_DPS 未満）。方位は保ち、250 度回ること。
+        attitude_setup();
+        t = 0;
+        feed((int)(4 * fs), dt, t, a_lv, gz);
+        set_yaw_good();
+        const double wb9[3] = { 0.0, 0.0, 250.0 * M_PI / 180.0 };
+        float wv9[3]; body_to_sensor(wb9, wv9);
+        feed((int)(1 * fs), dt, t, a_lv, wv9);
+        feed((int)(1 * fs), dt, t, a_lv, gz);
+        float s9 = 0.0f; uint32_t n9 = 0; bool d9 = false;
+        const bool ev9 = attitude_take_gyro_sat_event(s9, n9, d9);
+        float r9, p9, h9; attitude_get_euler_raw(r9, p9, h9);
+        float d9h = h9;                                   // 0 度からの回り（±180 に畳む）
+        while (d9h >  180.0f) d9h -= 360.0f;
+        while (d9h < -180.0f) d9h += 360.0f;
+        printf("\nG9) 方位 0 度のあと上下軸まわりに 250 deg/s で 1 秒（飽和しない）\n");
+        printf("   方位を保った %d・ログの印 %d（1・0 が正しい）  方位 %.1f deg（250 度回って 110 か 250 が正しい）\n",
+               (int)attitude_yaw_ready(), (int)ev9, h9);
+        ok &= attitude_yaw_ready() && !ev9 && fabsf(fabsf(d9h) - 110.0f) < 1.0f;
     }
     printf("\n結果: %s\n", ok ? "PASS — 水平化・航跡ヨー・待機中の維持・上方向の常時提供・重力観測・発散の再発防止がすべて正しい"
                              : "FAIL");

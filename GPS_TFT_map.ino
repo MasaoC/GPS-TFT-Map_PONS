@@ -1356,6 +1356,7 @@ static void eskf_apply_tick() {
     //   という読み方ができるようにしておく。
     // ★ リプレイ中は 0（不明）。CSV の過去の日付が settings.txt に残り、次の本物の日に「別の日の較正」と誤って言う（BUG-110）
     attitude_set_calib_date(getReplayMode() ? 0 : get_gnss_jst_yyyymmdd());
+    attitude_set_calib_time(getReplayMode() ? -1 : get_gnss_jst_hhmm());   // 設定画面に出すだけ（2026-11-27〜）
     enqueueTask(createSaveSettingTask()); // 次回起動でも効くよう保存
     // 成功トーン（上がり 2 音）。SD に eskf_apply_done.wav が無くても、
     // 較正が実行されたことが分かるようにする。WAV の直前に鳴らす。
@@ -1551,6 +1552,15 @@ static void periodic_log_tick() {
         enqueueTask(
             createLogSdfTask("imu gapmax=%lums",
                              (unsigned long)(get_imu_poll_gap_max_us() / 1000)));
+      }
+      // チップが飽和を言ったサンプル数（2026-11-27〜）。あった分だけ出す（ふだんは 0 なので行を増やさない）。
+      // 推定が方位を捨てるのは値の方（ESKF_GYRO_SAT_DPS。`ESKF GYRO SAT` の行）。この行はチップがどこで飽和を言うかを見るため。
+      {
+        uint32_t sg, sa;
+        get_imu_sat_counts(sg, sa);
+        if (sg || sa)
+          enqueueTask(createLogSdfTask("imu sat gyro=%lu acc=%lu (samples flagged by chip)",
+                                       (unsigned long)sg, (unsigned long)sa));
       }
       redraw_prof_log();   // 地図の描き直しの内訳（どこで時間がかかっているか）
       live_periodic_log(); // ライブ配信（流している間だけ。書いた行・捨てた行・リングの最大）
@@ -2667,6 +2677,15 @@ void loop() {
     if (attitude_take_imu_gap_event(gap_s, yaw_kept)) {
       enqueueTask(createLogSdfTask("ESKF IMU GAP: %.1fs -> tilt/heading uncertainty widened, velocity from next GNSS, %s",
                                    gap_s, yaw_kept ? "heading kept (check vs track)" : "yaw was not set"));
+    }
+    // ジャイロが飽和した（ESKF_GYRO_SAT_DPS 以上。2026-11-27〜）。方位は捨て、次の発進で入れ直す（ESKF YAW INIT の行）
+    {
+      float sat_s; uint32_t sat_n; bool dropped;
+      if (attitude_take_gyro_sat_event(sat_s, sat_n, dropped)) {
+        enqueueTask(createLogSdfTask("ESKF GYRO SAT: %.2fs %lu samples >= %.0f deg/s -> %s, tilt uncertainty widened, velocity from next GNSS",
+                                     sat_s, (unsigned long)sat_n, ESKF_GYRO_SAT_DPS,
+                                     dropped ? "heading dropped (re-set on next takeoff run)" : "yaw was not set"));
+      }
     }
   }
 

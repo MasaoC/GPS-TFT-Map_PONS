@@ -125,6 +125,9 @@ uint32_t get_imu_poll_gap_max_us();
 uint32_t get_imu_drain_max_us();
 // リングバッファが一杯で読まなかった回数（loop() に入ってから）。ポーリングのときは 0。
 uint32_t get_imu_ring_ovf();
+// チップが飽和を言った（S1:S0 = 10）サンプル数。ジャイロ・加速度に分けて。**読むとリセットされる。**（2026-11-27〜）
+// 推定が飽和とみなすのは値の方（settings.h の ESKF_GYRO_SAT_DPS）で、これは見るだけ。
+void     get_imu_sat_counts(uint32_t &gyro, uint32_t &acc);
 // いまタイマー割り込みで読んでいるか。
 bool     imu_read_in_irq();
 

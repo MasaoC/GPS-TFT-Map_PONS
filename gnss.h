@@ -164,6 +164,7 @@
   GnssDate get_gnss_date();
   GnssTime get_gnss_time();
   uint32_t get_gnss_jst_yyyymmdd();   // JST の今日の日付 YYYYMMDD。0 = 時刻がまだ無い
+  int      get_gnss_jst_hhmm();       // JST のいまの時刻 HHMM（例 1432）。-1 = 時刻がまだ無い（APPLY した時刻の記録。2026-11-27〜）
 
   // 最大 G/S 取得関数
   // ★ 自機の分と、受信した送信機の分を別々に持つ。get_* はいま画面に出している方（ミラー中は送信機）。航跡も同じ。

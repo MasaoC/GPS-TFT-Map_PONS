@@ -270,6 +270,12 @@ const PONS_SETTINGS_SCHEMA = [
     caution: '【原則編集禁止】通常は本体が自動記録します。'
   },
   {
+    key: 'calib_time', label: '最終較正時刻 (HHMM)', cat: 'internal', tier: 'internal',
+    type: 'text', defaultVal: '-1',
+    desc: '最後に APPLY を実行した JST 時刻（例 1432、-1 = 不明）。本体の設定画面（IMU/ESKF 1/2）の stored offset の下に日付と並べて出すだけで、判定には使いません。',
+    caution: '【原則編集禁止】通常は本体が自動記録します。'
+  },
+  {
     key: 'auto10k_status', label: 'AUTO10K 折返しフェーズ', cat: 'internal', tier: 'internal',
     type: 'select', defaultVal: 'AWAY',
     options: [{ v: 'AWAY', l: 'AWAY（往路：離陸後〜折返し前）' }, { v: 'INTO', l: 'INTO（復路：折返し後）' }],
@@ -649,6 +655,10 @@ function validateAllDrafts() {
     }
     if (s.key === 'calib_date' && !/^(0|\d{8})$/.test(raw)) {
       errors[s.key] = '0 または 8 桁の YYYYMMDD（例: 20261120）を入力してください';
+      continue;
+    }
+    if (s.key === 'calib_time' && !(raw === '-1' || (/^\d{4}$/.test(raw) && +raw.slice(0, 2) <= 23 && +raw.slice(2) <= 59))) {
+      errors[s.key] = '-1 または 4 桁の HHMM（例: 1432）を入力してください';
       continue;
     }
     if (s.type === 'number') {

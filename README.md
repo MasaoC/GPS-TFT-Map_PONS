@@ -38,16 +38,9 @@ SD カードのログを付属ツール（`tools/`）で解析し、機体特性
 
 | ドキュメント | 対象・内容 |
 |---|---|
+| **[docs 案内](docs/README.md)** | 開発・製作・機能仕様・設計メモ・TODO の一覧 |
 | **[PONS_HPA v7.1 説明書](https://docs.google.com/document/d/1KvTG9RTmQfcqMZj5Lb0X9cOWW-vuLJjpPzH3PTkBcsk/)** | **パイロット・ボートマン向け**。操作手順、画面の見方、警告音の意味、大会当日の運用手順（Google Docs） |
 | **この README** | **開発者・自作者向け**。アーキテクチャ、設計根拠、ハードウェア構成、SD 構成、解析ツール |
-| **[ハードウェア製作・調達ガイド](docs/hardware.md)** | JLCPCB PCBA 発注、手実装部品 BOM、代替部品検証、組み立て・導通チェック手順 |
-| **[SCH16T 設計メモ](docs/sch16t_design.md)** | Murata SCH16T-K01 の仕様と決めごと・ファームの作り・配線・罠・単独テスト・本体での確認と実測の記録 |
-| **[無線 PONS Link 仕様](docs/pons_link.md)** | 920MHz LoRa テレメトリ、32 バイト固定フレーム形式 2、電波法適合、運用ルール、実測性能 |
-| **[無線立ち上げ試験](docs/pons_link_bringup.md)** | 基板到着後の PONS Link 立ち上げ・動作確認手順 |
-| **[音仕様](docs/pons_sound.md)** | 音声 3 系統（WAV / トーン / バリオ）、同時再生・排他制御、WAV 一覧・差し替え手順 |
-| **[電源・安全保護回路仕様](docs/pons_power.md)** | 充電 IC 焼損防止対策、SW OFF 充電検出、過放電ラッチ・充電禁止ロック、待機中自動減光 |
-| **[充電残量・時間推計仕様](docs/pons_charge_estimation.md)** | 充電中の開放電圧・残量(%)・満充電残り時間の推計物理モデル |
-| **[ナビゲーション仕様](docs/pons_navigation.md)** | 方位・距離計算ロジック、Auto 10km モード、コース警報アルゴリズム |
 
 ---
 
@@ -370,7 +363,7 @@ NAV 画面でスイッチ長押しで入ります。
   * ファイル: `index.html`（画面と版数）・`repons.css`・`player.js`（再生・地図・CSV）・`gauges.js`（計器・グラフ）・
     `serial.js`（PONS との接続）・`logview.js`（log.txt）・`settings_editor.js`（本体設定）・`hooks.js`・`analysis_*.js`・
     `olddata_open.js`・`video_sync.js`・`live_launcher.js`。CSS と JS は index.html が版数付きでこの順に読む（2026-11-23 に index.html を分けた）。
-  * **ライブ配信**（2026-11-23〜・実機未確認）: ヘッダーの「📡 ライブ」で別窓（`live.html`）を開き、USB でつないだ**受信機**から
+  * **ライブ配信**（2026-11-23〜・実機確認済み）: ヘッダーの「📡 ライブ」で別窓（`live.html`）を開き、USB でつないだ**受信機**から
     `PONS:LIVE,ON` で受けた行で**機体の画面を本体と同じ見た目で描き直す**（本体と同じ hires のベクター地図・送信機の縮尺。届いたらすぐ描く）。
     画面の下にボートの受信強度と機体までの距離の帯。OBS でこの窓を取り込んで配信する。受けた行は保存・再生できる（受信機が無くても練習できる。
     模擬の記録は `test/make_live_sample.py`）。窓の中身は `live.js`（接続・行の読み取り・帯）・`live_screen.js`（本体の地図画面の写し）・`live_tft.js`（TFT_eSPI の写し）・

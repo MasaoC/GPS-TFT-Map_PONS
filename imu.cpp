@@ -520,6 +520,15 @@ void imu_kalman_gnss_update(float z_gnss_msl, float vacc_m) {
     // 約1秒ごとに1回だけ実行する（ループ頻度によらず補正レートを安定させる）
     uint32_t now_ms = millis();
     if (now_ms - _gnss_last_ms < 1000) return;
+    // ★ 新しい測位が来ていなければ使わない（2026-11-27）。呼び出し元（GPS_TFT_map.ino の kalman_feed_tick）は loop() の毎回を通り、
+    //   GNSS が抜けた・GNSS だけがリセットした（NMEA だけで NAV-PVT が来ない）間も、fix の印と高度は最後の値のまま凍っている。
+    //   1 秒のレート制限だけでは**凍った高度を 1 秒ごとに入れ続け**、気圧の基準を最大 GNSS_MAX_DELTA_M / 秒で凍った高度へ
+    //   引っぱっていた（飛行中に抜けると、そのあと上った・下りた分が高度の表示から少しずつ消える。オフセットの長期更新も同じ）。
+    //   判定は imu_kalman_gnss_vel_update() と同じく iTOW（測位エポック）。
+    static uint32_t s_last_itow_ms = 0xFFFFFFFFu;
+    const uint32_t itow_ms = get_gnss_itow_ms();
+    if (itow_ms == s_last_itow_ms) return;
+    s_last_itow_ms = itow_ms;
     _gnss_last_ms = now_ms;
 
     // ---- フェーズ1: gnss_kf_offset の初期化 ----
