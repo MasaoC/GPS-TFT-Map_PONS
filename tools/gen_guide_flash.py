@@ -4,7 +4,7 @@
 # Project : PONS v7 (Pilot Oriented Navigation System for HPA)
 # Role    : 案内画像（日本語の全画面画像）を、本体 FLASH に焼き込む src/flashdata/*_data.cpp にする。
 #             imu_guide … IMU/ESKF 画面の入口の案内（tools/imu_guide/imu_guide_*.svg、3 枚）
-#             tas_guide … 推定 TAS の案内（tools/tas_guide/tas_guide_*.svg、1 枚。docs/pons_tas.md §4.4）
+#             tas_guide … 推定 TAS の案内（tools/tas_guide/tas_guide_*.svg、2 枚。docs/pons_tas.md §4.4）
 #
 #           案内は日本語。本体に日本語フォントは無いので、文字も図も画像にして焼く。
 #           原本は SVG（文字を <text> で持つので、文言の差分が見える）。

@@ -1,0 +1,34 @@
+<svg width="240" height="320" viewBox="0 0 240 320" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',sans-serif" font-weight="700">
+  <rect width="240" height="320" fill="#FFFFFF"/>
+  <rect width="240" height="36" fill="#0000FF"/>
+  <text x="8" y="25" font-size="18" fill="#FFFFFF">上昇・降下の補正</text>
+  <text x="232" y="25" font-size="18" fill="#FFFFFF" text-anchor="end">2/3</text>
+  <text x="12" y="57" font-size="14">上昇中の例</text>
+
+  <!-- 同じ起点から水平線、対気飛行経路（19°）、機首方向（39°）を描く。 -->
+  <g fill="none" stroke-width="2">
+    <path d="M22 190H224" stroke="#7B797B" stroke-dasharray="5 4"/>
+    <path d="M22 190L225 120" stroke="#0000FF"/>
+    <path d="M22 190L178 64" stroke="#000000"/>
+    <path d="M84 190A62 62 0 0 0 70.2 151" stroke="#000000"/>
+    <path d="M142 190A120 120 0 0 0 135.5 150.9" stroke="#0000FF"/>
+    <path d="M153.4 144.7A139 139 0 0 0 130 102.5" stroke="#A33B00"/>
+  </g>
+  <polygon points="225,120 214,119 217,128" fill="#0000FF"/>
+  <polygon points="178,64 167,66 173,73" fill="#000000"/>
+  <text x="186" y="66" font-size="13">機首方向</text>
+  <text x="231" y="112" font-size="13" fill="#0000FF" text-anchor="end">対気飛行経路</text>
+  <text x="224" y="207" font-size="13" fill="#595959" text-anchor="end">水平線</text>
+  <text x="55" y="172" font-size="15">θ</text>
+  <text x="154" y="177" font-size="15" fill="#0000FF">γ</text>
+  <text x="123" y="130" font-size="15" fill="#A33B00">α</text>
+
+  <rect x="8" y="215" width="224" height="31" fill="#E7E7E7"/>
+  <text x="120" y="236" font-size="14" text-anchor="middle">ピッチ θ − <tspan fill="#0000FF">経路角 γ</tspan> ≈ <tspan fill="#A33B00">迎角 α</tspan></text>
+  <text x="12" y="264" font-size="14">同じ迎角でもピッチは変わる</text>
+  <text x="12" y="283" font-size="14">V/Sで上昇・降下分を補正します。</text>
+
+  <rect y="292" width="240" height="2" fill="#7B797B"/>
+  <text x="213" y="314" font-size="16" text-anchor="end">スイッチを押すと次へ</text>
+  <polygon points="225,301 235,308 225,315" fill="#000000"/>
+</svg>

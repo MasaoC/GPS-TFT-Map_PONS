@@ -1,11 +1,11 @@
 <svg width="240" height="320" viewBox="0 0 240 320" xmlns="http://www.w3.org/2000/svg" font-family="'Hiragino Sans','Noto Sans JP',sans-serif" font-weight="700">
-  <!-- 推定 TAS の案内 1/2: 大きい枠の青い箱の意味。docs/pons_tas.md §4.4 -->
+  <!-- 推定 TAS の案内 1/3: 大きい枠の青い箱の意味。docs/pons_tas.md §4.4 -->
   <rect width="240" height="320" fill="#FFFFFF"/>
 
   <!-- 見出し帯（IMU の案内と同じ形） -->
   <rect x="0" y="0" width="240" height="36" fill="#0000FF"/>
   <text x="8" y="25" font-size="18" fill="#FFFFFF">推定 TAS の見方</text>
-  <text x="232" y="25" font-size="18" fill="#FFFFFF" text-anchor="end">1/2</text>
+  <text x="232" y="25" font-size="18" fill="#FFFFFF" text-anchor="end">1/3</text>
 
   <!-- ヘッダーの見本: 左が対地速度（白地に黒字）、右が推定 TAS（青地に白字・縦書きの TAS） -->
   <rect x="8" y="44" width="224" height="46" fill="#FFFFFF" stroke="#7B797B" stroke-width="2"/>
