@@ -124,6 +124,7 @@
   // ★ ミラーもデモも通さない、この機体自身の測位。
   //   受信モードでは get_gnss_*() が機体の値に置き換わるので、
   //   ボート自身を地図に出すにはこちらを使う。fix が無ければ false。
+  bool gnss_own_fix_fresh();  // 自機の最新 NAV-PVT が有効で、測位の有効期間内か
   bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track);
   // 自機の GNSS の fix と高度（ミラー・デモの差し替えを通さない。リプレイ中は呼ぶ側が除く）。link_assist.cpp が使う
   bool   gnss_own_fixok();

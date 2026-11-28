@@ -1967,6 +1967,8 @@ static int eskf_yaw_row_y() {
 static int  s_eskf_warn_y    = -1;
 static bool s_eskf_warn_boat = false;
 
+static uint16_t s_attitude_notice = 0;  // この地図フレームに専用の説明がある不足項目
+
 void draw_eskf_attitude() {
   // 機能そのものが OFF なら何も出さない（ESKF 導入前と同じ見た目に戻す）。
   // ★ ミラー中は自機のスイッチを見ない（送信機の姿勢を出す。下の eskf_display_enabled() が判断する）。
@@ -1990,6 +1992,7 @@ void draw_eskf_attitude() {
     if (rem < 0.0f) rem = 0.0f;
     backscreen.setTextColor(COLOR_ORANGE);
     backscreen.setCursor(ESKF_LABEL_X, y2 - fh - ESKF_ROW_GAP);
+    s_attitude_notice |= RDY_ESKF;
     backscreen.print("ESKF Not ready");
     backscreen.unloadFont();
     backscreen.setTextSize(1);
@@ -3823,6 +3826,9 @@ static void draw_charge_popup() {
 // 較正のやり直しの警告（draw_eskf_attitude() の ★ を参照）。無線のアイコンより上に、白い地を敷いて描く。
 static void draw_eskf_calib_warning() {
   if (s_eskf_warn_y < 0) return;
+  // ★ s_attitude_notice に RDY_CALIB を立てないこと（2026-11-28）。この赤字は 3 秒に 1 秒だけ点滅するので、立てると
+  //   NOT READY のポップアップの CALIB もそれに合わせて消えたり出たりした（CALIB だけ欠けているとポップアップごと点滅）。
+  //   ポップアップの CALIB は出しっぱなしにする（ユーザー）。ESKF の「Not ready」は点滅しないので、そちらは今までどおり外す。
   const int yw = s_eskf_warn_y;
   s_eskf_warn_y = -1;   // 次のフレームは draw_eskf_attitude() が決め直す
   backscreen.loadFont(AA_FONT_SMALL);
@@ -3840,6 +3846,54 @@ static void draw_eskf_calib_warning() {
     backscreen.print(l2);
   }
   backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+}
+
+// NAV の上半分の空き段を使う。姿勢の説明は下半分、既存の通知は予約済みの段にある。
+static void draw_readiness_notice() {
+  if (screen_mode != MODE_MAP || getReplayMode() || is_demo_active() || !readiness_waiting()) return;
+  const bool rx = readiness_receiver();
+  const uint16_t missing = readiness_missing() & ~(rx ? 0 : s_attitude_notice);
+  bool known = false;
+  const uint16_t tx = rx ? readiness_sender_settings(known) : 0;
+  if (!missing && (!rx || (known && !tx))) return;
+  char items[80];
+  char second_line[40];
+  char* second = nullptr;
+  if (rx) {
+    char reasons[32];
+    readiness_format_missing(missing, reasons, sizeof reasons);
+    snprintf(items, sizeof items, "RX: %s", missing ? reasons : "OK");
+    readiness_format_missing(tx, reasons, sizeof reasons);
+    snprintf(second_line, sizeof second_line, "TX CFG: %s", !known ? "WAIT" : tx ? reasons : "OK");
+    second = second_line;
+  } else {
+    readiness_format_missing(missing, items, sizeof items);
+    // 内蔵フォントは 6px/文字。35 文字を超えたら項目名の境で折り返す。
+    if (strlen(items) > 35) {
+      second = items + 35;
+      while (*second != ' ') --second;
+      *second++ = 0;
+    }
+  }
+  const int h = second ? 43 : 33;
+  for (int y = 44; y + h <= 150; y += 2) {
+    if (!notice_free(y, h)) continue;
+    begin_notice_box(8, y, SCREEN_WIDTH - 16, h, COLOR_RED);
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setTextSize(1);
+    backscreen.setCursor(14, y + 3);
+    backscreen.print(rx && !missing && !known ? "CHECKING TX" : "NOT READY");
+    backscreen.unloadFont();
+    backscreen.setCursor(14, y + 21);
+    backscreen.print(items);
+    if (second) {
+      backscreen.setCursor(14, y + 31);
+      backscreen.print(second);
+    }
+    backscreen.loadFont(AA_FONT_SMALL);
+    backscreen.setTextColor(COLOR_BLACK, COLOR_WHITE);
+    break;
+  }
 }
 
 void push_backscreen(){
@@ -3863,6 +3917,8 @@ void push_backscreen(){
   draw_sw_off_notice();            // 同じ段（上の 2 つが出ている間は出ない）
   draw_charge_popup();             // USB 充電・地上静止時の充電ダッシュボードポップアップ
   draw_nomapdata();                // GNSS の状態の箱。**最後に**描き、上の箱と重ならない段を探して置く
+  draw_readiness_notice();
+  s_attitude_notice = 0;
   backscreen.pushSprite(0, 50);
   // 通知の箱の一覧を閉じる（map_notice_shown() 用に数だけ残す）。次のフレームは空から数える。
   s_notice_last_n  = s_res_n;
@@ -5673,14 +5729,32 @@ void draw_setting_mode(int selectedLine, int cursorLine) {
 
   // ---- 本番前チェック（readiness.cpp）。タイトルの右 ----
   // そろっていれば緑の READY、欠けていれば赤の NOT READY と、足りない項目の短い名前。
-  // 受信モード・リプレイ・デモは対象外なので何も出さない（readiness_applicable）。
+  // 受信機には RX / TX CFG の確認を出す。リプレイ・デモは対象外。
   // ★ 長さが変わるので、毎回この領域を消してから描く。
   // ★ 項目の行は内蔵フォント（6px/文字）。120px に 20 文字まで。入りきらない名前は
   //   readiness_format_missing() が落とす（途中で切れた名前は出さない）。
   {
     const int rx = 112;
     tft.fillRect(rx, 0, SCREEN_WIDTH - rx, 29, COLOR_WHITE);
-    if (readiness_applicable()) {
+    if (readiness_receiver()) {
+      const uint16_t local = readiness_missing();
+      bool known;
+      const uint16_t tx = readiness_sender_settings(known);
+      char items[64];
+      tft.unloadFont();
+      tft.setTextSize(1);
+      tft.setTextColor(local ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
+      readiness_format_missing(local, items, sizeof items);
+      tft.setCursor(rx, 0);
+      tft.printf("RX: %s", local ? items : "OK");
+      tft.setTextColor(!known ? COLOR_GRAY : tx ? COLOR_RED : COLOR_GREEN, COLOR_WHITE);
+      tft.setCursor(rx, 10);
+      tft.print("TX CFG:");
+      readiness_format_missing(tx, items, sizeof items);
+      tft.setCursor(rx, 20);
+      tft.print(!known ? "WAIT" : tx ? items : "OK");
+      tft.loadFont(AA_FONT_SMALL);
+    } else if (readiness_applicable()) {
       const uint16_t m = readiness_missing();
       if (m == 0) {
         tft.setTextColor(COLOR_GREEN, COLOR_WHITE);

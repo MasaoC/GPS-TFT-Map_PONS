@@ -83,12 +83,20 @@ void tas_tick() {
     return;
   }
   s_repTick = 0;
-  if (!gs_ok) { s_runOn = false; s_leaving = false; return; }
+  if (!gs_ok || (src == SRC_SENSOR && !gnss_own_fix_fresh()) ||
+      (src == SRC_MIRROR && gnss_shown_no_fix())) {
+    s_runOn = false;
+    s_leaving = false;
+    return;
+  }
 
   // いまの状態から抜ける条件が成り立っているか
   const bool toward = s_airborne ? (gs < TAS_GND_GS_MPS) : (gs >= TAS_AIR_GS_MPS);
   const uint32_t hold_ms = s_airborne ? TAS_LAND_HOLD_MS : TAS_SWITCH_HOLD_MS;
-  const uint32_t now = millis();
+  // 実測値はサンプル間の時間で判定する。最後の速度を表示している間に
+  // ループだけで離陸・着地が成立するのを防ぐ。デモは毎周回速度を生成する。
+  const uint32_t now = src == SRC_SENSOR ? get_gnss_fix_millis()
+                     : src == SRC_MIRROR ? link_last_rx_ms() : millis();
   if (!toward) { s_runOn = false; s_leaving = false; return; }
   if (!s_runOn) { s_runOn = true; s_runMs = now; s_leaving = !s_airborne; return; }
   if (now - s_runMs >= hold_ms) {

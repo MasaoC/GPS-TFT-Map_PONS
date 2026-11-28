@@ -41,12 +41,12 @@ display_tft.cpp wind_arrow_color() 47caadff481c
 display_tft.cpp draw_wind_arrow() 1f00458d5a8f
 display_tft.cpp draw_ground_ok_range() 782a962351c0
 display_tft.cpp eskf_yaw_row_y() a27fb8466cf5
-display_tft.cpp draw_eskf_attitude() 0a34ddc9e070
+display_tft.cpp draw_eskf_attitude() e98592ea2a4d
 display_tft.cpp draw_eskf_yaw() 00964804b6ef
 display_tft.cpp begin_notice_box() b42b1e36261d
 display_tft.cpp draw_power_fault_warning() a7b6637846ba
 display_tft.cpp draw_eskf_calib_warning() b2ca8a9cf70f
-display_tft.cpp push_backscreen() e6967182938b
+display_tft.cpp push_backscreen() 58e48cff97f5
 display_tft.cpp truetrack_display_deg() aa4cf10c552b
 display_tft.cpp draw_average_pitch_label() 48d1e0a6785a
 display_tft.cpp draw_average_alpha_label() 89d8d58b7064

@@ -10,6 +10,7 @@
 // ============================================================
 // Handle button updates
 #include "button.h"
+#include "readiness.h"
 #include "../mysd.h"
 #include "../gnss.h"
 #include "../attitude.h"
@@ -35,8 +36,39 @@ float scale_screen_km(int index);  // 画面横幅が何 km か（GPS_TFT_map.in
 
 // 標準の縮尺（画面幅 約 18km）か。設定画面の Map scale の丸と、受信モードで添える
 // 送信機の縮尺「(S: 18km)」の色が**同じ基準**を見る（片方だけ変えると食い違う）。
-static bool scale_is_standard(int idx) {
-  return idx == 3;  // SCALE_LARGE_GMAP（通常使用）
+static bool scale_ok_for_site(int idx, bool test_flight) {
+  return idx == 3 || (test_flight && scale_screen_km(idx) > 0);  // SCALE_LARGE_GMAP（通常使用）
+}
+
+// 中心座標は滑走路端から最大約 2.6 km 離れているため、会場は半径 5 km で判定する。
+struct TestFlightSite { double lat, lon; };
+static const TestFlightSite test_sites[] = {
+  { KASAOKA_LAT, KASAOKA_LON }, { SHIRAHAMA_LAT, SHIRAHAMA_LON }
+};
+static bool within_test_site(const TestFlightSite& site, double lat, double lon) {
+  return calculateDistanceKm(site.lat, site.lon, lat, lon) <= 5.0;
+}
+
+static const TestFlightSite* test_site_at(double lat, double lon) {
+  for (const auto& site : test_sites) {
+    if (within_test_site(site, lat, lon)) return &site;
+  }
+  return nullptr;
+}
+
+static const TestFlightSite* current_test_site() {
+  if (link_get_mode() == LINK_MODE_RX || is_demo_active() || !gnss_own_fix_fresh()) return nullptr;
+  double lat, lon, gs, track;
+  if (!gnss_get_own_fix(lat, lon, gs, track)) return nullptr;
+  return test_site_at(lat, lon);
+}
+
+// 受信機の目的地・モードと送信機縮尺の注記には、送信機で評価した結果を使う。
+static int sender_setting_color(uint16_t bit) {
+  bool known;
+  const uint16_t missing = readiness_sender_settings(known);
+  if (!known) return COLOR_GRAY;
+  return (missing & bit) ? COLOR_RED : COLOR_GREEN;
 }
 
 // 縮尺の添字を画面幅の距離の文字列にする（"18km" / "4.6km"）。範囲外は "?"。
@@ -183,7 +215,7 @@ Setting menu_settings[] = {
   // [1] 目的地選択 (SETDESTINATION)
   //   ・Toggle: currentdestination を 0..destinations_count-1 でローテート
   //   ・Exit  : AUTO10K 禁止目的地が選ばれていたら FLYINTO に強制変更し、エラー音を鳴らす
-  //   ・アイコン色: 目的地が "PLATHOME"（出発地点）なら緑、それ以外は赤
+  //   ・アイコン色: 笠岡・白浜では同じ会場の目的地、それ以外では PLATHOME が緑
   // ----------------------------------------------------------
   { SETTING_SETDESTINATION,
     [](bool selected) -> std::string {
@@ -221,13 +253,15 @@ Setting menu_settings[] = {
       }
     },
     [](){
-      // 目的地が未選択（起動直後は -1）なら配列外アクセスになるため既定色を返す
-      if(currentdestination == -1 || currentdestination >= destinations_count)
-        return COLOR_RED;
-      if(strcmp(extradestinations[currentdestination].name, "PLATHOME") == 0)
-        return COLOR_GREEN;
-      else
-        return COLOR_RED;
+      if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) {
+        if (link_is_receiving() && link_dest_missing()) return COLOR_RED;
+        return sender_setting_color(RDY_DEST);
+      }
+      if (currentdestination < 0 || currentdestination >= destinations_count) return COLOR_RED;
+      const auto& dest = extradestinations[currentdestination];
+      if (const auto* site = current_test_site())
+        return within_test_site(*site, dest.cords[0][0], dest.cords[0][1]) ? COLOR_GREEN : COLOR_RED;
+      return strcmp(dest.name, "PLATHOME") == 0 ? COLOR_GREEN : COLOR_RED;
     }
   },
 
@@ -235,7 +269,7 @@ Setting menu_settings[] = {
   // [2] ナビゲーションモード選択 (DESTINATIONMODE)
   //   ・Toggle: FLYINTO → FLYAWAY → AUTO10K → FLYINTO と循環
   //   ・Exit  : AUTO10K 禁止目的地なら FLYINTO に強制変更し、エラー音を鳴らす
-  //   ・アイコン色: AUTO10K なら緑（大会モード）、それ以外は赤
+  //   ・アイコン色: 笠岡・白浜では INTO / AWAY、それ以外では大会用の AUTO10K が緑
   // ----------------------------------------------------------
   { SETTING_DESTINATIONMODE,
     [](bool selected) -> std::string {
@@ -277,6 +311,9 @@ Setting menu_settings[] = {
       }
     },
     [](){
+      if (link_get_mode() == LINK_MODE_RX && link_live_ui_ok()) return sender_setting_color(RDY_MODE);
+      if (current_test_site())
+        return (destination_mode == DMODE_FLYINTO || destination_mode == DMODE_FLYAWAY) ? COLOR_GREEN : COLOR_RED;
       if(destination_mode == DMODE_AUTO10K)
         return COLOR_GREEN;
       else
@@ -412,7 +449,7 @@ Setting menu_settings[] = {
   //             （広域 → … → 最大拡大 → 広域 とループ）
   //   ・表示は画面横幅の実距離。ベクタ地図に移行して Google タイルのズーム番号との
   //     対応が無くなったため、pilot にとって意味のある距離表示にしてある。
-  //   ・アイコン色: 標準の縮尺（scaleindex==3）なら緑（通常使用する拡大率）、それ以外は赤
+  //   ・アイコン色: 大会は標準縮尺（scaleindex==3）、試験会場は全段階が緑
   //   ・受信モード: 行の後ろに送信機の縮尺を「(S: 18km)」と添え、**送信機が**標準の縮尺かで
   //     緑／赤にする（menu_setting_note）。受信機の縮尺は送信機に合わせない（2026-11-12〜。
   //     ボートでは機体と違う縮尺で見たい場面がある）ので、受信機自身の丸はハイフン。
@@ -436,7 +473,7 @@ Setting menu_settings[] = {
       //   正しい設定なのに異常に見える（MENU_ICON_HYPHEN の説明は src/button.h）。
       //   送信機の縮尺の良し悪しは、行の後ろの「(S: ..)」の色で出す。
       if (link_get_mode() == LINK_MODE_RX) return MENU_ICON_HYPHEN;
-      if (scale_is_standard(scaleindex))
+      if (scale_ok_for_site(scaleindex, current_test_site() != nullptr))
         return COLOR_GREEN;
       else
         return COLOR_RED;
@@ -690,7 +727,7 @@ static_assert(sizeof(menu_settings) / sizeof(menu_settings[0]) <= 15,
 
 // 設定画面の行の後ろに、ラベルと別の色で添える注記（src/button.h）。
 // いまは受信モードの Map scale の行の「(S: 18km)」（送信機の縮尺）だけ。
-//   緑 = 送信機が標準の縮尺（設定画面の Map scale の丸と同じ基準 scale_is_standard）
+//   緑 = 送信機の設定チェックで縮尺が適切（大会は標準、TF は任意）
 //   赤 = 標準でない（パイロットが違う縮尺のまま飛ぼうとしている）。範囲外の値も標準ではないので赤
 //   灰 = まだ分からない（受信していない・縮尺の載る回転枠をまだ受けていない）。"(S: --)"
 // ★ リプレイ中・デモ中は無線を「OFF 扱い」にする（link.h）ので出さない。
@@ -709,7 +746,7 @@ bool menu_setting_note(int id, char* buf, size_t n, int* color) {
   char km[12];
   format_scale_km(km, sizeof(km), idx);
   snprintf(buf, n, " (S: %s)", km);
-  *color = scale_is_standard(idx) ? COLOR_GREEN : COLOR_RED;
+  *color = sender_setting_color(RDY_SCALE);
   return true;
 }
 

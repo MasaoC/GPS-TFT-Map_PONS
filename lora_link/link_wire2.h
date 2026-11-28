@@ -53,6 +53,7 @@
 //   0xB8: KF 高度と状態を核の 3 バイトに詰め、回転枠を 4 バイトに拡張。遅い状態とヘッダー設定は枠 6 へ。
 //   0xBC: 状態 3 項目とヘッダー設定を枠 2 にも載せ、4 発に 1 回にする。
 //   0xC0: ヨー精度も枠 2 と 6 に載せ、4 発に 1 回にする。
+//   0xC4: 風の枠 1・5 の上位 8 ビットで機体側の設定確認結果を送る。
 //   受信ログ（received/）は LinkTelem から書く。末尾近くの slot 列で、どの回転枠が入っていたか
 //   （＝その行で更新されたゆっくりした項目）が分かる。
 //
@@ -64,7 +65,7 @@
 #include "link_proto.h"
 
 #define LINK_W2_LEN        32
-#define LINK_W2_MAGIC      0xC0   // 印（上位 6 ビット）。下位 2 ビットはグループ
+#define LINK_W2_MAGIC      0xC4   // 印（上位 6 ビット）。下位 2 ビットはグループ
 #define LINK_W2_MAGIC_MASK 0xFC
 #define LINK_W2_SLOTS      8      // 回転枠の数。**256 の約数にすること**（seq の 8 ビットが一周しても続くように）
 static_assert((LINK_W2_MAGIC & ~LINK_W2_MAGIC_MASK) == 0, "印の下位 2 ビットはグループ用に空けておく");
@@ -176,7 +177,8 @@ static inline bool link_w2_is_magic(uint8_t b) { return (b & LINK_W2_MAGIC_MASK)
 // ============================================================
 //  送信側: LinkTelem → 32 バイト
 // ============================================================
-static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
+// 風の枠の上位バイトには送信機の設定チェックを載せる。0 は未判定、bit 7 が有効。
+static inline void link_w2_encode(const LinkTelem* t, uint8_t* out, uint8_t settings_check = 0) {
     memset(out, 0, LINK_W2_LEN);
     const uint8_t seq8 = (uint8_t)t->seq;
     out[W2_MAGIC] = (uint8_t)(LINK_W2_MAGIC | (t->group & 0x03));
@@ -241,6 +243,7 @@ static inline void link_w2_encode(const LinkTelem* t, uint8_t* out) {
             const uint32_t wd = (uint32_t)(w2_divr(t->wind_dir_cdeg, 10) % 3600);
             s = (uint32_t)t->wind_dmps | (wd << 8) | (1u << 20);
         }
+        s |= (uint32_t)settings_check << 24;
         break; }
     case W2S_TRIM: {
         const uint32_t tr = (uint32_t)w2_clampi(t->roll_trim_cdeg, -2047, 2047) & 0xFFF;
@@ -324,6 +327,8 @@ struct LinkW2Rx {
     uint32_t  last_press_ms; // 気圧・縮尺を最後に受けた時刻（枠 6）
     uint32_t  last_slow_ms;  // 状態・ヘッダー設定を最後に受けた時刻（枠 2 または 6）
     bool      slow_known;
+    uint8_t   settings_check;
+    uint32_t  settings_ms;
 };
 
 // 回転枠の値を「送る間隔 × これ」より長く受けていなければ、分からなくなったとみなす。
@@ -362,6 +367,7 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
     const uint32_t gap_ms = now_ms - st->last_ms;
     if (st->seq_known && gap_ms > LINK_W2_STALE_FRAMES * per_ms) {
         // 長く途切れた後。回転枠で覚えていた値はもう信用しない（受け直すまで出さない）
+        st->settings_check = 0;
         st->slot_have = 0; st->slot_seen = 0; st->yawacc_known = false;
         t.sacc_cms = LINK_SACC_NONE;   // have ビットが無いので値で「無し」に戻す（古い sAcc を出さない）
         t.batt     = LINK_BATT_NONE;   // 電池の表示も同じ（受信ログに古い値を書かない）
@@ -491,6 +497,8 @@ static inline void link_w2_decode(const uint8_t* p, LinkW2Rx* st, uint32_t now_m
         break;
     case W2S_WIND:
     case W2S_WIND2:
+        st->settings_check = (uint8_t)(s >> 24);
+        st->settings_ms = now_ms;
         if (s & (1u << 20)) {
             t.wind_dmps     = (uint8_t)(s & 0xFF);
             t.wind_dir_cdeg = (uint16_t)(((s >> 8) & 0xFFF) * 10);

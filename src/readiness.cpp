@@ -42,19 +42,48 @@ extern bool ground_pitch_warn_active;
 static bool     s_applicable = false;
 static uint16_t s_missing    = 0;
 
+// 起動直後は待機。走行中に測位が途切れた場合は、古い速度で待機へ戻さない。
+static bool s_still = true;
+static bool s_receiver = false;
+bool readiness_receiver() { return s_applicable && s_receiver; }
+
+static_assert(RDY_MODE == RDY_DEST * 2 && RDY_VOLUME == RDY_DEST * 4 &&
+              RDY_SCALE == RDY_DEST * 8, "無線の設定チェックの並び");
+uint8_t readiness_tx_settings() {
+  if (!s_applicable || s_receiver) return 0;
+  return 0x80 | ((s_missing / RDY_DEST) & 15) | ((s_missing & RDY_SET) ? 16 : 0);
+}
+uint16_t readiness_sender_settings(bool& known) {
+  const uint8_t result = link_sender_settings_check();
+  known = (result & 0x80) != 0;
+  return ((result & 15) * RDY_DEST) | ((result & 16) ? RDY_SET : 0);
+}
+bool readiness_waiting() {
+  if (!s_applicable || !s_still || s_receiver != (link_get_mode() == LINK_MODE_RX)) return false;
+  return !s_receiver || !link_mirror_active() || !link_get_fix_ok() || link_get_gs() <= READY_STILL_MPS;
+}
+
 bool     readiness_applicable() { return s_applicable; }
 uint16_t readiness_missing()    { return s_missing; }
 
 // 設定画面に赤の × があるか（色が COLOR_RED の行）。IMU と無線の行は、この下で別の項目（ESKF・CALIB・LINK）として
 // 見るので数えない（同じ理由を 2 つの名前で出さないため）。
-static bool any_setting_red() {
+static uint16_t missing_settings() {
+  uint16_t missing = 0;
   for (int i = 0; i < setting_size; i++) {
     if (menu_settings[i].iconColor == nullptr) continue;
     const int id = menu_settings[i].id;
     if (id == SETTING_IMU_DETAIL || id == SETTING_WIRELESS) continue;
-    if (menu_settings[i].iconColor() == COLOR_RED) return true;
+    if (menu_settings[i].iconColor() != COLOR_RED) continue;
+    switch (id) {
+      case SETTING_SETDESTINATION: missing |= RDY_DEST; break;
+      case SETTING_DESTINATIONMODE: missing |= RDY_MODE; break;
+      case SETTING_VOLUME: missing |= RDY_VOLUME; break;
+      case SETTING_SCALE: missing |= RDY_SCALE; break;
+      default: missing |= RDY_SET; break;
+    }
   }
-  return false;
+  return missing;
 }
 
 static uint16_t evaluate() {
@@ -62,7 +91,7 @@ static uint16_t evaluate() {
 
   // GNSS（**自機の**受信機。受信モードは対象外なのでミラーは通らない）
   double lat, lon, gs, trk;
-  if (!get_gnss_connection() || !gnss_get_own_fix(lat, lon, gs, trk) ||
+  if (!gnss_own_fix_fresh() || !gnss_get_own_fix(lat, lon, gs, trk) ||
       get_gnss_fixtype() < 3 || !get_gnss_fixok() ||
       get_gnss_hacc_mm() > (uint32_t)(READY_HACC_MAX_M * 1000.0f))
     m |= RDY_GNSS;
@@ -91,7 +120,7 @@ static uint16_t evaluate() {
     }
   }
 
-  if (any_setting_red()) m |= RDY_SET;
+  m |= missing_settings();
 
   // 電源。USB がつながっている間は電池の残量が測れない（SW OFF のあいだは 0V）。
   // 過放電ラッチが残っている機体も点検・解除前は READY にしない。
@@ -121,7 +150,8 @@ void readiness_format_missing(uint16_t missing, char* buf, size_t n) {
   static const struct { uint16_t bit; const char* name; } kItems[] = {
     { RDY_GNSS, "GNSS" }, { RDY_IMU, "IMU" },   { RDY_ESKF, "ESKF" }, { RDY_CALIB, "CALIB" },
     { RDY_ATT,  "ATT"  }, { RDY_SET, "SET" },   { RDY_USB,  "USB"  }, { RDY_BATT,  "BATT"  },
-    { RDY_SD,   "SD"   }, { RDY_LINK, "LINK" },
+    { RDY_SD,   "SD"   }, { RDY_LINK, "LINK" }, { RDY_DEST, "DEST" }, { RDY_MODE, "MODE" },
+    { RDY_VOLUME, "VOL" }, { RDY_SCALE, "SCALE" },
   };
   if (n == 0) return;
   buf[0] = '\0';
@@ -144,10 +174,26 @@ void readiness_tick() {
   if (now - last_ms < 1000) return;
   last_ms = now;
 
-  s_applicable = !getReplayMode() && !is_demo_active() && link_get_mode() != LINK_MODE_RX;
+  s_applicable = !getReplayMode() && !is_demo_active();
+  s_receiver = link_get_mode() == LINK_MODE_RX;
   if (!s_applicable) {
     s_missing   = 0;
     ready_since = 0;
+    return;
+  }
+  double lat, lon, gs, trk;
+  if (gnss_own_fix_fresh() && gnss_get_own_fix(lat, lon, gs, trk))
+    s_still = gs <= READY_STILL_MPS;
+  if (s_receiver) {
+    s_missing = 0;
+    if (!good_sd()) s_missing |= RDY_SD;
+    if (!link_module_alive() || !link_is_receiving() || link_dup_sender()) s_missing |= RDY_LINK;
+    if (link_is_receiving() && link_dest_missing()) s_missing |= RDY_DEST;
+    if (power_fault_active() || power_charge_hot_active() || power_overdischarge_latched() ||
+        (!usb_power_present() && !power_sw_off_on_usb() &&
+         battery_percent(get_input_voltage()) < READY_BATT_MIN_PERCENT)) s_missing |= RDY_BATT;
+    ready_since = notready_since = 0;
+    announced = false;
     return;
   }
   s_missing = evaluate();
@@ -155,11 +201,11 @@ void readiness_tick() {
   if (s_missing == 0) {
     notready_since = 0;
     // 地上で止まっているときだけ言う（自機の GNSS。evaluate() が fix を確かめている）
-    double lat, lon, gs, trk;
-    const bool still = gnss_get_own_fix(lat, lon, gs, trk) && gs <= READY_STILL_MPS;
-    if (!still) { ready_since = 0; return; }
+    if (!s_still) { ready_since = 0; return; }
+    // 最後の測位のあと、ループの時計だけが進んでも「準備完了」にしない。
+    const uint32_t fix_ms = get_gnss_fix_millis();
     if (ready_since == 0) ready_since = now;
-    if (!announced && now - ready_since >= READY_HOLD_MS) {
+    if (!announced && (int32_t)(fix_ms - ready_since) >= (int32_t)READY_HOLD_MS) {
       announced = true;
       // 「準備完了。」優先度 2（無線モードの読み上げと同じ）。
       enqueueTask(createPlayWavTask("wav/ready.wav", 2));

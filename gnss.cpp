@@ -2893,6 +2893,11 @@ void try_enque_savecsv(){
 //   受信モードの地図は機体の位置を中心に描くので、get_gnss_lat() などは
 //   すべて機体の値に置き換わる。ボート自身を地図に出すにはここが要る。
 //   fix が無ければ false（このとき lat/lon には何も書かない）。
+bool gnss_own_fix_fresh() {
+  return !replaymode_gnssoff && ubx_pos_valid &&
+         (uint32_t)(millis() - gnss_fix_millis) < GNSS_FIX_TIMEOUT_MS;
+}
+
 bool gnss_get_own_fix(double &lat, double &lon, double &gs, double &track) {
     // ★ リプレイ中は返さない（2026-11-14、BUG-103）。apply_replay_row() が CSV の位置と速度を ubx_pos_valid・stored_* に
     //   入れるので、再生した飛行を自機の動きと取り違え、詳細画面から地図へ勝手に戻る・自動調光・充電の警告の抑止が働いていた

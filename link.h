@@ -96,6 +96,8 @@
   bool     link_take_draw_frame();
   // ミラー中に TFT を描いてよい時間か（受信中のフレームに描画を重ねない）。ミラー中以外は true
   bool     link_draw_window_ok();
+  uint8_t link_sender_settings_check();  // 風の回転枠で届いた設定判定。古い・未受信は 0
+  uint32_t link_last_rx_ms();             // 最後のテレメトリの受信時刻 [ms]
   uint32_t link_age_ms();                 // 最後の受信からの経過 [ms]
   uint32_t link_rx_interval_ms();         // 直近の受信間隔 [ms]（最後の受信の1個前からの経過時間。未計測は0）
   int8_t   link_rssi();                   // 直近の RSSI [dBm]

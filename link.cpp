@@ -161,6 +161,7 @@ typedef enum { LTX_IDLE = 0, LTX_WAKING, LTX_TXSTART, LTX_TXDONE } LinkTxState;
 static LinkTxState s_txState     = LTX_IDLE;
 static uint32_t    s_txStateMs   = 0;
 
+#include "src/readiness.h"
 static void link_push_telemetry();   // 実体は下（送信側の組み立て）
 static void link_preflight_start();  // 実体は下（送信前チェック）
 static void link_apply_power_state();// 実体は下（モードに応じた mode 0 / mode 3）
@@ -1835,7 +1836,7 @@ static void link_push_telemetry() {
                    : (sacc_mm >= cap_mm)    ? (uint16_t)(LINK_SACC_NONE - 1)
                    : (uint16_t)((sacc_mm + 5u) / 10u);
     }
-    t.fixflags = get_gnss_fixok() ? 0x01 : 0x00;
+    t.fixflags = gnss_own_fix_fresh() ? 0x01 : 0x00;
 
     // ナビ設定。受信側はこれを自分の設定と突き合わせるためだけに使う。
     t.dest_index = (int8_t)currentdestination;
@@ -1894,7 +1895,7 @@ static void link_push_telemetry() {
     // ★ 電波には 32 バイトに詰めてから載せる（lora_link/link_wire2.h。中身の組み立ては上のまま。
     //   送信時間が 65 バイトの約 6 割になり、送信電流もそのぶん減る）。
     uint8_t w2[LINK_W2_LEN];
-    link_w2_encode(&t, w2);
+    link_w2_encode(&t, w2, readiness_tx_settings());
     if (e220_send(w2, (uint8_t)LINK_W2_LEN)) {
       const uint32_t now_tx = millis();
       if (s_txMs > 0) s_txIntervalMs = now_tx - s_txMs;
@@ -1906,6 +1907,12 @@ static void link_push_telemetry() {
 // ============================================================
 //  受信側：状態
 // ============================================================
+uint8_t link_sender_settings_check() {
+    if (!link_is_receiving() || link_dup_sender() ||
+        millis() - s_w2rx.settings_ms >= LINK_W2_STALE_FRAMES * s_txPeriodEstMs) return 0;
+    return s_w2rx.settings_check;
+}
+uint32_t link_last_rx_ms()     { return s_rxMs; }
 uint32_t link_age_ms()         { return s_rxValid ? (millis() - s_rxMs) : 0xFFFFFFFF; }
 uint32_t link_rx_interval_ms() { return s_rxIntervalMs; }
 bool     link_is_receiving()   { return s_rxValid && link_age_ms() < link_nosignal_ms(); }

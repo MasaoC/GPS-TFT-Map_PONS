@@ -74,16 +74,18 @@ static void test_roundtrip_8slots() {
     for (uint16_t seq = 0; seq < 8; seq++) {
         LinkTelem tx = make_full_telem(seq);
         uint8_t wire[LINK_W2_LEN];
-        link_w2_encode(&tx, wire);
+        link_w2_encode(&tx, wire, 0x8B);
 
         CHECK(link_w2_valid(wire), "slot %u valid", seq);
         CHECK(!link_bc_valid(wire), "slot %u is not beacon", seq);
         CHECK(link_w2_group(wire) == 2, "slot %u group", seq);
         CHECK(link_w2_slot(wire) == seq, "slot %u index", seq);
-        const uint8_t unused = seq == W2S_TRIM ? 0xFCu : seq == W2S_PRESS ? 0xC0u : 0xFFu;
+        const uint8_t unused = (seq == W2S_WIND || seq == W2S_WIND2) ? 0 : seq == W2S_TRIM ? 0xFCu : seq == W2S_PRESS ? 0xC0u : 0xFFu;
         CHECK((wire[W2_SLOT + 3] & unused) == 0, "slot %u sends unused high bits as zero", seq);
 
         link_w2_decode(wire, &rx, 1000 + seq * 1000, 1000);
+
+        CHECK(rx.settings_check == (seq >= W2S_WIND ? 0x8B : 0), "settings result after slot %u", seq);
 
         // 回転枠 2（W2S_TRIM）を受けるまでは RHAVE_ATT_YAW は立たない仕様
         if (seq < W2S_TRIM) {
@@ -377,7 +379,7 @@ static void test_extremes_and_sentinels() {
     CHECK(link_w2_crc_ok(bad) && !link_frame_valid(bad), "A2 CRC valid, reject as telemetry");
     CHECK(link_w2_legacy_magic(bad[0]) == 0xA2 && link_w2_legacy_group(bad) == 3,
           "diagnose A2 with separate group byte");
-    constexpr uint8_t old_formats[] = {0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xBC};
+    constexpr uint8_t old_formats[] = {0xA4, 0xA8, 0xAC, 0xB0, 0xB4, 0xB8, 0xBC, 0xC0};
     for (const uint8_t magic : old_formats) {
         for (uint8_t group = 0; group < 4; group++) {
             bad[W2_MAGIC] = magic | group;

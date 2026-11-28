@@ -22,7 +22,7 @@
 //#define DEBUG_ESKF
 
 #define BUILDDATE 20261128
-#define BUILDVERSION "1.16"
+#define BUILDVERSION "1.17"
 
 // ============================================================
 //  基板（v7.1。SCH16T を J6 の FPC コネクタで外付け）
@@ -120,6 +120,8 @@
 //   止まっても取りこぼさない。実測の Core0 の停止は数十 ms（imu gapmax=）。
 //   5 秒なら「本当に来ていない」ときだけ立つ。
 #define GNSS_CONN_TIMEOUT_MS   5000UL
+// 準備完了・TAS に使う測位の有効期間。表示用 NAV-PVT（2 Hz）の 3 周期。
+#define GNSS_FIX_TIMEOUT_MS    (3000UL / GNSS_APP_RATE_HZ)
 // バイトは届いているのに UBX がこれだけ来なければ、GNSS が設定を失った（電源の瞬断などで GNSS だけが
 // リセットし、工場出荷の NMEA だけに戻った）とみて設定を一式送り直す（gnss.cpp の gnss_ubx_watchdog）。
 // NAV-PVT は 0.25 秒ごとなので 10 秒は 40 回ぶんの欠け。描画で Core0 が止まっても FIFO に溜まるので誤発火しない。
@@ -1045,9 +1047,6 @@ extern volatile uint32_t _core1_base_sp;  // GPS_TFT_map.ino で定義
   #define SCH16T_PIN_EXTRESN    45   // 外部リセット（負論理）。ネット名 SCH16T_RESET
   #define SCH16T_PIN_DRY        46   // データ準備完了（デシメーション出力用）。SCH16T_SYNC
 
-  // ★ 2026-11-03 に v7.1 本体で起動・机上確認（docs/sch16t_design.md §6 の Step 2〜3）まで済んだ。
-  //   **走行（Step 4）と飛行（Step 5）はまだ。** 通してからこの #warning を消すこと。
-  #warning "SCH16T: road-tested on v7.1 (Step 4 done 2026-11-19/22) but not yet flight-tested. Check docs/pons_todo.md section 1 by car, then Step 5. DO NOT FLY."
 
 // ============================================================
 //  IMU の生ログと読み出し

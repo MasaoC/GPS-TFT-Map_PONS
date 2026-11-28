@@ -25,9 +25,19 @@
 #define RDY_LINK   0x0200  // 送信モードで、無線モジュールが応答しない／送信前チェック中／
                            // 同じチャンネルに他の送信機がいる
 
+#define RDY_DEST   0x0400
+#define RDY_MODE   0x0800
+#define RDY_VOLUME 0x1000
+#define RDY_SCALE  0x2000
+
+// 無線設定チェックの下位 4 ビットは DEST / MODE / VOL / SCALE の順。
+uint8_t readiness_tx_settings();
+bool readiness_receiver();  // 受信機自身の確認中
+uint16_t readiness_sender_settings(bool& known);
+bool readiness_waiting();
 void     readiness_tick();         // loop() の最上位から毎回呼ぶ（内部で 1 秒に 1 回）
-// 判定の対象か。受信モード（ボート）・リプレイ中・デモ中は false
-// （どれも「この機体がこれから飛ぶ」話ではない）。
+// 判定の対象か。リプレイ中・デモ中は false
+// （受信機では地上局自身の項目を評価する）。
 bool     readiness_applicable();
 uint16_t readiness_missing();      // 足りない項目（RDY_*）。0 ならそろっている
 // 足りない項目を "GNSS ESKF SD" のような短い文字列にする。
