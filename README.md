@@ -1,5 +1,5 @@
 # PONS — 鳥人間コンテスト向け 人力飛行機用 GPS/GNSS ナビ（航法装置）v7.1
-<img width="1312" height="368" alt="PONS の実機（v6）。白い 3D プリントケースの 2.8 インチ TFT に、琵琶湖の地図・対地速度・方位・目的地までの距離を表示している / PONS GNSS navigation display for human-powered aircraft showing a Lake Biwa map" src="https://github.com/user-attachments/assets/1e0ee79d-7a78-437a-a577-ab036f17d5f1" />
+<img width="164" height="193" alt="PONS v7.1P v7.1B の写真" src="https://github.com/user-attachments/assets/bc375770-9032-467d-a24b-8c6a4f4a52d8" />
 <img width="240" height="52" alt="PONS ロゴ / PONS logo" src="https://github.com/user-attachments/assets/ffad4b6f-56ef-4505-8b95-28498c59182f" />
 
 **PONS（Pilot Oriented Navigation System）**は、人力飛行機のパイロットが使いやすいことを目標とした航法装置です。琵琶湖の鳥人間コンテストに特化しています。  
