@@ -190,7 +190,7 @@ python3 tools/repons/test/run_live_tests.py   # Re:PONS のライブ配信（Lin
   並びを変えたら `LINK_W2_MAGIC` も変える。
   **印は上位 6 ビットで、下位 2 ビットはグループ（A〜D）**（いまは `0xC4`。送信機の設定確認結果は枠 1・5、ヨー精度・状態 3 項目・ヘッダー設定は枠 2・6）。印は必ず
   `link_w2_is_magic()` で比べること — **バイトごと `==` で比べると別グループの電波が「無信号」になり**、
-  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xC4`）。
+  SD が飛んでグループが A に戻った事故に気づけなくなる（`e220.cpp` の同期探しも同じ）。変えるときは 4 つ飛ばし（次は `0xC8`）。
   **GNSS の時刻の助け合いのビーコン（印 `0x58`。[lora_link/link_beacon.h](lora_link/link_beacon.h)）も同じ 32 バイト**で、
   e220.cpp の切り出しは両方を拾う（`link_frame_is_magic` / `link_frame_valid`）。テレメトリの印を変えるときはビーコンの印とぶつけないこと
   （`static_assert` で止まる）。ビーコンは `link_recv_telem()` が `link_assist.cpp` へ渡し、**受信の数・seq・ミラー・NO SIGNAL・
@@ -336,7 +336,7 @@ python3 tools/repons/test/run_live_tests.py   # Re:PONS のライブ配信（Lin
 | [display_pages.cpp](display_pages.cpp) | 地上で見る詳細画面（VARIO / GNSS DETAIL）。スプライトは display_tft.cpp のものを借りる |
 | [attitude.cpp](attitude.cpp) | 姿勢 ESKF。風推定と自動ロールトリムもここ |
 | [imu.cpp](imu.cpp) | バリオ用 Kalman filter と推定側のゲッター。**チップ非依存** |
-| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す。まだ飛ばしていないので `#warning` で「飛ばすな」が出る。[docs/sch16t_design.md](docs/sch16t_design.md) |
+| [imu_sch16t.cpp](imu_sch16t.cpp) | SCH16T ドライバ。**チップ依存はここだけ。** SPI1 の 48bit フレーム・初期化・タイマー割り込みで読んでリングバッファへ積み、`loop()` 側で推定へ渡す。まだ飛ばしていない。[docs/sch16t_design.md](docs/sch16t_design.md) |
 | [src/imu_sensor.h](src/imu_sensor.h) | IMU チップと推定の境界。**feed の口（`imu_feed_gyro` / `imu_feed_accel`）と `imu_drv_*`** |
 | [link.cpp](link.cpp) / [e220.cpp](e220.cpp) | 無線。link=テレメトリの意味 / e220=UART の叩き方だけ |
 | [live.cpp](live.cpp) | ライブ配信（2026-11-23〜・実機確認済み）。**受信機だけ**が `PONS:LIVE,ON` で、受けた LinkTelem（`LT`）・画面の判断（`LN`）・受信機の状態（`LS`）を USB へ流す。PC 接続の画面には入らない。行の形は docs/pons_webserial_protocol.md §4 (9)、設計は [docs/pons_live_stream_plan.md](docs/pons_live_stream_plan.md)。Re:PONS の側は `tools/repons/live.html`（配信の窓）と `live*.js` |
@@ -346,7 +346,7 @@ python3 tools/repons/test/run_live_tests.py   # Re:PONS のライブ配信（Lin
 | [bootwatch.cpp](bootwatch.cpp) | 起動の見張りと水晶の立ち上がり待ち（2026-11）。起動処理の最初〜 "BOOT PONS" の間だけ watchdog を掛け、固まったら自分で再起動して止まった段階を log.txt に `BOOT WATCH:` で出す。pico-sdk の `runtime_init_clocks()` を写しに置き換え、水晶が STABLE になってから `BOOTWATCH_XOSC_SETTLE_MS`（50ms）待って PLL を起こす（**0 にしないこと**。経緯は [docs/hardware.md](docs/hardware.md) §2「起動時に固まる件」）。**arduino-pico を上げたら元の `runtime_init_clocks()` と見比べること**。`isr_hardfault` も置き換えている |
 | [src/readiness.cpp](src/readiness.cpp) | 本番前チェック。そろったら「準備完了」、欠けていれば設定画面の右上に項目名。**既存の判定（設定画面の丸の色・地上チェック・送信前チェック）を読むだけで、条件を書き写さない** |
 | [rtc_backup.cpp](rtc_backup.cpp) | GNSS のバックアップ電池（BT1）が「あと何時間もつか」の推定（2026-11-08）。**v7.2 基板（`settings.h` の `PONS_MAINBOARD_REV` = 72、2026-11-16〜）は、電源を切っていても主電池が BT1 を保つ時間を足す**。通電で足し、電源を切っていた時間で引き、起動時の時計の生死で引き戻す。記録は SD の `rtc_backup.txt`（読み書きは mysd.cpp・Core1） |
-| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。**実機未確認**）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。**外から GNSS へ時刻を入れる口 `gnss_dbd_give_time()` もここ**（2026-11-10。PC の `PONS:TIME`。LoRa の時刻もここへ渡すだけにして、入れる条件を呼び出し側に書かない）。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS / COLD,TIME / COLDONLY,TIME`。SD の読み書きは mysd.cpp・Core1 |
+| [gnss_dbd.cpp](gnss_dbd.cpp) | GNSS の航法データベース（UBX-MGA-DBD）を SD の `gnss_dbd.bin` に写し、起動時に時計が死んでいた（BT1 が切れていた）ときだけ GNSS へ戻す（2026-11-09。確認済み）。時刻を知らずに断られた分は、GNSS が衛星から時刻を読んだら入れ直す。**外から GNSS へ時刻を入れる口 `gnss_dbd_give_time()` もここ**（2026-11-10。PC の `PONS:TIME`。LoRa の時刻もここへ渡すだけにして、入れる条件を呼び出し側に書かない）。机の上の試験は USB シリアルの `PONS:DBD,SAVE / COLD / COLDONLY / HOT / STATUS / COLD,TIME / COLDONLY,TIME`。SD の読み書きは mysd.cpp・Core1 |
 | [lora_link/link_proto.h](lora_link/link_proto.h) | PONS Link の通信プロトコル本体（`LinkTelem` 構造体・CRC・無線方式に依存しない設計） |
 | [lora_link/link_wire2.h](lora_link/link_wire2.h) | 電波に載せる 32 バイトのフレーム（`LinkTelem` を詰める・戻す） |
 | [tas.cpp](tas.cpp) | 推定 TAS の表示の判断（2026-11-07）。ヘッダー右の大きい枠に何を出すか（真方位 / 平均ピッチ / 推定 TAS / 地上の横線つき TAS）を、設定・地上と飛行中・**表示の供給元 4 つ**から 1 か所で決める。描画は `tas_header()` を読むだけ。仕様は [docs/pons_tas.md](docs/pons_tas.md) |
@@ -359,7 +359,7 @@ python3 tools/repons/test/run_live_tests.py   # Re:PONS のライブ配信（Lin
 - ナビの考え方: [docs/pons_navigation.md](docs/pons_navigation.md) — 音の鳴り方: [docs/pons_sound.md](docs/pons_sound.md)
 - 無線の設計・電波法: [docs/pons_link.md](docs/pons_link.md) — 実機立ち上げ: [docs/pons_link_bringup.md](docs/pons_link_bringup.md)
 - GNSS の TTFF を SD の DBD と LoRa の助け合いで縮める計画: [docs/pons_ttff_assist_plan.md](docs/pons_ttff_assist_plan.md)
-  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10 に実装・実機未確認、無線の時刻の助け合いは 2026-11-13 に実装・確認済み）
+  （段階 1 の SD の DBD は 2026-11-09、PC から時刻を入れる口は 2026-11-10、無線の時刻の助け合いは 2026-11-13 に実装・いずれも確認済み）
 - 充電 IC 焼損（2026-10-15）の対策と、全基板（v3〜v7.2）の電源の形・ファームの対応: [docs/pons_power.md](docs/pons_power.md)
 - 充電中のバッテリー残量(%)・残り時間推定 仕様書: [docs/pons_charge_estimation.md](docs/pons_charge_estimation.md)
 - SCH16T（v7.1 の IMU）の仕様・決めごと・配線・罠・単独テスト・本体での確認と実測: [docs/sch16t_design.md](docs/sch16t_design.md)

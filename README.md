@@ -62,7 +62,7 @@ SD カードのログを付属ツール（`tools/`）で解析し、機体特性
 | **無線 (PONS Link)** | 920MHz LoRa（E220-900T22S(JP)、技適取得済・免許不要、送信 13dBm / 到達実測 **350m**） |
 | **バッテリー / 電源** | LiPo 860mAh、USB-C 充電（303mA）。電源スイッチ後段ロードスイッチ Q3、逆接保護 Q4、過電圧保護 U10 |
 | **稼働時間** | 輝度 High で約 3 時間。Low（自動調光・待機減光有効）で大幅に延長 |
-| **ストレージ** | 内蔵 16MB FLASH（W25Q128：ベクタ地図・音声 40 ファイル・起動ロゴ）、microSD（ログ記録） |
+| **ストレージ** | 内蔵 16MB FLASH（W25Q128：ベクタ地図・音声 44 ファイル・起動ロゴ）、microSD（ログ記録） |
 
 ---
 
@@ -115,8 +115,8 @@ ANA は BT1 が切れていた起動でも有効のままです（`settings.h` �
 - **外から時刻を入れる**: 時刻を知らない GNSS は戻したデータベースの一部を断るので、PC につないでいれば Re:PONS が送る PC の時刻を、
   無線では仲間（機体のテレメトリ・ボートの時刻のビーコン）の時刻を、精度つきで GNSS へ入れます（`gnss_dbd_give_time()` 1 か所に集約）。
 - **衛星系**: 起動時に GNSS の衛星系の設定（CFG-SIGNAL）を読んで `log.txt` の `GNSS SIGNAL ...` に残します。BeiDou は工場出荷の B1C のまま
-  （B1I は GLONASS と同時に使えず、試すと妨害の指標が上がった）。QZSS はどの GNSS 基板でも測位に使われておらず、理由を調べています
-  （`GNSS QZSS (...)` の行。[docs/pons_todo_notes.md](docs/pons_todo_notes.md)）。
+  （B1I は GLONASS と同時に使えず、試すと妨害の指標が上がった）。QZSS が使われなかった件はアンテナ（受け方）の問題と分かり、新しい GNSS 基板では測位に使われています
+  （2026-11-18 確認。衛星ごとの状態は `GNSS QZSS (...)` の行。[docs/pons_todo_notes.md](docs/pons_todo_notes.md)）。
 - **机の上の試験**: USB シリアルの `PONS:DBD,COLD` / `COLDONLY` / `HOT` / `SAVE` / `STATUS`、`COLD,TIME` / `COLDONLY,TIME`
   （[docs/pons_webserial_protocol.md](docs/pons_webserial_protocol.md)）。
 - GNSS DETAIL 3 の下の 2 行は受け方の指標です: `RF jam:12 50+:3/60 noise:91 agc:4464`（`50+` は直近 60 秒で妨害の指標 jamInd が 50 以上だった秒数。
